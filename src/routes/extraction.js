@@ -1481,312 +1481,23 @@ Return ONLY the JSON object.`;
   };
 }
 
-/**
- * Score a slot's plausibility as the genuine main switch within a run of
- * Stage-3-classified main_switch slots.
- *
- * Six signals, summed:
- *   +2 — slot.ratingText digits match the classifier's main_switch_rating
- *        (e.g. slot reads "100A", classifier said "100" — strongest positive)
- *   +1 — slot.ratingText is non-null at all (any face read is a positive)
- *   +1 — slot.confidence ≥ 0.7 (Stage 3 self-rated as non-partial)
- *   +1 — slot.bsEn matches the BS EN 60947 family (switch-disconnector standard)
- *   +1 — Stage 4 label looks main-switch-like AND labelConfidence ≥ 0.85
- *   −2 — Stage 4 label is something else (appliance / circuit name) AND
- *        labelConfidence ≥ 0.85 — strongest negative: a confident appliance
- *        name is the loudest "this is not the main switch" signal we have
- *
- * Higher is more plausible. The score is purely ordinal — we sort the run
- * and demote the bottom (runLength - expectedSize) slots; absolute values
- * never matter outside that comparison.
- */
-function scoreMainSwitchPlausibility(slot, expectedRatingDigits) {
-  let score = 0;
-
-  const ratingText = slot.ratingText != null ? String(slot.ratingText) : '';
-  const slotRatingDigits = ratingText.match(/\d+/)?.[0] ?? null;
-  if (expectedRatingDigits && slotRatingDigits === expectedRatingDigits) {
-    score += 2;
-  }
-  if (slotRatingDigits) {
-    score += 1;
-  }
-
-  if ((slot.confidence ?? 0) >= 0.7) {
-    score += 1;
-  }
-
-  const bsEnNorm = (slot.bsEn || '').toLowerCase().replace(/\s+/g, '');
-  if (bsEnNorm.includes('60947')) {
-    score += 1;
-  }
-
-  const labelRaw = slot.label != null ? String(slot.label).trim() : '';
-  const labelConf = slot.labelConfidence ?? 0;
-  if (labelRaw.length > 0 && labelConf >= 0.85) {
-    const looksLikeMainSwitch = /^(mains?\s*switch|isolator|switch[-\s]?fuse|main|\d+\s*a)$/i.test(
-      labelRaw
-    );
-    if (looksLikeMainSwitch) {
-      score += 1;
-    } else {
-      score -= 2;
-    }
-  }
-
-  return score;
-}
-
-/**
- * Patterns that identify a slot whose Stage 4 label clearly names it as the
- * main switch / isolator. Conservative — matches phrases that appear ONLY
- * on a main-switch device face, never on an MCB/RCBO label. The bare word
- * "isolator" is included because Wylex / Hager / Schneider all label
- * their isolators that way; the bare word "switch" is NOT included
- * because circuit labels like "Hot Tub Switch" / "Garage Switch" would
- * false-positive.
- */
-const MAIN_SWITCH_LABEL_PATTERNS = [
-  /^\s*main\s*switch\s*$/i,
-  /^\s*main\s*isolator\s*$/i,
-  /^\s*main\s*isol\.?\s*$/i,
-  /^\s*mains\s*switch\s*$/i,
-  /^\s*switch\s*disconnector\s*$/i,
-  /^\s*isolator\s*$/i,
-];
-
-function labelLooksLikeMainSwitch(label) {
-  if (typeof label !== 'string') return false;
-  return MAIN_SWITCH_LABEL_PATTERNS.some((p) => p.test(label));
-}
-
-/**
- * Promote slots whose Stage 4 label identifies them as the main switch,
- * but whose Stage 3 classification calls them an RCBO / MCB / RCD / unknown.
- *
- * The Stage 4 label pass reads the printed text on the device face — that
- * text is the ground truth. When Stage 3 mis-classifies a main-switch
- * slot as RCBO (Elucian CU1SPD275 reproduces this on certain shots —
- * production extraction `1777975403777-zvdpli` 2026-05-05), the slot
- * survives `slotsToCircuits` and gets emitted as circuit #1 with label
- * "Main Switch", which the inspector then has to manually delete from
- * every schedule.
- *
- * This pre-pass runs AFTER labels are attached but BEFORE
- * `slotsToCircuits`, so the existing `cls === 'main_switch'` filter in
- * the merger correctly skips the promoted slot. Mutates `slots` in place;
- * preserves `_originalClassification` for audit.
- *
- * Doesn't promote slots already classified as main_switch (idempotent),
- * spd, blank, or empty (no need / wrong direction).
- */
-export function promoteLabelMatchedMainSwitch(slots, opts = {}) {
-  const { logger, userId } = opts;
-  if (!Array.isArray(slots)) return;
-  let promoted = 0;
-  for (const slot of slots) {
-    if (!slot) continue;
-    const cls = (slot.classification || '').toLowerCase();
-    // Skip slots that are already classified as a non-circuit.
-    if (cls === 'main_switch' || cls === 'spd' || cls === 'blank' || cls === 'empty') continue;
-    if (!labelLooksLikeMainSwitch(slot.label) && !labelLooksLikeMainSwitch(slot.labelRaw)) continue;
-    slot._originalClassification = slot.classification ?? null;
-    slot._promotedToMainSwitchByLabel = true;
-    slot.classification = 'main_switch';
-    promoted += 1;
-    if (logger) {
-      logger.info('Stage 3 main_switch promoted from label', {
-        userId,
-        slotIndex: slot.slotIndex ?? null,
-        previousClassification: slot._originalClassification,
-        label: slot.label ?? null,
-      });
-    }
-  }
-  return promoted;
-}
-
-/**
- * Patterns that identify a slot whose Stage 4 label clearly names it as the
- * RCD device itself. Conservative — matches phrases that appear ONLY on
- * an RCD device face / strip header, never on a circuit label.
- *
- * Notable exclusions: phrases like "Bathroom RCD" / "Sockets RCD" /
- * "Kitchen RCD" describe RCD-PROTECTED CIRCUITS, not the RCD device.
- * The patterns are anchored at start-of-string so they won't match those.
- */
-const RCD_LABEL_PATTERNS = [
-  /^\s*rcd\s*$/i,
-  /^\s*main\s*rcd\s*$/i,
-  /^\s*rcd\s*main\s*$/i,
-  /^\s*\d+\s*ma\s*rcd\s*$/i, // "30mA RCD"
-  /^\s*rcd\s*\d+\s*ma\s*$/i, // "RCD 30mA"
-  /^\s*type\s*[abcdfs]{1,2}\s*rcd\s*$/i, // "Type AC RCD" / "Type A RCD"
-  /^\s*rcd\s*type\s*[abcdfs]{1,2}\s*$/i,
-  /^\s*\d+\s*a\s*rcd\s*$/i, // "80A RCD"
-  /^\s*rcd\s*\d+\s*a\s*$/i,
-  /^\s*rccb\s*$/i, // residual current circuit breaker — rare but unambiguous
-];
-
-function labelLooksLikeRcd(label) {
-  if (typeof label !== 'string') return false;
-  return RCD_LABEL_PATTERNS.some((p) => p.test(label));
-}
-
-/**
- * Promote slots whose Stage 4 label identifies them as an RCD device, but
- * whose Stage 3 classification calls them an MCB / RCBO / unknown.
- *
- * Mirrors `promoteLabelMatchedMainSwitch`. Stage 4's per-crop label pass
- * reads the printed text on or above each slot — that text is the ground
- * truth. When Stage 3 mis-classifies a 2-module RCD as a pair of MCBs (or
- * a single RCBO), the slot leaks into the schedule with label "Rcd" and
- * the phase walk never transitions. The 2026-05-05 Wylex NHRS12SL
- * extraction (1778000413993-gqsdld) reproduced this — every circuit got
- * tagged with the manufacturer-default RCD type instead of being driven
- * by the actual device's face read.
- *
- * Runs AFTER labels are attached and AFTER `promoteLabelMatchedMainSwitch`,
- * but BEFORE `slotsToCircuits`. The promoted slot then drives both the
- * phase-2 transition and the upstream RCD reference for downstream MCBs.
- *
- * Idempotent on slots already classified rcd. Doesn't touch main_switch
- * (higher-priority classification), spd, blank, or empty (would change
- * the slot's meaning, not just refine it).
- */
-export function promoteLabelMatchedRcd(slots, opts = {}) {
-  const { logger, userId } = opts;
-  if (!Array.isArray(slots)) return;
-  let promoted = 0;
-  for (const slot of slots) {
-    if (!slot) continue;
-    const cls = (slot.classification || '').toLowerCase();
-    if (
-      cls === 'rcd' ||
-      cls === 'main_switch' ||
-      cls === 'spd' ||
-      cls === 'blank' ||
-      cls === 'empty'
-    )
-      continue;
-    if (!labelLooksLikeRcd(slot.label) && !labelLooksLikeRcd(slot.labelRaw)) continue;
-    slot._originalClassification = slot.classification ?? null;
-    slot._promotedToRcdByLabel = true;
-    slot.classification = 'rcd';
-    promoted += 1;
-    if (logger) {
-      logger.info('Stage 3 rcd promoted from label', {
-        userId,
-        slotIndex: slot.slotIndex ?? null,
-        previousClassification: slot._originalClassification,
-        label: slot.label ?? null,
-      });
-    }
-  }
-  return promoted;
-}
-
-/**
- * Trim spurious main_switch classifications from oversized contiguous runs.
- *
- * Mutates `slots` in place: any slot demoted from main_switch has its
- * `classification` rewritten to 'unknown' (so the main scan loop treats it
- * as a low-confidence circuit row, riding the current phase rather than
- * triggering any phase change), with `_originalClassification` and
- * `_demotedFromMainSwitch` flags preserved for audit/iOS.
- *
- * Run length is the count of contiguous main_switch slots. Expected size is:
- *   1. `expectedPoles` if a sane integer 1-4 (caller-supplied from the
- *      board classifier — currently always null, plumbed for future use).
- *   2. The mode of the run's per-slot `poles` values, if at least 2 slots
- *      agree on the same 1-4 integer.
- *   3. UK-domestic default = 2.
- *
- * Runs whose length is ≤ expected size are left untouched. Oversized runs
- * are scored slot-by-slot; the bottom (runLength - expected) slots get
- * demoted. Ties broken by `mainSwitchSide`: when scores are equal, the
- * slots PHYSICALLY FURTHEST from the side where the main switch is
- * supposed to live are demoted first (mainSwitchSide 'right' → demote
- * leftmost; 'left' → demote rightmost). This matches the dominant bleed
- * direction observed in production: the genuine isolator anchors itself
- * on its real side, and Stage 3's leak grows AWAY from it.
- */
-function trimSpuriousMainSwitchClusterRuns(slots, expectedRating, expectedPoles, mainSwitchSide) {
-  if (!Array.isArray(slots) || slots.length === 0) return;
-
-  const ratingDigits = expectedRating ? (String(expectedRating).match(/\d+/)?.[0] ?? null) : null;
-
-  const runs = [];
-  let i = 0;
-  while (i < slots.length) {
-    if ((slots[i].classification || '').toLowerCase() === 'main_switch') {
-      const start = i;
-      while (i < slots.length && (slots[i].classification || '').toLowerCase() === 'main_switch') {
-        i++;
-      }
-      runs.push({ start, end: i - 1 });
-    } else {
-      i++;
-    }
-  }
-
-  for (const run of runs) {
-    const runSlots = slots.slice(run.start, run.end + 1);
-    const runLength = runSlots.length;
-
-    let expected;
-    if (Number.isInteger(expectedPoles) && expectedPoles >= 1 && expectedPoles <= 4) {
-      expected = expectedPoles;
-    } else {
-      const polesCounts = new Map();
-      for (const s of runSlots) {
-        const p = s.poles;
-        if (Number.isInteger(p) && p >= 1 && p <= 4) {
-          polesCounts.set(p, (polesCounts.get(p) ?? 0) + 1);
-        }
-      }
-      let modePoles = null;
-      let modeCount = 0;
-      for (const [p, count] of polesCounts) {
-        if (count > modeCount) {
-          modePoles = p;
-          modeCount = count;
-        }
-      }
-      expected = modeCount >= 2 ? modePoles : 2;
-    }
-
-    if (runLength <= expected) continue;
-
-    const scored = runSlots.map((slot, idx) => ({
-      absIdx: run.start + idx,
-      score: scoreMainSwitchPlausibility(slot, ratingDigits),
-      slot,
-    }));
-
-    // Sort by score desc, then by physical-distance-from-the-real-side as
-    // a tie-breaker. When scores are equal we want the slot furthest from
-    // the main-switch side to land at the BOTTOM of the keep-list (i.e.
-    // get sliced into the demote bucket).
-    //   mainSwitchSide='right' → keep rightmost first  → sort absIdx DESC
-    //   mainSwitchSide='left'  → keep leftmost first   → sort absIdx ASC
-    //   mainSwitchSide unknown → arbitrary but deterministic: keep leftmost
-    //                            (matches the slightly-more-common LHS
-    //                            isolator on UK split-load boards)
-    const tieBreakAscending = mainSwitchSide !== 'right';
-    scored.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return tieBreakAscending ? a.absIdx - b.absIdx : b.absIdx - a.absIdx;
-    });
-
-    const toDemote = scored.slice(expected);
-    for (const d of toDemote) {
-      d.slot._originalClassification = d.slot.classification;
-      d.slot.classification = 'unknown';
-      d.slot._demotedFromMainSwitch = true;
-    }
-  }
-}
+// ---------------------------------------------------------------------------
+// 2026-05-07: removed 305 lines of patch functions that fixed symptoms of
+// the position-clustered sliding-window pipeline:
+//   - scoreMainSwitchPlausibility / trimSpuriousMainSwitchClusterRuns —
+//     fixed Stage 3 over-tagging adjacent slots as main_switch when the
+//     2-mod isolator's lever bleed crossed slot boundaries. The new
+//     ordered-list prompt asks the VLM to return a 2-pole isolator as
+//     exactly two adjacent main_switch entries — over-tagging cannot
+//     produce a longer run than reality.
+//   - promoteLabelMatchedMainSwitch / promoteLabelMatchedRcd — patched
+//     Stage 4 labels onto Stage 3 mis-classifications. With the new
+//     pipeline labels arrive on the per-window read and Stage 3
+//     mis-classifications are vote-resolved across windows during
+//     alignment.
+// References in extraction.js, ccu-route-merger.test.js, and
+// promote-label-main-switch.test.js are removed in the same change.
+// ---------------------------------------------------------------------------
 
 /**
  * Build an EICR-schema `circuits[]` array from per-slot VLM classifications.
@@ -1833,33 +1544,6 @@ export function slotsToCircuits({
   mainSwitchPoles = null,
 }) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
-
-  // --- Pre-pass 0: trim spurious main_switch classifications
-  //
-  // Stage 3's per-slot VLM, when given a single-module crop centred near a
-  // wide main switch (lever isolators, rotary bezels, double-pole RCBOs
-  // sitting adjacent to the isolator), can confidently mis-classify the
-  // adjacent circuit slot as part of the main switch. Visual cues bleed in:
-  // diagonal lever travel, red plastic, the cosmetic bezel of the rotary
-  // base, or — as on the Elucian CU1SPD275 (extraction 1777921959918-zlhiha
-  // captured 2026-05-04) — an MCB faceplate that ALSO has a red plastic
-  // strip and looks visually different from the surrounding RCBOs.
-  //
-  // Without this trim, the "skip cls === 'main_switch'" rule downstream
-  // silently drops the genuine circuit (e.g. "Ovens" at slot 11 of that
-  // capture, classified main_switch alongside the real 2-pole isolator
-  // at slots 12-13). The user sees the schedule short by one circuit.
-  //
-  // The pre-pass walks contiguous main_switch runs, computes an expected
-  // run length (caller-supplied poles, modal poles across the run, or 2 as
-  // the UK domestic default), scores each slot's plausibility as a real
-  // main switch, and demotes the lowest-scoring overflow slots. Demoted
-  // slots have `classification` rewritten to 'unknown' so both this
-  // pre-pass's later cascade computation AND the main scan loop's existing
-  // low-confidence branch handle them naturally — they emerge as circuits
-  // with the slot's Stage 4 label, low_confidence:true, and is_partial_crop
-  // set. `_originalClassification` is preserved for audit/iOS.
-  trimSpuriousMainSwitchClusterRuns(slots, mainSwitchRating, mainSwitchPoles, mainSwitchSide);
 
   // --- Pre-pass: build the outward-from-main-switch RCD reference list.
   //
@@ -1951,16 +1635,7 @@ export function slotsToCircuits({
     const extendsSide = typeof slot.extends === 'string' ? slot.extends : 'none';
 
     // 1. main_switch / spd: not emitted, no phase change.
-    //    Also skip a slot demoted FROM main_switch by trimSpuriousMainSwitchClusterRuns
-    //    whose Stage 4 label still says "Mains Switch" / "Isolator" — that's the
-    //    real main-switch carcass after a 2-module isolator clustered as two
-    //    1-module reads (extraction 1778043419386-zmidoj 2026-05-06: trim kept
-    //    slot 13 and demoted slot 12 to 'unknown', then slot 12 leaked into
-    //    the schedule as circuit #1 "Mains Switch"). The label-rescue keeps
-    //    the original trim use case (Ovens RCBO mis-tagged main_switch with
-    //    a non-main-switch label) emitting normally.
     if (cls === 'main_switch' || cls === 'spd') continue;
-    if (slot._demotedFromMainSwitch && labelLooksLikeMainSwitch(slot.label)) continue;
 
     // 2. RCD: not emitted; updates reference + flips phase.
     if (cls === 'rcd') {
@@ -1973,15 +1648,23 @@ export function slotsToCircuits({
       continue;
     }
 
-    // 3. Exposed rail (no device, no blanking plate). IP4X safety defect —
-    // emit so the inspector flags it for C2/C3. Doesn't trigger phase 2
-    // (electrically meaningless boundary; live exposed rail can be on
-    // either bus segment).
+    // 3. Empty-content slot — should not occur with the ordered-list pipeline
+    // (the prompt rules forbid the VLM from reporting bare rail; window
+    // overshoot prevents end-of-rail unowned slots; alignment guarantees no
+    // interior gaps). Kept as a defensive low-confidence emission for any
+    // legacy fixture or future code path that synthesises an empty slot.
+    // Critically NOT emitted as `is_exposed_rail` — the production pipeline
+    // never had a positive VLM read for exposed rail; every "Exposed rail"
+    // row historically emitted was a fabricated artefact of the old
+    // position-clustered placement step (extractions 1778086091005-v9sst9
+    // and 1778103470875-488yba are the named regressions). Real exposed
+    // rail (an IP4X defect) requires a positive identification by the
+    // inspector — the model does not have a category for it.
     if (content === 'empty' || cls === 'empty') {
       circuits.push({
         circuit_number: circuitNumber,
         slot_index: slot.slotIndex ?? null,
-        label: 'Exposed rail (no device, no blank)',
+        label: slot.label ?? null,
         ocpd_type: null,
         ocpd_rating_a: null,
         ocpd_bs_en: null,
@@ -1992,7 +1675,6 @@ export function slotsToCircuits({
         rcd_rating_ma: null,
         rcd_bs_en: null,
         low_confidence: true,
-        is_exposed_rail: true,
       });
       circuitNumber++;
       continue;
@@ -2650,28 +2332,14 @@ router.post(
               tokensOut: labelPassResult.usage?.outputTokens,
             });
 
-            // Promote any slot whose Stage 4 label clearly identifies it as
-            // the main switch (e.g. "Main Switch" / "Isolator") but whose
-            // Stage 3 classification missed it. Without this, a Stage 3
-            // mis-classification of an Elucian main switch as RCBO emits
-            // the device as circuit #1 with label "Main Switch" — the
-            // inspector has to manually delete it. Run AFTER labels are
-            // attached so the promotion sees both pieces of evidence.
-            promoteLabelMatchedMainSwitch(analysis.slots, {
-              logger,
-              userId: req.user.id,
-            });
-            // Same pattern for the RCD device. Stage 3 occasionally misses
-            // a 2-module RCD (mis-calls it MCB / RCBO / unknown), even
-            // though Stage 4 reads "Rcd" / "RCD" off the strip header
-            // unambiguously. Without this promotion the missed RCD leaks
-            // into the schedule as an extra circuit AND the phase-2
-            // transition never opens for downstream MCBs (Wylex NHRS12SL
-            // 2026-05-05 extraction reproduced this).
-            promoteLabelMatchedRcd(analysis.slots, {
-              logger,
-              userId: req.user.id,
-            });
+            // 2026-05-07: removed promoteLabelMatchedMainSwitch /
+            // promoteLabelMatchedRcd post-passes. With the ordered-list
+            // sliding-window pipeline the per-window VLM call returns
+            // both classification and label together, vote-merged across
+            // overlapping windows. A Stage 3 mis-classification on one
+            // window is corrected by the sibling reads from the two
+            // other windows that cover the same slot — no need for a
+            // post-merge label-rescue.
           } else if (labelPassResult && labelPassResult.__error) {
             analysis.label_pass_error = labelPassResult.__error;
           }

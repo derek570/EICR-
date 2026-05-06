@@ -1,42 +1,56 @@
 /**
- * Sliding-window CCU extraction — production-grade port of the harness
- * at scripts/ccu-sliding-window.mjs (v5c). Replaces the per-slot Stage 3
- * + Stage 4 batch path with a CV-anchored sliding-window VLM pipeline +
- * position-clustered merge.
+ * Sliding-window CCU extraction — ordered-list pipeline.
  *
- * Design summary (full rationale in the harness file's header comment):
- *   - CV (prepareModernGeometry / prepareRewireableGeometry) supplies
- *     pitchPx + rail bbox. Both are reliable from line-fitting +
- *     autocorrelation. The CV's `moduleCount` is INTENTIONALLY IGNORED —
- *     count comes from the cluster output, not from the CV.
- *   - Windows are planned in PIXEL space: each window is `windowMod ×
- *     pitchPx` wide, advancing by `strideMod × pitchPx`. Default 5-mod
- *     wide, 2-mod stride → 3-mod overlap.
- *   - The VLM is asked for a FLEXIBLE list of devices visible in each
- *     crop — could be 3, 4, 5, 6, 7, however many it sees. Each device
- *     returns a `position_pct` 0..1 telling us the fraction of the crop
- *     width where its centre lies. The harness converts that to an
- *     image-space X.
- *   - Position-based clustering: every cross-window read of the same
- *     physical device lands at approximately the same image X. Reads
- *     cluster when |Δx| < 0.7 × pitchPx AND kinds are compatible.
- *     Labels are NOT used for clustering — they're voted on per cluster.
- *   - Output is reshaped into the same `{slots, labels, usage, timings}`
- *     shape that classifyModernSlots + extractSlotLabels produced, so
- *     the existing post-merge enrichment chain (assembleGeometricResult,
- *     slotsToCircuits, applyRcdTypeLookup, applyBsEnFallback,
- *     normaliseCircuitLabels, lookupMissingRcdTypes,
- *     flagRcdWaveformOutliers) works UNCHANGED on the result.
+ * Design (replaces position-clustered v5c, 2026-05-07):
  *
- * Why no per-slot bleed: every slot sits well inside ≥1 window with no
- * edge clipping, so the 2-pole-neighbour-bleed bug class (Ovens RCBO
- * next to a 2-pole main switch losing its rating because Stage 3 was
- * looking at a 2.2× pitch crop that captured half the main switch) is
- * structurally impossible.
+ *   The VLM is asked to enumerate every visible MODULE SLOT in left-to-right
+ *   order, one entry per slot. A 2-pole device that occupies two physical
+ *   slots is returned as TWO entries with identical kind/label/rating —
+ *   "RCD counts as 2", as Derek put it. Edge-clipped devices are
+ *   deliberately OMITTED so the count from each window is unambiguous, and
+ *   the next overlapping window covers them whole. Bare DIN rail and cover
+ *   plastic are also omitted; only physical devices and blanking plates
+ *   appear in the response.
  *
- * Why no count-from-CV bug: the cluster count is what comes out of the
- * VLM reads, so even if the CV under-counts ways by 1, the sliding
- * window recovers the true device count.
+ *   Consecutive overlapping windows are reconciled by sequence alignment on
+ *   device_kind (with rating as a secondary tiebreaker). The merger walks
+ *   pairwise through the windows, finds the largest tail/head match between
+ *   window N and window N+1, votes on the overlapping entries, and appends
+ *   the non-overlapping tail. The result is a canonical ordered list of
+ *   entries — one per module slot of the rail — that maps 1:1 to the
+ *   downstream `slots[]` shape consumed by `slotsToCircuits`.
+ *
+ *   Window planning extends ~`overshootMod` modules past each rail edge.
+ *   Off-rail regions are visually empty, the model omits them per the prompt
+ *   rules, so the overshoot windows naturally return fewer entries near the
+ *   edges. This serves three purposes simultaneously:
+ *     (1) every real edge device gets at least 2 window passes (no single-
+ *         coverage at the rail extremes);
+ *     (2) end-of-rail is self-validating — if the leftmost or rightmost
+ *         window returns close to a full `windowMod` of devices, the rail
+ *         estimate was short and a warning is logged;
+ *     (3) the merger's "no leftover unowned slots in the interior" guarantee
+ *         removes the entire class of fabricated "exposed rail" defects
+ *         that the position-clustered pipeline produced when it dropped a
+ *         cluster (extractions 1778086091005-v9sst9 and 1778103470875-488yba
+ *         are the named regressions this rewrite closes).
+ *
+ *   What this rewrite removes:
+ *     - position_pct in the prompt (VLMs are unreliable at pixel coordinates;
+ *       we don't ask for what the model is bad at).
+ *     - clusterReads / mergeAdjacentMainSwitchClusters / snap-to-slot
+ *       placement (all artefacts of the position-clustered design — gone).
+ *     - The downstream patches in extraction.js
+ *       (trimSpuriousMainSwitchClusterRuns, promoteLabelMatchedMainSwitch,
+ *       promoteLabelMatchedRcd) exist purely to fix symptoms of the old
+ *       merger; they are removed in the same change.
+ *
+ * Output contract is unchanged: returns `{slots, labels, finalDevices,
+ * snappedWays, pitchPx, timings, usage, lowConfidence, stage3Error,
+ * stageOutputs, skippedSlotIndices}` so the existing route-handler chain
+ * (assembleGeometricResult, slotsToCircuits, applyRcdTypeLookup,
+ * applyBsEnFallback, normaliseCircuitLabels, lookupMissingRcdTypes,
+ * flagRcdWaveformOutliers) consumes it without change.
  */
 import sharp from 'sharp';
 import { cropSlot } from './ccu-geometric.js';
@@ -45,8 +59,8 @@ import { cropCarrierSlot } from './ccu-geometric-rewireable.js';
 const SLIDING_WINDOW_TIMEOUT_MS = Number(process.env.CCU_SLIDING_WINDOW_TIMEOUT_MS || 60_000);
 const SLIDING_WINDOW_MAX_TOKENS = 2048;
 
-// Wylex BS 3036 colour-code lookup for rewireable carriers. Only used
-// when the VLM left ocpd_rating_a null on a rewireable.
+// Wylex BS 3036 colour-code lookup for rewireable carriers — only used when
+// the VLM left ocpd_rating_a null on a rewireable.
 const COLOUR_TO_AMPS = {
   white: 5,
   blue: 15,
@@ -57,41 +71,56 @@ const COLOUR_TO_AMPS = {
 
 const norm2px = (v, dim) => Math.round((v / 1000) * dim);
 
+// ---------------------------------------------------------------------------
+// Prompts
+//
+// The unifying rule is: ONE ENTRY PER MODULE SLOT, in strict left-to-right
+// order. Multi-module devices are repeated. Edge-clipped devices and bare
+// rail are omitted. The VLM never returns coordinates — only an ordered
+// list — because spatial regression is its weak suit and the surrounding
+// pipeline doesn't need it (CV owns the geometry, the merger owns the
+// alignment).
+// ---------------------------------------------------------------------------
+
 const MODERN_PROMPT = `You are inspecting a horizontal section of a UK consumer unit's main DIN rail.
 
-The image shows circuit-protective devices (MCBs, RCBOs, RCDs, blanking plates, main switches, SPDs) with a label strip above and/or below the rail. Identify EVERY device whose body is FULLY VISIBLE in this crop, in strict left-to-right order. Skip devices clipped at the left or right edge — the next window will capture them.
+Devices visible: MCBs, RCBOs, RCDs, blanking plates, main switches, SPDs, all mounted on a horizontal rail with a circuit-label strip above and/or below.
 
-Return as many devices as you see — could be 3, 4, 5, 6, 7, or more. Don't be constrained by any expected count.
+YOUR JOB
+List every visible MODULE SLOT in strict left-to-right order. ONE ENTRY = ONE MODULE SLOT.
 
-For multi-module devices (a 2-pole main switch or 2-module RCD spans two adjacent module slots): return ONE entry for the whole device. Indicate its width via \`width_modules\` (1 for normal MCB/RCBO/SPD, 2 for typical 2-pole main switch / 2-module RCD).
+A 2-pole device that physically occupies TWO module slots — typically a 2-pole main switch or a 2-module RCD — must be returned as TWO ENTRIES with identical device_kind, label, ocpd_rating_a, ocpd_bs_en, rcd_type, rcd_rating_ma. (One entry per module slot it occupies.) Three-pole isolators: three identical entries.
 
-For each device:
-- position_pct: NUMBER between 0.0 and 1.0 — the fraction of THE IMAGE WIDTH where this device's CENTRE lies (left edge=0.0, right edge=1.0). Be precise: the device's geometric centre.
-- width_modules: 1 or 2 (rarely 3 or 4 for very wide isolators).
+EDGE RULES — read carefully, these are the most common source of error:
+- OMIT any device whose body is partially clipped at the LEFT or RIGHT edge of this image. The next overlapping window will see it whole. UNDER-reporting at the edges is correct; do not guess width or identity from a half view.
+- OMIT bare DIN rail, cover plastic, the side/end of the consumer-unit enclosure, or anything that is not a physical device or a blanking plate. If a stretch of rail at either edge has no device and no blanking plate, do NOT add a placeholder.
+- INCLUDE blanking plates (plain plastic covers in an unused slot) as ordinary entries with device_kind:"blank". They occupy a real module slot.
+
+For each entry:
 - device_kind: one of "mcb", "rcbo", "rcd", "main_switch", "spd", "blank"
-- label: circuit name from the strip directly aligned with this device's CENTRE — copy VERBATIM (preserve exact spelling, including handwritten quirks). Do NOT aggregate or paraphrase from neighbouring devices. null if blank/unreadable.
-
-DEVICE FACE FIELDS (null if not clearly readable — never guess):
-- ocpd_rating_a: integer amperage from the device face (e.g. 32 for "B32A").
-- ocpd_curve: "B", "C", or "D" for MCBs/RCBOs.
-- ocpd_bs_en: e.g. "BS EN 61009", "BS EN 60898", "BS EN 61008", "BS EN 60947-3".
-- rcd_type: "AC", "A", "F", or "B" — ONLY if the trip classification is explicitly stated as TEXT on the device. The international AC waveform symbol alone does NOT mean Type AC; many Type A devices show that symbol. If unsure, return null.
-- rcd_rating_ma: 30, 100, 300, or 500.
+- label: circuit name from the strip directly aligned with this module slot — copy VERBATIM (preserve exact spelling, including handwritten quirks). null if blank/unreadable. For a 2-mod device the same label is repeated on both entries.
+- ocpd_rating_a: integer amperage from the device face (e.g. 32 for "B32A"). null if not clearly readable.
+- ocpd_curve: "B", "C", or "D" for MCBs/RCBOs. null otherwise.
+- ocpd_bs_en: e.g. "BS EN 61009", "BS EN 60898", "BS EN 61008", "BS EN 60947-3". null if uncertain.
+- rcd_type: "AC", "A", "F", or "B" — ONLY if the trip classification is explicitly stated as TEXT on the device. The international AC waveform symbol alone does NOT mean Type AC; many Type A devices show that symbol. null if uncertain.
+- rcd_rating_ma: 30, 100, 300, or 500. null otherwise.
 
 Return STRICT JSON only — no markdown, no commentary:
-{"devices":[{"position_pct":0.1,"width_modules":1,"device_kind":"rcbo",...},...]}`;
+{"entries":[{"device_kind":"mcb","label":"...","ocpd_rating_a":32,"ocpd_curve":"B","ocpd_bs_en":"BS EN 60898","rcd_type":null,"rcd_rating_ma":null},...]}`;
 
 const REWIREABLE_PROMPT = `You are inspecting a horizontal section of a UK rewireable (bakelite) consumer unit. This is NOT a DIN-rail board — these are pull-out fuse carriers (BS 3036) or HBC cartridge fuses (BS 1361/BS 88-2) sitting in moulded sockets on a flat panel. Each carrier has a red pull-tab at the top.
 
-Identify EVERY device whose body is FULLY VISIBLE in this crop, in strict left-to-right order. Skip devices clipped at the left or right edge — the next window will capture them.
+YOUR JOB
+List every visible CARRIER SLOT in strict left-to-right order. ONE ENTRY = ONE CARRIER SLOT.
 
-Return as many devices as you see — could be 3, 4, 5, 6, 7, or more. Don't be constrained by any expected count.
+A wide separate main switch / switch-fuse may span two carrier slots — return as TWO ENTRIES with identical device_kind:"main_switch", label, ocpd_rating_a, ocpd_bs_en.
 
-Most rewireable devices are single-module. Some boards have a separate main switch / switch-fuse to one side of the carrier row that may span 2 modules (\`width_modules: 2\`).
+EDGE RULES:
+- OMIT any carrier whose body is partially clipped at the LEFT or RIGHT edge. The next overlapping window will see it whole.
+- OMIT bare panel, side moulding, or anything that is not a physical carrier or a blanking plate.
+- INCLUDE blanking plates (empty sockets without a carrier fitted) as device_kind:"blank".
 
-For each device:
-- position_pct: NUMBER between 0.0 and 1.0 — fraction of IMAGE WIDTH where this device's CENTRE lies. Be precise.
-- width_modules: 1 normally; 2 for a wide separate main switch.
+For each entry:
 - device_kind: one of "rewireable", "cartridge", "main_switch", "blank"
   • rewireable = BS 3036 pull-out carrier with rewireable fuse wire inside (Wylex/MEM/Crabtree/Bill domestic).
   • cartridge  = pull-out carrier holding an HBC cartridge fuse (BS 1361 or BS 88-2 commercial).
@@ -99,231 +128,251 @@ For each device:
 - body_colour: colour of the CARRIER BODY *below* the red pull-tab. One of "white","blue","yellow","red","green","unknown". CRITICAL: every Wylex carrier has a RED PULL-TAB — that's the lift handle, NOT the rating. Look at the body below the pull-tab. If the body itself is red below the tab, it IS a 30 A red carrier. null for cartridge / main_switch / blank.
 - ocpd_rating_a: integer amperage. For cartridge fuses, read the rating printed on the carrier face. For rewireable, you may leave this null — we will derive it from body_colour via the Wylex code: white=5A, blue=15A, yellow=20A, red=30A, green=45A.
 - ocpd_bs_en: "BS 3036" for rewireable, "BS 1361" for cartridge domestic, "BS 88-2" for cartridge commercial, "BS EN 60947-3" for main_switch. null if unsure.
-- label: circuit name from the strip / inspector handwriting directly aligned with this carrier's CENTRE — copy VERBATIM. null if blank/unreadable.
+- label: circuit name from the strip / inspector handwriting directly aligned with this carrier — copy VERBATIM. null if blank/unreadable.
 
 Return STRICT JSON only — no markdown, no commentary:
-{"devices":[{"position_pct":0.1,"width_modules":1,"device_kind":"rewireable","body_colour":"red",...},...]}`;
+{"entries":[{"device_kind":"rewireable","body_colour":"red","ocpd_rating_a":30,"ocpd_bs_en":"BS 3036","label":"..."},...]}`;
+
+// ---------------------------------------------------------------------------
+// Window planning
+// ---------------------------------------------------------------------------
 
 /**
- * Plan window pixel ranges along the rail. Windows are `windowMod ×
- * pitchPx` wide, advancing by `strideMod × pitchPx`. A right-anchored
- * window is added if the natural-stride sequence under-covers the
- * rightmost edge.
+ * Plan window pixel ranges along the rail.
+ *
+ * Each window is `windowMod × pitchPx` wide, advancing by `strideMod × pitchPx`.
+ * The first window starts `overshootMod` pitches BEFORE railLeft and the last
+ * window ends `overshootMod` pitches PAST railRight (clamped to the image).
+ * The overshoot regions provide:
+ *   - Double-coverage of edge devices (otherwise only seen by one window).
+ *   - Self-validation of the rail extent — if an overshoot window returns
+ *     close to a full `windowMod` of devices, the rail estimate was short.
+ *
+ * The internal stride is unchanged from the pre-overshoot version; we only
+ * extend the start/end. A window's left or right that would fall outside
+ * [0, imgW] is clamped — the overshoot region is then truncated but the
+ * window is still useful for double-coverage.
  *
  * @param {number} railLeftPx
  * @param {number} railRightPx
  * @param {number} pitchPx
- * @param {number} windowMod  — default 5
- * @param {number} strideMod  — default 2
+ * @param {number} windowMod   default 5
+ * @param {number} strideMod   default 2
  * @param {number} imgW
- * @returns {Array<{x0:number,x1:number}>}
+ * @param {number} overshootMod  default 2 — how many pitches past each rail edge to extend
+ * @returns {Array<{x0:number,x1:number,overshoot:'left'|'right'|'none'}>}
  */
-export function planWindows(railLeftPx, railRightPx, pitchPx, windowMod, strideMod, imgW) {
+export function planWindows(
+  railLeftPx,
+  railRightPx,
+  pitchPx,
+  windowMod,
+  strideMod,
+  imgW,
+  overshootMod = 2
+) {
   const windowPx = Math.round(windowMod * pitchPx);
   const stridePx = Math.round(strideMod * pitchPx);
+  const overshootPx = Math.round(overshootMod * pitchPx);
+
+  const startX = railLeftPx - overshootPx; // may be negative; clamped on use
+  const endX = railRightPx + overshootPx; // may exceed imgW; clamped on use
+
   const windows = [];
-  for (let x0 = railLeftPx; x0 + windowPx <= railRightPx + pitchPx * 0.3; x0 += stridePx) {
-    windows.push({
-      x0: Math.max(0, Math.round(x0)),
-      x1: Math.min(imgW, Math.round(x0 + windowPx)),
-    });
+  // Strict-less than `endX - windowPx + 1`: walk natural-stride windows whose
+  // RIGHT edge does not exceed endX. The right-edge anchor below picks up any
+  // remainder.
+  for (let x0 = startX; x0 + windowPx <= endX; x0 += stridePx) {
+    windows.push({ x0, x1: x0 + windowPx });
   }
-  if (windows.length === 0 || windows[windows.length - 1].x1 < railRightPx - pitchPx * 0.3) {
-    windows.push({
-      x0: Math.max(0, Math.round(railRightPx - windowPx)),
-      x1: Math.min(imgW, railRightPx),
-    });
+  // Right-edge anchor: if the natural stride didn't land a window flush to
+  // endX (railRightPx + overshootPx), add one more anchored to endX.
+  if (windows.length === 0 || windows[windows.length - 1].x1 < endX - Math.round(pitchPx * 0.3)) {
+    windows.push({ x0: endX - windowPx, x1: endX });
   }
-  // Dedupe: the right-anchor may match the last natural window's x0
-  // within < 0.3 × pitch (we'd be running the same VLM call twice).
+
+  // Dedupe near-identical x0 (within 0.3 × pitch) — the right-anchor may
+  // duplicate the last natural window when stride+overshoot align.
   const dedup = [];
   for (const w of windows) {
     if (dedup.length === 0 || Math.abs(dedup[dedup.length - 1].x0 - w.x0) > pitchPx * 0.3) {
       dedup.push(w);
     }
   }
-  return dedup;
+
+  // Clamp to image bounds and tag overshoot ownership. A window whose
+  // unclamped left was below railLeft is a "left overshoot"; whose unclamped
+  // right exceeded railRight is a "right overshoot". A single window can be
+  // both if the rail is narrower than `windowMod * pitchPx` (rare — sub-5-way
+  // boards), in which case we tag it as 'left' to keep the type tight.
+  return dedup.map((w) => {
+    const x0 = Math.max(0, Math.round(w.x0));
+    const x1 = Math.min(imgW, Math.round(w.x1));
+    let overshoot = 'none';
+    if (w.x0 < railLeftPx) overshoot = 'left';
+    else if (w.x1 > railRightPx) overshoot = 'right';
+    return { x0, x1, overshoot };
+  });
 }
 
-function fingerprintCompatible(a, b) {
-  const aKind = (a.kind || '').toLowerCase();
-  const bKind = (b.kind || '').toLowerCase();
-  // Different non-null kinds are incompatible (e.g. main_switch vs mcb at the
-  // same x — definitely different devices).
-  if (aKind && bKind && aKind !== bKind) return false;
+// ---------------------------------------------------------------------------
+// Sequence alignment merger
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether two ordered entries refer to the same physical module slot for the
+ * purpose of overlap alignment. Match strictness:
+ *   1. device_kind must match exactly. (An MCB at slot N in window 1 cannot
+ *      align with an RCD at slot N in window 2 — they're different devices.)
+ *   2. If both entries have a non-null ocpd_rating_a, the ratings must match.
+ *      (Two adjacent same-kind devices with different ratings are a strong
+ *      disambiguator — never merge a 32A MCB with a 6A MCB.)
+ *
+ * Labels and other fields are NOT used for matching — they're voted on after
+ * alignment. This is deliberate: the same physical device may have label
+ * "OVENS" in one window read and "OVEN" in another (Deepgram-style transcription
+ * variation), and forcing exact label equality would split the cluster.
+ */
+function entriesMatch(a, b) {
+  if (!a || !b) return false;
+  if ((a.kind || '') !== (b.kind || '')) return false;
+  if (a.rating != null && b.rating != null && Number(a.rating) !== Number(b.rating)) return false;
   return true;
 }
 
-function mostCommon(values) {
-  const counts = new Map();
-  for (const v of values) {
-    if (v == null || v === '') continue;
-    counts.set(v, (counts.get(v) || 0) + 1);
-  }
-  let best = null;
-  let bestCount = 0;
-  for (const [v, c] of counts) {
-    if (c > bestCount) {
-      best = v;
-      bestCount = c;
+/**
+ * Find the best overlap length L for `next` aligning against the tail of
+ * `canonical`. We bias toward `expectedL` (the geometric expectation given
+ * windowMod/strideMod) because adjacent identical devices create alignment
+ * ambiguity that can only be resolved by knowing how much overlap was
+ * planned.
+ *
+ * Search order:
+ *   1. Exact `expectedL` match.
+ *   2. expectedL ± 1, ± 2 (handles a single missed/extra entry in either window).
+ *   3. Any other valid match, largest first.
+ *   0 if nothing aligns (alignment failure — caller appends `next` whole).
+ */
+export function findBestOverlap(canonical, next, expectedL) {
+  const maxL = Math.min(canonical.length, next.length);
+  if (maxL === 0) return 0;
+
+  const tryL = (L) => {
+    if (L < 0 || L > maxL) return false;
+    for (let k = 0; k < L; k++) {
+      const a = canonical[canonical.length - L + k];
+      const b = next[k];
+      if (!entriesMatch(a, b)) return false;
+    }
+    return true;
+  };
+
+  if (typeof expectedL === 'number' && expectedL >= 0) {
+    if (tryL(expectedL)) return expectedL;
+    for (const dL of [-1, 1, -2, 2]) {
+      const L = expectedL + dL;
+      if (tryL(L)) return L;
     }
   }
-  return best;
-}
 
-// Same patterns as MAIN_SWITCH_LABEL_PATTERNS in src/routes/extraction.js.
-// Duplicated locally to keep ccu-sliding-window.js free of route-handler
-// imports — these two patterns + the routes-side rescue must move together.
-const MAIN_SWITCH_LABEL_PATTERNS_LOCAL = [
-  /^\s*main\s*switch\s*$/i,
-  /^\s*main\s*isolator\s*$/i,
-  /^\s*main\s*isol\.?\s*$/i,
-  /^\s*mains\s*switch\s*$/i,
-  /^\s*switch\s*disconnector\s*$/i,
-  /^\s*isolator\s*$/i,
-];
-
-function labelLooksLikeMainSwitchLocal(label) {
-  if (typeof label !== 'string' || label.trim() === '') return false;
-  return MAIN_SWITCH_LABEL_PATTERNS_LOCAL.some((p) => p.test(label));
-}
-
-function bestLabel(labels) {
-  const valid = labels.filter((l) => l && String(l).trim().length > 0);
-  if (valid.length === 0) return null;
-  // Most common; tie-break on length (longer = more info).
-  const counts = new Map();
-  for (const l of valid) counts.set(l, (counts.get(l) || 0) + 1);
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0][0];
+  for (let L = maxL; L > 0; L--) {
+    if (tryL(L)) return L;
+  }
+  return 0;
 }
 
 /**
- * Cluster cross-window reads into one entry per physical device.
- *
- * Two reads are the same physical device when:
- *   - Their image-space X positions are within 0.7 × pitchPx of each
- *     other (a bit looser than half-pitch to absorb VLM position-
- *     estimate noise, but tight enough that adjacent slots one full
- *     pitch apart never merge — which would wrongly collapse same-
- *     name adjacent circuits e.g. "LIGHTING" / "LIGHTING").
- *   - Their kinds are compatible (a 2-pole main_switch and a 1-pole
- *     MCB at similar positions are different devices).
- *   - Labels are NOT required to match — the VLM frequently misreads
- *     adjacent strip labels (HOB → UTILITY, OVENS → HOB), so position
- *     + kind dominate and the label is voted on per cluster.
- *
- * @param {Array<Object>} allReads — collected from all windows
- * @param {number} pitchPx
- * @returns {Array<{reads:Array<Object>}>}
+ * Vote-merge two entries that align to the same physical module slot. Ratings,
+ * curves, BS EN, RCD fields, labels: each field takes the most-common value
+ * across all source reads, breaking ties toward the value with higher count.
  */
-export function clusterReads(allReads, pitchPx) {
-  const TOLERANCE = pitchPx * 0.7;
-  const sorted = [...allReads].sort((a, b) => a.xImage - b.xImage);
-  const clusters = [];
-  for (const r of sorted) {
-    const last = clusters[clusters.length - 1];
-    if (last) {
-      const lastMeanX = last.reads.reduce((s, x) => s + x.xImage, 0) / last.reads.length;
-      if (Math.abs(r.xImage - lastMeanX) < TOLERANCE && fingerprintCompatible(r, last.reads[0])) {
-        last.reads.push(r);
-        continue;
-      }
-    }
-    clusters.push({ reads: [r] });
+function mergeEntries(into, from) {
+  if (!into.sources) into.sources = [];
+  for (const f of ['rating', 'curve', 'bs_en', 'rcd_type', 'rcd_rating_ma', 'body_colour']) {
+    if (into[f] == null && from[f] != null) into[f] = from[f];
   }
-  return clusters;
+  // Label: prefer non-null and longer (handwritten labels often span multiple
+  // lines; the longer read is usually the more complete transcription).
+  if (from.label != null && from.label !== '') {
+    if (into.label == null || into.label === '' || from.label.length > into.label.length) {
+      into.label = from.label;
+    }
+  }
+  into.votes = (into.votes ?? 1) + 1;
+  into.sources.push(
+    ...(from.sources || [{ window: from.window, indexInWindow: from.indexInWindow }])
+  );
+  return into;
 }
 
 /**
- * Merge adjacent main_switch clusters that the VLM reported as separate
- * 1-module devices.
+ * Reconcile multiple windows' ordered device lists into a single canonical
+ * left-to-right list of module-slot entries.
  *
- * A 2-pole or 3-pole isolator's mechanically-linked toggle handles can each
- * present like a single-module main switch to the VLM — particularly when
- * no single window cleanly captures the whole device. clusterReads keeps
- * them as separate clusters because their image-X positions are ≥ 1 pitch
- * apart (the 0.7 × pitch tolerance exists to stop adjacent same-name
- * circuits like "LIGHTING / LIGHTING" from collapsing into one).
+ * Algorithm: pairwise sequence alignment. Start with window 0's list as the
+ * canonical seed. For each subsequent window, find the best tail/head overlap
+ * against the canonical, vote-merge the overlapping entries, and append the
+ * non-overlapping tail.
  *
- * Repro: extraction 1778043419386-zmidoj (Elucian CU2MS100, 2026-05-06).
- * The 2-pole isolator was read as two widthMod=1 main_switch devices, one
- * per visible toggle. Snapping placed both as main_switch slots side-by-side
- * (slots 12 and 13). Downstream `trimSpuriousMainSwitchClusterRuns` saw a
- * 2-slot run with poles=[1,1], voted expected=1, demoted slot 12 to
- * 'unknown' — and it leaked into the schedule as circuit #1 "MAINS SWITCH".
+ * Pre-conditions on inputs:
+ *   - `windowsDevices[i]` is an ordered array of devices reported by window i.
+ *   - Every entry corresponds to one module slot. Multi-mod devices appear as
+ *     N consecutive entries with identical kind/rating/label.
+ *   - Edge-clipped devices and bare rail were already omitted by the prompt.
  *
- * Restricted to main_switch only:
- *   - Genuine adjacent main_switch devices are vanishingly rare on UK
- *     domestic boards (one isolator per board is the norm). Even on the
- *     edge case of a dual-isolator board, an over-merge only hides one
- *     main_switch from the iOS overlay — never produces a wrong circuit
- *     row, because main_switch slots aren't emitted as circuits.
- *   - Adjacent RCDs DO occur on split-load boards (bedroom RCD next to
- *     kitchen RCD), so an analogous RCD-merge would be unsafe. Multi-module
- *     RCDs are handled downstream by the `prevWasRcd` gap-fill in
- *     slotsToCircuits which combines two adjacent rcd slots into one
- *     rcdEntry without changing slot count.
+ * Post-condition:
+ *   - Returned array has one entry per physical module slot of the rail, in
+ *     left-to-right order. Each entry carries `votes` (how many windows saw
+ *     it) and `sources` (per-window-and-index citations).
  *
- * The merged cluster carries `mergedSpan` (count of constituent clusters)
- * so the widthMod calculation downstream can use the larger of the
- * VLM-reported widthMod and the merged span — i.e. a correctly-reported
- * widthMod=2 single cluster keeps widthMod=2, but two merged widthMod=1
- * clusters become widthMod=2.
+ * @param {Array<Array<object>>} windowsDevices  one ordered list per window
+ * @param {{expectedOverlap?: number}} [opts]    expected overlap length in entries
+ * @returns {Array<object>}
  */
-export function mergeAdjacentMainSwitchClusters(clusters, pitchPx) {
-  if (!Array.isArray(clusters) || clusters.length === 0) return clusters;
-  const TOLERANCE = pitchPx * 1.5;
-  const merged = [];
-  for (const c of clusters) {
-    const last = merged[merged.length - 1];
-    if (last) {
-      const lastKind = mostCommon(last.reads.map((r) => r.kind));
-      const currKind = mostCommon(c.reads.map((r) => r.kind));
-      if (lastKind === 'main_switch' && currKind === 'main_switch') {
-        // Compare to the LAST READ's xImage (rightmost edge of the
-        // already-merged cluster), not the cluster mean — the mean drifts
-        // as we fold more clusters in, which would let a 3-cluster chain
-        // miss the third merge by a hair when the centroid sits midway
-        // between the second and third devices.
-        const lastRightX = Math.max(...last.reads.map((r) => r.xImage));
-        const currLeftX = Math.min(...c.reads.map((r) => r.xImage));
-        if (currLeftX - lastRightX < TOLERANCE) {
-          // Label compatibility gate: refuse the merge when there is
-          // POSITIVE evidence one of the clusters is actually a real
-          // circuit row (Stage 3's per-slot VLM has a documented failure
-          // mode where it mis-classifies an adjacent RCBO as main_switch
-          // — see trimSpuriousMainSwitchClusterRuns in extraction.js).
-          // If the strip label clearly says "Ovens" or "Cooker", that's
-          // not the other half of the isolator. Both-null is allowed
-          // because handwritten or illegible strips are common; both-
-          // main-switch-shaped is the bug case we're fixing.
-          const lastLabel = bestLabel(last.reads.map((r) => r.label));
-          const currLabel = bestLabel(c.reads.map((r) => r.label));
-          const lastIsCircuitName =
-            typeof lastLabel === 'string' &&
-            lastLabel.trim() !== '' &&
-            !labelLooksLikeMainSwitchLocal(lastLabel);
-          const currIsCircuitName =
-            typeof currLabel === 'string' &&
-            currLabel.trim() !== '' &&
-            !labelLooksLikeMainSwitchLocal(currLabel);
-          if (!lastIsCircuitName && !currIsCircuitName) {
-            last.reads.push(...c.reads);
-            last.mergedSpan = (last.mergedSpan ?? 1) + 1;
-            continue;
-          }
-        }
-      }
+export function alignWindows(windowsDevices, opts = {}) {
+  const expectedL = opts.expectedOverlap;
+  if (!Array.isArray(windowsDevices) || windowsDevices.length === 0) return [];
+
+  let canonical = (windowsDevices[0] || []).map((d, idx) => ({
+    ...d,
+    votes: 1,
+    sources: [{ window: 0, indexInWindow: idx }],
+  }));
+
+  for (let i = 1; i < windowsDevices.length; i++) {
+    const next = (windowsDevices[i] || []).map((d, idx) => ({
+      ...d,
+      votes: 1,
+      sources: [{ window: i, indexInWindow: idx }],
+    }));
+    if (next.length === 0) continue;
+    if (canonical.length === 0) {
+      canonical = next;
+      continue;
     }
-    merged.push({ ...c, mergedSpan: c.mergedSpan ?? 1 });
+
+    const overlap = findBestOverlap(canonical, next, expectedL);
+
+    for (let k = 0; k < overlap; k++) {
+      const cIdx = canonical.length - overlap + k;
+      canonical[cIdx] = mergeEntries(canonical[cIdx], next[k]);
+    }
+
+    for (let k = overlap; k < next.length; k++) {
+      canonical.push(next[k]);
+    }
   }
-  return merged;
+
+  return canonical;
 }
+
+// ---------------------------------------------------------------------------
+// VLM call
+// ---------------------------------------------------------------------------
 
 /**
  * Run a single window's VLM call. Aborts on timeout. Parses the response
- * (with one ```json fence-strip pass for sloppy responses) and returns
- * normalised devices + usage counters.
+ * (with a one-pass ```json fence-strip for sloppy responses).
  */
 async function runWindow({ anthropic, model, prompt, cropBuf, windowIndex, signal }) {
   const t0 = Date.now();
@@ -362,21 +411,116 @@ async function runWindow({ anthropic, model, prompt, cropBuf, windowIndex, signa
   } catch (err) {
     throw new Error(`window ${windowIndex} JSON parse failed: ${err.message}`);
   }
+  // Accept the new "entries" key plus legacy aliases the harness/tests may
+  // emit (the prompt asks for "entries"; older fixtures use "devices").
+  const entries = parsed.entries || parsed.devices || parsed.circuits || parsed.slots || [];
   return {
     ms,
     usage: {
       inputTokens: usage.input_tokens || 0,
       outputTokens: usage.output_tokens || 0,
     },
-    devices: parsed.devices || parsed.circuits || parsed.slots || [],
+    entries,
   };
 }
 
 /**
- * Main entry. Takes a CV-prepared geometry + image buffer + Anthropic
- * client and returns a `{slots, labels, usage, timings, lowConfidence,
- * stageOutputs, finalDevices}` object shaped to drop into the existing
- * route handler in place of `classifyModernSlots` + `extractSlotLabels`.
+ * Normalise a raw VLM response entry into the internal device shape used by
+ * the alignment merger. Rejects entries that are missing device_kind (the
+ * minimum requirement to participate in alignment).
+ */
+function normaliseEntry(raw, windowIndex, indexInWindow) {
+  if (!raw || typeof raw !== 'object') return null;
+  const kind = typeof raw.device_kind === 'string' ? raw.device_kind.toLowerCase().trim() : null;
+  if (!kind) return null;
+  return {
+    window: windowIndex,
+    indexInWindow,
+    kind,
+    rating: raw.ocpd_rating_a ?? null,
+    curve: raw.ocpd_curve || null,
+    bs_en: raw.ocpd_bs_en || null,
+    rcd_type: raw.rcd_type || null,
+    rcd_rating_ma: raw.rcd_rating_ma ?? null,
+    body_colour: raw.body_colour || null,
+    label: typeof raw.label === 'string' && raw.label.trim() !== '' ? raw.label : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Output assembly
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert canonical entries into the slot/label arrays consumed by
+ * assembleGeometricResult + slotsToCircuits. Each canonical entry maps 1:1
+ * to a slot. The slot grid is derived from the canonical length, NOT from
+ * the CV's snappedWays (the canonical IS the truth — the CV pitch only
+ * planned the windows).
+ *
+ * The slot count from the canonical may differ from the CV's snappedWays
+ * estimate by ±1-2. That difference is captured in `lowConfidence` /
+ * `extraEntries` for downstream awareness.
+ */
+function entriesToSlots(canonical, boardManufacturer) {
+  const slots = [];
+  const labels = [];
+  for (let s = 0; s < canonical.length; s++) {
+    const e = canonical[s];
+    const cls = e.kind;
+    let rating = e.rating != null ? Number(e.rating) || null : null;
+    if (rating == null && cls === 'rewireable' && e.body_colour && COLOUR_TO_AMPS[e.body_colour]) {
+      rating = COLOUR_TO_AMPS[e.body_colour];
+    }
+    // confidence — at least one window saw this; cap at 0.95 so the
+    // downstream 0.7 floor in slotsToCircuits is comfortably exceeded.
+    const confidence = Math.min(0.95, 0.5 + 0.15 * Math.max(0, (e.votes || 1) - 1));
+    slots.push({
+      slotIndex: s,
+      content: cls === 'blank' ? 'blank' : 'device',
+      extends: 'none',
+      classification: cls,
+      manufacturer:
+        boardManufacturer ?? (cls === 'rcbo' || cls === 'rcd' || cls === 'mcb' ? 'unknown' : null),
+      model: null,
+      ratingAmps: rating,
+      ratingText: rating != null ? `${e.curve || ''}${rating}A`.trim() : null,
+      ratingHallucinationDetected: false,
+      poles: 1,
+      tripCurve: e.curve || null,
+      sensitivity:
+        e.rcd_rating_ma != null
+          ? typeof e.rcd_rating_ma === 'number'
+            ? e.rcd_rating_ma
+            : Number(e.rcd_rating_ma) || null
+          : null,
+      rcdWaveformType: e.rcd_type || null,
+      bsEn: e.bs_en || null,
+      bodyColour: e.body_colour || null,
+      confidence,
+      // crop is filled in below by per-slot sharp.extract
+      crop: { bbox: { x: 0, y: 0, w: 0, h: 0 }, base64: '' },
+      label: e.label || null,
+    });
+    labels.push({
+      slotIndex: s,
+      label: e.label || null,
+      rawLabel: e.label || null,
+      confidence,
+    });
+  }
+  return { slots, labels };
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Main entry. Takes a CV-prepared geometry + image buffer + Anthropic client
+ * and returns a `{slots, labels, usage, timings, lowConfidence, stageOutputs,
+ * finalDevices}` object shaped to drop into the existing route handler in
+ * place of classifyModernSlots + extractSlotLabels.
  *
  * @param {{
  *   imageBuffer: Buffer,
@@ -386,9 +530,10 @@ async function runWindow({ anthropic, model, prompt, cropBuf, windowIndex, signa
  *   model: string,
  *   imgW: number,
  *   imgH: number,
- *   boardManufacturer?: string,  // from Stage 1b classifier; stamped onto every slot for outlier-detection compatibility
+ *   boardManufacturer?: string,
  *   windowMod?: number,
  *   strideMod?: number,
+ *   overshootMod?: number,
  *   labelPad?: number,
  *   logger?: object,
  *   userId?: string
@@ -405,6 +550,7 @@ export async function extractViaSlidingWindow({
   boardManufacturer = null,
   windowMod = 5,
   strideMod = 2,
+  overshootMod = 2,
   labelPad = 1.0,
   logger,
   userId,
@@ -412,10 +558,6 @@ export async function extractViaSlidingWindow({
   const t0 = Date.now();
 
   // --- 1. Resolve geometry to image-pixel space -------------------------
-  // Modern: slotCentersX / railBbox / medianRails are normalised 0..1000;
-  //         cvPitchDiag.pitchPx is image px.
-  // Rewireable: slotCentersX + carrierPitchPx are pixels; panelBounds is
-  //         normalised 0..1000.
   let pitchPx, railLeftPx, railRightPx, railTopPx, railBottomPx;
   if (isRewireable) {
     pitchPx = prepared.carrierPitchPx;
@@ -446,7 +588,15 @@ export async function extractViaSlidingWindow({
   const cropBottom = Math.min(imgH, railBottomPx + padPx);
   const cropH = cropBottom - cropTop;
 
-  const windows = planWindows(railLeftPx, railRightPx, pitchPx, windowMod, strideMod, imgW);
+  const windows = planWindows(
+    railLeftPx,
+    railRightPx,
+    pitchPx,
+    windowMod,
+    strideMod,
+    imgW,
+    overshootMod
+  );
 
   // --- 3. Run windows in parallel --------------------------------------
   const prompt = isRewireable ? REWIREABLE_PROMPT : MODERN_PROMPT;
@@ -470,149 +620,48 @@ export async function extractViaSlidingWindow({
           windowIndex: i + 1,
           signal: abortController.signal,
         });
-        return { window: i + 1, x0: w.x0, x1: w.x1, ...r };
+        return { window: i + 1, x0: w.x0, x1: w.x1, overshoot: w.overshoot, ...r };
       })
     );
   } finally {
     clearTimeout(timeoutId);
   }
 
-  // --- 4. Convert each device's position_pct → image-space X ------------
-  const allReads = [];
-  for (const r of windowResults) {
-    const cropW = r.x1 - r.x0;
-    for (const d of r.devices) {
-      const pct = Number(d.position_pct);
-      if (!Number.isFinite(pct) || pct < 0 || pct > 1) continue;
-      const xImage = r.x0 + pct * cropW;
-      allReads.push({
-        window: r.window,
-        xImage,
-        widthMod: Number(d.width_modules) || 1,
-        kind: d.device_kind || null,
-        rating: d.ocpd_rating_a ?? null,
-        curve: d.ocpd_curve || null,
-        bs_en: d.ocpd_bs_en || null,
-        rcd_type: d.rcd_type || null,
-        rcd_rating_ma: d.rcd_rating_ma ?? null,
-        body_colour: d.body_colour || null,
-        label: d.label || null,
-      });
-    }
-  }
+  // --- 4. Normalise per-window entries ---------------------------------
+  // Each window's response is an ordered list. We strip rejects (no
+  // device_kind) but preserve order — alignment depends on it.
+  const windowsDevices = windowResults.map((r) =>
+    r.entries.map((raw, idx) => normaliseEntry(raw, r.window, idx)).filter(Boolean)
+  );
 
-  // --- 5. Cluster reads → final devices --------------------------------
-  const rawClusters = clusterReads(allReads, pitchPx);
-  // Merge a 2-pole / 3-pole isolator that the VLM split into adjacent
-  // 1-module main_switch reads back into one device. See function-level
-  // comment on mergeAdjacentMainSwitchClusters for the failure mode.
-  const clusters = mergeAdjacentMainSwitchClusters(rawClusters, pitchPx);
+  // --- 5. Sequence-alignment merger ------------------------------------
+  // Expected overlap in entries between consecutive windows. With windowMod=5
+  // and strideMod=2, consecutive windows physically share 3 module slots.
+  // The merger biases toward this length when alignment is ambiguous (e.g.
+  // adjacent identical-rating MCBs).
+  const expectedOverlap = Math.max(0, windowMod - strideMod);
+  const canonical = alignWindows(windowsDevices, { expectedOverlap });
 
-  // Per-cluster consensus voting + mean image X.
-  const finalDevices = clusters.map((c) => {
-    const meanX = c.reads.reduce((s, r) => s + r.xImage, 0) / c.reads.length;
-    let rating = mostCommon(c.reads.map((r) => r.rating));
-    const colour = mostCommon(c.reads.map((r) => r.body_colour));
-    const kind = mostCommon(c.reads.map((r) => r.kind));
-    if (rating == null && kind === 'rewireable' && colour && COLOUR_TO_AMPS[colour]) {
-      rating = COLOUR_TO_AMPS[colour];
-    }
-    // mergedSpan is set when mergeAdjacentMainSwitchClusters folded multiple
-    // clusters into this one (each with widthMod=1). Keep the larger of the
-    // VLM-voted widthMod and the merged span — a single cluster that
-    // correctly reported widthMod=2 stays widthMod=2.
-    const widthModFromReads = mostCommon(c.reads.map((r) => r.widthMod)) || 1;
-    const widthMod = Math.max(c.mergedSpan ?? 1, widthModFromReads);
-    return {
-      xImage: Math.round(meanX),
-      widthMod,
-      kind,
-      rating,
-      curve: mostCommon(c.reads.map((r) => r.curve)),
-      bs_en: mostCommon(c.reads.map((r) => r.bs_en)),
-      rcd_type: mostCommon(c.reads.map((r) => r.rcd_type)),
-      rcd_rating_ma: mostCommon(c.reads.map((r) => r.rcd_rating_ma)),
-      body_colour: colour,
-      label: bestLabel(c.reads.map((r) => r.label)),
-      votes: c.reads.length,
-    };
-  });
+  // --- 6. Assemble slot output ----------------------------------------
+  const { slots, labels } = entriesToSlots(canonical, boardManufacturer);
 
-  // --- 6. Map devices to a canonical slot grid -------------------------
-  // Snap each device's centre X to the nearest slot in a (railLeftPx,
-  // railRightPx, pitchPx)-defined grid. The grid has `Math.round(railWidth/pitch)`
-  // slots; multi-module devices occupy `widthMod` consecutive slots
-  // starting at the device's snap-to-leftmost-slot.
-  const snappedWays = Math.max(1, Math.round(railWidthPx / pitchPx));
+  // --- 7. Per-slot crops for iOS overlay -------------------------------
+  // The CV-derived slot grid is used purely for cropping. If the canonical
+  // length disagrees with the CV's snappedWays, we crop along the canonical's
+  // implied positions (rail divided by canonical.length) so each entry has a
+  // matching crop. This keeps the iOS tap-to-correct overlay coherent.
+  const snappedWays = canonical.length;
   const slotCentersPx = [];
-  for (let i = 0; i < snappedWays; i++) {
-    slotCentersPx.push(railLeftPx + (i + 0.5) * pitchPx);
-  }
-  function snapToSlot(xImage, widthMod) {
-    // For a 2-mod device, its centre sits between two slot centres; we
-    // place its leftmost slot at the slot whose centre is < xImage by
-    // ~pitchPx/2. For 1-mod, snap to nearest slot centre.
-    if (widthMod >= 2) {
-      // Centre falls between slots leftmost+0 and leftmost + (widthMod-1).
-      // Compute leftmost = round((xImage - (widthMod-1)/2 * pitch - railLeft)/pitch - 0.5)
-      const leftmostCenter = xImage - ((widthMod - 1) / 2) * pitchPx;
-      let i = Math.round((leftmostCenter - railLeftPx) / pitchPx - 0.5);
-      i = Math.max(0, Math.min(snappedWays - widthMod, i));
-      return i;
+  if (snappedWays > 0) {
+    const effectivePitch = railWidthPx / snappedWays;
+    for (let i = 0; i < snappedWays; i++) {
+      slotCentersPx.push(railLeftPx + (i + 0.5) * effectivePitch);
     }
-    let i = Math.round((xImage - railLeftPx) / pitchPx - 0.5);
-    i = Math.max(0, Math.min(snappedWays - 1, i));
-    return i;
   }
 
-  // Sort by xImage and snap. Resolve any collisions by preferring higher
-  // vote count, then larger widthMod.
-  finalDevices.sort((a, b) => a.xImage - b.xImage);
-  const slotOwner = new Array(snappedWays).fill(null);
-  const placedDevices = [];
-  for (const d of finalDevices) {
-    const start = snapToSlot(d.xImage, d.widthMod || 1);
-    const cols = d.widthMod || 1;
-    let conflict = false;
-    for (let s = start; s < start + cols && s < snappedWays; s++) {
-      if (slotOwner[s] && slotOwner[s].votes >= d.votes) {
-        conflict = true;
-        break;
-      }
-    }
-    if (conflict) continue;
-    for (let s = start; s < start + cols && s < snappedWays; s++) {
-      slotOwner[s] = d;
-    }
-    placedDevices.push({ ...d, startSlot: start, colsUsed: cols });
-  }
-
-  // --- 7. Synthesise the slots[] + labels[] arrays in the shape that  --
-  // classifyModernSlots / extractSlotLabels would have produced. The
-  // existing route-handler flow (assembleGeometricResult, slotsToCircuits,
-  // applyRcdTypeLookup, applyBsEnFallback, normaliseCircuitLabels,
-  // lookupMissingRcdTypes, flagRcdWaveformOutliers) consumes this shape
-  // unchanged.
-  //
-  // For multi-module devices we replicate the device's data across ALL
-  // its slots; slotsToCircuits then handles the de-duplication (e.g. an
-  // 'rcd' classification produces one schedule row per pair, and a
-  // 'main_switch' is skipped entirely).
-  const slots = [];
-  const labels = [];
-
-  // Precompute per-slot crops in parallel (sharp.extract — no VLM).
-  // iOS uses these for its tap-to-correct overlays (LiveFillState.slotCrops).
-  const slotCrops = await Promise.all(
-    Array.from({ length: snappedWays }, async (_, i) => {
+  await Promise.all(
+    slots.map(async (slot, i) => {
       try {
-        const geomShared = {
-          slotCentersX: isRewireable
-            ? slotCentersPx
-            : slotCentersPx.map((px) => Math.round((px / imgW) * 1000)),
-          imageWidth: imgW,
-          imageHeight: imgH,
-        };
         if (isRewireable) {
           const out = await cropCarrierSlot(imageBuffer, i, {
             slotCentersX: slotCentersPx,
@@ -622,99 +671,46 @@ export async function extractViaSlidingWindow({
             imageWidth: imgW,
             imageHeight: imgH,
           });
-          return out;
+          slot.crop = { bbox: out.bbox, base64: out.buffer.toString('base64') };
+        } else {
+          const out = await cropSlot(imageBuffer, i, {
+            slotCentersX: slotCentersPx.map((px) => Math.round((px / imgW) * 1000)),
+            moduleWidth: Math.round((pitchPx / imgW) * 1000),
+            railTop: prepared.medianRails?.rail_top ?? Math.round((railTopPx / imgH) * 1000),
+            railBottom:
+              prepared.medianRails?.rail_bottom ?? Math.round((railBottomPx / imgH) * 1000),
+            imageWidth: imgW,
+            imageHeight: imgH,
+          });
+          slot.crop = { bbox: out.bbox, base64: out.buffer.toString('base64') };
         }
-        const out = await cropSlot(imageBuffer, i, {
-          slotCentersX: geomShared.slotCentersX,
-          moduleWidth: Math.round((pitchPx / imgW) * 1000),
-          railTop: prepared.medianRails?.rail_top ?? Math.round((railTopPx / imgH) * 1000),
-          railBottom: prepared.medianRails?.rail_bottom ?? Math.round((railBottomPx / imgH) * 1000),
-          imageWidth: imgW,
-          imageHeight: imgH,
-        });
-        return out;
       } catch {
-        return { buffer: Buffer.alloc(0), bbox: { x: 0, y: 0, w: 1, h: 1 } };
+        slot.crop = { bbox: { x: 0, y: 0, w: 1, h: 1 }, base64: '' };
       }
     })
   );
 
-  for (let s = 0; s < snappedWays; s++) {
-    const owner = slotOwner[s];
-    const crop = slotCrops[s];
-    const crop64 = crop.buffer.length > 0 ? crop.buffer.toString('base64') : '';
-
-    if (!owner) {
-      slots.push({
-        slotIndex: s,
-        content: 'empty',
-        extends: 'none',
-        classification: 'unknown',
-        manufacturer: null,
-        model: null,
-        ratingAmps: null,
-        ratingText: null,
-        ratingHallucinationDetected: false,
-        poles: null,
-        tripCurve: null,
-        sensitivity: null,
-        rcdWaveformType: null,
-        bsEn: null,
-        confidence: 0,
-        crop: { bbox: crop.bbox, base64: crop64 },
+  // --- 8. Edge-overshoot diagnostics ----------------------------------
+  // If a left- or right-overshoot window returned close to a full windowMod
+  // of devices (specifically: > windowMod - overshootMod), the rail probably
+  // extended further than the CV thought. Log a warning; downstream callers
+  // see lowConfidence=true so the inspector knows to verify edge devices.
+  let lowConfidence = false;
+  const edgeOvershootSaturated = windowResults.filter(
+    (r) => r.overshoot !== 'none' && r.entries.length > windowMod - overshootMod
+  );
+  if (edgeOvershootSaturated.length > 0) {
+    lowConfidence = true;
+    if (logger) {
+      logger.warn('CCU edge overshoot saturated — rail may extend past CV estimate', {
+        userId,
+        windows: edgeOvershootSaturated.map((r) => ({
+          window: r.window,
+          overshoot: r.overshoot,
+          entries: r.entries.length,
+        })),
       });
-      labels.push({
-        slotIndex: s,
-        label: null,
-        rawLabel: null,
-        confidence: 0,
-      });
-      continue;
     }
-
-    const ownsStartSlot = owner.startSlot === s;
-    const cls = (owner.kind || 'unknown').toLowerCase();
-    // Normalise device_kind to what the existing slotsToCircuits / merger
-    // expects — the harness emits "rewireable"/"cartridge"/"main_switch"/"spd"/"blank"
-    // as-is and the modern emits "mcb"/"rcbo"/"rcd"/etc.
-    const classification = cls;
-    // Confidence: scale by votes (3 votes ≈ full confidence). Cluster
-    // votes are 1..N where N is window count; cap at 0.95 so the
-    // existing 0.7 confidence floor in slotsToCircuits is comfortably
-    // exceeded.
-    const confidence = Math.min(0.95, 0.5 + 0.15 * (owner.votes - 1));
-
-    slots.push({
-      slotIndex: s,
-      content: owner.kind === 'blank' ? 'blank' : 'device',
-      extends: owner.colsUsed > 1 ? (ownsStartSlot ? 'right' : 'left') : 'none',
-      classification,
-      manufacturer:
-        boardManufacturer ?? (cls === 'rcbo' || cls === 'rcd' || cls === 'mcb' ? 'unknown' : null),
-      model: null,
-      ratingAmps: typeof owner.rating === 'number' ? owner.rating : Number(owner.rating) || null,
-      ratingText: owner.rating != null ? `${owner.curve || ''}${owner.rating}A`.trim() : null,
-      ratingHallucinationDetected: false,
-      poles: owner.colsUsed >= 2 ? 2 : 1,
-      tripCurve: owner.curve || null,
-      sensitivity:
-        owner.rcd_rating_ma != null
-          ? typeof owner.rcd_rating_ma === 'number'
-            ? owner.rcd_rating_ma
-            : Number(owner.rcd_rating_ma) || null
-          : null,
-      rcdWaveformType: owner.rcd_type || null,
-      bsEn: owner.bs_en || null,
-      bodyColour: owner.body_colour || null,
-      confidence,
-      crop: { bbox: crop.bbox, base64: crop64 },
-    });
-    labels.push({
-      slotIndex: s,
-      label: owner.label || null,
-      rawLabel: owner.label || null,
-      confidence,
-    });
   }
 
   const totalUsage = windowResults.reduce(
@@ -733,26 +729,26 @@ export async function extractViaSlidingWindow({
       windowCount: windows.length,
       pitchPx,
       ways: snappedWays,
-      readsTotal: allReads.length,
-      clusters: clusters.length,
-      placed: placedDevices.length,
+      readsTotal: windowsDevices.reduce((acc, w) => acc + w.length, 0),
+      canonicalLength: canonical.length,
       wallMs,
       sumWindowMs,
       tokensIn: totalUsage.inputTokens,
       tokensOut: totalUsage.outputTokens,
       pipeline: isRewireable ? 'rewireable' : 'modern',
+      edgeOvershootSaturated: edgeOvershootSaturated.length,
     });
   }
 
   return {
     slots,
     labels,
-    finalDevices: placedDevices,
+    finalDevices: canonical,
     snappedWays,
     pitchPx,
     timings: { stage3Ms: wallMs },
     usage: totalUsage,
-    lowConfidence: false,
+    lowConfidence,
     stage3Error: null,
     stageOutputs: {
       stage3: {
