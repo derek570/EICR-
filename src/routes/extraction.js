@@ -1946,7 +1946,16 @@ export function slotsToCircuits({
     const extendsSide = typeof slot.extends === 'string' ? slot.extends : 'none';
 
     // 1. main_switch / spd: not emitted, no phase change.
+    //    Also skip a slot demoted FROM main_switch by trimSpuriousMainSwitchClusterRuns
+    //    whose Stage 4 label still says "Mains Switch" / "Isolator" — that's the
+    //    real main-switch carcass after a 2-module isolator clustered as two
+    //    1-module reads (extraction 1778043419386-zmidoj 2026-05-06: trim kept
+    //    slot 13 and demoted slot 12 to 'unknown', then slot 12 leaked into
+    //    the schedule as circuit #1 "Mains Switch"). The label-rescue keeps
+    //    the original trim use case (Ovens RCBO mis-tagged main_switch with
+    //    a non-main-switch label) emitting normally.
     if (cls === 'main_switch' || cls === 'spd') continue;
+    if (slot._demotedFromMainSwitch && labelLooksLikeMainSwitch(slot.label)) continue;
 
     // 2. RCD: not emitted; updates reference + flips phase.
     if (cls === 'rcd') {

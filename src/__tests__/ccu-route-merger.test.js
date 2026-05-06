@@ -961,6 +961,108 @@ describe('slotsToCircuits', () => {
     expect(slots[2]._demotedFromMainSwitch).toBe(true);
   });
 
+  test('5d-ter. demoted slot whose label still says "Mains Switch" is NOT emitted as a circuit', () => {
+    // Regression: extraction 1778043419386-zmidoj (Elucian CU1SPD275, 2026-05-06).
+    // Sliding window read a 2-pole 100A main switch as TWO single-module
+    // main_switch reads in adjacent windows that didn't cluster (positions
+    // > 0.7 × pitch apart). Both slots reported poles=1, so the trim's
+    // mode-of-poles vote set expected=1, and tie-break with mainSwitchSide
+    // 'right' demoted the leftmost slot to 'unknown'. That carcass leaked
+    // into the schedule as circuit #1 with label "MAINS SWITCH" because
+    // slotsToCircuits only filtered cls === 'main_switch' / 'spd', not
+    // demoted-with-main-switch-label.
+    const slots = [
+      makeSlot({
+        slotIndex: 0,
+        classification: 'main_switch',
+        poles: 1,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: 'MAINS SWITCH',
+        labelConfidence: 0.65,
+        confidence: 0.65,
+      }),
+      makeSlot({
+        slotIndex: 1,
+        classification: 'main_switch',
+        poles: 1,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: 'MAINS SWITCH',
+        labelConfidence: 0.65,
+        confidence: 0.65,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+    });
+
+    // Trim still demotes one slot (no signal to keep both — that's the
+    // pre-existing tie-break behaviour). The fix is at the emit step:
+    // a demoted slot whose Stage 4 label STILL identifies it as a main
+    // switch is the real isolator's other half, not a circuit.
+    expect(slots[0]._demotedFromMainSwitch).toBe(true);
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(circuits).toEqual([]);
+  });
+
+  test('5d-quater. demoted slot with appliance-name label IS still emitted (preserves Ovens-rescue case)', () => {
+    // Counterpart to 5d-ter: trim's original purpose is to rescue a real
+    // circuit (e.g. Ovens RCBO) that Stage 3 wrongly tagged main_switch.
+    // The demoted-and-emitted path must keep working for slots whose
+    // Stage 4 label is an appliance name, not a main-switch phrase.
+    const slots = [
+      makeSlot({
+        slotIndex: 0,
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 32,
+        ratingText: 'B32A',
+        label: 'Ovens',
+        labelConfidence: 0.9,
+        confidence: 0.6,
+      }),
+      makeSlot({
+        slotIndex: 1,
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: 'Mains Switch',
+        labelConfidence: 0.9,
+        confidence: 0.6,
+      }),
+      makeSlot({
+        slotIndex: 2,
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: null,
+        labelConfidence: 0.3,
+        confidence: 0.6,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+    });
+
+    expect(slots[0]._demotedFromMainSwitch).toBe(true);
+    expect(circuits).toHaveLength(1);
+    expect(circuits[0].label).toBe('Ovens');
+    expect(circuits[0].low_confidence).toBe(true);
+  });
+
   test('5e. explicit mainSwitchPoles=3 lets a 3-slot run pass untrimmed', () => {
     // Future-proofing: if the classifier ever supplies a 3-pole isolator,
     // a 3-slot run is correct and must not be trimmed.
