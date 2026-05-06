@@ -2281,27 +2281,31 @@ router.post(
         });
       }
 
-      // --- Datasheet ways override (lookup BEFORE geometry) ---
-      // When the classifier identifies a board model (or manufacturer +
-      // confusable variant) for which we have a datasheet ways count,
-      // pass that count into the box-tightener so it bypasses the
-      // height-anchor formula. The formula's biggest failure mode is
-      // keystone distortion on off-axis shots — a 4 % change in detected
-      // face height flips the count rounding by ±1 and drops an end
-      // device (the Hob-disappearing problem repeatedly hit on Elucian
-      // CU1SPD275 in production logs 2026-05-05). The ways override
-      // side-steps that geometry entirely.
+      // --- Registry lookup (RCD waveform type only — NOT module count) ---
+      // The classifier identifies a board model; the registry knows the
+      // RCD waveform type (AC/A/B), BS EN, and other manufacturer-series
+      // facts that aren't visible in the photo. We call lookupRcdType
+      // here so `applyRcdTypeLookup` downstream can reuse the result
+      // without a second filesystem read (it's mtime-cached, but the
+      // log line documents *which* match fired).
       //
-      // The same lookup result is reused later (after circuits are
-      // assembled) by `applyRcdTypeLookup` to apply rcd_type. Calling
-      // it twice is cheap — it's a pure function with mtime-cached
-      // file access.
+      // Module count is NOT taken from the registry. The "ways" field
+      // in datasheets is ambiguous — it can mean "free outgoing ways",
+      // "total module positions", or "RCD-protected ways" depending on
+      // who entered the row. On a Wylex NHRS12SL the registry says 12
+      // but the physical rail carries 16 modules (12-way bank + main
+      // switch + side MCB + 2-mod isolator). Forcing 12 slots into a
+      // 16-module bbox produces 4 unowned slots that downstream code
+      // asserts as "Exposed rail (no device, no blank)" — a fabricated
+      // IP4X safety defect. CV-only count is the correct stance because
+      // ccu-rail-quad already handles keystone (perspective-rectified
+      // autocorrelation in mm-uniform space, slot centres projected
+      // back through the quad), which was the failure mode the override
+      // existed to side-step.
       const upfrontLookup = lookupRcdType({
         manufacturer: boardClassification.boardManufacturer,
         model: boardClassification.boardModel,
       });
-      const datasheetWays =
-        Number.isFinite(upfrontLookup.ways) && upfrontLookup.ways > 0 ? upfrontLookup.ways : null;
       if (upfrontLookup.source !== 'miss') {
         logger.info('RCD type lookup pre-geometry', {
           userId: req.user.id,
@@ -2309,7 +2313,6 @@ router.post(
           matchedKey: upfrontLookup.matched_key,
           matchedVia: upfrontLookup.matched_via,
           readAs: upfrontLookup.read_as ?? null,
-          datasheetWays,
         });
       }
 
@@ -2339,7 +2342,7 @@ router.post(
           prepared = await prepareRewireableGeometry(imageBytes);
           preparedSource = 'rewireable';
         } else if (boxTightenEnabled && railRoiHint) {
-          const tightenerOpts = datasheetWays ? { waysOverride: datasheetWays } : {};
+          const tightenerOpts = {};
           let tightened = null;
           let tightenedFrom = null;
 
@@ -2371,22 +2374,13 @@ router.post(
 
           if (tightened) {
             prepared = adaptTightenerToPrepared(tightened);
-            preparedSource =
-              tightenedFrom === 'quad'
-                ? tightened.waysOverrideApplied
-                  ? 'rail-quad-ways'
-                  : 'rail-quad'
-                : tightened.waysOverrideApplied
-                  ? 'box-tightener-ways'
-                  : 'box-tightener';
+            preparedSource = tightenedFrom === 'quad' ? 'rail-quad' : 'box-tightener';
             logger.info('CCU box-tightener used', {
               userId: req.user.id,
               source: tightenedFrom,
               moduleCount: tightened.moduleCount,
               pitchPx: Math.round(tightened.pitchPx * 10) / 10,
               initialPitchPx: tightened.initialPitchPx,
-              waysOverrideApplied: tightened.waysOverrideApplied === true,
-              datasheetWays,
               quadrilateral: tightened.quadrilateral ?? null,
               rectNormCorr: tightened.refinement?.quadDiag?.rectNormCorr ?? null,
               refinementAccepted: tightened.refinement.accepted,

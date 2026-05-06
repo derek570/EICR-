@@ -332,6 +332,36 @@ describe('tightenAndChunkQuad — edge cases', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Regression: registry "ways" is ambiguous — CV-only must still work
+// ---------------------------------------------------------------------------
+//
+// Production extraction 1778086091005-v9sst9 (2026-05-06) shipped 10 circuits
+// for a Wylex NHRS12SL where 3 of them were spurious "Exposed rail (no device,
+// no blank)" rows. Root cause: the route handler passed `waysOverride: 12`
+// from the registry, forcing 12 slots into a user-drawn rail_roi that
+// actually spans ~16 modules of physical device (the 12-way RCD-protected
+// bank + main switch + side MCB + 2-mod isolator are all on one rail). The
+// override bypassed the autocorrelation, so 4 real slots ended up unowned
+// and were misclassified as exposed live rail.
+//
+// The fix removed `waysOverride` from the route call. This test pins it: on
+// this exact photo + rail_roi, CV alone must find > 12 modules and the
+// autocorrelation must be confidently above the floor. If a future change
+// re-introduces the override, this test should fail and surface the
+// regression before TestFlight.
+describeIfCorpus('tightenAndChunkQuad — Wylex NHRS12SL registry-ambiguity regression', () => {
+  test('1778086091005-v9sst9 — CV finds the true module count (NOT the datasheet 12)', async () => {
+    const { entry, photo } = loadCorpusBoard('1778086091005-v9sst9');
+    const result = await tightenAndChunkQuad(photo, entry.userBox);
+    expect(result.waysOverrideApplied).toBe(false);
+    expect(result.moduleCount).toBeGreaterThan(12);
+    expect(result.moduleCount).toBeLessThanOrEqual(20);
+    expect(result.refinement.quadDiag.rectNormCorr).toBeGreaterThan(0.25);
+    expect(result.slotCentersPx).toHaveLength(result.moduleCount);
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
 // findBoundaryPhase — locks slot grid to actual device positions
 // ---------------------------------------------------------------------------
 
