@@ -65,11 +65,34 @@ export const CHITCHAT_SUPPRESS_LOG_INTERVAL_MS = 60_000;
 
 // Resume words an inspector might naturally say. Server-side only — iOS
 // doesn't need to know the vocabulary because the transcript carries the
-// raw text and the server matches. Bounded forms ("certmate" + verb
-// within 15 chars) catch "CertMate, resume" / "CertMate listen" without
-// false-firing on unrelated speech mentioning the brand.
+// raw text and the server matches.
+//
+// Vocabulary:
+//   - `resume` / `carry on` / `continue` / `wake up` — direct commands
+//   - `go on` / `back to it` — colloquial resume phrases
+//   - `certmate.{0,15}?(?:resume|listen|on)` — brand-anchored variants
+//     ("CertMate, resume" / "CertMate listen") with a 15-char ceiling
+//     so a long sentence mentioning "CertMate" doesn't false-fire.
+//
+// False-positive guards (slice-3 follow-up cleanup, L5 from the
+// post-impl review):
+//   - The bare verbs `go on` / `continue` are too generic on their own
+//     ("I'll go on the roof", "let me continue with the paperwork"),
+//     so each is wrapped in a negative lookahead that excludes the
+//     most common chitchat continuations: prepositions (`on`, `with`,
+//     `to`, `in`, `for`, `about`, `up`) and articles (`the`, `a`, `an`).
+//     `Carry on` is left unguarded because it's almost always a wake
+//     phrase in inspector context (the alternative — "carry on a
+//     conversation" — is rare enough to accept the false-wake cost).
+//   - `wake up`, `back to it`, `resume` aren't guarded because their
+//     natural English usage is overwhelmingly a wake intent.
+//
+// The conservative reading: a false wake is a benign event (Sonnet
+// just resumes, costing one extra turn until the counter ticks back
+// up). The guards trade a small amount of precision for noticeably
+// fewer false wakes during chitchat about the inspection itself.
 export const WAKE_REGEX =
-  /\b(?:resume|carry\s+on|continue|wake\s+up|go\s+on|back\s+to\s+it|certmate.{0,15}?(?:resume|listen|on))\b/i;
+  /\b(?:resume|carry\s+on|continue(?!\s+(?:on|with|to|in|for|about|up|the|a|an)\b)|wake\s+up|go\s+on(?!\s+(?:the|a|an|with|to|in|for|about|up)\b)|back\s+to\s+it|certmate.{0,15}?(?:resume|listen|on))\b/i;
 
 /**
  * Initialise the chitchat state on a session entry. Idempotent — safe

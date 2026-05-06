@@ -238,6 +238,7 @@ describe('enterChitchatPause / exitChitchatPause', () => {
 
 describe('isWakeWordTranscript / WAKE_REGEX', () => {
   test.each([
+    // Direct wake phrases
     ['resume', true],
     ['Resume', true],
     ['carry on', true],
@@ -245,9 +246,29 @@ describe('isWakeWordTranscript / WAKE_REGEX', () => {
     ['wake up', true],
     ['go on', true],
     ['back to it', true],
+    // Brand-anchored
     ['CertMate, resume', true],
     ['CertMate listen', true],
-    ['CertMate keep listening', false], // outside the bounded form
+    ['CertMate keep listening', false], // outside the bounded 15-char form
+    // False-positive guards (L5 — slice-3 follow-up): bare verbs in
+    // chitchat about the inspection itself should NOT wake.
+    ['I will go on the roof', false],
+    ['let me go on with the paperwork', false],
+    ['we should continue on to the kitchen', false],
+    ['continue with the next circuit', false],
+    ['continue to the consumer unit', false],
+    ['continue up the ladder', false],
+    ['continue the inspection', false],
+    // ...but standalone wake intent still fires
+    ['continue', true],
+    ['continue please', true],
+    ['go on', true],
+    // "go on with it" is borderline (could be "resume the inspection" or
+    // "proceed with that thing") — current guard rejects all "go on with"
+    // continuations, accepting the false-negative cost. Inspector can say
+    // "carry on" or "resume" directly without ambiguity.
+    ['go on with it', false],
+    // General prose
     ['I think the answer is forty-two', false],
     ['the resume of the inspection', true], // contains "resume" — accepted
     ['', false],
