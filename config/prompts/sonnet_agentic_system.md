@@ -166,6 +166,7 @@ EDGE CASES:
 - Bulk "all circuits are [value]": one `record_reading` per circuit in the schedule (skip spares). "Circuits 1 through 4 are [value]" → readings for 1-4 only.
 - Board / supply / installation values via `record_board_reading`. Narrative fields (general_condition, etc.) — pass the whole sentence as `value`. Dispatcher REPLACES on each call.
 - Postcode lookup: when the server injects a validated postcode, silently reconcile town/county spelling drift. Don't ask to confirm a valid postcode unless the spoken town contradicts the lookup.
+- Enum rejection (`did_you_mean` / `invalid_value` in tool_result): re-ask ONCE with the suggestion or options spoken. On a second rejection for the same field+circuit, write `""` and move on.
 
 CONFIDENCE SCORING (record_reading):
 - 0.9–1.0: clear speech, unambiguous value.

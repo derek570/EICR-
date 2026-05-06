@@ -95,7 +95,21 @@
 import { validateAskUser } from './stage6-dispatch-validation.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
-import { resolveCircuitAnswer, resolveValueAnswer } from './stage6-answer-resolver.js';
+import { createRequire } from 'node:module';
+import {
+  resolveCircuitAnswer,
+  resolveValueAnswer,
+  resolveEnumAnswer,
+} from './stage6-answer-resolver.js';
+
+const require = createRequire(import.meta.url);
+// Schema-driven enum validation for select-typed asks (Bug B from session
+// DC946608). The resolver reads `field.options` to (a) accept canonical
+// values, (b) suggest 1-digit-different alternatives, and (c) reject
+// totally-unrecognised values with the full option list — surfacing the
+// rejection to Sonnet so the re-ask-once-then-move-on rule can fire
+// instead of looping the same prompt verbatim.
+const FIELD_SCHEMA = require('../../config/field_schema.json');
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
@@ -584,6 +598,99 @@ async function buildResolvedBody({
   // Runs BEFORE the no-pending-write fallback so it catches asks the
   // pre-fix path would have dropped to "legacy body".
   if (autoResolveWrite) {
+    // Bug B (session DC946608) — enum-resolve runs FIRST for select-typed
+    // fields. resolveValueAnswer would happily extract "68001" as a digit
+    // and write it through (silently failing schema validation downstream),
+    // re-asking the same question forever. resolveEnumAnswer matches
+    // against the field's option list and surfaces invalid values to Sonnet
+    // with a structured `match_status` so the prompt's re-ask-once rule
+    // can fire instead of looping.
+    const enumVerdict = resolveEnumAnswer({
+      userText: outcome.user_text,
+      contextField,
+      contextCircuit,
+      sourceTurnId: turnId,
+      fieldSchema: FIELD_SCHEMA,
+    });
+    if (enumVerdict.kind === 'auto_resolve') {
+      const dispatched = [];
+      for (const write of enumVerdict.writes) {
+        try {
+          const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+          dispatched.push({
+            tool: write.tool,
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            ok: result?.ok !== false,
+          });
+        } catch (err) {
+          if (logger?.warn) {
+            logger.warn('stage6.ask_user_enum_auto_resolve_dispatch_failed', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              field: write.field,
+              circuit: write.circuit,
+              error: err?.message || String(err),
+            });
+          }
+          dispatched.push({
+            tool: write.tool,
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            ok: false,
+            error: err?.message || String(err),
+          });
+        }
+      }
+      if (logger?.info) {
+        logger.info('stage6.ask_user_enum_auto_resolved', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+          write_count: dispatched.length,
+          all_ok: dispatched.every((d) => d.ok),
+        });
+      }
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: true,
+        match_status: 'enum_resolved',
+        resolved_writes: dispatched,
+      };
+    }
+    if (enumVerdict.kind === 'did_you_mean' || enumVerdict.kind === 'invalid_value') {
+      if (logger?.info) {
+        logger.info('stage6.ask_user_enum_rejected', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+          kind: enumVerdict.kind,
+          received: enumVerdict.received,
+          suggestions: enumVerdict.suggestions ?? null,
+        });
+      }
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: false,
+        match_status: enumVerdict.kind, // 'did_you_mean' | 'invalid_value'
+        field: contextField,
+        circuit: contextCircuit,
+        received: enumVerdict.received,
+        valid_options: enumVerdict.valid_options,
+        ...(enumVerdict.suggestions ? { suggestions: enumVerdict.suggestions } : {}),
+      };
+    }
+    // `no_value_context` — fall through to value-resolver as before.
+
     const valueVerdict = resolveValueAnswer({
       userText: outcome.user_text,
       contextField,

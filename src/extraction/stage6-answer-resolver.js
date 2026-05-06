@@ -707,3 +707,177 @@ export function resolveValueAnswer({ userText, contextField, contextCircuit, sou
     ],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Enum-resolve (2026-05-06) — Bug B fix from session DC946608
+// ---------------------------------------------------------------------------
+//
+// `rcd_bs_en` is a select field with options `["", "61008", "61009", "62423",
+// "N/A"]`. When the user dictates "BS 68001" (a typo / mishearing for
+// "61008"), the value-resolver above happily extracts the digit "68001"
+// and would write it verbatim — but the field schema rejects unknown
+// option values, so the write was silently dropped and the same question
+// was re-asked. The transcript log of session DC946608 shows three
+// identical "What's the BS number?" prompts in 11 seconds.
+//
+// `resolveEnumAnswer` runs BEFORE `resolveValueAnswer` for select fields:
+//   - extracts a 5-digit run from the reply (handles "BS 61008", "61008",
+//     "sixty-one zero zero eight" once normalised by upstream NumberNormaliser)
+//   - exact-matches against the option list → `auto_resolve`
+//   - single-digit-different from a valid option → `did_you_mean`
+//     (Sonnet speaks the suggestion: "BS 68001 isn't standard — did you
+//     mean 61008?")
+//   - otherwise → `invalid_value` with the full option list
+//
+// Both `did_you_mean` and `invalid_value` carry the structured reason in
+// the dispatcher's tool_result body so the prompt's re-ask-once rule can
+// fire deterministically (Sonnet retries once with options spoken aloud,
+// then writes the empty value and moves on rather than looping).
+//
+// Conservative-by-default: N/A and the empty option resolve to canonical
+// "N/A" / "". A reply with no digits and no N/A signal escalates to the
+// legacy free-text body so Sonnet can interpret unusual phrasing.
+
+// Bare-string options that should auto-resolve to N/A. Order matters only
+// for log readability — match is case-insensitive substring.
+const NA_PHRASES = ['n/a', 'na', 'not applicable', 'none', 'no rcd', 'no rcd fitted'];
+
+/**
+ * Single-digit-edit check for two equal-length strings. O(n) one pass with
+ * early exit. Used for "did you mean" suggestions on 5-digit BS-EN codes
+ * where Levenshtein-1 reduces to "exactly one position differs".
+ */
+function singleDigitDiff(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let diffs = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) {
+      diffs += 1;
+      if (diffs > 1) return false;
+    }
+  }
+  return diffs === 1;
+}
+
+/**
+ * Resolve a select-typed ask_user reply against the asked field's option list.
+ * Returns one of:
+ *
+ *   { kind: 'auto_resolve', writes: [{tool, field, circuit, value, confidence, source_turn_id}] }
+ *   { kind: 'did_you_mean', received, suggestions: [...], valid_options: [...] }
+ *   { kind: 'invalid_value', received, valid_options: [...] }
+ *   { kind: 'no_value_context' }   — fall through (field not select, no options, etc.)
+ *
+ * Pure function — no side effects, no I/O. Caller (dispatcher) decides
+ * how to surface each verdict in the tool_result body.
+ *
+ * @param {object} args
+ * @param {string} args.userText
+ * @param {string|null} args.contextField    circuit_fields key
+ * @param {number|null} args.contextCircuit  circuit_ref
+ * @param {string|null} args.sourceTurnId
+ * @param {object} args.fieldSchema          loaded field_schema.json (or its circuit_fields slice)
+ */
+export function resolveEnumAnswer({
+  userText,
+  contextField,
+  contextCircuit,
+  sourceTurnId,
+  fieldSchema,
+}) {
+  if (!contextField || contextCircuit === null || contextCircuit === undefined) {
+    return { kind: 'no_value_context' };
+  }
+  // Look up the field. Accept either the full schema object (with
+  // circuit_fields key) or the circuit_fields slice directly.
+  const fields = fieldSchema?.circuit_fields ?? fieldSchema ?? null;
+  const field = fields ? fields[contextField] : null;
+  if (!field || field.type !== 'select' || !Array.isArray(field.options)) {
+    return { kind: 'no_value_context' };
+  }
+  // Filter the empty-string and N/A out of the matchable list — those are
+  // semantic exits, not user-dictated values.
+  const matchableOptions = field.options.filter((o) => o && o !== 'N/A');
+  if (matchableOptions.length === 0) {
+    return { kind: 'no_value_context' };
+  }
+  const text = String(userText ?? '').trim();
+  if (!text) {
+    return {
+      kind: 'invalid_value',
+      received: '',
+      valid_options: field.options,
+    };
+  }
+  const lower = text.toLowerCase();
+
+  // N/A short-circuit. Any of NA_PHRASES as a contained whole-word match.
+  const naMatch = NA_PHRASES.some((p) =>
+    new RegExp(`\\b${p.replace(/\//g, '\\/')}\\b`).test(lower)
+  );
+  if (naMatch && field.options.includes('N/A')) {
+    return {
+      kind: 'auto_resolve',
+      writes: [
+        {
+          tool: 'record_reading',
+          field: contextField,
+          circuit: contextCircuit,
+          value: 'N/A',
+          confidence: 0.95,
+          source_turn_id: sourceTurnId ?? null,
+        },
+      ],
+    };
+  }
+
+  // Extract the first 5-digit run (the standard BS-EN length). If the
+  // field's options don't follow the BS-EN shape, fall through — this
+  // resolver is currently scoped to digit-anchored enums; extending to
+  // word-anchored enums (e.g. ocpd_type AC|A|F|B) is future work.
+  const allDigit5 = matchableOptions.every((o) => /^\d{5}$/.test(o));
+  if (!allDigit5) {
+    return { kind: 'no_value_context' };
+  }
+  const digitMatch = text.match(/\b(\d{5})\b/);
+  if (!digitMatch) {
+    return {
+      kind: 'invalid_value',
+      received: text,
+      valid_options: field.options,
+    };
+  }
+  const candidate = digitMatch[1];
+  if (matchableOptions.includes(candidate)) {
+    return {
+      kind: 'auto_resolve',
+      writes: [
+        {
+          tool: 'record_reading',
+          field: contextField,
+          circuit: contextCircuit,
+          value: candidate,
+          confidence: 0.95,
+          source_turn_id: sourceTurnId ?? null,
+        },
+      ],
+    };
+  }
+  // 1-digit-different suggestions (typical Deepgram drift on dictated
+  // digits — "61008" → "68001" was the prod failure).
+  const suggestions = matchableOptions.filter((o) => singleDigitDiff(candidate, o));
+  if (suggestions.length > 0) {
+    return {
+      kind: 'did_you_mean',
+      received: candidate,
+      suggestions,
+      valid_options: field.options,
+    };
+  }
+  return {
+    kind: 'invalid_value',
+    received: candidate,
+    valid_options: field.options,
+  };
+}

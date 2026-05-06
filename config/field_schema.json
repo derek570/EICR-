@@ -140,9 +140,10 @@
     },
     "rcd_bs_en": {
       "label": "RCD BS/EN",
-      "type": "text",
+      "type": "select",
+      "options": ["", "61008", "61009", "62423", "N/A"],
       "description": "RCD British/European Standard reference",
-      "ai_guidance": "Standard number. Common: 61008 (RCCB), 61009 (RCBO), 62423 (Type F RCD)",
+      "ai_guidance": "Inspectors usually dictate digits only ('sixty-one zero zero eight'). Server normalises and validates against the option list. Common: 61008 (RCCB), 61009 (RCBO), 62423 (Type F RCD).",
       "pdf_column": "BS(EN)",
       "group": "RCD"
     },
