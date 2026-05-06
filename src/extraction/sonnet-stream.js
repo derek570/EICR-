@@ -49,6 +49,8 @@ import {
   recordTurn as recordChitchatTurn,
   exitChitchatPause,
   isWakeWordTranscript,
+  bufferTranscript,
+  drainReplayBuffer,
 } from './chitchat-pause.js';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
 // duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
@@ -940,34 +942,72 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               ws.close(1008, 'Rate limit exceeded');
               return;
             }
-            // Chitchat pause gate (slice 1). When the session is paused
-            // we suppress forwarding to Sonnet until a wake trigger
-            // fires. A wake-word match on the transcript text wakes the
-            // session and the message proceeds to handleTranscript so
-            // the wake utterance itself isn't lost. Any other transcript
-            // is silently dropped (Deepgram + iOS-side regex still
-            // running — only the Sonnet API leg is gated). Slice 2 will
-            // buffer dropped text for replay-on-resume.
+            // Chitchat pause gate (slices 1 + 2). When the session is
+            // paused we suppress forwarding to Sonnet until a wake
+            // trigger fires:
+            //   - wake-word regex match on transcript text → wake +
+            //     forward (so Sonnet sees the resume context)
+            //   - non-empty `regexResults` array → wake + forward
+            //     (iOS regex caught a real value; that's a stronger
+            //     engagement signal than chitchat would generate)
+            //   - otherwise → append to replayBuffer + drop (Deepgram
+            //     and iOS regex still running, only the Sonnet API leg
+            //     is gated)
+            // On wake from any source, the buffered text is drained
+            // and prepended to the wake utterance so a value spoken
+            // right at the pause/wake boundary isn't lost.
             if (currentSessionId && activeSessions.has(currentSessionId)) {
               const ccEntry = activeSessions.get(currentSessionId);
               const ccState = ensureChitchatState(ccEntry);
               if (ccState?.paused) {
-                if (isWakeWordTranscript(msg.text)) {
+                const wakeWord = isWakeWordTranscript(msg.text);
+                const regexHit = Array.isArray(msg.regexResults) && msg.regexResults.length > 0;
+                if (wakeWord || regexHit) {
+                  const replay = drainReplayBuffer(ccState);
+                  if (replay) {
+                    msg = {
+                      ...msg,
+                      text:
+                        typeof msg.text === 'string' && msg.text ? `${replay} ${msg.text}` : replay,
+                    };
+                    logger.info('chitchat.replay_prepended', {
+                      sessionId: currentSessionId,
+                      replay_chars: replay.length,
+                      wake_reason: wakeWord ? 'wake_word' : 'regex_hint',
+                    });
+                  }
                   exitChitchatPause({
                     state: ccState,
                     sendEnvelope: (env) => ws.send(JSON.stringify(env)),
                     logger,
                     sessionId: currentSessionId,
-                    reason: 'wake_word',
+                    reason: wakeWord ? 'wake_word' : 'regex_hint',
                   });
-                  // fall through to handleTranscript — wake utterance
-                  // is forwarded so Sonnet sees the resume context
+                  // fall through to handleTranscript with the
+                  // (possibly replay-prefixed) wake utterance
                 } else {
+                  bufferTranscript(ccState, msg.text);
                   logger.info('chitchat.transcript_suppressed', {
                     sessionId: currentSessionId,
                     text_preview: typeof msg.text === 'string' ? msg.text.slice(0, 80) : null,
+                    buffer_depth: ccState.replayBuffer.length,
                   });
                   break;
+                }
+              } else if (Array.isArray(msg.regexResults) && msg.regexResults.length > 0) {
+                // Slice 2: not paused yet, but iOS regex caught a value
+                // on this transcript. Reset the counter immediately
+                // (don't wait for Sonnet's result) so a session where
+                // regex extracts everything keeps Sonnet warm rather
+                // than drifting into pause. Mitigates Derek's "if regex
+                // extracts well, Sonnet would go offline" concern.
+                if (ccState.turnsSinceExtraction !== 0) {
+                  logger.info('chitchat.counter_reset_regex', {
+                    sessionId: currentSessionId,
+                    prev_count: ccState.turnsSinceExtraction,
+                    regex_hint_count: msg.regexResults.length,
+                  });
+                  ccState.turnsSinceExtraction = 0;
                 }
               }
             }

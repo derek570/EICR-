@@ -31,6 +31,12 @@
 
 export const CHITCHAT_PAUSE_THRESHOLD = 10;
 
+// How many seconds of recent paused-transcript text to replay back to
+// Sonnet on wake. Caps at the configured horizon so a session that sits
+// in chitchat for an hour doesn't accumulate megabytes of dead text and
+// flood the next Sonnet turn.
+export const CHITCHAT_REPLAY_HORIZON_MS = 30_000;
+
 // Resume words an inspector might naturally say. Server-side only — iOS
 // doesn't need to know the vocabulary because the transcript carries the
 // raw text and the server matches. Bounded forms ("certmate" + verb
@@ -51,6 +57,11 @@ export function ensureChitchatState(entry) {
       turnsSinceExtraction: 0,
       paused: false,
       pausedAt: null,
+      // Slice 2: rolling buffer of transcript text dropped while
+      // paused. Drained on wake and prepended to the wake utterance
+      // so a value spoken right at the wake boundary isn't lost.
+      // Cap by time, not size — `CHITCHAT_REPLAY_HORIZON_MS`.
+      replayBuffer: [],
     };
   }
   return entry.chitchatState;
@@ -68,9 +79,14 @@ export function ensureChitchatState(entry) {
  *   - The session has a pending ask_user round-trip (engine working
  *     through a question — must not count as chitchat even if the
  *     turn itself was a quiet "let me re-ask" pass)
+ *   - iOS regex (TranscriptFieldMatcher) caught a value on this turn,
+ *     even when Sonnet itself extracted nothing. Slice 2: this is
+ *     Derek's "if regex extracts everything well, Sonnet would go
+ *     offline" risk mitigation — regex-only sessions keep Sonnet warm.
  */
-export function turnHadEngagement(result, sessionPendingAskUser) {
+export function turnHadEngagement(result, sessionPendingAskUser, regexHintCount = 0) {
   if (sessionPendingAskUser) return true;
+  if (regexHintCount > 0) return true;
   if (Array.isArray(result?.extracted_readings) && result.extracted_readings.length > 0) {
     return true;
   }
@@ -99,13 +115,22 @@ export function turnHadEngagement(result, sessionPendingAskUser) {
  * @param {function} [args.logger]           optional structured logger
  * @param {string}   [args.sessionId]
  */
-export function recordTurn({ state, result, pendingAskUser, sendEnvelope, logger, sessionId }) {
+export function recordTurn({
+  state,
+  result,
+  pendingAskUser,
+  regexHintCount = 0,
+  sendEnvelope,
+  logger,
+  sessionId,
+}) {
   if (!state || state.paused) return;
-  if (turnHadEngagement(result, pendingAskUser)) {
+  if (turnHadEngagement(result, pendingAskUser, regexHintCount)) {
     if (state.turnsSinceExtraction !== 0) {
       logger?.info?.('chitchat.counter_reset', {
         sessionId,
         prev_count: state.turnsSinceExtraction,
+        regex_hint_count: regexHintCount,
       });
     }
     state.turnsSinceExtraction = 0;
@@ -173,4 +198,43 @@ export function exitChitchatPause({ state, sendEnvelope, logger, sessionId, reas
 export function isWakeWordTranscript(text) {
   if (typeof text !== 'string' || !text) return false;
   return WAKE_REGEX.test(text);
+}
+
+/**
+ * Append a paused-session transcript to the replay buffer. Drops
+ * entries older than `CHITCHAT_REPLAY_HORIZON_MS` so the buffer stays
+ * bounded regardless of pause length. Caller invokes this only when
+ * the transcript is being suppressed (no wake word, no regex hit).
+ */
+export function bufferTranscript(state, text, now = Date.now()) {
+  if (!state || typeof text !== 'string' || !text.trim()) return;
+  state.replayBuffer.push({ ts: now, text });
+  // Evict expired in-place — cheap because the buffer is short and
+  // strictly monotonic in `ts`.
+  const horizon = now - CHITCHAT_REPLAY_HORIZON_MS;
+  while (state.replayBuffer.length > 0 && state.replayBuffer[0].ts < horizon) {
+    state.replayBuffer.shift();
+  }
+}
+
+/**
+ * Drain the replay buffer to a single string in chronological order
+ * (oldest first), space-joined. Clears the buffer. Returns `''` when
+ * empty so the caller can prepend without conditionals.
+ *
+ * Drops entries older than the horizon BEFORE concatenating — a slow
+ * wake (e.g. iOS sat on the WS message for several seconds) shouldn't
+ * resurrect already-stale text.
+ */
+export function drainReplayBuffer(state, now = Date.now()) {
+  if (!state || !Array.isArray(state.replayBuffer) || state.replayBuffer.length === 0) {
+    return '';
+  }
+  const horizon = now - CHITCHAT_REPLAY_HORIZON_MS;
+  const fresh = state.replayBuffer.filter((e) => e.ts >= horizon);
+  state.replayBuffer = [];
+  return fresh
+    .map((e) => e.text)
+    .join(' ')
+    .trim();
 }

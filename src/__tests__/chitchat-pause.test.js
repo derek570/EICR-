@@ -6,6 +6,7 @@
 
 import {
   CHITCHAT_PAUSE_THRESHOLD,
+  CHITCHAT_REPLAY_HORIZON_MS,
   WAKE_REGEX,
   ensureChitchatState,
   turnHadEngagement,
@@ -13,6 +14,8 @@ import {
   enterChitchatPause,
   exitChitchatPause,
   isWakeWordTranscript,
+  bufferTranscript,
+  drainReplayBuffer,
 } from '../extraction/chitchat-pause.js';
 
 function makeEntry() {
@@ -272,5 +275,99 @@ describe('isWakeWordTranscript / WAKE_REGEX', () => {
   test('exported WAKE_REGEX matches the helper', () => {
     expect(WAKE_REGEX.test('carry on')).toBe(true);
     expect(WAKE_REGEX.test('idle banter')).toBe(false);
+  });
+});
+
+describe('slice 2 — regexHintCount in turnHadEngagement / recordTurn', () => {
+  test('regexHintCount > 0 alone counts as engagement', () => {
+    expect(turnHadEngagement({}, false, 1)).toBe(true);
+    expect(turnHadEngagement({}, false, 5)).toBe(true);
+  });
+
+  test('regexHintCount === 0 leaves engagement on extraction signals only', () => {
+    expect(turnHadEngagement({}, false, 0)).toBe(false);
+    expect(turnHadEngagement({ extracted_readings: [{}] }, false, 0)).toBe(true);
+  });
+
+  test('recordTurn resets counter when regex hits even on empty Sonnet result', () => {
+    const state = ensureChitchatState(makeEntry());
+    state.turnsSinceExtraction = 7;
+    const cap = makeCapture();
+    recordTurn({
+      state,
+      result: {},
+      pendingAskUser: false,
+      regexHintCount: 2,
+      sendEnvelope: cap.sendEnvelope,
+      logger: silentLogger,
+    });
+    expect(state.turnsSinceExtraction).toBe(0);
+    expect(state.paused).toBe(false);
+    expect(cap.sent).toEqual([]);
+  });
+
+  test('regex-only sessions never pause', () => {
+    const state = ensureChitchatState(makeEntry());
+    const cap = makeCapture();
+    for (let i = 0; i < 50; i += 1) {
+      recordTurn({
+        state,
+        result: {}, // Sonnet caught nothing
+        pendingAskUser: false,
+        regexHintCount: 1, // regex caught a value every turn
+        sendEnvelope: cap.sendEnvelope,
+        logger: silentLogger,
+      });
+    }
+    expect(state.paused).toBe(false);
+    expect(state.turnsSinceExtraction).toBe(0);
+  });
+});
+
+describe('slice 2 — replay buffer (bufferTranscript / drainReplayBuffer)', () => {
+  test('appends in order, drains in chronological order', () => {
+    const state = ensureChitchatState(makeEntry());
+    bufferTranscript(state, 'first', 1000);
+    bufferTranscript(state, 'second', 2000);
+    bufferTranscript(state, 'third', 3000);
+    expect(drainReplayBuffer(state, 3500)).toBe('first second third');
+    expect(state.replayBuffer).toEqual([]); // cleared after drain
+  });
+
+  test('drops entries older than CHITCHAT_REPLAY_HORIZON_MS on append', () => {
+    const state = ensureChitchatState(makeEntry());
+    bufferTranscript(state, 'ancient', 1000);
+    // Append at a timestamp far beyond the horizon — old entry evicted.
+    bufferTranscript(state, 'fresh', 1000 + CHITCHAT_REPLAY_HORIZON_MS + 5_000);
+    expect(state.replayBuffer.length).toBe(1);
+    expect(state.replayBuffer[0].text).toBe('fresh');
+  });
+
+  test('drain filters out stale entries that slipped past append-time eviction', () => {
+    const state = ensureChitchatState(makeEntry());
+    // Force two entries into the buffer with widely separated timestamps;
+    // simulate a long pause where drain happens far after the first push.
+    state.replayBuffer.push({ ts: 1000, text: 'ancient' });
+    state.replayBuffer.push({ ts: 1000 + CHITCHAT_REPLAY_HORIZON_MS - 500, text: 'borderline' });
+    // Drain at a time where 'ancient' is stale, 'borderline' just inside.
+    expect(drainReplayBuffer(state, 1000 + CHITCHAT_REPLAY_HORIZON_MS + 100)).toBe('borderline');
+  });
+
+  test('drain on empty buffer returns empty string, not throw', () => {
+    const state = ensureChitchatState(makeEntry());
+    expect(drainReplayBuffer(state)).toBe('');
+  });
+
+  test('whitespace-only / empty texts are skipped by bufferTranscript', () => {
+    const state = ensureChitchatState(makeEntry());
+    bufferTranscript(state, '');
+    bufferTranscript(state, '   ');
+    bufferTranscript(state, null);
+    expect(state.replayBuffer.length).toBe(0);
+  });
+
+  test('null state is safe — does not throw on either helper', () => {
+    expect(() => bufferTranscript(null, 'x')).not.toThrow();
+    expect(drainReplayBuffer(null)).toBe('');
   });
 });
