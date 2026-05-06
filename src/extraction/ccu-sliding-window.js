@@ -171,6 +171,23 @@ function mostCommon(values) {
   return best;
 }
 
+// Same patterns as MAIN_SWITCH_LABEL_PATTERNS in src/routes/extraction.js.
+// Duplicated locally to keep ccu-sliding-window.js free of route-handler
+// imports — these two patterns + the routes-side rescue must move together.
+const MAIN_SWITCH_LABEL_PATTERNS_LOCAL = [
+  /^\s*main\s*switch\s*$/i,
+  /^\s*main\s*isolator\s*$/i,
+  /^\s*main\s*isol\.?\s*$/i,
+  /^\s*mains\s*switch\s*$/i,
+  /^\s*switch\s*disconnector\s*$/i,
+  /^\s*isolator\s*$/i,
+];
+
+function labelLooksLikeMainSwitchLocal(label) {
+  if (typeof label !== 'string' || label.trim() === '') return false;
+  return MAIN_SWITCH_LABEL_PATTERNS_LOCAL.some((p) => p.test(label));
+}
+
 function bestLabel(labels) {
   const valid = labels.filter((l) => l && String(l).trim().length > 0);
   if (valid.length === 0) return null;
@@ -215,6 +232,92 @@ export function clusterReads(allReads, pitchPx) {
     clusters.push({ reads: [r] });
   }
   return clusters;
+}
+
+/**
+ * Merge adjacent main_switch clusters that the VLM reported as separate
+ * 1-module devices.
+ *
+ * A 2-pole or 3-pole isolator's mechanically-linked toggle handles can each
+ * present like a single-module main switch to the VLM — particularly when
+ * no single window cleanly captures the whole device. clusterReads keeps
+ * them as separate clusters because their image-X positions are ≥ 1 pitch
+ * apart (the 0.7 × pitch tolerance exists to stop adjacent same-name
+ * circuits like "LIGHTING / LIGHTING" from collapsing into one).
+ *
+ * Repro: extraction 1778043419386-zmidoj (Elucian CU2MS100, 2026-05-06).
+ * The 2-pole isolator was read as two widthMod=1 main_switch devices, one
+ * per visible toggle. Snapping placed both as main_switch slots side-by-side
+ * (slots 12 and 13). Downstream `trimSpuriousMainSwitchClusterRuns` saw a
+ * 2-slot run with poles=[1,1], voted expected=1, demoted slot 12 to
+ * 'unknown' — and it leaked into the schedule as circuit #1 "MAINS SWITCH".
+ *
+ * Restricted to main_switch only:
+ *   - Genuine adjacent main_switch devices are vanishingly rare on UK
+ *     domestic boards (one isolator per board is the norm). Even on the
+ *     edge case of a dual-isolator board, an over-merge only hides one
+ *     main_switch from the iOS overlay — never produces a wrong circuit
+ *     row, because main_switch slots aren't emitted as circuits.
+ *   - Adjacent RCDs DO occur on split-load boards (bedroom RCD next to
+ *     kitchen RCD), so an analogous RCD-merge would be unsafe. Multi-module
+ *     RCDs are handled downstream by the `prevWasRcd` gap-fill in
+ *     slotsToCircuits which combines two adjacent rcd slots into one
+ *     rcdEntry without changing slot count.
+ *
+ * The merged cluster carries `mergedSpan` (count of constituent clusters)
+ * so the widthMod calculation downstream can use the larger of the
+ * VLM-reported widthMod and the merged span — i.e. a correctly-reported
+ * widthMod=2 single cluster keeps widthMod=2, but two merged widthMod=1
+ * clusters become widthMod=2.
+ */
+export function mergeAdjacentMainSwitchClusters(clusters, pitchPx) {
+  if (!Array.isArray(clusters) || clusters.length === 0) return clusters;
+  const TOLERANCE = pitchPx * 1.5;
+  const merged = [];
+  for (const c of clusters) {
+    const last = merged[merged.length - 1];
+    if (last) {
+      const lastKind = mostCommon(last.reads.map((r) => r.kind));
+      const currKind = mostCommon(c.reads.map((r) => r.kind));
+      if (lastKind === 'main_switch' && currKind === 'main_switch') {
+        // Compare to the LAST READ's xImage (rightmost edge of the
+        // already-merged cluster), not the cluster mean — the mean drifts
+        // as we fold more clusters in, which would let a 3-cluster chain
+        // miss the third merge by a hair when the centroid sits midway
+        // between the second and third devices.
+        const lastRightX = Math.max(...last.reads.map((r) => r.xImage));
+        const currLeftX = Math.min(...c.reads.map((r) => r.xImage));
+        if (currLeftX - lastRightX < TOLERANCE) {
+          // Label compatibility gate: refuse the merge when there is
+          // POSITIVE evidence one of the clusters is actually a real
+          // circuit row (Stage 3's per-slot VLM has a documented failure
+          // mode where it mis-classifies an adjacent RCBO as main_switch
+          // — see trimSpuriousMainSwitchClusterRuns in extraction.js).
+          // If the strip label clearly says "Ovens" or "Cooker", that's
+          // not the other half of the isolator. Both-null is allowed
+          // because handwritten or illegible strips are common; both-
+          // main-switch-shaped is the bug case we're fixing.
+          const lastLabel = bestLabel(last.reads.map((r) => r.label));
+          const currLabel = bestLabel(c.reads.map((r) => r.label));
+          const lastIsCircuitName =
+            typeof lastLabel === 'string' &&
+            lastLabel.trim() !== '' &&
+            !labelLooksLikeMainSwitchLocal(lastLabel);
+          const currIsCircuitName =
+            typeof currLabel === 'string' &&
+            currLabel.trim() !== '' &&
+            !labelLooksLikeMainSwitchLocal(currLabel);
+          if (!lastIsCircuitName && !currIsCircuitName) {
+            last.reads.push(...c.reads);
+            last.mergedSpan = (last.mergedSpan ?? 1) + 1;
+            continue;
+          }
+        }
+      }
+    }
+    merged.push({ ...c, mergedSpan: c.mergedSpan ?? 1 });
+  }
+  return merged;
 }
 
 /**
@@ -399,7 +502,11 @@ export async function extractViaSlidingWindow({
   }
 
   // --- 5. Cluster reads → final devices --------------------------------
-  const clusters = clusterReads(allReads, pitchPx);
+  const rawClusters = clusterReads(allReads, pitchPx);
+  // Merge a 2-pole / 3-pole isolator that the VLM split into adjacent
+  // 1-module main_switch reads back into one device. See function-level
+  // comment on mergeAdjacentMainSwitchClusters for the failure mode.
+  const clusters = mergeAdjacentMainSwitchClusters(rawClusters, pitchPx);
 
   // Per-cluster consensus voting + mean image X.
   const finalDevices = clusters.map((c) => {
@@ -410,7 +517,12 @@ export async function extractViaSlidingWindow({
     if (rating == null && kind === 'rewireable' && colour && COLOUR_TO_AMPS[colour]) {
       rating = COLOUR_TO_AMPS[colour];
     }
-    const widthMod = mostCommon(c.reads.map((r) => r.widthMod)) || 1;
+    // mergedSpan is set when mergeAdjacentMainSwitchClusters folded multiple
+    // clusters into this one (each with widthMod=1). Keep the larger of the
+    // VLM-voted widthMod and the merged span — a single cluster that
+    // correctly reported widthMod=2 stays widthMod=2.
+    const widthModFromReads = mostCommon(c.reads.map((r) => r.widthMod)) || 1;
+    const widthMod = Math.max(c.mergedSpan ?? 1, widthModFromReads);
     return {
       xImage: Math.round(meanX),
       widthMod,

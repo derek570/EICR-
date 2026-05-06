@@ -7,7 +7,11 @@
  * here.
  */
 import { jest } from '@jest/globals';
-import { planWindows, clusterReads } from '../extraction/ccu-sliding-window.js';
+import {
+  planWindows,
+  clusterReads,
+  mergeAdjacentMainSwitchClusters,
+} from '../extraction/ccu-sliding-window.js';
 
 // Silence the linter — jest is auto-imported by the test runner.
 jest.fn(); // noop
@@ -125,5 +129,128 @@ describe('clusterReads', () => {
     const clusters = clusterReads(reads, pitchPx);
     expect(clusters).toHaveLength(1);
     expect(clusters[0].reads).toHaveLength(2);
+  });
+});
+
+describe('mergeAdjacentMainSwitchClusters', () => {
+  function read(window, xImage, kind, widthMod = 1, label = null) {
+    return {
+      window,
+      xImage,
+      widthMod,
+      kind,
+      rating: 100,
+      curve: null,
+      bs_en: 'BS EN 60947-3',
+      rcd_type: null,
+      rcd_rating_ma: null,
+      body_colour: null,
+      label,
+    };
+  }
+
+  test('Two adjacent widthMod=1 main_switch clusters ~1 pitch apart merge into one', () => {
+    // Repro of extraction 1778043419386-zmidoj: VLM split a 2-pole isolator
+    // into two single-module main_switch reads at module 12 and module 13
+    // centres. clusterReads correctly kept them apart (>0.7 × pitch); the
+    // merge step folds them back into one device with mergedSpan=2.
+    const pitchPx = 384;
+    const clusters = [
+      { reads: [read(3, 4900, 'main_switch'), read(4, 4920, 'main_switch')] },
+      { reads: [read(4, 5290, 'main_switch'), read(5, 5310, 'main_switch')] },
+    ];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].mergedSpan).toBe(2);
+    expect(merged[0].reads).toHaveLength(4);
+  });
+
+  test('Three adjacent main_switch clusters merge into one widthMod=3 device (commercial 3-pole)', () => {
+    const pitchPx = 100;
+    const clusters = [
+      { reads: [read(1, 1000, 'main_switch')] },
+      { reads: [read(2, 1100, 'main_switch')] },
+      { reads: [read(3, 1200, 'main_switch')] },
+    ];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].mergedSpan).toBe(3);
+  });
+
+  test('main_switch cluster next to mcb cluster does NOT merge (kind incompatible)', () => {
+    const pitchPx = 100;
+    const clusters = [{ reads: [read(1, 1000, 'main_switch')] }, { reads: [read(2, 1100, 'mcb')] }];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].mergedSpan).toBe(1);
+    expect(merged[1].mergedSpan).toBe(1);
+  });
+
+  test('main_switch clusters >1.5 pitch apart do NOT merge (legitimately separate isolators)', () => {
+    const pitchPx = 100;
+    const clusters = [
+      { reads: [read(1, 1000, 'main_switch')] },
+      // 250 px apart > 1.5 × 100 — could only happen if a board really
+      // does have two physically distinct isolators with a gap between.
+      { reads: [read(2, 1250, 'main_switch')] },
+    ];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(2);
+  });
+
+  test('Adjacent rcd clusters do NOT merge (split-load boards have separate RCDs)', () => {
+    // Bedroom RCD next to kitchen RCD on a split-load board. The downstream
+    // gap-fill in slotsToCircuits handles 2-module RCDs correctly without
+    // needing a merge step here — and merging would wrongly collapse the
+    // two physically distinct RCDs into one.
+    const pitchPx = 100;
+    const clusters = [{ reads: [read(1, 1000, 'rcd')] }, { reads: [read(2, 1100, 'rcd')] }];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(2);
+  });
+
+  test('main_switch cluster with circuit-name label does NOT merge with main_switch cluster (RCBO mis-classified safety)', () => {
+    // Stage 3's documented failure mode (trimSpuriousMainSwitchClusterRuns
+    // in extraction.js): the VLM occasionally tags an adjacent RCBO as
+    // main_switch when red-shroud bleed crosses the slot boundary. Without
+    // this guard the merge would fold the real RCBO into the isolator and
+    // the inspector would see one fewer circuit on the schedule.
+    const pitchPx = 100;
+    const clusters = [
+      { reads: [read(1, 1000, 'main_switch', 1, 'Ovens')] }, // mis-tagged RCBO
+      { reads: [read(2, 1100, 'main_switch', 1, 'MAINS SWITCH')] }, // real isolator
+    ];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(2);
+  });
+
+  test('main_switch + main_switch merge proceeds when labels are both null (handwritten / illegible strip)', () => {
+    const pitchPx = 100;
+    const clusters = [
+      { reads: [read(1, 1000, 'main_switch', 1, null)] },
+      { reads: [read(2, 1100, 'main_switch', 1, null)] },
+    ];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].mergedSpan).toBe(2);
+  });
+
+  test('main_switch + main_switch merge proceeds when one label is null and the other is main-switch-shaped', () => {
+    const pitchPx = 100;
+    const clusters = [
+      { reads: [read(1, 1000, 'main_switch', 1, null)] },
+      { reads: [read(2, 1100, 'main_switch', 1, 'MAINS SWITCH')] },
+    ];
+    const merged = mergeAdjacentMainSwitchClusters(clusters, pitchPx);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].mergedSpan).toBe(2);
+  });
+
+  test('Empty / single-cluster input passes through unchanged', () => {
+    expect(mergeAdjacentMainSwitchClusters([], 100)).toEqual([]);
+    const single = [{ reads: [read(1, 1000, 'main_switch')] }];
+    const out = mergeAdjacentMainSwitchClusters(single, 100);
+    expect(out).toHaveLength(1);
+    expect(out[0].mergedSpan).toBe(1);
   });
 });
