@@ -7,6 +7,7 @@
 import {
   CHITCHAT_PAUSE_THRESHOLD,
   CHITCHAT_REPLAY_HORIZON_MS,
+  CHITCHAT_SUPPRESS_LOG_INTERVAL_MS,
   WAKE_REGEX,
   ensureChitchatState,
   turnHadEngagement,
@@ -16,6 +17,7 @@ import {
   isWakeWordTranscript,
   bufferTranscript,
   drainReplayBuffer,
+  shouldLogSuppression,
 } from '../extraction/chitchat-pause.js';
 
 function makeEntry() {
@@ -356,8 +358,10 @@ describe('slice 3 — cache keep-alive delegated to EICRExtractionSession', () =
       paused: false,
       pausedAt: null,
       replayBuffer: [],
+      lastSuppressLogAt: 0,
     });
     expect(Object.keys(state).sort()).toEqual([
+      'lastSuppressLogAt',
       'paused',
       'pausedAt',
       'replayBuffer',
@@ -367,13 +371,20 @@ describe('slice 3 — cache keep-alive delegated to EICRExtractionSession', () =
 });
 
 describe('slice 2 — replay buffer (bufferTranscript / drainReplayBuffer)', () => {
-  test('appends in order, drains in chronological order', () => {
+  test('appends in order, drains in chronological order with period boundaries', () => {
     const state = ensureChitchatState(makeEntry());
     bufferTranscript(state, 'first', 1000);
     bufferTranscript(state, 'second', 2000);
     bufferTranscript(state, 'third', 3000);
-    expect(drainReplayBuffer(state, 3500)).toBe('first second third');
+    expect(drainReplayBuffer(state, 3500)).toBe('first. second. third.');
     expect(state.replayBuffer).toEqual([]); // cleared after drain
+  });
+
+  test('preserves existing terminal punctuation rather than appending another', () => {
+    const state = ensureChitchatState(makeEntry());
+    bufferTranscript(state, 'is the kitchen on circuit 3?', 1000);
+    bufferTranscript(state, 'right then', 2000);
+    expect(drainReplayBuffer(state, 2500)).toBe('is the kitchen on circuit 3? right then.');
   });
 
   test('drops entries older than CHITCHAT_REPLAY_HORIZON_MS on append', () => {
@@ -392,7 +403,7 @@ describe('slice 2 — replay buffer (bufferTranscript / drainReplayBuffer)', () 
     state.replayBuffer.push({ ts: 1000, text: 'ancient' });
     state.replayBuffer.push({ ts: 1000 + CHITCHAT_REPLAY_HORIZON_MS - 500, text: 'borderline' });
     // Drain at a time where 'ancient' is stale, 'borderline' just inside.
-    expect(drainReplayBuffer(state, 1000 + CHITCHAT_REPLAY_HORIZON_MS + 100)).toBe('borderline');
+    expect(drainReplayBuffer(state, 1000 + CHITCHAT_REPLAY_HORIZON_MS + 100)).toBe('borderline.');
   });
 
   test('drain on empty buffer returns empty string, not throw', () => {
@@ -411,5 +422,48 @@ describe('slice 2 — replay buffer (bufferTranscript / drainReplayBuffer)', () 
   test('null state is safe — does not throw on either helper', () => {
     expect(() => bufferTranscript(null, 'x')).not.toThrow();
     expect(drainReplayBuffer(null)).toBe('');
+  });
+});
+
+describe('shouldLogSuppression — throttle for transcript_suppressed log', () => {
+  test('first call always logs (lastSuppressLogAt: 0 sentinel)', () => {
+    const state = ensureChitchatState(makeEntry());
+    expect(shouldLogSuppression(state, 1_000)).toBe(true);
+    expect(state.lastSuppressLogAt).toBe(1_000);
+  });
+
+  test('rapid second call within the interval skips', () => {
+    const state = ensureChitchatState(makeEntry());
+    state.lastSuppressLogAt = 1_000;
+    expect(shouldLogSuppression(state, 1_500)).toBe(false);
+    // sentinel unchanged
+    expect(state.lastSuppressLogAt).toBe(1_000);
+  });
+
+  test('call past the interval boundary logs again and updates the sentinel', () => {
+    const state = ensureChitchatState(makeEntry());
+    state.lastSuppressLogAt = 1_000;
+    const after = 1_000 + CHITCHAT_SUPPRESS_LOG_INTERVAL_MS;
+    expect(shouldLogSuppression(state, after)).toBe(true);
+    expect(state.lastSuppressLogAt).toBe(after);
+  });
+
+  test('exitChitchatPause resets the sentinel so the next pause cycle logs first-suppression', () => {
+    const state = ensureChitchatState(makeEntry());
+    state.paused = true;
+    state.pausedAt = Date.now();
+    state.lastSuppressLogAt = Date.now();
+    const cap = makeCapture();
+    exitChitchatPause({
+      state,
+      sendEnvelope: cap.sendEnvelope,
+      logger: silentLogger,
+      reason: 'wake_word',
+    });
+    expect(state.lastSuppressLogAt).toBe(0);
+  });
+
+  test('null state is safe', () => {
+    expect(shouldLogSuppression(null)).toBe(false);
   });
 });

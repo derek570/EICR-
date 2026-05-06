@@ -56,6 +56,13 @@ export const CHITCHAT_PAUSE_THRESHOLD = 10;
 // flood the next Sonnet turn.
 export const CHITCHAT_REPLAY_HORIZON_MS = 30_000;
 
+// Throttle for the per-transcript suppression log. Logging every
+// dropped transcript during a long pause produces hundreds of nearly-
+// identical CloudWatch lines. The first suppression always logs (so a
+// debug session sees that the pause started taking effect) and after
+// that we only emit once per `CHITCHAT_SUPPRESS_LOG_INTERVAL_MS`.
+export const CHITCHAT_SUPPRESS_LOG_INTERVAL_MS = 60_000;
+
 // Resume words an inspector might naturally say. Server-side only — iOS
 // doesn't need to know the vocabulary because the transcript carries the
 // raw text and the server matches. Bounded forms ("certmate" + verb
@@ -81,6 +88,11 @@ export function ensureChitchatState(entry) {
       // so a value spoken right at the wake boundary isn't lost.
       // Cap by time, not size — `CHITCHAT_REPLAY_HORIZON_MS`.
       replayBuffer: [],
+      // Suppression-log throttle (slice-3 follow-up cleanup): timestamp
+      // of the most-recent `chitchat.transcript_suppressed` log line.
+      // 0 means "never logged this pause cycle". Reset to 0 on
+      // exitChitchatPause so a future pause starts with a fresh log.
+      lastSuppressLogAt: 0,
     };
   }
   return entry.chitchatState;
@@ -187,6 +199,9 @@ export function exitChitchatPause({ state, sendEnvelope, logger, sessionId, reas
   state.paused = false;
   state.pausedAt = null;
   state.turnsSinceExtraction = 0;
+  // Reset the suppression-log throttle so the next pause cycle gets
+  // its first-suppression log line, not a silent skip.
+  state.lastSuppressLogAt = 0;
   logger?.info?.('chitchat.resumed', {
     sessionId,
     reason: reason || 'unspecified',
@@ -228,8 +243,12 @@ export function bufferTranscript(state, text, now = Date.now()) {
 
 /**
  * Drain the replay buffer to a single string in chronological order
- * (oldest first), space-joined. Clears the buffer. Returns `''` when
- * empty so the caller can prepend without conditionals.
+ * (oldest first), period-joined. Sonnet sees turn boundaries rather
+ * than one run-on pseudo-utterance: entries that already end with
+ * `.`/`!`/`?` are preserved, others get a period appended by the
+ * joiner so the concatenated result reads as a sequence of sentences.
+ * Clears the buffer. Returns `''` when empty so the caller can
+ * prepend without conditionals.
  *
  * Drops entries older than the horizon BEFORE concatenating — a slow
  * wake (e.g. iOS sat on the WS message for several seconds) shouldn't
@@ -243,7 +262,29 @@ export function drainReplayBuffer(state, now = Date.now()) {
   const fresh = state.replayBuffer.filter((e) => e.ts >= horizon);
   state.replayBuffer = [];
   return fresh
-    .map((e) => e.text)
+    .map((e) => {
+      const t = e.text.trim();
+      return /[.!?]$/.test(t) ? t : `${t}.`;
+    })
     .join(' ')
     .trim();
+}
+
+/**
+ * Throttled accessor for the per-transcript suppression log. Returns
+ * true when the caller should emit the `chitchat.transcript_suppressed`
+ * log line, false when it should skip. First suppression of each
+ * pause cycle always logs (so debugging sees pause took effect);
+ * subsequent suppressions are gated by `CHITCHAT_SUPPRESS_LOG_INTERVAL_MS`
+ * to keep CloudWatch noise bounded for long pauses (no
+ * 360-line dumps for a 30-min phone call).
+ */
+export function shouldLogSuppression(state, now = Date.now()) {
+  if (!state) return false;
+  const last = state.lastSuppressLogAt || 0;
+  if (last === 0 || now - last >= CHITCHAT_SUPPRESS_LOG_INTERVAL_MS) {
+    state.lastSuppressLogAt = now;
+    return true;
+  }
+  return false;
 }

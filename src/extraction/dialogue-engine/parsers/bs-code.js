@@ -94,6 +94,23 @@ function normaliseBsInput(text) {
 // inspector would actually dictate (with internal hyphen preserved
 // because "60947-2" and "60947-3" are distinct standards). Keep this
 // list in sync with PATTERNS.
+//
+// Schema/picker drift note (2026-05-06 review L7): the canonical
+// strings here ("BS EN 60898", "BS 3036" etc.) match `Constants.swift`
+// `ocpdBsEnOptions` / `rcdBsEnOptions` on iOS — they are what the
+// dialogue engine writes and what the iOS picker accepts. They DO NOT
+// match the backend `field_schema.json` options post-`e5a5bc8` (which
+// uses bare-digit forms like `60898-1` and `61009`). Any inspector
+// dictation that resolves through this fuzzy fallback writes the
+// canonical here, displays correctly in iOS, and is silently rejected
+// by the resolver-path enum check ONLY if Sonnet then re-asks via
+// `ask_user`. Triage: the right fix is a coordinated parser/picker/
+// schema alignment sprint (would also touch
+// `scripts/normalise-bs-en-values.js` for historical data), not a
+// drop or re-canonical of individual entries here. Keeping the list
+// uniform across all four schemas (OCPD, RCD, RCBO, schema-resolver)
+// means dictation works regardless of which path triggers; misuse
+// is contained to the resolver-validate-loop case.
 const FUZZY_TARGETS = [
   { digits: '60947-2', canonical: 'BS EN 60947-2' },
   { digits: '60947-3', canonical: 'BS EN 60947-3' },

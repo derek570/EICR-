@@ -51,6 +51,7 @@ import {
   isWakeWordTranscript,
   bufferTranscript,
   drainReplayBuffer,
+  shouldLogSuppression,
 } from './chitchat-pause.js';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
 // duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
@@ -987,11 +988,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   // (possibly replay-prefixed) wake utterance
                 } else {
                   bufferTranscript(ccState, msg.text);
-                  logger.info('chitchat.transcript_suppressed', {
-                    sessionId: currentSessionId,
-                    text_preview: typeof msg.text === 'string' ? msg.text.slice(0, 80) : null,
-                    buffer_depth: ccState.replayBuffer.length,
-                  });
+                  if (shouldLogSuppression(ccState)) {
+                    logger.info('chitchat.transcript_suppressed', {
+                      sessionId: currentSessionId,
+                      text_preview: typeof msg.text === 'string' ? msg.text.slice(0, 80) : null,
+                      buffer_depth: ccState.replayBuffer.length,
+                    });
+                  }
                   break;
                 }
               } else if (Array.isArray(msg.regexResults) && msg.regexResults.length > 0) {
