@@ -1,7 +1,7 @@
 # Multi-Board / Sub-Main Support — Fresh-Context Handoff
 
 **Read this first** in a new session. Full plan in sibling `PLAN.md` (~870 lines, refer as needed).
-Last updated 2026-05-07. Status: **Phases 1, 2, 2a, 3, 4, 4a SHIPPED. Phase 5 slices 5.1–5.5 SHIPPED (`afd928f` + `4df60ee` + `68d7b6e` for 5.5). Slice 5.6 (legacy `circuits[0]` removal) is held back until `STAGE6_MULTI_BOARD=true` soaks for ≥1 deploy cycle. Phase 6.0 (`board_ops` wire channel — Codex deal-breaker #3) is the next concrete step after 5.6.**
+Last updated 2026-05-07. Status: **Phases 1, 2, 2a, 3, 4, 4a SHIPPED. Phase 5 slices 5.1–5.5 SHIPPED (`afd928f` + `4df60ee` + `68d7b6e` for 5.5). Phase 6.0 SHIPPED — backend wire channel (`2706123`) + iOS BoardOp decoder (`3734b67`) close Codex deal-breaker #3. Slice 5.6 (legacy `circuits[0]` removal) is held back until `STAGE6_MULTI_BOARD=true` soaks for ≥1 deploy cycle. Phase 6 (the tools themselves: `add_board` / `select_board` / `mark_distribution_circuit` dispatchers + tool schemas) is the next concrete step.**
 
 > If you are resuming Phase 5 specifically, jump straight to
 > [PHASE5_HANDOFF.md](PHASE5_HANDOFF.md) — it is self-contained and
