@@ -933,3 +933,26 @@ bundled with the next functional change.
 hierarchy validator) is the next concrete step. It crosses into
 `EICR_Automation/` (different repo) and has a wider blast radius —
 worth treating as its own session.
+
+#### 2026-05-07 — Phase 2: backend schema parity + hierarchy validation — SHIPPED
+
+Four commits on `EICR_Automation` `main`, all pre-CI green:
+
+- **2.1 `1059f39`** `refactor(shared-types): mirror iOS BoardInfo + Board fields and add Circuit hierarchy fields`. `packages/shared-types/src/circuit.ts` widened to mirror the iOS shape: new `BoardType` union, 18 `BoardInfo` fields (existing iOS-only set + multi-board hierarchy + sub-main cable trio), three new `Circuit` fields (`board_id`, `is_distribution_circuit`, `feeds_board_id`), `Board.designation` / `Board.location` made optional, canonical `ze_at_db` added alongside the legacy `zs_at_db` alias. Diff: +48 / -2. Verified via `npx tsc --noEmit` on `packages/shared-types`, `packages/shared-utils`, and `web/` — all green.
+
+- **2.2 `ebb6183`** `test(jobs): pin multi-board round-trip in PUT/GET extracted_data.json`. Three new tests in `src/__tests__/jobs.test.js`: PUT-side intercepts `mockUploadText` to assert the JSON-serialised boards array carries the hierarchy + sub-main cable fields; GET-side stubs `mockDownloadText` to confirm the response includes them; `test.todo` for the circuit-CSV round-trip pinned as the Phase 2a regression target. Phase 1's `sub_main_cable_length` deletion is also pinned (`expect(...).toBeUndefined()`).
+
+- **2.3 `ef56e25`** `feat(boards): add hierarchy validator + wire into PUT /api/job`. New module `src/extraction/board-hierarchy-validator.js` (~95 lines) with `validateBoardHierarchy(boards, circuits) → { ok, errors }`. Four error codes: `parent_not_found`, `circular_reference`, `multiple_main_boards`, `feed_circuit_not_found`. Wired into `src/routes/jobs.js` PUT handler immediately after the auth check, gated on `if (boards)` so legacy single-board saves are unaffected. Failure returns 400 with `{ error: 'invalid_board_hierarchy', details: [...] }`. 13 unit tests + 1 route-level wire test (asserts no S3 upload happens on validator rejection). Tolerant of `circuit` vs `circuit_ref` keying, numeric `feed_circuit_ref` coercion, and missing `board_type` (counts as main for legacy snapshots).
+
+- **2.4 `c21820b`** `feat(schema): add board hierarchy + sub-main cable + distribution-circuit fields`. `config/field_schema.json` gains 9 entries: 2 in `circuit_fields` (`is_distribution_circuit`, `feeds_board_id`) and 7 in `board_fields` (`board_type`, `parent_board_id`, `feed_circuit_ref`, `sort_order`, `sub_main_cable_material`, `sub_main_cable_csa`, `sub_main_cpc_csa`). CSA fields typed as `text` to match the iOS `CMUnitTextField` UI; `sub_main_cable_material` matches iOS `Constants.conductorMaterials` exactly. `sub_main_cable_length` intentionally absent (Phase 1).
+
+**Phase 2 deviations from the literal plan (in commit messages):**
+- Added `board_id?: string` to `Circuit` in 2.1 (the literal plan only listed `is_distribution_circuit` + `feeds_board_id`). Foundation of the multi-board model; the validator and the Phase 2.2 test both reference it.
+- The plan's snippet placed tests at `src/extraction/__tests__/board-hierarchy-validator.test.js`; this repo doesn't use nested `__tests__` directories, so I followed the existing flat `src/__tests__/<name>.test.js` convention.
+- The plan's `sub_main_cable_material` options were `["", "Cu", "Al"]`; I matched iOS exactly (`["", "Copper", "Aluminium", "Steel", "N/A"]`) so the picker and the schema can't drift.
+- The plan's `sub_main_cable_csa` was a select; I made it `text` because the iOS UI is a `CMUnitTextField`, not a picker. A future tightening to a constrained select would need a paired iOS picker — not in scope here.
+- Hooked the validator on `if (boards)` rather than always — keeps it a no-op for single-board legacy saves.
+
+**Test counts post-Phase 2:** 1 todo + 29 passed in the two suites I touched (was 1 todo + 16 passed mid-phase). Stage6-cached-prefix-trust-boundary suite (3000-line, schema-aware) was kicked off as a sanity check — still running at commit time, expected unaffected because the schema additions are purely additive and don't collide with the field names that test verifies.
+
+**Phase 3 (PDF sub-main section) is the next concrete step.** Like Phase 1, it is iOS-only — operates on `EICRHTMLTemplate.swift` to render a per-sub-board `<h3>` block. Lower blast radius than Phase 2; a single session.
