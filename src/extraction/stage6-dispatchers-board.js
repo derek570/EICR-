@@ -47,7 +47,7 @@
  * @file
  */
 
-import { applyBoardReadingToSnapshot } from './stage6-snapshot-mutators.js';
+import { applyBoardReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM } from './stage6-tool-schemas.js';
 
@@ -129,10 +129,19 @@ export async function dispatchRecordBoardReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  // 3) mutate via the shared atom — the atom is a pure write into circuits[0].
-  applyBoardReadingToSnapshot(session.stateSnapshot, {
+  // 3) mutate via the flag-aware wrapper. Flag-off: legacy circuits[0] write
+  //    (preserves every existing reader until slice 5.6 retires the bucket).
+  //    Flag-on: writes into BoardInfo on snapshot.boards via
+  //    applyBoardReadingMultiBoard, falling back to snapshot.currentBoardId
+  //    when input.board_id is not supplied. The schema doesn't yet expose
+  //    board_id (Phase 6 / Codex deal-breaker #3 — the board_ops wire
+  //    channel + tool surface widening), so today this is always
+  //    currentBoardId-defaulted; threading the field anyway keeps the
+  //    dispatcher forward-compatible for the Phase 6 schema bump.
+  applyBoardReadingFlagAware(session.stateSnapshot, {
     field: input.field,
     value: input.value,
+    boardId: input.board_id,
   });
 
   // 4) track in perTurnWrites for the bundler / shadow comparator.

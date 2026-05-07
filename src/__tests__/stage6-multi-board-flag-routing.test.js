@@ -651,4 +651,110 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     expect(body.deleted).toBe(true);
     expect(session.stateSnapshot.circuits['main::3']).toBeUndefined();
   });
+
+  // Slice 5.5.2 — record_board_reading end-to-end under flag-on
+  test('record_board_reading writes to BoardInfo on the active board (not circuits[0])', async () => {
+    const session = makeMultiBoardSession();
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_brr_1',
+        name: 'record_board_reading',
+        input: {
+          field: 'earth_loop_impedance_ze',
+          value: '0.35',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.stateSnapshot.boards[0]).toEqual({
+      id: 'main',
+      designation: 'DB-1',
+      board_type: 'main',
+      earth_loop_impedance_ze: '0.35',
+    });
+    // circuits[0] (legacy bucket) MUST stay empty — slice 5.6 retires it.
+    expect(session.stateSnapshot.circuits[0]).toBeUndefined();
+    // perTurnWrites still tracks board readings keyed by field so the
+    // bundler/comparator surface is unchanged.
+    expect(writes.boardReadings.get('earth_loop_impedance_ze')).toMatchObject({
+      value: '0.35',
+      confidence: 0.9,
+    });
+  });
+
+  test('record_board_reading is forward-compatible with optional input.board_id (Phase 6 surface)', async () => {
+    // Today's schema doesn't expose board_id — Phase 6 widens it. The
+    // dispatcher already threads input.board_id through so a future schema
+    // bump lands without re-touching the dispatcher.
+    const session = makeMultiBoardSession();
+    session.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'DB-2',
+      board_type: 'sub-distribution',
+    });
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_brr_2',
+        name: 'record_board_reading',
+        input: {
+          field: 'earth_loop_impedance_ze',
+          value: '0.18',
+          confidence: 0.9,
+          source_turn_id: 't1',
+          board_id: 'sub-1',
+        },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.stateSnapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
+    expect(session.stateSnapshot.boards[1].earth_loop_impedance_ze).toBe('0.18');
+  });
+
+  test('record_board_reading auto-resolve write hook lands on BoardInfo (path-2 invariant)', async () => {
+    // The path-2 resolver dispatches a SYNTHETIC record_board_reading call
+    // with a tool_call_id containing '::auto::' when an ask_user reply
+    // resolves a pending_write. Under flag-on, the synthetic write must
+    // land on BoardInfo on the active board — NOT on circuits[0]. This
+    // pins the contract documented in
+    // memory/handoff_2026-04-27_path2_review_fixes.md (the resolver's
+    // invariants must survive the flag-on migration).
+    const session = makeMultiBoardSession();
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_pending_42::auto::42',
+        name: 'record_board_reading',
+        input: {
+          field: 'earth_loop_impedance_ze',
+          value: '0.42',
+          confidence: 1.0,
+          source_turn_id: 't_resolve',
+        },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.stateSnapshot.boards[0].earth_loop_impedance_ze).toBe('0.42');
+    // perTurnWrites flags the write as auto-resolved so the slot comparator
+    // can filter it (P3-B from the path-2 review).
+    expect(writes.boardReadings.get('earth_loop_impedance_ze').auto_resolved).toBe(true);
+  });
 });
