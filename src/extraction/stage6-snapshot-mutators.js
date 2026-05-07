@@ -173,6 +173,171 @@ export function deleteCircuit(snapshot, { circuit_ref }) {
   return { ok: true, deleted: true };
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5.2 — composite-key multi-board mutator helpers (.planning-stage6-agentic/
+// handoffs/multi-board-support-2026-05-07/PHASE5_HANDOFF.md). Live alongside
+// the legacy flat-key mutators above; gated on the `STAGE6_MULTI_BOARD` env
+// flag at every dispatcher call site (slice 5.3).
+//
+// Composite key shape: `${board_id}::${circuit}` — a string so it never
+// collides with the legacy numeric keys (JS object keys are always strings,
+// so `circuits['1']` and `circuits['main::1']` are distinct slots).
+//
+// Bucket shape: `{ circuit: number, board_id: string, ...fields }`. The
+// self-describing `circuit` + `board_id` keys let the slice 5.5 / 5.6
+// serialiser flatten composite-keyed snapshots back to the iOS array
+// shape `[{circuit, board_id, ...}]` without extra bookkeeping.
+//
+// Board ID defaulting: explicit `boardId` arg wins; falls back to
+// `snapshot.currentBoardId`; falls back to `'main'`. The fallback chain is
+// the same in every helper, factored into `resolveBoardId`.
+//
+// Slice 5.5 will add the analogous board-reading helper (`applyBoardReadingMultiBoard`)
+// that writes to `snapshot.boards.find(b => b.id === id)` BoardInfo rather
+// than to a circuit bucket — that's the structural shift, not in scope here.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BOARD_ID_FALLBACK = 'main';
+
+function resolveBoardId(snapshot, explicitBoardId) {
+  return explicitBoardId ?? snapshot?.currentBoardId ?? DEFAULT_BOARD_ID_FALLBACK;
+}
+
+function compositeKey(boardId, circuit) {
+  return `${boardId}::${circuit}`;
+}
+
+/**
+ * Lookup a circuit bucket by composite key. Returns the resolved key + the
+ * bucket reference (or undefined if absent). Useful for read paths that need
+ * to know the key for logging or for "did this exist before I wrote?" checks.
+ *
+ * @param {{circuits: Object, currentBoardId?: string}} snapshot
+ * @param {number} circuit
+ * @param {string|undefined|null} boardId — optional explicit override
+ * @returns {{key: string, bucket: Object|undefined}}
+ */
+export function findCircuitBucket(snapshot, circuit, boardId) {
+  const id = resolveBoardId(snapshot, boardId);
+  const key = compositeKey(id, circuit);
+  return { key, bucket: snapshot?.circuits?.[key] };
+}
+
+/**
+ * Composite-key version of applyReadingToSnapshot. Writes
+ * `snapshot.circuits[key][field] = value` where `key = ${board_id}::${circuit}`.
+ *
+ * Auto-creates the bucket if missing, seeded with the self-describing
+ * `{circuit, board_id}` skeleton so the bucket can be flattened back to the
+ * iOS row shape later.
+ *
+ * @param {{circuits: Object, currentBoardId?: string}} snapshot
+ * @param {{circuit: number, field: string, value: string, boardId?: string}} input
+ */
+export function applyReadingMultiBoard(snapshot, { circuit, field, value, boardId }) {
+  const id = resolveBoardId(snapshot, boardId);
+  const key = compositeKey(id, circuit);
+  if (!snapshot.circuits[key]) {
+    snapshot.circuits[key] = { circuit, board_id: id };
+  }
+  snapshot.circuits[key][field] = value;
+}
+
+/**
+ * Composite-key version of clearReadingInSnapshot. Removes
+ * `snapshot.circuits[key][field]` if present; returns `{cleared: boolean}`
+ * matching the legacy contract.
+ *
+ * @param {{circuits: Object, currentBoardId?: string}} snapshot
+ * @param {{circuit: number, field: string, boardId?: string}} input
+ * @returns {{cleared: boolean}}
+ */
+export function clearReadingMultiBoard(snapshot, { circuit, field, boardId }) {
+  const id = resolveBoardId(snapshot, boardId);
+  const key = compositeKey(id, circuit);
+  const bucket = snapshot?.circuits?.[key];
+  if (!bucket || !(field in bucket)) return { cleared: false };
+  delete bucket[field];
+  return { cleared: true };
+}
+
+/**
+ * Composite-key version of upsertCircuitMeta. Same null-skipping semantics —
+ * passing `null` for a meta field leaves the existing value untouched.
+ * Auto-creates the bucket with the self-describing skeleton on first write.
+ *
+ * @param {{circuits: Object, currentBoardId?: string}} snapshot
+ * @param {{circuit_ref: number, designation?: string|null, phase?: string|null,
+ *          rating_amps?: number|null, cable_csa_mm2?: number|null,
+ *          boardId?: string}} input
+ */
+export function upsertCircuitMetaMultiBoard(
+  snapshot,
+  { circuit_ref, designation, phase, rating_amps, cable_csa_mm2, boardId }
+) {
+  const id = resolveBoardId(snapshot, boardId);
+  const key = compositeKey(id, circuit_ref);
+  if (!snapshot.circuits[key]) {
+    snapshot.circuits[key] = { circuit: circuit_ref, board_id: id };
+  }
+  const target = snapshot.circuits[key];
+  if (designation != null) target.designation = designation;
+  if (phase != null) target.phase = phase;
+  if (rating_amps != null) target.rating_amps = rating_amps;
+  if (cable_csa_mm2 != null) target.cable_csa_mm2 = cable_csa_mm2;
+}
+
+/**
+ * Composite-key version of renameCircuit. Same-board only — moving a circuit
+ * between boards is a different operation (not yet a tool). Same edge cases
+ * as the flat version: idempotent on `from_ref === circuit_ref`,
+ * `source_not_found` if the from-key is empty, `target_exists` if the
+ * to-key is occupied (no destructive merge).
+ *
+ * On success, the bucket's self-describing `circuit` field is updated to
+ * the new ref so the bucket stays internally consistent post-rekey.
+ *
+ * @param {{circuits: Object, currentBoardId?: string}} snapshot
+ * @param {{from_ref: number, circuit_ref: number, boardId?: string}} input
+ * @returns {{ok: true} | {ok: false, error: {code: 'source_not_found'|'target_exists'}}}
+ */
+export function renameCircuitMultiBoard(snapshot, { from_ref, circuit_ref, boardId }) {
+  if (from_ref === circuit_ref) return { ok: true };
+  const id = resolveBoardId(snapshot, boardId);
+  const fromKey = compositeKey(id, from_ref);
+  const toKey = compositeKey(id, circuit_ref);
+  if (!snapshot.circuits[fromKey]) {
+    return { ok: false, error: { code: 'source_not_found' } };
+  }
+  if (snapshot.circuits[toKey]) {
+    return { ok: false, error: { code: 'target_exists' } };
+  }
+  const bucket = snapshot.circuits[fromKey];
+  bucket.circuit = circuit_ref;
+  snapshot.circuits[toKey] = bucket;
+  delete snapshot.circuits[fromKey];
+  return { ok: true };
+}
+
+/**
+ * Composite-key version of deleteCircuit. Noop if the bucket is absent
+ * (returns `{ok:true, deleted:false}` matching the legacy semantic).
+ * Dispatcher / validator layer is responsible for refusing `circuit_ref <= 0`.
+ *
+ * @param {{circuits: Object, currentBoardId?: string}} snapshot
+ * @param {{circuit_ref: number, boardId?: string}} input
+ * @returns {{ok: true, deleted: boolean}}
+ */
+export function deleteCircuitMultiBoard(snapshot, { circuit_ref, boardId }) {
+  const id = resolveBoardId(snapshot, boardId);
+  const key = compositeKey(id, circuit_ref);
+  if (!snapshot?.circuits || !(key in snapshot.circuits)) {
+    return { ok: true, deleted: false };
+  }
+  delete snapshot.circuits[key];
+  return { ok: true, deleted: true };
+}
+
 /**
  * Append an observation to session.extractedObservations with a fresh
  * crypto.randomUUID(). The atom owns id generation — callers never pass an
