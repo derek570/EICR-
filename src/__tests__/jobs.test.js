@@ -340,6 +340,36 @@ describe('Job routes (supertest)', () => {
       expect(res.body.boards[1].sub_main_cable_length).toBeUndefined();
     });
 
+    test('rejects PUT with invalid board hierarchy (400)', async () => {
+      // Phase 2.3 — wire-level proof that the validator runs before S3 writes.
+      // Payload has a sub_main board pointing at a parent_board_id that does
+      // not exist in boards[], which is the cleanest single-error case.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1' });
+      mockUploadText.mockClear();
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          boards: [
+            { id: 'main', board_type: 'main' },
+            { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'does-not-exist' },
+          ],
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_board_hierarchy');
+      expect(res.body.details).toContainEqual({
+        code: 'parent_not_found',
+        board_id: 'sub-1',
+        parent: 'does-not-exist',
+      });
+      // No S3 write should have happened — the validator rejected before
+      // the try block that builds extracted_data.json.
+      expect(mockUploadText).not.toHaveBeenCalled();
+    });
+
     // Phase 2a (CSV header hardening) regression target. Today
     // `src/export.js:42` defines a fixed CIRCUIT_FIELD_ORDER that does not
     // include `board_id`, `is_distribution_circuit`, or `feeds_board_id`

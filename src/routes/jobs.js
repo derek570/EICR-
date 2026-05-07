@@ -28,6 +28,7 @@ import {
 import logger from '../logger.js';
 import { parsePagination, paginatedResponse } from '../utils/pagination.js';
 import { sanitizeS3Path } from '../utils/sanitize.js';
+import { validateBoardHierarchy } from '../extraction/board-hierarchy-validator.js';
 import { createFileFilter, IMAGE_MIMES, AUDIO_MIMES, handleUploadError } from '../utils/upload.js';
 
 const router = Router();
@@ -666,6 +667,21 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
   const hasAccess = await auth.canAccessUser(req, userId);
   if (!hasAccess) {
     return res.status(403).json({ error: 'Access denied' });
+  }
+
+  // Phase 2.3: reject malformed multi-board hierarchies before they reach
+  // S3. Only fires when the payload includes `boards`; legacy single-board
+  // saves (boards omitted, board_info only) are unaffected.
+  if (boards) {
+    const { ok, errors } = validateBoardHierarchy(boards, circuits);
+    if (!ok) {
+      logger.warn('Rejecting PUT with invalid board hierarchy', {
+        userId,
+        jobId,
+        errors,
+      });
+      return res.status(400).json({ error: 'invalid_board_hierarchy', details: errors });
+    }
   }
 
   try {
