@@ -1766,4 +1766,196 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
   // because there is no single-shot to overlap with. The classifier is now
   // awaited up front before Stage 2/3/4 dispatch — see analyze-ccu route
   // handler in src/routes/extraction.js.
+
+  // Phase 4 of the multi-board sprint
+  // (.planning-stage6-agentic/handoffs/multi-board-support-2026-05-07/PLAN.md):
+  // /api/analyze-ccu accepts an optional `board_id` (and optionally
+  // `board_index`) on the multipart upload, and echoes both back in the
+  // analysis response under `attribution`. Older iOS builds that omit
+  // these fields still get a 200 with `attribution: { board_id: null,
+  // board_index: null }` so the iOS decoder is single-path.
+  test('echoes board_id + board_index attribution on the response', async () => {
+    classifyModernSlotsMock.mockResolvedValue({
+      slots: [],
+      stageOutputs: {},
+      usage: { inputTokens: 100, outputTokens: 50 },
+      timings: { stage3Ms: 10 },
+      lowConfidence: false,
+    });
+    mockExtractSlotLabels.mockResolvedValue({
+      labels: [],
+      usage: { inputTokens: 100, outputTokens: 50 },
+      batchCount: 0,
+      skippedSlotIndices: [],
+      timings: { cropMs: 0, vlmMs: 0, totalMs: 0 },
+    });
+    mockAnthropicMessagesCreate.mockImplementation(async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_manufacturer: 'Hager',
+            board_model: null,
+            board_technology: 'modern',
+            main_switch_rating: '100',
+            main_switch_position: 'left',
+            main_switch_bs_en: null,
+            main_switch_type: 'Isolator',
+            main_switch_poles: 'DP',
+            main_switch_current: '100',
+            main_switch_voltage: '230',
+            spd_present: false,
+            circuits: [],
+            confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+            questionsForInspector: [],
+          }),
+        },
+      ],
+      usage: { input_tokens: 1000, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    }));
+
+    const token = jwt.sign({ userId: 'user-1', email: 'u@x' }, process.env.JWT_SECRET, {
+      expiresIn: '24h',
+    });
+    const sharp = (await import('sharp')).default;
+    const fakeJpeg = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: { r: 200, g: 200, b: 200 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const res = await supertest(app)
+      .post('/api/analyze-ccu')
+      .set('Authorization', `Bearer ${token}`)
+      .field('board_id', 'sub-1')
+      .field('board_index', '1')
+      .attach('photo', fakeJpeg, 'test.jpg');
+
+    expect(res.status).toBe(200);
+    expect(res.body.attribution).toEqual({ board_id: 'sub-1', board_index: 1 });
+  });
+
+  test('attribution carries nulls when no board_id / board_index supplied', async () => {
+    classifyModernSlotsMock.mockResolvedValue({
+      slots: [],
+      stageOutputs: {},
+      usage: { inputTokens: 100, outputTokens: 50 },
+      timings: { stage3Ms: 10 },
+      lowConfidence: false,
+    });
+    mockExtractSlotLabels.mockResolvedValue({
+      labels: [],
+      usage: { inputTokens: 100, outputTokens: 50 },
+      batchCount: 0,
+      skippedSlotIndices: [],
+      timings: { cropMs: 0, vlmMs: 0, totalMs: 0 },
+    });
+    mockAnthropicMessagesCreate.mockImplementation(async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_manufacturer: 'Hager',
+            board_model: null,
+            board_technology: 'modern',
+            main_switch_rating: '100',
+            main_switch_position: 'left',
+            main_switch_bs_en: null,
+            main_switch_type: 'Isolator',
+            main_switch_poles: 'DP',
+            main_switch_current: '100',
+            main_switch_voltage: '230',
+            spd_present: false,
+            circuits: [],
+            confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+            questionsForInspector: [],
+          }),
+        },
+      ],
+      usage: { input_tokens: 1000, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    }));
+
+    const token = jwt.sign({ userId: 'user-1', email: 'u@x' }, process.env.JWT_SECRET, {
+      expiresIn: '24h',
+    });
+    const sharp = (await import('sharp')).default;
+    const fakeJpeg = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: { r: 200, g: 200, b: 200 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const res = await supertest(app)
+      .post('/api/analyze-ccu')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('photo', fakeJpeg, 'test.jpg');
+
+    expect(res.status).toBe(200);
+    expect(res.body.attribution).toEqual({ board_id: null, board_index: null });
+  });
+
+  test('attribution silently drops a malformed board_index (non-numeric)', async () => {
+    classifyModernSlotsMock.mockResolvedValue({
+      slots: [],
+      stageOutputs: {},
+      usage: { inputTokens: 100, outputTokens: 50 },
+      timings: { stage3Ms: 10 },
+      lowConfidence: false,
+    });
+    mockExtractSlotLabels.mockResolvedValue({
+      labels: [],
+      usage: { inputTokens: 100, outputTokens: 50 },
+      batchCount: 0,
+      skippedSlotIndices: [],
+      timings: { cropMs: 0, vlmMs: 0, totalMs: 0 },
+    });
+    mockAnthropicMessagesCreate.mockImplementation(async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_manufacturer: 'Hager',
+            board_model: null,
+            board_technology: 'modern',
+            main_switch_rating: '100',
+            main_switch_position: 'left',
+            main_switch_bs_en: null,
+            main_switch_type: 'Isolator',
+            main_switch_poles: 'DP',
+            main_switch_current: '100',
+            main_switch_voltage: '230',
+            spd_present: false,
+            circuits: [],
+            confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+            questionsForInspector: [],
+          }),
+        },
+      ],
+      usage: { input_tokens: 1000, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    }));
+
+    const token = jwt.sign({ userId: 'user-1', email: 'u@x' }, process.env.JWT_SECRET, {
+      expiresIn: '24h',
+    });
+    const sharp = (await import('sharp')).default;
+    const fakeJpeg = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: { r: 200, g: 200, b: 200 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const res = await supertest(app)
+      .post('/api/analyze-ccu')
+      .set('Authorization', `Bearer ${token}`)
+      .field('board_id', 'sub-1')
+      .field('board_index', 'not-a-number')
+      .attach('photo', fakeJpeg, 'test.jpg');
+
+    expect(res.status).toBe(200);
+    // board_id still present, board_index gracefully nulled.
+    expect(res.body.attribution).toEqual({ board_id: 'sub-1', board_index: null });
+  });
 });

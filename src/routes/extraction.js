@@ -1883,11 +1883,32 @@ router.post(
         }
       }
 
+      // Phase 4 of the multi-board sprint: optional board attribution. iOS
+      // attaches `board_id` (and optionally `board_index`) when uploading
+      // a sub-board CCU photo so the server can echo it back in the
+      // response, log under the right board, and key training-data S3
+      // paths by board. Both fields are optional; older iOS builds that
+      // omit them stay on the legacy implicit-main-board path.
+      const attributionBoardId =
+        typeof req.body?.board_id === 'string' && req.body.board_id.trim().length > 0
+          ? req.body.board_id.trim()
+          : null;
+      const rawBoardIndex = req.body?.board_index;
+      let attributionBoardIndex = null;
+      if (rawBoardIndex !== undefined && rawBoardIndex !== null && rawBoardIndex !== '') {
+        const parsed = Number(rawBoardIndex);
+        if (Number.isInteger(parsed) && parsed >= 0) {
+          attributionBoardIndex = parsed;
+        }
+      }
+
       logger.info('CCU photo analysis requested', {
         userId: req.user.id,
         fileSize: req.file.size,
         model,
         railRoiHint: !!railRoiHint,
+        attributionBoardId,
+        attributionBoardIndex,
       });
 
       // Resize image if base64 would exceed Anthropic's 5MB limit (~3.75MB raw)
@@ -2625,6 +2646,14 @@ router.post(
             confidence: boardClassification.confidence,
           }
         : null;
+
+      // Echo the board attribution sent on the upload (Phase 4 multi-board).
+      // Always present (even when both inputs were null) so iOS can use a
+      // single decoder path instead of branching on `attribution === undefined`.
+      analysis.attribution = {
+        board_id: attributionBoardId,
+        board_index: attributionBoardIndex,
+      };
 
       const totalElapsedMs = Date.now() - endpointStartMs;
       logger.info('CCU extraction total timing', {
