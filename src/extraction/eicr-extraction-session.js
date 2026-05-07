@@ -9,7 +9,13 @@ import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { CostTracker } from './cost-tracker.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
-import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
+import {
+  ensureMultiBoardShape,
+  isMultiBoardFlagOn,
+  getCircuitBucket,
+  listCircuitRefsInBoard,
+  DEFAULT_MAIN_BOARD_ID,
+} from './stage6-multi-board-shape.js';
 import { CONTROL_CHAR_PATTERN } from './stage6-sanitise-user-text.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import logger from '../logger.js';
@@ -2110,7 +2116,38 @@ export class EICRExtractionSession {
    * messages drop out of the sliding window.
    */
   buildStateSnapshotMessage() {
-    const hasCircuits = Object.keys(this.stateSnapshot.circuits).length > 0;
+    // Phase 5.5.3 — flag-aware supply / circuit reads. Under flag-on, the
+    // supply line in the emitted snapshot is sourced from
+    // `boards.find(b => b.id === currentBoardId)` (with skeleton keys
+    // `id` / `designation` / `board_type` filtered) instead of from
+    // `circuits[0]`. Non-supply iteration uses `listCircuitRefsInBoard`,
+    // per-ref reads use `getCircuitBucket`, so a flag-on session walks
+    // composite-keyed buckets correctly. Flag-off path reads as before.
+    const flagOn = isMultiBoardFlagOn();
+    const currentBoardId = this.stateSnapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+    let supplyData;
+    if (flagOn) {
+      const board = Array.isArray(this.stateSnapshot.boards)
+        ? this.stateSnapshot.boards.find((b) => b && b.id === currentBoardId)
+        : null;
+      if (board) {
+        // Strip BoardInfo skeleton keys so the emitted supply line stays
+        // semantically equivalent to the legacy `circuits[0]` shape (which
+        // never carried these keys). This keeps the emitted snapshot text
+        // byte-equivalent across flag flip when only supply fields differ
+        // by storage location, NOT by content.
+        const filtered = {};
+        for (const [key, value] of Object.entries(board)) {
+          if (key === 'id' || key === 'designation' || key === 'board_type') continue;
+          filtered[key] = value;
+        }
+        if (Object.keys(filtered).length > 0) supplyData = filtered;
+      }
+    } else {
+      supplyData = this.stateSnapshot.circuits[0];
+    }
+    const hasSupply = supplyData && Object.keys(supplyData).length > 0;
+    const hasCircuits = hasSupply || Object.keys(this.stateSnapshot.circuits).length > 0;
     const hasPending = this.stateSnapshot.pending_readings.length > 0;
     const hasObs = this.stateSnapshot.observations.length > 0;
     const hasAlerts = this.stateSnapshot.validation_alerts.length > 0;
@@ -2251,8 +2288,11 @@ export class EICRExtractionSession {
       //
       // Plan 04-15 r9-#2 — wrapped in ALL modes (r8-#2's off-mode
       // branch deleted per security trade-off).
-      const supplyData = this.stateSnapshot.circuits[0];
-      if (supplyData && Object.keys(supplyData).length > 0) {
+      //
+      // Phase 5.5.3 — `supplyData` is now resolved at function entry
+      // (flag-aware: BoardInfo on snapshot.boards under flag-on, else
+      // circuits[0]). `hasSupply` is the flag-aware presence flag.
+      if (hasSupply) {
         // Plan 04-18 r12-#1 — route each supply field through
         // `applyWrapPolicy` so canonical enums (supply_type,
         // earthing_system) and numeric-coerced fields (ze, pfc)
@@ -2265,11 +2305,17 @@ export class EICRExtractionSession {
         lines.push(`0:${JSON.stringify(wrappedSupply)}`);
       }
 
-      // Split non-supply circuits into recent (detailed) and older (summary)
+      // Split non-supply circuits into recent (detailed) and older (summary).
+      //
+      // Phase 5.5.3 — under flag-on, listCircuitRefsInBoard scopes the
+      // iteration to the current board's composite-keyed buckets and
+      // excludes the legacy `0` (supply) bucket. Under flag-off, it walks
+      // the legacy numeric keys filtering keys < 1, matching the
+      // pre-existing `n !== 0` predicate exactly for any seeded snapshot
+      // (the `>= 1` floor also drops historical edge cases like negative
+      // refs that the old filter accepted but were never written).
       const recentNums = this.recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS);
-      const allNonSupply = Object.keys(this.stateSnapshot.circuits)
-        .map(Number)
-        .filter((n) => n !== 0);
+      const allNonSupply = listCircuitRefsInBoard(this.stateSnapshot, currentBoardId);
       const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
 
       if (olderNums.length > 0) {
@@ -2311,11 +2357,18 @@ export class EICRExtractionSession {
       // user-derived free text (circuit_designation / designation)
       // picks up the wrap. Unknown string fields default to wrapped
       // via `wrapPolicyFor`'s fail-safe.
+      // Phase 5.5.3 — flag-aware per-ref read. Under flag-on,
+      // getCircuitBucket dereferences the composite key
+      // (`${currentBoardId}::${num}`); the bucket carries `circuit` +
+      // `board_id` self-describing fields which are skipped during the
+      // compact-key projection so emitted JSON stays byte-equivalent to
+      // the legacy shape (only the data source changes).
       for (const num of recentNums) {
-        const fields = this.stateSnapshot.circuits[num];
+        const fields = getCircuitBucket(this.stateSnapshot, num, currentBoardId);
         if (!fields) continue;
         const compact = {};
         for (const [field, value] of Object.entries(fields)) {
+          if (flagOn && (field === 'circuit' || field === 'board_id')) continue;
           const id = FIELD_ID_MAP[field];
           compact[id != null ? id : field] = applyWrapPolicy(field, value);
         }
@@ -2546,15 +2599,16 @@ export class EICRExtractionSession {
 
     const snapshot = parts.join('\n\n');
 
-    // Log token estimate for monitoring snapshot growth in long sessions
-    const allNonSupply = Object.keys(this.stateSnapshot.circuits)
-      .map(Number)
-      .filter((n) => n !== 0);
+    // Log token estimate for monitoring snapshot growth in long sessions.
+    // Phase 5.5.3 — flag-aware iteration via listCircuitRefsInBoard so the
+    // compacted-circuit count under flag-on reflects the active board's
+    // composite-keyed buckets, not legacy numeric keys.
+    const tokenStatRefs = listCircuitRefsInBoard(this.stateSnapshot, currentBoardId);
     const recentCount = Math.min(this.recentCircuitOrder.length, SNAPSHOT_RECENT_CIRCUITS);
-    const compactedCount = allNonSupply.length - recentCount;
+    const compactedCount = tokenStatRefs.length - recentCount;
     const estimate = Math.ceil(snapshot.length / 4);
     logger.info(
-      `[StateSnapshot] Estimated tokens: ${estimate}, circuits: ${allNonSupply.length}, compacted: ${compactedCount}`
+      `[StateSnapshot] Estimated tokens: ${estimate}, circuits: ${tokenStatRefs.length}, compacted: ${compactedCount}`
     );
 
     return snapshot;

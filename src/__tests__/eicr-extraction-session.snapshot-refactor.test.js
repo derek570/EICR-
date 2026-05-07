@@ -652,3 +652,150 @@ describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () 
     expect(msg).toBe(expected);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 5.5.3 — flag-aware snapshot serialiser. Under STAGE6_MULTI_BOARD=true
+// the supply line is sourced from `boards[currentBoardId]` (with skeleton
+// keys filtered) and circuit iteration walks composite-keyed buckets via
+// listCircuitRefsInBoard / getCircuitBucket. Flag-off behaviour is byte-
+// equivalent to the pre-slice-5.5 read path (pinned by every existing test
+// in this file plus the targeted regression guards below).
+// ---------------------------------------------------------------------------
+describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
+  const originalFlag = process.env.STAGE6_MULTI_BOARD;
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
+    else process.env.STAGE6_MULTI_BOARD = originalFlag;
+  });
+
+  test('flag-off: supply line still reads from circuits[0] (regression guard)', () => {
+    delete process.env.STAGE6_MULTI_BOARD;
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.stateSnapshot.circuits[0] = { earth_loop_impedance_ze: '0.35' };
+    const snapshot = s.buildStateSnapshotMessage();
+    // Free-text fields pass through applyWrapPolicy → inline USER_TEXT wrap.
+    expect(snapshot).toContain('earth_loop_impedance_ze');
+    expect(snapshot).toContain('0.35');
+    expect(snapshot).toMatch(/^0:\{/m);
+  });
+
+  test('flag-on: supply line reads from boards[currentBoardId] BoardInfo, skeleton keys stripped', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    // ensureMultiBoardShape (slice 5.1) seeds `main` board; write a supply
+    // field via the slice-5.5.1 mutator path.
+    s.stateSnapshot.boards[0].earth_loop_impedance_ze = '0.35';
+    s.stateSnapshot.boards[0].prospective_fault_current = '1.5';
+    const snapshot = s.buildStateSnapshotMessage();
+    expect(snapshot).toContain('earth_loop_impedance_ze');
+    expect(snapshot).toContain('0.35');
+    expect(snapshot).toContain('prospective_fault_current');
+    expect(snapshot).toContain('1.5');
+    expect(snapshot).toMatch(/^0:\{/m);
+    // Skeleton keys MUST be filtered — emitting `id` / `designation` /
+    // `board_type` would diverge the snapshot byte-shape from flag-off.
+    expect(snapshot).not.toContain('"id":"main"');
+    expect(snapshot).not.toContain('"designation":"DB-1"');
+    expect(snapshot).not.toContain('"board_type":"main"');
+  });
+
+  test('flag-on: empty BoardInfo (skeleton only) does NOT emit a supply line', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    // Skeleton-only board: id/designation/board_type but no real fields.
+    // After filtering, `supplyData` is empty so no `0:{...}` line emits.
+    s.stateSnapshot.circuits['main::1'] = {
+      circuit: 1,
+      board_id: 'main',
+      circuit_designation: 'Lighting',
+    };
+    s.recentCircuitOrder = [1];
+    const snapshot = s.buildStateSnapshotMessage();
+    expect(snapshot).not.toMatch(/^0:\{/m);
+    // The non-supply circuit still emits.
+    expect(snapshot).toContain('Lighting');
+  });
+
+  test('flag-on: per-circuit lines come from composite-keyed buckets, self-describing fields elided', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.stateSnapshot.circuits['main::3'] = {
+      circuit: 3,
+      board_id: 'main',
+      earth_loop_impedance_ze: '0.42',
+    };
+    s.recentCircuitOrder = [3];
+    const snapshot = s.buildStateSnapshotMessage();
+    expect(snapshot).toMatch(/3:\{/);
+    expect(snapshot).toContain('0.42');
+    // The composite-key bucket carries self-describing `circuit` + `board_id`
+    // skeleton fields; they must NOT leak into the emitted JSON line because
+    // they would diverge byte-shape from flag-off circuits[3] (which has
+    // neither key).
+    expect(snapshot).not.toContain('"circuit":3');
+    expect(snapshot).not.toContain('"board_id":"main"');
+  });
+
+  test('flag-on: non-supply iteration scopes to currentBoardId — sibling-board buckets ignored', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'DB-2',
+      board_type: 'sub-distribution',
+    });
+    s.stateSnapshot.circuits['main::1'] = {
+      circuit: 1,
+      board_id: 'main',
+      circuit_designation: 'Lighting',
+    };
+    s.stateSnapshot.circuits['sub-1::1'] = {
+      circuit: 1,
+      board_id: 'sub-1',
+      circuit_designation: 'Cooker',
+    };
+    s.recentCircuitOrder = [1];
+    const snapshot = s.buildStateSnapshotMessage();
+    // currentBoardId is 'main' by default — sub-board's circuit must not
+    // leak into the emitted snapshot.
+    expect(snapshot).toContain('Lighting');
+    expect(snapshot).not.toContain('Cooker');
+  });
+
+  test('flag-on: switching currentBoardId surfaces the sub-board scope on the next snapshot', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'DB-2',
+      board_type: 'sub-distribution',
+    });
+    s.stateSnapshot.circuits['main::1'] = {
+      circuit: 1,
+      board_id: 'main',
+      circuit_designation: 'Lighting',
+    };
+    s.stateSnapshot.circuits['sub-1::1'] = {
+      circuit: 1,
+      board_id: 'sub-1',
+      circuit_designation: 'Cooker',
+    };
+    s.stateSnapshot.currentBoardId = 'sub-1';
+    s.recentCircuitOrder = [1];
+    const snapshot = s.buildStateSnapshotMessage();
+    expect(snapshot).toContain('Cooker');
+    expect(snapshot).not.toContain('Lighting');
+  });
+
+  test('flag-on with no boards entry at all returns null when nothing else seeded (defensive)', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    // Strip the slice-5.1 default board entirely to model a partially-
+    // hydrated snapshot. supplyData resolves to nothing and `circuits` is
+    // empty, so the gate still returns null.
+    s.stateSnapshot.boards = [];
+    s.stateSnapshot.currentBoardId = null;
+    const snapshot = s.buildStateSnapshotMessage();
+    expect(snapshot).toBeNull();
+  });
+});
