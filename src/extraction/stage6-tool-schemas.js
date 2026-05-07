@@ -186,6 +186,18 @@ const recordReading = makeTool({
       description:
         'Identifier of the user turn this reading came from; used for dedup and correlation in logs.',
     },
+    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id. The
+    // dispatcher and validator have threaded this through into the
+    // flag-aware mutators since slice 5.2/5.3; exposing the schema field
+    // lets Sonnet route a reading to a specific board explicitly when the
+    // inspector says "circuit 4 on the main board" while currentBoardId is
+    // a sub-board. Defaults to currentBoardId when omitted — back-compat
+    // for every pre-Phase-6 session.
+    board_id: {
+      type: 'string',
+      description:
+        'Board the circuit lives on. Defaults to currentBoardId when omitted. Pass explicitly when the inspector names a board different from the current one (e.g. "circuit 4 on the main board" while a sub-board is current).',
+    },
   },
   required: ['field', 'circuit', 'value', 'confidence', 'source_turn_id'],
 });
@@ -213,6 +225,12 @@ const clearReading = makeTool({
       enum: enumerations.clear_reading_reason,
       description:
         'Why the reading is being cleared. user_correction: inspector restated. misheard: transcript was wrong. wrong_circuit: value was written to the wrong circuit_ref.',
+    },
+    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
+    // record_reading for rationale).
+    board_id: {
+      type: 'string',
+      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
     },
   },
   required: ['field', 'circuit', 'reason'],
@@ -255,6 +273,12 @@ const createCircuit = makeTool({
     cable_csa_mm2: {
       anyOf: [{ type: 'number' }, { type: 'null' }],
       description: 'Live conductor cross-sectional area in mm^2. Null if unknown.',
+    },
+    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
+    // record_reading for rationale).
+    board_id: {
+      type: 'string',
+      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
     },
   },
   required: ['circuit_ref'],
@@ -303,6 +327,12 @@ const renameCircuit = makeTool({
     cable_csa_mm2: {
       anyOf: [{ type: 'number' }, { type: 'null' }],
       description: 'New live conductor cross-sectional area in mm^2. Null to leave unchanged.',
+    },
+    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
+    // record_reading for rationale).
+    board_id: {
+      type: 'string',
+      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
     },
   },
   required: ['from_ref', 'circuit_ref'],
@@ -592,6 +622,12 @@ const deleteCircuit = makeTool({
     circuit_ref: {
       type: 'integer',
       description: 'Circuit reference number to delete. Must be >= 1 (supply at 0 is protected).',
+    },
+    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
+    // record_reading for rationale).
+    board_id: {
+      type: 'string',
+      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
     },
   },
   required: ['circuit_ref'],
