@@ -1577,6 +1577,22 @@ router.post('/debug-report', auth.requireAuth, async (req, res) => {
 /**
  * Finish the recording session
  * POST /api/recording/:sessionId/finish
+ *
+ * SCOPE: SINGLE-BOARD ONLY. This is the legacy whisper-extract path
+ * (transcribe → extractSession → save). Its accumulator carries a flat
+ * `session.accumulator.board` (object, not array), and the downstream
+ * `extractSession()` returns a single `result.board`. A `jobData.boards`
+ * array on the request body is read for `boards[0]` only; any
+ * `boards[1..]` is dropped with a warn log (see line ~1654).
+ *
+ * Multi-board jobs (sub-mains, sub-distribution boards) are NOT
+ * supported by this path. The multi-board future routes through
+ * Stage 6 over the WebSocket (`/api/sonnet-stream`) — see
+ * Phase 5+ of the multi-board sprint
+ * (.planning-stage6-agentic/handoffs/multi-board-support-2026-05-07/PLAN.md).
+ * iOS picks the right path based on whether the job has marked any
+ * sub-boards; if the whisper path receives multi-board data, that
+ * is a client-side routing bug.
  */
 router.post('/recording/:sessionId/finish', auth.requireAuth, async (req, res) => {
   const { sessionId } = req.params;
@@ -1651,7 +1667,33 @@ router.post('/recording/:sessionId/finish', auth.requireAuth, async (req, res) =
         session.accumulator.supply = { ...jobData.supply_characteristics };
       }
 
+      // Phase 4a of the multi-board / sub-main support sprint
+      // (.planning-stage6-agentic/handoffs/multi-board-support-2026-05-07/PLAN.md):
+      // the whisper / `finishRecordingSession` path is structurally
+      // SINGLE-BOARD ONLY. `session.accumulator.board` and
+      // `formData.board_info` are flat objects (not arrays), and the
+      // downstream `extractSession()` returns `result.board` (singular).
+      // Multi-board jobs (jobData.boards.length > 1) are NOT supported
+      // by this path — only `boards[0]` is captured here. The
+      // multi-board future routes through Stage 6 (sonnet-stream WS,
+      // Phase 5+ work in this sprint), which is what iOS uses for any
+      // job that has been marked as multi-board.
+      //
+      // If a client sends >1 board on the whisper finish, log loudly
+      // so the dropped sub-board data is visible in CloudWatch — this
+      // would indicate a routing bug client-side (the client should
+      // have used Stage 6 instead).
       if (jobData.boards && jobData.boards.length > 0) {
+        if (jobData.boards.length > 1) {
+          logger.warn(
+            'Whisper finish: multi-board payload received but whisper path is single-board only. boards[1..] dropped — client should route multi-board jobs through Stage 6 (sonnet-stream).',
+            {
+              sessionId,
+              boardCount: jobData.boards.length,
+              droppedBoardIds: jobData.boards.slice(1).map((b) => b?.id ?? null),
+            }
+          );
+        }
         session.accumulator.board = { ...jobData.boards[0] };
       }
 
