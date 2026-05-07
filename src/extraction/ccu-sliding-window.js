@@ -744,6 +744,29 @@ export async function extractViaSlidingWindow({
     });
   }
 
+  // Per-window entry summary for the geometric sidecar — lets us debug
+  // alignment failures after the fact (a single mis-rated VLM read can break
+  // findBestOverlap and cascade into duplicated slots; without per-window data
+  // there's no way to trace which window cut the merge). Entries are already
+  // kind-trimmed by normaliseEntry, so this is bounded ~5 entries × ~10 windows.
+  const windowEntries = windowResults.map((r, i) => ({
+    window: r.window,
+    x0: r.x0,
+    x1: r.x1,
+    overshoot: r.overshoot,
+    ms: r.ms,
+    entries: windowsDevices[i].map((e) => ({
+      kind: e.kind,
+      rating: e.rating,
+      curve: e.curve,
+      bs_en: e.bs_en,
+      rcd_type: e.rcd_type,
+      rcd_rating_ma: e.rcd_rating_ma,
+      body_colour: e.body_colour,
+      label: e.label,
+    })),
+  }));
+
   return {
     slots,
     labels,
@@ -760,6 +783,7 @@ export async function extractViaSlidingWindow({
         batchCount: windows.length,
         batchSize: null,
         usage: totalUsage,
+        windowEntries,
       },
     },
     skippedSlotIndices: [],
