@@ -339,6 +339,53 @@ export function deleteCircuitMultiBoard(snapshot, { circuit_ref, boardId }) {
   return { ok: true, deleted: true };
 }
 
+/**
+ * Phase 5.5 — board-level multi-board mutator. Writes to BoardInfo on the
+ * resolved board's `boards[]` entry rather than to `circuits[0]`. The
+ * structural shift is the point: under flag-on, supply / board /
+ * installation fields stop sharing the legacy `circuits[0]` namespace and
+ * land on the board record they describe, so the iOS app's already-shipped
+ * multi-board model is the authoritative shape on both sides of the wire.
+ *
+ * Bucket shape: `{id, designation, board_type, ...fields}`. The first three
+ * are seeded by `ensureMultiBoardShape` (slice 5.1); subsequent writes
+ * accrete supply / installation field names alongside.
+ *
+ * Synthesised on first write if the resolved board id is missing — the
+ * session constructor's `ensureMultiBoardShape` call guarantees a default
+ * `main` board, but a future writer (e.g. an `add_board` flow that pushes
+ * AFTER the write target is named) might point at an id that doesn't yet
+ * exist. Synthesise rather than silent-drop.
+ *
+ * Why a separate mutator from `applyReadingMultiBoard`: the storage shape
+ * is different. Circuits live at `snapshot.circuits[`${id}::${ref}`]`;
+ * board-level fields live at `snapshot.boards[].find(b => b.id === id)`.
+ * Sharing a helper would conflate two namespaces that the iOS model
+ * deliberately separates.
+ *
+ * @param {{boards?: Array, currentBoardId?: string}} snapshot
+ * @param {{field: string, value: string, boardId?: string}} input
+ */
+export function applyBoardReadingMultiBoard(snapshot, { field, value, boardId }) {
+  const id = resolveBoardId(snapshot, boardId);
+  if (!Array.isArray(snapshot.boards)) {
+    snapshot.boards = [];
+  }
+  let board = snapshot.boards.find((b) => b && b.id === id);
+  if (!board) {
+    // Defensive: ensureMultiBoardShape guarantees boards is non-empty for the
+    // 'main' default, but a writer may target a previously-unseen id. Seed a
+    // minimum-viable BoardInfo so subsequent writes accrete fields normally.
+    board = {
+      id,
+      designation: id,
+      board_type: id === DEFAULT_BOARD_ID_FALLBACK ? 'main' : 'sub-distribution',
+    };
+    snapshot.boards.push(board);
+  }
+  board[field] = value;
+}
+
 // ---------------------------------------------------------------------------
 // Phase 5.3 — flag-aware wrappers. These are the entry points dispatchers
 // call after slice 5.3 lands. Each wrapper inspects `STAGE6_MULTI_BOARD`
@@ -391,6 +438,24 @@ export function deleteCircuitFlagAware(snapshot, args) {
     return deleteCircuitMultiBoard(snapshot, args);
   }
   return deleteCircuit(snapshot, args);
+}
+
+/**
+ * Phase 5.5 — flag-aware wrapper for board / supply / installation reads.
+ *
+ * Flag-off: legacy `applyBoardReadingToSnapshot` writes to `circuits[0]`,
+ * preserving every existing reader (8+ files) until slice 5.6 retires the
+ * legacy bucket.
+ * Flag-on: `applyBoardReadingMultiBoard` writes to the resolved board's
+ * BoardInfo entry on `boards[]`. The two paths share `args` (which may
+ * carry an optional `boardId`) — flag-off ignores `boardId` entirely.
+ */
+export function applyBoardReadingFlagAware(snapshot, args) {
+  if (isMultiBoardFlagOn()) {
+    applyBoardReadingMultiBoard(snapshot, args);
+  } else {
+    applyBoardReadingToSnapshot(snapshot, args);
+  }
 }
 
 /**

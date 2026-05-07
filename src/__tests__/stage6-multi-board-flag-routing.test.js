@@ -30,6 +30,7 @@ import {
   upsertCircuitMetaFlagAware,
   renameCircuitFlagAware,
   deleteCircuitFlagAware,
+  applyBoardReadingFlagAware,
 } from '../extraction/stage6-snapshot-mutators.js';
 import {
   ensureMultiBoardShape,
@@ -345,6 +346,37 @@ describe('flag-aware mutator wrappers', () => {
     const r = deleteCircuitFlagAware(snapshot, { circuit_ref: 3 });
     expect(r).toEqual({ ok: true, deleted: true });
     expect(snapshot.circuits['main::3']).toBeUndefined();
+  });
+
+  // Slice 5.5 — applyBoardReadingFlagAware
+  test('flag-off: applyBoardReadingFlagAware writes to legacy circuits[0]', () => {
+    delete process.env.STAGE6_MULTI_BOARD;
+    const snapshot = makeLegacySession().stateSnapshot;
+    applyBoardReadingFlagAware(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
+    expect(snapshot.circuits[0]).toEqual({ earth_loop_impedance_ze: '0.35' });
+    // Boards array stays as it was — flag-off path doesn't touch BoardInfo.
+    expect(snapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
+  });
+
+  test('flag-on: applyBoardReadingFlagAware writes to BoardInfo on the active board', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession().stateSnapshot;
+    applyBoardReadingFlagAware(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
+    expect(snapshot.boards[0].earth_loop_impedance_ze).toBe('0.35');
+    expect(snapshot.circuits[0]).toBeUndefined();
+  });
+
+  test('flag-on: applyBoardReadingFlagAware honours explicit boardId', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession().stateSnapshot;
+    snapshot.boards.push({ id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' });
+    applyBoardReadingFlagAware(snapshot, {
+      field: 'earth_loop_impedance_ze',
+      value: '0.18',
+      boardId: 'sub-1',
+    });
+    expect(snapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
+    expect(snapshot.boards[1].earth_loop_impedance_ze).toBe('0.18');
   });
 });
 

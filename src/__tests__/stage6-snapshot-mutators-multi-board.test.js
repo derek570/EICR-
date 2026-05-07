@@ -21,6 +21,7 @@ import {
   upsertCircuitMetaMultiBoard,
   renameCircuitMultiBoard,
   deleteCircuitMultiBoard,
+  applyBoardReadingMultiBoard,
 } from '../extraction/stage6-snapshot-mutators.js';
 
 function makeSnapshot(overrides = {}) {
@@ -322,5 +323,114 @@ describe('per-board namespace isolation', () => {
     });
     expect(findCircuitBucket(snapshot, 1, 'main').bucket.ze).toBe('0.42');
     expect(findCircuitBucket(snapshot, 1, 'sub-1').bucket.ze).toBe('0.18');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slice 5.5 — applyBoardReadingMultiBoard. Board / supply / installation
+// readings stop sharing the legacy circuits[0] namespace and land on the
+// resolved board's BoardInfo entry on snapshot.boards.
+// ---------------------------------------------------------------------------
+describe('applyBoardReadingMultiBoard — board-level writes', () => {
+  test('writes to the active board on snapshot.boards (no circuits[0] touch)', () => {
+    const snapshot = makeSnapshot();
+    applyBoardReadingMultiBoard(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
+    expect(snapshot.boards[0]).toEqual({
+      id: 'main',
+      designation: 'DB-1',
+      board_type: 'main',
+      earth_loop_impedance_ze: '0.35',
+    });
+    // Slice 5.6 retires circuits[0]; under flag-on with the new mutator, it
+    // is never written to.
+    expect(snapshot.circuits[0]).toBeUndefined();
+  });
+
+  test('explicit boardId scopes the write to the named sub-board', () => {
+    const snapshot = makeSnapshot();
+    snapshot.boards.push({ id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' });
+    applyBoardReadingMultiBoard(snapshot, {
+      field: 'earth_loop_impedance_ze',
+      value: '0.18',
+      boardId: 'sub-1',
+    });
+    expect(snapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
+    expect(snapshot.boards[1].earth_loop_impedance_ze).toBe('0.18');
+  });
+
+  test('falls back to snapshot.currentBoardId when boardId omitted', () => {
+    const snapshot = makeSnapshot({
+      boards: [
+        { id: 'main', designation: 'DB-1', board_type: 'main' },
+        { id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' },
+      ],
+      currentBoardId: 'sub-1',
+    });
+    applyBoardReadingMultiBoard(snapshot, { field: 'earth_loop_impedance_ze', value: '0.18' });
+    expect(snapshot.boards[1].earth_loop_impedance_ze).toBe('0.18');
+    expect(snapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
+  });
+
+  test('synthesises a sub-distribution BoardInfo on first write to a previously-unseen id', () => {
+    const snapshot = makeSnapshot();
+    applyBoardReadingMultiBoard(snapshot, {
+      field: 'earth_loop_impedance_ze',
+      value: '0.18',
+      boardId: 'sub-2',
+    });
+    const sub = snapshot.boards.find((b) => b.id === 'sub-2');
+    expect(sub).toEqual({
+      id: 'sub-2',
+      designation: 'sub-2',
+      board_type: 'sub-distribution',
+      earth_loop_impedance_ze: '0.18',
+    });
+  });
+
+  test('synthesises a main BoardInfo when the resolved id is the default fallback', () => {
+    // Snapshot has no boards array at all (legacy snapshot before slice 5.1
+    // wire-in completes hydration). The mutator must seed boards[] and
+    // synthesise the default 'main' board record.
+    const snapshot = { circuits: {} };
+    applyBoardReadingMultiBoard(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
+    expect(snapshot.boards).toHaveLength(1);
+    expect(snapshot.boards[0]).toEqual({
+      id: 'main',
+      designation: 'main',
+      board_type: 'main',
+      earth_loop_impedance_ze: '0.35',
+    });
+  });
+
+  test('subsequent writes accrete fields on the same BoardInfo entry', () => {
+    const snapshot = makeSnapshot();
+    applyBoardReadingMultiBoard(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
+    applyBoardReadingMultiBoard(snapshot, { field: 'prospective_fault_current', value: '1.5' });
+    expect(snapshot.boards[0]).toEqual({
+      id: 'main',
+      designation: 'DB-1',
+      board_type: 'main',
+      earth_loop_impedance_ze: '0.35',
+      prospective_fault_current: '1.5',
+    });
+  });
+
+  test('last-write-wins on the same field', () => {
+    const snapshot = makeSnapshot();
+    applyBoardReadingMultiBoard(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
+    applyBoardReadingMultiBoard(snapshot, { field: 'earth_loop_impedance_ze', value: '0.42' });
+    expect(snapshot.boards[0].earth_loop_impedance_ze).toBe('0.42');
+  });
+
+  test('does not collide with circuits[0] legacy bucket — flag-off readers see neither', () => {
+    // Coexistence pin: flag-off serialiser reads circuits[0]; flag-on writer
+    // populates boards[0]. Slice 5.5 / 5.6 retires circuits[0] entirely;
+    // until then, the two surfaces are independent.
+    const snapshot = makeSnapshot({
+      circuits: { 0: { earth_loop_impedance_ze: '0.99' } },
+    });
+    applyBoardReadingMultiBoard(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
+    expect(snapshot.circuits[0].earth_loop_impedance_ze).toBe('0.99'); // legacy untouched
+    expect(snapshot.boards[0].earth_loop_impedance_ze).toBe('0.35'); // new surface
   });
 });
