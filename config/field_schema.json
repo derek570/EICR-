@@ -283,6 +283,21 @@
       "ai_guidance": "AFDD test button checked and working (if AFDD fitted). 'OK' or 'Y' for pass. Leave blank if no AFDD.",
       "pdf_column": "AFDD btn",
       "group": "Test Results"
+    },
+    "is_distribution_circuit": {
+      "label": "Distribution Circuit",
+      "type": "select",
+      "options": ["", "yes", "no"],
+      "description": "Whether this circuit feeds another distribution board (sub-main / sub-distribution)",
+      "ai_guidance": "'yes' if the circuit supplies a downstream board (e.g. a garage CU, an outbuilding board, a kitchen sub-CU). Pair with feeds_board_id to identify which board. Leave blank/'no' for a final circuit (sockets, lights, cooker, shower, etc.).",
+      "group": "Hierarchy"
+    },
+    "feeds_board_id": {
+      "label": "Feeds Board ID",
+      "type": "text",
+      "description": "ID of the downstream board this distribution circuit supplies",
+      "ai_guidance": "Set in tandem with is_distribution_circuit='yes'. Holds the id of the board (boards[].id) that this circuit feeds — for example the sub-main board's id 'sub-1'. The UI / Stage 6 will resolve this to a designation for display.",
+      "group": "Hierarchy"
     }
   },
 
@@ -337,6 +352,50 @@
       "type": "text",
       "description": "Prospective fault current at DB",
       "ai_guidance": "PFC/PSCC reading. Domestic typically 1-6kA. Must not exceed OCPD breaking capacity."
+    },
+    "board_type": {
+      "label": "Board Type",
+      "type": "select",
+      "options": ["", "main", "sub_distribution", "sub_main"],
+      "description": "Role of this board in the multi-board hierarchy",
+      "ai_guidance": "'main' for the origin/intake board (one per job). 'sub_main' for a board fed via its own dedicated sub-main cable from the main board (e.g. garage / outbuilding feed). 'sub_distribution' for a board hanging off a distribution circuit. Blank counts as 'main' for legacy single-board jobs."
+    },
+    "parent_board_id": {
+      "label": "Parent Board ID",
+      "type": "text",
+      "description": "ID of the board this one is fed from (boards[].id of parent)",
+      "ai_guidance": "Set on sub_main / sub_distribution boards only. Holds the id of the upstream board, e.g. 'main'. Combined with feed_circuit_ref to resolve the supplied_from display string."
+    },
+    "feed_circuit_ref": {
+      "label": "Feed Circuit Ref",
+      "type": "text",
+      "description": "Circuit reference on the parent board that supplies this board",
+      "ai_guidance": "The 'way' / circuit number on the parent board's schedule that this sub-board is fed from — e.g. '4'. Validated server-side to point at a circuit on parent_board_id."
+    },
+    "sort_order": {
+      "label": "Sort Order",
+      "type": "number",
+      "description": "Display ordering of boards in the UI",
+      "ai_guidance": "Inspector-controlled order; not extracted from speech. Lower numbers appear first. Leave blank for new boards — UI assigns by append order."
+    },
+    "sub_main_cable_material": {
+      "label": "Sub-Main Cable Material",
+      "type": "select",
+      "options": ["", "Copper", "Aluminium", "Steel", "N/A"],
+      "description": "Conductor material of the sub-main cable feeding this board",
+      "ai_guidance": "Material of the cable from parent_board_id to this board. 'Copper' is the typical UK domestic default. Set only on sub_main / sub_distribution boards. Mirrors iOS Constants.conductorMaterials so canonical values match the UI picker."
+    },
+    "sub_main_cable_csa": {
+      "label": "Sub-Main Cable Live CSA (mm2)",
+      "type": "text",
+      "description": "Live conductor cross-sectional area of the sub-main cable",
+      "ai_guidance": "Cross-sectional area in mm2. Sub-main cables are typically 16-95 mm2 depending on load and cable run length. Free-form text — iOS UI uses a unit text field, not a picker."
+    },
+    "sub_main_cpc_csa": {
+      "label": "Sub-Main CPC CSA (mm2)",
+      "type": "text",
+      "description": "CPC (earth) conductor cross-sectional area of the sub-main cable",
+      "ai_guidance": "CPC size in mm2. Often smaller than the live conductor (e.g. 6 mm2 CPC alongside 16 mm2 lives). Free-form text — iOS UI uses a unit text field."
     }
   },
 
