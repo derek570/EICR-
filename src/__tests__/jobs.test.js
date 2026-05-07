@@ -370,17 +370,13 @@ describe('Job routes (supertest)', () => {
       expect(mockUploadText).not.toHaveBeenCalled();
     });
 
-    // Phase 2a (CSV header hardening) regression target. Today
-    // `src/export.js:42` defines a fixed CIRCUIT_FIELD_ORDER that does not
-    // include `board_id`, `is_distribution_circuit`, or `feeds_board_id`
-    // — so a circuits round-trip through `test_results.csv` silently
-    // drops these fields. Codex flagged this as a deal-breaker (PLAN.md
-    // section "Deal-breakers from Codex review"). Phase 2a will extend
-    // the field order; once it lands, change this `test.todo` into a
-    // green assertion that mirrors the boards round-trip above.
-    test.todo(
-      'preserves circuit-level multi-board fields (board_id, is_distribution_circuit, feeds_board_id) on round-trip — blocked on Phase 2a CSV header hardening'
-    );
+    // Phase 2a closed the CSV-header round-trip gap (src/export.js
+    // CIRCUIT_FIELD_ORDER appended board_id, is_distribution_circuit,
+    // feeds_board_id). The actual round-trip is exercised in
+    // src/__tests__/export.test.js where circuitsToCSV is NOT mocked;
+    // this `jobs.test.js` mocks `circuitsToCSV` to return '' so a route-
+    // level round-trip here would only re-test the mock, not the real
+    // serializer. The cross-reference is intentional — see export.test.js.
   });
 
   describe('DELETE /api/job/:userId/:jobId', () => {
