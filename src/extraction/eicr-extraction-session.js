@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { CostTracker } from './cost-tracker.js';
 import { applyReadingToSnapshot, clearReadingInSnapshot } from './stage6-snapshot-mutators.js';
+import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
 import { CONTROL_CHAR_PATTERN } from './stage6-sanitise-user-text.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import logger from '../logger.js';
@@ -769,6 +770,14 @@ export class EICRExtractionSession {
       observations: [], // deduped observation texts
       validation_alerts: [],
     };
+    // Phase 5.1 of the multi-board sprint: synthesise the default `main`
+    // board + currentBoardId pointer so every downstream consumer sees a
+    // multi-board-shaped snapshot from the very first read. Idempotent —
+    // safe to re-run if a future hydration path restores partial state.
+    // The `circuits` keyed object is intentionally NOT re-keyed here;
+    // legacy numeric keys (0 = supply / 1+ = circuits) coexist with
+    // composite keys until slices 5.5 / 5.6 retire the legacy bucket.
+    ensureMultiBoardShape(this.stateSnapshot);
 
     // Tracks order in which circuits were last updated, for snapshot windowing.
     // Most recently updated circuits appear at the end.

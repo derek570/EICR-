@@ -32,12 +32,8 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
   })),
 }));
 
-const {
-  EICRExtractionSession,
-  EICR_SYSTEM_PROMPT,
-  EIC_SYSTEM_PROMPT,
-  EICR_AGENTIC_SYSTEM_PROMPT,
-} = await import('../extraction/eicr-extraction-session.js');
+const { EICRExtractionSession, EICR_SYSTEM_PROMPT, EIC_SYSTEM_PROMPT, EICR_AGENTIC_SYSTEM_PROMPT } =
+  await import('../extraction/eicr-extraction-session.js');
 
 // ---------------------------------------------------------------------------
 // Plan 02-01 Task 4 regression guard — shared snapshot mutator atoms.
@@ -63,11 +59,18 @@ describe('eicr-extraction-session.updateStateSnapshot — Plan 02-01 Task 4 refa
   test('null result is a noop (legacy guard preserved)', () => {
     const session = new EICRExtractionSession('test-key-unused', 'test-session-02');
     session.updateStateSnapshot(null);
+    // Phase 5.1 of the multi-board sprint: the constructor now runs
+    // `ensureMultiBoardShape` against the fresh stateSnapshot, so a
+    // freshly-constructed session carries a synthesised default `main`
+    // board + `currentBoardId` pointer. The legacy keys (circuits,
+    // pending_readings, observations, validation_alerts) are unchanged.
     expect(session.stateSnapshot).toEqual({
       circuits: {},
       pending_readings: [],
       observations: [],
       validation_alerts: [],
+      boards: [{ id: 'main', designation: 'DB-1', board_type: 'main' }],
+      currentBoardId: 'main',
     });
   });
 });
@@ -102,7 +105,7 @@ describe('Plan 04-02 — constructor prompt selection (mode-gated)', () => {
 });
 
 describe('Plan 04-02 — buildSystemBlocks', () => {
-  test("off mode: always single-block array with base prompt + cache_control ephemeral 5m", () => {
+  test('off mode: always single-block array with base prompt + cache_control ephemeral 5m', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
     // Seed snapshot so, if off-mode logic leaked, a second block would appear.
     s.updateStateSnapshot({
@@ -115,7 +118,7 @@ describe('Plan 04-02 — buildSystemBlocks', () => {
     expect(blocks[0].cache_control).toEqual({ type: 'ephemeral', ttl: '5m' });
   });
 
-  test("shadow mode + empty snapshot → single-block array (empty snapshot collapses)", () => {
+  test('shadow mode + empty snapshot → single-block array (empty snapshot collapses)', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     // No circuits, no schedule, no observations — snapshot is null.
     const blocks = s.buildSystemBlocks();
@@ -124,7 +127,7 @@ describe('Plan 04-02 — buildSystemBlocks', () => {
     expect(blocks[0].cache_control).toEqual({ type: 'ephemeral', ttl: '5m' });
   });
 
-  test("shadow mode + non-empty snapshot → two-block array; block[1] is the snapshot", () => {
+  test('shadow mode + non-empty snapshot → two-block array; block[1] is the snapshot', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.updateStateSnapshot({
       extracted_readings: [{ circuit: 1, field: 'zs', value: '0.35' }],
@@ -138,7 +141,7 @@ describe('Plan 04-02 — buildSystemBlocks', () => {
     expect(blocks[1].cache_control).toEqual({ type: 'ephemeral', ttl: '5m' });
   });
 
-  test("live mode behaves identically to shadow for buildSystemBlocks", () => {
+  test('live mode behaves identically to shadow for buildSystemBlocks', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
     s.updateStateSnapshot({
       extracted_readings: [{ circuit: 1, field: 'zs', value: '0.35' }],
@@ -151,7 +154,7 @@ describe('Plan 04-02 — buildSystemBlocks', () => {
 });
 
 describe('Plan 04-02 — buildMessageWindow mode gating', () => {
-  test("off mode: snapshot appears as user/assistant pair in the window (legacy)", () => {
+  test('off mode: snapshot appears as user/assistant pair in the window (legacy)', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
     s.updateStateSnapshot({
       extracted_readings: [{ circuit: 1, field: 'zs', value: '0.35' }],
@@ -165,7 +168,7 @@ describe('Plan 04-02 — buildMessageWindow mode gating', () => {
     expect(window[1].content[0].text).toBe('{"acknowledged": true}');
   });
 
-  test("shadow mode: window is ONLY the conversationHistory slice, no snapshot pair", () => {
+  test('shadow mode: window is ONLY the conversationHistory slice, no snapshot pair', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.updateStateSnapshot({
       extracted_readings: [{ circuit: 1, field: 'zs', value: '0.35' }],
@@ -183,7 +186,7 @@ describe('Plan 04-02 — buildMessageWindow mode gating', () => {
     }
   });
 
-  test("live mode: same as shadow — no snapshot pair in window", () => {
+  test('live mode: same as shadow — no snapshot pair in window', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
     s.updateStateSnapshot({
       extracted_readings: [{ circuit: 1, field: 'zs', value: '0.35' }],
@@ -192,7 +195,7 @@ describe('Plan 04-02 — buildMessageWindow mode gating', () => {
     expect(window).toHaveLength(0);
   });
 
-  test("shadow mode: circuit schedule never leaks into any window message", () => {
+  test('shadow mode: circuit schedule never leaks into any window message', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.updateJobState({
       circuits: [{ ref: '1', designation: 'Ring Final', ocpd_type: 'B', ocpd_rating: 32 }],
@@ -205,7 +208,7 @@ describe('Plan 04-02 — buildMessageWindow mode gating', () => {
     expect(asJson).not.toContain('CIRCUIT SCHEDULE');
   });
 
-  test("off + shadow: conversationHistory slice is identical across modes given the same input", () => {
+  test('off + shadow: conversationHistory slice is identical across modes given the same input', () => {
     const seed = (mode) => {
       const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: mode });
       // Push a fake user/assistant exchange.
@@ -229,7 +232,7 @@ describe('Plan 04-02 — buildMessageWindow mode gating', () => {
 describe('Plan 04-02 — _sendCacheKeepalive mode gating', () => {
   beforeEach(() => mockCreate.mockReset());
 
-  test("off mode keepalive: snapshot user/assistant pair PLUS [keepalive], system is single-block", async () => {
+  test('off mode keepalive: snapshot user/assistant pair PLUS [keepalive], system is single-block', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"acknowledged":true}' }],
       usage: { input_tokens: 5, output_tokens: 1 },
@@ -257,7 +260,7 @@ describe('Plan 04-02 — _sendCacheKeepalive mode gating', () => {
     expect(payload.messages[2].content[0].text).toBe('[keepalive]');
   });
 
-  test("shadow mode keepalive: messages is ONLY [keepalive], system is two-block when snapshot non-empty", async () => {
+  test('shadow mode keepalive: messages is ONLY [keepalive], system is two-block when snapshot non-empty', async () => {
     mockCreate.mockResolvedValue({
       content: [{ type: 'text', text: '{"acknowledged":true}' }],
       usage: { input_tokens: 5, output_tokens: 1 },
@@ -285,7 +288,7 @@ describe('Plan 04-02 — _sendCacheKeepalive mode gating', () => {
 });
 
 describe('Plan 04-02 — buildUserMessage per-turn minimalism in non-off mode', () => {
-  test("off mode: circuit schedule appears on first call (unchanged)", () => {
+  test('off mode: circuit schedule appears on first call (unchanged)', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'off' });
     s.circuitSchedule = '  Circuit 1: Kitchen Sockets []';
     const msg = s.buildUserMessage('test utterance');
@@ -293,7 +296,7 @@ describe('Plan 04-02 — buildUserMessage per-turn minimalism in non-off mode', 
     expect(msg).toContain('Circuit 1: Kitchen Sockets');
   });
 
-  test("shadow mode: circuit schedule NEVER appears in buildUserMessage output", () => {
+  test('shadow mode: circuit schedule NEVER appears in buildUserMessage output', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.circuitSchedule = '  Circuit 1: Kitchen Sockets []';
     const msg = s.buildUserMessage('test utterance');
@@ -306,9 +309,7 @@ describe('Plan 04-02 — buildUserMessage per-turn minimalism in non-off mode', 
   test("shadow mode: 'Already asked' and 'Observations already created' are suppressed", () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.askedQuestions = ['zs:1', 'r2:2'];
-    s.extractedObservations = [
-      { id: 'id-a', text: 'missing earth bond at kitchen', code: 'C2' },
-    ];
+    s.extractedObservations = [{ id: 'id-a', text: 'missing earth bond at kitchen', code: 'C2' }];
     const msg = s.buildUserMessage('hello');
     expect(msg).not.toContain('Already asked');
     expect(msg).not.toContain('Observations already created');
@@ -362,7 +363,7 @@ describe('Plan 04-08 r2-#1 — cached-prefix digest regression', () => {
     expect(blocks[1].text).toContain('loose neutral in upstairs consumer unit');
   });
 
-  test("r2-1c: combined — snapshot includes schedule + extracted + observations + asked + extractedObs in order", () => {
+  test('r2-1c: combined — snapshot includes schedule + extracted + observations + asked + extractedObs in order', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.circuitSchedule = '  Circuit 1: Kitchen Sockets []';
     s.updateStateSnapshot({
@@ -387,7 +388,7 @@ describe('Plan 04-08 r2-#1 — cached-prefix digest regression', () => {
     expect(iExtractedObs).toBeGreaterThan(iAsked);
   });
 
-  test("r2-1d: off-mode buildUserMessage output is byte-identical to pre-r2 behaviour", () => {
+  test('r2-1d: off-mode buildUserMessage output is byte-identical to pre-r2 behaviour', () => {
     // Locks the STR-01 rollback invariant — adding the digests into the
     // cached prefix on non-off MUST NOT disturb the off-mode per-turn
     // injection of those same digests in buildUserMessage.
@@ -405,7 +406,7 @@ describe('Plan 04-08 r2-#1 — cached-prefix digest regression', () => {
     expect(msg).toBe(expected);
   });
 
-  test("r2-1e: non-off — session with only askedQuestions + no readings/schedule returns non-null snapshot containing just ASKED QUESTIONS", () => {
+  test('r2-1e: non-off — session with only askedQuestions + no readings/schedule returns non-null snapshot containing just ASKED QUESTIONS', () => {
     // Before r2, buildStateSnapshotMessage returned null when circuits +
     // pending + obs + alerts + schedule were all empty — even though
     // askedQuestions was non-empty. Fix: widen the non-null gate to include
@@ -428,7 +429,7 @@ describe('Plan 04-08 r2-#1 — cached-prefix digest regression', () => {
 describe('Plan 04-02 — legacy off-mode regression guard (Group 6)', () => {
   beforeEach(() => mockCreate.mockReset());
 
-  test("off mode extractFromUtterance: system stays single-block; snapshot in messages", async () => {
+  test('off mode extractFromUtterance: system stays single-block; snapshot in messages', async () => {
     mockCreate.mockResolvedValue({
       content: [
         {
@@ -465,7 +466,8 @@ describe('Plan 04-02 — legacy off-mode regression guard (Group 6)', () => {
     expect(payload.system[0].text).toBe(EICR_SYSTEM_PROMPT);
     // Off mode: snapshot rides in messages array as the first user/assistant pair.
     const snapshotMsg = payload.messages.find(
-      (m) => m.role === 'user' &&
+      (m) =>
+        m.role === 'user' &&
         Array.isArray(m.content) &&
         typeof m.content[0]?.text === 'string' &&
         m.content[0].text.includes('EXTRACTED')
@@ -502,7 +504,7 @@ describe('Plan 04-02 — legacy off-mode regression guard (Group 6)', () => {
 describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () => {
   beforeEach(() => mockCreate.mockReset());
 
-  test("r4-1a: off-mode buildStateSnapshotMessage() with ONLY askedQuestions returns null (pre-r2 semantic)", () => {
+  test('r4-1a: off-mode buildStateSnapshotMessage() with ONLY askedQuestions returns null (pre-r2 semantic)', () => {
     // Pre-r2: off-mode snapshot returned null when circuits + pending +
     // observations + alerts + schedule were all empty, even if
     // askedQuestions was non-empty — askedQuestions was NOT a
@@ -518,7 +520,7 @@ describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () 
     expect(snapshot).toBeNull();
   });
 
-  test("r4-1b: off-mode buildStateSnapshotMessage() with seeded state omits ASKED QUESTIONS + EXTRACTED OBSERVATIONS", () => {
+  test('r4-1b: off-mode buildStateSnapshotMessage() with seeded state omits ASKED QUESTIONS + EXTRACTED OBSERVATIONS', () => {
     // Off mode: even with circuits seeded (so snapshot is non-null), the
     // ASKED QUESTIONS + EXTRACTED OBSERVATIONS sections must NOT appear
     // in the snapshot text — they live in buildUserMessage for off-mode.
@@ -537,7 +539,7 @@ describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () 
     expect(snapshot).not.toContain('EXTRACTED OBSERVATIONS');
   });
 
-  test("r4-1c: shadow-mode preservation — ASKED QUESTIONS + EXTRACTED OBSERVATIONS still ride the cached prefix", () => {
+  test('r4-1c: shadow-mode preservation — ASKED QUESTIONS + EXTRACTED OBSERVATIONS still ride the cached prefix', () => {
     // Regression guard: the off-mode gate must NOT break the non-off
     // cached-prefix behaviour that r2-1a / r2-1b locked. Shadow mode
     // still emits both sections via buildStateSnapshotMessage.
@@ -552,7 +554,7 @@ describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () 
     expect(snapshot).toContain('missing earth bond');
   });
 
-  test("r4-1d: off-mode extractFromUtterance — each digest appears EXACTLY ONCE across messages", async () => {
+  test('r4-1d: off-mode extractFromUtterance — each digest appears EXACTLY ONCE across messages', async () => {
     // The duplication bug is only visible end-to-end: buildUserMessage in
     // off-mode emits 'Already asked (skip)' + 'Observations already
     // created', and buildMessageWindow pushes the snapshot (which pre-fix
@@ -622,14 +624,16 @@ describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () 
     // from the turn's user message, not duplicated into a snapshot
     // section).
     const legacyAskedCount = (allText.match(/Already asked \(skip\):/g) || []).length;
-    const legacyExtObsCount = (allText.match(/Observations already created \(do NOT re-extract\):/g) || []).length;
+    const legacyExtObsCount = (
+      allText.match(/Observations already created \(do NOT re-extract\):/g) || []
+    ).length;
     expect(legacyAskedCount).toBe(1);
     expect(legacyExtObsCount).toBe(1);
 
     s.stop();
   });
 
-  test("r4-1e: off-mode buildUserMessage byte-identical — r2-1d parity preserved", () => {
+  test('r4-1e: off-mode buildUserMessage byte-identical — r2-1d parity preserved', () => {
     // Cross-check the r2-1d lock still holds: buildUserMessage's off-mode
     // output is byte-identical to the pre-r2 expectation, regardless of
     // the r4 snapshot-builder gate. This is a defensive regression — any
