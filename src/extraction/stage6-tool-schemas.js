@@ -666,6 +666,13 @@ const calculateZs = makeTool({
       description:
         'Calculate for every circuit with the required inputs ("calculate Zs for all available circuits"). Mutually exclusive with circuit_ref and circuit_refs. Default false.',
     },
+    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id (see
+    // record_reading for rationale). Scopes the calculation to circuits
+    // on the named board; defaults to currentBoardId.
+    board_id: {
+      type: 'string',
+      description: 'Board the circuits live on. Defaults to currentBoardId when omitted.',
+    },
   },
   required: ['all'],
 });
@@ -709,6 +716,13 @@ const calculateR1PlusR2 = makeTool({
       type: 'boolean',
       description:
         'Calculate for every circuit with the required inputs for the chosen method. Mutually exclusive with circuit_ref and circuit_refs. Default false.',
+    },
+    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id (see
+    // record_reading for rationale). Scopes the calculation to circuits
+    // on the named board; defaults to currentBoardId.
+    board_id: {
+      type: 'string',
+      description: 'Board the circuits live on. Defaults to currentBoardId when omitted.',
     },
   },
   required: ['method', 'all'],
@@ -823,6 +837,17 @@ const setFieldForAllCircuits = makeTool({
       type: 'string',
       description:
         'Identifier of the user turn this bulk capture came from; used for dedup and correlation.',
+    },
+    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id with a
+    // special-case "*" cross-board sweep. Default behaviour stays
+    // current-board-only (matches the inspector's natural meaning of "all
+    // circuits"); pass `'*'` explicitly to walk every board on the job.
+    // The dispatcher rejects an unknown id (anything not "*" and not in
+    // snapshot.boards) — the schema can't enforce that without an enum.
+    board_id: {
+      type: 'string',
+      description:
+        'Scope the bulk write to the named board (defaults to currentBoardId). Pass "*" to apply across every board on the job.',
     },
   },
   required: ['field', 'value', 'confidence', 'source_turn_id'],

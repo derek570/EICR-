@@ -610,9 +610,10 @@ function selectorRefs(input, snapshot) {
     );
   }
   // all: walk every non-supply circuit in the snapshot. Under flag-on, this
-  // walks composite-key buckets scoped to the current board; under flag-off,
-  // numeric keys >= 1 (legacy behaviour).
-  return listCircuitRefsInBoard(snapshot);
+  // walks composite-key buckets scoped to (input.board_id ?? currentBoardId);
+  // under flag-off, numeric keys >= 1 (legacy behaviour, board_id ignored).
+  // Phase 6.5 — board_id thread-through.
+  return listCircuitRefsInBoard(snapshot, input.board_id);
 }
 
 /**
@@ -639,12 +640,15 @@ function parseFiniteNumber(v) {
  *   2. source_turn_id carries a synthetic '::calc::<tool>' marker so log
  *      analysis can split server-derived writes from Sonnet-direct writes.
  */
-function applyCalculatedReading(session, perTurnWrites, { circuit, field, value, tool }) {
+function applyCalculatedReading(session, perTurnWrites, { circuit, field, value, tool, boardId }) {
   // Calculated writes (Zs from Ze + R1+R2, R1+R2 from Zs - Ze, etc.) flow
   // through the same flag-aware mutator as record_reading so the calc
   // outputs land in the SAME bucket shape as the source readings — no
   // mismatch between manually-recorded inputs and server-derived outputs.
-  applyReadingFlagAware(session.stateSnapshot, { circuit, field, value });
+  // Phase 6.5: thread boardId so explicit input.board_id on calculate_zs /
+  // calculate_r1_plus_r2 routes the WRITE to the right composite-key bucket
+  // (the SELECTOR already routes via listCircuitRefsInBoard + getCircuitBucket).
+  applyReadingFlagAware(session.stateSnapshot, { circuit, field, value, boardId });
   perTurnWrites.readings.set(`${field}::${circuit}`, {
     value,
     confidence: 1.0,
@@ -692,7 +696,7 @@ export async function dispatchCalculateZs(call, ctx) {
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = getCircuitBucket(session.stateSnapshot, ref);
+    const bucket = getCircuitBucket(session.stateSnapshot, ref, input.board_id);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;
@@ -719,6 +723,7 @@ export async function dispatchCalculateZs(call, ctx) {
       field: 'measured_zs_ohm',
       value,
       tool: 'calculate_zs',
+      boardId: input.board_id,
     });
     computed.push({ circuit_ref: ref, field: 'measured_zs_ohm', value });
   }
@@ -788,7 +793,7 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = getCircuitBucket(session.stateSnapshot, ref);
+    const bucket = getCircuitBucket(session.stateSnapshot, ref, input.board_id);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;
@@ -840,6 +845,7 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
       field: 'r1_r2_ohm',
       value,
       tool: 'calculate_r1_plus_r2',
+      boardId: input.board_id,
     });
     computed.push({ circuit_ref: ref, field: 'r1_r2_ohm', value, method });
   }
@@ -924,73 +930,108 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   }
 
   const scope = input.scope ?? 'non_spare';
-  // Flag-aware iteration — under flag-on, walks composite-key buckets in the
-  // current board scope; under flag-off, numeric keys >= 1 (legacy).
-  const allRefs = listCircuitRefsInBoard(session.stateSnapshot);
+
+  // 2026-05-07 Phase 6.5 — board_id thread-through with `'*'` cross-board sweep.
+  //
+  // Resolve the iteration plan: a list of {boardId, refs[]} tuples.
+  //   - input.board_id === '*' → every board on the snapshot, scoped via
+  //     listCircuitRefsInBoard per board. Cross-board sweep is the locked
+  //     S5 decision from the multi-board sprint PLAN.md self-review:
+  //     default current-board-only, explicit '*' to opt into cross-board.
+  //   - input.board_id is a specific id → that board only.
+  //   - input.board_id omitted → default to currentBoardId via listCircuitRefsInBoard's
+  //     own fallback (preserves pre-Phase-6 behaviour exactly).
+  //
+  // Under flag-off, every board collapses to the legacy numeric-key namespace
+  // because listCircuitRefsInBoard ignores the boardId arg. So '*' is a no-op
+  // deviation from the unscoped default — same iteration shape, same writes.
+  const snapshot = session.stateSnapshot;
+  const iterationPlan =
+    input.board_id === '*'
+      ? (snapshot.boards ?? []).map((b) => ({
+          boardId: b?.id,
+          refs: listCircuitRefsInBoard(snapshot, b?.id),
+        }))
+      : [{ boardId: input.board_id, refs: listCircuitRefsInBoard(snapshot, input.board_id) }];
 
   const applied = [];
   const skipped = [];
-  for (const ref of allRefs) {
-    const bucket = getCircuitBucket(session.stateSnapshot, ref);
-    if (!bucket) continue;
-    if (scope === 'non_spare') {
-      // Two ways a circuit reads as "spare":
-      //   (a) the designation literally contains the word "spare" — but
-      //       matched as a WHOLE WORD, not a substring. The previous
-      //       `.includes('spare')` falsely flagged "non-spare" (rare in
-      //       practice but a real correctness bug). \bspare\b avoids that.
-      //   (b) the designation is empty / null / whitespace — blank-row
-      //       circuits in the schedule are spares by convention (the
-      //       inspector hasn't named them because there's nothing to
-      //       inspect). The previous filter only caught (a) and would
-      //       have applied the bulk write to every blank slot — a real
-      //       data-quality bug for any real-world dual-RCD board where
-      //       trailing slots are reserved for future use.
-      // The negative lookbehind `(?<!-)` rejects compound forms like
-      // "non-spare" / "anti-spare" — \b alone treats the hyphen as a word
-      // boundary and would falsely flag those as spares. The lookahead
-      // `\b` after `spare` is symmetric in spirit but we don't need a
-      // mirror lookahead because trailing hyphens on "spare-anything"
-      // ARE genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
-      const designation = String(bucket.circuit_designation ?? '').trim();
-      if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
-        skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
-        continue;
+  for (const { boardId, refs } of iterationPlan) {
+    for (const ref of refs) {
+      const bucket = getCircuitBucket(snapshot, ref, boardId);
+      if (!bucket) continue;
+      if (scope === 'non_spare') {
+        // Two ways a circuit reads as "spare":
+        //   (a) the designation literally contains the word "spare" — but
+        //       matched as a WHOLE WORD, not a substring. The previous
+        //       `.includes('spare')` falsely flagged "non-spare" (rare in
+        //       practice but a real correctness bug). \bspare\b avoids that.
+        //   (b) the designation is empty / null / whitespace — blank-row
+        //       circuits in the schedule are spares by convention (the
+        //       inspector hasn't named them because there's nothing to
+        //       inspect). The previous filter only caught (a) and would
+        //       have applied the bulk write to every blank slot — a real
+        //       data-quality bug for any real-world dual-RCD board where
+        //       trailing slots are reserved for future use.
+        // The negative lookbehind `(?<!-)` rejects compound forms like
+        // "non-spare" / "anti-spare" — \b alone treats the hyphen as a word
+        // boundary and would falsely flag those as spares. The lookahead
+        // `\b` after `spare` is symmetric in spirit but we don't need a
+        // mirror lookahead because trailing hyphens on "spare-anything"
+        // ARE genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
+        const designation = String(bucket.circuit_designation ?? '').trim();
+        if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
+          skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
+          continue;
+        }
+      } else if (scope === 'rcd_protected_only') {
+        // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
+        // check: field_schema.json:166 declares its default as "30", which
+        // means non-RCD circuits inherit "30" the moment any code reads
+        // through the default path. Including it would tag every circuit
+        // in the snapshot as RCD-protected and the filter would do nothing.
+        // Verified against session DC946608's snapshot — every circuit had
+        // rcd_operating_current_ma="30" regardless of actual RCD bank
+        // membership.
+        const hasRcd =
+          (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
+          (bucket.rcd_type && bucket.rcd_type !== '');
+        if (!hasRcd) {
+          skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
+          continue;
+        }
       }
-    } else if (scope === 'rcd_protected_only') {
-      // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
-      // check: field_schema.json:166 declares its default as "30", which
-      // means non-RCD circuits inherit "30" the moment any code reads
-      // through the default path. Including it would tag every circuit
-      // in the snapshot as RCD-protected and the filter would do nothing.
-      // Verified against session DC946608's snapshot — every circuit had
-      // rcd_operating_current_ma="30" regardless of actual RCD bank
-      // membership.
-      const hasRcd =
-        (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
-        (bucket.rcd_type && bucket.rcd_type !== '');
-      if (!hasRcd) {
-        skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
-        continue;
-      }
+      // Phase 6.5 — thread boardId so the flag-aware mutator writes to the
+      // correct composite-key bucket (under flag-on) or the legacy numeric
+      // bucket (under flag-off, where boardId is ignored by the mutator).
+      applyReadingFlagAware(snapshot, {
+        circuit: ref,
+        field: input.field,
+        value: input.value,
+        boardId,
+      });
+      // perTurnWrites key shape is locked to `${field}::${circuit}` (per
+      // stage6-per-turn-writes.js MAJOR-1). For a `'*'` cross-board sweep,
+      // multiple (board, ref) pairs may collide on the same (field, ref) Map
+      // key — Map.set overwrites with last-write-wins semantics, which is
+      // fine: the wire bundle reflects the last write per (field, ref) pair,
+      // while the snapshot carries every board's mutation. The applied[]
+      // array surfaces the full per-board breakdown for Sonnet's read-back.
+      perTurnWrites.readings.set(`${input.field}::${ref}`, {
+        value: input.value,
+        confidence: input.confidence,
+        source_turn_id: input.source_turn_id,
+      });
+      applied.push({
+        circuit: ref,
+        field: input.field,
+        value: input.value,
+        // Surface the board_id only for cross-board sweeps so the existing
+        // single-board envelope shape stays byte-identical for every
+        // pre-Phase-6.5 caller. iOS decoder treats unknown keys as benign.
+        ...(input.board_id === '*' ? { board_id: boardId } : {}),
+      });
     }
-    // set_field_for_all_circuits keeps its current iteration scope under
-    // both flag states (per Phase 5 handoff S5 — default scope is "all
-    // circuits with a legacy numeric ref"; current-board-only scoping is
-    // a Phase 6 concern). The bucket key shape, however, follows the
-    // flag — writes land at the composite key under flag-on so the
-    // bulk-edit results stay in the same shape as record_reading writes.
-    applyReadingFlagAware(session.stateSnapshot, {
-      circuit: ref,
-      field: input.field,
-      value: input.value,
-    });
-    perTurnWrites.readings.set(`${input.field}::${ref}`, {
-      value: input.value,
-      confidence: input.confidence,
-      source_turn_id: input.source_turn_id,
-    });
-    applied.push({ circuit: ref, field: input.field, value: input.value });
   }
 
   logToolCall(logger, {
