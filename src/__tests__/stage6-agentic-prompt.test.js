@@ -134,8 +134,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // example + ring-final ask-first rule). Three tools ≈ +500
       // tokens; cap moved by +600 to keep ~100-token headroom. Field
       // test 2026-05-04 session 07635782 surfaced all three.
+      // 2026-05-07 (multi-board sprint Phase 7.1): relaxed to 8600 to
+      // absorb the new MULTI-BOARD ROUTING block. Three tools
+      // (add_board, select_board, mark_distribution_circuit) plus the
+      // implicit currentBoardId routing note ≈ +400 tokens; cap moved
+      // by +500 to keep ~100-token headroom. PHASE6_PHASE7_AUTONOMOUS.md
+      // slice 7.1 specifies the block verbatim from PLAN.md L626-649.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(8100);
+      expect(estimate).toBeLessThanOrEqual(8600);
     });
   });
 
@@ -604,8 +610,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     calculate_zs, calculate_r1_plus_r2 — with worked examples
       //     and the ring-final ask-first rule. Field test 07635782
       //     surfaced the gaps). Cap mirrors Group 1's +600 bump.
+      //   - 6100 (2026-05-07: multi-board sprint Phase 7.1 added the
+      //     MULTI-BOARD ROUTING block — 3 tools (add_board, select_board,
+      //     mark_distribution_circuit) plus the implicit currentBoardId
+      //     routing note. ~+400 tokens; cap moved by +500 mirroring
+      //     Group 1's bump.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(5600);
+      expect(estimate).toBeLessThanOrEqual(6100);
     });
   });
 
