@@ -79,7 +79,8 @@ describe('record_board_reading schema', () => {
     // (10), and calculate_r1_plus_r2 (11) appended 2026-05-04.
     // set_field_for_all_circuits (12) appended 2026-05-06 (session DC946608
     // bulk-set bug — Sonnet truncated the model's 14-tool burst to 7).
-    expect(TOOL_SCHEMAS).toHaveLength(13);
+    // add_board (13) appended 2026-05-07 (multi-board sprint Phase 6.1).
+    expect(TOOL_SCHEMAS).toHaveLength(14);
     expect(TOOL_SCHEMAS[7]).toBeDefined();
     expect(TOOL_SCHEMAS[7].name).toBe('record_board_reading');
     expect(TOOL_SCHEMAS[8].name).toBe('start_dialogue_script');
@@ -87,6 +88,7 @@ describe('record_board_reading schema', () => {
     expect(TOOL_SCHEMAS[10].name).toBe('calculate_zs');
     expect(TOOL_SCHEMAS[11].name).toBe('calculate_r1_plus_r2');
     expect(TOOL_SCHEMAS[12].name).toBe('set_field_for_all_circuits');
+    expect(TOOL_SCHEMAS[13].name).toBe('add_board');
     expect(TOOL_SCHEMAS[0].name).toBe('record_reading'); // unchanged
   });
 

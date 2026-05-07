@@ -792,6 +792,51 @@ const setFieldForAllCircuits = makeTool({
   required: ['field', 'value', 'confidence', 'source_turn_id'],
 });
 
+// ---------------------------------------------------------------------------
+// 2026-05-07 multi-board sprint Phase 6.1 — add_board.
+//
+// Inspector mentions a NEW consumer unit / sub-distribution board / sub-main
+// ("there's another consumer unit in the garage", "this is the sub-main
+// fed from the main"). Sonnet calls add_board; the server synthesises a
+// stable id (`sub-${n}` / `main-${n}`), validates the hierarchy via the
+// shared validateBoardHierarchy helper, mutates snapshot.boards, flips
+// snapshot.currentBoardId, and emits an op onto perTurnWrites.boardOps
+// for the iOS wire channel landed in Phase 6.0.
+//
+// id is server-synthesised because the model can't reliably invent stable
+// non-colliding ids across sessions; the server already knows the full
+// boards[] state and can pick `sub-${n}` deterministically. The model
+// only provides a designation.
+// ---------------------------------------------------------------------------
+const addBoard = makeTool({
+  name: 'add_board',
+  description:
+    'Add a new consumer unit / distribution board to the job. Use when the inspector mentions a NEW consumer unit, sub-distribution board, or sub-main. The new board becomes the current board for subsequent reads/writes. Do NOT call for the main board — the session always starts with one main board already.',
+  properties: {
+    designation: {
+      type: 'string',
+      description: 'Inspector-facing designation (e.g. "DB-2", "Garage CU"). 1-32 chars.',
+    },
+    board_type: {
+      type: 'string',
+      enum: ['main', 'sub_distribution', 'sub_main'],
+      description:
+        'Board type. Use "sub_main" for boards fed by a single distribution circuit (typical sub-main); "sub_distribution" for multi-feed; "main" only for the primary CU on the job (rarely correct from this tool — main is implicit).',
+    },
+    parent_board_id: {
+      type: 'string',
+      description:
+        'ID of the parent board this is fed from. REQUIRED for sub_main; optional for sub_distribution; ignored for main.',
+    },
+    feed_circuit_ref: {
+      type: 'integer',
+      description:
+        'Circuit ref on the parent board that feeds this one (e.g. 4). Required when parent_board_id is set.',
+    },
+  },
+  required: ['designation', 'board_type'],
+});
+
 export const TOOL_SCHEMAS = [
   recordReading,
   clearReading,
@@ -813,6 +858,9 @@ export const TOOL_SCHEMAS = [
   // 2026-05-06 (session DC946608) — bulk-set tool. Appended last to keep the
   // earlier TOOL_SCHEMAS indices stable for any consumers that key on them.
   setFieldForAllCircuits,
+  // 2026-05-07 multi-board sprint Phase 6.1 — appended last so existing
+  // TOOL_SCHEMAS indices stay stable for any consumers that key on them.
+  addBoard,
 ];
 
 /**

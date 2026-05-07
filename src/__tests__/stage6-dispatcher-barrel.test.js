@@ -27,7 +27,7 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all twelve keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all thirteen keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -44,6 +44,8 @@ describe('barrel re-exports', () => {
         // 2026-05-06 (session DC946608) — bulk-set tool. Replaces the
         // model's 14-tool-call burst pattern with one server-iterated call.
         'set_field_for_all_circuits',
+        // 2026-05-07 multi-board sprint Phase 6.1 — add_board.
+        'add_board',
       ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
@@ -66,6 +68,9 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.set_field_for_all_circuits).toBe(
       circuitSibling.dispatchSetFieldForAllCircuits
     );
+    // 2026-05-07 multi-board sprint Phase 6.1 — add_board lives on the board
+    // sibling alongside record_board_reading.
+    expect(WRITE_DISPATCHERS.add_board).toBe(boardSibling.dispatchAddBoard);
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -145,6 +150,15 @@ describe('barrel re-exports', () => {
         value: '0.5',
         confidence: 1.0,
         source_turn_id: 't1',
+      },
+      // 2026-05-07 multi-board sprint Phase 6.1 — add_board minimal happy
+      // path. board_type=sub_distribution + non-empty designation is enough;
+      // parent_board_id and feed_circuit_ref are optional for sub_distribution.
+      // The dispatcher synthesises id `sub-1` because the seeded snapshot has
+      // only the default `main` board.
+      add_board: {
+        designation: 'Garage CU',
+        board_type: 'sub_distribution',
       },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {

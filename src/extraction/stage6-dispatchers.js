@@ -45,7 +45,7 @@ import {
   dispatchRecordObservation,
   dispatchDeleteObservation,
 } from './stage6-dispatchers-observation.js';
-import { dispatchRecordBoardReading } from './stage6-dispatchers-board.js';
+import { dispatchRecordBoardReading, dispatchAddBoard } from './stage6-dispatchers-board.js';
 import { dispatchStartDialogueScript } from './stage6-dispatchers-script.js';
 
 /**
@@ -86,6 +86,12 @@ export const WRITE_DISPATCHERS = {
   // truncated the burst to 7 in production, so the structural fix is to
   // make "all circuits" atomic on the server side.
   set_field_for_all_circuits: dispatchSetFieldForAllCircuits,
+  // 2026-05-07 multi-board sprint Phase 6.1 — add_board. Sonnet calls
+  // this when the inspector mentions a NEW consumer unit / sub-distribution
+  // board / sub-main; dispatcher synthesises a stable id, validates the
+  // hierarchy, mutates snapshot.boards + currentBoardId, and emits an op
+  // onto perTurnWrites.boardOps (Phase 6.0 wire channel) for iOS.
+  add_board: dispatchAddBoard,
 };
 
 /**

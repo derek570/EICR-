@@ -50,6 +50,8 @@
 import { applyBoardReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM } from './stage6-tool-schemas.js';
+import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
+import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
 // underlying enum is itself frozen-by-convention (codegenned from
@@ -175,4 +177,178 @@ export async function dispatchRecordBoardReading(call, ctx) {
     input_summary: { field: input.field },
   });
   return envelope(call.tool_call_id, { ok: true }, false);
+}
+
+// ---------------------------------------------------------------------------
+// 2026-05-07 multi-board sprint Phase 6.1 — dispatchAddBoard.
+//
+// Schema-side: tool defined in stage6-tool-schemas.js (`addBoard`).
+// Wire channel: appends an op onto perTurnWrites.boardOps (Phase 6.0 slot)
+// which the bundler emits to iOS as the `board_ops` event channel.
+//
+// id synthesis: server picks `sub-${n}` (n = max existing sub-N + 1, or 1).
+// `main-${n}` for board_type='main' (rare — main is implicit).
+//
+// Hierarchy validation: delegated to validateBoardHierarchy on the
+// PROVISIONAL boards[] (current + new). Validator owns cycle/orphan/
+// duplicate-main/feed-circuit-not-found rules; dispatcher rejects with
+// `hierarchy_invalid` and leaves snapshot untouched on failure.
+// ---------------------------------------------------------------------------
+
+const VALID_BOARD_TYPES = new Set(['main', 'sub_distribution', 'sub_main']);
+
+const ADD_BOARD_DESIGNATION_MAX = 32;
+
+/**
+ * add_board: validate → synthesise id → validate hierarchy → mutate
+ * snapshot.boards + currentBoardId → push boardOps op → log → envelope.
+ *
+ * @param {{tool_call_id: string, name: string, input: {designation: string, board_type: string, parent_board_id?: string, feed_circuit_ref?: number}}} call
+ * @param {{session: object, logger: object, turnId: string, perTurnWrites: object, round: number}} ctx
+ */
+export async function dispatchAddBoard(call, ctx) {
+  const { session, logger, turnId, perTurnWrites, round } = ctx;
+  const input = call.input ?? {};
+
+  function reject(code, field) {
+    const err = field == null ? { code } : { code, field };
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'add_board',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: err,
+      // PII: log only the names that drive the rejection. Never log the
+      // designation here — it may carry user-supplied free text.
+      input_summary: { board_type: input.board_type ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // 1) board_type must be a recognised enum value.
+  if (!VALID_BOARD_TYPES.has(input.board_type)) {
+    return reject('invalid_board_type', 'board_type');
+  }
+
+  // 2) designation must be a non-empty string of ≤ 32 chars.
+  if (
+    typeof input.designation !== 'string' ||
+    input.designation.trim() === '' ||
+    input.designation.length > ADD_BOARD_DESIGNATION_MAX
+  ) {
+    return reject('invalid_designation', 'designation');
+  }
+
+  // 3) parent_board_id required for sub_main.
+  if (input.board_type === 'sub_main' && !input.parent_board_id) {
+    return reject('parent_required', 'parent_board_id');
+  }
+
+  // 4) parent_board_id, when supplied, must reference an existing board.
+  const snapshot = session.stateSnapshot;
+  ensureMultiBoardShape(snapshot);
+  const existingBoards = snapshot.boards ?? [];
+  if (input.parent_board_id) {
+    const parent = existingBoards.find((b) => b && b.id === input.parent_board_id);
+    if (!parent) {
+      return reject('parent_not_found', 'parent_board_id');
+    }
+  }
+
+  // 5) feed_circuit_ref required + integer when parent_board_id is supplied.
+  if (
+    input.parent_board_id &&
+    (input.feed_circuit_ref == null || !Number.isInteger(input.feed_circuit_ref))
+  ) {
+    return reject('feed_circuit_ref_required', 'feed_circuit_ref');
+  }
+
+  // 6) Synthesise the new board id. Stable across the session: `sub-${n}`
+  //    where n = max existing sub-N + 1 (or 1 if none). `main-${n}` is
+  //    used for board_type='main' to keep the primary id 'main' reserved
+  //    for the synthesised default board.
+  const existingIds = existingBoards.map((b) => b && b.id).filter((id) => typeof id === 'string');
+  const prefix = input.board_type === 'main' ? 'main' : 'sub';
+  let nextN = 1;
+  for (const id of existingIds) {
+    const m = new RegExp(`^${prefix}-(\\d+)$`).exec(id);
+    if (m) nextN = Math.max(nextN, Number(m[1]) + 1);
+  }
+  const newId = `${prefix}-${nextN}`;
+  // Defensive: id collision is structurally impossible given the max-walk
+  // above, but if a future caller seeds boards[] with a synthetic id that
+  // breaks the convention (e.g. sub-99999), bail rather than overwrite.
+  if (existingIds.includes(newId)) {
+    return reject('board_id_collision', null);
+  }
+
+  // 7) Build the new board record.
+  const newBoard = {
+    id: newId,
+    designation: input.designation.trim(),
+    board_type: input.board_type,
+  };
+  if (input.parent_board_id) newBoard.parent_board_id = input.parent_board_id;
+  if (input.feed_circuit_ref != null) newBoard.feed_circuit_ref = input.feed_circuit_ref;
+
+  // 8) Hierarchy validation BEFORE mutating snapshot. The validator owns
+  //    cycle / orphan / duplicate-main / feed-circuit-not-found rules — single
+  //    source of truth shared with the iOS-side check and the PUT /api/job
+  //    gate (Phase 2.3 of the multi-board sprint).
+  const provisionalBoards = [...existingBoards, newBoard];
+  const provisionalCircuits = Object.values(snapshot.circuits ?? {});
+  const validation = validateBoardHierarchy(provisionalBoards, provisionalCircuits);
+  if (!validation.ok) {
+    const err = { code: 'hierarchy_invalid', field: null, details: validation.errors };
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'add_board',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: { code: 'hierarchy_invalid' },
+      input_summary: { board_type: input.board_type ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // 9) Mutate snapshot: append board, flip currentBoardId so subsequent
+  //    record_reading / create_circuit calls land on the new board.
+  snapshot.boards.push(newBoard);
+  snapshot.currentBoardId = newId;
+
+  // 10) Push the wire op for iOS (Phase 6.0 channel). Carry every payload
+  //     field so the iOS receiver doesn't have to re-fetch state to learn
+  //     what was added.
+  perTurnWrites.boardOps.push({
+    op: 'add_board',
+    board_id: newId,
+    designation: newBoard.designation,
+    board_type: newBoard.board_type,
+    parent_board_id: newBoard.parent_board_id ?? null,
+    feed_circuit_ref: newBoard.feed_circuit_ref ?? null,
+  });
+
+  // 11) Log success. PII discipline: never log the designation (free text).
+  logToolCall(logger, {
+    sessionId: session.sessionId,
+    turnId,
+    tool_use_id: call.tool_call_id,
+    tool: 'add_board',
+    round,
+    is_error: false,
+    outcome: 'ok',
+    validation_error: null,
+    input_summary: {
+      board_id: newId,
+      board_type: newBoard.board_type,
+      parent_board_id: newBoard.parent_board_id ?? null,
+    },
+  });
+  return envelope(call.tool_call_id, { ok: true, board_id: newId, currentBoardId: newId }, false);
 }
