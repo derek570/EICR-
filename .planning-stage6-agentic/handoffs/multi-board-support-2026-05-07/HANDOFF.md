@@ -1,7 +1,12 @@
 # Multi-Board / Sub-Main Support — Fresh-Context Handoff
 
 **Read this first** in a new session. Full plan in sibling `PLAN.md` (~870 lines, refer as needed).
-Last updated 2026-05-07. Status: **all decisions locked, no code written yet, ready for Phase 1.**
+Last updated 2026-05-07. Status: **Phases 1, 2, 2a, 3, 4, 4a SHIPPED. Phase 5 (Stage 6 state-model widening, 2-3 sessions) is the next concrete step — see [PHASE5_HANDOFF.md](PHASE5_HANDOFF.md).**
+
+> If you are resuming Phase 5 specifically, jump straight to
+> [PHASE5_HANDOFF.md](PHASE5_HANDOFF.md) — it is self-contained and
+> captures the Codex-corrected snapshot shape, file:line audit, and
+> recommended slice order.
 
 ---
 

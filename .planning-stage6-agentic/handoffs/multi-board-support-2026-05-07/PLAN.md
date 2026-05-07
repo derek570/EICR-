@@ -987,3 +987,35 @@ Two commits, one per repo:
 - Plan said the protocol method's new parameters could be added with default values; Swift protocols don't carry defaults across the protocol boundary, so I made the protocol method require all five and added concrete-level defaults on `APIClient` only. Trade-off explained in the commit message.
 
 **Phase 5 (Stage 6 state-model widening) is the next concrete step** — the heaviest slice in the sprint, expected 2-3 sessions. Phase 2a (CSV-header hardening) and Phase 4a (recording.js single-board scope decision) remain unblocked backend-only items that could land in parallel.
+
+#### 2026-05-07 — Phase 2a: CSV header hardening — SHIPPED
+
+**Commit `ddde287` on `EICR_Automation` `main`.** `src/export.js` `CIRCUIT_FIELD_ORDER` (the array driving CSV header row + per-row column extraction in both `circuitsToCSV` and `jobToExcel`) now appends `board_id`, `is_distribution_circuit`, `feeds_board_id`. `CIRCUIT_HEADERS` (Excel human-label map) gains matching keys ("Board ID", "Distribution Circuit", "Feeds Board ID"). New entries are at the END of the order on purpose — `parseCSV` in `src/utils/jobs.js` maps by header NAME, not position, so legacy 29-column CSVs continue to parse cleanly (the new fields read as undefined for legacy rows; iOS's "first board wins" orphan-fixup at `JobViewModel.swift:88-91` catches those).
+
+New file `src/__tests__/export.test.js` with 4 unit tests: header-line check, 3-row multi-board fixture round-trip (main + sub-board feed + sub-board final circuit), legacy 29-column CSV reads cleanly, vanilla single-board exporter round-trips empty hierarchy strings. Test does NOT import `parseCSV` from `utils/jobs.js` because that module transitively imports `storage.js` which uses `import.meta.dirname` (broken under jest `--experimental-vm-modules`); inlined a 12-line copy of the parser algorithm instead. The `test.todo` placeholder pinned to Phase 2a in `jobs.test.js` (commit `ebb6183`) is replaced by a comment cross-referencing `export.test.js` — the route-level test would only re-test the mocked `circuitsToCSV` since `jobs.test.js` mocks the export module wholesale.
+
+**Closes Codex deal-breaker #1** (CSV export silently dropping new fields). Test results post-change: `npx jest src/__tests__/export.test.js src/__tests__/jobs.test.js src/__tests__/board-hierarchy-validator.test.js` → 33/33 green.
+
+#### 2026-05-07 — Phase 4a: recording.js single-board scope decision — SHIPPED
+
+**Commit `7e588c8` on `EICR_Automation` `main`.** `src/routes/recording.js` `POST /api/recording/:sessionId/finish` (the legacy whisper / `finishRecordingSession` path) gains a new docstring explicitly declaring the route as SINGLE-BOARD ONLY. The existing `boards[0]` collapse at line 1654 (single-board accumulator extraction from `jobData.boards`) gets a structural comment explaining why this collapse is correct (`session.accumulator.board` is a flat object — not array — and downstream `extractSession()` returns a single `result.board`), plus a `logger.warn` that fires when `jobData.boards.length > 1`, logging the dropped sub-board ids so silent data loss is visible in CloudWatch. The multi-board future routes through Stage 6 (`/api/sonnet-stream` WS, Phase 5+); iOS picks the right path based on whether the job has marked any sub-boards. Any multi-board payload arriving on the whisper route is now framed as a client-side routing bug.
+
+No tests added — the change is structurally documentation + a logger call, and the route is heavily stateful (sessions / S3 / extractSession). Writing a finish-handler harness from scratch to assert one log line is more risk than the change deserves. The existing `recording.test.js` was run as a sanity check post-change → 15/15 green.
+
+**Closes Codex deal-breaker #2** (recording.js silent multi-board drop).
+
+#### 2026-05-07 — Phase 5 fresh-context handoff written
+
+**Sibling `PHASE5_HANDOFF.md` (≈340 lines).** Comprehensive brief for the next session resuming Phase 5. Covers:
+- Cold-start primer summarising every shipped commit by phase (1, 2.1-2.4, 2a, 3, 4, 4a).
+- The CRITICAL Codex correction: `snapshot.circuits` is a keyed object (`{circuit: {field: value}}`) with init at `eicr-extraction-session.js:766`, NOT an array. PLAN.md Phase 5.2 sketch using `.find(...)` and `.push(...)` is structurally wrong — the right shape is composite-string keys (`'main::1'`, `'sub-1::1'`).
+- Audit of `circuits[0]` entrenchment across 6+ files with verbatim line refs (`stage6-snapshot-mutators.js:49,72-73`, `stage6-dispatchers-board.js`, `stage6-dispatcher-ask.js:899`, `stage6-event-bundler.js:126`, `stage6-slot-comparator.js:72`, `stage6-per-turn-writes.js:42,58`, `stage6-tool-schemas.js:70,82,443,489,497`, `stage6-answer-resolver.js:351`, `eicr-extraction-session.js:343,1076,2240`).
+- Recommended 6-slice commit order: 5.1 `ensureMultiBoardShape` migration helper → 5.2 composite-key mutator helpers → 5.3 feature-flag branch on `record_reading` dispatcher → 5.4 reader strangler (event-bundler, comparator, per-turn-writes) → 5.5 writer strangler (`stage6-dispatchers-board.js`, `eicr-extraction-session.js:2240` supplyData read) → 5.6 legacy `circuits[0]` removal (only after `STAGE6_MULTI_BOARD` has been on through one deploy).
+- Explicit "do NOT retire in one pass" list (5 items).
+- Open Codex deal-breaker tracker: #1 CLOSED by 2a, #2 CLOSED by 4a, #3 (`board_ops` wire channel) is Phase 6.0, must land BEFORE the new tools.
+- Test strategy with feature-flag-aware regression suite + iOS-parity script (Phase 8.1).
+- Pre-flight checks before starting: pull main, read path-2 review handoff, run baseline `npm test`, confirm `STAGE6_MULTI_BOARD` env plumbing.
+
+The sprint-level `HANDOFF.md` was updated to point at `PHASE5_HANDOFF.md` for the active phase. The phase-specific handoff is self-contained — a fresh session resuming Phase 5 can read just `PHASE5_HANDOFF.md` and have everything it needs.
+
+**This concludes the documentation+ infrastructure work for Phases 1-4a.** Phase 5 is the next concrete step; Phase 6.0 (Stage 6 board-ops wire protocol) follows it before any new tool can be implemented usefully.
