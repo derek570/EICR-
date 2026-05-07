@@ -48,7 +48,16 @@
  * just the new turn) for zero extraction value.
  */
 
-export const CHITCHAT_PAUSE_THRESHOLD = 10;
+// 8 zero-engagement Sonnet turns ≈ 35-40s of continuous chitchat at the
+// observed ~5s-per-turn cadence. Was 10 (50s) — lowered 2026-05-07 after
+// session 555FA596 ran for 67s without engaging the pause; the threshold
+// landed past the natural session boundary. At ~$0.0067/turn the cost
+// difference 10→8 is only ~1.4¢/episode but the ~10s-faster engagement
+// is the bigger win on long phone-call / walk-between-rooms episodes.
+// Re-evaluate downward if/when Deepgram Flux migration lands — Flux's
+// turn-detection produces fewer, more semantically complete utterances,
+// so equivalent chitchat would tick the counter more slowly.
+export const CHITCHAT_PAUSE_THRESHOLD = 8;
 
 // How many seconds of recent paused-transcript text to replay back to
 // Sonnet on wake. Caps at the configured horizon so a session that sits
