@@ -119,6 +119,102 @@ RULES
 Return JSON only — no prose, no markdown fence.`;
 
 // ---------------------------------------------------------------------------
+// Crop image to the rail region (with margin above/below for labels)
+// ---------------------------------------------------------------------------
+
+/**
+ * Crop the source image to the rail area plus generous vertical margin so the
+ * VLM's attention isn't spread across cabinet door / wall / floor / ceiling
+ * content surrounding the rail.
+ *
+ * Margin choices (tuned 2026-05-07 against the Wylex NHRS12SL field test):
+ *   horizontal: 5% of rail width on each side — small buffer so a slightly
+ *               imprecise rail-bbox detection doesn't clip a real edge device
+ *   above:      200% of rail height — captures typed label strips (close)
+ *               and inspector handwritten cards far above the rail
+ *   below:     200% of rail height — captures the handwritten "label flaps"
+ *               that often hang well below the device row on UK CUs
+ *
+ * Each margin is clamped to image bounds. If the rail is near a frame edge,
+ * the crop simply runs to the edge — we never pad with synthetic content.
+ *
+ * Falls back to the full image if the rail bbox is missing or degenerate
+ * (CV upstream failure shouldn't take the VLM call down).
+ */
+async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireable, logger }) {
+  const bbox = isRewireable ? prepared.panelBounds : prepared.railBbox;
+  if (
+    !bbox ||
+    !Number.isFinite(bbox.left) ||
+    !Number.isFinite(bbox.right) ||
+    !Number.isFinite(bbox.top) ||
+    !Number.isFinite(bbox.bottom) ||
+    bbox.right <= bbox.left ||
+    bbox.bottom <= bbox.top
+  ) {
+    if (logger) {
+      logger.warn('CCU single-shot: rail bbox missing or degenerate, sending full image', {
+        bbox,
+      });
+    }
+    return imageBuffer;
+  }
+
+  const railLeftPx = norm2px(bbox.left, imgW);
+  const railRightPx = norm2px(bbox.right, imgW);
+  const railTopPx = norm2px(bbox.top, imgH);
+  const railBottomPx = norm2px(bbox.bottom, imgH);
+  const railWidth = railRightPx - railLeftPx;
+  const railHeight = railBottomPx - railTopPx;
+
+  const xMargin = Math.round(railWidth * 0.05);
+  const yAboveMargin = Math.round(railHeight * 2.0);
+  const yBelowMargin = Math.round(railHeight * 2.0);
+
+  const cropLeft = Math.max(0, railLeftPx - xMargin);
+  const cropTop = Math.max(0, railTopPx - yAboveMargin);
+  const cropRight = Math.min(imgW, railRightPx + xMargin);
+  const cropBottom = Math.min(imgH, railBottomPx + yBelowMargin);
+  const cropWidth = cropRight - cropLeft;
+  const cropHeight = cropBottom - cropTop;
+
+  if (cropWidth <= 0 || cropHeight <= 0) {
+    if (logger) {
+      logger.warn('CCU single-shot: zero-area crop, sending full image', {
+        cropLeft,
+        cropTop,
+        cropWidth,
+        cropHeight,
+      });
+    }
+    return imageBuffer;
+  }
+
+  // Re-encode at quality 92 — the camera-source JPEG is already lossy, so a
+  // small further re-encode preserves enough fidelity for the labels while
+  // keeping the cropped buffer small. Use mozjpeg=false (default) for
+  // speed; per-extraction this runs once per request, not in a hot loop.
+  const cropped = await sharp(imageBuffer)
+    .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
+    .jpeg({ quality: 92 })
+    .toBuffer();
+
+  if (logger) {
+    logger.info('CCU single-shot rail-region crop', {
+      sourceWidth: imgW,
+      sourceHeight: imgH,
+      cropLeft,
+      cropTop,
+      cropWidth,
+      cropHeight,
+      sourceBytes: imageBuffer.length,
+      croppedBytes: cropped.length,
+    });
+  }
+  return cropped;
+}
+
+// ---------------------------------------------------------------------------
 // VLM call
 // ---------------------------------------------------------------------------
 
@@ -332,7 +428,23 @@ export async function extractViaSingleShot({
 }) {
   const t0 = Date.now();
 
-  // 1. Send the full image with a single VLM call.
+  // 1. Crop to the rail region + label margin before sending to the VLM.
+  //    The full original image is mostly cabinet/wall/floor surrounding the
+  //    rail (rail occupies ~19% of frame area on a typical UK shot). Cropping
+  //    keeps the model's attention on the rail and the label strips above
+  //    and below it, so devices in the middle of the rail are less likely
+  //    to be misclassified as blank from attention dilution. The
+  //    per-slot crops attached to slots[].crop later still come from the
+  //    full original buffer at native resolution for the iOS overlay —
+  //    only the VLM call uses the rail-region crop.
+  const visionImage = await cropToRailRegion({
+    imageBuffer,
+    prepared,
+    imgW,
+    imgH,
+    isRewireable,
+    logger,
+  });
   const prompt = isRewireable ? REWIREABLE_PROMPT : MODERN_PROMPT;
   const abortController = new AbortController();
   const timeoutId = setTimeout(() => abortController.abort(), SINGLE_SHOT_TIMEOUT_MS);
@@ -342,7 +454,7 @@ export async function extractViaSingleShot({
       anthropic,
       model,
       prompt,
-      imageBuffer,
+      imageBuffer: visionImage,
       signal: abortController.signal,
     });
   } finally {
