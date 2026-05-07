@@ -226,6 +226,131 @@ describe('Job routes (supertest)', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
     });
+
+    test('preserves multi-board fields in extracted_data.json on PUT', async () => {
+      // Phase 2.2 regression test (multi-board sprint
+      // .planning-stage6-agentic/handoffs/multi-board-support-2026-05-07/PLAN.md).
+      // Pins that boards[].parent_board_id, .feed_circuit_ref, .board_type,
+      // and the sub-main cable fields survive the PUT round-trip into the
+      // extracted_data.json blob — the JSON pass-through is what makes the
+      // current cloud sync work for multi-board jobs, so any future refactor
+      // that strips boards through a typed shape must keep this test green.
+      // Phase 1's deletion of sub_main_cable_length is also pinned here.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockUpdateJob.mockResolvedValue(undefined);
+
+      let uploadedExtractedDataJson = null;
+      mockUploadText.mockImplementation(async (content, key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          uploadedExtractedDataJson = content;
+        }
+      });
+
+      const payload = {
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-1',
+            designation: 'DB-2',
+            board_type: 'sub_main',
+            parent_board_id: 'main',
+            feed_circuit_ref: '4',
+            sub_main_cable_material: 'Cu',
+            sub_main_cable_csa: '16',
+            sub_main_cpc_csa: '6',
+          },
+        ],
+        circuits: [
+          {
+            circuit: '4',
+            board_id: 'main',
+            is_distribution_circuit: 'yes',
+            feeds_board_id: 'sub-1',
+          },
+          { circuit: '1', board_id: 'sub-1', designation: 'Kitchen' },
+        ],
+      };
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send(payload);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      expect(uploadedExtractedDataJson).not.toBeNull();
+      const written = JSON.parse(uploadedExtractedDataJson);
+      expect(written.boards).toHaveLength(2);
+      expect(written.boards[0]).toMatchObject({ id: 'main', board_type: 'main' });
+      expect(written.boards[1]).toMatchObject({
+        id: 'sub-1',
+        parent_board_id: 'main',
+        feed_circuit_ref: '4',
+        board_type: 'sub_main',
+        sub_main_cable_material: 'Cu',
+        sub_main_cable_csa: '16',
+        sub_main_cpc_csa: '6',
+      });
+      // Phase 1: sub_main_cable_length must NOT survive — iOS dropped it,
+      // so any payload still carrying it is upstream noise. We don't strip
+      // it server-side (the iOS Codable encoder no longer emits it), but
+      // this test pins that we don't accidentally synthesise it either.
+      expect(written.boards[1].sub_main_cable_length).toBeUndefined();
+    });
+
+    test('returns multi-board fields from extracted_data.json on GET', async () => {
+      // Read-side complement to the PUT round-trip pin above. Confirms the
+      // GET handler at src/routes/jobs.js:474 surfaces boards[] verbatim
+      // from the stored JSON, so iOS / web clients receive the hierarchy
+      // fields they wrote.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+
+      const stored = {
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-1',
+            designation: 'DB-2',
+            board_type: 'sub_main',
+            parent_board_id: 'main',
+            feed_circuit_ref: '4',
+            sub_main_cable_csa: '16',
+            sub_main_cpc_csa: '6',
+          },
+        ],
+      };
+      mockDownloadText.mockImplementation(async (key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          return JSON.stringify(stored);
+        }
+        return null;
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .get('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.boards).toHaveLength(2);
+      expect(res.body.boards[1].parent_board_id).toBe('main');
+      expect(res.body.boards[1].feed_circuit_ref).toBe('4');
+      expect(res.body.boards[1].board_type).toBe('sub_main');
+      expect(res.body.boards[1].sub_main_cable_csa).toBe('16');
+      expect(res.body.boards[1].sub_main_cable_length).toBeUndefined();
+    });
+
+    // Phase 2a (CSV header hardening) regression target. Today
+    // `src/export.js:42` defines a fixed CIRCUIT_FIELD_ORDER that does not
+    // include `board_id`, `is_distribution_circuit`, or `feeds_board_id`
+    // — so a circuits round-trip through `test_results.csv` silently
+    // drops these fields. Codex flagged this as a deal-breaker (PLAN.md
+    // section "Deal-breakers from Codex review"). Phase 2a will extend
+    // the field order; once it lands, change this `test.todo` into a
+    // green assertion that mirrors the boards round-trip above.
+    test.todo(
+      'preserves circuit-level multi-board fields (board_id, is_distribution_circuit, feeds_board_id) on round-trip — blocked on Phase 2a CSV header hardening'
+    );
   });
 
   describe('DELETE /api/job/:userId/:jobId', () => {
