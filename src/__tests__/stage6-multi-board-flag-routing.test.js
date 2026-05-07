@@ -35,6 +35,8 @@ import {
   ensureMultiBoardShape,
   isMultiBoardFlagOn,
   circuitExistsInSnapshot,
+  getCircuitBucket,
+  listCircuitRefsInBoard,
 } from '../extraction/stage6-multi-board-shape.js';
 
 function mockLogger() {
@@ -149,6 +151,122 @@ describe('circuitExistsInSnapshot', () => {
     // here from pre-flag-on state).
     const snapshot = makeMultiBoardSession({ 3: { ze: '0.42' } }).stateSnapshot;
     expect(circuitExistsInSnapshot(snapshot, 3)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getCircuitBucket / listCircuitRefsInBoard — flag-aware reader helpers (Slice 5.4)
+// ---------------------------------------------------------------------------
+describe('getCircuitBucket', () => {
+  const originalFlag = process.env.STAGE6_MULTI_BOARD;
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
+    else process.env.STAGE6_MULTI_BOARD = originalFlag;
+  });
+
+  test('flag-off: returns bucket via legacy flat key', () => {
+    delete process.env.STAGE6_MULTI_BOARD;
+    const snapshot = makeLegacySession({ 3: { ze: '0.42' } }).stateSnapshot;
+    expect(getCircuitBucket(snapshot, 3)).toEqual({ ze: '0.42' });
+    expect(getCircuitBucket(snapshot, 99)).toBeUndefined();
+  });
+
+  test('flag-on: returns bucket via composite key with currentBoardId', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession({
+      'main::3': { circuit: 3, board_id: 'main', ze: '0.42' },
+    }).stateSnapshot;
+    expect(getCircuitBucket(snapshot, 3)).toEqual({ circuit: 3, board_id: 'main', ze: '0.42' });
+  });
+
+  test('flag-on: explicit boardId scopes the lookup', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession({
+      'main::3': { circuit: 3, board_id: 'main', ze: '0.42' },
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', ze: '0.18' },
+    }).stateSnapshot;
+    expect(getCircuitBucket(snapshot, 3, 'main').ze).toBe('0.42');
+    expect(getCircuitBucket(snapshot, 3, 'sub-1').ze).toBe('0.18');
+    expect(getCircuitBucket(snapshot, 3, 'sub-2')).toBeUndefined();
+  });
+
+  test('defensive on null snapshot / null circuits', () => {
+    expect(getCircuitBucket(null, 3)).toBeUndefined();
+    expect(getCircuitBucket({}, 3)).toBeUndefined();
+    expect(getCircuitBucket({ circuits: null }, 3)).toBeUndefined();
+  });
+});
+
+describe('listCircuitRefsInBoard', () => {
+  const originalFlag = process.env.STAGE6_MULTI_BOARD;
+  afterEach(() => {
+    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
+    else process.env.STAGE6_MULTI_BOARD = originalFlag;
+  });
+
+  test('flag-off: returns numeric keys >= 1, sorted ascending', () => {
+    delete process.env.STAGE6_MULTI_BOARD;
+    const snapshot = makeLegacySession({ 0: {}, 1: {}, 5: {}, 3: {} }).stateSnapshot;
+    expect(listCircuitRefsInBoard(snapshot)).toEqual([1, 3, 5]);
+  });
+
+  test('flag-off: rejects non-numeric keys (e.g. composite keys returning NaN)', () => {
+    delete process.env.STAGE6_MULTI_BOARD;
+    const snapshot = makeLegacySession({
+      1: {},
+      'main::3': { circuit: 3, board_id: 'main' },
+    }).stateSnapshot;
+    // Number('main::3') === NaN, filtered out; 1 stays.
+    expect(listCircuitRefsInBoard(snapshot)).toEqual([1]);
+  });
+
+  test('flag-on: returns refs from composite-key buckets in current board scope, sorted ascending', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession({
+      'main::1': { circuit: 1, board_id: 'main' },
+      'main::5': { circuit: 5, board_id: 'main' },
+      'main::3': { circuit: 3, board_id: 'main' },
+    }).stateSnapshot;
+    expect(listCircuitRefsInBoard(snapshot)).toEqual([1, 3, 5]);
+  });
+
+  test('flag-on: scopes to the requested board (cross-board iteration not yet supported)', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession({
+      'main::1': { circuit: 1, board_id: 'main' },
+      'main::3': { circuit: 3, board_id: 'main' },
+      'sub-1::1': { circuit: 1, board_id: 'sub-1' },
+      'sub-1::7': { circuit: 7, board_id: 'sub-1' },
+    }).stateSnapshot;
+    expect(listCircuitRefsInBoard(snapshot, 'main')).toEqual([1, 3]);
+    expect(listCircuitRefsInBoard(snapshot, 'sub-1')).toEqual([1, 7]);
+  });
+
+  test('flag-on: ignores legacy flat-keyed buckets (slice 5.6 retires them)', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession({
+      1: { ze: '0.42' }, // legacy bucket; bucket.board_id is undefined
+      'main::3': { circuit: 3, board_id: 'main' },
+    }).stateSnapshot;
+    expect(listCircuitRefsInBoard(snapshot)).toEqual([3]);
+  });
+
+  test('flag-on: defaults boardId from currentBoardId when explicit arg omitted', () => {
+    process.env.STAGE6_MULTI_BOARD = 'true';
+    const snapshot = makeMultiBoardSession({
+      'main::1': { circuit: 1, board_id: 'main' },
+      'sub-1::1': { circuit: 1, board_id: 'sub-1' },
+    }).stateSnapshot;
+    snapshot.currentBoardId = 'sub-1';
+    expect(listCircuitRefsInBoard(snapshot)).toEqual([1]);
+    expect(listCircuitRefsInBoard(snapshot)[0]).toBe(1);
+    // The single ref returned belongs to sub-1's bucket.
+  });
+
+  test('defensive on null snapshot / null circuits', () => {
+    expect(listCircuitRefsInBoard(null)).toEqual([]);
+    expect(listCircuitRefsInBoard({})).toEqual([]);
+    expect(listCircuitRefsInBoard({ circuits: null })).toEqual([]);
   });
 });
 
@@ -404,6 +522,79 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
       board_id: 'main',
       designation: 'Cooker',
     });
+  });
+
+  test('calculate_zs round-trips: composite-key R1+R2 input → composite-key Zs output', async () => {
+    // End-to-end pin for slice 5.4 reader migration: under flag-on, calc_zs
+    // must (a) iterate composite-key buckets via listCircuitRefsInBoard,
+    // (b) read input r1_r2_ohm via getCircuitBucket, (c) write Zs via the
+    // flag-aware mutator wrapper. Ze still lives at circuits[0] until
+    // slice 5.5 migrates board-level readings.
+    const session = makeMultiBoardSession({
+      0: { earth_loop_impedance_ze: '0.35' }, // legacy supply bucket; slice 5.5 migrates this
+      'main::3': { circuit: 3, board_id: 'main', r1_r2_ohm: '0.25' },
+    });
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_calc_zs',
+        name: 'calculate_zs',
+        input: { circuit_ref: 3 },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    const body = JSON.parse(result.content);
+    expect(body.computed).toEqual([
+      { circuit_ref: 3, field: 'measured_zs_ohm', value: '0.60' }, // 0.35 + 0.25 to 2dp
+    ]);
+    expect(body.skipped).toEqual([]);
+    expect(session.stateSnapshot.circuits['main::3'].measured_zs_ohm).toBe('0.60');
+  });
+
+  test('set_field_for_all_circuits walks composite-key buckets in current board only', async () => {
+    // Slice 5.4 reader migration: listCircuitRefsInBoard scopes the iteration
+    // to currentBoardId, so a write to 'all' under flag-on does NOT spill
+    // onto sibling boards. Phase 6 may introduce an explicit cross-board
+    // scope — until then, single-board is the safe default.
+    const session = makeMultiBoardSession({
+      'main::1': { circuit: 1, board_id: 'main', circuit_designation: 'Lighting' },
+      'main::2': { circuit: 2, board_id: 'main', circuit_designation: 'Sockets' },
+      'sub-1::1': { circuit: 1, board_id: 'sub-1', circuit_designation: 'Cooker' },
+    });
+    session.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'DB-2',
+      board_type: 'sub-distribution',
+    });
+
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_setall',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_button_confirmed',
+          value: 'OK',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          scope: 'all',
+        },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.stateSnapshot.circuits['main::1'].rcd_button_confirmed).toBe('OK');
+    expect(session.stateSnapshot.circuits['main::2'].rcd_button_confirmed).toBe('OK');
+    expect(session.stateSnapshot.circuits['sub-1::1'].rcd_button_confirmed).toBeUndefined();
   });
 
   test('delete_circuit removes composite-key bucket', async () => {

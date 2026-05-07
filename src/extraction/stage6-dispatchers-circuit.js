@@ -53,6 +53,7 @@ import {
   renameCircuitFlagAware,
   deleteCircuitFlagAware,
 } from './stage6-snapshot-mutators.js';
+import { getCircuitBucket, listCircuitRefsInBoard } from './stage6-multi-board-shape.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
 import {
@@ -608,11 +609,10 @@ function selectorRefs(input, snapshot) {
       (a, b) => a - b
     );
   }
-  // all: walk every non-supply circuit in the snapshot.
-  return Object.keys(snapshot.circuits || {})
-    .map(Number)
-    .filter((n) => Number.isInteger(n) && n >= 1)
-    .sort((a, b) => a - b);
+  // all: walk every non-supply circuit in the snapshot. Under flag-on, this
+  // walks composite-key buckets scoped to the current board; under flag-off,
+  // numeric keys >= 1 (legacy behaviour).
+  return listCircuitRefsInBoard(snapshot);
 }
 
 /**
@@ -692,7 +692,7 @@ export async function dispatchCalculateZs(call, ctx) {
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = session.stateSnapshot.circuits?.[ref];
+    const bucket = getCircuitBucket(session.stateSnapshot, ref);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;
@@ -788,7 +788,7 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = session.stateSnapshot.circuits?.[ref];
+    const bucket = getCircuitBucket(session.stateSnapshot, ref);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;
@@ -924,15 +924,14 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   }
 
   const scope = input.scope ?? 'non_spare';
-  const allRefs = Object.keys(session.stateSnapshot?.circuits ?? {})
-    .map(Number)
-    .filter((n) => Number.isInteger(n) && n >= 1)
-    .sort((a, b) => a - b);
+  // Flag-aware iteration — under flag-on, walks composite-key buckets in the
+  // current board scope; under flag-off, numeric keys >= 1 (legacy).
+  const allRefs = listCircuitRefsInBoard(session.stateSnapshot);
 
   const applied = [];
   const skipped = [];
   for (const ref of allRefs) {
-    const bucket = session.stateSnapshot.circuits[ref];
+    const bucket = getCircuitBucket(session.stateSnapshot, ref);
     if (!bucket) continue;
     if (scope === 'non_spare') {
       // Two ways a circuit reads as "spare":

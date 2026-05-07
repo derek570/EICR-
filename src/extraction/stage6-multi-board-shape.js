@@ -45,6 +45,67 @@ export function isMultiBoardFlagOn() {
   return process.env.STAGE6_MULTI_BOARD === 'true';
 }
 
+// Phase 5.4 — flag-aware circuit-bucket lookup. Replaces inline
+// `snapshot.circuits[ref]` reads in the calc-tool dispatchers and other
+// circuit-level readers so that under flag-on, the lookup hits the
+// composite key (`${board_id}::${ref}`) instead of the legacy numeric key.
+//
+// Defensive on missing snapshot — returns undefined rather than crashing,
+// matching the pre-existing optional-chain idiom (`circuits?.[ref]`).
+//
+// @param {{circuits: Object, currentBoardId?: string}} snapshot
+// @param {number} ref       — circuit ref (1+ for circuits, 0 for legacy supply)
+// @param {string?} boardId  — optional explicit override; falls back to currentBoardId then 'main'
+// @returns {Object|undefined}
+export function getCircuitBucket(snapshot, ref, boardId) {
+  if (!snapshot || !snapshot.circuits) return undefined;
+  if (isMultiBoardFlagOn()) {
+    const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+    return snapshot.circuits[`${id}::${ref}`];
+  }
+  return snapshot.circuits[ref];
+}
+
+// Phase 5.4 — flag-aware "list every non-supply circuit ref in the active
+// board scope". Replaces inline `Object.keys(snapshot.circuits).map(Number).filter(...)`
+// patterns in `selectorRefs` and `set_field_for_all_circuits` so that
+// under flag-on, the iteration sees composite-key buckets correctly.
+//
+// Returns refs sorted ascending (matches the legacy convention so calc tools
+// process circuits in numeric order regardless of insertion order).
+//
+// Flag-on scoping: only buckets whose `board_id` matches the resolved board
+// id are returned. Cross-board iteration (e.g. "all circuits on every
+// board") is not yet a tool concern — Phase 6 will introduce a
+// `select_board` tool that flips currentBoardId; until then, iteration is
+// always single-board.
+//
+// @param {{circuits: Object, currentBoardId?: string}} snapshot
+// @param {string?} boardId  — optional explicit override
+// @returns {number[]}        — sorted ascending; circuit 0 (legacy supply) excluded
+export function listCircuitRefsInBoard(snapshot, boardId) {
+  if (!snapshot || !snapshot.circuits) return [];
+  if (isMultiBoardFlagOn()) {
+    const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+    const refs = [];
+    for (const bucket of Object.values(snapshot.circuits)) {
+      if (
+        bucket &&
+        bucket.board_id === id &&
+        Number.isInteger(bucket.circuit) &&
+        bucket.circuit >= 1
+      ) {
+        refs.push(bucket.circuit);
+      }
+    }
+    return refs.sort((a, b) => a - b);
+  }
+  return Object.keys(snapshot.circuits)
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n >= 1)
+    .sort((a, b) => a - b);
+}
+
 // Phase 5.3 — flag-aware existence check. Replaces inline
 // `circuit in snapshot.circuits` checks in the validators so that under
 // flag-on, validators consult the composite key (`${board_id}::${circuit}`)
