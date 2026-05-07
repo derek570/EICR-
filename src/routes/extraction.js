@@ -1911,22 +1911,61 @@ router.post(
         attributionBoardIndex,
       });
 
-      // Resize image if base64 would exceed Anthropic's 5MB limit (~3.75MB raw)
+      // Two buffers, one role each:
+      //
+      //   apiBytes      — downsized for whole-image VLM calls (board
+      //                   classifier). Anthropic's request body cap forces a
+      //                   resize, AND the model auto-downsamples >1568×1568
+      //                   internally before vision processing, so sending
+      //                   the full 12 MP iPhone capture buys nothing on
+      //                   whole-image calls.
+      //
+      //   originalBytes — full quality, used for per-window crops in
+      //                   extractViaSlidingWindow. Each window is ~5
+      //                   modules wide; cropping a sharp 4032-wide source
+      //                   yields ~876-px windows that resize cleanly to
+      //                   1536 for the per-window VLM call. Cropping the
+      //                   downsized 2048-wide source yields ~445-px
+      //                   windows that have to be 3.4×-upscaled to 1536,
+      //                   destroying small-text legibility on the labels.
+      //                   Field test 2026-05-07: same Wylex NHRS12SL board
+      //                   gave 16 perfect slots in the morning at 97 px /
+      //                   module and 25 duplicated slots in the afternoon
+      //                   at 89 px / module — the difference came entirely
+      //                   from manual-fit framing variance after the
+      //                   downsize had already capped the headroom.
+      //                   Sourcing crops from the original buffer takes
+      //                   the rail back to ~175 px / module on a typical
+      //                   16-way board, well above Sonnet's flip threshold.
+      //
+      // Image-token billing is bucketed by effective resolution, not source
+      // pixels, so the per-window calls cost the same regardless of source
+      // size. The classifier still sees the downsized image so its tokens
+      // and request size are unchanged from before.
       const MAX_BASE64_BYTES = 5 * 1024 * 1024;
       const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
-      let imageBytes = await fs.readFile(tempPath);
+      const originalBytes = await fs.readFile(tempPath);
+      const originalMeta = await sharp(originalBytes).metadata();
+      const originalImageWidth = originalMeta.width || 0;
+      const originalImageHeight = originalMeta.height || 0;
+      let apiBytes = originalBytes;
 
-      if (imageBytes.length > MAX_RAW_BYTES) {
+      if (apiBytes.length > MAX_RAW_BYTES) {
         logger.info('CCU image too large for API, resizing with sharp', {
-          originalBytes: imageBytes.length,
+          originalBytes: apiBytes.length,
           maxBytes: MAX_RAW_BYTES,
         });
-        imageBytes = await sharp(imageBytes)
+        apiBytes = await sharp(originalBytes)
           .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
           .jpeg({ quality: 80 })
           .toBuffer();
-        logger.info('CCU image resized', { newBytes: imageBytes.length });
+        logger.info('CCU image resized', { newBytes: apiBytes.length });
       }
+      // Alias so the rest of the route handler — board classifier base64,
+      // CV stages (Stage 1/2), per-slot fallback path — keeps reading the
+      // downsized buffer it always read. extractViaSlidingWindow alone is
+      // switched over to originalBytes below.
+      const imageBytes = apiBytes;
 
       const base64 = Buffer.from(imageBytes).toString('base64');
 
@@ -2168,14 +2207,49 @@ router.post(
       if (slidingWindowEnabled) {
         const { extractViaSlidingWindow } = await import('../extraction/ccu-sliding-window.js');
         try {
+          // Scale the prepared geometry from CV-space (apiBytes dimensions)
+          // into source-space (originalBytes dimensions) so that
+          // extractViaSlidingWindow crops windows in original-pixel coords.
+          //
+          // railBbox, medianRails, slotCentersX, panelBounds are all in
+          // per-1000 normalised space and resolve correctly under any
+          // imgW/imgH via norm2px(). Only the absolute-pixel-space fields
+          // (cvPitchDiag.pitchPx and cvPitchDiag.railWidthPx) need explicit
+          // multiplication. If originalBytes was identical to apiBytes
+          // (small upload, no resize), the scale is 1.0 and the prepared
+          // geometry passes through unchanged.
+          const sourceImgW = originalImageWidth || prepared.imageWidth;
+          const sourceImgH = originalImageHeight || prepared.imageHeight;
+          const sourceScale = prepared.imageWidth > 0 ? sourceImgW / prepared.imageWidth : 1;
+          const preparedForSlidingWindow =
+            sourceScale === 1
+              ? prepared
+              : {
+                  ...prepared,
+                  imageWidth: sourceImgW,
+                  imageHeight: sourceImgH,
+                  cvPitchDiag: prepared.cvPitchDiag
+                    ? {
+                        ...prepared.cvPitchDiag,
+                        pitchPx:
+                          prepared.cvPitchDiag.pitchPx != null
+                            ? prepared.cvPitchDiag.pitchPx * sourceScale
+                            : null,
+                        railWidthPx:
+                          prepared.cvPitchDiag.railWidthPx != null
+                            ? prepared.cvPitchDiag.railWidthPx * sourceScale
+                            : null,
+                      }
+                    : prepared.cvPitchDiag,
+                };
           const swResult = await extractViaSlidingWindow({
-            imageBuffer: imageBytes,
-            prepared,
+            imageBuffer: originalBytes,
+            prepared: preparedForSlidingWindow,
             isRewireable: isRewireablePipeline,
             anthropic,
             model,
-            imgW: prepared.imageWidth,
-            imgH: prepared.imageHeight,
+            imgW: sourceImgW,
+            imgH: sourceImgH,
             boardManufacturer: boardClassification.boardManufacturer,
             logger,
             userId: req.user.id,
