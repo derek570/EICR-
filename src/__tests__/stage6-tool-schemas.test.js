@@ -72,14 +72,18 @@ const EXPECTED_TOOL_NAMES = [
   // 2026-05-07 multi-board sprint Phase 6.2: select_board (id-only) flips
   // currentBoardId to a previously-added board.
   'select_board',
+  // 2026-05-07 multi-board sprint Phase 6.3: mark_distribution_circuit
+  // flags a circuit as feeding another board (sub-main). STOP-SLICE: no
+  // forward-ref ask_user — Sonnet must call add_board FIRST.
+  'mark_distribution_circuit',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 15 tools with the expected names', () => {
+  test('exports exactly 16 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(15);
+    expect(TOOL_SCHEMAS).toHaveLength(16);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });

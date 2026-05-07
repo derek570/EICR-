@@ -793,6 +793,44 @@ const setFieldForAllCircuits = makeTool({
 });
 
 // ---------------------------------------------------------------------------
+// 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit.
+//
+// Inspector says a circuit on the current board feeds another board:
+// "Circuit 4 feeds the garage CU". Sonnet calls
+// mark_distribution_circuit with the circuit ref and the fed-from
+// board id. Dispatcher writes is_distribution_circuit='yes' +
+// feeds_board_id onto the circuit bucket; emits
+// {op: 'mark_distribution_circuit', ...} onto perTurnWrites.boardOps.
+//
+// STOP-SLICE deviation from PLAN.md L577-583: this slice REJECTS with
+// `feeds_board_not_found` when the target board does not yet exist.
+// The PLAN.md prescription was to ask_user (then chain add_board);
+// path-2 resolver entanglement risk made this a supervised slice.
+// Sonnet should call add_board FIRST, then mark_distribution_circuit.
+// ---------------------------------------------------------------------------
+const markDistributionCircuit = makeTool({
+  name: 'mark_distribution_circuit',
+  description:
+    'Flag an existing circuit as a distribution circuit feeding another board (sub-main). Use when the inspector says a circuit feeds a sub-board, e.g. "Circuit 4 feeds the kitchen sub-board". The fed-from board MUST already exist on the job — call add_board first if it does not.',
+  properties: {
+    circuit: {
+      type: 'integer',
+      description: 'Circuit ref on the (board_id ?? currentBoardId).',
+    },
+    board_id: {
+      type: 'string',
+      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
+    },
+    feeds_board_id: {
+      type: 'string',
+      description:
+        'ID of the board this circuit feeds. MUST already exist on the job — call add_board first if it does not.',
+    },
+  },
+  required: ['circuit', 'feeds_board_id'],
+});
+
+// ---------------------------------------------------------------------------
 // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
 //
 // Inspector switches between boards they have already added — "back to the
@@ -889,6 +927,8 @@ export const TOOL_SCHEMAS = [
   addBoard,
   // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
   selectBoard,
+  // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit.
+  markDistributionCircuit,
 ];
 
 /**

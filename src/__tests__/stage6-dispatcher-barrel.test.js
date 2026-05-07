@@ -27,7 +27,7 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all fourteen keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all fifteen keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -48,6 +48,9 @@ describe('barrel re-exports', () => {
         'add_board',
         // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
         'select_board',
+        // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit
+        // (no forward-ref ask_user — STOP-SLICE).
+        'mark_distribution_circuit',
       ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
@@ -75,6 +78,10 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.add_board).toBe(boardSibling.dispatchAddBoard);
     // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
     expect(WRITE_DISPATCHERS.select_board).toBe(boardSibling.dispatchSelectBoard);
+    // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit.
+    expect(WRITE_DISPATCHERS.mark_distribution_circuit).toBe(
+      boardSibling.dispatchMarkDistributionCircuit
+    );
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -169,6 +176,14 @@ describe('barrel re-exports', () => {
       // when the dispatcher runs against any seeded snapshot, so id 'main'
       // resolves cleanly.
       select_board: { board_id: 'main' },
+      // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit.
+      // The seeded session has circuit 3 on the synthesised 'main' board.
+      // Self-feeding 'main' is semantically weird but the dispatcher does
+      // NOT enforce no-self-feed (that's a separate hierarchy concern).
+      // Self-feed exercises the happy path purely because it's the only
+      // existing board id in the minimal seed; the actual no-cycle gate
+      // lives in validateBoardHierarchy and is invoked from add_board.
+      mark_distribution_circuit: { circuit: 3, feeds_board_id: 'main' },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       // Fresh session per call so create_circuit(99) etc don't collide.

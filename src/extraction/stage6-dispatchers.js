@@ -49,6 +49,7 @@ import {
   dispatchRecordBoardReading,
   dispatchAddBoard,
   dispatchSelectBoard,
+  dispatchMarkDistributionCircuit,
 } from './stage6-dispatchers-board.js';
 import { dispatchStartDialogueScript } from './stage6-dispatchers-script.js';
 
@@ -100,6 +101,12 @@ export const WRITE_DISPATCHERS = {
   // Inspector switches between previously-added boards. Designation fuzzy
   // match is deferred to a supervised session.
   select_board: dispatchSelectBoard,
+  // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit.
+  // Marks an existing circuit as feeding another board. STOP-SLICE: no
+  // forward-ref ask_user when feeds_board_id doesn't exist — Sonnet must
+  // call add_board FIRST. Path-2 resolver entanglement risk made the
+  // ask_user flow a supervised slice.
+  mark_distribution_circuit: dispatchMarkDistributionCircuit,
 };
 
 /**

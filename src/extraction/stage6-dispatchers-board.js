@@ -50,7 +50,7 @@
 import { applyBoardReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM } from './stage6-tool-schemas.js';
-import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
+import { ensureMultiBoardShape, getCircuitBucket } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
@@ -418,4 +418,113 @@ export async function dispatchSelectBoard(call, ctx) {
     input_summary: { board_id: target.id },
   });
   return envelope(call.tool_call_id, { ok: true, currentBoardId: target.id }, false);
+}
+
+// ---------------------------------------------------------------------------
+// 2026-05-07 multi-board sprint Phase 6.3 — dispatchMarkDistributionCircuit.
+//
+// Inspector says "Circuit 4 feeds the garage CU". Sonnet calls
+// mark_distribution_circuit; dispatcher locates the circuit on the
+// (board_id ?? currentBoardId) board, verifies feeds_board_id exists,
+// writes is_distribution_circuit='yes' + feeds_board_id, emits an op.
+//
+// STOP-SLICE deviation from PLAN.md L577-583: when feeds_board_id does
+// not resolve to an existing board, REJECT with `feeds_board_not_found`.
+// PLAN.md prescribed an ask_user(add_board) flow; that's path-2 resolver
+// territory and is deferred to a supervised session. Sonnet's prompt is
+// updated (Phase 7.1) to call add_board FIRST when the target doesn't
+// exist, so this contract remains the model's responsibility.
+//
+// Bucket lookup: getCircuitBucket is flag-aware — under flag-off it reads
+// snapshot.circuits[ref], under flag-on it reads
+// snapshot.circuits['${board_id}::${ref}']. Centralising the lookup
+// keeps the dispatcher correct under both modes without conditional
+// branches in this file.
+// ---------------------------------------------------------------------------
+export async function dispatchMarkDistributionCircuit(call, ctx) {
+  const { session, logger, turnId, perTurnWrites, round } = ctx;
+  const input = call.input ?? {};
+
+  function reject(code, field) {
+    const err = field == null ? { code } : { code, field };
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'mark_distribution_circuit',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: err,
+      input_summary: {
+        circuit: Number.isInteger(input.circuit) ? input.circuit : null,
+        feeds_board_id: typeof input.feeds_board_id === 'string' ? input.feeds_board_id : null,
+      },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // 1) circuit must be a positive integer.
+  if (!Number.isInteger(input.circuit) || input.circuit < 1) {
+    return reject('invalid_circuit', 'circuit');
+  }
+
+  // 2) feeds_board_id must be a non-empty string.
+  if (typeof input.feeds_board_id !== 'string' || input.feeds_board_id.trim() === '') {
+    return reject('invalid_feeds_board_id', 'feeds_board_id');
+  }
+
+  const snapshot = session.stateSnapshot;
+  ensureMultiBoardShape(snapshot);
+
+  // 3) Resolve the source board (board_id arg → currentBoardId → 'main').
+  const sourceBoardId = input.board_id ?? snapshot.currentBoardId ?? 'main';
+  const sourceBoard = (snapshot.boards ?? []).find((b) => b && b.id === sourceBoardId);
+  if (!sourceBoard) {
+    return reject('source_board_not_found', 'board_id');
+  }
+
+  // 4) Resolve the target board. STOP-SLICE: NO forward-ref ask_user —
+  //    Sonnet must call add_board first when the target doesn't exist.
+  const targetBoard = (snapshot.boards ?? []).find((b) => b && b.id === input.feeds_board_id);
+  if (!targetBoard) {
+    return reject('feeds_board_not_found', 'feeds_board_id');
+  }
+
+  // 5) Locate the circuit bucket on the source board (flag-aware).
+  const bucket = getCircuitBucket(snapshot, input.circuit, sourceBoardId);
+  if (!bucket) {
+    return reject('circuit_not_found', 'circuit');
+  }
+
+  // 6) Mutate: mark as distribution circuit + record fed board.
+  bucket.is_distribution_circuit = 'yes';
+  bucket.feeds_board_id = targetBoard.id;
+
+  // 7) Emit wire op. Carry source_board_id explicitly so iOS doesn't have
+  //    to assume currentBoardId at receive time.
+  perTurnWrites.boardOps.push({
+    op: 'mark_distribution_circuit',
+    circuit_ref: input.circuit,
+    feeds_board_id: targetBoard.id,
+    source_board_id: sourceBoardId,
+  });
+
+  // 8) Log success.
+  logToolCall(logger, {
+    sessionId: session.sessionId,
+    turnId,
+    tool_use_id: call.tool_call_id,
+    tool: 'mark_distribution_circuit',
+    round,
+    is_error: false,
+    outcome: 'ok',
+    validation_error: null,
+    input_summary: {
+      circuit: input.circuit,
+      source_board_id: sourceBoardId,
+      feeds_board_id: targetBoard.id,
+    },
+  });
+  return envelope(call.tool_call_id, { ok: true }, false);
 }
