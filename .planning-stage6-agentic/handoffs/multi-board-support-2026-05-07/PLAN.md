@@ -956,3 +956,19 @@ Four commits on `EICR_Automation` `main`, all pre-CI green:
 **Test counts post-Phase 2:** 1 todo + 29 passed in the two suites I touched (was 1 todo + 16 passed mid-phase). Stage6-cached-prefix-trust-boundary suite (3000-line, schema-aware) was kicked off as a sanity check — still running at commit time, expected unaffected because the schema additions are purely additive and don't collide with the field names that test verifies.
 
 **Phase 3 (PDF sub-main section) is the next concrete step.** Like Phase 1, it is iOS-only — operates on `EICRHTMLTemplate.swift` to render a per-sub-board `<h3>` block. Lower blast radius than Phase 2; a single session.
+
+#### 2026-05-07 — Phase 3: PDF sub-main section (iOS-only) — SHIPPED
+
+**Commit `df4311c` on `CertMateUnified` `main`.** Inside the per-board landscape page loop in `Sources/PDF/EICRHTMLTemplate.swift` (line 1472, `for board in job.boards`), the existing 4-row Board Details table is now followed (when `board.boardType == .subDistribution || .subMain`) by a single-row "Distribution Circuit (Sub-Main)" section. Cells: Fed from (parent designation, looked up via `job.boards.first { $0.id == board.parentBoardId }`), Feed circuit (`board.feedCircuitRef`), Cable material (`board.subMainCableMaterial`), Live conductor CSA (`board.subMainCableCsa`), CPC CSA (`board.subMainCpcCsa`). Length is intentionally omitted (Phase 1 dropped the field at the model layer — a length cell here would not type-check).
+
+The implementation splits the existing single `html += """..."""` multi-line literal into two heredocs around the new conditional block, keeping the rendered HTML byte-identical for non-sub-boards. Used the existing `red-bar-small` heading + 1×N `board-detail-table` layout exactly, so the new section blends into the page styling. Bare `esc(...)` rather than `EICRHTMLTemplate.esc(...)` to match the surrounding code style (it's a private static member of the same type).
+
+Tests: 4 new XCTests in `Tests/CertMateUnifiedTests/PDF/EICRHTMLTemplateTests.swift`:
+- `testSubMainSectionRendersOnSubBoard` — happy path; asserts heading + parent designation + material + both CSAs.
+- `testSubMainSectionAbsentOnSingleMainBoard` — pins that the section is the load-bearing signal that a page belongs to a downstream board.
+- `testSubMainSectionRendersOnSubDistributionToo` — covers `.subDistribution` so a typo narrowing the conditional to `.subMain` only would fail.
+- `testSubMainSectionDoesNotRenderCableLength` — Phase 1 cross-check; a future regression that re-introduces a cable-length row would need to be deliberate.
+
+Build verified: `xcodebuild ... -destination 'generic/platform=iOS Simulator' build` → BUILD SUCCEEDED. Tests verified via `xcodebuild test -destination 'platform=macOS,variant=Mac Catalyst' -only-testing:.../EICRHTMLTemplateTests CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=""` → 25/25 pass (was 21/21 pre-Phase 3; the 4 new tests are additive). Used the Catalyst destination because `xcrun simctl create` hangs in "creation state" on this Mac, so the iPhone Simulator boot path is broken — flagged but not in scope. The Catalyst test runs are equivalent for these tests because they only exercise pure-string HTML output (no WKWebView, no PDF rendering).
+
+**Phase 4 (`/api/analyze-ccu` board attribution + iOS `.addNewBoard` mode) is the next concrete step.** Backend + iOS, single session, low blast radius — but Phase 4a (recording.js single-board scope decision) is also unblocked and could land in parallel.
