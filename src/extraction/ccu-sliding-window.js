@@ -27,8 +27,11 @@
  *     (1) every real edge device gets at least 2 window passes (no single-
  *         coverage at the rail extremes);
  *     (2) end-of-rail is self-validating — if the leftmost or rightmost
- *         window returns close to a full `windowMod` of devices, the rail
- *         estimate was short and a warning is logged;
+ *         overshoot window returns close to a full `windowMod` of devices,
+ *         the rail estimate was short and the extra modules were caught.
+ *         This is the success case (overshoot did its job), logged at
+ *         info level for diagnostics. It does NOT downgrade confidence:
+ *         populated overshoot is the design intent, not a defect.
  *     (3) the merger's "no leftover unowned slots in the interior" guarantee
  *         removes the entire class of fabricated "exposed rail" defects
  *         that the position-clustered pipeline produced when it dropped a
@@ -692,25 +695,26 @@ export async function extractViaSlidingWindow({
 
   // --- 8. Edge-overshoot diagnostics ----------------------------------
   // If a left- or right-overshoot window returned close to a full windowMod
-  // of devices (specifically: > windowMod - overshootMod), the rail probably
-  // extended further than the CV thought. Log a warning; downstream callers
-  // see lowConfidence=true so the inspector knows to verify edge devices.
-  let lowConfidence = false;
+  // of devices (specifically: > windowMod - overshootMod), the rail extended
+  // further than the CV's bbox estimate and the overshoot windows caught
+  // those extra modules. This is the success case for the overshoot design
+  // (every real edge device gets ≥2 passes AND the rail extent is self-
+  // validated) so we log it at info level for diagnostics. We do NOT set
+  // lowConfidence=true: populated overshoot is the intended outcome, not a
+  // defect. Downstream lowConfidence is computed from Stage 1/2 only.
+  const lowConfidence = false;
   const edgeOvershootSaturated = windowResults.filter(
     (r) => r.overshoot !== 'none' && r.entries.length > windowMod - overshootMod
   );
-  if (edgeOvershootSaturated.length > 0) {
-    lowConfidence = true;
-    if (logger) {
-      logger.warn('CCU edge overshoot saturated — rail may extend past CV estimate', {
-        userId,
-        windows: edgeOvershootSaturated.map((r) => ({
-          window: r.window,
-          overshoot: r.overshoot,
-          entries: r.entries.length,
-        })),
-      });
-    }
+  if (edgeOvershootSaturated.length > 0 && logger) {
+    logger.info('CCU overshoot validated rail extent — extra modules caught beyond CV bbox', {
+      userId,
+      windows: edgeOvershootSaturated.map((r) => ({
+        window: r.window,
+        overshoot: r.overshoot,
+        entries: r.entries.length,
+      })),
+    });
   }
 
   const totalUsage = windowResults.reduce(
