@@ -992,6 +992,25 @@ export const TOOL_SCHEMAS = [
   markDistributionCircuit,
 ];
 
+// ---------------------------------------------------------------------------
+// 2026-05-07 multi-board sprint Phase 6.6 — BOARD_OP_NAMES surface lock.
+//
+// Closed enum naming every tool that pushes onto perTurnWrites.boardOps
+// (the Phase 6.0 wire channel). Pinned by stage6-board-op-names.test.js so
+// adding a future board-shape tool without updating the enum (or the
+// barrel-wire-in audit) trips a loud regression instead of silently
+// drifting the iOS receiver's contract.
+//
+// Frozen so a downstream caller can't .push() / .pop() the constant in
+// place — same discipline as ASK_USER_ANSWER_OUTCOMES /
+// RESTRAINED_MODE_EVENTS / ASK_USER_LIFECYCLES.
+// ---------------------------------------------------------------------------
+export const BOARD_OP_NAMES = Object.freeze([
+  'add_board',
+  'select_board',
+  'mark_distribution_circuit',
+]);
+
 /**
  * Look up a tool by name. Returns undefined for unknown names so callers can
  * short-circuit cleanly when a dispatcher receives an unrecognised tool_use
