@@ -2206,6 +2206,38 @@ router.post(
       let classified, labelPassResult;
       if (slidingWindowEnabled) {
         const { extractViaSlidingWindow } = await import('../extraction/ccu-sliding-window.js');
+        // Route the sliding-window VLM calls (and ONLY those) to whichever
+        // model CCU_SLIDING_WINDOW_MODEL names. Defaults to CCU_MODEL so
+        // existing deployments don't change behaviour unless explicitly
+        // opted in. When the chosen model name starts with "gpt-", wrap an
+        // OpenAI client in an Anthropic-shaped adapter; otherwise keep the
+        // existing Anthropic client. The classifier and any other
+        // whole-image VLM calls upstream stay on Sonnet — only the
+        // per-window enumeration (the surface that exhibits within-window
+        // over-enumeration on identical-rating MCB rows) gets re-targeted.
+        const slidingWindowModel = (process.env.CCU_SLIDING_WINDOW_MODEL || model).trim();
+        const { isOpenAIModel, createOpenAIAnthropicAdapter } =
+          await import('../extraction/openai-vision-adapter.js');
+        const swUseOpenAI = isOpenAIModel(slidingWindowModel);
+        let swClient = anthropic;
+        if (swUseOpenAI) {
+          const openaiKey = process.env.OPENAI_API_KEY;
+          if (!openaiKey) {
+            logger.warn(
+              'CCU_SLIDING_WINDOW_MODEL is OpenAI but OPENAI_API_KEY missing — falling back to Anthropic',
+              {
+                userId: req.user.id,
+                slidingWindowModel,
+              }
+            );
+          } else {
+            swClient = createOpenAIAnthropicAdapter({ apiKey: openaiKey });
+            logger.info('CCU sliding-window using OpenAI', {
+              userId: req.user.id,
+              slidingWindowModel,
+            });
+          }
+        }
         try {
           // Scale the prepared geometry from CV-space (apiBytes dimensions)
           // into source-space (originalBytes dimensions) so that
@@ -2246,8 +2278,8 @@ router.post(
             imageBuffer: originalBytes,
             prepared: preparedForSlidingWindow,
             isRewireable: isRewireablePipeline,
-            anthropic,
-            model,
+            anthropic: swClient,
+            model: swUseOpenAI && process.env.OPENAI_API_KEY ? slidingWindowModel : model,
             imgW: sourceImgW,
             imgH: sourceImgH,
             boardManufacturer: boardClassification.boardManufacturer,
