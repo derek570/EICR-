@@ -1,7 +1,7 @@
 # Multi-Board / Sub-Main Support — Fresh-Context Handoff
 
 **Read this first** in a new session. Full plan in sibling `PLAN.md` (~870 lines, refer as needed).
-Last updated 2026-05-07. Status: **Phases 1, 2, 2a, 3, 4, 4a SHIPPED. Phase 5 (Stage 6 state-model widening, 2-3 sessions) is the next concrete step — see [PHASE5_HANDOFF.md](PHASE5_HANDOFF.md).**
+Last updated 2026-05-07. Status: **Phases 1, 2, 2a, 3, 4, 4a SHIPPED. Phase 5 slices 5.1–5.5 SHIPPED (`afd928f` + `4df60ee` + `68d7b6e` for 5.5). Slice 5.6 (legacy `circuits[0]` removal) is held back until `STAGE6_MULTI_BOARD=true` soaks for ≥1 deploy cycle. Phase 6.0 (`board_ops` wire channel — Codex deal-breaker #3) is the next concrete step after 5.6.**
 
 > If you are resuming Phase 5 specifically, jump straight to
 > [PHASE5_HANDOFF.md](PHASE5_HANDOFF.md) — it is self-contained and

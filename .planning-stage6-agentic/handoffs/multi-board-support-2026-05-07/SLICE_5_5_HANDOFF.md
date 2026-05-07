@@ -7,6 +7,17 @@ covers slices 5.1–5.6 design.
 This file is the focused brief for the **two remaining slices** after the
 2026-05-07 session shipped 5.1, 5.2, 5.3, and 5.4. Last updated 2026-05-07.
 
+> **STATUS — slice 5.5 SHIPPED.** Three commits on `main`: `afd928f`
+> (5.5.1 `applyBoardReadingMultiBoard` mutator + flag-aware wrapper),
+> `4df60ee` (5.5.2 `dispatchRecordBoardReading` migrated, including the
+> path-2 auto-resolve invariant test), `68d7b6e` (5.5.3 snapshot
+> serialiser readers — supply line, non-supply iteration, per-ref bucket
+> fetch, hasCircuits + token-estimate log line). Backend suite 3054/3057
+> green (3 skipped, +21 from 3033 baseline). **Slice 5.6 is still gated
+> on a deploy cycle of `STAGE6_MULTI_BOARD=true` soak — DO NOT ship 5.6
+> without that field-test green.** See PLAN.md delivery log for the full
+> slice 5.5 entry.
+
 ---
 
 ## What's already shipped (cold-start primer)
@@ -426,10 +437,9 @@ is where regressions will most likely surface.
 - [x] 5.2 — Composite-key mutator helpers + tests (`9fd646f`)
 - [x] 5.3 — Feature-flag branch on every circuit-level write dispatcher (`0876bed`)
 - [x] 5.4 — Strangler reader migration (calc tools + set_field_for_all_circuits) (`cd43a50`)
-- [ ] 5.5 — Strangler writer migration (record_board_reading + supplyData read + snapshot serialiser)
+- [x] 5.5 — Strangler writer migration (record_board_reading + supplyData read + snapshot serialiser) (`afd928f` + `4df60ee` + `68d7b6e`)
 - [ ] 5.6 — Remove `circuits[0]` references + legacy mutators (only after `STAGE6_MULTI_BOARD` has been on through one deploy cycle)
-- [x] PLAN.md delivery-log entries for slices 5.1 / 5.2 / 5.3 / 5.4
-- [ ] PLAN.md delivery-log entry for slice 5.5
+- [x] PLAN.md delivery-log entries for slices 5.1 / 5.2 / 5.3 / 5.4 / 5.5
 - [ ] CLAUDE.md changelog row when phase complete (one row per phase, not per slice)
 - [ ] Memory entry update — set Phase 5 to DONE and re-point "next concrete step" to Phase 6.0 (the `board_ops` wire channel)
 
