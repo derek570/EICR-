@@ -21,7 +21,7 @@
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 
 describe('createPerTurnWrites()', () => {
-  test('returns an object with the six expected fields all initially empty', () => {
+  test('returns an object with the seven expected fields all initially empty', () => {
     const w = createPerTurnWrites();
     expect(w.readings).toBeInstanceOf(Map);
     expect(w.readings.size).toBe(0);
@@ -38,6 +38,10 @@ describe('createPerTurnWrites()', () => {
     expect(w.deletedObservations).toHaveLength(0);
     expect(Array.isArray(w.circuitOps)).toBe(true);
     expect(w.circuitOps).toHaveLength(0);
+    // boardOps is the Phase 6.0 wire channel for board mutations
+    // (Codex deal-breaker #3). Inert until Phase 6 dispatchers populate it.
+    expect(Array.isArray(w.boardOps)).toBe(true);
+    expect(w.boardOps).toHaveLength(0);
   });
 
   test('each call returns a NEW object — no shared references across invocations (reset-per-turn contract)', () => {
@@ -50,6 +54,7 @@ describe('createPerTurnWrites()', () => {
     expect(a.observations).not.toBe(b.observations);
     expect(a.deletedObservations).not.toBe(b.deletedObservations);
     expect(a.circuitOps).not.toBe(b.circuitOps);
+    expect(a.boardOps).not.toBe(b.boardOps);
 
     // Mutating one must not affect the other.
     a.readings.set('Ze_ohms::1', { value: '0.35', confidence: 1.0, source_turn_id: 't1' });
@@ -59,9 +64,11 @@ describe('createPerTurnWrites()', () => {
       source_turn_id: 't1',
     });
     a.cleared.push({ field: 'Zs_ohms', circuit: 1, reason: 'user_correction' });
+    a.boardOps.push({ op: 'add_board', board_id: 'sub-1', designation: 'DB-2' });
     expect(b.readings.size).toBe(0);
     expect(b.boardReadings.size).toBe(0);
     expect(b.cleared).toHaveLength(0);
+    expect(b.boardOps).toHaveLength(0);
   });
 
   test('readings Map has last-write-wins semantics on the same `${field}::${circuit}` key (same-turn correction pathway)', () => {

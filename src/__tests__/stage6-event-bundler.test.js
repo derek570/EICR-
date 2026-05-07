@@ -19,6 +19,7 @@ function makePerTurnWrites(overrides = {}) {
     observations: overrides.observations ?? [],
     deletedObservations: overrides.deletedObservations ?? [],
     circuitOps: overrides.circuitOps ?? [],
+    boardOps: overrides.boardOps ?? [],
   };
 }
 
@@ -144,19 +145,78 @@ describe('bundleToolCallsIntoResult — Slot inclusion (per-new-slot tests)', ()
 
   test('non-empty deletedObservations → observation_deletions present; cleared_readings absent', () => {
     const deletedObservations = [{ id: 'obs-1', reason: 'duplicate' }];
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ deletedObservations }),
-      { questions: [] },
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ deletedObservations }), {
+      questions: [],
+    });
     expect(r.observation_deletions).toEqual(deletedObservations);
     expect('cleared_readings' in r).toBe(false);
     expect('circuit_updates' in r).toBe(false);
+  });
+
+  // Phase 6.0 — board_ops wire channel slot.
+  test('non-empty boardOps → board_ops present; other new slots absent', () => {
+    const boardOps = [
+      { op: 'add_board', board_id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' },
+    ];
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ boardOps }), { questions: [] });
+    expect(r.board_ops).toEqual(boardOps);
+    expect('cleared_readings' in r).toBe(false);
+    expect('circuit_updates' in r).toBe(false);
+    expect('observation_deletions' in r).toBe(false);
+  });
+
+  test('boardOps preserves discriminated-union shape — add_board / select_board / mark_distribution_circuit pass through verbatim', () => {
+    const boardOps = [
+      { op: 'add_board', board_id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' },
+      { op: 'select_board', board_id: 'sub-1' },
+      { op: 'mark_distribution_circuit', circuit_ref: 4, feeds_board_id: 'sub-1' },
+    ];
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ boardOps }), { questions: [] });
+    expect(r.board_ops).toHaveLength(3);
+    expect(r.board_ops[0]).toEqual(boardOps[0]);
+    expect(r.board_ops[1]).toEqual(boardOps[1]);
+    expect(r.board_ops[2]).toEqual(boardOps[2]);
+    // Each entry carries an `op` discriminator — locked here so future
+    // Phase 6 tools added to the channel must include it.
+    for (const entry of r.board_ops) {
+      expect(typeof entry.op).toBe('string');
+      expect(entry.op).not.toBe('');
+    }
+  });
+
+  test('boardOps array is a defensive shallow copy — mutating perTurnWrites after bundling does not retroactively alter result', () => {
+    const boardOps = [{ op: 'add_board', board_id: 'sub-1', designation: 'DB-2' }];
+    const writes = makePerTurnWrites({ boardOps });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] });
+    // Mutate the source after bundling.
+    writes.boardOps.push({ op: 'select_board', board_id: 'sub-1' });
+    writes.boardOps[0].designation = 'TAMPERED';
+    expect(r.board_ops).toHaveLength(1);
+    expect(r.board_ops[0].designation).toBe('DB-2');
+  });
+
+  test('omits boardOps slot when accumulator field is missing entirely (older test fixture compat)', () => {
+    // Older fixtures may build the accumulator without a boardOps key.
+    // The bundler must NOT crash on undefined and must NOT emit the slot.
+    const writesNoBoardOps = {
+      readings: new Map(),
+      cleared: [],
+      observations: [],
+      deletedObservations: [],
+      circuitOps: [],
+    };
+    const r = bundleToolCallsIntoResult(writesNoBoardOps, { questions: [] });
+    expect('board_ops' in r).toBe(false);
   });
 });
 
 describe('bundleToolCallsIntoResult — iOS compatibility JSON shape regression', () => {
   test('empty perTurnWrites produces key-set equal to legacy (three keys, sorted)', () => {
-    const legacy = { extracted_readings: [{ field: 'x', circuit: 'C1', value: 1, confidence: 1 }], observations: [], questions: [] };
+    const legacy = {
+      extracted_readings: [{ field: 'x', circuit: 'C1', value: 1, confidence: 1 }],
+      observations: [],
+      questions: [],
+    };
     const r = bundleToolCallsIntoResult(makePerTurnWrites(), legacy);
     expect(Object.keys(r).sort()).toEqual(['extracted_readings', 'observations', 'questions']);
   });
@@ -167,8 +227,8 @@ describe('bundleToolCallsIntoResult — Defensive guards', () => {
     expect(() =>
       bundleToolCallsIntoResult(
         { readings: [], cleared: [], observations: [], deletedObservations: [], circuitOps: [] },
-        { questions: [] },
-      ),
+        { questions: [] }
+      )
     ).toThrow(/must be a Map/);
 
     const r = bundleToolCallsIntoResult(makePerTurnWrites(), undefined);

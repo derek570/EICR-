@@ -27,9 +27,11 @@ export const BUNDLER_PHASE = 2;
  *          cleared: Array<{field: string, circuit: string, reason?: string}>,
  *          observations: Array<{id: string, text: string, code: string}>,
  *          deletedObservations: Array<{id: string, reason?: string}>,
- *          circuitOps: Array<{op: string, circuit_ref: string, from_ref?: string, meta?: any}>}} perTurnWrites
+ *          circuitOps: Array<{op: string, circuit_ref: string, from_ref?: string, meta?: any}>,
+ *          boardOps?: Array<{op: string, [key: string]: any}>}} perTurnWrites
  *   Accumulator populated by Phase 2 dispatchers (Plans 02-03 + 02-04 +
- *   Bug-C carryover dispatcher record_board_reading).
+ *   Bug-C carryover dispatcher record_board_reading + Phase 6 board-op
+ *   dispatchers).
  * @param {{questions?: Array<any>}|null|undefined} legacyResultShape
  *   The legacy extractor's result object. Only `.questions` is consumed
  *   (Phase 2 keeps legacy question-gate behaviour; tool-call ask_user is
@@ -41,7 +43,8 @@ export const BUNDLER_PHASE = 2;
  *            cleared_readings?: Array<{field: string, circuit: string, reason?: string}>,
  *            circuit_updates?: Array<{op: string, circuit_ref: string, from_ref?: string, meta?: any}>,
  *            observation_deletions?: Array<{id: string, reason?: string}>,
- *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call'}>}}
+ *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call'}>,
+ *            board_ops?: Array<{op: string, [key: string]: any}>}}
  */
 export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   if (!perTurnWrites || !(perTurnWrites.readings instanceof Map)) {
@@ -150,6 +153,25 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
       extracted_board_readings.push(reading);
     }
     result.extracted_board_readings = extracted_board_readings;
+  }
+
+  // 8. Phase 6.0 — multi-board board-ops wire channel (Codex deal-breaker #3).
+  //    Append-only Array of discriminated-union ops emitted by Phase 6 board
+  //    dispatchers (`add_board` / `select_board` / `mark_distribution_circuit`,
+  //    plus any future board-mutation tool). Each entry carries an `op` field
+  //    plus the payload the tool dispatcher built.
+  //
+  //    Emit verbatim (defensive shallow copy so downstream mutation can't
+  //    retro-alter the bundled result). OMITTED when empty so pre-Phase-6
+  //    traffic — every session today, since no dispatcher writes here yet —
+  //    stays byte-identical and existing iOS decoders unaware of the slot
+  //    see no change.
+  //
+  //    boardOps is optional in the input shape because callers building the
+  //    accumulator manually (older test fixtures) may pre-date the Phase 6.0
+  //    wire-in. createPerTurnWrites() always seeds an empty array.
+  if (Array.isArray(perTurnWrites.boardOps) && perTurnWrites.boardOps.length > 0) {
+    result.board_ops = perTurnWrites.boardOps.map((op) => ({ ...op }));
   }
 
   return result;

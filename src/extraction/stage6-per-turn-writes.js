@@ -53,6 +53,16 @@
  *   circuitOps          : Array<{op: 'create'|'rename'|'update', circuit_ref, from_ref?, meta}>
  *                         Append-only. Phase 2 supports create/rename/update;
  *                         Phase 3+ may extend `op`.
+ *   boardOps            : Array<{op: 'add_board'|'select_board'|'mark_distribution_circuit', ...payload}>
+ *                         Phase 6.0 — multi-board sprint Codex deal-breaker #3.
+ *                         Append-only wire channel for board mutations dispatched
+ *                         by Phase 6 tools (`add_board`, `select_board`,
+ *                         `mark_distribution_circuit`). Discriminated by `op`;
+ *                         each op carries the payload Sonnet emitted (board id,
+ *                         designation, board_type, circuit_ref, etc.). Inert
+ *                         until Phase 6 dispatchers write — bundler emits the
+ *                         `board_ops` slot only when non-empty so pre-Phase-6
+ *                         traffic stays byte-identical to today.
  */
 
 export function createPerTurnWrites() {
@@ -63,5 +73,6 @@ export function createPerTurnWrites() {
     observations: [],
     deletedObservations: [],
     circuitOps: [],
+    boardOps: [],
   };
 }
