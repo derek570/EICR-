@@ -51,6 +51,7 @@
  */
 
 import { CONTEXT_FIELD_ENUM, BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from './stage6-tool-schemas.js';
+import { circuitExistsInSnapshot } from './stage6-multi-board-shape.js';
 
 // Sets for O(1) membership tests in validateAskUser's pending_write
 // cross-check. Pre-computing them here keeps the validator pure (no
@@ -70,7 +71,7 @@ const RECORD_BOARD_READING_FIELDS = new Set(BOARD_FIELD_ENUM);
  * we only reject present-but-invalid values here.
  */
 export function validateRecordReading(input, snapshot) {
-  if (!(input.circuit in snapshot.circuits)) {
+  if (!circuitExistsInSnapshot(snapshot, input.circuit, input.board_id)) {
     return { code: 'circuit_not_found', field: 'circuit' };
   }
   if (input.confidence != null) {
@@ -93,7 +94,7 @@ export function validateRecordReading(input, snapshot) {
  * §Q8.
  */
 export function validateClearReading(input, snapshot) {
-  if (!(input.circuit in snapshot.circuits)) {
+  if (!circuitExistsInSnapshot(snapshot, input.circuit, input.board_id)) {
     return { code: 'circuit_not_found', field: 'circuit' };
   }
   return null;
@@ -103,7 +104,7 @@ export function validateClearReading(input, snapshot) {
  * create_circuit: circuit_ref must be new; numeric meta must be numeric.
  */
 export function validateCreateCircuit(input, snapshot) {
-  if (input.circuit_ref in snapshot.circuits) {
+  if (circuitExistsInSnapshot(snapshot, input.circuit_ref, input.board_id)) {
     return { code: 'circuit_already_exists', field: 'circuit_ref' };
   }
   if (input.rating_amps != null && typeof input.rating_amps !== 'number') {
@@ -128,10 +129,13 @@ export function validateRenameCircuit(input, snapshot) {
   if (!Number.isInteger(input.from_ref) || input.from_ref < 1) {
     return { code: 'invalid_from_ref', field: 'from_ref' };
   }
-  if (!(input.from_ref in snapshot.circuits)) {
+  if (!circuitExistsInSnapshot(snapshot, input.from_ref, input.board_id)) {
     return { code: 'source_not_found', field: 'from_ref' };
   }
-  if (input.from_ref !== input.circuit_ref && input.circuit_ref in snapshot.circuits) {
+  if (
+    input.from_ref !== input.circuit_ref &&
+    circuitExistsInSnapshot(snapshot, input.circuit_ref, input.board_id)
+  ) {
     return { code: 'target_exists', field: 'circuit_ref' };
   }
   if (input.rating_amps != null && typeof input.rating_amps !== 'number') {

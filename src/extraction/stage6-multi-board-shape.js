@@ -36,6 +36,38 @@ export const DEFAULT_MAIN_BOARD_ID = 'main';
 export const DEFAULT_MAIN_BOARD_DESIGNATION = 'DB-1';
 export const DEFAULT_MAIN_BOARD_TYPE = 'main';
 
+// Phase 5.3 — feature flag gate. Default OFF in production. Flip to 'true'
+// is a Phase 8.4 field-test gate, NOT a routine push. Every Phase 5
+// dispatcher branches on this; reading via this helper (rather than
+// direct env access at every call site) gives a single seam for tests
+// to mock and a single name for grep audits.
+export function isMultiBoardFlagOn() {
+  return process.env.STAGE6_MULTI_BOARD === 'true';
+}
+
+// Phase 5.3 — flag-aware existence check. Replaces inline
+// `circuit in snapshot.circuits` checks in the validators so that under
+// flag-on, validators consult the composite key (`${board_id}::${circuit}`)
+// instead of the legacy flat key.
+//
+// Defensive on missing snapshot / missing circuits map — returns false
+// rather than crashing on `undefined.circuits[...]`. The dispatchers
+// always pass `session.stateSnapshot`, which is guaranteed to be a
+// stateSnapshot-shaped object with a `circuits: {}` property by the
+// constructor wire-in (slice 5.1), but a future call from a partially
+// constructed test fixture should fail gracefully.
+//
+// Board ID resolution: `boardId` arg → `snapshot.currentBoardId` →
+// `'main'`. Same chain as the mutators in slice 5.2.
+export function circuitExistsInSnapshot(snapshot, circuit, boardId) {
+  if (!snapshot || !snapshot.circuits) return false;
+  if (isMultiBoardFlagOn()) {
+    const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+    return `${id}::${circuit}` in snapshot.circuits;
+  }
+  return circuit in snapshot.circuits;
+}
+
 /**
  * Build a fresh default main-board record. Returned as a new object
  * every call (no shared reference) so callers can mutate without

@@ -52,7 +52,7 @@
  */
 
 import { IR_FIELDS, recordIrWrite, clearIrState } from './insulation-resistance-timeout.js';
-import { applyReadingToSnapshot } from './stage6-snapshot-mutators.js';
+import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 
 /**
  * Hard cap on script duration. If the inspector enters the script and then
@@ -417,7 +417,10 @@ function buildExtractionPayload(circuit_ref, writes) {
  * timeout module tracks the two readings, not the voltage field.
  */
 function applyWrite(session, circuit_ref, field, value, now) {
-  applyReadingToSnapshot(session.stateSnapshot, {
+  // IR-script writes flow through the flag-aware wrapper so synthesised
+  // values land in the same bucket shape as the inspector-dictated
+  // readings that triggered the script.
+  applyReadingFlagAware(session.stateSnapshot, {
     circuit: circuit_ref,
     field,
     value,

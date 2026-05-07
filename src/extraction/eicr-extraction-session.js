@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { CostTracker } from './cost-tracker.js';
-import { applyReadingToSnapshot, clearReadingInSnapshot } from './stage6-snapshot-mutators.js';
+import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
 import { CONTROL_CHAR_PATTERN } from './stage6-sanitise-user-text.js';
 import { lookupPostcode } from '../postcode_lookup.js';
@@ -2036,7 +2036,12 @@ export class EICRExtractionSession {
           // Pass canonical field through to the shared atom too, so the
           // mutator's downstream WRAP_POLICY / FIELD_ID_MAP lookups speak
           // the same vocabulary as everything else post-r13-#2.
-          applyReadingToSnapshot(this.stateSnapshot, {
+          // Phase 5.3 — legacy off-mode path uses the same flag-aware
+          // wrapper as the Stage 6 dispatchers. Production runs `live`
+          // mode (Stage 6 tool calls) so this branch is dormant, but
+          // keeping it flag-threaded prevents split-brain if a future
+          // session combines off-mode and flag-on.
+          applyReadingFlagAware(this.stateSnapshot, {
             circuit,
             field: canonicalField,
             value: reading.value,
@@ -2064,7 +2069,7 @@ export class EICRExtractionSession {
     if (result.field_clears && result.field_clears.length > 0) {
       for (const clear of result.field_clears) {
         if (clear.circuit != null) {
-          clearReadingInSnapshot(this.stateSnapshot, {
+          clearReadingFlagAware(this.stateSnapshot, {
             circuit: clear.circuit,
             field: clear.field,
           });

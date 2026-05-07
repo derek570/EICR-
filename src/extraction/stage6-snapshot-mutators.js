@@ -30,6 +30,7 @@
 // function signatures that Phase 2 will consume verbatim.
 
 import { randomUUID } from 'node:crypto';
+import { isMultiBoardFlagOn } from './stage6-multi-board-shape.js';
 
 /**
  * Write a reading into stateSnapshot.circuits[circuit][field]. Auto-creates
@@ -336,6 +337,60 @@ export function deleteCircuitMultiBoard(snapshot, { circuit_ref, boardId }) {
   }
   delete snapshot.circuits[key];
   return { ok: true, deleted: true };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5.3 — flag-aware wrappers. These are the entry points dispatchers
+// call after slice 5.3 lands. Each wrapper inspects `STAGE6_MULTI_BOARD`
+// (via `isMultiBoardFlagOn`) and routes to either the legacy flat-key
+// mutator or the composite-key multi-board mutator above.
+//
+// Putting the flag check in the wrapper (rather than at every dispatcher
+// call site) keeps the dispatcher code uniform — the flag name appears
+// in this file ONLY, so a future rename / removal in slice 5.6 has a
+// single grep target.
+//
+// Default flag-off path is byte-identical to the legacy mutator call —
+// every regression in the existing test suite continues to pass without
+// modification. Flag-on path forwards `args` (which may carry an
+// optional `boardId`) into the multi-board mutator's resolution chain.
+// ---------------------------------------------------------------------------
+
+export function applyReadingFlagAware(snapshot, args) {
+  if (isMultiBoardFlagOn()) {
+    applyReadingMultiBoard(snapshot, args);
+  } else {
+    applyReadingToSnapshot(snapshot, args);
+  }
+}
+
+export function clearReadingFlagAware(snapshot, args) {
+  if (isMultiBoardFlagOn()) {
+    return clearReadingMultiBoard(snapshot, args);
+  }
+  return clearReadingInSnapshot(snapshot, args);
+}
+
+export function upsertCircuitMetaFlagAware(snapshot, args) {
+  if (isMultiBoardFlagOn()) {
+    upsertCircuitMetaMultiBoard(snapshot, args);
+  } else {
+    upsertCircuitMeta(snapshot, args);
+  }
+}
+
+export function renameCircuitFlagAware(snapshot, args) {
+  if (isMultiBoardFlagOn()) {
+    return renameCircuitMultiBoard(snapshot, args);
+  }
+  return renameCircuit(snapshot, args);
+}
+
+export function deleteCircuitFlagAware(snapshot, args) {
+  if (isMultiBoardFlagOn()) {
+    return deleteCircuitMultiBoard(snapshot, args);
+  }
+  return deleteCircuit(snapshot, args);
 }
 
 /**

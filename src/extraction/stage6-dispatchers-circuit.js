@@ -47,11 +47,11 @@
 
 import { createRequire } from 'node:module';
 import {
-  applyReadingToSnapshot,
-  clearReadingInSnapshot,
-  upsertCircuitMeta,
-  renameCircuit,
-  deleteCircuit,
+  applyReadingFlagAware,
+  clearReadingFlagAware,
+  upsertCircuitMetaFlagAware,
+  renameCircuitFlagAware,
+  deleteCircuitFlagAware,
 } from './stage6-snapshot-mutators.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
@@ -114,10 +114,11 @@ export async function dispatchRecordReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  applyReadingToSnapshot(session.stateSnapshot, {
+  applyReadingFlagAware(session.stateSnapshot, {
     circuit: input.circuit,
     field: input.field,
     value: input.value,
+    boardId: input.board_id,
   });
 
   // MAJOR-1 shape lock: value object carries ONLY {value, confidence,
@@ -203,9 +204,10 @@ export async function dispatchClearReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  const { cleared } = clearReadingInSnapshot(session.stateSnapshot, {
+  const { cleared } = clearReadingFlagAware(session.stateSnapshot, {
     circuit: input.circuit,
     field: input.field,
+    boardId: input.board_id,
   });
 
   if (!cleared) {
@@ -329,12 +331,13 @@ export async function dispatchCreateCircuit(call, ctx) {
     }
   }
 
-  upsertCircuitMeta(session.stateSnapshot, {
+  upsertCircuitMetaFlagAware(session.stateSnapshot, {
     circuit_ref: input.circuit_ref,
     designation: input.designation,
     phase: input.phase,
     rating_amps: input.rating_amps,
     cable_csa_mm2: input.cable_csa_mm2,
+    boardId: input.board_id,
   });
 
   perTurnWrites.circuitOps.push({
@@ -465,9 +468,10 @@ export async function dispatchRenameCircuit(call, ctx) {
 
   // Rekey when from_ref !== circuit_ref. The atom is a pure noop when they
   // are equal, so the branch is safe to take unconditionally.
-  const renameResult = renameCircuit(session.stateSnapshot, {
+  const renameResult = renameCircuitFlagAware(session.stateSnapshot, {
     from_ref: input.from_ref,
     circuit_ref: input.circuit_ref,
+    boardId: input.board_id,
   });
   if (!renameResult.ok) {
     // Defensive — validator already vetted these inputs. If this fires, a
@@ -476,12 +480,13 @@ export async function dispatchRenameCircuit(call, ctx) {
   }
 
   if (metaSupplied) {
-    upsertCircuitMeta(session.stateSnapshot, {
+    upsertCircuitMetaFlagAware(session.stateSnapshot, {
       circuit_ref: input.circuit_ref,
       designation: input.designation,
       phase: input.phase,
       rating_amps: input.rating_amps,
       cable_csa_mm2: input.cable_csa_mm2,
+      boardId: input.board_id,
     });
   }
 
@@ -555,8 +560,9 @@ export async function dispatchDeleteCircuit(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  const { deleted } = deleteCircuit(session.stateSnapshot, {
+  const { deleted } = deleteCircuitFlagAware(session.stateSnapshot, {
     circuit_ref: input.circuit_ref,
+    boardId: input.board_id,
   });
 
   perTurnWrites.circuitOps.push({
@@ -634,7 +640,11 @@ function parseFiniteNumber(v) {
  *      analysis can split server-derived writes from Sonnet-direct writes.
  */
 function applyCalculatedReading(session, perTurnWrites, { circuit, field, value, tool }) {
-  applyReadingToSnapshot(session.stateSnapshot, { circuit, field, value });
+  // Calculated writes (Zs from Ze + R1+R2, R1+R2 from Zs - Ze, etc.) flow
+  // through the same flag-aware mutator as record_reading so the calc
+  // outputs land in the SAME bucket shape as the source readings — no
+  // mismatch between manually-recorded inputs and server-derived outputs.
+  applyReadingFlagAware(session.stateSnapshot, { circuit, field, value });
   perTurnWrites.readings.set(`${field}::${circuit}`, {
     value,
     confidence: 1.0,
@@ -965,7 +975,13 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         continue;
       }
     }
-    applyReadingToSnapshot(session.stateSnapshot, {
+    // set_field_for_all_circuits keeps its current iteration scope under
+    // both flag states (per Phase 5 handoff S5 — default scope is "all
+    // circuits with a legacy numeric ref"; current-board-only scoping is
+    // a Phase 6 concern). The bucket key shape, however, follows the
+    // flag — writes land at the composite key under flag-on so the
+    // bulk-edit results stay in the same shape as record_reading writes.
+    applyReadingFlagAware(session.stateSnapshot, {
       circuit: ref,
       field: input.field,
       value: input.value,

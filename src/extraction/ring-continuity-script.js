@@ -64,7 +64,7 @@ import {
   recordRingContinuityWrite,
   clearRingContinuityState,
 } from './ring-continuity-timeout.js';
-import { applyReadingToSnapshot } from './stage6-snapshot-mutators.js';
+import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 
 /**
  * Hard cap on script duration. If the inspector enters the script, walks
@@ -434,7 +434,13 @@ function buildExtractionPayload(circuit_ref, writes) {
  * timer's per-circuit timestamp, and produce a wire-extraction record.
  */
 function applyWrite(session, circuit_ref, field, value, now) {
-  applyReadingToSnapshot(session.stateSnapshot, {
+  // Ring-continuity script writes flow through the flag-aware wrapper so
+  // synthesised values (e.g. completing a ring on the third reading) land
+  // in the same bucket shape as the inspector-dictated readings that
+  // triggered the script. Under flag-on, the write is scoped to the
+  // current board; under flag-off, the legacy flat-key write path is
+  // byte-identical to the pre-Phase-5 behaviour.
+  applyReadingFlagAware(session.stateSnapshot, {
     circuit: circuit_ref,
     field,
     value,
