@@ -69,14 +69,17 @@ const EXPECTED_TOOL_NAMES = [
   // consumer unit / sub-distribution board / sub-main and emits onto the
   // boardOps wire channel landed in Phase 6.0.
   'add_board',
+  // 2026-05-07 multi-board sprint Phase 6.2: select_board (id-only) flips
+  // currentBoardId to a previously-added board.
+  'select_board',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 14 tools with the expected names', () => {
+  test('exports exactly 15 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(14);
+    expect(TOOL_SCHEMAS).toHaveLength(15);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });

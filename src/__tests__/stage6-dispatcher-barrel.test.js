@@ -27,7 +27,7 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all thirteen keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all fourteen keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -46,6 +46,8 @@ describe('barrel re-exports', () => {
         'set_field_for_all_circuits',
         // 2026-05-07 multi-board sprint Phase 6.1 — add_board.
         'add_board',
+        // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
+        'select_board',
       ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
@@ -71,6 +73,8 @@ describe('barrel re-exports', () => {
     // 2026-05-07 multi-board sprint Phase 6.1 — add_board lives on the board
     // sibling alongside record_board_reading.
     expect(WRITE_DISPATCHERS.add_board).toBe(boardSibling.dispatchAddBoard);
+    // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
+    expect(WRITE_DISPATCHERS.select_board).toBe(boardSibling.dispatchSelectBoard);
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -160,6 +164,11 @@ describe('barrel re-exports', () => {
         designation: 'Garage CU',
         board_type: 'sub_distribution',
       },
+      // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
+      // The default `main` board is synthesised by ensureMultiBoardShape
+      // when the dispatcher runs against any seeded snapshot, so id 'main'
+      // resolves cleanly.
+      select_board: { board_id: 'main' },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       // Fresh session per call so create_circuit(99) etc don't collide.

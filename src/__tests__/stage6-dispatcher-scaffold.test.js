@@ -39,7 +39,7 @@ function mockLogger() {
 }
 
 describe('WRITE_DISPATCHERS dispatch table', () => {
-  test('has exactly thirteen keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2 + set_field_for_all_circuits + add_board', () => {
+  test('has exactly fourteen keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2 + set_field_for_all_circuits + add_board + select_board', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         'clear_reading',
@@ -69,6 +69,8 @@ describe('WRITE_DISPATCHERS dispatch table', () => {
         'set_field_for_all_circuits',
         // 2026-05-07 multi-board sprint Phase 6.1 — add_board.
         'add_board',
+        // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
+        'select_board',
       ].sort()
     );
   });

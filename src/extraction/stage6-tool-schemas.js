@@ -793,6 +793,32 @@ const setFieldForAllCircuits = makeTool({
 });
 
 // ---------------------------------------------------------------------------
+// 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
+//
+// Inspector switches between boards they have already added — "back to the
+// main board", "OK, on DB-2 now". Sonnet calls select_board with the EXACT
+// id from the most recent add_board response. Designations are NOT accepted
+// here; the fuzzy-match designation lookup is deferred to a supervised
+// session (PHASE6_PHASE7_AUTONOMOUS.md STOP slice).
+//
+// Why id-only: Levenshtein floor / case sensitivity / ambiguity rule are
+// product judgement calls. Shipping id-only first gathers field-test
+// feedback before adding fuzzy match.
+// ---------------------------------------------------------------------------
+const selectBoard = makeTool({
+  name: 'select_board',
+  description:
+    'Set the current board for subsequent circuit operations. Use when the inspector indicates they have moved to a different consumer unit they previously added. Pass the EXACT board_id (e.g. "main", "sub-1", "sub-2"). Designations like "DB-2" or "Garage CU" are NOT accepted by this version — pass the id from the most recent add_board response or the snapshot.',
+  properties: {
+    board_id: {
+      type: 'string',
+      description: 'Exact board id (e.g. "main", "sub-1"). Designations are not accepted.',
+    },
+  },
+  required: ['board_id'],
+});
+
+// ---------------------------------------------------------------------------
 // 2026-05-07 multi-board sprint Phase 6.1 — add_board.
 //
 // Inspector mentions a NEW consumer unit / sub-distribution board / sub-main
@@ -861,6 +887,8 @@ export const TOOL_SCHEMAS = [
   // 2026-05-07 multi-board sprint Phase 6.1 — appended last so existing
   // TOOL_SCHEMAS indices stay stable for any consumers that key on them.
   addBoard,
+  // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
+  selectBoard,
 ];
 
 /**

@@ -352,3 +352,70 @@ export async function dispatchAddBoard(call, ctx) {
   });
   return envelope(call.tool_call_id, { ok: true, board_id: newId, currentBoardId: newId }, false);
 }
+
+// ---------------------------------------------------------------------------
+// 2026-05-07 multi-board sprint Phase 6.2 — dispatchSelectBoard.
+//
+// Inspector switches between boards they previously added. Schema-side:
+// `selectBoard` in stage6-tool-schemas.js. Wire channel: appends a
+// `{op: 'select_board', board_id}` op onto perTurnWrites.boardOps for iOS.
+//
+// id-only resolution: designation fuzzy match is a STOP slice (Levenshtein
+// floor / case sensitivity / ambiguity rule are product judgement calls).
+// Unknown id → reject with `board_not_found`.
+//
+// Idempotency note: select_board('main') when already on main still emits
+// one boardOps entry. The wire shape carries "the model called the tool",
+// not "the model changed state"; suppression isn't this layer's concern.
+// ---------------------------------------------------------------------------
+export async function dispatchSelectBoard(call, ctx) {
+  const { session, logger, turnId, perTurnWrites, round } = ctx;
+  const input = call.input ?? {};
+
+  function reject(code, field) {
+    const err = field == null ? { code } : { code, field };
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'select_board',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: err,
+      input_summary: { board_id: input.board_id ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // 1) board_id must be a non-empty string.
+  if (typeof input.board_id !== 'string' || input.board_id.trim() === '') {
+    return reject('invalid_board_id', 'board_id');
+  }
+
+  // 2) board_id must reference an existing board on the snapshot.
+  const snapshot = session.stateSnapshot;
+  ensureMultiBoardShape(snapshot);
+  const target = (snapshot.boards ?? []).find((b) => b && b.id === input.board_id);
+  if (!target) {
+    return reject('board_not_found', 'board_id');
+  }
+
+  // 3) Mutate currentBoardId; emit wire op.
+  snapshot.currentBoardId = target.id;
+  perTurnWrites.boardOps.push({ op: 'select_board', board_id: target.id });
+
+  // 4) Log success.
+  logToolCall(logger, {
+    sessionId: session.sessionId,
+    turnId,
+    tool_use_id: call.tool_call_id,
+    tool: 'select_board',
+    round,
+    is_error: false,
+    outcome: 'ok',
+    validation_error: null,
+    input_summary: { board_id: target.id },
+  });
+  return envelope(call.tool_call_id, { ok: true, currentBoardId: target.id }, false);
+}

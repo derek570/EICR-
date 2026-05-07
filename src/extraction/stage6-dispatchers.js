@@ -45,7 +45,11 @@ import {
   dispatchRecordObservation,
   dispatchDeleteObservation,
 } from './stage6-dispatchers-observation.js';
-import { dispatchRecordBoardReading, dispatchAddBoard } from './stage6-dispatchers-board.js';
+import {
+  dispatchRecordBoardReading,
+  dispatchAddBoard,
+  dispatchSelectBoard,
+} from './stage6-dispatchers-board.js';
 import { dispatchStartDialogueScript } from './stage6-dispatchers-script.js';
 
 /**
@@ -92,6 +96,10 @@ export const WRITE_DISPATCHERS = {
   // hierarchy, mutates snapshot.boards + currentBoardId, and emits an op
   // onto perTurnWrites.boardOps (Phase 6.0 wire channel) for iOS.
   add_board: dispatchAddBoard,
+  // 2026-05-07 multi-board sprint Phase 6.2 — select_board (id-only).
+  // Inspector switches between previously-added boards. Designation fuzzy
+  // match is deferred to a supervised session.
+  select_board: dispatchSelectBoard,
 };
 
 /**
