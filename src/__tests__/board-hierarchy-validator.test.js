@@ -135,4 +135,43 @@ describe('validateBoardHierarchy', () => {
     expect(validateBoardHierarchy(undefined, undefined)).toEqual({ ok: true, errors: [] });
     expect(validateBoardHierarchy(null, null)).toEqual({ ok: true, errors: [] });
   });
+
+  // Legacy snapshot fallback (2026-05-08): pre-multi-board sessions seed
+  // circuit buckets with no `board_id`. Adding a sub_main against such a
+  // job must succeed — circuits with absent board_id belong to the implicit
+  // main board.
+  it('accepts a missing board_id on circuits when the parent is the main board', () => {
+    const boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'main', feed_circuit_ref: 11 },
+    ];
+    const circuits = [{ circuit_ref: 11 }, { circuit_ref: 4 }];
+    expect(validateBoardHierarchy(boards, circuits)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('also accepts missing board_id when the parent has no board_type (legacy main)', () => {
+    const boards = [
+      { id: 'main' },
+      { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'main', feed_circuit_ref: 11 },
+    ];
+    const circuits = [{ circuit_ref: 11 }];
+    expect(validateBoardHierarchy(boards, circuits)).toEqual({ ok: true, errors: [] });
+  });
+
+  it('does NOT accept missing board_id when the parent is a non-main board', () => {
+    const boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'main', feed_circuit_ref: 4 },
+      { id: 'sub-2', board_type: 'sub_main', parent_board_id: 'sub-1', feed_circuit_ref: 1 },
+    ];
+    const circuits = [{ circuit_ref: 4, board_id: 'main' }, { circuit_ref: 1 }];
+    const result = validateBoardHierarchy(boards, circuits);
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContainEqual({
+      code: 'feed_circuit_not_found',
+      board_id: 'sub-2',
+      parent: 'sub-1',
+      ref: 1,
+    });
+  });
 });

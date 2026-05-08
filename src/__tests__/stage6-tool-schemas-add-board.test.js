@@ -373,6 +373,87 @@ describe('dispatchAddBoard rejections', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Group 3b — Legacy snapshot adapter (2026-05-08)
+// ---------------------------------------------------------------------------
+
+describe('dispatchAddBoard legacy keyed-snapshot adapter', () => {
+  // Production session EEB8F9EA (2026-05-08) seeded 13 circuits from a
+  // pre-multi-board jobState. Each bucket carried its field map but no
+  // `board_id` and no `circuit_ref` — the dictionary key was the only
+  // record of the ref. The validator (which expects an array of objects
+  // self-identifying their ref + board) couldn't find any circuit on the
+  // main board, so add_board rejected `hierarchy_invalid` for every feed
+  // ref. The dispatcher now synthesises both fields from the dictionary
+  // key + the implicit main board id before handing the array to the
+  // validator. Locks the regression.
+  test('legacy keyed circuits (no board_id, no circuit_ref on bucket) accept a sub_main with a valid feed circuit', async () => {
+    const session = makeSession();
+    // Mirror the pre-fix seed shape: numeric keys, bare field maps.
+    session.stateSnapshot.circuits = {
+      0: { ze: '0.21' },
+      1: { designation: 'Lights', rating_amps: 6 },
+      11: { designation: 'Garden', rating_amps: 32 },
+    };
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+
+    const res = await d(
+      {
+        tool_call_id: 'tu_legacy_seed',
+        name: 'add_board',
+        input: {
+          designation: 'Garage',
+          board_type: 'sub_main',
+          parent_board_id: 'main',
+          feed_circuit_ref: 11,
+        },
+      },
+      {}
+    );
+
+    expect(res.is_error).toBe(false);
+    expect(session.stateSnapshot.boards).toHaveLength(2);
+    expect(session.stateSnapshot.currentBoardId).toBe('sub-1');
+    expect(writes.boardOps).toHaveLength(1);
+    expect(writes.boardOps[0]).toMatchObject({
+      op: 'add_board',
+      board_id: 'sub-1',
+      parent_board_id: 'main',
+      feed_circuit_ref: 11,
+    });
+  });
+
+  test('legacy keyed circuits still reject when the feed ref is not in the snapshot', async () => {
+    const session = makeSession();
+    session.stateSnapshot.circuits = {
+      1: { designation: 'Lights' },
+    };
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
+
+    const res = await d(
+      {
+        tool_call_id: 'tu_legacy_dangling',
+        name: 'add_board',
+        input: {
+          designation: 'Garage',
+          board_type: 'sub_main',
+          parent_board_id: 'main',
+          feed_circuit_ref: 99,
+        },
+      },
+      {}
+    );
+
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content).error.code).toBe('hierarchy_invalid');
+    expect(session.stateSnapshot.boards).toHaveLength(1);
+    expect(writes.boardOps).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Group 4 — boardOps ordering
 // ---------------------------------------------------------------------------
 

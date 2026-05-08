@@ -70,12 +70,20 @@ export function validateBoardHierarchy(boards = [], circuits = []) {
   }
 
   // 4. feed_circuit_ref resolves to a circuit on the parent board.
+  //
+  // Legacy-snapshot fallback: if the parent is the main board (board_type
+  // 'main' or unset, mirroring rule #3), accept circuits with no `board_id`
+  // as belonging to it. Pre-multi-board snapshots stamped no `board_id` on
+  // their circuit buckets; without this clause a sub_main cannot be added
+  // to any legacy job because every feed circuit lookup would miss.
   for (const b of boards) {
     if (!b?.feed_circuit_ref || !b?.parent_board_id) continue;
+    const parent = boards.find((x) => x?.id === b.parent_board_id);
+    const parentIsMain = !parent?.board_type || parent.board_type === 'main';
     const ref = String(b.feed_circuit_ref);
     const match = safeCircuits.find(
       (c) =>
-        c?.board_id === b.parent_board_id &&
+        (c?.board_id === b.parent_board_id || (parentIsMain && c?.board_id == null)) &&
         (String(c?.circuit ?? '') === ref || String(c?.circuit_ref ?? '') === ref)
     );
     if (!match) {

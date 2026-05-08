@@ -50,7 +50,11 @@
 import { applyBoardReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM } from './stage6-tool-schemas.js';
-import { ensureMultiBoardShape, getCircuitBucket } from './stage6-multi-board-shape.js';
+import {
+  DEFAULT_MAIN_BOARD_ID,
+  ensureMultiBoardShape,
+  getCircuitBucket,
+} from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
@@ -298,8 +302,29 @@ export async function dispatchAddBoard(call, ctx) {
   //    cycle / orphan / duplicate-main / feed-circuit-not-found rules — single
   //    source of truth shared with the iOS-side check and the PUT /api/job
   //    gate (Phase 2.3 of the multi-board sprint).
+  //
+  //    Shape adapter: the in-memory `snapshot.circuits` is a keyed map
+  //    (numeric legacy keys 0/1/2... in flag-off, composite `${board_id}::${ref}`
+  //    in flag-on), and bucket VALUES under flag-off carry no `circuit_ref`
+  //    or `board_id`. The validator expects a flat array where each entry
+  //    self-identifies. Synthesise the missing fields from the dictionary
+  //    key + the implicit main board id so a legacy snapshot validates the
+  //    same way a wire-shape array (PUT /api/job) does.
+  const mainBoardId = existingBoards[0]?.id ?? DEFAULT_MAIN_BOARD_ID;
   const provisionalBoards = [...existingBoards, newBoard];
-  const provisionalCircuits = Object.values(snapshot.circuits ?? {});
+  const provisionalCircuits = Object.entries(snapshot.circuits ?? {}).map(([key, bucket]) => {
+    const fromBucket = bucket && typeof bucket === 'object' ? bucket : {};
+    const numericKey = Number(key);
+    const synthesizedRef =
+      fromBucket.circuit_ref ??
+      fromBucket.circuit ??
+      (Number.isInteger(numericKey) ? numericKey : undefined);
+    return {
+      ...fromBucket,
+      circuit_ref: synthesizedRef,
+      board_id: fromBucket.board_id ?? mainBoardId,
+    };
+  });
   const validation = validateBoardHierarchy(provisionalBoards, provisionalCircuits);
   if (!validation.ok) {
     const err = { code: 'hierarchy_invalid', field: null, details: validation.errors };
