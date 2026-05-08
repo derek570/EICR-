@@ -48,6 +48,7 @@
  */
 
 import { applyBoardReadingFlagAware } from './stage6-snapshot-mutators.js';
+import { encodeBoardReadingKey } from './stage6-per-turn-writes.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM } from './stage6-tool-schemas.js';
 import {
@@ -186,7 +187,11 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // the field on apply to land the value on board.zeAtDb / board.ipf rather
   // than always boards[0]).
   const autoResolved = String(call.tool_call_id ?? '').includes('::auto::');
-  perTurnWrites.boardReadings.set(input.field, {
+  // Slice 1.1c — encodeBoardReadingKey embeds boardId in the Map key so a
+  // single tool-loop turn can write the same field on two boards (e.g. main
+  // and a sub-board's supply Ze) without one clobbering the other. Pre-1.1c
+  // legacy keys (no boardId tag) decode as boardId=null in the bundler.
+  perTurnWrites.boardReadings.set(encodeBoardReadingKey(input.field, input.board_id), {
     value: input.value,
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,

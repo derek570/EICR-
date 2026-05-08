@@ -18,7 +18,7 @@ import {
   dispatchCalculateZs,
   dispatchCalculateR1PlusR2,
 } from '../extraction/stage6-dispatchers-circuit.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import { createPerTurnWrites, encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
 
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -130,7 +130,10 @@ describe('dispatchCalculateZs', () => {
     expect(body.skipped).toEqual([]);
     expect(ctx.session.stateSnapshot.circuits[1].measured_zs_ohm).toBe('0.57');
     // Reading flows through the standard extracted_readings path.
-    expect(ctx.perTurnWrites.readings.has('measured_zs_ohm::1')).toBe(true);
+    // Hotfix slice 1.1c — readings Map is now keyed by encodeReadingKey
+    // (boardId-bearing). No board_id in this fixture → encoder uses the
+    // empty/null boardId tag, but `.has(literal)` won't match anymore.
+    expect(ctx.perTurnWrites.readings.has(encodeReadingKey('measured_zs_ohm', 1))).toBe(true);
   });
 
   test('NEVER overwrites an existing measured Zs', async () => {

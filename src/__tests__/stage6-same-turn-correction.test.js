@@ -50,7 +50,7 @@
 import { jest } from '@jest/globals';
 
 import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import { createPerTurnWrites, encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
 import { bundleToolCallsIntoResult } from '../extraction/stage6-event-bundler.js';
 
 function makeLogger() {
@@ -95,11 +95,14 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
           source_turn_id: 't1',
         },
       },
-      {},
+      {}
     );
     expect(out1.is_error).toBe(false);
     expect(perTurnWrites.readings.size).toBe(1);
-    expect(perTurnWrites.readings.get('volts::1').value).toBe('230');
+    // Hotfix slice 1.1c — readings Map keyed by encodeReadingKey, not bare
+    // `${field}::${circuit}`. No board_id passed → encoder uses null/empty
+    // boardId tag, decoder treats it as null on the wire (legacy single-board).
+    expect(perTurnWrites.readings.get(encodeReadingKey('volts', 1)).value).toBe('230');
     expect(session.stateSnapshot.circuits[1].volts).toBe('230');
 
     // Call 2: record_reading(volts, C1, 240). OVERWRITES call 1 on the Map
@@ -116,11 +119,11 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
           source_turn_id: 't1',
         },
       },
-      {},
+      {}
     );
     expect(out2.is_error).toBe(false);
     expect(perTurnWrites.readings.size).toBe(1); // still 1 — same key, overwritten
-    expect(perTurnWrites.readings.get('volts::1').value).toBe('240');
+    expect(perTurnWrites.readings.get(encodeReadingKey('volts', 1)).value).toBe('240');
     expect(session.stateSnapshot.circuits[1].volts).toBe('240');
 
     // Call 3: clear_reading(volts, C1). Removes from Map + snapshot, pushes to
@@ -135,7 +138,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
           reason: 'user_correction',
         },
       },
-      {},
+      {}
     );
     expect(out3.is_error).toBe(false);
 
@@ -168,9 +171,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     expect(bundled).not.toHaveProperty('observation_deletions');
 
     // All three log rows emitted with correct outcomes.
-    const logCalls = logger.info.mock.calls.filter(
-      (c) => c[0] === 'stage6_tool_call',
-    );
+    const logCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6_tool_call');
     expect(logCalls).toHaveLength(3);
     expect(logCalls[0][1]).toMatchObject({ tool: 'record_reading', outcome: 'ok', round: 1 });
     expect(logCalls[1][1]).toMatchObject({ tool: 'record_reading', outcome: 'ok', round: 2 });
@@ -191,7 +192,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
         name: 'record_reading',
         input: { field: 'amps', circuit: 1, value: '10', confidence: 1.0, source_turn_id: 't2' },
       },
-      {},
+      {}
     );
     await dispatch(
       {
@@ -199,7 +200,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
         name: 'record_reading',
         input: { field: 'volts', circuit: 1, value: '230', confidence: 1.0, source_turn_id: 't2' },
       },
-      {},
+      {}
     );
     await dispatch(
       {
@@ -207,12 +208,12 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
         name: 'clear_reading',
         input: { field: 'volts', circuit: 1, reason: 'retest_needed' },
       },
-      {},
+      {}
     );
 
     expect(perTurnWrites.readings.size).toBe(1);
-    expect(perTurnWrites.readings.has('amps::1')).toBe(true);
-    expect(perTurnWrites.readings.has('volts::1')).toBe(false);
+    expect(perTurnWrites.readings.has(encodeReadingKey('amps', 1))).toBe(true);
+    expect(perTurnWrites.readings.has(encodeReadingKey('volts', 1))).toBe(false);
     expect(perTurnWrites.cleared).toHaveLength(1);
 
     const bundled = bundleToolCallsIntoResult(perTurnWrites, { questions: [] });

@@ -26,7 +26,7 @@
 
 import { jest } from '@jest/globals';
 import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import { createPerTurnWrites, encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
 
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -85,8 +85,9 @@ describe('dispatchSetFieldForAllCircuits — happy path', () => {
     }
 
     // perTurnWrites carries 14 entries with MAJOR-1 shape.
+    // Hotfix slice 1.1c — readings Map keyed by encodeReadingKey.
     expect(writes.readings.size).toBe(14);
-    expect(writes.readings.get('rcd_button_confirmed::5')).toEqual({
+    expect(writes.readings.get(encodeReadingKey('rcd_button_confirmed', 5))).toEqual({
       value: 'OK',
       confidence: 0.95,
       source_turn_id: 't1',
@@ -374,7 +375,7 @@ describe('dispatchSetFieldForAllCircuits — validation rejection', () => {
     expect(result.is_error).toBe(false);
     expect(body.ok).toBe(true);
     expect(body.applied).toHaveLength(14);
-    expect(writes.readings.get('measured_zs_ohm::5').value).toBe('0.47');
+    expect(writes.readings.get(encodeReadingKey('measured_zs_ohm', 5)).value).toBe('0.47');
   });
 
   test('select-typed field with empty-string value (canonical "clear") is accepted — "" is a valid option', async () => {

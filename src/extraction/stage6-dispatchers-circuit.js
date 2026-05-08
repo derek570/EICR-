@@ -53,6 +53,7 @@ import {
   renameCircuitFlagAware,
   deleteCircuitFlagAware,
 } from './stage6-snapshot-mutators.js';
+import { encodeReadingKey } from './stage6-per-turn-writes.js';
 import { getCircuitBucket, listCircuitRefsInBoard } from './stage6-multi-board-shape.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
@@ -142,7 +143,12 @@ export async function dispatchRecordReading(call, ctx) {
   // OMIT (undefined) for single-board sessions so the bundler can suppress
   // the field on the wire and the wire shape stays byte-identical pre-hotfix.
   const autoResolved = String(call.tool_call_id ?? '').includes('::auto::');
-  perTurnWrites.readings.set(`${input.field}::${input.circuit}`, {
+  // Hotfix slice 1.1c — encodeReadingKey embeds boardId in the Map key so
+  // cross-board same-(field, circuit) writes in a single tool-loop turn
+  // (e.g. set_field_for_all_circuits('*')) don't collide on Map.set's
+  // last-write-wins. Legacy keys without the boardId tag still decode to
+  // boardId=null in the bundler.
+  perTurnWrites.readings.set(encodeReadingKey(input.field, input.circuit, input.board_id), {
     value: input.value,
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,
@@ -242,7 +248,9 @@ export async function dispatchClearReading(call, ctx) {
   // Same-turn correction: if a record_reading for this slot was pushed earlier
   // in THIS turn, remove it from the Map so the bundler doesn't report both a
   // record and a clear for the same slot (that would be contradictory wire).
-  perTurnWrites.readings.delete(`${input.field}::${input.circuit}`);
+  // Slice 1.1c — same boardId-bearing key shape as the record_reading set
+  // call so the delete targets the right (field, circuit, board) tuple.
+  perTurnWrites.readings.delete(encodeReadingKey(input.field, input.circuit, input.board_id));
   perTurnWrites.cleared.push({
     field: input.field,
     circuit: input.circuit,
@@ -683,7 +691,10 @@ function applyCalculatedReading(session, perTurnWrites, { circuit, field, value,
   // "Work on Board" hotfix slice 1.1a — propagate boardId on the value
   // entry so the bundler emits `reading.board_id` on the wire and iOS
   // routes calc-derived readings to the right board.
-  perTurnWrites.readings.set(`${field}::${circuit}`, {
+  // Slice 1.1c — encode boardId in the Map key so a cross-board calc sweep
+  // (`board_id: '*'` is not yet supported on the calc tools, but the
+  // pattern is forward-safe) doesn't collide on (field, circuit) key.
+  perTurnWrites.readings.set(encodeReadingKey(field, circuit, boardId), {
     value,
     confidence: 1.0,
     source_turn_id: `::calc::${tool}`,
@@ -1045,20 +1056,16 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         value: input.value,
         boardId,
       });
-      // perTurnWrites key shape is locked to `${field}::${circuit}` (per
-      // stage6-per-turn-writes.js MAJOR-1) for slice 1.1a. For a `'*'`
-      // cross-board sweep, multiple (board, ref) pairs collide on the same
-      // (field, ref) Map key — Map.set overwrites with last-write-wins, which
-      // means the wire bundle today carries only the last board's write while
-      // the snapshot carries every board's mutation. Slice 1.1c upgrades the
-      // key to `${field}::${ref} __board__ ${boardId} ` so cross-board sweeps
-      // survive both layers; until then the applied[] array (with explicit
-      // board_id per entry under '*' sweep) is the SoT for Sonnet's read-back.
+      // Slice 1.1c — perTurnWrites key now embeds boardId via
+      // encodeReadingKey. Cross-board '*' sweep can write the same
+      // (field, ref) on every board in one turn without collision; each
+      // (field, ref, board) tuple lands in its own Map slot, the bundler
+      // emits the correct extracted_readings entry per board, and the
+      // applied[] array still surfaces the per-board breakdown.
       //
-      // "Work on Board" hotfix slice 1.1a — carry per-iteration boardId on
-      // the value entry so the bundler emits the right `reading.board_id`
-      // for whichever (board, ref) survives the collision.
-      perTurnWrites.readings.set(`${input.field}::${ref}`, {
+      // "Work on Board" hotfix slice 1.1a — value entry carries boardId so
+      // the bundler emits the right `reading.board_id` on each entry.
+      perTurnWrites.readings.set(encodeReadingKey(input.field, ref, boardId), {
         value: input.value,
         confidence: input.confidence,
         source_turn_id: input.source_turn_id,

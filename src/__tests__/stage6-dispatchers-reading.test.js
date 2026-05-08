@@ -27,7 +27,7 @@
 
 import { jest } from '@jest/globals';
 import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import { createPerTurnWrites, encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
 
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -38,9 +38,7 @@ function makeSession(snapshot = { circuits: {} }) {
 }
 
 function toolCallRows(logger) {
-  return logger.info.mock.calls
-    .filter((c) => c[0] === 'stage6_tool_call')
-    .map((c) => c[1]);
+  return logger.info.mock.calls.filter((c) => c[0] === 'stage6_tool_call').map((c) => c[1]);
 }
 
 describe('dispatchRecordReading', () => {
@@ -54,9 +52,15 @@ describe('dispatchRecordReading', () => {
       {
         tool_call_id: 'tu_1',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.35', confidence: 0.9, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.35',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
 
     // Envelope shape
@@ -69,7 +73,7 @@ describe('dispatchRecordReading', () => {
 
     // perTurnWrites carries the entry with the MAJOR-1 locked shape
     expect(writes.readings.size).toBe(1);
-    expect(writes.readings.get('Ze_ohms::3')).toEqual({
+    expect(writes.readings.get(encodeReadingKey('Ze_ohms', 3))).toEqual({
       value: '0.35',
       confidence: 0.9,
       source_turn_id: 't1',
@@ -100,9 +104,15 @@ describe('dispatchRecordReading', () => {
       {
         tool_call_id: 'tu_bad',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 5, value: '0.35', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 5,
+          value: '0.35',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(true);
@@ -136,9 +146,15 @@ describe('dispatchRecordReading', () => {
       {
         tool_call_id: 'tu_pii',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 1, value: 'secret-0.35', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 1,
+          value: 'secret-0.35',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
 
     const rows = toolCallRows(logger);
@@ -159,17 +175,29 @@ describe('dispatchRecordReading', () => {
       {
         tool_call_id: 'tu_1',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.35', confidence: 0.9, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.35',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
     await d(
       {
         tool_call_id: 'tu_2',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.42', confidence: 0.8, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.42',
+          confidence: 0.8,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
 
     // applyReadingToSnapshot overwrote
@@ -177,7 +205,7 @@ describe('dispatchRecordReading', () => {
 
     // perTurnWrites has ONE entry (last-write-wins Map) with the MAJOR-1 locked shape.
     expect(writes.readings.size).toBe(1);
-    const entry = writes.readings.get('Ze_ohms::3');
+    const entry = writes.readings.get(encodeReadingKey('Ze_ohms', 3));
     expect(entry).toEqual({ value: '0.42', confidence: 0.8, source_turn_id: 't1' });
     // Shape lock: value object must NOT carry field/circuit.
     expect(entry).not.toHaveProperty('field');
@@ -193,25 +221,43 @@ describe('dispatchRecordReading', () => {
       {
         tool_call_id: 'tu_a',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 1, value: '0.1', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 1,
+          value: '0.1',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
     await d(
       {
         tool_call_id: 'tu_b',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 2, value: '0.2', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 2,
+          value: '0.2',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
     await d(
       {
         tool_call_id: 'tu_c',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.3', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.3',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
 
     const rounds = toolCallRows(logger).map((r) => r.round);
@@ -229,10 +275,10 @@ describe('dispatchRecordReading', () => {
         name: 'record_reading',
         input: { field: 'Ze_ohms', circuit: 3, value: '0.35', source_turn_id: 't1' },
       },
-      {},
+      {}
     );
 
-    expect(writes.readings.get('Ze_ohms::3')).toEqual({
+    expect(writes.readings.get(encodeReadingKey('Ze_ohms', 3))).toEqual({
       value: '0.35',
       confidence: 1.0,
       source_turn_id: 't1',
@@ -253,7 +299,7 @@ describe('dispatchClearReading', () => {
         name: 'clear_reading',
         input: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(false);
@@ -288,7 +334,7 @@ describe('dispatchClearReading', () => {
         name: 'clear_reading',
         input: { field: 'Ze_ohms', circuit: 5, reason: 'misheard' },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(true);
@@ -315,7 +361,7 @@ describe('dispatchClearReading', () => {
         name: 'clear_reading',
         input: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(false);
@@ -343,9 +389,15 @@ describe('dispatchClearReading', () => {
       {
         tool_call_id: 'tu_a',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.35', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.35',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
     await d(
       {
@@ -353,11 +405,11 @@ describe('dispatchClearReading', () => {
         name: 'clear_reading',
         input: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
       },
-      {},
+      {}
     );
 
     // readings entry was deleted by the clear path (same-turn dedup).
-    expect(writes.readings.has('Ze_ohms::3')).toBe(false);
+    expect(writes.readings.has(encodeReadingKey('Ze_ohms', 3))).toBe(false);
     // cleared has the single entry.
     expect(writes.cleared).toEqual([{ field: 'Ze_ohms', circuit: 3, reason: 'user_correction' }]);
     // Snapshot bucket field was removed by clearReadingInSnapshot.
@@ -374,9 +426,15 @@ describe('dispatchClearReading', () => {
       {
         tool_call_id: 'tu_a',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.35', confidence: 1.0, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.35',
+          confidence: 1.0,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
     await d(
       {
@@ -384,19 +442,25 @@ describe('dispatchClearReading', () => {
         name: 'clear_reading',
         input: { field: 'Ze_ohms', circuit: 3, reason: 'misheard' },
       },
-      {},
+      {}
     );
     await d(
       {
         tool_call_id: 'tu_c',
         name: 'record_reading',
-        input: { field: 'Ze_ohms', circuit: 3, value: '0.42', confidence: 0.95, source_turn_id: 't1' },
+        input: {
+          field: 'Ze_ohms',
+          circuit: 3,
+          value: '0.42',
+          confidence: 0.95,
+          source_turn_id: 't1',
+        },
       },
-      {},
+      {}
     );
 
     expect(writes.readings.size).toBe(1);
-    expect(writes.readings.get('Ze_ohms::3')).toEqual({
+    expect(writes.readings.get(encodeReadingKey('Ze_ohms', 3))).toEqual({
       value: '0.42',
       confidence: 0.95,
       source_turn_id: 't1',

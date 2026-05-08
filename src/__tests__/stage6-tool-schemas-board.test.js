@@ -39,7 +39,10 @@ import {
   getToolByName,
 } from '../extraction/stage6-tool-schemas.js';
 import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import {
+  createPerTurnWrites,
+  encodeBoardReadingKey,
+} from '../extraction/stage6-per-turn-writes.js';
 import { applyBoardReadingToSnapshot } from '../extraction/stage6-snapshot-mutators.js';
 import { bundleToolCallsIntoResult } from '../extraction/stage6-event-bundler.js';
 import { projectSlots, compareSlots } from '../extraction/stage6-slot-comparator.js';
@@ -356,8 +359,12 @@ describe('dispatchRecordBoardReading state mutation', () => {
     });
 
     // perTurnWrites tracks the entry under the field-only key (no `::`).
+    // Hotfix slice 1.1c — boardReadings Map key now embeds boardId via
+    // encodeBoardReadingKey so cross-board same-field writes don't collide.
+    // No board_id in this fixture → encoder produces the legacy-equivalent
+    // key with an empty boardId tag.
     expect(writes.boardReadings.size).toBe(1);
-    expect(writes.boardReadings.get('earth_loop_impedance_ze')).toEqual({
+    expect(writes.boardReadings.get(encodeBoardReadingKey('earth_loop_impedance_ze'))).toEqual({
       value: '0.86',
       confidence: 0.95,
       source_turn_id: 't1',
@@ -434,7 +441,7 @@ describe('dispatchRecordBoardReading state mutation', () => {
       {}
     );
     expect(writes.boardReadings.size).toBe(1);
-    expect(writes.boardReadings.get('earth_loop_impedance_ze')).toEqual({
+    expect(writes.boardReadings.get(encodeBoardReadingKey('earth_loop_impedance_ze'))).toEqual({
       value: '0.91',
       confidence: 0.95,
       source_turn_id: 't1',

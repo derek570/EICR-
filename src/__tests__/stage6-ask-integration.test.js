@@ -44,7 +44,7 @@ import {
 } from '../extraction/stage6-dispatchers.js';
 import { runToolLoop } from '../extraction/stage6-tool-loop.js';
 import { classifyOvertake } from '../extraction/stage6-overtake-classifier.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import { createPerTurnWrites, encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
 import { mockClient } from './helpers/mockStream.js';
 
 // ---------------------------------------------------------------------------
@@ -259,9 +259,10 @@ describe('STT-05 — blocking ask_user round-trip (Plan 03-09)', () => {
     expect(writeLogs[0][1]).toMatchObject({ outcome: 'ok', is_error: false });
 
     // perTurnWrites received the reading from the writes dispatcher.
-    // Phase 2 perTurnWrites.readings is a Map keyed by `${field}::${circuit}`.
+    // Hotfix slice 1.1c — Map keyed by encodeReadingKey, not bare
+    // `${field}::${circuit}` (key now embeds boardId for collision safety).
     expect(perTurnWrites.readings.size).toBe(1);
-    expect(perTurnWrites.readings.get('measured_zs_ohm::5')).toMatchObject({
+    expect(perTurnWrites.readings.get(encodeReadingKey('measured_zs_ohm', 5))).toMatchObject({
       value: '1.08',
       confidence: 1.0,
       source_turn_id: 'turn-1',
@@ -467,7 +468,7 @@ describe('STT-07 — mid-ask overtake (Plan 03-09)', () => {
 
     // record_reading for ocpd_max_zs_ohm=0.3 committed in round 2. Map shape.
     expect(perTurnWrites.readings.size).toBe(1);
-    expect(perTurnWrites.readings.get('ocpd_max_zs_ohm::1')).toMatchObject({
+    expect(perTurnWrites.readings.get(encodeReadingKey('ocpd_max_zs_ohm', 1))).toMatchObject({
       value: '0.3',
       confidence: 1.0,
     });

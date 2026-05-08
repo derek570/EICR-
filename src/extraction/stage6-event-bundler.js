@@ -16,6 +16,8 @@
  * `questions` slot into the iOS wire shape.
  */
 
+import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
+
 export const BUNDLER_PHASE = 2;
 
 /**
@@ -76,9 +78,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   //    against a non-integer circuit_ref the schema doesn't currently allow).
   const extracted_readings = [];
   for (const [key, entry] of perTurnWrites.readings) {
-    const sep = key.indexOf('::');
-    const field = sep >= 0 ? key.slice(0, sep) : key;
-    const circuitStr = sep >= 0 ? key.slice(sep + 2) : '';
+    // Slice 1.1c — decodeReadingKey handles BOTH the new boardId-tagged
+    // shape `${field}::${circuit}<NUL>__board__<NUL>${boardId}<NUL>` and
+    // legacy 2-part `${field}::${circuit}` keys (test fixtures or older
+    // accumulators) so this loop is shape-agnostic. boardId from the key
+    // is NOT used for emission — the value entry's boardId (set by the
+    // dispatcher in slice 1.1a) is the wire-shape SoT; the key boardId
+    // is purely a same-turn collision-key.
+    const { field, circuit: circuitStr } = decodeReadingKey(key);
     const circuitInt = Number(circuitStr);
     const circuit =
       circuitStr !== '' && Number.isInteger(circuitInt) && String(circuitInt) === circuitStr
@@ -147,7 +154,11 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   //    Map relies on for STT-09 same-turn correction.
   if (boardReadings.size > 0) {
     const extracted_board_readings = [];
-    for (const [field, entry] of boardReadings) {
+    for (const [key, entry] of boardReadings) {
+      // Slice 1.1c — same key-decoder treatment as the readings Map. Legacy
+      // field-only keys decode to boardId=null; new boardId-tagged keys
+      // strip the tag so `field` is the bare field name on the wire.
+      const { field } = decodeBoardReadingKey(key);
       const reading = {
         field,
         value: entry.value,

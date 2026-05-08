@@ -25,7 +25,10 @@
 
 import { jest } from '@jest/globals';
 import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import {
+  createPerTurnWrites,
+  encodeBoardReadingKey,
+} from '../extraction/stage6-per-turn-writes.js';
 import {
   applyReadingFlagAware,
   clearReadingFlagAware,
@@ -626,7 +629,16 @@ describe('dispatchers against a sub-board target', () => {
     expect(session.stateSnapshot.circuits[0]).toBeUndefined();
     // perTurnWrites still tracks board readings keyed by field so the
     // bundler/comparator surface is unchanged.
-    expect(writes.boardReadings.get('earth_loop_impedance_ze')).toMatchObject({
+    // Hotfix slice 1.1c — boardReadings Map key is encodeBoardReadingKey
+    // output. This test omits explicit input.board_id, so the dispatcher
+    // passes undefined to encoder → empty boardId tag (legacy-equivalent
+    // key shape). The mutator still resolves currentBoardId for the
+    // snapshot write — it's the perTurnWrites tracking that's omitted-
+    // boardId; the bundler then drops board_id on the wire and iOS uses
+    // currentBoardId fallback in slice 1.3.
+    expect(
+      writes.boardReadings.get(encodeBoardReadingKey('earth_loop_impedance_ze'))
+    ).toMatchObject({
       value: '0.35',
       confidence: 0.9,
     });
@@ -706,6 +718,8 @@ describe('dispatchers against a sub-board target', () => {
     expect(session.stateSnapshot.boards[1].earth_loop_impedance_ze).toBe('0.42');
     // perTurnWrites flags the write as auto-resolved so the slot comparator
     // can filter it (P3-B from the path-2 review).
-    expect(writes.boardReadings.get('earth_loop_impedance_ze').auto_resolved).toBe(true);
+    expect(
+      writes.boardReadings.get(encodeBoardReadingKey('earth_loop_impedance_ze')).auto_resolved
+    ).toBe(true);
   });
 });
