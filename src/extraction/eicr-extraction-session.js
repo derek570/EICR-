@@ -13,6 +13,7 @@ import {
   ensureMultiBoardShape,
   isMultiBoardFlagOn,
   getCircuitBucket,
+  getMainBoardId,
   listCircuitRefsInBoard,
   DEFAULT_MAIN_BOARD_ID,
 } from './stage6-multi-board-shape.js';
@@ -1006,6 +1007,32 @@ export class EICRExtractionSession {
    */
   _seedStateFromJobState(jobState) {
     if (!jobState?.circuits) return;
+    // "Work on Board" sprint Phase A.3 — hydrate boards[] from jobState
+    // BEFORE seeding circuits, so the dual-shape circuit router can ask
+    // `getMainBoardId(snapshot)` and route per-circuit to the correct
+    // namespace (legacy bare-numeric for main, composite key for sub-boards).
+    //
+    // If jobState carries an explicit boards[] (iOS multi-board PUT), it
+    // wins — replace the synth `[main]` default with the real array.
+    // Currently a single-source field test still hits this path with
+    // `boards` absent; in that case the constructor's `ensureMultiBoardShape`
+    // synth default (`[{id:'main', designation:'DB-1', board_type:'main'}]`)
+    // is preserved unchanged.
+    //
+    // Q0.1 (locked): on session start, currentBoardId is ALWAYS the main
+    // board id — predictable focus, no stale "last active" restored across
+    // sessions.
+    if (Array.isArray(jobState.boards) && jobState.boards.length > 0) {
+      this.stateSnapshot.boards = jobState.boards.map((b) => ({ ...b }));
+    }
+    this.stateSnapshot.currentBoardId = getMainBoardId(this.stateSnapshot);
+    const mainBoardId = this.stateSnapshot.currentBoardId;
+    // Pre-compute the set of known board ids so we can detect (and silently
+    // fall back to the legacy bucket for) any circuit whose `board_id` points
+    // at a board that isn't in `boards[]` — defensive against partially-
+    // hydrated payloads. The dispatcher's hierarchy validator catches
+    // mismatches at write-time on PUT; this seeder is read-time.
+    const knownBoardIds = new Set((this.stateSnapshot.boards ?? []).map((b) => b?.id));
     let seeded = 0;
     for (const circuit of jobState.circuits) {
       const num = parseInt(circuit.ref || circuit.circuitNumber || circuit.number);
@@ -1074,7 +1101,28 @@ export class EICRExtractionSession {
       // `rename_circuit` for that ref. Pre-fix this branch only fired when at
       // least one field had been populated, which silently dropped pristine
       // CCU-imported circuits.
-      this.stateSnapshot.circuits[num] = { ...fields };
+      //
+      // "Work on Board" sprint Phase A.3 — dual-shape routing. When the
+      // circuit's `board_id` resolves to the main board (or is absent), seed
+      // at the legacy bare-numeric key (preserves byte-identical behaviour
+      // for every single-board job). When it resolves to a known non-main
+      // board, seed at the composite key `${board_id}::${num}` with a
+      // self-describing `{circuit, board_id}` skeleton so the
+      // dual-shape readers (`getCircuitBucket` / `listCircuitRefsInBoard`)
+      // see it correctly. Unknown `board_id` (not in `boards[]`) falls back
+      // to legacy as the safe default — the hierarchy validator on the next
+      // PUT surfaces the orphan circuit if the inspector cares to fix it.
+      const circuitBoardId = circuit.board_id ?? circuit.boardId;
+      if (circuitBoardId && circuitBoardId !== mainBoardId && knownBoardIds.has(circuitBoardId)) {
+        const compositeKey = `${circuitBoardId}::${num}`;
+        this.stateSnapshot.circuits[compositeKey] = {
+          circuit: num,
+          board_id: circuitBoardId,
+          ...fields,
+        };
+      } else {
+        this.stateSnapshot.circuits[num] = { ...fields };
+      }
       if (!this.recentCircuitOrder.includes(num)) this.recentCircuitOrder.push(num);
       seeded++;
     }

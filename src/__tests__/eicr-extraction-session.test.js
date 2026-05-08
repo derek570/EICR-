@@ -104,6 +104,98 @@ describe('EICRExtractionSession', () => {
     });
   });
 
+  describe('_seedStateFromJobState — "Work on Board" Phase A.3 dual-shape routing', () => {
+    // Single-board jobs (no boards array OR boards = [main only]) seed every
+    // circuit at the legacy bare-numeric key. Multi-board jobs route per
+    // circuit's `board_id`: main → legacy, sub-boards → composite key.
+    test('single-board job: all circuits land at legacy bare-numeric keys', () => {
+      session.start({
+        circuits: [
+          { ref: '1', designation: 'Lights' },
+          { ref: '2', designation: 'Sockets' },
+        ],
+      });
+      expect(session.stateSnapshot.circuits[1]).toEqual({ circuit_designation: 'Lights' });
+      expect(session.stateSnapshot.circuits[2]).toEqual({ circuit_designation: 'Sockets' });
+      // No composite keys leaked.
+      expect(Object.keys(session.stateSnapshot.circuits).every((k) => /^\d+$/.test(k))).toBe(true);
+      // currentBoardId resolves to the synth main board.
+      expect(session.stateSnapshot.currentBoardId).toBe('main');
+    });
+
+    test('multi-board job: hydrates boards[] from jobState; routes circuits per dual-shape', () => {
+      session.start({
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-1',
+            designation: 'DB-2',
+            board_type: 'sub-distribution',
+            parent_board_id: 'main',
+            feed_circuit_ref: '4',
+          },
+        ],
+        circuits: [
+          { ref: '1', designation: 'Lights', board_id: 'main' },
+          { ref: '4', designation: 'Sub-board feed', board_id: 'main' },
+          // Sub-1 owns its own circuit 1 — must NOT collide with main's circuit 1.
+          { ref: '1', designation: 'Garage lights', board_id: 'sub-1' },
+        ],
+      });
+
+      // Main circuits at legacy keys.
+      expect(session.stateSnapshot.circuits[1]).toEqual({ circuit_designation: 'Lights' });
+      expect(session.stateSnapshot.circuits[4]).toEqual({ circuit_designation: 'Sub-board feed' });
+
+      // Sub-1's circuit 1 at composite key — does NOT clobber main::1.
+      expect(session.stateSnapshot.circuits['sub-1::1']).toEqual({
+        circuit: 1,
+        board_id: 'sub-1',
+        circuit_designation: 'Garage lights',
+      });
+
+      // boards[] reflects the iOS-supplied multi-board structure.
+      expect(session.stateSnapshot.boards).toHaveLength(2);
+      expect(session.stateSnapshot.boards[0].id).toBe('main');
+      expect(session.stateSnapshot.boards[1].id).toBe('sub-1');
+
+      // Q0.1 — currentBoardId on session start is ALWAYS the main board id.
+      expect(session.stateSnapshot.currentBoardId).toBe('main');
+    });
+
+    test("circuit's board_id pointing at unknown board falls back to legacy bucket (defensive)", () => {
+      // jobState declares only main but a circuit claims `board_id: 'orphan'`.
+      // The seeder falls back to legacy rather than synthesising a phantom
+      // composite-key bucket whose board_id has no entry in boards[].
+      session.start({
+        boards: [{ id: 'main', designation: 'DB-1', board_type: 'main' }],
+        circuits: [{ ref: '5', designation: 'Misattributed', board_id: 'orphan' }],
+      });
+      expect(session.stateSnapshot.circuits[5]).toEqual({ circuit_designation: 'Misattributed' });
+      expect(session.stateSnapshot.circuits['orphan::5']).toBeUndefined();
+    });
+
+    test('camelCase boardId from iOS payload also routes correctly', () => {
+      // iOS encodes its `boardId` Codable property as `board_id` snake_case
+      // (Circuit.swift:46), but defensive parity with the camelCase variants
+      // already accepted by the seeder (`measuredZsOhm`, `polarityConfirmed`,
+      // …) means we tolerate `boardId` too.
+      session.start({
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          { id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' },
+        ],
+        circuits: [{ ref: '7', designation: 'Cooker', boardId: 'sub-1' }],
+      });
+      expect(session.stateSnapshot.circuits['sub-1::7']).toEqual({
+        circuit: 7,
+        board_id: 'sub-1',
+        circuit_designation: 'Cooker',
+      });
+      expect(session.stateSnapshot.circuits[7]).toBeUndefined();
+    });
+  });
+
   describe('stop', () => {
     test('should set isActive to false and return summary', () => {
       session.start(null);
