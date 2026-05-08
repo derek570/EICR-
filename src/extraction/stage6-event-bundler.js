@@ -22,12 +22,12 @@ export const BUNDLER_PHASE = 2;
  * Translate per-turn tool-call outcomes into the legacy `extraction` result
  * shape that iOS `ServerWebSocketService` expects.
  *
- * @param {{readings: Map<string, {value: any, confidence: number, source_turn_id?: string}>,
- *          boardReadings: Map<string, {value: any, confidence: number, source_turn_id?: string}>,
+ * @param {{readings: Map<string, {value: any, confidence: number, source_turn_id?: string, boardId?: string}>,
+ *          boardReadings: Map<string, {value: any, confidence: number, source_turn_id?: string, boardId?: string}>,
  *          cleared: Array<{field: string, circuit: string, reason?: string}>,
  *          observations: Array<{id: string, text: string, code: string}>,
  *          deletedObservations: Array<{id: string, reason?: string}>,
- *          circuitOps: Array<{op: string, circuit_ref: string, from_ref?: string, meta?: any}>,
+ *          circuitOps: Array<{op: string, circuit_ref: string, from_ref?: string, board_id?: string, meta?: any}>,
  *          boardOps?: Array<{op: string, [key: string]: any}>}} perTurnWrites
  *   Accumulator populated by Phase 2 dispatchers (Plans 02-03 + 02-04 +
  *   Bug-C carryover dispatcher record_board_reading + Phase 6 board-op
@@ -37,13 +37,13 @@ export const BUNDLER_PHASE = 2;
  *   (Phase 2 keeps legacy question-gate behaviour; tool-call ask_user is
  *   Phase 3+). If null/undefined, treated as `{}` so the bundler still
  *   produces a valid empty-questions shape even when the legacy path threw.
- * @returns {{extracted_readings: Array<{field: string, circuit: string, value: any, confidence: number, source: 'tool_call'}>,
+ * @returns {{extracted_readings: Array<{field: string, circuit: string, value: any, confidence: number, source: 'tool_call', board_id?: string}>,
  *            observations: Array<{id: string, text: string, code: string}>,
  *            questions: Array<any>,
  *            cleared_readings?: Array<{field: string, circuit: string, reason?: string}>,
- *            circuit_updates?: Array<{op: string, circuit_ref: string, from_ref?: string, meta?: any}>,
+ *            circuit_updates?: Array<{op: string, circuit_ref: string, from_ref?: string, board_id?: string, meta?: any}>,
  *            observation_deletions?: Array<{id: string, reason?: string}>,
- *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call'}>,
+ *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call', board_id?: string}>,
  *            board_ops?: Array<{op: string, [key: string]: any}>}}
  */
 export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
@@ -99,6 +99,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
     if (entry.auto_resolved === true) {
       reading.auto_resolved = true;
     }
+    // "Work on Board" hotfix slice 1.1a (2026-05-08) — emit board_id when
+    // the dispatcher recorded one on the value entry. Omit otherwise so
+    // single-board sessions stay byte-identical to pre-hotfix traffic and
+    // pre-fix iOS clients (which ignore the field via decodeIfPresent) see
+    // no change.
+    if (entry.boardId != null) {
+      reading.board_id = entry.boardId;
+    }
     extracted_readings.push(reading);
   }
 
@@ -149,6 +157,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
       // P3-B — same auto_resolve propagation as extracted_readings above.
       if (entry.auto_resolved === true) {
         reading.auto_resolved = true;
+      }
+      // "Work on Board" hotfix slice 1.1a — emit board_id so shadow-harness's
+      // fold to extracted_readings (with circuit:0) carries the field through
+      // to iOS, where applySonnetReadings can land board-level supply on the
+      // right BoardInfo via the boardIndex(for:) helper rather than
+      // pinning to boards[0].
+      if (entry.boardId != null) {
+        reading.board_id = entry.boardId;
       }
       extracted_board_readings.push(reading);
     }

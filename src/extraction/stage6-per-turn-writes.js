@@ -17,9 +17,17 @@
  * SHAPE LOCK (MAJOR-1 — DO NOT MUTATE WITHOUT UPDATING PLAN 02-02)
  * ---------------------------------------------------------------------------
  * `readings` is a Map keyed by `${field}::${circuit}`. Its VALUES carry
- * {value, confidence, source_turn_id} — and NOTHING ELSE. Specifically,
- * `field` and `circuit` MUST NOT appear in the value object; they live in
- * the key and are reconstructed by splitting on '::' in Plan 02-05's bundler.
+ * {value, confidence, source_turn_id, auto_resolved?, boardId?} — and NOTHING
+ * ELSE. Specifically, `field` and `circuit` MUST NOT appear in the value
+ * object; they live in the key and are reconstructed by splitting on '::'
+ * in Plan 02-05's bundler.
+ *
+ * `boardId` was added in the "Work on Board" hotfix slice 1.1a (2026-05-08)
+ * so the bundler can emit `reading.board_id` on the wire and the iOS apply
+ * path can route by (boardId, circuitRef) rather than pinning to boards[0].
+ * The Map key shape stays at `${field}::${circuit}` for slice 1.1a; slice
+ * 1.1c extends the key to include boardId so cross-board same-turn writes
+ * (`set_field_for_all_circuits('*')`) don't collide.
  *
  * Why: duplicating field/circuit in both the key and the value creates a
  * truth-divergence risk (which one does the bundler trust if they disagree?)
@@ -27,15 +35,17 @@
  * identity; if the value also carries an older copy, refactors drift).
  *
  * If a new Phase ever NEEDS more metadata in the value object, add it
- * alongside value/confidence/source_turn_id — but do NOT re-introduce
+ * alongside value/confidence/source_turn_id/boardId — but do NOT re-introduce
  * field/circuit. The tests in `stage6-per-turn-writes.test.js` assert this
  * shape and will fail if anyone re-adds those keys.
  * ---------------------------------------------------------------------------
  *
  * Slot semantics:
- *   readings            : Map<"${field}::${circuit}", {value, confidence, source_turn_id}>
+ *   readings            : Map<"${field}::${circuit}",
+ *                              {value, confidence, source_turn_id, boardId?, auto_resolved?}>
  *                         Last-write-wins (same-turn correction path).
- *   boardReadings       : Map<field, {value, confidence, source_turn_id}>
+ *   boardReadings       : Map<field,
+ *                              {value, confidence, source_turn_id, boardId?, auto_resolved?}>
  *                         Phase 2 carryover (Bug C — 2026-04-26 production analysis):
  *                         supply / installation / board-level writes via
  *                         record_board_reading. Keyed by field ONLY (no circuit —

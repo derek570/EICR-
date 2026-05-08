@@ -178,12 +178,20 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // P3-B (2026-04-27): tag synthetic auto-resolve writes so the slot
   // comparator can filter them out (see stage6-dispatchers-circuit.js for
   // the parallel change on per-circuit writes).
+  //
+  // "Work on Board" hotfix slice 1.1a (2026-05-08): carry input.board_id on
+  // the value object so the bundler can emit `reading.board_id` on the
+  // wire (board-level supply / installation reads route to the right board
+  // via the shadow-harness fold to extracted_readings circuit:0; iOS uses
+  // the field on apply to land the value on board.zeAtDb / board.ipf rather
+  // than always boards[0]).
   const autoResolved = String(call.tool_call_id ?? '').includes('::auto::');
   perTurnWrites.boardReadings.set(input.field, {
     value: input.value,
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,
     auto_resolved: autoResolved || undefined,
+    boardId: input.board_id ?? undefined,
   });
 
   // 5) log success.

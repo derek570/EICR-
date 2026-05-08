@@ -126,8 +126,8 @@ export async function dispatchRecordReading(call, ctx) {
   });
 
   // MAJOR-1 shape lock: value object carries ONLY {value, confidence,
-  // source_turn_id, auto_resolved?} — field/circuit live in the Map key.
-  // Bundler (Plan 02-05) splits the key on '::' to reconstruct them.
+  // source_turn_id, auto_resolved?, boardId?} — field/circuit live in the
+  // Map key. Bundler (Plan 02-05) splits the key on '::' to reconstruct them.
   //
   // P3-B (2026-04-27): tag synthetic auto-resolve writes so the slot
   // comparator can filter them out and avoid false-positive `extra_in_tool`
@@ -135,12 +135,19 @@ export async function dispatchRecordReading(call, ctx) {
   // code; createAskDispatcher short-circuits before the resolution path).
   // The synthetic tool_call_id namespace marker '::auto::' is set by
   // createAutoResolveWriteHook in stage6-dispatchers.js.
+  //
+  // "Work on Board" hotfix slice 1.1a (2026-05-08): carry input.board_id on
+  // the value object so the bundler can emit `reading.board_id` on the wire
+  // and iOS can route by (boardId, circuitRef) rather than pin to boards[0].
+  // OMIT (undefined) for single-board sessions so the bundler can suppress
+  // the field on the wire and the wire shape stays byte-identical pre-hotfix.
   const autoResolved = String(call.tool_call_id ?? '').includes('::auto::');
   perTurnWrites.readings.set(`${input.field}::${input.circuit}`, {
     value: input.value,
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,
     auto_resolved: autoResolved || undefined,
+    boardId: input.board_id ?? undefined,
   });
 
   // Ring continuity tracking — stamp the circuit's last-write timestamp
@@ -351,6 +358,12 @@ export async function dispatchCreateCircuit(call, ctx) {
   perTurnWrites.circuitOps.push({
     op: 'create',
     circuit_ref: input.circuit_ref,
+    // "Work on Board" hotfix slice 1.1a — circuit_updates wire shape carries
+    // board_id so the iOS apply path (which converts shadow-harness's legacy-
+    // shape delete projection into a bucket lookup) routes the new bucket to
+    // the right board. Omit-when-undefined preserves byte-identical traffic
+    // for single-board sessions.
+    ...(input.board_id != null ? { board_id: input.board_id } : {}),
     meta: {
       designation: input.designation ?? null,
       phase: input.phase ?? null,
@@ -504,6 +517,9 @@ export async function dispatchRenameCircuit(call, ctx) {
     op: 'rename',
     from_ref: input.from_ref,
     circuit_ref: input.circuit_ref,
+    // "Work on Board" hotfix slice 1.1a — see dispatchCreateCircuit for
+    // rationale. Rename ops route to the target board's bucket on iOS.
+    ...(input.board_id != null ? { board_id: input.board_id } : {}),
     meta: {
       designation: input.designation ?? null,
       phase: input.phase ?? null,
@@ -580,6 +596,10 @@ export async function dispatchDeleteCircuit(call, ctx) {
   perTurnWrites.circuitOps.push({
     op: 'delete',
     circuit_ref: input.circuit_ref,
+    // "Work on Board" hotfix slice 1.1a — board_id flows through to iOS so
+    // the legacy-shape delete projection (shadow-harness :436-447) can route
+    // to the right board's bucket on apply.
+    ...(input.board_id != null ? { board_id: input.board_id } : {}),
   });
 
   logToolCall(logger, {
@@ -660,10 +680,14 @@ function applyCalculatedReading(session, perTurnWrites, { circuit, field, value,
   // calculate_r1_plus_r2 routes the WRITE to the right composite-key bucket
   // (the SELECTOR already routes via listCircuitRefsInBoard + getCircuitBucket).
   applyReadingFlagAware(session.stateSnapshot, { circuit, field, value, boardId });
+  // "Work on Board" hotfix slice 1.1a — propagate boardId on the value
+  // entry so the bundler emits `reading.board_id` on the wire and iOS
+  // routes calc-derived readings to the right board.
   perTurnWrites.readings.set(`${field}::${circuit}`, {
     value,
     confidence: 1.0,
     source_turn_id: `::calc::${tool}`,
+    boardId: boardId ?? undefined,
   });
 }
 
@@ -1022,16 +1046,23 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         boardId,
       });
       // perTurnWrites key shape is locked to `${field}::${circuit}` (per
-      // stage6-per-turn-writes.js MAJOR-1). For a `'*'` cross-board sweep,
-      // multiple (board, ref) pairs may collide on the same (field, ref) Map
-      // key — Map.set overwrites with last-write-wins semantics, which is
-      // fine: the wire bundle reflects the last write per (field, ref) pair,
-      // while the snapshot carries every board's mutation. The applied[]
-      // array surfaces the full per-board breakdown for Sonnet's read-back.
+      // stage6-per-turn-writes.js MAJOR-1) for slice 1.1a. For a `'*'`
+      // cross-board sweep, multiple (board, ref) pairs collide on the same
+      // (field, ref) Map key — Map.set overwrites with last-write-wins, which
+      // means the wire bundle today carries only the last board's write while
+      // the snapshot carries every board's mutation. Slice 1.1c upgrades the
+      // key to `${field}::${ref} __board__ ${boardId} ` so cross-board sweeps
+      // survive both layers; until then the applied[] array (with explicit
+      // board_id per entry under '*' sweep) is the SoT for Sonnet's read-back.
+      //
+      // "Work on Board" hotfix slice 1.1a — carry per-iteration boardId on
+      // the value entry so the bundler emits the right `reading.board_id`
+      // for whichever (board, ref) survives the collision.
       perTurnWrites.readings.set(`${input.field}::${ref}`, {
         value: input.value,
         confidence: input.confidence,
         source_turn_id: input.source_turn_id,
+        boardId: boardId ?? undefined,
       });
       applied.push({
         circuit: ref,
