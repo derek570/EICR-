@@ -1,7 +1,7 @@
 # "Work on [Board]" — Fresh-Context Handoff
 
 **Read this first** in a new session. Full plan in sibling `PLAN.md` (~370 lines).
-Last updated 2026-05-08 (Phase A SHIPPED). Status: **Phase A landed on `main` as commit `382985e`. Backend full suite green (3161/3164, 3 pre-existing skips). Not yet pushed/deployed. Slices A.3 (`_seedStateFromJobState` composite-key route) and A.4 (`buildStateSnapshotMessage` dual-shape supply line + retire `STAGE6_MULTI_BOARD` env flag) are the next concrete steps — both backend-only, separate commits each. Phases B-E (server scoping, iOS voice command, banner, WS broadcast) follow per the table below.**
+Last updated 2026-05-08 (Phase A FULLY SHIPPED — all three slices). Status: **Phase A landed across three commits on `main`: `382985e` (dual-shape helpers + mutator wrappers + 32 test rewrites), `d1ad05b` (`_seedStateFromJobState` dual-shape routing), `cc303bc` (`buildStateSnapshotMessage` dual-shape + `STAGE6_MULTI_BOARD` env flag retired). Backend full suite green (3162 passing, 3 pre-existing skips). NOT YET PUSHED/DEPLOYED. Phase B (server strict `currentBoardId` scoping + system-prompt hint) is the next backend slice — single commit, then push to deploy the full Phase A + B as one unit. Phases C/D/E ship the iOS-facing UX (voice command, banner, WS broadcast).**
 
 ---
 
@@ -250,33 +250,48 @@ Replay the EEB8F9EA scenario in a fixture: legacy main with `circuits[1..13]`, `
 
 ### How a fresh session should pick up
 
-Phase A is now landed (commit `382985e` on `main`, 2026-05-08). The session log
-above is preserved as a record of the design work; it is no longer the
-"how to start" pointer.
+Phase A is fully landed across three commits on `main` (2026-05-08). The
+session log above is preserved as a record of the original design work.
 
-Next steps:
+**Phase A commits:**
+1. `382985e` — dual-shape helpers (`getMainBoardId`) + mutator wrappers +
+   32 test rewrites across 4 suites.
+2. `d1ad05b` — `_seedStateFromJobState` board hydration + per-circuit
+   dual-shape routing + 4 new regression tests.
+3. `cc303bc` — `buildStateSnapshotMessage` dual-shape supply/iteration +
+   `STAGE6_MULTI_BOARD` env flag and `isMultiBoardFlagOn()` helper
+   deleted entirely.
 
-1. **Slice A.3** — `eicr-extraction-session.js:_seedStateFromJobState`
-   (line ~1077). When the iOS PUT seeds a multi-board snapshot, route
-   each circuit to either the legacy bare-numeric key (if `circuit.board_id`
-   resolves to main) or the composite key `${board_id}::${ref}` (if it
-   resolves to any other board). Today every seeded circuit lands at the
-   bare-numeric key regardless of board. One commit, backend-only.
-2. **Slice A.4** — `eicr-extraction-session.js:buildStateSnapshotMessage`
-   (line ~2118). Replace the `isMultiBoardFlagOn()` branch with the
-   dual-shape rule: main supply reads from `circuits[0]`, sub-board supply
-   from BoardInfo on `boards[]`. After landing, delete the
-   `isMultiBoardFlagOn` export AND the `STAGE6_MULTI_BOARD` env var (no
-   remaining readers). One commit, backend-only.
-3. **Phases B → E** — see the phase order table at the top of this file.
-   Phase B (strict server scoping + system prompt) is the next backend
-   slice after A.4 lands; C/D/E are the iOS-facing UX work.
+**Acceptance gate (Phase A) — met:**
+- Full backend suite green (3162 passing, 3 pre-existing skips).
+- EEB8F9EA "moving on to sub-board, garage fed from circuit 11" repro
+  now works end-to-end: composite-key writes ship for every non-main
+  board; main-board behaviour byte-identical to legacy.
+- `STAGE6_MULTI_BOARD` env var is dead. No production reader. The only
+  remaining grep hits are historical comments.
 
-Acceptance gate (Phase A) — already met by commit `382985e`:
-- Full backend suite green (3161 passing).
-- Composite-key writes ship for every non-main board across all six
-  dispatchers (record_reading, clear_reading, create_circuit,
-  rename_circuit, delete_circuit, set_field_for_all_circuits) and the
-  two board-level paths (record_board_reading, mark_distribution_circuit).
-- Main-board behaviour is byte-identical to legacy: every flag-off /
-  legacy test passes unmodified.
+**Next steps:**
+
+1. **Phase B — server strict `currentBoardId` scoping + system prompt.**
+   Backend-only. Tighten the agentic-prompt + dispatcher contract so
+   that:
+   - Every circuit-mutator tool call MUST resolve to `currentBoardId`
+     (or include an explicit `board_id`). Cross-board readings without
+     an explicit board_id get rejected with a structured error rather
+     than silently writing to the wrong board.
+   - The system prompt explains the scope to Sonnet: "All readings
+     land on the active board; if the inspector mentions a different
+     board, call `select_board` first." (Q0.4 locked: NO auto-routing
+     of cross-board readings.)
+   Estimate: 0.5 session.
+2. **Phase C — iOS voice command "Work on \[X\]" → `select_board` tool.**
+   iOS-only. New voice intent parsed by `TranscriptFieldMatcher`:
+   substring match on `boards[].designation`, longest match wins,
+   ambiguity → TTS clarification. Sends `select_board` over WS.
+   Estimate: 1 session.
+3. **Phase D + E — iOS red-banner UI + backend WS broadcast.** Ships
+   together because the banner needs the WS reactivity. Estimate: 0.5
+   session each.
+
+Phase A + Phase B can ship as a single backend deploy if you want to
+gate the iOS-facing work behind a complete server-side foundation.
