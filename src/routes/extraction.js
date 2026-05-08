@@ -2502,22 +2502,54 @@ router.post(
           // groups-mode prompt no longer asks for main_switch_center_x as
           // of 2026-04-29).
           let mainSwitchSide = 'none';
-          const stage3MainSwitchSlot = (analysis.slots || []).find(
+          let mainSwitchSideSource = 'none';
+          const stage3MainSwitchSlots = (analysis.slots || []).filter(
             (s) => s?.classification === 'main_switch'
           );
+          const stage3MainSwitchSlot = stage3MainSwitchSlots[0] || null;
           if (stage3MainSwitchSlot) {
             const halfwayIdx = (analysis.slots.length - 1) / 2;
             mainSwitchSide = stage3MainSwitchSlot.slotIndex >= halfwayIdx ? 'right' : 'left';
+            mainSwitchSideSource = 'stage3';
           } else if (geometricResult.mainSwitchOffset === 'right-edge') {
             mainSwitchSide = 'right';
+            mainSwitchSideSource = 'stage2-rewireable';
           } else if (geometricResult.mainSwitchOffset === 'left-edge') {
             mainSwitchSide = 'left';
+            mainSwitchSideSource = 'stage2-rewireable';
           } else if (
             boardClassification?.mainSwitchPosition === 'left' ||
             boardClassification?.mainSwitchPosition === 'right'
           ) {
             mainSwitchSide = boardClassification.mainSwitchPosition;
+            mainSwitchSideSource = 'stage1-classifier';
           }
+          // Diagnostic: record provenance + cross-stage agreement so future
+          // wrong-end extractions can be triaged from CloudWatch alone. Logs
+          // every Stage 3 main_switch candidate (cluster index of false
+          // positives is the common failure mode — a 2-pole RCD on the far
+          // end mistaken for the isolator, as on the 2026-05-08 Protek board
+          // where slot-0 RCD outranked the slot-11 labelled main switch).
+          logger.info('CCU mainSwitchSide resolved', {
+            userId: req.user.id,
+            mainSwitchSide,
+            mainSwitchSideSource,
+            stage3CandidateCount: stage3MainSwitchSlots.length,
+            stage3CandidateSlots: stage3MainSwitchSlots.map((s) => ({
+              slotIndex: s.slotIndex,
+              hasLabel: !!(s.label && String(s.label).trim()),
+              ratingAmps: s.ratingAmps ?? null,
+            })),
+            stage2Offset: geometricResult.mainSwitchOffset || null,
+            stage1Position: boardClassification?.mainSwitchPosition || null,
+            stage1Confidence: boardClassification?.confidence ?? null,
+            slotCount: (analysis.slots || []).length,
+            agreementWithStage1:
+              boardClassification?.mainSwitchPosition &&
+              ['left', 'right'].includes(boardClassification.mainSwitchPosition)
+                ? boardClassification.mainSwitchPosition === mainSwitchSide
+                : null,
+          });
 
           const mergedCircuits = slotsToCircuits({
             slots: analysis.slots,
