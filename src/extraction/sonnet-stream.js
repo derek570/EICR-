@@ -150,6 +150,45 @@ function consumeLegacyQuestionsForUser(entry) {
 }
 
 /**
+ * 2026-05-08 multi-board sprint Phase E — unified `current_board_changed`
+ * broadcast for the Sonnet-initiated path.
+ *
+ * `dispatchSelectBoard` (stage6-dispatchers-board.js) pushes
+ * `{op: 'select_board', board_id}` onto `perTurnWrites.boardOps`, which the
+ * bundler emits as `result.board_ops`. After the extraction envelope is
+ * sent to iOS, this helper scans those ops for `select_board` entries and
+ * emits one top-level `current_board_changed` envelope per match — the
+ * same wire shape the iOS-initiated `case 'select_board'` handler uses on
+ * direct success. Result: a single iOS code path drives `JobViewModel.
+ * currentBoardId` regardless of who initiated the switch.
+ *
+ * Called from both `onBatchResult` and the synchronous `handleTranscript`
+ * extraction send so batched + live tool-loop turns both broadcast. No-op
+ * when `boardOps` is missing/empty.
+ */
+function emitCurrentBoardChangedFromBoardOps(ws, snapshot, boardOps) {
+  if (!ws || ws.readyState !== ws.OPEN) return;
+  if (!Array.isArray(boardOps) || boardOps.length === 0) return;
+  for (const op of boardOps) {
+    if (!op || op.op !== 'select_board' || typeof op.board_id !== 'string') continue;
+    // Designation is looked up from the snapshot at send time so the wire
+    // signal carries the human-readable name iOS can drop straight into
+    // the Phase D red banner / TTS confirmation. Falls back to null when
+    // the snapshot doesn't carry a designation (legacy jobs that pre-date
+    // the multi-board sprint).
+    const target = (snapshot?.boards ?? []).find((b) => b && b.id === op.board_id);
+    ws.send(
+      JSON.stringify({
+        type: 'current_board_changed',
+        board_id: op.board_id,
+        designation: target?.designation ?? null,
+        source: 'sonnet',
+      })
+    );
+  }
+}
+
+/**
  * Plan 06-07 r6-#1 (BLOCK) — re-resolve SONNET_TOOL_CALLS at reconnect/
  * resume time so the freshly-bound entry's session tracks the latest env
  * mode for runtime path selection.
@@ -1249,6 +1288,22 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 designation: sbTarget.designation ?? null,
               })
             );
+            // 2026-05-08 multi-board sprint Phase E — unified `current_board_changed`
+            // broadcast. Same wire shape regardless of switch source (iOS voice
+            // command here; Sonnet `dispatchSelectBoard` tool emits via
+            // `result.board_ops` on the extraction send path). iOS decodes once,
+            // updates `JobViewModel.currentBoardId`, Phase D's red banner
+            // reactively flips. The select_board_ack envelope above is now
+            // redundant for UI reactivity but kept for the request/response
+            // contract (carries error codes on failure paths).
+            ws.send(
+              JSON.stringify({
+                type: 'current_board_changed',
+                board_id: sbTarget.id,
+                designation: sbTarget.designation ?? null,
+                source: 'ios',
+              })
+            );
             break;
           }
 
@@ -2157,6 +2212,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+          // Phase E: emit `current_board_changed` for any select_board op
+          // Sonnet emitted this turn. iOS uses the unified envelope to drive
+          // `JobViewModel.currentBoardId` regardless of switch source — see
+          // helper docstring above.
+          emitCurrentBoardChangedFromBoardOps(currentWs, session.stateSnapshot, result.board_ops);
 
           // Phase A: RULE 6 correction edits (same or similar text, new code)
           // arrive classified by EICRExtractionSession into observationUpdates.
@@ -3670,6 +3731,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         } = result;
         const resultWithoutQuestions = { readings: extracted_readings, ...rest };
         ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+        // Phase E: emit `current_board_changed` for any select_board op
+        // Sonnet emitted this turn. iOS uses the unified envelope to drive
+        // `JobViewModel.currentBoardId` regardless of switch source — see
+        // helper docstring above.
+        emitCurrentBoardChangedFromBoardOps(ws, entry.session.stateSnapshot, result.board_ops);
 
         // Phase A: dispatch RULE 6 correction edits (observation_id reused).
         // These must fire before the BPG4 refinement path so iOS patches the

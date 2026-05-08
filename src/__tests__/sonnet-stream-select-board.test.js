@@ -184,6 +184,48 @@ describe('case select_board — happy path', () => {
     });
   });
 
+  // 2026-05-08 multi-board sprint Phase E — unified `current_board_changed`
+  // broadcast. After the ack, the handler also emits a top-level envelope
+  // that iOS uses to drive `JobViewModel.currentBoardId`. Source = 'ios'
+  // distinguishes from the Sonnet-initiated path.
+  test('emits current_board_changed broadcast on success (source=ios)', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    seedTwoBoardSnapshot(entry);
+
+    await sendFrame(ws, { type: 'select_board', board_id: 'sub-1' });
+
+    const broadcasts = envelopesOfType(ws, 'current_board_changed');
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]).toEqual({
+      type: 'current_board_changed',
+      board_id: 'sub-1',
+      designation: 'Garage',
+      source: 'ios',
+    });
+  });
+
+  test('current_board_changed carries null designation when board carries none', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    entry.session.stateSnapshot = {
+      boards: [
+        { id: 'main', designation: 'Main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' }, // no designation
+      ],
+      currentBoardId: 'main',
+      circuits: {},
+    };
+
+    await sendFrame(ws, { type: 'select_board', board_id: 'sub-1' });
+
+    const broadcasts = envelopesOfType(ws, 'current_board_changed');
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]).toMatchObject({ board_id: 'sub-1', designation: null, source: 'ios' });
+  });
+
   test('flipping back to main is allowed and acks ok=true', async () => {
     const ws = connect(wss);
     const sid = await startSession(ws);
@@ -230,6 +272,20 @@ describe('case select_board — board_not_found', () => {
       error: 'board_not_found',
       board_id: 'sub-99',
     });
+  });
+
+  // Phase E — rejection paths must NOT broadcast `current_board_changed`,
+  // since the snapshot's `currentBoardId` was never flipped. Otherwise iOS
+  // would think a switch happened and render the banner on the wrong board.
+  test('does NOT emit current_board_changed on rejection', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    seedTwoBoardSnapshot(entry);
+
+    await sendFrame(ws, { type: 'select_board', board_id: 'sub-99' });
+
+    expect(envelopesOfType(ws, 'current_board_changed')).toHaveLength(0);
   });
 
   test('snapshot with no boards array rejects board_not_found', async () => {
@@ -302,6 +358,131 @@ describe('case select_board — no_active_session', () => {
     expect(envelopesOfType(ws, 'select_board_ack')[0]).toMatchObject({
       ok: false,
       error: 'no_active_session',
+    });
+  });
+});
+
+// 2026-05-08 multi-board sprint Phase E — Sonnet-initiated `select_board`
+// path. dispatchSelectBoard pushes `{op: 'select_board', board_id}` onto
+// `perTurnWrites.boardOps`; the bundler emits `result.board_ops`; the
+// extraction-send path (this batch callback or handleTranscript) then
+// broadcasts `current_board_changed` so iOS reacts the same way as the
+// iOS-initiated path. These tests exercise the helper via the batch
+// callback hook — the same hook that fires when Sonnet's tool loop
+// resolves asynchronously.
+describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () => {
+  test('emits current_board_changed (source=sonnet) for select_board op in result.board_ops', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    seedTwoBoardSnapshot(entry);
+
+    // Synthesize a turn result containing a select_board op as if Sonnet's
+    // dispatcher had pushed it during a tool-loop iteration.
+    entry.session.onBatchResult({
+      extracted_readings: [],
+      observations: [],
+      board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
+    });
+
+    const broadcasts = envelopesOfType(ws, 'current_board_changed');
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]).toEqual({
+      type: 'current_board_changed',
+      board_id: 'sub-1',
+      designation: 'Garage',
+      source: 'sonnet',
+    });
+  });
+
+  test('emits one broadcast per select_board op when multiple appear in same turn', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    entry.session.stateSnapshot = {
+      boards: [
+        { id: 'main', designation: 'Main', board_type: 'main' },
+        { id: 'sub-1', designation: 'Garage', board_type: 'sub_distribution' },
+        { id: 'sub-2', designation: 'Annexe', board_type: 'sub_distribution' },
+      ],
+      currentBoardId: 'main',
+      circuits: {},
+    };
+
+    entry.session.onBatchResult({
+      extracted_readings: [],
+      observations: [],
+      board_ops: [
+        { op: 'select_board', board_id: 'sub-1' },
+        { op: 'add_board', board_id: 'sub-2', designation: 'Annexe' },
+        { op: 'select_board', board_id: 'sub-2' },
+      ],
+    });
+
+    const broadcasts = envelopesOfType(ws, 'current_board_changed');
+    expect(broadcasts).toHaveLength(2);
+    expect(broadcasts[0]).toMatchObject({ board_id: 'sub-1', designation: 'Garage' });
+    expect(broadcasts[1]).toMatchObject({ board_id: 'sub-2', designation: 'Annexe' });
+  });
+
+  test('does NOT broadcast when board_ops contains only non-select ops', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    seedTwoBoardSnapshot(entry);
+
+    entry.session.onBatchResult({
+      extracted_readings: [],
+      observations: [],
+      board_ops: [
+        { op: 'add_board', board_id: 'sub-2', designation: 'New' },
+        { op: 'mark_distribution_circuit', circuit_ref: 4, feeds_board_id: 'sub-1' },
+      ],
+    });
+
+    expect(envelopesOfType(ws, 'current_board_changed')).toHaveLength(0);
+  });
+
+  test('does NOT broadcast when board_ops slot is omitted from result', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    seedTwoBoardSnapshot(entry);
+
+    entry.session.onBatchResult({
+      extracted_readings: [],
+      observations: [],
+      // no board_ops key at all
+    });
+
+    expect(envelopesOfType(ws, 'current_board_changed')).toHaveLength(0);
+  });
+
+  test('current_board_changed carries null designation when target board has none', async () => {
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    entry.session.stateSnapshot = {
+      boards: [
+        { id: 'main', designation: 'Main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' }, // no designation
+      ],
+      currentBoardId: 'main',
+      circuits: {},
+    };
+
+    entry.session.onBatchResult({
+      extracted_readings: [],
+      observations: [],
+      board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
+    });
+
+    const broadcasts = envelopesOfType(ws, 'current_board_changed');
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]).toMatchObject({
+      board_id: 'sub-1',
+      designation: null,
+      source: 'sonnet',
     });
   });
 });
