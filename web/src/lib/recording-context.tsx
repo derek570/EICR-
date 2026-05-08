@@ -30,6 +30,7 @@ import {
   speak,
   speakConfirmation,
 } from './recording/tts';
+import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tts';
 import { record as recordLifecycle } from './diagnostics/lifecycle-log';
 import { playAttentionTone, playConfirmationChime } from './recording/tones';
 import { api } from './api-client';
@@ -1052,6 +1053,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // dead session — we bail and tear down the accidental resources.
     const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     sessionIdRef.current = sessionId;
+    // Wire the same sessionId into the ElevenLabs TTS proxy so the
+    // backend's CostTracker attributes character usage to this session
+    // (mirrors iOS AlertManager.sessionIdProvider). Without this every
+    // ElevenLabs round-trip is unattributed and the per-session cost
+    // readout under-reports — and the proxy short-circuits to the
+    // SpeechSynthesis fallback because tts.ts requires an active
+    // sessionId before routing through ElevenLabs.
+    setTtsSessionId(sessionId);
     // Phase E — open a backend recording session in parallel with the
     // mic pipeline. Fire-and-forget: if the call fails (network blip,
     // server hot-reload), recording continues without a backend
@@ -1162,6 +1171,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     if (statusRef.current === 'idle') return;
     recordLifecycle('recording-stop', { status: statusRef.current });
     sessionIdRef.current = '';
+    // Clear the TTS sessionId in lockstep so post-stop speak() calls
+    // (e.g. an ask_user that arrived after the WS close) bypass the
+    // ElevenLabs path and degrade to native TTS — mirrors the
+    // sessionIdRef rotation guard everywhere else in this file.
+    setTtsSessionId(null);
     // Phase E — close the backend session asynchronously. Fire-and-
     // forget so a slow finish() call doesn't block the UI rolling
     // back to idle. iOS does the same. Snapshot the id BEFORE

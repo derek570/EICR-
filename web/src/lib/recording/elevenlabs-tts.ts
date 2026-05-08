@@ -1,0 +1,415 @@
+'use client';
+
+/**
+ * ElevenLabs TTS via the backend proxy.
+ *
+ * Mirrors iOS `AlertManager.speakWithTTS` (AlertManager.swift:1029-1134) so
+ * the PWA hears the same Archer Conversational voice the inspector hears
+ * on iPad — closing the parity gap that left the web client emitting
+ * the OS SpeechSynthesis voice instead. The backend proxy at
+ * `/api/proxy/elevenlabs-tts` (src/routes/keys.js:223) injects the API
+ * key, voice ID, and model server-side and attributes the character
+ * count to the active session's CostTracker when `sessionId` is sent.
+ *
+ * Strategy
+ * - 12-second fetch timeout. Above that we abort and surface a fallback
+ *   reason so the caller can degrade to SpeechSynthesis. iOS uses the
+ *   identical 12s budget at AlertManager.swift:1085.
+ * - Single shared `<audio>` element. Reusing the element is the iOS
+ *   Safari workaround for the "audio.play() needs a user gesture" rule —
+ *   once one play() has resolved inside a Start-tap handler (via
+ *   `primeAudioElement()` from `tts.ts.primeTts`), every subsequent
+ *   `src = blobUrl; play()` on that same element inherits the gesture
+ *   grant. Creating a fresh `new Audio()` for each utterance would
+ *   require a fresh gesture, which we never get mid-recording.
+ * - Cancel-before-replace. Each `speakElevenLabs()` aborts the
+ *   in-flight fetch (if any) and pauses the shared audio element
+ *   before issuing the new request. iOS does the same at
+ *   AlertManager.swift:1043-1054 — without it concurrent ElevenLabs
+ *   round-trips race and the loser silently never closes its TTS
+ *   window, so the mic-feedback gate suppresses transcripts forever
+ *   (the same class of bug that the closeWindow guard fix in tts.ts
+ *   addresses for the SpeechSynthesis path).
+ *
+ * Lifecycle callbacks — the caller (`tts.ts.dispatch`) passes onStart /
+ * onEnd / onError handlers that own the public `ttsWindow` so this
+ * module never has to know what the mic-feedback gate looks like.
+ * `onStart` fires when the audio element's `play` event resolves AND
+ * the first `playing` event lands (real audio is now flowing); `onEnd`
+ * fires from the `ended` event; `onError` fires from `error`/network
+ * failures/timeout/abort.
+ *
+ * Authentication mirrors `api-client.ts`: read the JWT from the local
+ * auth helper, include cookies for the backend's dual-mode auth (Bearer
+ * header OR cookie). The proxy route is `auth.requireAuth`, so an
+ * unauthenticated client transparently falls back to SpeechSynthesis
+ * via the 401 surface.
+ *
+ * Why not use the typed `request<T>` helper in api-client.ts: that
+ * wrapper retries idempotent requests, parses JSON, and runs zod
+ * adapters — none of which apply here. POSTs aren't retried by design,
+ * the response is `audio/mpeg`, and there's no schema. A lean direct
+ * fetch is clearer than fighting the wrapper.
+ */
+
+import { getToken } from '../auth';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
+const FETCH_TIMEOUT_MS = 12_000;
+
+/**
+ * Lifecycle hooks passed in by the caller. The contract is that `onStart`
+ * fires exactly once before any `onEnd` / `onError`, and exactly one of
+ * `onEnd` / `onError` resolves the speech regardless of the failure
+ * mode. Symmetric with the SpeechSynthesisUtterance event model so
+ * tts.ts can route both paths through the same window-management code.
+ */
+export interface ElevenLabsLifecycle {
+  /** Audio is now actually playing — open the mic-feedback window. */
+  onStart?: () => void;
+  /** Audio finished naturally — close the window. */
+  onEnd?: () => void;
+  /**
+   * Something failed. The reason is informational only; the caller
+   * should fall back to native TTS regardless. Reasons:
+   * - `'no-session'`: no sessionId was supplied (skipping ElevenLabs to
+   *   avoid an unattributed cost path; also matches the "haven't started
+   *   recording yet" case where no auth context is meaningful).
+   * - `'no-token'`: getToken() returned null — user is logged out.
+   * - `'fetch'`: HTTP error (5xx, 401, 400, body parse).
+   * - `'timeout'`: 12s fetch budget exceeded.
+   * - `'aborted'`: cancelSpeech() / new dispatch() superseded this one.
+   * - `'play'`: audio element error (unsupported codec, stalled load).
+   * - `'offline'`: `navigator.onLine === false` at dispatch time.
+   */
+  onError?: (reason: ElevenLabsFailureReason) => void;
+}
+
+export type ElevenLabsFailureReason =
+  | 'no-session'
+  | 'no-token'
+  | 'fetch'
+  | 'timeout'
+  | 'aborted'
+  | 'play'
+  | 'offline';
+
+/**
+ * Module-level state — single in-flight ElevenLabs request and a single
+ * shared audio element. Both are cancel-before-replace so a new
+ * speakElevenLabs() call always supersedes the previous one.
+ */
+let activeAbortController: AbortController | null = null;
+let activeBlobUrl: string | null = null;
+let sharedAudio: HTMLAudioElement | null = null;
+let activeSessionId: string | null = null;
+
+/**
+ * Set the sessionId that subsequent ElevenLabs requests will attribute
+ * cost to. Call this from the recording-context when a session opens
+ * (`sessionIdRef.current`) and clear it (pass `null`) when the session
+ * stops. Mirrors iOS `AlertManager.sessionIdProvider` set by the
+ * recording viewmodel at session boundaries.
+ *
+ * No sessionId means we skip ElevenLabs entirely and fall back to
+ * SpeechSynthesis. This avoids an unattributed character cost on
+ * out-of-session paths (tour narration before recording starts) and
+ * matches iOS behavior — `proxyElevenLabsTTS` only fires from inside
+ * an active `RecordingSessionCoordinator`.
+ */
+export function setActiveSessionId(sessionId: string | null): void {
+  activeSessionId = sessionId;
+}
+
+export function getActiveSessionId(): string | null {
+  return activeSessionId;
+}
+
+/**
+ * Lazily create (or return) the shared `<audio>` element. Used both by
+ * priming (silent unlock at Start tap) and the playback path. iOS
+ * Safari's autoplay policy requires the FIRST `play()` on a fresh
+ * element to land inside a user gesture; subsequent `play()` calls on
+ * the SAME element inherit the grant. By keeping a single element
+ * around for the page lifetime we only need one gesture-bound prime.
+ */
+function getSharedAudio(): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null;
+  if (!sharedAudio) {
+    sharedAudio = new Audio();
+    // Prevents the element from showing up in any media-session UI;
+    // we own the lifecycle.
+    sharedAudio.preload = 'auto';
+  }
+  return sharedAudio;
+}
+
+/**
+ * Prime the shared audio element with a silent data URI so iOS Safari
+ * grants autoplay permission for the rest of the page lifecycle.
+ * Called by `tts.ts.primeTts()` from inside the Start-tap user gesture
+ * — without this, the FIRST ElevenLabs payload arrives well after the
+ * gesture window has closed, `audio.play()` rejects with a
+ * `NotAllowedError`, and we silently degrade to SpeechSynthesis on every
+ * utterance even though ElevenLabs delivered audio cleanly.
+ *
+ * The data URI is a 44-byte WAV header with zero samples — universally
+ * decodable, plays for ~0ms, and never makes a network round-trip.
+ *
+ * Best-effort: any failure is swallowed because priming is non-essential
+ * (worst case we fall back to SpeechSynthesis on the first utterance).
+ */
+export function primeAudioElement(): void {
+  const audio = getSharedAudio();
+  if (!audio) return;
+  try {
+    // 44-byte minimal WAV header: RIFF, fmt chunk (PCM, 1 channel,
+    // 8000 Hz, 8 bits/sample), data chunk of length 0. Inline so we
+    // don't need a separate static asset.
+    audio.src =
+      'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+    audio.muted = true;
+    const promise = audio.play();
+    // play() returns a Promise on modern browsers; ignore both
+    // resolution paths — success leaves the element unlocked, failure
+    // means we'll fall back later.
+    if (promise && typeof promise.catch === 'function') {
+      promise.catch(() => {
+        /* ignore — best-effort prime */
+      });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Cancel any in-flight ElevenLabs request AND stop playback on the
+ * shared audio element. Idempotent — safe to call when nothing is in
+ * flight. Called by `tts.ts.cancelSpeech()` and at the top of every
+ * new speakElevenLabs() call.
+ *
+ * Note: blob URL cleanup happens here so the next dispatch starts with
+ * no stale references. iOS Safari has been observed to leak blob URLs
+ * across navigations if not explicitly revoked.
+ */
+export function cancelElevenLabs(): void {
+  if (activeAbortController) {
+    activeAbortController.abort();
+    activeAbortController = null;
+  }
+  if (sharedAudio) {
+    try {
+      sharedAudio.pause();
+      sharedAudio.removeAttribute('src');
+      sharedAudio.load();
+    } catch {
+      /* ignore */
+    }
+  }
+  if (activeBlobUrl) {
+    try {
+      URL.revokeObjectURL(activeBlobUrl);
+    } catch {
+      /* ignore */
+    }
+    activeBlobUrl = null;
+  }
+}
+
+/**
+ * Returns true iff this runtime can use ElevenLabs (browser context with
+ * Audio + fetch). Allows callers to decide between this path and the
+ * SpeechSynthesis fallback at speak() time without a probe round-trip.
+ */
+export function isElevenLabsAvailable(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (typeof window.fetch !== 'function') return false;
+  if (typeof window.Audio !== 'function') return false;
+  return true;
+}
+
+/**
+ * Speak `text` via ElevenLabs. Returns a promise that resolves when
+ * the lifecycle settles (either onEnd or onError fired). The boolean
+ * indicates whether playback completed successfully — callers use this
+ * to decide whether to fall back to SpeechSynthesis.
+ *
+ * Lifecycle:
+ *   1. Cancel any in-flight request + stop the shared audio.
+ *   2. Validate sessionId / online state — short-circuit to onError
+ *      with the appropriate reason if the precondition fails.
+ *   3. Fetch /api/proxy/elevenlabs-tts with a 12s AbortController
+ *      timeout. AbortController is shared with `cancelElevenLabs()`
+ *      so a Stop-tap or supersede also aborts the fetch.
+ *   4. Decode the audio blob, set it on the shared element, call
+ *      play(). The `playing` event opens the TTS window via onStart;
+ *      `ended` closes it via onEnd; `error` falls back via onError.
+ *
+ * The text is the SAME text that goes to SpeechSynthesis — no
+ * client-side expansion. The proxy route does no rewrites either; iOS
+ * `expandForTTS` (AlertManager.swift:1031) is only relevant on iOS
+ * (it expands "Zs" → "zee-ess" etc. for Apple's TTS that mispronounces
+ * abbreviations). ElevenLabs handles those abbreviations natively and
+ * iOS doesn't expand the ElevenLabs text either — it expands BEFORE
+ * the round-trip and ElevenLabs is happy with both forms.
+ */
+export function speakElevenLabs(
+  text: string,
+  lifecycle: ElevenLabsLifecycle = {}
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    cancelElevenLabs();
+
+    if (!isElevenLabsAvailable()) {
+      lifecycle.onError?.('offline');
+      resolve(false);
+      return;
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      lifecycle.onError?.('offline');
+      resolve(false);
+      return;
+    }
+
+    if (!activeSessionId) {
+      lifecycle.onError?.('no-session');
+      resolve(false);
+      return;
+    }
+
+    const token = getToken();
+    if (!token) {
+      lifecycle.onError?.('no-token');
+      resolve(false);
+      return;
+    }
+
+    const audio = getSharedAudio();
+    if (!audio) {
+      lifecycle.onError?.('play');
+      resolve(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    activeAbortController = controller;
+
+    // Track which side fired the abort so the catch handler can
+    // distinguish a 12s timeout from an external cancel (Stop tap or
+    // a fresh dispatch superseding this one). Without this flag both
+    // paths look identical to the catch — `controller.signal.aborted`
+    // is true in both cases — and we'd misclassify cancels as timeouts.
+    let timeoutFired = false;
+    const timeoutId = window.setTimeout(() => {
+      timeoutFired = true;
+      controller.abort();
+    }, FETCH_TIMEOUT_MS);
+
+    let settled = false;
+    const settle = (ok: boolean, reason?: ElevenLabsFailureReason) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      if (!ok && reason) lifecycle.onError?.(reason);
+      else if (ok) lifecycle.onEnd?.();
+      // Detach element listeners so a later play() (e.g. priming or a
+      // fresh dispatch) doesn't trigger this resolved promise's hooks.
+      audio.removeEventListener('playing', onPlaying);
+      audio.removeEventListener('ended', onEnded);
+      audio.removeEventListener('error', onAudioError);
+      // Clean up the blob URL only AFTER playback is fully settled
+      // so the audio element doesn't yank its own source mid-decode.
+      if (activeAbortController === controller) {
+        activeAbortController = null;
+      }
+      if (activeBlobUrl) {
+        try {
+          URL.revokeObjectURL(activeBlobUrl);
+        } catch {
+          /* ignore */
+        }
+        activeBlobUrl = null;
+      }
+      resolve(ok);
+    };
+
+    const onPlaying = () => {
+      lifecycle.onStart?.();
+    };
+    const onEnded = () => {
+      settle(true);
+    };
+    const onAudioError = () => {
+      settle(false, 'play');
+    };
+    audio.addEventListener('playing', onPlaying, { once: true });
+    audio.addEventListener('ended', onEnded);
+    audio.addEventListener('error', onAudioError);
+
+    fetch(`${API_BASE_URL}/api/proxy/elevenlabs-tts`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ text, sessionId: activeSessionId }),
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (controller.signal.aborted) {
+          settle(false, 'aborted');
+          return;
+        }
+        if (!res.ok) {
+          settle(false, 'fetch');
+          return;
+        }
+        const blob = await res.blob();
+        if (controller.signal.aborted) {
+          settle(false, 'aborted');
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        activeBlobUrl = url;
+        audio.muted = false;
+        audio.volume = 1.0;
+        audio.src = url;
+        const playPromise = audio.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {
+            // iOS Safari rejects play() with NotAllowedError when the
+            // gesture grant has expired (e.g. the priming utterance
+            // never landed inside a real Start tap). Falling back to
+            // SpeechSynthesis here is the safest path — the inspector
+            // still hears the question, just in the OS voice.
+            settle(false, 'play');
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) {
+          // Distinguish a 12s budget timeout from an external cancel —
+          // `timeoutFired` is set only by the timer's own callback, so
+          // a cancel from cancelElevenLabs() leaves it false.
+          settle(false, timeoutFired ? 'timeout' : 'aborted');
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'fetch failed';
+        if (message.includes('aborted') || message.includes('AbortError')) {
+          settle(false, 'aborted');
+        } else {
+          settle(false, 'fetch');
+        }
+      });
+  });
+}
+
+/** Test-only: clear all module state so each test starts clean. */
+export function __resetElevenLabsForTests(): void {
+  cancelElevenLabs();
+  sharedAudio = null;
+  activeSessionId = null;
+}

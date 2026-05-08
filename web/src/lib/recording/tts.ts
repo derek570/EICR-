@@ -1,8 +1,17 @@
 'use client';
 
+import {
+  cancelElevenLabs,
+  isElevenLabsAvailable,
+  getActiveSessionId,
+  primeAudioElement,
+  speakElevenLabs,
+  type ElevenLabsFailureReason,
+} from './elevenlabs-tts';
+
 /**
- * Text-to-speech wrapper — thin shim over the browser's SpeechSynthesis
- * API. Mirrors the iOS `AlertManager` TTS model exactly:
+ * Text-to-speech wrapper — ElevenLabs primary, browser SpeechSynthesis
+ * fallback. Mirrors the iOS `AlertManager` TTS model exactly:
  *
  *   - `speak()` is the always-on path. iOS speaks ask_user prompts,
  *     validation alerts, voice-command responses ("Got it, X", "Moved
@@ -197,8 +206,101 @@ export function isWithinTtsWindow(cooldownMs = 300, nowMs = Date.now()): boolean
  * Internal: queue an utterance unconditionally. `speak` and
  * `speakConfirmation` both go through this; the only difference is the
  * preference gate on the confirmation entry point.
+ *
+ * Routing — ElevenLabs first, SpeechSynthesis fallback:
+ * - When the recording-context has set an active sessionId AND the
+ *   runtime supports HTMLAudioElement, we POST to
+ *   /api/proxy/elevenlabs-tts and play the resulting Archer
+ *   Conversational MP3. Mirrors iOS `speakWithTTS` (AlertManager.swift:
+ *   1029) which has used ElevenLabs as primary since 2026-02 with a 12s
+ *   timeout and Apple-native fallback.
+ * - On any pre-playback failure (no session, no auth, fetch error,
+ *   timeout, offline) we degrade to `dispatchNative` — the original
+ *   SpeechSynthesis path with its closeWindow guard.
+ * - Once ElevenLabs audio actually starts playing, mid-playback errors
+ *   close the window and resolve the speech without re-speaking via
+ *   native — falling back at that point would replay the entire
+ *   utterance from the start, which is worse than just stopping.
  */
 function dispatch(text: string, options?: SpeakOptions): void {
+  const trimmed = text?.trim();
+  if (!trimmed) {
+    options?.onEnd?.();
+    return;
+  }
+
+  if (isElevenLabsAvailable() && getActiveSessionId()) {
+    dispatchElevenLabs(trimmed, options);
+    return;
+  }
+  dispatchNative(trimmed, options);
+}
+
+/**
+ * Speak via ElevenLabs proxy. Owns the same `ttsWindow` lifecycle the
+ * native path manages, but the open-edge fires inside the audio
+ * element's `playing` event (the iOS-aligned "actual audio is now
+ * flowing" moment) rather than at dispatch time. The closeWindow guard
+ * uses the same `myStartMs`-as-identity pattern as the native path,
+ * so the same regression contract holds: a stale onEnd from a
+ * superseded request can't corrupt a fresh window.
+ */
+function dispatchElevenLabs(text: string, options?: SpeakOptions): void {
+  // Cancel any in-flight native utterance — concurrent native + ElevenLabs
+  // would step on each other audibly. The matching cancel inside
+  // speakElevenLabs() handles the prior ElevenLabs request.
+  try {
+    window.speechSynthesis.cancel();
+  } catch {
+    /* ignore */
+  }
+
+  let myStartMs: number | null = null;
+
+  speakElevenLabs(text, {
+    onStart: () => {
+      // Audio element fired `playing` — open the window now so the
+      // mic-feedback gate suppresses the speaker self-feedback.
+      myStartMs = Date.now();
+      ttsWindow = { startMs: myStartMs, endMs: null };
+    },
+    onEnd: () => {
+      if (myStartMs != null && ttsWindow && ttsWindow.startMs === myStartMs) {
+        ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+      }
+      options?.onEnd?.();
+    },
+    onError: (reason: ElevenLabsFailureReason) => {
+      if (myStartMs != null) {
+        // Mid-playback error — close the window and resolve. Don't
+        // re-speak via native; the inspector heard the start of the
+        // line and a second full read would just be confusing.
+        if (ttsWindow && ttsWindow.startMs === myStartMs) {
+          ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+        }
+        options?.onEnd?.();
+        return;
+      }
+      // Pre-playback failure — fall back to native so the inspector
+      // still hears the line in the OS voice. `reason` is informational;
+      // every reason except 'aborted' should fall back. Aborted means
+      // a fresh dispatch superseded us, so the new dispatch will own
+      // the window — calling dispatchNative here would race against it.
+      if (reason === 'aborted') {
+        return;
+      }
+      dispatchNative(text, options);
+    },
+  });
+}
+
+/**
+ * Speak via the browser's SpeechSynthesis. Used both as the primary
+ * path when ElevenLabs isn't available (no session, SSR, missing
+ * Audio element) and as the fallback when an ElevenLabs request fails
+ * before audio playback begins.
+ */
+function dispatchNative(text: string, options?: SpeakOptions): void {
   const trimmed = text?.trim();
   if (!trimmed) {
     options?.onEnd?.();
@@ -327,6 +429,14 @@ export function primeTts(): void {
   } catch {
     // Swallow — priming is best-effort, never block recording start.
   }
+  // Also prime the shared `<audio>` element. iOS Safari requires the
+  // first `play()` on each element to land inside a user-gesture
+  // handler; without this, the FIRST ElevenLabs payload arrives well
+  // after the gesture window has closed and `audio.play()` rejects
+  // with NotAllowedError. The element is reused for every subsequent
+  // ElevenLabs utterance, so a single prime per Start tap unlocks the
+  // whole session.
+  primeAudioElement();
 }
 
 /**
@@ -402,6 +512,12 @@ export function cancelSpeech(): void {
   } catch {
     // ignore
   }
+  // Cancel any in-flight ElevenLabs fetch and pause the shared audio
+  // element. Without this, a Stop tap mid-fetch would let the audio
+  // arrive and play AFTER recording stopped — the inspector hears
+  // Sonnet's last question over the silence after they've already
+  // moved on.
+  cancelElevenLabs();
 }
 
 /**
