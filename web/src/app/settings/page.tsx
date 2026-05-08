@@ -93,8 +93,14 @@ export default function SettingsHubPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
-      {/* Hero profile header — avatar + name + role pills */}
-      <section className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-6">
+      {/* Hero profile header — avatar + name + role pills.
+       * `w-full` is load-bearing on iOS Safari: a `<section>` flex child
+       * with `overflow-hidden` (BFC trigger) fails to honour the parent's
+       * `align-items: stretch`, collapsing to ~min-content width. The
+       * symptom is the avatar peeking out of a tall narrow strip and the
+       * email being clipped. SectionGroup avoids this because its inner
+       * `flex` rewrites the cross-axis sizing path. Do not remove. */}
+      <section className="w-full overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-6">
         <div className="flex flex-col items-center gap-4 text-center">
           <div
             aria-hidden

@@ -170,7 +170,10 @@ function HeroHeader({
 }) {
   return (
     <section
-      className="relative overflow-hidden rounded-[var(--radius-lg)] p-5 text-white"
+      // `w-full` is load-bearing on iOS Safari: a `<section>` flex child
+      // with `overflow-hidden` (BFC trigger) collapses to ~min-content
+      // width instead of stretching. Same fix as the main settings hero.
+      className="relative w-full overflow-hidden rounded-[var(--radius-lg)] p-5 text-white"
       style={{
         background:
           'linear-gradient(135deg, var(--color-brand-blue), color-mix(in oklab, var(--color-brand-green) 70%, var(--color-brand-blue)))',

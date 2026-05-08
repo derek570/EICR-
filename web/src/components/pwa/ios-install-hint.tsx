@@ -102,7 +102,12 @@ export function IOSInstallHint() {
     <aside
       role="region"
       aria-label="Install CertMate on your iPhone"
-      className="relative overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-brand-blue)]/30 bg-[color-mix(in_srgb,var(--color-brand-blue)_10%,var(--color-surface-2))] p-5"
+      // `w-full` is load-bearing on iOS Safari: an `<aside>` flex child
+      // with `overflow-hidden` (BFC trigger) fails to honour the parent's
+      // `align-items: stretch` and collapses to ~min-content width — the
+      // banner renders as a narrow vertical strip with the X and + icons
+      // clipped on top of each other. Do not remove.
+      className="relative w-full overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-brand-blue)]/30 bg-[color-mix(in_srgb,var(--color-brand-blue)_10%,var(--color-surface-2))] p-5"
     >
       {/* D8: 44×44 (was 32×32 — h-8 w-8). Positioning via className; the
        * IconButton variant covers hover/focus/bg. */}
