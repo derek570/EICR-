@@ -140,8 +140,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // implicit currentBoardId routing note ≈ +400 tokens; cap moved
       // by +500 to keep ~100-token headroom. PHASE6_PHASE7_AUTONOMOUS.md
       // slice 7.1 specifies the block verbatim from PLAN.md L626-649.
+      // 2026-05-08 ("Work on Board" Phase B): relaxed to 8750 to
+      // absorb the SINGLE-BOARD FOCUS paragraph. The new paragraph
+      // codifies the dispatcher's `wrong_board` rejection so Sonnet
+      // does not waste a turn discovering it; ≈ +30 tokens; cap moved
+      // by +150 to keep ~100-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(8600);
+      expect(estimate).toBeLessThanOrEqual(8750);
     });
   });
 
@@ -615,8 +620,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     mark_distribution_circuit) plus the implicit currentBoardId
       //     routing note. ~+400 tokens; cap moved by +500 mirroring
       //     Group 1's bump.
+      //   - 6300 ("Work on Board" Phase B 2026-05-08: SINGLE-BOARD FOCUS
+      //     paragraph codifies the dispatcher `wrong_board` rejection so
+      //     Sonnet learns the rule from the prompt instead of from a tool
+      //     reject. ≈ +85 tokens; cap moved by +200 mirroring Group 1's
+      //     bump and keeping ~100-token headroom for future refinements).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(6100);
+      expect(estimate).toBeLessThanOrEqual(6300);
     });
   });
 

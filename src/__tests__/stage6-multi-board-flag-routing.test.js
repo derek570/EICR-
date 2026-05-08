@@ -632,13 +632,13 @@ describe('dispatchers against a sub-board target', () => {
     });
   });
 
-  test('record_board_reading is forward-compatible with optional input.board_id (Phase 6 surface)', async () => {
-    // Today's schema doesn't expose board_id — Phase 6 widens it. The
-    // dispatcher already threads input.board_id through so a future schema
-    // bump lands without re-touching the dispatcher.
+  test('record_board_reading rejects explicit cross-board board_id with wrong_board (Phase B)', async () => {
+    // 2026-05-08 "Work on Board" Phase B locked Q0.4: NO auto-routing of
+    // cross-board readings. An explicit board_id that disagrees with
+    // currentBoardId is rejected so Sonnet must call select_board first.
+    // Pre-Phase-B, this dispatcher silently honoured the override (the
+    // forward-compat test that previously lived here).
     const session = makeSubBoardSession();
-    // Override currentBoardId to main so the explicit board_id has something
-    // to override (otherwise it's the same as currentBoardId).
     session.stateSnapshot.currentBoardId = 'main';
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -659,10 +659,20 @@ describe('dispatchers against a sub-board target', () => {
       {}
     );
 
-    expect(result.is_error).toBe(false);
-    // Main BoardInfo untouched; sub-1 BoardInfo carries the field.
+    expect(result.is_error).toBe(true);
+    const body = JSON.parse(result.content);
+    expect(body.error).toMatchObject({
+      code: 'wrong_board',
+      field: 'board_id',
+      expected: 'main',
+      got: 'sub-1',
+    });
+    // Snapshot UNTOUCHED on rejection — neither board carries the value.
     expect(session.stateSnapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
-    expect(session.stateSnapshot.boards[1].earth_loop_impedance_ze).toBe('0.18');
+    expect(session.stateSnapshot.boards[1].earth_loop_impedance_ze).toBeUndefined();
+    // perTurnWrites also UNTOUCHED — the bundler should not see this turn
+    // as having produced a board reading.
+    expect(writes.boardReadings.size).toBe(0);
   });
 
   test('record_board_reading auto-resolve write hook lands on BoardInfo (path-2 invariant)', async () => {

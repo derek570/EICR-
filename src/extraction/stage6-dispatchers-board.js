@@ -56,6 +56,7 @@ import {
   getCircuitBucket,
 } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
+import { validateBoardScope } from './stage6-dispatch-validation.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
 // underlying enum is itself frozen-by-convention (codegenned from
@@ -133,6 +134,26 @@ export async function dispatchRecordBoardReading(call, ctx) {
       input_summary: { field: input.field ?? null },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // 2b) "Work on Board" Phase B — strict currentBoardId scope. Reject
+  //     explicit cross-board board_id; omitted board_id defaults to
+  //     currentBoardId in the mutator. Forces Sonnet through select_board
+  //     for board-level supply / installation reads on a different board.
+  const scopeErr = validateBoardScope(input, session.stateSnapshot);
+  if (scopeErr) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_board_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: scopeErr,
+      input_summary: { field: input.field },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: scopeErr }, true);
   }
 
   // 3) mutate via the flag-aware wrapper. Flag-off: legacy circuits[0] write

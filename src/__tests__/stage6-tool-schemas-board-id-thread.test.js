@@ -72,8 +72,16 @@ function makeMultiBoardSession() {
 }
 
 describe('explicit board_id routes to the named board bucket', () => {
-  test('record_reading: explicit board_id="sub-1" writes to sub-1::3, not main::3', async () => {
+  // 2026-05-08 "Work on Board" Phase B: explicit `board_id` is now ONLY
+  // accepted when it matches `currentBoardId`. The schema thread-through
+  // contract still applies (the field must reach the mutator and route to
+  // the composite-key bucket), so each test below sets `currentBoardId` to
+  // match the explicit `board_id` first. A separate Phase B suite
+  // (`stage6-work-on-board-phase-b-scope.test.js`) pins the cross-board
+  // rejection case.
+  test('record_reading: explicit board_id="sub-1" while active writes to sub-1::3, not main::3', async () => {
     const session = makeMultiBoardSession();
+    session.stateSnapshot.currentBoardId = 'sub-1';
     // Seed main at the legacy bare-numeric key (dual-shape main namespace)
     // and sub-1 at the composite key. Validator must accept circuit 3 on
     // sub-1 explicitly via the composite path.
@@ -133,6 +141,8 @@ describe('explicit board_id routes to the named board bucket', () => {
 
   test('create_circuit + delete_circuit: explicit board_id scopes both write paths to the named board', async () => {
     const session = makeMultiBoardSession();
+    // Phase B: currentBoardId must match the explicit board_id arg.
+    session.stateSnapshot.currentBoardId = 'sub-1';
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
 
@@ -164,6 +174,8 @@ describe('explicit board_id routes to the named board bucket', () => {
 
   test('clear_reading: explicit board_id targets the right bucket', async () => {
     const session = makeMultiBoardSession();
+    // Phase B: currentBoardId must match the explicit board_id arg.
+    session.stateSnapshot.currentBoardId = 'sub-1';
     // Main lives at the legacy bare-numeric key; sub-1 at the composite key.
     session.stateSnapshot.circuits[3] = { measured_zs_ohm: '0.42' };
     session.stateSnapshot.circuits['sub-1::3'] = {

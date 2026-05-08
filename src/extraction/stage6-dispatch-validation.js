@@ -51,7 +51,7 @@
  */
 
 import { CONTEXT_FIELD_ENUM, BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from './stage6-tool-schemas.js';
-import { circuitExistsInSnapshot } from './stage6-multi-board-shape.js';
+import { circuitExistsInSnapshot, getMainBoardId } from './stage6-multi-board-shape.js';
 
 // Sets for O(1) membership tests in validateAskUser's pending_write
 // cross-check. Pre-computing them here keeps the validator pure (no
@@ -362,4 +362,55 @@ export function validateAskUser(input) {
     }
   }
   return null;
+}
+
+/**
+ * 2026-05-08 "Work on Board" Phase B — strict currentBoardId scope.
+ *
+ * Reject mutator tool calls when an explicit `board_id` is supplied that
+ * does not match the session's `currentBoardId`. Tells Sonnet to call
+ * `select_board` first.
+ *
+ * WHY: Q0.4 of the multi-board sprint locks "no auto-routing of cross-board
+ * readings". The inspector switches boards by voice → server flips
+ * `currentBoardId` → all subsequent writes scope there. If Sonnet supplies
+ * an explicit `board_id` targeting a different board, the only safe action
+ * is to reject and force a `select_board` first; otherwise a misheard
+ * transcript could silently land on the wrong board's circuit. Phase A's
+ * dual-shape storage made cross-board writes possible; Phase B closes the
+ * door so they can only happen via an explicit board switch.
+ *
+ * Tools gated by this validator: record_reading, clear_reading,
+ * create_circuit, rename_circuit, delete_circuit, record_board_reading.
+ *
+ * Tools INTENTIONALLY exempt:
+ *   - calculate_zs / calculate_r1_plus_r2 — Phase 6.5 explicitly threads
+ *     board_id for cross-board calcs (legitimate read-mostly use case).
+ *   - set_field_for_all_circuits — supports the `'*'` cross-board sweep
+ *     (locked S5 decision from the multi-board sprint).
+ *   - select_board — flips currentBoardId; gating it would be circular.
+ *   - add_board — creates new boards; currentBoardId doesn't apply.
+ *   - mark_distribution_circuit — its `board_id` arg names the SOURCE
+ *     board for the distribution-circuit relationship; semantics differ
+ *     from "the board this write lands on".
+ *
+ * Omitted `board_id` is always allowed — the mutators (applyReadingFlagAware
+ * et al.) default to currentBoardId, which is the locked behaviour we want.
+ *
+ * @param {{board_id?: string|null}} input
+ * @param {{currentBoardId?: string, boards?: Array<{id?: string, board_type?: string}>}} snapshot
+ * @returns {null | {code: 'wrong_board', field: 'board_id', expected: string, got: string, hint: string}}
+ */
+export function validateBoardScope(input, snapshot) {
+  const supplied = input?.board_id;
+  if (supplied == null) return null;
+  const expected = snapshot?.currentBoardId ?? getMainBoardId(snapshot);
+  if (supplied === expected) return null;
+  return {
+    code: 'wrong_board',
+    field: 'board_id',
+    expected,
+    got: supplied,
+    hint: 'Call select_board to switch boards before recording on a different one.',
+  };
 }

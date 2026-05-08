@@ -64,6 +64,7 @@ import {
   validateDeleteCircuit,
   validateCalculateZs,
   validateCalculateR1PlusR2,
+  validateBoardScope,
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
@@ -99,7 +100,9 @@ export async function dispatchRecordReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input;
 
-  const err = validateRecordReading(input, session.stateSnapshot);
+  const err =
+    validateRecordReading(input, session.stateSnapshot) ||
+    validateBoardScope(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -189,7 +192,9 @@ export async function dispatchClearReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input;
 
-  const err = validateClearReading(input, session.stateSnapshot);
+  const err =
+    validateClearReading(input, session.stateSnapshot) ||
+    validateBoardScope(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -266,7 +271,9 @@ export async function dispatchCreateCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input;
 
-  const err = validateCreateCircuit(input, session.stateSnapshot);
+  const err =
+    validateCreateCircuit(input, session.stateSnapshot) ||
+    validateBoardScope(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -390,7 +397,9 @@ export async function dispatchRenameCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input;
 
-  const err = validateRenameCircuit(input, session.stateSnapshot);
+  const err =
+    validateRenameCircuit(input, session.stateSnapshot) ||
+    validateBoardScope(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -545,7 +554,9 @@ export async function dispatchDeleteCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input;
 
-  const err = validateDeleteCircuit(input, session.stateSnapshot);
+  const err =
+    validateDeleteCircuit(input, session.stateSnapshot) ||
+    validateBoardScope(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
