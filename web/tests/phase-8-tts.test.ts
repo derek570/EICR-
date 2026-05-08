@@ -277,6 +277,36 @@ describe('TTS audio window (mic-feedback gate)', () => {
     const w = getTtsAudioWindow();
     expect(w?.endMs).not.toBeNull();
   });
+
+  it('closes the window after onstart fires before onend (real browser order)', () => {
+    // Regression: previously the closeWindow guard captured `openedAt`
+    // at dispatch time and compared against `ttsWindow.startMs`. The
+    // `onstart` handler re-stamped `startMs` to the playback moment,
+    // which made the guard fail forever — `endMs` never got set,
+    // `isWithinTtsWindow()` returned `true` for the rest of the page
+    // lifetime, and every final transcript was suppressed at the
+    // recording-context mic-feedback gate. Real browsers always fire
+    // `onstart` before `onend` for any utterance that actually plays;
+    // the previous test only fired `onend` so the bug went undetected.
+    speak('hello');
+    const utterance = shim.spoken[0] as unknown as {
+      onstart?: () => void;
+      onend?: () => void;
+    };
+    utterance.onstart?.();
+    // Spin so Date.now() advances at least 1ms — guarantees the
+    // re-stamped startMs differs from the dispatch-time openedAt and
+    // exercises the regression precisely.
+    const t0 = Date.now();
+    while (Date.now() === t0) {
+      /* spin */
+    }
+    utterance.onend?.();
+    const w = getTtsAudioWindow();
+    expect(w?.endMs).not.toBeNull();
+    // 400ms past endMs releases the gate (cooldown is 300ms).
+    expect(isWithinTtsWindow(300, w!.endMs! + 400)).toBe(false);
+  });
 });
 
 describe('confirmationToSentence', () => {

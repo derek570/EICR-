@@ -218,20 +218,30 @@ function dispatch(text: string, options?: SpeakOptions): void {
 
     // Open the TTS window. iOS opens it inside `markTTSStarted()` at the
     // moment audio actually plays; on web we approximate by stamping it
-    // when `speak()` is dispatched — the difference is bounded by the
-    // browser's queue latency (a few ms in practice). The mic-feedback
-    // gate uses this START time as the lower bound when discarding
-    // transcripts.
-    const openedAt = Date.now();
-    ttsWindow = { startMs: openedAt, endMs: null };
+    // when `speak()` is dispatched and re-stamping inside `onstart` for
+    // tighter alignment. The mic-feedback gate uses this START time as
+    // the lower bound when discarding transcripts.
+    //
+    // Identity is tracked through `myStartMs` (a closure-captured number
+    // that the closeWindow guard compares against `ttsWindow.startMs`).
+    // We previously captured a single `openedAt` and used it as both the
+    // identity AND the timestamp; once `onstart` re-stamped startMs to
+    // the playback time, the guard `ttsWindow.startMs === openedAt`
+    // failed forever and `endMs` never got set — so `isWithinTtsWindow()`
+    // returned `true` until the next dispatch, which silently dropped
+    // every subsequent final transcript at the recording-context gate.
+    // Tracking myStartMs separately so it gets updated atomically with
+    // the window keeps the guard correct across the onstart re-stamp.
+    let myStartMs = Date.now();
+    ttsWindow = { startMs: myStartMs, endMs: null };
 
     const closeWindow = () => {
       // Only close if we still own this window — a fresh dispatch will
       // have overwritten it with a new startMs already, in which case
       // overwriting endMs would corrupt the new window's "currently
       // speaking" signal.
-      if (ttsWindow && ttsWindow.startMs === openedAt) {
-        ttsWindow = { startMs: openedAt, endMs: Date.now() };
+      if (ttsWindow && ttsWindow.startMs === myStartMs) {
+        ttsWindow = { startMs: myStartMs, endMs: Date.now() };
       }
     };
 
@@ -239,9 +249,12 @@ function dispatch(text: string, options?: SpeakOptions): void {
       // Re-stamp startMs at the actual playback moment for tighter
       // alignment with iOS — synthesis can hold the utterance for tens
       // of ms before audio begins, especially on iOS Safari after a
-      // voiceschanged event.
-      if (ttsWindow && ttsWindow.endMs == null) {
-        ttsWindow = { startMs: Date.now(), endMs: null };
+      // voiceschanged event. Update both `myStartMs` and `ttsWindow`
+      // together so the closeWindow guard still matches when `onend`
+      // fires later.
+      if (ttsWindow && ttsWindow.startMs === myStartMs && ttsWindow.endMs == null) {
+        myStartMs = Date.now();
+        ttsWindow = { startMs: myStartMs, endMs: null };
       }
     };
     utterance.onend = () => {
