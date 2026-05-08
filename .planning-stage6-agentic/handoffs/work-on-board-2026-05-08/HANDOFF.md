@@ -1,7 +1,7 @@
 # "Work on [Board]" — Fresh-Context Handoff
 
 **Read this first** in a new session. Full plan in sibling `PLAN.md` (~370 lines).
-Last updated 2026-05-08 (Phase A FULLY SHIPPED — all three slices). Status: **Phase A landed across three commits on `main`: `382985e` (dual-shape helpers + mutator wrappers + 32 test rewrites), `d1ad05b` (`_seedStateFromJobState` dual-shape routing), `cc303bc` (`buildStateSnapshotMessage` dual-shape + `STAGE6_MULTI_BOARD` env flag retired). Backend full suite green (3162 passing, 3 pre-existing skips). NOT YET PUSHED/DEPLOYED. Phase B (server strict `currentBoardId` scoping + system-prompt hint) is the next backend slice — single commit, then push to deploy the full Phase A + B as one unit. Phases C/D/E ship the iOS-facing UX (voice command, banner, WS broadcast).**
+Last updated 2026-05-08 (Phase A + Phase B FULLY SHIPPED). Status: **Phase A landed across three commits on `main` (`382985e` / `d1ad05b` / `cc303bc`) and was deployed via CI run `25560825421`. Phase B landed in a single commit `d783818` and was pushed via CI run `25561866675` (in flight at handoff time). Backend full suite green (3182 passing, 3 pre-existing skips). The backend foundation of the sprint is complete: sub-board writes are storage-safe (Phase A) and write-scope-safe (Phase B). Phase C (iOS voice command "Work on \[X\]" → `select_board`) is the next concrete step. Phase D + E (red-banner UI + WS broadcast) ship together after C. See `../handoff_2026-05-08_work-on-board-phase-b-shipped.md` for the per-slice rationale and test inventory.**
 
 ---
 
