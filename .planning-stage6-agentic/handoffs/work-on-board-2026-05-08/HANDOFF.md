@@ -1,7 +1,7 @@
 # "Work on [Board]" — Fresh-Context Handoff
 
 **Read this first** in a new session. Full plan in sibling `PLAN.md` (~370 lines).
-Last updated 2026-05-08. Status: **Phase 0 LOCKED, Phase A ready to start.**
+Last updated 2026-05-08 (post-exploratory-session). Status: **Phase 0 LOCKED, Phase A explored — production-side change is small (~50 lines), test rewrite is bulky (~30 tests across 4 suites). Production code reverted; no Phase A commits on `main` yet. See "Session log — 2026-05-08" below for the drafted helper / mutator code and the exact test transformation pattern, so a fresh session can land Phase A in one focused commit without re-doing the design work.**
 
 ---
 
@@ -95,4 +95,166 @@ This plan replaces the flag with a per-call rule: **composite when `boardId` is 
 
 - `../multi-board-support-2026-05-07/HANDOFF.md` — parent sprint that introduced multi-board iOS + Phase 5/6 backend.
 - `../multi-board-support-2026-05-07/PHASE5_HANDOFF.md` — full re-key plan; not what this sprint takes, but the eventual destination.
-- Commit `27a1b94` — today's `add_board` legacy-snapshot fix; this sprint builds on top.
+- Commit `27a1b94` — today's `add_board` legacy-snapshot fix; this sprint builds on top. Deployed to prod via the `f159057` CI run.
+
+---
+
+## Session log — 2026-05-08 (Phase A exploration)
+
+This section captures everything learned during the first Phase A attempt so a fresh session resumes from a known position rather than repeating the design work.
+
+### What's on `main` (already deployed)
+
+- `27a1b94` `fix(stage6): add_board accepts legacy keyed-snapshot circuits` — closes the EEB8F9EA `hierarchy_invalid` repro. Deployed via the `f159057` CI run (~13:28 UTC).
+- `bfed5ed` `docs(stage6): plan + handoff for "Work on [Board]" single-board-focus sprint` — this directory.
+- Phase A production-side edits were drafted then **reverted**. Working tree clean.
+
+### Phase A production-side changes (drafted, reverted, ready to re-apply)
+
+The change is mechanical: replace the `STAGE6_MULTI_BOARD` flag-on/off branch in helpers + mutator wrappers with a per-call "is target the main board?" check. The existing flag-on path (composite keys via `applyReadingMultiBoard`, `upsertCircuitMetaMultiBoard`, etc.) is already correct — just needs to fire when `boardId !== mainBoardId`, regardless of the flag.
+
+**File 1 — `src/extraction/stage6-multi-board-shape.js`**
+
+Add helper (after `DEFAULT_MAIN_BOARD_TYPE`):
+
+```js
+export function getMainBoardId(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.boards) || snapshot.boards.length === 0) {
+    return DEFAULT_MAIN_BOARD_ID;
+  }
+  const main = snapshot.boards.find((b) => b && (!b.board_type || b.board_type === 'main'));
+  return main?.id ?? snapshot.boards[0]?.id ?? DEFAULT_MAIN_BOARD_ID;
+}
+```
+
+Replace each of the three flag-gated helpers' body with the dual-shape pattern:
+
+```js
+export function getCircuitBucket(snapshot, ref, boardId) {
+  if (!snapshot || !snapshot.circuits) return undefined;
+  const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+  const mainId = getMainBoardId(snapshot);
+  if (id === mainId) {
+    return snapshot.circuits[ref];
+  }
+  return snapshot.circuits[`${id}::${ref}`];
+}
+
+export function listCircuitRefsInBoard(snapshot, boardId) {
+  if (!snapshot || !snapshot.circuits) return [];
+  const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+  const mainId = getMainBoardId(snapshot);
+  if (id === mainId) {
+    return Object.keys(snapshot.circuits)
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n >= 1)
+      .sort((a, b) => a - b);
+  }
+  const refs = [];
+  for (const bucket of Object.values(snapshot.circuits)) {
+    if (bucket && bucket.board_id === id && Number.isInteger(bucket.circuit) && bucket.circuit >= 1) {
+      refs.push(bucket.circuit);
+    }
+  }
+  return refs.sort((a, b) => a - b);
+}
+
+export function circuitExistsInSnapshot(snapshot, circuit, boardId) {
+  if (!snapshot || !snapshot.circuits) return false;
+  const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+  const mainId = getMainBoardId(snapshot);
+  if (id === mainId) {
+    return circuit in snapshot.circuits;
+  }
+  return `${id}::${circuit}` in snapshot.circuits;
+}
+```
+
+Keep `isMultiBoardFlagOn()` exported. The only remaining reader is `eicr-extraction-session.js:buildStateSnapshotMessage` (line ~2126), which slice A.4 will flip; once that's done, the export and env var can both be deleted.
+
+**File 2 — `src/extraction/stage6-snapshot-mutators.js`**
+
+Swap the import: `import { getMainBoardId } from './stage6-multi-board-shape.js';` (drop `isMultiBoardFlagOn`).
+
+Replace the six `*FlagAware` wrappers with the per-call rule:
+
+```js
+function isMainBoardTarget(snapshot, args) {
+  const target = args?.boardId ?? snapshot?.currentBoardId ?? getMainBoardId(snapshot);
+  return target === getMainBoardId(snapshot);
+}
+
+export function applyReadingFlagAware(snapshot, args) {
+  if (isMainBoardTarget(snapshot, args)) applyReadingToSnapshot(snapshot, args);
+  else applyReadingMultiBoard(snapshot, args);
+}
+
+// …same shape for clearReadingFlagAware, upsertCircuitMetaFlagAware,
+// renameCircuitFlagAware, deleteCircuitFlagAware, applyBoardReadingFlagAware
+```
+
+The wrapper names stay (`*FlagAware`) so every dispatcher import keeps compiling.
+
+### Test failure inventory (after re-applying the above)
+
+Running the full suite yielded **32 failures across 4 suites**. All follow the same pattern: a flag-on test pre-seeds a composite key for the main board (`circuits['main::3']`) and asserts composite-path routing. Under dual-shape, `currentBoardId='main'` always routes to legacy bare keys, so those buckets become invisible to the validator.
+
+| Suite | Failing tests | Pattern |
+|---|---|---|
+| `stage6-multi-board-flag-routing.test.js` | 25 | Tests both helpers and dispatchers under flag-on. Most "flag-on" tests need re-targeting to `currentBoardId='sub-1'` with composite seeds at `'sub-1::N'`. |
+| `stage6-tool-schemas-mark-distribution-circuit.test.js` | 1 | `flag-on: marks composite-key bucket on the resolved board` — same pattern. |
+| `stage6-tool-schemas-board-id-calc-sweep.test.js` | 3 | `default (no board_id)` / `board_id="*"` / `single-board response shape` — composite-key calc-sweep tests. |
+| `eicr-extraction-session.snapshot-refactor.test.js` | 3 | `buildStateSnapshotMessage` flag-on tests — these will only pass after slice A.4 (the `buildStateSnapshotMessage` migration). May have to mark `.skip` until then. |
+
+### Test rewrite recipe
+
+For each failing test in `stage6-multi-board-flag-routing.test.js`:
+
+1. **Delete** the `process.env.STAGE6_MULTI_BOARD = 'true'` (and the `delete process.env...` afterEach).
+2. **Switch** the session helper from `makeMultiBoardSession` (currentBoardId='main') to a new `makeSubBoardSession` helper:
+   ```js
+   function makeSubBoardSession(circuitSeeds = {}) {
+     const snapshot = {
+       circuits: { ...circuitSeeds },
+       pending_readings: [],
+       observations: [],
+       validation_alerts: [],
+       boards: [
+         { id: 'main', designation: 'DB-1', board_type: 'main' },
+         { id: 'sub-1', designation: 'DB-2', board_type: 'sub_main', parent_board_id: 'main', feed_circuit_ref: 4 },
+       ],
+       currentBoardId: 'sub-1',
+     };
+     return { sessionId: 's-sub', stateSnapshot: snapshot, extractedObservations: [] };
+   }
+   ```
+3. **Rename** `'main::3'` references to `'sub-1::3'` in seeds and assertions.
+4. **Rename** the describe block / test name from `flag-on: …` to `sub-board: …`.
+
+The flag-off tests (testing main-board legacy behaviour) need only describe-block renames — their behaviour stays identical under dual-shape because main always routes legacy.
+
+### What still needs to happen after the test rewrites
+
+Slice A.3 (touched only briefly in this session):
+- `eicr-extraction-session.js:_seedStateFromJobState` (line ~1077) — when seeding from a multi-board iOS PUT, route circuits with `board_id !== mainBoardId` to composite keys instead of flat keys. Today everything writes to `circuits[num]` regardless of the circuit's `board_id`.
+
+Slice A.4:
+- `eicr-extraction-session.js:buildStateSnapshotMessage` (line ~2118) — replace `isMultiBoardFlagOn()` branch with dual-shape: main board renders supply line from `circuits[0]`, sub-boards render supply from their BoardInfo. Fixes the 3 snapshot-refactor test failures. After this lands, `isMultiBoardFlagOn` and the `STAGE6_MULTI_BOARD` env var are dead — delete both.
+
+### Acceptance gate (Phase A)
+
+Replay the EEB8F9EA scenario in a fixture: legacy main with `circuits[1..13]`, `add_board(sub_main, parent='main', feed=11)`, then 3 readings on sub-1 circuit 1 (which doesn't conflict with main's circuit 1). Verify:
+- `snapshot.circuits[1..13]` byte-identical to before add_board.
+- `snapshot.circuits['sub-1::1']` carries the new readings.
+- `boardOps` event channel emits `add_board` then 3 reading events with `board_id: 'sub-1'`.
+
+### How a fresh session should pick up
+
+1. Read this section.
+2. Re-apply the production code from "Phase A production-side changes" above (5 minutes of edits).
+3. Run `node --experimental-vm-modules node_modules/jest/bin/jest.js --no-coverage src/__tests__/stage6-multi-board-flag-routing.test.js` to confirm the 25-failure baseline.
+4. Add `makeSubBoardSession` helper to that file.
+5. Walk each failing test through the rewrite recipe. ~20 minutes of mechanical edits.
+6. Repeat for the 3 sibling suites (mark-distribution-circuit, board-id-calc-sweep, snapshot-refactor — though the snapshot-refactor ones may need to be `.skip`ed pending slice A.4).
+7. Full suite green → commit Phase A as `feat(stage6): dual-shape circuit storage (Work on Board sprint Phase A)`.
+8. Move on to slice A.3 (`_seedStateFromJobState`) and A.4 (`buildStateSnapshotMessage`) — these can be one more commit each.
