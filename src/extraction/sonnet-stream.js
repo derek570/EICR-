@@ -103,6 +103,14 @@ import { createAskBudget } from './stage6-ask-budget.js';
 // 05-02 was scoped to the adapter module + tests; the sonnet-stream.js
 // composition step landed here (the executor's note in 05-02-SUMMARY).
 import { createFilledSlotsShadowLogger } from './stage6-filled-slots-shadow.js';
+// 2026-05-08 multi-board sprint Phase C — client-initiated select_board.
+// iOS detects "work on [board]" / "switch to [board]" on-device, resolves
+// to a board id, and sends `{type: 'select_board', board_id}`. The handler
+// below mutates `session.stateSnapshot.currentBoardId` directly, mirroring
+// the chitchat_resume precedent (no Sonnet round-trip). ensureMultiBoardShape
+// stamps board_id on legacy snapshots so the lookup works on jobs that
+// pre-date the multi-board sprint.
+import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -1156,6 +1164,93 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               }
             }
             break;
+
+          // 2026-05-08 multi-board sprint Phase C — client-initiated
+          // select_board. iOS detects "work on [board]" on-device via
+          // WorkOnBoardIntent.parse, resolves the spoken designation to a
+          // board id (substring-contains, longest match), and sends
+          // `{type: 'select_board', board_id}`. We mutate
+          // `session.stateSnapshot.currentBoardId` directly here — no
+          // Sonnet round-trip — so a subsequent `record_reading` lands at
+          // the correct composite-key bucket (Phase A) and Phase B's
+          // `wrong_board` gate doesn't kick in. The chitchat_resume case
+          // above is the precedent: a small WS handler that mutates session
+          // state directly without going through Sonnet's tool-call loop.
+          //
+          // Why not call dispatchSelectBoard? That path expects a Sonnet
+          // `tool_use` envelope with `perTurnWrites` for the boardOps wire
+          // emission. Phase E adds the proper `current_board_changed`
+          // broadcast on the boardOps channel; until then the iOS client
+          // already knows the new id (it sent it) and only needs an ack.
+          //
+          // Errors:
+          //   - no_active_session  : session not started or already stopped
+          //   - invalid_board_id   : missing / non-string board_id
+          //   - board_not_found    : id doesn't reference a board on the
+          //                          snapshot (sub-board not added yet, or
+          //                          stale id from a re-loaded job)
+          case 'select_board': {
+            if (!currentSessionId || !activeSessions.has(currentSessionId)) {
+              ws.send(
+                JSON.stringify({
+                  type: 'select_board_ack',
+                  ok: false,
+                  error: 'no_active_session',
+                })
+              );
+              break;
+            }
+            const sbBoardId = msg.board_id;
+            if (typeof sbBoardId !== 'string' || sbBoardId.trim() === '') {
+              ws.send(
+                JSON.stringify({
+                  type: 'select_board_ack',
+                  ok: false,
+                  error: 'invalid_board_id',
+                })
+              );
+              break;
+            }
+            const sbEntry = activeSessions.get(currentSessionId);
+            const sbSnapshot = sbEntry.session.stateSnapshot;
+            // Stamp board_id on legacy snapshots so the lookup below works
+            // on jobs that pre-date the multi-board sprint. Idempotent.
+            ensureMultiBoardShape(sbSnapshot);
+            const sbTarget = (sbSnapshot.boards ?? []).find((b) => b && b.id === sbBoardId);
+            if (!sbTarget) {
+              ws.send(
+                JSON.stringify({
+                  type: 'select_board_ack',
+                  ok: false,
+                  error: 'board_not_found',
+                  board_id: sbBoardId,
+                })
+              );
+              logger.warn('select_board (iOS) board_not_found', {
+                sessionId: currentSessionId,
+                board_id: sbBoardId,
+                known_ids: (sbSnapshot.boards ?? []).map((b) => b?.id ?? null),
+              });
+              break;
+            }
+            const sbPreviousBoardId = sbSnapshot.currentBoardId ?? null;
+            sbSnapshot.currentBoardId = sbTarget.id;
+            logger.info('select_board (iOS voice command)', {
+              sessionId: currentSessionId,
+              board_id: sbTarget.id,
+              designation: sbTarget.designation ?? null,
+              previous_board_id: sbPreviousBoardId,
+            });
+            ws.send(
+              JSON.stringify({
+                type: 'select_board_ack',
+                ok: true,
+                board_id: sbTarget.id,
+                designation: sbTarget.designation ?? null,
+              })
+            );
+            break;
+          }
 
           // Manual chitchat-pause wake. iOS sends this when the inspector
           // taps the Resume button on the chitchat banner. Idempotent —
