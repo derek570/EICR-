@@ -395,7 +395,10 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
     });
   });
 
-  test('emits one broadcast per select_board op when multiple appear in same turn', async () => {
+  test('emits one broadcast per select_board / add_board op when multiple appear in same turn', async () => {
+    // Hotfix slice 2.1 — add_board now also fires a current_board_changed
+    // broadcast (with source='sonnet_add' to disambiguate from select_board).
+    // Expected: 3 broadcasts for [select_board, add_board, select_board].
     const ws = connect(wss);
     const sid = await startSession(ws);
     const entry = getEntry(sid);
@@ -420,12 +423,25 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
     });
 
     const broadcasts = envelopesOfType(ws, 'current_board_changed');
-    expect(broadcasts).toHaveLength(2);
-    expect(broadcasts[0]).toMatchObject({ board_id: 'sub-1', designation: 'Garage' });
-    expect(broadcasts[1]).toMatchObject({ board_id: 'sub-2', designation: 'Annexe' });
+    expect(broadcasts).toHaveLength(3);
+    expect(broadcasts[0]).toMatchObject({
+      board_id: 'sub-1',
+      designation: 'Garage',
+      source: 'sonnet',
+    });
+    expect(broadcasts[1]).toMatchObject({
+      board_id: 'sub-2',
+      designation: 'Annexe',
+      source: 'sonnet_add',
+    });
+    expect(broadcasts[2]).toMatchObject({
+      board_id: 'sub-2',
+      designation: 'Annexe',
+      source: 'sonnet',
+    });
   });
 
-  test('does NOT broadcast when board_ops contains only non-select ops', async () => {
+  test('emits current_board_changed (source=sonnet_add) for add_board op (hotfix slice 2.1)', async () => {
     const ws = connect(wss);
     const sid = await startSession(ws);
     const entry = getEntry(sid);
@@ -435,9 +451,37 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
       extracted_readings: [],
       observations: [],
       board_ops: [
-        { op: 'add_board', board_id: 'sub-2', designation: 'New' },
-        { op: 'mark_distribution_circuit', circuit_ref: 4, feeds_board_id: 'sub-1' },
+        {
+          op: 'add_board',
+          board_id: 'sub-1',
+          designation: 'Garage',
+          board_type: 'sub_distribution',
+        },
       ],
+    });
+
+    const broadcasts = envelopesOfType(ws, 'current_board_changed');
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]).toEqual({
+      type: 'current_board_changed',
+      board_id: 'sub-1',
+      designation: 'Garage',
+      source: 'sonnet_add',
+    });
+  });
+
+  test('does NOT broadcast when board_ops contains only mark_distribution_circuit', async () => {
+    // Slice 2.1 widened the discriminator to {select_board, add_board};
+    // mark_distribution_circuit and any future non-flip op stays silent.
+    const ws = connect(wss);
+    const sid = await startSession(ws);
+    const entry = getEntry(sid);
+    seedTwoBoardSnapshot(entry);
+
+    entry.session.onBatchResult({
+      extracted_readings: [],
+      observations: [],
+      board_ops: [{ op: 'mark_distribution_circuit', circuit_ref: 4, feeds_board_id: 'sub-1' }],
     });
 
     expect(envelopesOfType(ws, 'current_board_changed')).toHaveLength(0);

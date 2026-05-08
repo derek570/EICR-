@@ -170,7 +170,21 @@ function emitCurrentBoardChangedFromBoardOps(ws, snapshot, boardOps) {
   if (!ws || ws.readyState !== ws.OPEN) return;
   if (!Array.isArray(boardOps) || boardOps.length === 0) return;
   for (const op of boardOps) {
-    if (!op || op.op !== 'select_board' || typeof op.board_id !== 'string') continue;
+    if (!op || typeof op.board_id !== 'string') continue;
+    // Hotfix slice 2.1 — widen the discriminator to include `add_board`.
+    // Phase 6.1's add_board dispatcher flips snapshot.currentBoardId AND
+    // pushes a boardOps op with board_id + designation, but the helper
+    // previously only matched select_board. Result: every Sonnet-driven
+    // add_board flowed past iOS's banner + JobViewModel without firing
+    // a current_board_changed broadcast — banner stayed on the previous
+    // board until the inspector said something that triggered a
+    // select_board.
+    //
+    // `source` carries a sub-discriminator so logs / future analytics can
+    // tell add-board flips apart from select-board flips.
+    const isAddBoard = op.op === 'add_board';
+    const isSelectBoard = op.op === 'select_board';
+    if (!isAddBoard && !isSelectBoard) continue;
     // Designation is looked up from the snapshot at send time so the wire
     // signal carries the human-readable name iOS can drop straight into
     // the Phase D red banner / TTS confirmation. Falls back to null when
@@ -182,7 +196,7 @@ function emitCurrentBoardChangedFromBoardOps(ws, snapshot, boardOps) {
         type: 'current_board_changed',
         board_id: op.board_id,
         designation: target?.designation ?? null,
-        source: 'sonnet',
+        source: isAddBoard ? 'sonnet_add' : 'sonnet',
       })
     );
   }
@@ -1172,6 +1186,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               // and a post-close send would log noise.
               if (ack.status !== 'rejected') {
                 ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+
+                // Hotfix slice 2.3 — emit initial current_board_changed
+                // AFTER the rehydrate ack so iOS's WS dispatch is in steady
+                // state. Token-rehydrate path preserves the on-snapshot
+                // currentBoardId; broadcasting here closes the same gap
+                // as the started + reconnected branches.
+                if (ws.readyState === ws.OPEN && activeEntryKey) {
+                  const rehydratedEntry = activeSessions.get(activeEntryKey);
+                  const snapshot = rehydratedEntry?.session?.stateSnapshot;
+                  const currentId = snapshot?.currentBoardId;
+                  if (typeof currentId === 'string' && currentId.length > 0) {
+                    const target = (snapshot.boards ?? []).find((b) => b && b.id === currentId);
+                    ws.send(
+                      JSON.stringify({
+                        type: 'current_board_changed',
+                        board_id: currentId,
+                        designation: target?.designation ?? null,
+                        source: 'session_resume',
+                      })
+                    );
+                  }
+                }
               }
             } else if (currentSessionId && activeSessions.has(currentSessionId)) {
               const resumeEntry = activeSessions.get(currentSessionId);
@@ -2188,6 +2224,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           sessionId: existing.rehydrateSessionId || null,
         })
       );
+
+      // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
+      // session_ack so iOS's WS dispatch is in steady state when the
+      // broadcast arrives. Reconnect preserves currentBoardId on the
+      // server-side stateSnapshot, but iOS's `jobVM.currentBoardId` may
+      // have been re-seeded from persistence on a fresh app launch + WS
+      // reconnect (e.g. force-quit + relaunch with the same job open).
+      // The `source: 'session_resume'` discriminator lets iOS suppress
+      // the Phase D banner-flip animation on resumes — no UX surface for
+      // "you're back on the same board you were on".
+      if (ws.readyState === ws.OPEN) {
+        const snapshot = existing.session?.stateSnapshot;
+        const currentId = snapshot?.currentBoardId;
+        if (typeof currentId === 'string' && currentId.length > 0) {
+          const target = (snapshot.boards ?? []).find((b) => b && b.id === currentId);
+          ws.send(
+            JSON.stringify({
+              type: 'current_board_changed',
+              board_id: currentId,
+              designation: target?.designation ?? null,
+              source: 'session_resume',
+            })
+          );
+        }
+      }
+
       // Flush any extraction results that were buffered while the socket was disconnected
       flushPendingExtractions(ws, existing, sessionId);
       logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
@@ -2566,6 +2628,36 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     ws.send(
       JSON.stringify({ type: 'session_ack', status: 'started', sessionId: rehydrateSessionId })
     );
+
+    // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
+    // session_started ack so iOS's WS dispatch is in steady state when the
+    // broadcast arrives. _seedStateFromJobState (called inside the
+    // EICRExtractionSession constructor / explicit seed call) resets
+    // `currentBoardId` to the main board id (Q0.1 lock — always main on
+    // fresh session). Without this initial broadcast, iOS jobVM.currentBoardId
+    // stays at whatever value persistence rehydrated and the apply-path
+    // priority chain may target the wrong board until Sonnet emits the
+    // first select_board.
+    //
+    // Source = 'session_start' so iOS can decide whether to suppress the
+    // banner flip animation (no UX value flashing the banner on a fresh
+    // session for "you're on the main board" — every session starts there).
+    if (ws.readyState === ws.OPEN) {
+      const snapshot = session.stateSnapshot;
+      const currentId = snapshot?.currentBoardId;
+      if (typeof currentId === 'string' && currentId.length > 0) {
+        const target = (snapshot.boards ?? []).find((b) => b && b.id === currentId);
+        ws.send(
+          JSON.stringify({
+            type: 'current_board_changed',
+            board_id: currentId,
+            designation: target?.designation ?? null,
+            source: 'session_start',
+          })
+        );
+      }
+    }
+
     logger.info('Session started', {
       sessionId,
       rehydrateSessionId,
@@ -2868,6 +2960,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          // Hotfix slice 2.2 — replay any select_board / add_board boardOps
+          // through the same broadcast scan the live tool-loop turn would
+          // have used. Reconnect-during-board-switch was a silent banner
+          // miss pre-hotfix: the buffered extraction reaches iOS but the
+          // current_board_changed envelope was never re-emitted, so iOS
+          // jobVM.currentBoardId stayed stale until the next live op.
+          // The snapshot is the post-flip state at flush time, so
+          // designations resolve correctly inside the helper.
+          emitCurrentBoardChangedFromBoardOps(ws, entry.session?.stateSnapshot, result.board_ops);
           // Phase A: if the buffered extraction carried RULE 6 correction edits,
           // replay them on the restored socket so iOS doesn't miss the patch.
           dispatchObservationUpdates(ws, sessionId, observationUpdates);
