@@ -1909,6 +1909,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // and the 2-ask cap is preserved across hang-up + reconnect.
           entry.askBudget?.destroy();
           entry.questionGate.destroy();
+          // Stop the EICRExtractionSession so its cache-keepalive +
+          // pause-keepalive timers cancel and `isActive` flips to false.
+          // Without this, the keepalive `setTimeout` chain
+          // (eicr-extraction-session.js:1373) keeps firing every
+          // CACHE_KEEPALIVE_MS forever — the timer holds a closure-strong
+          // reference to `this`, so even after activeSessions.delete()
+          // drops the entry, GC can't reclaim the session. CloudWatch
+          // proof: sess_moxffh2j_82f8 (2026-05-08 21:28 UTC) showed
+          // cleanup at 21:34:06 followed by "Cache keepalive sent"
+          // logs at 21:36:12 / 21:40:13 / 21:44:15 — three orphaned
+          // refreshes after the session was supposedly torn down,
+          // each costing one Anthropic round-trip and pinning the
+          // session's full prompt + state-snapshot in memory until
+          // the process restarts. Optional-chained for safety —
+          // handleSessionStart's reconnect path destroys the entry
+          // before constructing a new session, but a future code
+          // path could still set entry.session=null at teardown.
+          entry.session?.stop?.();
           activeSessions.delete(currentSessionId);
         }, 300000);
       }
