@@ -100,6 +100,29 @@ export async function dispatchRecordBoardReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input ?? {};
 
+  // Hotfix slice 3.1 — validateBoardScope runs FIRST so a cross-board
+  // record_board_reading on a non-current board surfaces as `wrong_board`
+  // rather than confidence_out_of_range or invalid_field. The pre-hotfix
+  // order ran scope last (after confidence + field-enum), which masked
+  // the multi-board contract violation behind unrelated rejections.
+  // Sonnet's prompt rule "call select_board first" depends on getting
+  // the right error code back.
+  const scopeErr = validateBoardScope(input, session.stateSnapshot);
+  if (scopeErr) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_board_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: scopeErr,
+      input_summary: { field: input.field ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: scopeErr }, true);
+  }
+
   // 1) confidence bounds — mirrors record_reading dispatcher.
   const confErr = validateConfidence(input.confidence);
   if (confErr) {
@@ -135,26 +158,6 @@ export async function dispatchRecordBoardReading(call, ctx) {
       input_summary: { field: input.field ?? null },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
-  }
-
-  // 2b) "Work on Board" Phase B — strict currentBoardId scope. Reject
-  //     explicit cross-board board_id; omitted board_id defaults to
-  //     currentBoardId in the mutator. Forces Sonnet through select_board
-  //     for board-level supply / installation reads on a different board.
-  const scopeErr = validateBoardScope(input, session.stateSnapshot);
-  if (scopeErr) {
-    logToolCall(logger, {
-      sessionId: session.sessionId,
-      turnId,
-      tool_use_id: call.tool_call_id,
-      tool: 'record_board_reading',
-      round,
-      is_error: true,
-      outcome: 'rejected',
-      validation_error: scopeErr,
-      input_summary: { field: input.field },
-    });
-    return envelope(call.tool_call_id, { ok: false, error: scopeErr }, true);
   }
 
   // 3) mutate via the flag-aware wrapper. Flag-off: legacy circuits[0] write

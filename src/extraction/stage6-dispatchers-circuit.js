@@ -102,8 +102,8 @@ export async function dispatchRecordReading(call, ctx) {
   const input = call.input;
 
   const err =
-    validateRecordReading(input, session.stateSnapshot) ||
-    validateBoardScope(input, session.stateSnapshot);
+    validateBoardScope(input, session.stateSnapshot) ||
+    validateRecordReading(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -206,8 +206,8 @@ export async function dispatchClearReading(call, ctx) {
   const input = call.input;
 
   const err =
-    validateClearReading(input, session.stateSnapshot) ||
-    validateBoardScope(input, session.stateSnapshot);
+    validateBoardScope(input, session.stateSnapshot) ||
+    validateClearReading(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -287,8 +287,8 @@ export async function dispatchCreateCircuit(call, ctx) {
   const input = call.input;
 
   const err =
-    validateCreateCircuit(input, session.stateSnapshot) ||
-    validateBoardScope(input, session.stateSnapshot);
+    validateBoardScope(input, session.stateSnapshot) ||
+    validateCreateCircuit(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -419,8 +419,8 @@ export async function dispatchRenameCircuit(call, ctx) {
   const input = call.input;
 
   const err =
-    validateRenameCircuit(input, session.stateSnapshot) ||
-    validateBoardScope(input, session.stateSnapshot);
+    validateBoardScope(input, session.stateSnapshot) ||
+    validateRenameCircuit(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -579,8 +579,8 @@ export async function dispatchDeleteCircuit(call, ctx) {
   const input = call.input;
 
   const err =
-    validateDeleteCircuit(input, session.stateSnapshot) ||
-    validateBoardScope(input, session.stateSnapshot);
+    validateBoardScope(input, session.stateSnapshot) ||
+    validateDeleteCircuit(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
