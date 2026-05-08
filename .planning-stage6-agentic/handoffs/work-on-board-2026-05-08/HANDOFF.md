@@ -1,7 +1,7 @@
 # "Work on [Board]" — Fresh-Context Handoff
 
 **Read this first** in a new session. Full plan in sibling `PLAN.md` (~370 lines).
-Last updated 2026-05-08 (post-exploratory-session). Status: **Phase 0 LOCKED, Phase A explored — production-side change is small (~50 lines), test rewrite is bulky (~30 tests across 4 suites). Production code reverted; no Phase A commits on `main` yet. See "Session log — 2026-05-08" below for the drafted helper / mutator code and the exact test transformation pattern, so a fresh session can land Phase A in one focused commit without re-doing the design work.**
+Last updated 2026-05-08 (Phase A SHIPPED). Status: **Phase A landed on `main` as commit `382985e`. Backend full suite green (3161/3164, 3 pre-existing skips). Not yet pushed/deployed. Slices A.3 (`_seedStateFromJobState` composite-key route) and A.4 (`buildStateSnapshotMessage` dual-shape supply line + retire `STAGE6_MULTI_BOARD` env flag) are the next concrete steps — both backend-only, separate commits each. Phases B-E (server scoping, iOS voice command, banner, WS broadcast) follow per the table below.**
 
 ---
 
@@ -250,11 +250,33 @@ Replay the EEB8F9EA scenario in a fixture: legacy main with `circuits[1..13]`, `
 
 ### How a fresh session should pick up
 
-1. Read this section.
-2. Re-apply the production code from "Phase A production-side changes" above (5 minutes of edits).
-3. Run `node --experimental-vm-modules node_modules/jest/bin/jest.js --no-coverage src/__tests__/stage6-multi-board-flag-routing.test.js` to confirm the 25-failure baseline.
-4. Add `makeSubBoardSession` helper to that file.
-5. Walk each failing test through the rewrite recipe. ~20 minutes of mechanical edits.
-6. Repeat for the 3 sibling suites (mark-distribution-circuit, board-id-calc-sweep, snapshot-refactor — though the snapshot-refactor ones may need to be `.skip`ed pending slice A.4).
-7. Full suite green → commit Phase A as `feat(stage6): dual-shape circuit storage (Work on Board sprint Phase A)`.
-8. Move on to slice A.3 (`_seedStateFromJobState`) and A.4 (`buildStateSnapshotMessage`) — these can be one more commit each.
+Phase A is now landed (commit `382985e` on `main`, 2026-05-08). The session log
+above is preserved as a record of the design work; it is no longer the
+"how to start" pointer.
+
+Next steps:
+
+1. **Slice A.3** — `eicr-extraction-session.js:_seedStateFromJobState`
+   (line ~1077). When the iOS PUT seeds a multi-board snapshot, route
+   each circuit to either the legacy bare-numeric key (if `circuit.board_id`
+   resolves to main) or the composite key `${board_id}::${ref}` (if it
+   resolves to any other board). Today every seeded circuit lands at the
+   bare-numeric key regardless of board. One commit, backend-only.
+2. **Slice A.4** — `eicr-extraction-session.js:buildStateSnapshotMessage`
+   (line ~2118). Replace the `isMultiBoardFlagOn()` branch with the
+   dual-shape rule: main supply reads from `circuits[0]`, sub-board supply
+   from BoardInfo on `boards[]`. After landing, delete the
+   `isMultiBoardFlagOn` export AND the `STAGE6_MULTI_BOARD` env var (no
+   remaining readers). One commit, backend-only.
+3. **Phases B → E** — see the phase order table at the top of this file.
+   Phase B (strict server scoping + system prompt) is the next backend
+   slice after A.4 lands; C/D/E are the iOS-facing UX work.
+
+Acceptance gate (Phase A) — already met by commit `382985e`:
+- Full backend suite green (3161 passing).
+- Composite-key writes ship for every non-main board across all six
+  dispatchers (record_reading, clear_reading, create_circuit,
+  rename_circuit, delete_circuit, set_field_for_all_circuits) and the
+  two board-level paths (record_board_reading, mark_distribution_circuit).
+- Main-board behaviour is byte-identical to legacy: every flag-off /
+  legacy test passes unmodified.
