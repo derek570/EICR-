@@ -220,52 +220,52 @@ function RecordingActionBar() {
       <div
         role="toolbar"
         aria-label="Recording controls"
-        className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-3 pb-3 md:pb-4"
+        className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-2 pb-2 md:px-3 md:pb-4"
       >
-        <div className="pointer-events-auto flex w-full max-w-[1100px] flex-col gap-2 rounded-[var(--radius-xl)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)]/95 px-3 py-2.5 shadow-[0_-12px_48px_rgba(0,0,0,0.55)] backdrop-blur-md md:flex-row md:items-center md:gap-3 md:px-4">
-          {/* ── Left: state pill + VAD dot + timer + cost ──────────── */}
-          <div className="flex items-center gap-2.5">
+        <div className="pointer-events-auto flex w-full max-w-[1100px] flex-row flex-wrap items-center gap-1.5 rounded-[var(--radius-lg)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)]/95 px-2 py-1.5 shadow-[0_-12px_48px_rgba(0,0,0,0.55)] backdrop-blur-md md:flex-nowrap md:gap-3 md:rounded-[var(--radius-xl)] md:px-4 md:py-2.5">
+          {/* ── Left: state pill + VAD dot + timer ──────────────────
+              Phone portrait (iOS canon): keep this cluster compact —
+              just status indicator + timer. Cost readout is iPad+ only
+              so it doesn't crowd the small screen. */}
+          <div className="flex items-center gap-1.5 md:gap-2.5">
             <StatePill state={state} />
             <VadIndicator state={state} />
-            <div className="flex items-baseline gap-2">
-              <span className="font-mono text-[15px] font-semibold tabular-nums text-[var(--color-text-primary)]">
-                {formatElapsed(elapsedSec)}
-              </span>
-              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-tertiary)]">
-                {formatCost(costUsd)}
-              </span>
-            </div>
+            <span className="font-mono text-[13px] font-semibold tabular-nums text-[var(--color-text-primary)] md:text-[15px]">
+              {formatElapsed(elapsedSec)}
+            </span>
+            <span className="hidden text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--color-text-tertiary)] md:inline">
+              {formatCost(costUsd)}
+            </span>
           </div>
 
-          {/* ── Centre: VU meter ────────────────────────────────────── */}
+          {/* ── Centre: VU meter (tablet+ only) ─────────────────────── */}
           <div className="hidden flex-1 md:block">
             <VuMeter level={micLevel} active={isActive} />
           </div>
 
           {/* ── Right: iOS-parity buttons + Pause/End ─────────────────
-              iPhone canon (IMG_6296): only CCU / End / Pause are
-              visible. iPad / landscape (IMG_6295): full set Voice /
-              Defaults / Apply / CCU / Doc / Obs / End / Pause.
-              `cm-bar-extra` hides at < md so the phone-portrait bar
-              isn't crammed with overflow-scrolling pills. */}
-          <div className="flex items-center justify-end gap-1.5 overflow-x-auto md:gap-2">
-            {/* Voice / Defaults / Apply — iPad-only per iOS canon. */}
+              iPhone portrait now mirrors iOS landscape (per inspector
+              field-test feedback): inline Voice (TTS toggle), CCU, Doc,
+              End, Pause. Defaults/Apply/Obs stay tablet-only because
+              they open full-page sheets that are awkward mid-recording
+              on phone (the inspector can pause and tap them on the
+              installation tab instead). */}
+          <div className="ml-auto flex items-center justify-end gap-1 md:gap-2">
             {ttsSupported ? (
-              <div className="hidden md:contents">
-                <ParityButton
-                  label={voiceFeedbackOn ? 'Voice' : 'Muted'}
-                  tone={voiceFeedbackOn ? 'green' : 'muted'}
-                  icon={voiceFeedbackOn ? Volume2 : VolumeX}
-                  onClick={toggleVoiceFeedback}
-                  ariaPressed={voiceFeedbackOn}
-                  ariaLabel={
-                    voiceFeedbackOn
-                      ? 'Disable spoken reading confirmations'
-                      : 'Enable spoken reading confirmations'
-                  }
-                />
-              </div>
+              <ParityButton
+                label={voiceFeedbackOn ? 'Voice' : 'Muted'}
+                tone={voiceFeedbackOn ? 'green' : 'muted'}
+                icon={voiceFeedbackOn ? Volume2 : VolumeX}
+                onClick={toggleVoiceFeedback}
+                ariaPressed={voiceFeedbackOn}
+                ariaLabel={
+                  voiceFeedbackOn
+                    ? 'Disable spoken reading confirmations'
+                    : 'Enable spoken reading confirmations'
+                }
+              />
             ) : null}
+            {/* Defaults / Apply — tablet+ only, see comment above. */}
             <div className="hidden md:contents">
               <ParityButton
                 label="Defaults"
@@ -275,22 +275,22 @@ function RecordingActionBar() {
               />
               <ParityButton label="Apply" tone="green" icon={Check} onClick={onOpenApply} />
             </div>
-            {/* CCU is always visible — primary mid-recording action on
-                phone too (large orange circle in IMG_6296). */}
+            {/* CCU + Doc — always visible; primary mid-recording entry
+                points for photo/document capture. */}
             <ParityButton
               label="CCU"
               tone="orange"
               icon={Camera}
               onClick={() => goToTab('/circuits')}
             />
-            {/* Doc / Obs — iPad-only per iOS canon. */}
+            <ParityButton
+              label="Doc"
+              tone="cyan"
+              icon={FileText}
+              onClick={() => goToTab('/circuits')}
+            />
+            {/* Obs — tablet+ only, see comment above. */}
             <div className="hidden md:contents">
-              <ParityButton
-                label="Doc"
-                tone="cyan"
-                icon={FileText}
-                onClick={() => goToTab('/circuits')}
-              />
               <ParityButton
                 label="Obs"
                 tone="blue"
@@ -493,17 +493,20 @@ function ParityButton({
       aria-pressed={ariaPressed}
       aria-label={resolvedLabel}
       className={cn(
-        'flex shrink-0 flex-col items-center gap-0.5 rounded-2xl px-2 py-1.5 text-white transition active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white',
+        'flex shrink-0 flex-col items-center gap-0.5 rounded-2xl px-1 py-1 text-white transition active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white md:px-2 md:py-1.5',
         disabled && 'cursor-not-allowed opacity-45'
       )}
     >
       <span
-        className="flex h-9 w-9 items-center justify-center rounded-full shadow-[0_2px_10px_rgba(0,0,0,0.35)]"
+        className="flex h-8 w-8 items-center justify-center rounded-full shadow-[0_2px_10px_rgba(0,0,0,0.35)] md:h-9 md:w-9"
         style={{ background: TONE_BG[tone] }}
       >
         <Icon className="h-4 w-4" strokeWidth={2.25} aria-hidden />
       </span>
-      <span className="text-[10px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-secondary)]">
+      {/* Label hidden on phone (icons are recognizable + the bar must
+          fit five buttons + the status cluster on a 375 px screen).
+          Icon-only on phone matches the iOS portrait bar density. */}
+      <span className="hidden text-[10px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-secondary)] md:block">
         {label}
       </span>
     </button>

@@ -5,6 +5,11 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, ClipboardCopy, Download, Trash2, Wrench } from 'lucide-react';
 import { downloadBlob } from '@certmate/shared-utils';
 import { collectDiagnostics } from '@/lib/diagnostics';
+import {
+  clearLog as clearLifecycleLog,
+  getLog as getLifecycleLog,
+  type LifecycleEvent,
+} from '@/lib/diagnostics/lifecycle-log';
 import { DB_NAME } from '@/lib/pwa/job-cache';
 import { clearAuth } from '@/lib/auth';
 import { HeroHeader } from '@/components/ui/hero-header';
@@ -170,6 +175,8 @@ export default function DiagnosticsPage() {
         ) : null}
       </SectionCard>
 
+      <RecentActivityCard />
+
       <SectionCard
         accent="red"
         title="Clear cache"
@@ -196,4 +203,108 @@ export default function DiagnosticsPage() {
       />
     </main>
   );
+}
+
+/**
+ * Recent activity timeline — surfaces the lifecycle log
+ * (`@/lib/diagnostics/lifecycle-log`) inline so an inspector seeing a
+ * "the page kept refreshing" symptom can confirm what fired (error
+ * boundary, SW upgrade, page-suspend BFCache restore, etc.) without
+ * having to download and parse the full diagnostics JSON. The log is
+ * also included verbatim in the JSON export via the existing
+ * localStorage dump in `lib/diagnostics.ts`, so support gets the same
+ * data either way.
+ */
+function RecentActivityCard() {
+  const [events, setEvents] = React.useState<LifecycleEvent[]>([]);
+  const [confirmClearOpen, setConfirmClearOpen] = React.useState(false);
+
+  const refresh = React.useCallback(() => {
+    setEvents(getLifecycleLog().slice().reverse());
+  }, []);
+
+  React.useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  return (
+    <SectionCard
+      accent="magenta"
+      title="Recent activity"
+      subtitle="App lifecycle events captured locally. Useful for diagnosing unexpected reloads. Auto-cleared after 100 entries."
+    >
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" size="sm" onClick={refresh}>
+          Refresh
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setConfirmClearOpen(true)}
+          disabled={events.length === 0}
+          className="gap-1 text-[var(--color-text-secondary)]"
+        >
+          <Trash2 className="h-3.5 w-3.5" aria-hidden />
+          Clear log
+        </Button>
+      </div>
+      {events.length === 0 ? (
+        <p className="text-[13px] text-[var(--color-text-secondary)]">
+          No events recorded yet. Lifecycle events appear here as you use the app.
+        </p>
+      ) : (
+        <ul className="max-h-64 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] text-[12px]">
+          {events.map((entry, i) => (
+            <li
+              key={`${entry.ts}-${i}`}
+              className="flex items-start gap-3 border-b border-[var(--color-border-subtle)] px-3 py-2 last:border-b-0"
+            >
+              <span className="font-mono tabular-nums text-[var(--color-text-tertiary)]">
+                {new Date(entry.ts).toLocaleTimeString()}
+              </span>
+              <span className="font-mono font-semibold text-[var(--color-text-primary)]">
+                {entry.event}
+              </span>
+              <span className="ml-auto truncate font-mono text-[var(--color-text-secondary)]">
+                {summarisePayload(entry)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <ConfirmDialog
+        open={confirmClearOpen}
+        onOpenChange={setConfirmClearOpen}
+        title="Clear activity log?"
+        description="This removes the local lifecycle event history. The diagnostics JSON export will no longer include past events until new ones accumulate."
+        confirmLabel="Clear log"
+        cancelLabel="Keep"
+        destructive
+        onConfirm={() => {
+          clearLifecycleLog();
+          setConfirmClearOpen(false);
+          refresh();
+        }}
+      />
+    </SectionCard>
+  );
+}
+
+/** Format a lifecycle entry's payload as a single short line for the
+ *  list — the full payload is in the export, this is just for at-a-
+ *  glance reading. */
+function summarisePayload(entry: LifecycleEvent): string {
+  const { ts: _ts, event: _event, ...rest } = entry;
+  void _ts;
+  void _event;
+  const keys = Object.keys(rest);
+  if (keys.length === 0) return '';
+  const parts: string[] = [];
+  for (const k of keys) {
+    const v = rest[k];
+    if (v == null) continue;
+    const str = typeof v === 'string' ? v : JSON.stringify(v);
+    parts.push(`${k}=${str.length > 32 ? str.slice(0, 32) + '…' : str}`);
+  }
+  return parts.join(' ');
 }

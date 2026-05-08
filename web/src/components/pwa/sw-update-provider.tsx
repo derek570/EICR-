@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
+import { record as recordLifecycle } from '@/lib/diagnostics/lifecycle-log';
 
 /**
  * Renders nothing. Watches the active service-worker registration for a
@@ -121,9 +122,11 @@ export function SwUpdateProvider() {
         // because the toast-driven SKIP_WAITING flow sets a different
         // condition (the waiting worker was observed while a
         // controller existed; see `promptToReload` above).
+        recordLifecycle('sw-controllerchange-first-install', {});
         return;
       }
       reloadedRef.current = true;
+      recordLifecycle('sw-controllerchange-reload', {});
       window.location.reload();
     }
     navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);

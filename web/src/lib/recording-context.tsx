@@ -30,6 +30,7 @@ import {
   speak,
   speakConfirmation,
 } from './recording/tts';
+import { record as recordLifecycle } from './diagnostics/lifecycle-log';
 import { playAttentionTone, playConfirmationChime } from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
@@ -170,6 +171,41 @@ const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJob } = useJobContext();
   const liveFill = useLiveFillStore();
+
+  // One-time page-lifecycle listener — captures pageshow / pagehide /
+  // visibilitychange to the diagnostics lifecycle log. iOS Safari (and
+  // PWAs in standalone mode) can suspend a backgrounded tab and either
+  // restore it from the BFCache (`pageshow.persisted === true`) or
+  // reload it from network. Both look like a "refresh" to the inspector
+  // mid-recording but produce different diagnostic signatures, so the
+  // log lets us tell them apart in the field. The provider is mounted
+  // once at the app root (see app/layout.tsx) so a single listener
+  // covers the whole session lifecycle.
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    recordLifecycle('provider-mount', {});
+    const onShow = (e: PageTransitionEvent) => {
+      recordLifecycle('page-show', { persisted: e.persisted });
+    };
+    const onHide = (e: PageTransitionEvent) => {
+      recordLifecycle('page-hide', { persisted: e.persisted });
+    };
+    const onVisibility = () => {
+      recordLifecycle('visibility-change', {
+        state: document.visibilityState,
+      });
+    };
+    window.addEventListener('pageshow', onShow);
+    window.addEventListener('pagehide', onHide);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pageshow', onShow);
+      window.removeEventListener('pagehide', onHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+      recordLifecycle('provider-unmount', {});
+    };
+  }, []);
+
   const [state, setStateRaw] = React.useState<RecordingState>('idle');
   // Mirror of `state` in a ref so that synchronous double-taps of
   // start/stop/pause/resume see the *just-set* status instead of the
@@ -980,7 +1016,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // though the first has already called setState('requesting-mic'). The
     // ref is updated synchronously inside setState, so the second tap
     // sees `requesting-mic` and bails. Double-tap on Start now no-ops.
-    if (statusRef.current !== 'idle' && statusRef.current !== 'error') return;
+    if (statusRef.current !== 'idle' && statusRef.current !== 'error') {
+      recordLifecycle('recording-start-blocked', { status: statusRef.current });
+      return;
+    }
+    recordLifecycle('recording-start', { jobId: jobRef.current?.id ?? null });
     // Unlock SpeechSynthesis inside the user-gesture stack frame BEFORE
     // any await — iOS Safari only grants TTS autoplay when the first
     // speak() lands inside a click/touchend/keydown handler, and the
@@ -1120,6 +1160,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // racing through to setState('active'). Setting to empty string is
     // enough — any string-compare against a real sessionId will differ.
     if (statusRef.current === 'idle') return;
+    recordLifecycle('recording-stop', { status: statusRef.current });
     sessionIdRef.current = '';
     // Phase E — close the backend session asynchronously. Fire-and-
     // forget so a slow finish() call doesn't block the UI rolling
