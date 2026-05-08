@@ -11,6 +11,7 @@
  */
 
 import { bundleToolCallsIntoResult, BUNDLER_PHASE } from '../extraction/stage6-event-bundler.js';
+import { encodeReadingKey, encodeBoardReadingKey } from '../extraction/stage6-per-turn-writes.js';
 
 function makePerTurnWrites(overrides = {}) {
   return {
@@ -242,5 +243,116 @@ describe('bundleToolCallsIntoResult — Defensive guards', () => {
 describe('bundleToolCallsIntoResult — sanity', () => {
   test('BUNDLER_PHASE is 2', () => {
     expect(BUNDLER_PHASE).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "Work on Board" hotfix slice 1.5 — board_id wire emission tests
+// (slice 1.1a + 1.1c — bundler reads entry.boardId for the wire-shape and
+// decodes Map keys via decodeReadingKey for field/circuit reconstruction).
+// ---------------------------------------------------------------------------
+
+describe('bundleToolCallsIntoResult — board_id emission (hotfix slice 1.1a)', () => {
+  test('extracted_readings entries carry board_id when dispatcher wrote with explicit boardId', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1, 'sub-1'),
+        {
+          value: '1.08',
+          confidence: 1.0,
+          source_turn_id: 't1',
+          boardId: 'sub-1',
+        },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
+    expect(r.extracted_readings).toHaveLength(1);
+    expect(r.extracted_readings[0]).toMatchObject({
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      value: '1.08',
+      board_id: 'sub-1',
+    });
+  });
+
+  test('extracted_readings.board_id is omitted when boardId was null/undefined (single-board session, byte-identical to pre-hotfix)', () => {
+    const readings = new Map([
+      [encodeReadingKey('Ze_ohms', 1), { value: '0.35', confidence: 1.0, source_turn_id: 't1' }],
+    ]);
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
+    expect(r.extracted_readings[0]).not.toHaveProperty('board_id');
+  });
+
+  test('extracted_board_readings carries board_id', () => {
+    const writes = makePerTurnWrites();
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('earth_loop_impedance_ze', 'sub-1'),
+        {
+          value: '0.91',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          boardId: 'sub-1',
+        },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] });
+    expect(r.extracted_board_readings).toHaveLength(1);
+    expect(r.extracted_board_readings[0]).toMatchObject({
+      field: 'earth_loop_impedance_ze',
+      value: '0.91',
+      board_id: 'sub-1',
+    });
+  });
+
+  test('circuit_updates passes board_id through verbatim from circuitOps', () => {
+    const writes = makePerTurnWrites({
+      circuitOps: [
+        { op: 'create', circuit_ref: 5, board_id: 'sub-1', meta: { designation: 'Garage' } },
+        { op: 'delete', circuit_ref: 3, board_id: 'sub-1' },
+      ],
+    });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] });
+    expect(r.circuit_updates).toEqual([
+      { op: 'create', circuit_ref: 5, board_id: 'sub-1', meta: { designation: 'Garage' } },
+      { op: 'delete', circuit_ref: 3, board_id: 'sub-1' },
+    ]);
+  });
+
+  test('per-turn collision regression: same circuit ref, same field, written on main AND sub-1 — both survive into extracted_readings', () => {
+    // The BLOCKER #1 1.1c regression. Pre-hotfix: Map key was
+    // `${field}::${circuit}` so the second write clobbered the first.
+    // Post-hotfix: encodeReadingKey embeds boardId so each (board,
+    // field, circuit) tuple gets its own slot AND the bundler emits
+    // both rows on the wire with distinct board_id.
+    const readings = new Map();
+    readings.set(encodeReadingKey('Ze_ohms', 1, 'main'), {
+      value: '0.35',
+      confidence: 1.0,
+      source_turn_id: 't1',
+      boardId: 'main',
+    });
+    readings.set(encodeReadingKey('Ze_ohms', 1, 'sub-1'), {
+      value: '0.42',
+      confidence: 1.0,
+      source_turn_id: 't1',
+      boardId: 'sub-1',
+    });
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
+    expect(r.extracted_readings).toHaveLength(2);
+    const byBoard = Object.fromEntries(r.extracted_readings.map((e) => [e.board_id, e.value]));
+    expect(byBoard).toEqual({ main: '0.35', 'sub-1': '0.42' });
+  });
+
+  test('legacy 2-part key fixture decodes cleanly (pre-hotfix accumulators / older fixtures)', () => {
+    // Hand-built Map with the bare-string key (no encodeReadingKey).
+    // The decoder must tolerate it and emit a reading WITHOUT board_id.
+    const readings = new Map([
+      ['Ze_ohms::3', { value: '0.35', confidence: 1.0, source_turn_id: 't1' }],
+    ]);
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
+    expect(r.extracted_readings).toHaveLength(1);
+    expect(r.extracted_readings[0]).toMatchObject({ field: 'Ze_ohms', circuit: 3, value: '0.35' });
+    expect(r.extracted_readings[0]).not.toHaveProperty('board_id');
   });
 });
