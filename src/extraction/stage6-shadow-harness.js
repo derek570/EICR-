@@ -320,15 +320,24 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // `circuit: 0` so they render in the existing iOS UI without a TestFlight
   // update. The separate `extracted_board_readings` slot stays for forward
   // compatibility — once iOS decodes it, this fold can be removed.
+  //
+  // "Work on Board" hotfix slice 1.1b (2026-05-08) — preserve board_id on
+  // the synthesised circuit:0 reading so iOS's applySonnetReadings can
+  // route board-level supply / installation writes (Ze, IPF, etc.) to the
+  // BoardInfo of the right board via the boardIndex(for:) helper rather
+  // than always pinning to boards[0]. Slice 1.1a populated br.board_id;
+  // omit-when-undefined keeps single-board sessions byte-identical.
   if (Array.isArray(result.extracted_board_readings)) {
     for (const br of result.extracted_board_readings) {
-      result.extracted_readings.push({
+      const synthesised = {
         field: br.field,
         circuit: 0,
         value: br.value,
         confidence: br.confidence,
         source: br.source,
-      });
+      };
+      if (br.board_id != null) synthesised.board_id = br.board_id;
+      result.extracted_readings.push(synthesised);
     }
   }
 
@@ -369,19 +378,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       cable_csa_mm2: 'cable_size', // iOS line 260, maps to circuit.cableSize → liveCsaMm2
     };
     for (const op of result.circuit_updates) {
-      // op shape: { op: 'create'|'rename', circuit_ref, from_ref?, meta? }
+      // op shape: { op: 'create'|'rename', circuit_ref, from_ref?, board_id?, meta? }
       const ref = op.circuit_ref;
       const meta = op.meta ?? {};
       for (const [metaKey, legacyField] of Object.entries(META_TO_LEGACY_FIELD)) {
         const v = meta[metaKey];
         if (v == null) continue; // designed-as-null skips emission
-        result.extracted_readings.push({
+        // "Work on Board" hotfix slice 1.1b — propagate the op's board_id
+        // onto the synthesised meta-as-reading entry. iOS's apply path then
+        // lands the create/rename meta on the right board's circuit row
+        // rather than always main's. Omit when nullish (single-board session
+        // / pre-1.1a dispatcher write).
+        const synthesised = {
           field: legacyField,
           circuit: ref,
           value: typeof v === 'number' ? String(v) : v,
           confidence: 1.0,
           source: 'tool_call',
-        });
+        };
+        if (op.board_id != null) synthesised.board_id = op.board_id;
+        result.extracted_readings.push(synthesised);
       }
     }
   }
@@ -437,11 +453,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   if (Array.isArray(result.circuit_updates)) {
     for (const op of result.circuit_updates) {
       if (op && op.op === 'delete' && Number.isInteger(op.circuit_ref)) {
-        legacyShapeDeletes.push({
+        // "Work on Board" hotfix slice 1.1b — board_id rides through to iOS
+        // so the delete routes to the right board's bucket on apply.
+        // Slice 1.2 extends iOS's CircuitUpdate Codable with the optional
+        // boardId field; pre-fix iOS clients ignore it via decodeIfPresent.
+        const projected = {
           circuit: op.circuit_ref,
           designation: '',
           action: 'delete',
-        });
+        };
+        if (op.board_id != null) projected.board_id = op.board_id;
+        legacyShapeDeletes.push(projected);
       }
     }
   }
