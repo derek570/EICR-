@@ -30,7 +30,7 @@
 // function signatures that Phase 2 will consume verbatim.
 
 import { randomUUID } from 'node:crypto';
-import { isMultiBoardFlagOn } from './stage6-multi-board-shape.js';
+import { getMainBoardId } from './stage6-multi-board-shape.js';
 
 /**
  * Write a reading into stateSnapshot.circuits[circuit][field]. Auto-creates
@@ -387,74 +387,78 @@ export function applyBoardReadingMultiBoard(snapshot, { field, value, boardId })
 }
 
 // ---------------------------------------------------------------------------
-// Phase 5.3 — flag-aware wrappers. These are the entry points dispatchers
-// call after slice 5.3 lands. Each wrapper inspects `STAGE6_MULTI_BOARD`
-// (via `isMultiBoardFlagOn`) and routes to either the legacy flat-key
-// mutator or the composite-key multi-board mutator above.
+// "Work on Board" sprint Phase A — dual-shape wrappers. Replaces the previous
+// STAGE6_MULTI_BOARD flag-on/off branch with a per-call rule: writes to the
+// MAIN board (resolved via getMainBoardId) take the legacy flat-key path,
+// writes to ANY OTHER board take the composite-key path.
 //
-// Putting the flag check in the wrapper (rather than at every dispatcher
-// call site) keeps the dispatcher code uniform — the flag name appears
-// in this file ONLY, so a future rename / removal in slice 5.6 has a
-// single grep target.
+// Why dual-shape rather than full composite: every existing iterator that
+// filters `Number.isInteger(n) && n >= 1` over snapshot.circuits keys keeps
+// working untouched, because main's circuits stay at bare numeric keys.
+// Sub-board buckets live at `${board_id}::${ref}` and are naturally skipped
+// by the legacy filters. Phase 5.6 of the older sprint can retire the
+// legacy half later as a clean-up.
 //
-// Default flag-off path is byte-identical to the legacy mutator call —
-// every regression in the existing test suite continues to pass without
-// modification. Flag-on path forwards `args` (which may carry an
-// optional `boardId`) into the multi-board mutator's resolution chain.
+// Wrapper names stay (*FlagAware) so every dispatcher import keeps compiling.
 // ---------------------------------------------------------------------------
 
+function isMainBoardTarget(snapshot, args) {
+  const mainId = getMainBoardId(snapshot);
+  const target = args?.boardId ?? snapshot?.currentBoardId ?? mainId;
+  return target === mainId;
+}
+
 export function applyReadingFlagAware(snapshot, args) {
-  if (isMultiBoardFlagOn()) {
-    applyReadingMultiBoard(snapshot, args);
-  } else {
+  if (isMainBoardTarget(snapshot, args)) {
     applyReadingToSnapshot(snapshot, args);
+  } else {
+    applyReadingMultiBoard(snapshot, args);
   }
 }
 
 export function clearReadingFlagAware(snapshot, args) {
-  if (isMultiBoardFlagOn()) {
-    return clearReadingMultiBoard(snapshot, args);
+  if (isMainBoardTarget(snapshot, args)) {
+    return clearReadingInSnapshot(snapshot, args);
   }
-  return clearReadingInSnapshot(snapshot, args);
+  return clearReadingMultiBoard(snapshot, args);
 }
 
 export function upsertCircuitMetaFlagAware(snapshot, args) {
-  if (isMultiBoardFlagOn()) {
-    upsertCircuitMetaMultiBoard(snapshot, args);
-  } else {
+  if (isMainBoardTarget(snapshot, args)) {
     upsertCircuitMeta(snapshot, args);
+  } else {
+    upsertCircuitMetaMultiBoard(snapshot, args);
   }
 }
 
 export function renameCircuitFlagAware(snapshot, args) {
-  if (isMultiBoardFlagOn()) {
-    return renameCircuitMultiBoard(snapshot, args);
+  if (isMainBoardTarget(snapshot, args)) {
+    return renameCircuit(snapshot, args);
   }
-  return renameCircuit(snapshot, args);
+  return renameCircuitMultiBoard(snapshot, args);
 }
 
 export function deleteCircuitFlagAware(snapshot, args) {
-  if (isMultiBoardFlagOn()) {
-    return deleteCircuitMultiBoard(snapshot, args);
+  if (isMainBoardTarget(snapshot, args)) {
+    return deleteCircuit(snapshot, args);
   }
-  return deleteCircuit(snapshot, args);
+  return deleteCircuitMultiBoard(snapshot, args);
 }
 
 /**
- * Phase 5.5 — flag-aware wrapper for board / supply / installation reads.
+ * Dual-shape wrapper for board / supply / installation reads.
  *
- * Flag-off: legacy `applyBoardReadingToSnapshot` writes to `circuits[0]`,
+ * Main-target: legacy `applyBoardReadingToSnapshot` writes to `circuits[0]`,
  * preserving every existing reader (8+ files) until slice 5.6 retires the
  * legacy bucket.
- * Flag-on: `applyBoardReadingMultiBoard` writes to the resolved board's
- * BoardInfo entry on `boards[]`. The two paths share `args` (which may
- * carry an optional `boardId`) — flag-off ignores `boardId` entirely.
+ * Non-main target: `applyBoardReadingMultiBoard` writes to the resolved
+ * board's BoardInfo entry on `boards[]`.
  */
 export function applyBoardReadingFlagAware(snapshot, args) {
-  if (isMultiBoardFlagOn()) {
-    applyBoardReadingMultiBoard(snapshot, args);
-  } else {
+  if (isMainBoardTarget(snapshot, args)) {
     applyBoardReadingToSnapshot(snapshot, args);
+  } else {
+    applyBoardReadingMultiBoard(snapshot, args);
   }
 }
 

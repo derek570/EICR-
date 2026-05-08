@@ -36,19 +36,39 @@ export const DEFAULT_MAIN_BOARD_ID = 'main';
 export const DEFAULT_MAIN_BOARD_DESIGNATION = 'DB-1';
 export const DEFAULT_MAIN_BOARD_TYPE = 'main';
 
-// Phase 5.3 — feature flag gate. Default OFF in production. Flip to 'true'
-// is a Phase 8.4 field-test gate, NOT a routine push. Every Phase 5
-// dispatcher branches on this; reading via this helper (rather than
-// direct env access at every call site) gives a single seam for tests
-// to mock and a single name for grep audits.
+// Phase 5.3 — feature flag gate. Kept exported so the lone remaining reader
+// (`buildStateSnapshotMessage` in eicr-extraction-session.js, slice A.4 will
+// flip it) keeps compiling. After A.4 lands, both this helper and the
+// `STAGE6_MULTI_BOARD` env var become dead and can be deleted.
 export function isMultiBoardFlagOn() {
   return process.env.STAGE6_MULTI_BOARD === 'true';
 }
 
-// Phase 5.4 — flag-aware circuit-bucket lookup. Replaces inline
-// `snapshot.circuits[ref]` reads in the calc-tool dispatchers and other
-// circuit-level readers so that under flag-on, the lookup hits the
-// composite key (`${board_id}::${ref}`) instead of the legacy numeric key.
+// "Work on Board" sprint Phase A — resolve the main board id from a
+// snapshot. Used by the dual-shape helpers below to decide whether a
+// per-call boardId targets the legacy flat namespace (main) or the
+// composite namespace (any non-main board).
+//
+// Resolution order:
+//   1. boards[] entry whose board_type is 'main' (or absent — legacy
+//      seeded snapshots may omit the field entirely).
+//   2. boards[0].id — first declared board wins if no main marker.
+//   3. DEFAULT_MAIN_BOARD_ID ('main') — the synthesised default seeded
+//      by ensureMultiBoardShape on legacy snapshots.
+export function getMainBoardId(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.boards) || snapshot.boards.length === 0) {
+    return DEFAULT_MAIN_BOARD_ID;
+  }
+  const main = snapshot.boards.find((b) => b && (!b.board_type || b.board_type === 'main'));
+  return main?.id ?? snapshot.boards[0]?.id ?? DEFAULT_MAIN_BOARD_ID;
+}
+
+// "Work on Board" sprint Phase A — dual-shape circuit-bucket lookup.
+// Main board reads from the legacy bare-numeric key; non-main boards
+// read from composite keys (`${board_id}::${ref}`). Replaces the
+// previous flag-gated branch — the env flag was stuck off in production
+// because seeded snapshots wrote legacy keys regardless of flag state,
+// so flag-on existence checks went invisible to seeded circuits.
 //
 // Defensive on missing snapshot — returns undefined rather than crashing,
 // matching the pre-existing optional-chain idiom (`circuits?.[ref]`).
@@ -59,57 +79,51 @@ export function isMultiBoardFlagOn() {
 // @returns {Object|undefined}
 export function getCircuitBucket(snapshot, ref, boardId) {
   if (!snapshot || !snapshot.circuits) return undefined;
-  if (isMultiBoardFlagOn()) {
-    const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
-    return snapshot.circuits[`${id}::${ref}`];
+  const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+  const mainId = getMainBoardId(snapshot);
+  if (id === mainId) {
+    return snapshot.circuits[ref];
   }
-  return snapshot.circuits[ref];
+  return snapshot.circuits[`${id}::${ref}`];
 }
 
-// Phase 5.4 — flag-aware "list every non-supply circuit ref in the active
-// board scope". Replaces inline `Object.keys(snapshot.circuits).map(Number).filter(...)`
-// patterns in `selectorRefs` and `set_field_for_all_circuits` so that
-// under flag-on, the iteration sees composite-key buckets correctly.
+// "Work on Board" sprint Phase A — dual-shape circuit-ref enumerator.
+// Main board iterates the legacy bare-numeric keys; non-main boards
+// iterate composite-keyed buckets and filter by `bucket.board_id`.
 //
 // Returns refs sorted ascending (matches the legacy convention so calc tools
 // process circuits in numeric order regardless of insertion order).
-//
-// Flag-on scoping: only buckets whose `board_id` matches the resolved board
-// id are returned. Cross-board iteration (e.g. "all circuits on every
-// board") is not yet a tool concern — Phase 6 will introduce a
-// `select_board` tool that flips currentBoardId; until then, iteration is
-// always single-board.
 //
 // @param {{circuits: Object, currentBoardId?: string}} snapshot
 // @param {string?} boardId  — optional explicit override
 // @returns {number[]}        — sorted ascending; circuit 0 (legacy supply) excluded
 export function listCircuitRefsInBoard(snapshot, boardId) {
   if (!snapshot || !snapshot.circuits) return [];
-  if (isMultiBoardFlagOn()) {
-    const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
-    const refs = [];
-    for (const bucket of Object.values(snapshot.circuits)) {
-      if (
-        bucket &&
-        bucket.board_id === id &&
-        Number.isInteger(bucket.circuit) &&
-        bucket.circuit >= 1
-      ) {
-        refs.push(bucket.circuit);
-      }
-    }
-    return refs.sort((a, b) => a - b);
+  const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+  const mainId = getMainBoardId(snapshot);
+  if (id === mainId) {
+    return Object.keys(snapshot.circuits)
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n >= 1)
+      .sort((a, b) => a - b);
   }
-  return Object.keys(snapshot.circuits)
-    .map(Number)
-    .filter((n) => Number.isInteger(n) && n >= 1)
-    .sort((a, b) => a - b);
+  const refs = [];
+  for (const bucket of Object.values(snapshot.circuits)) {
+    if (
+      bucket &&
+      bucket.board_id === id &&
+      Number.isInteger(bucket.circuit) &&
+      bucket.circuit >= 1
+    ) {
+      refs.push(bucket.circuit);
+    }
+  }
+  return refs.sort((a, b) => a - b);
 }
 
-// Phase 5.3 — flag-aware existence check. Replaces inline
-// `circuit in snapshot.circuits` checks in the validators so that under
-// flag-on, validators consult the composite key (`${board_id}::${circuit}`)
-// instead of the legacy flat key.
+// "Work on Board" sprint Phase A — dual-shape existence check. Main board
+// consults the legacy bare-numeric key; non-main boards consult the
+// composite-key namespace (`${board_id}::${circuit}`).
 //
 // Defensive on missing snapshot / missing circuits map — returns false
 // rather than crashing on `undefined.circuits[...]`. The dispatchers
@@ -122,11 +136,12 @@ export function listCircuitRefsInBoard(snapshot, boardId) {
 // `'main'`. Same chain as the mutators in slice 5.2.
 export function circuitExistsInSnapshot(snapshot, circuit, boardId) {
   if (!snapshot || !snapshot.circuits) return false;
-  if (isMultiBoardFlagOn()) {
-    const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
-    return `${id}::${circuit}` in snapshot.circuits;
+  const id = boardId ?? snapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+  const mainId = getMainBoardId(snapshot);
+  if (id === mainId) {
+    return circuit in snapshot.circuits;
   }
-  return circuit in snapshot.circuits;
+  return `${id}::${circuit}` in snapshot.circuits;
 }
 
 /**

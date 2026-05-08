@@ -169,11 +169,13 @@ describe('set_field_for_all_circuits: board_id thread-through + cross-board swee
   });
 
   test('default (no board_id): writes to currentBoardId circuits only', async () => {
+    // Under dual-shape: main board reads/writes legacy bare-numeric keys;
+    // sub-1 reads/writes composite keys. With currentBoardId='main', the
+    // sweep walks main's legacy circuits[1] and ignores sub-1's composite
+    // bucket entirely.
     const session = makeMultiBoardSession();
     session.stateSnapshot.currentBoardId = 'main';
-    session.stateSnapshot.circuits['main::1'] = {
-      circuit: 1,
-      board_id: 'main',
+    session.stateSnapshot.circuits[1] = {
       circuit_designation: 'Lights',
     };
     session.stateSnapshot.circuits['sub-1::1'] = {
@@ -200,7 +202,7 @@ describe('set_field_for_all_circuits: board_id thread-through + cross-board swee
     expect(res.is_error).toBe(false);
     const body = JSON.parse(res.content);
     expect(body.applied).toEqual([{ circuit: 1, field: 'measured_zs_ohm', value: '0.99' }]);
-    expect(session.stateSnapshot.circuits['main::1'].measured_zs_ohm).toBe('0.99');
+    expect(session.stateSnapshot.circuits[1].measured_zs_ohm).toBe('0.99');
     expect(session.stateSnapshot.circuits['sub-1::1']).not.toHaveProperty('measured_zs_ohm');
   });
 
@@ -240,18 +242,15 @@ describe('set_field_for_all_circuits: board_id thread-through + cross-board swee
   });
 
   test('board_id="*": writes to every board\'s circuits; applied[] carries board_id annotations', async () => {
+    // Under dual-shape: main lives at legacy bare-numeric keys, sub-1 at
+    // composite keys. The '*' iteration plan walks every board id via
+    // listCircuitRefsInBoard, which routes per dual-shape (main → legacy,
+    // sub-1 → composite). Three writes total — circuits[1], circuits[2],
+    // circuits['sub-1::1'].
     const session = makeMultiBoardSession();
     session.stateSnapshot.currentBoardId = 'main';
-    session.stateSnapshot.circuits['main::1'] = {
-      circuit: 1,
-      board_id: 'main',
-      circuit_designation: 'Lights',
-    };
-    session.stateSnapshot.circuits['main::2'] = {
-      circuit: 2,
-      board_id: 'main',
-      circuit_designation: 'Sockets',
-    };
+    session.stateSnapshot.circuits[1] = { circuit_designation: 'Lights' };
+    session.stateSnapshot.circuits[2] = { circuit_designation: 'Sockets' };
     session.stateSnapshot.circuits['sub-1::1'] = {
       circuit: 1,
       board_id: 'sub-1',
@@ -276,7 +275,6 @@ describe('set_field_for_all_circuits: board_id thread-through + cross-board swee
     );
     expect(res.is_error).toBe(false);
     const body = JSON.parse(res.content);
-    // Three writes total — main::1, main::2, sub-1::1.
     expect(body.applied).toHaveLength(3);
     // applied[] carries board_id under cross-board sweep so Sonnet can
     // read back which board each write landed on.
@@ -289,21 +287,20 @@ describe('set_field_for_all_circuits: board_id thread-through + cross-board swee
       { circuit: 2, board_id: 'main', field: 'measured_zs_ohm', value: '0.77' },
       { circuit: 1, board_id: 'sub-1', field: 'measured_zs_ohm', value: '0.77' },
     ]);
-    // Snapshot reflects the cross-board mutation.
-    expect(session.stateSnapshot.circuits['main::1'].measured_zs_ohm).toBe('0.77');
-    expect(session.stateSnapshot.circuits['main::2'].measured_zs_ohm).toBe('0.77');
+    // Snapshot reflects the cross-board mutation — each write lands in the
+    // correct namespace for its board.
+    expect(session.stateSnapshot.circuits[1].measured_zs_ohm).toBe('0.77');
+    expect(session.stateSnapshot.circuits[2].measured_zs_ohm).toBe('0.77');
     expect(session.stateSnapshot.circuits['sub-1::1'].measured_zs_ohm).toBe('0.77');
   });
 
   test('single-board response shape stays byte-identical (no board_id key) for non-cross-board calls', async () => {
     // Pre-Phase-6.5 callers + iOS decoders must not see a new field on
-    // applied[]. Only the explicit '*' sweep tags board_id.
+    // applied[]. Only the explicit '*' sweep tags board_id. Under
+    // dual-shape, default scope (currentBoardId='main') walks legacy
+    // bare-numeric keys.
     const session = makeMultiBoardSession();
-    session.stateSnapshot.circuits['main::1'] = {
-      circuit: 1,
-      board_id: 'main',
-      circuit_designation: 'Lights',
-    };
+    session.stateSnapshot.circuits[1] = { circuit_designation: 'Lights' };
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
     const res = await d(

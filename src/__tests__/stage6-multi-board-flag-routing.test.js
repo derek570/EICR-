@@ -1,24 +1,26 @@
 /**
- * Phase 5.3 — STAGE6_MULTI_BOARD flag-routing regression suite.
+ * "Work on Board" sprint Phase A — dual-shape circuit-storage routing
+ * regression suite. (Renamed from "Phase 5.3 — STAGE6_MULTI_BOARD
+ * flag-routing" — the env flag is now dead-code; routing is per-call.)
  *
  * Two responsibilities:
  *
- *   (1) Pin the flag-off path as byte-identical to the legacy behaviour.
- *       Every existing dispatcher test exercises flag-off implicitly (the
- *       env var is unset by default), so this file's flag-off coverage
- *       is intentionally sparse — it just verifies the new wrappers route
- *       to the legacy mutators when the flag is unset.
+ *   (1) Pin the MAIN-BOARD path as byte-identical to the legacy behaviour.
+ *       Every existing dispatcher test exercises main implicitly (the
+ *       default `currentBoardId='main'` from `ensureMultiBoardShape`), so
+ *       the main-board coverage here is intentionally sparse — it just
+ *       verifies the new wrappers route to the legacy mutators when the
+ *       resolved board is main.
  *
- *   (2) Pin the flag-on path so that record_reading / clear_reading /
+ *   (2) Pin the SUB-BOARD path so that record_reading / clear_reading /
  *       create_circuit / rename_circuit / delete_circuit / record_reading-
  *       in-set_field_for_all_circuits all write to the composite key shape
- *       AND the validators check existence via the composite key. Slice 5.4
- *       migrates the readers (event-bundler etc.) so a flag-on session is
- *       not yet end-to-end functional, but the write side is locked here.
+ *       AND the validators check existence via the composite key when the
+ *       resolved board is non-main.
  *
- * Setup / teardown: every test that enables the flag does so in a
- * `beforeEach` and unsets it in `afterEach` so a leak (test exits with
- * the var still set) cannot poison the rest of the suite.
+ * The `STAGE6_MULTI_BOARD` env var still exists (one orphan reader in
+ * `eicr-extraction-session.js:buildStateSnapshotMessage`, slice A.4 will
+ * retire it) but does NOT affect routing. Tests no longer toggle it.
  */
 
 import { jest } from '@jest/globals';
@@ -70,6 +72,32 @@ function makeLegacySession(circuitSeeds = {}) {
   return { sessionId: 's-legacy', stateSnapshot: snapshot, extractedObservations: [] };
 }
 
+// "Work on Board" sprint Phase A — sub-board fixture. Constructs a snapshot
+// with two boards (main + sub-1) and pins `currentBoardId='sub-1'` so the
+// dual-shape helpers route to the composite-key namespace. Used by every
+// test that previously asserted "flag-on routes composite" — under dual-shape
+// that route is taken by non-main boards regardless of any env flag.
+function makeSubBoardSession(circuitSeeds = {}) {
+  const snapshot = {
+    circuits: { ...circuitSeeds },
+    pending_readings: [],
+    observations: [],
+    validation_alerts: [],
+    boards: [
+      { id: 'main', designation: 'DB-1', board_type: 'main' },
+      {
+        id: 'sub-1',
+        designation: 'DB-2',
+        board_type: 'sub-distribution',
+        parent_board_id: 'main',
+        feed_circuit_ref: 4,
+      },
+    ],
+    currentBoardId: 'sub-1',
+  };
+  return { sessionId: 's-sub', stateSnapshot: snapshot, extractedObservations: [] };
+}
+
 // ---------------------------------------------------------------------------
 // isMultiBoardFlagOn — environment plumbing
 // ---------------------------------------------------------------------------
@@ -102,55 +130,44 @@ describe('isMultiBoardFlagOn', () => {
 // circuitExistsInSnapshot — flag-aware existence check
 // ---------------------------------------------------------------------------
 describe('circuitExistsInSnapshot', () => {
-  const originalFlag = process.env.STAGE6_MULTI_BOARD;
-  afterEach(() => {
-    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
-    else process.env.STAGE6_MULTI_BOARD = originalFlag;
-  });
-
-  test('flag-off: checks legacy flat key', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+  test('main board: checks legacy flat key', () => {
     const snapshot = makeLegacySession({ 3: { ze: '0.42' } }).stateSnapshot;
     expect(circuitExistsInSnapshot(snapshot, 3)).toBe(true);
     expect(circuitExistsInSnapshot(snapshot, 99)).toBe(false);
   });
 
-  test('flag-off: ignores boardId argument and ignores composite buckets', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+  test('main board: ignores composite buckets', () => {
+    // Composite-only bucket on the main namespace. Main always routes legacy,
+    // so a `'main::3'` key is invisible — main's circuit-3 lookup walks
+    // `circuits[3]`, which is absent.
     const snapshot = makeLegacySession({
       'main::3': { circuit: 3, board_id: 'main' },
     }).stateSnapshot;
-    // Composite-only bucket; no legacy flat key. Flag-off says "doesn't exist".
     expect(circuitExistsInSnapshot(snapshot, 3, 'main')).toBe(false);
   });
 
-  test('flag-on: checks composite key with currentBoardId fallback', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main' },
+  test('sub-board: checks composite key with currentBoardId fallback', () => {
+    const snapshot = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' },
     }).stateSnapshot;
     expect(circuitExistsInSnapshot(snapshot, 3)).toBe(true);
     expect(circuitExistsInSnapshot(snapshot, 99)).toBe(false);
   });
 
-  test('flag-on: explicit boardId scopes the lookup', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main' },
-      'sub-1::3': { circuit: 3, board_id: 'sub-1' },
+  test('explicit boardId scopes the lookup across both namespaces', () => {
+    const snapshot = makeSubBoardSession({
+      3: { ze: '0.42' }, // legacy bare-numeric key (main namespace)
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' }, // composite (sub-1 namespace)
     }).stateSnapshot;
     expect(circuitExistsInSnapshot(snapshot, 3, 'main')).toBe(true);
     expect(circuitExistsInSnapshot(snapshot, 3, 'sub-1')).toBe(true);
     expect(circuitExistsInSnapshot(snapshot, 3, 'sub-2')).toBe(false);
   });
 
-  test('flag-on: ignores legacy flat keys (3 in circuits but 3 NOT in main::3)', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    // Snapshot has legacy bucket but NO composite bucket — under flag-on,
-    // record_reading should treat this circuit as nonexistent (the migration
-    // is already in flight for fresh sessions; legacy buckets only survive
-    // here from pre-flag-on state).
-    const snapshot = makeMultiBoardSession({ 3: { ze: '0.42' } }).stateSnapshot;
+  test('sub-board: ignores legacy bare-numeric keys (sub-board namespace is composite-only)', () => {
+    // Snapshot has legacy bare-numeric bucket only, sub-board scope queries
+    // composite namespace → "doesn't exist" for sub-1 even though main has it.
+    const snapshot = makeSubBoardSession({ 3: { ze: '0.42' } }).stateSnapshot;
     expect(circuitExistsInSnapshot(snapshot, 3)).toBe(false);
   });
 });
@@ -159,31 +176,22 @@ describe('circuitExistsInSnapshot', () => {
 // getCircuitBucket / listCircuitRefsInBoard — flag-aware reader helpers (Slice 5.4)
 // ---------------------------------------------------------------------------
 describe('getCircuitBucket', () => {
-  const originalFlag = process.env.STAGE6_MULTI_BOARD;
-  afterEach(() => {
-    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
-    else process.env.STAGE6_MULTI_BOARD = originalFlag;
-  });
-
-  test('flag-off: returns bucket via legacy flat key', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+  test('main board: returns bucket via legacy flat key', () => {
     const snapshot = makeLegacySession({ 3: { ze: '0.42' } }).stateSnapshot;
     expect(getCircuitBucket(snapshot, 3)).toEqual({ ze: '0.42' });
     expect(getCircuitBucket(snapshot, 99)).toBeUndefined();
   });
 
-  test('flag-on: returns bucket via composite key with currentBoardId', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main', ze: '0.42' },
+  test('sub-board: returns bucket via composite key with currentBoardId', () => {
+    const snapshot = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', ze: '0.18' },
     }).stateSnapshot;
-    expect(getCircuitBucket(snapshot, 3)).toEqual({ circuit: 3, board_id: 'main', ze: '0.42' });
+    expect(getCircuitBucket(snapshot, 3)).toEqual({ circuit: 3, board_id: 'sub-1', ze: '0.18' });
   });
 
-  test('flag-on: explicit boardId scopes the lookup', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main', ze: '0.42' },
+  test('explicit boardId scopes the lookup across both namespaces', () => {
+    const snapshot = makeSubBoardSession({
+      3: { ze: '0.42' }, // legacy main namespace
       'sub-1::3': { circuit: 3, board_id: 'sub-1', ze: '0.18' },
     }).stateSnapshot;
     expect(getCircuitBucket(snapshot, 3, 'main').ze).toBe('0.42');
@@ -199,43 +207,33 @@ describe('getCircuitBucket', () => {
 });
 
 describe('listCircuitRefsInBoard', () => {
-  const originalFlag = process.env.STAGE6_MULTI_BOARD;
-  afterEach(() => {
-    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
-    else process.env.STAGE6_MULTI_BOARD = originalFlag;
-  });
-
-  test('flag-off: returns numeric keys >= 1, sorted ascending', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+  test('main board: returns numeric keys >= 1, sorted ascending', () => {
     const snapshot = makeLegacySession({ 0: {}, 1: {}, 5: {}, 3: {} }).stateSnapshot;
     expect(listCircuitRefsInBoard(snapshot)).toEqual([1, 3, 5]);
   });
 
-  test('flag-off: rejects non-numeric keys (e.g. composite keys returning NaN)', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+  test('main board: rejects non-numeric keys (composite keys live in another namespace)', () => {
     const snapshot = makeLegacySession({
       1: {},
-      'main::3': { circuit: 3, board_id: 'main' },
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' },
     }).stateSnapshot;
-    // Number('main::3') === NaN, filtered out; 1 stays.
+    // Number('sub-1::3') === NaN, filtered out; 1 stays.
     expect(listCircuitRefsInBoard(snapshot)).toEqual([1]);
   });
 
-  test('flag-on: returns refs from composite-key buckets in current board scope, sorted ascending', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::1': { circuit: 1, board_id: 'main' },
-      'main::5': { circuit: 5, board_id: 'main' },
-      'main::3': { circuit: 3, board_id: 'main' },
+  test('sub-board: returns refs from composite-key buckets in current board scope, sorted ascending', () => {
+    const snapshot = makeSubBoardSession({
+      'sub-1::1': { circuit: 1, board_id: 'sub-1' },
+      'sub-1::5': { circuit: 5, board_id: 'sub-1' },
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' },
     }).stateSnapshot;
     expect(listCircuitRefsInBoard(snapshot)).toEqual([1, 3, 5]);
   });
 
-  test('flag-on: scopes to the requested board (cross-board iteration not yet supported)', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::1': { circuit: 1, board_id: 'main' },
-      'main::3': { circuit: 3, board_id: 'main' },
+  test('explicit boardId scopes to that namespace (cross-board iteration not supported)', () => {
+    const snapshot = makeSubBoardSession({
+      1: { ze: '0.42' }, // legacy main namespace
+      3: { ze: '0.10' }, // legacy main namespace
       'sub-1::1': { circuit: 1, board_id: 'sub-1' },
       'sub-1::7': { circuit: 7, board_id: 'sub-1' },
     }).stateSnapshot;
@@ -243,25 +241,21 @@ describe('listCircuitRefsInBoard', () => {
     expect(listCircuitRefsInBoard(snapshot, 'sub-1')).toEqual([1, 7]);
   });
 
-  test('flag-on: ignores legacy flat-keyed buckets (slice 5.6 retires them)', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      1: { ze: '0.42' }, // legacy bucket; bucket.board_id is undefined
-      'main::3': { circuit: 3, board_id: 'main' },
+  test('sub-board: ignores legacy bare-numeric buckets (those belong to main)', () => {
+    const snapshot = makeSubBoardSession({
+      1: { ze: '0.42' }, // legacy main bucket; invisible to sub-1 scope
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' },
     }).stateSnapshot;
     expect(listCircuitRefsInBoard(snapshot)).toEqual([3]);
   });
 
-  test('flag-on: defaults boardId from currentBoardId when explicit arg omitted', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::1': { circuit: 1, board_id: 'main' },
+  test('sub-board: defaults boardId from currentBoardId when explicit arg omitted', () => {
+    const snapshot = makeSubBoardSession({
+      1: { ze: '0.42' }, // legacy main bucket
       'sub-1::1': { circuit: 1, board_id: 'sub-1' },
     }).stateSnapshot;
-    snapshot.currentBoardId = 'sub-1';
     expect(listCircuitRefsInBoard(snapshot)).toEqual([1]);
-    expect(listCircuitRefsInBoard(snapshot)[0]).toBe(1);
-    // The single ref returned belongs to sub-1's bucket.
+    // The single ref returned belongs to sub-1's bucket (currentBoardId='sub-1').
   });
 
   test('defensive on null snapshot / null circuits', () => {
@@ -274,101 +268,86 @@ describe('listCircuitRefsInBoard', () => {
 // ---------------------------------------------------------------------------
 // Mutator wrappers — flag-aware routing
 // ---------------------------------------------------------------------------
-describe('flag-aware mutator wrappers', () => {
-  const originalFlag = process.env.STAGE6_MULTI_BOARD;
-  afterEach(() => {
-    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
-    else process.env.STAGE6_MULTI_BOARD = originalFlag;
-  });
-
-  test('flag-off: applyReadingFlagAware writes to legacy flat key', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+describe('dual-shape mutator wrappers', () => {
+  test('main board: applyReadingFlagAware writes to legacy flat key', () => {
     const snapshot = makeLegacySession().stateSnapshot;
     applyReadingFlagAware(snapshot, { circuit: 3, field: 'ze', value: '0.42' });
     expect(snapshot.circuits[3]).toEqual({ ze: '0.42' });
     expect(snapshot.circuits['main::3']).toBeUndefined();
   });
 
-  test('flag-on: applyReadingFlagAware writes to composite key with currentBoardId', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession().stateSnapshot;
+  test('sub-board: applyReadingFlagAware writes to composite key with currentBoardId', () => {
+    const snapshot = makeSubBoardSession().stateSnapshot;
     applyReadingFlagAware(snapshot, { circuit: 3, field: 'ze', value: '0.42' });
-    expect(snapshot.circuits['main::3']).toEqual({ circuit: 3, board_id: 'main', ze: '0.42' });
+    expect(snapshot.circuits['sub-1::3']).toEqual({ circuit: 3, board_id: 'sub-1', ze: '0.42' });
     expect(snapshot.circuits[3]).toBeUndefined();
   });
 
-  test('flag-on: applyReadingFlagAware honours explicit boardId from input', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession().stateSnapshot;
+  test('explicit boardId from input overrides currentBoardId (sub-1 from main session)', () => {
+    const snapshot = makeLegacySession().stateSnapshot;
     snapshot.boards.push({ id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' });
     applyReadingFlagAware(snapshot, { circuit: 3, field: 'ze', value: '0.18', boardId: 'sub-1' });
     expect(snapshot.circuits['sub-1::3']).toEqual({ circuit: 3, board_id: 'sub-1', ze: '0.18' });
   });
 
-  test('flag-on: clearReadingFlagAware removes composite-key field', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main', ze: '0.42', pfc: '1.5' },
+  test('sub-board: clearReadingFlagAware removes composite-key field', () => {
+    const snapshot = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', ze: '0.42', pfc: '1.5' },
     }).stateSnapshot;
     const r = clearReadingFlagAware(snapshot, { circuit: 3, field: 'ze' });
     expect(r).toEqual({ cleared: true });
-    expect(snapshot.circuits['main::3'].ze).toBeUndefined();
-    expect(snapshot.circuits['main::3'].pfc).toBe('1.5');
+    expect(snapshot.circuits['sub-1::3'].ze).toBeUndefined();
+    expect(snapshot.circuits['sub-1::3'].pfc).toBe('1.5');
   });
 
-  test('flag-on: upsertCircuitMetaFlagAware creates composite-key bucket', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession().stateSnapshot;
+  test('sub-board: upsertCircuitMetaFlagAware creates composite-key bucket', () => {
+    const snapshot = makeSubBoardSession().stateSnapshot;
     upsertCircuitMetaFlagAware(snapshot, { circuit_ref: 7, designation: 'Cooker' });
-    expect(snapshot.circuits['main::7']).toEqual({
+    expect(snapshot.circuits['sub-1::7']).toEqual({
       circuit: 7,
-      board_id: 'main',
+      board_id: 'sub-1',
       designation: 'Cooker',
     });
   });
 
-  test('flag-on: renameCircuitFlagAware rekeys composite key only', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main', ze: '0.42' },
+  test('sub-board: renameCircuitFlagAware rekeys composite key only', () => {
+    const snapshot = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', ze: '0.42' },
     }).stateSnapshot;
     const r = renameCircuitFlagAware(snapshot, { from_ref: 3, circuit_ref: 5 });
     expect(r).toEqual({ ok: true });
-    expect(snapshot.circuits['main::3']).toBeUndefined();
-    expect(snapshot.circuits['main::5']).toEqual({ circuit: 5, board_id: 'main', ze: '0.42' });
+    expect(snapshot.circuits['sub-1::3']).toBeUndefined();
+    expect(snapshot.circuits['sub-1::5']).toEqual({ circuit: 5, board_id: 'sub-1', ze: '0.42' });
   });
 
-  test('flag-on: deleteCircuitFlagAware removes composite-key bucket', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main' },
+  test('sub-board: deleteCircuitFlagAware removes composite-key bucket', () => {
+    const snapshot = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' },
     }).stateSnapshot;
     const r = deleteCircuitFlagAware(snapshot, { circuit_ref: 3 });
     expect(r).toEqual({ ok: true, deleted: true });
-    expect(snapshot.circuits['main::3']).toBeUndefined();
+    expect(snapshot.circuits['sub-1::3']).toBeUndefined();
   });
 
-  // Slice 5.5 — applyBoardReadingFlagAware
-  test('flag-off: applyBoardReadingFlagAware writes to legacy circuits[0]', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+  // applyBoardReadingFlagAware — main writes legacy circuits[0]; sub-board writes BoardInfo.
+  test('main board: applyBoardReadingFlagAware writes to legacy circuits[0]', () => {
     const snapshot = makeLegacySession().stateSnapshot;
     applyBoardReadingFlagAware(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
     expect(snapshot.circuits[0]).toEqual({ earth_loop_impedance_ze: '0.35' });
-    // Boards array stays as it was — flag-off path doesn't touch BoardInfo.
+    // Boards array stays as it was — main path doesn't touch BoardInfo.
     expect(snapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
   });
 
-  test('flag-on: applyBoardReadingFlagAware writes to BoardInfo on the active board', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession().stateSnapshot;
+  test('sub-board: applyBoardReadingFlagAware writes to BoardInfo on the active board', () => {
+    const snapshot = makeSubBoardSession().stateSnapshot;
     applyBoardReadingFlagAware(snapshot, { field: 'earth_loop_impedance_ze', value: '0.35' });
-    expect(snapshot.boards[0].earth_loop_impedance_ze).toBe('0.35');
+    // boards[1] is sub-1 in makeSubBoardSession (boards[0]=main, boards[1]=sub-1).
+    expect(snapshot.boards[1].earth_loop_impedance_ze).toBe('0.35');
     expect(snapshot.circuits[0]).toBeUndefined();
   });
 
-  test('flag-on: applyBoardReadingFlagAware honours explicit boardId', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    const snapshot = makeMultiBoardSession().stateSnapshot;
+  test('explicit boardId overrides currentBoardId (sub-1 from main session)', () => {
+    const snapshot = makeLegacySession().stateSnapshot;
     snapshot.boards.push({ id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' });
     applyBoardReadingFlagAware(snapshot, {
       field: 'earth_loop_impedance_ze',
@@ -381,23 +360,15 @@ describe('flag-aware mutator wrappers', () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end dispatcher invocation under flag-on. Exercises the full pipeline
-// (validator → mutator → perTurnWrites → log) so a regression in any of
-// validation, mutation, or wrapping surfaces here.
+// End-to-end dispatcher invocation against a sub-board target. Exercises the
+// full pipeline (validator → mutator → perTurnWrites → log) so a regression
+// in any of validation, mutation, or wrapping surfaces here. Sub-board scope
+// is the only path that exercises composite-key writes — main is legacy.
 // ---------------------------------------------------------------------------
-describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
-  const originalFlag = process.env.STAGE6_MULTI_BOARD;
-  beforeEach(() => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-  });
-  afterEach(() => {
-    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
-    else process.env.STAGE6_MULTI_BOARD = originalFlag;
-  });
-
+describe('dispatchers against a sub-board target', () => {
   test('record_reading writes via composite-key + validator accepts composite-key existence', async () => {
-    const session = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main' }, // pre-existing bucket so validator accepts
+    const session = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' }, // pre-existing bucket so validator accepts
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -419,18 +390,18 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.circuits['main::3']).toMatchObject({
+    expect(session.stateSnapshot.circuits['sub-1::3']).toMatchObject({
       circuit: 3,
-      board_id: 'main',
+      board_id: 'sub-1',
       earth_loop_impedance_ze: '0.42',
     });
   });
 
   test('record_reading is rejected when circuit absent from composite namespace', async () => {
-    // Snapshot has the LEGACY bucket but no composite bucket. Flag-on
-    // validator looks at composite, says "doesn't exist", dispatcher
-    // rejects — strict-mode behaviour is preserved.
-    const session = makeMultiBoardSession({ 3: { ze: '0.42' } });
+    // Snapshot has a bare-numeric (main-namespace) bucket but no composite
+    // bucket for sub-1. Sub-board validator looks at composite, says
+    // "doesn't exist", dispatcher rejects — strict-mode behaviour preserved.
+    const session = makeSubBoardSession({ 3: { ze: '0.42' } });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, logger, 'turn-1', writes);
@@ -456,7 +427,7 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
   });
 
   test('create_circuit writes composite-key bucket', async () => {
-    const session = makeMultiBoardSession();
+    const session = makeSubBoardSession();
     const logger = mockLogger();
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, logger, 'turn-1', writes);
@@ -477,9 +448,9 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.circuits['main::7']).toEqual({
+    expect(session.stateSnapshot.circuits['sub-1::7']).toEqual({
       circuit: 7,
-      board_id: 'main',
+      board_id: 'sub-1',
       designation: 'Cooker',
       phase: 'L1',
       rating_amps: 32,
@@ -488,8 +459,8 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
   });
 
   test('create_circuit refuses duplicate composite-key bucket', async () => {
-    const session = makeMultiBoardSession({
-      'main::7': { circuit: 7, board_id: 'main' },
+    const session = makeSubBoardSession({
+      'sub-1::7': { circuit: 7, board_id: 'sub-1' },
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -510,8 +481,8 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
   });
 
   test('clear_reading clears composite-key field', async () => {
-    const session = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main', earth_loop_impedance_ze: '0.42' },
+    const session = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', earth_loop_impedance_ze: '0.42' },
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -527,12 +498,12 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.circuits['main::3'].earth_loop_impedance_ze).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-1::3'].earth_loop_impedance_ze).toBeUndefined();
   });
 
   test('rename_circuit rekeys within the composite namespace', async () => {
-    const session = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main', designation: 'Cooker' },
+    const session = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', designation: 'Cooker' },
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -548,23 +519,23 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.circuits['main::3']).toBeUndefined();
-    expect(session.stateSnapshot.circuits['main::5']).toMatchObject({
+    expect(session.stateSnapshot.circuits['sub-1::3']).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-1::5']).toMatchObject({
       circuit: 5,
-      board_id: 'main',
+      board_id: 'sub-1',
       designation: 'Cooker',
     });
   });
 
   test('calculate_zs round-trips: composite-key R1+R2 input → composite-key Zs output', async () => {
-    // End-to-end pin for slice 5.4 reader migration: under flag-on, calc_zs
+    // End-to-end pin for the dual-shape reader path on a sub-board: calc_zs
     // must (a) iterate composite-key buckets via listCircuitRefsInBoard,
     // (b) read input r1_r2_ohm via getCircuitBucket, (c) write Zs via the
-    // flag-aware mutator wrapper. Ze still lives at circuits[0] until
-    // slice 5.5 migrates board-level readings.
-    const session = makeMultiBoardSession({
-      0: { earth_loop_impedance_ze: '0.35' }, // legacy supply bucket; slice 5.5 migrates this
-      'main::3': { circuit: 3, board_id: 'main', r1_r2_ohm: '0.25' },
+    // dual-shape mutator wrapper. Ze still lives at circuits[0] (calc_zs
+    // pulls from the legacy supply bucket; slice A.4 may migrate that).
+    const session = makeSubBoardSession({
+      0: { earth_loop_impedance_ze: '0.35' }, // legacy supply bucket — installation-level
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', r1_r2_ohm: '0.25' },
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -585,23 +556,20 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
       { circuit_ref: 3, field: 'measured_zs_ohm', value: '0.60' }, // 0.35 + 0.25 to 2dp
     ]);
     expect(body.skipped).toEqual([]);
-    expect(session.stateSnapshot.circuits['main::3'].measured_zs_ohm).toBe('0.60');
+    expect(session.stateSnapshot.circuits['sub-1::3'].measured_zs_ohm).toBe('0.60');
   });
 
   test('set_field_for_all_circuits walks composite-key buckets in current board only', async () => {
-    // Slice 5.4 reader migration: listCircuitRefsInBoard scopes the iteration
-    // to currentBoardId, so a write to 'all' under flag-on does NOT spill
-    // onto sibling boards. Phase 6 may introduce an explicit cross-board
-    // scope — until then, single-board is the safe default.
-    const session = makeMultiBoardSession({
-      'main::1': { circuit: 1, board_id: 'main', circuit_designation: 'Lighting' },
-      'main::2': { circuit: 2, board_id: 'main', circuit_designation: 'Sockets' },
+    // listCircuitRefsInBoard scopes the iteration to currentBoardId, so a
+    // write to 'all' from a sub-board does NOT spill onto the main board's
+    // legacy circuits. Cross-board sweep is opt-in via `board_id: '*'`.
+    const session = makeSubBoardSession({
+      // Main board (legacy bare-numeric keys):
+      1: { circuit_designation: 'Lighting' },
+      2: { circuit_designation: 'Sockets' },
+      // Sub-1 (composite keys):
       'sub-1::1': { circuit: 1, board_id: 'sub-1', circuit_designation: 'Cooker' },
-    });
-    session.stateSnapshot.boards.push({
-      id: 'sub-1',
-      designation: 'DB-2',
-      board_type: 'sub-distribution',
+      'sub-1::2': { circuit: 2, board_id: 'sub-1', circuit_designation: 'Garage sockets' },
     });
 
     const logger = mockLogger();
@@ -624,14 +592,16 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.circuits['main::1'].rcd_button_confirmed).toBe('OK');
-    expect(session.stateSnapshot.circuits['main::2'].rcd_button_confirmed).toBe('OK');
-    expect(session.stateSnapshot.circuits['sub-1::1'].rcd_button_confirmed).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-1::1'].rcd_button_confirmed).toBe('OK');
+    expect(session.stateSnapshot.circuits['sub-1::2'].rcd_button_confirmed).toBe('OK');
+    // Main's legacy circuits MUST not be touched by a sub-board sweep.
+    expect(session.stateSnapshot.circuits[1].rcd_button_confirmed).toBeUndefined();
+    expect(session.stateSnapshot.circuits[2].rcd_button_confirmed).toBeUndefined();
   });
 
   test('delete_circuit removes composite-key bucket', async () => {
-    const session = makeMultiBoardSession({
-      'main::3': { circuit: 3, board_id: 'main' },
+    const session = makeSubBoardSession({
+      'sub-1::3': { circuit: 3, board_id: 'sub-1' },
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -649,12 +619,12 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     expect(result.is_error).toBe(false);
     const body = JSON.parse(result.content);
     expect(body.deleted).toBe(true);
-    expect(session.stateSnapshot.circuits['main::3']).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-1::3']).toBeUndefined();
   });
 
-  // Slice 5.5.2 — record_board_reading end-to-end under flag-on
-  test('record_board_reading writes to BoardInfo on the active board (not circuits[0])', async () => {
-    const session = makeMultiBoardSession();
+  // record_board_reading end-to-end against a sub-board target.
+  test('record_board_reading writes to BoardInfo on the active sub-board (not circuits[0])', async () => {
+    const session = makeSubBoardSession();
     const logger = mockLogger();
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, logger, 'turn-1', writes);
@@ -674,13 +644,14 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.boards[0]).toEqual({
-      id: 'main',
-      designation: 'DB-1',
-      board_type: 'main',
+    // boards[1] is sub-1 in makeSubBoardSession (boards[0]=main, boards[1]=sub-1).
+    expect(session.stateSnapshot.boards[1]).toMatchObject({
+      id: 'sub-1',
+      designation: 'DB-2',
       earth_loop_impedance_ze: '0.35',
     });
-    // circuits[0] (legacy bucket) MUST stay empty — slice 5.6 retires it.
+    // circuits[0] (legacy supply bucket) MUST stay empty for sub-board writes —
+    // sub-boards land on BoardInfo, not on the main supply slot.
     expect(session.stateSnapshot.circuits[0]).toBeUndefined();
     // perTurnWrites still tracks board readings keyed by field so the
     // bundler/comparator surface is unchanged.
@@ -694,12 +665,10 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     // Today's schema doesn't expose board_id — Phase 6 widens it. The
     // dispatcher already threads input.board_id through so a future schema
     // bump lands without re-touching the dispatcher.
-    const session = makeMultiBoardSession();
-    session.stateSnapshot.boards.push({
-      id: 'sub-1',
-      designation: 'DB-2',
-      board_type: 'sub-distribution',
-    });
+    const session = makeSubBoardSession();
+    // Override currentBoardId to main so the explicit board_id has something
+    // to override (otherwise it's the same as currentBoardId).
+    session.stateSnapshot.currentBoardId = 'main';
     const logger = mockLogger();
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, logger, 'turn-1', writes);
@@ -720,6 +689,7 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
+    // Main BoardInfo untouched; sub-1 BoardInfo carries the field.
     expect(session.stateSnapshot.boards[0].earth_loop_impedance_ze).toBeUndefined();
     expect(session.stateSnapshot.boards[1].earth_loop_impedance_ze).toBe('0.18');
   });
@@ -727,12 +697,11 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
   test('record_board_reading auto-resolve write hook lands on BoardInfo (path-2 invariant)', async () => {
     // The path-2 resolver dispatches a SYNTHETIC record_board_reading call
     // with a tool_call_id containing '::auto::' when an ask_user reply
-    // resolves a pending_write. Under flag-on, the synthetic write must
-    // land on BoardInfo on the active board — NOT on circuits[0]. This
-    // pins the contract documented in
-    // memory/handoff_2026-04-27_path2_review_fixes.md (the resolver's
-    // invariants must survive the flag-on migration).
-    const session = makeMultiBoardSession();
+    // resolves a pending_write. Against a sub-board target, the synthetic
+    // write must land on BoardInfo — NOT on circuits[0]. Pins the contract
+    // documented in memory/handoff_2026-04-27_path2_review_fixes.md (the
+    // resolver's invariants must survive the dual-shape transition).
+    const session = makeSubBoardSession();
     const logger = mockLogger();
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, logger, 'turn-1', writes);
@@ -752,7 +721,8 @@ describe('dispatchers under STAGE6_MULTI_BOARD=true', () => {
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.boards[0].earth_loop_impedance_ze).toBe('0.42');
+    // boards[1] is sub-1 (active board).
+    expect(session.stateSnapshot.boards[1].earth_loop_impedance_ze).toBe('0.42');
     // perTurnWrites flags the write as auto-resolved so the slot comparator
     // can filter it (P3-B from the path-2 review).
     expect(writes.boardReadings.get('earth_loop_impedance_ze').auto_resolved).toBe(true);

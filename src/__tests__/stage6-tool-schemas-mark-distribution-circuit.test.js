@@ -119,30 +119,39 @@ describe('dispatchMarkDistributionCircuit happy paths', () => {
     });
   });
 
-  test('flag-on: marks composite-key bucket on the resolved board', async () => {
-    const session = makeSession({ flagOn: true });
-    // Seed circuit 4 on the composite key main::4.
-    session.stateSnapshot.circuits['main::4'] = {
-      board_id: 'main',
+  test('sub-board source: marks composite-key bucket on the resolved board', async () => {
+    // Under dual-shape, composite-key writes happen on non-main boards.
+    // Add a second sub-board so the source ('sub-1') and target ('sub-2')
+    // are both legitimate non-main boards. Seed circuit 4 on sub-1 so the
+    // dispatcher's getCircuitBucket lookup hits the composite key
+    // 'sub-1::4' and the resulting mutation lands at the same key.
+    const session = makeSession({ flagOn: false });
+    session.stateSnapshot.boards.push({
+      id: 'sub-2',
+      designation: 'Annexe DB',
+      board_type: 'sub_distribution',
+    });
+    session.stateSnapshot.circuits['sub-1::4'] = {
+      board_id: 'sub-1',
       circuit: 4,
-      designation: 'Sub-board feed',
+      designation: 'Annexe feed',
     };
 
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
     const res = await d(
       {
-        tool_call_id: 'tu_mark_on',
+        tool_call_id: 'tu_mark_sub',
         name: 'mark_distribution_circuit',
-        input: { circuit: 4, feeds_board_id: 'sub-1' },
+        input: { circuit: 4, board_id: 'sub-1', feeds_board_id: 'sub-2' },
       },
       {}
     );
 
     expect(res.is_error).toBe(false);
-    expect(session.stateSnapshot.circuits['main::4'].is_distribution_circuit).toBe('yes');
-    expect(session.stateSnapshot.circuits['main::4'].feeds_board_id).toBe('sub-1');
-    expect(writes.boardOps[0].source_board_id).toBe('main');
+    expect(session.stateSnapshot.circuits['sub-1::4'].is_distribution_circuit).toBe('yes');
+    expect(session.stateSnapshot.circuits['sub-1::4'].feeds_board_id).toBe('sub-2');
+    expect(writes.boardOps[0].source_board_id).toBe('sub-1');
   });
 
   test('explicit board_id overrides currentBoardId', async () => {

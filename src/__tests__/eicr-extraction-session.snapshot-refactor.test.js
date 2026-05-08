@@ -699,14 +699,22 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).not.toContain('"board_type":"main"');
   });
 
-  test('flag-on: empty BoardInfo (skeleton only) does NOT emit a supply line', () => {
+  test('flag-on (sub-board scope): empty BoardInfo (skeleton only) does NOT emit a supply line', () => {
+    // Under dual-shape, sub-boards live in the composite-key namespace.
+    // Switch the active board to sub-1 so listCircuitRefsInBoard /
+    // getCircuitBucket route via composite keys; supply line falls away
+    // because sub-1's BoardInfo has no real supply fields.
     process.env.STAGE6_MULTI_BOARD = 'true';
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
-    // Skeleton-only board: id/designation/board_type but no real fields.
-    // After filtering, `supplyData` is empty so no `0:{...}` line emits.
-    s.stateSnapshot.circuits['main::1'] = {
+    s.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'DB-2',
+      board_type: 'sub-distribution',
+    });
+    s.stateSnapshot.currentBoardId = 'sub-1';
+    s.stateSnapshot.circuits['sub-1::1'] = {
       circuit: 1,
-      board_id: 'main',
+      board_id: 'sub-1',
       circuit_designation: 'Lighting',
     };
     s.recentCircuitOrder = [1];
@@ -716,12 +724,18 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).toContain('Lighting');
   });
 
-  test('flag-on: per-circuit lines come from composite-keyed buckets, self-describing fields elided', () => {
+  test('flag-on (sub-board scope): per-circuit lines come from composite-keyed buckets, self-describing fields elided', () => {
     process.env.STAGE6_MULTI_BOARD = 'true';
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
-    s.stateSnapshot.circuits['main::3'] = {
+    s.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'DB-2',
+      board_type: 'sub-distribution',
+    });
+    s.stateSnapshot.currentBoardId = 'sub-1';
+    s.stateSnapshot.circuits['sub-1::3'] = {
       circuit: 3,
-      board_id: 'main',
+      board_id: 'sub-1',
       earth_loop_impedance_ze: '0.42',
     };
     s.recentCircuitOrder = [3];
@@ -730,13 +744,16 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).toContain('0.42');
     // The composite-key bucket carries self-describing `circuit` + `board_id`
     // skeleton fields; they must NOT leak into the emitted JSON line because
-    // they would diverge byte-shape from flag-off circuits[3] (which has
+    // they would diverge byte-shape from main's circuits[3] (which has
     // neither key).
     expect(snapshot).not.toContain('"circuit":3');
-    expect(snapshot).not.toContain('"board_id":"main"');
+    expect(snapshot).not.toContain('"board_id":"sub-1"');
   });
 
   test('flag-on: non-supply iteration scopes to currentBoardId — sibling-board buckets ignored', () => {
+    // currentBoardId='sub-1' must surface only sub-1's composite bucket
+    // and ignore main's legacy bare-numeric bucket entirely (they live in
+    // separate namespaces under dual-shape).
     process.env.STAGE6_MULTI_BOARD = 'true';
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.stateSnapshot.boards.push({
@@ -744,11 +761,8 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
       designation: 'DB-2',
       board_type: 'sub-distribution',
     });
-    s.stateSnapshot.circuits['main::1'] = {
-      circuit: 1,
-      board_id: 'main',
-      circuit_designation: 'Lighting',
-    };
+    s.stateSnapshot.currentBoardId = 'sub-1';
+    s.stateSnapshot.circuits[1] = { circuit_designation: 'Lighting' };
     s.stateSnapshot.circuits['sub-1::1'] = {
       circuit: 1,
       board_id: 'sub-1',
@@ -756,10 +770,9 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     };
     s.recentCircuitOrder = [1];
     const snapshot = s.buildStateSnapshotMessage();
-    // currentBoardId is 'main' by default — sub-board's circuit must not
-    // leak into the emitted snapshot.
-    expect(snapshot).toContain('Lighting');
-    expect(snapshot).not.toContain('Cooker');
+    // Sub-1 scope — main's legacy circuit must not leak into the snapshot.
+    expect(snapshot).toContain('Cooker');
+    expect(snapshot).not.toContain('Lighting');
   });
 
   test('flag-on: switching currentBoardId surfaces the sub-board scope on the next snapshot', () => {
