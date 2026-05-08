@@ -22,11 +22,11 @@ function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 }
 
+// `flagOn` arg accepted for back-compat with existing callers; under
+// dual-shape the env flag has no effect on routing, so the arg is ignored.
+// Kept on the signature to avoid touching every call site.
+// eslint-disable-next-line no-unused-vars
 function makeSession({ flagOn = false } = {}) {
-  // Always restore env after the test — see beforeEach/afterEach below.
-  if (flagOn) process.env.STAGE6_MULTI_BOARD = 'true';
-  else delete process.env.STAGE6_MULTI_BOARD;
-
   const snapshot = {
     circuits: {},
     pending_readings: [],
@@ -46,13 +46,6 @@ function makeSession({ flagOn = false } = {}) {
 function toolCallRows(logger) {
   return logger.info.mock.calls.filter((c) => c[0] === 'stage6_tool_call').map((c) => c[1]);
 }
-
-beforeEach(() => {
-  delete process.env.STAGE6_MULTI_BOARD;
-});
-afterEach(() => {
-  delete process.env.STAGE6_MULTI_BOARD;
-});
 
 describe('mark_distribution_circuit schema', () => {
   test('exists in TOOL_SCHEMAS', () => {

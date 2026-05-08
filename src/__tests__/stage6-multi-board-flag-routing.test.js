@@ -18,9 +18,9 @@
  *       AND the validators check existence via the composite key when the
  *       resolved board is non-main.
  *
- * The `STAGE6_MULTI_BOARD` env var still exists (one orphan reader in
- * `eicr-extraction-session.js:buildStateSnapshotMessage`, slice A.4 will
- * retire it) but does NOT affect routing. Tests no longer toggle it.
+ * The `STAGE6_MULTI_BOARD` env var and `isMultiBoardFlagOn()` helper
+ * have both been retired (slice A.4). No remaining production reader.
+ * Tests no longer toggle the env or import the helper.
  */
 
 import { jest } from '@jest/globals';
@@ -36,7 +36,6 @@ import {
 } from '../extraction/stage6-snapshot-mutators.js';
 import {
   ensureMultiBoardShape,
-  isMultiBoardFlagOn,
   circuitExistsInSnapshot,
   getCircuitBucket,
   listCircuitRefsInBoard,
@@ -99,35 +98,7 @@ function makeSubBoardSession(circuitSeeds = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// isMultiBoardFlagOn — environment plumbing
-// ---------------------------------------------------------------------------
-describe('isMultiBoardFlagOn', () => {
-  const originalFlag = process.env.STAGE6_MULTI_BOARD;
-  afterEach(() => {
-    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
-    else process.env.STAGE6_MULTI_BOARD = originalFlag;
-  });
-
-  test('returns false when env var is unset (production default)', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
-    expect(isMultiBoardFlagOn()).toBe(false);
-  });
-
-  test('returns false for any truthy-looking string other than "true"', () => {
-    for (const v of ['1', 'yes', 'TRUE', 'on', 'enabled']) {
-      process.env.STAGE6_MULTI_BOARD = v;
-      expect(isMultiBoardFlagOn()).toBe(false);
-    }
-  });
-
-  test('returns true ONLY for the literal string "true"', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-    expect(isMultiBoardFlagOn()).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// circuitExistsInSnapshot — flag-aware existence check
+// circuitExistsInSnapshot — dual-shape existence check
 // ---------------------------------------------------------------------------
 describe('circuitExistsInSnapshot', () => {
   test('main board: checks legacy flat key', () => {

@@ -10,15 +10,10 @@
  * with its own pins.
  *
  * Behaviour-side: also exercises the explicit-board_id end-to-end path
- * under STAGE6_MULTI_BOARD=true. Slice 5.2/5.3 already wired board_id
- * through validators + dispatchers; slice 6.4/6.5 just exposes the field
- * on the schema. The flag-on tests prove the schema field reaches the
+ * via the dual-shape routing (Phase A). Slice 5.2/5.3 wired board_id
+ * through validators + dispatchers; slice 6.4/6.5 exposed the field on
+ * the schema. The dispatcher tests prove the schema field reaches the
  * mutator and the right composite-key bucket gets touched.
- *
- * NOTE: shape pins are flag-agnostic — they just check input_schema. The
- * end-to-end tests gate on STAGE6_MULTI_BOARD=true (default off) so the
- * legacy-numeric-key path stays the un-altered baseline for sessions
- * that pre-date Phase 6.
  */
 
 import { jest } from '@jest/globals';
@@ -30,13 +25,6 @@ import { ensureMultiBoardShape } from '../extraction/stage6-multi-board-shape.js
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 }
-
-beforeEach(() => {
-  delete process.env.STAGE6_MULTI_BOARD;
-});
-afterEach(() => {
-  delete process.env.STAGE6_MULTI_BOARD;
-});
 
 // ---------------------------------------------------------------------------
 // Schema pin: every named tool exposes an optional board_id string property,
@@ -62,8 +50,8 @@ describe('board_id schema thread-through', () => {
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end behaviour: explicit board_id under flag-on routes to the
-// composite-key bucket on the named board.
+// End-to-end behaviour: explicit board_id under dual-shape routing routes
+// to the composite-key bucket on the named board (any non-main target).
 // ---------------------------------------------------------------------------
 
 function makeMultiBoardSession() {
@@ -83,15 +71,13 @@ function makeMultiBoardSession() {
   return { sessionId: 's-thread', stateSnapshot: snapshot, extractedObservations: [] };
 }
 
-describe('explicit board_id routes to the named board bucket (flag-on)', () => {
-  beforeEach(() => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-  });
-
+describe('explicit board_id routes to the named board bucket', () => {
   test('record_reading: explicit board_id="sub-1" writes to sub-1::3, not main::3', async () => {
     const session = makeMultiBoardSession();
-    // Seed both composite-key buckets so both pass validator.
-    session.stateSnapshot.circuits['main::3'] = { circuit: 3, board_id: 'main' };
+    // Seed main at the legacy bare-numeric key (dual-shape main namespace)
+    // and sub-1 at the composite key. Validator must accept circuit 3 on
+    // sub-1 explicitly via the composite path.
+    session.stateSnapshot.circuits[3] = {};
     session.stateSnapshot.circuits['sub-1::3'] = { circuit: 3, board_id: 'sub-1' };
 
     const writes = createPerTurnWrites();
@@ -117,8 +103,8 @@ describe('explicit board_id routes to the named board bucket (flag-on)', () => {
       board_id: 'sub-1',
       measured_zs_ohm: '0.18',
     });
-    // Main bucket untouched.
-    expect(session.stateSnapshot.circuits['main::3']).not.toHaveProperty('measured_zs_ohm');
+    // Main bucket (legacy namespace) untouched.
+    expect(session.stateSnapshot.circuits[3]).not.toHaveProperty('measured_zs_ohm');
   });
 
   test('record_reading: missing board_id falls back to currentBoardId (back-compat)', async () => {
@@ -178,11 +164,8 @@ describe('explicit board_id routes to the named board bucket (flag-on)', () => {
 
   test('clear_reading: explicit board_id targets the right bucket', async () => {
     const session = makeMultiBoardSession();
-    session.stateSnapshot.circuits['main::3'] = {
-      circuit: 3,
-      board_id: 'main',
-      measured_zs_ohm: '0.42',
-    };
+    // Main lives at the legacy bare-numeric key; sub-1 at the composite key.
+    session.stateSnapshot.circuits[3] = { measured_zs_ohm: '0.42' };
     session.stateSnapshot.circuits['sub-1::3'] = {
       circuit: 3,
       board_id: 'sub-1',
@@ -205,7 +188,7 @@ describe('explicit board_id routes to the named board bucket (flag-on)', () => {
     );
     expect(res.is_error).toBe(false);
     expect(session.stateSnapshot.circuits['sub-1::3']).not.toHaveProperty('measured_zs_ohm');
-    // Main bucket survives.
-    expect(session.stateSnapshot.circuits['main::3'].measured_zs_ohm).toBe('0.42');
+    // Main bucket (legacy namespace) survives.
+    expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('0.42');
   });
 });

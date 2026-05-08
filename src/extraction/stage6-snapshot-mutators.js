@@ -175,27 +175,22 @@ export function deleteCircuit(snapshot, { circuit_ref }) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 5.2 — composite-key multi-board mutator helpers (.planning-stage6-agentic/
-// handoffs/multi-board-support-2026-05-07/PHASE5_HANDOFF.md). Live alongside
-// the legacy flat-key mutators above; gated on the `STAGE6_MULTI_BOARD` env
-// flag at every dispatcher call site (slice 5.3).
+// Phase 5.2 — composite-key multi-board mutator helpers. Live alongside the
+// legacy flat-key mutators above; the dual-shape wrappers below ("Work on
+// Board" Phase A) route any non-main target through these.
 //
 // Composite key shape: `${board_id}::${circuit}` — a string so it never
 // collides with the legacy numeric keys (JS object keys are always strings,
 // so `circuits['1']` and `circuits['main::1']` are distinct slots).
 //
 // Bucket shape: `{ circuit: number, board_id: string, ...fields }`. The
-// self-describing `circuit` + `board_id` keys let the slice 5.5 / 5.6
-// serialiser flatten composite-keyed snapshots back to the iOS array
-// shape `[{circuit, board_id, ...}]` without extra bookkeeping.
+// self-describing `circuit` + `board_id` keys let the serialiser flatten
+// composite-keyed snapshots back to the iOS array shape
+// `[{circuit, board_id, ...}]` without extra bookkeeping.
 //
 // Board ID defaulting: explicit `boardId` arg wins; falls back to
 // `snapshot.currentBoardId`; falls back to `'main'`. The fallback chain is
 // the same in every helper, factored into `resolveBoardId`.
-//
-// Slice 5.5 will add the analogous board-reading helper (`applyBoardReadingMultiBoard`)
-// that writes to `snapshot.boards.find(b => b.id === id)` BoardInfo rather
-// than to a circuit bucket — that's the structural shift, not in scope here.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BOARD_ID_FALLBACK = 'main';

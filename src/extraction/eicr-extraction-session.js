@@ -11,7 +11,6 @@ import { CostTracker } from './cost-tracker.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import {
   ensureMultiBoardShape,
-  isMultiBoardFlagOn,
   getCircuitBucket,
   getMainBoardId,
   listCircuitRefsInBoard,
@@ -2164,26 +2163,34 @@ export class EICRExtractionSession {
    * messages drop out of the sliding window.
    */
   buildStateSnapshotMessage() {
-    // Phase 5.5.3 — flag-aware supply / circuit reads. Under flag-on, the
-    // supply line in the emitted snapshot is sourced from
-    // `boards.find(b => b.id === currentBoardId)` (with skeleton keys
-    // `id` / `designation` / `board_type` filtered) instead of from
-    // `circuits[0]`. Non-supply iteration uses `listCircuitRefsInBoard`,
-    // per-ref reads use `getCircuitBucket`, so a flag-on session walks
-    // composite-keyed buckets correctly. Flag-off path reads as before.
-    const flagOn = isMultiBoardFlagOn();
+    // "Work on Board" sprint Phase A.4 — dual-shape supply / circuit reads.
+    // Replaces the previous STAGE6_MULTI_BOARD env-flag branch. The choice
+    // is per-call:
+    //   * MAIN board (currentBoardId === main board id): supply line comes
+    //     from `circuits[0]` (the legacy supply bucket every existing
+    //     reader expects). Non-supply iteration walks legacy bare-numeric
+    //     keys via listCircuitRefsInBoard's main-target branch.
+    //   * NON-MAIN board: supply line comes from BoardInfo on
+    //     `boards.find(b => b.id === currentBoardId)` (skeleton keys
+    //     filtered so the JSON shape matches main's `circuits[0]` for
+    //     fields that overlap). Non-supply iteration walks composite-key
+    //     buckets via listCircuitRefsInBoard's sub-board branch.
+    //
+    // The skeleton-key filter (`id` / `designation` / `board_type`) is
+    // retained so the emitted supply line is semantically equivalent
+    // across the two storage shapes — a sub-board with `ze_at_db` set
+    // emits `0:{ze_at_db:'…'}` exactly as a main board with the same
+    // value would emit `0:{ze_at_db:'…'}`.
     const currentBoardId = this.stateSnapshot.currentBoardId ?? DEFAULT_MAIN_BOARD_ID;
+    const mainBoardId = getMainBoardId(this.stateSnapshot);
     let supplyData;
-    if (flagOn) {
+    if (currentBoardId === mainBoardId) {
+      supplyData = this.stateSnapshot.circuits[0];
+    } else {
       const board = Array.isArray(this.stateSnapshot.boards)
         ? this.stateSnapshot.boards.find((b) => b && b.id === currentBoardId)
         : null;
       if (board) {
-        // Strip BoardInfo skeleton keys so the emitted supply line stays
-        // semantically equivalent to the legacy `circuits[0]` shape (which
-        // never carried these keys). This keeps the emitted snapshot text
-        // byte-equivalent across flag flip when only supply fields differ
-        // by storage location, NOT by content.
         const filtered = {};
         for (const [key, value] of Object.entries(board)) {
           if (key === 'id' || key === 'designation' || key === 'board_type') continue;
@@ -2191,8 +2198,6 @@ export class EICRExtractionSession {
         }
         if (Object.keys(filtered).length > 0) supplyData = filtered;
       }
-    } else {
-      supplyData = this.stateSnapshot.circuits[0];
     }
     const hasSupply = supplyData && Object.keys(supplyData).length > 0;
     const hasCircuits = hasSupply || Object.keys(this.stateSnapshot.circuits).length > 0;
@@ -2405,18 +2410,20 @@ export class EICRExtractionSession {
       // user-derived free text (circuit_designation / designation)
       // picks up the wrap. Unknown string fields default to wrapped
       // via `wrapPolicyFor`'s fail-safe.
-      // Phase 5.5.3 — flag-aware per-ref read. Under flag-on,
-      // getCircuitBucket dereferences the composite key
-      // (`${currentBoardId}::${num}`); the bucket carries `circuit` +
-      // `board_id` self-describing fields which are skipped during the
-      // compact-key projection so emitted JSON stays byte-equivalent to
-      // the legacy shape (only the data source changes).
+      // "Work on Board" sprint Phase A.4 — dual-shape per-ref read.
+      // getCircuitBucket dereferences either the legacy bare-numeric
+      // key (main board) or the composite key `${board_id}::${num}`
+      // (sub-board). Composite buckets carry `circuit` + `board_id`
+      // self-describing fields; main buckets do not. Always strip both
+      // keys from the compact projection — for main, the strip is a
+      // no-op (keys are absent); for sub-boards, it preserves the
+      // byte-equivalent shape with main's emitted JSON.
       for (const num of recentNums) {
         const fields = getCircuitBucket(this.stateSnapshot, num, currentBoardId);
         if (!fields) continue;
         const compact = {};
         for (const [field, value] of Object.entries(fields)) {
-          if (flagOn && (field === 'circuit' || field === 'board_id')) continue;
+          if (field === 'circuit' || field === 'board_id') continue;
           const id = FIELD_ID_MAP[field];
           compact[id != null ? id : field] = applyWrapPolicy(field, value);
         }

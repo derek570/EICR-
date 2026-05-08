@@ -36,14 +36,6 @@ export const DEFAULT_MAIN_BOARD_ID = 'main';
 export const DEFAULT_MAIN_BOARD_DESIGNATION = 'DB-1';
 export const DEFAULT_MAIN_BOARD_TYPE = 'main';
 
-// Phase 5.3 — feature flag gate. Kept exported so the lone remaining reader
-// (`buildStateSnapshotMessage` in eicr-extraction-session.js, slice A.4 will
-// flip it) keeps compiling. After A.4 lands, both this helper and the
-// `STAGE6_MULTI_BOARD` env var become dead and can be deleted.
-export function isMultiBoardFlagOn() {
-  return process.env.STAGE6_MULTI_BOARD === 'true';
-}
-
 // "Work on Board" sprint Phase A — resolve the main board id from a
 // snapshot. Used by the dual-shape helpers below to decide whether a
 // per-call boardId targets the legacy flat namespace (main) or the

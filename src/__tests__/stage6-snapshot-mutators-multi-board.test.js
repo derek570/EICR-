@@ -269,13 +269,12 @@ describe('deleteCircuitMultiBoard', () => {
   });
 });
 
-describe('legacy + composite key coexistence (slice 5.3 prerequisite)', () => {
-  test("legacy '1' key and composite 'main::1' key live side by side", () => {
-    // This is the load-bearing invariant for slice 5.3's flag-gated dispatcher
-    // wiring: while STAGE6_MULTI_BOARD is off in production, every dispatcher
-    // still writes via the legacy mutators (numeric keys). When the flag flips
-    // on for one session, the SAME snapshot object will start receiving
-    // composite-key writes. They must not stomp on each other.
+describe('legacy + composite key coexistence (dual-shape invariant)', () => {
+  test("legacy '1' key and composite 'sub-1::1' key live side by side", () => {
+    // This is the load-bearing invariant for dual-shape routing (Phase A):
+    // main board writes go to the legacy bare-numeric keys; sub-board writes
+    // go to the composite-key namespace. They share the same `circuits`
+    // object on the snapshot and must not stomp on each other.
     const snapshot = makeSnapshot({
       circuits: {
         0: { ze: '0.42' }, // legacy supply bucket

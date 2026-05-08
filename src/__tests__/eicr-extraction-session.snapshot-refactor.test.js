@@ -654,38 +654,35 @@ describe('Plan 04-10 r4-#1 — off-mode snapshot byte-identical regression', () 
 });
 
 // ---------------------------------------------------------------------------
-// Phase 5.5.3 — flag-aware snapshot serialiser. Under STAGE6_MULTI_BOARD=true
-// the supply line is sourced from `boards[currentBoardId]` (with skeleton
-// keys filtered) and circuit iteration walks composite-keyed buckets via
-// listCircuitRefsInBoard / getCircuitBucket. Flag-off behaviour is byte-
-// equivalent to the pre-slice-5.5 read path (pinned by every existing test
-// in this file plus the targeted regression guards below).
+// "Work on Board" sprint Phase A.4 — dual-shape snapshot serialiser.
+// (Renamed from "Phase 5.5.3 flag-aware snapshot serialiser".) Per-call
+// routing replaces the env-flag gate:
+//   * MAIN board (currentBoardId === main): supply line sourced from
+//     `circuits[0]`, circuit iteration walks legacy bare-numeric keys.
+//   * NON-MAIN board: supply line sourced from BoardInfo on `boards[]`
+//     (skeleton keys filtered), circuit iteration walks composite keys.
+// Tests no longer toggle STAGE6_MULTI_BOARD — it has no readers left.
 // ---------------------------------------------------------------------------
-describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
-  const originalFlag = process.env.STAGE6_MULTI_BOARD;
-  afterEach(() => {
-    if (originalFlag === undefined) delete process.env.STAGE6_MULTI_BOARD;
-    else process.env.STAGE6_MULTI_BOARD = originalFlag;
-  });
-
-  test('flag-off: supply line still reads from circuits[0] (regression guard)', () => {
-    delete process.env.STAGE6_MULTI_BOARD;
+describe('"Work on Board" Phase A.4 — dual-shape snapshot serialiser', () => {
+  test('main board: supply line reads from circuits[0]', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.stateSnapshot.circuits[0] = { earth_loop_impedance_ze: '0.35' };
     const snapshot = s.buildStateSnapshotMessage();
-    // Free-text fields pass through applyWrapPolicy → inline USER_TEXT wrap.
     expect(snapshot).toContain('earth_loop_impedance_ze');
     expect(snapshot).toContain('0.35');
     expect(snapshot).toMatch(/^0:\{/m);
   });
 
-  test('flag-on: supply line reads from boards[currentBoardId] BoardInfo, skeleton keys stripped', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
+  test('sub-board: supply line reads from BoardInfo on boards[], skeleton keys stripped', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
-    // ensureMultiBoardShape (slice 5.1) seeds `main` board; write a supply
-    // field via the slice-5.5.1 mutator path.
-    s.stateSnapshot.boards[0].earth_loop_impedance_ze = '0.35';
-    s.stateSnapshot.boards[0].prospective_fault_current = '1.5';
+    s.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'DB-2',
+      board_type: 'sub-distribution',
+      earth_loop_impedance_ze: '0.35',
+      prospective_fault_current: '1.5',
+    });
+    s.stateSnapshot.currentBoardId = 'sub-1';
     const snapshot = s.buildStateSnapshotMessage();
     expect(snapshot).toContain('earth_loop_impedance_ze');
     expect(snapshot).toContain('0.35');
@@ -693,18 +690,17 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).toContain('1.5');
     expect(snapshot).toMatch(/^0:\{/m);
     // Skeleton keys MUST be filtered — emitting `id` / `designation` /
-    // `board_type` would diverge the snapshot byte-shape from flag-off.
-    expect(snapshot).not.toContain('"id":"main"');
-    expect(snapshot).not.toContain('"designation":"DB-1"');
-    expect(snapshot).not.toContain('"board_type":"main"');
+    // `board_type` would diverge the snapshot byte-shape from main.
+    expect(snapshot).not.toContain('"id":"sub-1"');
+    expect(snapshot).not.toContain('"designation":"DB-2"');
+    expect(snapshot).not.toContain('"board_type":"sub-distribution"');
   });
 
-  test('flag-on (sub-board scope): empty BoardInfo (skeleton only) does NOT emit a supply line', () => {
+  test('sub-board: empty BoardInfo (skeleton only) does NOT emit a supply line', () => {
     // Under dual-shape, sub-boards live in the composite-key namespace.
     // Switch the active board to sub-1 so listCircuitRefsInBoard /
     // getCircuitBucket route via composite keys; supply line falls away
     // because sub-1's BoardInfo has no real supply fields.
-    process.env.STAGE6_MULTI_BOARD = 'true';
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.stateSnapshot.boards.push({
       id: 'sub-1',
@@ -724,8 +720,7 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).toContain('Lighting');
   });
 
-  test('flag-on (sub-board scope): per-circuit lines come from composite-keyed buckets, self-describing fields elided', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
+  test('sub-board: per-circuit lines come from composite-keyed buckets, self-describing fields elided', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.stateSnapshot.boards.push({
       id: 'sub-1',
@@ -750,11 +745,10 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).not.toContain('"board_id":"sub-1"');
   });
 
-  test('flag-on: non-supply iteration scopes to currentBoardId — sibling-board buckets ignored', () => {
+  test('sub-board: non-supply iteration scopes to currentBoardId — sibling-board buckets ignored', () => {
     // currentBoardId='sub-1' must surface only sub-1's composite bucket
     // and ignore main's legacy bare-numeric bucket entirely (they live in
     // separate namespaces under dual-shape).
-    process.env.STAGE6_MULTI_BOARD = 'true';
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.stateSnapshot.boards.push({
       id: 'sub-1',
@@ -775,19 +769,15 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).not.toContain('Lighting');
   });
 
-  test('flag-on: switching currentBoardId surfaces the sub-board scope on the next snapshot', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
+  test('switching currentBoardId surfaces the sub-board scope on the next snapshot', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     s.stateSnapshot.boards.push({
       id: 'sub-1',
       designation: 'DB-2',
       board_type: 'sub-distribution',
     });
-    s.stateSnapshot.circuits['main::1'] = {
-      circuit: 1,
-      board_id: 'main',
-      circuit_designation: 'Lighting',
-    };
+    // Main's circuit 1 lives at the legacy bare-numeric key under dual-shape.
+    s.stateSnapshot.circuits[1] = { circuit_designation: 'Lighting' };
     s.stateSnapshot.circuits['sub-1::1'] = {
       circuit: 1,
       board_id: 'sub-1',
@@ -800,8 +790,7 @@ describe('Phase 5.5.3 — flag-aware snapshot serialiser', () => {
     expect(snapshot).not.toContain('Lighting');
   });
 
-  test('flag-on with no boards entry at all returns null when nothing else seeded (defensive)', () => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
+  test('no boards entry at all returns null when nothing else seeded (defensive)', () => {
     const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
     // Strip the slice-5.1 default board entirely to model a partially-
     // hydrated snapshot. supplyData resolves to nothing and `circuits` is

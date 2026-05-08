@@ -4,8 +4,9 @@
  *
  * Pins the new optional board_id property on calculate_zs,
  * calculate_r1_plus_r2, and set_field_for_all_circuits. Behaviour-side
- * tests exercise the explicit-board_id path under STAGE6_MULTI_BOARD=true,
- * including the `'*'` cross-board sweep on set_field_for_all_circuits.
+ * tests exercise the explicit-board_id path under the dual-shape routing
+ * (Phase A), including the `'*'` cross-board sweep on
+ * set_field_for_all_circuits.
  *
  * Slice 6.5 SCHEMA + DISPATCHER deltas:
  *   - calculate_zs / calculate_r1_plus_r2: thread input.board_id through
@@ -25,13 +26,6 @@ import { ensureMultiBoardShape } from '../extraction/stage6-multi-board-shape.js
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 }
-
-beforeEach(() => {
-  delete process.env.STAGE6_MULTI_BOARD;
-});
-afterEach(() => {
-  delete process.env.STAGE6_MULTI_BOARD;
-});
 
 const SCHEMA_PINS = ['calculate_zs', 'calculate_r1_plus_r2', 'set_field_for_all_circuits'];
 
@@ -73,11 +67,7 @@ function makeMultiBoardSession() {
   return { sessionId: 's-calc-thread', stateSnapshot: snapshot, extractedObservations: [] };
 }
 
-describe('calculate_zs: explicit board_id scopes the iteration (flag-on)', () => {
-  beforeEach(() => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-  });
-
+describe('calculate_zs: explicit board_id scopes the iteration', () => {
   test('all=true with board_id="sub-1" computes Zs only on sub-1 circuits', async () => {
     const session = makeMultiBoardSession();
     // Board-level Ze on circuits[0] (legacy supply bucket) — shared across
@@ -116,11 +106,7 @@ describe('calculate_zs: explicit board_id scopes the iteration (flag-on)', () =>
   });
 });
 
-describe('calculate_r1_plus_r2: explicit board_id scopes the iteration (flag-on)', () => {
-  beforeEach(() => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-  });
-
+describe('calculate_r1_plus_r2: explicit board_id scopes the iteration', () => {
   test('all=true + zs_minus_ze + board_id="sub-1" computes R1+R2 only on sub-1 circuits', async () => {
     const session = makeMultiBoardSession();
     session.stateSnapshot.circuits[0] = { earth_loop_impedance_ze: '0.30' };
@@ -163,11 +149,7 @@ describe('calculate_r1_plus_r2: explicit board_id scopes the iteration (flag-on)
 // explicit board_id scopes; '*' walks every board.
 // ---------------------------------------------------------------------------
 
-describe('set_field_for_all_circuits: board_id thread-through + cross-board sweep (flag-on)', () => {
-  beforeEach(() => {
-    process.env.STAGE6_MULTI_BOARD = 'true';
-  });
-
+describe('set_field_for_all_circuits: board_id thread-through + cross-board sweep', () => {
   test('default (no board_id): writes to currentBoardId circuits only', async () => {
     // Under dual-shape: main board reads/writes legacy bare-numeric keys;
     // sub-1 reads/writes composite keys. With currentBoardId='main', the
