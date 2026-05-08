@@ -28,6 +28,7 @@ import {
   getTtsAudioWindow,
   isTtsAvailable,
   isWithinTtsWindow,
+  primeTts,
   setConfirmationModeEnabled,
   speak,
   speakConfirmation,
@@ -169,6 +170,55 @@ describe('speakConfirmation() — gated path', () => {
     setConfirmationModeEnabled(false);
     speakConfirmation('muted, should not cancel either');
     expect(shim.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('primeTts() — user-gesture audio unlock', () => {
+  // The web analogue of iOS AudioSessionManager.setupSession() at
+  // RecordingSessionCoordinator.swift:149. iOS Safari blocks the first
+  // SpeechSynthesis.speak() of a page lifecycle unless it lands inside
+  // a user-gesture handler — without this, the FIRST ask_user question
+  // fires silently and the inspector cannot hear the AI. Called from
+  // the Start Recording button before any await.
+
+  it('coaxes the voices cache to populate (iOS Safari empty-voices quirk)', () => {
+    primeTts();
+    expect(shim.getVoices).toHaveBeenCalled();
+  });
+
+  it('dispatches a silent (volume=0) one-space utterance to satisfy the autoplay grant', () => {
+    primeTts();
+    expect(shim.speak).toHaveBeenCalledTimes(1);
+    const utterance = shim.spoken[0] as ShimUtterance & { volume?: number };
+    expect(utterance.text).toBe(' ');
+    expect(utterance.volume).toBe(0);
+  });
+
+  it('does NOT cancel in-flight speech (would interrupt tour narration)', () => {
+    primeTts();
+    expect(shim.cancel).not.toHaveBeenCalled();
+  });
+
+  it('does NOT open the mic-feedback ttsWindow (silent prime must not gate transcripts)', () => {
+    primeTts();
+    expect(getTtsAudioWindow()).toBeNull();
+    expect(isWithinTtsWindow()).toBe(false);
+  });
+
+  it('is safe to call repeatedly (each Start tap re-primes)', () => {
+    primeTts();
+    primeTts();
+    primeTts();
+    expect(shim.speak).toHaveBeenCalledTimes(3);
+  });
+
+  it('no-ops when SpeechSynthesis is unavailable (SSR / non-browser)', () => {
+    Object.defineProperty(window, 'speechSynthesis', {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
+    expect(() => primeTts()).not.toThrow();
   });
 });
 

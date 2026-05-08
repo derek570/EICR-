@@ -263,6 +263,60 @@ function dispatch(text: string, options?: SpeakOptions): void {
 }
 
 /**
+ * Prime SpeechSynthesis from inside a user-gesture handler. iOS Safari
+ * (and PWAs in standalone mode especially) refuses the first `speak()`
+ * of a page lifecycle unless it lands inside a click/touchend/keydown
+ * handler — without this, the FIRST `ask_user` question fires when
+ * Sonnet asks something well after the user gesture window has closed,
+ * iOS swallows it, and the inspector sees the question on screen with
+ * no audio.
+ *
+ * This is the web analogue of iOS's `AudioSessionManager.setupSession()`
+ * call at `RecordingSessionCoordinator.swift:149`, which configures
+ * `.playAndRecord` at the same lifecycle moment (Start Recording tap)
+ * to unlock the audio output path. Different mechanism, same intent:
+ * unlock TTS at the user gesture that begins recording so the always-on
+ * `speak()` path used for `ask_user` plays audibly without further
+ * setup.
+ *
+ * Mechanism: `getVoices()` coaxes the `voiceschanged` event so
+ * `pickVoice()` returns non-null on the first real `speak()`, AND a
+ * silent (`volume=0`) one-space utterance satisfies the
+ * autoplay-on-gesture rule. The utterance bypasses `dispatch()` so it
+ * does NOT cancel any in-flight tour narration and does NOT open the
+ * mic-feedback `ttsWindow` (which would otherwise suppress legitimate
+ * transcripts during the priming fraction of a second).
+ *
+ * Safe to call repeatedly — subsequent priming calls are no-ops at the
+ * audio level on iOS, and the silent utterance is dropped by every
+ * browser within a few ms.
+ *
+ * MUST be called synchronously from a user-gesture handler (click,
+ * touchend, keydown). The gesture grant does NOT survive across
+ * `await` boundaries, so callers should invoke this BEFORE any async
+ * work in the handler.
+ */
+export function primeTts(): void {
+  if (!isTtsAvailable()) return;
+  try {
+    // Coax the voices cache to populate (iOS Safari returns [] until
+    // after the first `voiceschanged` event fires).
+    window.speechSynthesis.getVoices();
+    // Silent utterance — text=' ' because empty strings are rejected by
+    // some browsers; volume=0 so even if the engine produces audio it's
+    // inaudible. The gesture grant transfers to subsequent speak()
+    // calls within this page lifecycle.
+    const utterance = new window.SpeechSynthesisUtterance(' ');
+    utterance.volume = 0;
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    // Swallow — priming is best-effort, never block recording start.
+  }
+}
+
+/**
  * Always-on speech path. Speaks regardless of the confirmation-mode
  * toggle — used for ask_user prompts, validation alerts, voice-command
  * responses, and tour narration. Mirrors iOS `speakAlertMessage` /

@@ -26,6 +26,7 @@ import {
   confirmationToSentence,
   getConfirmationModeEnabled,
   isWithinTtsWindow,
+  primeTts,
   speak,
   speakConfirmation,
 } from './recording/tts';
@@ -980,6 +981,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // ref is updated synchronously inside setState, so the second tap
     // sees `requesting-mic` and bails. Double-tap on Start now no-ops.
     if (statusRef.current !== 'idle' && statusRef.current !== 'error') return;
+    // Unlock SpeechSynthesis inside the user-gesture stack frame BEFORE
+    // any await — iOS Safari only grants TTS autoplay when the first
+    // speak() lands inside a click/touchend/keydown handler, and the
+    // gesture grant does not survive across `await`. This is the web
+    // analogue of iOS's `AudioSessionManager.setupSession()` call at
+    // RecordingSessionCoordinator.swift:149 which configures
+    // .playAndRecord at the same lifecycle moment to unlock the audio
+    // output path. Without this prime, the first ask_user question is
+    // silent on iPhone — the inspector sees the question on screen but
+    // cannot hear it, the conversation stalls, and the session ends
+    // with near-empty extraction (see sess_mox58v7n_kpr9, 2026-05-08).
+    primeTts();
     setErrorMessage(null);
     setState('requesting-mic');
     setElapsedSec(0);
