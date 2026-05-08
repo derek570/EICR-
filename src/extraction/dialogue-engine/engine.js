@@ -42,6 +42,7 @@ import {
   safeSend,
 } from './helpers/wire-emit.js';
 import { applyDerivations } from './helpers/derivations.js';
+import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -1242,10 +1243,17 @@ export function enterScriptByName({
     // strict-mode forces Sonnet to call create_circuit explicitly if
     // it wants a new one, rather than silently creating via this back
     // door).
-    const circuits = session.stateSnapshot?.circuits;
-    const exists =
-      (circuits && typeof circuits === 'object' && circuits[circuit_ref]) ||
-      (Array.isArray(circuits) && circuits.some((c) => Number(c?.circuit_ref) === circuit_ref));
+    //
+    // Hotfix slice 4 — use circuitExistsInSnapshot for the dual-shape
+    // lookup so the engine respects board scope. Pre-fix: a sub-board
+    // flow on currentBoardId='sub-1' would silently accept a ref that
+    // existed only on main, because the bare-numeric key lookup hit
+    // main's bucket regardless. Now scoped via currentBoardId.
+    const snapshot = session.stateSnapshot;
+    const circuits = snapshot?.circuits;
+    const exists = Array.isArray(circuits)
+      ? circuits.some((c) => Number(c?.circuit_ref) === circuit_ref)
+      : circuitExistsInSnapshot(snapshot, circuit_ref, snapshot?.currentBoardId);
     if (!exists) {
       return {
         ok: false,

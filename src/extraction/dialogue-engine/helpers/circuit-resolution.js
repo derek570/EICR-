@@ -7,7 +7,19 @@
  * canonical `bucket.circuit_designation` written by
  * `_seedStateFromJobState`). Lifting it into one helper means future
  * key-shape changes land once.
+ *
+ * "Work on Board" hotfix slice 4 (2026-05-08) — replaced direct
+ * `snapshot.circuits[ref]` walks with the dual-shape helpers
+ * `getCircuitBucket` and `listCircuitRefsInBoard` so designation /
+ * field reads scope to the ACTIVE board (snapshot.currentBoardId)
+ * rather than walking every circuit on every board. Pre-fix a
+ * sub-board flow on currentBoardId='sub-1' would designation-match
+ * against main's circuits too (the bare-numeric keys), giving
+ * cross-board false matches when a label like "Cooker" appeared
+ * on multiple boards.
  */
+
+import { getCircuitBucket, listCircuitRefsInBoard } from '../../stage6-multi-board-shape.js';
 
 /**
  * Try the digit-form regex against a transcript. Recognises:
@@ -67,11 +79,13 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
   const normalised = text.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!normalised) return empty;
 
-  const circuits = snapshot.circuits;
-  const entries = Array.isArray(circuits)
-    ? circuits.map((c) => [c?.circuit_ref, c])
-    : Object.entries(circuits);
-
+  // Hotfix slice 4 — designation matching scopes to the ACTIVE board so
+  // a sub-board flow doesn't false-match against main's designations.
+  // listCircuitRefsInBoard returns refs filtered to currentBoardId under
+  // dual-shape, OR every numeric ref under flag-off (legacy single-board
+  // behaviour preserved). getCircuitBucket reads the right composite-key
+  // bucket per ref. Array-shape snapshots (legacy in-memory) fall through
+  // to the legacy walk to keep older fixtures green.
   const restrict =
     Array.isArray(opts.restrictToRefs) && opts.restrictToRefs.length > 0
       ? new Set(opts.restrictToRefs.map(Number))
@@ -79,20 +93,43 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
 
   const matches = [];
   const designationsByRef = new Map();
-  for (const [refKey, bucket] of entries) {
-    if (!bucket || typeof bucket !== 'object') continue;
-    const ref = Number(refKey);
-    if (!Number.isInteger(ref) || ref <= 0) continue;
-    if (restrict && !restrict.has(ref)) continue;
-    const designation = bucket.circuit_designation || bucket.designation;
-    if (typeof designation !== 'string' || !designation.trim()) continue;
-    const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
-    if (!normDes) continue;
-    if (normalised.includes(normDes) || normDes.includes(normalised)) {
-      matches.push(ref);
-      designationsByRef.set(ref, normDes);
+
+  if (Array.isArray(snapshot.circuits)) {
+    // Array-shape — walk verbatim (legacy fixture compat).
+    for (const c of snapshot.circuits) {
+      if (!c || typeof c !== 'object') continue;
+      const ref = Number(c.circuit_ref);
+      if (!Number.isInteger(ref) || ref <= 0) continue;
+      if (restrict && !restrict.has(ref)) continue;
+      const designation = c.circuit_designation || c.designation;
+      if (typeof designation !== 'string' || !designation.trim()) continue;
+      const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!normDes) continue;
+      if (normalised.includes(normDes) || normDes.includes(normalised)) {
+        matches.push(ref);
+        designationsByRef.set(ref, normDes);
+      }
+    }
+  } else {
+    // Dual-shape — use the active-board-aware helpers.
+    const activeBoardId = snapshot.currentBoardId;
+    const refs = listCircuitRefsInBoard(snapshot, activeBoardId);
+    for (const ref of refs) {
+      if (!Number.isInteger(ref) || ref <= 0) continue;
+      if (restrict && !restrict.has(ref)) continue;
+      const bucket = getCircuitBucket(snapshot, ref, activeBoardId);
+      if (!bucket || typeof bucket !== 'object') continue;
+      const designation = bucket.circuit_designation || bucket.designation;
+      if (typeof designation !== 'string' || !designation.trim()) continue;
+      const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!normDes) continue;
+      if (normalised.includes(normDes) || normDes.includes(normalised)) {
+        matches.push(ref);
+        designationsByRef.set(ref, normDes);
+      }
     }
   }
+
   // Deduplicate (in case the iteration produced a circuit twice via
   // string + number key collision).
   const candidates = Array.from(new Set(matches)).sort((a, b) => a - b);
@@ -146,10 +183,13 @@ export function readExistingValues(session, circuit_ref, fields) {
   if (!snapshot) return out;
   const circuits = snapshot.circuits;
   let bucket = null;
-  if (circuits && typeof circuits === 'object' && !Array.isArray(circuits)) {
-    bucket = circuits[circuit_ref] || circuits[String(circuit_ref)] || null;
-  } else if (Array.isArray(circuits)) {
+  if (Array.isArray(circuits)) {
     bucket = circuits.find((c) => c && Number(c.circuit_ref) === Number(circuit_ref)) || null;
+  } else if (circuits && typeof circuits === 'object') {
+    // Hotfix slice 4 — use the dual-shape lookup so the read scopes to the
+    // active board's bucket rather than the bare numeric key (which would
+    // hit main's circuit even when currentBoardId is sub-1).
+    bucket = getCircuitBucket(snapshot, circuit_ref, snapshot.currentBoardId) ?? null;
   }
   if (!bucket) return out;
   for (const f of fields) {
