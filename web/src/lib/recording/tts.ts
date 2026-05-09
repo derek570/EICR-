@@ -8,6 +8,7 @@ import {
   speakElevenLabs,
   type ElevenLabsFailureReason,
 } from './elevenlabs-tts';
+import { clientDiagnostic } from './client-diagnostic';
 
 /**
  * Text-to-speech wrapper — ElevenLabs primary, browser SpeechSynthesis
@@ -225,11 +226,22 @@ export function isWithinTtsWindow(cooldownMs = 300, nowMs = Date.now()): boolean
 function dispatch(text: string, options?: SpeakOptions): void {
   const trimmed = text?.trim();
   if (!trimmed) {
+    clientDiagnostic('tts_dispatch_empty', {});
     options?.onEnd?.();
     return;
   }
 
-  if (isElevenLabsAvailable() && getActiveSessionId()) {
+  const elevenLabsAvailable = isElevenLabsAvailable();
+  const sessionId = getActiveSessionId();
+  clientDiagnostic('tts_dispatch', {
+    textLength: trimmed.length,
+    textPreview: trimmed.slice(0, 80),
+    elevenLabsAvailable,
+    hasActiveSessionId: Boolean(sessionId),
+    route: elevenLabsAvailable && sessionId ? 'elevenlabs' : 'native',
+  });
+
+  if (elevenLabsAvailable && sessionId) {
     dispatchElevenLabs(trimmed, options);
     return;
   }
@@ -272,6 +284,7 @@ function dispatchElevenLabs(text: string, options?: SpeakOptions): void {
     },
     onError: (reason: ElevenLabsFailureReason) => {
       if (myStartMs != null) {
+        clientDiagnostic('tts_elevenlabs_mid_playback_error', { reason });
         // Mid-playback error — close the window and resolve. Don't
         // re-speak via native; the inspector heard the start of the
         // line and a second full read would just be confusing.
@@ -287,8 +300,13 @@ function dispatchElevenLabs(text: string, options?: SpeakOptions): void {
       // a fresh dispatch superseded us, so the new dispatch will own
       // the window — calling dispatchNative here would race against it.
       if (reason === 'aborted') {
+        clientDiagnostic('tts_elevenlabs_aborted', {});
         return;
       }
+      clientDiagnostic('tts_elevenlabs_fallback_to_native', {
+        reason,
+        textPreview: text.slice(0, 80),
+      });
       dispatchNative(text, options);
     },
   });
@@ -412,7 +430,11 @@ function dispatchNative(text: string, options?: SpeakOptions): void {
  * work in the handler.
  */
 export function primeTts(): void {
-  if (!isTtsAvailable()) return;
+  if (!isTtsAvailable()) {
+    clientDiagnostic('primeTts_skipped_unavailable', {});
+    return;
+  }
+  let synthesisOk = false;
   try {
     // Coax the voices cache to populate (iOS Safari returns [] until
     // after the first `voiceschanged` event fires).
@@ -426,9 +448,11 @@ export function primeTts(): void {
     utterance.rate = 1.0;
     utterance.pitch = 1.0;
     window.speechSynthesis.speak(utterance);
+    synthesisOk = true;
   } catch {
     // Swallow — priming is best-effort, never block recording start.
   }
+  clientDiagnostic('primeTts', { synthesisOk });
   // Also prime the shared `<audio>` element. iOS Safari requires the
   // first `play()` on each element to land inside a user-gesture
   // handler; without this, the FIRST ElevenLabs payload arrives well

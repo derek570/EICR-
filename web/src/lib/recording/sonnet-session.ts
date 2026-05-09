@@ -18,6 +18,7 @@
 
 import { api } from '../api-client';
 import { getToken } from '../auth';
+import { clientDiagnostic } from './client-diagnostic';
 import type { RegexResultsWire } from './regex-match-result';
 
 export type SonnetConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -685,6 +686,25 @@ export class SonnetSession {
   }
 
   /**
+   * Diagnostic envelope that lands on CloudWatch as `Client diagnostic`.
+   * Mirrors iOS `ServerWebSocketService.sendClientDiagnostic`. Drop-on-
+   * floor when disconnected — diagnostics are best-effort and we don't
+   * want to inflate the reconnect buffer with telemetry.
+   *
+   * Envelope keys (`type`, `category`, `timestamp`) are written AFTER
+   * the payload spread so a caller cannot accidentally hijack the WS
+   * message type — same defence iOS added at ServerWebSocketService.swift:794.
+   */
+  sendClientDiagnostic(category: string, payload: Record<string, unknown> = {}): void {
+    if (!this.ws || this.state !== 'connected') return;
+    const msg: Record<string, unknown> = { ...payload };
+    msg.type = 'client_diagnostic';
+    msg.category = category;
+    msg.timestamp = new Date().toISOString();
+    this.sendRaw(msg);
+  }
+
+  /**
    * Read the in-flight ask_user toolCallId AND clear it in one call.
    * Returns null if no Stage 6 ask is currently in flight, OR if the
    * toolCallId has already been answered (idempotency Set check).
@@ -990,7 +1010,21 @@ export class SonnetSession {
         // and the inspector waits in silence (Farm Close prod incident,
         // 2026-05-04, sess_moqvdgjl_fo6w).
         const question = (json.question as string) ?? '';
-        if (!question) break;
+        // Diagnostic — log entry on every ask_user_started, before any
+        // early-break, so a missing question OR a missing toolCallId is
+        // visible from CloudWatch. Pinning the prod sess_moyo7wmd_mdpr
+        // pipeline regression where the wire round-trip succeeded but
+        // the question never reached the AlertCard / TTS proxy.
+        clientDiagnostic('ask_user_started_decoded', {
+          questionLength: question.length,
+          questionPreview: question.slice(0, 80),
+          hasToolCallId: typeof json.tool_call_id === 'string' && json.tool_call_id.length > 0,
+          reason: typeof json.reason === 'string' ? json.reason : null,
+        });
+        if (!question) {
+          clientDiagnostic('ask_user_started_dropped_empty_question', {});
+          break;
+        }
         const toolCallId =
           typeof json.tool_call_id === 'string' && json.tool_call_id.length > 0
             ? (json.tool_call_id as string)
@@ -1016,6 +1050,10 @@ export class SonnetSession {
             typeof json.context_circuit === 'number' ? (json.context_circuit as number) : null,
           tool_call_id: toolCallId,
         };
+        clientDiagnostic('ask_user_started_dispatching_to_onQuestion', {
+          hasOnQuestionCallback: typeof this.callbacks.onQuestion === 'function',
+          inFlightLatched: this.inFlightToolCallId === toolCallId,
+        });
         this.callbacks.onQuestion?.(mapped);
         break;
       }

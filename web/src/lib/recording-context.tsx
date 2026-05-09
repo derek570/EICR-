@@ -36,6 +36,7 @@ import {
   speakConfirmation,
 } from './recording/tts';
 import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tts';
+import { clientDiagnostic, setDiagnosticSink } from './recording/client-diagnostic';
 import { record as recordLifecycle } from './diagnostics/lifecycle-log';
 import { playAttentionTone, playConfirmationChime } from './recording/tones';
 import { api } from './api-client';
@@ -351,6 +352,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const teardownSonnet = React.useCallback(() => {
     sonnetRef.current?.disconnect();
     sonnetRef.current = null;
+    setDiagnosticSink(null);
     setSonnetState('disconnected');
     // Tear down the matcher state alongside the WS session — both have
     // the same lifetime by design. reset() clears lastProcessedOffset
@@ -704,13 +706,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         applyExtraction(result);
       },
       onQuestion: (q) => {
+        clientDiagnostic('onQuestion_entered', {
+          questionType: q.question_type ?? null,
+          questionLength: typeof q.question === 'string' ? q.question.length : 0,
+          questionPreview: typeof q.question === 'string' ? q.question.slice(0, 80) : '',
+          hasToolCallId: typeof q.tool_call_id === 'string' && q.tool_call_id.length > 0,
+        });
         let isNew = false;
+        let queueDepthAfter = 0;
         setQuestions((prev) => {
           // Dedup by text — Sonnet occasionally re-asks the same
           // question across turns until the field is filled.
-          if (prev.some((p) => p.question === q.question)) return prev;
+          if (prev.some((p) => p.question === q.question)) {
+            queueDepthAfter = prev.length;
+            return prev;
+          }
           isNew = true;
           const next = [...prev, q];
+          queueDepthAfter = next.length > 5 ? 5 : next.length;
           return next.length > 5 ? next.slice(next.length - 5) : next;
         });
         // A question frame also closes the turn that produced it — same
@@ -732,6 +745,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // ordering at AlertManager.swift:717 (playAttentionTone()
         // immediately before speakAlertMessage()).
         if (isNew && q.question) {
+          clientDiagnostic('onQuestion_speaking', {
+            queueDepth: queueDepthAfter,
+            questionPreview: q.question.slice(0, 80),
+          });
           // Switch the sleep timer to the 75s question-answer window
           // so the inspector has time to hear, think, and reply
           // without the standard 60s timer dropping us into sleep
@@ -739,6 +756,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           sleepManagerRef.current?.onQuestionAsked();
           playAttentionTone();
           speak(q.question);
+        } else {
+          clientDiagnostic('onQuestion_skipped_speak', {
+            isNew,
+            hasQuestionText: Boolean(q.question),
+            queueDepth: queueDepthAfter,
+            reason: !isNew ? 'dedup_hit' : !q.question ? 'empty_text' : 'unknown',
+          });
         }
       },
       onFieldCorrected: (msg) => {
@@ -907,6 +931,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       jobState: jobRef.current,
     });
     sonnetRef.current = session;
+    // Wire the diagnostic sink so deep modules (tts.ts, elevenlabs-tts.ts)
+    // can fire `client_diagnostic` envelopes without plumbing the session
+    // reference through every layer. Cleared on teardownSonnet.
+    setDiagnosticSink(session);
   }, [applyExtraction]);
 
   /** Open the mic stream and forward audio to Deepgram. Shared between

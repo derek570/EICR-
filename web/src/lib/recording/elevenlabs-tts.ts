@@ -53,6 +53,7 @@
  */
 
 import { getToken } from '../auth';
+import { clientDiagnostic } from './client-diagnostic';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 const FETCH_TIMEOUT_MS = 12_000;
@@ -261,19 +262,28 @@ export function speakElevenLabs(
   return new Promise<boolean>((resolve) => {
     cancelElevenLabs();
 
+    clientDiagnostic('elevenlabs_speak_entered', {
+      textLength: text.length,
+      textPreview: text.slice(0, 80),
+      hasActiveSessionId: Boolean(activeSessionId),
+    });
+
     if (!isElevenLabsAvailable()) {
+      clientDiagnostic('elevenlabs_speak_short_circuit', { reason: 'unavailable' });
       lifecycle.onError?.('offline');
       resolve(false);
       return;
     }
 
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      clientDiagnostic('elevenlabs_speak_short_circuit', { reason: 'offline' });
       lifecycle.onError?.('offline');
       resolve(false);
       return;
     }
 
     if (!activeSessionId) {
+      clientDiagnostic('elevenlabs_speak_short_circuit', { reason: 'no-session' });
       lifecycle.onError?.('no-session');
       resolve(false);
       return;
@@ -281,6 +291,7 @@ export function speakElevenLabs(
 
     const token = getToken();
     if (!token) {
+      clientDiagnostic('elevenlabs_speak_short_circuit', { reason: 'no-token' });
       lifecycle.onError?.('no-token');
       resolve(false);
       return;
@@ -288,6 +299,7 @@ export function speakElevenLabs(
 
     const audio = getSharedAudio();
     if (!audio) {
+      clientDiagnostic('elevenlabs_speak_short_circuit', { reason: 'no-audio-element' });
       lifecycle.onError?.('play');
       resolve(false);
       return;
@@ -336,18 +348,22 @@ export function speakElevenLabs(
     };
 
     const onPlaying = () => {
+      clientDiagnostic('elevenlabs_audio_playing', {});
       lifecycle.onStart?.();
     };
     const onEnded = () => {
+      clientDiagnostic('elevenlabs_audio_ended', {});
       settle(true);
     };
     const onAudioError = () => {
+      clientDiagnostic('elevenlabs_audio_error_event', {});
       settle(false, 'play');
     };
     audio.addEventListener('playing', onPlaying, { once: true });
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('error', onAudioError);
 
+    clientDiagnostic('elevenlabs_fetch_start', {});
     fetch(`${API_BASE_URL}/api/proxy/elevenlabs-tts`, {
       method: 'POST',
       headers: {
@@ -360,10 +376,12 @@ export function speakElevenLabs(
     })
       .then(async (res) => {
         if (controller.signal.aborted) {
+          clientDiagnostic('elevenlabs_fetch_aborted_post_response', {});
           settle(false, 'aborted');
           return;
         }
         if (!res.ok) {
+          clientDiagnostic('elevenlabs_fetch_not_ok', { status: res.status });
           settle(false, 'fetch');
           return;
         }
@@ -372,6 +390,7 @@ export function speakElevenLabs(
           settle(false, 'aborted');
           return;
         }
+        clientDiagnostic('elevenlabs_fetch_ok', { blobSize: blob.size });
         const url = URL.createObjectURL(blob);
         activeBlobUrl = url;
         audio.muted = false;
@@ -379,12 +398,15 @@ export function speakElevenLabs(
         audio.src = url;
         const playPromise = audio.play();
         if (playPromise && typeof playPromise.catch === 'function') {
-          playPromise.catch(() => {
+          playPromise.catch((err: unknown) => {
             // iOS Safari rejects play() with NotAllowedError when the
             // gesture grant has expired (e.g. the priming utterance
             // never landed inside a real Start tap). Falling back to
             // SpeechSynthesis here is the safest path — the inspector
             // still hears the question, just in the OS voice.
+            const name = err instanceof Error ? err.name : 'unknown';
+            const message = err instanceof Error ? err.message.slice(0, 120) : '';
+            clientDiagnostic('elevenlabs_play_rejected', { errorName: name, message });
             settle(false, 'play');
           });
         }
@@ -394,10 +416,14 @@ export function speakElevenLabs(
           // Distinguish a 12s budget timeout from an external cancel —
           // `timeoutFired` is set only by the timer's own callback, so
           // a cancel from cancelElevenLabs() leaves it false.
+          clientDiagnostic('elevenlabs_fetch_aborted', {
+            kind: timeoutFired ? 'timeout' : 'external',
+          });
           settle(false, timeoutFired ? 'timeout' : 'aborted');
           return;
         }
         const message = err instanceof Error ? err.message : 'fetch failed';
+        clientDiagnostic('elevenlabs_fetch_threw', { message: message.slice(0, 120) });
         if (message.includes('aborted') || message.includes('AbortError')) {
           settle(false, 'aborted');
         } else {
