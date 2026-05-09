@@ -250,13 +250,20 @@ describe('dispatchAddBoard rejections', () => {
     expect(writes.boardOps).toHaveLength(0);
   });
 
-  test('parent_required: sub_main without parent_board_id', async () => {
+  // 2026-05-09 add-board hotfix — parent_required now ONLY fires when the
+  // snapshot has zero or two-or-more main-board candidates. Single-main
+  // jobs (the overwhelmingly common case) auto-resolve the parent to the
+  // single main; on a multi-main snapshot the rejection is preserved so
+  // Sonnet must disambiguate.
+  test('parent_required: sub_main on a multi-main snapshot still rejects', async () => {
     const session = makeSession();
+    // Add a second main board so the single-main fallback can't fire.
+    session.stateSnapshot.boards.push({ id: 'main-2', designation: 'DB-2', board_type: 'main' });
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
     const res = await d(
       {
-        tool_call_id: 'tu_no_parent',
+        tool_call_id: 'tu_no_parent_multi_main',
         name: 'add_board',
         input: { designation: 'Annexe', board_type: 'sub_main' },
       },
@@ -267,8 +274,155 @@ describe('dispatchAddBoard rejections', () => {
       code: 'parent_required',
       field: 'parent_board_id',
     });
-    expect(session.stateSnapshot.boards).toHaveLength(1);
+    expect(session.stateSnapshot.boards).toHaveLength(2);
     expect(writes.boardOps).toHaveLength(0);
+  });
+
+  test('parent_required: sub_main on a snapshot with no main board rejects', async () => {
+    const session = makeSession();
+    // Wipe boards entirely — pathological state but the validator must
+    // hold the line. ensureMultiBoardShape would re-synthesise a default
+    // on the next dispatcher entry, so we replace boards[] AFTER
+    // construction (the dispatcher's ensureMultiBoardShape call is a
+    // no-op when boards is non-empty).
+    session.stateSnapshot.boards = [
+      { id: 'sub-only', designation: 'SubOnly', board_type: 'sub_distribution' },
+    ];
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
+    const res = await d(
+      {
+        tool_call_id: 'tu_no_parent_no_main',
+        name: 'add_board',
+        input: { designation: 'Annexe', board_type: 'sub_main' },
+      },
+      {}
+    );
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content).error).toEqual({
+      code: 'parent_required',
+      field: 'parent_board_id',
+    });
+    expect(writes.boardOps).toHaveLength(0);
+  });
+
+  test('single-main fallback: sub_main without parent_board_id auto-fills the single main', async () => {
+    // 2026-05-09 add-board hotfix — sessions 7113A114 + 399E69A7 looped on
+    // parent_required because Sonnet had no way to learn the main board's
+    // id. With a single main on snapshot.boards[], the dispatcher resolves
+    // the parent silently and the call proceeds to feed_circuit_ref + the
+    // hierarchy validator.
+    const session = makeSession();
+    session.stateSnapshot.circuits['main::1'] = { board_id: 'main', circuit: 1 };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+    const res = await d(
+      {
+        tool_call_id: 'tu_fallback',
+        name: 'add_board',
+        input: {
+          designation: 'Garage CU',
+          board_type: 'sub_main',
+          // parent_board_id omitted — should fall back to 'main'.
+          feed_circuit_ref: 1,
+        },
+      },
+      {}
+    );
+    expect(res.is_error).toBeFalsy();
+    const body = JSON.parse(res.content);
+    expect(body.ok).toBe(true);
+    expect(body.board_id).toBe('sub-1');
+
+    // Snapshot: new sub-board persists with parent_board_id resolved to the
+    // single main, so a downstream PUT /api/job hierarchy gate also passes.
+    expect(session.stateSnapshot.boards).toHaveLength(2);
+    expect(session.stateSnapshot.boards[1]).toMatchObject({
+      id: 'sub-1',
+      board_type: 'sub_main',
+      parent_board_id: 'main',
+      feed_circuit_ref: 1,
+    });
+
+    // boardOps: wire op carries the resolved parent so iOS doesn't have to
+    // re-derive it from currentBoardId.
+    expect(writes.boardOps).toEqual([
+      {
+        op: 'add_board',
+        board_id: 'sub-1',
+        designation: 'Garage CU',
+        board_type: 'sub_main',
+        parent_board_id: 'main',
+        feed_circuit_ref: 1,
+      },
+    ]);
+
+    // Optimiser visibility — the fallback is logged as a separate event so
+    // CloudWatch queries can quantify how often the model lets the server
+    // do the disambiguation.
+    const fallbackLogs = logger.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.add_board_parent_fallback'
+    );
+    expect(fallbackLogs).toHaveLength(1);
+    expect(fallbackLogs[0][1]).toMatchObject({
+      source: 'single_main_fallback',
+      resolved_parent_board_id: 'main',
+    });
+  });
+
+  test('single-main fallback: empty-string parent_board_id is treated as missing', async () => {
+    // STT / Sonnet sometimes round-trip an empty string when the model
+    // emits the field but has no value to put there. Treat that the same
+    // as missing so the fallback fires.
+    const session = makeSession();
+    session.stateSnapshot.circuits['main::1'] = { board_id: 'main', circuit: 1 };
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
+    const res = await d(
+      {
+        tool_call_id: 'tu_fallback_empty',
+        name: 'add_board',
+        input: {
+          designation: 'Garage CU',
+          board_type: 'sub_main',
+          parent_board_id: '',
+          feed_circuit_ref: 1,
+        },
+      },
+      {}
+    );
+    expect(res.is_error).toBeFalsy();
+    expect(session.stateSnapshot.boards[1].parent_board_id).toBe('main');
+  });
+
+  test('single-main fallback: explicit valid parent_board_id still wins (no logging noise)', async () => {
+    // The fallback only triggers when parent_board_id is missing/empty.
+    // Explicitly-supplied valid ids must take precedence and NOT log the
+    // fallback event.
+    const session = makeSession();
+    session.stateSnapshot.circuits['main::4'] = { board_id: 'main', circuit: 4 };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+    const res = await d(
+      {
+        tool_call_id: 'tu_explicit',
+        name: 'add_board',
+        input: {
+          designation: 'Garage CU',
+          board_type: 'sub_main',
+          parent_board_id: 'main',
+          feed_circuit_ref: 4,
+        },
+      },
+      {}
+    );
+    expect(res.is_error).toBeFalsy();
+    const fallbackLogs = logger.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.add_board_parent_fallback'
+    );
+    expect(fallbackLogs).toHaveLength(0);
   });
 
   test('parent_not_found: parent_board_id pointing at a non-existent board', async () => {

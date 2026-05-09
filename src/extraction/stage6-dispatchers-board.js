@@ -283,25 +283,63 @@ export async function dispatchAddBoard(call, ctx) {
     return reject('invalid_designation', 'designation');
   }
 
-  // 3) parent_board_id required for sub_main.
-  if (input.board_type === 'sub_main' && !input.parent_board_id) {
-    return reject('parent_required', 'parent_board_id');
-  }
-
-  // 4) parent_board_id, when supplied, must reference an existing board.
+  // 3) parent_board_id required for sub_main — but with a defensive
+  //    single-main fallback. When the inspector adds a sub_main on a job
+  //    with exactly ONE main board on snapshot.boards[], the parent is
+  //    structurally unambiguous, so we silently default to that single
+  //    main board's id rather than rejecting the call. Pre-fix Sonnet
+  //    routinely emitted add_board with parent_board_id omitted (or
+  //    invented as the literal "main") and looped against
+  //    parent_required / parent_not_found — sessions 7113A114 +
+  //    399E69A7 (2026-05-09) showed 10+ rejected calls in two
+  //    consecutive recordings.
+  //
+  //    The fallback only fires when EVERYTHING is unambiguous:
+  //      * board_type === 'sub_main'
+  //      * input.parent_board_id is null/undefined/empty string
+  //      * snapshot.boards[] has exactly one entry whose board_type is
+  //        'main' (or absent — legacy seeds may omit it).
+  //    Multi-main jobs still reject with parent_required so the model
+  //    must disambiguate. The fallback is logged so optimiser reports
+  //    can spot it.
   const snapshot = session.stateSnapshot;
   ensureMultiBoardShape(snapshot);
   const existingBoards = snapshot.boards ?? [];
-  if (input.parent_board_id) {
-    const parent = existingBoards.find((b) => b && b.id === input.parent_board_id);
+
+  let resolvedParentId = input.parent_board_id;
+  if (input.board_type === 'sub_main' && !resolvedParentId) {
+    const mains = existingBoards.filter((b) => b && (!b.board_type || b.board_type === 'main'));
+    if (mains.length === 1 && typeof mains[0].id === 'string') {
+      resolvedParentId = mains[0].id;
+      if (logger?.info) {
+        logger.info('stage6.add_board_parent_fallback', {
+          sessionId: session.sessionId,
+          turnId,
+          tool_use_id: call.tool_call_id,
+          source: 'single_main_fallback',
+          resolved_parent_board_id: mains[0].id,
+        });
+      }
+    } else {
+      return reject('parent_required', 'parent_board_id');
+    }
+  }
+
+  // 4) parent_board_id, when supplied (or fallback-resolved), must
+  //    reference an existing board. The fallback path always picks an
+  //    existing id so this branch only rejects when the model supplied
+  //    a non-matching id explicitly.
+  if (resolvedParentId) {
+    const parent = existingBoards.find((b) => b && b.id === resolvedParentId);
     if (!parent) {
       return reject('parent_not_found', 'parent_board_id');
     }
   }
 
-  // 5) feed_circuit_ref required + integer when parent_board_id is supplied.
+  // 5) feed_circuit_ref required + integer when parent_board_id is
+  //    resolved (whether explicit or via the single-main fallback).
   if (
-    input.parent_board_id &&
+    resolvedParentId &&
     (input.feed_circuit_ref == null || !Number.isInteger(input.feed_circuit_ref))
   ) {
     return reject('feed_circuit_ref_required', 'feed_circuit_ref');
@@ -326,13 +364,16 @@ export async function dispatchAddBoard(call, ctx) {
     return reject('board_id_collision', null);
   }
 
-  // 7) Build the new board record.
+  // 7) Build the new board record. Use the resolved parent id so the
+  //    single-main fallback persists onto the snapshot record (otherwise a
+  //    later PUT /api/job round-trip would surface the orphan as
+  //    parent_not_found via the same shared validator).
   const newBoard = {
     id: newId,
     designation: input.designation.trim(),
     board_type: input.board_type,
   };
-  if (input.parent_board_id) newBoard.parent_board_id = input.parent_board_id;
+  if (resolvedParentId) newBoard.parent_board_id = resolvedParentId;
   if (input.feed_circuit_ref != null) newBoard.feed_circuit_ref = input.feed_circuit_ref;
 
   // 8) Hierarchy validation BEFORE mutating snapshot. The validator owns
