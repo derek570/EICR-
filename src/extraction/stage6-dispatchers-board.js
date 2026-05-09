@@ -437,6 +437,66 @@ export async function dispatchAddBoard(call, ctx) {
     feed_circuit_ref: newBoard.feed_circuit_ref ?? null,
   });
 
+  // 10a) Atomicity — when add_board carries both parent_board_id and
+  //      feed_circuit_ref, also mark the parent's feed circuit as a
+  //      distribution circuit feeding the new board. ONE inspector
+  //      utterance ("garage CU fed from circuit 2 on the main board")
+  //      then = ONE atomic mutation = ONE round-trip, instead of forcing
+  //      Sonnet to chain `add_board` → `mark_distribution_circuit` and
+  //      navigate the cross-board source-resolution problem.
+  //
+  //      Field test FD4FF35F (2026-05-09) hit exactly this cascade: after
+  //      add_board flipped currentBoardId to "sub-1", the model called
+  //      mark_distribution_circuit({circuit:2, feeds_board_id:"sub-1"})
+  //      without an explicit board_id, the dispatcher resolved source =
+  //      currentBoardId = "sub-1", and the source-board check rejected
+  //      (sub-1 had no circuit 2). Doing the mark inline removes the
+  //      whole second-tool-call class of failure and matches the model's
+  //      semantic intent — adding a sub-main IS marking its feed circuit.
+  //
+  //      No-op when the feed circuit doesn't exist yet (e.g. inspector
+  //      adds the sub-board before describing the feed). Sonnet can call
+  //      mark_distribution_circuit later when the circuit is created.
+  //      Explicit log row when this fires so optimiser reports can audit
+  //      the round-trip and an "add but no mark" is distinguishable from
+  //      an "add then ask".
+  if (resolvedParentId && Number.isInteger(input.feed_circuit_ref)) {
+    const parentBucket = getCircuitBucket(snapshot, input.feed_circuit_ref, resolvedParentId);
+    if (parentBucket) {
+      parentBucket.is_distribution_circuit = 'yes';
+      parentBucket.feeds_board_id = newId;
+      perTurnWrites.boardOps.push({
+        op: 'mark_distribution_circuit',
+        circuit_ref: input.feed_circuit_ref,
+        feeds_board_id: newId,
+        source_board_id: resolvedParentId,
+      });
+      if (logger?.info) {
+        logger.info('stage6.add_board_auto_mark_dist', {
+          sessionId: session.sessionId,
+          turnId,
+          tool_use_id: call.tool_call_id,
+          board_id: newId,
+          source_board_id: resolvedParentId,
+          circuit_ref: input.feed_circuit_ref,
+        });
+      }
+    } else if (logger?.info) {
+      // Distinguish the "circuit exists yet" miss from a successful mark
+      // so the same telemetry can flag inspectors who declare the feed
+      // circuit only after adding the board.
+      logger.info('stage6.add_board_auto_mark_dist_skipped', {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        board_id: newId,
+        source_board_id: resolvedParentId,
+        circuit_ref: input.feed_circuit_ref,
+        reason: 'feed_circuit_not_found',
+      });
+    }
+  }
+
   // 11) Log success. PII discipline: never log the designation (free text).
   logToolCall(logger, {
     sessionId: session.sessionId,

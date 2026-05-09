@@ -569,12 +569,30 @@ describe('dispatchAddBoard legacy keyed-snapshot adapter', () => {
     expect(res.is_error).toBe(false);
     expect(session.stateSnapshot.boards).toHaveLength(2);
     expect(session.stateSnapshot.currentBoardId).toBe('sub-1');
-    expect(writes.boardOps).toHaveLength(1);
+    // 2026-05-09: dispatchAddBoard now atomically marks the parent's feed
+    // circuit when both parent_board_id and feed_circuit_ref are supplied
+    // AND the parent bucket exists. Legacy seeds use bare-numeric keys
+    // for the main board, so getCircuitBucket(snap, 11, 'main') finds
+    // circuits[11] and the auto-mark fires. Two boardOps result: the
+    // add_board itself, then mark_distribution_circuit on circuit 11.
+    expect(writes.boardOps).toHaveLength(2);
     expect(writes.boardOps[0]).toMatchObject({
       op: 'add_board',
       board_id: 'sub-1',
       parent_board_id: 'main',
       feed_circuit_ref: 11,
+    });
+    expect(writes.boardOps[1]).toEqual({
+      op: 'mark_distribution_circuit',
+      circuit_ref: 11,
+      feeds_board_id: 'sub-1',
+      source_board_id: 'main',
+    });
+    // Parent bucket also mutated in-place so any same-turn observer
+    // (validator on a later round / shadow harness) sees the marked state.
+    expect(session.stateSnapshot.circuits[11]).toMatchObject({
+      is_distribution_circuit: 'yes',
+      feeds_board_id: 'sub-1',
     });
   });
 
@@ -642,5 +660,233 @@ describe('dispatchAddBoard wire emit ordering', () => {
 
     // currentBoardId tracks the latest add.
     expect(session.stateSnapshot.currentBoardId).toBe('sub-2');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group 5 — Auto-mark distribution circuit (atomicity, 2026-05-09)
+//
+// dispatchAddBoard atomically marks the parent's feed circuit as a
+// distribution circuit when both parent_board_id and feed_circuit_ref
+// are supplied AND the parent bucket exists. ONE inspector utterance
+// ("garage CU fed from circuit 2 on the main") = ONE atomic mutation.
+// Closes the source_board_not_found cascade observed in field test
+// FD4FF35F (2026-05-09): post add_board the model would emit
+// mark_distribution_circuit without an explicit board_id, the dispatcher
+// resolved source via currentBoardId (just flipped to the new sub-board),
+// and the source-board check rejected. The auto-mark eliminates the
+// whole class of failure by making "add a sub-main fed from X" a single
+// tool call.
+// ---------------------------------------------------------------------------
+
+describe('dispatchAddBoard auto-mark distribution circuit', () => {
+  test('parent + feed_circuit_ref + bucket exists → emits mark_distribution_circuit op AND mutates parent bucket', async () => {
+    const session = makeSession();
+    // Legacy bare-numeric key — getCircuitBucket reads from the flat
+    // namespace on the main board.
+    session.stateSnapshot.circuits[2] = {
+      designation: 'Garage feed',
+      rating_amps: 32,
+    };
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+
+    const res = await d(
+      {
+        tool_call_id: 'tu_atomic',
+        name: 'add_board',
+        input: {
+          designation: 'Garage CU',
+          board_type: 'sub_main',
+          parent_board_id: 'main',
+          feed_circuit_ref: 2,
+        },
+      },
+      {}
+    );
+
+    expect(res.is_error).toBeFalsy();
+    expect(JSON.parse(res.content).board_id).toBe('sub-1');
+
+    // boardOps: add_board then mark_distribution_circuit, in insertion order.
+    expect(writes.boardOps).toHaveLength(2);
+    expect(writes.boardOps[0].op).toBe('add_board');
+    expect(writes.boardOps[1]).toEqual({
+      op: 'mark_distribution_circuit',
+      circuit_ref: 2,
+      feeds_board_id: 'sub-1',
+      source_board_id: 'main',
+    });
+
+    // Parent bucket mutated in place so any same-turn validator pass
+    // (e.g. shadow harness) sees the marked state.
+    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+      is_distribution_circuit: 'yes',
+      feeds_board_id: 'sub-1',
+      designation: 'Garage feed',
+      rating_amps: 32,
+    });
+
+    // Optimiser visibility — auto-mark fires its own log row so analytics
+    // can quantify how often the atomic path saves a chained tool call.
+    const autoMarkLogs = logger.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.add_board_auto_mark_dist'
+    );
+    expect(autoMarkLogs).toHaveLength(1);
+    expect(autoMarkLogs[0][1]).toMatchObject({
+      board_id: 'sub-1',
+      source_board_id: 'main',
+      circuit_ref: 2,
+    });
+  });
+
+  test('parent + feed_circuit_ref but bucket NOT in snapshot → rejected by hierarchy validator BEFORE auto-mark runs', async () => {
+    // The hierarchy validator runs before the snapshot mutation step, so a
+    // missing feed circuit on the parent surfaces as hierarchy_invalid and
+    // the dispatcher never reaches the auto-mark branch. This is the
+    // correct safety net: we don't want to silently add a board pointing
+    // at a non-existent feed circuit.
+    const session = makeSession();
+    // Note: NO circuits seeded — feed_circuit_ref=2 will not validate.
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+
+    const res = await d(
+      {
+        tool_call_id: 'tu_no_feed',
+        name: 'add_board',
+        input: {
+          designation: 'Garage CU',
+          board_type: 'sub_main',
+          parent_board_id: 'main',
+          feed_circuit_ref: 2,
+        },
+      },
+      {}
+    );
+
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content).error.code).toBe('hierarchy_invalid');
+    // Snapshot untouched on rejection — no add_board, no auto-mark, no
+    // boardOps emit.
+    expect(session.stateSnapshot.boards).toHaveLength(1);
+    expect(writes.boardOps).toHaveLength(0);
+  });
+
+  test('parent + feed_circuit_ref but composite-key seed under main → auto-mark NO-OP (lookup uses bare-numeric for main)', async () => {
+    // The single-main-fallback path is the typical production seed shape:
+    // iOS sends circuits keyed under composite `${board_id}::${ref}` even
+    // for the main board. getCircuitBucket reads from the bare-numeric key
+    // when the target id matches the main, so a composite-keyed-only main
+    // bucket isn't visible to the auto-mark lookup. We log the skip and
+    // proceed without the second op — the inspector can call
+    // mark_distribution_circuit explicitly later (or, more typically, the
+    // legacy main-board circuit will already be at the bare-numeric key
+    // because the iOS-side state mirror writes both shapes).
+    const session = makeSession();
+    session.stateSnapshot.circuits['main::2'] = {
+      board_id: 'main',
+      circuit: 2,
+      designation: 'Garage feed',
+    };
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+
+    const res = await d(
+      {
+        tool_call_id: 'tu_composite_only',
+        name: 'add_board',
+        input: {
+          designation: 'Garage CU',
+          board_type: 'sub_main',
+          parent_board_id: 'main',
+          feed_circuit_ref: 2,
+        },
+      },
+      {}
+    );
+
+    // The hierarchy validator is happy because it iterates the keyed
+    // object and synthesises a flat array (it sees 'main::2'). The
+    // auto-mark uses getCircuitBucket which is namespace-strict for main,
+    // so the actual bucket lookup misses and we log the skip.
+    expect(res.is_error).toBeFalsy();
+    expect(writes.boardOps).toHaveLength(1);
+    expect(writes.boardOps[0].op).toBe('add_board');
+
+    const skippedLogs = logger.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.add_board_auto_mark_dist_skipped'
+    );
+    expect(skippedLogs).toHaveLength(1);
+    expect(skippedLogs[0][1]).toMatchObject({
+      board_id: 'sub-1',
+      source_board_id: 'main',
+      circuit_ref: 2,
+      reason: 'feed_circuit_not_found',
+    });
+  });
+
+  test('sub_distribution + parent + feed_circuit_ref + bucket exists → also auto-marks (board_type-agnostic)', async () => {
+    // The atomic auto-mark fires for any board_type that supplies both
+    // parent_board_id and feed_circuit_ref. We don't gate on sub_main vs
+    // sub_distribution because the inspector's intent — "this board is
+    // fed from circuit X on the parent" — is identical regardless of
+    // multi-feed status.
+    const session = makeSession();
+    session.stateSnapshot.circuits[7] = { designation: 'Annexe feed' };
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
+
+    const res = await d(
+      {
+        tool_call_id: 'tu_subdist',
+        name: 'add_board',
+        input: {
+          designation: 'Annexe DB',
+          board_type: 'sub_distribution',
+          parent_board_id: 'main',
+          feed_circuit_ref: 7,
+        },
+      },
+      {}
+    );
+    expect(res.is_error).toBeFalsy();
+    expect(writes.boardOps).toHaveLength(2);
+    expect(writes.boardOps[1].op).toBe('mark_distribution_circuit');
+    expect(writes.boardOps[1].circuit_ref).toBe(7);
+    expect(session.stateSnapshot.circuits[7].is_distribution_circuit).toBe('yes');
+    expect(session.stateSnapshot.circuits[7].feeds_board_id).toBe('sub-1');
+  });
+
+  test('sub_distribution without parent_board_id → no auto-mark attempt, no skip log', async () => {
+    // The auto-mark is gated on resolvedParentId AND a numeric
+    // feed_circuit_ref. sub_distribution can be added without a parent
+    // (multi-feed boards have no single parent), and that path must not
+    // emit a noisy "skipped" log when no mark was ever expected.
+    const session = makeSession();
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+
+    await d(
+      {
+        tool_call_id: 'tu_no_parent',
+        name: 'add_board',
+        input: { designation: 'Standalone', board_type: 'sub_distribution' },
+      },
+      {}
+    );
+
+    expect(writes.boardOps).toHaveLength(1);
+    expect(writes.boardOps[0].op).toBe('add_board');
+    const skippedLogs = logger.info.mock.calls.filter(
+      (c) =>
+        c[0] === 'stage6.add_board_auto_mark_dist' ||
+        c[0] === 'stage6.add_board_auto_mark_dist_skipped'
+    );
+    expect(skippedLogs).toHaveLength(0);
   });
 });
