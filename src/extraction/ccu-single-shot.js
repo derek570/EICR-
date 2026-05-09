@@ -92,7 +92,26 @@ RULES
 - Read the printed amperage from the device face, not from any label nearby.
 - Trip-curve letter is printed beside the amperage on the device face. If you can't read it, return null.
 - For RCBOs and RCDs, look for the waveform symbol (∿ AC, ⬓ A, ⌒ F, ⊐ B). Return null if symbol is unclear.
-- Labels: transcribe verbatim including line breaks. Don't summarise.
+
+LABELS
+- Read the circuit description text from the label strip nearest the slot.
+- IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise.
+- Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next returns as "Upstairs Lighting", not two separate strings.
+- If a label is faded, illegible, or absent, return null. Never guess or copy from adjacent slots.
+- Normalise common abbreviations to title-case EICR terms:
+    Imm / Immersion / Hot Water / HW → "Water Heater"
+    Smokes / Smoke / S/D / Smoke Det → "Smoke Alarm"
+    Lts / Ltg → "Lights"
+    Skt / Skts → "Sockets" (keep any room prefix, e.g. "Kitchen Sockets")
+    CKR → "Cooker"
+    Shwr → "Shower"
+    Blr → "Boiler"
+    FF / F/F → "Fridge Freezer"
+    CH → "Central Heating"
+    UFH → "Underfloor Heating"
+    W/M / Washer → "Washing Machine"
+    T/D → "Tumble Dryer"
+    EV / EVCP → "Electric Vehicle"
 
 Return JSON only — no prose, no markdown fence.`;
 
@@ -115,6 +134,26 @@ RULES
 - Carrier colour is the strongest rating signal. Match white=5A, blue=15A, yellow=20A, red=30A, green=45A.
 - Main switch is a separate row or end position; if visible, use device_kind:"main_switch".
 - Empty slots in the carrier panel are blanks: device_kind:"blank".
+
+LABELS
+- Read the circuit description text from the label strip nearest the carrier.
+- IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise.
+- Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next returns as "Upstairs Lighting", not two separate strings.
+- If a label is faded, illegible, or absent, return null. Never guess or copy from adjacent slots.
+- Normalise common abbreviations to title-case EICR terms:
+    Imm / Immersion / Hot Water / HW → "Water Heater"
+    Smokes / Smoke / S/D / Smoke Det → "Smoke Alarm"
+    Lts / Ltg → "Lights"
+    Skt / Skts → "Sockets" (keep any room prefix, e.g. "Kitchen Sockets")
+    CKR → "Cooker"
+    Shwr → "Shower"
+    Blr → "Boiler"
+    FF / F/F → "Fridge Freezer"
+    CH → "Central Heating"
+    UFH → "Underfloor Heating"
+    W/M / Washer → "Washing Machine"
+    T/D → "Tumble Dryer"
+    EV / EVCP → "Electric Vehicle"
 
 Return JSON only — no prose, no markdown fence.`;
 
