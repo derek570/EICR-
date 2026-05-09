@@ -94,38 +94,38 @@ export default function SettingsHubPage() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
       {/* Hero profile header — avatar + name + role pills.
-       * `w-full` is load-bearing on iOS Safari: a `<section>` flex child
-       * with `overflow-hidden` (BFC trigger) fails to honour the parent's
-       * `align-items: stretch`, collapsing to ~min-content width. The
-       * symptom is the avatar peeking out of a tall narrow strip and the
-       * email being clipped. SectionGroup avoids this because its inner
-       * `flex` rewrites the cross-axis sizing path. Do not remove. */}
-      <section className="w-full overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div
-            aria-hidden
-            className="flex h-20 w-20 items-center justify-center rounded-full text-3xl font-bold text-white"
-            style={{
-              background:
-                'linear-gradient(135deg, var(--color-brand-blue), var(--color-brand-green))',
-            }}
-          >
-            {initial}
-          </div>
-          <div className="flex flex-col gap-1">
-            <h1 className="text-[20px] font-bold text-[var(--color-text-primary)]">{user.name}</h1>
-            <p className="text-[13px] text-[var(--color-text-secondary)]">{user.email}</p>
-          </div>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            {user.role ? (
-              <RoleBadge color="blue">{user.role[0].toUpperCase() + user.role.slice(1)}</RoleBadge>
-            ) : null}
-            {user.company_role && user.company_role !== 'employee' ? (
-              <RoleBadge color="green">
-                {user.company_role[0].toUpperCase() + user.company_role.slice(1)}
-              </RoleBadge>
-            ) : null}
-          </div>
+       * Mobile Safari quirk: a `<section>` flex child with
+       * `overflow-hidden` (BFC trigger) collapses to ~min-content width
+       * instead of stretching to its parent. `w-full` alone wasn't
+       * enough (see f159057 — the symptom returned). The reliable
+       * escape hatch is making the element itself a flex container, so
+       * Safari rewrites the cross-axis sizing path (the same reason
+       * SectionGroup never broke). `flex flex-col` here merges the
+       * outer wrapper with the previously-nested centring div. */}
+      <section className="flex w-full flex-col items-center gap-4 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-6 text-center">
+        <div
+          aria-hidden
+          className="flex h-20 w-20 items-center justify-center rounded-full text-3xl font-bold text-white"
+          style={{
+            background:
+              'linear-gradient(135deg, var(--color-brand-blue), var(--color-brand-green))',
+          }}
+        >
+          {initial}
+        </div>
+        <div className="flex flex-col gap-1">
+          <h1 className="text-[20px] font-bold text-[var(--color-text-primary)]">{user.name}</h1>
+          <p className="text-[13px] text-[var(--color-text-secondary)]">{user.email}</p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {user.role ? (
+            <RoleBadge color="blue">{user.role[0].toUpperCase() + user.role.slice(1)}</RoleBadge>
+          ) : null}
+          {user.company_role && user.company_role !== 'employee' ? (
+            <RoleBadge color="green">
+              {user.company_role[0].toUpperCase() + user.company_role.slice(1)}
+            </RoleBadge>
+          ) : null}
         </div>
       </section>
 
