@@ -100,6 +100,7 @@ import {
   resolveCircuitAnswer,
   resolveValueAnswer,
   resolveEnumAnswer,
+  resolveBoardIdAnswer,
 } from './stage6-answer-resolver.js';
 
 const require = createRequire(import.meta.url);
@@ -598,6 +599,102 @@ async function buildResolvedBody({
   // Runs BEFORE the no-pending-write fallback so it catches asks the
   // pre-fix path would have dropped to "legacy body".
   if (autoResolveWrite) {
+    // 2026-05-09 add-board hotfix — board-id resolve runs FIRST when the
+    // ask carries a board-reference context_field (`feeds_board_id` /
+    // `parent_board_id`). Pre-fix the value-resolver below was the only
+    // resolver to fire — it looked for numerics, found none in "It is."
+    // / "main", and escalated. Sessions 7113A114 + 399E69A7 (2026-05-09)
+    // showed the same question re-asked on every turn until the ask
+    // budget exhausted. The board-id resolver consumes "main" / "yes" /
+    // "the garage" / a literal id and echoes the resolved board id back
+    // to Sonnet via `match_status: 'board_resolved'` so the next turn
+    // can call mark_distribution_circuit / add_board with the right id.
+    //
+    // Why this is structured as an echo-to-Sonnet rather than an
+    // auto-write: `mark_distribution_circuit` writes are well-defined
+    // (we'd have circuit + feeds_board_id from context), but `add_board`
+    // writes need a designation we may not yet have collected. Echoing
+    // back keeps the contract uniform and lets Sonnet decide which tool
+    // to call next.
+    const boardsForResolver = Array.isArray(session?.stateSnapshot?.boards)
+      ? session.stateSnapshot.boards
+      : [];
+    const boardVerdict = resolveBoardIdAnswer({
+      userText: outcome.user_text,
+      contextField,
+      contextCircuit,
+      boards: boardsForResolver,
+    });
+    if (boardVerdict.kind === 'auto_resolve') {
+      if (logger?.info) {
+        logger.info('stage6.ask_user_board_id_resolved', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+          resolved_board_id: boardVerdict.resolved_board_id,
+          resolved_via: boardVerdict.resolved_via,
+        });
+      }
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: true,
+        match_status: 'board_resolved',
+        context_field: contextField,
+        context_circuit: contextCircuit,
+        resolved_board_id: boardVerdict.resolved_board_id,
+        resolved_via: boardVerdict.resolved_via,
+        available_boards: boardVerdict.available_boards,
+      };
+    }
+    if (boardVerdict.kind === 'cancel') {
+      if (logger?.info) {
+        logger.info('stage6.ask_user_board_id_resolution_cancelled', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+        });
+      }
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: false,
+        match_status: 'cancelled',
+        context_field: contextField,
+        context_circuit: contextCircuit,
+      };
+    }
+    if (boardVerdict.kind === 'escalate') {
+      if (logger?.info) {
+        logger.info('stage6.ask_user_board_id_resolution_escalated', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+          parsed_hint: boardVerdict.parsed_hint,
+        });
+      }
+      // Fall through with available_boards in the body so Sonnet has the
+      // listing in one round-trip rather than re-asking blind.
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: false,
+        match_status: 'board_resolution_escalated',
+        context_field: contextField,
+        context_circuit: contextCircuit,
+        parsed_hint: boardVerdict.parsed_hint,
+        available_boards: boardVerdict.available_boards,
+      };
+    }
+    // `no_board_context` — context_field isn't a board-id field; proceed
+    // to the existing enum / value resolvers below.
+
     // Bug B (session DC946608) — enum-resolve runs FIRST for select-typed
     // fields. resolveValueAnswer would happily extract "68001" as a digit
     // and write it through (silently failing schema validation downstream),

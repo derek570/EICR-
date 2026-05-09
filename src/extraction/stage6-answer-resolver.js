@@ -709,6 +709,308 @@ export function resolveValueAnswer({ userText, contextField, contextCircuit, sou
 }
 
 // ---------------------------------------------------------------------------
+// Board-id resolve (2026-05-09) — add-board hotfix from sessions 7113A114 +
+// 399E69A7
+// ---------------------------------------------------------------------------
+//
+// `feeds_board_id` and `parent_board_id` are board-reference fields whose
+// valid values are the literal ids of existing boards on the snapshot
+// (`main`, `sub-1`, or any UUID iOS supplied via jobState.boards[]). When
+// Sonnet emits an ask_user with one of these as `context_field`, the user's
+// reply is almost always one of:
+//
+//   - the main keyword:      "main", "the main", "main board", "the main board"
+//   - an affirmative reply:  "yes", "yes it is", "it is", "that's right",
+//                            "correct", "yeah" — only meaningful when the
+//                            ask was phrased as "...is it the main board?"
+//                            (single-main-board jobs).
+//   - a board designation:   "DB-1", "Garage", "the garage CU"
+//   - a literal id:          "main", "sub-1", "C58D2373-…"
+//   - cancel:                "skip", "never mind"
+//
+// Pre-fix the value-resolver was the only resolver to fire — it looked for
+// numerics, found none, and escalated with parsed_hint=no_numeric_in_reply.
+// Sonnet then re-asked, the user gave the same answer, infinite loop.
+//
+// `resolveBoardIdAnswer` is a PURE matcher — given the user's text, the
+// context field, and the boards[] array (all data, no I/O), it returns one
+// of:
+//
+//   { kind: 'auto_resolve', resolved_board_id, resolved_via, board }
+//     — caller echoes resolved_board_id back to Sonnet via match_status:
+//       'board_resolved' so the next turn can call mark_distribution_circuit
+//       / add_board with the literal id. resolved_via lets log analysis
+//       distinguish keyword vs designation vs id matches.
+//
+//   { kind: 'cancel' }
+//     — user opted out; same shape as the value-resolver cancel branch.
+//
+//   { kind: 'escalate', parsed_hint, available_boards }
+//     — caller falls through to legacy body so Sonnet can interpret the
+//       reply in context. available_boards is included so Sonnet can pick
+//       in a single retry.
+//
+//   { kind: 'no_board_context' }
+//     — context_field isn't a board-id field; caller proceeds to other
+//       resolvers as before.
+
+const BOARD_ID_CONTEXT_FIELDS = new Set(['feeds_board_id', 'parent_board_id']);
+
+// "Yes" affirmatives that, alongside a single-main-board snapshot, mean
+// "yes, it's the main board". Conservative: we ONLY auto-resolve these when
+// the snapshot has exactly one main candidate, otherwise escalate so the
+// model can disambiguate. The alternative (auto-resolving "yes" against
+// multi-main snapshots) would silently route to the wrong parent.
+const AFFIRMATIVE_PHRASES = [
+  'yes',
+  'yeah',
+  'yep',
+  'yup',
+  'correct',
+  'right',
+  'thats right',
+  "that's right",
+  'it is',
+  'yes it is',
+  'yes the main',
+  'yes the main board',
+  'main',
+  'the main',
+  'main board',
+  'the main board',
+  'the main one',
+  'mains',
+  'the mains',
+];
+
+// Explicit main-keyword patterns. Subset of AFFIRMATIVE_PHRASES that don't
+// need the single-main-board precondition because they NAME the main board
+// directly. When the snapshot has exactly one main board, both sets resolve
+// identically — but for multi-main snapshots, only this set wins (and even
+// then we still need a single main candidate to route confidently).
+const MAIN_KEYWORD_PHRASES = new Set([
+  'main',
+  'the main',
+  'main board',
+  'the main board',
+  'mains',
+  'the mains',
+  'the main one',
+]);
+
+/**
+ * Pull the main board out of a boards[] array. Mirrors the resolution order
+ * in stage6-multi-board-shape.js#getMainBoardId, but operates on a passed-in
+ * array so the resolver stays pure (no snapshot import).
+ */
+function findMainBoard(boards) {
+  if (!Array.isArray(boards)) return null;
+  const explicit = boards.find((b) => b && b.board_type === 'main');
+  if (explicit) return explicit;
+  // Legacy seeds may omit board_type — fall back to "no board_type means main".
+  const implicit = boards.find((b) => b && !b.board_type);
+  if (implicit) return implicit;
+  return null;
+}
+
+/**
+ * Match a designation against the boards[] array. Same algorithm as
+ * `matchDesignation` for circuits: exact (case-insensitive) wins over
+ * substring; multiple matches at either level are ambiguous.
+ *
+ * Normalisation: both sides are reduced to a space-separated alphanumeric
+ * residue so "DB-1" matches the cleaned reply "db 1" — the designation
+ * cleaner runs the same `[a-z0-9]+` split as `cleanReplyForDesignation`,
+ * eliminating hyphen / underscore / case-only mismatches that would
+ * otherwise force escalation.
+ */
+function normaliseDesignation(text) {
+  if (typeof text !== 'string') return '';
+  const words = text.toLowerCase().match(/[a-z0-9]+/g) || [];
+  return words.join(' ');
+}
+
+function matchBoardDesignation(cleaned, boards) {
+  if (!Array.isArray(boards) || boards.length === 0 || !cleaned) {
+    return { kind: 'no_match', boards: [] };
+  }
+  const exact = [];
+  const substr = [];
+  for (const b of boards) {
+    if (!b || typeof b.designation !== 'string') continue;
+    const d = normaliseDesignation(b.designation);
+    if (!d) continue;
+    if (d === cleaned) {
+      exact.push(b);
+      continue;
+    }
+    if (d.includes(cleaned) || cleaned.includes(d)) {
+      substr.push(b);
+    }
+  }
+  if (exact.length === 1) return { kind: 'exact', boards: exact };
+  if (exact.length > 1) return { kind: 'ambiguous', boards: exact };
+  if (substr.length === 1) return { kind: 'unique_substring', boards: substr };
+  if (substr.length > 1) return { kind: 'ambiguous', boards: substr };
+  return { kind: 'no_match', boards: [] };
+}
+
+/**
+ * Resolve an ask_user reply against the boards[] array on the snapshot.
+ *
+ * @param {object} args
+ * @param {string} args.userText             inspector reply
+ * @param {string|null} args.contextField    'feeds_board_id' / 'parent_board_id' / other
+ * @param {number|null} args.contextCircuit  carried through but unused for matching
+ * @param {Array<object>} args.boards        snapshot.boards[]
+ * @returns {object}
+ */
+export function resolveBoardIdAnswer({ userText, contextField, boards }) {
+  if (!BOARD_ID_CONTEXT_FIELDS.has(contextField)) {
+    return { kind: 'no_board_context' };
+  }
+  const text = String(userText ?? '').trim();
+  if (!text) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'empty_reply',
+      available_boards: summariseBoards(boards),
+    };
+  }
+  const lower = text.toLowerCase();
+  const stripped = stripPunct(lower);
+
+  if (CANCEL_PHRASES.includes(stripped)) {
+    return { kind: 'cancel' };
+  }
+
+  // 1) Main-keyword match — "main" / "the main" / "main board" etc. Resolves
+  //    to the snapshot's main board. Runs BEFORE literal-id walk so a user
+  //    saying "main" against a single-main snapshot is logged as
+  //    `main_keyword` rather than `literal_id` (the synthetic default
+  //    happens to use 'main' as its id; the user typed the keyword, not
+  //    the id). Multi-main snapshots escalate here so the model
+  //    disambiguates rather than the resolver guessing.
+  if (MAIN_KEYWORD_PHRASES.has(stripped)) {
+    const main = findMainBoard(boards);
+    if (main && typeof main.id === 'string') {
+      const mains = (boards ?? []).filter((b) => b && (b.board_type === 'main' || !b.board_type));
+      if (mains.length === 1) {
+        return {
+          kind: 'auto_resolve',
+          resolved_board_id: main.id,
+          resolved_via: 'main_keyword',
+          board: main,
+          available_boards: summariseBoards(boards),
+        };
+      }
+      return {
+        kind: 'escalate',
+        parsed_hint: 'main_keyword_but_multiple_mains',
+        available_boards: summariseBoards(boards),
+      };
+    }
+  }
+
+  // 2) Literal id match — UUIDs ("C58D2373-…"), `sub-N`, etc. Runs after
+  //    the main-keyword path so a user saying "main" doesn't hit this
+  //    branch on a single-main synthetic-id snapshot.
+  if (Array.isArray(boards)) {
+    const literal = boards.find((b) => {
+      if (!b || typeof b.id !== 'string') return false;
+      if (b.id === text) return true;
+      // Synthetic ids are short ascii; case-insensitive compare is safe.
+      // UUIDs are 36 chars with dashes — also case-insensitive per RFC 4122.
+      return b.id.toLowerCase() === lower;
+    });
+    if (literal) {
+      return {
+        kind: 'auto_resolve',
+        resolved_board_id: literal.id,
+        resolved_via: 'literal_id',
+        board: literal,
+        available_boards: summariseBoards(boards),
+      };
+    }
+  }
+
+  // 3) Affirmative reply — only confident with exactly one main board.
+  //    Pre-condition: the model phrased the ask as a yes/no on the main
+  //    ("Is the parent the main board?") and the user assented. We can't
+  //    verify the question shape here, so we use the boards[] as the
+  //    proxy: a job with exactly one main has only one valid affirmative
+  //    target.
+  if (AFFIRMATIVE_PHRASES.includes(stripped)) {
+    const mains = Array.isArray(boards)
+      ? boards.filter((b) => b && (b.board_type === 'main' || !b.board_type))
+      : [];
+    if (mains.length === 1 && typeof mains[0].id === 'string') {
+      return {
+        kind: 'auto_resolve',
+        resolved_board_id: mains[0].id,
+        resolved_via: 'affirmative_single_main',
+        board: mains[0],
+        available_boards: summariseBoards(boards),
+      };
+    }
+    // Otherwise escalate — "yes" against a multi-main snapshot is
+    // structurally ambiguous.
+    return {
+      kind: 'escalate',
+      parsed_hint: mains.length === 0 ? 'affirmative_no_main_board' : 'affirmative_multiple_mains',
+      available_boards: summariseBoards(boards),
+    };
+  }
+
+  // 4) Designation match. Re-use the cleaned-residue strip from circuit
+  //    matching (drops 'circuit', 'the', 'a', stop-words). Two-char floor
+  //    matches the circuit resolver — 1-char would substring-hit
+  //    everything.
+  const cleaned = cleanReplyForDesignation(lower);
+  if (cleaned.length >= 2) {
+    const match = matchBoardDesignation(cleaned, boards);
+    if (match.kind === 'exact' || match.kind === 'unique_substring') {
+      return {
+        kind: 'auto_resolve',
+        resolved_board_id: match.boards[0].id,
+        resolved_via: 'designation_match',
+        board: match.boards[0],
+        available_boards: summariseBoards(boards),
+      };
+    }
+    if (match.kind === 'ambiguous') {
+      return {
+        kind: 'escalate',
+        parsed_hint: `ambiguous_board_designation:${match.boards.map((b) => b.id).join(',')}`,
+        available_boards: summariseBoards(boards),
+      };
+    }
+  }
+
+  return {
+    kind: 'escalate',
+    parsed_hint: 'no_board_match',
+    available_boards: summariseBoards(boards),
+  };
+}
+
+/**
+ * Compact representation of boards[] for the available_boards body field.
+ * Mirrors the BOARDS: section in buildStateSnapshotMessage so Sonnet sees
+ * the same shape on both surfaces.
+ */
+function summariseBoards(boards) {
+  if (!Array.isArray(boards)) return [];
+  return boards
+    .filter((b) => b && typeof b.id === 'string')
+    .map((b) => ({
+      id: b.id,
+      designation: typeof b.designation === 'string' ? b.designation : null,
+      board_type: typeof b.board_type === 'string' ? b.board_type : null,
+    }));
+}
+
+// ---------------------------------------------------------------------------
 // Enum-resolve (2026-05-06) — Bug B fix from session DC946608
 // ---------------------------------------------------------------------------
 //
