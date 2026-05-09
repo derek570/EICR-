@@ -279,6 +279,153 @@ describe('resolveMainSwitchSide — Stage 3 path', () => {
   });
 });
 
+describe('resolveMainSwitchSide — single-cluster sanity escape (interior cluster + confident Stage 1)', () => {
+  // Background: 2026-05-09 Hager field-test failure. gpt-5.5 tagged a single
+  // main_switch cluster at slots [6, 7] on a 16-slot Hager board with a
+  // schedule-strip label OCR'd as containing "Mains". Stage 1 (Sonnet,
+  // confidence 0.88) said the main switch was on the RIGHT. The pre-fix
+  // resolver took the single-cluster path and returned LEFT, inverting BS
+  // 7671 numbering. The override demotes interior single clusters when
+  // Stage 1 is confident enough to push back.
+
+  test('Hager 13:13 case — interior cluster [6,7] in 16 slots, Stage 1 right @ 0.88 → override to right', () => {
+    const slots = Array.from({ length: 16 }, (_, i) =>
+      i === 6 || i === 7 ? ms(i, 'Mains') : mcb(i)
+    );
+    const out = resolveMainSwitchSide({
+      slots,
+      slotCount: 16,
+      stage1Position: 'right',
+      stage1Confidence: 0.88,
+      stage2Offset: null,
+    });
+    expect(out.mainSwitchSide).toBe('right');
+    expect(out.mainSwitchSideSource).toBe('stage1-classifier');
+    expect(out.diagnostic.stage3DisambiguationRule).toBe('stage1-override-interior-cluster');
+    expect(out.diagnostic.stage3CandidateCount).toBe(2);
+    expect(out.diagnostic.stage3ClusterCount).toBe(1);
+    expect(out.diagnostic.stage1Confidence).toBe(0.88);
+    // Resolved side is "right" — agrees with Stage 1.
+    expect(out.diagnostic.agreementWithStage1).toBe(true);
+  });
+
+  test('Hager 10:24 case — same interior cluster, mirror direction (Stage 1 left @ 0.88) → override to left', () => {
+    // Symmetry check: cluster mid-index 6.5 is on the LEFT of the rail
+    // halfway (7.5). If Stage 1 said LEFT, it would AGREE with the cluster
+    // and no override should fire. This test pins the symmetric case where
+    // Stage 1 says RIGHT against a left-leaning cluster — the actual Hager
+    // failure shape — to make sure we don't flip when Stage 1 is silent
+    // about the side the cluster already picks.
+    const slots = Array.from({ length: 16 }, (_, i) =>
+      i === 6 || i === 7 ? ms(i, 'Mains: 100A') : mcb(i)
+    );
+    const out = resolveMainSwitchSide({
+      slots,
+      slotCount: 16,
+      stage1Position: 'left', // agrees with cluster's left-leaning side
+      stage1Confidence: 0.88,
+      stage2Offset: null,
+    });
+    // No override — Stage 1 agrees, single-cluster rule wins as before.
+    expect(out.mainSwitchSide).toBe('left');
+    expect(out.mainSwitchSideSource).toBe('stage3');
+    expect(out.diagnostic.stage3DisambiguationRule).toBe('single-cluster');
+  });
+
+  test('edge cluster [0,1] disagreeing with confident Stage 1 → NO override (cluster wins)', () => {
+    // Edge clusters are where real domestic main switches live. Trust Stage
+    // 3 unconditionally there — the override is for INTERIOR clusters only.
+    // edgeDistance = 0.5 → not > 2 → no override.
+    const out = resolveMainSwitchSide({
+      slots: [ms(0, 'Main Switch'), ms(1), mcb(2), mcb(3), mcb(4), mcb(5)],
+      slotCount: 12,
+      stage1Position: 'right',
+      stage1Confidence: 0.95, // very confident, but cluster is at edge
+      stage2Offset: null,
+    });
+    expect(out.mainSwitchSide).toBe('left');
+    expect(out.mainSwitchSideSource).toBe('stage3');
+    expect(out.diagnostic.stage3DisambiguationRule).toBe('single-cluster');
+  });
+
+  test('interior cluster but Stage 1 confidence below 0.80 → NO override (Stage 3 wins)', () => {
+    // Low-confidence Stage 1 isn't trusted to overrule Stage 3 even when
+    // the cluster is interior. Picks the low-confidence threshold of 0.80
+    // (just below) to confirm the gate.
+    const slots = Array.from({ length: 16 }, (_, i) =>
+      i === 6 || i === 7 ? ms(i, 'Mains') : mcb(i)
+    );
+    const out = resolveMainSwitchSide({
+      slots,
+      slotCount: 16,
+      stage1Position: 'right',
+      stage1Confidence: 0.79, // just below the 0.80 floor
+      stage2Offset: null,
+    });
+    expect(out.mainSwitchSide).toBe('left');
+    expect(out.mainSwitchSideSource).toBe('stage3');
+    expect(out.diagnostic.stage3DisambiguationRule).toBe('single-cluster');
+    expect(out.diagnostic.agreementWithStage1).toBe(false); // disagreement still recorded
+  });
+
+  test('interior cluster, Stage 1 confidence missing (null) → NO override', () => {
+    // Defensive: confidence is optional in the resolver signature; if the
+    // caller hasn't plumbed it through we must NOT silently treat that as
+    // "infinitely confident". null → don't fire the override.
+    const slots = Array.from({ length: 16 }, (_, i) =>
+      i === 6 || i === 7 ? ms(i, 'Mains') : mcb(i)
+    );
+    const out = resolveMainSwitchSide({
+      slots,
+      slotCount: 16,
+      stage1Position: 'right',
+      stage1Confidence: null,
+      stage2Offset: null,
+    });
+    expect(out.mainSwitchSide).toBe('left');
+    expect(out.mainSwitchSideSource).toBe('stage3');
+    expect(out.diagnostic.stage3DisambiguationRule).toBe('single-cluster');
+  });
+
+  test('interior cluster, Stage 1 confident, but Stage 1 says "none" → NO override', () => {
+    // "none" carries no directional information — can't be used to flip
+    // the cluster's verdict. Override is gated on a real left/right vote.
+    const slots = Array.from({ length: 16 }, (_, i) =>
+      i === 6 || i === 7 ? ms(i, 'Mains') : mcb(i)
+    );
+    const out = resolveMainSwitchSide({
+      slots,
+      slotCount: 16,
+      stage1Position: 'none',
+      stage1Confidence: 0.95,
+      stage2Offset: null,
+    });
+    expect(out.mainSwitchSide).toBe('left');
+    expect(out.mainSwitchSideSource).toBe('stage3');
+    expect(out.diagnostic.stage3DisambiguationRule).toBe('single-cluster');
+  });
+
+  test('interior cluster exactly at the 2-slot edge-distance threshold → NO override (strict >, not >=)', () => {
+    // [2, 3] in 16 slots → midIdx 2.5 → edge distance min(2.5, 12.5) = 2.5,
+    // which is > 2 so this WOULD trigger. Use [1, 2] instead → midIdx 1.5
+    // → edge distance 1.5, NOT > 2 → no override even with confident Stage 1.
+    // This pins the strict-> threshold so future tuning is intentional.
+    const slots = Array.from({ length: 16 }, (_, i) =>
+      i === 1 || i === 2 ? ms(i, 'Mains') : mcb(i)
+    );
+    const out = resolveMainSwitchSide({
+      slots,
+      slotCount: 16,
+      stage1Position: 'right',
+      stage1Confidence: 0.95,
+      stage2Offset: null,
+    });
+    expect(out.mainSwitchSide).toBe('left');
+    expect(out.mainSwitchSideSource).toBe('stage3');
+    expect(out.diagnostic.stage3DisambiguationRule).toBe('single-cluster');
+  });
+});
+
 describe('resolveMainSwitchSide — Stage 2 fallback', () => {
   test('no Stage 3 candidates, stage2Offset="right-edge" → right via stage2-rewireable', () => {
     const out = resolveMainSwitchSide({
@@ -343,6 +490,7 @@ describe('resolveMainSwitchSide — Stage 1 fallback', () => {
       stage3Clusters: [],
       stage3DisambiguationRule: null,
       stage1Position: null,
+      stage1Confidence: null,
       stage2Offset: null,
       agreementWithStage1: null,
     });

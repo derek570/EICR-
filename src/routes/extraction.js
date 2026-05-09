@@ -2517,6 +2517,10 @@ router.post(
             slots: analysis.slots || [],
             slotCount: (analysis.slots || []).length,
             stage1Position: boardClassification?.mainSwitchPosition || null,
+            stage1Confidence:
+              typeof boardClassification?.confidence === 'number'
+                ? boardClassification.confidence
+                : null,
             stage2Offset: geometricResult.mainSwitchOffset || null,
           });
           logger.info('CCU mainSwitchSide resolved', {
