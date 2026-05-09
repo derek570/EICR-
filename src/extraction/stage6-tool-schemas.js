@@ -907,11 +907,12 @@ const markDistributionCircuit = makeTool({
 const selectBoard = makeTool({
   name: 'select_board',
   description:
-    'Set the current board for subsequent circuit operations. Use when the inspector indicates they have moved to a different consumer unit they previously added. Pass the EXACT board_id (e.g. "main", "sub-1", "sub-2"). Designations like "DB-2" or "Garage CU" are NOT accepted by this version — pass the id from the most recent add_board response or the snapshot.',
+    'Set the current board for subsequent circuit operations. Use when the inspector indicates they have moved to a different consumer unit they previously added. Copy the EXACT id from the BOARDS section of the snapshot, or from the most recent add_board response. The id may be a UUID (existing main board, e.g. "C58D2373-…") or a server-synthesised string ("sub-1", "sub-2") — never invent ids. Designations like "DB-2" or "Garage CU" are NOT accepted by this version.',
   properties: {
     board_id: {
       type: 'string',
-      description: 'Exact board id (e.g. "main", "sub-1"). Designations are not accepted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot or the most recent add_board response. Format varies (UUID for the original main; "sub-N" for boards added this session). Designations are not accepted.',
     },
   },
   required: ['board_id'],
@@ -936,7 +937,7 @@ const selectBoard = makeTool({
 const addBoard = makeTool({
   name: 'add_board',
   description:
-    'Add a new consumer unit / distribution board to the job. Use when the inspector mentions a NEW consumer unit, sub-distribution board, or sub-main. The new board becomes the current board for subsequent reads/writes. Do NOT call for the main board — the session always starts with one main board already.',
+    'Add a new consumer unit / distribution board to the job. Use when the inspector mentions a NEW consumer unit, sub-distribution board, or sub-main. The new board becomes the current board for subsequent reads/writes. When both parent_board_id and feed_circuit_ref are supplied (e.g. "garage CU fed from circuit 2 on the main"), the server ALSO marks that circuit as a distribution circuit feeding the new board atomically — do NOT chain a separate mark_distribution_circuit call after this. Do NOT call for the main board — the session always starts with one main board already.',
   properties: {
     designation: {
       type: 'string',
@@ -951,12 +952,12 @@ const addBoard = makeTool({
     parent_board_id: {
       type: 'string',
       description:
-        'ID of the parent board this is fed from — copy the EXACT id from the BOARDS section of the snapshot (e.g. "main", or a UUID like "C58D2373-…"). Do NOT invent ids. REQUIRED for sub_main when more than one parent candidate exists; if the snapshot has exactly one main board, the server fills it in automatically when omitted. Optional for sub_distribution; ignored for main.',
+        'ID of the parent board this is fed from — copy the EXACT id from the BOARDS section of the snapshot. Format varies: the original main board id is typically a UUID (e.g. "C58D2373-…"); boards added this session use server-synthesised strings ("sub-1", "sub-2"). Do NOT invent ids. REQUIRED for sub_main when more than one parent candidate exists; if the snapshot has exactly one main board, the server fills it in automatically when omitted. Optional for sub_distribution; ignored for main.',
     },
     feed_circuit_ref: {
       type: 'integer',
       description:
-        'Circuit ref on the parent board that feeds this one (e.g. 4). Required when parent_board_id is set.',
+        'Circuit ref on the parent board that feeds this one (e.g. 4). Required when parent_board_id is set. When both are present the server automatically marks that circuit as a distribution circuit feeding the new board, so a separate mark_distribution_circuit call is unnecessary and should be omitted.',
     },
   },
   required: ['designation', 'board_type'],
