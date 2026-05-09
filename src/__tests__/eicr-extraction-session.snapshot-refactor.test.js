@@ -689,11 +689,17 @@ describe('"Work on Board" Phase A.4 — dual-shape snapshot serialiser', () => {
     expect(snapshot).toContain('prospective_fault_current');
     expect(snapshot).toContain('1.5');
     expect(snapshot).toMatch(/^0:\{/m);
-    // Skeleton keys MUST be filtered — emitting `id` / `designation` /
-    // `board_type` would diverge the snapshot byte-shape from main.
-    expect(snapshot).not.toContain('"id":"sub-1"');
-    expect(snapshot).not.toContain('"designation":"DB-2"');
-    expect(snapshot).not.toContain('"board_type":"sub-distribution"');
+    // Skeleton keys MUST be filtered FROM THE SUPPLY LINE (`0:{...}`) —
+    // emitting `id` / `designation` / `board_type` there would diverge
+    // the supply byte-shape from main. Note: the BOARDS section
+    // (added 2026-05-09 add-board hotfix) DOES legitimately emit those
+    // keys as a separate listing, so the assertion must be scoped to
+    // the supply line specifically.
+    const supplyLine = snapshot.split('\n').find((l) => l.startsWith('0:{'));
+    expect(supplyLine).toBeDefined();
+    expect(supplyLine).not.toContain('"id":"sub-1"');
+    expect(supplyLine).not.toContain('"designation":"DB-2"');
+    expect(supplyLine).not.toContain('"board_type":"sub-distribution"');
   });
 
   test('sub-board: empty BoardInfo (skeleton only) does NOT emit a supply line', () => {

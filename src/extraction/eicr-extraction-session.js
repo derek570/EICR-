@@ -2205,6 +2205,26 @@ export class EICRExtractionSession {
     const hasObs = this.stateSnapshot.observations.length > 0;
     const hasAlerts = this.stateSnapshot.validation_alerts.length > 0;
     const hasSchedule = !!this.circuitSchedule;
+    // 2026-05-09 add-board hotfix — surface boards[] (id + designation +
+    // board_type + parent_board_id + feed_circuit_ref) so Sonnet can pick
+    // a real id when calling add_board / select_board / mark_distribution_circuit.
+    // Pre-fix the snapshot exposed circuits but never the boards array, so
+    // Sonnet had to either omit parent_board_id (parent_required reject) or
+    // invent one (parent_not_found reject). Smoking gun: sessions 7113A114 +
+    // 399E69A7 (2026-05-09) — 10+ add_board rejections in two consecutive
+    // recordings on the same job.
+    //
+    // Gate threshold: 2+ boards. Single-board jobs (the common case) don't
+    // need the BOARDS section because (a) add_board on sub_main has a
+    // single-main fallback in dispatchAddBoard that auto-fills the parent,
+    // (b) the board-id ask-resolver handles "main" / "yes" / "it is" via
+    // the same single-main fallback, and (c) select_board /
+    // mark_distribution_circuit are no-ops on single-board jobs (no other
+    // target). Keeping the threshold at 2 preserves the empty-snapshot
+    // canary tests (synth default main alone keeps the snapshot null) and
+    // saves prompt bytes on every single-board recording.
+    const hasBoards =
+      Array.isArray(this.stateSnapshot.boards) && this.stateSnapshot.boards.length >= 2;
     // Stage 6 Plan 04-08 r2-#1 — re-home anti-re-ask + dedup digests into
     // the cached prefix. Before r2 these lived in buildUserMessage but were
     // suppressed in non-off modes by Plan 04-02's refactor without being
@@ -2229,7 +2249,8 @@ export class EICRExtractionSession {
       !hasAlerts &&
       !hasSchedule &&
       !hasAsked &&
-      !hasExtractedObs
+      !hasExtractedObs &&
+      !hasBoards
     ) {
       return null;
     }
@@ -2318,6 +2339,50 @@ export class EICRExtractionSession {
       parts.push(
         `CIRCUIT SCHEDULE (confirmed values — do NOT question these):\n${scheduleContent}`
       );
+    }
+
+    // 2026-05-09 add-board hotfix — emit the boards[] listing as a structured
+    // section so Sonnet has the literal ids, designations, and types needed
+    // for add_board.parent_board_id, select_board.board_id, and
+    // mark_distribution_circuit.feeds_board_id.
+    //
+    // Format is intentionally compact + JSON-per-line so Sonnet can copy an
+    // id verbatim. The active board is annotated so subsequent reads/writes
+    // can route correctly. Designations are user-supplied free text — wrap
+    // them inline with USER_TEXT markers per the snapshot security contract
+    // (the same wrapping circuit designations get below). board_type +
+    // parent_board_id + feed_circuit_ref are server-canonical (enum / id /
+    // integer), so no wrap needed.
+    if (hasBoards) {
+      const boardLines = [];
+      const activeBoardId = currentBoardId;
+      for (const board of this.stateSnapshot.boards) {
+        if (!board || typeof board !== 'object' || typeof board.id !== 'string') continue;
+        const compact = { id: board.id };
+        if (typeof board.designation === 'string' && board.designation !== '') {
+          compact.designation = wrapSnapshotUserTextInline(board.designation);
+        }
+        if (typeof board.board_type === 'string' && board.board_type !== '') {
+          compact.board_type = board.board_type;
+        }
+        if (typeof board.parent_board_id === 'string' && board.parent_board_id !== '') {
+          compact.parent_board_id = board.parent_board_id;
+        }
+        if (Number.isInteger(board.feed_circuit_ref)) {
+          compact.feed_circuit_ref = board.feed_circuit_ref;
+        }
+        if (board.id === activeBoardId) {
+          compact.active = true;
+        }
+        boardLines.push(JSON.stringify(compact));
+      }
+      if (boardLines.length > 0) {
+        parts.push(
+          `BOARDS (use these EXACT ids when calling add_board.parent_board_id, ` +
+            `select_board.board_id, or mark_distribution_circuit.feeds_board_id):\n` +
+            boardLines.join('\n')
+        );
+      }
     }
 
     // Build compact extracted readings section.
