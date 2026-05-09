@@ -495,9 +495,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               ? crypto.randomUUID()
               : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
           const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
+          // `regexResults` is the iOS-parity pre-extraction wire field
+          // (matches Swift ServerWebSocketService.swift:506-507). Wire-only
+          // here — populated in the next commit by the TranscriptFieldMatcher
+          // adapter, behind the NEXT_PUBLIC_REGEX_HINTS_ENABLED flag.
+          // Backend (sonnet-stream.js:3434) falls through to its
+          // entry.lastRegexResults fallback when undefined, so this commit
+          // is wire-safe with no behaviour change.
           sonnetRef.current?.sendTranscript(text, {
             confirmationsEnabled: getConfirmationModeEnabled(),
             utteranceId,
+            regexResults: undefined,
           });
           if (inFlightToolCallId) {
             sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);

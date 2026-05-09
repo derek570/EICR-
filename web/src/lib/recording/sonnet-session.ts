@@ -18,6 +18,7 @@
 
 import { api } from '../api-client';
 import { getToken } from '../auth';
+import type { RegexResultsWire } from './regex-match-result';
 
 export type SonnetConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -607,10 +608,23 @@ export class SonnetSession {
    *
    *  `confirmationsEnabled` mirrors iOS — sent as the `confirmations_
    *  enabled` wire flag so Sonnet only generates a confirmations[]
-   *  array when the inspector has the toggle on. */
+   *  array when the inspector has the toggle on.
+   *
+   *  `regexResults` mirrors iOS `ServerWebSocketService.sendTranscript`
+   *  (line 506-507): the array of pre-extracted field hints from the
+   *  client-side TranscriptFieldMatcher. Backend reads it at
+   *  `src/extraction/sonnet-stream.js:3416-3443` for the chitchat-pause
+   *  wake gate, counter reset, and overtake classifier. Omitted (or
+   *  empty) → backend falls through to its `entry.lastRegexResults`
+   *  fallback (line 3434), so an absent field is wire-safe. Per-entry
+   *  shape is `{field, value?}` matching iOS — see regex-match-result.ts. */
   sendTranscript(
     text: string,
-    options?: { confirmationsEnabled?: boolean; utteranceId?: string }
+    options?: {
+      confirmationsEnabled?: boolean;
+      utteranceId?: string;
+      regexResults?: RegexResultsWire;
+    }
   ): void {
     const trimmed = text?.trim();
     if (!trimmed) return;
@@ -621,6 +635,9 @@ export class SonnetSession {
     };
     if (options?.utteranceId) {
       msg.utterance_id = options.utteranceId;
+    }
+    if (options?.regexResults && options.regexResults.length > 0) {
+      msg.regexResults = options.regexResults;
     }
     this.sendBuffered(msg);
   }
