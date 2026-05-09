@@ -11,6 +11,11 @@ import {
   type SonnetQuestion,
 } from './recording/sonnet-session';
 import { applyExtractionToJob, applyObservationUpdate } from './recording/apply-extraction';
+import { applyRegexMatchToJob } from './recording/apply-regex-match';
+import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
+import { FieldSourceTracker } from './recording/field-source-tracker';
+import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
+import { normalise as normaliseTranscriptText } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
 import { SileroVAD } from './recording/silero-vad';
@@ -262,6 +267,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const micRef = React.useRef<MicCaptureHandle | null>(null);
   const deepgramRef = React.useRef<DeepgramService | null>(null);
   const sonnetRef = React.useRef<SonnetSession | null>(null);
+  // iOS-parity pre-extraction state. The matcher is stateful — it owns
+  // `lastProcessedOffset` for sliding-window scanning + a 30s active-
+  // circuit-ref window for ring-continuity carryover. Instantiated in
+  // `openSonnet` (so a fresh session starts with an empty matcher) and
+  // nullified in `teardownSonnet`. Mirrors iOS DeepgramRecordingViewModel
+  // where the matcher is owned by the ViewModel for the session lifetime.
+  // Cumulative transcript is the contract the matcher requires (every
+  // call receives all finals so far joined by spaces) — feeding isolated
+  // utterances breaks the offset arithmetic and silently suppresses
+  // cross-utterance matches like ring-continuity carryover (codex
+  // review finding F2).
+  const regexMatcherRef = React.useRef<TranscriptFieldMatcher | null>(null);
+  const fieldSourceTrackerRef = React.useRef<FieldSourceTracker | null>(null);
+  const cumulativeTranscriptRef = React.useRef<string>('');
   // Phase 4e — 3-second pre-wake PCM ring buffer + state machine driving
   // doze/sleep transitions. The ring buffer is always written while the
   // mic is live so a wake from sleeping can replay the words the
@@ -333,6 +352,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     sonnetRef.current?.disconnect();
     sonnetRef.current = null;
     setSonnetState('disconnected');
+    // Tear down the matcher state alongside the WS session — both have
+    // the same lifetime by design. reset() clears lastProcessedOffset
+    // and activeCircuitRef so a brand-new session starts fresh; we then
+    // null the ref so any stray caller hits an explicit "no matcher"
+    // path instead of a stale offset.
+    regexMatcherRef.current?.reset();
+    regexMatcherRef.current = null;
+    fieldSourceTrackerRef.current = null;
+    cumulativeTranscriptRef.current = '';
   }, []);
 
   const teardownSleep = React.useCallback(() => {
@@ -495,17 +523,52 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               ? crypto.randomUUID()
               : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
           const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
-          // `regexResults` is the iOS-parity pre-extraction wire field
-          // (matches Swift ServerWebSocketService.swift:506-507). Wire-only
-          // here — populated in the next commit by the TranscriptFieldMatcher
-          // adapter, behind the NEXT_PUBLIC_REGEX_HINTS_ENABLED flag.
-          // Backend (sonnet-stream.js:3434) falls through to its
-          // entry.lastRegexResults fallback when undefined, so this commit
-          // is wire-safe with no behaviour change.
+          // iOS-parity pre-extraction pipeline. Mirrors Swift
+          // DeepgramRecordingViewModel.handleFinalTranscript at the
+          // matcher → field-source-tracker → buildRegexSummary boundary.
+          // Gated on NEXT_PUBLIC_REGEX_HINTS_ENABLED so a misfiring
+          // pattern in prod can be killed via Vercel env var without a
+          // redeploy — see PLAN validation/rollout.
+          let regexResults: RegexResultsWire | undefined = undefined;
+          if (
+            process.env.NEXT_PUBLIC_REGEX_HINTS_ENABLED === '1' &&
+            regexMatcherRef.current &&
+            fieldSourceTrackerRef.current
+          ) {
+            const normalised = normaliseTranscriptText(text);
+            cumulativeTranscriptRef.current +=
+              (cumulativeTranscriptRef.current ? ' ' : '') + normalised;
+            const matchResult = regexMatcherRef.current.match(
+              cumulativeTranscriptRef.current,
+              jobRef.current
+            );
+            const applied = applyRegexMatchToJob(
+              jobRef.current,
+              matchResult,
+              fieldSourceTrackerRef.current
+            );
+            if (applied) {
+              updateJobRef.current(applied.patch);
+              jobRef.current = {
+                ...jobRef.current,
+                ...(applied.patch as Partial<typeof jobRef.current>),
+              };
+              if (applied.changedKeys.length > 0) {
+                liveFill.markUpdated(applied.changedKeys);
+              }
+            }
+            const writtenKeys = fieldSourceTrackerRef.current.consumeTurnWrites();
+            regexResults = buildRegexSummary(writtenKeys, jobRef.current);
+          }
+          // Pass the ORIGINAL text to Sonnet (not the normalised form) —
+          // iOS sends unnormalised text on the wire and the regex
+          // summary alongside (Swift sendTranscript:494,504). Backend
+          // has its own dialogue-engine normalisation; double-normalising
+          // would diverge from iOS.
           sonnetRef.current?.sendTranscript(text, {
             confirmationsEnabled: getConfirmationModeEnabled(),
             utteranceId,
-            regexResults: undefined,
+            regexResults,
           });
           if (inFlightToolCallId) {
             sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
@@ -619,6 +682,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const openSonnet = React.useCallback(() => {
     const sessionId = sessionIdRef.current;
     const jobId = jobRef.current.id;
+    // Instantiate the matcher + tracker alongside the WS session. Try/
+    // catch the matcher construction so a Safari < 16.4 lookbehind-throw
+    // (NumberNormaliser step 8d) degrades gracefully to the no-regex-
+    // hints path — same behaviour as today, no regression. See PLAN
+    // risks #2.
+    try {
+      regexMatcherRef.current = new TranscriptFieldMatcher();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[recording] feature.regex_lookbehind_unsupported', err);
+      regexMatcherRef.current = null;
+    }
+    fieldSourceTrackerRef.current = new FieldSourceTracker();
+    fieldSourceTrackerRef.current.seedFromJob(jobRef.current);
+    cumulativeTranscriptRef.current = '';
+
     const session = new SonnetSession({
       onStateChange: setSonnetState,
       onExtraction: (result) => {
