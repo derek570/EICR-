@@ -938,15 +938,24 @@ export class SonnetSession {
     switch (type) {
       case 'session_ack': {
         const status = (json.status as string) ?? 'unknown';
+        const maybeId = json.sessionId;
+        const incomingId = typeof maybeId === 'string' && maybeId.length > 0 ? maybeId : null;
+        clientDiagnostic('session_ack_received', {
+          status,
+          hasSessionId: incomingId !== null,
+          isFirstAck: this.sessionId === null,
+          idChanged:
+            incomingId !== null && this.sessionId !== null && this.sessionId !== incomingId,
+          priorStatus: this.sessionStatus ?? 'none',
+        });
         // Capture sessionId from the server so reconnect can echo it
         // back inside `session_resume`. The server started emitting this
         // field in Wave 4c.5 backend; older builds omit it, in which
         // case we simply keep the previously-known value (or null on a
         // fresh session) and reconnect will fall back to the original
         // `session_start` flow.
-        const maybeId = json.sessionId;
-        if (typeof maybeId === 'string' && maybeId.length > 0) {
-          this.sessionId = maybeId;
+        if (incomingId !== null) {
+          this.sessionId = incomingId;
         }
         // TTL-expired rehydration: if the previous ack status was
         // 'resumed' and the server is now saying 'new', the 5-minute
@@ -995,6 +1004,15 @@ export class SonnetSession {
         // else (question, field, circuit, context) is already flat.
         const { type: _t, ...rest } = json;
         void _t;
+        const legacyQuestion = (rest as { question?: unknown }).question;
+        clientDiagnostic('legacy_question_decoded', {
+          questionLength: typeof legacyQuestion === 'string' ? legacyQuestion.length : 0,
+          questionPreview: typeof legacyQuestion === 'string' ? legacyQuestion.slice(0, 80) : '',
+          question_type:
+            typeof (rest as { question_type?: unknown }).question_type === 'string'
+              ? (rest as { question_type: string }).question_type
+              : null,
+        });
         this.callbacks.onQuestion?.(rest as unknown as SonnetQuestion);
         break;
       }

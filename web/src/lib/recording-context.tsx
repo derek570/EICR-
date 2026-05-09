@@ -638,6 +638,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  validation_alerts into the pending-readings counter. */
   const applyExtraction = React.useCallback(
     (result: ExtractionResult) => {
+      // Diagnostic — log every extraction envelope received so we can see
+      // what session_resume rehydrate replays vs what fresh turns produce.
+      // First confirmation text is captured because the sess_moytejkn_8bsl
+      // bug (2026-05-09) showed the same stale "I don't know the field 'is'."
+      // string firing twice without a matching server-side extraction log
+      // — we need to see if it came in via this handler.
+      const firstConfirmationPreview =
+        result.confirmations && result.confirmations[0]
+          ? (result.confirmations[0].text ?? '').slice(0, 80)
+          : '';
+      clientDiagnostic('onExtraction_entered', {
+        readings: result.readings?.length ?? 0,
+        confirmations: result.confirmations?.length ?? 0,
+        validation_alerts: result.validation_alerts?.length ?? 0,
+        observations: result.observations?.length ?? 0,
+        field_clears: result.field_clears?.length ?? 0,
+        circuit_updates: result.circuit_updates?.length ?? 0,
+        firstConfirmationPreview,
+        extraction_failed: Boolean(result.extraction_failed),
+      });
       const applied = applyExtractionToJob(jobRef.current, result);
       if (applied) {
         updateJobRef.current(applied.patch);
@@ -661,7 +681,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const first = result.confirmations?.[0];
       if (first) {
         const sentence = confirmationToSentence(first);
-        if (sentence) speakConfirmation(sentence);
+        if (sentence) {
+          clientDiagnostic('onExtraction_speaking_confirmation', {
+            sentencePreview: sentence.slice(0, 80),
+          });
+          speakConfirmation(sentence);
+        }
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they

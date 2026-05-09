@@ -223,10 +223,14 @@ export function isWithinTtsWindow(cooldownMs = 300, nowMs = Date.now()): boolean
  *   native — falling back at that point would replay the entire
  *   utterance from the start, which is worse than just stopping.
  */
-function dispatch(text: string, options?: SpeakOptions): void {
+function dispatch(
+  text: string,
+  options?: SpeakOptions,
+  caller: 'speak' | 'speakConfirmation' | 'unknown' = 'unknown'
+): void {
   const trimmed = text?.trim();
   if (!trimmed) {
-    clientDiagnostic('tts_dispatch_empty', {});
+    clientDiagnostic('tts_dispatch_empty', { caller });
     options?.onEnd?.();
     return;
   }
@@ -234,6 +238,7 @@ function dispatch(text: string, options?: SpeakOptions): void {
   const elevenLabsAvailable = isElevenLabsAvailable();
   const sessionId = getActiveSessionId();
   clientDiagnostic('tts_dispatch', {
+    caller,
     textLength: trimmed.length,
     textPreview: trimmed.slice(0, 80),
     elevenLabsAvailable,
@@ -476,11 +481,16 @@ export function primeTts(): void {
  * stall.
  */
 export function speak(text: string, options?: SpeakOptions): void {
+  clientDiagnostic('tts_speak_called', {
+    textLength: typeof text === 'string' ? text.length : 0,
+    textPreview: typeof text === 'string' ? text.slice(0, 80) : '',
+  });
   if (!isTtsAvailable()) {
+    clientDiagnostic('tts_speak_skipped_unavailable', {});
     options?.onEnd?.();
     return;
   }
-  dispatch(text, options);
+  dispatch(text, options, 'speak');
 }
 
 /**
@@ -495,19 +505,26 @@ export function speak(text: string, options?: SpeakOptions): void {
  * client is willing to speak.
  */
 export function speakConfirmation(text: string, options?: SpeakOptions): void {
+  clientDiagnostic('tts_speak_confirmation_called', {
+    textLength: typeof text === 'string' ? text.length : 0,
+    textPreview: typeof text === 'string' ? text.slice(0, 80) : '',
+    forced: Boolean(options?.force),
+  });
   if (!isTtsAvailable()) {
+    clientDiagnostic('tts_speak_confirmation_skipped_unavailable', {});
     options?.onEnd?.();
     return;
   }
   const enabled = options?.force ? true : getConfirmationModeEnabled();
   if (!enabled) {
+    clientDiagnostic('tts_speak_confirmation_skipped_muted', {});
     // Muted — fire the end callback synchronously so any caller waiting
     // on speech end (none today, but symmetric with `speak`) doesn't
     // stall.
     options?.onEnd?.();
     return;
   }
-  dispatch(text, options);
+  dispatch(text, options, 'speakConfirmation');
 }
 
 /**
