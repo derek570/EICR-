@@ -951,7 +951,7 @@ const addBoard = makeTool({
     parent_board_id: {
       type: 'string',
       description:
-        'ID of the parent board this is fed from. REQUIRED for sub_main; optional for sub_distribution; ignored for main.',
+        'ID of the parent board this is fed from — copy the EXACT id from the BOARDS section of the snapshot (e.g. "main", or a UUID like "C58D2373-…"). Do NOT invent ids. REQUIRED for sub_main when more than one parent candidate exists; if the snapshot has exactly one main board, the server fills it in automatically when omitted. Optional for sub_distribution; ignored for main.',
     },
     feed_circuit_ref: {
       type: 'integer',
