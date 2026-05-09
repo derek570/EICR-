@@ -43,20 +43,63 @@ const fieldSchema = require('../../config/field_schema.json');
 const enumerations = require('../../config/stage6-enumerations.json');
 const contextKeys = require('../../config/stage6-context-keys.json');
 
-// Deterministic enum for ask_user.context_field (Plan 02-01 closes Phase 1
-// carryover). Sorted so test snapshots and log buckets are stable across
-// runs. Concat order: circuit_fields keys → non-circuit sentinels → null.
-// Deduped defensively in case a circuit_fields key ever collides with a
-// sentinel (shouldn't happen — sentinels are namespaced — but the dedupe
-// keeps the schema valid if it does).
+// Deterministic enum for ask_user.context_field. Originally (Plan 02-01)
+// covered only circuit_fields + sentinels because Sonnet's only legal ask
+// scope was a single circuit's reading slot. Widened 2026-05-09 to include
+// board-level fields (board_fields + supply_characteristics_fields +
+// installation_details_fields — the same union BOARD_FIELD_ENUM is built
+// from below) after field session CBC1C763 surfaced the gap end-to-end:
+//
+//   1. Inspector said "new sub-board". Sonnet TTS'd the combined ask
+//      "What's the designation, AND which circuit on the main board feeds
+//      it?".
+//   2. Inspector answered just "Garage." — designation only.
+//   3. Sonnet emitted a focused follow-up `ask_user` with
+//      `context_field: "feed_circuit_ref"`. The validator at
+//      stage6-dispatch-validation.js:304 rejected it as
+//      `invalid_context_field` (the enum had ZERO board-level keys).
+//      The ask never reached TTS / the inspector.
+//   4. Sonnet fell back to calling `add_board` with only
+//      `{board_type:"sub_main"}`. The add_board validator (correctly)
+//      rejected with `feed_circuit_ref_required`.
+//   5. Sonnet recovered and re-asked with `context_field: "none"` (legal),
+//      but by then the inspector was already dictating circuit 2 — the
+//      ask landed `user_moved_on` and the sub-board was never created.
+//
+// Root-cause shape: the multi-board sprint (2026-05-07/08) added new
+// board-level fields (parent_board_id, feed_circuit_ref, sub_main_cable_*)
+// and shipped record_board_reading + add_board so Sonnet could WRITE them,
+// but never widened the ask_user.context_field enum that gates the
+// CLARIFICATION asks for those same fields. So the model could write a
+// field but not ask about it.
+//
+// Concat order: circuit_fields + board_fields + supply_characteristics_fields
+// + installation_details_fields + sentinels + null. Deduped defensively
+// (Set) — `earthing_arrangement` already overlaps board_fields and supply,
+// `phases` would collide with future drift, etc. Sorted so test snapshots
+// / CloudWatch buckets / wrapper key buckets stay stable across runs.
+// `_ui_*` meta keys filtered out for the same reason BOARD_FIELD_ENUM
+// filters them: they describe UI tab grouping, they aren't legal field
+// scopes for an ask.
+//
 // Exported so Phase 3 dispatch-time validators (Plan 03-02 validateAskUser)
 // can reuse the same closed namespace rather than re-derive it — the enum
 // definition stays the single source of truth.
 export const CONTEXT_FIELD_ENUM = (() => {
-  const circuitKeys = Object.keys(fieldSchema.circuit_fields).slice().sort();
-  const sentinels = contextKeys.sentinels.slice().sort();
-  const stringSet = new Set([...circuitKeys, ...sentinels]);
-  return [...stringSet, null];
+  const filterMeta = (k) => !k.startsWith('_ui_');
+  const circuitKeys = Object.keys(fieldSchema.circuit_fields).filter(filterMeta);
+  const boardKeys = Object.keys(fieldSchema.board_fields).filter(filterMeta);
+  const supplyKeys = Object.keys(fieldSchema.supply_characteristics_fields).filter(filterMeta);
+  const installKeys = Object.keys(fieldSchema.installation_details_fields).filter(filterMeta);
+  const sentinels = contextKeys.sentinels.slice();
+  const stringSet = new Set([
+    ...circuitKeys,
+    ...boardKeys,
+    ...supplyKeys,
+    ...installKeys,
+    ...sentinels,
+  ]);
+  return [...stringSet].sort().concat([null]);
 })();
 
 // Deterministic enum for record_board_reading.field (Phase 2 carryover —

@@ -321,6 +321,30 @@ describe('validateAskUser', () => {
         field: 'context_field',
       });
     });
+
+    // Regression — field session CBC1C763 (2026-05-09). Sonnet emitted a
+    // focused follow-up `ask_user` with `context_field: "feed_circuit_ref"`
+    // mid-add_board. Pre-fix the validator pre-rejected the ask as
+    // `invalid_context_field`, the focused question never reached the
+    // inspector, and Sonnet fell back to a missing-field add_board that
+    // the dispatcher rightly rejected. Inspector got stuck in the loop and
+    // could never create a sub-board. The widened CONTEXT_FIELD_ENUM covers
+    // these board-hierarchy + sub-main + supply + installation keys.
+    test.each([
+      'feed_circuit_ref',
+      'parent_board_id',
+      'board_type',
+      'sub_main_cable_material',
+      'sub_main_cable_csa',
+      'sub_main_cpc_csa',
+      'earth_loop_impedance_ze',
+      'address',
+      'postcode',
+      'prospective_fault_current',
+    ])('context_field=%p → null (board/supply/install fields are now legal scopes)', (key) => {
+      const input = { ...validInput(), context_field: key };
+      expect(validateAskUser(input)).toBeNull();
+    });
   });
 
   describe('invalid_context_circuit', () => {

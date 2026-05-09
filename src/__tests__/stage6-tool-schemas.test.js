@@ -254,17 +254,63 @@ describe('stage6-tool-schemas', () => {
     expect(stringBranch.type).toBe('string');
     expect(nullBranch.type).toBe('null');
 
-    const circuitFieldKeys = Object.keys(fieldSchema.circuit_fields);
-    // The string branch enum holds circuit_fields keys + sentinels (no null —
-    // null lives on the null branch now).
-    expect(stringBranch.enum).toHaveLength(circuitFieldKeys.length + contextKeys.sentinels.length);
-    for (const key of circuitFieldKeys) {
+    // 2026-05-09 widening: enum is now circuit_fields ∪ board_fields ∪
+    // supply_characteristics_fields ∪ installation_details_fields ∪ sentinels
+    // (deduped). The four field buckets overlap on a couple of names
+    // (`earthing_arrangement` lives in both supply and board), so length is
+    // computed from the same Set the schema builds.
+    const filterMeta = (k) => !k.startsWith('_ui_');
+    const expectedKeys = new Set([
+      ...Object.keys(fieldSchema.circuit_fields).filter(filterMeta),
+      ...Object.keys(fieldSchema.board_fields).filter(filterMeta),
+      ...Object.keys(fieldSchema.supply_characteristics_fields).filter(filterMeta),
+      ...Object.keys(fieldSchema.installation_details_fields).filter(filterMeta),
+      ...contextKeys.sentinels,
+    ]);
+    expect(stringBranch.enum).toHaveLength(expectedKeys.size);
+    for (const key of expectedKeys) {
       expect(stringBranch.enum).toContain(key);
     }
-    for (const sentinel of contextKeys.sentinels) {
-      expect(stringBranch.enum).toContain(sentinel);
-    }
     expect(stringBranch.enum).not.toContain(null);
+  });
+
+  test('ask_user.context_field accepts the multi-board hierarchy keys (regression — field session CBC1C763, 2026-05-09)', () => {
+    // Pins the 2026-05-09 widening. Pre-fix these keys triggered
+    // `invalid_context_field` at stage6-dispatch-validation.js:304 when
+    // Sonnet tried to focus-ask "Which circuit feeds this sub-board?" or
+    // "Is this sub-distribution or sub-main?" — the focused ask never
+    // reached TTS, Sonnet fell back to add_board with missing fields, and
+    // the inspector saw nothing happen. Each key listed here corresponds
+    // to a board-level slot that Sonnet must be able to legally scope an
+    // ask to during sub-board creation.
+    const askUser = byName('ask_user');
+    const stringBranch = askUser.input_schema.properties.context_field.anyOf[0];
+    const required = [
+      'parent_board_id',
+      'feed_circuit_ref',
+      'board_type',
+      'sub_main_cable_material',
+      'sub_main_cable_csa',
+      'sub_main_cpc_csa',
+    ];
+    for (const key of required) {
+      expect(stringBranch.enum).toContain(key);
+    }
+  });
+
+  test('ask_user.context_field accepts supply + installation field keys (so Sonnet can scope clarification asks)', () => {
+    // Sonnet has been writing supply/installation fields via
+    // record_board_reading for ages, but pre-2026-05-09 it could only tag
+    // CLARIFICATION asks for those fields with the `none` sentinel, so
+    // ask-bucket analytics had no field-level fidelity for the half of the
+    // job that lives outside circuits[]. Widening makes context_field
+    // analytics symmetric across both write tools.
+    const askUser = byName('ask_user');
+    const stringBranch = askUser.input_schema.properties.context_field.anyOf[0];
+    expect(stringBranch.enum).toContain('earth_loop_impedance_ze');
+    expect(stringBranch.enum).toContain('prospective_fault_current');
+    expect(stringBranch.enum).toContain('address');
+    expect(stringBranch.enum).toContain('postcode');
   });
 
   test('ask_user.context_field — no hand-rolled sentinel literals in schema module (Plan 02-01 single-source-of-truth guard)', () => {
