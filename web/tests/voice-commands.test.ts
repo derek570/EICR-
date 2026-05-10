@@ -198,8 +198,12 @@ describe('applyVoiceCommand — apply_field', () => {
 
 describe('field-alias coverage (iOS parity)', () => {
   // The audit found the PWA's pre-fix vocabulary covered ~15 fields
-  // vs iOS ~40. These tests pin the additional aliases we now accept,
-  // matching VoiceCommandExecutor.swift:setCircuitField (lines 207–256).
+  // vs iOS ~40. These tests pin the additional aliases the applier
+  // resolves, matching VoiceCommandExecutor.swift:setCircuitField
+  // (lines 207–256). Commands of this shape now arrive via the server
+  // (Sonnet's `voice_command_response`) rather than the client parser
+  // — iOS canon. We construct the `update_field` command directly to
+  // exercise the alias resolution.
   it.each([
     ['cpc size', 'cpc_csa_mm2'],
     ['rcd rating', 'rcd_rating_a'],
@@ -213,17 +217,10 @@ describe('field-alias coverage (iOS parity)', () => {
     ['number of points', 'number_of_points'],
     ['test voltage', 'ir_test_voltage_v'],
   ])('"%s" maps to circuit field %s', (phrase, canonical) => {
-    const cmd = parseVoiceCommand(`set ${phrase} to 30 on circuit 1`);
-    expect(cmd).toEqual({
-      type: 'update_field',
-      field: phrase,
-      value: '30',
-      circuit: 1,
-    });
-    // resolveField is internal — we exercise it via the applier.
-    const out = applyVoiceCommand(cmd!, {
-      circuits: [{ id: 'c1', circuit_ref: '1' }],
-    });
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: phrase, value: '30', circuit: 1 },
+      { circuits: [{ id: 'c1', circuit_ref: '1' }] }
+    );
     const next = (out.patch?.circuits as Array<Record<string, unknown>>)[0];
     expect(next[canonical]).toBeDefined();
   });

@@ -42,6 +42,7 @@ import { playAttentionTone, playConfirmationChime } from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
 import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
+import { mapServerActionToVoiceCommand } from './recording/voice-command-action';
 
 /**
  * Recording context.
@@ -924,6 +925,47 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // section flash is enough — the row text itself is the
         // affordance) so emit a section-level key.
         liveFill.markUpdated(['observations']);
+      },
+      onVoiceCommandResponse: (response) => {
+        // iOS canon: DeepgramRecordingViewModel.handleVoiceCommandResponse
+        // (DeepgramRecordingViewModel.swift:7446). Execute the action via
+        // the same applier the local Calculate/Apply intents use, then
+        // speak the server's spoken_response through the confirmation TTS
+        // gate. Pre-2026-05-10 the web decoded these messages and dropped
+        // them on the floor (the callback was never bound).
+        clientDiagnostic('voice_command_response_received', {
+          understood: response.understood,
+          actionType: response.action?.type ?? 'none',
+          responsePreview: (response.spoken_response ?? '').slice(0, 80),
+        });
+        if (response.understood && response.action) {
+          const command = mapServerActionToVoiceCommand(response.action);
+          if (command) {
+            const outcome = applyVoiceCommand(
+              command,
+              jobRef.current as unknown as VoiceCommandJob
+            );
+            if (outcome.patch) {
+              updateJobRef.current(outcome.patch);
+              jobRef.current = {
+                ...jobRef.current,
+                ...(outcome.patch as Partial<typeof jobRef.current>),
+              };
+              if (outcome.changedKeys && outcome.changedKeys.length > 0) {
+                liveFill.markUpdated(outcome.changedKeys);
+              }
+              playConfirmationChime();
+            }
+          } else {
+            clientDiagnostic('voice_command_action_unmapped', {
+              actionType: response.action?.type ?? 'none',
+            });
+          }
+        }
+        if (response.spoken_response) {
+          speakConfirmation(response.spoken_response);
+        }
+        sleepManagerRef.current?.onSpeechActivity();
       },
       onCostUpdate: (update) => {
         // Server sends totalJobCost in USD. We keep Sonnet cost
