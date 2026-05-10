@@ -21,8 +21,10 @@
  *     directly (no envelope sent — session was never paused)
  *   - manual `chitchat_resume` envelope while paused → `chitchat_resumed`
  *     sent with `reason: 'manual'`
- *   - existing `session_resume` envelope while paused → `chitchat_resumed`
- *     sent with `reason: 'session_resume'`
+ *   - `session_resume` envelope (Deepgram doze recovery) while paused →
+ *     paused flag STAYS true, no `chitchat_resumed` envelope. Deepgram
+ *     doze cycles must not reset the chitchat budget — see header comment
+ *     in `chitchat-pause.js` for the prod incident that motivated this.
  *
  * The session machinery is mocked the same way `sonnet-stream-resume`
  * does it (FakeEICRExtractionSession) so handleTranscript's downstream
@@ -292,22 +294,28 @@ describe('case chitchat_resume — manual wake from iOS Resume button', () => {
   });
 });
 
-describe('case session_resume — Deepgram doze recovery also wakes chitchat', () => {
-  test('legacy wake (no sessionId) on paused chitchat → resumed reason session_resume', async () => {
+describe('case session_resume — Deepgram doze recovery does NOT wake chitchat', () => {
+  // Regression for prod session D8E51F51 (2026-05-09): the chitchat pause
+  // fired correctly at turn 8 with the inspector's phone in his pocket,
+  // then was immediately undone by `session_resume` 215s later when
+  // Deepgram came back from doze. Counter restarted from 0 and the
+  // "ferry-situation" protection (bounded chitchat → bounded Sonnet cost)
+  // was effectively defeated. Wake is now semantic-only.
+  test('legacy wake (no sessionId) on paused chitchat → paused stays true, no envelope', async () => {
     const ws = connect(wss);
     const sid = await startSession(ws);
     const entry = getEntry(sid);
     const cc = ensureChitchatState(entry);
     cc.paused = true;
     cc.pausedAt = Date.now();
-    // The session.pause call from the doze-pause path is mocked, so the
-    // matching session.resume is a no-op here. The chitchat hook is
-    // independent and still fires.
     await sendFrame(ws, { type: 'session_resume' });
 
-    expect(cc.paused).toBe(false);
-    const resumed = envelopesOfType(ws, 'chitchat_resumed');
-    expect(resumed).toHaveLength(1);
-    expect(resumed[0].reason).toBe('session_resume');
+    expect(cc.paused).toBe(true);
+    expect(envelopesOfType(ws, 'chitchat_resumed')).toEqual([]);
+    // The session-level resume ack still fires (Deepgram doze recovery
+    // is a separate concern from chitchat — only the chitchat hook is
+    // dropped). Asserts the doze recovery itself wasn't broken.
+    const acks = envelopesOfType(ws, 'session_ack').filter((e) => e.status === 'resumed');
+    expect(acks).toHaveLength(1);
   });
 });

@@ -1223,20 +1223,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 turns: resumeEntry.session.turnCount,
               });
               ws.send(JSON.stringify({ type: 'session_ack', status: 'resumed' }));
-              // Chitchat-pause fourth wake trigger: Deepgram coming back
-              // from doze (which is what `session_resume` without a
-              // sessionId means) also wakes Sonnet if it had paused on
-              // chitchat earlier in the session.
-              const ccState = ensureChitchatState(resumeEntry);
-              if (ccState?.paused) {
-                exitChitchatPause({
-                  state: ccState,
-                  sendEnvelope: (env) => ws.send(JSON.stringify(env)),
-                  logger,
-                  sessionId: currentSessionId,
-                  reason: 'session_resume',
-                });
-              }
+              // Deliberately NOT exiting chitchat-pause here. `session_resume`
+              // without a sessionId is Deepgram doze recovery — it fires every
+              // time speech resumes after a brief silence, which in a
+              // pocket / family-chat scenario happens repeatedly. Resetting
+              // the chitchat counter on every doze-recovery defeats the
+              // protection (observed prod session D8E51F51 2026-05-09: pause
+              // fired correctly at turn 8, then immediately undone by
+              // session_resume 215s later, counter restarted from 0). Chitchat
+              // wake remains semantic: WAKE_REGEX, iOS regex hit, or manual
+              // Resume button — handled in the `transcript` and
+              // `chitchat_resume` arms.
             }
             break;
 

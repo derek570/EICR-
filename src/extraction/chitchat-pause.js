@@ -8,15 +8,23 @@
  * messages to Sonnet until a wake trigger fires. Deepgram + iOS-side
  * regex remain active throughout — only the Sonnet API leg is suppressed.
  *
- * Wake triggers (server-side, all four):
+ * Wake triggers (server-side, all three are SEMANTIC — the inspector did
+ * something that signals real inspection intent):
  *   1. Voice command matched by WAKE_REGEX in any incoming transcript text.
  *   2. Manual `chitchat_resume` WS message (iOS Resume button).
- *   3. Existing `session_resume` WS message — fires when Deepgram reconnects
- *      from doze, so audio coming back also wakes Sonnet.
- *   4. iOS regex hit (`msg.regexResults` non-empty on a transcript): the
+ *   3. iOS regex hit (`msg.regexResults` non-empty on a transcript): the
  *      inspector dictated a value the on-device matcher caught; that's
  *      strong engagement signal, so wake + replay-buffer-prepend the
  *      transcript before forwarding to handleTranscript.
+ *
+ * Notably NOT a wake trigger: `session_resume`. That envelope fires on
+ * Deepgram doze recovery (any time speech resumes after ≥10s silence),
+ * which happens repeatedly in pocket / family-chat / phone-call scenarios.
+ * Treating it as a wake trigger reset the counter on every doze cycle and
+ * effectively defeated the protection (prod session D8E51F51 2026-05-09:
+ * pause fired correctly at turn 8, then immediately undone by session_resume
+ * 215s later, counter restarted, never re-armed before the inspector noticed
+ * and stopped the session). Chitchat wake is now semantic-only.
  *
  * On wake, the replay buffer (paused-session transcripts within the last
  * 30 s) is drained and prepended to the wake utterance so a value spoken
@@ -223,7 +231,7 @@ export function enterChitchatPause({ state, sendEnvelope, logger, sessionId }) {
 /**
  * Exit the paused state. Resets the counter. Idempotent.
  *
- * @param {string} reason — wake_word | manual | session_resume | regex_hint
+ * @param {string} reason — wake_word | manual | regex_hint
  */
 export function exitChitchatPause({ state, sendEnvelope, logger, sessionId, reason }) {
   if (!state || !state.paused) return;
