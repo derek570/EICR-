@@ -315,7 +315,7 @@ function generateHTML(data) {
 }
 
 /**
- * Generate a PDF test results sheet matching the Tradecert format
+ * Generate a PDF test results sheet from extraction output.
  */
 export async function generateTestResultsPDF({
   outDir,

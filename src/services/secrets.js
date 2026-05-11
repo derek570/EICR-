@@ -117,7 +117,6 @@ export async function getAllSecrets() {
   const knownKeys = [
     'OPENAI_API_KEY',
     'GEMINI_API_KEY',
-    'TRADECERT_API_KEY',
     'ANTHROPIC_API_KEY',
     'DEEPGRAM_API_KEY',
     'ELEVENLABS_API_KEY',
@@ -152,7 +151,6 @@ export function clearCache() {
 
 export const getOpenAIKey = () => getSecret('OPENAI_API_KEY');
 export const getGeminiKey = () => getSecret('GEMINI_API_KEY');
-export const getTradecertKey = () => getSecret('TRADECERT_API_KEY');
 export const getAnthropicKey = () => getSecret('ANTHROPIC_API_KEY');
 export const getDeepgramKey = () => getSecret('DEEPGRAM_API_KEY');
 export const getElevenLabsKey = () => getSecret('ELEVENLABS_API_KEY');
@@ -163,7 +161,6 @@ export default {
   clearCache,
   getOpenAIKey,
   getGeminiKey,
-  getTradecertKey,
   getAnthropicKey,
   getDeepgramKey,
   getElevenLabsKey,
