@@ -746,6 +746,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const applied = applyExtractionToJob(jobRef.current, result);
       if (applied) {
         updateJobRef.current(applied.patch);
+        // Mirror the patch into jobRef.current synchronously so a
+        // second extraction landing in the same React tick reads the
+        // freshly-patched circuits[] / sections rather than the pre-patch
+        // snapshot. Without this, the next applyExtractionToJob call
+        // re-creates each circuit row with a new UUID and the patch
+        // REPLACES the circuits array (apply-extraction.ts always
+        // returns a full circuits array, not a delta), so only the most
+        // recently dictated circuit survives. Every other apply-path in
+        // this file (voice-command, regex-apply, onFieldCorrected,
+        // onCircuitCreated, onCircuitUpdated) already mirrors — this
+        // is the path that was missed.
+        jobRef.current = {
+          ...jobRef.current,
+          ...(applied.patch as Partial<typeof jobRef.current>),
+        };
         // Feed LiveFillState so <LiveFillView> can flash the fields
         // Sonnet actually filled. No-op if the list is empty (the patch
         // only had `field_clears`, which we deliberately don't flash).

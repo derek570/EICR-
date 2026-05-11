@@ -204,6 +204,28 @@ export function primeAudioElement(): void {
           }
         })
         .catch((err: unknown) => {
+          const name = err instanceof Error ? err.name : 'unknown';
+          const message = err instanceof Error ? err.message.slice(0, 120) : '';
+          // AbortError means the prime was *cancelled* mid-flight, NOT
+          // that the autoplay policy refused us. The most common cause
+          // is a real `speakElevenLabs()` call landing before the
+          // prime's play() promise resolves — it calls
+          // `cancelElevenLabs()` at the top, which `audio.pause()`'s
+          // the shared element, and the still-pending prime play()
+          // promise rejects with AbortError. In that case the browser
+          // HAS recorded the gesture grant (the play() began before
+          // the pause), so leaving the flag at its optimistic default
+          // keeps ElevenLabs available. Only NotAllowedError (and
+          // other non-abort failures) actually mean the autoplay
+          // policy refused us — those flip the flag false so the
+          // next speak() routes to SpeechSynthesis.
+          if (name === 'AbortError') {
+            clientDiagnostic('prime_audio_element_aborted_superseded', {
+              errorName: name,
+              message,
+            });
+            return;
+          }
           // Promise rejection means iPad Safari (or another browser
           // with an autoplay policy) refused the gesture grant. Flip
           // the flag so isElevenLabsAvailable() returns false and the
@@ -212,8 +234,6 @@ export function primeAudioElement(): void {
           // utterance ran inside the same Start tap and has a better
           // chance of being warmed.
           audioGestureGranted = false;
-          const name = err instanceof Error ? err.name : 'unknown';
-          const message = err instanceof Error ? err.message.slice(0, 120) : '';
           clientDiagnostic('prime_audio_element_rejected', { errorName: name, message });
         });
     } else {
