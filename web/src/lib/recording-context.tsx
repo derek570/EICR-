@@ -32,6 +32,7 @@ import {
   getConfirmationModeEnabled,
   isWithinTtsWindow,
   primeTts,
+  setTtsLifecycleObserver,
   speak,
   speakConfirmation,
 } from './recording/tts';
@@ -1332,6 +1333,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // cannot hear it, the conversation stalls, and the session ends
     // with near-empty extraction (see sess_mox58v7n_kpr9, 2026-05-08).
     primeTts();
+    // Wire the SleepManager TTS-active gate. Every TTS dispatch (question,
+    // confirmation, voice-command response) flips the no-transcript timer
+    // off while the device speaker is producing artificial silence on the
+    // mic. iOS canon: AlertManager fires
+    // `sessionCoordinator.sleepManager.onTTSStarted/Finished` at
+    // DeepgramRecordingViewModel.swift:813,866. Without this, the web's
+    // 60s timer kept counting while TTS spoke a 5-8s question + the
+    // inspector's think-time, fired sleep entry mid-conversation, and
+    // tore down Deepgram + Sonnet exactly when the inspector started
+    // their answer.
+    setTtsLifecycleObserver((event) => {
+      sleepManagerRef.current?.setTtsActive(event === 'start');
+    });
     setErrorMessage(null);
     setState('requesting-mic');
     setElapsedSec(0);
@@ -1499,6 +1513,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // Cancel any in-flight TTS so the last confirmation doesn't keep
     // speaking after the inspector has ended the session.
     cancelSpeech();
+    // Drop the TTS lifecycle observer so any post-stop speak() (e.g.
+    // the tour controller used outside a recording session) doesn't
+    // attempt to mutate a torn-down sleep manager. Mirrors the symmetric
+    // pairing with setTtsLifecycleObserver in start().
+    setTtsLifecycleObserver(null);
     setState('idle');
     setMicLevel(0);
     setQuestions([]);

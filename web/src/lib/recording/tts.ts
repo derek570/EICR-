@@ -179,6 +179,52 @@ interface SpeakOptions {
 let ttsWindow: { startMs: number; endMs: number | null } | null = null;
 
 /**
+ * Lifecycle observer — called with `'start'` when ttsWindow opens
+ * (audio begins flowing) and `'end'` when it closes (utterance ended /
+ * superseded / errored). Mirrors iOS where AlertManager.swift fires
+ * `sessionCoordinator.sleepManager.onTTSStarted()` / `onTTSFinished()`
+ * at exactly these moments (DeepgramRecordingViewModel.swift:813, 866)
+ * so the no-transcript timer is suspended while the device's own
+ * speaker is producing artificial silence on the mic. Without an
+ * observer hook on web, the SleepManager kept its 60s timer running
+ * through a 5-8s TTS question + the inspector's think-time, fired
+ * sleep entry mid-conversation, and tore down Deepgram + Sonnet
+ * exactly when the inspector started speaking their answer.
+ *
+ * Default: null (no observer wired — keeps the module unit-testable
+ * in isolation and the tour controller can use TTS without a sleep
+ * manager). Registered/cleared by recording-context.tsx at session
+ * boundaries.
+ */
+let ttsLifecycleObserver: ((event: 'start' | 'end') => void) | null = null;
+
+/**
+ * Register a TTS lifecycle observer. Pass `null` to clear. Recording
+ * sessions register an observer that forwards to
+ * `sleepManager.setTtsActive(active)` so the no-transcript timer is
+ * suspended while TTS plays. Idempotent — re-registering replaces the
+ * previous observer rather than chaining (the recording session is
+ * the sole expected consumer).
+ */
+export function setTtsLifecycleObserver(observer: ((event: 'start' | 'end') => void) | null): void {
+  ttsLifecycleObserver = observer;
+}
+
+/**
+ * Internal helper — fires the observer if any. Wrapped in try/catch so
+ * a bad consumer can't blow up the TTS path (every call to this is
+ * inside an audio-element / SpeechSynthesisUtterance lifecycle handler
+ * where throwing would be a silent failure mode anyway).
+ */
+function notifyTtsLifecycle(event: 'start' | 'end'): void {
+  try {
+    ttsLifecycleObserver?.(event);
+  } catch {
+    /* swallow */
+  }
+}
+
+/**
  * Read the TTS audio window. Returns null when no utterance has been
  * dispatched yet — equivalent to "TTS is silent, transcripts can flow
  * through unconditionally". Callers that want to detect "currently
@@ -280,10 +326,12 @@ function dispatchElevenLabs(text: string, options?: SpeakOptions): void {
       // mic-feedback gate suppresses the speaker self-feedback.
       myStartMs = Date.now();
       ttsWindow = { startMs: myStartMs, endMs: null };
+      notifyTtsLifecycle('start');
     },
     onEnd: () => {
       if (myStartMs != null && ttsWindow && ttsWindow.startMs === myStartMs) {
         ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+        notifyTtsLifecycle('end');
       }
       options?.onEnd?.();
     },
@@ -295,6 +343,7 @@ function dispatchElevenLabs(text: string, options?: SpeakOptions): void {
         // line and a second full read would just be confusing.
         if (ttsWindow && ttsWindow.startMs === myStartMs) {
           ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+          notifyTtsLifecycle('end');
         }
         options?.onEnd?.();
         return;
@@ -359,6 +408,7 @@ function dispatchNative(text: string, options?: SpeakOptions): void {
     // the window keeps the guard correct across the onstart re-stamp.
     let myStartMs = Date.now();
     ttsWindow = { startMs: myStartMs, endMs: null };
+    notifyTtsLifecycle('start');
 
     const closeWindow = () => {
       // Only close if we still own this window — a fresh dispatch will
@@ -367,6 +417,7 @@ function dispatchNative(text: string, options?: SpeakOptions): void {
       // speaking" signal.
       if (ttsWindow && ttsWindow.startMs === myStartMs) {
         ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+        notifyTtsLifecycle('end');
       }
     };
 
@@ -549,6 +600,7 @@ export function cancelSpeech(): void {
     window.speechSynthesis.cancel();
     if (ttsWindow && ttsWindow.endMs == null) {
       ttsWindow = { startMs: ttsWindow.startMs, endMs: Date.now() };
+      notifyTtsLifecycle('end');
     }
   } catch {
     // ignore
