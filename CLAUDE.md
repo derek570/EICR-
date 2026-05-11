@@ -115,7 +115,7 @@ iOS (16kHz PCM) -> DeepgramService (direct Nova-3 WS)
 | Resource | Value |
 |----------|-------|
 | Region | eu-west-2 (London) |
-| Domain | certomatic3000.co.uk |
+| Domain | certmate.uk |
 | ECS Cluster | eicr-cluster-production |
 | ECR Backend | `<ACCOUNT_ID>`.dkr.ecr.eu-west-2.amazonaws.com/eicr-backend |
 | RDS Database | eicr-db-production.cfo684yymx9d.eu-west-2.rds.amazonaws.com |
