@@ -316,6 +316,14 @@ export function __resetTtsFingerprintsForTests(): void {
   recentTtsFingerprints = [];
 }
 
+/** Test-only — register a fingerprint without going through dispatch().
+ *  Production callers register via dispatch() automatically; tests use
+ *  this so they can pin isTTSEcho behaviour without driving the full
+ *  speechSynthesis polyfill. */
+export function __registerTtsFingerprintForTests(text: string): void {
+  registerTtsFingerprint(text);
+}
+
 /**
  * Read the TTS audio window. Returns null when no utterance has been
  * dispatched yet — equivalent to "TTS is silent, transcripts can flow
