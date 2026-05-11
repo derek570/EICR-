@@ -277,6 +277,28 @@ export function useTour(options: UseTourOptions = {}): TourController {
     void writePersisted({ disabled: false, seen: true });
   }, [writePersisted]);
 
+  // Imperative start channel — `cm:start-tour` custom event lets sibling
+  // components (e.g. the JobHeader 3-dot menu's "Guided Tour" item) kick
+  // off a tour without sharing a controller instance through React
+  // context. iOS canon equivalent is `TourManager.startTour(phase:)`
+  // called from the JobDetailView toolbar menu
+  // (DashboardView.swift / JobDetailView.swift:L121-L124 invoke
+  // `tourManager.startTour(...)`). Pre-fix the PWA JobHeader implemented
+  // this by wiping `cm-tour-job-seen` and reloading the page — clunky +
+  // disruptive. The event channel lets each useTour instance opt into
+  // remote-start by stateKey so the dashboard tour doesn't accidentally
+  // fire when the job-tour entry is selected.
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ stateKey?: string }>).detail;
+      if (detail?.stateKey !== stateKey) return;
+      start();
+    };
+    window.addEventListener('cm:start-tour', handler);
+    return () => window.removeEventListener('cm:start-tour', handler);
+  }, [stateKey, start]);
+
   const stop = React.useCallback(() => {
     cancelSpeech();
     clearAdvance();

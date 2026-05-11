@@ -54,15 +54,17 @@ export function JobHeader() {
   };
   const onGuidedTour = () => {
     setMenuOpen(false);
-    // Tour kick-off — Phase D will fully rewire this; for now we drop
-    // the marker that resets `cm-tour-job-seen` so the existing
-    // useTour hook re-runs on next mount.
+    // Imperative kick-off — JobTourMount's useTour instance subscribes
+    // to `cm:start-tour` and calls its own start(). Mirrors iOS
+    // `tourManager.startTour(.job)` from JobDetailView.swift:L121-L124
+    // (the toolbar menu calls startTour() on the shared TourManager).
+    // Pre-fix the PWA wiped `cm-tour-job-seen` from localStorage and
+    // reloaded the page, which made the tour re-fire on remount via
+    // `autoStartOnFirstRun` — a clunky workaround for not having a
+    // shared controller. The event channel keeps useTour's "no React
+    // context" decision intact while removing the reload.
     if (typeof window !== 'undefined') {
-      window.localStorage.removeItem('cm-tour-job-seen');
-      // Reload so any tour root that mounts on the job layout reads
-      // the cleared flag and starts. Phase D will replace this with
-      // a controlled tour controller.
-      window.location.reload();
+      window.dispatchEvent(new CustomEvent('cm:start-tour', { detail: { stateKey: 'job' } }));
     }
   };
 
