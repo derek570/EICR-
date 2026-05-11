@@ -287,6 +287,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     updateJobRef.current = updateJob;
   }, [updateJob]);
 
+  // Synchronous mirror of `questions`. Bug L (2026-05-11) — the dedup logic
+  // in onQuestion used to live inside the setQuestions reducer, so dedup
+  // and the `isNew`/`queueDepthAfter` outputs all depended on the reducer
+  // committing. In a double-mount / Suspense-retry scenario (the audit
+  // doc's open item "double-`provider-mount` 12 ms apart"), the setter
+  // can belong to a fiber that never commits — React silently drops the
+  // update, the reducer never runs, `isNew` stays at its `false` init
+  // value, and the else-branch logs a phantom `dedup_hit` on a queue that
+  // was actually empty. The TTS playback decision (which reads `isNew`)
+  // also goes to the skip branch, so the inspector hears nothing for the
+  // very first ask of the session. Pinned by sess_mp19b6tf_i5xc 13:48:48
+  // UTC: first ask, `isNew:false, queueDepth:0, reason:dedup_hit` — a
+  // combination [].some(...) cannot produce from a single reducer call.
+  // The ref decouples dedup from React's commit lifecycle.
+  const questionsRef = React.useRef<SonnetQuestion[]>([]);
+  React.useEffect(() => {
+    questionsRef.current = questions;
+  }, [questions]);
+
   // ── Audio pipeline ──────────────────────────────────────────────────────
   // Mic capture handle + elapsed/cost ticker. The mic handle owns the
   // AudioContext and Worklet; we keep it in a ref so `stop()` can tear it
@@ -860,20 +879,38 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           questionPreview: typeof q.question === 'string' ? q.question.slice(0, 80) : '',
           hasToolCallId: typeof q.tool_call_id === 'string' && q.tool_call_id.length > 0,
         });
-        let isNew = false;
-        let queueDepthAfter = 0;
-        setQuestions((prev) => {
-          // Dedup by text — Sonnet occasionally re-asks the same
-          // question across turns until the field is filled.
-          if (prev.some((p) => p.question === q.question)) {
-            queueDepthAfter = prev.length;
-            return prev;
-          }
-          isNew = true;
-          const next = [...prev, q];
-          queueDepthAfter = next.length > 5 ? 5 : next.length;
-          return next.length > 5 ? next.slice(next.length - 5) : next;
-        });
+        // Bug L (2026-05-11) — dedup synchronously against `questionsRef`
+        // (not via the setQuestions reducer return value) so the TTS-vs-
+        // skip decision survives the double-mount/Suspense-retry race
+        // where setQuestions belongs to an unmounted fiber and the
+        // reducer never runs. See questionsRef declaration for the full
+        // sess_mp19b6tf_i5xc rationale.
+        //
+        // Sonnet occasionally re-asks the same question across turns
+        // until the field is filled; iOS's AlertCardView doesn't
+        // re-announce a queued question, so neither do we.
+        const prevQs = questionsRef.current;
+        const isDuplicate = prevQs.some((p) => p.question === q.question);
+        if (isDuplicate) {
+          clientDiagnostic('onQuestion_skipped_speak', {
+            isNew: false,
+            hasQuestionText: Boolean(q.question),
+            queueDepth: prevQs.length,
+            reason: 'dedup_hit',
+          });
+          // Still close the turn that produced it — same accounting
+          // as the non-dedup path below.
+          setProcessingCount((n) => Math.max(0, n - 1));
+          return;
+        }
+        // Push to the queue, capped at 5. Write the ref synchronously
+        // BEFORE setQuestions so a second onQuestion firing in the same
+        // tick sees the fresh queue and dedups correctly even if the
+        // useEffect mirror hasn't run yet.
+        const appended = [...prevQs, q];
+        const next = appended.length > 5 ? appended.slice(appended.length - 5) : appended;
+        questionsRef.current = next;
+        setQuestions(next);
         // A question frame also closes the turn that produced it — same
         // accounting as the extraction branch above.
         setProcessingCount((n) => Math.max(0, n - 1));
@@ -882,19 +919,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // question frame (question_type === 'orphaned') rather than a
         // validation_alerts entry, and the banner would stay at 0 while
         // the UI simultaneously showed an orphaned-reading question.
-        if (isNew && q.question_type === 'orphaned') {
+        if (q.question_type === 'orphaned') {
           setPendingReadings((n) => n + 1);
         }
-        // Speak only newly-appearing questions. Re-asks are suppressed
-        // by the dedup above, matching iOS where the AlertCardView
-        // doesn't re-announce a queued question. The attention tone
-        // plays BEFORE TTS to give the inspector a half-second of
-        // warning that something needs their attention — same iOS
-        // ordering at AlertManager.swift:717 (playAttentionTone()
-        // immediately before speakAlertMessage()).
-        if (isNew && q.question) {
+        // Speak only newly-appearing questions. The attention tone plays
+        // BEFORE TTS to give the inspector a half-second of warning that
+        // something needs their attention — same iOS ordering at
+        // AlertManager.swift:717 (playAttentionTone() immediately before
+        // speakAlertMessage()).
+        if (q.question) {
           clientDiagnostic('onQuestion_speaking', {
-            queueDepth: queueDepthAfter,
+            queueDepth: next.length,
             questionPreview: q.question.slice(0, 80),
           });
           // Switch the sleep timer to the 75s question-answer window
@@ -906,10 +941,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           speak(q.question);
         } else {
           clientDiagnostic('onQuestion_skipped_speak', {
-            isNew,
-            hasQuestionText: Boolean(q.question),
-            queueDepth: queueDepthAfter,
-            reason: !isNew ? 'dedup_hit' : !q.question ? 'empty_text' : 'unknown',
+            isNew: true,
+            hasQuestionText: false,
+            queueDepth: next.length,
+            reason: 'empty_text',
           });
         }
       },
@@ -1375,6 +1410,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setSonnetCostUsd(0);
     setTranscript([]);
     setInterim('');
+    questionsRef.current = [];
     setQuestions([]);
     setProcessingCount(0);
     setPendingReadings(0);
@@ -1542,6 +1578,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setTtsLifecycleObserver(null);
     setState('idle');
     setMicLevel(0);
+    questionsRef.current = [];
     setQuestions([]);
     setProcessingCount(0);
     setPendingReadings(0);
@@ -1688,7 +1725,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         setQuestions((prev) => {
           const removed = prev[index];
           if (removed?.question) cancelDismissTimer(removed.question);
-          return prev.filter((_, i) => i !== index);
+          const next = prev.filter((_, i) => i !== index);
+          questionsRef.current = next;
+          return next;
         });
       } catch (err) {
         const message = err instanceof Error ? err.message.slice(0, 200) : String(err);
@@ -1757,7 +1796,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // timer.
         setQuestions((prev) => {
           if (target.question) cancelDismissTimer(target.question);
-          return prev.filter((_, i) => i !== index);
+          const next = prev.filter((_, i) => i !== index);
+          questionsRef.current = next;
+          return next;
         });
       } catch (err) {
         const message = err instanceof Error ? err.message.slice(0, 200) : String(err);
@@ -1796,7 +1837,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         speak('Okay, keeping it.');
         setQuestions((prev) => {
           if (target.question) cancelDismissTimer(target.question);
-          return prev.filter((_, i) => i !== index);
+          const next = prev.filter((_, i) => i !== index);
+          questionsRef.current = next;
+          return next;
         });
       } catch (err) {
         const message = err instanceof Error ? err.message.slice(0, 200) : String(err);
@@ -1860,7 +1903,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Re-resolve the index by text in case the queue shifted
         // between schedule and fire (a manual dismiss earlier in the
         // list would have changed the absolute index).
-        setQuestions((prev) => prev.filter((p) => p.question !== q.question));
+        setQuestions((prev) => {
+          const next = prev.filter((p) => p.question !== q.question);
+          questionsRef.current = next;
+          return next;
+        });
       }, ms);
       dismissTimersRef.current.set(q.question, handle);
       void idx;
