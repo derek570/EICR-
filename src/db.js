@@ -300,6 +300,97 @@ export async function updateUser(userId, data) {
 }
 
 /**
+ * Hard-delete a user and every owned row across the RDS schema in a single
+ * transaction. The S3 wipe is the caller's responsibility (see
+ * `src/routes/auth.js` DELETE /account); this function ONLY handles RDS.
+ *
+ * Required by Apple App Store Guideline 5.1.1(v) ("If your app supports
+ * account creation, you must also offer account deletion within the app")
+ * and by UK GDPR Article 17 (right to erasure). The pre-existing soft-
+ * delete via `users.is_active = false` did not satisfy either — Apple
+ * rejects soft-delete-only flows, and an inactive row still holds
+ * personal data.
+ *
+ * Deletion order is structural, not arbitrary. Tables WITHOUT a FK to
+ * `users(id)` must be wiped manually with `WHERE user_id = $1`; tables
+ * WITH `ON DELETE CASCADE` are cleared automatically when the `users`
+ * row drops at the end. Foreign-key configuration audited against
+ * `migrations/001_baseline.cjs` + `migrations/006_indexes_and_constraints.cjs`
+ * on 2026-05-11:
+ *
+ *   CASCADE (auto-cleared by the final users DELETE):
+ *     push_subscriptions       (FK in 001 baseline)
+ *     subscriptions            (FK added in 006)
+ *     calendar_tokens          (FK added in 006)
+ *
+ *   No FK — must be deleted manually here:
+ *     job_versions             (text user_id, no FK)
+ *     jobs                     (text user_id, no FK)
+ *     properties               (text user_id, no FK; client_id has
+ *                               SET NULL to clients which is irrelevant
+ *                               once both go in this transaction)
+ *     clients                  (text user_id, no FK)
+ *
+ *   Deliberately NOT deleted:
+ *     audit_log                (UK GDPR Art. 17(3)(b) carve-out for
+ *                               legal-obligation retention; the log of
+ *                               this very deletion lives here)
+ *     companies                (multi-user resource; never cascaded
+ *                               from a single user's deletion)
+ *
+ * Returns a per-table count of rows deleted; the caller writes these to
+ * the audit log as the erasure receipt.
+ *
+ * If anything inside the transaction fails the whole operation rolls
+ * back and re-throws — partial deletion is forbidden; the user row must
+ * remain whole until the erasure can complete atomically.
+ */
+export async function hardDeleteUserAccount(userId) {
+  if (!usePostgres()) {
+    // Local dev / no-DB mode — nothing to delete server-side. Return a
+    // zero-row receipt so the route can still respond 204 in dev.
+    return {
+      job_versions: 0,
+      jobs: 0,
+      properties: 0,
+      clients: 0,
+      users: 0,
+    };
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const jv = await client.query('DELETE FROM job_versions WHERE user_id = $1', [userId]);
+    const jb = await client.query('DELETE FROM jobs WHERE user_id = $1', [userId]);
+    const pr = await client.query('DELETE FROM properties WHERE user_id = $1', [userId]);
+    const cl = await client.query('DELETE FROM clients WHERE user_id = $1', [userId]);
+    // Final blow: cascading FKs in push_subscriptions / subscriptions /
+    // calendar_tokens fire here. Capture the rowcount so we can detect
+    // "user didn't exist" (0) and distinguish it from "successfully erased".
+    const us = await client.query('DELETE FROM users WHERE id = $1', [userId]);
+
+    await client.query('COMMIT');
+
+    return {
+      job_versions: jv.rowCount ?? 0,
+      jobs: jb.rowCount ?? 0,
+      properties: pr.rowCount ?? 0,
+      clients: cl.rowCount ?? 0,
+      users: us.rowCount ?? 0,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error('hardDeleteUserAccount failed', { error: error.message, userId });
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Reset a user's password (admin only). Also clears any lockout state.
  */
 export async function resetUserPassword(userId, passwordHash) {
