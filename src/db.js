@@ -178,7 +178,7 @@ export async function listUsers() {
   try {
     const result = await pool.query(
       `SELECT u.id, u.email, u.name, u.company_name, u.role,
-              u.is_active::boolean as is_active,
+              u.is_active,
               u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
               u.company_id, u.company_role, c.name as company_display_name
        FROM users u
@@ -204,7 +204,7 @@ export async function listUsersPaginated(limit, offset) {
       pool.query('SELECT COUNT(*) FROM users'),
       pool.query(
         `SELECT u.id, u.email, u.name, u.company_name, u.role,
-                u.is_active::boolean as is_active,
+                u.is_active,
                 u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
                 u.company_id, u.company_role, c.name as company_display_name
          FROM users u
@@ -1281,7 +1281,7 @@ export async function getUsersByCompany(companyId) {
   try {
     const result = await pool.query(
       `SELECT id, email, name, company_name, role, company_role,
-              is_active::boolean as is_active,
+              is_active,
               last_login, created_at, failed_login_attempts, locked_until
        FROM users WHERE company_id = $1 ORDER BY created_at DESC`,
       [companyId]
