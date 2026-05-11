@@ -118,6 +118,11 @@ export type RecordingSnapshot = {
   /** Count of validation alerts / orphaned readings Sonnet flagged during
    *  the session. Drives the <PendingDataBanner>; iOS parity. */
   pendingReadings: number;
+  /** True when the backend has paused Sonnet forwarding because of
+   *  10 consecutive zero-engagement transcript turns (chitchat). iOS
+   *  parity (DeepgramRecordingViewModel.swift:92). Drives the top
+   *  `<ChitchatPauseBanner>` overlay during a recording session. */
+  chitchatPaused: boolean;
   /** Error string when `state === 'error'`. */
   errorMessage: string | null;
   /** Phase E — backend recording session id from POST /api/recording/start.
@@ -149,6 +154,13 @@ export type RecordingActions = {
    *  and speaks "Okay, keeping it." No chime — iOS line 788 mirrors
    *  this (rejection is silent except for TTS). */
   rejectQuestion: (index: number) => void;
+  /** Manual wake from the chitchat-pause banner. Optimistically clears
+   *  the banner, sends `chitchat_resume` over the WS, and arms a 5s
+   *  watchdog — if the backend doesn't confirm via `chitchat_resumed`
+   *  within that window, the banner re-shows so the inspector knows
+   *  Sonnet is still paused (network drop / backend stall). Mirrors iOS
+   *  `resumeFromChitchatPause` (DeepgramRecordingViewModel.swift:6880). */
+  resumeChitchat: () => void;
 };
 
 type RecordingCtx = RecordingSnapshot & RecordingActions;
@@ -247,6 +259,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // Cumulative count of validation-alerts / orphaned readings Sonnet has
   // flagged during the session. Mirrors iOS `PendingDataBanner`.
   const [pendingReadings, setPendingReadings] = React.useState(0);
+  // Chitchat-pause flag (iOS parity, 2026-05-06 slice 4). Set true when the
+  // backend emits `chitchat_paused` after 10 consecutive zero-engagement
+  // turns; cleared on `chitchat_resumed` from the backend OR optimistically
+  // on Resume-button tap (with a 5s watchdog re-show if the backend doesn't
+  // confirm). iOS canon `DeepgramRecordingViewModel.swift:92,6849-6912`.
+  const [chitchatPaused, setChitchatPaused] = React.useState(false);
+  // Tracks an in-flight optimistic Resume tap — distinct from `chitchatPaused`
+  // because we clear the banner instantly on tap but want to re-show it if
+  // the backend never confirms.
+  const chitchatPendingResumeRef = React.useRef(false);
+  const chitchatResumeWatchdogRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
 
   // Job snapshot kept in a ref so we can send the latest `jobState` on
@@ -967,6 +990,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         sleepManagerRef.current?.onSpeechActivity();
       },
+      onChitchatPaused: () => {
+        // iOS canon: serverDidEnterChitchatPause (DeepgramRecordingViewModel.swift:6849).
+        clientDiagnostic('chitchat_paused_received', {});
+        setChitchatPaused(true);
+      },
+      onChitchatResumed: (reason) => {
+        // iOS canon: serverDidExitChitchatPause (line 6855). Clear the
+        // banner + cancel the optimistic-resume watchdog so a confirm
+        // that arrives after a tap doesn't leave a stale timer armed.
+        clientDiagnostic('chitchat_resumed_received', { reason });
+        setChitchatPaused(false);
+        chitchatPendingResumeRef.current = false;
+        if (chitchatResumeWatchdogRef.current) {
+          clearTimeout(chitchatResumeWatchdogRef.current);
+          chitchatResumeWatchdogRef.current = null;
+        }
+      },
       onCostUpdate: (update) => {
         // Server sends totalJobCost in USD. We keep Sonnet cost
         // separate from Deepgram so the UI ticker stays smooth between
@@ -1602,6 +1642,35 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     [cancelDismissTimer, questions]
   );
 
+  // Manual wake from the chitchat-pause banner Resume button. Mirrors iOS
+  // `resumeFromChitchatPause` (DeepgramRecordingViewModel.swift:6880-6912):
+  // optimistically clear the banner so the inspector sees instant
+  // acknowledgement, send `chitchat_resume` over the WS, then arm a 5s
+  // watchdog. If the backend doesn't confirm via `chitchat_resumed`
+  // within that window, we re-show the banner — the inspector knows
+  // their tap didn't reach Sonnet (network drop / backend stall) and
+  // can retry rather than dictating into a silently-still-paused
+  // session. The watchdog is cancelled by `onChitchatResumed`.
+  const resumeChitchat = React.useCallback(() => {
+    setChitchatPaused(false);
+    chitchatPendingResumeRef.current = true;
+    if (chitchatResumeWatchdogRef.current) {
+      clearTimeout(chitchatResumeWatchdogRef.current);
+    }
+    chitchatResumeWatchdogRef.current = setTimeout(() => {
+      // If `chitchat_resumed` arrived, pendingResume is already false
+      // and we leave the cleared banner alone.
+      if (chitchatPendingResumeRef.current) {
+        chitchatPendingResumeRef.current = false;
+        setChitchatPaused(true);
+        clientDiagnostic('chitchat_resume_watchdog_fired', { timeoutSec: 5 });
+      }
+      chitchatResumeWatchdogRef.current = null;
+    }, 5000);
+    sonnetRef.current?.sendChitchatResume();
+    clientDiagnostic('chitchat_resume_manual', {});
+  }, []);
+
   // Schedule the auto-dismiss whenever a NEW question lands at the
   // tail of the questions queue. Driven off the questions state (not
   // onQuestion) so a re-render race that drops a question mid-fire
@@ -1660,6 +1729,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       questions,
       processingCount,
       pendingReadings,
+      chitchatPaused,
       errorMessage,
       backendSessionId,
       start,
@@ -1669,6 +1739,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       dismissQuestion,
       acceptQuestion,
       rejectQuestion,
+      resumeChitchat,
     }),
     [
       state,
@@ -1682,6 +1753,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       questions,
       processingCount,
       pendingReadings,
+      chitchatPaused,
       errorMessage,
       backendSessionId,
       start,
@@ -1689,6 +1761,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       pause,
       resume,
       dismissQuestion,
+      resumeChitchat,
     ]
   );
 

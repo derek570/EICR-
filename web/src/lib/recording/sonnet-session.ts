@@ -239,6 +239,18 @@ export interface SonnetSessionCallbacks {
   onCircuitCreated?: (msg: Stage6CircuitCreated) => void;
   onCircuitUpdated?: (msg: Stage6CircuitUpdated) => void;
   onObservationDeleted?: (msg: Stage6ObservationDeleted) => void;
+  /**
+   * Chitchat-pause state-machine callbacks (iOS parity, 2026-05-06
+   * slice 4). The backend (`src/extraction/sonnet-stream.js`) emits
+   * `chitchat_paused` after 10 consecutive zero-engagement transcript
+   * turns to stop burning Sonnet tokens on small-talk, and
+   * `chitchat_resumed` once a wake trigger fires (wake word, regex
+   * hit, manual Resume tap, or `session_resume` Deepgram-doze recovery).
+   * Mirrors iOS `serverDidEnterChitchatPause` / `serverDidExitChitchatPause`
+   * (DeepgramRecordingViewModel.swift:6849-6870).
+   */
+  onChitchatPaused?: () => void;
+  onChitchatResumed?: (reason: string) => void;
   onError?: (err: Error, recoverable: boolean) => void;
 }
 
@@ -753,6 +765,16 @@ export class SonnetSession {
     this.sendRaw({ type: 'session_resume' });
   }
 
+  /** Manual wake from the chitchat-pause banner's Resume button. iOS
+   *  canon: `ServerWebSocketService.sendChitchatResume()` →
+   *  `{type: "chitchat_resume"}`. The backend exits the paused state
+   *  and emits `chitchat_resumed` over the WS, which flips the host's
+   *  `chitchatPaused` flag back to false via the
+   *  `onChitchatResumed` callback. */
+  sendChitchatResume(): void {
+    this.sendBuffered({ type: 'chitchat_resume' });
+  }
+
   /** Graceful shutdown: send session_stop, let the server flush any
    *  buffered utterances, then close the socket. */
   disconnect(): void {
@@ -1182,6 +1204,20 @@ export class SonnetSession {
           spoken_response: (json.spoken_response as string) ?? '',
           action: (json.action as VoiceCommandResponse['action']) ?? null,
         });
+        break;
+      }
+      case 'chitchat_paused': {
+        // iOS canon: DeepgramRecordingViewModel.swift:6849. Backend
+        // emits this after 10 consecutive zero-engagement turns.
+        this.callbacks.onChitchatPaused?.();
+        break;
+      }
+      case 'chitchat_resumed': {
+        // iOS canon: DeepgramRecordingViewModel.swift:6855. The
+        // `reason` field is informational (logged for diagnostics);
+        // the UI just clears the banner.
+        const reason = typeof json.reason === 'string' ? json.reason : '';
+        this.callbacks.onChitchatResumed?.(reason);
         break;
       }
       case 'cost_update': {
