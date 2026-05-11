@@ -30,6 +30,7 @@ import {
   cancelSpeech,
   confirmationToSentence,
   getConfirmationModeEnabled,
+  isTTSEcho,
   isWithinTtsWindow,
   primeTts,
   setTtsLifecycleObserver,
@@ -494,6 +495,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               });
               return;
             }
+          }
+          // Belt-and-braces — fingerprint echo gate (iOS canon
+          // DeepgramRecordingViewModel.swift:2823). The wall-clock TTS
+          // window above catches finals whose timing overlaps the
+          // current TTS audio. The fingerprint check catches finals
+          // that arrived OUTSIDE the wall-clock window but match a
+          // recently-spoken TTS phrase — Deepgram processing latency
+          // can delay finals by 500-1500ms, putting them past the
+          // 300ms cooldown but still inside the 15-second fingerprint
+          // window. Without this, the user reported "keeps asking the
+          // same question" because the mic picked up its own
+          // question through the speaker, Deepgram transcribed
+          // fragments, and Sonnet processed those fragments as the
+          // inspector's reply.
+          if (isTTSEcho(text)) {
+            console.info(`[recording:tts-echo-discarded] text="${text.slice(0, 60)}"`);
+            clientDiagnostic('pipeline_tts_echo_discarded', {
+              textLength: text.length,
+              textPreview: text.slice(0, 60),
+            });
+            return;
           }
           setTranscript((prev) => {
             const next: TranscriptUtterance[] = [

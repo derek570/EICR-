@@ -225,6 +225,98 @@ function notifyTtsLifecycle(event: 'start' | 'end'): void {
 }
 
 /**
+ * TTS fingerprint echo gate — port of iOS
+ * `recentTTSFingerprints` + `isTTSEcho()`
+ * (DeepgramRecordingViewModel.swift:156, 2776, 2823).
+ *
+ * Every dispatched TTS phrase registers a fingerprint (word Set) with a
+ * 15-second expiry. `isTTSEcho(transcript)` then checks whether a
+ * subsequently-arrived final transcript word-overlaps an active
+ * fingerprint above the iOS-canonical threshold:
+ *
+ *   - Short fingerprints (≤2 words) OR short transcripts (≤2 words):
+ *     exact subset match — every TTS word must appear in the
+ *     transcript OR vice versa.
+ *   - Otherwise: >70 % word-Set overlap of transcript against TTS,
+ *     iOS line 2842 verbatim. The 70 % bound is calibrated so a
+ *     natural answer like "that was for circuit three" replying to
+ *     "which circuit was that reading for?" doesn't trip — the
+ *     answer shares only "that", "was", "for", "circuit" with the
+ *     fingerprint, falling under 70 %.
+ *
+ * Used by recording-context.tsx's onFinalTranscript handler AFTER the
+ * wall-clock TTS-window gate so a self-feedback final that arrived
+ * outside the wall-clock window (delayed by Deepgram processing) but
+ * was inside the 15-second fingerprint window still gets dropped.
+ * Without this, the user reported "the page keeps asking the same
+ * question only about the very first part of an utterance" — the mic
+ * picked up its own question through the speaker, Deepgram transcribed
+ * fragments, and Sonnet treated those fragments as the inspector's
+ * answer.
+ */
+interface TtsFingerprint {
+  words: Set<string>;
+  expiry: number;
+}
+
+let recentTtsFingerprints: TtsFingerprint[] = [];
+
+const TTS_FINGERPRINT_TTL_MS = 15_000;
+const TTS_FINGERPRINT_OVERLAP_THRESHOLD = 0.7;
+
+/** Lower-cases + word-splits the text and registers a fingerprint with
+ *  the 15-second TTL. No-op for empty / whitespace-only text. iOS canon
+ *  doesn't filter short phrases (line 2778 comment: "removed 3-word
+ *  minimum") — even one-word confirmations like "Updated" register so
+ *  a deepgram echo of just "Updated" gets caught. */
+function registerTtsFingerprint(text: string): void {
+  const trimmed = text?.trim().toLowerCase();
+  if (!trimmed) return;
+  const words = new Set(trimmed.split(/\s+/).filter(Boolean));
+  if (words.size === 0) return;
+  recentTtsFingerprints.push({ words, expiry: Date.now() + TTS_FINGERPRINT_TTL_MS });
+}
+
+function isSubsetOf(a: Set<string>, b: Set<string>): boolean {
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+/**
+ * Returns true iff `transcript` likely echoes a recently-dispatched
+ * TTS phrase. Pruning of expired fingerprints happens lazily on every
+ * call, so callers don't need to schedule cleanup separately. Mirrors
+ * iOS isTTSEcho (DeepgramRecordingViewModel.swift:2823).
+ */
+export function isTTSEcho(transcript: string): boolean {
+  const now = Date.now();
+  if (recentTtsFingerprints.length > 0) {
+    recentTtsFingerprints = recentTtsFingerprints.filter((fp) => fp.expiry >= now);
+  }
+  if (recentTtsFingerprints.length === 0) return false;
+  const transcriptWords = new Set(transcript.toLowerCase().split(/\s+/).filter(Boolean));
+  if (transcriptWords.size === 0) return false;
+  for (const fp of recentTtsFingerprints) {
+    if (fp.words.size <= 2 || transcriptWords.size <= 2) {
+      if (isSubsetOf(fp.words, transcriptWords) || isSubsetOf(transcriptWords, fp.words)) {
+        return true;
+      }
+      continue;
+    }
+    let overlap = 0;
+    for (const w of transcriptWords) if (fp.words.has(w)) overlap++;
+    const ratio = overlap / transcriptWords.size;
+    if (ratio > TTS_FINGERPRINT_OVERLAP_THRESHOLD) return true;
+  }
+  return false;
+}
+
+/** Test-only — clear the fingerprint state between tests. */
+export function __resetTtsFingerprintsForTests(): void {
+  recentTtsFingerprints = [];
+}
+
+/**
  * Read the TTS audio window. Returns null when no utterance has been
  * dispatched yet — equivalent to "TTS is silent, transcripts can flow
  * through unconditionally". Callers that want to detect "currently
@@ -291,6 +383,14 @@ function dispatch(
     hasActiveSessionId: Boolean(sessionId),
     route: elevenLabsAvailable && sessionId ? 'elevenlabs' : 'native',
   });
+
+  // Register the fingerprint BEFORE dispatch so a Deepgram transcript
+  // that arrives microseconds after the speaker starts playing already
+  // has the fingerprint available to match against. iOS registers at
+  // exactly the same lifecycle point (DeepgramRecordingViewModel.swift:2776
+  // call site is inside speakWithTTS, right before the synthesizer
+  // starts).
+  registerTtsFingerprint(trimmed);
 
   if (elevenLabsAvailable && sessionId) {
     dispatchElevenLabs(trimmed, options);
