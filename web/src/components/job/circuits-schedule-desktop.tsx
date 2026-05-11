@@ -32,6 +32,7 @@ import {
   isSpareCircuit,
   type CircuitFieldKey,
 } from '@/lib/constants/circuit-field-options';
+import { applyDefaultsToCircuit } from '@certmate/shared-utils';
 
 type CircuitLike = { id: string; [key: string]: unknown };
 
@@ -97,9 +98,18 @@ const COLUMNS: ColumnSpec[] = [
 ];
 
 const REF_WIDTH = 64;
-const DESIGNATION_WIDTH = 220;
+const DESIGNATION_WIDTH = 240;
 const DELETE_WIDTH = 56;
-const ROW_HEIGHT = 48;
+const ROW_HEIGHT = 52;
+/** Debounce window for auto-defaults after the inspector stops typing
+ *  in the designation cell. 600ms is comfortably past human typing
+ *  cadence (~150ms / keystroke for a fluent typist) without feeling
+ *  laggy. Blur triggers the same path immediately. */
+const DEFAULTS_DEBOUNCE_MS = 600;
+/** How long the brand-blue cell flash plays. Mirrors the keyframe in
+ *  globals.css `.cm-cell-flash`. We remove the className after this
+ *  delay so a subsequent auto-fill of the same cell can re-trigger. */
+const FLASH_DURATION_MS = 1400;
 
 export interface CircuitsScheduleDesktopProps {
   circuits: CircuitLike[];
@@ -118,7 +128,112 @@ export function CircuitsScheduleDesktop({
   const [activeCell, setActiveCell] = React.useState<string | null>(null);
   // Active header popover: column key for which the bulk-fill UI is open.
   const [activeHeader, setActiveHeader] = React.useState<string | null>(null);
+  // Cells that should currently play the brand-blue auto-fill flash.
+  // Keys are `${rowId}::${field}`; tick state forces a re-render when the
+  // same key fires twice in a row (since the Set identity stays stable).
+  const [flashed, setFlashed] = React.useState<Set<string>>(() => new Set());
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const flashTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // Debounced auto-defaults timer per circuit id — fires DEFAULTS_DEBOUNCE_MS
+  // after the last designation keystroke. iOS leaves defaults manual (the
+  // Apply Defaults rail button); the desktop schedule fires it eagerly so a
+  // designer entering "Lighting" / "Cooker" sees the row light up with the
+  // matching cable / OCPD presets the moment they pause typing.
+  const defaultsTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  React.useEffect(() => {
+    // Clean any pending timers when the component unmounts. The Map's
+    // stored timeout ids are individually cleared because clearTimeout
+    // on a stale id is a no-op but the closure over `circuits` would
+    // otherwise leak across the unmount boundary.
+    const flash = flashTimers.current;
+    const defaults = defaultsTimers.current;
+    return () => {
+      flash.forEach(clearTimeout);
+      defaults.forEach(clearTimeout);
+    };
+  }, []);
+
+  const markFlashed = React.useCallback((keys: string[]) => {
+    if (keys.length === 0) return;
+    setFlashed((prev) => {
+      const next = new Set(prev);
+      keys.forEach((k) => next.add(k));
+      return next;
+    });
+    keys.forEach((k) => {
+      const existing = flashTimers.current.get(k);
+      if (existing) clearTimeout(existing);
+      const t = setTimeout(() => {
+        setFlashed((prev) => {
+          if (!prev.has(k)) return prev;
+          const next = new Set(prev);
+          next.delete(k);
+          return next;
+        });
+        flashTimers.current.delete(k);
+      }, FLASH_DURATION_MS);
+      flashTimers.current.set(k, t);
+    });
+  }, []);
+
+  // Designation → defaults pipeline. Looks up the per-type defaults via
+  // `applyDefaultsToCircuit`, builds a patch of only the newly-filled
+  // fields (so React still receives an additive patch, not a wholesale
+  // replacement), and triggers the flash for those fields.
+  const applyDesignationDefaults = React.useCallback(
+    (circuit: CircuitLike) => {
+      // Coerce the loose `CircuitLike` shape into something
+      // `applyDefaultsToCircuit` can accept — it expects a plain
+      // string-valued Circuit subset.
+      const stringy: Record<string, string> = {};
+      for (const [k, val] of Object.entries(circuit)) {
+        if (typeof val === 'string') stringy[k] = val;
+      }
+      const { circuit: filled, filledFields } = applyDefaultsToCircuit(stringy);
+      if (filledFields === 0) return;
+      const patch: Record<string, string> = {};
+      const flashKeys: string[] = [];
+      for (const [k, v] of Object.entries(filled)) {
+        if (k === 'id' || k === 'circuit_designation' || k === 'circuit_ref') continue;
+        if (typeof v !== 'string' || v.trim() === '') continue;
+        if (stringy[k] !== v) {
+          patch[k] = v;
+          flashKeys.push(`${circuit.id}::${k}`);
+        }
+      }
+      if (Object.keys(patch).length === 0) return;
+      onPatch(circuit.id, patch);
+      markFlashed(flashKeys);
+    },
+    [onPatch, markFlashed]
+  );
+
+  const scheduleDesignationDefaults = React.useCallback(
+    (circuit: CircuitLike) => {
+      const existing = defaultsTimers.current.get(circuit.id);
+      if (existing) clearTimeout(existing);
+      const t = setTimeout(() => {
+        defaultsTimers.current.delete(circuit.id);
+        applyDesignationDefaults(circuit);
+      }, DEFAULTS_DEBOUNCE_MS);
+      defaultsTimers.current.set(circuit.id, t);
+    },
+    [applyDesignationDefaults]
+  );
+
+  const flushDesignationDefaults = React.useCallback(
+    (circuit: CircuitLike) => {
+      const existing = defaultsTimers.current.get(circuit.id);
+      if (existing) {
+        clearTimeout(existing);
+        defaultsTimers.current.delete(circuit.id);
+      }
+      applyDesignationDefaults(circuit);
+    },
+    [applyDesignationDefaults]
+  );
 
   // Click-outside closes any open popover. Without this an open dropdown
   // would stay anchored even after the inspector moved on to a different
@@ -153,7 +268,7 @@ export function CircuitsScheduleDesktop({
   return (
     <div
       ref={containerRef}
-      className="relative w-full overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)]"
+      className="relative w-full overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_2px_12px_rgba(0,0,0,0.18)]"
       data-testid="circuits-schedule-desktop"
     >
       <table
@@ -161,17 +276,28 @@ export function CircuitsScheduleDesktop({
         style={{ borderCollapse: 'separate', borderSpacing: 0 }}
       >
         <thead>
-          <tr className="bg-[var(--color-surface-2)] text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]">
+          <tr className="text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-secondary)]">
             <th
-              className="sticky left-0 z-20 border-b border-r border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-3 py-3 text-left"
-              style={{ width: REF_WIDTH, minWidth: REF_WIDTH }}
+              className="sticky left-0 z-20 border-b border-r border-[var(--color-border-subtle)] px-3 py-3 text-left"
+              style={{
+                width: REF_WIDTH,
+                minWidth: REF_WIDTH,
+                background:
+                  'linear-gradient(180deg, color-mix(in srgb, var(--color-brand-blue) 14%, var(--color-surface-2)) 0%, var(--color-surface-2) 100%)',
+              }}
               scope="col"
             >
               Ref
             </th>
             <th
-              className="sticky z-20 border-b border-r border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-3 py-3 text-left"
-              style={{ left: REF_WIDTH, width: DESIGNATION_WIDTH, minWidth: DESIGNATION_WIDTH }}
+              className="sticky z-20 border-b border-r border-[var(--color-border-subtle)] px-3 py-3 text-left"
+              style={{
+                left: REF_WIDTH,
+                width: DESIGNATION_WIDTH,
+                minWidth: DESIGNATION_WIDTH,
+                background:
+                  'linear-gradient(180deg, color-mix(in srgb, var(--color-brand-blue) 14%, var(--color-surface-2)) 0%, var(--color-surface-2) 100%)',
+              }}
               scope="col"
             >
               Designation
@@ -202,14 +328,18 @@ export function CircuitsScheduleDesktop({
           </tr>
         </thead>
         <tbody>
-          {circuits.map((c) => (
+          {circuits.map((c, idx) => (
             <Row
               key={c.id}
               circuit={c}
+              rowIndex={idx}
               onPatch={onPatch}
               onRemove={onRemove}
               activeCell={activeCell}
               setActiveCell={setActiveCell}
+              flashed={flashed}
+              onDesignationChange={scheduleDesignationDefaults}
+              onDesignationBlur={flushDesignationDefaults}
             />
           ))}
         </tbody>
@@ -276,11 +406,14 @@ function ColumnFillPopover({
     <div
       role="dialog"
       aria-label={`Fill ${column.label} column`}
-      className="absolute left-0 top-full z-30 mt-1 w-64 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] p-3 text-left text-[12px] font-normal normal-case tracking-normal text-[var(--color-text-primary)] shadow-[0_12px_32px_rgba(0,0,0,0.45)]"
+      className="cm-popover-in absolute left-0 top-full z-30 mt-2 w-72 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] p-4 text-left text-[12px] font-normal normal-case tracking-normal text-[var(--color-text-primary)] shadow-[0_16px_40px_rgba(0,0,0,0.55)] backdrop-blur-sm"
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="mb-2 text-[11px] uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]">
-        Fill column with…
+      <div className="mb-3 flex items-center justify-between text-[11px] uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]">
+        <span>Fill {column.label.toLowerCase()}</span>
+        <span className="rounded-full bg-[var(--color-brand-blue)]/15 px-2 py-0.5 text-[10px] font-semibold text-[var(--color-brand-blue)]">
+          column
+        </span>
       </div>
       {presetOptions ? (
         <select
@@ -339,16 +472,24 @@ function ColumnFillPopover({
 
 function Row({
   circuit,
+  rowIndex,
   onPatch,
   onRemove,
   activeCell,
   setActiveCell,
+  flashed,
+  onDesignationChange,
+  onDesignationBlur,
 }: {
   circuit: CircuitLike;
+  rowIndex: number;
   onPatch: (id: string, patch: Record<string, string>) => void;
   onRemove: (id: string) => void;
   activeCell: string | null;
   setActiveCell: (next: string | null) => void;
+  flashed: Set<string>;
+  onDesignationChange: (circuit: CircuitLike) => void;
+  onDesignationBlur: (circuit: CircuitLike) => void;
 }) {
   const v = (k: string): string | undefined => {
     const val = circuit[k];
@@ -356,19 +497,34 @@ function Row({
   };
   const ref = v('circuit_ref') ?? '';
   const spare = isSpareCircuit(circuit);
+  // Zebra striping. Spare rows have a stronger tint and reduced text
+  // contrast so the eye can skim past them when scanning a schedule of
+  // 30+ circuits. Odd rows pick up a 3% surface-3 wash; even rows stay
+  // at surface-1 so the schedule reads like a paper EICR form.
+  const baseTint = spare
+    ? 'bg-[color-mix(in_srgb,var(--color-status-pending)_8%,var(--color-surface-1))] text-[var(--color-text-tertiary)]'
+    : rowIndex % 2 === 0
+      ? 'bg-[var(--color-surface-1)]'
+      : 'bg-[color-mix(in_srgb,var(--color-surface-2)_55%,var(--color-surface-1))]';
+
+  const stickyAccent =
+    'linear-gradient(90deg, color-mix(in srgb, var(--color-brand-blue) 10%, transparent) 0%, transparent 60%)';
+
+  const flashClass = (field: string) =>
+    flashed.has(`${circuit.id}::${field}`) ? 'cm-cell-flash' : '';
 
   return (
     <tr
-      className={`group transition ${
-        spare
-          ? 'bg-[var(--color-surface-2)] text-[var(--color-text-tertiary)]'
-          : 'bg-[var(--color-surface-1)] hover:bg-[var(--color-surface-2)]'
-      }`}
+      className={`group transition-colors duration-150 ${baseTint} hover:bg-[color-mix(in_srgb,var(--color-brand-blue)_6%,var(--color-surface-2))]`}
       style={{ height: ROW_HEIGHT }}
     >
       <td
-        className="sticky left-0 z-10 border-b border-r border-[var(--color-border-subtle)] bg-inherit px-2 py-1"
-        style={{ width: REF_WIDTH, minWidth: REF_WIDTH }}
+        className="sticky left-0 z-10 border-b border-r border-[var(--color-border-subtle)] bg-inherit px-2 py-1 font-semibold text-[var(--color-text-secondary)]"
+        style={{
+          width: REF_WIDTH,
+          minWidth: REF_WIDTH,
+          backgroundImage: stickyAccent,
+        }}
       >
         <CellInput
           id={circuit.id}
@@ -376,17 +532,31 @@ function Row({
           value={v('circuit_ref')}
           onPatch={onPatch}
           ariaLabel={`Circuit ${ref} reference`}
+          align="center"
+          weight="semibold"
         />
       </td>
       <td
         className="sticky z-10 border-b border-r border-[var(--color-border-subtle)] bg-inherit px-2 py-1"
-        style={{ left: REF_WIDTH, width: DESIGNATION_WIDTH, minWidth: DESIGNATION_WIDTH }}
+        style={{
+          left: REF_WIDTH,
+          width: DESIGNATION_WIDTH,
+          minWidth: DESIGNATION_WIDTH,
+          backgroundImage: stickyAccent,
+        }}
       >
         <CellInput
           id={circuit.id}
           colKey="circuit_designation"
           value={v('circuit_designation')}
-          onPatch={onPatch}
+          onPatch={(id, patch) => {
+            onPatch(id, patch);
+            // Schedule the debounced auto-defaults pipeline. We pass the
+            // *patched* shape so `inferCircuitType` sees the freshest
+            // designation when the timer fires.
+            onDesignationChange({ ...circuit, ...patch });
+          }}
+          onBlur={() => onDesignationBlur(circuit)}
           ariaLabel={`Circuit ${ref} designation`}
         />
       </td>
@@ -395,7 +565,7 @@ function Row({
         return (
           <td
             key={col.key}
-            className="relative border-b border-[var(--color-border-subtle)] px-1 py-1"
+            className={`relative border-b border-[var(--color-border-subtle)] px-1 py-1 ${flashClass(col.key)}`}
             style={{ width: col.width, minWidth: col.width }}
           >
             <CellField
@@ -461,20 +631,25 @@ function CellField({
           aria-haspopup="listbox"
           aria-expanded={isOpen}
           aria-label={ariaLabel}
-          className={`flex h-9 w-full items-center justify-between rounded-[var(--radius-sm)] border px-2 text-[13px] transition ${
+          className={`flex h-10 w-full items-center justify-between rounded-[var(--radius-sm)] border px-2 text-[13px] transition-all duration-150 ${
             isOpen
-              ? 'border-[var(--color-brand-blue)] bg-[var(--color-surface-2)]'
+              ? 'border-[var(--color-brand-blue)] bg-[var(--color-surface-2)] shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-brand-blue)_25%,transparent)]'
               : 'border-transparent hover:border-[var(--color-border-subtle)] hover:bg-[var(--color-surface-2)]'
           }`}
         >
-          <span className={value ? '' : 'opacity-50'}>{value || '—'}</span>
-          <ChevronDown className="h-3 w-3 flex-shrink-0 opacity-60" aria-hidden />
+          <span className={value ? 'font-medium' : 'opacity-50'}>{value || '—'}</span>
+          <ChevronDown
+            className={`h-3 w-3 flex-shrink-0 transition-transform duration-150 ${
+              isOpen ? 'rotate-180 text-[var(--color-brand-blue)]' : 'opacity-60'
+            }`}
+            aria-hidden
+          />
         </button>
         {isOpen ? (
           <ul
             role="listbox"
             aria-label={ariaLabel}
-            className="absolute left-0 top-full z-30 mt-1 max-h-64 min-w-full overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_12px_32px_rgba(0,0,0,0.45)]"
+            className="cm-popover-in absolute left-0 top-full z-30 mt-1 max-h-64 min-w-full overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
             onClick={(e) => e.stopPropagation()}
           >
             <li>
@@ -533,24 +708,33 @@ function CellInput({
   colKey,
   value,
   onPatch,
+  onBlur,
   inputMode,
   ariaLabel,
+  align,
+  weight,
 }: {
   id: string;
   colKey: string;
   value: string | undefined;
   onPatch: (id: string, patch: Record<string, string>) => void;
+  onBlur?: () => void;
   inputMode?: 'decimal' | 'numeric' | 'text';
   ariaLabel: string;
+  align?: 'center' | 'left';
+  weight?: 'normal' | 'semibold';
 }) {
+  const alignClass = align === 'center' ? 'text-center' : 'text-left';
+  const weightClass = weight === 'semibold' ? 'font-semibold' : '';
   return (
     <input
       type="text"
       inputMode={inputMode}
       value={value ?? ''}
       onChange={(e) => onPatch(id, { [colKey]: e.target.value })}
+      onBlur={onBlur}
       aria-label={ariaLabel}
-      className="h-9 w-full rounded-[var(--radius-sm)] border border-transparent bg-transparent px-2 text-[13px] transition hover:border-[var(--color-border-subtle)] hover:bg-[var(--color-surface-2)] focus:border-[var(--color-brand-blue)] focus:bg-[var(--color-surface-2)] focus:outline-none"
+      className={`h-10 w-full rounded-[var(--radius-sm)] border border-transparent bg-transparent px-2 text-[13px] transition-colors duration-150 hover:border-[var(--color-border-subtle)] hover:bg-[var(--color-surface-2)] focus:border-[var(--color-brand-blue)] focus:bg-[var(--color-surface-2)] focus:shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-brand-blue)_25%,transparent)] focus:outline-none ${alignClass} ${weightClass}`}
     />
   );
 }

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import type { CircuitRow, ObservationRow } from '@/lib/types';
+import { useMediaQuery, DESKTOP_BREAKPOINT } from '@/hooks/use-media-query';
 
 /**
  * Job overview tab — at-a-glance dashboard mirroring the iOS Overview
@@ -41,6 +42,10 @@ export default function JobOverviewPage() {
   const params = useParams<{ id: string }>();
   const jobId = params.id;
   const base = `/job/${jobId}`;
+  // Drop the 1280 px page cap on desktop so the hero strip + summary
+  // cards fill the viewport — matches the Circuits-tab treatment so
+  // both at-a-glance and edit surfaces feel coherent on wide monitors.
+  const isDesktop = useMediaQuery(DESKTOP_BREAKPOINT);
 
   // Cast tab data bags to a permissive record so we can read whichever
   // keys Sonnet has populated without fighting the type system.
@@ -61,7 +66,7 @@ export default function JobOverviewPage() {
   return (
     <div
       className="mx-auto flex w-full flex-col gap-5 px-4 py-5 landscape:gap-1.5 landscape:px-1.5 landscape:py-1.5 portrait:md:px-8 portrait:md:py-7"
-      style={{ maxWidth: '1280px' }}
+      style={{ maxWidth: isDesktop ? '100%' : '1280px' }}
     >
       {/* ── Hero strip ───────────────────────────────────────────
           Landscape (incl. landscape phone): 5 boxes side-by-side,

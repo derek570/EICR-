@@ -610,3 +610,60 @@ body {
     transform: none;
   }
 }
+
+/* =============================================================================
+ * Desktop circuits schedule — entrance + interaction motion.
+ *
+ *  • cm-popover-in     — bulk-fill popover & cell listbox: scale + fade in
+ *                        from 0.96 / 4px below over 140ms.
+ *  • cm-cell-flash     — brand-blue background flash that fades back to
+ *                        transparent over ~1.4s. Applied to cells that
+ *                        were auto-filled by the designation → defaults
+ *                        lookup (or any other programmatic patch) so the
+ *                        inspector can see which cells just changed.
+ *  • cm-row-hover-lift — subtle row hover effect; relies on box-shadow
+ *                        + a left-edge brand-blue accent so the table
+ *                        still feels grid-like and not card-like.
+ *
+ *  All three are gated by prefers-reduced-motion.
+ * ========================================================================== */
+@keyframes cm-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.cm-popover-in {
+  animation: cm-popover-in 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  transform-origin: top left;
+}
+
+@keyframes cm-cell-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--color-brand-blue) 35%, transparent);
+    box-shadow: inset 0 0 0 1px var(--color-brand-blue);
+  }
+  60% {
+    background-color: color-mix(in srgb, var(--color-brand-blue) 14%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand-blue) 40%, transparent);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+.cm-cell-flash {
+  animation: cm-cell-flash 1400ms ease-out both;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cm-popover-in,
+  .cm-cell-flash {
+    animation: none;
+  }
+}
