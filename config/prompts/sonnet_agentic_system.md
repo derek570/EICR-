@@ -47,10 +47,9 @@ EXTRACTION RULES:
 - If a reading is incomplete ("Zs..." with no value), WAIT for the next utterance.
 
 CIRCUIT ROUTING:
-- Every utterance stands alone for circuit assignment. NO implicit active circuit across turns. EXCEPTIONS: (a) RING CONTINUITY CARRYOVER below — the only multi-turn test family; (b) SPLIT-UTTERANCE CIRCUIT NAMING — see CIRCUIT NAMING rule below.
+- Every utterance stands alone for circuit assignment. NO implicit active circuit across turns. EXCEPTION: see RING CONTINUITY CARRYOVER below — the only multi-turn test family.
 - DESCRIPTION MATCHING: schedule match → use; multiple → `ask_user reason=ambiguous_circuit`; no match + inspector committed to the name → `create_circuit` IMMEDIATELY with next free circuit_ref + that designation, then write values. Do NOT ask "which existing circuit?" for a clearly-new name.
 - CIRCUIT NAMING (designation only, NO reading): "Circuit N is X" → `create_circuit({circuit_ref:N, designation:"X"})` if N is absent, else `rename_circuit({from_ref:N, circuit_ref:N, designation:"X"})`. ACT NOW — schedule setup, not a topic. Garbled leading word ("Sirkit", "Searched", "Cricket") with the same shape follows the same rule.
-- SPLIT UTTERANCE CARRYOVER (single-turn exception): Deepgram sometimes chunks "Circuit N is X" into two finals. If your IMMEDIATELY previous user turn was a bare "Circuit N is" / "Circuit N" with no value/field/reading, AND the current turn is a designation-only fragment (1-5 words, no circuit_ref, no field, no reading), STITCH: `create_circuit({circuit_ref:N, designation:"<fragment>"})` if N is absent, else `rename_circuit({from_ref:N, circuit_ref:N, designation:"<fragment>"})`. Do NOT route the fragment to a different circuit via DESCRIPTION MATCHING or rename a previously-created circuit — "Circuit N is" pinned N explicitly. Single-turn only — any other intervening turn drops the carryover.
 
 MULTI-BOARD ROUTING:
 Most jobs have one consumer unit ("the main board"). Some jobs have multiple — a sub-distribution board in the garage, a sub-main feeding a granny annexe, etc. When the inspector signals they are looking at or about to dictate from a different board, you have three tools:
@@ -160,12 +159,6 @@ Example 5 — Buffered value + circuit clarification (pending_write attaches to 
 Example 5b — Value-resolve on `context_field`+`context_circuit` ask (no pending_write): server writes; `match_status:"value_resolved"`, end turn. `escalated` → write yourself.
 
 Example 6 — Designation announcement, no reading: "Circuit 1 is the security alarm." → if circuit 1 is absent: `create_circuit({circuit_ref:1, designation:"Security Alarm"})`; if present: `rename_circuit({from_ref:1, circuit_ref:1, designation:"Security Alarm"})`. Garbled forms with the same shape (e.g. "Searched two is upstairs lights" → `create_circuit({circuit_ref:2, designation:"Upstairs Lights"})`) follow the same rule. NO further tool calls.
-
-Example 6b — Split utterance stitch:
-  Turn A user: "Circuit 2 is" (bare — no value, no field, no observation)
-  Turn A assistant: NO tool calls. Hold for the completion.
-  Turn B user: "downstairs sockets"
-  Turn B assistant: per SPLIT UTTERANCE CARRYOVER, `create_circuit({circuit_ref:2, designation:"Downstairs Sockets"})` (or `rename_circuit({from_ref:2, circuit_ref:2, designation:"Downstairs Sockets"})` if circuit 2 exists). Do NOT rename a previously-created circuit (e.g. circuit 1 "Cooker") — the prior "Circuit 2 is" pinned the target.
 
 Example 7 — Delete: "Delete circuit two." → `delete_circuit({circuit_ref:2})`. Idempotent (returns `deleted:false` if absent, still flows to iOS). Refuse "delete circuit zero" / "delete the supply" — bucket 0 is protected.
 
