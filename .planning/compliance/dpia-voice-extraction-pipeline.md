@@ -246,17 +246,17 @@ The risk register below uses ICO scoring:
 | Residual severity | **Low** |
 | Residual overall | **Low — accepted** |
 
-### Risk R3 — Unredacted personal data in CloudWatch logs with indefinite retention
+### Risk R3 — Unredacted personal data in CloudWatch logs
 
 | Field | Value |
 |---|---|
-| Source | `logger.info` calls in `src/routes/jobs.js`, `src/routes/calendar.js` and elsewhere log raw `address`, `client_name`, `postcode`. Log group `retentionInDays` is not configured, so retention is indefinite. |
-| Potential harm | Permanent record of every homeowner address that ever entered the system, accessible to anyone with IAM read on the log group. Disclosure under SAR is awkward. ICO would view this as a clear Art. 5(1)(c) (minimisation) + Art. 5(1)(e) (storage limitation) breach. |
-| Likelihood (pre-mitigation) | **High** — current state |
-| Severity | **Medium** — sensitivity of addresses + indefinite retention |
-| Overall (pre-mitigation) | **High** |
-| Mitigations | M3.1, M3.2 |
-| Residual likelihood | **Low** (after redaction + 30-day retention) |
+| Source | `logger.info` calls in `src/routes/jobs.js`, `src/routes/calendar.js` and elsewhere logged raw `address`, `client_name`, `postcode` before commit `fb20dc0`. **Retention was found to be 30 days at the log-group level on verification (2026-05-11)** — the original audit incorrectly assumed indefinite retention because the setting was not in the ECS task def. |
+| Potential harm | A 30-day rolling window of homeowner addresses accessible to anyone with IAM read on the log group. Less severe than the audit initially suggested (which assumed indefinite retention) but still a clear Art. 5(1)(c) (minimisation) breach until redaction shipped. |
+| Likelihood (pre-mitigation) | **High** — call sites logged PII on every job-update / calendar event |
+| Severity | **Low–Medium** — sensitivity of addresses, 30-day window |
+| Overall (pre-mitigation) | **Medium** |
+| Mitigations | M3.1 (redaction shipped — commit `fb20dc0`); M3.2 (retention already in place — verified) |
+| Residual likelihood | **Low** (format-chain redaction is now the only path; logger calls cannot bypass it without explicit code change) |
 | Residual severity | **Low** |
 | Residual overall | **Low — accepted** |
 
@@ -412,8 +412,8 @@ Each mitigation is keyed to one or more risks (R-) above and to the operational 
 | M1.4 | **Transcript retention capped at 30 days.** | R1 | Pending Task #3 (S3 Lifecycle rule on `debug_log.jsonl`) |
 | **M2.1** | **Set `mip_opt_out=true`** as a URL parameter on every Deepgram WebSocket connection. Single change in iOS `DeepgramService.swift` and web `deepgram-service.ts`. | R2 | Pending compliance Task #3 |
 | M2.2 | **Sign Deepgram DPA** with UK Addendum to SCCs in place. | R2, R6 (DPF mechanism) | Pending compliance Task #2 |
-| **M3.1** | **Redact personal data in logger calls.** Either centralised wrapper (`logger.info('Updating job', { jobId })` only — no address) or per-call-site change. | R3 | Pending Task #3 |
-| M3.2 | **Set `retentionInDays: 30`** on `/ecs/eicr/eicr-backend` and `/ecs/eicr/eicr-pwa` CloudWatch log groups (one line in `ecs/task-def-backend.json`). | R3 | Pending Task #3 |
+| **M3.1** | **Redact personal data in logger calls** via Winston format-chain redaction in `src/logger.js`. PII_FIELDS set covers `address`, `client_name`, `clientName`, `postcode`, `postCode`, `client_phone`, `clientPhone`, `client_email`, `clientEmail`. Format-chain placement means it applies to every existing and future call site without per-site refactoring. | R3 | **Shipped commit `fb20dc0` (2026-05-11). 8 tests passing.** |
+| M3.2 | **30-day CloudWatch retention** on all `/ecs/eicr/*` log groups. | R3 | **Already in place — verified 2026-05-11 via `aws logs describe-log-groups`.** Set at log-group level, not in ECS task def. |
 | **M4.1** | **Env-gate the `debug/` S3 write** so it only runs when `ENABLE_DEBUG_AUDIO=true` (default false in production). | R4 | Pending Task #3 |
 | M4.2 | **S3 Lifecycle rule on `debug/*`** with 7-day expiry as belt-and-braces. | R4 | Pending Task #3 |
 | **M5.1** | **Strip EXIF metadata** before upload in `Sources/Processing/ImageScaler.swift`. Use `CGImageDestination` with an empty metadata dictionary. | R5, R7 | Pending Task #3 |

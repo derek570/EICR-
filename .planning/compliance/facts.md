@@ -176,9 +176,10 @@ No dedicated session table — JWTs are stateless and stored client-side only.
 
 ### 6.3 CloudWatch Logs (eu-west-2)
 
-- `/ecs/eicr/eicr-backend` — application logs. **Currently not redacted: addresses, client names, postcodes appear in plaintext** via `logger.info(...)` calls in `src/routes/jobs.js`, `src/routes/calendar.js`, etc. `[ACTION]` Task #3.
-- `/ecs/eicr/eicr-pwa` — frontend logs.
-- **Retention is not configured on either group**, meaning logs are kept indefinitely. `[ACTION]` Task #3 sets `retentionInDays: 30`.
+- `/ecs/eicr/eicr-backend` — application logs. Personal data now redacted at the Winston format-chain level (`src/logger.js`, commit `fb20dc0`, 2026-05-11) — `address`, `client_name`, `postcode`, `client_phone`, `client_email` and their camelCase variants are replaced with `[REDACTED]` before reaching CloudWatch. Verified by `src/__tests__/logger.redaction.test.js` (8/8 passing).
+- `/ecs/eicr/eicr-pwa` — frontend logs (no application code outputs PII here).
+- `/ecs/eicr/eicr-frontend` — legacy log group, empty.
+- **Retention is configured at 30 days on all three log groups** — verified 2026-05-11 via `aws logs describe-log-groups`. The retention is set at the log-group level (not in the ECS task definition), so it survives task def re-registration but does NOT auto-apply to any new log group created in future. When adding a new service, set `retentionInDays` on its log group as part of the rollout checklist.
 
 ### 6.4 iOS device (local)
 
@@ -290,7 +291,7 @@ These are the items that made the audit a load-bearing exercise rather than a sa
 
 1. **Raw audio is persisted to S3** for debug purposes at `debug/{userId}/{sessionId}/chunk_*` — `src/routes/recording.js:892-906`. Must be env-gated off in prod or capped with a 7-day lifecycle. (`[ACTION]` Task #3)
 2. **EXIF metadata including GPS is not stripped** from iOS photo uploads. `Sources/Processing/ImageScaler.swift` preserves all metadata. (`[ACTION]` Task #3)
-3. **CloudWatch logs contain raw personal data** — `address`, `client_name`, `postcode` logged in plaintext from `src/routes/jobs.js`, `src/routes/calendar.js`, etc. AND **retention is unlimited** because `retentionInDays` is not set on the log group. (`[ACTION]` Task #3 — two-part: retention + redaction)
+3. **CloudWatch logs contained raw personal data — FIXED 2026-05-11.** `address`, `client_name`, `postcode` were logged in plaintext from `src/routes/jobs.js`, `src/routes/calendar.js`, etc. Commit `fb20dc0` adds Winston format-chain redaction so the PII never reaches CloudWatch. Log-group retention was already set to 30 days at the AWS log-group level (verified — the original audit missed it because the setting lives outside the task def). The "two-part" framing was wrong on the retention half; only the redaction needed action.
 4. **Web auth tokens in `localStorage` + non-HttpOnly cookie** (`web/src/lib/auth.ts:10-87`). XSS-readable. Code comment indicates HttpOnly migration is on the Phase 9 roadmap. **Not a launch-blocker; should be flagged as a residual risk in the DPIA.**
 5. **Homeowner phone + email captured via voice** into `installation_details.client_phone` / `client_email`. Must appear in Privacy Policy data inventory.
 6. **No SMTP credentials deployed in production.** `src/services/email.js` exists but cannot send. Implies certificate-email delivery is broken / dependent on iOS-local PDF path. When wired up later, the SMTP provider becomes a sub-processor.

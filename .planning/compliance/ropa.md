@@ -83,7 +83,7 @@ CertMate is **controller** for processing where Beckley Electrical Ltd determine
 | Categories of personal data | User ID, IP address (in some log lines), request paths, error stacks. **Currently also includes raw `address`, `client_name`, `postcode` strings** — see DPIA §R3 and compliance Task #3. |
 | Recipients | AWS CloudWatch Logs in `/ecs/eicr/eicr-backend` and `/ecs/eicr/eicr-pwa` (eu-west-2) |
 | International transfers | None |
-| Retention | **Currently indefinite — not configured.** Target: 30 days. Action tracked under compliance Task #3. |
+| Retention | **30 days** — verified configured at the log-group level on 2026-05-11. PII fields redacted from log lines at the Winston format-chain level (commit `fb20dc0`). |
 | Lawful basis | Art. 6(1)(f) — legitimate interest (service operation and security) balanced against subject interests; balancing test relies on redaction (in progress) |
 | Security measures | CloudWatch encrypted at rest; IAM-controlled read access; admin-only |
 

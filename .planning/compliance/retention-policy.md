@@ -37,7 +37,7 @@ Out of scope: data held by sub-processors (Anthropic, OpenAI, Deepgram, ElevenLa
 | R7 | Cost / usage telemetry (`session-analytics/{userId}/{sessionId}/cost_summary.json`) | Indefinite | **2 years** | S3 Lifecycle rule on `session-analytics/*/cost_summary.json` | Billing dispute window |
 | R8 | Inspector signature image (S3 `settings/{userId}/signatures/`) | While account active | **Account lifetime + 7 years post-closure** | Triggered on account closure: signature retained but flagged "account closed"; deleted at +7y | Linked to certs already issued under that signature |
 | R9 | Inspector account data (RDS `users`) | While account active | **Account lifetime + 7 years post-closure** | Manual deletion at +7y; row not anonymised because audit trail (`job_versions.user_id`) refers to it for compliance | Linked to certs issued under that account (controller obligation) |
-| R10 | CloudWatch application logs (`/ecs/eicr/eicr-backend`, `/ecs/eicr/eicr-pwa`) | **Indefinite — not configured** | **30 days** | Log group `retentionInDays: 30` set in `ecs/task-def-backend.json` | Operational and security monitoring |
+| R10 | CloudWatch application logs (`/ecs/eicr/eicr-backend`, `/ecs/eicr/eicr-pwa`, `/ecs/eicr/eicr-frontend`) | **30 days (already set at the log-group level, verified 2026-05-11)** | **30 days** | Log group `retentionInDays: 30` set via AWS console / `aws logs put-retention-policy` | Operational and security monitoring |
 | R11 | Crash logs (TestFlight / App Store Connect) | Apple default ~90 days | Apple default | Apple-managed | Service quality |
 | R12 | JWT auth tokens | Until expiry | Until expiry | Stateless — server side has no record | Operational |
 | R13 | Push subscription credentials (RDS `push_subscriptions`) | While valid | **Until user revokes OR 12-month idle** | Periodic scan for subscriptions with no successful delivery in 12 months | Service operation |
@@ -63,7 +63,7 @@ Used for time-based bulk expiry of S3 objects. Configured in AWS Console / Terra
 
 ### 3.2 CloudWatch retention
 
-Set per log group via `retentionInDays` in the ECS task definition (`ecs/task-def-backend.json`). Maps to R10.
+Set at the log-group level (NOT in the ECS task definition — the awslogs driver doesn't carry retention). The three live log groups (`/ecs/eicr/eicr-backend`, `/ecs/eicr/eicr-pwa`, `/ecs/eicr/eicr-frontend`) are at 30 days, verified 2026-05-11 via `aws logs describe-log-groups`. Operational note: when adding a new service (= new log group), set `retentionInDays` via `aws logs put-retention-policy --log-group-name <name> --retention-in-days 30 --region eu-west-2` as part of the deployment checklist. Maps to R10.
 
 ### 3.3 Scheduled deletion job
 
