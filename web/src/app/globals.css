@@ -89,6 +89,64 @@
 }
 
 /* =============================================================================
+ * Tailwind v4 max-w-* utility scale override
+ * -----------------------------------------------------------------------------
+ * Our @theme block above defines `--spacing-{xs,sm,md,lg,xl,2xl,3xl}` to
+ * snap padding/margin/gap to the 4-pt grid. Tailwind v4's `max-w-*`
+ * t-shirt-size utilities share that same scale namespace: the compiler
+ * sees a defined `--spacing-3xl: 48px` and emits
+ *   `.max-w-3xl { max-width: var(--spacing-3xl); }`
+ * which evaluates to 48px instead of the intended 48rem (768px). Every
+ * page using `max-w-3xl` on its `<main>` therefore collapses to a 48-px-
+ * wide centred column on every browser (this was misdiagnosed twice as
+ * a Mobile WebKit BFC quirk on /settings — commits f159057 and f900a09 —
+ * because Chromium emulation of mobile UAs hid the symptom in dev). The
+ * admin user-management pages are the latest victim.
+ *
+ * Fix: emit explicit `.max-w-*` declarations OUTSIDE `@layer utilities`
+ * so they win the cascade over the compiler's `@layer` rules without
+ * needing `!important`. Values match Tailwind v4's default container
+ * scale (`--container-{xs..7xl}`). Defining `--container-*` tokens in
+ * `@theme` was tried first but Tailwind still emitted the
+ * `var(--spacing-*)` references — the spacing namespace wins at compile
+ * time when both are present. Static values dodge that entirely and
+ * decouple max-width from any future spacing-token changes.
+ * ============================================================================= */
+.max-w-xs {
+  max-width: 20rem;
+}
+.max-w-sm {
+  max-width: 24rem;
+}
+.max-w-md {
+  max-width: 28rem;
+}
+.max-w-lg {
+  max-width: 32rem;
+}
+.max-w-xl {
+  max-width: 36rem;
+}
+.max-w-2xl {
+  max-width: 42rem;
+}
+.max-w-3xl {
+  max-width: 48rem;
+}
+.max-w-4xl {
+  max-width: 56rem;
+}
+.max-w-5xl {
+  max-width: 64rem;
+}
+.max-w-6xl {
+  max-width: 72rem;
+}
+.max-w-7xl {
+  max-width: 80rem;
+}
+
+/* =============================================================================
  * Base styles
  * ============================================================================= */
 :root {

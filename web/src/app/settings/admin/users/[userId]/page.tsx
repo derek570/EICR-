@@ -311,22 +311,8 @@ export default function AdminEditUserPage() {
         </p>
       ) : null}
 
-      {/*
-       * `flex flex-col` on each SectionCard below is load-bearing on iOS
-       * Safari. SectionCard renders a `<section overflow-hidden>` (BFC
-       * trigger); Mobile WebKit refuses to honour the parent's
-       * `align-items: stretch` for a BFC flex child and collapses it to
-       * ~min-content width — the narrow vertical strip seen on iPhone
-       * Safari before this fix. The working /job/[id] tabs sidestep this
-       * because their `cm-stagger-children` animation applies a
-       * `transform` to each child, which reroutes Safari's sizing path.
-       * Admin pages have no stagger, so we apply the documented escape
-       * hatch (make the BFC element a flex container) at each call site.
-       * See commits f159057 and f900a09 for the prior /settings hero
-       * hits of the same bug.
-       */}
       {/* Account */}
-      <SectionCard accent="blue" icon={UserIcon} title="Account" className="flex flex-col">
+      <SectionCard accent="blue" icon={UserIcon} title="Account">
         <FloatingLabelInput
           label="Full Name *"
           value={name}
@@ -348,7 +334,7 @@ export default function AdminEditUserPage() {
       </SectionCard>
 
       {/* Roles */}
-      <SectionCard accent="blue" icon={ShieldCheck} title="Roles" className="flex flex-col">
+      <SectionCard accent="blue" icon={ShieldCheck} title="Roles">
         <LabelledSelect
           label="System Role"
           value={role}
@@ -380,7 +366,7 @@ export default function AdminEditUserPage() {
       </SectionCard>
 
       {/* Company */}
-      <SectionCard accent="green" icon={Building2} title="Company" className="flex flex-col">
+      <SectionCard accent="green" icon={Building2} title="Company">
         <FloatingLabelInput
           label="Company Name"
           value={companyName}
@@ -433,7 +419,7 @@ export default function AdminEditUserPage() {
       </SectionCard>
 
       {/* Security */}
-      <SectionCard accent="amber" icon={KeyRound} title="Security" className="flex flex-col">
+      <SectionCard accent="amber" icon={KeyRound} title="Security">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="flex-1">
             <p className="text-[13px] font-semibold text-[var(--color-text-primary)]">
