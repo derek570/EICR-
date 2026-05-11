@@ -145,8 +145,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // codifies the dispatcher's `wrong_board` rejection so Sonnet
       // does not waste a turn discovering it; ≈ +30 tokens; cap moved
       // by +150 to keep ~100-token headroom.
+      // 2026-05-11 (Bug K split-utterance carryover): relaxed to 9050
+      // to absorb the SPLIT UTTERANCE CARRYOVER bullet under CIRCUIT
+      // ROUTING and Example 6b in WORKED EXAMPLES. Production session
+      // sess_mp19b6tf_i5xc (13:48 UTC) reproduced the Deepgram-chunked
+      // "Circuit 2 is" / "downstairs sockets" mis-attribution; the new
+      // rule + example are the smallest viable steering that pins the
+      // pinned-circuit_ref semantics. Trimmed to minimum verbiage;
+      // ≈ +215 tokens; cap moved by +300 keeping ~85-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(8750);
+      expect(estimate).toBeLessThanOrEqual(9050);
     });
   });
 
@@ -625,8 +633,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     Sonnet learns the rule from the prompt instead of from a tool
       //     reject. ≈ +85 tokens; cap moved by +200 mirroring Group 1's
       //     bump and keeping ~100-token headroom for future refinements).
+      //   - 6600 (Bug K split-utterance carryover 2026-05-11: adds the
+      //     SPLIT UTTERANCE CARRYOVER bullet + Example 6b. Pinned by
+      //     production session sess_mp19b6tf_i5xc where "Circuit 2 is"
+      //     + "downstairs sockets" arrived as two finals 2 s apart;
+      //     Sonnet renamed Circuit 1 instead of creating Circuit 2.
+      //     ≈ +215 tokens; cap moved by +300 mirroring Group 1's bump
+      //     and keeping ~85-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(6300);
+      expect(estimate).toBeLessThanOrEqual(6600);
     });
   });
 
@@ -713,6 +728,82 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt.toLowerCase()).not.toMatch(
         /topic-only\s+utterance.*no\s+tool\s+calls;\s+wait\.\s+values\s+follow/
       );
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 11 — 2026-05-11 split-utterance carryover (Bug K)
+  // ------------------------------------------------------------------
+  // Production session sess_mp19b6tf_i5xc (2026-05-11 13:48 UTC) reproduced
+  // the Deepgram split-utterance bug: "Circuit 2 is" landed as a final on
+  // its own at 13:48:20, then "downstairs socket." landed as a SEPARATE
+  // final 2 s later at 13:48:22. Sonnet had no prompt guidance for
+  // stitching these two halves and called `rename_circuit(from_ref:1,
+  // circuit_ref:1)` — overwriting Circuit 1's designation instead of
+  // creating Circuit 2 — because Circuit 1 was the most-recently-named
+  // circuit and the "downstairs socket" fragment matched DESCRIPTION
+  // MATCHING. From the inspector's POV, the cooker disappeared and
+  // Circuit 2 was never created. Pin all three load-bearing pieces of
+  // the new rule so a future rewrite can't silently lose any of them.
+  // ------------------------------------------------------------------
+  describe('Group 11 — 2026-05-11 split-utterance carryover (Bug K)', () => {
+    test('SPLIT UTTERANCE CARRYOVER rule exists and pins the trigger conditions', () => {
+      const idx = prompt.search(/SPLIT UTTERANCE CARRYOVER/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const window = prompt.slice(idx, idx + 1400);
+      // The trigger pattern — bare "Circuit N is" with no completion.
+      expect(window).toMatch(/Circuit\s+N\s+is/);
+      // The follow-up shape — designation-only fragment.
+      expect(window.toLowerCase()).toMatch(/designation-only/);
+      // The action — issue create_circuit / rename_circuit on the
+      // PINNED circuit_ref from the prior turn, not on the most-recent
+      // circuit picked by DESCRIPTION MATCHING. Both branches must be
+      // named so Sonnet has a complete decision tree.
+      expect(window).toEqual(expect.stringContaining('create_circuit'));
+      expect(window).toEqual(expect.stringContaining('rename_circuit'));
+      // The single-turn carryover guard — without this, a stale "Circuit
+      // N is" from earlier in the session could pollute later utterances.
+      expect(window.toLowerCase()).toMatch(/single-turn/);
+      // The negative guard — must explicitly warn against routing the
+      // fragment to an unrelated circuit (the bug from sess_mp19b6tf_i5xc).
+      expect(window.toLowerCase()).toMatch(/do not rename|do not route|not route the fragment/i);
+    });
+
+    test('UTTERANCE ISOLATION exception clause names SPLIT-UTTERANCE alongside RING CONTINUITY', () => {
+      // The line that previously said "EXCEPTION: see RING CONTINUITY
+      // CARRYOVER below — the only multi-turn test family" now lists
+      // TWO exceptions. Sonnet sees this rule at the top of CIRCUIT
+      // ROUTING; the cross-reference must be there or the model treats
+      // each utterance in isolation and falls back to the original bug
+      // behaviour.
+      const idx = prompt.search(/Every utterance stands alone for circuit assignment/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const window = prompt.slice(idx, idx + 400);
+      // Both exception names must be present.
+      expect(window).toMatch(/RING CONTINUITY CARRYOVER/);
+      expect(window).toMatch(/SPLIT[\s-]UTTERANCE/i);
+    });
+
+    test('Example 6b — split-utterance stitch worked example exists', () => {
+      // Worked examples carry disproportionate weight in the model's
+      // decision policy — the rule alone wasn't enough on the original
+      // CIRCUIT NAMING bullet (Example 6 was added in the silent-drop
+      // fix). Pin the example so a future trim doesn't drop it.
+      const idx = prompt.search(/Example\s+6b/i);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const e6bBody = prompt.slice(idx, idx + 800);
+      // The two-turn structure (A → B) must be visible.
+      expect(e6bBody).toMatch(/Turn A/);
+      expect(e6bBody).toMatch(/Turn B/);
+      // Both branches of the stitch (create vs rename) must appear.
+      expect(e6bBody).toEqual(expect.stringContaining('create_circuit'));
+      expect(e6bBody).toEqual(expect.stringContaining('rename_circuit'));
+      // The actual circuit_ref:2 case from the production session is
+      // the example's anchor — keep it concrete.
+      expect(e6bBody).toMatch(/circuit_ref:\s*2/);
+      // The trap that bit production (renaming Circuit 1 because it
+      // was the most-recently-created) must be called out explicitly.
+      expect(e6bBody.toLowerCase()).toMatch(/previously[\s-]created|circuit 1|"cooker"/);
     });
   });
 });
