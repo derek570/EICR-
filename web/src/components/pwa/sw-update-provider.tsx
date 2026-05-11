@@ -52,6 +52,16 @@ export function SwUpdateProvider() {
   // the update first.
   const reloadedRef = useRef(false);
   const toastShownRef = useRef(false);
+  // Set true ONLY when the user explicitly taps "Reload" on the toast.
+  // controllerchange will then know this is a user-initiated upgrade and
+  // can fire `location.reload()` to swap to the new bundle. Without this
+  // flag, any controllerchange — including the spontaneous ones that
+  // happen when iOS Safari kills a backgrounded PWA and the waiting SW
+  // activates on next launch with `clientsClaim: true` — would yank the
+  // user to a fresh tab mid-task. The inspector log on 2026-05-11
+  // captured 7 such uninitiated reloads in 18 hours, blowing away
+  // recording sessions every time.
+  const userInitiatedReloadRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -69,6 +79,12 @@ export function SwUpdateProvider() {
         action: {
           label: 'Reload',
           onClick: () => {
+            // Flip the user-initiated flag so the controllerchange
+            // listener below knows this upgrade was opted into. Any
+            // OTHER controllerchange (SW activating because the old
+            // one's clients all closed) leaves the flag false and
+            // the reload is suppressed.
+            userInitiatedReloadRef.current = true;
             waiting.postMessage({ type: 'SKIP_WAITING' });
             // Don't call reload() here — wait for `controllerchange` so we
             // reload exactly once the new SW has claimed this client.
@@ -123,6 +139,21 @@ export function SwUpdateProvider() {
         // condition (the waiting worker was observed while a
         // controller existed; see `promptToReload` above).
         recordLifecycle('sw-controllerchange-first-install', {});
+        return;
+      }
+      if (!userInitiatedReloadRef.current) {
+        // controllerchange fired but the user never tapped Reload. The
+        // most common cause: iOS Safari killed the backgrounded PWA,
+        // the old SW's controlled-client count hit zero, the waiting
+        // SW activated, and `clientsClaim: true` immediately claimed
+        // THIS tab on its next launch — all without the user opting
+        // in to an upgrade. Pre-2026-05-11, this fired
+        // `location.reload()` blindly and yanked inspectors out of
+        // mid-recording sessions every time we deployed (7 reloads in
+        // 18 hours per the lifecycle log we collected). Now we log
+        // and stay put. The waiting toast (if applicable) is still
+        // visible so the inspector can opt in when convenient.
+        recordLifecycle('sw-controllerchange-uninitiated', {});
         return;
       }
       reloadedRef.current = true;
