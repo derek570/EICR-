@@ -889,20 +889,30 @@ router.post(
         }
       }
 
-      // Save audio chunk to S3 for debug
+      // Save audio chunk to S3 for debug. Gated behind ENABLE_DEBUG_AUDIO
+      // because in production this writes raw PCM/MP4 of inspector
+      // dictation — which contains incidental homeowner / third-party
+      // voices — to S3 indefinitely. That is a UK GDPR retention breach
+      // on every session and contradicts the "audio is not persisted"
+      // architectural claim in the Privacy Policy + DPIA. Default off in
+      // production; opt in temporarily for diagnostic work and pair with
+      // the S3 Lifecycle rule on `debug/*` (7-day expiry) as
+      // belt-and-braces. Tracked in DPIA mitigations M4.1 + M4.2.
       const audioStats = await fs.stat(tempAudioPath).catch(() => null);
       const audioBytes = audioStats?.size || 0;
       const debugExt = path.extname(tempAudioPath) || '.m4a';
       const debugAudioKey = `debug/${session.userId}/${sessionId}/chunk_${String(chunkIndex).padStart(3, '0')}${debugExt}`;
-      try {
-        const audioContent = await fs.readFile(tempAudioPath);
-        await storage.uploadBytes(audioContent, debugAudioKey, audioFile.mimetype || 'audio/mp4');
-      } catch (debugErr) {
-        logger.warn('Failed to save debug audio chunk', {
-          sessionId,
-          chunkIndex,
-          error: debugErr.message,
-        });
+      if (process.env.ENABLE_DEBUG_AUDIO === 'true') {
+        try {
+          const audioContent = await fs.readFile(tempAudioPath);
+          await storage.uploadBytes(audioContent, debugAudioKey, audioFile.mimetype || 'audio/mp4');
+        } catch (debugErr) {
+          logger.warn('Failed to save debug audio chunk', {
+            sessionId,
+            chunkIndex,
+            error: debugErr.message,
+          });
+        }
       }
 
       // Add to debug log
