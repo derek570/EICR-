@@ -137,7 +137,20 @@ export default function AdminCreateUserPage() {
       </div>
 
       <form onSubmit={submit} className="flex flex-col gap-5">
-        <SectionCard accent="blue" icon={UserIcon} title="Account">
+        {/*
+         * `flex flex-col` on each SectionCard is load-bearing on iOS Safari.
+         * SectionCard renders a `<section overflow-hidden>` (BFC trigger);
+         * Mobile WebKit refuses to honour the parent's `align-items: stretch`
+         * for a BFC flex child and collapses it to ~min-content width — the
+         * narrow vertical strip seen on iPhone Safari before this fix. The
+         * working /job/[id] tabs sidestep this because their `cm-stagger-
+         * children` animation applies a `transform` to each child, which
+         * reroutes Safari's sizing path. Admin pages have no stagger, so we
+         * apply the documented escape hatch (make the BFC element a flex
+         * container) at each call site instead. See commits f159057 and
+         * f900a09 for the prior /settings hero hits of the same bug.
+         */}
+        <SectionCard accent="blue" icon={UserIcon} title="Account" className="flex flex-col">
           <FloatingLabelInput
             label="Full Name *"
             value={name}
@@ -173,7 +186,7 @@ export default function AdminCreateUserPage() {
           />
         </SectionCard>
 
-        <SectionCard accent="blue" icon={ShieldCheck} title="Roles">
+        <SectionCard accent="blue" icon={ShieldCheck} title="Roles" className="flex flex-col">
           <LabelledSelect
             label="System Role"
             value={role}
@@ -196,7 +209,12 @@ export default function AdminCreateUserPage() {
           />
         </SectionCard>
 
-        <SectionCard accent="green" icon={Building2} title="Company (optional)">
+        <SectionCard
+          accent="green"
+          icon={Building2}
+          title="Company (optional)"
+          className="flex flex-col"
+        >
           <FloatingLabelInput
             label="Company Name"
             value={companyName}
