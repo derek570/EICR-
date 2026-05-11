@@ -1106,6 +1106,25 @@ function CircuitCard({
                 onChange={(e) => onPatch({ rcd_rating_a: e.target.value })}
               />
             </div>
+            {/* Test-button confirmation toggles — iOS canon writes the
+                literal `"✓"` sentinel (DeepgramRecordingViewModel.swift:4323,
+                VoiceCommandExecutor.swift:249, transcript-field-matcher.ts:976).
+                Previously the Cards view didn't surface these; inspectors on
+                mobile had to switch to Table view to mark a test as pressed.
+                Two pill toggles flip the value between `"✓"` and `""` so
+                the data round-trip stays byte-identical with iOS. */}
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <CircuitButtonTestToggle
+                label="RCD test button"
+                value={text('rcd_button_confirmed')}
+                onChange={(next) => onPatch({ rcd_button_confirmed: next })}
+              />
+              <CircuitButtonTestToggle
+                label="AFDD test button"
+                value={text('afdd_button_confirmed')}
+                onChange={(next) => onPatch({ afdd_button_confirmed: next })}
+              />
+            </div>
           </SectionCard>
 
           <SectionCard accent="green" title="Test readings">
@@ -1186,5 +1205,47 @@ function CircuitCard({
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * Single-pill toggle for the `rcd_button_confirmed` / `afdd_button_confirmed`
+ * 2-state fields. iOS writes the literal `"✓"` glyph when an inspector
+ * confirms they pressed the test button; the field stays empty when
+ * unconfirmed (Constants.swift `normaliseBooleanValue` maps truthy →
+ * `"✓"`, falsy → echo). The PWA's `circuits-sticky-table.tsx` already
+ * surfaces these as a 2-option select (`['', '✓']`); this is the matching
+ * affordance for the Cards view. Tap toggles between `"✓"` and `""`,
+ * round-trip-safe with iOS.
+ */
+function CircuitButtonTestToggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const confirmed = value === '✓';
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={confirmed}
+      aria-label={label}
+      onClick={() => onChange(confirmed ? '' : '✓')}
+      className={
+        'flex h-10 items-center justify-between gap-2 rounded-[var(--radius-md)] border px-3 text-[13px] transition ' +
+        (confirmed
+          ? 'border-[var(--color-status-ok)]/40 bg-[var(--color-status-ok)]/15 text-[var(--color-status-ok)]'
+          : 'border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]')
+      }
+    >
+      <span>{label}</span>
+      <span className="font-semibold tabular-nums" aria-hidden>
+        {confirmed ? '✓' : '—'}
+      </span>
+    </button>
   );
 }
