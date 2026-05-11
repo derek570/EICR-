@@ -7,6 +7,12 @@
 > - Delete stale content rather than commenting it out. Keep every file under its target line count.
 > - **Commit automatically after each logical unit of work — do NOT wait to be asked.** Small, focused commits with detailed messages explaining both what changed and WHY the code exists.
 
+> **MANDATORY — Backend (`src/`, `config/prompts/`, `packages/shared-types`, `packages/shared-utils`, RDS, S3) is SHARED with iOS and IMMUTABLE during PWA-only work.**
+> - PWA bug fixes / parity work / UI tweaks land in `web/` ONLY. Do NOT touch `src/`, `config/prompts/*.md`, or shared-types/shared-utils without an explicit cross-platform mandate.
+> - **Why:** iOS already runs against the current backend shape; any backend change risks iOS regression and a TestFlight cycle. iOS is canon for the data contract.
+> - **How to apply:** before editing anything outside `web/`, stop and ask: "is this fix changing behaviour that iOS sees?" If yes, surface it to the user before touching it. If a PWA gap really cannot be closed without a backend change, escalate — do not bundle a backend tweak into a PWA fix.
+> - **Pure-frontend state** (anything that doesn't traverse the WS / HTTP boundary) is not covered by this rule.
+
 Automated EICR/EIC certificate creation for electrical inspectors using an iOS-first workflow.
 
 ## Project Overview
