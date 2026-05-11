@@ -12,18 +12,20 @@ audience: morning-Derek opening the laptop after a night's sleep
 
 ## TL;DR — first three minutes
 
-Two big things shipped overnight, both already pushed and one already live in production:
+Two big things shipped overnight, both pushed AND verified live in production via curl smoke test (22:25 BST):
 
-1. **Public legal corpus at `/legal/*`** — six App-Store-ready compliance documents now serve as static HTML to any visitor. App Store's Privacy URL has a target. **LIVE in production** (CI run `25697467543` succeeded at ~21:41 BST).
-2. **Hard-delete account flow** (Apple 5.1.1(v) blocker) — backend `DELETE /api/auth/account` rewritten from soft-delete to true erasure with NICEIC archive; iOS Settings now shows a "Delete Account" button + confirmation sheet. **Pushed, CI run `25699533837` deploying.**
+1. **Public legal corpus at `/legal/*`** — six App-Store-ready compliance documents serve as static HTML to any visitor. App Store's Privacy URL has a target. **LIVE in prod** (all 6 routes + hub all 200).
+2. **Hard-delete account flow** (Apple 5.1.1(v) blocker) — backend `DELETE /api/auth/account` rewritten from soft-delete to true erasure with NICEIC archive; iOS Settings now shows a "Delete Account" button + confirmation sheet. **Backend LIVE in prod** (`curl -X DELETE https://api.certmate.uk/api/auth/account` returns 401, confirming endpoint + auth gate).
 
-One App-Store-critical thing remains in your hands: **TestFlight push of the iOS build** to put the deletion UI (and the two earlier compliance commits a3eaccd / aa7141c) in front of Apple reviewers. Run from `~/Developer/EICR_Automation/CertMateUnified/`:
+Bonus shipped overnight: **`/support` page** for Apple's Support URL (also live, 200), **demo-account setup recipe** (paste-and-go), and an **iOS legal-text drift audit** flagging 3 HIGH-severity inconsistencies between `LegalTexts.swift` and the new public privacy policy that Derek should decide whether to fix-now or fix-later.
+
+The one critical thing in your hands: **TestFlight push of the iOS build** to put the deletion UI (and the two earlier compliance commits a3eaccd / aa7141c) in front of Apple reviewers. Run from `~/Developer/EICR_Automation/CertMateUnified/`:
 
 ```
 ./deploy-testflight.sh 2>&1 | tee /tmp/deploy.log
 ```
 
-Everything else is form-filling in App Store Connect (drafts ready in `app-store-submission-checklist.md` + `app-review-reviewer-notes.md`).
+Everything else is form-filling in App Store Connect (drafts ready in `app-store-submission-checklist.md`, `app-review-reviewer-notes.md`, and `demo-account-setup.md`).
 
 ## What got done overnight, with commit hashes
 
@@ -36,9 +38,15 @@ All on `origin/main`. CI run `25699533837` is queued to deploy the last three.
 | `bd22fde` | feat(web): publish public legal corpus at /legal/* | ✅ via run 25697467543 |
 | `13fdc87` | docs(compliance): App Store submission checklist with Nutrition Labels | ✅ via run 25697467543 |
 | `ae83907` | (parallel-session) fix(migrations/009): users.is_active boolean migration | ✅ via run 25697467543 |
-| `edff1d9` | feat(auth): hard-delete account on DELETE /api/auth/account (5.1.1(v)) | 🟡 CI run 25699533837 |
-| `bd4bacb` | feat(web): public /support page for App Store Support URL | 🟡 CI run 25699533837 |
-| `06718b9` | docs(compliance): App Review reviewer notes + deletion-UX audit | 🟡 CI run 25699533837 |
+| `edff1d9` | feat(auth): hard-delete account on DELETE /api/auth/account (5.1.1(v)) | ✅ via run 25699533837 |
+| `bd4bacb` | feat(web): public /support page for App Store Support URL | ✅ via run 25699533837 |
+| `06718b9` | docs(compliance): App Review reviewer notes + deletion-UX audit | ✅ via run 25699533837 |
+| `f32d2bc` | docs(compliance): overnight status — morning entry point (this doc) | ✅ via run 25699595717 |
+| `928ab31` | docs(compliance): iOS-embedded privacy text vs public policy drift audit | 🟡 run 25699734514 (docs-only, no functional change) |
+| `806207a` | docs(claude.md): correct domain to certmate.uk (was stale certomatic3000.co.uk) | 🟡 run 25700886678 (docs-only, no functional change) |
+| `1fbccd9` | docs(compliance): App Review demo-account setup recipe | 🟡 (queued, docs-only, no functional change) |
+
+The four docs-only commits at the bottom don't affect runtime — they'll deploy as no-ops behind the same CI pipeline, no urgency.
 
 ### CertMateUnified (iOS)
 
@@ -135,6 +143,45 @@ Current draft `Voice-driven EICR & EIC certificates` is 38 chars; Apple's limit 
 ### 5. Screenshots (~90 min)
 
 Apple wants screenshots for 6.7" iPhone + 12.9" iPad minimum. Boot the TestFlight build, take 4-5 screens per device class, sanitise any real data, drop into App Store Connect. Suggested screens per §6 of the submission checklist.
+
+## Production smoke test (run at 22:25 BST overnight)
+
+All seven user-visible new routes returned 200 from the public internet:
+
+```
+  200  https://certmate.uk/legal
+  200  https://certmate.uk/legal/privacy-policy
+  200  https://certmate.uk/legal/cookie-policy
+  200  https://certmate.uk/legal/sub-processors
+  200  https://certmate.uk/legal/acceptable-use-policy
+  200  https://certmate.uk/legal/beta-tester-agreement
+  200  https://certmate.uk/legal/door-script
+  200  https://certmate.uk/support
+```
+
+Backend deletion endpoint:
+
+```
+DELETE https://api.certmate.uk/api/auth/account (no auth) → 401
+```
+
+The 401 confirms the new endpoint is deployed AND the auth middleware is firing — exactly what we want for a Bearer-token-protected destructive operation.
+
+Health check:
+
+```
+GET https://api.certmate.uk/api/health → {"status":"ok","storage":"s3"}
+```
+
+DNS variants checked:
+
+```
+  307  https://certmate.uk/            ← root redirects to /login
+  307  https://www.certmate.uk/         ← www alias works
+  404  https://api.certmate.uk/         ← root 404 is correct (API only serves /api/*)
+  307  https://certmate.co.uk/          ← alternate TLD points at same ALB
+  307  https://certomatic3000.co.uk/    ← legacy domain still pointed at prod
+```
 
 ## Open decisions I left for you
 
