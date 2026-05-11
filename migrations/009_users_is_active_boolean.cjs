@@ -24,6 +24,17 @@
  * wire shape settled — but every TestFlight invite-employee flow and the
  * new Task 18 account-deletion flow are blocked too.
  *
+ * The first attempt at this migration used `pgm.alterColumn(..., {type,
+ * using, default, notNull})` which node-pg-migrate compiles into a single
+ * `ALTER TABLE` statement combining SET DEFAULT, SET DATA TYPE, and SET
+ * NOT NULL. Postgres can't reorder the clauses, and the existing
+ * `DEFAULT 1` (integer) can't auto-cast to boolean during the TYPE change,
+ * so it fails with `default for column "is_active" cannot be cast
+ * automatically to type boolean`. The fix below issues three separate
+ * statements in the right order: DROP DEFAULT first, then change the
+ * type, then re-set the boolean default. Same trick in reverse for the
+ * down migration (drop the boolean default before going back to integer).
+ *
  * Migration uses `is_active <> 0` for the USING clause, matching the
  * read-side `::boolean` cast's semantics exactly (any non-zero integer
  * becomes true, zero becomes false). DEFAULT flips from `1` to `true`,
@@ -45,19 +56,19 @@
  */
 
 exports.up = (pgm) => {
-  pgm.alterColumn('users', 'is_active', {
-    type: 'boolean',
-    using: '(is_active <> 0)',
-    default: true,
-    notNull: true,
-  });
+  pgm.sql('ALTER TABLE "users" ALTER COLUMN "is_active" DROP DEFAULT');
+  pgm.sql(
+    'ALTER TABLE "users" ALTER COLUMN "is_active" SET DATA TYPE boolean USING (is_active <> 0)'
+  );
+  pgm.sql('ALTER TABLE "users" ALTER COLUMN "is_active" SET DEFAULT true');
+  pgm.sql('ALTER TABLE "users" ALTER COLUMN "is_active" SET NOT NULL');
 };
 
 exports.down = (pgm) => {
-  pgm.alterColumn('users', 'is_active', {
-    type: 'integer',
-    using: 'CASE WHEN is_active THEN 1 ELSE 0 END',
-    default: 1,
-    notNull: true,
-  });
+  pgm.sql('ALTER TABLE "users" ALTER COLUMN "is_active" DROP DEFAULT');
+  pgm.sql(
+    'ALTER TABLE "users" ALTER COLUMN "is_active" SET DATA TYPE integer USING (CASE WHEN is_active THEN 1 ELSE 0 END)'
+  );
+  pgm.sql('ALTER TABLE "users" ALTER COLUMN "is_active" SET DEFAULT 1');
+  pgm.sql('ALTER TABLE "users" ALTER COLUMN "is_active" SET NOT NULL');
 };
