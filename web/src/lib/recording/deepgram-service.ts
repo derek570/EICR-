@@ -496,6 +496,16 @@ export class DeepgramService {
       // both clients with the SAME value.
       utterance_end_ms: '1000',
       vad_events: 'true',
+      // Opt out of Deepgram's Model Improvement Partnership Program (MIP).
+      // Without this flag the default account allows Deepgram to retain
+      // audio for model training, which would be a UK GDPR breach on every
+      // session: incidental third-party voices captured during inspector
+      // dictation would end up in an external training corpus with no
+      // lawful basis. Set on every connection rather than account-wide so
+      // it cannot be regressed by an account-config change. Mirrors iOS
+      // (DeepgramService.swift); the rules/mistakes.md "keep configs in
+      // sync" note applies here. Tracked in DPIA mitigation M2.1.
+      mip_opt_out: 'true',
     });
     return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
   }
