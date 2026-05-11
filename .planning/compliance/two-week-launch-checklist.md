@@ -197,6 +197,34 @@ Send them:
 
 Watch the consent-screen flow complete on first launch. Wait 24 hours. Their first real homeowner job is now legitimate from every angle on this checklist.
 
+### ☐ 18. Build in-app account deletion + submit to App Store
+
+Runs in parallel with Tasks 15–17; the Apple review clock is independent.
+
+**Engineering — in-app account deletion** (Apple Guideline 5.1.1(v), in force since June 2022; required for any app that supports account creation):
+
+- Backend: new `DELETE /api/me` endpoint that (a) deletes the RDS `users` row (cascades to `clients`, `properties`, `subscriptions`, `calendar_tokens`, `push_subscriptions`, `account_consents`), (b) deletes the user's S3 prefixes (`jobs/{userId}/`, `settings/{userId}/`, `session-analytics/{userId}/`), (c) writes a row to the Subject Rights Request Register, (d) returns 204
+- Backend: keep PDFs that fall inside the NICEIC 6-year retention window — move them under `archive/{userId}/` to dissociate from the active account but preserve the legal-obligation retention. Same handling as the SAR / Erasure Playbook §6.3 "Items NOT erased" template.
+- iOS: Settings → Account → "Delete my account" button with a confirmation modal that names the data being deleted and the items retained for NICEIC. Calls the new endpoint.
+- Web: same UX in `web/src/app/settings/account/page.tsx`.
+- Test: a unit test confirms the endpoint cascades correctly; a manual E2E test confirms the button does the right thing.
+
+**Time: ~6 hours engineering across iOS + web + backend.**
+
+**App Store metadata + submission:**
+
+- Fill in the App Privacy "Nutrition Labels" on App Store Connect (data types collected, use, linkage, tracking). Source: `.planning/compliance/facts.md` §3.
+- Confirm `NSMicrophoneUsageDescription`, `NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription` strings in `Sources/Info.plist` are specific and meaningful — Apple rejects vague ones.
+- Prepare App Store listing: icon, screenshots (iPhone + iPad), description, keywords, support URL (`certmate.uk/support` — does this exist?), marketing URL.
+- Public-listing positioning: do NOT label the app as beta in the App Store description. The contractual Beta Tester Agreement structure persists; the public marketing copy reads as production-ready.
+- Submit binary via App Store Connect (separate flow from TestFlight, same code).
+
+**Time: ~3 hours metadata + 24h–10 days Apple review.**
+
+**Decision to make before submission:** iOS monetisation route — Apple IAP (Apple takes 15–30%) vs. web-only subscription signup with iOS app free (keep 100%, adds a flow step). Required only if/when CertMate ever charges via the iOS app. Free during beta means no IAP work is needed now, but the decision shapes how you market the iOS app on the Store.
+
+**Total Task 18 effort: ~9 hours engineering + 1 hour metadata + Apple review elapsed. Likely 2–4 weeks elapsed from start to App Store live, including 1–3 rejection-and-resubmit cycles typical for first submissions.**
+
 ---
 
 ## Cost summary
@@ -212,20 +240,22 @@ Watch the consent-screen flow complete on first launch. Wait 24 hours. Their fir
 
 ## What this checklist does NOT include
 
-- Self-serve SAR / erasure endpoints (engineering, scheduled later)
+- Self-serve SAR / erasure beyond the account-deletion route in Task 18 (separate engineering, scheduled later)
 - HttpOnly cookie migration (engineering, scheduled later — DPIA R9 residual)
-- App Store submission (separate workstream — overlaps with Task 15)
 - Stripe / payments wiring (no paid plan during beta)
+- iOS monetisation decision — Apple IAP vs. web-only signup (gated on charging plan)
 - ISO 27001 / SOC 2 (deferred to enterprise customer demand)
 
 ## Status snapshot
 
 | Phase | Item | Done? |
 |---|---|---|
-| 1–3 | All free admin items | ☐ |
+| 1–3 | All free admin items (DPAs, ICO, MFA audit) | ☐ |
 | 4–7 | PI + Cyber Essentials kicked off | ☐ |
 | 8–14 | Solicitor review + TestFlight + tabletop + door-script field test | ☐ |
 | 14+ | Solicitor feedback applied, public docs published, consent screen built | ☐ |
+| 14+ parallel | Account deletion built + App Store submitted | ☐ |
 | Gate | Tester #2 invited and onboarded | ☐ |
+| Stretch | App Store live | ☐ |
 
 Update this file with `☑` as each item completes; commit per material milestone.
