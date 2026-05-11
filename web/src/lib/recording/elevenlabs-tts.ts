@@ -55,6 +55,25 @@
 import { getToken } from '../auth';
 import { clientDiagnostic } from './client-diagnostic';
 
+/**
+ * Tracks whether the shared `<audio>` element has been successfully
+ * unlocked by a priming `play()` inside a user gesture. iPad Safari
+ * (in a browser tab — NOT installed PWA) is the strictest case: even
+ * the priming `play()` can reject silently if the gesture wasn't
+ * properly rooted, in which case any later `audio.play()` (for a real
+ * ElevenLabs payload) will also reject with NotAllowedError. By
+ * flipping this to `false` when priming fails AND checking it before
+ * routing to ElevenLabs, we degrade up-front to SpeechSynthesis
+ * instead of paying for a fetch whose audio we can't play. Mirrors
+ * iOS's `audioSessionReady` flag (RecordingSessionCoordinator.swift:151)
+ * which only flips after .playAndRecord configures successfully.
+ *
+ * Defaults to `true` so the very first prime attempt is allowed to
+ * proceed; flipped to `false` only on confirmed rejection. Reset
+ * via `__resetElevenLabsForTests`.
+ */
+let audioGestureGranted = true;
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 const FETCH_TIMEOUT_MS = 12_000;
 
@@ -162,26 +181,63 @@ function getSharedAudio(): HTMLAudioElement | null {
  */
 export function primeAudioElement(): void {
   const audio = getSharedAudio();
-  if (!audio) return;
+  if (!audio) {
+    audioGestureGranted = false;
+    clientDiagnostic('prime_audio_element_no_audio', {});
+    return;
+  }
   try {
-    // 44-byte minimal WAV header: RIFF, fmt chunk (PCM, 1 channel,
-    // 8000 Hz, 8 bits/sample), data chunk of length 0. Inline so we
-    // don't need a separate static asset.
     audio.src =
       'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
     audio.muted = true;
     const promise = audio.play();
-    // play() returns a Promise on modern browsers; ignore both
-    // resolution paths — success leaves the element unlocked, failure
-    // means we'll fall back later.
-    if (promise && typeof promise.catch === 'function') {
-      promise.catch(() => {
-        /* ignore — best-effort prime */
-      });
+    if (promise && typeof promise.then === 'function') {
+      promise
+        .then(() => {
+          audioGestureGranted = true;
+          clientDiagnostic('prime_audio_element_succeeded', {});
+          try {
+            audio.pause();
+            audio.currentTime = 0;
+          } catch {
+            /* ignore */
+          }
+        })
+        .catch((err: unknown) => {
+          // Promise rejection means iPad Safari (or another browser
+          // with an autoplay policy) refused the gesture grant. Flip
+          // the flag so isElevenLabsAvailable() returns false and the
+          // next `speak()` routes straight to SpeechSynthesis — which
+          // ALSO needs a gesture grant, but the prime SpeechSynthesis
+          // utterance ran inside the same Start tap and has a better
+          // chance of being warmed.
+          audioGestureGranted = false;
+          const name = err instanceof Error ? err.name : 'unknown';
+          const message = err instanceof Error ? err.message.slice(0, 120) : '';
+          clientDiagnostic('prime_audio_element_rejected', { errorName: name, message });
+        });
+    } else {
+      // Sync play() return value (very old browsers). Assume success.
+      audioGestureGranted = true;
+      clientDiagnostic('prime_audio_element_sync_ok', {});
     }
-  } catch {
-    /* ignore */
+  } catch (err) {
+    audioGestureGranted = false;
+    const message = err instanceof Error ? err.message.slice(0, 120) : '';
+    clientDiagnostic('prime_audio_element_threw', { message });
   }
+}
+
+/**
+ * Returns true iff the shared audio element's priming `play()` has
+ * confirmed a gesture grant. Used by `isElevenLabsAvailable()` so
+ * that on iPad Safari browser tab — where priming silently fails —
+ * we skip the ElevenLabs fetch (whose audio we cannot play) and go
+ * straight to SpeechSynthesis. iOS canon doesn't have this
+ * complication; it's web-specific.
+ */
+export function hasAudioGestureGrant(): boolean {
+  return audioGestureGranted;
 }
 
 /**
@@ -227,6 +283,11 @@ export function isElevenLabsAvailable(): boolean {
   if (typeof window === 'undefined') return false;
   if (typeof window.fetch !== 'function') return false;
   if (typeof window.Audio !== 'function') return false;
+  // iPad Safari browser-tab specific: if primeAudioElement() confirmed
+  // a rejection, the gesture grant is missing and any subsequent
+  // audio.play() will reject. Skip ElevenLabs so we don't burn a fetch
+  // whose payload we can't play — fall back to SpeechSynthesis up-front.
+  if (!audioGestureGranted) return false;
   return true;
 }
 
@@ -438,4 +499,5 @@ export function __resetElevenLabsForTests(): void {
   cancelElevenLabs();
   sharedAudio = null;
   activeSessionId = null;
+  audioGestureGranted = true;
 }

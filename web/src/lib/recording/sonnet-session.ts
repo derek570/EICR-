@@ -717,6 +717,21 @@ export class SonnetSession {
   }
 
   /**
+   * Non-consuming read of the in-flight ask_user toolCallId. Used by
+   * the barge-in path (`onFinalTranscript` in recording-context.tsx)
+   * which needs to know an ask is pending but does NOT want to
+   * mark-as-fired yet — the consume happens later in the same handler
+   * AFTER the barge-in TTS cancel. Returns null if no ask is in
+   * flight OR if it has already fired.
+   */
+  peekInFlightToolCallId(): string | null {
+    const id = this.inFlightToolCallId;
+    if (!id) return null;
+    if (this.firedToolCallIds.has(id)) return null;
+    return id;
+  }
+
+  /**
    * Read the in-flight ask_user toolCallId AND clear it in one call.
    * Returns null if no Stage 6 ask is currently in flight, OR if the
    * toolCallId has already been answered (idempotency Set check).

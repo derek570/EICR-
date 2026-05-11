@@ -435,23 +435,64 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         },
         onFinalTranscript: (text, confidence) => {
           setInterim('');
+          // Stage 1 of the recording pipeline — verbose log so we can
+          // confirm at the field-test console that the transcript
+          // actually reached the host before any gating runs.
+          console.info(
+            `[recording:pipeline] stage=onFinalTranscript text="${text.slice(0, 80)}" len=${text.length} conf=${confidence.toFixed(2)}`
+          );
+          clientDiagnostic('pipeline_final_transcript', {
+            textLength: text.length,
+            textPreview: text.slice(0, 80),
+            confidence,
+          });
           // Mic-feedback gate (iOS parity) — discard finals that
           // arrived while the device's own TTS was audible. Without
           // this, the speaker plays "Should I create circuit 1?", the
           // mic picks it up, Deepgram emits a transcript, and Sonnet
-          // processes the question as if the inspector said it. iOS
-          // closes this loop at AlertManager.swift:854 (ttsAudioOverlaps)
-          // by tracking the audio window and discarding overlapping
-          // transcripts. The PWA tracks a coarser window (start=>end +
-          // 300ms cooldown) inside tts.ts; that's enough to suppress
-          // the bulk of the loopback because Deepgram's own endpointing
-          // already groups TTS-induced speech into a single utterance
-          // that finishes near the same moment TTS does.
+          // processes the question as if the inspector said it.
+          //
+          // iOS canon barges in (AlertManager.swift:1369): when the
+          // inspector starts speaking ON TOP of a question's TTS audio,
+          // the question's audio is cancelled and the inspector's reply
+          // is honoured. The PWA previously discarded the reply
+          // unconditionally — exactly the "no way to add an answer"
+          // symptom reported in the field. Match iOS: if there is an
+          // in-flight ask_user (tool_call_id pending) AND the heard
+          // text is plausibly a content reply (not just a 1-word burp
+          // that's more likely the mic catching its own speaker), then
+          // BARGE IN — cancel TTS and let the transcript through.
           if (isWithinTtsWindow()) {
-            console.info(
-              `[recording] final suppressed inside TTS window text="${text.slice(0, 60)}"`
-            );
-            return;
+            const hasInFlightAsk = Boolean(sonnetRef.current?.peekInFlightToolCallId());
+            const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+            // Single-token replies ARE legitimate ("yes", "no", "0.6",
+            // "TT"). iOS uses a separate VAD gate; we approximate by
+            // letting any non-empty reply through when there is an
+            // in-flight ask, but suppress when there isn't (no ask =
+            // any TTS-window utterance is almost certainly self-feedback).
+            if (hasInFlightAsk) {
+              console.info(
+                `[recording:barge-in] cancelling TTS, accepting reply text="${text.slice(0, 80)}" words=${wordCount}`
+              );
+              clientDiagnostic('pipeline_barge_in', {
+                textLength: text.length,
+                textPreview: text.slice(0, 80),
+                wordCount,
+              });
+              cancelSpeech();
+              // Fall through — don't return — so the transcript routes
+              // to Sonnet AND fires ask_user_answered below.
+            } else {
+              console.info(
+                `[recording:final-suppressed] inside TTS window, no in-flight ask text="${text.slice(0, 60)}"`
+              );
+              clientDiagnostic('pipeline_final_suppressed', {
+                textLength: text.length,
+                textPreview: text.slice(0, 60),
+                reason: 'tts_window_no_ask',
+              });
+              return;
+            }
           }
           setTranscript((prev) => {
             const next: TranscriptUtterance[] = [
@@ -556,11 +597,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // pattern in prod can be killed via Vercel env var without a
           // redeploy — see PLAN validation/rollout.
           let regexResults: RegexResultsWire | undefined = undefined;
-          if (
-            process.env.NEXT_PUBLIC_REGEX_HINTS_ENABLED === '1' &&
-            regexMatcherRef.current &&
-            fieldSourceTrackerRef.current
-          ) {
+          const regexHintsEnabled = process.env.NEXT_PUBLIC_REGEX_HINTS_ENABLED === '1';
+          console.info(
+            `[recording:pipeline] stage=regex enabled=${regexHintsEnabled} matcher=${Boolean(regexMatcherRef.current)} tracker=${Boolean(fieldSourceTrackerRef.current)}`
+          );
+          if (regexHintsEnabled && regexMatcherRef.current && fieldSourceTrackerRef.current) {
             const normalised = normaliseTranscriptText(text);
             cumulativeTranscriptRef.current +=
               (cumulativeTranscriptRef.current ? ' ' : '') + normalised;
@@ -573,6 +614,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               matchResult,
               fieldSourceTrackerRef.current
             );
+            console.info(
+              `[recording:pipeline] stage=regex_applied changedKeys=${applied?.changedKeys.length ?? 0} keys=${(applied?.changedKeys ?? []).slice(0, 5).join(',')}`
+            );
+            clientDiagnostic('pipeline_regex_applied', {
+              normalisedPreview: normalised.slice(0, 80),
+              changedKeysCount: applied?.changedKeys.length ?? 0,
+              changedKeysPreview: (applied?.changedKeys ?? []).slice(0, 5),
+            });
             if (applied) {
               updateJobRef.current(applied.patch);
               jobRef.current = {
@@ -591,12 +640,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // summary alongside (Swift sendTranscript:494,504). Backend
           // has its own dialogue-engine normalisation; double-normalising
           // would diverge from iOS.
+          console.info(
+            `[recording:pipeline] stage=sonnet_send utteranceId=${utteranceId.slice(0, 8)} inFlightToolCallId=${inFlightToolCallId?.slice(0, 12) ?? 'none'} regexHints=${regexResults?.length ?? 0}`
+          );
+          clientDiagnostic('pipeline_sonnet_send', {
+            textPreview: text.slice(0, 80),
+            utteranceIdShort: utteranceId.slice(0, 12),
+            hasInFlightAsk: Boolean(inFlightToolCallId),
+            regexHintsCount: regexResults?.length ?? 0,
+          });
           sonnetRef.current?.sendTranscript(text, {
             confirmationsEnabled: getConfirmationModeEnabled(),
             utteranceId,
             regexResults,
           });
           if (inFlightToolCallId) {
+            console.info(
+              `[recording:pipeline] stage=ask_user_answered toolCallId=${inFlightToolCallId.slice(0, 12)} userText="${text.slice(0, 40)}"`
+            );
             sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
           }
           // Each dispatched transcript is one outstanding Sonnet turn
@@ -1460,6 +1521,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // states — anything else (including a late retry from the overlay
     // while we've already rotated to a fresh session) must no-op.
     if (statusRef.current !== 'sleeping') return;
+    // Re-prime TTS inside the Resume-button user gesture stack frame
+    // BEFORE any await. iPad Safari can drop the audio gesture grant
+    // during a long pause (autoplay policy expires it), so a Resume
+    // tap is the next user gesture and is our chance to refresh both
+    // the SpeechSynthesis voices cache and the shared audio element's
+    // play() grant. Without this, the first ask_user after a Resume
+    // is silent in exactly the same way the very-first ask_user
+    // would be without start()'s primeTts.
+    primeTts();
     const fromSleeping = true;
     // Snapshot sessionId so the late-resolving openDeepgram / beginMic
     // paths below can detect if a stop() raced them.
@@ -1557,11 +1627,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
   const dismissQuestion = React.useCallback(
     (index: number) => {
-      setQuestions((prev) => {
-        const removed = prev[index];
-        if (removed?.question) cancelDismissTimer(removed.question);
-        return prev.filter((_, i) => i !== index);
-      });
+      try {
+        clientDiagnostic('tap_dismiss_entered', { index });
+        setQuestions((prev) => {
+          const removed = prev[index];
+          if (removed?.question) cancelDismissTimer(removed.question);
+          return prev.filter((_, i) => i !== index);
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message.slice(0, 200) : String(err);
+        console.error('[recording:tap_dismiss] threw', err);
+        clientDiagnostic('tap_dismiss_threw', { message });
+      }
     },
     [cancelDismissTimer]
   );
@@ -1584,60 +1661,92 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    */
   const acceptQuestion = React.useCallback(
     (index: number) => {
-      const target = questions[index];
-      if (!target) return;
-      const toolCallId = target.tool_call_id;
-      if (toolCallId && sonnetRef.current) {
-        const utteranceId =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `u_${Date.now()}_tap`;
-        // Send a placeholder transcript so the wire ordering invariant
-        // holds (transcript-then-ask) — the backend's seenTranscript
-        // Utterances Set must be populated before the ask answer
-        // arrives, otherwise the fast-path dedupe misses and we burn
-        // the fuzzy fallback. Empty user_text would defeat the
-        // anchor; "yes" is the canonical positive shape.
-        sonnetRef.current.sendTranscript('yes', {
-          confirmationsEnabled: getConfirmationModeEnabled(),
-          utteranceId,
+      // Wrap the entire body in a try/catch so a JS exception inside any
+      // of the three sub-paths (wire send / chime / TTS / setQuestions)
+      // cannot bubble up to the React error boundary and look like a
+      // page crash. iOS's handleTapResponse has implicit Obj-C exception
+      // safety; the PWA needs explicit guarding. Mirrors the
+      // best-effort posture iOS takes around speakWithTTS.
+      try {
+        const target = questions[index];
+        clientDiagnostic('tap_accept_entered', {
+          index,
+          haveTarget: Boolean(target),
+          haveToolCallId: Boolean(target?.tool_call_id),
+          haveSonnetRef: Boolean(sonnetRef.current),
+          questionPreview: target?.question?.slice(0, 80) ?? '',
         });
-        sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId);
+        if (!target) return;
+        const toolCallId = target.tool_call_id;
+        if (toolCallId && sonnetRef.current) {
+          const utteranceId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `u_${Date.now()}_tap`;
+          // Send a placeholder transcript so the wire ordering invariant
+          // holds (transcript-then-ask) — the backend's seenTranscript
+          // Utterances Set must be populated before the ask answer
+          // arrives, otherwise the fast-path dedupe misses and we burn
+          // the fuzzy fallback. Empty user_text would defeat the
+          // anchor; "yes" is the canonical positive shape.
+          sonnetRef.current.sendTranscript('yes', {
+            confirmationsEnabled: getConfirmationModeEnabled(),
+            utteranceId,
+          });
+          sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId);
+        }
+        playConfirmationChime();
+        speak('Updated');
+        // Drop the question from the queue + clear the auto-dismiss
+        // timer.
+        setQuestions((prev) => {
+          if (target.question) cancelDismissTimer(target.question);
+          return prev.filter((_, i) => i !== index);
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message.slice(0, 200) : String(err);
+        console.error('[recording:tap_accept] threw', err);
+        clientDiagnostic('tap_accept_threw', { message });
       }
-      playConfirmationChime();
-      speak('Updated');
-      // Drop the question from the queue + clear the auto-dismiss
-      // timer.
-      setQuestions((prev) => {
-        if (target.question) cancelDismissTimer(target.question);
-        return prev.filter((_, i) => i !== index);
-      });
     },
     [cancelDismissTimer, questions]
   );
 
   const rejectQuestion = React.useCallback(
     (index: number) => {
-      const target = questions[index];
-      if (!target) return;
-      const toolCallId = target.tool_call_id;
-      if (toolCallId && sonnetRef.current) {
-        const utteranceId =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `u_${Date.now()}_tap`;
-        sonnetRef.current.sendTranscript('no', {
-          confirmationsEnabled: getConfirmationModeEnabled(),
-          utteranceId,
+      try {
+        const target = questions[index];
+        clientDiagnostic('tap_reject_entered', {
+          index,
+          haveTarget: Boolean(target),
+          haveToolCallId: Boolean(target?.tool_call_id),
+          haveSonnetRef: Boolean(sonnetRef.current),
+          questionPreview: target?.question?.slice(0, 80) ?? '',
         });
-        sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId);
+        if (!target) return;
+        const toolCallId = target.tool_call_id;
+        if (toolCallId && sonnetRef.current) {
+          const utteranceId =
+            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `u_${Date.now()}_tap`;
+          sonnetRef.current.sendTranscript('no', {
+            confirmationsEnabled: getConfirmationModeEnabled(),
+            utteranceId,
+          });
+          sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId);
+        }
+        // No chime on reject — iOS line 788 only speaks the response.
+        speak('Okay, keeping it.');
+        setQuestions((prev) => {
+          if (target.question) cancelDismissTimer(target.question);
+          return prev.filter((_, i) => i !== index);
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message.slice(0, 200) : String(err);
+        console.error('[recording:tap_reject] threw', err);
+        clientDiagnostic('tap_reject_threw', { message });
       }
-      // No chime on reject — iOS line 788 only speaks the response.
-      speak('Okay, keeping it.');
-      setQuestions((prev) => {
-        if (target.question) cancelDismissTimer(target.question);
-        return prev.filter((_, i) => i !== index);
-      });
     },
     [cancelDismissTimer, questions]
   );
@@ -1761,6 +1870,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       pause,
       resume,
       dismissQuestion,
+      acceptQuestion,
+      rejectQuestion,
       resumeChitchat,
     ]
   );
