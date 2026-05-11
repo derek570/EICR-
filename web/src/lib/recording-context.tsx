@@ -174,6 +174,34 @@ const Ctx = React.createContext<RecordingCtx | null>(null);
 // Sonnet token costs in on top.
 const DEEPGRAM_USD_PER_MIN = 0.0077;
 
+// Bug K (2026-05-11) — Deepgram split-utterance buffer.
+// Deepgram occasionally chunks "Circuit N is X" across two finals — the
+// first ends with bare "Circuit N is" (no completion) and the
+// designation arrives 1-3 seconds later in a separate final. Without
+// buffering, Sonnet sees the two halves as unrelated utterances and
+// (a) emits no tool calls for the first half, then (b) tries to route
+// the second half via DESCRIPTION MATCHING against the existing
+// schedule — which can mis-rename a previously-created circuit
+// (production session sess_mp19b6tf_i5xc, 2026-05-11 13:48 UTC). The
+// fix: detect the trailing-naming pattern, hold the first final for
+// up to NAMING_BUFFER_TIMEOUT_MS, and either concatenate-and-flush on
+// the next final OR timeout-and-flush alone.
+//
+// Pattern matches: "Circuit 1 is", "Circuit number 2 is", "Circuit one
+// is", "Circuit two is", "Circuit 3 is.", trailing whitespace tolerated.
+// Anchored to end-of-string — does NOT match if the utterance continues
+// past "is" (e.g. "Circuit 1 is a cooker" → no buffer, normal dispatch).
+//
+// Same regex shape on the iOS side (DeepgramRecordingViewModel.swift) so
+// the two clients buffer identically. Keep them in sync.
+const TRAILING_CIRCUIT_NAMING_PATTERN =
+  /\bcircuit\s+(?:number\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+is\s*\.?\s*$/i;
+const NAMING_BUFFER_TIMEOUT_MS = 3000;
+
+function isTrailingCircuitNamingPattern(text: string): boolean {
+  return TRAILING_CIRCUIT_NAMING_PATTERN.test(text);
+}
+
 /** T20 — Silero VAD master enable. Defaults ON; the env var is now an
  *  emergency kill switch — set `NEXT_PUBLIC_SILERO_VAD=0` at build
  *  time (Dockerfile build-arg or `web/.env.production`) to disable
@@ -287,6 +315,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     updateJobRef.current = updateJob;
   }, [updateJob]);
 
+  // Bug K (2026-05-11) — pending-naming utterance buffer. Holds at most
+  // one Deepgram final whose text trailing-matches "Circuit N is" with
+  // no completion. The setTimeout id lives alongside so a follow-up
+  // final can cancel it cleanly. See TRAILING_CIRCUIT_NAMING_PATTERN
+  // for the trigger shape and the full rationale.
+  const pendingNamingBufferRef = React.useRef<{
+    text: string;
+    confidence: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+
   // Synchronous mirror of `questions`. Bug L (2026-05-11) — the dedup logic
   // in onQuestion used to live inside the setQuestions reducer, so dedup
   // and the `isNew`/`queueDepthAfter` outputs all depended on the reducer
@@ -392,6 +431,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     deepgramRef.current = null;
     setDeepgramState('disconnected');
     setInterim('');
+    // Bug K — drop any pending naming-buffer timer so the deferred
+    // dispatchFinal doesn't fire after the Sonnet WS is gone (which
+    // would NPE on sonnetRef.current?.sendTranscript inside a logged
+    // dispatch). Buffered text is discarded silently — by the time
+    // the user stops the session, holding "Circuit N is" for a
+    // never-arriving completion is correct.
+    if (pendingNamingBufferRef.current) {
+      clearTimeout(pendingNamingBufferRef.current.timer);
+      pendingNamingBufferRef.current = null;
+    }
   }, []);
 
   const teardownSonnet = React.useCallback(() => {
@@ -449,6 +498,123 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const openDeepgram = React.useCallback(
     async (sourceSampleRate: number) => {
       const sessionId = sessionIdRef.current;
+
+      // Bug K (2026-05-11) — extracted dispatch helper. The
+      // pending-naming buffer above needs to flush a held final
+      // either when a follow-up final arrives (the normal path,
+      // already inline) OR when the 3 s timeout fires (the timer
+      // closure below). Both routes call `dispatchFinal`. Defined
+      // inside openDeepgram so it captures the same refs the inline
+      // path uses; reconstructed each Deepgram-session open, which
+      // matches when those refs are valid.
+      const dispatchFinal = (text: string, confidence: number) => {
+        setTranscript((prev) => {
+          const next: TranscriptUtterance[] = [
+            ...prev,
+            {
+              id: `u_${Date.now()}_${prev.length + 1}`,
+              text,
+              confidence,
+              final: true,
+              timestamp: Date.now(),
+            },
+          ];
+          return next.length > 10 ? next.slice(next.length - 10) : next;
+        });
+        // Client-side voice command dispatch (Phase 8). Attempt the MVP
+        // parser; when it matches, apply the patch, speak the response
+        // synchronously, and SKIP forwarding to Sonnet — otherwise
+        // Sonnet would produce a second, conflicting extraction from
+        // the same transcript. Anything the parser doesn't recognise
+        // continues to the server-side extraction path.
+        const command = parseVoiceCommand(text);
+        if (command) {
+          const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
+          if (outcome.patch) {
+            updateJobRef.current(outcome.patch);
+            jobRef.current = {
+              ...jobRef.current,
+              ...(outcome.patch as Partial<typeof jobRef.current>),
+            };
+            if (outcome.changedKeys && outcome.changedKeys.length > 0) {
+              liveFill.markUpdated(outcome.changedKeys);
+            }
+          }
+          if (outcome.response) {
+            if (outcome.patch) playConfirmationChime();
+            speak(outcome.response);
+          }
+          sleepManagerRef.current?.onSpeechActivity();
+          return;
+        }
+        const utteranceId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
+        let regexResults: RegexResultsWire | undefined = undefined;
+        const regexHintsEnabled = process.env.NEXT_PUBLIC_REGEX_HINTS_ENABLED === '1';
+        console.info(
+          `[recording:pipeline] stage=regex enabled=${regexHintsEnabled} matcher=${Boolean(regexMatcherRef.current)} tracker=${Boolean(fieldSourceTrackerRef.current)}`
+        );
+        if (regexHintsEnabled && regexMatcherRef.current && fieldSourceTrackerRef.current) {
+          const normalised = normaliseTranscriptText(text);
+          cumulativeTranscriptRef.current +=
+            (cumulativeTranscriptRef.current ? ' ' : '') + normalised;
+          const matchResult = regexMatcherRef.current.match(
+            cumulativeTranscriptRef.current,
+            jobRef.current
+          );
+          const applied = applyRegexMatchToJob(
+            jobRef.current,
+            matchResult,
+            fieldSourceTrackerRef.current
+          );
+          console.info(
+            `[recording:pipeline] stage=regex_applied changedKeys=${applied?.changedKeys.length ?? 0} keys=${(applied?.changedKeys ?? []).slice(0, 5).join(',')}`
+          );
+          clientDiagnostic('pipeline_regex_applied', {
+            normalisedPreview: normalised.slice(0, 80),
+            changedKeysCount: applied?.changedKeys.length ?? 0,
+            changedKeysPreview: (applied?.changedKeys ?? []).slice(0, 5),
+          });
+          if (applied) {
+            updateJobRef.current(applied.patch);
+            jobRef.current = {
+              ...jobRef.current,
+              ...(applied.patch as Partial<typeof jobRef.current>),
+            };
+            if (applied.changedKeys.length > 0) {
+              liveFill.markUpdated(applied.changedKeys);
+            }
+          }
+          const writtenKeys = fieldSourceTrackerRef.current.consumeTurnWrites();
+          regexResults = buildRegexSummary(writtenKeys, jobRef.current);
+        }
+        console.info(
+          `[recording:pipeline] stage=sonnet_send utteranceId=${utteranceId.slice(0, 8)} inFlightToolCallId=${inFlightToolCallId?.slice(0, 12) ?? 'none'} regexHints=${regexResults?.length ?? 0}`
+        );
+        clientDiagnostic('pipeline_sonnet_send', {
+          textPreview: text.slice(0, 80),
+          utteranceIdShort: utteranceId.slice(0, 12),
+          hasInFlightAsk: Boolean(inFlightToolCallId),
+          regexHintsCount: regexResults?.length ?? 0,
+        });
+        sonnetRef.current?.sendTranscript(text, {
+          confirmationsEnabled: getConfirmationModeEnabled(),
+          utteranceId,
+          regexResults,
+        });
+        if (inFlightToolCallId) {
+          console.info(
+            `[recording:pipeline] stage=ask_user_answered toolCallId=${inFlightToolCallId.slice(0, 12)} userText="${text.slice(0, 40)}"`
+          );
+          sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
+        }
+        setProcessingCount((n) => n + 1);
+        sleepManagerRef.current?.onSpeechActivity();
+      };
+
       const service = new DeepgramService({
         onStateChange: setDeepgramState,
         onInterimTranscript: (text) => {
@@ -536,179 +702,77 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
             return;
           }
-          setTranscript((prev) => {
-            const next: TranscriptUtterance[] = [
-              ...prev,
-              {
-                id: `u_${Date.now()}_${prev.length + 1}`,
-                text,
-                confidence,
-                final: true,
-                timestamp: Date.now(),
-              },
-            ];
-            return next.length > 10 ? next.slice(next.length - 10) : next;
-          });
-          // Client-side voice command dispatch (Phase 8). Attempt the MVP
-          // parser; when it matches, apply the patch, speak the response
-          // synchronously, and SKIP forwarding to Sonnet — otherwise
-          // Sonnet would produce a second, conflicting extraction from
-          // the same transcript. Anything the parser doesn't recognise
-          // continues to the server-side extraction path.
-          const command = parseVoiceCommand(text);
-          if (command) {
-            const outcome = applyVoiceCommand(
-              command,
-              jobRef.current as unknown as VoiceCommandJob
-            );
-            if (outcome.patch) {
-              updateJobRef.current(outcome.patch);
-              // Mirror the patch into jobRef.current synchronously so a
-              // second rapid-fire voice command sees the updated state.
-              // Without this, the useEffect-driven `jobRef.current = job`
-              // only lands on the next render and two consecutive updates
-              // against the same top-level section (e.g. "set ze 0.35"
-              // then "set pfc 1.5" both patch `supply`) would overwrite
-              // each other because the second applyVoiceCommand reads a
-              // stale section snapshot. The patch already contains full
-              // section replacements, so a shallow merge is correct.
-              jobRef.current = {
-                ...jobRef.current,
-                ...(outcome.patch as Partial<typeof jobRef.current>),
-              };
-              // Feed the live-fill flash so voice-driven edits animate
-              // the same as Sonnet-driven ones. Empty-list calls are a
-              // no-op, so guarding is unnecessary.
-              if (outcome.changedKeys && outcome.changedKeys.length > 0) {
-                liveFill.markUpdated(outcome.changedKeys);
+          // Bug K (2026-05-11) — pending-naming utterance buffer.
+          // If a previous final was a bare "Circuit N is" without
+          // completion, it's currently held in pendingNamingBufferRef
+          // waiting for a follow-up. Concatenate so the regex matcher
+          // sees both halves in the same cumulative-transcript pass
+          // AND Sonnet sees them as a single turn — which is the only
+          // way Sonnet routes "downstairs sockets" to circuit 2
+          // rather than mis-renaming circuit 1 via DESCRIPTION
+          // MATCHING. See TRAILING_CIRCUIT_NAMING_PATTERN for the
+          // full rationale and the iOS-parity note.
+          let effectiveText = text;
+          let effectiveConfidence = confidence;
+          const pending = pendingNamingBufferRef.current;
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingNamingBufferRef.current = null;
+            effectiveText = (pending.text + ' ' + text).trim();
+            // Combined confidence is the LOWER of the two — pessimistic,
+            // mirrors how a single transcript would carry one confidence.
+            effectiveConfidence = Math.min(pending.confidence, confidence);
+            clientDiagnostic('pipeline_naming_buffer_concat', {
+              bufferedPreview: pending.text.slice(0, 40),
+              followUpPreview: text.slice(0, 40),
+              combinedPreview: effectiveText.slice(0, 80),
+            });
+          }
+          // If the (possibly concatenated) text is itself a trailing
+          // "Circuit N is" — i.e. the inspector paused again or just
+          // re-stated the preface — buffer it and wait. This branch
+          // covers: (a) the original buffer trigger when no pending
+          // existed; (b) the rare case of two naming prefaces in a row
+          // (e.g. "Circuit 2 is" + "Circuit 3 is" — user backed out).
+          // Either way we want to hold for the completion.
+          if (isTrailingCircuitNamingPattern(effectiveText)) {
+            const armedAt = Date.now();
+            const timer = setTimeout(() => {
+              const buffered = pendingNamingBufferRef.current;
+              if (!buffered || buffered.timer !== timer) {
+                // Either nothing pending (someone else cleared it) or
+                // a fresher timer is now in flight — drop the stale fire.
+                return;
               }
-            }
-            if (outcome.response) {
-              // Confirmation chime before the spoken response — same
-              // ordering as iOS resolveWithCorrection
-              // (AlertManager.swift:552 chime then speakResponse).
-              // Only fires for commands that produced a patch (queries
-              // shouldn't chime — they're read-only).
-              if (outcome.patch) playConfirmationChime();
-              speak(outcome.response);
-            }
-            sleepManagerRef.current?.onSpeechActivity();
+              pendingNamingBufferRef.current = null;
+              clientDiagnostic('pipeline_naming_buffer_timeout', {
+                textPreview: buffered.text.slice(0, 80),
+                heldMs: Date.now() - armedAt,
+              });
+              // Flush the buffered final via the dispatch helper — the
+              // TTS gates above already passed at buffer-time, and a
+              // 3 s delay is short enough that re-running them would
+              // be a no-op in the overwhelming majority of cases. iOS
+              // canon ports the same single-gate model.
+              dispatchFinal(buffered.text, buffered.confidence);
+            }, NAMING_BUFFER_TIMEOUT_MS);
+            pendingNamingBufferRef.current = {
+              text: effectiveText,
+              confidence: effectiveConfidence,
+              timer,
+            };
+            clientDiagnostic('pipeline_naming_buffer_armed', {
+              textPreview: effectiveText.slice(0, 80),
+              timeoutMs: NAMING_BUFFER_TIMEOUT_MS,
+            });
             return;
           }
-          // Fire the final utterance at the Sonnet session so server-side
-          // multi-turn extraction can fill form fields. No-op if the WS
-          // isn't open — the Sonnet client queues messages while
-          // disconnected.
-          //
-          // `confirmationsEnabled` mirrors iOS (DeepgramRecordingViewModel.
-          // swift:1863): the same boolean that gates client-side
-          // `speakConfirmation` is forwarded to the backend so Sonnet
-          // only generates a confirmations[] array when the user wants
-          // them. Reading the storage value here (rather than caching it
-          // in a React state) means flipping the toggle mid-recording
-          // takes effect on the very next utterance without a re-render
-          // round-trip.
-          //
-          // `utteranceId` is a per-final UUID that doubles as the
-          // dedupe anchor at the backend (sonnet-stream.js:2092). It's
-          // stamped on every transcript so any subsequent Stage 6 ask
-          // can echo it back as `consumed_utterance_id` and hit the
-          // fast-path Set lookup at sonnet-stream.js:1013.
-          //
-          // Stage 6 STI-04 — if a Stage 6 ask is in flight (toolCallId
-          // captured from an `ask_user_started` payload), the wire
-          // ordering MUST be transcript→ask_user_answered with the
-          // SAME utteranceId so the backend's seenTranscriptUtterances
-          // Set is populated before the ask's lookup runs. Mirrors
-          // DeepgramRecordingViewModel.swift:1820–1883.
-          //
-          // The `consume…` call is read-and-clear; if no ask is in
-          // flight we just send the transcript. Idempotency for split
-          // hesitation finals ("uh" → "cooker" in two finals) lives
-          // inside SonnetSession's firedToolCallIds Set — only the
-          // first non-empty final after an ask emits the answer.
-          const utteranceId =
-            typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-              ? crypto.randomUUID()
-              : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-          const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
-          // iOS-parity pre-extraction pipeline. Mirrors Swift
-          // DeepgramRecordingViewModel.handleFinalTranscript at the
-          // matcher → field-source-tracker → buildRegexSummary boundary.
-          // Gated on NEXT_PUBLIC_REGEX_HINTS_ENABLED so a misfiring
-          // pattern in prod can be killed via Vercel env var without a
-          // redeploy — see PLAN validation/rollout.
-          let regexResults: RegexResultsWire | undefined = undefined;
-          const regexHintsEnabled = process.env.NEXT_PUBLIC_REGEX_HINTS_ENABLED === '1';
-          console.info(
-            `[recording:pipeline] stage=regex enabled=${regexHintsEnabled} matcher=${Boolean(regexMatcherRef.current)} tracker=${Boolean(fieldSourceTrackerRef.current)}`
-          );
-          if (regexHintsEnabled && regexMatcherRef.current && fieldSourceTrackerRef.current) {
-            const normalised = normaliseTranscriptText(text);
-            cumulativeTranscriptRef.current +=
-              (cumulativeTranscriptRef.current ? ' ' : '') + normalised;
-            const matchResult = regexMatcherRef.current.match(
-              cumulativeTranscriptRef.current,
-              jobRef.current
-            );
-            const applied = applyRegexMatchToJob(
-              jobRef.current,
-              matchResult,
-              fieldSourceTrackerRef.current
-            );
-            console.info(
-              `[recording:pipeline] stage=regex_applied changedKeys=${applied?.changedKeys.length ?? 0} keys=${(applied?.changedKeys ?? []).slice(0, 5).join(',')}`
-            );
-            clientDiagnostic('pipeline_regex_applied', {
-              normalisedPreview: normalised.slice(0, 80),
-              changedKeysCount: applied?.changedKeys.length ?? 0,
-              changedKeysPreview: (applied?.changedKeys ?? []).slice(0, 5),
-            });
-            if (applied) {
-              updateJobRef.current(applied.patch);
-              jobRef.current = {
-                ...jobRef.current,
-                ...(applied.patch as Partial<typeof jobRef.current>),
-              };
-              if (applied.changedKeys.length > 0) {
-                liveFill.markUpdated(applied.changedKeys);
-              }
-            }
-            const writtenKeys = fieldSourceTrackerRef.current.consumeTurnWrites();
-            regexResults = buildRegexSummary(writtenKeys, jobRef.current);
-          }
-          // Pass the ORIGINAL text to Sonnet (not the normalised form) —
-          // iOS sends unnormalised text on the wire and the regex
-          // summary alongside (Swift sendTranscript:494,504). Backend
-          // has its own dialogue-engine normalisation; double-normalising
-          // would diverge from iOS.
-          console.info(
-            `[recording:pipeline] stage=sonnet_send utteranceId=${utteranceId.slice(0, 8)} inFlightToolCallId=${inFlightToolCallId?.slice(0, 12) ?? 'none'} regexHints=${regexResults?.length ?? 0}`
-          );
-          clientDiagnostic('pipeline_sonnet_send', {
-            textPreview: text.slice(0, 80),
-            utteranceIdShort: utteranceId.slice(0, 12),
-            hasInFlightAsk: Boolean(inFlightToolCallId),
-            regexHintsCount: regexResults?.length ?? 0,
-          });
-          sonnetRef.current?.sendTranscript(text, {
-            confirmationsEnabled: getConfirmationModeEnabled(),
-            utteranceId,
-            regexResults,
-          });
-          if (inFlightToolCallId) {
-            console.info(
-              `[recording:pipeline] stage=ask_user_answered toolCallId=${inFlightToolCallId.slice(0, 12)} userText="${text.slice(0, 40)}"`
-            );
-            sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
-          }
-          // Each dispatched transcript is one outstanding Sonnet turn
-          // until an extraction / question frame arrives to clear it.
-          setProcessingCount((n) => n + 1);
-          // Reset the SleepManager's no-final-transcript timer. Interim
-          // partials deliberately don't — iOS does the same so the mic's
-          // AGC can't self-feed and keep the doze timer permanently armed.
-          sleepManagerRef.current?.onSpeechActivity();
+          // Normal dispatch path — either the original final didn't
+          // trigger the buffer OR the pending buffer just resolved
+          // via concatenation. Either way, route the (possibly
+          // combined) text through the same Sonnet/regex/voice-command
+          // pipeline as before.
+          dispatchFinal(effectiveText, effectiveConfidence);
         },
         onReconnected: () => {
           // Socket just reopened after an auto-reconnect. Replay the
