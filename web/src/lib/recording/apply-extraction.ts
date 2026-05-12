@@ -163,6 +163,51 @@ const MIRROR_BOARD_TO_SUPPLY: ReadonlySet<string> = new Set([
   'spd_rated_current',
 ]);
 
+/**
+ * Fields written to `board_info` or `supply_characteristics` that the
+ * Board tab also reads from the active `boards[i]` record. iOS's
+ * multi-board work (2026-05-07 sprint) moved board-level data into
+ * `job.boards[]`; the PWA Board tab reads from there
+ * (`web/src/app/job/[id]/board/page.tsx:95-101` —
+ * `const boards = job.boards ?? []`, then `text('manufacturer')`,
+ * `text('main_switch_bs_en')`, `text('earthing_arrangement')`,
+ * `text('ze')`, `text('zs_at_db')` on the active board record).
+ *
+ * The Sonnet apply path currently writes only to the legacy
+ * `board_info` / `supply_characteristics` singletons — so dictating
+ * "Wylex Amendment 3" lands in `job.board_info.manufacturer` and
+ * LiveFillView shows it, but the Board tab (reading
+ * `boards[0].manufacturer`) is empty post-recording.
+ *
+ * This map declares the {source-section, source-key, target boards[i]
+ * key} mirror triples. Each entry is also applied to `boards[0]`
+ * after the primary section write. Multi-board sessions
+ * (`boards.length > 1`) are intentionally skipped — they need
+ * `board_id` routing per reading (Phase 2 of the multi-board parity
+ * push). For single-board sessions (`boards.length <= 1`), this
+ * mirror closes the visible gap.
+ *
+ * Source of truth: backend KNOWN_FIELDS (sonnet-stream.js:651+) for
+ * what Sonnet emits, and `board/page.tsx` `text(...)` calls for what
+ * the UI reads. Both sides are grep-pinned by tests in
+ * `apply-extraction-boards-mirror.test.ts`.
+ */
+const MIRROR_TO_BOARDS0: ReadonlyArray<{
+  section: Section;
+  sectionKey: string;
+  boardKey: string;
+}> = [
+  { section: 'board_info', sectionKey: 'manufacturer', boardKey: 'manufacturer' },
+  { section: 'board_info', sectionKey: 'main_switch_bs_en', boardKey: 'main_switch_bs_en' },
+  {
+    section: 'supply_characteristics',
+    sectionKey: 'earthing_arrangement',
+    boardKey: 'earthing_arrangement',
+  },
+  { section: 'supply_characteristics', sectionKey: 'ze', boardKey: 'ze' },
+  { section: 'supply_characteristics', sectionKey: 'zs_at_db', boardKey: 'zs_at_db' },
+];
+
 // ─────────────────────────────────────────────────────────────────────────
 // Field routing for circuit: 0 (supply / installation / etc.)
 //
@@ -722,6 +767,73 @@ function diffCircuitKeys(
   return keys;
 }
 
+/**
+ * Compute a `boards[]` patch that mirrors specific fields from the
+ * section patches into `boards[0]`. Returns `null` when no mirror
+ * applies (multi-board session, no qualifying values, or every
+ * candidate already has a user value on the board record).
+ *
+ * Behaviour:
+ *   - `existingBoards.length > 1` → skip entirely. Multi-board needs
+ *     `board_id` routing per reading; the apply layer doesn't see
+ *     that yet (Phase 2). Returning null leaves any iOS-set multi-
+ *     board data untouched.
+ *   - `existingBoards.length === 0` → synthesise `boards[0]` with a
+ *     UUID, `board_type: 'main'`, and the qualifying mirror values.
+ *     Matches the Board tab's `newBoard()` fallback shape.
+ *   - `existingBoards.length === 1` → patch boards[0] field-by-field,
+ *     respecting the 3-tier priority guard.
+ */
+function mirrorSectionPatchesToBoard0(
+  job: JobDetail,
+  patch: Partial<JobDetail>
+): Record<string, unknown>[] | null {
+  const existingBoards =
+    (patch.boards as Record<string, unknown>[] | undefined) ??
+    (job.boards as Record<string, unknown>[] | undefined) ??
+    [];
+  if (existingBoards.length > 1) {
+    pipelineLog('apply_boards_mirror_skipped_multi_board', {
+      boards_count: existingBoards.length,
+    });
+    return null;
+  }
+  const existingBoard0 = existingBoards[0] ?? {};
+
+  const board0Updates: Record<string, unknown> = {};
+  for (const { section, sectionKey, boardKey } of MIRROR_TO_BOARDS0) {
+    const sectionPatch = patch[section] as Record<string, unknown> | undefined;
+    if (!sectionPatch || !(sectionKey in sectionPatch)) continue;
+    // Priority guard — never clobber a value the inspector has typed
+    // into the Board tab directly. The existing-section guard in
+    // applyCircuit0Readings already protects sections, but the
+    // boards[0] record is its own store.
+    if (hasValue(existingBoard0[boardKey])) {
+      pipelineLog('apply_boards_mirror_user_value_kept', {
+        board_key: boardKey,
+      });
+      continue;
+    }
+    board0Updates[boardKey] = sectionPatch[sectionKey];
+  }
+
+  if (Object.keys(board0Updates).length === 0) return null;
+
+  if (existingBoards.length === 0) {
+    const id = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
+    pipelineLog('apply_boards_mirror_synthesized_board0', {
+      id,
+      fields: Object.keys(board0Updates),
+    });
+    return [{ id, board_type: 'main', ...board0Updates }];
+  }
+
+  pipelineLog('apply_boards_mirror_patched_board0', {
+    fields: Object.keys(board0Updates),
+  });
+  return [{ ...existingBoard0, ...board0Updates }];
+}
+
 /** Diff observations. Emits `observation.{id}` for each new row. We
  *  don't bother diffing fields within an existing observation — Sonnet
  *  never amends observations, it only appends them. */
@@ -790,6 +902,15 @@ export function applyExtractionToJob(
   // Per-circuit readings + updates + clears.
   const newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears);
   if (newCircuits) patch.circuits = newCircuits;
+
+  // Board mirror — populate boards[0] so the Board tab renders
+  // Sonnet-extracted manufacturer, main_switch_bs_en, earthing_
+  // arrangement, ze, zs_at_db. Reads from the JUST-built section
+  // patches above; produces a `patch.boards` entry when at least one
+  // field qualifies. Skipped for multi-board (Phase 2 will route by
+  // board_id).
+  const newBoards = mirrorSectionPatchesToBoard0(job, patch);
+  if (newBoards) patch.boards = newBoards;
 
   // Observations.
   const newObservations = applyObservations(job, observations);
