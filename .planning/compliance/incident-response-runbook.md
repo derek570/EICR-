@@ -47,7 +47,7 @@ The first hour is the most important. Follow the steps in order; don't try to do
 
 ### Minute 0–5 — **Detect and acknowledge**
 
-1. Open an entry in the [Breach Register](./registers/breach-register.md) with: timestamp (UTC), source of report, one-sentence description, your name, severity (use "P3" pending classification).
+1. Open an entry in [`registers/breach-register.md`](./registers/breach-register.md) with: timestamp (UTC), source of report, one-sentence description, your name, severity (use "P3" pending classification).
 2. Start a timer. The 72-hour ICO clock starts from "when you become aware" — that's now.
 
 ### Minute 5–15 — **Classify**
@@ -57,6 +57,22 @@ The first hour is the most important. Follow the steps in order; don't try to do
 5. If P1 or P2, immediately:
    - Email yourself a copy of all the evidence so it is preserved outside any system that might itself be compromised.
    - Note in the register the **scope** as best understood: (a) which inspectors / homeowners affected, (b) what data category, (c) what time window.
+
+### Minute 5–15 — **Evidence questions to the reporter (if the report came from a human)**
+
+If the incident was self-reported by an inspector or homeowner, your **first reply** should ask the questions that will drive the classification call. Send before the 30-min mark; don't wait for answers before starting containment.
+
+**For device loss / theft:**
+1. Was the device passcode/biometric locked at the time of loss?
+2. When did you last log in to CertMate on the device? (We issue 30-day session tokens.)
+3. Have you (a) reported the theft to police, (b) signed out of your Apple ID via Find My iPhone, (c) initiated a remote wipe?
+4. Approximately how many real jobs did you run on that device, and what was the most recent date?
+
+**For suspected account compromise (phishing, shared password, etc.):**
+1. When and how did you become suspicious?
+2. Have you changed your CertMate password from a different device?
+3. Have you used the same password anywhere else? (If yes, change those too.)
+4. List any unfamiliar activity you can see in the app (jobs you don't recognise, settings changes, etc.).
 
 ### Minute 15–30 — **Contain**
 
@@ -86,13 +102,15 @@ The order is **stop the bleeding first, investigate second**.
 
 ## 4. Containment toolkit — exact commands
 
-Keep these in your head or pinned at your desk:
+Keep these in your head or pinned at your desk.
+
+> **WARNING — JWT rotation is global.** Rotating `JWT_SECRET` logs out **every** active inspector, not just the suspected-compromised one. For a single-user beta this is acceptable. As the tester base grows, prefer account-specific lock (cmd 2) and reserve JWT rotation for incidents where the signing key itself is suspected leaked.
 
 ```bash
 # Set CWD if not already there
 cd /Users/derekbeckley/Developer/EICR_Automation
 
-# 1. Rotate JWT secret (forces every session to log out on next request)
+# 1. Rotate JWT secret (forces EVERY session — all inspectors — to log out on next request)
 NEW_JWT=$(openssl rand -base64 64)
 aws secretsmanager get-secret-value --secret-id eicr/api-keys --region eu-west-2 --query SecretString --output text | \
   python3 -c "import json,sys; d=json.loads(sys.stdin.read()); d['JWT_SECRET']='$NEW_JWT'; print(json.dumps(d))" | \
@@ -100,9 +118,16 @@ aws secretsmanager get-secret-value --secret-id eicr/api-keys --region eu-west-2
 # Then force-new-deployment on ECS so the running tasks pick up the new secret
 aws ecs update-service --cluster eicr-cluster-production --service eicr-backend --force-new-deployment --region eu-west-2
 
-# 2. Lock a specific inspector account (replace <user-id>)
-# Connect via psql using the credentials in eicr/database secret, then:
-#   UPDATE users SET is_active = false, locked_until = NOW() + INTERVAL '30 days' WHERE id = '<user-id>';
+# 2. Lock a specific inspector account (preferred for single-account compromise)
+# Fetch DB creds and open a one-shot psql session:
+DB_CREDS=$(aws secretsmanager get-secret-value --secret-id eicr/database --region eu-west-2 --query SecretString --output text)
+DB_HOST=$(echo "$DB_CREDS" | python3 -c "import json,sys;print(json.loads(sys.stdin.read())['host'])")
+DB_USER=$(echo "$DB_CREDS" | python3 -c "import json,sys;print(json.loads(sys.stdin.read())['username'])")
+DB_PASS=$(echo "$DB_CREDS" | python3 -c "import json,sys;print(json.loads(sys.stdin.read())['password'])")
+DB_NAME=$(echo "$DB_CREDS" | python3 -c "import json,sys;print(json.loads(sys.stdin.read())['dbname'])")
+PGPASSWORD="$DB_PASS" psql "sslmode=require host=$DB_HOST user=$DB_USER dbname=$DB_NAME" \
+  -c "UPDATE users SET is_active = false, locked_until = NOW() + INTERVAL '30 days' WHERE id = '<user-id>';"
+# Reverse: same query with is_active = true, locked_until = NULL.
 
 # 3. Revoke a single sub-processor key (example: Anthropic — replace key in console + here)
 aws secretsmanager get-secret-value --secret-id eicr/api-keys --region eu-west-2 --query SecretString --output text | \
@@ -119,15 +144,36 @@ aws ecs update-service --cluster eicr-cluster-production --service eicr-backend 
 aws rds create-db-snapshot --db-instance-identifier eicr-db-production --db-snapshot-identifier incident-<YYYYMMDD-HHMM> --region eu-west-2
 
 # 6. Pull recent CloudWatch logs for evidence
-aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 4h --format short > /tmp/incident-backend-logs.txt
-aws logs tail /ecs/eicr/eicr-pwa --region eu-west-2 --since 4h --format short > /tmp/incident-pwa-logs.txt
+#    Adjust --since to cover the FULL window from time-of-incident to now.
+#    Device-loss reports often arrive next-morning, so --since 24h is the safer default.
+aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 24h --format short > /tmp/incident-backend-logs.txt
+aws logs tail /ecs/eicr/eicr-pwa --region eu-west-2 --since 24h --format short > /tmp/incident-pwa-logs.txt
+
+# 7. Scope CloudWatch logs to a specific user (Logs Insights — adjust time range in console or via --start-time / --end-time)
+aws logs start-query --region eu-west-2 \
+  --log-group-name /ecs/eicr/eicr-backend \
+  --start-time $(date -u -v-24H +%s) --end-time $(date -u +%s) \
+  --query-string 'fields @timestamp, @message | filter @message like /<user-id-or-email>/ | sort @timestamp desc | limit 500'
+# Then fetch results with: aws logs get-query-results --query-id <id-from-above> --region eu-west-2
 ```
 
 Keep the output of every containment command. It is part of the incident record.
 
+## 4.1 Device-side actions — delegated to the affected user
+
+We cannot do these for the inspector; they own the Apple ID. Send the list as part of the first reply for any device-loss / theft / suspected-account-compromise report:
+
+1. **Remote-wipe via Find My iPhone / Find My iPad** — https://support.apple.com/en-gb/HT201472 — erases CertMate's cached job data, transcripts, and photos on the device.
+2. **Sign out of Apple ID remotely** — Settings → Apple ID → Find My → Mark As Lost (also locks Activation Lock so the device can't be re-set-up without the Apple ID password).
+3. **Report the theft to the police** for an incident reference number. Required if the inspector intends to claim on their own home/business insurance and useful evidence in our breach register.
+
+A separate `is_active = false` lock from our side (toolkit cmd 2) is independent of and complementary to the above. The device may be wiped but the JWT in the wiped device's keychain could still be valid until our token-revoke takes effect — close that loop first.
+
 ## 5. Controller notification (24-hour deadline) — email template
 
 Send from `privacy@certmate.uk` to the affected inspector-customer(s).
+
+> **If the Controller is also the reporter** (i.e. the inspector emailed us first to say their device was stolen or account compromised), use the short variant in §5.1 instead of the formal template below. The formal template assumes the Controller is hearing about the incident from us for the first time; using it on a self-reporter reads as process-theatre.
 
 > Subject: **CertMate — personal-data incident notification — action may be required**
 >
@@ -160,6 +206,33 @@ Send from `privacy@certmate.uk` to the affected inspector-customer(s).
 > privacy@certmate.uk
 > [phone]
 
+## 5.1 Controller notification — short variant (Controller is the reporter)
+
+When the inspector reported the incident themselves, send a confirmation-of-actions email rather than the formal template.
+
+> Subject: **CertMate — your reported incident — confirmation of actions taken**
+>
+> Hi [name],
+>
+> Thanks for reporting [the iPad theft / suspected account access] on [date / time]. I'm writing within the 24-hour window required by Section 9.9 of the Beta Tester Agreement to confirm what we've done on our side.
+>
+> **On our side:**
+> - [List, e.g.: locked your CertMate account at 09:19 UTC; rotated session tokens]
+> - [Investigated CloudWatch logs from [time of incident] to now — finding: [no activity / activity, see below]]
+> - Logged as incident `INC-YYYY-NNN` in our internal breach register
+>
+> **On your side, please confirm you have done:**
+> - [As applicable: remote-wiped via Find My iPhone; signed out of Apple ID; reported to police]
+> - Changed your CertMate password (you can re-activate the account once you confirm)
+>
+> Based on the evidence we have so far, our assessment is that ICO notification is [not required / required] because [reasoning]. I'll send a final closure email with root-cause and any follow-up actions within 7 days.
+>
+> Reply with the device-side confirmations and I'll re-activate your account.
+>
+> Derek Beckley
+> Data Protection Lead, Beckley Electrical Ltd t/a CertMate
+> privacy@certmate.uk
+
 ## 6. ICO notification (72-hour deadline) — submission
 
 The ICO accepts breach notifications at [ico.org.uk/for-organisations/report-a-breach/](https://ico.org.uk/for-organisations/report-a-breach/). Use the online form. The information you'll need:
@@ -176,6 +249,21 @@ The ICO accepts breach notifications at [ico.org.uk/for-organisations/report-a-b
 **If you cannot meet the 72-hour deadline**, the ICO will accept the notification late, accompanied by the reasons for the delay. Do not wait beyond 72 hours hoping for more information — submit what you have.
 
 You do not need a solicitor to file an ICO notification. If the incident is large or contentious, retain one for the follow-up correspondence.
+
+### 6.1 ICO notification — decision matrix
+
+The P2 ICO call ("assess against the 'likely to result in a risk' threshold") is the single most consequential judgement in this runbook. Use this matrix for the common cases; for anything outside it, document the reasoning in the breach register row.
+
+| Pattern | Notify ICO? | Reasoning |
+|---|---|---|
+| **PIN/biometric-locked device loss, no API activity from the account after the loss** | **No** — log assessment in breach register, send Controller §5.1 short notification only | Device cryptographically protected; no evidence the data has been "compromised"; the lock substantially mitigates risk |
+| **Unlocked device loss** (e.g. inspector left the iPad on a job-site bench, returned to find it gone, no PIN set) | **Yes** — within 72h. Treat the cached job data on the device as disclosed. | The "likely risk" threshold is met because anyone could have opened the app |
+| **PIN-locked device loss with API activity from the compromised account after loss time** | **Yes** — within 72h. PIN was bypassed or shared. | Evidence of actual compromise overrides the lock-as-mitigation argument |
+| **Confirmed exfiltration of homeowner data** (anywhere in the chain — device, backend, sub-processor) | **Yes** — within 72h, plus consider data-subject notification under §7 | The presumption is in favour of notification once exfiltration is evidenced |
+| **Service-only incident with no personal-data dimension** (e.g. ECS service degraded, no data accessed) | **No** | Not a personal-data breach; log internally only |
+| **Sub-processor notification reaching us about an incident in their stack** | **Depends** — apply the same matrix substituting "their disclosure" for "device loss" | A sub-processor confirming actual access by an unauthorised party is the same standard as our own systems being accessed |
+
+For any "Yes" case, draft the §6 submission in parallel with the §5 / §5.1 Controller notification — don't sequence them.
 
 ## 7. Data-subject notification (without undue delay if high risk)
 

@@ -42,8 +42,6 @@ Entries are **append-only**. Errors are corrected by appending a "correction" ro
 
 ## Register
 
-> **Empty — no incidents have occurred. Tabletop exercises will populate rows here when they are run.**
-
 | ID | Detected at (UTC) | Reported by | Description | Class | Data categories | Subjects | Containment | Controller notif | ICO notif | Subjects notif | Closed at | Root cause | Post-mortem |
 |----|-------------------|-------------|-------------|-------|-----------------|----------|-------------|------------------|-----------|----------------|-----------|------------|-------------|
-| _(no rows yet)_ | | | | | | | | | | | | | |
+| INC-2026-001 | 2026-05-12 09:14 | Tabletop facilitator | Simulated stolen-iPad scenario from runbook §9 walked end-to-end without touching production. Inspector "E. Kowalski" reports passcode-locked iPad with active CertMate session was stolen at a Reading job site ~16h prior. 3 real homeowner jobs cached on device. | Tabletop | Inspector account credentials; cached homeowner names, addresses, photos, transcripts | 1 inspector + ~3 homeowners (simulated) | Drafted only — JWT rotation, account lock, ECS redeploy, CloudWatch sweep | N/A (tabletop) | N/A (tabletop) | N/A (tabletop) | 2026-05-12 10:14 | Tabletop exercise — no real root cause. Runbook fitness-for-purpose confirmed READY conditional on 8 GAP-fixes (applied in same commit). | [2026-05-12-tabletop-stolen-ipad.md](../incidents/2026-05-12-tabletop-stolen-ipad.md) |
