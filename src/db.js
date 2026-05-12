@@ -1838,6 +1838,173 @@ export async function query(text, params) {
   return pool.query(text, params);
 }
 
+// =============================================================================
+// account_consents — UK GDPR Art. 28 clickwrap evidence
+// See .planning/compliance/in-app-consent-screen.md and migration 010.
+// =============================================================================
+
+/**
+ * Has the user accepted the named version of the agreement?
+ * Returns the row or null. Null means "needs to accept".
+ */
+export async function getMostRecentAcceptedConsent(userId, agreementKind, agreementVersion) {
+  if (!usePostgres()) return null;
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT id, accepted_at, recorded_at, platform, platform_version
+       FROM account_consents
+      WHERE user_id = $1 AND agreement_kind = $2 AND agreement_version = $3
+      ORDER BY recorded_at DESC
+      LIMIT 1`,
+    [userId, agreementKind, agreementVersion]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * Record an acceptance. Idempotent via ON CONFLICT — a duplicate
+ * acceptance from a parallel device-launch flow is silently coalesced
+ * into the existing row. The RETURNING clause works on both insert and
+ * existing-row paths so callers get the same shape back either way.
+ */
+export async function recordAccountConsent({
+  userId,
+  agreementKind,
+  agreementVersion,
+  acceptedAt,
+  platform,
+  platformVersion,
+  ipAddress,
+  userAgent,
+}) {
+  if (!usePostgres()) {
+    throw new Error('Database not configured');
+  }
+  const pool = getPool();
+  const result = await pool.query(
+    `INSERT INTO account_consents
+       (user_id, agreement_kind, agreement_version, accepted_at,
+        platform, platform_version, ip_address, user_agent)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (user_id, agreement_kind, agreement_version)
+     DO UPDATE SET recorded_at = account_consents.recorded_at
+     RETURNING id, accepted_at, recorded_at`,
+    [
+      userId,
+      agreementKind,
+      agreementVersion,
+      acceptedAt,
+      platform,
+      platformVersion || null,
+      ipAddress || null,
+      userAgent || null,
+    ]
+  );
+  return result.rows[0];
+}
+
+// =============================================================================
+// cert_attestations — per-PDF readings + observations audit trail
+// See .planning/compliance/pdf-issuance-attestations.md and migration 011.
+// =============================================================================
+
+/**
+ * Write both attestations for a single PDF issuance atomically. The
+ * pair must succeed or fail together so we never leave a half-written
+ * audit trail. Returns the inserted rows in submission order.
+ *
+ * Caller must have already verified job ownership.
+ */
+export async function recordCertAttestations({
+  userId,
+  jobId,
+  pdfS3Key,
+  attestations,
+  ipAddress,
+  userAgent,
+}) {
+  if (!usePostgres()) {
+    throw new Error('Database not configured');
+  }
+  if (!Array.isArray(attestations) || attestations.length !== 2) {
+    throw new Error('recordCertAttestations requires exactly 2 attestations');
+  }
+  const kinds = new Set(attestations.map((a) => a.kind));
+  if (!(kinds.has('readings') && kinds.has('observations') && kinds.size === 2)) {
+    throw new Error("recordCertAttestations requires kinds={'readings','observations'}");
+  }
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rows = [];
+    for (const att of attestations) {
+      const result = await client.query(
+        `INSERT INTO cert_attestations
+           (user_id, job_id, pdf_s3_key, attestation_kind,
+            attestation_text_version, attested_at,
+            platform, platform_version, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, attestation_kind, attested_at, recorded_at`,
+        [
+          userId,
+          jobId,
+          pdfS3Key || null,
+          att.kind,
+          att.textVersion,
+          att.attestedAt,
+          att.platform,
+          att.platformVersion || null,
+          ipAddress || null,
+          userAgent || null,
+        ]
+      );
+      rows.push(result.rows[0]);
+    }
+    await client.query('COMMIT');
+    return rows;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Stamp the PDF S3 key onto attestations whose render has just
+ * completed. Returns the number of rows updated.
+ */
+export async function updateAttestationPdfKey(attestationIds, pdfS3Key) {
+  if (!usePostgres()) return 0;
+  if (!Array.isArray(attestationIds) || attestationIds.length === 0) return 0;
+  const pool = getPool();
+  const result = await pool.query(
+    `UPDATE cert_attestations SET pdf_s3_key = $1 WHERE id = ANY($2::int[])`,
+    [pdfS3Key, attestationIds]
+  );
+  return result.rowCount;
+}
+
+/**
+ * Fetch all attestations for a job (most-recent-first). Used by the
+ * Settings → Issued certificates list and by audit pulls.
+ */
+export async function getAttestationsForJob(userId, jobId) {
+  if (!usePostgres()) return [];
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT id, attestation_kind, attestation_text_version,
+            attested_at, recorded_at, platform, platform_version,
+            pdf_s3_key
+       FROM cert_attestations
+      WHERE user_id = $1 AND job_id = $2
+      ORDER BY recorded_at DESC`,
+    [userId, jobId]
+  );
+  return result.rows;
+}
+
 /**
  * Close the database connection pool (for graceful shutdown)
  */

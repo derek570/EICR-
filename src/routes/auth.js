@@ -83,9 +83,44 @@ router.post('/refresh', async (req, res) => {
 /**
  * Get current user
  * GET /api/auth/me
+ *
+ * Extended 2026-05-12 with consent fields so clients can route
+ * through the first-login consent screen without an extra round-trip.
+ * Returns:
+ *   - all the existing req.user fields (id, email, name, role, etc.)
+ *   - consent_pending: true if the user has NOT accepted the current
+ *     Beta Tester Agreement version; false otherwise
+ *   - current_agreement_version: the version string the client should
+ *     present + submit
+ *
+ * The consent check fail-opens if the DB is unavailable — the
+ * recording / job-create / etc. routes are independently gated by
+ * the require-consent middleware, so a transiently-degraded /me
+ * response can't actually leak un-consented data through.
  */
-router.get('/me', auth.requireAuth, (req, res) => {
-  res.json(req.user);
+router.get('/me', auth.requireAuth, async (req, res) => {
+  // Lazy import to keep this module side-effect-free at top level.
+  const [{ default: dbModule }, { CURRENT_VERSIONS }] = await Promise.all([
+    import('../db.js').then((m) => ({ default: m })),
+    import('../lib/legal-text-versions.js'),
+  ]);
+  const btaVersion = CURRENT_VERSIONS.beta_tester_agreement;
+  let consentPending = false;
+  try {
+    const row = await dbModule.getMostRecentAcceptedConsent(
+      req.user.id,
+      'beta_tester_agreement',
+      btaVersion
+    );
+    consentPending = row === null;
+  } catch (err) {
+    logger.warn('me_consent_check_failed_open', { error: err.message, user_id: req.user.id });
+  }
+  res.json({
+    ...req.user,
+    consent_pending: consentPending,
+    current_agreement_version: btaVersion,
+  });
 });
 
 /**

@@ -48,6 +48,10 @@ import exportRouter from './routes/export.js';
 import ocrRouter from './routes/ocr.js';
 import sleepLogRouter from './routes/sleep-log.js';
 import postcodeRouter from './routes/postcode.js';
+import accountRouter from './routes/account.js';
+import legalRouter from './routes/legal.js';
+import certAttestationsRouter from './routes/cert-attestations.js';
+import { requireConsent } from './middleware/require-consent.js';
 
 // WebSocket recording server (re-exported for server.js)
 import { wss } from './ws-recording.js';
@@ -241,24 +245,36 @@ app.use('/api/companies', auth.requireAuth, companiesRouter);
 
 // Pre-existing route modules
 app.use('/api/auth', authLimiter, authRouter);
+app.use('/api/account', accountRouter); // /api/account/consent/accept, /api/account/consent/status
+app.use('/api/legal', legalRouter); // /api/legal/text-versions (unauthenticated; UI copy)
+app.use('/api/cert-attestations', auth.requireAuth, requireConsent, certAttestationsRouter);
 app.use('/api', keysRouter); // /api/proxy/*, /api/config/*
 app.use('/api', settingsRouter); // /api/settings/*, /api/inspector-profiles/*, /api/schema/*, /api/regulations
 app.use('/api/push', pushRouter); // /api/push/*
 app.use('/api', feedbackRouter); // /api/feedback/*, /api/optimizer-report/*
 app.use('/api/billing', billingRouter); // /api/billing/* (except webhook which stays here)
 app.use('/api/calendar', calendarRouter); // /api/calendar/*
-app.use('/api', clientsRouter); // /api/clients/*, /api/properties/*
+app.use('/api', auth.requireAuth, requireConsent, clientsRouter); // /api/clients/*, /api/properties/* — homeowner CRM
 app.use('/api/analytics', analyticsRouter); // /api/analytics/*
 
 // Decomposed route modules
-app.use('/api', jobsRouter); // /api/jobs/*, /api/job/*, /api/upload, /api/process-job, /api/queue/*
-app.use('/api', recordingRouter); // /api/recording/*, /api/session/*, /api/debug-report
-app.use('/api', uploadLimiter, photosRouter); // /api/job/:userId/:jobId/photos/*
-app.use('/api', aiLimiter, extractionRouter); // /api/recording/sonnet-extract, /api/analyze-ccu, /api/enhance-observation
-app.use('/api', pdfRouter); // /api/job/:userId/:jobId/generate-pdf
-app.use('/api', emailLimiter, emailRouter); // /api/job/:userId/:jobId/email, /api/email/status, /api/whatsapp/*
-app.use('/api', exportRouter); // /api/job/:userId/:jobId/export/*
-app.use('/api', ocrRouter); // /api/ocr/*
+// Customer-personal-data routes are gated by requireConsent — see
+// .planning/compliance/in-app-consent-screen.md and
+// src/middleware/require-consent.js. The order is:
+//   auth → ensure we know who the user is
+//   requireConsent → ensure they've accepted the current BTA
+//   route → do the work
+// requireAuth has already run via the per-route auth.requireAuth calls
+// inside each module's handlers; requireConsent is mounted at the
+// app.use level so every handler below it inherits the check.
+app.use('/api', auth.requireAuth, requireConsent, jobsRouter); // jobs
+app.use('/api', auth.requireAuth, requireConsent, recordingRouter); // recording
+app.use('/api', auth.requireAuth, requireConsent, uploadLimiter, photosRouter); // photos
+app.use('/api', auth.requireAuth, requireConsent, aiLimiter, extractionRouter); // extraction
+app.use('/api', auth.requireAuth, requireConsent, pdfRouter); // generate-pdf — homeowner data
+app.use('/api', auth.requireAuth, requireConsent, emailLimiter, emailRouter); // email + whatsapp — homeowner contact
+app.use('/api', auth.requireAuth, requireConsent, exportRouter); // CSV / archive exports — homeowner data
+app.use('/api', auth.requireAuth, requireConsent, ocrRouter); // doc OCR — may contain PII
 app.use('/api', sleepLogRouter); // /api/sleep-log
 app.use('/api', postcodeRouter); // /api/postcode/:postcode
 
