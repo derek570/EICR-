@@ -28,6 +28,20 @@ import type {
 } from './sonnet-session';
 import type { ScheduleOutcome } from '@/lib/constants/inspection-schedule';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
+import { applyDefaultsToCircuit } from '@certmate/shared-utils';
+
+/**
+ * Options threaded into the apply path. Currently carries the user's
+ * circuit-field defaults so newly-created circuit rows arrive with
+ * wiring type / OCPD BS EN / RCD BS EN / IR test voltage / max
+ * disconnect time pre-filled — iOS canon
+ * (`DefaultsService.applyDefaults` + `CertificateDefaultsService.
+ * applyCableDefaults`). Optional: omitted by tests + legacy callers
+ * skip the defaults pipeline.
+ */
+export interface ApplyExtractionOptions {
+  userDefaults?: Record<string, string>;
+}
 
 type Section =
   | 'supply_characteristics'
@@ -439,7 +453,8 @@ function applyCircuitReadings(
   job: JobDetail,
   readings: ExtractedReading[],
   circuitUpdates: CircuitUpdate[],
-  fieldClears: FieldClear[]
+  fieldClears: FieldClear[],
+  options: ApplyExtractionOptions = {}
 ): CircuitRow[] | null {
   const perCircuitReadings = readings.filter((r) => r.circuit >= 1 && r.field);
   const hasCircuitUpdate = circuitUpdates.some((u) => u.circuit >= 1);
@@ -476,6 +491,13 @@ function applyCircuitReadings(
     if (typeof ref === 'string' && ref) indexByRef.set(ref, idx);
   });
 
+  // Indexes of rows synthesised by this turn — defaults are applied
+  // to these AFTER all Sonnet readings / circuit_updates / clears
+  // have landed, so the per-circuit priority guard treats the empty
+  // bare row (not the default-filled row) as "empty" and lets Sonnet
+  // values win in same-turn races. iOS canon does the equivalent —
+  // defaults arrive last, never overwrite a set value.
+  const synthesisedIndexes = new Set<number>();
   const ensureRow = (circuitNum: number): number => {
     const ref = String(circuitNum);
     const existingIdx = indexByRef.get(ref);
@@ -483,8 +505,10 @@ function applyCircuitReadings(
     const id = globalThis.crypto?.randomUUID?.() ?? `c-${Date.now()}-${circuitNum}`;
     const row: CircuitRow = { id, circuit_ref: ref, circuit_designation: '' };
     circuits.push(row);
-    indexByRef.set(ref, circuits.length - 1);
-    return circuits.length - 1;
+    const newIdx = circuits.length - 1;
+    indexByRef.set(ref, newIdx);
+    synthesisedIndexes.add(newIdx);
+    return newIdx;
   };
 
   // Apply circuit_updates (create / rename designation) first so
@@ -564,6 +588,28 @@ function applyCircuitReadings(
     const column = translateCircuitField(clear.field);
     delete row[column];
     circuits[idx] = row;
+  }
+
+  // H7 — apply user + global defaults to rows synthesised THIS turn,
+  // after Sonnet's readings + circuit_updates landed. `applyDefaults
+  // ToCircuit` only fills empty fields, so any value Sonnet just
+  // wrote stays untouched. Pre-existing rows (`indexByRef` hit in
+  // ensureRow) are NOT in `synthesisedIndexes` and so never have
+  // defaults re-applied — preserves the user's manually-typed values.
+  if (options.userDefaults && synthesisedIndexes.size > 0) {
+    for (const idx of synthesisedIndexes) {
+      const merged = applyDefaultsToCircuit(
+        circuits[idx] as unknown as Parameters<typeof applyDefaultsToCircuit>[0],
+        { userDefaults: options.userDefaults }
+      );
+      if (merged.filledFields > 0) {
+        circuits[idx] = merged.circuit as unknown as CircuitRow;
+        pipelineLog('apply_circuit_defaults_applied_on_create', {
+          circuit_idx: idx,
+          filled_count: merged.filledFields,
+        });
+      }
+    }
   }
 
   return circuits;
@@ -1033,7 +1079,8 @@ export type AppliedExtraction = {
  *  are honoured too (they delete the key from the matching section). */
 export function applyExtractionToJob(
   job: JobDetail,
-  result: ExtractionResult
+  result: ExtractionResult,
+  options: ApplyExtractionOptions = {}
 ): AppliedExtraction | null {
   const readings = result.readings ?? [];
   const circuitUpdates = result.circuit_updates ?? [];
@@ -1072,8 +1119,9 @@ export function applyExtractionToJob(
     }
   }
 
-  // Per-circuit readings + updates + clears.
-  const newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears);
+  // Per-circuit readings + updates + clears. Thread options so
+  // ensureRow can apply user defaults on circuit creation (H7 parity).
+  const newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears, options);
   if (newCircuits) patch.circuits = newCircuits;
 
   // Board mirror — populate the right entry in `boards[]` so the

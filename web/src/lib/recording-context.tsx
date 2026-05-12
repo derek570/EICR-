@@ -47,6 +47,8 @@ import { api } from './api-client';
 import { useJobContext } from './job-context';
 import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
 import { mapServerActionToVoiceCommand } from './recording/voice-command-action';
+import { useCurrentUser } from './use-current-user';
+import { useUserDefaults } from '@/hooks/use-user-defaults';
 
 /**
  * Recording context.
@@ -222,6 +224,21 @@ const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJob } = useJobContext();
+  // H7 — user-scoped circuit-field defaults. iOS canon applies these to
+  // any newly-created circuit (`DefaultsService.applyDefaults` +
+  // `CertificateDefaultsService.applyCableDefaults`) so a Sonnet-
+  // created row arrives with wiring type, ref method, OCPD/RCD BS EN,
+  // IR test voltage, max disconnect time pre-filled — same as if the
+  // inspector had added the row manually and tapped "Apply Defaults".
+  // Held in a ref so the apply-extraction call-path can read the
+  // current value synchronously (the recording callbacks fire outside
+  // React's render cycle).
+  const { user } = useCurrentUser();
+  const { defaults: userDefaults } = useUserDefaults(user?.id);
+  const userDefaultsRef = React.useRef(userDefaults);
+  React.useEffect(() => {
+    userDefaultsRef.current = userDefaults;
+  }, [userDefaults]);
   const liveFill = useLiveFillStore();
 
   // One-time page-lifecycle listener — captures pageshow / pagehide /
@@ -916,7 +933,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       });
       let applied: ReturnType<typeof applyExtractionToJob>;
       try {
-        applied = applyExtractionToJob(jobRef.current, result);
+        applied = applyExtractionToJob(jobRef.current, result, {
+          userDefaults: userDefaultsRef.current,
+        });
       } catch (err) {
         pipelineLog('recording_apply_extraction_threw', {
           error: err instanceof Error ? err.message : String(err),
@@ -1108,7 +1127,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           readings: [],
           field_clears: [{ circuit: msg.circuit, field: msg.field }],
         };
-        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        const applied = applyExtractionToJob(jobRef.current, synthetic, {
+          userDefaults: userDefaultsRef.current,
+        });
         if (applied) {
           updateJobRef.current(applied.patch);
           jobRef.current = {
@@ -1144,7 +1165,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             },
           ],
         };
-        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        const applied = applyExtractionToJob(jobRef.current, synthetic, {
+          userDefaults: userDefaultsRef.current,
+        });
         if (applied) {
           updateJobRef.current(applied.patch);
           jobRef.current = {
@@ -1181,7 +1204,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           readings: ratingReadings,
           circuit_updates: circuitUpdates,
         };
-        const applied = applyExtractionToJob(jobRef.current, synthetic);
+        const applied = applyExtractionToJob(jobRef.current, synthetic, {
+          userDefaults: userDefaultsRef.current,
+        });
         if (applied) {
           updateJobRef.current(applied.patch);
           jobRef.current = {
