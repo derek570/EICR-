@@ -1462,9 +1462,49 @@ export function applyExtractionToJob(
   const newBoards = mirrorReadingsToBoards(job, readings);
   if (newBoards) patch.boards = newBoards;
 
+  // M7 — EIC cert-type guards. iOS `applySonnetObservations :5473`
+  // early-returns when `certificate_type == .eic` (EICs are for new
+  // installs and must not carry observations), and drops the five
+  // EICR-only installation fields on cert-type mismatch. Defence in
+  // depth — the backend prompt gates most of this, but a buggy or
+  // mid-deploy mismatch would otherwise let EICR-shaped data land
+  // on an EIC. Same set as iOS at :4326-:4395.
+  const isEic = job.certificate_type === 'EIC';
+  if (isEic) {
+    const install = patch.installation_details as Record<string, unknown> | undefined;
+    if (install) {
+      const eicrOnlyKeys: ReadonlyArray<string> = [
+        'reason_for_report',
+        'date_of_previous_inspection',
+        'previous_certificate_number',
+        'estimated_age_of_installation',
+        'general_condition',
+        'general_condition_of_installation', // PWA-column dual-write of general_condition
+      ];
+      let stripped = false;
+      const next = { ...install };
+      for (const key of eicrOnlyKeys) {
+        if (key in next) {
+          delete next[key];
+          stripped = true;
+        }
+      }
+      if (stripped) {
+        patch.installation_details = next;
+        pipelineLog('apply_eic_stripped_eicr_only_install_fields', {});
+      }
+    }
+  }
+
   // Observations.
-  const newObservations = applyObservations(job, observations);
+  const newObservations =
+    isEic && observations.length > 0 ? null : applyObservations(job, observations);
   if (newObservations) patch.observations = newObservations;
+  if (isEic && observations.length > 0) {
+    pipelineLog('apply_eic_dropped_observations', {
+      dropped_count: observations.length,
+    });
+  }
 
   // Mirror coded observations onto inspection_schedule.items — iOS
   // canon auto-marks the schedule row when a `schedule_item`-tagged
