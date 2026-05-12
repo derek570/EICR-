@@ -774,70 +774,144 @@ function diffCircuitKeys(
 }
 
 /**
- * Compute a `boards[]` patch that mirrors specific fields from the
- * section patches into `boards[0]`. Returns `null` when no mirror
- * applies (multi-board session, no qualifying values, or every
- * candidate already has a user value on the board record).
+ * Mirror selected circuit:0 readings into the `boards[]` array so the
+ * Board tab (which reads `job.boards[i]`) renders Sonnet-extracted
+ * board-level fields. Iterates over readings (not the section patch
+ * map) because per-reading `board_id` is the authoritative routing
+ * key for multi-board jobs:
  *
- * Behaviour:
- *   - `existingBoards.length > 1` → skip entirely. Multi-board needs
- *     `board_id` routing per reading; the apply layer doesn't see
- *     that yet (Phase 2). Returning null leaves any iOS-set multi-
- *     board data untouched.
- *   - `existingBoards.length === 0` → synthesise `boards[0]` with a
- *     UUID, `board_type: 'main'`, and the qualifying mirror values.
- *     Matches the Board tab's `newBoard()` fallback shape.
- *   - `existingBoards.length === 1` → patch boards[0] field-by-field,
- *     respecting the 3-tier priority guard.
+ *   - `reading.board_id` present → find `boards[i].id === board_id`;
+ *     when not found (orphan id) the reading is logged and skipped so
+ *     a stale wire reference can't synthesise a phantom board record.
+ *   - `reading.board_id` absent → fall back to `boards[0]`. If
+ *     `boards.length > 1` AND the reading is targetable (in
+ *     MIRROR_BOARD_KEYS), skip and log: ambiguous default routing on
+ *     a multi-board job needs an explicit board_id, never a guess.
+ *   - `boards.length === 0` AND fall-back path → synthesise
+ *     `boards[0]` with `{id: UUID, board_type: 'main'}` and the
+ *     qualifying mirror values. Matches the Board tab's `newBoard()`
+ *     shape.
+ *
+ * Per-reading priority guard: never overwrites a value already typed
+ * into the matching board record under the same key.
+ *
+ * Returns the updated `boards[]` array when any field landed, or null
+ * for no-op (no qualifying readings; orphan ids; user values
+ * preserved).
  */
-function mirrorSectionPatchesToBoard0(
+function mirrorReadingsToBoards(
   job: JobDetail,
-  patch: Partial<JobDetail>
+  readings: ExtractedReading[]
 ): Record<string, unknown>[] | null {
-  const existingBoards =
-    (patch.boards as Record<string, unknown>[] | undefined) ??
-    (job.boards as Record<string, unknown>[] | undefined) ??
-    [];
-  if (existingBoards.length > 1) {
-    pipelineLog('apply_boards_mirror_skipped_multi_board', {
-      boards_count: existingBoards.length,
-    });
-    return null;
-  }
-  const existingBoard0 = existingBoards[0] ?? {};
+  const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
+  // Index existing boards by id for O(1) lookup. Skip entries without
+  // an id (shouldn't happen but be defensive).
+  const indexById = new Map<string, number>();
+  existingBoards.forEach((b, i) => {
+    const id = typeof b.id === 'string' ? b.id : null;
+    if (id) indexById.set(id, i);
+  });
 
-  const board0Updates: Record<string, unknown> = {};
-  for (const { section, sectionKey, boardKey } of MIRROR_TO_BOARDS0) {
-    const sectionPatch = patch[section] as Record<string, unknown> | undefined;
-    if (!sectionPatch || !(sectionKey in sectionPatch)) continue;
-    // Priority guard — never clobber a value the inspector has typed
-    // into the Board tab directly. The existing-section guard in
-    // applyCircuit0Readings already protects sections, but the
-    // boards[0] record is its own store.
-    if (hasValue(existingBoard0[boardKey])) {
+  // Resolved per-board updates accumulator. Keyed by board index so
+  // multiple readings on the same board coalesce into one patch.
+  const updatesByIndex = new Map<number, Record<string, unknown>>();
+  // Tracks whether we've already synthesised a default board[0] so a
+  // second fall-back reading lands on the same synthesised record.
+  let syntheticDefaultIdx: number | null = null;
+
+  for (const reading of readings) {
+    if (reading.circuit !== 0 || !reading.field) continue;
+    const mirror = MIRROR_TO_BOARDS0.find((m) => m.sectionKey === reading.field);
+    if (!mirror) continue;
+
+    // Source-section priority — if the inspector has already typed a
+    // value into the corresponding section (under the wire name OR
+    // the PWA column name), `applyCircuit0Readings` will have skipped
+    // it. The board mirror MUST skip in lock-step so a section-
+    // protected reading doesn't sneak into boards[] via the
+    // reading-driven path.
+    const sourceSection = job[mirror.section] as Record<string, unknown> | undefined;
+    if (sourceSection) {
+      const pwaCol = LEGACY_TO_PWA_SECTION_FIELD[reading.field];
+      if (hasValue(sourceSection[reading.field]) || (pwaCol && hasValue(sourceSection[pwaCol]))) {
+        pipelineLog('apply_boards_mirror_skipped_source_section_user_value', {
+          field: reading.field,
+          source_section: mirror.section,
+        });
+        continue;
+      }
+    }
+
+    let targetIdx: number;
+    if (reading.board_id != null && reading.board_id !== '') {
+      const found = indexById.get(reading.board_id);
+      if (found == null) {
+        pipelineLog('apply_boards_mirror_orphan_board_id', {
+          board_id: reading.board_id,
+          field: reading.field,
+        });
+        continue;
+      }
+      targetIdx = found;
+    } else {
+      // No board_id — default routing to boards[0]. Refuse to guess
+      // for multi-board jobs.
+      if (existingBoards.length > 1) {
+        pipelineLog('apply_boards_mirror_skipped_ambiguous_multi_board', {
+          boards_count: existingBoards.length,
+          field: reading.field,
+        });
+        continue;
+      }
+      if (existingBoards.length === 0) {
+        // Synthesise boards[0] on first fall-back reading.
+        if (syntheticDefaultIdx == null) {
+          const id = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
+          existingBoards.push({ id, board_type: 'main' });
+          syntheticDefaultIdx = existingBoards.length - 1;
+          pipelineLog('apply_boards_mirror_synthesized_board0', { id });
+        }
+        targetIdx = syntheticDefaultIdx;
+      } else {
+        targetIdx = 0;
+      }
+    }
+
+    // Priority guard — read the live target board (including any
+    // updates already collected this turn) so multiple readings can
+    // safely coalesce, but pre-existing user values block.
+    const targetBoard = existingBoards[targetIdx] ?? {};
+    const pendingUpdates = updatesByIndex.get(targetIdx) ?? {};
+    const currentValue = pendingUpdates[mirror.boardKey] ?? targetBoard[mirror.boardKey];
+    if (hasValue(currentValue)) {
       pipelineLog('apply_boards_mirror_user_value_kept', {
-        board_key: boardKey,
+        target_index: targetIdx,
+        board_key: mirror.boardKey,
       });
       continue;
     }
-    board0Updates[boardKey] = sectionPatch[sectionKey];
+
+    pendingUpdates[mirror.boardKey] = reading.value;
+    updatesByIndex.set(targetIdx, pendingUpdates);
   }
 
-  if (Object.keys(board0Updates).length === 0) return null;
+  if (updatesByIndex.size === 0) return null;
 
-  if (existingBoards.length === 0) {
-    const id = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
-    pipelineLog('apply_boards_mirror_synthesized_board0', {
-      id,
-      fields: Object.keys(board0Updates),
-    });
-    return [{ id, board_type: 'main', ...board0Updates }];
-  }
-
-  pipelineLog('apply_boards_mirror_patched_board0', {
-    fields: Object.keys(board0Updates),
+  // Apply collected updates onto the boards slice. Return a new array
+  // so the patch is a fresh reference (React change detection).
+  const out: Record<string, unknown>[] = existingBoards.map((b, i) => {
+    const upd = updatesByIndex.get(i);
+    return upd ? { ...b, ...upd } : b;
   });
-  return [{ ...existingBoard0, ...board0Updates }];
+
+  pipelineLog('apply_boards_mirror_applied', {
+    touched_indexes: Array.from(updatesByIndex.keys()),
+    fields_per_index: Object.fromEntries(
+      Array.from(updatesByIndex.entries()).map(([i, u]) => [i, Object.keys(u)])
+    ),
+  });
+
+  return out;
 }
 
 /** Diff observations. Emits `observation.{id}` for each new row. We
@@ -909,13 +983,13 @@ export function applyExtractionToJob(
   const newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears);
   if (newCircuits) patch.circuits = newCircuits;
 
-  // Board mirror — populate boards[0] so the Board tab renders
-  // Sonnet-extracted manufacturer, main_switch_bs_en, earthing_
-  // arrangement, ze, zs_at_db. Reads from the JUST-built section
-  // patches above; produces a `patch.boards` entry when at least one
-  // field qualifies. Skipped for multi-board (Phase 2 will route by
-  // board_id).
-  const newBoards = mirrorSectionPatchesToBoard0(job, patch);
+  // Board mirror — populate the right entry in `boards[]` so the
+  // Board tab renders Sonnet-extracted manufacturer, main_switch_bs_en,
+  // earthing_arrangement, ze, zs_at_db. Iterates over readings so
+  // each one's `board_id` controls which board record receives the
+  // value. Multi-board jobs without a board_id are deliberately
+  // skipped — the apply path refuses to guess.
+  const newBoards = mirrorReadingsToBoards(job, readings);
   if (newBoards) patch.boards = newBoards;
 
   // Observations.

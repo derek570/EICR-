@@ -29,6 +29,20 @@ export interface ExtractedReading {
   field: string;
   value: string | number | boolean;
   unit?: string | null;
+  /**
+   * Optional board id when the reading targets a specific board record
+   * in a multi-board job. Sourced from the backend bundler's per-turn
+   * `extracted_board_readings` fold + the shadow harness's circuit:0
+   * propagation (`src/extraction/stage6-shadow-harness.js:331-339`).
+   * iOS routes these readings to `job.boards[<index by id>]` via the
+   * `boardIndex(for:)` helper (DeepgramRecordingViewModel.swift).
+   *
+   * On the PWA, `apply-extraction.ts mirrorReadingsToBoards` uses this
+   * to write the reading onto the matching `boards[i]` record. Absent
+   * for legacy single-board sessions — apply path falls back to
+   * `boards[0]` (synthesised when the array is empty).
+   */
+  board_id?: string | null;
   confidence?: number;
 }
 
