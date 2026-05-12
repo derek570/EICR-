@@ -28,6 +28,7 @@ import type {
   Observation,
 } from './sonnet-session';
 import type { ScheduleOutcome } from '@/lib/constants/inspection-schedule';
+import { EIC_SCHEDULE, EICR_SCHEDULE } from '@/lib/constants/inspection-schedule';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 import {
   applyDefaultsToCircuit,
@@ -681,30 +682,87 @@ function applyCircuitReadings(
   return circuits;
 }
 
-/** Fold new observations into the existing array. Dedupes by
- *  case-insensitive `observation_text` so Sonnet re-asking about the
- *  same defect doesn't create duplicates.
+/** Flatten a schedule reference (EICR has nested sections; EIC is
+ *  flat) into a Set of valid refs for O(1) lookup. */
+function buildScheduleRefSet(certType: string | undefined): Set<string> {
+  if (certType === 'EIC') {
+    return new Set(EIC_SCHEDULE.map((item) => item.ref));
+  }
+  const refs = new Set<string>();
+  for (const section of EICR_SCHEDULE) {
+    for (const item of section.items) refs.add(item.ref);
+  }
+  return refs;
+}
+
+/** iOS-canon observation dedup. Tests bidirectional 40-char prefix
+ *  match OR >70 % set-based word overlap. Catches "loose neutral
+ *  terminal" matching "loose neutral connection" which the old
+ *  case-exact-only check let through as a duplicate row. */
+function observationLooksDuplicate(candidate: string, existing: string): boolean {
+  const a = candidate.toLowerCase().trim();
+  const b = existing.toLowerCase().trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // 40-char bidirectional prefix match.
+  const prefixA = a.slice(0, 40);
+  const prefixB = b.slice(0, 40);
+  if (a.startsWith(prefixB) || b.startsWith(prefixA)) return true;
+  // >70 % word-set overlap.
+  const wordsA = new Set(a.split(/\s+/).filter(Boolean));
+  if (wordsA.size === 0) return false;
+  const wordsB = new Set(b.split(/\s+/).filter(Boolean));
+  let overlap = 0;
+  for (const w of wordsA) if (wordsB.has(w)) overlap += 1;
+  return overlap / wordsA.size > 0.7;
+}
+
+/** Fold new observations into the existing array.
+ *
+ *  iOS-parity behaviours applied (M-series audit fixes):
+ *    M4 — captures `board_id` from the wire onto ObservationRow.
+ *    M9 — dedup via iOS-canon 40-char prefix + 70 % word overlap
+ *         (replaces the old case-exact-only check that let Sonnet
+ *         rewording slip past as a duplicate row).
+ *    M10 — invalid BPG4 codes (anything outside C1/C2/C3/FI) cause
+ *          the observation to be SKIPPED rather than landing as
+ *          un-coded. Matches iOS behaviour at applySonnetObservations
+ *          :5501-5508. The drop is logged so support can see why.
+ *    M11 — schedule_item refs are validated against the cert-type-
+ *          aware schedule reference. Unknown refs are stripped from
+ *          the row (the observation still lands; just without the
+ *          dead back-reference).
  *
  *  Captures `observation_id` (server-assigned UUID) into row.server_id
  *  so a follow-up `observation_update` (BPG4 refinement) can patch the
- *  exact row even after the visible text changes. Also captures
- *  `regulation` for the same reason — pre-refinement extractions may
- *  include it, and post-refinement updates reliably will. */
+ *  exact row even after the visible text changes. */
 function applyObservations(job: JobDetail, observations: Observation[]): ObservationRow[] | null {
   if (observations.length === 0) return null;
   const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
-  const seen = new Set(
-    existing.map((o) => (o.description ?? '').trim().toLowerCase()).filter(Boolean)
-  );
+  const certType = typeof job.certificate_type === 'string' ? job.certificate_type : 'EICR';
+  const validScheduleRefs = buildScheduleRefSet(certType);
   let changed = false;
   for (const obs of observations) {
     const text = (obs.observation_text ?? '').trim();
     if (!text) continue;
-    const key = text.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const id = globalThis.crypto?.randomUUID?.() ?? `obs-${Date.now()}-${existing.length + 1}`;
+    // M10 — drop invalid codes outright.
     const code = parseObservationCode(obs.code);
+    if (!code && obs.code != null && String(obs.code).trim() !== '') {
+      pipelineLog('apply_observations_dropped_invalid_code', {
+        raw_code: String(obs.code).slice(0, 16),
+        text_preview: text.slice(0, 40),
+      });
+      continue;
+    }
+    // M9 — bidirectional fuzzy dedup against every existing row.
+    const duplicate = existing.some((o) => observationLooksDuplicate(text, o.description ?? ''));
+    if (duplicate) {
+      pipelineLog('apply_observations_dedup_skip', {
+        text_preview: text.slice(0, 40),
+      });
+      continue;
+    }
+    const id = globalThis.crypto?.randomUUID?.() ?? `obs-${Date.now()}-${existing.length + 1}`;
     const row: ObservationRow = {
       id,
       code,
@@ -713,7 +771,23 @@ function applyObservations(job: JobDetail, observations: Observation[]): Observa
     };
     if (obs.observation_id) row.server_id = obs.observation_id;
     if (obs.regulation) row.regulation = obs.regulation;
-    if (obs.schedule_item) row.schedule_item = obs.schedule_item;
+    // M11 — schedule_item validation. Drop the back-reference if
+    // the ref isn't in the cert-type schedule. Observation still
+    // lands; it just won't render under the Inspection-tab preview.
+    if (obs.schedule_item) {
+      if (validScheduleRefs.has(obs.schedule_item)) {
+        row.schedule_item = obs.schedule_item;
+      } else {
+        pipelineLog('apply_observations_invalid_schedule_item', {
+          ref: obs.schedule_item.slice(0, 16),
+          cert_type: certType,
+        });
+      }
+    }
+    // M4 — board_id capture for multi-board attribution.
+    if (typeof obs.board_id === 'string' && obs.board_id) {
+      row.board_id = obs.board_id;
+    }
     existing.push(row);
     changed = true;
   }

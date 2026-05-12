@@ -68,6 +68,11 @@ export interface Observation {
   item_location?: string | null;
   schedule_item?: string | null;
   regulation?: string | null;
+  /** Multi-board attribution. Backend bundler propagates the active
+   *  board_id onto Sonnet-created observations (Phase 6 multi-board
+   *  sprint). PWA captures into `ObservationRow.board_id` so a
+   *  multi-board PDF can group defects per-board. */
+  board_id?: string | null;
 }
 
 /**

@@ -367,6 +367,16 @@ export interface ObservationRow {
    * referenced schedule item is later renumbered in a BS 7671 update.
    */
   schedule_description?: string;
+  /**
+   * Multi-board attribution — which board this observation belongs
+   * to. iOS `JobObservation.boardId` (`Observation.swift:46`) and
+   * `JobDetail.observations(for boardId:)` use this to render
+   * observations per-board in PDF output + filter the Observations
+   * tab for the active board. Pre-2026-05-12 this round-tripped
+   * iOS-set observations into the PWA, got stripped from the typed
+   * shape, and was silently dropped on the next save.
+   */
+  board_id?: string;
 }
 
 export interface InspectorInfo {
