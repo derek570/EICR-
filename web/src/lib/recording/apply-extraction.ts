@@ -848,6 +848,139 @@ export function parseObservationCode(
   return undefined;
 }
 
+/** Bonding-row PASS synonyms iOS maps to "PASS" before deciding
+ *  whether to fire `autoContinuityIfBonded`. Keeps the same
+ *  acceptance band as the iOS tab-edit path so Sonnet's bonding
+ *  writes ("yes", "confirmed", "installed") trigger the same
+ *  derived `main_bonding_continuity` flag. */
+const BONDING_PASS_SYNONYMS: ReadonlySet<string> = new Set([
+  'pass',
+  'yes',
+  'confirmed',
+  'ok',
+  'done',
+  'present',
+  'installed',
+  '✓',
+  'true',
+]);
+
+function normaliseBondingValue(raw: unknown): string | null {
+  if (raw == null) return null;
+  const s = String(raw).trim().toLowerCase();
+  if (BONDING_PASS_SYNONYMS.has(s)) return 'PASS';
+  return null;
+}
+
+const BONDING_KEYS: ReadonlyArray<string> = [
+  'bonding_water',
+  'bonding_gas',
+  'bonding_oil',
+  'bonding_structural_steel',
+  'bonding_lightning',
+  'bonding_other',
+];
+
+/**
+ * Apply iOS-parity SUPPLY-side derivations to a just-built section
+ * patch, mirroring the side effects that fire on Supply-tab edits:
+ *
+ *   - `earthing_arrangement = 'TT'` →
+ *       supply.means_earthing_electrode = true
+ *       supply.means_earthing_distributor = false
+ *       inspection_schedule.is_tt_earthing = true
+ *   - Bonding-row PASS (under any of the 5 extraneous-bond keys) →
+ *       supply.main_bonding_continuity = 'PASS' (when empty / N/A).
+ *     Sonnet's synonym variants are normalised to "PASS" first.
+ *   - Numeric Ze reading →
+ *       supply.supply_polarity_confirmed = true (when not set)
+ *       supply.earthing_conductor_continuity = 'PASS' (when empty /
+ *       N/A)
+ *
+ * iOS canon:
+ *   - SupplyTab.swift `setEarthingArrangement` (TT mirror)
+ *   - SupplyTab.swift `autoContinuityIfBonded` (M2)
+ *   - SupplyTab.swift `handleZeChange` lines 377-395 (M3)
+ *
+ * Mutates `patch` in place; pure on `job` (reads only). Idempotent —
+ * re-running on the same patch produces no further change.
+ */
+function applySupplyDerivations(job: JobDetail, patch: Partial<JobDetail>): void {
+  const supplyPatch = patch.supply_characteristics as Record<string, unknown> | undefined;
+  if (!supplyPatch) return;
+  const existingSupply = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
+  const merged: Record<string, unknown> = { ...existingSupply, ...supplyPatch };
+
+  // M1 — TT mirror.
+  if (typeof supplyPatch.earthing_arrangement === 'string') {
+    if (supplyPatch.earthing_arrangement === 'TT') {
+      if (!hasValue(merged.means_earthing_electrode)) {
+        supplyPatch.means_earthing_electrode = true;
+      }
+      if (!hasValue(merged.means_earthing_distributor)) {
+        supplyPatch.means_earthing_distributor = false;
+      }
+      // Mirror into inspection_schedule too. iOS canon writes both in
+      // the same patch.
+      const existingSchedule =
+        (job.inspection_schedule as Record<string, unknown> | undefined) ?? {};
+      const schedulePatch = (patch.inspection_schedule as Record<string, unknown> | undefined) ?? {
+        ...existingSchedule,
+      };
+      if (schedulePatch.is_tt_earthing !== true) {
+        schedulePatch.is_tt_earthing = true;
+        patch.inspection_schedule = schedulePatch;
+      }
+      pipelineLog('apply_supply_tt_mirror', {});
+    }
+  }
+
+  // M2 — bonding PASS → main_bonding_continuity.
+  let bondingPass = false;
+  for (const key of BONDING_KEYS) {
+    if (!(key in supplyPatch)) continue;
+    const normalised = normaliseBondingValue(supplyPatch[key]);
+    if (normalised === 'PASS') {
+      // Normalise the bonding cell itself so the cert reads "PASS"
+      // not "yes" / "confirmed".
+      supplyPatch[key] = 'PASS';
+      bondingPass = true;
+    }
+  }
+  if (bondingPass) {
+    const current =
+      typeof merged.main_bonding_continuity === 'string' ? merged.main_bonding_continuity : '';
+    if (!current || current === 'N/A') {
+      supplyPatch.main_bonding_continuity = 'PASS';
+      pipelineLog('apply_supply_bonding_pass_mirror', {});
+    }
+  }
+
+  // M3 — Ze → polarity + earthing continuity. Skip when the user has
+  // EXPLICITLY set polarity_confirmed (either true or false — the
+  // hasValue check matches both). iOS tracks an explicit manual-
+  // override set on the Supply tab; the apply path lacks that
+  // observer, so the safest invariant is "never clobber an existing
+  // boolean value". A false user-value stays false.
+  const zeRaw = supplyPatch.earth_loop_impedance_ze ?? supplyPatch.ze ?? undefined;
+  if (typeof zeRaw === 'string') {
+    const n = Number(zeRaw.trim());
+    if (Number.isFinite(n) && zeRaw.trim() !== '') {
+      if (!hasValue(merged.supply_polarity_confirmed)) {
+        supplyPatch.supply_polarity_confirmed = true;
+      }
+      const continuity =
+        typeof merged.earthing_conductor_continuity === 'string'
+          ? merged.earthing_conductor_continuity
+          : '';
+      if (!continuity || continuity === 'N/A') {
+        supplyPatch.earthing_conductor_continuity = 'PASS';
+      }
+      pipelineLog('apply_supply_ze_polarity_mirror', {});
+    }
+  }
+}
+
 /**
  * Build the `inspection_schedule.items` patch that mirrors Sonnet's
  * coded observations onto the BS 7671 Appendix 6 schedule. iOS canon:
@@ -1169,6 +1302,10 @@ export function applyExtractionToJob(
     const merged = supplyPatches[section];
     if (merged) patch[section] = merged;
   }
+
+  // M1+M2+M3 — apply Supply-side derivations that mirror tab-edit
+  // side effects (TT → schedule mirror, bonding PASS, Ze polarity).
+  applySupplyDerivations(job, patch);
 
   // Circuit 0 field_clears — delete key from the right section.
   for (const clear of fieldClears) {
