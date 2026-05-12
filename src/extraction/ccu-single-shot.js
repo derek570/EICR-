@@ -45,6 +45,17 @@
 import sharp from 'sharp';
 import { cropSlot } from './ccu-geometric.js';
 import { cropCarrierSlot } from './ccu-geometric-rewireable.js';
+import { dewarpRailQuad } from './ccu-rail-dewarp.js';
+
+// Kill switch for the rail-region perspective dewarp pre-pass. Defaults
+// ON. Set CCU_DEWARP_ENABLED="false" to fall back to the legacy
+// axis-aligned bbox extract — emergency rollback path if the dewarp
+// regresses without redeploying.
+const DEWARP_ENABLED = (process.env.CCU_DEWARP_ENABLED ?? 'true').toLowerCase() === 'true';
+// Output width for the rectified rail image. 2048 matches OpenAI
+// vision's high-detail internal grid; pushing higher doesn't buy more
+// per-slot pixels in the model's attention budget.
+const DEWARP_OUTPUT_WIDTH = Number(process.env.CCU_DEWARP_OUTPUT_WIDTH || 2048);
 
 const SINGLE_SHOT_TIMEOUT_MS = Number(process.env.CCU_SINGLE_SHOT_TIMEOUT_MS || 90_000);
 const SINGLE_SHOT_MAX_TOKENS = Number(process.env.CCU_SINGLE_SHOT_MAX_TOKENS || 4096);
@@ -181,6 +192,51 @@ Return JSON only — no prose, no markdown fence.`;
  * (CV upstream failure shouldn't take the VLM call down).
  */
 async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireable, logger }) {
+  // 1. Perspective-dewarp the rail when we have a quad — kill-switch
+  //    via CCU_DEWARP_ENABLED. Only the modern DIN-rail path: rewireable
+  //    boards use panelBounds (axis-aligned rectangle on the cover, not
+  //    a tilted rail), so the dewarp doesn't apply there.
+  //
+  //    On any dewarp error we log and fall through to the legacy
+  //    axis-aligned extract so the single-shot path is never blocked by
+  //    a dewarp regression. iOS sees the same response shape either way.
+  if (DEWARP_ENABLED && !isRewireable && prepared.railQuad) {
+    try {
+      const dewarpStart = Date.now();
+      const result = await dewarpRailQuad({
+        imageBuffer,
+        quad: prepared.railQuad,
+        // Same vertical+horizontal margins as the legacy bbox crop, so
+        // the field-of-view sent to the VLM is unchanged shape-wise —
+        // only the rail is now rectified within that view.
+        marginAboveFraction: 2.0,
+        marginBelowFraction: 2.0,
+        marginHorizontalFraction: 0.05,
+        outputWidth: DEWARP_OUTPUT_WIDTH,
+      });
+      if (logger) {
+        logger.info('CCU single-shot rail-region dewarp', {
+          sourceWidth: imgW,
+          sourceHeight: imgH,
+          outputWidth: result.outputWidth,
+          outputHeight: result.outputHeight,
+          sourceBytes: imageBuffer.length,
+          dewarpedBytes: result.buffer.length,
+          dewarpMs: Date.now() - dewarpStart,
+          quad: prepared.railQuad,
+        });
+      }
+      return result.buffer;
+    } catch (err) {
+      if (logger) {
+        logger.warn('CCU single-shot dewarp failed, falling back to bbox extract', {
+          error: err?.message ?? String(err),
+        });
+      }
+      // intentional fall-through to the legacy path below
+    }
+  }
+
   const bbox = isRewireable ? prepared.panelBounds : prepared.railBbox;
   if (
     !bbox ||

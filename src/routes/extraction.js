@@ -52,9 +52,25 @@ logger.info('CCU extraction config', {
  * unchanged. Coordinates are 0-1000 normalised over the source image.
  */
 export function adaptTightenerToPrepared(t) {
-  const { imageWidth, imageHeight, railFace, moduleCount, pitchPx, slotCentersPx } = t;
+  const { imageWidth, imageHeight, railFace, moduleCount, pitchPx, slotCentersPx, quadrilateral } =
+    t;
   const xToNorm = (x) => (x / imageWidth) * 1000;
   const yToNorm = (y) => (y / imageHeight) * 1000;
+  // railQuad is the 4 detected rail corners in apiBytes-pixel coords —
+  // preserved here (not on the axis-aligned railFace, which throws away
+  // the rotation/keystone). The CCU rail-region dewarp consumes this to
+  // rectify the rail before single-shot, fixing label-zone bleed on
+  // tilted or off-axis photos. Null on the legacy box-tightener path
+  // (only the quad-v1 path emits corners).
+  const railQuad =
+    quadrilateral && quadrilateral.tl && quadrilateral.tr && quadrilateral.bl && quadrilateral.br
+      ? {
+          tl: { x: quadrilateral.tl.x, y: quadrilateral.tl.y },
+          tr: { x: quadrilateral.tr.x, y: quadrilateral.tr.y },
+          bl: { x: quadrilateral.bl.x, y: quadrilateral.bl.y },
+          br: { x: quadrilateral.br.x, y: quadrilateral.br.y },
+        }
+      : null;
   return {
     medianRails: {
       rail_top: yToNorm(railFace.top),
@@ -62,6 +78,7 @@ export function adaptTightenerToPrepared(t) {
       rail_left: xToNorm(railFace.left),
       rail_right: xToNorm(railFace.right),
     },
+    railQuad,
     moduleCount,
     vlmCount: moduleCount,
     disagreement: 0,
@@ -2286,6 +2303,26 @@ router.post(
                             : null,
                       }
                     : prepared.cvPitchDiag,
+                  railQuad: prepared.railQuad
+                    ? {
+                        tl: {
+                          x: prepared.railQuad.tl.x * sourceScale,
+                          y: prepared.railQuad.tl.y * sourceScale,
+                        },
+                        tr: {
+                          x: prepared.railQuad.tr.x * sourceScale,
+                          y: prepared.railQuad.tr.y * sourceScale,
+                        },
+                        bl: {
+                          x: prepared.railQuad.bl.x * sourceScale,
+                          y: prepared.railQuad.bl.y * sourceScale,
+                        },
+                        br: {
+                          x: prepared.railQuad.br.x * sourceScale,
+                          y: prepared.railQuad.br.y * sourceScale,
+                        },
+                      }
+                    : null,
                 };
           const extractFn = useSingleShot ? extractViaSingleShot : extractViaSlidingWindow;
           const swResult = await extractFn({
