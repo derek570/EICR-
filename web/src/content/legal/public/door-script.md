@@ -72,7 +72,7 @@ The script intentionally:
 
 | Hook | Where it lives |
 |---|---|
-| Inspector consent to deliver this script | Beta Tester Agreement, clause [TODO once Beta Agreement section numbers are stable] |
+| Inspector consent to deliver this script | Beta Tester Agreement §5.3 |
 | In-app recording-start confirmation that the script was delivered | In-app consent screen — required tap on the recording-start UI |
 | Privacy Policy public reference for the homeowner who looks up the URL | [Privacy Policy](./privacy-policy.md) section "A note on voice recording" |
 | Lawful-basis balancing this script supports | [DPIA](./dpia-voice-extraction-pipeline.md) mitigation M1.1 against risk R1 |

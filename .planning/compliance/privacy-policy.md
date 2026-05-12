@@ -19,7 +19,7 @@ CertMate is a service operated by **Beckley Electrical Ltd**, a company register
 
 You can reach the person responsible for data protection at **`privacy@certmate.uk`**.
 
-We are registered with the UK Information Commissioner's Office (ICO) under registration number **[TO BE INSERTED ONCE REGISTERED]**.
+Our registration with the UK Information Commissioner's Office (ICO) is in progress. The registration number will be published on this page once issued.
 
 In this policy "we", "us", and "our" refer to Beckley Electrical Ltd trading as CertMate.
 
