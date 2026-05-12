@@ -29,6 +29,37 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   /*
+   * BTA consent gate. The JWT middleware (`src/middleware.ts`) verifies
+   * auth; this in-shell gate verifies consent because the JWT doesn't
+   * carry consent state. Fetches /api/auth/me once on mount; if the
+   * server says consent_pending, hard-redirects to /onboarding/consent.
+   * The redirect is a one-shot at AppShell-mount time — the per-API
+   * `require-consent` middleware on protected routes is the real
+   * safety net (every gated route 403s on consent_required), so this
+   * client-side hop is just the UX shortcut to skip a flash of
+   * dashboard chrome followed by a wall of 403s. Spec:
+   * .planning/compliance/in-app-consent-screen.md.
+   */
+  React.useEffect(() => {
+    let cancelled = false;
+    api
+      .me()
+      .then((me) => {
+        if (cancelled) return;
+        if (me.consent_pending) {
+          router.replace('/onboarding/consent');
+        }
+      })
+      .catch(() => {
+        // Auth/network failure here is handled by individual API
+        // calls' 401-redirect paths; don't compound from here.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  /*
    * Phase 7c — drain the offline mutation outbox on mount, on `online`,
    * and on tab foregrounding. Mounted here rather than at the root
    * layout so the replay worker only runs for authenticated sessions

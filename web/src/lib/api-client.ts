@@ -19,6 +19,9 @@ import {
   type LoginResponse,
   type Paginated,
   type User,
+  type LegalTextVersionsBundle,
+  type ConsentAcceptResponse,
+  type CertAttestationsAcceptResponse,
 } from './types';
 import {
   AdminSuccessResponseSchema,
@@ -1061,5 +1064,53 @@ export const api = {
       }
       throw err;
     }
+  },
+
+  // Legal text + consent / per-PDF attestations.
+  // Specs: .planning/compliance/in-app-consent-screen.md +
+  // .planning/compliance/pdf-issuance-attestations.md.
+
+  legalTextVersions(): Promise<LegalTextVersionsBundle> {
+    return request<LegalTextVersionsBundle>('/api/legal/text-versions');
+  },
+
+  acceptConsent(args: {
+    agreement_kind: string;
+    agreement_version: string;
+    accepted_at: string;
+    platform: 'web';
+    platform_version?: string;
+  }): Promise<ConsentAcceptResponse> {
+    return request<ConsentAcceptResponse>('/api/account/consent/accept', {
+      method: 'POST',
+      body: JSON.stringify(args),
+    });
+  },
+
+  acceptCertAttestations(args: {
+    job_id: string;
+    pdf_s3_key?: string;
+    attestations: Array<{
+      kind: 'readings' | 'observations';
+      text_version: string;
+      attested_at: string;
+      platform: 'web';
+      platform_version?: string;
+    }>;
+  }): Promise<CertAttestationsAcceptResponse> {
+    return request<CertAttestationsAcceptResponse>('/api/cert-attestations/accept', {
+      method: 'POST',
+      body: JSON.stringify(args),
+    });
+  },
+
+  updateAttestationPdfKey(args: {
+    attestation_ids: number[];
+    pdf_s3_key: string;
+  }): Promise<{ ok: boolean; updated: number }> {
+    return request<{ ok: boolean; updated: number }>('/api/cert-attestations/pdf-key', {
+      method: 'PATCH',
+      body: JSON.stringify(args),
+    });
   },
 };

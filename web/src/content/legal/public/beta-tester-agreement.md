@@ -60,6 +60,8 @@ In this agreement:
 
 4.3 **Inspector review is required.** No certificate produced using the Service is to be issued to a customer until You have personally reviewed every extracted field and confirmed it. You remain the qualified inspector responsible for the substantive accuracy and validity of every certificate You issue. The Service is a dictation and data-extraction aid, not the authority on the contents of a certificate.
 
+4.3.1 **Per-issuance attestations.** Each time the Service generates a certificate PDF for issue to a customer — including re-issuance of an unchanged certificate — You will record two separate attestations: (a) that You have personally reviewed every reading on the certificate, and (b) that You have personally reviewed every observation and code classification on the certificate. The wording of these attestations and the audit-record retention is governed by [pdf-issuance-attestations.md](./pdf-issuance-attestations.md). Recording the attestations is a condition of issuing the certificate. The attestations themselves do not transfer any professional liability between Us and You — Section 4.3 establishes the substantive position; the attestations are evidential proof that the review required by Section 4.3 occurred.
+
 4.4 We may modify, suspend, or discontinue any feature of the Service during the Beta Period without notice. Where the modification materially changes how Customer Personal Data is handled, Section 10 (Sub-processors) applies.
 
 ## 5. Your obligations as an inspector

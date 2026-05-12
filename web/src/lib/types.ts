@@ -44,6 +44,69 @@ export interface User {
   company_id?: string;
   /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
   company_role?: 'owner' | 'admin' | 'employee';
+  /**
+   * True when the user has NOT yet accepted the current Beta Tester
+   * Agreement version. Drives the dashboard's consent-gate redirect to
+   * `/onboarding/consent`. See `.planning/compliance/in-app-consent-screen.md`.
+   * Backend canonical at `/api/auth/me`; optional + undefined-tolerant
+   * so older /me responses still decode.
+   */
+  consent_pending?: boolean;
+  /** The current BTA version the user is being asked to accept. */
+  current_agreement_version?: string;
+}
+
+// =============================================================================
+// Legal text + consent / per-PDF attestations
+// Specs: .planning/compliance/in-app-consent-screen.md +
+//        .planning/compliance/pdf-issuance-attestations.md
+// =============================================================================
+
+export interface BTAConsentCopy {
+  heading: string;
+  summary: string;
+  bulletsHeading: string;
+  bullets: string[];
+  buttons: {
+    primary: string;
+    readFull: string;
+    cancel: string;
+  };
+  footer: string;
+  links: {
+    betaTesterAgreement: string;
+    privacyPolicy: string;
+    subProcessors: string;
+    doorScript: string;
+  };
+}
+
+export interface AttestationCopy {
+  heading: string;
+  body: string;
+}
+
+export interface KindBundle<Copy> {
+  version: string;
+  copy: Copy;
+}
+
+export interface LegalTextVersionsBundle {
+  beta_tester_agreement: KindBundle<BTAConsentCopy>;
+  cert_attestation_readings: KindBundle<AttestationCopy>;
+  cert_attestation_observations: KindBundle<AttestationCopy>;
+}
+
+export interface ConsentAcceptResponse {
+  ok: boolean;
+  consent_id: number;
+  accepted_at: string;
+  recorded_at: string;
+}
+
+export interface CertAttestationsAcceptResponse {
+  ok: boolean;
+  attestation_ids: number[];
 }
 
 /**
