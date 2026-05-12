@@ -21,14 +21,37 @@ This document has two halves:
 
 > CertMate is a voice-driven EICR / EIC certificate authoring tool for UK electricians. The reviewer can sign in with the demo account credentials supplied above, then exercise the recording pipeline as described below.
 >
+> **No electrical knowledge required:** every phrase the reviewer needs to speak is written out word-for-word in the "Test phrases" section below. Just read them aloud at normal pace. The app's job is to convert voice → text → structured certificate fields; you're testing that pipeline works, not whether the readings are technically valid.
+>
+> **First sign-in plays a guided tour:** when the reviewer first reaches the Dashboard, CertMate automatically starts a ~5-minute audio tour (10 narrated steps) explaining every feature. Keep volume on and headphones plugged in if convenient. The tour walks through the home screen → defaults → recording orientation → consumer-unit photo step → how to dictate readings → bulk-circuit dictation → voice confirmations → observations → voice commands → PDF generation. The reviewer can let it auto-advance or tap to skip individual steps.
+>
 > **Test inspection (the golden path):**
 >
-> 1. From the Dashboard, tap "New Job".
-> 2. Enter a property — type any UK postcode (e.g. RG30 4XW) and tap Lookup. Address fields will populate from the postcode service.
-> 3. Tap "Take photo of consumer unit". For an instant photo, tap the simulator photo library and pick any image; CertMate analyses it via GPT Vision. Real-world it would be the inspector's own camera.
-> 4. Tap "Start Recording". Speak any phrase containing a numeric reading, e.g. "earth fault loop impedance zero point one one ohms" or "Ze zero point one two". The transcript appears live in the bar at the bottom; the corresponding field highlights blue then fills with the value within ~1 second.
-> 5. Tap "Stop Recording" and review the populated certificate tabs.
-> 6. Tap "Issue PDF" — two tick-boxes appear that the inspector must confirm before the certificate is generated: one that they have personally reviewed every reading, one that they have personally reviewed every observation. Both confirmations are required every time a PDF is generated. The certificate renders locally on-device using WKWebView. No real homeowner data is in the demo account.
+> 1. **Sign in** with the demo credentials. Allow the tour to play (or tap-to-skip).
+> 2. **Open the existing demo job** "1 Apple Review Lane" on the Dashboard. This already contains a populated certificate with a consumer-unit photo + extracted circuits + dictated readings — you can see the end state immediately without recording anything yourself.
+> 3. **(Optional)** To test the new-job flow from scratch: tap "New Job" → type the UK postcode `RG30 4XW` → tap Lookup → address fields populate. Tap "Take photo of consumer unit" — pick any image from the photo library; CertMate's GPT Vision analyses it and returns a circuit schedule.
+> 4. **Test the voice extraction:** tap "Start Recording", read one of the test phrases below aloud at normal pace. The transcript appears live in the bar at the bottom of the screen; the relevant certificate field highlights bright blue, then fills with the spoken value within ~1 second.
+> 5. **Stop and review:** tap "Stop Recording" and check the Inspection / Circuits / Observations tabs — every field the AI extracted should be visible, editable, and the inspector can confirm or correct each one.
+> 6. **Issue the PDF:** tap the PDF tab → tap "Generate PDF". Two tick-boxes appear that the inspector must confirm before the certificate is generated: one for readings, one for observations. Both are required every time. After confirming, the certificate renders locally on-device using WKWebView and can be shared or printed. No real homeowner data is in the demo account.
+>
+> **Test phrases — read these aloud verbatim while recording:**
+>
+> Each phrase below has been transcribed in fully-spelled-out form (no abbreviations) to match how an inspector dictates aloud. After speaking each, watch the certificate fields populate in real time.
+>
+> | # | Speak this verbatim | Where it lands in the app |
+> |---|---|---|
+> | 1 | *"Earth fault loop impedance zero point one zero ohms"* | Ze field on the Earthing card highlights blue then fills with `0.10` |
+> | 2 | *"Prospective fault current one point two kilo amps"* | PFC field on the Earthing card fills with `1.2 kA` |
+> | 3 | *"Circuit one is a thirty two amp ring final"* | Circuits tab → Circuit 1 row populates with designation + amperage |
+> | 4 | *"Circuit one Zs zero point two five ohms"* | Circuits tab → Circuit 1 Zs column fills with `0.25` |
+> | 5 | *"Insulation resistance live to earth greater than nine ninety nine megger ohms"* | Circuit 1 IR (insulation resistance) column fills with `>999` |
+> | 6 | *"RCD trip time for circuits one to three is twenty five milliseconds"* | Multiple circuits — Circuits 1, 2, and 3 all fill their RCD trip column with `25 ms` |
+> | 7 | *"Observation — front cover not securely fixed. Code two."* | Observations tab gains a new row classified as a C2 observation |
+> | 8 | *"What's the Ze?"* | Voice command — the app speaks the current Ze value back via text-to-speech |
+>
+> The phrases are deliberately simple and use full words rather than abbreviations (i.e. "thirty two amp" not "32 A"). Speak at normal pace — the live transcript bar shows interim text as you talk, then finalises and extracts within ~1 second of the phrase ending.
+>
+> If voice extraction doesn't fire on the first attempt, check the small dot at the left of the transcript bar — green means the speech-to-text service is connected and listening. Orange/red would indicate a transient connectivity issue; tap Stop Recording and tap Start Recording again to reconnect.
 >
 > **Guideline 5.1.1(ix) — AI / generative content posture:** CertMate uses Anthropic Claude Sonnet to extract structured certificate readings from inspector voice dictation, and OpenAI GPT Vision to identify consumer-unit components from inspector photos. Both outputs are presented as **suggestions** to the qualified inspector, who reviews and edits every field on tabs before issuing the certificate. The two per-PDF tick-boxes described in step 6 are the durable audit record of that review. CertMate does not produce determinations: the named inspector is the responsible professional for every certificate issued. The mechanism is documented at [pdf-issuance-attestations.md](./pdf-issuance-attestations.md) (internal) and visible to end users via the Beta Tester Agreement §4.3.1 at https://certmate.uk/legal/beta-tester-agreement.
 >
