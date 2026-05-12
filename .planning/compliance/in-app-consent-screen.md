@@ -166,6 +166,19 @@ The page itself mirrors the iOS layout. The "Read the full Beta Tester Agreement
 
 The `agreement_version` field uses calendar versioning: e.g. `2026-05-11`. Bump on any material change to the Beta Tester Agreement that requires re-acceptance. Minor wording changes that don't affect rights or obligations don't require re-acceptance — flag this judgement explicitly in the commit that changes the agreement.
 
+## Relationship to other consent and attestation moments
+
+The first-login consent screen described here is one of **four** acknowledgement moments in the inspector journey. Each operates at a different cadence and addresses a different concern. None of them displaces another.
+
+| Moment | Cadence | What is acknowledged | Spec |
+|---|---|---|---|
+| First-login consent (this document) | Once per inspector + on material BTA version bumps | Acceptance of the Beta Tester Agreement; contractual base layer | this file |
+| Recording-time door-script reminder | Every recording session | Inspector confirms they will deliver the door script to the homeowner | [door-script.md](./door-script.md) |
+| Per-PDF inspector attestations | **Every** PDF issuance, including unchanged re-renders | Inspector personally reviewed every reading; inspector personally reviewed every observation | [pdf-issuance-attestations.md](./pdf-issuance-attestations.md) |
+| On-cert Declaration of Inspector | Printed on the cert itself | BS 7671 Section 653 customer-readable Declaration text | EICRHTMLTemplate / generate_pdf.js |
+
+The four are independently justifiable and each fails closed: if any one is skipped, the corresponding obligation is not satisfied. They were considered as a system during the 2026-05-12 attestations sprint and confirmed non-overlapping.
+
 ## Recording-time reminder
 
 Separately from this once-per-account consent, the recording start UI shows a smaller reminder on every recording session:

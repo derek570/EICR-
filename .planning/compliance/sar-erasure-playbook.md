@@ -237,7 +237,7 @@ If the erasure can be completed in full:
 >
 > Items NOT erased and the reason:
 >
-> [Most commonly: any cert PDF older than [insert NICEIC retention cutoff date] — we are required to retain finalised certificates for 6 years (NICEIC scheme rules) plus a 1-year safety margin. The retained certificates are no longer linked to your account; they sit in a regulatory archive that is not accessible from the main service.]
+> [Most commonly: any cert PDF older than [insert NICEIC retention cutoff date] — we are required to retain finalised certificates for 6 years (NICEIC scheme rules) plus a 1-year safety margin. The retained certificates are no longer linked to your account; they sit in a regulatory archive that is not accessible from the main service. **Per-PDF inspector attestation records (`cert_attestations` rows) attached to those certificates follow the same carve-out** — they are the evidential record of the inspector's review-before-issue declaration and form part of the regulatory-retention bundle alongside the cert itself.]
 >
 > You can request a copy of any retained item at any time by writing to `privacy@certmate.uk`.
 >

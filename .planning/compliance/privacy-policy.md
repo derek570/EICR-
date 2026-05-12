@@ -70,6 +70,7 @@ When you create an account and use CertMate, we collect:
 - **Test equipment details**: serial numbers and calibration dates of the multifunction tester (MFT) and any other instruments you record in your profile. These are stored on your iOS device only.
 - **Cost and usage records**: a per-session record of how much of CertMate's API usage your work consumed (used for billing reconciliation and cost monitoring).
 - **Device and crash diagnostics**: standard iOS crash reports and TestFlight install metadata. Apple processes these on our behalf — see the [Sub-Processor List](./sub-processors.md).
+- **Per-certificate attestation records**: each time you generate a certificate PDF, CertMate records two tick-box confirmations from you — that you have personally reviewed every reading on the certificate, and that you have personally reviewed every observation. We retain a small audit record of each confirmation (your user ID, the job ID, the certificate file reference, your IP address, the device or browser you used, and the time you confirmed) for the same period as the certificate itself. The audit record is evidence that you reviewed the AI-assisted output before issuing the certificate to your customer; it is not used for marketing or analytics.
 
 ### About homeowners (your customers, as an inspector — or you, as a homeowner)
 

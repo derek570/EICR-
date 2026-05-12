@@ -42,6 +42,7 @@ Out of scope: data held by sub-processors (Anthropic, OpenAI, Deepgram, ElevenLa
 | R12 | JWT auth tokens | Until expiry | Until expiry | Stateless — server side has no record | Operational |
 | R13 | Push subscription credentials (RDS `push_subscriptions`) | While valid | **Until user revokes OR 12-month idle** | Periodic scan for subscriptions with no successful delivery in 12 months | Service operation |
 | R14 | Marketing email subscriber list (when activated) | Not yet collected | **Until unsubscribe**; opt-in proof retained 2 years post-unsubscribe | Unsubscribe link in every email | PECR proof of consent |
+| R15 | Per-PDF inspector attestation records (RDS `cert_attestations`) | Not yet collected — pending implementation | **Lifetime of the associated cert + 7 years** (paired with R1) | Scheduled deletion job alongside R1 cert deletion; on inspector account deletion, rows follow the controller-legal-obligation carve-out and are moved under `archive/{userId}/` rather than deleted | Evidential proof that inspector review of AI-extracted readings and observations occurred at issuance time. Required to support the inspector-responsible framing in Beta Tester Agreement §4.3.1 and the M11.1 mitigation in [DPIA](./dpia-voice-extraction-pipeline.md). | [pdf-issuance-attestations.md §6](./pdf-issuance-attestations.md) |
 
 > **All "Today" entries marked indefinite become the target retention via compliance Task #3** (technical fixes) and the routine deletion job described in §4.
 

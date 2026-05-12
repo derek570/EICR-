@@ -57,6 +57,7 @@ CertMate processes personal data of four distinct categories of people. Each has
 | Inspector certification numbers (NICEIC / NAPIT / Stroma / ELECSA) | **Not stored anywhere on iOS.** Backend `InspectorProfile` type has an optional `enrolment_number` but it isn't populated by the iOS app. | n/a | `[VERIFIED]` — fewer ID fields = smaller PII surface |
 | JWT auth token | iOS Keychain (`com.certomatic.certmateunified` / `jwt_token`); web localStorage `cm_token` + non-HttpOnly cookie `token` | At login | `[VERIFIED]` — iOS uses KeychainAccess library. Web auth has XSS-readable storage; HttpOnly migration is on the roadmap (`web/src/lib/auth.ts` comment refers to "Phase 9"). |
 | Job history (which inspections they did) | RDS `jobs.user_id` + S3 `jobs/{userId}/` | Job creation | `[VERIFIED]` |
+| Per-PDF attestation records | RDS `cert_attestations` (`user_id`, `job_id`, `pdf_s3_key`, `attestation_kind`, `attestation_text_version`, `attested_at`, `recorded_at`, `platform`, `platform_version`, `ip_address`, `user_agent`) | Captured at PDF generation | `[PENDING]` — schema specified in [pdf-issuance-attestations.md](./pdf-issuance-attestations.md); table not yet created |
 | Session cost / usage analytics | S3 `session-analytics/{userId}/{sessionId}/cost_summary.json` | Recording sessions | `[VERIFIED]` |
 | Device crash logs | Apple TestFlight (90d Apple-managed retention) | Auto | `[CONFIRM]` no separate in-house crash uploader |
 | Push subscription credentials (web) | RDS `push_subscriptions` (endpoint, p256dh, auth) | Browser push opt-in | `[VERIFIED]` |
@@ -171,6 +172,7 @@ This data is processed by OpenAI GPT Vision and then carried into the new certif
 | `subscriptions` | `user_id`, `stripe_customer_id`, `stripe_subscription_id`, `stripe_price_id`, `plan`, `status`, period timestamps | Inactive — no live Stripe data yet |
 | `calendar_tokens` | `user_id`, `access_token`, `refresh_token`, `expiry_date`, `scope` | Inactive — Calendar not in use |
 | `push_subscriptions` | `user_id`, `endpoint`, `p256dh`, `auth` | Yes — browser push credentials |
+| `cert_attestations` (**pending — not yet created**) | `id`, `user_id`, `job_id`, `pdf_s3_key`, `attestation_kind`, `attestation_text_version`, `attested_at`, `recorded_at`, `platform`, `platform_version`, `ip_address`, `user_agent` | Yes — inspector audit-trail rows (no homeowner PII in the row itself; only references to it via `job_id`). `ON DELETE RESTRICT` on `user_id` and `job_id`. Spec: [pdf-issuance-attestations.md](./pdf-issuance-attestations.md) |
 
 No dedicated session table — JWTs are stateless and stored client-side only.
 

@@ -229,6 +229,19 @@ CertMate is **processor** for activities performed on behalf of inspector-custom
 | Retention | 2 years (billing dispute window) |
 | Security measures | S3 user-scoped key prefix; no public ACLs |
 
+### Activity P8 — Per-PDF inspector attestations
+
+| Field | Value |
+|---|---|
+| Purpose | Capture an evidential audit-trail record of the inspector's review-before-issue declaration each time a certificate PDF is generated. Two attestations per issuance: one for readings, one for observations. Full spec: [pdf-issuance-attestations.md](./pdf-issuance-attestations.md). |
+| Controllers on whose behalf | Inspector-customer (the attestation is an evidential artefact of the inspector's professional act) |
+| Categories of data subjects | Inspector — no homeowner data is captured in the attestation row itself, though the linked `job_id` and `pdf_s3_key` reach into homeowner data |
+| Categories of personal data | `user_id`, `job_id`, `pdf_s3_key`, attestation kind (`readings` or `observations`), attestation text version, attested-at timestamp, recorded-at timestamp, platform, platform version, IP address, user agent |
+| Sub-processors | AWS (RDS PostgreSQL in eu-west-2, table `cert_attestations`) |
+| International transfers | None — storage in UK |
+| Retention | Lifetime of the associated cert + 7 years — paired with R1 of the [Retention Policy](../compliance/retention-policy.md). On account deletion, attestations follow the controller-legal-obligation carve-out alongside the certs themselves. |
+| Security measures | RDS encryption at rest; `ON DELETE RESTRICT` on `user_id` and `job_id` (audit trail can never be silently cascaded away); no public read paths |
+
 ---
 
 ## Part 3 — General description of security measures
