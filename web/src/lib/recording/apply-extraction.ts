@@ -91,6 +91,37 @@ function translateCircuitField(wireField: string): string {
   return LEGACY_TO_PWA_CIRCUIT_FIELD[wireField] ?? wireField;
 }
 
+/**
+ * Wire field → PWA column counterpart for circuit-0 readings (supply,
+ * installation, board sections).
+ *
+ * Mirror class of bug to LEGACY_TO_PWA_CIRCUIT_FIELD above, but on the
+ * tabs above the circuits table. The backend wire ships iOS-legacy
+ * short names (`ze`, `pfc`, `main_earth_conductor_csa`,
+ * `main_bonding_conductor_csa`, `general_condition`). The Supply tab
+ * (`web/src/app/job/[id]/supply/page.tsx`) and Installation tab
+ * (`web/src/app/job/[id]/installation/page.tsx`) read modern long
+ * names. Without translation, Sonnet's supply / install readings land
+ * on keys the tab pages don't render.
+ *
+ * IMPORTANT — applyCircuit0Readings writes under BOTH the wire name AND
+ * the PWA-column name. The wire name keeps the existing LiveFillView
+ * during-recording rendering working (`web/src/components/live-fill/
+ * live-fill-view.tsx` reads `supply.ze`, `supply.pfc`, etc. directly).
+ * The PWA-column write makes the Supply / Installation tabs render
+ * the value post-recording. Writing both is additive — same value,
+ * two keys, until the PWA settles on a single naming convention.
+ */
+const LEGACY_TO_PWA_SECTION_FIELD: Record<string, string> = {
+  // Supply
+  ze: 'earth_loop_impedance_ze',
+  pfc: 'prospective_fault_current',
+  main_earth_conductor_csa: 'earthing_conductor_csa',
+  main_bonding_conductor_csa: 'main_bonding_csa',
+  // Installation
+  general_condition: 'general_condition_of_installation',
+};
+
 // ─────────────────────────────────────────────────────────────────────────
 // Field routing for circuit: 0 (supply / installation / etc.)
 //
@@ -202,14 +233,40 @@ function applyCircuit0Readings(
     if (reading.circuit !== 0 || !reading.field) continue;
     const section = routeSupplyField(reading.field);
     const existing = (job[section] as Record<string, unknown> | undefined) ?? {};
+    const pwaColumn = LEGACY_TO_PWA_SECTION_FIELD[reading.field];
     // 3-tier priority — don't overwrite a pre-existing value. Sonnet
     // dedups against its own state snapshot, but the user might have
     // typed a correction since the last job_state_update landed.
-    if (hasValue(existing[reading.field])) continue;
-    bySection[section] = {
+    // Priority check covers BOTH the wire name and the PWA column so
+    // a Sonnet reading can't clobber a value the user already typed
+    // under either spelling.
+    const priorWire = existing[reading.field];
+    const priorPwa = pwaColumn ? existing[pwaColumn] : undefined;
+    if (hasValue(priorWire) || hasValue(priorPwa)) {
+      pipelineLog('apply_section_reading_user_value_kept', {
+        section,
+        wire_field: reading.field,
+        pwa_column: pwaColumn ?? null,
+      });
+      continue;
+    }
+    // Write under the wire name (preserves LiveFillView's during-
+    // recording display) AND, when the PWA tab reads under a
+    // different name, under that too (makes the Supply / Installation
+    // tabs render post-recording).
+    const sectionPatch: Record<string, unknown> = {
       ...(bySection[section] ?? {}),
       [reading.field]: reading.value,
     };
+    if (pwaColumn && pwaColumn !== reading.field) {
+      sectionPatch[pwaColumn] = reading.value;
+      pipelineLog('apply_section_field_mirrored', {
+        section,
+        wire_field: reading.field,
+        pwa_column: pwaColumn,
+      });
+    }
+    bySection[section] = sectionPatch;
   }
 
   // Fold in per-section updates, preserving other keys on the section.
