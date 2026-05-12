@@ -11,7 +11,11 @@ import {
   type SonnetConnectionState,
   type SonnetQuestion,
 } from './recording/sonnet-session';
-import { applyExtractionToJob, applyObservationUpdate } from './recording/apply-extraction';
+import {
+  applyBoardOpsToJob,
+  applyExtractionToJob,
+  applyObservationUpdate,
+} from './recording/apply-extraction';
 import { applyRegexMatchToJob } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
@@ -138,6 +142,13 @@ export type RecordingSnapshot = {
    *  `/api/analyze-ccu` when this is null so a slow start endpoint
    *  doesn't block CCU capture. */
   backendSessionId: string | null;
+  /** Currently-active board id in a multi-board recording session.
+   *  Driven by the unified `current_board_changed` WS broadcast from
+   *  the backend (`src/extraction/sonnet-stream.js
+   *  emitCurrentBoardChangedFromBoardOps`). Consumers (Board tab,
+   *  Circuits tab, board-banner) filter their UI down to this id.
+   *  Null when no session is active OR the job is single-board. */
+  currentBoardId: string | null;
 };
 
 export type RecordingActions = {
@@ -457,6 +468,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // for cross-tap correlation. iOS uses one id (the backend's) for both.
   const backendSessionIdRef = React.useRef<string | null>(null);
   const [backendSessionId, setBackendSessionId] = React.useState<string | null>(null);
+  // H1+H2 — active-board state, driven by `current_board_changed`
+  // broadcasts. Exposed through the recording context so Board /
+  // Circuits / banner consumers can filter to the active board
+  // without separately decoding the WS message.
+  const [currentBoardId, setCurrentBoardId] = React.useState<string | null>(null);
   const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
@@ -1318,6 +1334,35 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         sleepManagerRef.current?.onSpeechActivity();
       },
+      onBoardOps: (ops) => {
+        if (ops.length === 0) return;
+        clientDiagnostic('board_ops_received', { count: ops.length });
+        const boardsPatch = applyBoardOpsToJob(jobRef.current, ops);
+        if (boardsPatch) {
+          updateJobRef.current(boardsPatch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(boardsPatch as Partial<typeof jobRef.current>),
+          };
+          schedulePushJobState();
+        }
+      },
+      onCurrentBoardChanged: (msg) => {
+        clientDiagnostic('current_board_changed_received', {
+          source: msg.source,
+          board_id_short: msg.board_id.slice(0, 8),
+        });
+        setCurrentBoardId(msg.board_id);
+      },
+      onSelectBoardAck: (msg) => {
+        // PWA doesn't emit `select_board` today (banner-driven only),
+        // so this is mostly diagnostic. iOS uses it to flag a failed
+        // switch back to the user.
+        clientDiagnostic('select_board_ack_received', {
+          ok: msg.ok,
+          hasError: !!msg.error,
+        });
+      },
       onChitchatPaused: () => {
         // iOS canon: serverDidEnterChitchatPause (DeepgramRecordingViewModel.swift:6849).
         clientDiagnostic('chitchat_paused_received', {});
@@ -1643,6 +1688,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // moves on if /recording/start 5xxs.
     backendSessionIdRef.current = null;
     setBackendSessionId(null);
+    // Reset active board id at session start — the backend will
+    // re-emit a `current_board_changed` once the session_resume / fresh
+    // session_ack settles, populating this from the canonical
+    // currentBoardId in the snapshot.
+    setCurrentBoardId(null);
     void api
       .recordingStart({
         jobId: jobRef.current?.id,
@@ -1751,6 +1801,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // ElevenLabs path and degrade to native TTS — mirrors the
     // sessionIdRef rotation guard everywhere else in this file.
     setTtsSessionId(null);
+    // Clear active board id so the next recording session starts with
+    // no banner state; the backend will re-broadcast on the new session.
+    setCurrentBoardId(null);
     // Phase E — close the backend session asynchronously. Fire-and-
     // forget so a slow finish() call doesn't block the UI rolling
     // back to idle. iOS does the same. Snapshot the id BEFORE
@@ -2149,6 +2202,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       chitchatPaused,
       errorMessage,
       backendSessionId,
+      currentBoardId,
       start,
       stop,
       pause,
@@ -2173,6 +2227,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       chitchatPaused,
       errorMessage,
       backendSessionId,
+      currentBoardId,
       start,
       stop,
       pause,

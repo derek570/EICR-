@@ -171,6 +171,40 @@ export interface Confirmation {
   value?: string | number | boolean;
 }
 
+/** Multi-board mutation op carried on the extraction envelope's
+ *  `board_ops` channel (backend: `perTurnWrites.boardOps` →
+ *  `bundleToolCallsIntoResult` → `result.board_ops`). Three op shapes
+ *  emitted by `stage6-dispatchers-board.js`:
+ *
+ *    - `add_board`                 — Sonnet created a new BoardInfo.
+ *    - `select_board`              — Sonnet flipped the active board.
+ *    - `mark_distribution_circuit` — Sonnet flagged a parent-board
+ *                                    circuit as feeding a sub-board.
+ *
+ *  iOS handles all three via `applyBoardOpsToJob`
+ *  (`DeepgramRecordingViewModel.swift:5205`). The PWA wires the same
+ *  apply via `applyBoardOpsToJob` in `apply-extraction.ts`.
+ */
+export type BoardOp =
+  | {
+      op: 'add_board';
+      board_id: string;
+      designation?: string | null;
+      board_type?: string | null;
+      parent_board_id?: string | null;
+      feed_circuit_ref?: number | null;
+    }
+  | {
+      op: 'select_board';
+      board_id: string;
+    }
+  | {
+      op: 'mark_distribution_circuit';
+      circuit_ref: number;
+      feeds_board_id: string;
+      source_board_id?: string | null;
+    };
+
 /** Shape of the `result` payload on `type: 'extraction'` messages. Note
  *  the server renames `extracted_readings` → `readings` before sending. */
 export interface ExtractionResult {
@@ -182,6 +216,31 @@ export interface ExtractionResult {
   confirmations?: Confirmation[];
   extraction_failed?: boolean;
   error_message?: string;
+  /** Multi-board mutation ops — Phase 6 wire channel. Decoded on the
+   *  PWA via `apply-extraction.ts applyBoardOpsToJob`. */
+  board_ops?: BoardOp[];
+}
+
+/** Unified `current_board_changed` broadcast — fired by the backend on
+ *  every board switch regardless of source (iOS voice command, Sonnet
+ *  add_board, Sonnet select_board). Wire emit point:
+ *  `src/extraction/sonnet-stream.js:169 emitCurrentBoardChangedFromBoardOps`. */
+export interface Stage6CurrentBoardChanged {
+  board_id: string;
+  designation: string | null;
+  source: 'sonnet' | 'sonnet_add' | 'ios' | string;
+}
+
+/** Request/response envelope for an iOS-initiated `select_board`.
+ *  Inspector-typed "switch to garage CU" sends `{type: 'select_board',
+ *  board_id}` over the WS; backend echoes `select_board_ack` with the
+ *  outcome. Web PWA isn't expected to emit `select_board` today —
+ *  it's primarily a receive-side concern so the audit gap can close. */
+export interface Stage6SelectBoardAck {
+  ok: boolean;
+  board_id?: string | null;
+  designation?: string | null;
+  error?: string | null;
 }
 
 /** Sonnet-generated question, gated server-side through QuestionGate.
@@ -254,6 +313,33 @@ export interface SonnetSessionCallbacks {
   onCircuitCreated?: (msg: Stage6CircuitCreated) => void;
   onCircuitUpdated?: (msg: Stage6CircuitUpdated) => void;
   onObservationDeleted?: (msg: Stage6ObservationDeleted) => void;
+  /**
+   * Multi-board ops bundled into the extraction envelope (`result.
+   * board_ops`). Fired AFTER `onExtraction` so the caller can apply
+   * extraction readings first, then `applyBoardOpsToJob` to mutate
+   * `job.boards` (add a sub-board, mark a distribution circuit).
+   * `select_board` ops here are duplicated by the top-level
+   * `current_board_changed` broadcast and intentionally inert — the
+   * caller drives `currentBoardId` off that callback instead.
+   */
+  onBoardOps?: (ops: BoardOp[]) => void;
+  /**
+   * Unified `current_board_changed` broadcast — fires for any board
+   * switch source (iOS voice command, Sonnet `add_board`, Sonnet
+   * `select_board`). Wire emit point:
+   * `src/extraction/sonnet-stream.js emitCurrentBoardChangedFromBoardOps`.
+   * Web caller should flip `JobViewModel.currentBoardId` equivalent
+   * state so the Board tab + Circuits tab filter to the active board.
+   */
+  onCurrentBoardChanged?: (msg: Stage6CurrentBoardChanged) => void;
+  /**
+   * Request/response acknowledgement for a client-initiated
+   * `select_board` frame. PWA doesn't emit `select_board` today
+   * (banner-driven flow only), but this hook is wired so the
+   * receive-side is parity-clean for when the PWA adds a manual
+   * board-switch affordance.
+   */
+  onSelectBoardAck?: (msg: Stage6SelectBoardAck) => void;
   /**
    * Chitchat-pause state-machine callbacks (iOS parity, 2026-05-06
    * slice 4). The backend (`src/extraction/sonnet-stream.js`) emits
@@ -1176,6 +1262,7 @@ export class SonnetSession {
             ? result.validation_alerts
             : [];
           const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
+          const boardOps = Array.isArray(result.board_ops) ? result.board_ops : [];
           const normalised: ExtractionResult = {
             readings,
             field_clears: fieldClears,
@@ -1185,6 +1272,7 @@ export class SonnetSession {
             confirmations,
             extraction_failed: result.extraction_failed,
             error_message: result.error_message,
+            board_ops: boardOps,
           };
           // Wire-shape audit — log the actual keys present on each
           // circuit_update so we can SEE whether the backend is sending
@@ -1215,14 +1303,53 @@ export class SonnetSession {
             observations: observations.length,
             validation_alerts: validationAlerts.length,
             confirmations: confirmations.length,
+            board_ops: boardOps.length,
             extraction_failed: !!normalised.extraction_failed,
             hasErrorMessage: typeof normalised.error_message === 'string',
             circuit_update_shapes: circuitUpdateShapes,
           });
           this.callbacks.onExtraction?.(normalised);
+          // Fire onBoardOps AFTER onExtraction so the caller can apply
+          // extraction readings (which may reference circuit refs
+          // newly-tagged by an add_board / mark_distribution_circuit
+          // op) before mutating boards[]. Empty arrays are still fired
+          // so the consumer can no-op idempotently; cheaper than
+          // re-checking the length at every call site.
+          this.callbacks.onBoardOps?.(boardOps);
         } else {
           pipelineLog('sonnet_extraction_no_result', {});
         }
+        break;
+      }
+      case 'current_board_changed': {
+        // Unified broadcast — fires on iOS voice command, Sonnet
+        // add_board, Sonnet select_board (`source` discriminator).
+        const boardId = typeof json.board_id === 'string' ? json.board_id : '';
+        if (!boardId) break;
+        const msg: Stage6CurrentBoardChanged = {
+          board_id: boardId,
+          designation: typeof json.designation === 'string' ? json.designation : null,
+          source: typeof json.source === 'string' ? json.source : 'unknown',
+        };
+        pipelineLog('sonnet_current_board_changed', {
+          source: msg.source,
+          designation_preview: msg.designation?.slice(0, 40) ?? null,
+        });
+        this.callbacks.onCurrentBoardChanged?.(msg);
+        break;
+      }
+      case 'select_board_ack': {
+        const msg: Stage6SelectBoardAck = {
+          ok: Boolean(json.ok),
+          board_id: typeof json.board_id === 'string' ? json.board_id : null,
+          designation: typeof json.designation === 'string' ? json.designation : null,
+          error: typeof json.error === 'string' ? json.error : null,
+        };
+        pipelineLog('sonnet_select_board_ack', {
+          ok: msg.ok,
+          hasError: !!msg.error,
+        });
+        this.callbacks.onSelectBoardAck?.(msg);
         break;
       }
       case 'question': {

@@ -20,6 +20,7 @@
 
 import type { CircuitRow, JobDetail, ObservationRow } from '../types';
 import type {
+  BoardOp,
   CircuitUpdate,
   ExtractedReading,
   ExtractionResult,
@@ -1188,4 +1189,159 @@ export function applyExtractionToJob(
   });
 
   return { patch, changedKeys };
+}
+
+/**
+ * Apply Sonnet's per-turn `board_ops` to a JobDetail. iOS canon:
+ * `DeepgramRecordingViewModel.swift:5205 applyBoardOpsToJob`.
+ *
+ * Returns the mutated JobDetail subset (boards + optionally circuits)
+ * as a partial patch, or null when no op had a visible effect.
+ *
+ * Op semantics:
+ *   - `add_board`: appends a new entry to `job.boards` carrying id +
+ *     designation + board_type + parent_board_id + feed_circuit_ref.
+ *     Idempotent on `board_id`: a re-emit (session_resume rehydrate,
+ *     duplicate tool-loop fire) is dropped silently.
+ *   - `select_board`: NO-OP here. The unified `current_board_changed`
+ *     WS broadcast is the source of truth for active-board state;
+ *     applying it twice would race the broadcast handler.
+ *   - `mark_distribution_circuit`: stamps `is_distribution_circuit:
+ *     'yes'` + `feeds_board_id: <child id>` on the matching
+ *     `boards[source].circuits[circuit_ref]` row (or `job.circuits`
+ *     fallback for legacy single-board snapshots). Skipped when the
+ *     source circuit row isn't found.
+ *
+ * NB on circuit storage: the PWA stores per-board circuits in
+ * `boards[i].circuits[]` (multi-board snapshot — iOS canon) AND a
+ * flat top-level `job.circuits[]` (single-board legacy). The
+ * apply-extraction path writes the flat top-level today; the
+ * mark-distribution mutation here targets WHATEVER shape is present,
+ * preferring the nested form when the source board has its own
+ * circuits[] populated.
+ */
+export function applyBoardOpsToJob(job: JobDetail, ops: BoardOp[]): Partial<JobDetail> | null {
+  if (!Array.isArray(ops) || ops.length === 0) return null;
+
+  let boards = (job.boards as Record<string, unknown>[] | undefined)?.slice();
+  let circuits = (job.circuits as CircuitRow[] | undefined)?.slice();
+  let touched = false;
+
+  for (const op of ops) {
+    if (!op || typeof op !== 'object') continue;
+    if (op.op === 'add_board') {
+      const bid = op.board_id;
+      if (typeof bid !== 'string' || !bid) {
+        pipelineLog('apply_board_op_skipped', { op: 'add_board', reason: 'missing_id' });
+        continue;
+      }
+      const existing = boards ?? [];
+      if (existing.some((b) => b && (b as { id?: string }).id === bid)) {
+        pipelineLog('apply_board_op_skipped', {
+          op: 'add_board',
+          reason: 'duplicate_id',
+          board_id: bid,
+        });
+        continue;
+      }
+      const newBoard: Record<string, unknown> = {
+        id: bid,
+        designation: op.designation ?? null,
+        board_type: op.board_type ?? 'sub_distribution',
+      };
+      if (op.parent_board_id != null) newBoard.parent_board_id = op.parent_board_id;
+      if (op.feed_circuit_ref != null) newBoard.feed_circuit_ref = op.feed_circuit_ref;
+      boards = [...existing, newBoard];
+      touched = true;
+      pipelineLog('apply_board_op_add_board', {
+        board_id: bid,
+        designation: typeof op.designation === 'string' ? op.designation.slice(0, 40) : null,
+        board_type: newBoard.board_type,
+      });
+    } else if (op.op === 'mark_distribution_circuit') {
+      const ref = op.circuit_ref;
+      const childId = op.feeds_board_id;
+      const sourceId = op.source_board_id ?? null;
+      if (
+        typeof ref !== 'number' ||
+        !Number.isFinite(ref) ||
+        typeof childId !== 'string' ||
+        !childId
+      ) {
+        pipelineLog('apply_board_op_skipped', {
+          op: 'mark_distribution_circuit',
+          reason: 'invalid_payload',
+        });
+        continue;
+      }
+      let landed = false;
+      // Prefer the per-board nested circuits when sourceId is given
+      // and that board has its own circuits[] array.
+      if (sourceId && boards) {
+        const sourceIdx = boards.findIndex((b) => b && (b as { id?: string }).id === sourceId);
+        if (sourceIdx !== -1) {
+          const board = boards[sourceIdx] as Record<string, unknown>;
+          const boardCircuits = Array.isArray(board.circuits)
+            ? (board.circuits as CircuitRow[])
+            : null;
+          if (boardCircuits) {
+            const rowIdx = boardCircuits.findIndex(
+              (c) => (c.circuit_ref ?? c.number) === String(ref)
+            );
+            if (rowIdx !== -1) {
+              const nextRow: CircuitRow = {
+                ...boardCircuits[rowIdx],
+                is_distribution_circuit: 'yes',
+                feeds_board_id: childId,
+              };
+              const nextBoardCircuits = boardCircuits.slice();
+              nextBoardCircuits[rowIdx] = nextRow;
+              boards[sourceIdx] = { ...board, circuits: nextBoardCircuits };
+              landed = true;
+            }
+          }
+        }
+      }
+      // Fallback: flat top-level circuits[] (single-board legacy).
+      if (!landed && circuits) {
+        const rowIdx = circuits.findIndex((c) => (c.circuit_ref ?? c.number) === String(ref));
+        if (rowIdx !== -1) {
+          const nextRow: CircuitRow = {
+            ...circuits[rowIdx],
+            is_distribution_circuit: 'yes',
+            feeds_board_id: childId,
+          };
+          circuits = circuits.slice();
+          circuits[rowIdx] = nextRow;
+          landed = true;
+        }
+      }
+      if (landed) {
+        touched = true;
+        pipelineLog('apply_board_op_mark_distribution_circuit', {
+          circuit_ref: ref,
+          feeds_board_id: childId,
+          source_board_id: sourceId,
+        });
+      } else {
+        pipelineLog('apply_board_op_skipped', {
+          op: 'mark_distribution_circuit',
+          reason: 'source_circuit_not_found',
+          circuit_ref: ref,
+        });
+      }
+    } else if (op.op === 'select_board') {
+      // Intentionally inert — see docstring. The current_board_changed
+      // broadcast drives the active-board state.
+      pipelineLog('apply_board_op_select_board_inert', { board_id: op.board_id });
+    } else {
+      pipelineLog('apply_board_op_unknown', { op: (op as { op?: string }).op ?? 'undefined' });
+    }
+  }
+
+  if (!touched) return null;
+  const patch: Partial<JobDetail> = {};
+  if (boards) patch.boards = boards;
+  if (circuits) patch.circuits = circuits;
+  return patch;
 }
