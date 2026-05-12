@@ -6,6 +6,7 @@ import { DeepgramService, type DeepgramConnectionState } from './recording/deepg
 import { resampleTo16k } from './recording/resample';
 import {
   SonnetSession,
+  type ExtractedReading,
   type ExtractionResult,
   type SonnetConnectionState,
   type SonnetQuestion,
@@ -1074,8 +1075,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // circuit_updates path so both create + designation rename use
         // the same code (mirrors iOS where both create_circuit and
         // rename_circuit fire Stage6CircuitCreated/Updated events).
+        // Forward msg.rating_amps as an `ocpd_rating` reading so the
+        // OCPD-rating column on the new circuit row populates in the
+        // same apply pass (iOS canon writes both designation + OCPD
+        // rating to the Circuit model when create_circuit dispatches).
+        const ratingReadings: ExtractedReading[] =
+          msg.rating_amps != null
+            ? [{ circuit: msg.circuit_ref, field: 'ocpd_rating', value: msg.rating_amps }]
+            : [];
         const synthetic: ExtractionResult = {
-          readings: [],
+          readings: ratingReadings,
           circuit_updates: [
             {
               circuit: msg.circuit_ref,
@@ -1100,17 +1109,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Stage 6 STI-07 — rename. Same wire shape as create; treat as
         // a rename action so the existing logic preserves any
         // already-typed designation only when the server isn't asking
-        // for an explicit overwrite.
-        if (!msg.designation) return;
+        // for an explicit overwrite. Forward rating_amps (same
+        // rationale as onCircuitCreated above).
+        if (!msg.designation && msg.rating_amps == null) return;
+        const ratingReadings: ExtractedReading[] =
+          msg.rating_amps != null
+            ? [{ circuit: msg.circuit_ref, field: 'ocpd_rating', value: msg.rating_amps }]
+            : [];
+        const circuitUpdates = msg.designation
+          ? [
+              {
+                circuit: msg.circuit_ref,
+                designation: msg.designation,
+                action: 'rename' as const,
+              },
+            ]
+          : [];
         const synthetic: ExtractionResult = {
-          readings: [],
-          circuit_updates: [
-            {
-              circuit: msg.circuit_ref,
-              designation: msg.designation,
-              action: 'rename',
-            },
-          ],
+          readings: ratingReadings,
+          circuit_updates: circuitUpdates,
         };
         const applied = applyExtractionToJob(jobRef.current, synthetic);
         if (applied) {
