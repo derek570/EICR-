@@ -354,6 +354,45 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const micRef = React.useRef<MicCaptureHandle | null>(null);
   const deepgramRef = React.useRef<DeepgramService | null>(null);
   const sonnetRef = React.useRef<SonnetSession | null>(null);
+  // Debounced job-state push. iOS calls
+  // `sonnetSession.sendJobStateUpdate(job)` after every applied
+  // extraction / circuit_created / circuit_updated / field_corrected /
+  // observation_update / observation_deleted so the backend's per-
+  // session Sonnet snapshot stays in lock-step with the client's
+  // mutated job. Without this, the server-side `stateSnapshot` Sonnet
+  // reads on the NEXT turn is stale — circuits the inspector just
+  // dictated aren't visible to subsequent reasoning, producing
+  // spurious re-asks and duplicate `create_circuit` calls.
+  // PWA pre-fix never called the method (the helper existed at
+  // `sonnet-session.ts:871` but had zero callers); the H6 audit
+  // 2026-05-12 surfaced this as the highest-impact gap. Debounced
+  // (120ms) so a burst of three consecutive applies in the same React
+  // tick coalesces into one wire frame.
+  const pushJobStateTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedulePushJobState = React.useCallback(() => {
+    if (pushJobStateTimerRef.current) {
+      clearTimeout(pushJobStateTimerRef.current);
+    }
+    pushJobStateTimerRef.current = setTimeout(() => {
+      pushJobStateTimerRef.current = null;
+      const session = sonnetRef.current;
+      if (!session) return;
+      try {
+        session.sendJobStateUpdate(jobRef.current);
+        pipelineLog('sonnet_job_state_pushed', {
+          circuits: Array.isArray(jobRef.current.circuits) ? jobRef.current.circuits.length : 0,
+          boards: Array.isArray(jobRef.current.boards) ? jobRef.current.boards.length : 0,
+          observations: Array.isArray(jobRef.current.observations)
+            ? jobRef.current.observations.length
+            : 0,
+        });
+      } catch (err) {
+        pipelineLog('sonnet_job_state_push_threw', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }, 120);
+  }, []);
   // iOS-parity pre-extraction state. The matcher is stateful — it owns
   // `lastProcessedOffset` for sliding-window scanning + a 30s active-
   // circuit-ref window for ring-continuity carryover. Instantiated in
@@ -450,6 +489,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     sonnetRef.current = null;
     setDiagnosticSink(null);
     setSonnetState('disconnected');
+    // Cancel any pending debounced job-state push so a late-firing
+    // timer doesn't try to send through the now-null session.
+    if (pushJobStateTimerRef.current) {
+      clearTimeout(pushJobStateTimerRef.current);
+      pushJobStateTimerRef.current = null;
+    }
     // Tear down the matcher state alongside the WS session — both have
     // the same lifetime by design. reset() clears lastProcessedOffset
     // and activeCircuitRef so a brand-new session starts fresh; we then
@@ -907,6 +952,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (applied.changedKeys.length > 0) {
           liveFill.markUpdated(applied.changedKeys);
         }
+        // Push the new job state back to the server (debounced, 120ms)
+        // so Sonnet's next-turn snapshot sees the mutated circuits /
+        // sections / observations. iOS parity — see schedulePushJobState
+        // doc comment.
+        schedulePushJobState();
       }
       // Speak the first confirmation (if any) through the
       // confirmation-mode-gated path — mirrors iOS where
@@ -939,7 +989,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // zero so a spurious extra frame doesn't push the count negative.
       setProcessingCount((n) => Math.max(0, n - 1));
     },
-    [liveFill]
+    [liveFill, schedulePushJobState]
   );
 
   /** Open the Sonnet extraction WebSocket. Runs alongside Deepgram —
@@ -1068,6 +1118,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           if (applied.changedKeys.length > 0) {
             liveFill.markUpdated(applied.changedKeys);
           }
+          schedulePushJobState();
         }
       },
       onCircuitCreated: (msg) => {
@@ -1103,6 +1154,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           if (applied.changedKeys.length > 0) {
             liveFill.markUpdated(applied.changedKeys);
           }
+          schedulePushJobState();
         }
       },
       onCircuitUpdated: (msg) => {
@@ -1139,6 +1191,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           if (applied.changedKeys.length > 0) {
             liveFill.markUpdated(applied.changedKeys);
           }
+          schedulePushJobState();
         }
       },
       onObservationDeleted: (msg) => {
@@ -1157,6 +1210,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           observations: next,
         };
         liveFill.markUpdated(['observations']);
+        schedulePushJobState();
       },
       onToolCallStarted: (msg) => {
         // Decode-only on iOS — log so prod traces show the tool loop
@@ -1196,6 +1250,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // section flash is enough — the row text itself is the
         // affordance) so emit a section-level key.
         liveFill.markUpdated(['observations']);
+        schedulePushJobState();
       },
       onVoiceCommandResponse: (response) => {
         // iOS canon: DeepgramRecordingViewModel.handleVoiceCommandResponse
