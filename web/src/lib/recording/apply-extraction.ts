@@ -35,6 +35,62 @@ type Section =
   | 'extent_and_type'
   | 'design_construction';
 
+/**
+ * Wire field name (post-`validateAndCorrectFields` on the backend) →
+ * `CircuitRow` column name on the PWA.
+ *
+ * The backend's `validateAndCorrectFields` (src/extraction/sonnet-stream.js)
+ * rewrites every per-circuit reading from Sonnet's modern
+ * `config/field_schema.json` keys to the iOS-legacy names that iOS
+ * Build 282's `applySonnetReadings` switch consumes natively. The wire
+ * contract is therefore iOS-legacy.
+ *
+ * The PWA's circuit table (`web/src/components/job/circuits-schedule-
+ * desktop.tsx`) reads the MODERN names. Without translation, every
+ * Sonnet per-circuit reading lands in `row[legacy]` while the UI reads
+ * `row[modern]` — invisible to the inspector. Field session
+ * `sess_mp2cacfh_xlur` (2026-05-12) repro'd the symptom across all per-
+ * circuit fields: 3 successful `create_circuit` tool calls, 4 extraction
+ * frames decoded with `circuit_updates: 0` and no rendered values.
+ *
+ * Source of truth — backend `FIELD_CORRECTIONS` table at
+ * `src/extraction/sonnet-stream.js:774-848`. Mirrored here as a reverse
+ * map (legacy → modern) so a future schema drift on either side fails
+ * the regression test in `tests/apply-extraction.test.ts` rather than
+ * silently dropping values.
+ *
+ * Why not translate on the backend: per project rule, the backend +
+ * shared types are immutable during parity work — iOS is canon for
+ * the data contract. Any wire-shape adjustment lands on the PWA only.
+ */
+const LEGACY_TO_PWA_CIRCUIT_FIELD: Record<string, string> = {
+  designation: 'circuit_designation',
+  ocpd_rating: 'ocpd_rating_a',
+  cable_size: 'live_csa_mm2',
+  cable_size_earth: 'cpc_csa_mm2',
+  zs: 'measured_zs_ohm',
+  r2: 'r2_ohm',
+  r1_plus_r2: 'r1_r2_ohm',
+  ring_continuity_r1: 'ring_r1_ohm',
+  ring_continuity_rn: 'ring_rn_ohm',
+  ring_continuity_r2: 'ring_r2_ohm',
+  insulation_resistance_l_e: 'ir_live_earth_mohm',
+  insulation_resistance_l_l: 'ir_live_live_mohm',
+  ir_test_voltage: 'ir_test_voltage_v',
+  rcd_trip_time: 'rcd_time_ms',
+  ocpd_breaking_capacity: 'ocpd_breaking_capacity_ka',
+  max_disconnect_time: 'max_disconnect_time_s',
+  polarity: 'polarity_confirmed',
+};
+
+/** Translate a wire field name to its PWA column counterpart. Returns
+ *  the input unchanged when the field is already in the modern shape
+ *  (e.g. `ocpd_type`, `rcd_rating_a`, `wiring_type` — these pass
+ *  through `KNOWN_FIELDS` on the backend without rewrite). */
+function translateCircuitField(wireField: string): string {
+  return LEGACY_TO_PWA_CIRCUIT_FIELD[wireField] ?? wireField;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Field routing for circuit: 0 (supply / installation / etc.)
 //
@@ -263,12 +319,28 @@ function applyCircuitReadings(
   for (const reading of perCircuitReadings) {
     const idx = ensureRow(reading.circuit);
     const row = circuits[idx];
+    // Translate iOS-legacy wire field name → PWA column name. Pass-through
+    // when already modern. See LEGACY_TO_PWA_CIRCUIT_FIELD docstring above.
+    const column = translateCircuitField(reading.field);
+    if (column !== reading.field) {
+      pipelineLog('apply_circuit_field_translated', {
+        circuit: reading.circuit,
+        wire_field: reading.field,
+        pwa_column: column,
+      });
+    }
     // 3-tier priority — keep the user's value if they've already typed
     // one into the field.
-    if (hasValue(row[reading.field])) continue;
+    if (hasValue(row[column])) {
+      pipelineLog('apply_circuit_reading_user_value_kept', {
+        circuit: reading.circuit,
+        pwa_column: column,
+      });
+      continue;
+    }
     circuits[idx] = {
       ...row,
-      [reading.field]: reading.value as unknown,
+      [column]: reading.value as unknown,
     };
   }
 
@@ -277,7 +349,10 @@ function applyCircuitReadings(
     const idx = indexByRef.get(String(clear.circuit));
     if (idx == null) continue;
     const row = { ...circuits[idx] };
-    delete row[clear.field];
+    // Same legacy → PWA translation as readings above so a Sonnet
+    // `clear_reading` lands on the column the UI actually renders.
+    const column = translateCircuitField(clear.field);
+    delete row[column];
     circuits[idx] = row;
   }
 
