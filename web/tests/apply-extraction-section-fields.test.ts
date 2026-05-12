@@ -51,7 +51,7 @@ function makeResult(over: Partial<ExtractionResult> = {}): ExtractionResult {
 const LEGACY_TO_PWA_SECTION_PAIRS: Array<
   [
     wireField: string,
-    section: 'supply_characteristics' | 'installation_details',
+    section: 'supply_characteristics' | 'installation_details' | 'extent_and_type',
     pwaColumn: string,
     value: unknown,
   ]
@@ -61,6 +61,7 @@ const LEGACY_TO_PWA_SECTION_PAIRS: Array<
   ['main_earth_conductor_csa', 'supply_characteristics', 'earthing_conductor_csa', '10'],
   ['main_bonding_conductor_csa', 'supply_characteristics', 'main_bonding_csa', '10'],
   ['general_condition', 'installation_details', 'general_condition_of_installation', 'Good'],
+  ['extent_of_installation', 'extent_and_type', 'extent', 'Whole installation'],
 ];
 
 describe('apply-extraction circuit:0 dual-write (wire name + PWA column)', () => {

@@ -120,6 +120,12 @@ const LEGACY_TO_PWA_SECTION_FIELD: Record<string, string> = {
   main_bonding_conductor_csa: 'main_bonding_csa',
   // Installation
   general_condition: 'general_condition_of_installation',
+  // Extent (EIC) — backend KNOWN_FIELDS emits `extent_of_installation`
+  // routed to `extent_and_type`, the Extent tab
+  // (`web/src/app/job/[id]/extent/page.tsx`) reads `extent` from
+  // that section. Without translation the EIC Extent of Work
+  // field renders empty post-recording.
+  extent_of_installation: 'extent',
 };
 
 /**
