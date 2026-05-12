@@ -57,8 +57,15 @@ const MIRRORED_PAIRS: Array<[wireField: string, boardKey: string, value: unknown
   ['manufacturer', 'manufacturer', 'Wylex'],
   ['main_switch_bs_en', 'main_switch_bs_en', 'BS EN 60947-3'],
   ['earthing_arrangement', 'earthing_arrangement', 'TN-C-S'],
-  ['ze', 'earth_loop_impedance_ze', '0.42'], // PWA column name on supply tab
+  ['ze', 'ze', '0.42'],
   ['zs_at_db', 'zs_at_db', '0.55'],
+  // Ambiguous board fields — wire name vs board record key diverge.
+  // Backend `FIELD_CORRECTIONS` rewrites Sonnet's modern names
+  // (polarity_confirmed, rcd_rating_ma) to the legacy short forms;
+  // the mirror translates back to the Board tab's expected key.
+  ['polarity', 'polarity_confirmed', '✓'],
+  ['rcd_rating_a', 'rcd_rating_ma', '30'],
+  ['rcd_trip_time', 'rcd_trip_time', '23'],
 ];
 
 describe('apply-extraction boards[0] mirror', () => {
@@ -74,24 +81,22 @@ describe('apply-extraction boards[0] mirror', () => {
       const boards = applied!.patch.boards;
       expect(boards).toBeDefined();
       expect(boards).toHaveLength(1);
-      // Synthesised board carries id + board_type + the mirrored value.
-      // The board record uses the WIRE name for manufacturer / main_switch_bs_en /
-      // earthing_arrangement / zs_at_db (those happen to match) and the
-      // PWA-column name for ze (earth_loop_impedance_ze, via the
-      // LEGACY_TO_PWA_SECTION_FIELD translation applied at the supply
-      // section write).
+      // Synthesised board carries id + board_type + the mirrored value
+      // under MIRROR_TO_BOARDS0[i].boardKey (the key the Board tab
+      // renders). For 5 of the 8 pairs the wire field name == boardKey
+      // (manufacturer, main_switch_bs_en, earthing_arrangement, ze,
+      // zs_at_db, rcd_trip_time); for 2 the keys diverge (polarity →
+      // polarity_confirmed; rcd_rating_a → rcd_rating_ma).
       const board0 = boards![0] as Record<string, unknown>;
       expect(board0.id).toBeDefined();
       expect(board0.board_type).toBe('main');
-      // Specific assert below uses the BOARD record key (which is what
-      // `MIRROR_TO_BOARDS0` declares as the target — same as the wire
-      // for 4/5 cases). For `ze`, the section patch wrote BOTH
-      // `ze` AND `earth_loop_impedance_ze` (the LEGACY_TO_PWA dual-
-      // write), but the boards[0] mirror reads under `ze` from the
-      // section patch, so boards[0].ze is the populated key.
-      const expectedBoardKey = wireField === 'ze' ? 'ze' : boardKey;
-      void expectedBoardKey;
-      expect(board0[wireField]).toBe(value);
+      expect(board0[boardKey]).toBe(value);
+      // When wire and board keys diverge, the wire name must NOT also
+      // appear on the board record — would imply a write under the
+      // wrong key.
+      if (wireField !== boardKey) {
+        expect(board0[wireField]).toBeUndefined();
+      }
     }
   );
 

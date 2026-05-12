@@ -212,6 +212,29 @@ const MIRROR_TO_BOARDS0: ReadonlyArray<{
   },
   { section: 'supply_characteristics', sectionKey: 'ze', boardKey: 'ze' },
   { section: 'supply_characteristics', sectionKey: 'zs_at_db', boardKey: 'zs_at_db' },
+  // Ambiguous board fields — wire name doesn't match the board record
+  // key the Board tab reads. The wire is iOS-legacy
+  // (`FIELD_CORRECTIONS` rewrite, sonnet-stream.js:774-848): Sonnet's
+  // modern `polarity_confirmed` / `rcd_rating_ma` are rewritten to the
+  // short forms below before reaching the PWA. `rcd_trip_time` is a
+  // KNOWN_FIELDS pass-through but its source section is
+  // `supply_characteristics` (no entry in CIRCUIT_0_SECTION); the
+  // Board tab still reads it under the same name.
+  {
+    section: 'supply_characteristics',
+    sectionKey: 'polarity',
+    boardKey: 'polarity_confirmed',
+  },
+  {
+    section: 'supply_characteristics',
+    sectionKey: 'rcd_rating_a',
+    boardKey: 'rcd_rating_ma',
+  },
+  {
+    section: 'supply_characteristics',
+    sectionKey: 'rcd_trip_time',
+    boardKey: 'rcd_trip_time',
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────
