@@ -26,6 +26,7 @@ import type {
   FieldClear,
   Observation,
 } from './sonnet-session';
+import type { ScheduleOutcome } from '@/lib/constants/inspection-schedule';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 
 type Section =
@@ -735,6 +736,75 @@ export function parseObservationCode(
   return undefined;
 }
 
+/**
+ * Build the `inspection_schedule.items` patch that mirrors Sonnet's
+ * coded observations onto the BS 7671 Appendix 6 schedule. iOS canon:
+ * when an inspector dictates "the kitchen socket is loose, item 4.4",
+ * Sonnet emits an observation `{code: 'C2', schedule_item: '4.4',
+ * observation_text: …}` and iOS auto-stamps
+ * `inspection_schedule.items['4.4'] = 'C2'` — so the Inspection tab's
+ * schedule row shows the outcome ticked alongside the observation
+ * preview, without the inspector having to tap through the manual
+ * outcome flow.
+ *
+ * The PWA's Inspection page already renders the linked-observation
+ * preview via `observationForRef` (`inspection/page.tsx:123-130`), but
+ * the outcome itself stayed unset because nothing on the apply path
+ * wrote to `inspection_schedule.items`. This helper closes the gap.
+ *
+ * Priority guard: never overwrite a user-set outcome. If the
+ * inspector has already manually marked the ref (PASS / N/A /
+ * different code), the helper leaves it alone — Sonnet's role is to
+ * fill blanks, not contradict the inspector.
+ *
+ * Returns the merged `items` record, or null when no schedule mirror
+ * applies (no coded observation with a schedule_item, or every
+ * candidate is already set).
+ */
+function markScheduleItemsFromObservations(
+  job: JobDetail,
+  observations: Observation[]
+): Record<string, ScheduleOutcome> | null {
+  if (observations.length === 0) return null;
+  const existingSchedule = (job.inspection_schedule as Record<string, unknown> | undefined) ?? {};
+  const existingItems =
+    (existingSchedule.items as Record<string, ScheduleOutcome | undefined> | undefined) ?? {};
+  const updates: Record<string, ScheduleOutcome> = {};
+  for (const obs of observations) {
+    const ref = obs.schedule_item;
+    if (typeof ref !== 'string' || ref.length === 0) continue;
+    const code = parseObservationCode(obs.code);
+    if (!code) continue;
+    // 3-tier priority — never clobber a user-set outcome. Empty /
+    // missing / undefined are open for Sonnet to fill.
+    if (hasValue(existingItems[ref])) {
+      pipelineLog('apply_schedule_outcome_user_value_kept', {
+        ref,
+        existing_outcome: existingItems[ref],
+        sonnet_code: code,
+      });
+      continue;
+    }
+    // Coalesce: if multiple observations target the same ref in one
+    // turn (unusual but defensive), last wins — same policy as
+    // applyObservations' dedup-by-text loop.
+    updates[ref] = code;
+  }
+  if (Object.keys(updates).length === 0) return null;
+  pipelineLog('apply_schedule_outcomes_marked', { refs: Object.keys(updates) });
+  // Filter out the optional-undefined entries from the existing map so
+  // the returned record is type-safe `Record<string, ScheduleOutcome>`.
+  // `existingItems` is declared with `| undefined` to model the
+  // Sonnet-deleted case; persisted state never carries actual undefined
+  // values for set keys, so filtering is a defensive no-op.
+  const merged: Record<string, ScheduleOutcome> = {};
+  for (const [key, value] of Object.entries(existingItems)) {
+    if (value != null) merged[key] = value;
+  }
+  Object.assign(merged, updates);
+  return merged;
+}
+
 /** Sections whose flat records feed LiveFillState section keys. */
 const SCALAR_SECTIONS: Section[] = [
   'installation_details',
@@ -1018,6 +1088,18 @@ export function applyExtractionToJob(
   // Observations.
   const newObservations = applyObservations(job, observations);
   if (newObservations) patch.observations = newObservations;
+
+  // Mirror coded observations onto inspection_schedule.items — iOS
+  // canon auto-marks the schedule row when a `schedule_item`-tagged
+  // observation lands. Without this the linked-observation preview
+  // shows up on the Inspection tab but the outcome column stays
+  // blank, forcing the inspector to manually tick what they already
+  // dictated.
+  const newScheduleItems = markScheduleItemsFromObservations(job, observations);
+  if (newScheduleItems) {
+    const existingSchedule = (job.inspection_schedule as Record<string, unknown> | undefined) ?? {};
+    patch.inspection_schedule = { ...existingSchedule, items: newScheduleItems };
+  }
 
   if (Object.keys(patch).length === 0) {
     pipelineLog('apply_extraction_exit_no_patch', {
