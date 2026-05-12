@@ -29,7 +29,13 @@ import type {
 } from './sonnet-session';
 import type { ScheduleOutcome } from '@/lib/constants/inspection-schedule';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
-import { applyDefaultsToCircuit } from '@certmate/shared-utils';
+import {
+  applyDefaultsToCircuit,
+  clampImpedance,
+  maxZsString,
+  recomputeAll,
+  type ImpedanceField,
+} from '@certmate/shared-utils';
 
 /**
  * Options threaded into the apply path. Currently carries the user's
@@ -106,6 +112,23 @@ const LEGACY_TO_PWA_CIRCUIT_FIELD: Record<string, string> = {
 function translateCircuitField(wireField: string): string {
   return LEGACY_TO_PWA_CIRCUIT_FIELD[wireField] ?? wireField;
 }
+
+/**
+ * Per-circuit columns that carry an impedance value (R1+R2, ring
+ * continuity legs, Zs, bare R2). Map to the `clampImpedance` field
+ * tag so the per-reading clamp picks the right bound band. Ze on
+ * the circuit row itself is unusual (Ze is supply-level not per-
+ * circuit) but listed for completeness — it'd land here only if
+ * someone added a per-board Ze override column.
+ */
+const CIRCUIT_IMPEDANCE_FIELD_TYPE: Record<string, ImpedanceField> = {
+  measured_zs_ohm: 'continuity',
+  r1_r2_ohm: 'continuity',
+  r2_ohm: 'continuity',
+  ring_r1_ohm: 'continuity',
+  ring_rn_ohm: 'continuity',
+  ring_r2_ohm: 'continuity',
+};
 
 /**
  * Wire field → PWA column counterpart for circuit-0 readings (supply,
@@ -551,6 +574,16 @@ function applyCircuitReadings(
     }
   }
 
+  // Earthing arrangement is needed to widen the Ze clamp ceiling on
+  // TT systems (200 Ω vs 5 Ω). Resolve once outside the loop —
+  // either from the just-built section patch (this turn's Sonnet
+  // write) or the existing job state.
+  const earthingForClamp = (() => {
+    const supply = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
+    const v = supply.earthing_arrangement;
+    return typeof v === 'string' ? v : null;
+  })();
+
   for (const reading of perCircuitReadings) {
     const idx = ensureRow(reading.circuit);
     const row = circuits[idx];
@@ -564,6 +597,38 @@ function applyCircuitReadings(
         pwa_column: column,
       });
     }
+    // H5 — clamp impedance values BEFORE writing. Deepgram regularly
+    // drops decimals ("zero point four four" → "44"); on a clean ÷10
+    // or ÷100 we recover silently. Out-of-range values still write
+    // (the Circuits tab visual + the upcoming inspector review pass
+    // are the second line of defence). Continuity fields share the
+    // 0.01-2.0 Ω band; Ze on circuit:N (rare — usually circuit:0)
+    // shares it too.
+    const impedanceField = CIRCUIT_IMPEDANCE_FIELD_TYPE[column];
+    let writeValue: unknown = reading.value;
+    if (impedanceField && typeof reading.value === 'string') {
+      const outcome = clampImpedance(impedanceField, reading.value, earthingForClamp);
+      if (outcome.kind === 'divided') {
+        pipelineLog('apply_circuit_impedance_clamp_divided', {
+          circuit: reading.circuit,
+          pwa_column: column,
+          original: outcome.original,
+          corrected: outcome.corrected,
+          divisor: outcome.divisor,
+        });
+        writeValue = outcome.corrected;
+      } else if (outcome.kind === 'out_of_range') {
+        pipelineLog('apply_circuit_impedance_out_of_range', {
+          circuit: reading.circuit,
+          pwa_column: column,
+          value_preview: outcome.value.slice(0, 16),
+        });
+        // Still write the raw value — the visual gate on the Circuits
+        // tab + the inspector-review pass on the cert PDF catch
+        // egregious outliers. Skipping the write would lose data
+        // that's sometimes intentional (e.g. very-high-Ze TT site).
+      }
+    }
     // 3-tier priority — keep the user's value if they've already typed
     // one into the field.
     if (hasValue(row[column])) {
@@ -575,7 +640,7 @@ function applyCircuitReadings(
     }
     circuits[idx] = {
       ...row,
-      [column]: reading.value as unknown,
+      [column]: writeValue,
     };
   }
 
@@ -1122,8 +1187,60 @@ export function applyExtractionToJob(
 
   // Per-circuit readings + updates + clears. Thread options so
   // ensureRow can apply user defaults on circuit creation (H7 parity).
-  const newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears, options);
+  let newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears, options);
   if (newCircuits) patch.circuits = newCircuits;
+
+  // H3 — auto-compute `ocpd_max_zs_ohm` for any circuit whose OCPD
+  // fields are now resolvable (type + rating + disconnect time). iOS
+  // canon: `Circuit.recalculateMaxZs()`. The lookup is pure; we run
+  // it on the just-built circuits[] patch so a same-turn write to
+  // `ocpd_type` / `ocpd_rating_a` / `max_disconnect_time_s` (defaults
+  // applied an instant ago) immediately produces the BS 7671 max Zs
+  // ceiling without waiting for the next turn.
+  const targetCircuits = newCircuits ?? (job.circuits as CircuitRow[] | undefined);
+  if (Array.isArray(targetCircuits) && targetCircuits.length > 0) {
+    let mzsChanged = false;
+    const nextCircuits = targetCircuits.map((row) => {
+      const type = typeof row.ocpd_type === 'string' ? row.ocpd_type : '';
+      const rating = typeof row.ocpd_rating_a === 'string' ? row.ocpd_rating_a : '';
+      const disc =
+        typeof row.max_disconnect_time_s === 'string'
+          ? (row.max_disconnect_time_s as string)
+          : undefined;
+      if (!type || !rating) return row;
+      const computed = maxZsString({ deviceType: type, rating, disconnectTime: disc });
+      if (computed == null) return row;
+      // 3-tier priority — never overwrite a user-typed override.
+      if (hasValue(row.ocpd_max_zs_ohm)) return row;
+      if (row.ocpd_max_zs_ohm === computed) return row;
+      mzsChanged = true;
+      return { ...row, ocpd_max_zs_ohm: computed };
+    });
+    if (mzsChanged) {
+      newCircuits = nextCircuits;
+      patch.circuits = nextCircuits;
+      pipelineLog('apply_circuit_max_zs_computed', {
+        touched: nextCircuits.filter((r, i) => r !== targetCircuits[i]).length,
+      });
+    }
+  }
+
+  // H4 — Zs ↔ R1+R2 ↔ Ze derivation. After all readings + the max-Zs
+  // pass land, run `recomputeAll` to fill any third unknown using the
+  // BS 7671 Zs = Ze + (R1+R2) identity. Pure on the JobDetail —
+  // takes the patched supply + circuits views. Only fills empty
+  // targets; an inspector value never gets re-derived.
+  const projectedForDerive: JobDetail = {
+    ...job,
+    ...(patch as Partial<JobDetail>),
+  } as JobDetail;
+  const derivedCircuits = recomputeAll(projectedForDerive as never);
+  if (derivedCircuits) {
+    patch.circuits = derivedCircuits as unknown as CircuitRow[];
+    pipelineLog('apply_circuit_derivation_recomputed', {
+      circuit_count: derivedCircuits.length,
+    });
+  }
 
   // Board mirror — populate the right entry in `boards[]` so the
   // Board tab renders Sonnet-extracted manufacturer, main_switch_bs_en,
