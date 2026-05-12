@@ -122,6 +122,47 @@ const LEGACY_TO_PWA_SECTION_FIELD: Record<string, string> = {
   general_condition: 'general_condition_of_installation',
 };
 
+/**
+ * Fields whose primary `CIRCUIT_0_SECTION` routing is `board_info`
+ * (matches LiveFillView's `board.*` reads) but which the Supply tab
+ * (`web/src/app/job/[id]/supply/page.tsx`) ALSO renders. Without a
+ * mirror write, dictating "main switch is 100 amps" lands in
+ * `job.board_info.main_switch_current` (visible in LiveFillView during
+ * recording) but the Supply tab — which reads
+ * `job.supply_characteristics.main_switch_current` — stays empty post-
+ * recording.
+ *
+ * Mirror approach (not routing replacement): same value written to
+ * both sections so neither consumer regresses. Membership derived by
+ * intersecting the `CIRCUIT_0_SECTION === 'board_info'` set with the
+ * field names actually grep'd out of `supply/page.tsx`.
+ *
+ * Deliberately EXCLUDED:
+ *   - `manufacturer` — Supply tab doesn't render it; the Board tab
+ *     reads `boards[i].manufacturer` not `board_info.manufacturer`,
+ *     so this needs a separate `board_info → boards[0]` mirror
+ *     (out-of-scope architectural fix).
+ *   - `rcd_operating_*_test` variants — inspector-typed only, never
+ *     emitted by Sonnet's `record_reading`, so no apply path here.
+ */
+const MIRROR_BOARD_TO_SUPPLY: ReadonlySet<string> = new Set([
+  'main_switch_bs_en',
+  'main_switch_current',
+  'main_switch_fuse_setting',
+  'main_switch_poles',
+  'main_switch_voltage',
+  'main_switch_location',
+  'main_switch_conductor_material',
+  'main_switch_conductor_csa',
+  'rcd_operating_current',
+  'rcd_time_delay',
+  'rcd_operating_time',
+  'spd_bs_en',
+  'spd_type_supply',
+  'spd_short_circuit',
+  'spd_rated_current',
+]);
+
 // ─────────────────────────────────────────────────────────────────────────
 // Field routing for circuit: 0 (supply / installation / etc.)
 //
@@ -231,42 +272,79 @@ function applyCircuit0Readings(
 
   for (const reading of readings) {
     if (reading.circuit !== 0 || !reading.field) continue;
-    const section = routeSupplyField(reading.field);
-    const existing = (job[section] as Record<string, unknown> | undefined) ?? {};
+    const primarySection = routeSupplyField(reading.field);
     const pwaColumn = LEGACY_TO_PWA_SECTION_FIELD[reading.field];
-    // 3-tier priority — don't overwrite a pre-existing value. Sonnet
-    // dedups against its own state snapshot, but the user might have
-    // typed a correction since the last job_state_update landed.
-    // Priority check covers BOTH the wire name and the PWA column so
-    // a Sonnet reading can't clobber a value the user already typed
-    // under either spelling.
-    const priorWire = existing[reading.field];
-    const priorPwa = pwaColumn ? existing[pwaColumn] : undefined;
-    if (hasValue(priorWire) || hasValue(priorPwa)) {
+
+    // Section targets: always the primary. Plus `supply_characteristics`
+    // when the field belongs to MIRROR_BOARD_TO_SUPPLY (main switch /
+    // SPD / supply RCD) — preserves LiveFillView's `board.*` reads
+    // while ALSO populating the Supply tab's `supply.*` reads.
+    const targets: Section[] = [primarySection];
+    if (
+      primarySection === 'board_info' &&
+      MIRROR_BOARD_TO_SUPPLY.has(reading.field) &&
+      !targets.includes('supply_characteristics')
+    ) {
+      targets.push('supply_characteristics');
+    }
+
+    // 3-tier priority — protect any pre-existing user value across
+    // EVERY target section, under BOTH wire and PWA-column names.
+    // The inspector might have typed "100" into the Supply tab's
+    // Main Switch Current field; that landed in
+    // `supply_characteristics.main_switch_current`. A subsequent
+    // Sonnet reading routed primarily to `board_info` must NOT clobber
+    // it just because the board section is empty.
+    let userValueKept = false;
+    for (const sec of targets) {
+      const existing = (job[sec] as Record<string, unknown> | undefined) ?? {};
+      if (hasValue(existing[reading.field])) {
+        userValueKept = true;
+        break;
+      }
+      if (pwaColumn && hasValue(existing[pwaColumn])) {
+        userValueKept = true;
+        break;
+      }
+    }
+    if (userValueKept) {
       pipelineLog('apply_section_reading_user_value_kept', {
-        section,
+        primary_section: primarySection,
+        targets,
         wire_field: reading.field,
         pwa_column: pwaColumn ?? null,
       });
       continue;
     }
-    // Write under the wire name (preserves LiveFillView's during-
-    // recording display) AND, when the PWA tab reads under a
-    // different name, under that too (makes the Supply / Installation
-    // tabs render post-recording).
-    const sectionPatch: Record<string, unknown> = {
-      ...(bySection[section] ?? {}),
-      [reading.field]: reading.value,
-    };
+
+    // Write to every target under the wire name + the PWA column name
+    // (when the latter exists and differs).
+    for (const sec of targets) {
+      const sectionPatch: Record<string, unknown> = {
+        ...(bySection[sec] ?? {}),
+        [reading.field]: reading.value,
+      };
+      if (pwaColumn && pwaColumn !== reading.field) {
+        sectionPatch[pwaColumn] = reading.value;
+      }
+      bySection[sec] = sectionPatch;
+    }
+
+    if (targets.length > 1) {
+      pipelineLog('apply_section_mirrored', {
+        wire_field: reading.field,
+        primary_section: primarySection,
+        mirrored_to: targets.slice(1),
+      });
+    }
     if (pwaColumn && pwaColumn !== reading.field) {
-      sectionPatch[pwaColumn] = reading.value;
-      pipelineLog('apply_section_field_mirrored', {
-        section,
+      pipelineLog('apply_section_field_translated', {
+        primary_section: primarySection,
+        targets,
         wire_field: reading.field,
         pwa_column: pwaColumn,
       });
     }
-    bySection[section] = sectionPatch;
   }
 
   // Fold in per-section updates, preserving other keys on the section.
