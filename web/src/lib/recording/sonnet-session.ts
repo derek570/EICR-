@@ -19,6 +19,7 @@
 import { api } from '../api-client';
 import { getToken } from '../auth';
 import { clientDiagnostic } from './client-diagnostic';
+import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 import type { RegexResultsWire } from './regex-match-result';
 
 export type SonnetConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -400,6 +401,14 @@ export class SonnetSession {
   // Gates whether we send `session_start` (first open) or `session_resume`
   // (reconnect) on the new socket's onopen.
   private hasConnectedOnce = false;
+  // Diagnostic — last-seen timestamps + message types for both
+  // directions on the WS, so a `sonnet_ws_close` row can show
+  // "ms since last server message" / "last sent type". Critical
+  // for diagnosing "WS died N ms after we sent X" patterns.
+  private lastRecvMs: number | null = null;
+  private lastRecvType: string | null = null;
+  private lastSendMs: number | null = null;
+  private lastSendType: string | null = null;
 
   constructor(callbacks: SonnetSessionCallbacks = {}, deps: SonnetSessionDeps = {}) {
     this.callbacks = callbacks;
@@ -436,7 +445,18 @@ export class SonnetSession {
    *  reconnect state machine; dirty closes will schedule a re-open via
    *  `scheduleReconnect()` until the attempts ceiling is hit. */
   connect(options: SessionStartOptions): void {
-    if (this.ws && this.state !== 'disconnected') return;
+    if (this.ws && this.state !== 'disconnected') {
+      pipelineLog('sonnet_connect_skipped_already_open', {
+        state: this.state,
+      });
+      return;
+    }
+    pipelineLog('sonnet_connect_invoked', {
+      jobId: options.jobId,
+      certType: options.certificateType,
+      hasJobState: options.jobState != null,
+      hasPriorSessionId: typeof options.sessionId === 'string',
+    });
     this.startOptions = options;
     this.shouldReconnect = true;
     this.reconnectAttempts = 0;
@@ -459,21 +479,39 @@ export class SonnetSession {
     const token = getToken();
     if (!token) {
       this.setState('error');
+      pipelineLog('sonnet_ws_no_token', {
+        sessionId: this.sessionId,
+        reconnectAttempt: this.reconnectAttempts,
+      });
       this.callbacks.onError?.(new Error('Not authenticated — no token available'), false);
       return;
     }
 
     const url = this.buildURL(token);
+    pipelineLog('sonnet_ws_connecting', {
+      sessionId: this.sessionId,
+      hasConnectedOnce: this.hasConnectedOnce,
+      reconnectAttempt: this.reconnectAttempts,
+      pendingMessages: this.pendingMessages.length,
+    });
     let ws: WebSocket;
     try {
       ws = new WebSocket(url);
     } catch (err) {
       this.setState('error');
+      pipelineLog('sonnet_ws_construct_throw', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       this.callbacks.onError?.(err instanceof Error ? err : new Error(String(err)), false);
       return;
     }
 
     ws.onopen = () => {
+      pipelineLog('sonnet_ws_open', {
+        sessionId: this.sessionId,
+        hasConnectedOnce: this.hasConnectedOnce,
+        reconnectAttempt: this.reconnectAttempts,
+      });
       this.setState('connected');
       // Clean open — reset the attempt counter so future dirty-close
       // cycles get a fresh exponential ramp from attempt 1.
@@ -544,6 +582,12 @@ export class SonnetSession {
 
     ws.onerror = () => {
       this.setState('error');
+      pipelineLog('sonnet_ws_error', {
+        sessionId: this.sessionId,
+        reconnectAttempt: this.reconnectAttempts,
+        msSinceLastRecv: this.lastRecvMs ? Date.now() - this.lastRecvMs : null,
+        lastRecvType: this.lastRecvType,
+      });
       this.callbacks.onError?.(new Error('Sonnet WebSocket error'), true);
     };
 
@@ -555,6 +599,19 @@ export class SonnetSession {
       const reconnectEnabled = isReconnectEnabled();
       const willReconnect =
         reconnectEnabled && !isClean && this.reconnectAttempts < RECONNECT_MAX_ATTEMPTS;
+      pipelineLog('sonnet_ws_close', {
+        sessionId: this.sessionId,
+        code: event.code,
+        reason: event.reason ?? '',
+        wasClean: event.wasClean,
+        shouldReconnect: this.shouldReconnect,
+        willReconnect,
+        reconnectAttempt: this.reconnectAttempts,
+        msSinceLastRecv: this.lastRecvMs ? Date.now() - this.lastRecvMs : null,
+        lastRecvType: this.lastRecvType,
+        msSinceLastSend: this.lastSendMs ? Date.now() - this.lastSendMs : null,
+        lastSendType: this.lastSendType,
+      });
 
       // Close-code log — matches `deepgram-service.ts` format for
       // cross-stream grepping in ops tooling (see WAVE_3F_HANDOFF.md).
@@ -597,6 +654,10 @@ export class SonnetSession {
   private scheduleReconnect(): void {
     this.reconnectAttempts += 1;
     const delay = SonnetSession.computeBackoffDelay(this.reconnectAttempts);
+    pipelineLog('sonnet_reconnect_scheduled', {
+      attempt: this.reconnectAttempts,
+      delayMs: delay,
+    });
     if (this.reconnectTimer) this.clearSchedule(this.reconnectTimer);
     this.reconnectTimer = this.schedule(() => {
       this.reconnectTimer = null;
@@ -640,7 +701,10 @@ export class SonnetSession {
     }
   ): void {
     const trimmed = text?.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      pipelineLog('sonnet_send_transcript_skipped_empty', {});
+      return;
+    }
     const msg: Record<string, unknown> = {
       type: 'transcript',
       text: trimmed,
@@ -652,6 +716,16 @@ export class SonnetSession {
     if (options?.regexResults && options.regexResults.length > 0) {
       msg.regexResults = options.regexResults;
     }
+    pipelineLog('sonnet_send_transcript', {
+      textLength: trimmed.length,
+      textPreview: trimmed.slice(0, 40),
+      utteranceIdShort:
+        typeof options?.utteranceId === 'string' ? options.utteranceId.slice(0, 11) : null,
+      regexHints: options?.regexResults?.length ?? 0,
+      confirmationsEnabled: options?.confirmationsEnabled ?? false,
+      state: this.state,
+      willBuffer: this.state !== 'connected',
+    });
     this.sendBuffered(msg);
   }
 
@@ -660,6 +734,12 @@ export class SonnetSession {
    *  when disconnected so corrections aren't dropped through a
    *  reconnect window. */
   sendCorrection(field: string, circuit: number, value: string | number | boolean): void {
+    pipelineLog('sonnet_send_correction', {
+      field,
+      circuit,
+      valueType: typeof value,
+      state: this.state,
+    });
     this.sendBuffered({ type: 'correction', field, circuit, value });
   }
 
@@ -685,7 +765,13 @@ export class SonnetSession {
    * see field comment.
    */
   sendAskUserAnswered(toolCallId: string, userText: string, consumedUtteranceId?: string): void {
-    if (!toolCallId || !userText) return;
+    if (!toolCallId || !userText) {
+      pipelineLog('sonnet_send_ask_user_answered_skipped', {
+        hasToolCallId: !!toolCallId,
+        hasUserText: !!userText,
+      });
+      return;
+    }
     const msg: Record<string, unknown> = {
       type: 'ask_user_answered',
       tool_call_id: toolCallId,
@@ -694,6 +780,12 @@ export class SonnetSession {
     if (consumedUtteranceId) {
       msg.consumed_utterance_id = consumedUtteranceId;
     }
+    pipelineLog('sonnet_send_ask_user_answered', {
+      toolCallIdShort: toolCallId.slice(0, 16),
+      userTextLength: userText.length,
+      userTextPreview: userText.slice(0, 40),
+      consumedUtteranceIdShort: consumedUtteranceId?.slice(0, 11) ?? null,
+    });
     this.sendBuffered(msg);
   }
 
@@ -793,6 +885,15 @@ export class SonnetSession {
   /** Graceful shutdown: send session_stop, let the server flush any
    *  buffered utterances, then close the socket. */
   disconnect(): void {
+    pipelineLog('sonnet_disconnect_invoked', {
+      state: this.state,
+      hasWs: this.ws != null,
+      readyState: this.ws?.readyState ?? null,
+      bufferedAmount: this.ws?.bufferedAmount ?? null,
+      pendingMessages: this.pendingMessages.length,
+      inFlightToolCallId:
+        typeof this.inFlightToolCallId === 'string' ? this.inFlightToolCallId.slice(0, 16) : null,
+    });
     // Cancel any pending reconnect and latch the state machine off so
     // a late-firing timer doesn't resurrect the socket after we asked
     // it to shut down.
@@ -859,10 +960,35 @@ export class SonnetSession {
   }
 
   private sendRaw(obj: Record<string, unknown>): void {
-    if (!this.ws) return;
+    const type = typeof obj.type === 'string' ? obj.type : 'unknown';
+    // CRITICAL: never pipelineLog `client_diagnostic` sends. pipelineLog
+    // fans out to clientDiagnostic() which routes through sendClientDiagnostic()
+    // which calls sendRaw() — logging that send would recurse infinitely.
+    const isDiag = type === 'client_diagnostic';
+    if (!this.ws) {
+      if (!isDiag) {
+        pipelineLog('sonnet_ws_send_dropped_no_ws', { type });
+      }
+      return;
+    }
     try {
       this.ws.send(JSON.stringify(obj));
+      this.lastSendMs = Date.now();
+      this.lastSendType = type;
+      if (!isDiag) {
+        pipelineLog('sonnet_ws_send', {
+          type,
+          readyState: this.ws.readyState,
+          bufferedAmount: this.ws.bufferedAmount,
+        });
+      }
     } catch (err) {
+      if (!isDiag) {
+        pipelineLog('sonnet_ws_send_throw', {
+          type,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       this.callbacks.onError?.(err instanceof Error ? err : new Error(String(err)), true);
     }
   }
@@ -967,11 +1093,18 @@ export class SonnetSession {
     try {
       const text = typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer);
       json = JSON.parse(text) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
+      pipelineLog('sonnet_ws_recv_parse_error', {
+        error: err instanceof Error ? err.message : String(err),
+        dataKind: typeof data,
+      });
       return;
     }
 
     const type = json.type as string | undefined;
+    this.lastRecvMs = Date.now();
+    this.lastRecvType = type ?? 'unknown';
+    pipelineLog('sonnet_ws_recv', { type: type ?? 'unknown' });
     switch (type) {
       case 'session_ack': {
         const status = (json.status as string) ?? 'unknown';
@@ -1019,19 +1152,62 @@ export class SonnetSession {
         const result = json.result as ExtractionResult | undefined;
         if (result) {
           // Normalise — server sometimes omits these when empty.
+          const readings = Array.isArray(result.readings) ? result.readings : [];
+          const fieldClears = Array.isArray(result.field_clears) ? result.field_clears : [];
+          const circuitUpdates = Array.isArray(result.circuit_updates)
+            ? result.circuit_updates
+            : [];
+          const observations = Array.isArray(result.observations) ? result.observations : [];
+          const validationAlerts = Array.isArray(result.validation_alerts)
+            ? result.validation_alerts
+            : [];
+          const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
           const normalised: ExtractionResult = {
-            readings: Array.isArray(result.readings) ? result.readings : [],
-            field_clears: Array.isArray(result.field_clears) ? result.field_clears : [],
-            circuit_updates: Array.isArray(result.circuit_updates) ? result.circuit_updates : [],
-            observations: Array.isArray(result.observations) ? result.observations : [],
-            validation_alerts: Array.isArray(result.validation_alerts)
-              ? result.validation_alerts
-              : [],
-            confirmations: Array.isArray(result.confirmations) ? result.confirmations : [],
+            readings,
+            field_clears: fieldClears,
+            circuit_updates: circuitUpdates,
+            observations,
+            validation_alerts: validationAlerts,
+            confirmations,
             extraction_failed: result.extraction_failed,
             error_message: result.error_message,
           };
+          // Wire-shape audit — log the actual keys present on each
+          // circuit_update so we can SEE whether the backend is sending
+          // {op, circuit_ref, meta} (iOS-flavoured) or {action, circuit,
+          // designation} (PWA-flavoured). The mismatch is the prime
+          // suspect for "circuit created without a name" in the
+          // 2026-05-12 sess_mp2921h7_2dl4 incident.
+          const circuitUpdateShapes = circuitUpdates.map((u) => {
+            const obj = u as unknown as Record<string, unknown>;
+            return {
+              keys: Object.keys(obj),
+              hasOp: 'op' in obj,
+              hasAction: 'action' in obj,
+              hasCircuit: 'circuit' in obj,
+              hasCircuitRef: 'circuit_ref' in obj,
+              hasDesignationTop: 'designation' in obj,
+              hasMeta: 'meta' in obj,
+              metaHasDesignation:
+                typeof obj.meta === 'object' &&
+                obj.meta != null &&
+                'designation' in (obj.meta as Record<string, unknown>),
+            };
+          });
+          pipelineLog('sonnet_extraction_decoded', {
+            readings: readings.length,
+            circuit_updates: circuitUpdates.length,
+            field_clears: fieldClears.length,
+            observations: observations.length,
+            validation_alerts: validationAlerts.length,
+            confirmations: confirmations.length,
+            extraction_failed: !!normalised.extraction_failed,
+            hasErrorMessage: typeof normalised.error_message === 'string',
+            circuit_update_shapes: circuitUpdateShapes,
+          });
           this.callbacks.onExtraction?.(normalised);
+        } else {
+          pipelineLog('sonnet_extraction_no_result', {});
         }
         break;
       }

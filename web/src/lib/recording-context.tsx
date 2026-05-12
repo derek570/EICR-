@@ -40,6 +40,7 @@ import {
 import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tts';
 import { clientDiagnostic, setDiagnosticSink } from './recording/client-diagnostic';
 import { record as recordLifecycle } from './diagnostics/lifecycle-log';
+import { pipelineLog } from './diagnostics/pipeline-log';
 import { playAttentionTone, playConfirmationChime } from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
@@ -633,6 +634,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             textPreview: text.slice(0, 80),
             confidence,
           });
+          pipelineLog('recording_final_transcript', {
+            textLength: text.length,
+            textPreview: text.slice(0, 40),
+            confidence: Math.round(confidence * 1000) / 1000,
+          });
           // Mic-feedback gate (iOS parity) — discard finals that
           // arrived while the device's own TTS was audible. Without
           // this, the speaker plays "Should I create circuit 1?", the
@@ -786,6 +792,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
         },
         onError: (err) => {
+          pipelineLog('recording_deepgram_on_error', {
+            messageLength: err.message.length,
+            messagePreview: err.message.slice(0, 80),
+            hasService: deepgramRef.current != null,
+          });
           // Only surface in the UI if we're not already closing down — a
           // normal CloseStream can race with `stop()` and emit a spurious
           // error that would otherwise flip the overlay red. In fetcher
@@ -849,7 +860,29 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         firstConfirmationPreview,
         extraction_failed: Boolean(result.extraction_failed),
       });
-      const applied = applyExtractionToJob(jobRef.current, result);
+      pipelineLog('recording_apply_extraction_call', {
+        readings: result.readings?.length ?? 0,
+        circuit_updates: result.circuit_updates?.length ?? 0,
+        observations: result.observations?.length ?? 0,
+        validation_alerts: result.validation_alerts?.length ?? 0,
+        confirmations: result.confirmations?.length ?? 0,
+        extraction_failed: Boolean(result.extraction_failed),
+      });
+      let applied: ReturnType<typeof applyExtractionToJob>;
+      try {
+        applied = applyExtractionToJob(jobRef.current, result);
+      } catch (err) {
+        pipelineLog('recording_apply_extraction_threw', {
+          error: err instanceof Error ? err.message : String(err),
+          stackPreview:
+            err instanceof Error && typeof err.stack === 'string' ? err.stack.slice(0, 200) : null,
+        });
+        throw err;
+      }
+      pipelineLog('recording_apply_extraction_result', {
+        appliedNull: applied === null,
+        changed_keys: applied?.changedKeys.length ?? 0,
+      });
       if (applied) {
         updateJobRef.current(applied.patch);
         // Mirror the patch into jobRef.current synchronously so a
@@ -1214,6 +1247,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
       },
       onError: (err, recoverable) => {
+        pipelineLog('recording_sonnet_on_error', {
+          recoverable,
+          messageLength: err.message.length,
+          messagePreview: err.message.slice(0, 80),
+        });
         // Only surface non-recoverable errors in the overlay. Transient
         // server errors (rate-limit, API blip) should not flip the UI
         // red mid-recording.
@@ -1439,9 +1477,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // sees `requesting-mic` and bails. Double-tap on Start now no-ops.
     if (statusRef.current !== 'idle' && statusRef.current !== 'error') {
       recordLifecycle('recording-start-blocked', { status: statusRef.current });
+      pipelineLog('recording_start_blocked', { status: statusRef.current });
       return;
     }
     recordLifecycle('recording-start', { jobId: jobRef.current?.id ?? null });
+    pipelineLog('recording_start_invoked', {
+      jobId: jobRef.current?.id ?? null,
+      certType: jobRef.current?.certificate_type ?? null,
+    });
     // Unlock SpeechSynthesis inside the user-gesture stack frame BEFORE
     // any await — iOS Safari only grants TTS autoplay when the first
     // speak() lands inside a click/touchend/keydown handler, and the
@@ -1604,6 +1647,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // enough — any string-compare against a real sessionId will differ.
     if (statusRef.current === 'idle') return;
     recordLifecycle('recording-stop', { status: statusRef.current });
+    pipelineLog('recording_stop_invoked', { status: statusRef.current });
     sessionIdRef.current = '';
     // Clear the TTS sessionId in lockstep so post-stop speak() calls
     // (e.g. an ask_user that arrived after the WS close) bypass the

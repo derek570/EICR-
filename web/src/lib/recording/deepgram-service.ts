@@ -20,6 +20,8 @@
  * change there.
  */
 
+import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
+
 export type DeepgramConnectionState =
   | 'disconnected'
   | 'connecting'
@@ -268,6 +270,10 @@ export class DeepgramService {
 
     ws.onopen = () => {
       const wasReconnect = this.hasEverOpened;
+      pipelineLog('deepgram_ws_open', {
+        wasReconnect,
+        reconnectAttempt: this.reconnectAttempt,
+      });
       this.setState('connected');
       this.reconnectAttempt = 0; // success resets backoff
       this.hasEverOpened = true;
@@ -285,6 +291,9 @@ export class DeepgramService {
     };
 
     ws.onerror = () => {
+      pipelineLog('deepgram_ws_error', {
+        willDeferToClose: this.shouldReconnect,
+      });
       // In fetcher mode, defer to onclose — it will schedule a
       // reconnect. Surfacing an error event here would double-fire
       // through the `errorEmitted` guard and, worse, flash an error
@@ -298,6 +307,14 @@ export class DeepgramService {
       this.stopKeepAlive();
       this.ws = null;
       const reconnectable = event.code !== 1000 && event.code !== 1005;
+      pipelineLog('deepgram_ws_close', {
+        code: event.code,
+        reason: event.reason ?? '',
+        wasClean: event.wasClean,
+        reconnectable,
+        shouldReconnect: this.shouldReconnect,
+        reconnectAttempt: this.reconnectAttempt,
+      });
       // Log close code + reason on every close so backend/ops can
       // correlate flaky-link incidents with browser-side reconnect
       // behaviour. 1000 (normal) + 1005 (no status) are expected
@@ -606,20 +623,36 @@ export class DeepgramService {
         }
 
         if (isFinal) {
+          pipelineLog('deepgram_final', {
+            textLength: transcript.length,
+            textPreview: transcript.slice(0, 40),
+            confidence: Math.round(confidence * 1000) / 1000,
+            wordCount: words.length,
+          });
           this.callbacks.onFinalTranscript(transcript, confidence, words);
         } else {
+          pipelineLog('deepgram_interim', {
+            textLength: transcript.length,
+            confidence: Math.round(confidence * 1000) / 1000,
+          });
           this.callbacks.onInterimTranscript(transcript, confidence);
         }
         break;
       }
       case 'SpeechStarted':
+        pipelineLog('deepgram_speech_started', {});
         this.callbacks.onSpeechStarted?.();
         break;
       case 'UtteranceEnd':
+        pipelineLog('deepgram_utterance_end', {});
         this.callbacks.onUtteranceEnd?.();
         break;
       case 'Error': {
         const msg = (json.message as string | undefined) ?? 'Unknown Deepgram error';
+        pipelineLog('deepgram_dg_error', {
+          messageLength: msg.length,
+          messagePreview: msg.slice(0, 80),
+        });
         this.callbacks.onError?.(new Error(msg));
         break;
       }

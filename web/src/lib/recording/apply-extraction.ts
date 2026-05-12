@@ -26,6 +26,7 @@ import type {
   FieldClear,
   Observation,
 } from './sonnet-session';
+import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 
 type Section =
   | 'supply_characteristics'
@@ -178,7 +179,27 @@ function applyCircuitReadings(
   const hasCircuitUpdate = circuitUpdates.some((u) => u.circuit >= 1);
   const hasPerCircuitClear = fieldClears.some((c) => c.circuit >= 1);
 
+  pipelineLog('apply_circuits_entry', {
+    per_circuit_readings: perCircuitReadings.length,
+    circuit_updates_raw: circuitUpdates.length,
+    circuit_updates_qualifying: circuitUpdates.filter((u) => u.circuit >= 1).length,
+    per_circuit_clears: fieldClears.filter((c) => c.circuit >= 1).length,
+    existing_circuits: Array.isArray(job.circuits) ? job.circuits.length : 0,
+  });
+
   if (perCircuitReadings.length === 0 && !hasCircuitUpdate && !hasPerCircuitClear) {
+    pipelineLog('apply_circuits_exit_noop', {
+      reason: 'no_qualifying_input',
+      // Wire-shape audit — if `circuit_updates` arrived but none
+      // qualified, dump the keys actually present on the first entry so
+      // we can immediately see whether the backend is using the
+      // iOS-flavoured {op, circuit_ref, meta} shape instead of the
+      // PWA-flavoured {action, circuit, designation} we read.
+      first_update_keys:
+        circuitUpdates.length > 0
+          ? Object.keys(circuitUpdates[0] as unknown as Record<string, unknown>)
+          : [],
+    });
     return null;
   }
 
@@ -203,11 +224,39 @@ function applyCircuitReadings(
   // Apply circuit_updates (create / rename designation) first so
   // readings against renamed circuits land on the right row.
   for (const upd of circuitUpdates) {
-    if (upd.circuit < 1 || !upd.designation) continue;
+    const obj = upd as unknown as Record<string, unknown>;
+    if (upd.circuit < 1 || !upd.designation) {
+      pipelineLog('apply_circuit_update_skipped', {
+        reason:
+          upd.circuit < 1
+            ? typeof upd.circuit === 'undefined'
+              ? 'circuit_undefined'
+              : 'circuit_lt_1'
+            : 'designation_missing_or_empty',
+        keys: Object.keys(obj),
+        circuit: upd.circuit,
+        action: upd.action,
+        designation_present: typeof upd.designation === 'string' && upd.designation.length > 0,
+      });
+      continue;
+    }
     const idx = ensureRow(upd.circuit);
     const row = circuits[idx];
     if (upd.action === 'rename' || !hasValue(row.circuit_designation)) {
       circuits[idx] = { ...row, circuit_designation: upd.designation };
+      pipelineLog('apply_circuit_update_applied', {
+        circuit: upd.circuit,
+        action: upd.action,
+        designation_length: upd.designation.length,
+        designation_preview: upd.designation.slice(0, 40),
+        rowCreated: idx === circuits.length - 1,
+      });
+    } else {
+      pipelineLog('apply_circuit_update_user_value_kept', {
+        circuit: upd.circuit,
+        existing_designation_preview:
+          typeof row.circuit_designation === 'string' ? row.circuit_designation.slice(0, 40) : null,
+      });
     }
   }
 
@@ -496,6 +545,14 @@ export function applyExtractionToJob(
   const fieldClears = result.field_clears ?? [];
   const observations = result.observations ?? [];
 
+  pipelineLog('apply_extraction_entry', {
+    readings: readings.length,
+    circuit_updates: circuitUpdates.length,
+    field_clears: fieldClears.length,
+    observations: observations.length,
+    existing_circuits: Array.isArray(job.circuits) ? job.circuits.length : 0,
+  });
+
   const patch: Partial<JobDetail> = {};
 
   // Circuit 0 readings — split by section.
@@ -528,7 +585,15 @@ export function applyExtractionToJob(
   const newObservations = applyObservations(job, observations);
   if (newObservations) patch.observations = newObservations;
 
-  if (Object.keys(patch).length === 0) return null;
+  if (Object.keys(patch).length === 0) {
+    pipelineLog('apply_extraction_exit_no_patch', {
+      readings: readings.length,
+      circuit_updates: circuitUpdates.length,
+      field_clears: fieldClears.length,
+      observations: observations.length,
+    });
+    return null;
+  }
 
   // Compute changedKeys by diffing the patched sections against the
   // pre-patch job. We diff instead of reading the readings array so the
@@ -550,6 +615,13 @@ export function applyExtractionToJob(
   if (patch.observations) {
     changedKeys.push(...diffObservationKeys(job.observations, patch.observations));
   }
+
+  pipelineLog('apply_extraction_exit', {
+    patch_sections: Object.keys(patch),
+    changed_keys: changedKeys.length,
+    new_circuit_count: Array.isArray(patch.circuits) ? patch.circuits.length : null,
+    new_observation_count: Array.isArray(patch.observations) ? patch.observations.length : null,
+  });
 
   return { patch, changedKeys };
 }

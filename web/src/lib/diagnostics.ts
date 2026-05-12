@@ -34,6 +34,7 @@
 
 import { DB_NAME, isSupported, openDB } from '@/lib/pwa/job-cache';
 import { getUser } from '@/lib/auth';
+import { getPipelineLog, type PipelineEvent } from '@/lib/diagnostics/pipeline-log';
 
 /**
  * Keys / values matching this regex are redacted in the dump. The
@@ -74,6 +75,12 @@ export interface DiagnosticsSnapshot {
     stores: Record<string, unknown[]>;
     error?: string;
   };
+  /** Recent recording-pipeline events. Ring buffer maintained in
+   *  `lib/diagnostics/pipeline-log.ts`. Capped at 500 entries; older
+   *  events are dropped silently. Included verbatim so support can
+   *  reconstruct the WS / extraction timeline without a CloudWatch
+   *  round-trip. */
+  pipeline_log: PipelineEvent[];
 }
 
 /** App version — build-time env wins so we can override per-channel. */
@@ -211,5 +218,6 @@ export async function collectDiagnostics(): Promise<DiagnosticsSnapshot> {
     local_storage: safeLocal,
     session_storage: safeSession,
     idb,
+    pipeline_log: getPipelineLog(),
   };
 }

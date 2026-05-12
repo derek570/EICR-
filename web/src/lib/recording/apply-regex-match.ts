@@ -22,6 +22,7 @@
 import type { JobDetail, CircuitRow } from '@/lib/types';
 import type { FieldSourceTracker } from './field-source-tracker';
 import type { CircuitUpdates, RegexMatchResult } from './regex-match-result';
+import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 
 // MARK: — Field-name → JobDetail-section routing
 //
@@ -111,6 +112,12 @@ export function applyRegexMatchToJob(
   result: RegexMatchResult,
   tracker: FieldSourceTracker
 ): RegexApplyOutput | null {
+  pipelineLog('apply_regex_entry', {
+    supply: Object.keys(result.supply_updates ?? {}).length,
+    board: Object.keys(result.board_updates ?? {}).length,
+    installation: Object.keys(result.installation_updates ?? {}).length,
+    circuit_updates_refs: Object.keys(result.circuit_updates ?? {}).length,
+  });
   const patch: Partial<JobDetail> = {};
   const changedKeys: string[] = [];
 
@@ -217,6 +224,13 @@ export function applyRegexMatchToJob(
     patch.circuits = circuits;
   }
 
-  if (changedKeys.length === 0) return null;
+  if (changedKeys.length === 0) {
+    pipelineLog('apply_regex_exit_no_changes', {});
+    return null;
+  }
+  pipelineLog('apply_regex_exit', {
+    changed_keys: changedKeys.length,
+    patch_sections: Object.keys(patch),
+  });
   return { patch, changedKeys };
 }
