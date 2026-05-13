@@ -1691,6 +1691,15 @@ export function applyExtractionToJob(
  * mark-distribution mutation here targets WHATEVER shape is present,
  * preferring the nested form when the source board has its own
  * circuits[] populated.
+ *
+ * NB on userDefaults: intentionally NOT threaded through this
+ * function. iOS canon `DeepgramRecordingViewModel.swift:5205-5320`
+ * doesn't call `DefaultsService.applyDefaults` for any board op
+ * either: `add_board` writes structural fields only,
+ * `mark_distribution_circuit` mutates two fields on an existing
+ * row, and `select_board` is inert. Circuit-level defaults flow
+ * through `applyExtractionToJob` (record_reading / add_circuit
+ * paths) where new rows are actually created.
  */
 export function applyBoardOpsToJob(job: JobDetail, ops: BoardOp[]): Partial<JobDetail> | null {
   if (!Array.isArray(ops) || ops.length === 0) return null;
