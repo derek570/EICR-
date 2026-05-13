@@ -16,6 +16,12 @@ import {
   applyExtractionToJob,
   applyObservationUpdate,
 } from './recording/apply-extraction';
+import {
+  isWithinLinkWindow,
+  type PendingObservationPhoto,
+  type RecentObservationRef,
+} from './recording/observation-photo';
+import { clearPendingPhoto, readPendingPhoto } from './pwa/job-cache';
 import { applyRegexMatchToJob } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
@@ -178,6 +184,20 @@ export type RecordingActions = {
    *  Sonnet is still paused (network drop / backend stall). Mirrors iOS
    *  `resumeFromChitchatPause` (DeepgramRecordingViewModel.swift:6880). */
   resumeChitchat: () => void;
+  /** L2 obs-photo sprint — capture an observation photo during a live
+   *  recording session. Resizes locally to ≤ 2048 px at JPEG 0.80
+   *  (EXIF + GPS dropped via canvas redraw), uploads to
+   *  `/api/job/.../photos`, then either auto-links to a recent
+   *  observation (within `OBSERVATION_PHOTO_LINK_WINDOW_MS`), enters
+   *  the pending slot for the next observation to claim, or — when
+   *  the 60 s window expires unclaimed — flows into
+   *  `job.unassigned_photos[]` for later recovery via the picker on
+   *  the observation edit sheet. No-op when `state !== 'active'`
+   *  (matches iOS `:1505`). Phase 4 wires the body; Phase 2 ships the
+   *  signature so Phase 5's Photo button can be authored without
+   *  blocking on the upload-handler work. iOS canon:
+   *  `DeepgramRecordingViewModel.swift:1504-1591`. */
+  captureObservationPhoto: (file: File) => Promise<void>;
 };
 
 type RecordingCtx = RecordingSnapshot & RecordingActions;
@@ -344,6 +364,68 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     updateJobRef.current = updateJob;
   }, [updateJob]);
+
+  // L2 obs-photo sprint — pending tuple slot. Held in a ref because the
+  // WS callback that drives `applyObservations` (Phase 3 reads this) and
+  // the chrome button's onClick (Phase 5 writes this via
+  // captureObservationPhoto) both need to see the *current* value
+  // without depending on a re-render. iOS canon:
+  // `DeepgramRecordingViewModel.swift:497`.
+  const pendingPhotoRef = React.useRef<PendingObservationPhoto | null>(null);
+  // Mirror of the LAST appended observation for the reverse-link path
+  // in Phase 4's captureObservationPhoto. Updated by Phase 3 in
+  // applyObservations after a row appends. iOS canon: :499-500.
+  // Reference unused before Phase 3 ships — pinned in a void to silence
+  // the unused-locals lint without dropping the declaration.
+  const recentObservationRef = React.useRef<RecentObservationRef | null>(null);
+  void recentObservationRef;
+
+  // Rehydrate the pending tuple from IDB when the active job changes
+  // (page reload or job switch). The 60 s TTL is enforced here so an
+  // expired record never reaches the Phase 3 forward-link. Phase 6
+  // will move expired-but-still-IDB-persisted records into
+  // `job.unassigned_photos[]` from a separate timer.
+  React.useEffect(() => {
+    const jobId = job?.id;
+    if (!jobId) {
+      pendingPhotoRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const record = await readPendingPhoto(jobId);
+      if (cancelled) return;
+      if (!record) {
+        pendingPhotoRef.current = null;
+        return;
+      }
+      if (!isWithinLinkWindow(record.timestamp)) {
+        // Past TTL on rehydrate — drop the slot. The upgrade-to-
+        // unassigned-pool path lands in Phase 6; until then expired
+        // records simply disappear, matching the pre-sprint state
+        // (the photo is already on S3 either way).
+        await clearPendingPhoto(jobId);
+        pendingPhotoRef.current = null;
+        return;
+      }
+      pendingPhotoRef.current = record;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.id]);
+
+  // Phase 2 placeholder — the resize + upload flow lands in Phase 4.
+  // The signature is in place so the Phase 5 chrome button can be
+  // authored against the final shape without churn. The body is
+  // intentionally a no-op log call: invoking it pre-Phase 4 should be
+  // observable for support but never crash a recording session.
+  const captureObservationPhoto = React.useCallback(async (file: File): Promise<void> => {
+    pipelineLog('observation_photo_capture_phase2_stub', {
+      size: file.size,
+      type: file.type,
+    });
+  }, []);
 
   // Bug K (2026-05-11) — pending-naming utterance buffer. Holds at most
   // one Deepgram final whose text trailing-matches "Circuit N is" with
@@ -2211,6 +2293,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       acceptQuestion,
       rejectQuestion,
       resumeChitchat,
+      captureObservationPhoto,
     }),
     [
       state,
@@ -2236,6 +2319,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       acceptQuestion,
       rejectQuestion,
       resumeChitchat,
+      captureObservationPhoto,
     ]
   );
 
