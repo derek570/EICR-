@@ -438,7 +438,11 @@ export default function CircuitsPage() {
         ? 'Analysing board labels…'
         : mode === 'hardware_update'
           ? 'Analysing new board hardware…'
-          : 'Analysing consumer unit…'
+          : mode === 'append_rail'
+            ? 'Analysing additional rail…'
+            : mode === 'add_new_board'
+              ? 'Analysing sub-board…'
+              : 'Analysing consumer unit…'
     );
     try {
       const analysis = await api.analyzeCCU(file);
@@ -493,16 +497,29 @@ export default function CircuitsPage() {
       });
       updateJob(patch);
       // If we just synthesised a board, surface it as the active one
-      // so the new circuits are visible under the selector.
+      // so the new circuits are visible under the selector. Same for
+      // add_new_board mode — the inspector just photographed a sub-
+      // board, so the active selection should jump to it (otherwise
+      // the new circuits appear to vanish under the previously
+      // selected board).
       const patchedBoards = (patch.boards ?? []) as { id: string }[];
       if (!selectedBoardId && patchedBoards.length > 0) {
         setSelectedBoardId(patchedBoards[0].id);
+      } else if (mode === 'add_new_board' && patchedBoards.length > 0) {
+        setSelectedBoardId(patchedBoards[patchedBoards.length - 1].id);
       }
       const added = analysis.circuits?.length ?? 0;
-      const suffix = mode === 'names_only' ? ' (labels only)' : mode === 'full_capture' ? '' : '';
+      const verb =
+        mode === 'append_rail' ? 'appended' : mode === 'add_new_board' ? 'added' : 'merged';
+      const suffix =
+        mode === 'names_only'
+          ? ' (labels only)'
+          : mode === 'add_new_board'
+            ? ' to a new sub-board'
+            : '';
       setActionHint(
         added > 0
-          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} merged${suffix}.`
+          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} ${verb}${suffix}.`
           : 'CCU analysed — no circuits detected.'
       );
       setCcuQuestions(questions);
