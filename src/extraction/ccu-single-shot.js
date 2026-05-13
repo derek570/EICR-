@@ -105,6 +105,18 @@ A 2-pole device that physically occupies TWO module slots — typically a 2-pole
 
 INCLUDE blanking plates (plain plastic covers in an unused slot) as ordinary entries with device_kind:"blank".
 
+COUNTING — CRITICAL
+Before writing any entries, count the visible toggle handles (or rocker switches, or fuse carriers) along the rail. UK consumer units commonly have runs of 3–8 IDENTICAL-LOOKING MCBs side-by-side (same colour, same amperage, same curve letter — e.g. four B32s in a row or six B6s in a row). It is easy to miscount these as "three" or "five" when there are actually four or six.
+
+Procedure:
+1. First, scan left-to-right and count every distinct toggle/rocker handle on the rail. Note the total.
+2. Then identify the major reference points: where does the row of MCBs start? Where does the RCD sit (if any)? Where is the main switch?
+3. For each RUN of identical-looking MCBs, count them individually by toggle. Do NOT describe a run as "several" or estimate — point at each toggle in turn (mentally), incrementing a counter.
+4. Your output must have one entry per physical slot — INCLUDING every identical MCB in a run. Five identical B6 MCBs in a row = five entries with rating=6, curve="B".
+5. Sanity check before returning: does the total entries count = the total toggles you counted in step 1, accounting for 2-pole/3-pole devices contributing 2 or 3 entries each? If they don't match, re-count.
+
+If unsure between N and N+1 in a long run of identicals, prefer N+1 — the post-extraction layer cross-checks with an independent geometric pipeline and a phantom slot is recoverable; a missed slot is not.
+
 OUTPUT
 Return a JSON object with one key "entries", an array of objects:
   {
