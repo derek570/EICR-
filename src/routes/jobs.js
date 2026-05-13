@@ -590,6 +590,7 @@ router.get('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
       inspector_id: extractedData.inspector_id || null,
       extent_and_type: extractedData.extent_and_type || null,
       design_construction: extractedData.design_construction || null,
+      unassigned_photos: extractedData.unassigned_photos || null,
     });
   } catch (error) {
     logger.error('Failed to get job', { userId, jobId, error: error.message });
@@ -662,6 +663,7 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
     inspector_id,
     extent_and_type,
     design_construction,
+    unassigned_photos,
   } = req.body;
 
   const hasAccess = await auth.canAccessUser(req, userId);
@@ -753,6 +755,16 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
     }
     if (design_construction) {
       extractedData.design_construction = design_construction;
+    }
+    if (Array.isArray(unassigned_photos)) {
+      // Pool of observation photos captured during recording that expired
+      // their auto-link window. Used by the EditObservationSheet "From Job"
+      // picker on iOS (Sources/Views/JobDetail/EditObservationSheet.swift:144)
+      // and the equivalent JobPhotosPickerSheet on PWA. iOS originally wrote
+      // this field but the destructure here omitted it, so the pool was
+      // in-memory only and never survived a reload — pinned by
+      // jobs.test.js round-trip tests below.
+      extractedData.unassigned_photos = unassigned_photos;
     }
 
     await storage.uploadText(

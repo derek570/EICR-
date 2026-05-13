@@ -340,6 +340,102 @@ describe('Job routes (supertest)', () => {
       expect(res.body.boards[1].sub_main_cable_length).toBeUndefined();
     });
 
+    test('preserves unassigned_photos in extracted_data.json on PUT', async () => {
+      // L2 observation-photo auto-link sprint 2026-05-13. Before this fix,
+      // the route destructure at jobs.js:654 omitted unassigned_photos so
+      // iOS's pool (Job.swift:104 + JobViewModel.swift:518-525) silently
+      // dropped on every save — the field never reached extracted_data.json.
+      // Pin the round-trip so a future destructure rewrite can't regress it.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockUpdateJob.mockResolvedValue(undefined);
+
+      let uploadedExtractedDataJson = null;
+      mockUploadText.mockImplementation(async (content, key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          uploadedExtractedDataJson = content;
+        }
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          unassigned_photos: ['photo-a.jpg', 'photo-b.jpg'],
+        });
+
+      expect(res.status).toBe(200);
+      expect(uploadedExtractedDataJson).not.toBeNull();
+      const written = JSON.parse(uploadedExtractedDataJson);
+      expect(written.unassigned_photos).toEqual(['photo-a.jpg', 'photo-b.jpg']);
+    });
+
+    test('PUT with empty unassigned_photos array clears the pool', async () => {
+      // Mirror iOS removePhotosFromUnassigned which sets the property to nil
+      // when the pool empties. An explicit [] from a client must replace any
+      // prior pool — not be skipped as falsy.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockUpdateJob.mockResolvedValue(undefined);
+      mockDownloadText.mockImplementation(async (key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          return JSON.stringify({ unassigned_photos: ['old.jpg'] });
+        }
+        return null;
+      });
+
+      let uploadedExtractedDataJson = null;
+      mockUploadText.mockImplementation(async (content, key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          uploadedExtractedDataJson = content;
+        }
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ unassigned_photos: [] });
+
+      expect(res.status).toBe(200);
+      const written = JSON.parse(uploadedExtractedDataJson);
+      expect(written.unassigned_photos).toEqual([]);
+    });
+
+    test('returns unassigned_photos from extracted_data.json on GET', async () => {
+      // Read-side complement. Before this fix, the GET response builder at
+      // jobs.js:576-593 enumerated a fixed field list that omitted
+      // unassigned_photos — so even if the field landed in S3 it never
+      // surfaced to the client.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockDownloadText.mockImplementation(async (key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          return JSON.stringify({ unassigned_photos: ['photo-a.jpg', 'photo-b.jpg'] });
+        }
+        return null;
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .get('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.unassigned_photos).toEqual(['photo-a.jpg', 'photo-b.jpg']);
+    });
+
+    test('GET defaults unassigned_photos to null when absent', async () => {
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockDownloadText.mockResolvedValue(null);
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .get('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.unassigned_photos).toBeNull();
+    });
+
     test('rejects PUT with invalid board hierarchy (400)', async () => {
       // Phase 2.3 — wire-level proof that the validator runs before S3 writes.
       // Payload has a sub_main board pointing at a parent_board_id that does
