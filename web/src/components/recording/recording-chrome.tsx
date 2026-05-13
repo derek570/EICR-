@@ -20,6 +20,8 @@ import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context
 import { useJobContext } from '@/lib/job-context';
 import { cn } from '@/lib/utils';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
+import { Image as ImageIcon } from 'lucide-react';
 import {
   getConfirmationModeEnabled,
   isTtsAvailable,
@@ -129,6 +131,7 @@ function RecordingActionBar() {
     stop,
     pause,
     resume,
+    captureObservationPhoto,
   } = useRecording();
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -181,6 +184,43 @@ function RecordingActionBar() {
     },
     [router, jobId]
   );
+
+  // L2 obs-photo sprint (2026-05-13) — recording-time Photo capture.
+  // The chooser sheet matches the iOS pattern at PhotoCaptureView.swift
+  // (a SwiftUI `.fullScreenCover(item: $activePhotoMode)` with
+  // Camera / Library cases). On PWA we drive the choice through two
+  // hidden file inputs: the camera input uses `capture=environment`
+  // to request the rear camera on iPad/iPhone Safari, while the
+  // library input omits `capture` so the inspector gets the photos
+  // app picker. Both fire `captureObservationPhoto` from the
+  // recording context on change — see Phase 4 for the upload + auto-
+  // link state machine.
+  const [photoChooserOpen, setPhotoChooserOpen] = React.useState(false);
+  const cameraInputRef = React.useRef<HTMLInputElement>(null);
+  const libraryInputRef = React.useRef<HTMLInputElement>(null);
+  const handlePhotoChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      // Reset the input value so picking the SAME file twice in a row
+      // still fires onChange. Without this, iOS Safari's picker is a
+      // no-op on re-select.
+      event.target.value = '';
+      if (!file) return;
+      void captureObservationPhoto(file);
+    },
+    [captureObservationPhoto]
+  );
+  const openCamera = React.useCallback(() => {
+    setPhotoChooserOpen(false);
+    // Defer the click so the dialog's close animation doesn't race
+    // with the iOS Safari camera prompt — a synchronous click during
+    // dismiss can be silently swallowed.
+    requestAnimationFrame(() => cameraInputRef.current?.click());
+  }, []);
+  const openLibrary = React.useCallback(() => {
+    setPhotoChooserOpen(false);
+    requestAnimationFrame(() => libraryInputRef.current?.click());
+  }, []);
 
   // Defaults / Apply — Phase B (2026-05-03) port of iOS
   // RecordingOverlay.swift handlers. iOS shows the Defaults manager
@@ -289,6 +329,22 @@ function RecordingActionBar() {
               icon={FileText}
               onClick={() => goToTab('/circuits')}
             />
+            {/* Photo — L2 obs-photo sprint (2026-05-13). Always visible
+                so a 360 px viewport still has it; iOS canon also keeps
+                this button always-on while recording. Disabled when the
+                state isn't active so a stray tap during requesting-mic
+                doesn't open the chooser before the mic stream is up.
+                Tap → chooser sheet with Camera / Library options
+                (decision 0.6). */}
+            <ParityButton
+              label="Photo"
+              tone="blue"
+              icon={Camera}
+              onClick={() => setPhotoChooserOpen(true)}
+              disabled={!isActive}
+              disabledReason="not recording"
+              ariaLabel="Capture observation photo"
+            />
             {/* Obs — tablet+ only, see comment above. */}
             <div className="hidden md:contents">
               <ParityButton
@@ -365,6 +421,68 @@ function RecordingActionBar() {
           }
         }}
       />
+
+      {/* L2 obs-photo sprint (2026-05-13) — hidden file inputs.
+          `capture="environment"` requests the rear camera on iPad/
+          iPhone Safari (Apple's docs note iOS 17+ honours this
+          reliably; older iPadOS falls back to a picker — same UX as
+          the Library button below, just one tap wasted). The
+          Library input intentionally omits `capture` so iOS surfaces
+          the photo library picker. Both fire `handlePhotoChange`
+          which delegates to `captureObservationPhoto` from the
+          recording context (Phase 4 state machine). */}
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handlePhotoChange}
+        className="hidden"
+        aria-hidden
+        tabIndex={-1}
+      />
+      <input
+        ref={libraryInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handlePhotoChange}
+        className="hidden"
+        aria-hidden
+        tabIndex={-1}
+      />
+
+      {/* Camera-vs-Library chooser. Matches iOS PhotoCaptureView's
+          `.fullScreenCover(item: $activePhotoMode)` chooser
+          (PhotoCaptureView.swift:32-186). Two tap targets only —
+          inspector mid-recording doesn't want a settings page, just
+          a fast pick. */}
+      <Dialog open={photoChooserOpen} onOpenChange={setPhotoChooserOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogTitle>Add observation photo</DialogTitle>
+          <DialogDescription>
+            Capture a photo of the issue or pick one from your library. The photo links to the
+            nearest observation automatically.
+          </DialogDescription>
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={openCamera}
+              className="flex flex-col items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-5 text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-blue)]"
+            >
+              <Camera className="h-8 w-8" strokeWidth={1.75} aria-hidden />
+              <span className="text-sm font-semibold">Camera</span>
+            </button>
+            <button
+              type="button"
+              onClick={openLibrary}
+              className="flex flex-col items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-5 text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-blue)]"
+            >
+              <ImageIcon className="h-8 w-8" strokeWidth={1.75} aria-hidden />
+              <span className="text-sm font-semibold">Library</span>
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
