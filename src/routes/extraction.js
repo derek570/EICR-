@@ -31,6 +31,8 @@ import { extractSlotLabels } from '../extraction/ccu-label-pass.js';
 import { resolveMainSwitchSide } from '../extraction/main-switch-resolver.js';
 import { applyRcdTypeLookup, lookupRcdType } from '../extraction/rcd-type-lookup.js';
 import { writeRcdPendingEntry } from '../extraction/rcd-pending-writer.js';
+import { evaluateQualityGate } from '../extraction/ccu-quality-gate.js';
+import { screenCcuPhoto } from '../extraction/ccu-preflight-screen.js';
 import { withIdempotency } from '../middleware/idempotency.js';
 
 const router = Router();
@@ -39,6 +41,12 @@ const router = Router();
 // Increased from 120s — CCU analysis regularly takes 100-110s
 const CCU_EXTRACTION_TIMEOUT_MS = parseInt(process.env.CCU_EXTRACTION_TIMEOUT_MS, 10) || 180_000;
 const CCU_MAX_UPLOAD_BYTES = parseInt(process.env.CCU_MAX_UPLOAD_BYTES, 10) || 20 * 1024 * 1024;
+// Preflight Haiku quality screen. Defaults ON; set CCU_PREFLIGHT_ENABLED="false"
+// on the task definition to bypass. The screen rejects obviously-unusable
+// photos (shadows, occlusion, blur) BEFORE the expensive per-slot pipeline
+// runs — saves ~$0.05 + ~30 s on a photo that was always going to fail.
+const CCU_PREFLIGHT_ENABLED =
+  (process.env.CCU_PREFLIGHT_ENABLED ?? 'true').toLowerCase() === 'true';
 
 logger.info('CCU extraction config', {
   timeoutMs: CCU_EXTRACTION_TIMEOUT_MS,
@@ -1963,6 +1971,42 @@ router.post(
       const MAX_BASE64_BYTES = 5 * 1024 * 1024;
       const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
       const originalBytes = await fs.readFile(tempPath);
+
+      // --- Preflight quality screen ---
+      // Fast Haiku call that catches visually-unusable photos (heavy
+      // shadow, glare, hand-in-shot, severe defocus) BEFORE we run the
+      // expensive per-slot pipeline. Open-fails (returns pass=true) on
+      // any Haiku error so a Haiku outage can't block extraction —
+      // the post-extract quality gate is the second safety net.
+      if (CCU_PREFLIGHT_ENABLED) {
+        try {
+          const Anthropic = (await import('@anthropic-ai/sdk')).default;
+          const preflightClient = new Anthropic({ apiKey: anthropicKey });
+          const preflight = await screenCcuPhoto({
+            imageBuffer: originalBytes,
+            anthropic: preflightClient,
+            logger,
+            userId: req.user.id,
+          });
+          if (!preflight.pass) {
+            return res.status(422).json({
+              status: 'retake_required',
+              reason: 'preflight_photo_quality',
+              message:
+                preflight.userMessage ||
+                'This photo isn’t clear enough to extract reliably. Please retake with even lighting and the whole consumer unit in frame.',
+              diagnostic: preflight.diagnostic,
+            });
+          }
+        } catch (err) {
+          // Don't block extraction over an unrelated preflight failure.
+          logger.warn('CCU preflight setup failed (open-fail to pipeline)', {
+            userId: req.user.id,
+            error: err?.message ?? String(err),
+          });
+        }
+      }
+
       const originalMeta = await sharp(originalBytes).metadata();
       const originalImageWidth = originalMeta.width || 0;
       const originalImageHeight = originalMeta.height || 0;
@@ -2832,6 +2876,60 @@ router.post(
         geometricSuccess: Boolean(geometricResult),
         extractionSource,
       });
+
+      // --- Quality gate ---
+      // Surface a "retake required" response when the pipeline produced
+      // output we can't trust. Design intent: never return wrong data
+      // silently. The gate is intentionally conservative — it fires only
+      // on hard signals (VLM↔CV count disagreement, severely keystoned
+      // quad, low Stage 1 confidence, mostly-null device ratings).
+      const stage3Out = geometricResult?.stageOutputs?.stage3 ?? {};
+      const gate = evaluateQualityGate({
+        vlmCountAgreesWithCv: stage3Out.vlmCountAgreesWithCv ?? null,
+        vlmCount: stage3Out.vlmCount ?? null,
+        cvCount: stage3Out.cvCount ?? null,
+        classifierConfidence: boardClassification?.confidence ?? null,
+        rectNormCorr: geometricResult?.chunkingDiag?.refinement?.quadDiag?.rectNormCorr ?? null,
+        circuits: analysis.circuits ?? [],
+      });
+      logger.info('CCU quality gate evaluated', {
+        userId: req.user.id,
+        pass: gate.pass,
+        reason: gate.reason,
+        diagnostic: gate.diagnostic,
+      });
+      if (!gate.pass) {
+        // Fire-and-forget training log: bad photos are arguably more
+        // valuable training data than good ones — they're the cases the
+        // pipeline currently fails on. Tag with retake reason so future
+        // tuning runs can filter.
+        logCcuTrainingData({
+          userId: req.user.id,
+          sessionId: req.body?.sessionId || null,
+          imageBuffer: imageBytes,
+          analysis: { ...analysis, retake_reason: gate.reason },
+          meta: {
+            model,
+            totalElapsedMs,
+            anthropicElapsedMs,
+            promptTokens: totalInputTokens,
+            completionTokens: totalOutputTokens,
+            timestamp: new Date().toISOString(),
+            retakeRejection: true,
+          },
+        }).catch((err) => {
+          logger.warn('CCU training log (retake) failed (non-fatal)', {
+            userId: req.user.id,
+            error: err.message,
+          });
+        });
+        return res.status(422).json({
+          status: 'retake_required',
+          reason: gate.reason,
+          message: gate.message,
+          diagnostic: gate.diagnostic,
+        });
+      }
 
       res.json(analysis);
 

@@ -1715,7 +1715,11 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
               main_switch_voltage: '230',
               spd_present: false,
               circuits: [],
-              confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+              // Numeric, top-level, per the classifier prompt's contract — see
+              // classifyBoardTechnology in src/routes/extraction.js. The final
+              // analysis.confidence.{overall, image_quality} is built from this
+              // numeric value downstream; the test doesn't need to provide both.
+              confidence: 0.95,
               questionsForInspector: [],
             }),
           },
@@ -1806,7 +1810,11 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
             main_switch_voltage: '230',
             spd_present: false,
             circuits: [],
-            confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+            // Numeric, top-level, per the classifier prompt's contract — see
+            // classifyBoardTechnology in src/routes/extraction.js. The final
+            // analysis.confidence.{overall, image_quality} is built from this
+            // numeric value downstream; the test doesn't need to provide both.
+            confidence: 0.95,
             questionsForInspector: [],
           }),
         },
@@ -1868,7 +1876,11 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
             main_switch_voltage: '230',
             spd_present: false,
             circuits: [],
-            confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+            // Numeric, top-level, per the classifier prompt's contract — see
+            // classifyBoardTechnology in src/routes/extraction.js. The final
+            // analysis.confidence.{overall, image_quality} is built from this
+            // numeric value downstream; the test doesn't need to provide both.
+            confidence: 0.95,
             questionsForInspector: [],
           }),
         },
@@ -1928,7 +1940,11 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
             main_switch_voltage: '230',
             spd_present: false,
             circuits: [],
-            confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+            // Numeric, top-level, per the classifier prompt's contract — see
+            // classifyBoardTechnology in src/routes/extraction.js. The final
+            // analysis.confidence.{overall, image_quality} is built from this
+            // numeric value downstream; the test doesn't need to provide both.
+            confidence: 0.95,
             questionsForInspector: [],
           }),
         },
