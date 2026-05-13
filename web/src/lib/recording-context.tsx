@@ -18,6 +18,7 @@ import {
 } from './recording/apply-extraction';
 import {
   isWithinLinkWindow,
+  OBSERVATION_PHOTO_LINK_WINDOW_MS,
   type PendingObservationPhoto,
   type RecentObservationRef,
 } from './recording/observation-photo';
@@ -730,21 +731,100 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // without depending on a re-render. iOS canon:
   // `DeepgramRecordingViewModel.swift:497`.
   const pendingPhotoRef = React.useRef<PendingObservationPhoto | null>(null);
+  // Phase 6 — 60 s expiry timer. Fires once the auto-link window
+  // plus a 10 s grace has elapsed for an unclaimed pending photo.
+  // On fire: move the (already-uploaded) filename into
+  // `job.unassigned_photos[]` so the inspector can recover it via
+  // the From-Job picker on the observation edit sheet. iOS canon:
+  // `DeepgramRecordingViewModel.swift:1564-1575`. Single timer slot
+  // matches the single pending slot.
+  const pendingPhotoTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Grace period added to the auto-link window so a pending record
+  // rehydrated from IDB right at the boundary doesn't get flushed
+  // by clock skew. iOS uses the same 60 s timer with no grace
+  // because its timestamp lives in the same process; on PWA the
+  // IDB record may have been written 60 s ago on a slightly-
+  // different system clock, hence the 10 s pad. Sprint PLAN
+  // §Risks §4.
+  const PENDING_EXPIRY_GRACE_MS = 10_000;
   // Mirror of the LAST appended observation for the reverse-link path
   // in Phase 4's captureObservationPhoto. Updated by Phase 3's
   // `onLastObservationCreated` callback after a row appends — see the
   // applyExtractionToJob call site below. iOS canon: :499-500.
   const recentObservationRef = React.useRef<RecentObservationRef | null>(null);
 
+  // Phase 6 — add a filename to `job.unassigned_photos[]`, deduping
+  // against the existing pool. iOS canon: `JobViewModel.swift:510-525`
+  // `addPhotosToUnassigned`. Used by (a) the rehydrate effect when an
+  // expired IDB record carries a settled filename and (b) the expiry
+  // timer below. No-op when `filename` is empty or already in the
+  // pool.
+  const moveToUnassignedPool = React.useCallback((filename: string | undefined) => {
+    if (!filename) return;
+    const currentJob = jobRef.current;
+    if (!currentJob) return;
+    const existing = (currentJob.unassigned_photos as string[] | undefined) ?? [];
+    if (existing.includes(filename)) return;
+    const next = [...existing, filename];
+    updateJobRef.current({ unassigned_photos: next });
+    jobRef.current = { ...currentJob, unassigned_photos: next };
+    pipelineLog('observation_photo_moved_to_unassigned_pool', {
+      filename,
+      pool_size_after: next.length,
+    });
+  }, []);
+
+  // Phase 6 — wrapper that writes pendingPhotoRef AND arms (or
+  // cancels) the expiry timer in lockstep. Every consumer that
+  // mutates the pending slot routes through this so the timer is
+  // never orphaned. The capture-observation-photo orchestration's
+  // `setPendingPhoto` dep below points at this same helper.
+  const setPendingPhotoState = React.useCallback(
+    (record: PendingObservationPhoto | null) => {
+      pendingPhotoRef.current = record;
+      if (pendingPhotoTimerRef.current != null) {
+        clearTimeout(pendingPhotoTimerRef.current);
+        pendingPhotoTimerRef.current = null;
+      }
+      if (!record) return;
+      const elapsed = Date.now() - record.timestamp;
+      const remaining = OBSERVATION_PHOTO_LINK_WINDOW_MS + PENDING_EXPIRY_GRACE_MS - elapsed;
+      pendingPhotoTimerRef.current = setTimeout(
+        () => {
+          // Re-read at fire-time so a since-replaced or since-
+          // cleared slot doesn't get inappropriately drained.
+          const current = pendingPhotoRef.current;
+          if (!current || current.blobId !== record.blobId) {
+            return;
+          }
+          // The photo's bytes are already on S3 (the upload may
+          // even have settled by now). Promote the filename into
+          // the unassigned pool so the From-Job picker can surface
+          // it — drop the slot regardless.
+          moveToUnassignedPool(current.filename);
+          pendingPhotoRef.current = null;
+          const jobId = jobRef.current?.id;
+          if (jobId) {
+            void clearPendingPhoto(jobId);
+          }
+          pendingPhotoTimerRef.current = null;
+        },
+        Math.max(0, remaining)
+      );
+    },
+    [moveToUnassignedPool]
+  );
+
   // Rehydrate the pending tuple from IDB when the active job changes
-  // (page reload or job switch). The 60 s TTL is enforced here so an
-  // expired record never reaches the Phase 3 forward-link. Phase 6
-  // will move expired-but-still-IDB-persisted records into
-  // `job.unassigned_photos[]` from a separate timer.
+  // (page reload or job switch). The 60 s + grace TTL is enforced
+  // here: an expired record with a settled filename promotes into
+  // the unassigned pool (Phase 6); an expired record without a
+  // filename simply drops (the upload never settled, so there's
+  // nothing in S3 to recover).
   React.useEffect(() => {
     const jobId = job?.id;
     if (!jobId) {
-      pendingPhotoRef.current = null;
+      setPendingPhotoState(null);
       return;
     }
     let cancelled = false;
@@ -752,24 +832,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const record = await readPendingPhoto(jobId);
       if (cancelled) return;
       if (!record) {
-        pendingPhotoRef.current = null;
+        setPendingPhotoState(null);
         return;
       }
-      if (!isWithinLinkWindow(record.timestamp)) {
-        // Past TTL on rehydrate — drop the slot. The upgrade-to-
-        // unassigned-pool path lands in Phase 6; until then expired
-        // records simply disappear, matching the pre-sprint state
-        // (the photo is already on S3 either way).
+      const elapsed = Date.now() - record.timestamp;
+      if (elapsed >= OBSERVATION_PHOTO_LINK_WINDOW_MS + PENDING_EXPIRY_GRACE_MS) {
+        // Past TTL on rehydrate — same handling as the live timer.
+        moveToUnassignedPool(record.filename);
         await clearPendingPhoto(jobId);
-        pendingPhotoRef.current = null;
+        setPendingPhotoState(null);
         return;
       }
-      pendingPhotoRef.current = record;
+      // Still within window — re-arm the timer for the remaining
+      // duration. Phase 3 forward-link can still claim this tuple.
+      setPendingPhotoState(record);
     })();
     return () => {
       cancelled = true;
     };
-  }, [job?.id]);
+  }, [job?.id, setPendingPhotoState, moveToUnassignedPool]);
 
   // L2 obs-photo sprint Phase 4 — full capture handler. Resize on
   // device, upload, then either reverse-link (recent observation
@@ -818,9 +899,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           recentObservationRef.current = null;
         },
         getPendingPhoto: () => pendingPhotoRef.current,
-        setPendingPhoto: (record) => {
-          pendingPhotoRef.current = record;
-        },
+        setPendingPhoto: setPendingPhotoState,
         getJob: () => jobRef.current ?? null,
         applyJobPatch: (patch) => {
           updateJobRef.current(patch);
@@ -1907,7 +1986,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           onPhotoAttached: (blobId) => {
             const jobId = jobRef.current?.id;
             if (pendingPhotoRef.current && pendingPhotoRef.current.blobId === blobId) {
-              pendingPhotoRef.current = null;
+              // setPendingPhotoState(null) also clears the expiry
+              // timer so a stale timer can't later move the just-
+              // attached photo into the unassigned pool.
+              setPendingPhotoState(null);
             }
             if (jobId) {
               void clearPendingPhoto(jobId);
@@ -3467,6 +3549,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       statusAtHide: statusRef.current,
     };
   }, [pause, stop, start]);
+
+  // L2 obs-photo sprint Phase 6 — cleanup the expiry timer on
+  // unmount too so a stray timer doesn't try to write
+  // `unassigned_photos` after the provider is gone.
+  React.useEffect(() => {
+    return () => {
+      if (pendingPhotoTimerRef.current != null) {
+        clearTimeout(pendingPhotoTimerRef.current);
+        pendingPhotoTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Total user-facing cost — Deepgram streaming + Sonnet tokens. Kept
   // as a derived value so callers always see a consistent sum.
