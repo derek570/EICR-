@@ -21,7 +21,10 @@ import {
   type PendingObservationPhoto,
   type RecentObservationRef,
 } from './recording/observation-photo';
-import { clearPendingPhoto, readPendingPhoto } from './pwa/job-cache';
+import { captureObservationPhoto as runCaptureObservationPhoto } from './recording/capture-observation-photo';
+import { clearPendingPhoto, readPendingPhoto, writePendingPhoto } from './pwa/job-cache';
+import { resizeImage } from './image-resize';
+import { toast } from 'sonner';
 import { applyRegexMatchToJob } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
@@ -768,17 +771,74 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     };
   }, [job?.id]);
 
-  // Phase 2 placeholder — the resize + upload flow lands in Phase 4.
-  // The signature is in place so the Phase 5 chrome button can be
-  // authored against the final shape without churn. The body is
-  // intentionally a no-op log call: invoking it pre-Phase 4 should be
-  // observable for support but never crash a recording session.
-  const captureObservationPhoto = React.useCallback(async (file: File): Promise<void> => {
-    pipelineLog('observation_photo_capture_phase2_stub', {
-      size: file.size,
-      type: file.type,
-    });
-  }, []);
+  // L2 obs-photo sprint Phase 4 — full capture handler. Resize on
+  // device, upload, then either reverse-link (recent observation
+  // within 60 s) or enter the pending slot. The orchestration lives
+  // in `lib/recording/capture-observation-photo.ts` with injectable
+  // deps so it can be unit-tested without a React tree. Here we just
+  // adapt the recording-context refs / api-client / updateJob into
+  // that contract. iOS canon: DeepgramRecordingViewModel.swift:1504-1591.
+  const captureObservationPhoto = React.useCallback(
+    async (file: File): Promise<void> => {
+      // iOS isRecording gate (`:1505`). The button surface (Phase 5)
+      // also enforces a `disabled={state !== 'active'}` but the
+      // belt-and-brace check here covers programmatic invocations
+      // (e.g. retry from a "Photo upload failed" toast).
+      if (statusRef.current !== 'active') {
+        pipelineLog('observation_photo_capture_skipped_not_recording', {
+          status: statusRef.current,
+        });
+        return;
+      }
+      const userId = user?.id;
+      const job = jobRef.current;
+      if (!userId || !job?.id) {
+        pipelineLog('observation_photo_capture_skipped_no_context', {
+          has_user: Boolean(userId),
+          has_job: Boolean(job?.id),
+        });
+        return;
+      }
+      await runCaptureObservationPhoto({
+        userId,
+        jobId: job.id,
+        file,
+        resize: (blob) => resizeImage(blob),
+        uploadPhoto: async (uid, jid, blob) => {
+          const response = await api.uploadObservationPhoto(uid, jid, blob);
+          return { filename: response.photo.filename };
+        },
+        generateBlobId: () =>
+          globalThis.crypto?.randomUUID?.() ?? `obs-photo-${Date.now()}-${Math.random()}`,
+        now: () => Date.now(),
+        writePendingPhoto,
+        clearPendingPhoto,
+        getRecentObservation: () => recentObservationRef.current,
+        clearRecentObservation: () => {
+          recentObservationRef.current = null;
+        },
+        getPendingPhoto: () => pendingPhotoRef.current,
+        setPendingPhoto: (record) => {
+          pendingPhotoRef.current = record;
+        },
+        getJob: () => jobRef.current ?? null,
+        applyJobPatch: (patch) => {
+          updateJobRef.current(patch);
+          jobRef.current = {
+            ...jobRef.current,
+            ...(patch as Partial<typeof jobRef.current>),
+          };
+        },
+        onError: (err) => {
+          toast.error('Photo upload failed', {
+            description: err.message,
+          });
+        },
+        log: (event, payload) => pipelineLog(event, payload),
+      });
+    },
+    [user?.id]
+  );
 
   // Bug K (2026-05-11) — pending-naming utterance buffer. Holds at most
   // one Deepgram final whose text trailing-matches "Circuit N is" with
