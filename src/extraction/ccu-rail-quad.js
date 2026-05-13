@@ -62,6 +62,14 @@ import { autocorrPeak } from './ccu-cv-pitch.js';
 // box, as a fraction of the box's perpendicular dimension. The user's box
 // is already pretty close to the rail; we just need enough room to recover
 // the actual edge when the box is a few % off.
+//
+// NOTE 2026-05-13: a 0.03 → 0.08 experiment was reverted after corpus
+// tests showed module-count regressions (Wylex 16→15, Protek 20→22). The
+// wider crop pulled in label-strip handwriting and cabinet edges that
+// polluted the autocorrelation pitch estimator. If we hit too-tight-crop
+// failures in the field again, do NOT just widen this constant — the fix
+// needs to be more surgical (e.g. detect "user box is unusually tight"
+// and pad only in that case, or pad in y only with x unchanged).
 const EDGE_SEARCH_PAD = 0.03;
 
 // MAD multiplier for outlier rejection on edge points. Edge points whose
