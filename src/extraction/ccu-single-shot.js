@@ -64,6 +64,16 @@ const DEWARP_OUTPUT_WIDTH =
   DEWARP_OUTPUT_WIDTH_RAW && Number(DEWARP_OUTPUT_WIDTH_RAW) > 0
     ? Number(DEWARP_OUTPUT_WIDTH_RAW)
     : null;
+// Halfway cost brake: if CCU_DEWARP_OUTPUT_WIDTH is unset (native mode)
+// and CCU_DEWARP_MAX_WIDTH is a positive integer, native output is
+// capped at that pixel width. Small-board photos whose native is already
+// below the cap are unaffected — that's the win vs forcing a fixed
+// CCU_DEWARP_OUTPUT_WIDTH, which would *upsample* a tight close-up of
+// a 4-way garage CU. Recommended fallback values if costs spike: 4096
+// (~25% below typical native, ~2× the old 2048 default).
+const DEWARP_MAX_WIDTH_RAW = process.env.CCU_DEWARP_MAX_WIDTH;
+const DEWARP_MAX_WIDTH =
+  DEWARP_MAX_WIDTH_RAW && Number(DEWARP_MAX_WIDTH_RAW) > 0 ? Number(DEWARP_MAX_WIDTH_RAW) : null;
 
 const SINGLE_SHOT_TIMEOUT_MS = Number(process.env.CCU_SINGLE_SHOT_TIMEOUT_MS || 90_000);
 const SINGLE_SHOT_MAX_TOKENS = Number(process.env.CCU_SINGLE_SHOT_MAX_TOKENS || 4096);
@@ -223,6 +233,7 @@ async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireabl
         marginBelowFraction: 2.0,
         marginHorizontalFraction: 0.1,
         outputWidth: DEWARP_OUTPUT_WIDTH,
+        maxOutputWidth: DEWARP_MAX_WIDTH,
       });
       if (logger) {
         logger.info('CCU single-shot rail-region dewarp', {

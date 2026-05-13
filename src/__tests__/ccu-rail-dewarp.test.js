@@ -183,6 +183,70 @@ describe('dewarpRailQuad', () => {
     expect(out.outputWidth).toBe(400);
   });
 
+  test('maxOutputWidth caps native mode when native would exceed it', async () => {
+    const img = await makeTestImage({ width: 800, height: 800 });
+    // Rail 600×100 with 10% horizontal margin → extended width ~720.
+    // Native (no cap) would output 720; with maxOutputWidth=300 we
+    // expect the output to clamp to 300.
+    const quad = {
+      tl: { x: 100, y: 350 },
+      tr: { x: 700, y: 350 },
+      bl: { x: 100, y: 450 },
+      br: { x: 700, y: 450 },
+    };
+    const out = await dewarpRailQuad({
+      imageBuffer: img,
+      quad,
+      marginAboveFraction: 0,
+      marginBelowFraction: 0,
+      marginHorizontalFraction: 0.1,
+      maxOutputWidth: 300,
+      // outputWidth omitted → native, but clamped by maxOutputWidth
+    });
+    expect(out.outputWidth).toBe(300);
+  });
+
+  test('maxOutputWidth is a no-op when native is already below the cap', async () => {
+    const img = await makeTestImage({ width: 800, height: 800 });
+    // Rail 200×100 with 10% margin → extended ~240. Cap is 600 → no clamp.
+    const quad = {
+      tl: { x: 100, y: 350 },
+      tr: { x: 300, y: 350 },
+      bl: { x: 100, y: 450 },
+      br: { x: 300, y: 450 },
+    };
+    const out = await dewarpRailQuad({
+      imageBuffer: img,
+      quad,
+      marginAboveFraction: 0,
+      marginBelowFraction: 0,
+      marginHorizontalFraction: 0.1,
+      maxOutputWidth: 600,
+    });
+    expect(out.outputWidth).toBeGreaterThanOrEqual(239);
+    expect(out.outputWidth).toBeLessThanOrEqual(241);
+  });
+
+  test('maxOutputWidth is ignored when outputWidth is explicitly set', async () => {
+    const img = await makeTestImage({ width: 800, height: 800 });
+    const quad = {
+      tl: { x: 100, y: 350 },
+      tr: { x: 700, y: 350 },
+      bl: { x: 100, y: 450 },
+      br: { x: 700, y: 450 },
+    };
+    const out = await dewarpRailQuad({
+      imageBuffer: img,
+      quad,
+      marginAboveFraction: 0,
+      marginBelowFraction: 0,
+      marginHorizontalFraction: 0,
+      outputWidth: 500, // explicit forced width
+      maxOutputWidth: 300, // would clamp native, but ignored in forced mode
+    });
+    expect(out.outputWidth).toBe(500);
+  });
+
   test('rejects malformed quad', async () => {
     const img = await makeTestImage();
     await expect(

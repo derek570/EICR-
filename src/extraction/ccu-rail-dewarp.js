@@ -147,11 +147,21 @@ export function extendQuadForMargins(quad, { marginAbove, marginBelow, marginHor
  * `targetWidth` controls output width:
  *   - `null` / `0` / undefined → preserve native pixel density (use the
  *     extended quad's actual width in source pixels). Capped at
- *     `srcWidth` so we never upsample.
- *   - explicit positive number → use that.
+ *     `srcWidth` so we never upsample, and capped further at
+ *     `maxWidth` if provided (cost brake — see Option 2 below).
+ *   - explicit positive number → use that. `maxWidth` is ignored in
+ *     forced mode (the explicit value IS the user's chosen ceiling).
+ *
+ * `maxWidth` is the "halfway-setting" knob for native mode: if costs
+ * escalate on big-CCU photos, the operator can clamp the output to e.g.
+ * 4096 wide without giving up native fidelity on smaller boards (where
+ * the native width is already below the cap). Without it, the only
+ * brake was `targetWidth`, which forces a fixed size and ends up
+ * upsampling small boards.
+ *
  * Output height is derived to preserve aspect.
  */
-function pickOutputSize(extendedQuad, targetWidth, srcWidth) {
+function pickOutputSize(extendedQuad, targetWidth, srcWidth, maxWidth) {
   const widthTop = len({
     x: extendedQuad.tr.x - extendedQuad.tl.x,
     y: extendedQuad.tr.y - extendedQuad.tl.y,
@@ -173,8 +183,9 @@ function pickOutputSize(extendedQuad, targetWidth, srcWidth) {
   const aspect = avgHeight / Math.max(1, avgWidth);
   let widthPx;
   if (targetWidth == null || targetWidth <= 0) {
-    const cap = Number.isFinite(srcWidth) && srcWidth > 0 ? srcWidth : Infinity;
-    widthPx = Math.min(cap, Math.round(avgWidth));
+    const srcCap = Number.isFinite(srcWidth) && srcWidth > 0 ? srcWidth : Infinity;
+    const userCap = Number.isFinite(maxWidth) && maxWidth > 0 ? maxWidth : Infinity;
+    widthPx = Math.min(srcCap, userCap, Math.round(avgWidth));
   } else {
     widthPx = Math.round(targetWidth);
   }
@@ -198,6 +209,10 @@ function pickOutputSize(extendedQuad, targetWidth, srcWidth) {
  *        room when the box-tightener clips the rail short.
  * @param {number|null}  [args.outputWidth=null] — null = preserve native
  *        pixel density from source; explicit number overrides.
+ * @param {number|null}  [args.maxOutputWidth=null] — cost brake for native
+ *        mode. When set, native output is capped at this pixel width;
+ *        boards whose native is already below the cap are unaffected.
+ *        Ignored when `outputWidth` is explicitly set.
  * @returns {Promise<{buffer:Buffer, outputWidth:number, outputHeight:number,
  *                    extendedQuad:object, ms:number}>}
  */
@@ -208,6 +223,7 @@ export async function dewarpRailQuad({
   marginBelowFraction = 2.0,
   marginHorizontalFraction = 0.1,
   outputWidth: targetWidth = null,
+  maxOutputWidth = null,
 }) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('dewarpRailQuad: imageBuffer must be a Buffer');
@@ -256,7 +272,12 @@ export async function dewarpRailQuad({
     marginHorizontal: marginHorizontalFraction,
   });
 
-  const { outputWidth, outputHeight } = pickOutputSize(extendedQuad, targetWidth, srcW);
+  const { outputWidth, outputHeight } = pickOutputSize(
+    extendedQuad,
+    targetWidth,
+    srcW,
+    maxOutputWidth
+  );
 
   const out = Buffer.allocUnsafe(outputWidth * outputHeight * 3);
 
