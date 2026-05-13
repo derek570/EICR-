@@ -52,10 +52,18 @@ import { dewarpRailQuad } from './ccu-rail-dewarp.js';
 // axis-aligned bbox extract — emergency rollback path if the dewarp
 // regresses without redeploying.
 const DEWARP_ENABLED = (process.env.CCU_DEWARP_ENABLED ?? 'true').toLowerCase() === 'true';
-// Output width for the rectified rail image. 2048 matches OpenAI
-// vision's high-detail internal grid; pushing higher doesn't buy more
-// per-slot pixels in the model's attention budget.
-const DEWARP_OUTPUT_WIDTH = Number(process.env.CCU_DEWARP_OUTPUT_WIDTH || 2048);
+// Output width for the rectified rail image. Default is "native" —
+// the dewarp preserves the source's pixel density at the rail (capped
+// at source width). Empirically the VLM reads small MCB-face and
+// label-strip text better with more pixels per module than the old
+// 2048-fixed output gave us. Set CCU_DEWARP_OUTPUT_WIDTH to a positive
+// integer to pin a fixed output width (e.g. to roll back to 2048 if
+// costs spike).
+const DEWARP_OUTPUT_WIDTH_RAW = process.env.CCU_DEWARP_OUTPUT_WIDTH;
+const DEWARP_OUTPUT_WIDTH =
+  DEWARP_OUTPUT_WIDTH_RAW && Number(DEWARP_OUTPUT_WIDTH_RAW) > 0
+    ? Number(DEWARP_OUTPUT_WIDTH_RAW)
+    : null;
 
 const SINGLE_SHOT_TIMEOUT_MS = Number(process.env.CCU_SINGLE_SHOT_TIMEOUT_MS || 90_000);
 const SINGLE_SHOT_MAX_TOKENS = Number(process.env.CCU_SINGLE_SHOT_MAX_TOKENS || 4096);
@@ -206,12 +214,14 @@ async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireabl
       const result = await dewarpRailQuad({
         imageBuffer,
         quad: prepared.railQuad,
-        // Same vertical+horizontal margins as the legacy bbox crop, so
-        // the field-of-view sent to the VLM is unchanged shape-wise —
-        // only the rail is now rectified within that view.
+        // 200% vertical margin on each side captures the label strips
+        // above and below the rail. Horizontal margin is 10% of rail
+        // width on each end (~1 module on a 19-way board) — gives the
+        // VLM breathing room when the box-tightener clips the rail
+        // short, without dragging in an adjacent CU.
         marginAboveFraction: 2.0,
         marginBelowFraction: 2.0,
-        marginHorizontalFraction: 0.05,
+        marginHorizontalFraction: 0.1,
         outputWidth: DEWARP_OUTPUT_WIDTH,
       });
       if (logger) {

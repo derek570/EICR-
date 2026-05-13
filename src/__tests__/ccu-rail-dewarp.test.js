@@ -135,6 +135,54 @@ describe('dewarpRailQuad', () => {
     expect(data[off + 2]).toBeLessThan(80); // B low
   });
 
+  test('native mode (outputWidth=null) sizes output from extended quad pixel width', async () => {
+    const img = await makeTestImage({ width: 400, height: 400 });
+    // Rail 200×100, with marginHorizontal=0.10 the extended quad is
+    // 200 + 2×20 = 240 wide. marginAbove/Below = 1.0 each adds 100 + 100
+    // to height → 300 tall. Output width should be ~240 (native pixel
+    // width of the extended quad, capped at srcW=400).
+    const quad = {
+      tl: { x: 100, y: 150 },
+      tr: { x: 300, y: 150 },
+      bl: { x: 100, y: 250 },
+      br: { x: 300, y: 250 },
+    };
+    const out = await dewarpRailQuad({
+      imageBuffer: img,
+      quad,
+      marginAboveFraction: 1.0,
+      marginBelowFraction: 1.0,
+      marginHorizontalFraction: 0.1,
+      // outputWidth omitted → native
+    });
+    expect(out.outputWidth).toBeGreaterThanOrEqual(239);
+    expect(out.outputWidth).toBeLessThanOrEqual(241);
+    // Aspect: extended height (300) / extended width (240) = 1.25
+    expect(out.outputHeight).toBeGreaterThanOrEqual(298);
+    expect(out.outputHeight).toBeLessThanOrEqual(302);
+  });
+
+  test('native mode caps output width at source image width (no upsampling)', async () => {
+    const img = await makeTestImage({ width: 400, height: 400 });
+    // Extended quad pixel width would be ~600 (300×2 with 50% margin),
+    // but srcW=400 — output must clamp to 400.
+    const quad = {
+      tl: { x: 50, y: 150 },
+      tr: { x: 350, y: 150 },
+      bl: { x: 50, y: 250 },
+      br: { x: 350, y: 250 },
+    };
+    const out = await dewarpRailQuad({
+      imageBuffer: img,
+      quad,
+      marginAboveFraction: 0,
+      marginBelowFraction: 0,
+      marginHorizontalFraction: 0.5, // extended width = 300 × 2 = 600
+      // outputWidth omitted → native, clamped to srcW=400
+    });
+    expect(out.outputWidth).toBe(400);
+  });
+
   test('rejects malformed quad', async () => {
     const img = await makeTestImage();
     await expect(

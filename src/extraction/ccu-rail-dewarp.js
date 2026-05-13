@@ -41,11 +41,15 @@
  * dependency.
  *
  * OUTPUT RESOLUTION
- * Default `outputWidth: 2048` matches OpenAI vision's high-detail
- * internal grid — sending higher doesn't buy more per-slot pixels in
- * the model's attention budget. Output height is computed from
- * extended-quad aspect so the rectified image preserves the rail's
- * shape ratio.
+ * Default `outputWidth: null` means "preserve native pixel density" —
+ * the output width is computed from the extended quad's actual width
+ * in source pixels, capped at the source image's width so we never
+ * synthesise detail by upsampling. This sends the VLM as many pixels
+ * per MCB face as the camera captured, which empirically improves
+ * OCR on small label printing and faint device-face text. Pass an
+ * explicit number to override (used for the legacy fixed-output path
+ * and for tests). Output height is computed from extended-quad aspect
+ * so the rectified image preserves the rail's shape ratio.
  *
  * FAILURE
  * Any error throws; the caller in `cropToRailRegion` is expected to
@@ -140,10 +144,14 @@ export function extendQuadForMargins(quad, { marginAbove, marginBelow, marginHor
  * aspect ratio of the extended rail face — width from the average of
  * top and bottom edges, height from the average of left and right.
  *
- * `targetWidth` clamps the output to a usable resolution. Output
- * height is derived to preserve aspect.
+ * `targetWidth` controls output width:
+ *   - `null` / `0` / undefined → preserve native pixel density (use the
+ *     extended quad's actual width in source pixels). Capped at
+ *     `srcWidth` so we never upsample.
+ *   - explicit positive number → use that.
+ * Output height is derived to preserve aspect.
  */
-function pickOutputSize(extendedQuad, targetWidth) {
+function pickOutputSize(extendedQuad, targetWidth, srcWidth) {
   const widthTop = len({
     x: extendedQuad.tr.x - extendedQuad.tl.x,
     y: extendedQuad.tr.y - extendedQuad.tl.y,
@@ -163,7 +171,14 @@ function pickOutputSize(extendedQuad, targetWidth) {
   const avgWidth = (widthTop + widthBot) / 2;
   const avgHeight = (heightL + heightR) / 2;
   const aspect = avgHeight / Math.max(1, avgWidth);
-  const outputWidth = Math.max(64, Math.round(targetWidth));
+  let widthPx;
+  if (targetWidth == null || targetWidth <= 0) {
+    const cap = Number.isFinite(srcWidth) && srcWidth > 0 ? srcWidth : Infinity;
+    widthPx = Math.min(cap, Math.round(avgWidth));
+  } else {
+    widthPx = Math.round(targetWidth);
+  }
+  const outputWidth = Math.max(64, widthPx);
   const outputHeight = Math.max(32, Math.round(outputWidth * aspect));
   return { outputWidth, outputHeight };
 }
@@ -178,8 +193,11 @@ function pickOutputSize(extendedQuad, targetWidth) {
  *        quad in source-image pixel coords. Y grows downward.
  * @param {number}  [args.marginAboveFraction=2.0]   — above the rail
  * @param {number}  [args.marginBelowFraction=2.0]   — below the rail
- * @param {number}  [args.marginHorizontalFraction=0.05]
- * @param {number}  [args.outputWidth=2048]
+ * @param {number}  [args.marginHorizontalFraction=0.10] — beyond rail ends,
+ *        ~1 module width on a 19-way board. Gives the VLM breathing
+ *        room when the box-tightener clips the rail short.
+ * @param {number|null}  [args.outputWidth=null] — null = preserve native
+ *        pixel density from source; explicit number overrides.
  * @returns {Promise<{buffer:Buffer, outputWidth:number, outputHeight:number,
  *                    extendedQuad:object, ms:number}>}
  */
@@ -188,8 +206,8 @@ export async function dewarpRailQuad({
   quad,
   marginAboveFraction = 2.0,
   marginBelowFraction = 2.0,
-  marginHorizontalFraction = 0.05,
-  outputWidth: targetWidth = 2048,
+  marginHorizontalFraction = 0.1,
+  outputWidth: targetWidth = null,
 }) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('dewarpRailQuad: imageBuffer must be a Buffer');
@@ -214,17 +232,9 @@ export async function dewarpRailQuad({
 
   const start = Date.now();
 
-  const extendedQuad = extendQuadForMargins(quad, {
-    marginAbove: marginAboveFraction,
-    marginBelow: marginBelowFraction,
-    marginHorizontal: marginHorizontalFraction,
-  });
-
-  const { outputWidth, outputHeight } = pickOutputSize(extendedQuad, targetWidth);
-
   // Read source as raw pixel data. We need pixel-level access for
-  // bilinear sampling. JPEG re-encoding at the end is necessary because
-  // the API expects compressed images.
+  // bilinear sampling, and srcW must be known before pickOutputSize so
+  // native-mode output width can be capped at the source's width.
   //
   // sharp returns RGB (3 channels) for JPEGs and RGBA (4 channels) for
   // PNGs with alpha. We support both — we only read R/G/B and ignore
@@ -239,6 +249,14 @@ export async function dewarpRailQuad({
   if (srcChannels !== 3 && srcChannels !== 4) {
     throw new Error(`dewarpRailQuad: expected 3- or 4-channel source; got ${srcChannels}`);
   }
+
+  const extendedQuad = extendQuadForMargins(quad, {
+    marginAbove: marginAboveFraction,
+    marginBelow: marginBelowFraction,
+    marginHorizontal: marginHorizontalFraction,
+  });
+
+  const { outputWidth, outputHeight } = pickOutputSize(extendedQuad, targetWidth, srcW);
 
   const out = Buffer.allocUnsafe(outputWidth * outputHeight * 3);
 
