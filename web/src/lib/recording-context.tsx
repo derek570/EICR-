@@ -233,6 +233,16 @@ const TRAILING_CIRCUIT_NAMING_PATTERN =
   /\bcircuit\s+(?:number\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+is\s*\.?\s*$/i;
 const NAMING_BUFFER_TIMEOUT_MS = 3000;
 
+// Burst-buffer window. Holds every transcript final for this long
+// before shipping to Sonnet, merging any second final that arrives
+// inside the window. 500ms matches the typical end-of-sentence pause
+// Deepgram inserts between back-to-back phrases said by the same
+// speaker — long enough to coalesce "Observation." + "There is a
+// crack…" when the inspector pauses briefly between trigger and
+// description, short enough that single-utterance latency is barely
+// perceptible (Sonnet's own response budget is ~3s).
+const BURST_BUFFER_TIMEOUT_MS = 500;
+
 function isTrailingCircuitNamingPattern(text: string): boolean {
   return TRAILING_CIRCUIT_NAMING_PATTERN.test(text);
 }
@@ -438,6 +448,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     timer: ReturnType<typeof setTimeout>;
   } | null>(null);
 
+  // Observation regression (2026-05-13, session sess_mp4jg2mt_231n) —
+  // burst buffer. Holds every Deepgram final for 500ms before shipping
+  // to Sonnet; if a second final arrives in that window, concat with
+  // ' ... ' (server's legacy batching separator) and dispatch as one
+  // turn. Symptom this fixes: "Observation." then "There is a crack in
+  // a socket in a bedroom." arriving 1.3s apart (close to but past the
+  // 500ms window). Sonnet only saw "Observation." in turn-3 and asked
+  // "What's the observation?" with reason=missing_context — the
+  // description was still queued for turn-4. The backend dispatcher
+  // (sonnet-stream.js handleTranscript) processes one transcript at a
+  // time with no batching; this is the legacy eicr-extraction-session
+  // BATCH_SIZE=2 / BATCH_TIMEOUT_MS=2000 contract resurrected as a
+  // client-side layer so iOS isn't affected.
+  const burstBufferRef = React.useRef<{
+    text: string;
+    confidence: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+
   // Synchronous mirror of `questions`. Bug L (2026-05-11) — the dedup logic
   // in onQuestion used to live inside the setQuestions reducer, so dedup
   // and the `isNew`/`queueDepthAfter` outputs all depended on the reducer
@@ -597,6 +626,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(pendingNamingBufferRef.current.timer);
       pendingNamingBufferRef.current = null;
     }
+    if (burstBufferRef.current) {
+      clearTimeout(burstBufferRef.current.timer);
+      burstBufferRef.current = null;
+    }
   }, []);
 
   const teardownSonnet = React.useCallback(() => {
@@ -669,6 +702,55 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // inside openDeepgram so it captures the same refs the inline
       // path uses; reconstructed each Deepgram-session open, which
       // matches when those refs are valid.
+      //
+      // dispatchFinalBurstBuffered (2026-05-13 observation regression)
+      // wraps dispatchFinal with a 500ms hold so consecutive Deepgram
+      // finals can be merged into one Sonnet turn. Existing call sites
+      // route through this wrapper, not dispatchFinal directly. The
+      // dispatchFinal closure stays unchanged so the actual send path
+      // is one definition.
+      const dispatchFinalBurstBuffered = (text: string, confidence: number) => {
+        const pending = burstBufferRef.current;
+        if (pending) {
+          // Second final arrived inside the window — merge and fire
+          // immediately. ' ... ' separator mirrors the server's legacy
+          // batching (eicr-extraction-session.js
+          // _processUtteranceBatch, line 1440) so the on-wire shape is
+          // familiar to Sonnet.
+          clearTimeout(pending.timer);
+          burstBufferRef.current = null;
+          const combinedText = `${pending.text} ... ${text}`;
+          const combinedConfidence = Math.min(pending.confidence, confidence);
+          clientDiagnostic('pipeline_burst_buffer_concat', {
+            bufferedPreview: pending.text.slice(0, 40),
+            followUpPreview: text.slice(0, 40),
+            combinedPreview: combinedText.slice(0, 80),
+            combinedLength: combinedText.length,
+          });
+          dispatchFinal(combinedText, combinedConfidence);
+          return;
+        }
+        const timer = setTimeout(() => {
+          const buffered = burstBufferRef.current;
+          if (!buffered || buffered.timer !== timer) {
+            // A fresher timer has armed in the meantime, or
+            // teardownDeepgram cleared the slot. Drop the stale fire.
+            return;
+          }
+          burstBufferRef.current = null;
+          clientDiagnostic('pipeline_burst_buffer_timeout', {
+            textPreview: buffered.text.slice(0, 80),
+            timeoutMs: BURST_BUFFER_TIMEOUT_MS,
+          });
+          dispatchFinal(buffered.text, buffered.confidence);
+        }, BURST_BUFFER_TIMEOUT_MS);
+        burstBufferRef.current = { text, confidence, timer };
+        clientDiagnostic('pipeline_burst_buffer_armed', {
+          textPreview: text.slice(0, 80),
+          timeoutMs: BURST_BUFFER_TIMEOUT_MS,
+        });
+      };
+
       const dispatchFinal = (text: string, confidence: number) => {
         setTranscript((prev) => {
           const next: TranscriptUtterance[] = [
@@ -772,6 +854,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             `[recording:pipeline] stage=ask_user_answered toolCallId=${inFlightToolCallId.slice(0, 12)} userText="${text.slice(0, 40)}"`
           );
           sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
+          // iOS canon DeepgramRecordingViewModel.swift:2108-2113 — clear
+          // the in-flight question slot the instant the wire emit is
+          // sent. The card itself is no longer rendered (see
+          // recording-chrome.tsx), but the questions[] state is still
+          // observed by dedup and accounting; leaving the just-answered
+          // question in the array would let the next onQuestion frame
+          // dedup against it for the rest of the session. The
+          // dismissTimersRef useEffect (~line 2334) reacts to the
+          // questions state change and clears any pending dismiss
+          // timer for the removed entry — no manual cleanup needed.
+          setQuestions((prev) => {
+            const next = prev.filter((q) => q.tool_call_id !== inFlightToolCallId);
+            if (next.length === prev.length) return prev;
+            questionsRef.current = next;
+            clientDiagnostic('question_dismissed_after_voice_answer', {
+              toolCallIdShort: inFlightToolCallId.slice(0, 12),
+              userTextPreview: text.slice(0, 40),
+            });
+            return next;
+          });
         }
         setProcessingCount((n) => n + 1);
         sleepManagerRef.current?.onSpeechActivity();
@@ -920,8 +1022,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               // TTS gates above already passed at buffer-time, and a
               // 3 s delay is short enough that re-running them would
               // be a no-op in the overwhelming majority of cases. iOS
-              // canon ports the same single-gate model.
-              dispatchFinal(buffered.text, buffered.confidence);
+              // canon ports the same single-gate model. Route through
+              // dispatchFinalBurstBuffered so a subsequent final
+              // within 500ms can still be merged.
+              dispatchFinalBurstBuffered(buffered.text, buffered.confidence);
             }, NAMING_BUFFER_TIMEOUT_MS);
             pendingNamingBufferRef.current = {
               text: effectiveText,
@@ -935,11 +1039,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             return;
           }
           // Normal dispatch path — either the original final didn't
-          // trigger the buffer OR the pending buffer just resolved
-          // via concatenation. Either way, route the (possibly
-          // combined) text through the same Sonnet/regex/voice-command
-          // pipeline as before.
-          dispatchFinal(effectiveText, effectiveConfidence);
+          // trigger the naming buffer OR it just resolved via
+          // concatenation. Route through dispatchFinalBurstBuffered
+          // so consecutive Deepgram finals within 500ms get merged
+          // into a single Sonnet turn (mitigates the "Observation."
+          // + "There is a crack…" split that prompted this fix).
+          dispatchFinalBurstBuffered(effectiveText, effectiveConfidence);
         },
         onReconnected: () => {
           // Socket just reopened after an auto-reconnect. Replay the

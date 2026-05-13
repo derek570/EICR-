@@ -31,7 +31,6 @@ import { ApplyDefaultsSheet } from '@/components/defaults/apply-defaults-sheet';
 import { VadIndicator } from './vad-indicator';
 import { ProcessingBadge } from './processing-badge';
 import { PendingDataBanner } from './pending-data-banner';
-import { AlertCard } from './alert-card';
 
 /**
  * Recording chrome — in-page indicator + control surface that renders
@@ -122,10 +121,6 @@ function RecordingActionBar() {
     errorMessage,
     processingCount,
     pendingReadings,
-    questions,
-    dismissQuestion,
-    acceptQuestion,
-    rejectQuestion,
     stop,
     pause,
     resume,
@@ -197,24 +192,19 @@ function RecordingActionBar() {
 
   return (
     <>
-      {/* Badges + alert card float above the action bar so they survive
-          landscape reorientation without colliding with the pill cluster.
-          Kept pointer-events:auto on the AlertCard itself via the inner
-          wrapper; the outer flex is pointer-events:none so taps pass
-          through to the page. */}
+      {/* Badges float above the action bar so they survive landscape
+          reorientation without colliding with the pill cluster. The
+          question card is intentionally NOT rendered here — iOS canon
+          defines AlertCardView but never applies `.alertOverlay()` to
+          any production view, so ask_user questions are TTS-only on
+          iOS. We mirror that exactly: TTS plays via `onQuestion` in
+          recording-context.tsx, voice replies route through
+          `sendAskUserAnswered` in dispatchFinal, no visual prompt. */}
       <div className="pointer-events-none fixed inset-x-0 bottom-[96px] z-40 flex flex-col items-center gap-2 px-3 md:bottom-[104px]">
         <div className="flex items-center gap-2">
           <ProcessingBadge count={processingCount} />
           <PendingDataBanner count={pendingReadings} />
         </div>
-        {questions.length > 0 ? (
-          <AlertCard
-            questions={questions}
-            onDismiss={dismissQuestion}
-            onAccept={acceptQuestion}
-            onReject={rejectQuestion}
-          />
-        ) : null}
       </div>
 
       <div
