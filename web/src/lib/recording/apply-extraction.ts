@@ -37,6 +37,10 @@ import {
   recomputeAll,
   type ImpedanceField,
 } from '@certmate/shared-utils';
+import {
+  mergePendingPhotoIntoObservations,
+  type PendingObservationPhoto,
+} from './observation-photo';
 
 /**
  * Options threaded into the apply path. Currently carries the user's
@@ -49,6 +53,28 @@ import {
  */
 export interface ApplyExtractionOptions {
   userDefaults?: Record<string, string>;
+  /** L2 obs-photo sprint — pending tuple captured during the current
+   *  recording session that's waiting for an observation to claim
+   *  it. When an observation lands within `OBSERVATION_PHOTO_LINK_WINDOW_MS`
+   *  AND at least one new row was appended this turn, the LAST
+   *  appended row's `.photos[]` gets the pending photo's filename
+   *  (or `blobId` placeholder if the upload is still in flight per
+   *  PLAN §Risks §1). iOS canon:
+   *  `DeepgramRecordingViewModel.swift:5583-5593`. */
+  pendingPhoto?: PendingObservationPhoto | null;
+  /** Invoked after the forward-link succeeds. Caller is expected to
+   *  clear `pendingPhotoRef` AND `clearPendingPhoto(jobId)` in IDB so
+   *  the next turn doesn't try to attach the same photo a second
+   *  time. Receives the `blobId` of the photo that was attached. */
+  onPhotoAttached?: (blobId: string) => void;
+  /** Invoked once per `applyExtractionToJob` call when at least one
+   *  new observation was appended. The id + timestamp feed
+   *  `recentObservationRef` in `recording-context.tsx`, which Phase 4's
+   *  reverse-link reads to decide whether a fresh photo capture
+   *  should skip the pending slot and attach to this observation
+   *  directly. iOS canon:
+   *  `DeepgramRecordingViewModel.swift:5596-5599`. */
+  onLastObservationCreated?: (id: string, timestamp: number) => void;
 }
 
 type Section =
@@ -840,12 +866,24 @@ function observationLooksDuplicate(candidate: string, existing: string): boolean
  *  Captures `observation_id` (server-assigned UUID) into row.server_id
  *  so a follow-up `observation_update` (BPG4 refinement) can patch the
  *  exact row even after the visible text changes. */
-function applyObservations(job: JobDetail, observations: Observation[]): ObservationRow[] | null {
+function applyObservations(
+  job: JobDetail,
+  observations: Observation[],
+  options: {
+    pendingPhoto?: PendingObservationPhoto | null;
+    onPhotoAttached?: (blobId: string) => void;
+    onLastObservationCreated?: (id: string, timestamp: number) => void;
+  } = {}
+): ObservationRow[] | null {
   if (observations.length === 0) return null;
   const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
   const certType = typeof job.certificate_type === 'string' ? job.certificate_type : 'EICR';
   const validScheduleRefs = buildScheduleRefSet(certType);
   let changed = false;
+  // Track the count of pre-existing rows so we can compute which
+  // appends are *new this turn* (vs. those carried in from the job
+  // snapshot). The reverse-link helper only fires for new rows.
+  const baselineCount = existing.length;
   for (const obs of observations) {
     const text = (obs.observation_text ?? '').trim();
     if (!text) continue;
@@ -894,6 +932,32 @@ function applyObservations(job: JobDetail, observations: Observation[]): Observa
     }
     existing.push(row);
     changed = true;
+  }
+  if (changed) {
+    // Forward-link: attach the pending photo to the LAST appended
+    // observation if it's still within the 60 s auto-link window.
+    // The merge helper is pure — it returns `true` iff it mutated
+    // newRows[last]. On a successful attach we invoke the callback
+    // so the caller can drain the pending state (ref + IDB).
+    if (options.pendingPhoto) {
+      const attached = mergePendingPhotoIntoObservations(existing, options.pendingPhoto);
+      if (attached) {
+        pipelineLog('apply_observations_photo_forward_linked', {
+          blob_id: options.pendingPhoto.blobId,
+          has_filename: Boolean(options.pendingPhoto.filename),
+          row_count: existing.length,
+        });
+        options.onPhotoAttached?.(options.pendingPhoto.blobId);
+      }
+    }
+    // Reverse-link feed: record the LAST appended observation so a
+    // subsequent photo capture can attach to it directly (Phase 4).
+    // Only fires when this turn actually appended at least one new
+    // row — pre-existing observations don't count as "recent".
+    if (existing.length > baselineCount) {
+      const last = existing[existing.length - 1];
+      options.onLastObservationCreated?.(last.id, Date.now());
+    }
   }
   return changed ? existing : null;
 }
@@ -1602,7 +1666,13 @@ export function applyExtractionToJob(
 
   // Observations.
   const newObservations =
-    isEic && observations.length > 0 ? null : applyObservations(job, observations);
+    isEic && observations.length > 0
+      ? null
+      : applyObservations(job, observations, {
+          pendingPhoto: options.pendingPhoto,
+          onPhotoAttached: options.onPhotoAttached,
+          onLastObservationCreated: options.onLastObservationCreated,
+        });
   if (newObservations) patch.observations = newObservations;
   if (isEic && observations.length > 0) {
     pipelineLog('apply_eic_dropped_observations', {
