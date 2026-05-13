@@ -31,25 +31,58 @@ const PREFLIGHT_RESIZE_WIDTH = Number(process.env.CCU_PREFLIGHT_RESIZE_WIDTH || 
 
 const PROMPT = `You are screening a photo of a UK consumer unit (electrical fuseboard) to decide whether it is good enough for automated data extraction.
 
-Look at the photo and judge:
-- Is the entire DIN rail (the row of MCBs/RCDs) fully visible and in frame?
-- Is the photo in focus on the device faces?
-- Is there severe shadow, glare, reflection, or a hand/finger covering any of the devices on the rail?
-- Is the rail roughly head-on (within ~30° tilt), or so angled that perspective is extreme?
-- Is the lighting sufficient to read the printed text on the device faces?
+CONTEXT — what a "good" photo looks like in this domain:
+- Most UK consumer units have HANDWRITTEN circuit labels on a paper or
+  card strip above or below the device row. These are NORMAL and
+  EXPECTED — they ARE the data the inspector needs us to read. Do NOT
+  treat handwritten labels as occlusion or as obstructing the rail.
+- A slight downward / upward tilt is normal because inspectors photograph
+  units mounted high on a wall. "Head-on" is a target, not a hard
+  requirement — only flag "angle" when the perspective is so extreme
+  that one end of the rail is dramatically larger than the other.
+- Mild shadow falling along part of the rail is normal in domestic
+  consumer-unit cupboards. Only flag "shadow" when a shadow is dark
+  enough to make device-face printing UNREADABLE in that area.
+- The cover / metal tray edges around the devices are PART of the
+  consumer unit, not an obstruction.
 
-Score:
-  1.0 = perfect — well-lit, in focus, head-on, fully framed, nothing covering devices.
-  0.7 = acceptable — minor issues that probably won't affect extraction.
-  0.5 = marginal — visible issues likely to cause errors.
-  0.0 = unusable — major obstruction, blur, or severe lighting problem.
+REJECT (score < 0.7) only for genuine blockers:
+- A hand, finger, tool, or unrelated object physically COVERING device
+  faces or labels (not the printed label strip itself).
+- Heavy motion blur or severe defocus making the device-face text
+  unreadable.
+- Severe perspective where the rail is at ~60°+ from head-on.
+- One or both ends of the rail cut out of frame.
+- Lighting so dark or blown-out that the device-face text is unreadable.
+- A dark shadow covering a substantial portion of the rail such that
+  individual devices in that zone cannot be distinguished.
+
+ACCEPT (score >= 0.7) when:
+- The full rail is visible end-to-end.
+- The device faces (toggles, amperage prints, RCD waveform symbols) are
+  legible to a human looking at this photo.
+- Handwritten or printed labels on the label strip are present —
+  whether legible or not is fine, that's a separate extraction concern.
+
+Score guidance:
+  1.0 = perfect — head-on, evenly lit, in focus, full rail in frame.
+  0.85 = good — minor cosmetic issues, will extract reliably.
+  0.7 = acceptable — handwritten labels, slight tilt, slight shadow, all
+                     within the "normal install" range above.
+  0.5 = marginal — one of the REJECT criteria is borderline.
+  0.0 = unusable — one or more REJECT criteria are clearly tripped.
 
 Return JSON only, no prose, no markdown fence:
 {
   "score": <0.0-1.0>,
   "issues": [<one or more of: "shadow", "glare", "occlusion", "blur", "angle", "out_of_frame", "low_light">],
   "user_message": "<one short sentence telling the inspector exactly what to fix on retake, or empty string if no issue>"
-}`;
+}
+
+IMPORTANT: "issues" is for genuine blockers under the REJECT criteria
+above. Do NOT list "occlusion" for handwritten labels. Do NOT list
+"angle" for a normal downward-facing inspection shot. An empty issues
+array on a score >= 0.7 is the expected case for a typical good photo.`;
 
 /**
  * @param {object} args
