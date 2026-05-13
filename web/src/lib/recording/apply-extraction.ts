@@ -376,6 +376,61 @@ export function hasValue(v: unknown): boolean {
   return false;
 }
 
+/**
+ * Narrative installation-details fields. Long multi-sentence dictations
+ * ("Installation is over 50 years old. Walls are damp. Sockets are
+ * 1960s.") may arrive split across multiple Deepgram final transcripts
+ * because of utterance-end timeouts or chunk boundaries. Each transcript
+ * fires its own Sonnet `record_reading`, and a plain overwrite would
+ * lose every sentence except the last.
+ *
+ * iOS handles this in `applySonnetNarrativeValue`
+ * (`DeepgramRecordingViewModel.swift:5948-6005`), called for
+ * `reason_for_report` (:4331) and `general_condition_of_installation`
+ * (:4400). PWA membership here includes the wire name (`general_condition`)
+ * and the PWA-column name (`general_condition_of_installation`) because
+ * we dual-write both — either one being the field on a `record_reading`
+ * should route through the merge logic.
+ */
+const NARRATIVE_FIELDS: ReadonlySet<string> = new Set([
+  'general_condition',
+  'general_condition_of_installation',
+  'reason_for_report',
+]);
+
+/**
+ * iOS-canon append/supersede/skip logic for narrative fields.
+ *
+ *   - empty current → set to new (first write);
+ *   - duplicate (case-insensitive) → no-op;
+ *   - new contains current → supersede (Sonnet re-emitted the full
+ *     narrative — replace to keep latest punctuation/casing);
+ *   - current contains new → no-op (a later partial duplicating an
+ *     earlier prefix would otherwise truncate the field);
+ *   - otherwise → append with `". "` joiner, or `" "` if the current
+ *     already ends in sentence-terminating punctuation.
+ *
+ * Returns `null` for "skip this write", or the merged string. Mirrors
+ * `applySonnetNarrativeValue` semantics exactly so cross-platform
+ * behaviour is identical for the same transcript sequence.
+ */
+export function mergeNarrativeValue(
+  currentRaw: string | null | undefined,
+  incomingRaw: string | null | undefined
+): string | null {
+  const newTrim = (incomingRaw ?? '').trim();
+  if (!newTrim) return null;
+  const curTrim = (currentRaw ?? '').trim();
+  if (!curTrim) return newTrim;
+  const curLower = curTrim.toLowerCase();
+  const newLower = newTrim.toLowerCase();
+  if (curLower === newLower) return null;
+  if (newLower.includes(curLower)) return newTrim;
+  if (curLower.includes(newLower)) return null;
+  const joiner = /[.!?]$/.test(curTrim) ? ' ' : '. ';
+  return curTrim + joiner + newTrim;
+}
+
 /** Apply all readings belonging to circuit 0. Returns a map of
  *  section → merged record that can be folded into the final patch. */
 function applyCircuit0Readings(
@@ -400,6 +455,55 @@ function applyCircuit0Readings(
       !targets.includes('supply_characteristics')
     ) {
       targets.push('supply_characteristics');
+    }
+
+    // Narrative-field branch — iOS canon `applySonnetNarrativeValue`
+    // (`DeepgramRecordingViewModel.swift:5948-6005`). Bypasses the
+    // userValueKept gate below: a manually-typed first sentence
+    // followed by a dictated continuation should APPEND, not skip.
+    // The mergeNarrativeValue helper's subset/superset checks handle
+    // duplicate emits without needing the gate.
+    const isNarrative =
+      NARRATIVE_FIELDS.has(reading.field) || (pwaColumn != null && NARRATIVE_FIELDS.has(pwaColumn));
+    if (isNarrative) {
+      for (const sec of targets) {
+        const existing = (job[sec] as Record<string, unknown> | undefined) ?? {};
+        const inBySection = (bySection[sec] as Record<string, unknown> | undefined) ?? {};
+        // Read existing across both the in-flight section patch (a
+        // prior reading in this same call) and the persisted job
+        // state. Fall back across wire-name ↔ PWA-column so a value
+        // typed directly into the Installation tab (PWA column) is
+        // honoured when Sonnet's `record_reading` arrives under the
+        // wire name.
+        const wireKey = reading.field;
+        const pickExisting = (k: string): string => {
+          const fromPatch = inBySection[k];
+          if (typeof fromPatch === 'string' && fromPatch.trim().length > 0) return fromPatch;
+          const fromJob = existing[k];
+          return typeof fromJob === 'string' ? fromJob : '';
+        };
+        const current = pickExisting(wireKey) || (pwaColumn ? pickExisting(pwaColumn) : '');
+        const merged = mergeNarrativeValue(current, String(reading.value ?? ''));
+        if (merged == null) {
+          pipelineLog('apply_narrative_field_skipped', {
+            section: sec,
+            wire_field: wireKey,
+            reason: !String(reading.value ?? '').trim() ? 'empty_incoming' : 'duplicate_or_subset',
+          });
+          continue;
+        }
+        const sectionPatch: Record<string, unknown> = { ...inBySection, [wireKey]: merged };
+        if (pwaColumn && pwaColumn !== wireKey) sectionPatch[pwaColumn] = merged;
+        bySection[sec] = sectionPatch;
+        pipelineLog('apply_narrative_field_merged', {
+          section: sec,
+          wire_field: wireKey,
+          pwa_column: pwaColumn ?? null,
+          result_length: merged.length,
+          was_first_write: !current,
+        });
+      }
+      continue;
     }
 
     // 3-tier priority — protect any pre-existing user value across
