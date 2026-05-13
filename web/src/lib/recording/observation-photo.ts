@@ -19,6 +19,7 @@
  *   - Reverse-link via recent observation: `:1522-1549`.
  */
 
+import type { ObservationRow } from '@/lib/types';
 import type { PendingObservationPhotoRecord } from '@/lib/pwa/job-cache';
 
 /**
@@ -86,4 +87,54 @@ export function isWithinLinkWindow(timestamp: number, now: number = Date.now()):
   if (!Number.isFinite(timestamp) || !Number.isFinite(now)) return false;
   const delta = now - timestamp;
   return delta >= 0 && delta < OBSERVATION_PHOTO_LINK_WINDOW_MS;
+}
+
+/**
+ * Phase 3 forward-link primitive — attach a pending observation photo
+ * to the LAST observation row in `newRows`. Mutates `newRows` in place
+ * (only the last index) and returns `true` iff an attach happened.
+ *
+ * Conditions for no-op (returns false, `newRows` untouched):
+ *   - `pending` is null / undefined.
+ *   - `newRows` is empty (nothing to attach to; pending tuple stays
+ *     in the caller's ref + IDB for the next turn).
+ *   - `pending.timestamp` is past the auto-link window from `now`.
+ *
+ * Write semantics:
+ *   - If `pending.filename` is set (the upload has resolved by the
+ *     time the observation lands) the canonical filename is appended.
+ *   - If `pending.filename` is NOT set (upload still in flight per
+ *     PLAN §Risks §1), the client-generated `blobId` is appended as
+ *     a placeholder. Phase 4's upload-success handler rewrites every
+ *     placeholder occurrence onto the canonical filename in a second
+ *     pass — that's why the blobId is a stable UUID rather than e.g.
+ *     a `Date.now()`-derived string.
+ *   - Pre-existing `photos[]` on the last row are PRESERVED — we
+ *     append, never replace. iOS canon: line :5587 (`.photos =
+ *     (.photos ?? []) + [path]`).
+ *
+ * Only the LAST row is attached. If Sonnet emitted multiple
+ * observations in a single turn (rare but possible), the photo
+ * lands on the most-recent one — same as iOS line :5583 ("LAST
+ * observation"). Treating earlier rows as candidates would risk
+ * mis-attribution: the inspector said one thing, took the photo,
+ * said another thing — the latter is the intent.
+ *
+ * Pure function: no IDB, no logging, no callbacks. Callers are
+ * responsible for clearing the pending state on a `true` return.
+ */
+export function mergePendingPhotoIntoObservations(
+  newRows: ObservationRow[],
+  pending: PendingObservationPhoto | null | undefined,
+  now: number = Date.now()
+): boolean {
+  if (!pending) return false;
+  if (newRows.length === 0) return false;
+  if (!isWithinLinkWindow(pending.timestamp, now)) return false;
+  const lastIdx = newRows.length - 1;
+  const last = newRows[lastIdx];
+  const nameOrPlaceholder = pending.filename ?? pending.blobId;
+  const existingPhotos = Array.isArray(last.photos) ? last.photos : [];
+  newRows[lastIdx] = { ...last, photos: [...existingPhotos, nameOrPlaceholder] };
+  return true;
 }

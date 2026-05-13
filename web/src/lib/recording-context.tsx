@@ -728,12 +728,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // `DeepgramRecordingViewModel.swift:497`.
   const pendingPhotoRef = React.useRef<PendingObservationPhoto | null>(null);
   // Mirror of the LAST appended observation for the reverse-link path
-  // in Phase 4's captureObservationPhoto. Updated by Phase 3 in
-  // applyObservations after a row appends. iOS canon: :499-500.
-  // Reference unused before Phase 3 ships — pinned in a void to silence
-  // the unused-locals lint without dropping the declaration.
+  // in Phase 4's captureObservationPhoto. Updated by Phase 3's
+  // `onLastObservationCreated` callback after a row appends — see the
+  // applyExtractionToJob call site below. iOS canon: :499-500.
   const recentObservationRef = React.useRef<RecentObservationRef | null>(null);
-  void recentObservationRef;
 
   // Rehydrate the pending tuple from IDB when the active job changes
   // (page reload or job switch). The 60 s TTL is enforced here so an
@@ -1839,6 +1837,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       try {
         applied = applyExtractionToJob(jobRef.current, result, {
           userDefaults: userDefaultsRef.current,
+          // L2 obs-photo sprint — thread the pending tuple so an
+          // observation arriving within the 60 s auto-link window can
+          // claim the photo. The callback drains both the in-memory
+          // ref AND the IDB record so the next turn doesn't try to
+          // attach the same photo twice. Phase 4 wires the capture
+          // handler that populates this slot.
+          pendingPhoto: pendingPhotoRef.current,
+          onPhotoAttached: (blobId) => {
+            const jobId = jobRef.current?.id;
+            if (pendingPhotoRef.current && pendingPhotoRef.current.blobId === blobId) {
+              pendingPhotoRef.current = null;
+            }
+            if (jobId) {
+              void clearPendingPhoto(jobId);
+            }
+          },
+          // Update the reverse-link feed so a fresh capture (Phase 4)
+          // can attach to this just-created observation directly
+          // without going through the pending slot. iOS canon: :5596.
+          onLastObservationCreated: (id, timestamp) => {
+            recentObservationRef.current = { id, timestamp };
+          },
         });
       } catch (err) {
         pipelineLog('recording_apply_extraction_threw', {
