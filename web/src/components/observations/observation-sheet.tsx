@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Camera, FolderOpen, Loader2, MapPin, Trash2, X } from 'lucide-react';
+import { Camera, FolderInput, FolderOpen, Loader2, MapPin, Trash2, X } from 'lucide-react';
 import { api } from '@/lib/api-client';
 import { ApiError, type ObservationRow } from '@/lib/types';
 import { getUser } from '@/lib/auth';
@@ -10,6 +10,12 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { IconButton } from '@/components/ui/icon-button';
 import { cn } from '@/lib/utils';
 import { ObservationPhoto } from './observation-photo';
+import { useJobContext } from '@/lib/job-context';
+import {
+  hasAnyPickableJobPhotos,
+  JobPhotosPickerSheet,
+  type JobPhotoSource,
+} from './job-photos-picker-sheet';
 
 /**
  * Add/edit observation sheet — mirrors iOS `EditObservationSheet.swift`.
@@ -73,9 +79,20 @@ export function ObservationSheet({
   const [draft, setDraft] = React.useState<ObservationRow>(observation);
   const [uploading, setUploading] = React.useState(false);
   const [photoError, setPhotoError] = React.useState<string | null>(null);
+  const [jobPhotosPickerOpen, setJobPhotosPickerOpen] = React.useState(false);
 
   const cameraInputRef = React.useRef<HTMLInputElement>(null);
   const libraryInputRef = React.useRef<HTMLInputElement>(null);
+
+  // L2 obs-photo sprint Phase 6 — pick-from-job uses the parent job
+  // context to mutate `unassigned_photos` / other observations on
+  // photo move. iOS canon: `EditObservationSheet.swift:215-238`
+  // (accumulates pendingMoves / pendingUnassignedMoves and applies
+  // on save). On PWA we apply moves eagerly because updateJob is a
+  // single-call API and the user's draft is local-only until Save —
+  // so an immediate move on pick is the cleanest semantic.
+  const { job, updateJob } = useJobContext();
+  const pickableFromJob = hasAnyPickableJobPhotos(job, observation.id ?? null);
 
   // Resolve the signed-in user once. The photo endpoints need userId,
   // but the job page path only carries jobId — so pull from auth.
@@ -97,6 +114,48 @@ export function ObservationSheet({
     setPhotoError(null);
     libraryInputRef.current?.click();
   };
+  const openJobPhotosPicker = () => {
+    setPhotoError(null);
+    setJobPhotosPickerOpen(true);
+  };
+
+  // L2 obs-photo Phase 6 — apply a move from the picker. The
+  // picker emits the source so the host can perform the right
+  // mutation atomically: pull the filename off the source AND
+  // append it to the draft. No-op if the filename is already on
+  // the draft (defensive against double-tap before the picker
+  // dismisses).
+  const handleJobPhotoPick = React.useCallback(
+    (source: JobPhotoSource, filename: string) => {
+      const alreadyOnDraft = (draft.photos ?? []).includes(filename);
+      if (!alreadyOnDraft) {
+        setDraft((d) => ({ ...d, photos: [...(d.photos ?? []), filename] }));
+      }
+      if (!job) return;
+      if (source.kind === 'unassigned') {
+        const pool = (job.unassigned_photos as string[] | undefined) ?? [];
+        const nextPool = pool.filter((f) => f !== filename);
+        if (nextPool.length !== pool.length) {
+          updateJob({ unassigned_photos: nextPool });
+        }
+      } else if (source.kind === 'observation') {
+        const observations = (job.observations as ObservationRow[] | undefined) ?? [];
+        const idx = observations.findIndex((o) => o.id === source.observationId);
+        if (idx === -1) return;
+        const source_obs = observations[idx];
+        const sourcePhotos = source_obs.photos ?? [];
+        const nextSourcePhotos = sourcePhotos.filter((f) => f !== filename);
+        if (nextSourcePhotos.length === sourcePhotos.length) return;
+        const nextObs = observations.slice();
+        nextObs[idx] = {
+          ...source_obs,
+          photos: nextSourcePhotos.length === 0 ? undefined : nextSourcePhotos,
+        };
+        updateJob({ observations: nextObs });
+      }
+    },
+    [draft.photos, job, updateJob]
+  );
 
   const handleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -348,6 +407,24 @@ export function ObservationSheet({
                     <FolderOpen className="h-3.5 w-3.5" aria-hidden />
                     Library
                   </Button>
+                  {/* L2 obs-photo Phase 6 — From-Job picker. Only
+                      surfaced when at least one of the picker's
+                      sections (unassigned pool / other observations)
+                      has content, to avoid leading the user into an
+                      empty sheet. iOS canon:
+                      `EditObservationSheet.swift:144-156`. */}
+                  {pickableFromJob ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={openJobPhotosPicker}
+                      disabled={uploading || !userId}
+                    >
+                      <FolderInput className="h-3.5 w-3.5" aria-hidden />
+                      From Job
+                    </Button>
+                  ) : null}
                 </div>
               </div>
 
@@ -443,6 +520,24 @@ export function ObservationSheet({
           </div>
         </div>
       </DialogContent>
+
+      {/* L2 obs-photo Phase 6 — From-Job picker. Rendered as a peer
+          of the main sheet so Radix's two-layer portal stack handles
+          the focus dance cleanly (the picker traps focus over the
+          observation sheet, returns it on close). Only stood up when
+          there's something to pick — otherwise we'd render an empty
+          sheet on every Edit Observation tap. */}
+      {jobPhotosPickerOpen && job && userId ? (
+        <JobPhotosPickerSheet
+          open={jobPhotosPickerOpen}
+          onClose={() => setJobPhotosPickerOpen(false)}
+          job={job}
+          jobId={jobId}
+          userId={userId}
+          excludeObservationId={observation.id ?? null}
+          onSelect={handleJobPhotoPick}
+        />
+      ) : null}
     </Dialog>
   );
 }

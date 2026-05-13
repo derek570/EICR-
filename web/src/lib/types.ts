@@ -318,6 +318,16 @@ export interface JobDetail extends Job {
   ccu_analysis_by_board?: Record<string, Record<string, unknown>>;
   /** Most recent recording session id (for resume/review). */
   last_session_id?: string;
+  /**
+   * Pool of observation-photo filenames whose 60 s auto-link window
+   * expired without a Sonnet observation claiming them. Inspectors
+   * recover photos against any observation later via the "From Job"
+   * picker on the observation edit sheet. Mirrors iOS
+   * `Job.unassignedPhotos` (`Job.swift:104`) and round-trips through
+   * `PUT /api/job/:userId/:jobId` (backend fix landed in
+   * `feat(backend): persist unassigned_photos on job PUT/GET`).
+   */
+  unassigned_photos?: string[];
 }
 
 export interface CircuitRow {
