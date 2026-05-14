@@ -24,8 +24,14 @@
  *   - No source/CV-space coordinate scaling (the call sees the whole image)
  *
  * What we keep:
- *   - CV (Stage 1 + Stage 2) still runs. moduleCountFromCv is independent
- *     ground truth that cross-checks the VLM's enumeration count.
+ *   - CV (Stage 1 + Stage 2) still runs. It produces the rail quad that
+ *     feeds the perspective dewarp, the rail bbox for slot-position
+ *     math, and the Stage 3 main-switch-side disambiguation. CV's
+ *     moduleCountFromCv is still computed for telemetry but is no longer
+ *     treated as authoritative — the field corpus showed it's unreliable
+ *     on non-standard rails (ADRBs, SPDs, multi-pole devices break the
+ *     periodic signature the pitch estimator depends on), see the
+ *     ccu-quality-gate.js header for the full story.
  *   - The board classifier (board_technology, manufacturer, model, main
  *     switch position, SPD presence) still runs first. Its output decides
  *     which prompt to send (modern vs rewireable).
@@ -33,10 +39,6 @@
  *     applyBsEnFallback, normaliseCircuitLabels, lookupMissingRcdTypes,
  *     flagRcdWaveformOutliers — unchanged. The output of this module
  *     mimics extractViaSlidingWindow's return shape exactly.
- *
- * What gets flagged as low-confidence:
- *   - VLM count disagrees with CV's moduleCountFromCv. Inspector should
- *     verify the count manually before relying on the extraction.
  *
  * Output contract (matches extractViaSlidingWindow):
  *   { slots, labels, finalDevices, snappedWays, pitchPx, timings, usage,
@@ -499,10 +501,7 @@ export async function extractViaSingleShot({
   //    rail (rail occupies ~19% of frame area on a typical UK shot). Cropping
   //    keeps the model's attention on the rail and the label strips above
   //    and below it, so devices in the middle of the rail are less likely
-  //    to be misclassified as blank from attention dilution. The
-  //    per-slot crops attached to slots[].crop later still come from the
-  //    full original buffer at native resolution for the iOS overlay —
-  //    only the VLM call uses the rail-region crop.
+  //    to be misclassified as blank from attention dilution.
   const visionImage = await cropToRailRegion({
     imageBuffer,
     prepared,
