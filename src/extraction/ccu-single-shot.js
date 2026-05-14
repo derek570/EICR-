@@ -43,8 +43,6 @@
  *     lowConfidence, stage3Error, stageOutputs, skippedSlotIndices }
  */
 import sharp from 'sharp';
-import { cropSlot } from './ccu-geometric.js';
-import { cropCarrierSlot } from './ccu-geometric-rewireable.js';
 import { dewarpRailQuad } from './ccu-rail-dewarp.js';
 
 // Kill switch for the rail-region perspective dewarp pre-pass. Defaults
@@ -464,66 +462,6 @@ function entriesToSlots(entries, boardManufacturer, vlmCountAgreesWithCv) {
 }
 
 // ---------------------------------------------------------------------------
-// Per-slot crop generation for iOS overlay
-// ---------------------------------------------------------------------------
-
-async function attachCropsToSlots({ slots, imageBuffer, prepared, isRewireable, imgW, imgH }) {
-  if (slots.length === 0) return;
-
-  // Build slot-centre x-coordinates by dividing the rail evenly into N
-  // slot positions, where N is the actual count VLM returned. For modern
-  // boards we use the railBbox; for rewireable we use panelBounds.
-  let leftPx, rightPx, panelTopNorm, panelBottomNorm, pitchPx;
-  if (isRewireable) {
-    leftPx = norm2px(prepared.panelBounds?.left ?? 50, imgW);
-    rightPx = norm2px(prepared.panelBounds?.right ?? 950, imgW);
-    panelTopNorm = prepared.panelBounds?.top ?? 400;
-    panelBottomNorm = prepared.panelBounds?.bottom ?? 600;
-    pitchPx = (rightPx - leftPx) / slots.length;
-  } else {
-    leftPx = norm2px(prepared.railBbox?.left ?? 50, imgW);
-    rightPx = norm2px(prepared.railBbox?.right ?? 950, imgW);
-    pitchPx = (rightPx - leftPx) / slots.length;
-  }
-
-  const slotCentersPx = slots.map((_, i) => leftPx + (i + 0.5) * pitchPx);
-
-  await Promise.all(
-    slots.map(async (slot, i) => {
-      try {
-        if (isRewireable) {
-          const out = await cropCarrierSlot(imageBuffer, i, {
-            slotCentersX: slotCentersPx,
-            carrierPitchPx: pitchPx,
-            panelTopNorm,
-            panelBottomNorm,
-            imageWidth: imgW,
-            imageHeight: imgH,
-          });
-          slot.crop = { bbox: out.bbox, base64: out.buffer.toString('base64') };
-        } else {
-          const out = await cropSlot(imageBuffer, i, {
-            slotCentersX: slotCentersPx.map((px) => Math.round((px / imgW) * 1000)),
-            moduleWidth: Math.round((pitchPx / imgW) * 1000),
-            railTop:
-              prepared.medianRails?.rail_top ??
-              Math.round((norm2px(prepared.railBbox?.top ?? 400, imgH) / imgH) * 1000),
-            railBottom:
-              prepared.medianRails?.rail_bottom ??
-              Math.round((norm2px(prepared.railBbox?.bottom ?? 600, imgH) / imgH) * 1000),
-            imageWidth: imgW,
-            imageHeight: imgH,
-          });
-          slot.crop = { bbox: out.bbox, base64: out.buffer.toString('base64') };
-        }
-      } catch {
-        slot.crop = { bbox: { x: 0, y: 0, w: 1, h: 1 }, base64: '' };
-      }
-    })
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -598,17 +536,7 @@ export async function extractViaSingleShot({
   // 3. Build slots[] + labels[] in the shape downstream code expects.
   const { slots, labels } = entriesToSlots(result.entries, boardManufacturer, vlmCountAgreesWithCv);
 
-  // 4. Generate per-slot crops for the iOS tap-to-correct overlay.
-  await attachCropsToSlots({
-    slots,
-    imageBuffer,
-    prepared,
-    isRewireable,
-    imgW,
-    imgH,
-  });
-
-  // 5. Effective pitch derived from final slot count and rail width.
+  // 4. Effective pitch derived from final slot count and rail width.
   const railLeftPx = isRewireable
     ? norm2px(prepared.panelBounds?.left ?? 50, imgW)
     : norm2px(prepared.railBbox?.left ?? 50, imgW);

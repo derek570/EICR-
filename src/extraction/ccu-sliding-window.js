@@ -56,8 +56,6 @@
  * flagRcdWaveformOutliers) consumes it without change.
  */
 import sharp from 'sharp';
-import { cropSlot } from './ccu-geometric.js';
-import { cropCarrierSlot } from './ccu-geometric-rewireable.js';
 
 const SLIDING_WINDOW_TIMEOUT_MS = Number(process.env.CCU_SLIDING_WINDOW_TIMEOUT_MS || 60_000);
 const SLIDING_WINDOW_MAX_TOKENS = 2048;
@@ -648,50 +646,8 @@ export async function extractViaSlidingWindow({
   // --- 6. Assemble slot output ----------------------------------------
   const { slots, labels } = entriesToSlots(canonical, boardManufacturer);
 
-  // --- 7. Per-slot crops for iOS overlay -------------------------------
-  // The CV-derived slot grid is used purely for cropping. If the canonical
-  // length disagrees with the CV's snappedWays, we crop along the canonical's
-  // implied positions (rail divided by canonical.length) so each entry has a
-  // matching crop. This keeps the iOS tap-to-correct overlay coherent.
+  // --- 7. Snapped way count (used downstream for telemetry + return) ---
   const snappedWays = canonical.length;
-  const slotCentersPx = [];
-  if (snappedWays > 0) {
-    const effectivePitch = railWidthPx / snappedWays;
-    for (let i = 0; i < snappedWays; i++) {
-      slotCentersPx.push(railLeftPx + (i + 0.5) * effectivePitch);
-    }
-  }
-
-  await Promise.all(
-    slots.map(async (slot, i) => {
-      try {
-        if (isRewireable) {
-          const out = await cropCarrierSlot(imageBuffer, i, {
-            slotCentersX: slotCentersPx,
-            carrierPitchPx: pitchPx,
-            panelTopNorm: prepared.panelBounds?.top ?? 400,
-            panelBottomNorm: prepared.panelBounds?.bottom ?? 600,
-            imageWidth: imgW,
-            imageHeight: imgH,
-          });
-          slot.crop = { bbox: out.bbox, base64: out.buffer.toString('base64') };
-        } else {
-          const out = await cropSlot(imageBuffer, i, {
-            slotCentersX: slotCentersPx.map((px) => Math.round((px / imgW) * 1000)),
-            moduleWidth: Math.round((pitchPx / imgW) * 1000),
-            railTop: prepared.medianRails?.rail_top ?? Math.round((railTopPx / imgH) * 1000),
-            railBottom:
-              prepared.medianRails?.rail_bottom ?? Math.round((railBottomPx / imgH) * 1000),
-            imageWidth: imgW,
-            imageHeight: imgH,
-          });
-          slot.crop = { bbox: out.bbox, base64: out.buffer.toString('base64') };
-        }
-      } catch {
-        slot.crop = { bbox: { x: 0, y: 0, w: 1, h: 1 }, base64: '' };
-      }
-    })
-  );
 
   // --- 8. Edge-overshoot diagnostics ----------------------------------
   // If a left- or right-overshoot window returned close to a full windowMod
