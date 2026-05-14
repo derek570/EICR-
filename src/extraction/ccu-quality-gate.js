@@ -11,10 +11,6 @@
  * tell the inspector to retake with a hint about what went wrong.
  *
  * Signal sources:
- *   - vlmCountAgreesWithCv: VLM enumeration count vs CV autocorrelation
- *     count. They are independent pipelines — disagreement = at least
- *     one is wrong. (Caught the 2026-05-13 Wylex NHRS12SL hand-shadow
- *     case where VLM = 15, CV = 16.)
  *   - classifierConfidence: Stage 1 board_technology classifier's own
  *     score. Low = couldn't clearly identify the board.
  *   - rectNormCorr: Stage 2 box-tightener's quad-vs-rectangle fit
@@ -22,18 +18,25 @@
  *     occluded; dewarp output will be poor.
  *   - ocpd null fraction: how many MCB/RCBO slots have no readable
  *     amperage. High = device faces are unreadable (glare, focus).
+ *
+ * VLM-vs-CV count agreement was previously a hard-fail signal here.
+ * It was dropped 2026-05-14 because CV's autocorrelation-based module
+ * count is unreliable on real-world boards: ADRBs, SPDs, multi-pole
+ * main switches, and any non-standard device face breaks the periodic
+ * signature the pitch estimator depends on. The result was a high
+ * false-positive rate (clean F2014MX photos being rejected three retakes
+ * in a row because CV under-counted by 2). Modern GPT-5.5 enumeration
+ * is more reliable than CV's geometric count on the variety of boards
+ * we see in the field; the count is now logged for telemetry only.
  */
 
 export const RETAKE_REASONS = {
-  VLM_CV_DISAGREEMENT: 'vlm_cv_disagreement',
   CLASSIFIER_LOW_CONFIDENCE: 'classifier_low_confidence',
   POOR_QUAD_FIT: 'poor_quad_fit',
   TOO_MANY_NULLS: 'too_many_nulls',
 };
 
 const MESSAGES = {
-  [RETAKE_REASONS.VLM_CV_DISAGREEMENT]:
-    'Some devices on the rail couldn’t be counted reliably — usually shadows, glare, or a hand partially in shot. Please retake with the whole rail evenly lit and unobstructed.',
   [RETAKE_REASONS.CLASSIFIER_LOW_CONFIDENCE]:
     'We couldn’t identify the consumer unit clearly. Please retake with the whole board in frame, in focus, and well lit.',
   [RETAKE_REASONS.POOR_QUAD_FIT]:
@@ -64,12 +67,6 @@ const DEFAULT_THRESHOLDS = {
  * and HTTP response shaping.
  *
  * @param {object} args
- * @param {boolean|null} [args.vlmCountAgreesWithCv]
- *        From `geometricResult.stageOutputs.stage3.vlmCountAgreesWithCv`.
- *        `false` is a hard fail; `null` (e.g. CV count unavailable)
- *        does not fail because we can't make a judgment.
- * @param {number|null} [args.vlmCount] — telemetry only
- * @param {number|null} [args.cvCount] — telemetry only
  * @param {number|null} [args.classifierConfidence]
  *        From `boardClassification.confidence`.
  * @param {number|null} [args.rectNormCorr]
@@ -84,9 +81,6 @@ const DEFAULT_THRESHOLDS = {
  * }}
  */
 export function evaluateQualityGate({
-  vlmCountAgreesWithCv = null,
-  vlmCount = null,
-  cvCount = null,
   classifierConfidence = null,
   rectNormCorr = null,
   circuits = null,
@@ -95,24 +89,12 @@ export function evaluateQualityGate({
   const cfg = { ...DEFAULT_THRESHOLDS, ...thresholds };
 
   const diagnostic = {
-    vlmCount,
-    cvCount,
-    vlmCountAgreesWithCv,
     classifierConfidence,
     rectNormCorr,
     ocpdSlotCount: null,
     ocpdNullRatingCount: null,
     ratingNullFraction: null,
   };
-
-  if (vlmCountAgreesWithCv === false) {
-    return {
-      pass: false,
-      reason: RETAKE_REASONS.VLM_CV_DISAGREEMENT,
-      message: MESSAGES[RETAKE_REASONS.VLM_CV_DISAGREEMENT],
-      diagnostic,
-    };
-  }
 
   if (
     typeof classifierConfidence === 'number' &&

@@ -2838,13 +2838,13 @@ router.post(
       // Surface a "retake required" response when the pipeline produced
       // output we can't trust. Design intent: never return wrong data
       // silently. The gate is intentionally conservative — it fires only
-      // on hard signals (VLM↔CV count disagreement, severely keystoned
-      // quad, low Stage 1 confidence, mostly-null device ratings).
-      const stage3Out = geometricResult?.stageOutputs?.stage3 ?? {};
+      // on hard signals (low Stage 1 confidence, severely keystoned quad,
+      // mostly-null device ratings). VLM↔CV count agreement was dropped
+      // 2026-05-14 because CV's autocorrelation count is unreliable on
+      // non-standard rails (ADRBs, SPDs, multi-pole devices) and was
+      // producing false positives on clean photos — see ccu-quality-gate.js
+      // header comment.
       const gate = evaluateQualityGate({
-        vlmCountAgreesWithCv: stage3Out.vlmCountAgreesWithCv ?? null,
-        vlmCount: stage3Out.vlmCount ?? null,
-        cvCount: stage3Out.cvCount ?? null,
         classifierConfidence: boardClassification?.confidence ?? null,
         rectNormCorr: geometricResult?.chunkingDiag?.refinement?.quadDiag?.rectNormCorr ?? null,
         circuits: analysis.circuits ?? [],
