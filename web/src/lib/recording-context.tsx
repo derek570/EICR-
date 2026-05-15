@@ -843,7 +843,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         console.info(
           `[recording:pipeline] stage=regex enabled=${regexHintsEnabled} matcher=${Boolean(regexMatcherRef.current)} tracker=${Boolean(fieldSourceTrackerRef.current)}`
         );
-        if (regexHintsEnabled && regexMatcherRef.current && fieldSourceTrackerRef.current) {
+        // Skip the regex pass entirely when this transcript is the answer
+        // to an in-flight ask_user. Codex review of sess_mp79tvcj_6prk
+        // (2026-05-15) flagged this: when the inspector said "It's a 100
+        // amp." in response to "What's the BS standard?", the cumulative
+        // matcher ran on the answer text + 30s of prior dialogue and
+        // wrote `board.main_switch_bs_en` (it had matched the digit-run
+        // "100" via the BS-EN pattern), competing with Sonnet's correct
+        // `record_board_reading{field:"main_switch_current"}` extraction
+        // that landed shortly after. Sonnet is the authority for ask_user
+        // answers — it has the context_field, the question, and the
+        // 5-min Anthropic-cached conversation tail. The regex shouldn't
+        // race it. Also avoid extending `cumulativeTranscriptRef` so
+        // subsequent utterances don't inherit the answer's text in their
+        // sliding-match window (Sonnet wrote the value; the matcher
+        // should remain unaware).
+        const isAnswerToAsk = Boolean(inFlightToolCallId);
+        if (
+          regexHintsEnabled &&
+          regexMatcherRef.current &&
+          fieldSourceTrackerRef.current &&
+          !isAnswerToAsk
+        ) {
           const normalised = normaliseTranscriptText(text);
           cumulativeTranscriptRef.current +=
             (cumulativeTranscriptRef.current ? ' ' : '') + normalised;
@@ -876,6 +897,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           const writtenKeys = fieldSourceTrackerRef.current.consumeTurnWrites();
           regexResults = buildRegexSummary(writtenKeys, jobRef.current);
+        } else if (regexHintsEnabled && isAnswerToAsk) {
+          clientDiagnostic('pipeline_regex_skipped_ask_answer', {
+            toolCallIdShort: inFlightToolCallId?.slice(0, 12) ?? null,
+            textPreview: text.slice(0, 80),
+          });
         }
         console.info(
           `[recording:pipeline] stage=sonnet_send utteranceId=${utteranceId.slice(0, 8)} inFlightToolCallId=${inFlightToolCallId?.slice(0, 12) ?? 'none'} regexHints=${regexResults?.length ?? 0}`
