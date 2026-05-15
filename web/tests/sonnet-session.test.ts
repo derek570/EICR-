@@ -918,4 +918,239 @@ describe('SonnetSession', () => {
       ]);
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Close code 1005 — Flaw B fix from sess_mp79tvcj_6prk (2026-05-15).
+  // RFC 6455 §7.1.5 "no status received": iPad Safari fires onclose with
+  // code 1005 when the OS reaps a backgrounded tab's WS during audio
+  // playback / App Nap. Treating 1005 as clean (pre-this-commit
+  // behaviour) suppressed reconnect on the exact death pattern that
+  // most needs one.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('close code 1005 (Flaw B — iPad Safari tab-reap reconnect)', () => {
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+    });
+    afterEach(() => {
+      delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+    });
+
+    it('schedules a reconnect on code 1005 (was suppressed pre-fix)', async () => {
+      const sched = makeControlledScheduler();
+      const session = new SonnetSession({}, sched);
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // drain session_start
+
+      server.close({ code: 1005, reason: '', wasClean: false });
+      await server.closed;
+
+      const next = new WS(SONNET_URL);
+      sched.flush();
+      await next.connected;
+      expect(session.connectionState).toBe('connected');
+    });
+
+    it('logs reconnect=true for a 1005 close when flag ON', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1005, reason: '', wasClean: false });
+      await server.closed;
+
+      const line = info.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].startsWith('[sonnet] close')
+      )?.[0] as string;
+      expect(line).toMatch(/code=1005/);
+      expect(line).toMatch(/reconnect=true/);
+    });
+
+    it('1000 still treated as clean (no reconnect) — narrow guard, not a blanket flip', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+
+      server.close({ code: 1000, reason: 'normal', wasClean: true });
+      await server.closed;
+
+      const line = info.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].startsWith('[sonnet] close')
+      )?.[0] as string;
+      expect(line).toMatch(/code=1000/);
+      expect(line).toMatch(/reconnect=false/);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Out-of-band client_diagnostic buffer — Flaw A fix from
+  // sess_mp79tvcj_6prk (2026-05-15). Pre-fix `sendClientDiagnostic`
+  // dropped on the floor when `state !== 'connected'`, so the very
+  // events that document a WS death (sonnet_ws_close,
+  // recording_pagehide, recording_visibility_change) were silently
+  // discarded. Now buffered + drained on the next clean open.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('client_diagnostic out-of-band buffer (Flaw A fix)', () => {
+    it('buffers diagnostics fired while disconnected and replays on reconnect', async () => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      try {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        const sched = makeControlledScheduler();
+        const session = new SonnetSession({}, sched);
+        session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // drain session_start
+        server.send(JSON.stringify({ type: 'session_ack', status: 'new', sessionId: 'srv-1' }));
+        await Promise.resolve();
+
+        // Dirty close — WS dies. Diagnostics fired AFTER this point must
+        // not be silently dropped.
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+
+        // The recording-context page-lifecycle effect would fire this in
+        // production when iPad Safari sends the tab into BFCache.
+        session.sendClientDiagnostic('recording_pagehide', { persisted: true });
+        session.sendClientDiagnostic('sonnet_ws_close_late_observation', {
+          ms_since_recv: 42,
+        });
+
+        const next = new WS(SONNET_URL);
+        sched.flush();
+        await next.connected;
+
+        // First post-resume frame is session_resume; drain it.
+        await next.nextMessage;
+
+        // The two buffered diagnostics MUST land in CloudWatch on the new WS.
+        const drained: Array<Record<string, unknown>> = [];
+        for (let i = 0; i < 2; i++) {
+          const raw = await next.nextMessage;
+          drained.push(JSON.parse(raw as string) as Record<string, unknown>);
+        }
+        expect(drained.every((m) => m.type === 'client_diagnostic')).toBe(true);
+        expect(drained[0].category).toBe('recording_pagehide');
+        expect(drained[0].persisted).toBe(true);
+        expect(drained[0].replayed_from_pending).toBe(true);
+        expect(typeof drained[0].replay_delay_ms).toBe('number');
+        expect(drained[1].category).toBe('sonnet_ws_close_late_observation');
+        expect(drained[1].replayed_from_pending).toBe(true);
+      } finally {
+        delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+      }
+    });
+
+    it('drains in FIFO order so the replay matches the dead-WS timeline', async () => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      try {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        const sched = makeControlledScheduler();
+        const session = new SonnetSession({}, sched);
+        session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // drain session_start
+        server.send(JSON.stringify({ type: 'session_ack', status: 'new', sessionId: 'srv-1' }));
+        await Promise.resolve();
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+
+        for (let i = 0; i < 5; i++) {
+          session.sendClientDiagnostic('test_seq', { seq: i });
+        }
+
+        const next = new WS(SONNET_URL);
+        sched.flush();
+        await next.connected;
+        await next.nextMessage; // drain session_resume
+
+        const replayed: number[] = [];
+        for (let i = 0; i < 5; i++) {
+          const raw = await next.nextMessage;
+          replayed.push((JSON.parse(raw as string) as Record<string, unknown>).seq as number);
+        }
+        expect(replayed).toEqual([0, 1, 2, 3, 4]);
+      } finally {
+        delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+      }
+    });
+
+    it('drops oldest events when the buffer overflows PENDING_DIAGNOSTICS_MAX (200)', async () => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      try {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        const sched = makeControlledScheduler();
+        const session = new SonnetSession({}, sched);
+        session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // drain session_start
+        server.send(JSON.stringify({ type: 'session_ack', status: 'new', sessionId: 'srv-1' }));
+        await Promise.resolve();
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+
+        // Fire 250 events — first 50 should evict.
+        for (let i = 0; i < 250; i++) {
+          session.sendClientDiagnostic('overflow_test', { seq: i });
+        }
+
+        const next = new WS(SONNET_URL);
+        sched.flush();
+        await next.connected;
+        await next.nextMessage; // session_resume
+
+        const first = JSON.parse((await next.nextMessage) as string) as Record<string, unknown>;
+        // After eviction, the kept window is [seq=50 .. seq=249] — first
+        // drained event is seq=50.
+        expect(first.seq).toBe(50);
+      } finally {
+        delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+      }
+    });
+
+    it('connected sends remain inline (no buffering when WS is live)', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // drain session_start
+
+      session.sendClientDiagnostic('inline_test', { hello: 'world' });
+      const raw = await server.nextMessage;
+      const msg = JSON.parse(raw as string) as Record<string, unknown>;
+      expect(msg.type).toBe('client_diagnostic');
+      expect(msg.category).toBe('inline_test');
+      expect(msg.hello).toBe('world');
+      expect(msg.replayed_from_pending).toBeUndefined();
+    });
+
+    it('disconnect() drops the pending buffer — stale diagnostics never replay on the next session', async () => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      try {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        const session = new SonnetSession({});
+        session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // session_start
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+
+        session.sendClientDiagnostic('stale_event', {});
+        session.disconnect();
+        // After grace period, open a new server + reconnect manually.
+        await new Promise((r) => setTimeout(r, 350));
+
+        const next = new WS(SONNET_URL);
+        session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+        await next.connected;
+        const raw = await next.nextMessage;
+        const frame = JSON.parse(raw as string) as Record<string, unknown>;
+        // First frame is session_start — NOT the buffered stale_event.
+        expect(frame.type).toBe('session_start');
+      } finally {
+        delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+      }
+    });
+  });
 });

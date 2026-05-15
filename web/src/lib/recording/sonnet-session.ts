@@ -418,6 +418,14 @@ const RECONNECT_BASE_MS = 500;
 const RECONNECT_CAP_MS = 10_000;
 /** Max attempts before we fire a terminal error and stop. */
 const RECONNECT_MAX_ATTEMPTS = 5;
+/**
+ * Bound on the out-of-band diagnostic buffer. A full PWA recording session
+ * generates ~5-15 client_diagnostic events per minute; 200 covers the
+ * entire 5-minute reconnect TTL window with headroom. When the buffer is
+ * full, FIFO drops keep the most-recent context (the lead-up to a death
+ * carries the diagnostic signal; ancient events do not).
+ */
+const PENDING_DIAGNOSTICS_MAX = 200;
 
 /**
  * Stage 6 protocol capability advertisement.
@@ -460,6 +468,24 @@ export class SonnetSession {
   // (heartbeat) or its content will be re-emitted by the server-side
   // session_resume rehydrate (job_state, session_pause/resume).
   private pendingMessages: Array<Record<string, unknown>> = [];
+  // Out-of-band diagnostic buffer — catches `client_diagnostic` envelopes
+  // that fire while the WS is closed (or mid-handshake) so they ship to
+  // CloudWatch on the next successful open. Designed to plug the visibility
+  // gap exposed by sess_mp79tvcj_6prk (2026-05-15): when the WS died at
+  // 18:50:03 UTC, the `sonnet_ws_close` diagnostic itself, plus every
+  // subsequent `recording_pagehide` / `recording_visibility_change` / etc.,
+  // was silently dropped because `sendClientDiagnostic` short-circuited
+  // on `state !== 'connected'`. With this buffer the close event survives
+  // to the next session_resume — even when reconnect is suppressed because
+  // of a code-1005 misclassification (Flaw B in the post-mortem), the
+  // FIRST event of the next WS lifetime carries the receipt of the
+  // previous death. Capped at PENDING_DIAGNOSTICS_MAX to bound memory
+  // during a long-running disconnect window; oldest events drop first.
+  private pendingDiagnostics: Array<{
+    category: string;
+    payload: Record<string, unknown>;
+    capturedAt: string;
+  }> = [];
   // Stage 6 STI-04 — toolCallId of the most-recent `ask_user_started`
   // that hasn't yet been answered. Captured here (rather than in the
   // consumer) so the SonnetSession remains the single source of truth
@@ -681,6 +707,13 @@ export class SonnetSession {
           this.sendRaw(msg);
         }
       }
+
+      // Drain client_diagnostic envelopes that fired during the dead-WS
+      // window. Runs after the session_start / session_resume frame +
+      // pendingMessages flush so the diagnostics land server-side with the
+      // session-rebind already applied. See `drainPendingDiagnostics` for
+      // the replay envelope shape.
+      this.drainPendingDiagnostics();
     };
 
     ws.onmessage = (event) => this.handleMessage(event.data);
@@ -700,7 +733,21 @@ export class SonnetSession {
       this.ws = null;
       if (this.state !== 'error') this.setState('disconnected');
 
-      const isClean = event.code === 1000 || event.code === 1005 || !this.shouldReconnect;
+      // Close-code policy
+      //   1000 — peer initiated a graceful shutdown. Truly clean. Never reconnect.
+      //   1005 — "no status received". RFC 6455 §7.1.5: the peer closed without
+      //          sending a Close frame. iPad Safari fires this when the OS reaps
+      //          a backgrounded tab's WS during audio playback / App Nap (the
+      //          recurring failure mode in sess_mp79tvcj_6prk and 4 prior PWA
+      //          sessions, 2026-05-15). Treating 1005 as clean — which the code
+      //          did pre-this-commit — silently suppressed every reconnect on
+      //          the death path most likely to need one. Re-classify as non-
+      //          clean so the reconnect ladder fires; the 5-minute server-side
+      //          TTL (sonnet-stream.js:1912) preserves the conversation context
+      //          across the reopen.
+      // !shouldReconnect — caller asked for shutdown (stop button, page unload
+      //          via disconnect()). Honour the explicit intent; never resurrect.
+      const isClean = event.code === 1000 || !this.shouldReconnect;
       const reconnectEnabled = isReconnectEnabled();
       const willReconnect =
         reconnectEnabled && !isClean && this.reconnectAttempts < RECONNECT_MAX_ATTEMPTS;
@@ -896,21 +943,73 @@ export class SonnetSession {
 
   /**
    * Diagnostic envelope that lands on CloudWatch as `Client diagnostic`.
-   * Mirrors iOS `ServerWebSocketService.sendClientDiagnostic`. Drop-on-
-   * floor when disconnected — diagnostics are best-effort and we don't
-   * want to inflate the reconnect buffer with telemetry.
+   * Mirrors iOS `ServerWebSocketService.sendClientDiagnostic`.
+   *
+   * Behaviour split by WS state:
+   *   - connected → send immediately
+   *   - any other state (connecting / disconnected / error) → push into
+   *     `pendingDiagnostics` (capped at PENDING_DIAGNOSTICS_MAX, FIFO
+   *     evicts oldest), drained on the next clean open. This is what
+   *     lets `sonnet_ws_close` / `recording_pagehide` / etc. survive a
+   *     dead-WS window: iOS doesn't need this path because its native
+   *     reconnect always fires onclose first, but iPad-Safari-in-PWA-
+   *     mode swallows close events under audio playback + power saving
+   *     (see sess_mp79tvcj_6prk post-mortem, 2026-05-15).
    *
    * Envelope keys (`type`, `category`, `timestamp`) are written AFTER
    * the payload spread so a caller cannot accidentally hijack the WS
    * message type — same defence iOS added at ServerWebSocketService.swift:794.
+   * `captured_at_iso` is stamped at buffer time so the server can tell a
+   * replayed diagnostic apart from one fired live; without it the
+   * `timestamp` on a drained envelope reflects drain time, not capture
+   * time, and a 30-second-old close event would look real-time.
    */
   sendClientDiagnostic(category: string, payload: Record<string, unknown> = {}): void {
-    if (!this.ws || this.state !== 'connected') return;
+    const capturedAt = new Date().toISOString();
+    if (!this.ws || this.state !== 'connected') {
+      this.pendingDiagnostics.push({ category, payload, capturedAt });
+      if (this.pendingDiagnostics.length > PENDING_DIAGNOSTICS_MAX) {
+        // Drop oldest — newest events carry the live disconnect context.
+        this.pendingDiagnostics.splice(0, this.pendingDiagnostics.length - PENDING_DIAGNOSTICS_MAX);
+      }
+      return;
+    }
     const msg: Record<string, unknown> = { ...payload };
     msg.type = 'client_diagnostic';
     msg.category = category;
-    msg.timestamp = new Date().toISOString();
+    msg.timestamp = capturedAt;
     this.sendRaw(msg);
+  }
+
+  /**
+   * Drain `pendingDiagnostics` over a freshly-opened WS. Called from
+   * `ws.onopen` AFTER session_start / session_resume + pendingMessages
+   * flush, so the diagnostic stream lands in CloudWatch with the session
+   * context already bound. Each replayed envelope carries:
+   *   - `category` + payload as captured
+   *   - `timestamp` = capture time (NOT drain time)
+   *   - `replayed_from_pending: true` so an analyst can spot which logs
+   *     came from a dead-WS window vs the live stream
+   *   - `replay_delay_ms` since capture, for ballpark dead-WS-window
+   *     duration in CloudWatch Insights without timestamp math
+   */
+  private drainPendingDiagnostics(): void {
+    if (this.pendingDiagnostics.length === 0) return;
+    const drained = this.pendingDiagnostics;
+    this.pendingDiagnostics = [];
+    const drainTime = Date.now();
+    for (const entry of drained) {
+      const msg: Record<string, unknown> = { ...entry.payload };
+      msg.type = 'client_diagnostic';
+      msg.category = entry.category;
+      msg.timestamp = entry.capturedAt;
+      msg.replayed_from_pending = true;
+      const capturedMs = Date.parse(entry.capturedAt);
+      if (Number.isFinite(capturedMs)) {
+        msg.replay_delay_ms = drainTime - capturedMs;
+      }
+      this.sendRaw(msg);
+    }
   }
 
   /**
@@ -1013,6 +1112,13 @@ export class SonnetSession {
     // session. Mirrors iOS where `pendingMessages.removeAll()` runs
     // during teardown (ServerWebSocketService.swift:288).
     this.pendingMessages = [];
+    // Same logic for pending diagnostics — once the inspector ended the
+    // session, replaying old client_diagnostic envelopes on a NEW session
+    // would muddy CloudWatch with stale categories carrying the wrong
+    // session context. The local pipelineLog ring + /settings/diagnostics
+    // export survives this drop, so nothing is lost — just unhitched from
+    // a session that no longer exists.
+    this.pendingDiagnostics = [];
     // Reset Stage 6 state: a fresh recording session starts with no
     // in-flight ask and no fired ids. firedToolCallIds is cleared
     // here (only) so a brand new session can't be polluted by ids
