@@ -264,6 +264,7 @@ jobs:
             APP_DIR=web
             NEXT_PUBLIC_API_URL=https://api.certmate.uk
             NEXT_PUBLIC_REGEX_HINTS_ENABLED=1
+            NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -371,6 +372,7 @@ jobs:
             APP_DIR=web
             NEXT_PUBLIC_API_URL=https://staging.certmate.uk
             NEXT_PUBLIC_REGEX_HINTS_ENABLED=1
+            NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED=true
             NODE_ENV=staging
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -493,6 +495,7 @@ jobs:
             APP_DIR=web
             NEXT_PUBLIC_API_URL=https://api.certmate.uk
             NEXT_PUBLIC_REGEX_HINTS_ENABLED=1
+            NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

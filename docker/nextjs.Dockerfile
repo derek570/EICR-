@@ -8,6 +8,14 @@ WORKDIR /app
 
 ARG APP_DIR
 ARG NEXT_PUBLIC_API_URL=https://api.certmate.uk
+# NEXT_PUBLIC_* vars are inlined at `next build` time from process.env, so
+# every flag the client reads has to be declared as ARG + ENV here. Build-args
+# passed without an ENV bridge are silently dropped — see 2026-05-15 incident
+# where NEXT_PUBLIC_REGEX_HINTS_ENABLED was passed in deploy.yml but never
+# reached the bundle, and NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED missed the
+# same way, leaving the Sonnet WS auto-reconnect machinery dormant in prod.
+ARG NEXT_PUBLIC_REGEX_HINTS_ENABLED
+ARG NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED
 
 # Copy workspace root package files for workspace resolution
 COPY package.json package-lock.json ./
@@ -25,6 +33,8 @@ RUN npm ci --ignore-scripts
 WORKDIR /app/${APP_DIR}
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_REGEX_HINTS_ENABLED=$NEXT_PUBLIC_REGEX_HINTS_ENABLED
+ENV NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED=$NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED
 
 # Remove any local env files that might override
 RUN rm -f .env.local .env
