@@ -294,25 +294,67 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     recordLifecycle('provider-mount', {});
+    // Mirror lifecycle events to CloudWatch via clientDiagnostic. The
+    // localStorage tail (recordLifecycle) survives reloads but is invisible
+    // outside Settings → Diagnostics. Field-tested 2026-05-15: PWA sessions
+    // were dying at 30-90s during ElevenLabs audio playback with no JS
+    // exception, no error_boundary, no `sonnet_ws_close` in the wire — the
+    // page just stopped emitting. Hypothesis is iPad Safari BFCaching or
+    // suspending the tab on audio playback; without these events on the
+    // server side, the next field session can't disambiguate Safari-killed-
+    // the-tab from a JS regression. clientDiagnostic is the only sink that
+    // reaches CloudWatch from the recording pipeline.
+    clientDiagnostic('recording_provider_mount', {
+      url: window.location.pathname,
+      visibility: typeof document !== 'undefined' ? document.visibilityState : 'unknown',
+    });
     const onShow = (e: PageTransitionEvent) => {
       recordLifecycle('page-show', { persisted: e.persisted });
+      clientDiagnostic('recording_pageshow', {
+        persisted: e.persisted,
+        url: window.location.pathname,
+      });
     };
     const onHide = (e: PageTransitionEvent) => {
       recordLifecycle('page-hide', { persisted: e.persisted });
+      clientDiagnostic('recording_pagehide', {
+        persisted: e.persisted,
+        url: window.location.pathname,
+      });
     };
     const onVisibility = () => {
       recordLifecycle('visibility-change', {
         state: document.visibilityState,
       });
+      clientDiagnostic('recording_visibility_change', {
+        state: document.visibilityState,
+      });
+    };
+    // Page Lifecycle API — `freeze` and `resume` only exist on Chromium-
+    // based engines, but iOS Safari emits its analogue via pagehide
+    // (persisted=true) which we already capture. Wired here in case any
+    // future browser surface adds them.
+    const onFreeze = () => {
+      recordLifecycle('page-freeze', {});
+      clientDiagnostic('recording_page_freeze', {});
+    };
+    const onResume = () => {
+      recordLifecycle('page-resume', {});
+      clientDiagnostic('recording_page_resume', {});
     };
     window.addEventListener('pageshow', onShow);
     window.addEventListener('pagehide', onHide);
     document.addEventListener('visibilitychange', onVisibility);
+    document.addEventListener('freeze', onFreeze);
+    document.addEventListener('resume', onResume);
     return () => {
       window.removeEventListener('pageshow', onShow);
       window.removeEventListener('pagehide', onHide);
       document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('freeze', onFreeze);
+      document.removeEventListener('resume', onResume);
       recordLifecycle('provider-unmount', {});
+      clientDiagnostic('recording_provider_unmount', {});
     };
   }, []);
 
