@@ -243,6 +243,20 @@ const NAMING_BUFFER_TIMEOUT_MS = 3000;
 // perceptible (Sonnet's own response budget is ~3s).
 const BURST_BUFFER_TIMEOUT_MS = 500;
 
+/**
+ * Heartbeat cadence — 5 s. Sized to be:
+ *   - Frequent enough that the maximum freeze window we can MISS is bounded
+ *     to <5s (any pause >5s lights up at least one gap), which is well
+ *     below the 30-90s death window we're trying to characterise.
+ *   - Infrequent enough that 200 heartbeats covers ~16 min of recording
+ *     in the localStorage pipelineLog ring without churning the older
+ *     domain events out of the window.
+ *   - Off the same heartbeat cadence used by iOS DeepgramService.swift
+ *     for the WS-ping path (every 5s); aligning gives us cross-platform
+ *     comparable timelines.
+ */
+const HEARTBEAT_INTERVAL_MS = 5000;
+
 function isTrailingCircuitNamingPattern(text: string): boolean {
   return TRAILING_CIRCUIT_NAMING_PATTERN.test(text);
 }
@@ -627,6 +641,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // without separately decoding the WS message.
   const [currentBoardId, setCurrentBoardId] = React.useState<string | null>(null);
   const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  // 5-second heartbeat — pinpoints "did the JS event loop freeze" without
+  // needing the WS to be alive. Each fire writes `pipelineLog('heartbeat',
+  // {seq})` which lands in the in-browser ring + localStorage tail (always)
+  // and the CloudWatch WS sink (when up). If the renderer is suspended by
+  // iPad Safari (the b2 hypothesis from sess_mp7yyt76_lm4o, 2026-05-16),
+  // the seq monotonicity breaks the instant the event loop stops dispatching
+  // — the local ring captures the last live seq + timestamp, and a gap >5s
+  // until any other event proves the freeze. Inspector exports via
+  // /settings/diagnostics; on next reconnect the new pendingDiagnostics
+  // buffer (commit 897dc51) drains the post-freeze heartbeats back to
+  // CloudWatch with `replayed_from_pending: true` so the gap is queryable.
+  const heartbeatIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const heartbeatSeqRef = React.useRef(0);
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
   // React with renders.
@@ -635,6 +662,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const clearTick = React.useCallback(() => {
     if (tickRef.current) clearInterval(tickRef.current);
     tickRef.current = null;
+    if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+    heartbeatIntervalRef.current = null;
   }, []);
 
   const beginTick = React.useCallback(() => {
@@ -646,6 +675,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // is authoritative from server-side `cost_update` snapshots.
       setDeepgramCostUsd((c) => c + DEEPGRAM_USD_PER_MIN / 60 / 10);
     }, 100);
+    // 5s heartbeat shares the same start/stop lifetime as the cost timer
+    // (only fires while a session is live). seq counter is monotonic for
+    // the whole tab lifetime — NOT reset between sessions — so a freeze-
+    // then-fresh-session can be correlated even across reload boundaries
+    // via localStorage. Reset on session_stop would defeat that.
+    heartbeatIntervalRef.current = setInterval(() => {
+      const seq = heartbeatSeqRef.current++;
+      pipelineLog('heartbeat', { seq });
+    }, HEARTBEAT_INTERVAL_MS);
   }, []);
 
   const teardownMic = React.useCallback(() => {
