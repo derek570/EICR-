@@ -831,7 +831,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         });
       };
 
-      const dispatchFinal = (text: string, confidence: number) => {
+      const dispatchFinal = (rawText: string, confidence: number) => {
+        // iOS canon (DeepgramRecordingViewModel.swift:1798): normalise
+        // BEFORE every downstream pass. The web pipeline previously called
+        // `normaliseTranscriptText(text)` only inside the regex-hints
+        // branch, so the cumulative buffer + matcher saw normalised text
+        // but Sonnet saw the raw Deepgram output. That gap surfaced as
+        // sess_mp7yyt76_lm4o (2026-05-16): inspector answered Sonnet's
+        // "Which circuit is the Zs of 0.65 for?" with the word "Second"
+        // (Deepgram-recurring mis-hearing of "circuit", per Swift docblock
+        // for `MISHEARED_CIRCUIT_PATTERN`). The web normaliser already
+        // rewrites `\bsecond\b → circuit` (number-normaliser.ts:138) but
+        // that rewrite never reached Sonnet because the send used `text`,
+        // not `normalised`. Now the normalised string flows through every
+        // path: local transcript display (parity with iOS line 1923),
+        // voice-command parsing, cumulative regex buffer, sendTranscript,
+        // and sendAskUserAnswered. The diagnostic `pipeline_text_normalised`
+        // surfaces in CloudWatch whenever the substitution changed
+        // anything, so the next session lets us verify "second" → "circuit"
+        // actually fired.
+        const text = normaliseTranscriptText(rawText);
+        if (text !== rawText) {
+          clientDiagnostic('pipeline_text_normalised', {
+            rawPreview: rawText.slice(0, 80),
+            normalisedPreview: text.slice(0, 80),
+          });
+        }
         setTranscript((prev) => {
           const next: TranscriptUtterance[] = [
             ...prev,
@@ -903,9 +928,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           fieldSourceTrackerRef.current &&
           !isAnswerToAsk
         ) {
-          const normalised = normaliseTranscriptText(text);
-          cumulativeTranscriptRef.current +=
-            (cumulativeTranscriptRef.current ? ' ' : '') + normalised;
+          // `text` is already normalised at the top of dispatchFinal; no
+          // need to re-run normaliseTranscriptText. The matcher does its
+          // OWN internal normalisation (transcript-field-matcher.ts:958
+          // — normaliseBeforeMatch + normalizeTranscript) on the sliding
+          // window so the cumulative buffer can stay in the same form
+          // the matcher expects.
+          cumulativeTranscriptRef.current += (cumulativeTranscriptRef.current ? ' ' : '') + text;
           const matchResult = regexMatcherRef.current.match(
             cumulativeTranscriptRef.current,
             jobRef.current
@@ -919,7 +948,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             `[recording:pipeline] stage=regex_applied changedKeys=${applied?.changedKeys.length ?? 0} keys=${(applied?.changedKeys ?? []).slice(0, 5).join(',')}`
           );
           clientDiagnostic('pipeline_regex_applied', {
-            normalisedPreview: normalised.slice(0, 80),
+            normalisedPreview: text.slice(0, 80),
             changedKeysCount: applied?.changedKeys.length ?? 0,
             changedKeysPreview: (applied?.changedKeys ?? []).slice(0, 5),
           });
