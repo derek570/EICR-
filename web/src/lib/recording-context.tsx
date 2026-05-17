@@ -850,6 +850,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // they're not muted by the still-playing question. Reset on
   // TTS-end or on any frame below threshold.
   const bargeInLevelFramesRef = React.useRef(0);
+  // Cooldown lockout so a single barge-in fire can't immediately re-trigger
+  // from the same sustained-loud run. Set when the threshold fires; cleared
+  // when ttsActiveRef flips back to false. Without this the original commit
+  // cc4082e would synchronously fire twice within ~1ms on iPad Safari
+  // (observed in sess_mp9qnay1_h1ik 2026-05-17): both fires call
+  // cancelSpeech() + sendBargeIn(), creating extra audio-element teardown
+  // work + redundant `tts_cancelled_by_user` frames on the wire — exactly
+  // the cumulative pressure profile that triggers the WebContent process
+  // reap during ElevenLabs playback.
+  const bargeInFiredRef = React.useRef(false);
   const BARGE_IN_LEVEL_THRESHOLD = 0.015;
   const BARGE_IN_LEVEL_FRAMES = 8;
   // Inspector-speaking tracker — mirrors iOS `isSpeaking` flag at
@@ -2197,14 +2207,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // notify backend. The deferred-TTS path from commit ee8ed78
         // covers the "TTS about to start" case; this covers
         // "TTS already playing".
-        if (ttsActiveRef.current) {
+        if (ttsActiveRef.current && !bargeInFiredRef.current) {
           if (level >= BARGE_IN_LEVEL_THRESHOLD) {
             bargeInLevelFramesRef.current += 1;
             if (bargeInLevelFramesRef.current >= BARGE_IN_LEVEL_FRAMES) {
+              // Latch the cooldown FIRST so a synchronous re-entry into
+              // onLevel (which iPad Safari can produce when the audio
+              // worklet flushes a pending buffer during the
+              // cancelSpeech() teardown that follows) hits the
+              // bargeInFiredRef guard and bails. Without the latch the
+              // same threshold could fire twice within ~1ms.
+              bargeInFiredRef.current = true;
+              const firedFrameCount = bargeInLevelFramesRef.current;
               bargeInLevelFramesRef.current = 0;
               clientDiagnostic('tts_barge_in_amplitude', {
                 level: Math.round(level * 1000) / 1000,
-                frames: BARGE_IN_LEVEL_FRAMES,
+                frames: firedFrameCount,
               });
               cancelSpeech();
               sonnetRef.current?.sendBargeIn('amplitude');
@@ -2215,9 +2233,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             // not a transient cough / clap.
             bargeInLevelFramesRef.current = 0;
           }
-        } else if (bargeInLevelFramesRef.current > 0) {
-          // TTS ended; reset counter for the next round.
-          bargeInLevelFramesRef.current = 0;
+        } else if (!ttsActiveRef.current) {
+          // TTS ended (or never started); reset counter + clear the
+          // cooldown latch for the next TTS round. Without clearing the
+          // latch here, a second TTS in the same session would never be
+          // bargeable.
+          if (bargeInLevelFramesRef.current > 0) {
+            bargeInLevelFramesRef.current = 0;
+          }
+          if (bargeInFiredRef.current) {
+            bargeInFiredRef.current = false;
+          }
         }
         // SleepManager's RMS fallback path — only reachable if the
         // Silero load failed at session start (offline first run + no
