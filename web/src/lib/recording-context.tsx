@@ -464,14 +464,42 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         });
       }
     };
+    // Network connectivity events (#64) — surfaced to the inspector as
+    // a banner-style toast so a mid-session offline doesn't silently
+    // break the WS retry ladder for an unbounded window. Recording
+    // doesn't auto-pause on offline (the WS reconnect ladder handles
+    // transient drops); the toast is purely UX so the inspector knows
+    // why their dictation isn't being acknowledged.
+    const onOnline = () => {
+      clientDiagnostic('recording_network_online', { status: statusRef.current });
+      if (statusRef.current === 'active' || statusRef.current === 'sleeping') {
+        toast('Connection restored', {
+          description: 'Recording will resume automatically.',
+          duration: 3_000,
+        });
+      }
+    };
+    const onOffline = () => {
+      clientDiagnostic('recording_network_offline', { status: statusRef.current });
+      if (statusRef.current === 'active' || statusRef.current === 'sleeping') {
+        toast('No network connection', {
+          description: 'Recording paused — Sonnet extraction unavailable until online.',
+          duration: 10_000,
+        });
+      }
+    };
     window.addEventListener('pageshow', onShow);
     window.addEventListener('pagehide', onHide);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
     document.addEventListener('visibilitychange', onVisibility);
     document.addEventListener('freeze', onFreeze);
     document.addEventListener('resume', onResume);
     return () => {
       window.removeEventListener('pageshow', onShow);
       window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
       document.removeEventListener('visibilitychange', onVisibility);
       document.removeEventListener('freeze', onFreeze);
       document.removeEventListener('resume', onResume);
@@ -2271,6 +2299,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     if (statusRef.current !== 'idle' && statusRef.current !== 'error') {
       recordLifecycle('recording-start-blocked', { status: statusRef.current });
       pipelineLog('recording_start_blocked', { status: statusRef.current });
+      return;
+    }
+    // Offline gate — iOS parity with `DeepgramRecordingViewModel.swift:601`
+    // (`NetworkMonitor.shared.isConnected`). Pre-fix the PWA opened mic
+    // capture + tried Deepgram + Sonnet WS handshakes anyway, burning
+    // battery on retry loops with no recoverable signal for the
+    // inspector. `navigator.onLine === false` is a hint (it can be
+    // false-positive on captive portals) but the false-positive cost
+    // is only "user re-taps Start once network returns" — much smaller
+    // than the silent-failure cost of starting offline.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      recordLifecycle('recording-start-blocked', { reason: 'offline' });
+      pipelineLog('recording_start_blocked', { reason: 'offline' });
+      toast('No network connection', {
+        description: 'Recording requires an internet connection. Try again once online.',
+        duration: 6_000,
+      });
       return;
     }
     recordLifecycle('recording-start', { jobId: jobRef.current?.id ?? null });
