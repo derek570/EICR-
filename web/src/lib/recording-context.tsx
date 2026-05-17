@@ -980,7 +980,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // Belt-and-braces cleanup if the provider unmounts while a session is
-  // live (route change, hot reload).
+  // live (route change, hot reload). Audit #61 (2026-05-17) flagged
+  // that pre-fix this missed `cancelSpeech()` and
+  // `setTtsLifecycleObserver(null)` from the explicit `stop()` path —
+  // a route change mid-TTS would leave ElevenLabs audio playing past
+  // unmount, and the lifecycle observer (pointing at functions
+  // captured in the dead provider's closure) would fire on a freshly
+  // mounted provider with stale data. Add both calls here so unmount
+  // is symmetric with stop().
   React.useEffect(() => {
     return () => {
       clearTick();
@@ -988,6 +995,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       teardownDeepgram();
       teardownSonnet();
       teardownSleep();
+      cancelSpeech();
+      setTtsLifecycleObserver(null);
     };
   }, [clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep]);
 

@@ -123,6 +123,18 @@ let activeAbortController: AbortController | null = null;
 let activeBlobUrl: string | null = null;
 let sharedAudio: HTMLAudioElement | null = null;
 let activeSessionId: string | null = null;
+// Module-scope pointer to the lifecycle of the currently-playing
+// utterance. Set at the top of `speakElevenLabs` (after the initial
+// `cancelElevenLabs` flushes any prior playback), cleared in `settle`
+// once the utterance reaches its terminal state. `cancelElevenLabs`
+// reads this to fire `onEnd` synchronously when a previously-playing
+// utterance gets superseded by a new call — without this, the
+// recording-context lifecycle observer never sees a matching `end`
+// for the superseded playback, leaving consumer state (most
+// importantly `ttsActiveRef` from commit 2bc8d90's PCM gate) stuck.
+// Mirror of iOS `AlertManager.swift:1040-1052 markTTSFinished()`
+// being explicitly called on supersede.
+let activeLifecycle: ElevenLabsLifecycle | null = null;
 
 /**
  * Set the sessionId that subsequent ElevenLabs requests will attribute
@@ -271,6 +283,24 @@ export function hasAudioGestureGrant(): boolean {
  * across navigations if not explicitly revoked.
  */
 export function cancelElevenLabs(): void {
+  // Fire the SUPERSEDED utterance's onEnd synchronously so the
+  // recording-context TTS lifecycle observer (commit 2bc8d90) sees a
+  // matching `end` event. Without this, a B-supersedes-A scenario
+  // leaves `ttsActiveRef = true` from A's start with no corresponding
+  // end fire — the PCM gate would stay engaged indefinitely on a
+  // failed-B-fetch path. The fire is wrapped in try/catch because the
+  // observer is consumer-supplied and must never crash the cancel
+  // path. Cleared BEFORE the abort so a callback that re-enters
+  // `cancelElevenLabs` synchronously doesn't recurse.
+  const prevLifecycle = activeLifecycle;
+  activeLifecycle = null;
+  if (prevLifecycle?.onEnd) {
+    try {
+      prevLifecycle.onEnd();
+    } catch {
+      /* swallow — observer must never tear down the cancel path */
+    }
+  }
   if (activeAbortController) {
     activeAbortController.abort();
     activeAbortController = null;
@@ -342,6 +372,12 @@ export function speakElevenLabs(
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     cancelElevenLabs();
+    // Register THIS lifecycle as the supersede target — a future
+    // `cancelElevenLabs()` (from a new speakElevenLabs, an explicit
+    // Stop, or a `disconnect()`) will fire onEnd on this lifecycle
+    // before clearing. Set AFTER the initial cancel above so we
+    // don't double-fire the previous lifecycle's onEnd.
+    activeLifecycle = lifecycle;
 
     clientDiagnostic('elevenlabs_speak_entered', {
       textLength: text.length,
@@ -405,6 +441,15 @@ export function speakElevenLabs(
       if (settled) return;
       settled = true;
       window.clearTimeout(timeoutId);
+      // Clear the supersede target so a subsequent `cancelElevenLabs`
+      // doesn't fire onEnd a second time for THIS utterance — the
+      // natural-end path below already fires it via `lifecycle.onEnd`.
+      // (If activeLifecycle has been re-assigned to a newer utterance
+      // already, leave it alone — that's the supersede-mid-settle race
+      // and the new owner has its own end semantics.)
+      if (activeLifecycle === lifecycle) {
+        activeLifecycle = null;
+      }
       if (!ok && reason) lifecycle.onError?.(reason);
       else if (ok) lifecycle.onEnd?.();
       // Detach element listeners so a later play() (e.g. priming or a
