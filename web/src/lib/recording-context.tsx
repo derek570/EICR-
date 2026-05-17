@@ -257,6 +257,16 @@ const BURST_BUFFER_TIMEOUT_MS = 500;
  */
 const HEARTBEAT_INTERVAL_MS = 5000;
 
+/**
+ * Delay between ElevenLabs `ended` and resuming the PCM-send pipeline. Mirrors
+ * the iOS `pauseAudioStream() → 500ms wait → resumeAudioStream()` cadence at
+ * `DeepgramService.swift:566` / `DeepgramRecordingViewModel.swift:828` — long
+ * enough to swallow the audio-out tail of the spoken question + any room
+ * reverb before re-enabling mic-to-WS forwarding, short enough that the
+ * inspector's immediate verbal answer to a question doesn't get clipped.
+ */
+const TTS_PCM_GATE_RESUME_DELAY_MS = 500;
+
 function isTrailingCircuitNamingPattern(text: string): boolean {
   return TRAILING_CIRCUIT_NAMING_PATTERN.test(text);
 }
@@ -654,6 +664,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // CloudWatch with `replayed_from_pending: true` so the gap is queryable.
   const heartbeatIntervalRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatSeqRef = React.useRef(0);
+  // TTS PCM gate — iOS parity for the freeze-trigger documented in
+  // sess_mp9ep221_62n8 post-mortem (2026-05-17). Held true while
+  // ElevenLabs playback is in flight; the mic-onSamples callback below
+  // (~line 1765) early-returns when this is true, mirroring iOS's
+  // `DeepgramService.pauseAudioStream()` (DeepgramService.swift:566).
+  // Skips resample + ringBuffer.write + Deepgram.sendSamples + Silero
+  // dispatch — three main-thread workloads that otherwise compete with
+  // iPad Safari's audio decode during foreground playback. The
+  // resume timer mirrors iOS's 500ms post-TTS drain window.
+  const ttsActiveRef = React.useRef(false);
+  const ttsResumeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
   // React with renders.
@@ -696,6 +717,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     deepgramRef.current = null;
     setDeepgramState('disconnected');
     setInterim('');
+    // Clear the TTS PCM gate so a stale `ttsActiveRef = true` doesn't
+    // outlive the recording session. If recording stops with TTS still
+    // in flight, the lifecycle observer's pending 500ms resume timer
+    // would fire AFTER teardown and call `resume()` on a null
+    // `deepgramRef`. The gate flag itself is also reset so a future
+    // session that starts before the timer fires won't inherit a
+    // muted state.
+    if (ttsResumeTimerRef.current) {
+      clearTimeout(ttsResumeTimerRef.current);
+      ttsResumeTimerRef.current = null;
+    }
+    ttsActiveRef.current = false;
     // Bug K — drop any pending naming-buffer timer so the deferred
     // dispatchFinal doesn't fire after the Sonnet WS is gone (which
     // would NPE on sonnetRef.current?.sendTranscript inside a logged
@@ -1763,6 +1796,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     ringBufferRef.current = new AudioRingBuffer(3, 16000);
     const handle = await startMicCapture({
       onSamples: (samples) => {
+        // iOS-parity PCM gate during ElevenLabs playback. Mirrors
+        // `DeepgramService.pauseAudioStream()` at DeepgramService.swift:566
+        // — iOS stops pushing mic PCM to its STT WS the instant TTS plays,
+        // resumes 500ms after playback ends. Without this the PWA does
+        // resample + ring-buffer write + Deepgram send + (in sleep) Silero
+        // inference on EVERY audio block while ElevenLabs is also
+        // decoding on the same iPad Safari renderer process — the
+        // observed cumulative-pressure trigger that froze the JS event
+        // loop ~1s into the 2nd consecutive TTS playback in
+        // sess_mp9ep221_62n8 (2026-05-17). Early-return BEFORE resample
+        // so we also save those CPU cycles, not just the WS send.
+        // Mic capture itself + the VU meter (onLevel below) keep
+        // running so the inspector still sees they're being heard.
+        if (ttsActiveRef.current) return;
         // Single resample point. `handle.sampleRate` is the AudioContext's
         // ACTUAL rate (browsers honour the 16000 hint only on some builds).
         // Post-resample data is 16kHz Float32 regardless of the hardware
@@ -1973,6 +2020,36 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // their answer.
     setTtsLifecycleObserver((event) => {
       sleepManagerRef.current?.setTtsActive(event === 'start');
+      // iOS-parity PCM gate. On TTS start: cancel any pending resume
+      // timer (a back-to-back ask_user pair would otherwise resume
+      // mid-second-utterance), flip ttsActiveRef so onSamples early-
+      // returns, and call DeepgramService.pause() as belt-and-braces.
+      // On TTS end: delay 500ms before flipping the ref back + calling
+      // resume() — matches iOS's post-TTS drain window
+      // (DeepgramRecordingViewModel.swift:828). The 500ms swallows the
+      // audio-out tail of the spoken question without clipping a fast
+      // verbal answer.
+      if (event === 'start') {
+        if (ttsResumeTimerRef.current) {
+          clearTimeout(ttsResumeTimerRef.current);
+          ttsResumeTimerRef.current = null;
+        }
+        ttsActiveRef.current = true;
+        deepgramRef.current?.pause();
+        clientDiagnostic('tts_pcm_gate_engaged', {});
+      } else {
+        if (ttsResumeTimerRef.current) {
+          clearTimeout(ttsResumeTimerRef.current);
+        }
+        ttsResumeTimerRef.current = setTimeout(() => {
+          ttsResumeTimerRef.current = null;
+          ttsActiveRef.current = false;
+          deepgramRef.current?.resume();
+          clientDiagnostic('tts_pcm_gate_released', {
+            delayMs: TTS_PCM_GATE_RESUME_DELAY_MS,
+          });
+        }, TTS_PCM_GATE_RESUME_DELAY_MS);
+      }
     });
     setErrorMessage(null);
     setState('requesting-mic');
