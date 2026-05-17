@@ -416,8 +416,25 @@ export function isReconnectEnabled(): boolean {
 const RECONNECT_BASE_MS = 500;
 /** Hard cap in ms — later attempts plateau here rather than growing unbounded. */
 const RECONNECT_CAP_MS = 10_000;
-/** Max attempts before we fire a terminal error and stop. */
-const RECONNECT_MAX_ATTEMPTS = 5;
+/**
+ * Max attempts before we fire a terminal error and stop. iOS reconnects
+ * indefinitely until manual stop (no cap, fresh token per attempt at
+ * `ServerWebSocketService.swift:1187-1225`) because field inspectors on
+ * flaky networks would otherwise lose their session after 5 mid-job
+ * drops. Mirror that — but cap the backoff at 30 s
+ * (RECONNECT_CAP_MS already does this) so battery drain is bounded.
+ * The PWA's reconnect attempts share the iOS-canon `session_resume`
+ * frame at `:642` so the backend's 5-minute TTL preserves context
+ * across reconnections that fall inside that window; reconnections
+ * after the TTL expires gracefully degrade to `session_start` with a
+ * "context expired" warning surfaced via `onError(_, recoverable=true)`.
+ *
+ * 50 attempts at the 30 s plateau = ~25 minutes of retry headroom.
+ * Long enough for an inspector to walk out of a basement and back into
+ * coverage without losing the session; short enough that a hard-
+ * killed laptop doesn't loop forever.
+ */
+const RECONNECT_MAX_ATTEMPTS = 50;
 /**
  * App-layer heartbeat cadence for the Sonnet WS, mirroring iOS
  * `ServerWebSocketService.pingInterval = 25.0` (ServerWebSocketService.swift:292).
@@ -1144,6 +1161,30 @@ export class SonnetSession {
   pause(): void {
     if (!this.ws || this.state !== 'connected') return;
     this.sendRaw({ type: 'session_pause' });
+  }
+
+  /**
+   * Ask the backend to compact the Anthropic conversation cache before
+   * the session goes idle. Mirrors iOS
+   * `ServerWebSocketService.sendCompactRequest()` at
+   * `ServerWebSocketService.swift:540` invoked from
+   * `RecordingSessionCoordinator.swift:394` on enter-sleeping.
+   *
+   * Why: Anthropic's 5-minute prompt-cache TTL means that an inspector
+   * pause longer than 5 minutes forces the next wake-turn to repay the
+   * full prompt cost. A `session_compact` request collapses the
+   * conversation history into a smaller summary that fits inside the
+   * cache window. The backend has its own guard rails
+   * (5-check compaction cost gate + 60k token threshold) so this is a
+   * best-effort hint, not a guarantee — the server may decline.
+   *
+   * Fire-and-forget on the wire. No reply event is awaited; the
+   * compact happens out-of-band on the backend before the next
+   * session_resume.
+   */
+  sendCompactRequest(): void {
+    if (!this.ws || this.state !== 'connected') return;
+    this.sendRaw({ type: 'session_compact' });
   }
 
   /** Inverse of pause() — re-enable extraction billing after wake. */

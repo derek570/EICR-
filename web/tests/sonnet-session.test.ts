@@ -268,13 +268,16 @@ describe('SonnetSession', () => {
       expect(onError).not.toHaveBeenCalled();
     });
 
-    it('terminates after max (5) attempts and fires terminal non-recoverable onError', async () => {
-      // To exercise the terminal path we need 5 dirty closes WITHOUT a
+    it('terminates after RECONNECT_MAX_ATTEMPTS (50) attempts and fires terminal non-recoverable onError', async () => {
+      // To exercise the terminal path we need 50 dirty closes WITHOUT a
       // successful open in between (an onopen resets the counter).
+      // The cap was raised from 5 → 50 in audit row #33 to mirror iOS
+      // (`ServerWebSocketService.swift:1187-1225`) which retries
+      // indefinitely. 50 × ~5ms-per-cycle = ~250 ms drain window.
       // Easiest way: stub `window.WebSocket` so every construction
       // yields a socket whose onclose fires on next tick without a
-      // prior onopen. That drives attempts 1..5 to exhaustion, and
-      // the 6th close is the one that flips onError to non-recoverable.
+      // prior onopen. That drives attempts 1..50 to exhaustion, and
+      // the 51st close is the one that flips onError to non-recoverable.
       const OriginalWS = window.WebSocket;
       const fakeSockets: Array<{
         close: () => void;
@@ -320,8 +323,9 @@ describe('SonnetSession', () => {
         // Each microtask cycle closes the current socket and the
         // onclose handler schedules the next reconnect via
         // `setTimeout(..., 0)` (jitter=0 from the beforeEach stub).
-        // Drain until the terminal error fires.
-        for (let i = 0; i < 20 && onError.mock.calls.length === 0; i++) {
+        // Drain until the terminal error fires. Cap raised to 50 in
+        // audit #33, so we drain ~250ms total (50 cycles × 5ms).
+        for (let i = 0; i < 150 && onError.mock.calls.length === 0; i++) {
           await new Promise((r) => setTimeout(r, 5));
         }
         // Drain one more pass so the terminal onError definitely landed.
@@ -330,7 +334,7 @@ describe('SonnetSession', () => {
         // The terminal error is non-recoverable with the documented message.
         const calls = onError.mock.calls;
         const terminal = calls.find(
-          (c) => c[1] === false && /reconnect failed after 5 attempts/.test(String(c[0]))
+          (c) => c[1] === false && /reconnect failed after 50 attempts/.test(String(c[0]))
         );
         expect(terminal).toBeDefined();
       } finally {

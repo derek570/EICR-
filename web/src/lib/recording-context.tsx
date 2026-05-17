@@ -2274,6 +2274,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // tick. The mic stream keeps running so the ring buffer
         // still captures pre-wake audio for the replay on next
         // speech.
+        //
+        // Ask backend to compact the Anthropic prompt cache BEFORE
+        // tearing down Sonnet — mirrors iOS at
+        // `RecordingSessionCoordinator.swift:394`. This collapses the
+        // multi-turn history into a smaller summary that survives
+        // Anthropic's 5-minute cache TTL, so the next wake-turn
+        // doesn't repay the full prompt cost. Best-effort; the
+        // backend's own 5-check + 60k-token guard rails decide
+        // whether to actually compact.
+        sonnetRef.current?.sendCompactRequest();
         sonnetRef.current?.pause();
         teardownDeepgram();
         teardownSonnet();
