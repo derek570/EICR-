@@ -135,6 +135,17 @@ let activeSessionId: string | null = null;
 // Mirror of iOS `AlertManager.swift:1040-1052 markTTSFinished()`
 // being explicitly called on supersede.
 let activeLifecycle: ElevenLabsLifecycle | null = null;
+// WeakSet of lifecycle objects whose terminal callback (onEnd OR onError)
+// has already fired exactly once. Used by `settle()` to skip a redundant
+// onError fire when `cancelElevenLabs()` has already fired onEnd on a
+// superseded lifecycle — without this dedup the recording-context TTS
+// lifecycle observer receives TWO `notifyTtsLifecycle('end')` calls
+// for the same superseded utterance, each re-arming the 500ms
+// resume timer and emitting a `tts_pcm_gate_released` event. Both fires
+// are idempotent in terms of state mutations, but the redundant
+// WS-send + audio-element churn contributes to the iPad Safari
+// WebContent-process pressure we're tracking in sess_mp9qnay1_h1ik.
+const terminalFiredLifecycles = new WeakSet<ElevenLabsLifecycle>();
 
 /**
  * Set the sessionId that subsequent ElevenLabs requests will attribute
@@ -296,6 +307,9 @@ export function cancelElevenLabs(): void {
   activeLifecycle = null;
   if (prevLifecycle?.onEnd) {
     try {
+      // Mark BEFORE the call so a re-entrant cancelElevenLabs from
+      // inside onEnd doesn't observe the lifecycle as un-fired.
+      terminalFiredLifecycles.add(prevLifecycle);
       prevLifecycle.onEnd();
     } catch {
       /* swallow — observer must never tear down the cancel path */
@@ -450,8 +464,23 @@ export function speakElevenLabs(
       if (activeLifecycle === lifecycle) {
         activeLifecycle = null;
       }
-      if (!ok && reason) lifecycle.onError?.(reason);
-      else if (ok) lifecycle.onEnd?.();
+      // If `cancelElevenLabs()` already fired this lifecycle's onEnd
+      // (the supersede / explicit-stop path), DO NOT fire onError on
+      // top — that double-fires `notifyTtsLifecycle('end')` to the
+      // recording-context observer, which re-arms the 500ms resume
+      // timer and emits an extra `tts_pcm_gate_released`. The audit
+      // of sess_mp9qnay1_h1ik (2026-05-17) tied this redundant churn
+      // to the iPad Safari WebContent-process reap; eliminating the
+      // duplicate keeps the supersede path tight. Once the WeakSet
+      // marks the lifecycle as terminal-fired we treat the natural
+      // settle as a no-op for terminal callbacks while still running
+      // the listener-detach + blob-URL cleanup below.
+      const alreadyTerminal = terminalFiredLifecycles.has(lifecycle);
+      if (!alreadyTerminal) {
+        terminalFiredLifecycles.add(lifecycle);
+        if (!ok && reason) lifecycle.onError?.(reason);
+        else if (ok) lifecycle.onEnd?.();
+      }
       // Detach element listeners so a later play() (e.g. priming or a
       // fresh dispatch) doesn't trigger this resolved promise's hooks.
       audio.removeEventListener('playing', onPlaying);
