@@ -60,6 +60,12 @@ import { mapServerActionToVoiceCommand } from './recording/voice-command-action'
 import { useCurrentUser } from './use-current-user';
 import { useUserDefaults } from '@/hooks/use-user-defaults';
 import { toast } from 'sonner';
+import {
+  clearRecordingState,
+  loadAndConsumeRecordingState,
+  persistRecordingState,
+  type PersistedRecordingState,
+} from './recording/session-resume';
 
 /**
  * Recording context.
@@ -557,9 +563,47 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // mic-request path, racing each other and leaking a second mic stream.
   // The ref is written synchronously *inside* the state setter below.
   const statusRef = React.useRef<RecordingState>('idle');
+  // Snapshot of the most recent persisted-recording-state slot. Updated
+  // alongside `setState` for every transition so a WebContent-process
+  // reap (iPad Safari) can be detected on the next mount and the
+  // inspector offered a resume. The actual write to sessionStorage is
+  // gated to 'active' / 'sleeping' transitions only — 'idle' / 'paused'
+  // / 'error' / 'requesting-mic' clear the slot.
+  const persistedSessionMetaRef = React.useRef<{
+    clientSessionId: string;
+    serverSessionId: string | null;
+    jobId: string;
+    certificateType: 'EICR' | 'EIC';
+    startedAt: number;
+  } | null>(null);
   const setState = React.useCallback((next: RecordingState) => {
     statusRef.current = next;
     setStateRaw(next);
+    // Cross-reload session-resume persistence (audit-batch follow-up
+    // for iPad Safari WebContent-process reap, 2026-05-17). Only
+    // 'active' and 'sleeping' represent a recording the inspector
+    // would WANT to resume after an autonomous reload — 'paused' is
+    // intentional, 'error' is terminal, 'requesting-mic' / 'idle' are
+    // not yet recording. Mirrors iOS where the
+    // `DeepgramRecordingViewModel` only writes its restore-on-relaunch
+    // sentinel when the inspector is actively dictating.
+    const meta = persistedSessionMetaRef.current;
+    if (meta && (next === 'active' || next === 'sleeping')) {
+      persistRecordingState({
+        clientSessionId: meta.clientSessionId,
+        serverSessionId: meta.serverSessionId,
+        jobId: meta.jobId,
+        certificateType: meta.certificateType,
+        status: next,
+        startedAt: meta.startedAt,
+        lastUpdatedAt: Date.now(),
+      });
+    } else if (next === 'idle') {
+      // Explicit stop / unmount → clean up so a fresh mount tomorrow
+      // doesn't see a stale "you were recording" entry from today.
+      clearRecordingState();
+      persistedSessionMetaRef.current = null;
+    }
   }, []);
   const [micLevel, setMicLevel] = React.useState(0);
   const [elapsedSec, setElapsedSec] = React.useState(0);
@@ -607,6 +651,68 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     updateJobRef.current = updateJob;
   }, [updateJob]);
+
+  // Cross-reload session-resume — fires ONCE on first mount with a
+  // real job. Checks sessionStorage for a persisted snapshot left by
+  // a previous instance of this provider (autonomous reload from
+  // iPad Safari WebContent-process reap, manual refresh during
+  // recording, etc.). If found AND within the 5-min Sonnet TTL AND
+  // for the SAME job the inspector is currently viewing, surface a
+  // sonner toast offering one-tap resume. Mirrors iOS's app-process
+  // state-survival semantics — iOS's recording state survives
+  // navigation-stack transitions but is gone after a full app kill;
+  // this is the web analogue for "I was recording before the
+  // process died, give me one tap to keep going". The
+  // load-and-consume helper clears the slot on read so the toast
+  // can't keep firing.
+  const resumeCheckFiredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (resumeCheckFiredRef.current) return;
+    if (!job?.id) return; // wait for job context to populate
+    resumeCheckFiredRef.current = true;
+    const persisted = loadAndConsumeRecordingState();
+    if (!persisted) return;
+    if (persisted.jobId !== job.id) {
+      // The reload happened on a different job page — the inspector
+      // already navigated. Don't auto-resume the old session here;
+      // they can go back to that job and tap Start to mint a fresh
+      // recording (the backend job state is preserved either way).
+      clientDiagnostic('recording_resume_skipped_job_mismatch', {
+        persistedJobId: persisted.jobId,
+        currentJobId: job.id,
+      });
+      return;
+    }
+    clientDiagnostic('recording_resume_toast_offered', {
+      clientSessionId: persisted.clientSessionId,
+      serverSessionIdShort: persisted.serverSessionId?.slice(0, 16) ?? null,
+      ageMs: Date.now() - persisted.lastUpdatedAt,
+      priorStatus: persisted.status,
+    });
+    toast('Recording was interrupted', {
+      description:
+        'The page reloaded while recording. Tap to resume — Sonnet context is preserved for 5 minutes.',
+      duration: Infinity,
+      action: {
+        label: 'Resume',
+        onClick: () => {
+          clientDiagnostic('recording_resume_tapped', {
+            ageMs: Date.now() - persisted.lastUpdatedAt,
+          });
+          // Mirror iOS: tap-to-resume after an app process kill
+          // mints a fresh recording session (backend job state is
+          // preserved server-side, so the inspector keeps all
+          // circuits + observations and just rebuilds the Sonnet
+          // turn context from their next utterances).
+          // Defer to next tick so the toast dismissal animation
+          // doesn't race with start()'s mic-permission flow.
+          setTimeout(() => {
+            void lifecycleActionsRef.current?.start();
+          }, 0);
+        },
+      },
+    });
+  }, [job?.id]);
 
   // L2 obs-photo sprint — pending tuple slot. Held in a ref because the
   // WS callback that drives `applyObservations` (Phase 3 reads this) and
@@ -910,6 +1016,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const lifecycleActionsRef = React.useRef<{
     pause: () => void;
     stop: () => void;
+    start: () => Promise<void> | void;
     statusAtHide: RecordingState;
   } | null>(null);
   const wasActiveBeforeHideRef = React.useRef<RecordingState>('idle');
@@ -1741,6 +1848,31 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           status,
           sessionIdShort: sessionId?.slice(0, 16) ?? null,
         });
+        // Stamp the server-minted sessionId onto the cross-reload
+        // resume slot. This is the rehydrate target — on a fresh
+        // mount post-reload, passing this back via
+        // `SonnetSession.connect({sessionId})` triggers the backend's
+        // `session_resume` path, preserving the Anthropic prompt
+        // cache within the 5-min TTL.
+        if (sessionId && persistedSessionMetaRef.current) {
+          persistedSessionMetaRef.current = {
+            ...persistedSessionMetaRef.current,
+            serverSessionId: sessionId,
+          };
+          // Persist now so a reload that happens BEFORE the next
+          // setState transition still has the server id.
+          if (statusRef.current === 'active' || statusRef.current === 'sleeping') {
+            persistRecordingState({
+              clientSessionId: persistedSessionMetaRef.current.clientSessionId,
+              serverSessionId: sessionId,
+              jobId: persistedSessionMetaRef.current.jobId,
+              certificateType: persistedSessionMetaRef.current.certificateType,
+              status: statusRef.current,
+              startedAt: persistedSessionMetaRef.current.startedAt,
+              lastUpdatedAt: Date.now(),
+            });
+          }
+        }
         if (status === 'resumed' && statusRef.current === 'sleeping') {
           // A clean resume after wake-from-sleep — no UI needed.
           return;
@@ -2550,6 +2682,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // dead session — we bail and tear down the accidental resources.
     const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     sessionIdRef.current = sessionId;
+    // Initialise the cross-reload session-resume slot. The
+    // serverSessionId stays null until the first session_ack lands;
+    // it gets populated via the onSessionAck callback wired in
+    // openSonnet. From here on, every `setState('active'|'sleeping')`
+    // transition will persist the snapshot via
+    // `persistRecordingState`.
+    const jobIdAtStart = jobRef.current?.id ?? null;
+    const certTypeAtStart = (jobRef.current?.certificate_type ?? 'EICR') as 'EICR' | 'EIC';
+    if (jobIdAtStart) {
+      persistedSessionMetaRef.current = {
+        clientSessionId: sessionId,
+        serverSessionId: null,
+        jobId: jobIdAtStart,
+        certificateType: certTypeAtStart,
+        startedAt: Date.now(),
+      };
+    }
     // Wire the same sessionId into the ElevenLabs TTS proxy so the
     // backend's CostTracker attributes character usage to this session
     // (mirrors iOS AlertManager.sessionIdProvider). Without this every
@@ -3071,9 +3220,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     lifecycleActionsRef.current = {
       pause,
       stop,
+      start,
       statusAtHide: statusRef.current,
     };
-  }, [pause, stop]);
+  }, [pause, stop, start]);
 
   // Total user-facing cost — Deepgram streaming + Sonnet tokens. Kept
   // as a derived value so callers always see a consistent sum.
