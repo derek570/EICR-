@@ -773,6 +773,44 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // resume timer mirrors iOS's 500ms post-TTS drain window.
   const ttsActiveRef = React.useRef(false);
   const ttsResumeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Inspector-speaking tracker — mirrors iOS `isSpeaking` flag at
+  // `DeepgramRecordingViewModel.swift:1607-1623`. Flipped TRUE on every
+  // interim transcript (the inspector is mid-utterance); flipped FALSE
+  // on `onUtteranceEnd`. Used by the deferred-TTS path so a Sonnet
+  // question whose audio arrives mid-sentence doesn't talk over the
+  // inspector. The phantom-VAD watchdog at `speechConfirmTimerRef`
+  // flips it back to false if `onSpeechStarted` fires without any
+  // subsequent interim (1.2s window) — guards against ambient breath /
+  // van rumble triggering a permanent "speaking" stuck state.
+  const isInspectorSpeakingRef = React.useRef(false);
+  const speechConfirmTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSpeechStartedTimeRef = React.useRef<number | null>(null);
+  // Deferred-TTS slot — when `speakOrDefer` is called while
+  // `isInspectorSpeakingRef.current === true`, the utterance is
+  // stashed here instead of speaking over the inspector. Drained on
+  // `onUtteranceEnd`. Single-slot (last-wins) so a backlog can't form;
+  // the iOS canon at `AlertManager.swift:1144-1179` is similarly
+  // single-slot. Cleared on session teardown.
+  const deferredTtsRef = React.useRef<{ text: string; toolCallId: string | null } | null>(null);
+  // Post-wake transcript monitor — mirrors iOS
+  // `RecordingSessionCoordinator.swift:530-577 monitorPostWakeTranscript`.
+  // 15s after sleep→active wake, if no final has arrived AND no
+  // SpeechStarted fired post-wake (the inspector might be mid-sentence
+  // when we wake), speak "Sorry, could you repeat that?". Cancelled by
+  // the next final via `onSpeechActivity`. The `wakeTimeRef` snapshot
+  // is what we compare `lastSpeechStartedTimeRef` against so a
+  // pre-wake SpeechStarted doesn't suppress the prompt.
+  const postWakeMonitorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wakeTimeRef = React.useRef<number | null>(null);
+  // Post-wake monitor cadence: 15s after wake before the
+  // "could you repeat that" prompt fires. Matches iOS at
+  // `RecordingSessionCoordinator.swift:530`. Longer = inspector waits
+  // in silence; shorter = false-positive prompts during natural pauses.
+  const POST_WAKE_MONITOR_MS = 15_000;
+  // Phantom-VAD watchdog: a `SpeechStarted` with no follow-up interim
+  // within 1.2s is ambient noise, not the inspector. Same value iOS
+  // uses at `DeepgramRecordingViewModel.swift:1620-1623`.
+  const SPEECH_CONFIRM_TIMEOUT_MS = 1200;
   // Lifecycle action ref — populated below once `pause` / `stop` are
   // defined. Lets the lifecycle effect (which mounts ONCE on provider
   // mount, before those callbacks exist) reach back into the latest
@@ -847,6 +885,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       ttsResumeTimerRef.current = null;
     }
     ttsActiveRef.current = false;
+    // Reset inspector-speaking + deferred-TTS state. A session that
+    // teardown'd mid-utterance would otherwise leak `isInspectorSpeaking
+    // = true` into the next session and silently defer its first TTS.
+    isInspectorSpeakingRef.current = false;
+    lastSpeechStartedTimeRef.current = null;
+    deferredTtsRef.current = null;
+    if (speechConfirmTimerRef.current) {
+      clearTimeout(speechConfirmTimerRef.current);
+      speechConfirmTimerRef.current = null;
+    }
+    if (postWakeMonitorTimerRef.current) {
+      clearTimeout(postWakeMonitorTimerRef.current);
+      postWakeMonitorTimerRef.current = null;
+    }
     // Bug K — drop any pending naming-buffer timer so the deferred
     // dispatchFinal doesn't fire after the Sonnet WS is gone (which
     // would NPE on sonnetRef.current?.sendTranscript inside a logged
@@ -1169,6 +1221,61 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         onStateChange: setDeepgramState,
         onInterimTranscript: (text) => {
           setInterim(text);
+          // Mirror iOS `isSpeaking` flag — interim arrival proves the
+          // inspector is mid-utterance. The phantom-VAD watchdog
+          // armed by `onSpeechStarted` would otherwise un-flip the
+          // ref after 1.2s of no interim, so we cancel it the moment
+          // a real interim lands.
+          isInspectorSpeakingRef.current = true;
+          if (speechConfirmTimerRef.current) {
+            clearTimeout(speechConfirmTimerRef.current);
+            speechConfirmTimerRef.current = null;
+          }
+          // Inspector is speaking → cancel the post-wake "could you
+          // repeat that" prompt. They're talking; the prompt would be
+          // an interruption.
+          if (postWakeMonitorTimerRef.current) {
+            clearTimeout(postWakeMonitorTimerRef.current);
+            postWakeMonitorTimerRef.current = null;
+          }
+        },
+        onSpeechStarted: () => {
+          // Stamp the time so the post-wake monitor (#53) can tell
+          // a pre-wake SpeechStarted from a post-wake one.
+          lastSpeechStartedTimeRef.current = Date.now();
+          // Don't trust the SpeechStarted alone — Deepgram fires it on
+          // ambient breath/rumble. Arm a 1.2s watchdog that un-flips
+          // `isInspectorSpeakingRef` if no interim follows. Cancelled
+          // by the first interim above. Mirrors iOS `speechConfirmTimer`
+          // at DeepgramRecordingViewModel.swift:1620-1623.
+          if (speechConfirmTimerRef.current) clearTimeout(speechConfirmTimerRef.current);
+          speechConfirmTimerRef.current = setTimeout(() => {
+            speechConfirmTimerRef.current = null;
+            // If no interim fired in the window, the original
+            // SpeechStarted was phantom — flip back to "not speaking"
+            // so a deferred TTS isn't held indefinitely.
+            isInspectorSpeakingRef.current = false;
+          }, SPEECH_CONFIRM_TIMEOUT_MS);
+        },
+        onUtteranceEnd: () => {
+          // Inspector finished a sentence. Flip the flag back and
+          // drain any deferred TTS so the question they were talking
+          // over plays now. Mirrors iOS `resumeDeferredTTSIfNeeded` at
+          // AlertManager.swift:1144-1179.
+          isInspectorSpeakingRef.current = false;
+          if (speechConfirmTimerRef.current) {
+            clearTimeout(speechConfirmTimerRef.current);
+            speechConfirmTimerRef.current = null;
+          }
+          const deferred = deferredTtsRef.current;
+          if (deferred) {
+            deferredTtsRef.current = null;
+            clientDiagnostic('tts_deferred_drain', {
+              toolCallIdShort: deferred.toolCallId?.slice(0, 12) ?? null,
+              textPreview: deferred.text.slice(0, 80),
+            });
+            speak(deferred.text);
+          }
         },
         onFinalTranscript: (text, confidence) => {
           setInterim('');
@@ -1594,7 +1701,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // mid-thought. Mirrors iOS SleepManager.swift:68.
           sleepManagerRef.current?.onQuestionAsked();
           playAttentionTone();
-          speak(q.question);
+          // Defer the TTS if the inspector is currently speaking, so
+          // we don't talk over their answer to the *previous* question.
+          // Mirrors iOS `AlertManager.swift:877-880 shouldDeferPlayback`.
+          // The deferred entry is drained on the next `onUtteranceEnd`.
+          if (isInspectorSpeakingRef.current) {
+            const toolCallId =
+              typeof q.tool_call_id === 'string' && q.tool_call_id.length > 0
+                ? q.tool_call_id
+                : null;
+            clientDiagnostic('tts_deferred_inspector_speaking', {
+              toolCallIdShort: toolCallId?.slice(0, 12) ?? null,
+              questionPreview: q.question.slice(0, 80),
+            });
+            deferredTtsRef.current = { text: q.question, toolCallId };
+          } else {
+            speak(q.question);
+          }
         } else {
           clientDiagnostic('onQuestion_skipped_speak', {
             isNew: true,
@@ -2044,6 +2167,47 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         setState('active');
         beginTick();
+        // Post-wake transcript monitor — mirror iOS
+        // `RecordingSessionCoordinator.swift:530-577`. The inspector
+        // may have spoken DURING the wake-from-sleep window and we
+        // missed it. After 15s, if no final transcript landed AND no
+        // SpeechStarted fired AFTER the wake, prompt them to retry.
+        const wakeTime = Date.now();
+        wakeTimeRef.current = wakeTime;
+        if (postWakeMonitorTimerRef.current) {
+          clearTimeout(postWakeMonitorTimerRef.current);
+        }
+        postWakeMonitorTimerRef.current = setTimeout(() => {
+          postWakeMonitorTimerRef.current = null;
+          // Session rotated → suppress
+          if (sessionIdRef.current !== sessionId) return;
+          if (statusRef.current !== 'active') return;
+          // Inspector started speaking after we woke → they're mid-
+          // utterance, suppress to avoid interrupting them.
+          const speechAfterWake =
+            lastSpeechStartedTimeRef.current != null &&
+            lastSpeechStartedTimeRef.current >= wakeTime;
+          if (speechAfterWake) {
+            clientDiagnostic('post_wake_monitor_suppressed', {
+              reason: 'speech_after_wake',
+              wakeAgeMs: Date.now() - wakeTime,
+            });
+            return;
+          }
+          // Sonnet WS down → no point speaking, the answer can't be
+          // captured anyway.
+          if (sonnetRef.current?.connectionState !== 'connected') {
+            clientDiagnostic('post_wake_monitor_suppressed', {
+              reason: 'sonnet_disconnected',
+              sonnetState: sonnetRef.current?.connectionState ?? 'no-service',
+            });
+            return;
+          }
+          clientDiagnostic('post_wake_monitor_fired', {
+            wakeAgeMs: Date.now() - wakeTime,
+          });
+          speak('Sorry, could you repeat that?');
+        }, POST_WAKE_MONITOR_MS);
       } catch (err) {
         if (sessionIdRef.current !== sessionId) return;
         const msg = err instanceof Error ? err.message : String(err);
