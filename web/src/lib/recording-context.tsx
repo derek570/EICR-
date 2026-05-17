@@ -59,6 +59,7 @@ import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@cer
 import { mapServerActionToVoiceCommand } from './recording/voice-command-action';
 import { useCurrentUser } from './use-current-user';
 import { useUserDefaults } from '@/hooks/use-user-defaults';
+import { toast } from 'sonner';
 
 /**
  * Recording context.
@@ -338,33 +339,130 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         persisted: e.persisted,
         url: window.location.pathname,
       });
+      // BFCache restore: if recording was active before the freeze AND
+      // the page is being restored from the bfcache (persisted=true),
+      // the WS sockets and AudioContext are in an undefined state.
+      // Auto-restart silently would steal the inspector's attention if
+      // they intentionally backgrounded the tab. Instead surface a
+      // sonner toast offering a one-tap restart. Mirrors the iOS UX
+      // pattern of "Recording suspended" alerts after interruption.
+      if (e.persisted && wasActiveBeforeHideRef.current === 'active') {
+        wasActiveBeforeHideRef.current = 'idle';
+        toast('Recording was suspended', {
+          description: 'iPad Safari paused the tab. Tap to restart.',
+          duration: Infinity,
+          action: {
+            label: 'Restart',
+            onClick: () => {
+              const actions = lifecycleActionsRef.current;
+              actions?.stop();
+              setTimeout(() => actions?.pause(), 400);
+            },
+          },
+        });
+      }
     };
     const onHide = (e: PageTransitionEvent) => {
-      recordLifecycle('page-hide', { persisted: e.persisted });
+      recordLifecycle('page-hide', {
+        persisted: e.persisted,
+        status: statusRef.current,
+      });
       clientDiagnostic('recording_pagehide', {
         persisted: e.persisted,
         url: window.location.pathname,
+        status: statusRef.current,
       });
+      // BFCache freeze: pause synchronously BEFORE the page freezes so
+      // `session_pause` lands on the still-live Sonnet WS and the
+      // backend can flush. Without this, the WS dies on freeze with
+      // no graceful shutdown — the next reopen has to negotiate a
+      // session_resume rebind against a backend that thinks the
+      // session was abruptly disconnected.
+      if (e.persisted) {
+        wasActiveBeforeHideRef.current = statusRef.current;
+        if (statusRef.current === 'active') {
+          lifecycleActionsRef.current?.pause();
+        }
+      }
     };
     const onVisibility = () => {
-      recordLifecycle('visibility-change', {
-        state: document.visibilityState,
-      });
-      clientDiagnostic('recording_visibility_change', {
-        state: document.visibilityState,
-      });
+      const state = document.visibilityState;
+      recordLifecycle('visibility-change', { state });
+      clientDiagnostic('recording_visibility_change', { state });
+      if (state === 'hidden') {
+        lastVisibilityHiddenAtRef.current = Date.now();
+      } else if (state === 'visible' && lastVisibilityHiddenAtRef.current != null) {
+        // On return: if we were hidden long enough for ALB to have
+        // reaped the WS (now bounded by the 25s app-heartbeat from
+        // commit 4015c5d) OR for iPad Safari to have BFCached us
+        // (the persisted=true branch above usually handles this, but
+        // sometimes visibilitychange fires without the matching
+        // pagehide/pageshow pair), probe the WS sockets and surface a
+        // recovery toast if either is disconnected.
+        const hiddenMs = Date.now() - lastVisibilityHiddenAtRef.current;
+        lastVisibilityHiddenAtRef.current = null;
+        if (hiddenMs > VISIBILITY_HIDDEN_RECOVERY_THRESHOLD_MS) {
+          const dgState = deepgramRef.current?.connectionState;
+          const sonnetState = sonnetRef.current?.connectionState;
+          const anyDown =
+            (dgState != null && dgState !== 'connected') ||
+            (sonnetState != null && sonnetState !== 'connected');
+          clientDiagnostic('recording_visibility_recovery_check', {
+            hiddenMs,
+            deepgramState: dgState ?? 'no-service',
+            sonnetState: sonnetState ?? 'no-service',
+            anyDown,
+            status: statusRef.current,
+          });
+          if (anyDown && statusRef.current === 'active') {
+            toast('Connection lost while away', {
+              description: 'The recording may need to resume manually.',
+              duration: 10_000,
+              action: {
+                label: 'Resume',
+                onClick: () => lifecycleActionsRef.current?.pause(),
+              },
+            });
+          }
+        }
+      }
     };
     // Page Lifecycle API — `freeze` and `resume` only exist on Chromium-
     // based engines, but iOS Safari emits its analogue via pagehide
-    // (persisted=true) which we already capture. Wired here in case any
-    // future browser surface adds them.
+    // (persisted=true) which we already capture. Wired here so Android
+    // Chrome PWA installs get the same recovery flow.
     const onFreeze = () => {
-      recordLifecycle('page-freeze', {});
-      clientDiagnostic('recording_page_freeze', {});
+      recordLifecycle('page-freeze', { status: statusRef.current });
+      clientDiagnostic('recording_page_freeze', { status: statusRef.current });
+      // Parallel #69 — pause if active so session_pause lands BEFORE
+      // the renderer is suspended. Practically Chromium-only; iPad
+      // Safari routes through onHide(persisted=true) instead.
+      wasActiveBeforeHideRef.current = statusRef.current;
+      if (statusRef.current === 'active') {
+        lifecycleActionsRef.current?.pause();
+      }
     };
     const onResume = () => {
-      recordLifecycle('page-resume', {});
-      clientDiagnostic('recording_page_resume', {});
+      recordLifecycle('page-resume', { wasActive: wasActiveBeforeHideRef.current });
+      clientDiagnostic('recording_page_resume', {
+        wasActive: wasActiveBeforeHideRef.current,
+      });
+      // Parallel #67 — same recovery toast as onShow(persisted=true).
+      if (wasActiveBeforeHideRef.current === 'active') {
+        wasActiveBeforeHideRef.current = 'idle';
+        toast('Recording was suspended', {
+          description: 'The browser paused the tab. Tap to restart.',
+          duration: Infinity,
+          action: {
+            label: 'Restart',
+            onClick: () => {
+              const actions = lifecycleActionsRef.current;
+              actions?.stop();
+              setTimeout(() => actions?.pause(), 400);
+            },
+          },
+        });
+      }
     };
     window.addEventListener('pageshow', onShow);
     window.addEventListener('pagehide', onHide);
@@ -675,6 +773,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // resume timer mirrors iOS's 500ms post-TTS drain window.
   const ttsActiveRef = React.useRef(false);
   const ttsResumeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Lifecycle action ref — populated below once `pause` / `stop` are
+  // defined. Lets the lifecycle effect (which mounts ONCE on provider
+  // mount, before those callbacks exist) reach back into the latest
+  // pause/stop functions. The `wasActiveBeforeHideRef` snapshot
+  // captures whether recording was live at the moment the page went
+  // hidden — used on resume to decide if the inspector needs a
+  // recovery toast.
+  const lifecycleActionsRef = React.useRef<{
+    pause: () => void;
+    stop: () => void;
+    statusAtHide: RecordingState;
+  } | null>(null);
+  const wasActiveBeforeHideRef = React.useRef<RecordingState>('idle');
+  const lastVisibilityHiddenAtRef = React.useRef<number | null>(null);
+  // BFCache window threshold — if the tab was hidden longer than this
+  // and we observe the WS sockets disconnected on return, we surface
+  // the recovery toast rather than just logging. iPad Safari typically
+  // BFCaches after 30-60s of foreground inactivity, so 30s catches the
+  // common case without nagging the inspector for brief app-switches.
+  const VISIBILITY_HIDDEN_RECOVERY_THRESHOLD_MS = 30_000;
   // Throttle setMicLevel to ~60Hz — audio callbacks fire every ~8ms at
   // 16kHz/128 samples which is overkill for a VU meter and would flood
   // React with renders.
@@ -2580,6 +2698,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       timers.clear();
     };
   }, []);
+
+  // Keep the lifecycle-actions ref in sync with the current `pause` /
+  // `stop` references. The lifecycle effect at the top of the provider
+  // mounts ONCE on mount with an empty dep array, so it captures the
+  // INITIAL `pause` / `stop` closures — which would be stale after any
+  // re-render. This effect refreshes the ref whenever those callbacks
+  // get a new identity, so the BFCache / freeze / visibilitychange
+  // handlers always reach the latest implementation.
+  React.useEffect(() => {
+    lifecycleActionsRef.current = {
+      pause,
+      stop,
+      statusAtHide: statusRef.current,
+    };
+  }, [pause, stop]);
 
   // Total user-facing cost — Deepgram streaming + Sonnet tokens. Kept
   // as a derived value so callers always see a consistent sum.
