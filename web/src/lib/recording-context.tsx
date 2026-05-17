@@ -479,6 +479,41 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         });
       }
     };
+    // Audio device-change observer (audit #15 + #5 + #6 + #7). iOS at
+    // `AudioSessionManager.swift:138-166` handles Bluetooth pair/
+    // unpair, headphone plug/unplug, and route-override by
+    // re-activating the audio session and forcing speaker if no
+    // input remains. PWA has no equivalent until this listener.
+    // The fix is intentionally light: surface a toast offering manual
+    // restart rather than auto-rebinding the mic stream. Auto-
+    // rebinding loses ~500ms during getUserMedia → audio-worklet
+    // re-wire which could clip a critical reading mid-dictation;
+    // inspector judgement on whether the swap matters is safer.
+    let lastDeviceChangeToastAt = 0;
+    const onDeviceChange = () => {
+      clientDiagnostic('recording_audio_devicechange', { status: statusRef.current });
+      // Throttle: Bluetooth pair fires devicechange multiple times in
+      // quick succession (device added, default route changed,
+      // capabilities reported). One toast per 5s is enough.
+      const now = Date.now();
+      if (now - lastDeviceChangeToastAt < 5_000) return;
+      lastDeviceChangeToastAt = now;
+      if (statusRef.current === 'active') {
+        toast('Audio device changed', {
+          description:
+            'A Bluetooth or headphone change may have affected recording. Tap to restart if needed.',
+          duration: 8_000,
+          action: {
+            label: 'Restart',
+            onClick: () => {
+              const actions = lifecycleActionsRef.current;
+              actions?.stop();
+              setTimeout(() => actions?.pause(), 400);
+            },
+          },
+        });
+      }
+    };
     const onOffline = () => {
       clientDiagnostic('recording_network_offline', { status: statusRef.current });
       if (statusRef.current === 'active' || statusRef.current === 'sleeping') {
@@ -495,6 +530,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     document.addEventListener('visibilitychange', onVisibility);
     document.addEventListener('freeze', onFreeze);
     document.addEventListener('resume', onResume);
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+      navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
+    }
     return () => {
       window.removeEventListener('pageshow', onShow);
       window.removeEventListener('pagehide', onHide);
@@ -503,6 +541,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       document.removeEventListener('visibilitychange', onVisibility);
       document.removeEventListener('freeze', onFreeze);
       document.removeEventListener('resume', onResume);
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+        navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
+      }
       recordLifecycle('provider-unmount', {});
       clientDiagnostic('recording_provider_unmount', {});
     };
