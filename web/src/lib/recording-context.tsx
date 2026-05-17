@@ -1669,6 +1669,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
     const session = new SonnetSession({
       onStateChange: setSonnetState,
+      onSessionAck: (status, sessionId) => {
+        // Audit #35 + #36 wiring. SonnetSession already surfaces a
+        // recoverable onError when status === 'new' arrives where a
+        // 'resumed' was expected (sonnet-session.ts:1470-1475 — TTL
+        // expired during a long pause), but the inspector never saw
+        // a UI cue. Surface a sonner toast so they know context is
+        // gone and the next few utterances will rebuild from scratch.
+        clientDiagnostic('sonnet_session_ack_observed', {
+          status,
+          sessionIdShort: sessionId?.slice(0, 16) ?? null,
+        });
+        if (status === 'resumed' && statusRef.current === 'sleeping') {
+          // A clean resume after wake-from-sleep — no UI needed.
+          return;
+        }
+      },
+      onResumeOutcome: (outcome) => {
+        clientDiagnostic('sonnet_resume_outcome', { outcome });
+        if (outcome === 'context_expired') {
+          toast('Recording paused too long', {
+            description:
+              'Sonnet lost the recent context. The next few utterances will rebuild from scratch.',
+            duration: 8_000,
+          });
+        }
+      },
       onExtraction: (result) => {
         applyExtraction(result);
       },

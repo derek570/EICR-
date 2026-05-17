@@ -202,6 +202,18 @@ export class SleepManager {
       this.clearNoTranscriptTimer();
     } else if (this.state === 'active') {
       this.armNoTranscriptTimer();
+    } else if (this.state === 'sleeping') {
+      // Audit #56 — defensive force-wake. The `enterSleeping` guard
+      // at applyWakeScore + the timer-already-cleared invariant
+      // should prevent us reaching `sleeping` while TTS is active.
+      // But a race where the SleepManager hit the 60s timer
+      // simultaneously with a TTS dispatch can land us here with
+      // tts=true & state=sleeping. iOS handles this defensively at
+      // `SleepManager.swift:onTTSFinished:181-184`: if TTS finishes
+      // while we got to sleeping anyway, wake immediately so the
+      // inspector's next utterance doesn't fall into the post-sleep
+      // mic gap.
+      this.cbs.onWake?.('sleeping');
     }
   }
 

@@ -298,6 +298,17 @@ export interface SonnetSessionCallbacks {
    * successful rehydrate of a prior session within the TTL window.
    */
   onSessionAck?: (status: string, sessionId?: string) => void;
+  /**
+   * Fires when a `session_resume` round-trip lands. `'resumed'` =
+   * server rehydrated the prior session within the 5-min TTL.
+   * `'context_expired'` = the server replied with a fresh-session
+   * `session_ack { status: 'new' }` even though we sent a
+   * `session_resume` — the Anthropic prompt cache has aged out and
+   * the multi-turn context is gone. `'first_open'` = the initial
+   * connect (not a resume). Mirrors iOS's distinction between
+   * `serverDidConnect` (first) and a successful resume-round-trip.
+   */
+  onResumeOutcome?: (outcome: 'first_open' | 'resumed' | 'context_expired') => void;
   onExtraction?: (result: ExtractionResult) => void;
   onQuestion?: (q: SonnetQuestion) => void;
   onVoiceCommandResponse?: (payload: VoiceCommandResponse) => void;
@@ -1473,6 +1484,18 @@ export class SonnetSession {
             new Error('Sonnet session context expired — continuing with fresh session'),
             true
           );
+        }
+        // Resume outcome event — audit #36 wiring. `prevStatus` is
+        // the LAST observed session_status before this ack; we fire
+        // the outcome BEFORE updating sessionStatus so the consumer
+        // sees the transition arc.
+        const prevStatus = this.sessionStatus;
+        if (status === 'new' && prevStatus === null) {
+          this.callbacks.onResumeOutcome?.('first_open');
+        } else if (status === 'resumed') {
+          this.callbacks.onResumeOutcome?.('resumed');
+        } else if (status === 'new' && prevStatus === 'resumed') {
+          this.callbacks.onResumeOutcome?.('context_expired');
         }
         if (status === 'new' || status === 'resumed') {
           this.sessionStatus = status;
