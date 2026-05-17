@@ -1153,4 +1153,138 @@ describe('SonnetSession', () => {
       }
     });
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // App-layer heartbeat — AWS ALB idle-timeout defence (#31 from runtime
+  // couplings audit, 2026-05-17). Mirrors iOS
+  // ServerWebSocketService.swift:604,1069-1092 — every 25s, send
+  // `{type:"heartbeat"}` to keep ALB's idle counter at zero. WS-level
+  // PING isn't enough; ALB counts application data frames only.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('app-layer heartbeat (ALB defence)', () => {
+    it('sends `{type:"heartbeat"}` every 25s after WS open', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const session = new SonnetSession({});
+        session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+
+        // Drain session_start so subsequent nextMessage reads are clean.
+        const startRaw = await server.nextMessage;
+        expect((JSON.parse(startRaw as string) as { type: string }).type).toBe('session_start');
+
+        // Fire the first heartbeat tick by advancing 25s of fake time.
+        await vi.advanceTimersByTimeAsync(25_000);
+        const beat1 = await server.nextMessage;
+        const frame1 = JSON.parse(beat1 as string) as { type: string };
+        expect(frame1.type).toBe('heartbeat');
+
+        // And a second tick another 25s later.
+        await vi.advanceTimersByTimeAsync(25_000);
+        const beat2 = await server.nextMessage;
+        const frame2 = JSON.parse(beat2 as string) as { type: string };
+        expect(frame2.type).toBe('heartbeat');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does NOT fire before 25s elapses', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const session = new SonnetSession({});
+        session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // session_start
+
+        // Advance 24.9s — heartbeat must NOT have fired yet.
+        await vi.advanceTimersByTimeAsync(24_900);
+        expect(server.messagesToConsume.pendingItems).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('stops on ws.onclose so no orphaned interval keeps firing', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const session = new SonnetSession({});
+        session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // session_start
+
+        server.close({ code: 1000, reason: 'normal', wasClean: true });
+        await server.closed;
+
+        // 60s of fake time post-close. With no live ws, no frames can land
+        // server-side anyway, but the interval should have been cleared
+        // so it isn't firing in the background.
+        await vi.advanceTimersByTimeAsync(60_000);
+        // We can't directly probe `heartbeatTimer` (it's private). The
+        // observable signal is "no message arrives on the closed server."
+        // We're using fake-timers + a clean close so the test cannot race
+        // with a pending tick.
+        expect(server.messagesToConsume.pendingItems).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('re-arms on reconnect (new ws.onopen → new heartbeat cycle)', async () => {
+      process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED = 'true';
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        // Math.random is consumed by the reconnect backoff jitter; pin to 0
+        // so the scheduled reconnect fires immediately when we advance time.
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        const sched = makeControlledScheduler();
+        const session = new SonnetSession({}, sched);
+        session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // session_start
+
+        // Dirty close → reconnect path.
+        server.close({ code: 1006, reason: 'abnormal', wasClean: false });
+        await server.closed;
+
+        // Stand up second server BEFORE flushing the scheduled reconnect.
+        const next = new WS(SONNET_URL);
+        sched.flush();
+        await next.connected;
+        await next.nextMessage; // session_resume (or session_start fallback)
+
+        // The reconnected WS should re-arm the heartbeat.
+        await vi.advanceTimersByTimeAsync(25_000);
+        const beat = await next.nextMessage;
+        const frame = JSON.parse(beat as string) as { type: string };
+        expect(frame.type).toBe('heartbeat');
+      } finally {
+        delete process.env.NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED;
+        vi.useRealTimers();
+      }
+    });
+
+    it('disconnect() clears the heartbeat', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const session = new SonnetSession({});
+        session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+        await server.connected;
+        await server.nextMessage; // session_start
+
+        session.disconnect();
+        // `disconnect()` sends `{type:"session_stop"}` synchronously
+        // before scheduling the 300ms close grace. Drain it.
+        const stopRaw = await server.nextMessage;
+        expect((JSON.parse(stopRaw as string) as { type: string }).type).toBe('session_stop');
+
+        // 300ms close grace + buffer, then 60s further. No additional
+        // heartbeat should have been queued on the server side.
+        await vi.advanceTimersByTimeAsync(60_400);
+        expect(server.messagesToConsume.pendingItems).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

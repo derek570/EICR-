@@ -419,6 +419,31 @@ const RECONNECT_CAP_MS = 10_000;
 /** Max attempts before we fire a terminal error and stop. */
 const RECONNECT_MAX_ATTEMPTS = 5;
 /**
+ * App-layer heartbeat cadence for the Sonnet WS, mirroring iOS
+ * `ServerWebSocketService.pingInterval = 25.0` (ServerWebSocketService.swift:292).
+ *
+ * WHY: AWS ALB's `idle_timeout` reaps the WebSocket after ~88s of
+ * inactivity. WebSocket-protocol PING frames (which iOS sends via
+ * URLSession and which the browser sends automatically) DON'T reset
+ * the ALB idle counter — ALB tracks application data-frame traffic
+ * only. iOS hit this in prod (sessions 0952EC64 / 51A530BB /
+ * A02B018D on 2026-04-22/24) and added a 25s `{type:"heartbeat"}`
+ * JSON frame to reset the timer. The server accepts it as a no-op
+ * (sonnet-stream.js `case 'heartbeat'`).
+ *
+ * The PWA had no equivalent until today's commit. Pre-fix, a long
+ * ask_user TTS (8-15s) + inspector think-time (up to 45s ask timeout) +
+ * any natural silence easily exceeded 88s, and the WS got reaped
+ * silently — only resurfacing as `Extraction buffered (socket not open)`
+ * on the server side once Sonnet tried to push a response.
+ *
+ * 25s mirrors iOS exactly so cross-platform field traces are
+ * comparable. Half the 50s mid-point of the ~88s window leaves
+ * comfortable headroom for jitter.
+ */
+const HEARTBEAT_INTERVAL_MS = 25_000;
+
+/**
  * Bound on the out-of-band diagnostic buffer. A full PWA recording session
  * generates ~5-15 client_diagnostic events per minute; 200 covers the
  * entire 5-minute reconnect TTL window with headroom. When the buffer is
@@ -486,6 +511,13 @@ export class SonnetSession {
     payload: Record<string, unknown>;
     capturedAt: string;
   }> = [];
+  // App-layer heartbeat timer — armed in `ws.onopen`, cleared in
+  // `ws.onclose` and `disconnect()`. See `HEARTBEAT_INTERVAL_MS` for
+  // the AWS-ALB-idle-timeout rationale. Typed as the return of the
+  // injected `schedule()` to match the existing `reconnectTimer`
+  // pattern (`unknown` upstream because the consumer-supplied
+  // scheduler may return setTimeout / setInterval / a vitest fake).
+  private heartbeatTimer: unknown = null;
   // Stage 6 STI-04 — toolCallId of the most-recent `ask_user_started`
   // that hasn't yet been answered. Captured here (rather than in the
   // consumer) so the SonnetSession remains the single source of truth
@@ -714,6 +746,14 @@ export class SonnetSession {
       // session-rebind already applied. See `drainPendingDiagnostics` for
       // the replay envelope shape.
       this.drainPendingDiagnostics();
+
+      // Arm the app-layer heartbeat — iOS-parity ALB-idle-timeout defence.
+      // Cleared in `ws.onclose` and `disconnect()`. Uses `setInterval`
+      // directly (not the injected `this.schedule`) because the heartbeat
+      // is recurring; `this.schedule` is single-fire. Tests can drive the
+      // tick via `vi.useFakeTimers()` + `vi.advanceTimersByTime`. See the
+      // HEARTBEAT_INTERVAL_MS docblock for the AWS-ALB rationale.
+      this.startHeartbeat();
     };
 
     ws.onmessage = (event) => this.handleMessage(event.data);
@@ -732,6 +772,13 @@ export class SonnetSession {
     ws.onclose = (event) => {
       this.ws = null;
       if (this.state !== 'error') this.setState('disconnected');
+
+      // Stop the app-layer heartbeat the moment the WS goes down.
+      // Leaving it armed across reconnects would still work (sendRaw
+      // is a no-op when this.ws is null) but the wasted timer ticks
+      // would fire every 25s in the background. The next clean
+      // ws.onopen re-arms it.
+      this.stopHeartbeat();
 
       // Close-code policy
       //   1000 — peer initiated a graceful shutdown. Truly clean. Never reconnect.
@@ -800,6 +847,35 @@ export class SonnetSession {
     };
 
     this.ws = ws;
+  }
+
+  /**
+   * Arm the app-layer heartbeat. Idempotent — re-arming clears the
+   * prior interval first so a fast close-reopen cycle can't end up
+   * with two timers racing 25s apart. Sends `{type:"heartbeat"}` on
+   * every tick via `sendRaw`, which is a no-op if `this.ws` is null
+   * (so a race between `ws.onclose` and a still-pending interval fire
+   * is safe). Mirrors iOS `ServerWebSocketService.startPingTimer()`
+   * (ServerWebSocketService.swift:1069-1092).
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      // sendRaw returns immediately if this.ws is null. We intentionally
+      // skip the readyState check here — sendRaw + the WebSocket API
+      // already drop the frame cleanly if the socket is closing. A
+      // bufferedAmount accumulating frames is also harmless: ALB cares
+      // about traffic on the wire and a buffered send still counts.
+      this.sendRaw({ type: 'heartbeat' });
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  /** Stop the app-layer heartbeat. Idempotent — safe to call repeatedly. */
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer != null) {
+      clearInterval(this.heartbeatTimer as ReturnType<typeof setInterval>);
+      this.heartbeatTimer = null;
+    }
   }
 
   /** Schedule the next reconnect attempt with exponential backoff + jitter. */
@@ -1106,6 +1182,10 @@ export class SonnetSession {
       this.clearSchedule(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // Stop the heartbeat timer too — pairs with `ws.onclose`'s stop
+    // call so an explicit disconnect-before-close leaves no orphaned
+    // setInterval running in the background.
+    this.stopHeartbeat();
     // Drop any unsent buffered messages — the inspector explicitly
     // ended the session, so a late transcript that landed during the
     // 300ms close grace shouldn't fire as a new turn on the next
