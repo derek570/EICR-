@@ -1175,6 +1175,24 @@ export class SonnetSession {
   }
 
   /**
+   * Tell the backend the inspector is talking OVER the currently-
+   * playing TTS — mirrors iOS `notifyBargeInFired` at
+   * `RecordingSessionCoordinator.swift:741-772` (the
+   * `tts_cancelled_by_user` wire frame). Backend uses this signal
+   * to attribute the next utterance to the SAME ask_user the TTS
+   * was emitting, not to a fresh turn. `reason` distinguishes
+   * `'amplitude'` (mic-level threshold) from `'vad'` (Silero
+   * probability) so analytics can compare detector accuracy across
+   * platforms.
+   */
+  sendBargeIn(reason: 'amplitude' | 'vad', vadProbability?: number): void {
+    if (!this.ws || this.state !== 'connected') return;
+    const msg: Record<string, unknown> = { type: 'tts_cancelled_by_user', reason };
+    if (typeof vadProbability === 'number') msg.vad_probability = vadProbability;
+    this.sendRaw(msg);
+  }
+
+  /**
    * Ask the backend to compact the Anthropic conversation cache before
    * the session goes idle. Mirrors iOS
    * `ServerWebSocketService.sendCompactRequest()` at

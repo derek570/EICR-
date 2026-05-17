@@ -842,6 +842,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // resume timer mirrors iOS's 500ms post-TTS drain window.
   const ttsActiveRef = React.useRef(false);
   const ttsResumeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Amplitude barge-in counter — counts consecutive mic-level frames
+  // above threshold during TTS playback. Mirrors iOS at
+  // `RecordingSessionCoordinator.swift:689-731 onAudioLevelUpdated`.
+  // When ttsActive AND the inspector's level sustains above
+  // BARGE_IN_LEVEL_THRESHOLD for BARGE_IN_LEVEL_FRAMES, cancel TTS so
+  // they're not muted by the still-playing question. Reset on
+  // TTS-end or on any frame below threshold.
+  const bargeInLevelFramesRef = React.useRef(0);
+  const BARGE_IN_LEVEL_THRESHOLD = 0.015;
+  const BARGE_IN_LEVEL_FRAMES = 8;
   // Inspector-speaking tracker — mirrors iOS `isSpeaking` flag at
   // `DeepgramRecordingViewModel.swift:1607-1623`. Flipped TRUE on every
   // interim transcript (the inspector is mid-utterance); flipped FALSE
@@ -2179,6 +2189,36 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       },
       onLevel: (level) => {
         const now = performance.now();
+        // Amplitude-based barge-in during TTS — audit #13. Inspector
+        // talking over a Sonnet question shouldn't have to wait for
+        // the full TTS to finish before their answer is captured.
+        // Counts consecutive frames above threshold; on 8-in-a-row
+        // (≈160ms at 50Hz onLevel cadence), cancel speech +
+        // notify backend. The deferred-TTS path from commit ee8ed78
+        // covers the "TTS about to start" case; this covers
+        // "TTS already playing".
+        if (ttsActiveRef.current) {
+          if (level >= BARGE_IN_LEVEL_THRESHOLD) {
+            bargeInLevelFramesRef.current += 1;
+            if (bargeInLevelFramesRef.current >= BARGE_IN_LEVEL_FRAMES) {
+              bargeInLevelFramesRef.current = 0;
+              clientDiagnostic('tts_barge_in_amplitude', {
+                level: Math.round(level * 1000) / 1000,
+                frames: BARGE_IN_LEVEL_FRAMES,
+              });
+              cancelSpeech();
+              sonnetRef.current?.sendBargeIn('amplitude');
+            }
+          } else {
+            // A frame below threshold breaks the run — the run must be
+            // SUSTAINED to count as the inspector actively talking,
+            // not a transient cough / clap.
+            bargeInLevelFramesRef.current = 0;
+          }
+        } else if (bargeInLevelFramesRef.current > 0) {
+          // TTS ended; reset counter for the next round.
+          bargeInLevelFramesRef.current = 0;
+        }
         // SleepManager's RMS fallback path — only reachable if the
         // Silero load failed at session start (offline first run + no
         // PWA cache, ORT crash, model 404). When silero is loaded, the
