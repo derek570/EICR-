@@ -948,26 +948,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // resume timer mirrors iOS's 500ms post-TTS drain window.
   const ttsActiveRef = React.useRef(false);
   const ttsResumeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Amplitude barge-in counter — counts consecutive mic-level frames
-  // above threshold during TTS playback. Mirrors iOS at
-  // `RecordingSessionCoordinator.swift:689-731 onAudioLevelUpdated`.
-  // When ttsActive AND the inspector's level sustains above
-  // BARGE_IN_LEVEL_THRESHOLD for BARGE_IN_LEVEL_FRAMES, cancel TTS so
-  // they're not muted by the still-playing question. Reset on
-  // TTS-end or on any frame below threshold.
-  const bargeInLevelFramesRef = React.useRef(0);
-  // Cooldown lockout so a single barge-in fire can't immediately re-trigger
-  // from the same sustained-loud run. Set when the threshold fires; cleared
-  // when ttsActiveRef flips back to false. Without this the original commit
-  // cc4082e would synchronously fire twice within ~1ms on iPad Safari
-  // (observed in sess_mp9qnay1_h1ik 2026-05-17): both fires call
-  // cancelSpeech() + sendBargeIn(), creating extra audio-element teardown
-  // work + redundant `tts_cancelled_by_user` frames on the wire — exactly
-  // the cumulative pressure profile that triggers the WebContent process
-  // reap during ElevenLabs playback.
-  const bargeInFiredRef = React.useRef(false);
-  const BARGE_IN_LEVEL_THRESHOLD = 0.015;
-  const BARGE_IN_LEVEL_FRAMES = 8;
+  // Amplitude-based barge-in was attempted in commits cc4082e (initial)
+  // and aca3327 (cooldown latch) but is fundamentally incompatible with
+  // the web platform: on iOS the AVAudioSession voice-processing mode
+  // provides hardware-grade acoustic echo cancellation, so the speaker
+  // output of the TTS itself doesn't reach the mic input as audible
+  // amplitude. On the web `getUserMedia({echoCancellation: true})` is
+  // best-effort browser-side processing — the TTS audio bleeds through
+  // and the amplitude detector trips on its own speaker output, killing
+  // every TTS within milliseconds of `elevenlabs_audio_playing`. Field-
+  // tested sess_mpathxlt_uwth (2026-05-18 06:22-06:27 UTC) showed all 6
+  // TTS rounds barging themselves in inside 0-60ms.
+  //
+  // Barge-in on the web is delegated to the text-final-during-TTS path
+  // in `dispatchFinal` (real Deepgram transcript words during an
+  // in-flight ask_user → cancelSpeech + sendBargeIn). Deepgram's
+  // server-side VAD is robust against the echo this client-side
+  // amplitude check trips on.
   // Inspector-speaking tracker — mirrors iOS `isSpeaking` flag at
   // `DeepgramRecordingViewModel.swift:1607-1623`. Flipped TRUE on every
   // interim transcript (the inspector is mid-utterance); flipped FALSE
@@ -2331,52 +2328,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       },
       onLevel: (level) => {
         const now = performance.now();
-        // Amplitude-based barge-in during TTS — audit #13. Inspector
-        // talking over a Sonnet question shouldn't have to wait for
-        // the full TTS to finish before their answer is captured.
-        // Counts consecutive frames above threshold; on 8-in-a-row
-        // (≈160ms at 50Hz onLevel cadence), cancel speech +
-        // notify backend. The deferred-TTS path from commit ee8ed78
-        // covers the "TTS about to start" case; this covers
-        // "TTS already playing".
-        if (ttsActiveRef.current && !bargeInFiredRef.current) {
-          if (level >= BARGE_IN_LEVEL_THRESHOLD) {
-            bargeInLevelFramesRef.current += 1;
-            if (bargeInLevelFramesRef.current >= BARGE_IN_LEVEL_FRAMES) {
-              // Latch the cooldown FIRST so a synchronous re-entry into
-              // onLevel (which iPad Safari can produce when the audio
-              // worklet flushes a pending buffer during the
-              // cancelSpeech() teardown that follows) hits the
-              // bargeInFiredRef guard and bails. Without the latch the
-              // same threshold could fire twice within ~1ms.
-              bargeInFiredRef.current = true;
-              const firedFrameCount = bargeInLevelFramesRef.current;
-              bargeInLevelFramesRef.current = 0;
-              clientDiagnostic('tts_barge_in_amplitude', {
-                level: Math.round(level * 1000) / 1000,
-                frames: firedFrameCount,
-              });
-              cancelSpeech();
-              sonnetRef.current?.sendBargeIn('amplitude');
-            }
-          } else {
-            // A frame below threshold breaks the run — the run must be
-            // SUSTAINED to count as the inspector actively talking,
-            // not a transient cough / clap.
-            bargeInLevelFramesRef.current = 0;
-          }
-        } else if (!ttsActiveRef.current) {
-          // TTS ended (or never started); reset counter + clear the
-          // cooldown latch for the next TTS round. Without clearing the
-          // latch here, a second TTS in the same session would never be
-          // bargeable.
-          if (bargeInLevelFramesRef.current > 0) {
-            bargeInLevelFramesRef.current = 0;
-          }
-          if (bargeInFiredRef.current) {
-            bargeInFiredRef.current = false;
-          }
-        }
+        // Amplitude-based barge-in was attempted in commits cc4082e +
+        // aca3327 but reverted after sess_mpathxlt_uwth (2026-05-18)
+        // showed it killing every TTS within 0-60ms of `audio_playing`.
+        // Web `getUserMedia` echoCancellation is software best-effort
+        // and the speaker output bleeds back through the mic, tripping
+        // the threshold on the TTS's own audio. iOS gets away with this
+        // because AVAudioSession voice-processing mode is
+        // hardware-grade AEC. Barge-in on the web is delegated to the
+        // text-final-during-TTS path in `dispatchFinal` — Deepgram's
+        // server-side VAD is robust against this echo.
         // SleepManager's RMS fallback path — only reachable if the
         // Silero load failed at session start (offline first run + no
         // PWA cache, ORT crash, model 404). When silero is loaded, the
