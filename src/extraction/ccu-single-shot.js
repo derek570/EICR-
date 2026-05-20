@@ -135,7 +135,10 @@ RULES
 - For RCBOs and RCDs, look for the waveform symbol (∿ AC, ⬓ A, ⌒ F, ⊐ B). Return null if symbol is unclear.
 
 LABELS
-- Read the circuit description text from the label strip nearest the slot.
+- A device's label lives in the label-strip channel DIRECTLY ABOVE or DIRECTLY BELOW the device — in the SAME VERTICAL COLUMN, centred on the device's left-right midpoint. Labels are NEVER to the side of a device; the strip channels run horizontally above and below the rail.
+- Read only the label whose horizontal centre sits within the same vertical column as the device. If the label's text is centred closer to a neighbouring slot's column than to this slot's column, IT DOES NOT BELONG TO THIS DEVICE — return null.
+- If two candidate labels are equally plausible (the label sits on the boundary between two slot columns), return null for BOTH slots. Do not guess which side it belongs to — the inspector will fix it.
+- A label that visibly spans MULTIPLE slots (one wide sticker covering two or more devices, e.g. "Upstairs Lights 1-2") is ambiguous — return null for every slot it spans.
 - IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise.
 - Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next returns as "Upstairs Lighting", not two separate strings.
 - If a label is faded, illegible, or absent, return null. Never guess or copy from adjacent slots.
@@ -177,7 +180,10 @@ RULES
 - Empty slots in the carrier panel are blanks: device_kind:"blank".
 
 LABELS
-- Read the circuit description text from the label strip nearest the carrier.
+- A carrier's label lives in the label-strip channel DIRECTLY ABOVE or DIRECTLY BELOW the carrier — in the SAME VERTICAL COLUMN, centred on the carrier's left-right midpoint. Labels are NEVER to the side of a carrier; the strip channels run horizontally above and below the carrier panel.
+- Read only the label whose horizontal centre sits within the same vertical column as the carrier. If the label's text is centred closer to a neighbouring slot's column than to this slot's column, IT DOES NOT BELONG TO THIS CARRIER — return null.
+- If two candidate labels are equally plausible (the label sits on the boundary between two slot columns), return null for BOTH slots. Do not guess which side it belongs to.
+- A label that visibly spans MULTIPLE slots (one wide sticker covering two or more carriers) is ambiguous — return null for every slot it spans.
 - IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise.
 - Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next returns as "Upstairs Lighting", not two separate strings.
 - If a label is faded, illegible, or absent, return null. Never guess or copy from adjacent slots.
