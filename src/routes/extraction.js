@@ -217,26 +217,24 @@ const sonnetChunkLimits = new Map();
  * train an on-device YOLO detector, not for high-resolution recall. This
  * keeps S3 cost negligible even as TestFlight volume scales.
  */
-async function compressForTrainingLog(buffer, targetBytes = 500 * 1024) {
-  let out = await sharp(buffer)
-    .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 75 })
-    .toBuffer();
-  if (out.length <= targetBytes) return out;
-  out = await sharp(buffer)
-    .resize(1280, 1280, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 65 })
-    .toBuffer();
-  return out;
-}
-
 /**
  * Fire-and-forget S3 logging of every CCU extraction — source of the
- * auto-labelled training corpus for the Phase B→E geometric pipeline.
- * Writes a small compressed JPEG + the VLM result JSON to:
+ * auto-labelled training corpus for the geometric pipeline AND the
+ * primary artefact for debugging mis-extractions after the fact.
+ *
+ * Writes the FULL-RES original JPEG (as uploaded by the client, no
+ * resize, no re-encode) + the VLM result JSON to:
  *   s3://$S3_BUCKET/ccu-extractions/{userId}/{sessionId|no-session}/{extractionId}/
- * Each upload is keyed by a unique extractionId so repeat shots within the
- * same recording session never overwrite earlier samples.
+ *
+ * 2026-05-21: switched from compressed (1600px / q75, ~180 KB) to full
+ * original. The compressed version destroyed label-strip pixel detail
+ * on UK CCUs (printed pictograms are tiny relative to the rail), making
+ * it impossible to re-run the VLM against the same image to debug
+ * mis-attributed labels. Storage delta is ~$15/yr at 5k certs/yr —
+ * negligible at any realistic scale.
+ *
+ * Each upload is keyed by a unique extractionId so repeat shots within
+ * the same recording session never overwrite earlier samples.
  */
 async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, meta }) {
   const extractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -246,10 +244,9 @@ async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, me
   const sessionSegment = String(sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'no-session';
   const prefix = `ccu-extractions/${userId}/${sessionSegment}/${extractionId}`;
 
-  const compressed = await compressForTrainingLog(imageBuffer);
   // storage.uploadBytes / uploadJson swallow S3 errors and return false. Check each
   // return value so silent S3 outages don't quietly discard training samples.
-  const jpegOk = await storage.uploadBytes(compressed, `${prefix}/original.jpg`, 'image/jpeg');
+  const jpegOk = await storage.uploadBytes(imageBuffer, `${prefix}/original.jpg`, 'image/jpeg');
   if (!jpegOk) {
     throw new Error(`storage.uploadBytes returned false for ${prefix}/original.jpg`);
   }
@@ -265,7 +262,7 @@ async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, me
     userId,
     sessionId: sessionId || null,
     extractionId,
-    compressedBytes: compressed.length,
+    originalBytes: imageBuffer.length,
     circuitCount: analysis?.circuits?.length || 0,
   });
 }
