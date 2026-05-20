@@ -356,3 +356,195 @@ describe('bundleToolCallsIntoResult — board_id emission (hotfix slice 1.1a)', 
     expect(r.extracted_readings[0]).not.toHaveProperty('board_id');
   });
 });
+
+describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)', () => {
+  test('opt-out: omits confirmations slot entirely when options absent (byte-identical pre-feature)', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
+    expect(r).not.toHaveProperty('confirmations');
+  });
+
+  test('opt-out: omits confirmations slot when options.confirmationsEnabled === false', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: false }
+    );
+    expect(r).not.toHaveProperty('confirmations');
+  });
+
+  test('opt-in: synthesises one confirmation per circuit reading with Circuit N prefix', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      [encodeReadingKey('r1_r2_ohm', 2), { value: '0.6', confidence: 1.0, source_turn_id: 't1' }],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations).toEqual([
+      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
+      { text: 'Circuit 2, R1 plus R2 0.6', field: 'r1_r2_ohm', circuit: 2 },
+    ]);
+  });
+
+  test('opt-in: board-level readings (extracted_board_readings) emit without Circuit prefix', () => {
+    const writes = makePerTurnWrites();
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('earth_loop_impedance_ze'),
+        { value: '0.25', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      [
+        encodeBoardReadingKey('prospective_fault_current'),
+        { value: '1.5', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    expect(r.confirmations).toEqual([
+      { text: 'Ze 0.25', field: 'earth_loop_impedance_ze', circuit: null },
+      { text: 'PFC 1.5', field: 'prospective_fault_current', circuit: null },
+    ]);
+  });
+
+  test('opt-in: unknown fields (free-text designation, BS_EN, address) are filtered out', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 1),
+        { value: 'Cooker', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      [
+        encodeReadingKey('ocpd_bs_en', 1),
+        { value: 'BS EN 60898', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('address'),
+        { value: '1 Tilehurst Road', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      [
+        encodeBoardReadingKey('postcode'),
+        { value: 'RG30 4XW', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    // Every field in the fixture is intentionally outside the friendly-name
+    // map: no confirmations should land, and the slot stays omitted to keep
+    // wire traffic byte-identical to the no-readings case.
+    expect(r).not.toHaveProperty('confirmations');
+  });
+
+  test('opt-in: low-confidence readings (<0.8) are skipped, mirroring legacy prompt gate', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      [encodeReadingKey('r1_r2_ohm', 2), { value: '0.6', confidence: 0.5, source_turn_id: 't1' }],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations).toEqual([
+      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
+    ]);
+  });
+
+  test('opt-in: polarity_confirmed=true reads back, polarity_confirmed=false suppresses', () => {
+    const readingsTrue = new Map([
+      [
+        encodeReadingKey('polarity_confirmed', 1),
+        { value: 'true', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r1 = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings: readingsTrue }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r1.confirmations).toEqual([
+      { text: 'Circuit 1, polarity confirmed', field: 'polarity_confirmed', circuit: 1 },
+    ]);
+
+    const readingsFalse = new Map([
+      [
+        encodeReadingKey('polarity_confirmed', 1),
+        { value: 'false', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r2 = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings: readingsFalse }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r2).not.toHaveProperty('confirmations');
+  });
+
+  test('legacy passthrough: when legacyResultShape already has confirmations, synthesis is bypassed', () => {
+    // Shadow mode invariant — Sonnet prose-JSON already populated the array
+    // server-side; the bundler must NOT double-emit by also synthesising.
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const legacy = {
+      questions: [],
+      confirmations: [{ text: 'Sonnet said this', field: 'measured_zs_ohm', circuit: 1 }],
+    };
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), legacy, {
+      confirmationsEnabled: true,
+    });
+    expect(r.confirmations).toEqual([
+      { text: 'Sonnet said this', field: 'measured_zs_ohm', circuit: 1 },
+    ]);
+  });
+
+  test('legacy passthrough: empty legacy.confirmations array still triggers synthesis (fall-through)', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [], confirmations: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations).toEqual([
+      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
+    ]);
+  });
+
+  test('legacy passthrough: defensive copy — mutating legacy.confirmations after bundle does not alter result', () => {
+    const legacyConfirmations = [{ text: 'original', field: 'measured_zs_ohm', circuit: 1 }];
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites(),
+      { questions: [], confirmations: legacyConfirmations },
+      { confirmationsEnabled: true }
+    );
+    legacyConfirmations[0].text = 'mutated';
+    expect(r.confirmations[0].text).toBe('original');
+  });
+});

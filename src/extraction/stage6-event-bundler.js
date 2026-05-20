@@ -20,6 +20,117 @@ import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-write
 
 export const BUNDLER_PHASE = 2;
 
+// Map of canonical field names to short spoken labels for confirmation
+// read-backs (Voice button feature). Only includes fields whose acoustic
+// feedback genuinely helps an inspector verify the dictation was understood —
+// numeric measurements and high-value categorical writes. Free-text fields
+// (designation), long-form codes (BS_EN), and address fields are intentionally
+// excluded; the inspector reads those off the screen instead.
+//
+// Address fields are also suppressed iOS-side (DeepgramRecordingViewModel.swift
+// `ttsSuppressedAddressFields`) — they're omitted here as belt-and-braces so
+// the backend doesn't ship bytes the client immediately discards.
+const CONFIRMATION_FRIENDLY_NAMES = {
+  measured_zs_ohm: 'Zs',
+  r1_r2_ohm: 'R1 plus R2',
+  r2_ohm: 'R2',
+  ring_r1_ohm: 'ring r1',
+  ring_rn_ohm: 'ring rn',
+  ring_r2_ohm: 'ring r2',
+  ir_live_earth_mohm: 'IR L to E',
+  ir_live_live_mohm: 'IR L to L',
+  ocpd_rating_a: 'OCPD rating',
+  ocpd_type: 'OCPD type',
+  rcd_operating_current_ma: 'RCD',
+  rcd_time_ms: 'RCD time',
+  rcd_type: 'RCD type',
+  number_of_points: 'points',
+  wiring_type: 'wiring type',
+  live_csa_mm2: 'live CSA',
+  cpc_csa_mm2: 'CPC CSA',
+  polarity_confirmed: 'polarity',
+  // Board-level (circuit=0 on the wire) — the friendly name carries enough
+  // context on its own; no "Circuit 0" prefix is rendered for these.
+  earth_loop_impedance_ze: 'Ze',
+  prospective_fault_current: 'PFC',
+  prospective_short_circuit_current: 'PSCC',
+  prospective_earth_fault_current: 'PEFC',
+};
+
+// Confidence threshold mirrors the legacy prompt's confirmation gate
+// ("confidence >= 0.8") at config/prompts/sonnet_extraction_system.md:283 so
+// the agentic path doesn't read back values Sonnet itself would have
+// withheld under the prose-JSON contract.
+const CONFIRMATION_MIN_CONFIDENCE = 0.8;
+
+function buildConfirmationText(field, value, circuit) {
+  const friendly = CONFIRMATION_FRIENDLY_NAMES[field];
+  if (!friendly) return null;
+  const valueStr = String(value ?? '').trim();
+  if (!valueStr) return null;
+  // Boolean polarity_confirmed comes through as the string "true"/"false".
+  // Speak "polarity confirmed" for true, suppress for false — a false
+  // polarity is an inspection failure that the inspector will edit by hand
+  // and shouldn't be acoustically reinforced as if accepted. Keep the
+  // "Circuit N" prefix when present so the inspector can tell two
+  // back-to-back polarity confirmations apart.
+  if (field === 'polarity_confirmed') {
+    if (valueStr.toLowerCase() !== 'true') return null;
+    if (circuit == null || circuit === 0) return 'polarity confirmed';
+    return `Circuit ${circuit}, polarity confirmed`;
+  }
+  // Board-level readings (circuit 0 or absent) skip the "Circuit N," prefix —
+  // "Ze 0.25" is a complete sentence in inspector parlance, "Circuit 0, Ze"
+  // would be confusing.
+  if (circuit == null || circuit === 0) {
+    return `${friendly} ${valueStr}`;
+  }
+  return `Circuit ${circuit}, ${friendly} ${valueStr}`;
+}
+
+/**
+ * Synthesise brief read-back confirmations from the bundled readings.
+ *
+ * The legacy prose-JSON extractor used to emit a `confirmations` array
+ * directly from the model (config/prompts/sonnet_extraction_system.md:283).
+ * The Stage 6 agentic path has no analogue — record_reading is the only
+ * write tool — so the iOS "Voice" toggle hooked to
+ * `confirmationModeEnabled` (DeepgramRecordingViewModel.swift:7334) read
+ * `result.confirmations` against an always-empty array, making the toggle
+ * appear broken. This helper rebuilds the same wire shape from the
+ * tool-call outcomes so the iOS path keeps working without a TestFlight
+ * push or a prompt revision.
+ *
+ * Confirmation text is intentionally short (legacy "under 5 words" guidance
+ * preserved at intent level; the friendly-name lookup keeps it concise).
+ *
+ * @param {Array<{field: string, circuit?: number|string, value: any, confidence: number}>} readings
+ *   Circuit-scoped readings (bundler output extracted_readings).
+ * @param {Array<{field: string, value: any, confidence: number}>} boardReadings
+ *   Board-scoped readings (bundler output extracted_board_readings).
+ * @returns {Array<{text: string, field: string, circuit: number|null}>}
+ */
+function synthesiseConfirmations(readings, boardReadings) {
+  const out = [];
+  for (const r of readings) {
+    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    const text = buildConfirmationText(r.field, r.value, r.circuit);
+    if (!text) continue;
+    out.push({
+      text,
+      field: r.field,
+      circuit: Number.isInteger(r.circuit) ? r.circuit : null,
+    });
+  }
+  for (const r of boardReadings) {
+    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    const text = buildConfirmationText(r.field, r.value, null);
+    if (!text) continue;
+    out.push({ text, field: r.field, circuit: null });
+  }
+  return out;
+}
+
 /**
  * Translate per-turn tool-call outcomes into the legacy `extraction` result
  * shape that iOS `ServerWebSocketService` expects.
@@ -48,7 +159,7 @@ export const BUNDLER_PHASE = 2;
  *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call', board_id?: string}>,
  *            board_ops?: Array<{op: string, [key: string]: any}>}}
  */
-export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
+export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, options = {}) {
   if (!perTurnWrites || !(perTurnWrites.readings instanceof Map)) {
     throw new TypeError('bundleToolCallsIntoResult: perTurnWrites.readings must be a Map');
   }
@@ -199,6 +310,38 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape) {
   //    wire-in. createPerTurnWrites() always seeds an empty array.
   if (Array.isArray(perTurnWrites.boardOps) && perTurnWrites.boardOps.length > 0) {
     result.board_ops = perTurnWrites.boardOps.map((op) => ({ ...op }));
+  }
+
+  // 9. Stage 6 confirmation read-backs (2026-05-20).
+  //    When the client opts in via `confirmations_enabled` on the
+  //    transcript message (iOS Voice toggle → sonnet-stream.js:3707 →
+  //    runShadowHarness options → here), synthesise brief text-to-speech
+  //    read-backs from the per-turn writes. iOS already decodes
+  //    `result.confirmations` (DeepgramRecordingViewModel.swift:7334) and
+  //    applies its own dedupe/suppression layer; the backend's job is just
+  //    to emit a short well-formed array per turn so the iOS speech queue
+  //    has something to work with.
+  //
+  //    Legacy prose-JSON path: when `legacyResultShape.confirmations` is
+  //    already populated (shadow mode, prompt-JSON extractor produced
+  //    them), preserve those verbatim and skip synthesis — the legacy
+  //    output is the authoritative shape there and we don't want to
+  //    double-emit. Live mode always has `legacy === null` and synthesis
+  //    is the only source.
+  //
+  //    OMITTED from the result when empty so pre-feature traffic and
+  //    sessions where the inspector turned the toggle off stay byte-
+  //    identical on the wire.
+  if (Array.isArray(legacy.confirmations) && legacy.confirmations.length > 0) {
+    result.confirmations = legacy.confirmations.map((c) => ({ ...c }));
+  } else if (options.confirmationsEnabled === true) {
+    const boardReadings = Array.isArray(result.extracted_board_readings)
+      ? result.extracted_board_readings
+      : [];
+    const confirmations = synthesiseConfirmations(extracted_readings, boardReadings);
+    if (confirmations.length > 0) {
+      result.confirmations = confirmations;
+    }
   }
 
   return result;

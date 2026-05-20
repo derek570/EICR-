@@ -313,7 +313,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // Bundle the per-turn writes into the legacy iOS shape. Pass null for
   // legacyResultShape — there's no legacy result; bundler will produce
   // `questions: []` from that.
-  const result = bundleToolCallsIntoResult(perTurnWrites, null);
+  //
+  // confirmationsEnabled flows from sonnet-stream.js (transcript message
+  // `confirmations_enabled` flag, set by iOS when the user toggles the
+  // Voice button ON) through options into the bundler's synthesis step
+  // (stage6-event-bundler.js:9). Live mode has no legacy.confirmations
+  // source so synthesis is the only path that populates result.confirmations.
+  const result = bundleToolCallsIntoResult(perTurnWrites, null, {
+    confirmationsEnabled: options.confirmationsEnabled === true,
+  });
 
   // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
   // readings (record_board_reading dispatches) into extracted_readings with
@@ -989,7 +997,12 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   }
 
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).
-  const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy);
+  // confirmationsEnabled: shadow mode prefers legacy.confirmations when
+  // present (Sonnet prose-JSON emitted them) but still synthesises from
+  // tool calls if the client opted in and legacy returned an empty array.
+  const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy, {
+    confirmationsEnabled: options.confirmationsEnabled === true,
+  });
 
   // Step 6: slot-diff the two result shapes.
   const divergence = compareSlots(legacy, toolResult);
