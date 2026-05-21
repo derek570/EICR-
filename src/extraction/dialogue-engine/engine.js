@@ -899,6 +899,46 @@ function runActivePath({
     return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
   }
 
+  // 5b. Defer answer — when the current slot opts in via
+  //     `acceptsDeferAnswer: true` (RCD's bs_en, 2026-05-21), the
+  //     inspector can say "fill later" / "later" / "come back to it"
+  //     to exit the WHOLE script for this circuit (NOT just blank one
+  //     slot). Any values already written at entry — e.g. an
+  //     opportunistically-volunteered rcd_trip_time — stay on the
+  //     snapshot; only the remaining unfilled slots are abandoned. A
+  //     brief "Okay, I'll come back to that later." TTS confirms the
+  //     defer, then the script clears state so the next "RCD" trigger
+  //     for the same circuit re-engages normally. Per user direction
+  //     (293F074F follow-up): defer suppresses only the current
+  //     auto-ask cascade, not future explicit re-mentions.
+  if (
+    currentSlot &&
+    currentSlot.acceptsDeferAnswer &&
+    Array.isArray(schema.deferTriggers) &&
+    matchesAny(text, schema.deferTriggers)
+  ) {
+    const filledAtDefer = { ...state.values };
+    logger?.info?.(`${schema.logEventPrefix}_deferred`, {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      deferred_at_slot: currentSlot.field,
+      filled_before_defer: Object.keys(filledAtDefer),
+      textPreview: text.slice(0, 80),
+    });
+    safeSend(
+      ws,
+      buildScriptInfo({
+        toolCallIdPrefix: schema.toolCallIdPrefix,
+        sessionId,
+        kind: 'defer',
+        text: schema.deferMessage ?? "Okay, I'll come back to that later.",
+        now,
+      })
+    );
+    clearScriptState(session);
+    return { handled: true, fallthrough: false };
+  }
+
   // 6. Schema-specific exclusive-parser hook (for IR voltage phase):
   //    when the current expected slot has `exclusiveWhenExpected: true`,
   //    skip named-field extraction and run only this slot's parser on

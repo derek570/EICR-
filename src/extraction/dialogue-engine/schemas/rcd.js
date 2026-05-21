@@ -115,6 +115,39 @@ const skipSlotTriggers = [
   /\b(?:don'?t\s+know|no\s+idea|leave\s+(?:it\s+)?blank|blank|pass|next\s+one|skip\s+(?:this|that|it|one))\b/i,
 ];
 
+// "fill later" / "later" / "come back to it" — defer the whole RCD
+// script for this circuit (NOT just one slot). Only fires when the
+// current slot has `acceptsDeferAnswer: true` (presently only
+// rcd_bs_en). Differs from skipSlotTriggers, which blanks ONE slot
+// and moves on. Differs from cancelTriggers, which announces "RCD
+// cancelled. N of M saved." — defer announces "Okay, I'll come back
+// to that later." The inspector's volunteered values (e.g.
+// rcd_trip_time written at entry) stay in the snapshot; only the
+// remaining unfilled slots are abandoned.
+//
+// Phrasings deliberately scoped to defer-intent verbs. Bare "later"
+// is included for terse replies to the ask, but the
+// acceptsDeferAnswer gate at the slot level ensures it only matches
+// when the inspector is replying to the BS-number prompt — bare
+// "later" in any other context (e.g. mid-IR script) won't trigger
+// because no other slot opts in.
+// Verb-prefix + "later" patterns. Filler between the verb and "later"
+// is bounded (≤ 20 chars, no digits) so the regex can't accidentally
+// span a sentence ("I'll fill in the form. Read me back the value
+// later" must not defer). Verb prefixes cover the natural deferral
+// phrasings: "fill in/it/them later", "fill it in later", "do it
+// later", "come back to it later", "back to it later". Bare "later"
+// is allowed only when the inspector's entire reply is the single
+// word (or "later." with full-stop) so it can't pick up "later" out
+// of unrelated sentences ("I'll deal with that later, but right now
+// the BS is 60898").
+const deferTriggers = [
+  /\bfill\s+[^\d?!]{0,20}?later\b/i,
+  /\bdo\s+[^\d?!]{0,15}?later\b/i,
+  /\b(?:come\s+)?back\s+[^\d?!]{0,20}?later\b/i,
+  /^\s*later[.!?]?\s*$/i,
+];
+
 const topicSwitchTriggers = [
   /\b(?:zs|z\s*s|ze|z\s*e)\s+(?:is|=|of|at)\b/i,
   /\bcircuit\s+\d+\s+is\b/i,
@@ -129,6 +162,7 @@ export const rcdSchema = {
   triggers,
   cancelTriggers,
   skipSlotTriggers,
+  deferTriggers,
   topicSwitchTriggers,
   slots,
   hardTimeoutMs: 180_000,
@@ -138,6 +172,7 @@ export const rcdSchema = {
   whichCircuitQuestion: 'Which circuit is the RCD for?',
   cancelMessage: ({ filled, total }) => `RCD cancelled. ${filled} of ${total} saved.`,
   cancelMessageEmpty: 'RCD cancelled.',
+  deferMessage: "Okay, I'll come back to that later.",
   finishMessage: ({ values }) => {
     const bs = values.rcd_bs_en ?? '?';
     const type = values.rcd_type ?? '?';

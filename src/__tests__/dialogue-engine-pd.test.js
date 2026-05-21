@@ -275,6 +275,167 @@ describe('RCD walk-through', () => {
       expect(rcdSchema.slots[1].acceptsDeferAnswer).toBe(true);
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // "fill later" defer — only fires when the current slot has
+  // acceptsDeferAnswer:true (rcd_bs_en). Exits the script without
+  // cancelling; volunteered values stay on the snapshot.
+  // ─────────────────────────────────────────────────────────────────────
+  describe('"fill later" defer (acceptsDeferAnswer slot)', () => {
+    test('inspector says "fill later" → exits script, trip_time preserved on snapshot', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      // Entry: volunteers trip_time, leaves bs/type/ma to ask.
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD trip time for circuit 5 is 25 ms.',
+        now: 1000,
+      });
+      expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+
+      // Defer: "fill later" → script exits with the info TTS.
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'fill later',
+        now: 2000,
+      });
+      expect(ws.sent.at(-1).reason).toBe('info');
+      expect(ws.sent.at(-1).question).toBe("Okay, I'll come back to that later.");
+      // Script state cleared.
+      expect(session.dialogueScriptState).toBeFalsy();
+      // trip_time still on the snapshot — defer doesn't roll back writes.
+      expect(session.stateSnapshot.circuits[5].rcd_trip_time).toBe('25');
+      // bs_en / type / ma stay unset.
+      expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBeUndefined();
+      expect(session.stateSnapshot.circuits[5].rcd_type).toBeUndefined();
+      expect(session.stateSnapshot.circuits[5].rcd_operating_current_ma).toBeUndefined();
+    });
+
+    test('bare "later" defers the BS-number ask', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD on circuit 5.',
+        now: 1000,
+      });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'later.',
+        now: 2000,
+      });
+      expect(ws.sent.at(-1).reason).toBe('info');
+      expect(session.dialogueScriptState).toBeFalsy();
+    });
+
+    test('"come back to it later" defers', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD on circuit 5.',
+        now: 1000,
+      });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'come back to it later',
+        now: 2000,
+      });
+      expect(ws.sent.at(-1).reason).toBe('info');
+      expect(session.dialogueScriptState).toBeFalsy();
+    });
+
+    test('"fill it in later" defers', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD on circuit 5.',
+        now: 1000,
+      });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'fill it in later',
+        now: 2000,
+      });
+      expect(ws.sent.at(-1).reason).toBe('info');
+      expect(session.dialogueScriptState).toBeFalsy();
+    });
+
+    test('defer does NOT fire mid-OCPD (slot does not opt into acceptsDeferAnswer)', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'MCB on circuit 5.',
+        now: 1000,
+      });
+      // OCPD bs_en doesn't opt in — "fill later" should NOT defer here.
+      // The bs-code parser will fail to parse it, so the engine
+      // re-asks. Script state stays active.
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'fill later',
+        now: 2000,
+      });
+      expect(session.dialogueScriptState).toBeTruthy();
+      expect(session.dialogueScriptState.active).toBe(true);
+      // No defer info TTS emitted.
+      expect(ws.sent.some((m) => m.question === "Okay, I'll come back to that later.")).toBe(false);
+    });
+
+    test('re-entering RCD after defer works normally (no lingering suppression)', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      // First entry → defer.
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD on circuit 5.',
+        now: 1000,
+      });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'fill later',
+        now: 2000,
+      });
+
+      // Second entry — should re-engage cleanly.
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD on circuit 5.',
+        now: 3000,
+      });
+      expect(session.dialogueScriptState).toBeTruthy();
+      expect(session.dialogueScriptState.active).toBe(true);
+      expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    });
+  });
 });
 
 describe('RCBO pivot', () => {
