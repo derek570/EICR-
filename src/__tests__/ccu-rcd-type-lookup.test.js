@@ -192,6 +192,7 @@ describe('lookupMissingRcdTypes — primary `missing` trigger', () => {
   test('non-fatal when search throws', async () => {
     const analysis = {
       board_manufacturer: 'Hager',
+      board_model: 'VML906CU',
       circuits: [rcboCircuit(1, { rcd_type: null })],
       slots: [rcboSlot({ rcdWaveformType: null })],
     };
@@ -212,150 +213,119 @@ describe('lookupMissingRcdTypes — primary `missing` trigger', () => {
     );
     expect(warnLog?.[1]).toMatchObject({ error: 'rate limited' });
   });
+
+  test('skips when board_model is missing (manufacturer alone is too generic)', async () => {
+    // 2026-05-21: tightened to require both manufacturer AND model. Without
+    // a model, a "Crabtree" search returns hits from any Crabtree consumer
+    // unit — that generic match was the source of the AC→A overrides on
+    // Ciaran's Starbreaker (the prior `uniform_low_conf` trigger acted on
+    // those generic hits).
+    const analysis = {
+      board_manufacturer: 'Crabtree',
+      board_model: null,
+      circuits: [rcboCircuit(1, { rcd_type: null })],
+      slots: [rcboSlot({ rcdWaveformType: null })],
+    };
+    const openai = makeOpenAi('{"rcd_type":"A"}');
+    const logger = makeLogger();
+
+    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
+
+    expect(openai.chat.completions.create).not.toHaveBeenCalled();
+    expect(analysis.circuits[0].rcd_type).toBeNull();
+    expect(
+      logger.info.mock.calls.find(
+        ([msg]) =>
+          msg === 'RCD type lookup skipped — no board model (manufacturer alone is too generic)'
+      )
+    ).toBeTruthy();
+  });
+
+  test('skips when board_model is empty string', async () => {
+    const analysis = {
+      board_manufacturer: 'Crabtree',
+      board_model: '   ',
+      circuits: [rcboCircuit(1, { rcd_type: null })],
+      slots: [rcboSlot({ rcdWaveformType: null })],
+    };
+    const openai = makeOpenAi('{"rcd_type":"A"}');
+    const logger = makeLogger();
+
+    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
+    expect(openai.chat.completions.create).not.toHaveBeenCalled();
+    expect(analysis.circuits[0].rcd_type).toBeNull();
+  });
 });
 
-describe('lookupMissingRcdTypes — secondary `uniform_low_conf` trigger', () => {
-  test('overrides uniform Stage-3 read when avg confidence < threshold and search returns different type', async () => {
-    // Reproduces the 2026-05-02 Crabtree field case: 11 RCBOs, all read
-    // "AC" at avg conf 0.79, true type per datasheet is "A".
+describe('lookupMissingRcdTypes — never overrides existing reads (2026-05-21 audit)', () => {
+  // The prior `uniform_low_conf` trigger overrode the VLM's existing
+  // waveform reads when all RCDs reported the same value with avg
+  // confidence < 0.85. Reproduced wrong-answer overrides on every
+  // Crabtree Starbreaker in the field-test corpus (the VLM was reading
+  // AC correctly; the manufacturer-only web search guessed Type A from
+  // a generic Crabtree RCBO datasheet and clobbered all 5 RCDs).
+  // The trigger was pulled 2026-05-21. These tests pin the new behaviour:
+  // existing rcd_type values are NEVER overridden, no matter how low the
+  // per-slot confidence.
+
+  test('does NOT call the search when all RCD-protected circuits already have types (no nulls = nothing to fill)', async () => {
     const slots = [];
     const circuits = [];
     for (let i = 0; i < 11; i++) {
-      slots.push(rcboSlot({ rcdWaveformType: 'AC', confidence: 0.79 }));
+      slots.push(rcboSlot({ rcdWaveformType: 'AC', confidence: 0.65 }));
       circuits.push(rcboCircuit(i + 1, { rcd_type: 'AC' }));
     }
-    const analysis = { board_manufacturer: 'Crabtree', board_model: '', circuits, slots };
+    const analysis = {
+      board_manufacturer: 'Crabtree',
+      board_model: 'Starbreaker SB6000',
+      circuits,
+      slots,
+    };
+    const openai = makeOpenAi('{"rcd_type":"A","source":"datasheet"}');
+    const logger = makeLogger();
+
+    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
+
+    expect(openai.chat.completions.create).not.toHaveBeenCalled();
+    // Every AC stays AC — no override, ever.
+    analysis.circuits.forEach((c) => expect(c.rcd_type).toBe('AC'));
+  });
+
+  test('does NOT override an existing AC read even when only some siblings are null and the search returns a different type', async () => {
+    // Hybrid case: 3 RCDs, 2 read AC at low confidence, 1 read null.
+    // Old behaviour: fleet trigger fires, all 3 get overridden to A.
+    // New behaviour: only the null is filled; the two AC reads are preserved.
+    const analysis = {
+      board_manufacturer: 'Crabtree',
+      board_model: 'Starbreaker SB6000',
+      circuits: [
+        rcboCircuit(1, { rcd_type: 'AC' }),
+        rcboCircuit(2, { rcd_type: null }),
+        rcboCircuit(3, { rcd_type: 'AC' }),
+      ],
+      slots: [
+        rcboSlot({ rcdWaveformType: 'AC', confidence: 0.65 }),
+        rcboSlot({ rcdWaveformType: null, confidence: 0.6 }),
+        rcboSlot({ rcdWaveformType: 'AC', confidence: 0.65 }),
+      ],
+    };
     const openai = makeOpenAi(
       '{"rcd_type": "A", "source": "Crabtree Starbreaker SB6000 datasheet"}'
     );
     const logger = makeLogger();
 
-    const out = await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
+    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
 
     expect(openai.chat.completions.create).toHaveBeenCalledTimes(1);
-    out.circuits.forEach((c) => expect(c.rcd_type).toBe('A'));
-
-    const startLog = logger.info.mock.calls.find(
-      ([msg]) => msg === 'RCD type web search lookup starting'
-    );
-    expect(startLog?.[1]).toMatchObject({
-      trigger: 'uniform_low_conf',
-      stage3UniformValue: 'AC',
-    });
-    expect(startLog?.[1].stage3AvgConfidence).toBeCloseTo(0.79, 2);
-
-    const foundLog = logger.info.mock.calls.find(
-      ([msg]) => msg === 'RCD type web search found type'
-    );
-    expect(foundLog?.[1]).toMatchObject({
-      trigger: 'uniform_low_conf',
-      rcdType: 'A',
-      filled: 0,
-      overridden: 11,
-      previousValue: 'AC',
-    });
-
-    // Search prompt must mention what Stage 3 read so the search has a
-    // concrete claim to verify rather than asking blank.
-    const sentPrompt = openai.chat.completions.create.mock.calls[0][0].messages[0].content;
-    expect(sentPrompt).toMatch(/Type AC/);
-    expect(sentPrompt).toMatch(/low confidence/i);
+    expect(analysis.circuits[0].rcd_type).toBe('AC'); // preserved
+    expect(analysis.circuits[1].rcd_type).toBe('A'); // filled
+    expect(analysis.circuits[2].rcd_type).toBe('AC'); // preserved
   });
 
-  test('preserves uniform Stage-3 read when search confirms the same type', async () => {
-    const slots = [
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.79 }),
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.8 }),
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.78 }),
-    ];
-    const circuits = [
-      rcboCircuit(1, { rcd_type: 'AC' }),
-      rcboCircuit(2, { rcd_type: 'AC' }),
-      rcboCircuit(3, { rcd_type: 'AC' }),
-    ];
-    const analysis = { board_manufacturer: 'OldMfr', circuits, slots };
-    const openai = makeOpenAi('{"rcd_type": "AC", "source": "datasheet"}');
-    const logger = makeLogger();
-
-    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
-
-    analysis.circuits.forEach((c) => expect(c.rcd_type).toBe('AC'));
-    const foundLog = logger.info.mock.calls.find(
-      ([msg]) => msg === 'RCD type web search found type'
-    );
-    expect(foundLog?.[1]).toMatchObject({
-      trigger: 'uniform_low_conf',
-      filled: 0,
-      overridden: 0,
-    });
-  });
-
-  test('does NOT trigger when avg confidence is above threshold', async () => {
-    // Same uniform value but high confidence — no verification needed.
-    const slots = [
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.95 }),
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.9 }),
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.92 }),
-    ];
-    const circuits = [
-      rcboCircuit(1, { rcd_type: 'AC' }),
-      rcboCircuit(2, { rcd_type: 'AC' }),
-      rcboCircuit(3, { rcd_type: 'AC' }),
-    ];
-    const analysis = { board_manufacturer: 'Crabtree', circuits, slots };
-    const openai = makeOpenAi('{"rcd_type":"A"}');
-    const logger = makeLogger();
-
-    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
-
-    expect(openai.chat.completions.create).not.toHaveBeenCalled();
-    expect(
-      logger.info.mock.calls.find(
-        ([msg]) => msg === 'RCD type lookup skipped — all RCD-protected circuits already have types'
-      )
-    ).toBeTruthy();
-  });
-
-  test('does NOT trigger when reads disagree (mixed types means VLM is reading, not defaulting)', async () => {
-    const slots = [
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.7 }),
-      rcboSlot({ rcdWaveformType: 'A', confidence: 0.7 }),
-      rcboSlot({ rcdWaveformType: 'AC', confidence: 0.7 }),
-    ];
-    const circuits = [
-      rcboCircuit(1, { rcd_type: 'AC' }),
-      rcboCircuit(2, { rcd_type: 'A' }),
-      rcboCircuit(3, { rcd_type: 'AC' }),
-    ];
-    const analysis = { board_manufacturer: 'Crabtree', circuits, slots };
-    const openai = makeOpenAi('{"rcd_type":"A"}');
-    const logger = makeLogger();
-
-    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
-
-    // Stage 3 produced varied reads — not the "fleet defaulted" signature,
-    // so no verification fires and types are preserved.
-    expect(openai.chat.completions.create).not.toHaveBeenCalled();
-    expect(analysis.circuits.map((c) => c.rcd_type)).toEqual(['AC', 'A', 'AC']);
-  });
-
-  test('does NOT trigger with only one RCD-bearing slot (uniformity is meaningless)', async () => {
-    const slots = [rcboSlot({ rcdWaveformType: 'AC', confidence: 0.6 })];
-    const circuits = [rcboCircuit(1, { rcd_type: 'AC' })];
-    const analysis = { board_manufacturer: 'Crabtree', circuits, slots };
-    const openai = makeOpenAi('{"rcd_type":"A"}');
-    const logger = makeLogger();
-
-    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
-
-    expect(openai.chat.completions.create).not.toHaveBeenCalled();
-    expect(analysis.circuits[0].rcd_type).toBe('AC');
-  });
-
-  test('threshold constant matches expected value (regression guard)', () => {
-    // Picked from the 2026-05-02 Crabtree case where avg conf was 0.79.
-    // Lowering this would re-introduce that field bug; raising it past
-    // ~0.9 would fire spuriously on healthy boards. Lock the value.
+  test('threshold constant matches expected value (still used by detectRcdWaveformOutliers)', () => {
+    // The constant survives because detectRcdWaveformOutliers still
+    // filters on per-slot confidence at this threshold. Pinning the
+    // value here so any future shift triggers a deliberate review.
     expect(RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD).toBe(0.85);
   });
 });
@@ -364,6 +334,7 @@ describe('lookupMissingRcdTypes — questionsForInspector pruning', () => {
   test('prunes RCD-related questions once all rcd_types resolved', async () => {
     const analysis = {
       board_manufacturer: 'Hager',
+      board_model: 'VML906CU',
       circuits: [rcboCircuit(1, { rcd_type: null })],
       slots: [rcboSlot({ rcdWaveformType: null })],
       questionsForInspector: [
@@ -382,6 +353,7 @@ describe('lookupMissingRcdTypes — questionsForInspector pruning', () => {
   test('leaves questions intact if some rcd_types remain unresolved', async () => {
     const analysis = {
       board_manufacturer: 'Hager',
+      board_model: 'VML906CU',
       circuits: [rcboCircuit(1, { rcd_type: null }), rcboCircuit(2, { rcd_type: null })],
       slots: [rcboSlot({ rcdWaveformType: null }), rcboSlot({ rcdWaveformType: null })],
       questionsForInspector: ['What RCD type for the kitchen circuit?'],

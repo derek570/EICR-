@@ -455,68 +455,42 @@ export function applyBsEnFallback(analysis) {
   return analysis;
 }
 
-// Confidence threshold for the secondary "uniform low-confidence" trigger
-// in lookupMissingRcdTypes. The waveform glyph (BS EN 61008/61009 Type
-// AC/A/F/B symbol) on the device face is sub-millimetre — much smaller
-// than rating/curve text. The VLM frequently reports a value with mediocre
-// confidence rather than honouring the prompt's "null if unclear" rule.
-// 0.85 was picked from the 2026-05-02 Crabtree field case where every
-// slot read "AC" at 0.65–0.92 (avg 0.79) and the ground truth was Type A.
+// Confidence threshold used by detectRcdWaveformOutliers (in this file)
+// for filtering eligible slots when looking for same-manufacturer
+// waveform disagreements. NOT used by lookupMissingRcdTypes — that
+// path no longer overrides existing waveform reads (the prior
+// "uniform low confidence" override was pulled 2026-05-21 after
+// Ciaran's Crabtree field test had visually-correct AC reads
+// clobbered to A by a generic Crabtree-RCBO web-search hit).
 export const RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD = 0.85;
 
 /**
- * Compute the average per-slot confidence over the slots that actually
- * carry an RCD waveform reading (RCBOs and standalone RCDs with a
- * non-null rcdWaveformType). Returns null when there aren't enough
- * RCD-bearing slots to make uniformity a meaningful signal.
- */
-function summariseRcdWaveformReads(slots) {
-  if (!Array.isArray(slots)) return null;
-  const rcdSlots = slots.filter(
-    (s) =>
-      s && (s.classification === 'rcbo' || s.classification === 'rcd') && s.rcdWaveformType != null
-  );
-  if (rcdSlots.length < 2) return null;
-  const values = rcdSlots.map((s) => s.rcdWaveformType);
-  const uniqueValues = new Set(values);
-  const avgConfidence =
-    rcdSlots.reduce((a, s) => a + (typeof s.confidence === 'number' ? s.confidence : 0), 0) /
-    rcdSlots.length;
-  return {
-    count: rcdSlots.length,
-    uniqueValues,
-    uniformValue: uniqueValues.size === 1 ? values[0] : null,
-    avgConfidence,
-  };
-}
-
-/**
- * Web search pass to fill / verify RCD types.
+ * Web search pass to FILL missing RCD types only (no overrides).
  *
- * Two triggers, both routed through the same gpt-5-search-api lookup:
+ * Single trigger: at least one RCD-protected circuit has rcd_type=null
+ * (the VLM couldn't read the waveform glyph). The search fills nulls;
+ * existing AC/A/F/B reads from the VLM are preserved untouched.
  *
- * 1. `missing` — original behaviour. Stage 3 returned null `rcdWaveformType`
- *    on at least one RCD-protected circuit (waveform symbol genuinely
- *    illegible). The search fills nulls.
+ * Gating (2026-05-21 — Derek's rule "only override when EXACT model
+ * found, not similar or best guess"):
+ *   - manufacturer must be non-empty
+ *   - board_model must be non-empty
+ * Manufacturer alone returns generic catalogue hits (every "Crabtree"
+ * RCBO from any product line) — those guesses were worse than nulls.
+ * Requiring model means the search is keyed on a specific datasheet.
  *
- * 2. `uniform_low_conf` — secondary verification trigger. Stage 3 returned
- *    the SAME rcdWaveformType on every RCD-bearing slot AND the average
- *    per-slot confidence was below RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD.
- *    This is the signature of a fleet-wide VLM default rather than 11
- *    confident reads — the glyph is sub-millimetre and the model tends to
- *    fall back to "AC" rather than null. The search verifies against the
- *    datasheet and OVERRIDES the suspect uniform value if the verified
- *    type differs.
- *
- * Both require a known board manufacturer (the search is keyed on it).
+ * Removed 2026-05-21:
+ *   - `uniform_low_conf` trigger that overrode existing waveform reads
+ *     based on a manufacturer-only web search. Reproduced wrong-answer
+ *     overrides on every Crabtree Starbreaker in the field-test corpus.
+ *   - `summariseRcdWaveformReads` helper (only used by the above).
  */
 export async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   const circuits = analysis.circuits || [];
   const manufacturer = analysis.board_manufacturer;
-  const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
+  const boardModel = analysis.board_model;
 
-  // Manufacturer is required for either trigger — without it the search
-  // has nothing to key on.
+  // Manufacturer required to key the search.
   if (!manufacturer) {
     logger.info('RCD type lookup skipped — no manufacturer', {
       userId,
@@ -526,43 +500,36 @@ export async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
     return analysis;
   }
 
-  // Primary trigger: any RCD-protected circuit with null rcd_type.
-  const missingType = circuits.filter((c) => c.rcd_protected && !c.rcd_type);
-
-  // Secondary trigger: detect the "Stage 3 defaulted to a single value
-  // across the whole board with mediocre confidence" signature. We compute
-  // this regardless of whether the primary trigger fired — useful in the
-  // log output for both branches and as a fallback when no nulls remain.
-  const summary = summariseRcdWaveformReads(slots);
-  const isUniformLowConf =
-    summary != null &&
-    summary.uniformValue != null &&
-    summary.avgConfidence < RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD;
-
-  let trigger;
-  let needsLookup;
-  if (missingType.length > 0) {
-    trigger = 'missing';
-    needsLookup = missingType;
-  } else if (isUniformLowConf) {
-    trigger = 'uniform_low_conf';
-    // Verify ALL RCD-protected circuits — they all share the same suspect
-    // uniform value, so any override applies to the whole fleet.
-    needsLookup = circuits.filter((c) => c.rcd_protected);
-  } else {
-    logger.info('RCD type lookup skipped — all RCD-protected circuits already have types', {
+  // Model required to make the search specific to one product. Without
+  // a model, a "Crabtree" search returns hits from any Crabtree consumer
+  // unit — that generic match was the source of the AC→A overrides on
+  // Ciaran's Starbreaker.
+  if (!boardModel || (typeof boardModel === 'string' && boardModel.trim() === '')) {
+    logger.info('RCD type lookup skipped — no board model (manufacturer alone is too generic)', {
       userId,
+      manufacturer,
       totalCircuits: circuits.length,
       rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
-      rcdSlotCount: summary?.count ?? 0,
-      avgConfidence: summary ? Number(summary.avgConfidence.toFixed(3)) : null,
-      uniformValue: summary?.uniformValue ?? null,
     });
     return analysis;
   }
 
+  // Trigger: any RCD-protected circuit with null rcd_type.
+  const missingType = circuits.filter((c) => c.rcd_protected && !c.rcd_type);
+  if (missingType.length === 0) {
+    logger.info('RCD type lookup skipped — all RCD-protected circuits already have types', {
+      userId,
+      manufacturer,
+      boardModel,
+      totalCircuits: circuits.length,
+      rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
+    });
+    return analysis;
+  }
+  const trigger = 'missing';
+  const needsLookup = missingType;
+
   // Gather any device info GPT extracted — RCBO model markings, ratings, etc.
-  const boardModel = analysis.board_model || '';
   const deviceDescriptions = [];
   for (const c of needsLookup) {
     const parts = [`Circuit ${c.circuit_number}`];
@@ -575,25 +542,18 @@ export async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   // Also check if there's a standalone RCD protecting these circuits
   const hasStandaloneRcd = needsLookup.some((c) => !c.is_rcbo && c.rcd_protected);
 
-  // When the secondary trigger fires we tell the search what Stage 3 read
-  // and how confident it was — gives the search a concrete claim to verify
-  // rather than a blank-slate query.
-  const verificationContext =
-    trigger === 'uniform_low_conf' && summary
-      ? `\nThe vision model read Type ${summary.uniformValue} on all ${summary.count} RCD devices but with low confidence (avg ${summary.avgConfidence.toFixed(2)}) — the BS EN 61008/61009 waveform glyph on the device face was likely too small to read reliably. Please verify against the manufacturer's published spec; if the published type is different, reply with the published type.`
-      : '';
-
   const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
 It contains ${needsLookup.length} RCD-protected circuits where I need to determine the RCD type.
-${hasStandaloneRcd ? 'Some circuits are protected by a standalone RCD/RCCB in the board.' : 'The circuits use RCBOs (combined MCB+RCD).'}${verificationContext}
+${hasStandaloneRcd ? 'Some circuits are protected by a standalone RCD/RCCB in the board.' : 'The circuits use RCBOs (combined MCB+RCD).'}
 
 Circuits needing RCD type: ${deviceDescriptions.join(', ')}.
 
-Search for the ${manufacturer} ${boardModel} consumer unit datasheet or technical specifications.
-What RCD type do the RCDs/RCBOs in this board provide? Type AC, Type A, Type B, Type F, or Type S?
+Search for the ${manufacturer} ${boardModel} consumer unit datasheet or technical specifications. ONLY answer if you find the EXACT model "${boardModel}" — do NOT generalise from a similar product, do NOT guess based on the manufacturer's other consumer units. If the exact model can't be located, reply with rcd_type:null.
 
-Reply ONLY with valid JSON: {"rcd_type": "AC" or "A" or "B" or "F" or "S", "source": "brief description of where you found this"}
-If you cannot determine the type, reply: {"rcd_type": null, "source": "not found"}`;
+What RCD type do the RCDs/RCBOs in the exact "${boardModel}" model provide? Type AC, Type A, Type B, Type F, or Type S?
+
+Reply ONLY with valid JSON: {"rcd_type": "AC" or "A" or "B" or "F" or "S" or null, "source": "URL or citation of the datasheet for the exact model"}
+If you cannot determine the type for the exact "${boardModel}" model, reply: {"rcd_type": null, "source": "exact model not found"}`;
 
   try {
     logger.info('RCD type web search lookup starting', {
@@ -602,8 +562,6 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
       boardModel,
       circuitsNeedingLookup: needsLookup.length,
       trigger,
-      stage3UniformValue: summary?.uniformValue ?? null,
-      stage3AvgConfidence: summary ? Number(summary.avgConfidence.toFixed(3)) : null,
       deviceDescriptions,
     });
 
@@ -633,18 +591,16 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
     const rcdType = searchResult.rcd_type?.toUpperCase()?.trim();
 
     if (rcdType && validTypes.includes(rcdType)) {
+      // Fill nulls only. Existing AC/A/F/B/S reads from the VLM are NEVER
+      // overridden — the 2026-05-21 audit confirmed VLM waveform reads
+      // outperform manufacturer-only web-search results, and ground-truth
+      // verification of a model-specific spec is the inspector's job at
+      // the live grid, not a probabilistic search.
       let filled = 0;
-      let overridden = 0;
       for (const c of needsLookup) {
         if (!c.rcd_type) {
           c.rcd_type = rcdType;
           filled += 1;
-        } else if (trigger === 'uniform_low_conf' && c.rcd_type !== rcdType) {
-          // Override the suspect uniform Stage 3 read with the verified
-          // datasheet value. Only happens on the secondary trigger — the
-          // primary `missing` trigger preserves existing reads.
-          c.rcd_type = rcdType;
-          overridden += 1;
         }
       }
       logger.info('RCD type web search found type', {
@@ -653,14 +609,15 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
         source: searchResult.source || 'unknown',
         trigger,
         filled,
-        overridden,
-        previousValue: trigger === 'uniform_low_conf' ? (summary?.uniformValue ?? null) : null,
+      });
+    } else {
+      logger.info('RCD type web search returned no type', {
+        userId,
+        source: searchResult.source || 'not found',
+        trigger,
       });
     }
 
-    // Count how many ended up with the looked-up type — for the primary
-    // trigger this matches "filled" above; for uniform_low_conf it matches
-    // "overridden" plus any pre-existing-equal circuits.
     const totalWithType = needsLookup.filter((c) => c.rcd_type).length;
     logger.info('RCD type web search applied', {
       userId,
@@ -1561,88 +1518,43 @@ export function slotsToCircuits({
 }) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
 
-  // --- Pre-pass: build the outward-from-main-switch RCD reference list.
-  //
-  // Derek's 2026-05-05 spec replaces the previous physical-L→R cascade with
-  // a two-phase walk that follows the same outward order as schedule
-  // numbering (BS 7671 — circuit 1 nearest the main switch). Three things
-  // matter for the main loop:
-  //
-  //   1. hasAnyRcd — does the board contain any RCD slot at all? Decides
-  //      whether a blank can act as a phase-1→phase-2 boundary.
-  //   2. rcdEntries — one entry per *physical* RCD device, in scan order,
-  //      with its own face read (type / sensitivity / rating / bsEn).
-  //      Two adjacent rcd slots are the same physical 2-module device and
-  //      gap-fill into one entry (preferring whichever module's face read
-  //      came back non-null).
-  //   3. rcdScanIndices — sorted scan-order indices of every rcd slot.
-  //      Used to look up the *next* RCD when phase 2 was triggered by a
-  //      blank but no RCD has been seen yet (38 Dickens Close topology:
-  //      RCD at the FAR end of the board, MCBs+blanks between).
+  // Schedule scan order: BS 7671 numbers circuits outward from the main
+  // switch. For boards with the main switch on the right, walk the slots
+  // right-to-left so circuit 1 is the device adjacent to the main switch.
   const scanOrder = mainSwitchSide === 'right' ? [...slots].reverse() : [...slots];
 
-  let hasAnyRcd = false;
-  const rcdEntries = [];
-  const rcdEntryIdxByScanIdx = new Map();
-  let prevWasRcd = false;
-  for (let i = 0; i < scanOrder.length; i++) {
-    const cls = (scanOrder[i].classification || '').toLowerCase();
-    if (cls !== 'rcd') {
-      prevWasRcd = false;
-      continue;
-    }
-    hasAnyRcd = true;
-    const s = scanOrder[i];
-    if (prevWasRcd) {
-      const prev = rcdEntries[rcdEntries.length - 1];
-      if (!prev.type && s.rcdWaveformType) prev.type = s.rcdWaveformType;
-      if (!prev.sensitivity && s.sensitivity != null && s.sensitivity !== '') {
-        prev.sensitivity = String(s.sensitivity);
-      }
-      if (!prev.rating && s.ratingAmps != null && s.ratingAmps !== '') {
-        prev.rating = String(s.ratingAmps);
-      }
-      if (!prev.bsEn && s.bsEn) prev.bsEn = s.bsEn;
-      rcdEntryIdxByScanIdx.set(i, rcdEntries.length - 1);
-    } else {
-      rcdEntries.push({
-        type: s.rcdWaveformType || null,
-        sensitivity: s.sensitivity != null && s.sensitivity !== '' ? String(s.sensitivity) : null,
-        rating: s.ratingAmps != null && s.ratingAmps !== '' ? String(s.ratingAmps) : null,
-        bsEn: s.bsEn || null,
-      });
-      rcdEntryIdxByScanIdx.set(i, rcdEntries.length - 1);
-    }
-    prevWasRcd = true;
-  }
-  const rcdScanIndices = Array.from(rcdEntryIdxByScanIdx.keys()).sort((a, b) => a - b);
-
-  // Main pass: emit schedule rows in scan order (outward from main switch).
+  // Main pass: emit schedule rows in scan order. Rule (Derek 2026-05-21):
+  //   - rcd_protected = is_rcbo (self-protected from its own face read) OR
+  //     an RCD slot has been seen EARLIER in scan order.
+  //   - The reference is the MOST RECENT RCD seen — split-load boards
+  //     update the reference each time a new RCD is encountered, so MCBs
+  //     after RCD bank 2 are protected by bank 2, MCBs after bank 1 (but
+  //     before bank 2) by bank 1.
+  //   - Adjacent rcd slots are the same physical 2-module device — the
+  //     pair gap-fills into one upstream reference (preferring whichever
+  //     module's face read came back non-null).
+  //   - RCDs / main_switch / spd are NOT emitted as schedule rows.
+  //   - Blanks emit "Spare" with rcd_protected=false regardless of where
+  //     they sit (Derek's "spares stay unprotected" rule).
   //
-  // Phase walk (Derek's 2026-05-05 spec):
-  //   - Phase 1 (default): MCBs unprotected.
-  //   - Phase 2: MCBs protected by the most-recently-seen upstream RCD.
-  //   - RCBOs anywhere are self-protected from THIS device's face read.
-  //   - Blanks emit "Spare" with rcd_protected=false regardless of phase
-  //     (Derek's "spares stay non RCD protected" rule).
-  //   - RCDs are NOT emitted as schedule rows. They update the upstream
-  //     reference and flip phase to 2.
+  // Earlier versions had a "blank-as-phase-boundary" heuristic that flipped
+  // subsequent MCBs into phase 2 if the board contained any RCD anywhere,
+  // even before any RCD had been seen in scan order. That heuristic was
+  // pulled 2026-05-21 because it mis-attributed sub-feed MCBs sitting
+  // BETWEEN the main switch and the first RCD (Crabtree Starbreaker
+  // topology — 50A B-curve MCB before the RCDs, NOT downstream of them)
+  // as RCD-protected. New rule: scan-order only, no look-ahead.
   //
-  // Phase transitions:
-  //   - First blank (cls='blank') AND board has any RCD anywhere
-  //     → flip phase to 2 starting at NEXT slot.
-  //   - Any RCD slot → flip phase to 2, update reference.
-  //
-  // Phase-2 reference resolution: a phase-2 MCB sitting BEFORE any RCD in
-  // scan order (because phase 2 was triggered by a blank) backfills its
-  // reference from the first upcoming RCD. That covers the 38 Dickens Close
-  // topology (RCD at the FAR end of the board, MCBs+blanks between it and
-  // the main switch) without forcing the cascade to walk physical L→R as
-  // it did before.
+  // Tradeoff acknowledged: the rare 38 Dickens Close topology (RCD at the
+  // FAR end of the board, MCBs+blanks between it and the main switch)
+  // now emits those MCBs as rcd_protected=false. The inspector corrects
+  // on the live grid — false negatives at the merger are recoverable;
+  // false positives (50A sub-feed marked as RCD-protected) silently
+  // wrong-record a cert.
   const circuits = [];
   let circuitNumber = 1;
-  let phase = 'phase1';
   let upstreamRcd = null;
+  let prevWasRcdForGapFill = false;
 
   for (let i = 0; i < scanOrder.length; i++) {
     const slot = scanOrder[i];
@@ -1650,19 +1562,38 @@ export function slotsToCircuits({
     const content = typeof slot.content === 'string' ? slot.content : 'device';
     const extendsSide = typeof slot.extends === 'string' ? slot.extends : 'none';
 
-    // 1. main_switch / spd: not emitted, no phase change.
-    if (cls === 'main_switch' || cls === 'spd') continue;
-
-    // 2. RCD: not emitted; updates reference + flips phase.
-    if (cls === 'rcd') {
-      const entryIdx = rcdEntryIdxByScanIdx.get(i);
-      if (entryIdx != null) {
-        const ent = rcdEntries[entryIdx];
-        upstreamRcd = { type: ent.type, sensitivity: ent.sensitivity };
-      }
-      phase = 'phase2';
+    // 1. main_switch / spd: not emitted, do not affect upstream reference.
+    if (cls === 'main_switch' || cls === 'spd') {
+      prevWasRcdForGapFill = false;
       continue;
     }
+
+    // 2. RCD: not emitted; updates upstreamRcd. Adjacent rcd slots are
+    //    the same physical 2-module device — gap-fill into the same
+    //    reference so the second module's face read can finish the first
+    //    module's null fields.
+    if (cls === 'rcd') {
+      if (prevWasRcdForGapFill && upstreamRcd) {
+        // Pair with the immediately-previous RCD slot — fill null fields
+        // from this module's face read if the previous one missed them.
+        if (!upstreamRcd.type && slot.rcdWaveformType) upstreamRcd.type = slot.rcdWaveformType;
+        if (!upstreamRcd.sensitivity && slot.sensitivity != null && slot.sensitivity !== '') {
+          upstreamRcd.sensitivity = String(slot.sensitivity);
+        }
+      } else {
+        // New physical RCD device — start a fresh reference. Split-load
+        // boards reach this branch on the second RCD bank, overriding
+        // the first bank's reference for all subsequent MCBs.
+        upstreamRcd = {
+          type: slot.rcdWaveformType || null,
+          sensitivity:
+            slot.sensitivity != null && slot.sensitivity !== '' ? String(slot.sensitivity) : null,
+        };
+      }
+      prevWasRcdForGapFill = true;
+      continue;
+    }
+    prevWasRcdForGapFill = false;
 
     // 3. Empty-content slot — should not occur with the ordered-list pipeline
     // (the prompt rules forbid the VLM from reporting bare rail; window
@@ -1697,24 +1628,12 @@ export function slotsToCircuits({
     }
 
     // 4. mcb / rcbo / unknown / partial / rewireable / cartridge / blank.
-    //    Determine the upstream RCD reference for this slot.
-    //
-    //    For phase-2 MCBs that appear before any RCD in scan order, look
-    //    ahead to the first upcoming RCD. The lookup is O(rcdScanIndices)
-    //    which is at most ~3 entries on real UK boards (single-RCD or
-    //    dual-RCD split-load).
-    let slotUpstreamRcd = null;
-    if (phase === 'phase2') {
-      if (upstreamRcd) {
-        slotUpstreamRcd = upstreamRcd;
-      } else {
-        const nextScanIdx = rcdScanIndices.find((x) => x > i);
-        if (nextScanIdx != null) {
-          const ent = rcdEntries[rcdEntryIdxByScanIdx.get(nextScanIdx)];
-          slotUpstreamRcd = { type: ent.type, sensitivity: ent.sensitivity };
-        }
-      }
-    }
+    //    rcd_protected iff is_rcbo OR an RCD has been seen earlier in
+    //    scan order (i.e. upstreamRcd is non-null). No look-ahead — the
+    //    earlier blank-flip+look-ahead heuristic was pulled 2026-05-21
+    //    because it mis-attributed sub-feed MCBs sitting BETWEEN the
+    //    main switch and the first RCD as RCD-protected.
+    const slotUpstreamRcd = upstreamRcd;
 
     // Partial crops (VLM saw only part of a wider device) are hallucination
     // hazards — the model can pattern-match a half-RCD to "B32 MCB" with
@@ -1772,13 +1691,6 @@ export function slotsToCircuits({
 
     circuits.push(circuit);
     circuitNumber++;
-
-    // Phase transition: a blank with at least one RCD anywhere on the board
-    // flips us into phase 2 from the NEXT slot. The blank itself stays
-    // unprotected (Derek's "spares stay non RCD protected" rule).
-    if (cls === 'blank' && hasAnyRcd && phase === 'phase1') {
-      phase = 'phase2';
-    }
   }
 
   return circuits;

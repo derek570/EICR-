@@ -441,17 +441,21 @@ describe('slotsToCircuits', () => {
     expect(circuits[1].rcd_type).toBe('A');
   });
 
-  test('4d. 38 Dickens Close — two-phase walk + blank-as-boundary + look-ahead RCD reference', () => {
-    // 38 Dickens Close topology (2026-04-28): main switch on the RIGHT,
-    // then 2 unprotected MCBs, then 3 blanks, then 2 protected MCBs, then
-    // RCD at the FAR LEFT. Walking outward (right → left):
-    //   - 2× MCB 6A:    phase 1, unprotected.
-    //   - blank ×3:     emit "Spare" unprotected. First blank flips state
-    //                   to phase 2 (RCD detected on board).
-    //   - 2× MCB 32A:   phase 2, but no RCD seen yet on the outward walk —
-    //                   look ahead to the upcoming RCD pair → AC/30.
-    //   - RCD pair:     not emitted.
-    // Total: 7 rows (was 8 with the old is_rcd_device row).
+  test('4d. 38 Dickens Close — no look-ahead: pre-RCD MCBs stay unprotected (Derek 2026-05-21 rule)', () => {
+    // 38 Dickens Close topology: main switch on the RIGHT, then 2 MCBs,
+    // then 3 blanks, then 2 MCBs, then an RCD pair at the FAR LEFT.
+    // Walking outward (right → left), no RCD has been seen until the final
+    // two slots — under the new scan-order-only rule, NONE of the MCBs
+    // get rcd_protected because the RCD is downstream of them in scan
+    // order. The inspector corrects the two real-world-protected MCBs at
+    // the live grid; false negatives at the merger are recoverable
+    // whereas false positives silently wrong-record certs.
+    //
+    // Earlier behaviour (look-ahead enabled): the blanks flipped the
+    // walk into "phase 2" and the 32A MCBs got back-filled with AC/30
+    // from the upcoming RCD. That behaviour was pulled because the same
+    // heuristic mis-attributed sub-feed MCBs sitting BEFORE an RCD on
+    // Crabtree Starbreaker boards (Ciaran field-test 2026-05-19).
     const slots = [
       // First module of 2-module RCD
       makeSlot({
@@ -461,44 +465,78 @@ describe('slotsToCircuits', () => {
         ratingAmps: 80,
         confidence: 0.9,
       }),
-      // Second module of same RCD (collapsed by dedupe)
+      // Second module of same RCD (gap-fill into the same upstream ref)
       makeSlot({ classification: 'rcd', confidence: 0.85 }),
-      // 2 MCBs — should inherit RCD cascade
+      // 2 MCBs at the FAR LEFT — in the physical-world they're protected
+      // by the RCD to their left, but they come BEFORE the RCD in the
+      // outward scan order. New rule: unprotected.
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
-      // 3 spares — cascade breaks here
+      // 3 spares — unprotected.
       makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
       makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
       makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
-      // 2 MCBs after spares — should NOT have RCD cascade
+      // 2 MCBs on the RIGHT-hand side — also unprotected (no RCD between
+      // them and the main switch).
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
     ];
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'right' });
-    // 4 MCBs + 3 Spares = 7 entries. RCD does not emit.
-    expect(circuits).toHaveLength(7);
-    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    expect(circuits).toHaveLength(7); // 4 MCBs + 3 Spares (RCD doesn't emit)
 
+    // ALL MCBs are unprotected under the new rule — none of them has an
+    // RCD slot earlier in scan order.
     const mcbs = circuits.filter((c) => c.label !== 'Spare' && c.ocpd_type != null);
     expect(mcbs).toHaveLength(4);
+    for (const c of mcbs) {
+      expect(c.rcd_protected).toBe(false);
+      expect(c.rcd_type).toBeNull();
+      expect(c.rcd_rating_ma).toBeNull();
+    }
+  });
 
-    // Right-handed scan: circuits 1-2 are the RIGHT-side MCBs (after spares,
-    // unprotected). Circuits 3-4 are the LEFT-side MCBs (RCD-protected).
-    // Find by ratingAmps — right-side MCBs are 6A, left-side are 32A.
-    const protectedMcbs = mcbs.filter((c) => c.ocpd_rating_a === '32');
-    const unprotectedMcbs = mcbs.filter((c) => c.ocpd_rating_a === '6');
-    expect(protectedMcbs).toHaveLength(2);
-    expect(unprotectedMcbs).toHaveLength(2);
+  test('4d-new. Crabtree Starbreaker regression — sub-feed MCB BEFORE RCD stays unprotected (Ciaran 2026-05-19 repro)', () => {
+    // Field-test repro: Crabtree Starbreaker board has 50A B-curve MCB at
+    // slot 3 (a sub-feed MCB BETWEEN the main switch and the first RCD).
+    // Earlier behaviour: blanks at slots 2 flipped phase, slot 3's MCB
+    // looked ahead to the RCD at slot 4 and got marked rcd_protected.
+    // New behaviour: slot 3 is unprotected because no RCD has been seen
+    // in scan order yet. The RCDs at slots 4-5 only protect slots 6+.
+    const slots = [
+      makeSlot({ classification: 'main_switch', confidence: 0.9 }),
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      // The 50A sub-feed MCB — Derek's photo of Ciaran's CCU. Should NOT
+      // be rcd_protected because the RCD is downstream in scan order.
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 50, confidence: 0.9 }),
+      // RCD pair (slots 4-5)
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 63,
+        confidence: 0.9,
+      }),
+      makeSlot({ classification: 'rcd', confidence: 0.85 }),
+      // MCBs after the RCD — should be rcd_protected
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
+    ];
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
-    for (const c of protectedMcbs) {
+    // 4 emitted circuits (1 blank + 1 50A MCB + 2 MCBs after RCD; main switch and 2 RCD slots don't emit)
+    expect(circuits).toHaveLength(4);
+    const subFeed = circuits.find((c) => c.ocpd_rating_a === '50');
+    expect(subFeed).toBeTruthy();
+    expect(subFeed.rcd_protected).toBe(false);
+    expect(subFeed.rcd_type).toBeNull();
+
+    const downstream = circuits.filter((c) => ['32', '6'].includes(c.ocpd_rating_a));
+    expect(downstream).toHaveLength(2);
+    for (const c of downstream) {
       expect(c.rcd_protected).toBe(true);
       expect(c.rcd_type).toBe('AC');
       expect(c.rcd_rating_ma).toBe('30');
-    }
-    for (const c of unprotectedMcbs) {
-      expect(c.rcd_protected).toBe(false);
-      expect(c.rcd_type).toBeNull();
     }
   });
 
