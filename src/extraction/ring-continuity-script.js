@@ -254,6 +254,24 @@ function parseValue(text) {
  * Recognises "lives <value>", "neutrals <value>", "earths <value>",
  * "CPC <value>" — same words the agentic prompt teaches.
  *
+ * Each conductor has TWO directional patterns:
+ *   - Field-first: "lives are 0.21", "lives 0.21 ohms"
+ *   - Value-first: "0.21 on the lives", "0.21 ohms lives"
+ *
+ * Both patterns are tried; if both match, the one with the SMALLER
+ * gap between the conductor word and the value wins. This handles
+ * "lives 0.43, 0.43 on the neutrals, CPC 0.78" correctly — for
+ * `neutrals`, field-first would skip over 17 chars (", and CPC is ")
+ * to grab 0.78, while value-first matches 0.43 with only 8 chars of
+ * gap; value-first wins on proximity. On ties (e.g. "lives 0.43"
+ * where only field-first matches), the existing pattern wins.
+ *
+ * Mirror added 2026-05-21 (session 293F074F): "Ring continuity for
+ * the cooker is 0.21 on the lives" defeated the original field-first-
+ * only regex (no digit appears AFTER "lives"), forcing the script to
+ * ask "What are the lives?" after the user had already volunteered
+ * the value.
+ *
  * Returns an ordered array of `{field, value}` for every matching pair
  * found. Empty array if none.
  *
@@ -262,28 +280,50 @@ function parseValue(text) {
  */
 function extractNamedFieldValues(text) {
   if (typeof text !== 'string' || !text) return [];
+  const VAL = '\\d*\\.?\\d+|infinite|open|discontinuous|infinity';
+  // Value-first connector words. Restricts the mirror so it can't
+  // glue bare digits onto a conductor word — "circuit 13. Lives 0.43"
+  // must NOT match value-first as "13 [...] Lives" (the value-first
+  // path would otherwise hijack the circuit number). Requiring an
+  // explicit preposition mirrors how inspectors actually phrase
+  // value-first dictation: "0.21 on the lives", "0.43 across the
+  // neutrals", "0.78 for the CPC".
+  const VALUE_FIRST_CONNECTOR =
+    '\\s*(?:ohms?|Ω)?\\s*(?:on|for|across|at|down|onto|to)\\s+(?:the\\s+)?';
   const out = [];
-  // Order: r1 (lives) → rn (neutrals) → r2 (earths/CPC). Each pattern
-  // captures the value (numeric or sentinel) within ~30 chars after the
-  // field word, allowing for filler words like "are", "is", "at".
-  const patterns = [
-    {
-      field: 'ring_r1_ohm',
-      re: /\blives?\b[^\d∞]{0,30}?(\d*\.?\d+|infinite|open|discontinuous|infinity)/i,
-    },
-    {
-      field: 'ring_rn_ohm',
-      re: /\bneutrals?\b[^\d∞]{0,30}?(\d*\.?\d+|infinite|open|discontinuous|infinity)/i,
-    },
-    {
-      field: 'ring_r2_ohm',
-      re: /\b(?:earths?|cpc|c\s*p\s*c)\b[^\d∞]{0,30}?(\d*\.?\d+|infinite|open|discontinuous|infinity)/i,
-    },
+  // Order: r1 (lives) → rn (neutrals) → r2 (earths/CPC). Each conductor
+  // has a field-first regex and a value-first mirror. Field-first
+  // filler excludes digits AND ∞ so it can't skip past another reading
+  // to grab a far-away digit; value-first requires an explicit
+  // connector preposition so circuit numbers / way numbers don't get
+  // mis-classified as readings.
+  const conductors = [
+    { field: 'ring_r1_ohm', word: 'lives?' },
+    { field: 'ring_rn_ohm', word: 'neutrals?' },
+    { field: 'ring_r2_ohm', word: '(?:earths?|cpc|c\\s*p\\s*c)' },
   ];
-  for (const { field, re } of patterns) {
-    const m = text.match(re);
-    if (m && m[1]) {
-      const val = parseValue(m[1]);
+  for (const { field, word } of conductors) {
+    // Field-first: "<word> [filler ≤30, no digits] <value>". Filler
+    // captured in group 1 for proximity scoring, value in group 2.
+    const fieldFirst = new RegExp(`\\b${word}\\b([^\\d∞]{0,30}?)(${VAL})`, 'i');
+    // Value-first: "<value> [optional 'ohms'] <connector> [optional 'the'] <word>".
+    // Value in group 1, filler (connector phrase) in group 2.
+    const valueFirst = new RegExp(`(${VAL})(${VALUE_FIRST_CONNECTOR})\\b${word}\\b`, 'i');
+    const ff = text.match(fieldFirst);
+    const vf = text.match(valueFirst);
+    const ffGap = ff ? ff[1].length : Infinity;
+    const vfGap = vf ? vf[2].length : Infinity;
+    let captured = null;
+    if (ff && vf) {
+      // Tie → field-first wins (matches the canonical dictation form).
+      captured = ffGap <= vfGap ? ff[2] : vf[1];
+    } else if (ff) {
+      captured = ff[2];
+    } else if (vf) {
+      captured = vf[1];
+    }
+    if (captured !== null) {
+      const val = parseValue(captured);
       if (val !== null) out.push({ field, value: val });
     }
   }

@@ -250,6 +250,76 @@ describe('extractNamedFieldValues (via __testing__)', () => {
   test('returns empty for utterance with no field words', () => {
     expect(extractNamedFieldValues('0.43')).toEqual([]);
   });
+
+  // Value-first (mirror) phrasings — added 2026-05-21, session 293F074F.
+  // Field test had "Ring continuity for the cooker is 0.21 on the lives"
+  // — value precedes the conductor word. Original regex required field-
+  // first ordering and silently dropped the value, causing the script to
+  // ask "What are the lives?" after the inspector had already given it.
+  test('extracts "0.21 on the lives" (value-first)', () => {
+    expect(extractNamedFieldValues('0.21 on the lives')).toEqual([
+      { field: 'ring_r1_ohm', value: '0.21' },
+    ]);
+  });
+
+  test('extracts the full session-293F074F entry utterance', () => {
+    expect(extractNamedFieldValues('Ring continuity for the cooker is 0.21 on the lives.')).toEqual(
+      [{ field: 'ring_r1_ohm', value: '0.21' }]
+    );
+  });
+
+  test('extracts "0.43 ohms on the neutrals" (value-first, neutrals)', () => {
+    expect(extractNamedFieldValues('0.43 ohms on the neutrals')).toEqual([
+      { field: 'ring_rn_ohm', value: '0.43' },
+    ]);
+  });
+
+  test('extracts "0.78 on the earths" (value-first, r2)', () => {
+    expect(extractNamedFieldValues('0.78 on the earths')).toEqual([
+      { field: 'ring_r2_ohm', value: '0.78' },
+    ]);
+  });
+
+  test('extracts "0.78 on the CPC" (value-first, r2 via CPC alias)', () => {
+    expect(extractNamedFieldValues('0.78 on the CPC')).toEqual([
+      { field: 'ring_r2_ohm', value: '0.78' },
+    ]);
+  });
+
+  test('mixed directions across the three conductors', () => {
+    expect(extractNamedFieldValues('lives 0.43, 0.43 on the neutrals, and CPC is 0.78.')).toEqual([
+      { field: 'ring_r1_ohm', value: '0.43' },
+      { field: 'ring_rn_ohm', value: '0.43' },
+      { field: 'ring_r2_ohm', value: '0.78' },
+    ]);
+  });
+
+  test('field-first wins when both directions could match the same conductor', () => {
+    // "lives 0.43 and then 0.99 on the lives" — field-first should
+    // capture 0.43, not the trailing 0.99.
+    expect(extractNamedFieldValues('lives 0.43 and then 0.99 on the lives')).toEqual([
+      { field: 'ring_r1_ohm', value: '0.43' },
+    ]);
+  });
+
+  test('value-first requires a connector preposition — "0.42 lives" alone does NOT match', () => {
+    // The value-first mirror requires "on|for|across|at|down|onto|to"
+    // before the conductor word. This stops circuit numbers and way
+    // numbers from being mis-read as values ("circuit 13. Lives 0.43"
+    // would otherwise see "13 [filler] Lives" and capture 13).
+    // Inspectors saying just "0.42 lives" with no connector is rare
+    // and ambiguous; the restriction is the safer default.
+    expect(extractNamedFieldValues('0.42 lives')).toEqual([]);
+  });
+
+  test('value-first does not match "circuit 13. Lives 0.43" as 13 → lives', () => {
+    // Direct regression for the failure mode that almost shipped:
+    // without the connector restriction, value-first would have
+    // grabbed "13" out of the circuit number and written it to R1.
+    expect(extractNamedFieldValues('Ring continuity for circuit 13. Lives 0.43.')).toEqual([
+      { field: 'ring_r1_ohm', value: '0.43' },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
