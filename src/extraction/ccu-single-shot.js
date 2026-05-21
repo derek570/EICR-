@@ -104,7 +104,7 @@ const norm2px = (v, dim) => Math.round((v / 1000) * dim);
 // Prompts
 // ---------------------------------------------------------------------------
 
-const MODERN_PROMPT = `You are inspecting a UK consumer unit's main DIN rail. The image shows a single horizontal rail with a row of devices left-to-right.
+export const MODERN_PROMPT = `You are inspecting a UK consumer unit's main DIN rail. The image shows a single horizontal rail with a row of devices left-to-right.
 
 Devices visible: MCBs, RCBOs, RCDs, blanking plates, main switches, SPDs. Each device is mounted on the rail and may have a circuit-label strip above and/or below it.
 
@@ -178,7 +178,7 @@ RULES (labels)
 
 Return JSON only — no prose, no markdown fence.`;
 
-const REWIREABLE_PROMPT = `You are inspecting a UK consumer unit with REWIREABLE FUSE CARRIERS (BS 3036) instead of modern MCBs. The fuse carriers are coloured plastic blocks (white=5A, blue=15A, yellow=20A, red=30A, green=45A) and slot into a horizontal carrier panel.
+export const REWIREABLE_PROMPT = `You are inspecting a UK consumer unit with REWIREABLE FUSE CARRIERS (BS 3036) instead of modern MCBs. The fuse carriers are coloured plastic blocks (white=5A, blue=15A, yellow=20A, red=30A, green=45A) and slot into a horizontal carrier panel.
 
 YOUR JOB
 List every visible CARRIER SLOT in strict left-to-right order. ONE ENTRY = ONE CARRIER SLOT.
@@ -628,6 +628,18 @@ function entriesToSlots(entries, boardManufacturer, vlmCountAgreesWithCv) {
         ? raw.device_code.trim()
         : null;
 
+    // Preserve the VLM's reported horizontal position so the label-shift
+    // bug can be diagnosed offline from result.json without re-calling the
+    // model. Stamped per-slot (camelCase to match the rest of this struct)
+    // and re-emitted as analysis.slots[].position_x_normalised by the route
+    // handler so the saved result.json carries it. See handoff
+    // .planning-stage6-agentic/handoffs/ccu-label-shift-2026-05-21/HANDOFF.md
+    // for the diagnostic flow this enables.
+    const positionXNormalised =
+      typeof raw.position_x === 'number' && raw.position_x >= 0 && raw.position_x <= 1
+        ? raw.position_x
+        : null;
+
     slots.push({
       slotIndex: s,
       content: cls === 'blank' ? 'blank' : 'device',
@@ -648,6 +660,7 @@ function entriesToSlots(entries, boardManufacturer, vlmCountAgreesWithCv) {
       confidence: baseConfidence,
       crop: { bbox: { x: 0, y: 0, w: 0, h: 0 }, base64: '' },
       label: labelText,
+      positionXNormalised,
     });
     labels.push({
       slotIndex: s,
@@ -803,6 +816,33 @@ export async function extractViaSingleShot({
     sources: [{ window: 0, indexInWindow: s.slotIndex }],
   }));
 
+  // Raw VLM output exposed for offline diagnostic replay. The matcher
+  // mutates result.entries[i].label in place, but the original label
+  // text + label position_x in result.labelArray is untouched, and the
+  // per-entry position_x is still present on result.entries[i]. Surfacing
+  // both keeps result.json self-diagnosing for the 2026-05-21 label-shift
+  // bug — a future change to matchLabelsToEntries can be replayed against
+  // these saved arrays without re-billing the VLM call.
+  const labelArrayRaw = Array.isArray(result.labelArray)
+    ? result.labelArray.map((l) => ({
+        text: typeof l?.text === 'string' ? l.text : null,
+        positionX:
+          typeof l?.position_x === 'number' && l.position_x >= 0 && l.position_x <= 1
+            ? l.position_x
+            : null,
+      }))
+    : [];
+  const entriesRaw = Array.isArray(result.entries)
+    ? result.entries.map((e, i) => ({
+        index: i,
+        deviceKind: typeof e?.device_kind === 'string' ? e.device_kind.toLowerCase().trim() : null,
+        positionX:
+          typeof e?.position_x === 'number' && e.position_x >= 0 && e.position_x <= 1
+            ? e.position_x
+            : null,
+      }))
+    : [];
+
   return {
     slots,
     labels,
@@ -814,6 +854,9 @@ export async function extractViaSingleShot({
       inputTokens: result.usage.inputTokens,
       outputTokens: result.usage.outputTokens,
     },
+    labelArrayRaw,
+    entriesRaw,
+    labelMatcherDiag,
     lowConfidence,
     stage3Error: null,
     stageOutputs: {

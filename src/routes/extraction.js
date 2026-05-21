@@ -2422,6 +2422,23 @@ router.post(
         if (Array.isArray(geometricResult.slots) && geometricResult.slots.length > 0) {
           analysis.slots = geometricResult.slots;
 
+          // Raw VLM positions exposed for offline diagnostic replay of the
+          // label-shift bug observed 2026-05-21 (handoff
+          // .planning-stage6-agentic/handoffs/ccu-label-shift-2026-05-21/).
+          // These are only populated by the single-shot pipeline — legacy
+          // sliding-window leaves them undefined, which is fine: the bug
+          // surface is single-shot's label matcher, and the legacy path
+          // doesn't run in production.
+          if (Array.isArray(geometricResult.labelArrayRaw)) {
+            analysis.vlm_labels_raw = geometricResult.labelArrayRaw;
+          }
+          if (Array.isArray(geometricResult.entriesRaw)) {
+            analysis.vlm_entries_raw = geometricResult.entriesRaw;
+          }
+          if (geometricResult.labelMatcherDiag) {
+            analysis.vlm_label_matcher_diag = geometricResult.labelMatcherDiag;
+          }
+
           // Stage 4 label-pass result was fetched in parallel with Stage 3
           // via Promise.all earlier in the handler. Three possible shapes:
           //   - { labels: [...], usage: {...}, timings: {...} } — success
