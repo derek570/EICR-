@@ -28,6 +28,10 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libpango-1.0-0 \
     libcairo2 \
+    # libgnutls30 listed explicitly so apt picks up the latest patched build
+    # (otherwise the base image's deb12u6 trips Trivy on CVE-2026-33845 +
+    # CVE-2026-42010, both of which are fixed in deb12u7+).
+    libgnutls30 \
     python3 \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
