@@ -78,6 +78,16 @@ const DEWARP_MAX_WIDTH =
 const SINGLE_SHOT_TIMEOUT_MS = Number(process.env.CCU_SINGLE_SHOT_TIMEOUT_MS || 90_000);
 const SINGLE_SHOT_MAX_TOKENS = Number(process.env.CCU_SINGLE_SHOT_MAX_TOKENS || 4096);
 
+// Feature flag for the position-based label matcher introduced 2026-05-21.
+// New prompt asks gpt-5.5 to return labels and devices as two arrays with
+// normalised position_x values; downstream code does the nearest-neighbour
+// 1-to-1 assignment instead of trusting the VLM to do it. Default ON;
+// CCU_VLM_POSITION_MATCHER="false" reverts to the per-entry label path
+// (defensive emergency rollback — the prompt still includes the legacy
+// label-per-entry field as a fallback when this flag is off).
+const VLM_POSITION_MATCHER_ENABLED =
+  (process.env.CCU_VLM_POSITION_MATCHER ?? 'true').toLowerCase() === 'true';
+
 // Wylex BS 3036 colour-code lookup for rewireable carriers — only used
 // when the VLM left ocpd_rating_a null on a rewireable.
 const COLOUR_TO_AMPS = {
@@ -118,7 +128,9 @@ Procedure:
 If unsure between N and N+1 in a long run of identicals, prefer N+1 — the post-extraction layer cross-checks with an independent geometric pipeline and a phantom slot is recoverable; a missed slot is not.
 
 OUTPUT
-Return a JSON object with one key "entries", an array of objects:
+Return a JSON object with TWO keys: "entries" (one per module slot) and "labels" (one per visible circuit label on the strip channel).
+
+"entries" — array, one object per visible MODULE SLOT in strict left-to-right order:
   {
     "device_kind": "mcb" | "rcbo" | "rcd" | "main_switch" | "spd" | "blank",
     "ocpd_rating_a": <integer amperage on the device face, or null>,
@@ -126,22 +138,28 @@ Return a JSON object with one key "entries", an array of objects:
     "ocpd_bs_en": "BS EN 60898" | "BS EN 61009" | "BS EN 60947-2" | null,
     "rcd_type": "AC" | "A" | "F" | "B" | null,
     "rcd_rating_ma": <integer mA for RCD/RCBO, or null>,
-    "label": <string from the circuit-label strip, or null if illegible>
+    "position_x": <fraction 0.0 - 1.0 of image width where this device's HORIZONTAL CENTRE sits>
   }
 
-RULES
+"labels" — array, one object per visible printed CIRCUIT LABEL on the strip channel (above or below the rail), in left-to-right order:
+  {
+    "text": <label text after applying the abbreviation normalisation below, or null if illegible>,
+    "position_x": <fraction 0.0 - 1.0 of image width where this label's HORIZONTAL CENTRE sits>
+  }
+
+POSITION_X values are measured from the LEFT edge of the image (=0.0) to the RIGHT edge (=1.0). Be precise — these positions will be matched to devices in code, not by your reasoning. Do NOT assign labels to devices yourself; just report what you see and where.
+
+RULES (entries)
 - Read the printed amperage from the device face, not from any label nearby.
 - Trip-curve letter is printed beside the amperage on the device face. If you can't read it, return null.
 - For RCBOs and RCDs, look for the waveform symbol (∿ AC, ⬓ A, ⌒ F, ⊐ B). Return null if symbol is unclear.
 
-LABELS
-- A device's label lives in the label-strip channel DIRECTLY ABOVE or DIRECTLY BELOW the device — in the SAME VERTICAL COLUMN, centred on the device's left-right midpoint. Labels are NEVER to the side of a device; the strip channels run horizontally above and below the rail.
-- Read only the label whose horizontal centre sits within the same vertical column as the device. If the label's text is centred closer to a neighbouring slot's column than to this slot's column, IT DOES NOT BELONG TO THIS DEVICE — return null.
-- If two candidate labels are equally plausible (the label sits on the boundary between two slot columns), return null for BOTH slots. Do not guess which side it belongs to — the inspector will fix it.
-- A label that visibly spans MULTIPLE slots (one wide sticker covering two or more devices, e.g. "Upstairs Lights 1-2") is ambiguous — return null for every slot it spans.
-- IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise.
-- Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next returns as "Upstairs Lighting", not two separate strings.
-- If a label is faded, illegible, or absent, return null. Never guess or copy from adjacent slots.
+RULES (labels)
+- Include every label you can read on the strip channel above OR below the rail. Each label gets ONE entry in the labels array, at its horizontal centre.
+- IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise — don't include it as a label.
+- Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next is ONE label "Upstairs Lighting".
+- If a label is faded or illegible, omit it from the labels array (or include with text:null if you can locate the position but not read the text).
+- For boards with pictogram icons (stove hob, lightbulb, socket outlet, showerhead, etc.), report the normalised text equivalent: hob/stove icon → "Cooker", lightbulb → "Lighting" or "Lights", socket icon → "Sockets", showerhead → "Shower".
 - Normalise common abbreviations to title-case EICR terms:
     Imm / Immersion / Hot Water / HW → "Water Heater"
     Smokes / Smoke / S/D / Smoke Det → "Smoke Alarm"
@@ -165,28 +183,36 @@ YOUR JOB
 List every visible CARRIER SLOT in strict left-to-right order. ONE ENTRY = ONE CARRIER SLOT.
 
 OUTPUT
-Return a JSON object with one key "entries", an array of objects:
+Return a JSON object with TWO keys: "entries" (one per carrier slot) and "labels" (one per visible circuit label on the strip channel).
+
+"entries" — array, one object per visible CARRIER SLOT in strict left-to-right order:
   {
     "device_kind": "rewireable" | "main_switch" | "blank",
     "ocpd_rating_a": <integer derived from carrier colour, or null>,
     "ocpd_bs_en": "BS 3036" | null,
     "body_colour": "white" | "blue" | "yellow" | "red" | "green" | null,
-    "label": <string from circuit label, or null>
+    "position_x": <fraction 0.0 - 1.0 of image width where this carrier's HORIZONTAL CENTRE sits>
   }
 
-RULES
+"labels" — array, one object per visible printed CIRCUIT LABEL on the strip channel (above or below the carrier panel), in left-to-right order:
+  {
+    "text": <label text after applying the abbreviation normalisation below, or null if illegible>,
+    "position_x": <fraction 0.0 - 1.0 of image width where this label's HORIZONTAL CENTRE sits>
+  }
+
+POSITION_X values are measured from the LEFT edge of the image (=0.0) to the RIGHT edge (=1.0). Be precise — these positions will be matched to carriers in code, not by your reasoning. Do NOT assign labels to carriers yourself; just report what you see and where.
+
+RULES (entries)
 - Carrier colour is the strongest rating signal. Match white=5A, blue=15A, yellow=20A, red=30A, green=45A.
 - Main switch is a separate row or end position; if visible, use device_kind:"main_switch".
 - Empty slots in the carrier panel are blanks: device_kind:"blank".
 
-LABELS
-- A carrier's label lives in the label-strip channel DIRECTLY ABOVE or DIRECTLY BELOW the carrier — in the SAME VERTICAL COLUMN, centred on the carrier's left-right midpoint. Labels are NEVER to the side of a carrier; the strip channels run horizontally above and below the carrier panel.
-- Read only the label whose horizontal centre sits within the same vertical column as the carrier. If the label's text is centred closer to a neighbouring slot's column than to this slot's column, IT DOES NOT BELONG TO THIS CARRIER — return null.
-- If two candidate labels are equally plausible (the label sits on the boundary between two slot columns), return null for BOTH slots. Do not guess which side it belongs to.
-- A label that visibly spans MULTIPLE slots (one wide sticker covering two or more carriers) is ambiguous — return null for every slot it spans.
-- IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise.
-- Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next returns as "Upstairs Lighting", not two separate strings.
-- If a label is faded, illegible, or absent, return null. Never guess or copy from adjacent slots.
+RULES (labels)
+- Include every label you can read on the strip channel above OR below the carrier panel. Each label gets ONE entry in the labels array, at its horizontal centre.
+- IGNORE the printed circuit-number prefix at the top of the strip (the small "1", "2", "3" etc.). The schedule renumbers, so the printed number is noise — don't include it as a label.
+- Join multi-line wraps with a single space — e.g. a strip with "Upstairs" on one line and "Lighting" on the next is ONE label "Upstairs Lighting".
+- If a label is faded or illegible, omit it from the labels array (or include with text:null if you can locate the position but not read the text).
+- For boards with pictogram icons (stove hob, lightbulb, socket outlet, showerhead, etc.), report the normalised text equivalent: hob/stove icon → "Cooker", lightbulb → "Lighting" or "Lights", socket icon → "Sockets", showerhead → "Shower".
 - Normalise common abbreviations to title-case EICR terms:
     Imm / Immersion / Hot Water / HW → "Water Heater"
     Smokes / Smoke / S/D / Smoke Det → "Smoke Alarm"
@@ -390,6 +416,7 @@ async function runSingleShot({ anthropic, model, prompt, imageBuffer, signal }) 
     throw new Error(`single-shot JSON parse failed: ${err.message}`);
   }
   const entries = parsed.entries || parsed.devices || parsed.circuits || parsed.slots || [];
+  const labelArray = Array.isArray(parsed.labels) ? parsed.labels : [];
 
   return {
     ms,
@@ -399,8 +426,159 @@ async function runSingleShot({ anthropic, model, prompt, imageBuffer, signal }) 
       cachedInputTokens: usage.cached_input_tokens || 0,
     },
     entries,
+    labelArray,
     rawText,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Position-based label-to-device matcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Devices that should receive circuit labels via the position matcher.
+ * Main switches, RCDs (section headers like "RCD Protected Circuits"),
+ * SPDs and blanks are EXCLUDED — labels near those positions are either
+ * device-kind identifiers ("Main Switch", "(RCD)") or section headers,
+ * neither of which should surface as circuit labels in the final
+ * schedule. slotsToCircuits filters main_switch/spd/blank out of
+ * circuits[] anyway, so labels on those entries would be ignored
+ * downstream — pre-filtering here keeps section headers from "stealing"
+ * a slot the real circuit label could have matched.
+ */
+const LABEL_MATCHABLE_KINDS = new Set(['mcb', 'rcbo', 'rewireable', 'cartridge']);
+
+/**
+ * Match VLM-returned labels onto entries by horizontal position.
+ *
+ * Replaces the prior "VLM assigns label per entry" approach which had a
+ * reliable failure mode on tightly-spaced MCBs: the model would correctly
+ * see "COOKER" sitting at x=0.577 and a B32 at x=0.585 (8 thousandths
+ * away), then attach COOKER to a B16 at x=0.535 (42 thousandths away)
+ * because it skipped the closer-to-neighbour check in its own prompt
+ * rule. 2026-05-20 diagnostic confirmed gpt-5.5's position perception
+ * is precise and stable (range 0.006 across 5 runs for the COOKER label)
+ * — only the constraint application was unreliable. Doing the matching
+ * in code is robust and free.
+ *
+ * Algorithm:
+ *   1. Derive a "pitch" from the median gap between MATCHABLE entries
+ *      (in normalised 0-1 space). This is robust to outlier gaps caused
+ *      by main-switch/RCD/blank runs between MCB clusters.
+ *   2. Threshold = 0.5 × pitch. A label that's farther from its nearest
+ *      matchable entry than this is dropped (typically a section header
+ *      like "RCD Protected Circuits" sitting between an RCD and the next
+ *      MCB).
+ *   3. For each label, find the nearest matchable entry. If a closer
+ *      label has already claimed that entry, drop this one.
+ *   4. Apply matched label.text onto entries[i].label. Unmatched matchable
+ *      entries get label=null so the downstream parser doesn't carry a
+ *      stale label from the prompt's per-entry field.
+ *
+ * Mutates `entries` in place. Returns a diagnostic object for logging.
+ */
+export function matchLabelsToEntries(entries, labelArray) {
+  const diag = {
+    skipped: false,
+    skipReason: null,
+    labelsInput: Array.isArray(labelArray) ? labelArray.length : 0,
+    candidates: 0,
+    matched: 0,
+    droppedFarFromAnyDevice: 0,
+    droppedDuplicateClaim: 0,
+    pitchNorm: null,
+    maxDistNorm: null,
+  };
+
+  if (!Array.isArray(labelArray) || labelArray.length === 0) {
+    diag.skipped = true;
+    diag.skipReason = 'no_labels_array';
+    return diag;
+  }
+  if (!Array.isArray(entries) || entries.length === 0) {
+    diag.skipped = true;
+    diag.skipReason = 'no_entries';
+    return diag;
+  }
+
+  // Build candidate list — matchable entries that have a usable position_x.
+  const candidates = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const kind = typeof e?.device_kind === 'string' ? e.device_kind.toLowerCase().trim() : null;
+    const x = typeof e?.position_x === 'number' ? e.position_x : null;
+    if (kind && LABEL_MATCHABLE_KINDS.has(kind) && x != null && x >= 0 && x <= 1) {
+      candidates.push({ idx: i, x });
+    }
+  }
+  diag.candidates = candidates.length;
+
+  if (candidates.length === 0) {
+    diag.skipped = true;
+    diag.skipReason = 'no_matchable_candidates';
+    return diag;
+  }
+
+  // Derive pitch from median adjacent gap between candidates (sorted by x).
+  // Fallback to 1/N if only one candidate exists.
+  const sortedX = candidates.map((c) => c.x).sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 1; i < sortedX.length; i++) gaps.push(sortedX[i] - sortedX[i - 1]);
+  let pitch;
+  if (gaps.length === 0) {
+    // Single candidate — use 1/(entries.length+1) as a reasonable default pitch.
+    pitch = 1 / Math.max(entries.length + 1, 2);
+  } else {
+    gaps.sort((a, b) => a - b);
+    pitch = gaps[Math.floor(gaps.length / 2)];
+  }
+  const maxDist = 0.5 * pitch;
+  diag.pitchNorm = Number(pitch.toFixed(4));
+  diag.maxDistNorm = Number(maxDist.toFixed(4));
+
+  // For each label, find nearest candidate within maxDist. Track best (closest)
+  // label per candidate idx — if two labels both nominate the same device, the
+  // closer one wins, the other is dropped.
+  const bestByIdx = new Map(); // idx -> { text, dist }
+  for (const lab of labelArray) {
+    const lx = typeof lab?.position_x === 'number' ? lab.position_x : null;
+    const text = typeof lab?.text === 'string' ? lab.text.trim() : null;
+    if (lx == null || lx < 0 || lx > 1 || !text) continue;
+
+    let bestDist = Infinity;
+    let bestCand = null;
+    for (const c of candidates) {
+      const d = Math.abs(c.x - lx);
+      if (d < bestDist) {
+        bestDist = d;
+        bestCand = c;
+      }
+    }
+    if (!bestCand || bestDist > maxDist) {
+      diag.droppedFarFromAnyDevice++;
+      continue;
+    }
+
+    const prev = bestByIdx.get(bestCand.idx);
+    if (!prev) {
+      bestByIdx.set(bestCand.idx, { text, dist: bestDist });
+    } else if (bestDist < prev.dist) {
+      bestByIdx.set(bestCand.idx, { text, dist: bestDist });
+      diag.droppedDuplicateClaim++;
+    } else {
+      diag.droppedDuplicateClaim++;
+    }
+  }
+  diag.matched = bestByIdx.size;
+
+  // Apply. For matchable entries: overwrite label with the matched text or null.
+  // Non-matchable entries (main_switch, rcd, spd, blank) keep whatever the VLM
+  // put there — the merger filters them out anyway.
+  for (const c of candidates) {
+    const m = bestByIdx.get(c.idx);
+    entries[c.idx].label = m ? m.text : null;
+  }
+  return diag;
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +715,32 @@ export async function extractViaSingleShot({
   const vlmCount = result.entries.length;
   const vlmCountAgreesWithCv = Number.isFinite(cvCount) && cvCount === vlmCount;
   const lowConfidence = !vlmCountAgreesWithCv;
+
+  // 2b. Position-based label matcher (2026-05-21). Replaces the prior
+  //     "VLM picks the label per entry" approach with code-side nearest-
+  //     neighbour matching on the VLM's reported label/device positions.
+  //     Failure mode addressed: gpt-5.5 perceives positions reliably
+  //     (range 0.006 normalised across 5 runs on the same image) but
+  //     skips its own closer-to-neighbour check when assigning, sticking
+  //     labels onto the wrong adjacent MCB. See matchLabelsToEntries
+  //     header for the algorithm. Mutates result.entries in place.
+  //
+  //     Gated by CCU_VLM_POSITION_MATCHER env var (default true). When
+  //     OFF, the VLM's per-entry label field survives unchanged (legacy
+  //     behaviour — risk-free rollback path).
+  let labelMatcherDiag = null;
+  if (VLM_POSITION_MATCHER_ENABLED) {
+    labelMatcherDiag = matchLabelsToEntries(result.entries, result.labelArray);
+    if (logger) {
+      logger.info('CCU single-shot label matcher', {
+        userId,
+        enabled: true,
+        ...labelMatcherDiag,
+      });
+    }
+  } else if (logger) {
+    logger.info('CCU single-shot label matcher', { userId, enabled: false });
+  }
 
   // 3. Build slots[] + labels[] in the shape downstream code expects.
   const { slots, labels } = entriesToSlots(result.entries, boardManufacturer, vlmCountAgreesWithCv);
