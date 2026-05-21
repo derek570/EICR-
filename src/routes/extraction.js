@@ -487,6 +487,7 @@ export const RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD = 0.85;
  */
 export async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   const circuits = analysis.circuits || [];
+  const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
   const manufacturer = analysis.board_manufacturer;
   const boardModel = analysis.board_model;
 
@@ -530,30 +531,51 @@ export async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   const needsLookup = missingType;
 
   // Gather any device info GPT extracted — RCBO model markings, ratings, etc.
+  // Including per-device part codes (slot.model) when the VLM read them off
+  // the device face — these are the most precise identifier we have (e.g.
+  // Crabtree "61/RB16/30AC" pins exactly one datasheet entry; "Crabtree
+  // Starbreaker" alone could be any of several product generations).
+  const slotByIndex = new Map(slots.map((s) => [s.slotIndex, s]));
   const deviceDescriptions = [];
+  const deviceCodes = new Set();
   for (const c of needsLookup) {
     const parts = [`Circuit ${c.circuit_number}`];
     if (c.is_rcbo) parts.push('RCBO');
     if (c.ocpd_rating_a) parts.push(`${c.ocpd_rating_a}A`);
     if (c.rcd_rating_ma) parts.push(`${c.rcd_rating_ma}mA`);
+    const code = slotByIndex.get(c.slot_index)?.model;
+    if (typeof code === 'string' && code.trim() !== '') {
+      const trimmed = code.trim();
+      parts.push(`part code "${trimmed}"`);
+      deviceCodes.add(trimmed);
+    }
     deviceDescriptions.push(parts.join(' '));
   }
 
   // Also check if there's a standalone RCD protecting these circuits
   const hasStandaloneRcd = needsLookup.some((c) => !c.is_rcbo && c.rcd_protected);
 
+  // If we have device codes, include a focused sub-clause asking the search
+  // to look up by part number too — the board model alone can resolve to
+  // multiple generations of RCBO supply, but the part code on each device
+  // face uniquely identifies a single datasheet.
+  const deviceCodesClause =
+    deviceCodes.size > 0
+      ? `\n\nThe following EXACT part codes are printed on the device faces: ${[...deviceCodes].map((c) => `"${c}"`).join(', ')}. Prefer these — if a datasheet for one of these exact part codes is locatable, use ITS rcd_type rather than the board-level catalogue.`
+      : '';
+
   const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
 It contains ${needsLookup.length} RCD-protected circuits where I need to determine the RCD type.
 ${hasStandaloneRcd ? 'Some circuits are protected by a standalone RCD/RCCB in the board.' : 'The circuits use RCBOs (combined MCB+RCD).'}
 
-Circuits needing RCD type: ${deviceDescriptions.join(', ')}.
+Circuits needing RCD type: ${deviceDescriptions.join(', ')}.${deviceCodesClause}
 
-Search for the ${manufacturer} ${boardModel} consumer unit datasheet or technical specifications. ONLY answer if you find the EXACT model "${boardModel}" — do NOT generalise from a similar product, do NOT guess based on the manufacturer's other consumer units. If the exact model can't be located, reply with rcd_type:null.
+Search for the EXACT consumer unit "${manufacturer} ${boardModel}" AND/OR the EXACT device part codes listed above. ONLY answer if you find a datasheet for the EXACT model or part code — do NOT generalise from a similar product, do NOT guess based on the manufacturer's other consumer units, do NOT extrapolate from a different RCBO range from the same manufacturer. If neither the exact board model nor any exact part code can be located, reply with rcd_type:null.
 
-What RCD type do the RCDs/RCBOs in the exact "${boardModel}" model provide? Type AC, Type A, Type B, Type F, or Type S?
+What RCD type do the RCDs/RCBOs provide? Type AC, Type A, Type B, Type F, or Type S?
 
-Reply ONLY with valid JSON: {"rcd_type": "AC" or "A" or "B" or "F" or "S" or null, "source": "URL or citation of the datasheet for the exact model"}
-If you cannot determine the type for the exact "${boardModel}" model, reply: {"rcd_type": null, "source": "exact model not found"}`;
+Reply ONLY with valid JSON: {"rcd_type": "AC" or "A" or "B" or "F" or "S" or null, "source": "URL or citation of the datasheet for the EXACT model or part code", "match_kind": "board_model" or "device_code" or "not_found"}
+If you cannot determine the type from the EXACT model or part code, reply: {"rcd_type": null, "source": "exact match not found", "match_kind": "not_found"}`;
 
   try {
     logger.info('RCD type web search lookup starting', {
@@ -588,9 +610,20 @@ If you cannot determine the type for the exact "${boardModel}" model, reply: {"r
 
     const searchResult = JSON.parse(searchJson);
     const validTypes = ['AC', 'A', 'B', 'F', 'S'];
+    const validMatchKinds = ['board_model', 'device_code'];
     const rcdType = searchResult.rcd_type?.toUpperCase()?.trim();
+    const matchKind = typeof searchResult.match_kind === 'string' ? searchResult.match_kind : null;
 
-    if (rcdType && validTypes.includes(rcdType)) {
+    // Belt-and-braces: even if the search returned a valid rcd_type, refuse
+    // to apply it unless match_kind confirms the answer came from an exact
+    // board-model OR device-code datasheet hit. Older prompt versions in
+    // production caching may not return match_kind; for backward compat we
+    // treat null match_kind as acceptable BUT we log it for audit. A
+    // self-declared "not_found" / unknown match_kind never applies.
+    const matchKindOk =
+      matchKind == null || validMatchKinds.includes(matchKind) || matchKind === '';
+
+    if (rcdType && validTypes.includes(rcdType) && matchKindOk) {
       // Fill nulls only. Existing AC/A/F/B/S reads from the VLM are NEVER
       // overridden — the 2026-05-21 audit confirmed VLM waveform reads
       // outperform manufacturer-only web-search results, and ground-truth
@@ -607,6 +640,7 @@ If you cannot determine the type for the exact "${boardModel}" model, reply: {"r
         userId,
         rcdType,
         source: searchResult.source || 'unknown',
+        matchKind: matchKind || 'unspecified',
         trigger,
         filled,
       });
@@ -614,6 +648,9 @@ If you cannot determine the type for the exact "${boardModel}" model, reply: {"r
       logger.info('RCD type web search returned no type', {
         userId,
         source: searchResult.source || 'not found',
+        matchKind: matchKind || 'unspecified',
+        rcdType: rcdType ?? null,
+        rejected: !matchKindOk,
         trigger,
       });
     }

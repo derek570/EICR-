@@ -322,6 +322,72 @@ describe('lookupMissingRcdTypes — never overrides existing reads (2026-05-21 a
     expect(analysis.circuits[2].rcd_type).toBe('AC'); // preserved
   });
 
+  test('search prompt includes per-device part codes when available (2026-05-21 device-code path)', async () => {
+    // The single-shot prompt asks the VLM to report device_code (part
+    // number printed on the device face). When present in slot.model,
+    // the lookup forwards them to the search and asks for an exact-
+    // part-code match. Pins the prompt structure so future edits keep
+    // shipping codes when we have them.
+    const analysis = {
+      board_manufacturer: 'Crabtree',
+      board_model: 'Starbreaker SB6000',
+      circuits: [
+        { ...rcboCircuit(1, { rcd_type: null }), slot_index: 0 },
+        { ...rcboCircuit(2, { rcd_type: null }), slot_index: 1 },
+      ],
+      slots: [
+        { ...rcboSlot({ rcdWaveformType: null }), slotIndex: 0, model: '61/RB16/30AC' },
+        { ...rcboSlot({ rcdWaveformType: null }), slotIndex: 1, model: '61/RB32/30AC' },
+      ],
+    };
+    const openai = makeOpenAi(
+      '{"rcd_type": "AC", "source": "Crabtree 61/RB16/30AC datasheet", "match_kind": "device_code"}'
+    );
+    const logger = makeLogger();
+
+    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
+
+    expect(openai.chat.completions.create).toHaveBeenCalledTimes(1);
+    const sentPrompt = openai.chat.completions.create.mock.calls[0][0].messages[0].content;
+    expect(sentPrompt).toContain('part code "61/RB16/30AC"');
+    expect(sentPrompt).toContain('part code "61/RB32/30AC"');
+    expect(sentPrompt).toMatch(/EXACT.*part code/i);
+    expect(sentPrompt).toContain('match_kind');
+
+    // Both circuits filled with the part-code-matched answer.
+    expect(analysis.circuits[0].rcd_type).toBe('AC');
+    expect(analysis.circuits[1].rcd_type).toBe('AC');
+
+    const foundLog = logger.info.mock.calls.find(
+      ([msg]) => msg === 'RCD type web search found type'
+    );
+    expect(foundLog?.[1]).toMatchObject({ matchKind: 'device_code', filled: 2 });
+  });
+
+  test('refuses a search answer with match_kind "not_found" even if rcd_type non-null', async () => {
+    // Belt-and-braces: if the model self-declares the answer didn't come
+    // from an exact match, we don't apply it. Pins the guard added in
+    // the apply branch.
+    const analysis = {
+      board_manufacturer: 'Crabtree',
+      board_model: 'Starbreaker SB6000',
+      circuits: [rcboCircuit(1, { rcd_type: null })],
+      slots: [rcboSlot({ rcdWaveformType: null })],
+    };
+    const openai = makeOpenAi(
+      '{"rcd_type": "A", "source": "guessed from another Crabtree product", "match_kind": "not_found"}'
+    );
+    const logger = makeLogger();
+
+    await lookupMissingRcdTypes(analysis, openai, logger, 'user-1');
+    expect(analysis.circuits[0].rcd_type).toBeNull();
+
+    const rejectedLog = logger.info.mock.calls.find(
+      ([msg]) => msg === 'RCD type web search returned no type'
+    );
+    expect(rejectedLog?.[1]).toMatchObject({ rejected: true, rcdType: 'A' });
+  });
+
   test('threshold constant matches expected value (still used by detectRcdWaveformOutliers)', () => {
     // The constant survives because detectRcdWaveformOutliers still
     // filters on per-slot confidence at this threshold. Pinning the

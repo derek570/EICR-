@@ -138,6 +138,7 @@ Return a JSON object with TWO keys: "entries" (one per module slot) and "labels"
     "ocpd_bs_en": "BS EN 60898" | "BS EN 61009" | "BS EN 60947-2" | null,
     "rcd_type": "AC" | "A" | "F" | "B" | null,
     "rcd_rating_ma": <integer mA for RCD/RCBO, or null>,
+    "device_code": <printed part number on the device face, EXACTLY as printed, e.g. "61/B16" on a Crabtree MCB, "iC60N" on a Schneider MCB, "MCN116" on a Hager MCB, "AFDD-32B" on an AFDD; null if not readable or no part number visible>,
     "position_x": <fraction 0.0 - 1.0 of image width where this device's HORIZONTAL CENTRE sits>
   }
 
@@ -191,6 +192,7 @@ Return a JSON object with TWO keys: "entries" (one per carrier slot) and "labels
     "ocpd_rating_a": <integer derived from carrier colour, or null>,
     "ocpd_bs_en": "BS 3036" | null,
     "body_colour": "white" | "blue" | "yellow" | "red" | "green" | null,
+    "device_code": <any printed part number stamped on the carrier or main switch, EXACTLY as printed; null if not readable or absent>,
     "position_x": <fraction 0.0 - 1.0 of image width where this carrier's HORIZONTAL CENTRE sits>
   }
 
@@ -616,6 +618,16 @@ function entriesToSlots(entries, boardManufacturer, vlmCountAgreesWithCv) {
     const labelText = typeof raw.label === 'string' && raw.label.trim() !== '' ? raw.label : null;
     const curve = typeof raw.ocpd_curve === 'string' ? raw.ocpd_curve : null;
 
+    // device_code is the printed part number on the device face (e.g.
+    // Crabtree "61/B16", Schneider "iC60N", Hager "MCN116"). When the VLM
+    // can read it, the downstream RCD-type lookup uses it as a precise
+    // identifier — manufacturer + part number resolves a single datasheet
+    // entry instead of guessing across a manufacturer's whole catalogue.
+    const deviceCode =
+      typeof raw.device_code === 'string' && raw.device_code.trim() !== ''
+        ? raw.device_code.trim()
+        : null;
+
     slots.push({
       slotIndex: s,
       content: cls === 'blank' ? 'blank' : 'device',
@@ -623,7 +635,7 @@ function entriesToSlots(entries, boardManufacturer, vlmCountAgreesWithCv) {
       classification: cls,
       manufacturer:
         boardManufacturer ?? (cls === 'rcbo' || cls === 'rcd' || cls === 'mcb' ? 'unknown' : null),
-      model: null,
+      model: deviceCode,
       ratingAmps: rating,
       ratingText: rating != null ? `${curve || ''}${rating}A`.trim() : null,
       ratingHallucinationDetected: false,
