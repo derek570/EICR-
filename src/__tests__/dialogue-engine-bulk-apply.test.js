@@ -370,6 +370,51 @@ describe('RCD bulk-apply integration', () => {
     expect(session.stateSnapshot.circuits[1].rcd_trip_time).toBe('25');
   });
 
+  // ─────────────────────────────────────────────────────────────────────
+  // End-to-end regression for the field-test bug (session 293F074F,
+  // 2026-05-21). The verbatim utterance that produced the four-times
+  // BS-number ask loop now flows cleanly: trip_time lands, BS gets
+  // asked once with the defer hint, inspector can either provide BS or
+  // defer. This is the user-facing acceptance test for fix B.
+  // ─────────────────────────────────────────────────────────────────────
+  test('session 293F074F repro: "RCD trip time for the cooker is 25 ms" → defer → exits with trip_time saved', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      // Field session had circuit 1 = Cooker with designation set.
+      1: { designation: 'Cooker' },
+    });
+
+    // Entry — verbatim from the production log.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCD trip time for the cooker is 25 ms.',
+      now: 1000,
+    });
+
+    // BEFORE fix: this looped on "What's the BS number?" four times.
+    // AFTER fix: trip_time on the snapshot, BS ask emitted ONCE with
+    // the defer hint.
+    expect(session.stateSnapshot.circuits[1].rcd_trip_time).toBe('25');
+    const askPayload = ws.sent.find((m) => m.context_field === 'rcd_bs_en');
+    expect(askPayload).toBeDefined();
+    expect(askPayload.question).toBe("What's the BS number? Or do you want to fill that in later?");
+
+    // Inspector defers — script exits cleanly, trip_time preserved.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'fill later',
+      now: 2000,
+    });
+    expect(ws.sent.at(-1).question).toBe("Okay, I'll come back to that later.");
+    expect(session.stateSnapshot.circuits[1].rcd_trip_time).toBe('25');
+    expect(session.stateSnapshot.circuits[1].rcd_bs_en).toBeUndefined();
+    expect(session.dialogueScriptState).toBeFalsy();
+  });
+
   test('unparseable reply ("um what?") → fall through to normal finish', () => {
     const ws = new FakeWS();
     const session = buildSession({ 1: {}, 2: {} });
