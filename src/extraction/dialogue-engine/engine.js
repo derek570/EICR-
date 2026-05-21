@@ -43,6 +43,8 @@ import {
 } from './helpers/wire-emit.js';
 import { applyDerivations } from './helpers/derivations.js';
 import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
+import { applyReadingToSnapshot } from '../stage6-snapshot-mutators.js';
+import { parseCircuitRange, formatBulkApplyConfirm } from './parsers/circuit-range.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -455,6 +457,27 @@ function runActivePath({
 }) {
   const state = session.dialogueScriptState;
   state.last_turn_at = now;
+
+  // 0a. Bulk-apply reply (RCD, 2026-05-21 fix B slice 3). When the
+  //     schema declared a `postCompletionAsk` and the engine emitted
+  //     the follow-up prompt last turn, intercept the inspector's
+  //     reply BEFORE any other active-path handler. The reply parses
+  //     via the schema-bound `parseCircuitRange`; we apply the
+  //     specified fields to the resolved circuit set, confirm out
+  //     loud, then finish the script. Mutually exclusive with the
+  //     disambiguation reply below — both gate on a single boolean
+  //     flag so they can't coincide.
+  if (state.bulkApplyPending && schema.postCompletionAsk) {
+    return handleBulkApplyReply({
+      ws,
+      session,
+      sessionId,
+      text,
+      schema,
+      logger,
+      now,
+    });
+  }
 
   // 0. Disambiguation reply — when the resume hook asked "Was 299
   //    L-L or L-E?", intercept the answer here BEFORE cancel /
@@ -1114,6 +1137,34 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
   const state = session.dialogueScriptState;
   const nextSlot = nextMissingSlot(state.values, schema.slots, state.skipped_slots);
   if (!nextSlot) {
+    // Post-completion bulk-apply prompt (RCD, 2026-05-21 fix B
+    // slice 3). When the schema declared a `postCompletionAsk` and
+    // the engine hasn't emitted it yet on this script-run, emit it
+    // instead of going straight to finish. The active-path's bulk-
+    // apply intercept will route the inspector's reply on the next
+    // turn. Gate on bulkApplyPending so an unparseable answer that
+    // routes back through here (after handleBulkApplyReply finished
+    // and cleared the flag) doesn't re-prompt.
+    if (schema.postCompletionAsk && !state.bulkApplyPending) {
+      state.bulkApplyPending = true;
+      state.bulkApplyAskedAt = now;
+      safeSend(
+        ws,
+        buildScriptAsk({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          now,
+          kind: 'bulk_apply',
+          slotQuestion: schema.postCompletionAsk.question,
+        })
+      );
+      logger?.info?.(`${schema.logEventPrefix}_bulk_apply_prompted`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        values: { ...state.values },
+      });
+      return { handled: true, fallthrough: false };
+    }
     finishScript({ ws, session, sessionId, schema, logger, now });
     return { handled: true, fallthrough: false };
   }
@@ -1130,6 +1181,116 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
       kind: 'value',
     })
   );
+  return { handled: true, fallthrough: false };
+}
+
+/**
+ * Handle the inspector's reply to a `postCompletionAsk` prompt
+ * (RCD bulk-apply, 2026-05-21 fix B slice 3).
+ *
+ * Parses the reply via `parseCircuitRange`:
+ *   - 'none'  → decline / unparseable → no bulk write, normal finish
+ *   - 'all'   → copy schema.postCompletionAsk.fields to every
+ *               positive-int circuit ref on the snapshot (except the
+ *               script's own circuit, already filled)
+ *   - 'range' → copy to circuits start..end (creates blanks for
+ *               unknown numbers; user direction 2026-05-21)
+ *   - 'list'  → copy to the listed circuits (creates blanks)
+ *
+ * Per user direction: bulk-apply OVERWRITES existing values on
+ * target circuits, NEVER skips-and-fills-blanks. The inspector is
+ * authoritatively telling the system "these RCD details apply
+ * everywhere I just said".
+ *
+ * Trip time is excluded by virtue of not being in
+ * `postCompletionAsk.fields` — per-circuit reading, not a shared
+ * device property.
+ */
+function handleBulkApplyReply({ ws, session, sessionId, text, schema, logger, now }) {
+  const state = session.dialogueScriptState;
+  const ask = schema.postCompletionAsk;
+  const fieldsToPropagate = Array.isArray(ask.fields) ? ask.fields : [];
+  const fieldsLabel = ask.fieldsLabel ?? schema.name.toUpperCase();
+  const parse = parseCircuitRange(text);
+
+  // Resolve the target circuit set.
+  let targetCircuits = [];
+  if (parse.scope === 'all') {
+    const snapshotRefs = Object.keys(session.stateSnapshot?.circuits ?? {})
+      .map((k) => parseInt(k, 10))
+      .filter((n) => Number.isInteger(n) && n > 0 && n !== state.circuit_ref)
+      .sort((a, b) => a - b);
+    targetCircuits = snapshotRefs;
+  } else if (parse.scope === 'range' || parse.scope === 'list') {
+    targetCircuits = parse.circuits.filter((n) => n !== state.circuit_ref);
+  }
+
+  // Build the value bundle from the script's filled values.
+  const values = {};
+  for (const field of fieldsToPropagate) {
+    const v = state.values[field];
+    if (v !== undefined && v !== null && v !== '') values[field] = v;
+  }
+
+  // Apply per target circuit. applyReadingToSnapshot auto-creates the
+  // bucket if missing — that's exactly the "create blank circuit"
+  // behaviour the user asked for.
+  let writeCount = 0;
+  for (const ref of targetCircuits) {
+    const circuitWrites = [];
+    for (const [field, value] of Object.entries(values)) {
+      applyReadingToSnapshot(session.stateSnapshot, { circuit: ref, field, value });
+      circuitWrites.push({ field, value });
+      writeCount += 1;
+    }
+    if (circuitWrites.length > 0) {
+      safeSend(ws, buildExtractionPayload(ref, circuitWrites, schema.extractionSource));
+    }
+  }
+
+  logger?.info?.(`${schema.logEventPrefix}_bulk_applied`, {
+    sessionId,
+    scope: parse.scope,
+    target_count: targetCircuits.length,
+    targets: targetCircuits.slice(0, 50),
+    fields: Object.keys(values),
+    writes: writeCount,
+    textPreview: text.slice(0, 80),
+  });
+
+  // Confirm out loud (per user direction 2026-05-21) — but ONLY when
+  // a write actually happened. Scope 'none' or empty target set →
+  // skip the bulk confirm and fall through to the normal finish TTS
+  // ("Got it. BS EN 61008, type AC, 30 mA.").
+  if (parse.scope !== 'none' && targetCircuits.length > 0) {
+    const confirm = formatBulkApplyConfirm(parse.scope, parse, fieldsLabel);
+    if (confirm) {
+      safeSend(
+        ws,
+        buildScriptInfo({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          kind: 'bulk_apply_done',
+          text: confirm,
+          now,
+        })
+      );
+    }
+    // Clear the bulk-apply state and the rest of the script. Don't
+    // call finishScript here — the bulk-apply confirm IS the closing
+    // TTS, and finishScript would emit the redundant "Got it." line.
+    clearScriptState(session);
+    if (typeof schema.onFinish === 'function') {
+      schema.onFinish(session, state.circuit_ref);
+    }
+    return { handled: true, fallthrough: false };
+  }
+
+  // Decline or unparseable — finish normally with the schema's
+  // standard completion TTS. The user got asked, said no (or
+  // mumbled), so the script wraps up the original circuit's RCD
+  // read-out and exits.
+  finishScript({ ws, session, sessionId, schema, logger, now });
   return { handled: true, fallthrough: false };
 }
 

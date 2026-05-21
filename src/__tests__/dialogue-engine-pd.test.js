@@ -162,12 +162,27 @@ describe('RCD walk-through', () => {
       transcriptText: '30',
       now: 4000,
     });
-    expect(ws.sent.at(-1).reason).toBe('info');
+    // Slice-3 (2026-05-21): all three slots filled → engine emits
+    // the bulk-apply prompt BEFORE the normal completion TTS.
+    expect(ws.sent.at(-1).reason).toBe('missing_context');
+    expect(ws.sent.at(-1).question).toMatch(/apply these RCD details/i);
     expect(session.stateSnapshot.circuits[5]).toMatchObject({
       rcd_bs_en: 'BS EN 61008',
       rcd_type: 'AC',
       rcd_operating_current_ma: '30',
     });
+
+    // Decline the bulk apply → engine finishes normally with the
+    // standard "Got it. ..." readout.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'no',
+      now: 5000,
+    });
+    expect(ws.sent.at(-1).reason).toBe('info');
+    expect(ws.sent.at(-1).question).toMatch(/^got it/i);
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -258,9 +273,19 @@ describe('RCD walk-through', () => {
         transcriptText: '30',
         now: 4000,
       });
-      // Script finishes — completion TTS, not another ask.
+      // Slice-3: all three primary slots filled → bulk-apply prompt
+      // first, then decline-and-finish.
+      expect(ws.sent.at(-1).reason).toBe('missing_context');
+      expect(ws.sent.at(-1).question).toMatch(/apply these RCD details/i);
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'no',
+        now: 5000,
+      });
       expect(ws.sent.at(-1).reason).toBe('info');
-      // trip_time stays unset.
+      // trip_time stays unset (volunteered-only, never asked).
       expect(session.stateSnapshot.circuits[5].rcd_trip_time).toBeUndefined();
     });
 

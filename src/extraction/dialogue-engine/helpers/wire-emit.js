@@ -41,6 +41,23 @@ export function buildScriptAsk({
       expected_answer_shape: 'value',
     };
   }
+  // Post-completion bulk-apply prompt (RCD, 2026-05-21). Acts like
+  // 'which_circuit' on the wire (null context_field/circuit, value
+  // shape so iOS waits for a reply) but uses an explicit prompt text
+  // passed via slotQuestion. Tool-call-id includes "bulk-apply" so
+  // the call stays distinct from the slot asks the engine just
+  // emitted.
+  if (kind === 'bulk_apply') {
+    return {
+      type: 'ask_user_started',
+      tool_call_id: `${toolCallIdPrefix}-${sessionId}-bulk-apply-${now}`,
+      question: slotQuestion,
+      reason: 'missing_context',
+      context_field: null,
+      context_circuit: null,
+      expected_answer_shape: 'value',
+    };
+  }
   return {
     type: 'ask_user_started',
     tool_call_id: `${toolCallIdPrefix}-${sessionId}-${circuit_ref}-${missing_field}-${now}`,

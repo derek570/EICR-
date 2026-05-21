@@ -179,4 +179,15 @@ export const rcdSchema = {
     const ma = values.rcd_operating_current_ma ?? '?';
     return `Got it. ${bs}, type ${type}, ${ma} mA.`;
   },
+  // Post-completion bulk-apply prompt (2026-05-21, fix B slice 3).
+  // When BS / type / mA are all filled, the engine emits this prompt
+  // BEFORE finishing the script. Reply parses via parseCircuitRange;
+  // applies the listed `fields` to the chosen circuits (creating
+  // blank circuits for unknown numbers per user direction). Trip time
+  // is NOT in `fields` because it's a per-circuit reading.
+  postCompletionAsk: {
+    question: "Apply these RCD details to any other circuits? Say 'all' or a range like '1 to 6'.",
+    fields: ['rcd_bs_en', 'rcd_type', 'rcd_operating_current_ma'],
+    fieldsLabel: 'RCD',
+  },
 };
