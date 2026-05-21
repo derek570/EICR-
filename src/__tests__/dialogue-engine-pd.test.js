@@ -169,6 +169,112 @@ describe('RCD walk-through', () => {
       rcd_operating_current_ma: '30',
     });
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // rcd_trip_time — volunteered-only slot. Added 2026-05-21 (session
+  // 293F074F): "RCD trip time for the cooker is 25 ms" used to enter
+  // the script and then ask "What's the BS number?" repeatedly because
+  // trip_time wasn't a slot at all. Now it's the first slot, marked
+  // `volunteeredOnly: true`, so the entry parser harvests it but
+  // nextMissingSlot never asks for it.
+  // ─────────────────────────────────────────────────────────────────────
+  describe('rcd_trip_time (volunteered-only)', () => {
+    test('entry utterance "RCD trip time for circuit 5 is 25 ms" writes trip_time and asks for BS', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD trip time for circuit 5 is 25 ms.',
+        now: 1000,
+      });
+      // trip_time landed via the entry parser.
+      expect(session.stateSnapshot.circuits[5].rcd_trip_time).toBe('25');
+      // Next ask skips trip_time (volunteeredOnly) and goes to bs_en.
+      expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+      // Question text includes the new "fill later" hint.
+      expect(ws.sent.at(-1).question).toBe(
+        "What's the BS number? Or do you want to fill that in later?"
+      );
+    });
+
+    test('"RCD on circuit 5" with no trip_time still asks for BS first', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD on circuit 5.',
+        now: 1000,
+      });
+      expect(session.stateSnapshot.circuits[5].rcd_trip_time).toBeUndefined();
+      expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    });
+
+    test('decimal trip time "12.5 ms" lands as "12.5"', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD trip time for circuit 5 is 12.5 ms.',
+        now: 1000,
+      });
+      expect(session.stateSnapshot.circuits[5].rcd_trip_time).toBe('12.5');
+    });
+
+    test('completing BS/type/mA does NOT require trip_time to finish', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 5: {} });
+      // Entry without trip_time.
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'RCD on circuit 5.',
+        now: 1000,
+      });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'BS EN 61008',
+        now: 2000,
+      });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'AC',
+        now: 3000,
+      });
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: '30',
+        now: 4000,
+      });
+      // Script finishes — completion TTS, not another ask.
+      expect(ws.sent.at(-1).reason).toBe('info');
+      // trip_time stays unset.
+      expect(session.stateSnapshot.circuits[5].rcd_trip_time).toBeUndefined();
+    });
+
+    test('schema slot order: trip_time first, bs_en second, type third, ma fourth', () => {
+      expect(rcdSchema.slots.map((s) => s.field)).toEqual([
+        'rcd_trip_time',
+        'rcd_bs_en',
+        'rcd_type',
+        'rcd_operating_current_ma',
+      ]);
+      expect(rcdSchema.slots[0].volunteeredOnly).toBe(true);
+      expect(rcdSchema.slots[1].acceptsDeferAnswer).toBe(true);
+    });
+  });
 });
 
 describe('RCBO pivot', () => {

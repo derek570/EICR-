@@ -1,29 +1,78 @@
 /**
- * RCD (residual current device) schema. Captures the three fields
- * iOS shows in the RCD column group: BS/EN code, type (waveform),
- * operating current in mA. RCD trip time is intentionally NOT a
- * slot here — it's a separate test reading captured by Sonnet's
- * normal extraction path.
+ * RCD (residual current device) schema. Captures the three "device-
+ * level" fields iOS shows in the RCD column group: BS/EN code, type
+ * (waveform), operating current in mA. As of 2026-05-21 (session
+ * 293F074F), the schema also opportunistically captures the
+ * per-circuit `rcd_trip_time` when the inspector volunteers it at
+ * entry ("RCD trip time for the cooker is 25 ms") — but never asks
+ * for it explicitly, because trip time is a test reading that varies
+ * per circuit, not a shared property of the RCD device.
  *
  * Pivot: when `rcd_bs_en` fills with "BS EN 61009", the device IS
  * an RCBO — derivation pivots to the RCBO schema and mirrors the
  * BS code into ocpd_bs_en (both columns hold the same value for
  * RCBOs by convention).
+ *
+ * Bulk apply: after BS / type / mA all fill (the three RCD device
+ * properties), the engine emits a follow-up TTS prompt: "Apply these
+ * RCD details to any other circuits? Say 'all' or a range like '1
+ * to 6'." The inspector's reply propagates BS/type/mA — but NOT
+ * trip_time — to the named circuits, creating blanks where the
+ * circuit number doesn't exist yet. See engine.js's bulk-apply
+ * branch for the implementation.
  */
 
 import { parseBsCode } from '../parsers/bs-code.js';
 import { parseRcdType } from '../parsers/rcd-type.js';
 import { parseMa } from '../parsers/ma.js';
+import { parseMs } from '../parsers/ms.js';
 
 const slots = [
+  // rcd_trip_time sits FIRST so the entry-utterance named-field
+  // extractor finds it before the regex-overlap-prone "BS"/"mA"
+  // patterns. `volunteeredOnly: true` means nextMissingSlot skips it
+  // — the engine never asks "What's the trip time?" via TTS. The
+  // inspector dictates it as part of the natural sentence; otherwise
+  // it stays null and they fill it later via the iOS UI.
+  //
+  // `countsTowardCancelTally: false` matches the existing IR voltage
+  // pattern — the "N of M saved" cancel message shouldn't penalise a
+  // never-asked slot.
+  {
+    field: 'rcd_trip_time',
+    label: 'trip time',
+    parser: parseMs,
+    // "trip time ... 25 ms" / "trip time of 25 ms" / "trip time is
+    // 25 milliseconds". Two-word phrase anchor `\btrip\s+time\b`. The
+    // unit suffix (ms/millisecond) is REQUIRED so the regex can use
+    // it as a right-anchor to skip over an intervening circuit
+    // number — "RCD trip time for circuit 5 is 25 ms" needs filler
+    // to consume "for circuit 5 is " to reach "25 ms". Allowing the
+    // filler to contain digits (only excluding ∞) is safe because
+    // the trailing unit pins the actual value position.
+    namedExtractor:
+      /\btrip\s*time\b[^∞]{0,40}?(\d+(?:\.\d+)?)\s*(?:m\s*s|millisecond|milliseconds)\b/i,
+    acceptsBareValue: false,
+    volunteeredOnly: true,
+    countsTowardCancelTally: false,
+  },
   {
     field: 'rcd_bs_en',
     kind: 'bs_code',
     label: 'BS number',
-    question: "What's the BS number?",
+    question: "What's the BS number? Or do you want to fill that in later?",
     parser: parseBsCode,
     namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
     acceptsBareValue: true,
+    // Defer answer: when the inspector says "fill later" / "later" /
+    // "skip" in response to this ask, the engine clears the script
+    // and marks the per-session, per-circuit RCD asks as deferred so
+    // the 60s ring-style re-ask watchdog (if any) doesn't keep
+    // nagging. See engine.js's defer branch for the parser + state
+    // update. The hint is built into the question text so the
+    // inspector knows the escape hatch exists without needing a
+    // tutorial.
+    acceptsDeferAnswer: true,
     derivations: [
       // RCBO pivot — mirror the BS code into ocpd_bs_en.
       { value: '61009', mirrors: ['ocpd_bs_en'], pivot: 'rcbo' },
@@ -50,7 +99,11 @@ const slots = [
 const triggers = [
   // "RCD on circuit N" — the trigger word "RCD" excludes "RCBO" via
   // the trailing word boundary, so "RCBO" doesn't accidentally enter
-  // RCD when the user really wanted RCBO.
+  // RCD when the user really wanted RCBO. The optional "trip time"
+  // alternative lets the script enter on the natural "RCD trip time
+  // for the cooker is 25 ms." utterance — without it, that utterance
+  // matched but the entry parser couldn't harvest "25 ms" because
+  // `rcd_trip_time` wasn't a slot.
   /\bRCD\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
 ];
 

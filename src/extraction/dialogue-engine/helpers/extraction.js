@@ -49,9 +49,15 @@ export function extractNamedFieldValues(text, slots) {
  * "skip that"). Skipped slots are treated as "done" for iteration
  * purposes so the script moves past them. PR2 OCPD/RCD/RCBO use
  * this; ring/IR pass undefined and behave as before.
+ *
+ * `volunteeredOnly: true` slots (RCD trip time, 2026-05-21) are also
+ * skipped — they're harvested from the entry utterance via
+ * extractNamedFieldValues but never asked for via TTS. They behave
+ * like "always done" from nextMissingSlot's perspective.
  */
 export function nextMissingSlot(values, slots, skippedSet) {
   for (const slot of slots) {
+    if (slot.volunteeredOnly) continue;
     if (skippedSet?.has?.(slot.field)) continue;
     const v = values[slot.field];
     if (v === undefined || v === null || v === '') return slot;
