@@ -450,37 +450,327 @@ async function runSingleShot({ anthropic, model, prompt, imageBuffer, signal }) 
  */
 const LABEL_MATCHABLE_KINDS = new Set(['mcb', 'rcbo', 'rewireable', 'cartridge']);
 
+// Selects which label-to-device matching algorithm to use. Default
+// 'monotonic' — global sequence alignment via DP, ships 2026-05-21 to
+// fix the Wylex NHRS12SL +1-shift regression (handoff
+// .planning-stage6-agentic/handoffs/ccu-label-shift-2026-05-21/).
+// 'nearest' falls back to the per-label nearest-neighbour matcher that
+// shipped 2026-05-21 earlier the same day. Kept as a one-flag rollback
+// — flip `CCU_LABEL_MATCHER_ALGORITHM=nearest` on the ECS task def to
+// revert without a redeploy. Delete the nearest path once monotonic
+// has 2 weeks in production with no surprises.
+const LABEL_MATCHER_ALGORITHM = (
+  process.env.CCU_LABEL_MATCHER_ALGORITHM ?? 'monotonic'
+).toLowerCase();
+
 /**
- * Match VLM-returned labels onto entries by horizontal position.
+ * Public entry point — dispatches to the configured matching algorithm.
+ * Mutates `entries` in place (sets entries[i].label). Returns a
+ * diagnostic object for CloudWatch logging.
  *
- * Replaces the prior "VLM assigns label per entry" approach which had a
- * reliable failure mode on tightly-spaced MCBs: the model would correctly
- * see "COOKER" sitting at x=0.577 and a B32 at x=0.585 (8 thousandths
- * away), then attach COOKER to a B16 at x=0.535 (42 thousandths away)
- * because it skipped the closer-to-neighbour check in its own prompt
- * rule. 2026-05-20 diagnostic confirmed gpt-5.5's position perception
- * is precise and stable (range 0.006 across 5 runs for the COOKER label)
- * — only the constraint application was unreliable. Doing the matching
- * in code is robust and free.
- *
- * Algorithm:
- *   1. Derive a "pitch" from the median gap between MATCHABLE entries
- *      (in normalised 0-1 space). This is robust to outlier gaps caused
- *      by main-switch/RCD/blank runs between MCB clusters.
- *   2. Threshold = 0.5 × pitch. A label that's farther from its nearest
- *      matchable entry than this is dropped (typically a section header
- *      like "RCD Protected Circuits" sitting between an RCD and the next
- *      MCB).
- *   3. For each label, find the nearest matchable entry. If a closer
- *      label has already claimed that entry, drop this one.
- *   4. Apply matched label.text onto entries[i].label. Unmatched matchable
- *      entries get label=null so the downstream parser doesn't carry a
- *      stale label from the prompt's per-entry field.
- *
- * Mutates `entries` in place. Returns a diagnostic object for logging.
+ * See `matchLabelsToEntriesMonotonic` (default) for the algorithm
+ * detail. The legacy `matchLabelsToEntriesNearest` is preserved as a
+ * one-env-var rollback path.
  */
 export function matchLabelsToEntries(entries, labelArray) {
+  if (LABEL_MATCHER_ALGORITHM === 'nearest') {
+    return matchLabelsToEntriesNearest(entries, labelArray);
+  }
+  return matchLabelsToEntriesMonotonic(entries, labelArray);
+}
+
+/**
+ * Monotonic sequence-alignment label matcher (default since 2026-05-21).
+ *
+ * The previous nearest-neighbour matcher operated per label in isolation:
+ * for each label, pick the closest matchable device within a tight
+ * pitch-derived threshold. This was robust to obvious failure modes
+ * (section headers landing on RCDs) but had a subtle one: when the VLM's
+ * reported positions drift by ~0.02 normalised x (which they do — see
+ * the 2026-05-21 diagnostic replay against the failing Wylex extraction
+ * 1779384564405-u7dp9b), a label can flip to a neighbour device whose
+ * x happens to be marginally closer that turn. Result: every circuit
+ * downstream shifts by one slot until the next gap absorbs the slack.
+ *
+ * The fix is to stop matching per-label and instead solve the GLOBAL
+ * one-to-one assignment that preserves the LEFT-TO-RIGHT ORDER of both
+ * lists — labels are emitted in left-to-right order along the strip,
+ * devices are mounted left-to-right on the rail, so the right answer
+ * must respect that ordering. Standard dynamic-programming sequence
+ * alignment (same machinery as DTW, Needleman-Wunsch) computes this in
+ * O(L × D) time.
+ *
+ * Algorithm:
+ *   1. Filter entries to matchable kinds (mcb/rcbo/rewireable/cartridge);
+ *      sort by x. Filter labels to those with valid text + x; sort by x.
+ *   2. Derive `pitch` = median adjacent gap between matchable candidates
+ *      (same as the nearest matcher — single source of truth).
+ *   3. Build a (L+1) × (D+1) DP table where cost[i][j] = best total
+ *      cost to align labels[0..i-1] with candidates[0..j-1]. At each
+ *      cell, pick the cheapest of three moves:
+ *        - MATCH: cost[i-1][j-1] + |label_i.x − cand_j.x|
+ *        - LABEL-SKIP (section header / hallucinated label):
+ *            cost[i-1][j] + LABEL_SKIP_PENALTY
+ *        - DEVICE-SKIP (unlabelled device, e.g. spare slot):
+ *            cost[i][j-1] + DEVICE_SKIP_PENALTY
+ *   4. Backtrack from (L, D) to recover the actual assignment.
+ *   5. Apply matched label.text onto entries[c.idx].label. Unmatched
+ *      matchable entries get label = null.
+ *
+ * Cost weights — tune via the env vars
+ * `CCU_LABEL_MATCHER_LABEL_SKIP_FACTOR`,
+ * `CCU_LABEL_MATCHER_DEVICE_SKIP_FACTOR`,
+ * `CCU_LABEL_MATCHER_MAX_MATCH_FACTOR` (all relative to pitch):
+ *
+ *   LABEL_SKIP_PENALTY = pitch        (default factor 1.0)
+ *     A label costs roughly one slot of misalignment to discard.
+ *     Higher → keeps labels even when their nearest device is far away
+ *     (risk: section headers swallow a real device). Lower → drops
+ *     labels too eagerly. The current value matches the cost of one
+ *     pitch of match-distance, so a label is matched if and only if
+ *     there's a device within ~one pitch of it.
+ *
+ *   DEVICE_SKIP_PENALTY = 0.5 × pitch (default factor 0.5)
+ *     A device costs half a slot to skip. Non-zero is CRITICAL — with
+ *     0 the algorithm gratuitously shifts labels +1 to chase a closer
+ *     neighbour match, exactly the bug we're fixing. 0.5 × pitch is
+ *     the smallest value at which the Wylex Kitchen Sockets +1 shift
+ *     becomes unprofitable in DP cost terms (the 0.006 distance gain
+ *     from picking slot 4 over slot 3 is offset by the 0.026 skip
+ *     cost). Don't lower this below ~0.4 × pitch without re-validating
+ *     the Wylex regression test.
+ *
+ *   MAX_MATCH_COST = 0.7 × pitch     (default factor 0.7)
+ *     Hard cap on individual match distance — beyond this, the match
+ *     cost is Infinity (forbidden). Without the cap a label sitting
+ *     in the middle of nowhere could match the nearest device across
+ *     the entire rail; with it, far-from-anything labels are forced to
+ *     label-skip and the device they would have stolen stays available
+ *     for the next label in sequence. 0.7 is slightly more permissive
+ *     than the old 0.5 × pitch nearest-neighbour threshold so a
+ *     leftmost label (which tends to sit slightly right of its device
+ *     due to label-strip layout) doesn't get dropped — but tight
+ *     enough that "Sockets" at 0.85 × pitch from its only matchable
+ *     neighbour still gets skipped.
+ *
+ * Backtrack tie-break (when two moves have equal cost): match > label-
+ * skip > device-skip. Rationale: a match is the most informative
+ * outcome; label-skip is the next-likely "real" interpretation (a
+ * section header that gpt-5.5 emitted alongside circuit labels); a
+ * device-skip is the least informative (just padding).
+ *
+ * Diagnostic shape (returned object, also logged to CloudWatch):
+ *   {
+ *     algorithm, skipped, skipReason,
+ *     labelsInput, labelsValidated, candidates,
+ *     matched, labelsSkipped, devicesSkipped,
+ *     pitchNorm, labelSkipPenalty, deviceSkipPenalty, maxMatchCost,
+ *     totalCost,
+ *   }
+ *
+ * Mutates `entries` in place.
+ */
+export function matchLabelsToEntriesMonotonic(entries, labelArray) {
   const diag = {
+    algorithm: 'monotonic',
+    skipped: false,
+    skipReason: null,
+    labelsInput: Array.isArray(labelArray) ? labelArray.length : 0,
+    labelsValidated: 0,
+    candidates: 0,
+    matched: 0,
+    labelsSkipped: 0,
+    devicesSkipped: 0,
+    pitchNorm: null,
+    labelSkipPenalty: null,
+    deviceSkipPenalty: null,
+    maxMatchCost: null,
+    totalCost: null,
+  };
+
+  if (!Array.isArray(labelArray) || labelArray.length === 0) {
+    diag.skipped = true;
+    diag.skipReason = 'no_labels_array';
+    return diag;
+  }
+  if (!Array.isArray(entries) || entries.length === 0) {
+    diag.skipped = true;
+    diag.skipReason = 'no_entries';
+    return diag;
+  }
+
+  // 1a. Build candidate list. Each candidate carries its ORIGINAL index in
+  //     entries[] so the result can be written back to the right slot.
+  //     Sort left-to-right by x — the monotonic constraint is in candidate-x
+  //     order, not entries[] order (defensive: VLM's entries[] *should* be
+  //     left-to-right but the diagnostic showed it isn't always).
+  const candidates = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const kind = typeof e?.device_kind === 'string' ? e.device_kind.toLowerCase().trim() : null;
+    const x = typeof e?.position_x === 'number' ? e.position_x : null;
+    if (kind && LABEL_MATCHABLE_KINDS.has(kind) && x != null && x >= 0 && x <= 1) {
+      candidates.push({ idx: i, x });
+    }
+  }
+  candidates.sort((a, b) => a.x - b.x);
+  diag.candidates = candidates.length;
+
+  if (candidates.length === 0) {
+    diag.skipped = true;
+    diag.skipReason = 'no_matchable_candidates';
+    return diag;
+  }
+
+  // 1b. Build label list (valid text + valid x); sort left-to-right.
+  const labels = [];
+  for (const lab of labelArray) {
+    const lx = typeof lab?.position_x === 'number' ? lab.position_x : null;
+    const text = typeof lab?.text === 'string' ? lab.text.trim() : null;
+    if (lx == null || lx < 0 || lx > 1 || !text) continue;
+    labels.push({ x: lx, text });
+  }
+  labels.sort((a, b) => a.x - b.x);
+  diag.labelsValidated = labels.length;
+
+  if (labels.length === 0) {
+    diag.skipped = true;
+    diag.skipReason = 'no_valid_labels';
+    // Still clear stale label fields on matchable entries.
+    for (const c of candidates) entries[c.idx].label = null;
+    return diag;
+  }
+
+  // 2. Pitch = median adjacent gap between matchable candidates.
+  let pitch;
+  if (candidates.length < 2) {
+    pitch = 1 / Math.max(entries.length + 1, 2);
+  } else {
+    const gaps = [];
+    for (let i = 1; i < candidates.length; i++) {
+      gaps.push(candidates[i].x - candidates[i - 1].x);
+    }
+    gaps.sort((a, b) => a - b);
+    pitch = gaps[Math.floor(gaps.length / 2)];
+  }
+
+  // Tunable factors. Defaults derived in the algorithm docstring above.
+  const labelSkipFactor = Number(process.env.CCU_LABEL_MATCHER_LABEL_SKIP_FACTOR ?? 1.0);
+  const deviceSkipFactor = Number(process.env.CCU_LABEL_MATCHER_DEVICE_SKIP_FACTOR ?? 0.5);
+  const maxMatchFactor = Number(process.env.CCU_LABEL_MATCHER_MAX_MATCH_FACTOR ?? 0.7);
+  const LABEL_SKIP_PENALTY = labelSkipFactor * pitch;
+  const DEVICE_SKIP_PENALTY = deviceSkipFactor * pitch;
+  const MAX_MATCH_COST = maxMatchFactor * pitch;
+
+  diag.pitchNorm = Number(pitch.toFixed(4));
+  diag.labelSkipPenalty = Number(LABEL_SKIP_PENALTY.toFixed(4));
+  diag.deviceSkipPenalty = Number(DEVICE_SKIP_PENALTY.toFixed(4));
+  diag.maxMatchCost = Number(MAX_MATCH_COST.toFixed(4));
+
+  // 3. DP fill. cost[i][j] = min cost to align labels[0..i-1] ↔ cands[0..j-1].
+  const L = labels.length;
+  const D = candidates.length;
+  const cost = Array.from({ length: L + 1 }, () => new Float64Array(D + 1));
+  // path[i][j]: 0=MATCH (diagonal), 1=LABEL_SKIP (from i-1,j), 2=DEVICE_SKIP (from i,j-1).
+  const path = Array.from({ length: L + 1 }, () => new Uint8Array(D + 1));
+
+  // Init: empty labels align with all-skipped devices, and vice versa.
+  for (let j = 1; j <= D; j++) {
+    cost[0][j] = j * DEVICE_SKIP_PENALTY;
+    path[0][j] = 2;
+  }
+  for (let i = 1; i <= L; i++) {
+    cost[i][0] = i * LABEL_SKIP_PENALTY;
+    path[i][0] = 1;
+  }
+
+  for (let i = 1; i <= L; i++) {
+    for (let j = 1; j <= D; j++) {
+      const dist = Math.abs(labels[i - 1].x - candidates[j - 1].x);
+      const matchCost = dist > MAX_MATCH_COST ? Infinity : dist;
+      const matchOpt = cost[i - 1][j - 1] + matchCost;
+      const labelSkipOpt = cost[i - 1][j] + LABEL_SKIP_PENALTY;
+      const deviceSkipOpt = cost[i][j - 1] + DEVICE_SKIP_PENALTY;
+
+      // Tie-break: match > label-skip > device-skip (strict-less compares).
+      let best = matchOpt;
+      let how = 0;
+      if (labelSkipOpt < best) {
+        best = labelSkipOpt;
+        how = 1;
+      }
+      if (deviceSkipOpt < best) {
+        best = deviceSkipOpt;
+        how = 2;
+      }
+      cost[i][j] = best;
+      path[i][j] = how;
+    }
+  }
+  diag.totalCost = Number.isFinite(cost[L][D]) ? Number(cost[L][D].toFixed(4)) : null;
+
+  // 4. Backtrack from (L, D) to recover the assignment.
+  const matchByCandidateIdx = new Map();
+  let labelsSkipped = 0;
+  let devicesSkipped = 0;
+  {
+    let i = L;
+    let j = D;
+    while (i > 0 || j > 0) {
+      if (i === 0) {
+        devicesSkipped++;
+        j--;
+        continue;
+      }
+      if (j === 0) {
+        labelsSkipped++;
+        i--;
+        continue;
+      }
+      const move = path[i][j];
+      if (move === 0) {
+        matchByCandidateIdx.set(candidates[j - 1].idx, labels[i - 1].text);
+        i--;
+        j--;
+      } else if (move === 1) {
+        labelsSkipped++;
+        i--;
+      } else {
+        devicesSkipped++;
+        j--;
+      }
+    }
+  }
+  diag.matched = matchByCandidateIdx.size;
+  diag.labelsSkipped = labelsSkipped;
+  diag.devicesSkipped = devicesSkipped;
+
+  // 5. Apply. Matchable entries: matched label or null (clears stale labels
+  //    from any prior per-entry-label code path). Non-matchable kinds
+  //    (main_switch, rcd, spd, blank) are not touched — the merger filters
+  //    them out of circuits[] anyway.
+  for (const c of candidates) {
+    const matched = matchByCandidateIdx.get(c.idx);
+    entries[c.idx].label = matched != null ? matched : null;
+  }
+  return diag;
+}
+
+/**
+ * Legacy nearest-neighbour label matcher. Kept as a one-env-var rollback
+ * path for the monotonic matcher that replaced it on 2026-05-21. Reverts
+ * to per-label nearest-within-half-pitch behaviour — see commit history
+ * for the full failure-mode story.
+ *
+ * To activate: set `CCU_LABEL_MATCHER_ALGORITHM=nearest` on the task def.
+ *
+ * Delete this function once the monotonic matcher has 2 weeks in
+ * production with no surprises and there's no scenario where we'd want
+ * to roll back.
+ */
+export function matchLabelsToEntriesNearest(entries, labelArray) {
+  const diag = {
+    algorithm: 'nearest',
     skipped: false,
     skipReason: null,
     labelsInput: Array.isArray(labelArray) ? labelArray.length : 0,
@@ -503,7 +793,6 @@ export function matchLabelsToEntries(entries, labelArray) {
     return diag;
   }
 
-  // Build candidate list — matchable entries that have a usable position_x.
   const candidates = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
@@ -521,14 +810,11 @@ export function matchLabelsToEntries(entries, labelArray) {
     return diag;
   }
 
-  // Derive pitch from median adjacent gap between candidates (sorted by x).
-  // Fallback to 1/N if only one candidate exists.
   const sortedX = candidates.map((c) => c.x).sort((a, b) => a - b);
   const gaps = [];
   for (let i = 1; i < sortedX.length; i++) gaps.push(sortedX[i] - sortedX[i - 1]);
   let pitch;
   if (gaps.length === 0) {
-    // Single candidate — use 1/(entries.length+1) as a reasonable default pitch.
     pitch = 1 / Math.max(entries.length + 1, 2);
   } else {
     gaps.sort((a, b) => a - b);
@@ -538,10 +824,7 @@ export function matchLabelsToEntries(entries, labelArray) {
   diag.pitchNorm = Number(pitch.toFixed(4));
   diag.maxDistNorm = Number(maxDist.toFixed(4));
 
-  // For each label, find nearest candidate within maxDist. Track best (closest)
-  // label per candidate idx — if two labels both nominate the same device, the
-  // closer one wins, the other is dropped.
-  const bestByIdx = new Map(); // idx -> { text, dist }
+  const bestByIdx = new Map();
   for (const lab of labelArray) {
     const lx = typeof lab?.position_x === 'number' ? lab.position_x : null;
     const text = typeof lab?.text === 'string' ? lab.text.trim() : null;
@@ -573,9 +856,6 @@ export function matchLabelsToEntries(entries, labelArray) {
   }
   diag.matched = bestByIdx.size;
 
-  // Apply. For matchable entries: overwrite label with the matched text or null.
-  // Non-matchable entries (main_switch, rcd, spd, blank) keep whatever the VLM
-  // put there — the merger filters them out anyway.
   for (const c of candidates) {
     const m = bestByIdx.get(c.idx);
     entries[c.idx].label = m ? m.text : null;
