@@ -52,18 +52,60 @@ import { dewarpRailQuad } from './ccu-rail-dewarp.js';
 // axis-aligned bbox extract — emergency rollback path if the dewarp
 // regresses without redeploying.
 const DEWARP_ENABLED = (process.env.CCU_DEWARP_ENABLED ?? 'true').toLowerCase() === 'true';
-// Output width for the rectified rail image. Default is "native" —
-// the dewarp preserves the source's pixel density at the rail (capped
-// at source width). Empirically the VLM reads small MCB-face and
-// label-strip text better with more pixels per module than the old
-// 2048-fixed output gave us. Set CCU_DEWARP_OUTPUT_WIDTH to a positive
-// integer to pin a fixed output width (e.g. to roll back to 2048 if
-// costs spike).
+// Output width for the rectified rail image sent to the VLM.
+// DEFAULT: 2048 pixels (fixed). This is an EMPIRICAL choice — see history.
+//
+// HISTORY
+//   - Before 2026-05-12: hardcoded 2048 fixed. Reliable VLM counting on
+//     real-world boards across the corpus.
+//   - 2026-05-12 (commit 10aabca, "preserve native pixel density"):
+//     changed default to null = native (no downsample, ~5917 px on a
+//     24 MP camera). Reasoning at the time: more pixels per module →
+//     better OCR on small device-face text.
+//   - 2026-05-13: native output empirically regressed gpt-5.5 COUNTING
+//     accuracy on Wylex NHRS12SL (multiple under-count repros). The
+//     OCR-side win on face text was real, but the counting-side loss
+//     dropped whole circuits — net worse. Hotfix set
+//     CCU_DEWARP_OUTPUT_WIDTH=2048 on the production task def to roll
+//     back to the prior behaviour.
+//   - Between 2026-05-13 and 2026-05-22, the hotfix env var was
+//     dropped from the task def (env-var drift). The native default
+//     re-applied silently.
+//   - 2026-05-22: same Wylex NHRS12SL board, same failure mode
+//     resurfaced (extraction 1779468040371-vwj60m: 14 entries when
+//     CV correctly counted 16; main switch + last Lighting dropped).
+//     This commit moves the 2048 default INTO CODE so it cannot be
+//     lost again to env-var drift.
+//
+// WHY 2048 BEATS NATIVE AT COUNTING (best theory — empirical primary)
+//   gpt-5.5's vision pipeline tiles input into multiple ~512px patches.
+//   At ~5917 wide the rail spans many tile boundaries; the model
+//   struggles to maintain spatial coherence across them and silently
+//   drops edge-of-rail modules. At 2048 wide the rail fits within a
+//   smaller tile footprint, whole-rail attention holds, counting is
+//   reliable. Per-module density drops ~296 → ~115 px, but device-face
+//   text remains legible at that density (60-80 px per character vs
+//   ~20-40 needed).
+//
+// ESCAPE HATCHES
+//   CCU_DEWARP_OUTPUT_WIDTH=N        — pin output to N pixels (overrides
+//                                      this 2048 default; useful for
+//                                      experiments at higher density)
+//   CCU_DEWARP_OUTPUT_WIDTH=native   — revert to native pixel-density
+//                                      output (the post-10aabca behaviour).
+//                                      Reserve for OCR-priority work; do
+//                                      NOT use in prod without re-testing
+//                                      counting accuracy on the corpus.
+//   CCU_DEWARP_MAX_WIDTH=N           — soft cap, only active when output
+//                                      mode is "native" (see below).
 const DEWARP_OUTPUT_WIDTH_RAW = process.env.CCU_DEWARP_OUTPUT_WIDTH;
-const DEWARP_OUTPUT_WIDTH =
-  DEWARP_OUTPUT_WIDTH_RAW && Number(DEWARP_OUTPUT_WIDTH_RAW) > 0
-    ? Number(DEWARP_OUTPUT_WIDTH_RAW)
-    : null;
+const DEWARP_OUTPUT_WIDTH = (() => {
+  const raw = typeof DEWARP_OUTPUT_WIDTH_RAW === 'string' ? DEWARP_OUTPUT_WIDTH_RAW.trim() : '';
+  if (raw.toLowerCase() === 'native') return null;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return n;
+  return 2048; // default — see history block above
+})();
 // Halfway cost brake: if CCU_DEWARP_OUTPUT_WIDTH is unset (native mode)
 // and CCU_DEWARP_MAX_WIDTH is a positive integer, native output is
 // capped at that pixel width. Small-board photos whose native is already
