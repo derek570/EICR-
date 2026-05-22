@@ -1034,6 +1034,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // a follow-up — for MVP the standard Sonnet round-trip with
   // in_response_to context lands the answer.
   const pendingReadingsBufferRef = React.useRef<PendingReadingsBuffer | null>(null);
+  // D6 — per-session dedup set for Sonnet confirmations. iOS canon
+  // `DeepgramRecordingViewModel.swift:303` `confirmedFieldKeys: Set<String>`
+  // reset at line 799 on session start. Keyed by `<field>_<circuit>` so a
+  // repeated overwrite of the same field+circuit pair doesn't re-announce
+  // (a turn that re-extracts the same Zs reading on the same circuit
+  // shouldn't TTS "Updated Zs to 0.42" twice). Field/circuit nulls fold
+  // into the key as 'unknown'/'none' to match iOS line 3307.
+  const confirmedFieldKeysRef = React.useRef<Set<string>>(new Set());
   if (pendingReadingsBufferRef.current === null) {
     pendingReadingsBufferRef.current = new PendingReadingsBuffer((readings) => {
       const buffer = pendingReadingsBufferRef.current;
@@ -1873,25 +1881,38 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // doc comment.
         schedulePushJobState();
       }
-      // Speak the first confirmation (if any) through the
-      // confirmation-mode-gated path — mirrors iOS where
-      // speakBriefConfirmation is the only TTS entry point gated by
-      // the user toggle (AlertManager.swift:889). Sonnet should also
-      // be honouring the matching `confirmations_enabled` wire flag
-      // and not emitting confirmations when the toggle is off, but
-      // we belt-and-brace here so a regression on either side fails
-      // safe (silent) rather than surprising the inspector with
-      // unexpected speech. Only the first is spoken so stacked
-      // readings don't backlog stale news.
-      const first = result.confirmations?.[0];
-      if (first) {
-        const sentence = confirmationToSentence(first);
-        if (sentence) {
-          clientDiagnostic('onExtraction_speaking_confirmation', {
-            sentencePreview: sentence.slice(0, 80),
+      // D6 — speak every confirmation through the confirmation-mode-
+      // gated path, deduped per session via confirmedFieldKeysRef so a
+      // re-extraction of the same field+circuit doesn't TTS twice.
+      // Mirrors iOS `flushPendingConfirmations`
+      // (DeepgramRecordingViewModel.swift:3290-3317): iterate the
+      // confirmations array, build `<field>_<circuit>` dedup key,
+      // skip on hit, otherwise speak via the user-toggle-gated path.
+      // Pre-fix the PWA only spoke the FIRST confirmation per turn —
+      // the inspector lost audio feedback on a multi-reading turn
+      // (two finals merged via the burst buffer can carry two field
+      // updates, and only the first got announced).
+      const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
+      for (const conf of confirmations) {
+        if (!conf || typeof conf.text !== 'string' || conf.text.trim().length === 0) continue;
+        const dedupeKey = `${conf.field ?? 'unknown'}_${
+          conf.circuit != null ? String(conf.circuit) : 'none'
+        }`;
+        if (confirmedFieldKeysRef.current.has(dedupeKey)) {
+          clientDiagnostic('onExtraction_confirmation_deduped', {
+            dedupeKey,
+            sentencePreview: conf.text.slice(0, 80),
           });
-          speakConfirmation(sentence);
+          continue;
         }
+        const sentence = confirmationToSentence(conf);
+        if (!sentence) continue;
+        confirmedFieldKeysRef.current.add(dedupeKey);
+        clientDiagnostic('onExtraction_speaking_confirmation', {
+          dedupeKey,
+          sentencePreview: sentence.slice(0, 80),
+        });
+        speakConfirmation(sentence);
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they
@@ -2806,6 +2827,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // D4 — drop any orphan readings carried over from a previous
     // session so the 2 s timer doesn't fire mid-warmup.
     pendingReadingsBufferRef.current?.reset();
+    // D6 — clear the per-field confirmation dedup set. Same iOS
+    // canon as line 799 (`confirmedFieldKeys = []`).
+    confirmedFieldKeysRef.current.clear();
     liveFill.reset();
     // Capture the new session id synchronously and snapshot it locally so
     // that any async handler resolving below (mic permission prompt, WS
@@ -3003,6 +3027,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // D4 — release the orphan buffer + cancel any armed timer so a
     // post-stop fire doesn't speak into a torn-down TTS pipeline.
     pendingReadingsBufferRef.current?.reset();
+    // D6 — drop the per-field confirmation dedup set so the next
+    // session starts with a clean slate.
+    confirmedFieldKeysRef.current.clear();
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 

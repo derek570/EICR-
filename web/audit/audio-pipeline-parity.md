@@ -161,39 +161,37 @@ resolve is tracked as a follow-up.
 Initially suspected from the audit, but `sendBargeIn` mirrors iOS exactly
 (see §3 above).
 
-### D6 — Per-field Sonnet TTS confirmation (MEDIUM, open)
+### D6 — Per-field Sonnet TTS confirmation ✅ closed 2026-05-22
 
-**iOS:** complete system. `confirmedFieldKeys: Set<String>` per session
-(`DeepgramRecordingViewModel.swift:303`). When `applySonnetValue`
-overwrites a field that previously had a different value, iOS:
-1. Builds a dedup key (line 3308).
-2. Calls `alertManager.speakBriefConfirmation(conf.text)` (line 3316)
-   to TTS "Updated Zs to 0.62".
-3. Inserts the key into `confirmedFieldKeys` so repeat overwrites
-   don't re-announce.
-4. Resets the set on session start (line 799).
+Re-examined: D6's audit-doc spec was incomplete. iOS's per-field TTS
+confirmation flows through the SERVER-EMITTED `confirmations[]` array
+on the extraction envelope, not a separate client-side path
+(`DeepgramRecordingViewModel.swift:3290-3317 flushPendingConfirmations`
+iterates the array, deduping via `confirmedFieldKeys: Set<String>`
+keyed `<field>_<circuit>`, then calls `speakBriefConfirmation`).
 
-**PWA:** stub at `recording-context.tsx:3123` (`speak('Updated')`).
-No `confirmedFieldKeys` equivalent. No per-field announcement system
-inside `applyExtraction`. The inspector loses the audio signal that
-Sonnet just corrected a field.
+PWA pre-fix only spoke the FIRST entry per turn
+(`recording-context.tsx:1886` — "Only the first is spoken so stacked
+readings don't backlog stale news") and had no dedup. On a multi-
+reading turn (especially after a burst-buffer merge) the inspector
+lost audio feedback on every reading after the first.
 
-**Severity rationale:** medium UX. Inspectors who develop the habit
-of glancing at the screen instead of relying on audio feedback won't
-notice (and that's most inspectors after a session or two), but
-hands-free workflows lose feedback parity.
+**Fix:**
+- Added `confirmedFieldKeysRef: React.useRef<Set<string>>` —
+  per-session dedup keyed `<field>_<circuit>` exactly like iOS line
+  3307. Reset on session start + on stop teardown.
+- `onExtraction` now iterates the full `result.confirmations` array,
+  builds the dedup key, skips on hit (`onExtraction_confirmation_
+  deduped` diagnostic), otherwise `speakConfirmation(sentence)` and
+  adds the key to the set.
+- Confirmation-mode user toggle still gates speech via
+  `speakConfirmation` (the existing `confirmations_enabled` wire flag
+  belt-and-braces the server-side gate).
 
-**Fix scope:** ~80 lines plus tests.
-- Add `sessionConfirmedKeysRef` to `recording-context.tsx`.
-- Inside `applyExtraction` (currently `apply-extraction.ts`), call a
-  new `announceFieldUpdate(key, newValue, prevValue)` helper when a
-  Sonnet value overwrites a different non-empty prior value AND the
-  dedup key hasn't fired yet this session.
-- Helper formats "Updated <friendlyFieldName(key)> to <value>" and
-  calls `speak` (which already routes through the in-flight tracker
-  bridge so the announcement TTS won't accidentally anchor a question
-  slot).
-- Reset the Set on session start alongside other state.
+Tests: 988/988 still pass — D6 is an in-place flow change with no new
+unit-test surface (logic lives inside the React-bound onExtraction
+callback; would require provider mount to drive). The behaviour
+change is verifiable in the field on the next session.
 
 ## 4. iOS-only paths (deliberate, not gaps)
 
