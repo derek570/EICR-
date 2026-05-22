@@ -40,6 +40,7 @@ import { FieldSourceTracker } from '@/lib/recording/field-source-tracker';
 import { applyRegexMatchToJob } from '@/lib/recording/apply-regex-match';
 import { buildRegexSummary, type RegexResultsWire } from '@/lib/recording/regex-match-result';
 import { normalise as normaliseTranscriptText } from '@/lib/recording/number-normaliser';
+import { BurstBuffer, NamingBuffer } from '@/lib/recording/dispatch-buffers';
 import type { JobDetail } from '@/lib/types';
 
 const SONNET_URL = 'ws://localhost:3000/api/sonnet-stream';
@@ -90,6 +91,15 @@ export interface HarnessOptions {
    *  the wire trace so the trace begins at the first injected transcript.
    *  Default true. */
   swallowHandshake?: boolean;
+  /** When true, dispatch buffers use a deterministic controlled
+   *  scheduler. Tests drive timers via `advance(ms)`. Default true so
+   *  tests are deterministic. */
+  controlledScheduler?: boolean;
+  /** Override the burst-buffer window length. Default 500 ms (production
+   *  value). */
+  burstBufferWindowMs?: number;
+  /** Override the naming-buffer window length. Default 3000 ms. */
+  namingBufferWindowMs?: number;
 }
 
 export interface Harness {
@@ -101,6 +111,25 @@ export interface Harness {
    *  matcher → apply patch → tracker → buildRegexSummary → sendTranscript.
    *  Returns the per-turn diagnostics for assertion. */
   injectFinal(text: string, opts?: InjectOptions): InjectResult;
+  /**
+   * Tier-2 injection: routes the final through the naming buffer first
+   * (catches "Circuit N is" prefaces and holds for completion) then
+   * through the burst buffer (merges consecutive finals within 500 ms
+   * with the ' ... ' separator), then dispatches via `injectFinal`.
+   *
+   * Use this for scenarios that need to validate the provider-side
+   * buffering behaviour without mounting `RecordingProvider`. Pair with
+   * `advance(ms)` to drive buffer timeouts and `flushBuffers()` on
+   * teardown.
+   */
+  feedDeepgramFinal(text: string, confidence?: number, opts?: InjectOptions): void;
+  /** Fast-forward all pending buffer timers by `ms`, firing any that
+   *  expire. Available only when the harness was built with
+   *  `controlledScheduler: true`. */
+  advance(ms: number): void;
+  /** Force-flush any pending buffered final (naming then burst).
+   *  Use during teardown so a buffered text isn't silently dropped. */
+  flushBuffers(): void;
   /** Resolve when the WS server receives the next frame; returns parsed JSON
    *  and appends to `wireTrace`. */
   nextWireMessage(): Promise<Record<string, unknown>>;
@@ -155,58 +184,123 @@ export async function buildHarness(options: HarnessOptions): Promise<Harness> {
   let cumulativeTranscript = '';
   let jobSnapshot: JobDetail = options.job;
 
+  // Controlled scheduler for the dispatch buffers — fires deterministically
+  // when `advance(ms)` is called. Each entry tracks its remaining time so
+  // simultaneous timers expire in arm-order.
+  const useControlled = options.controlledScheduler !== false;
+  interface TimerEntry {
+    cb: () => void;
+    remainingMs: number;
+  }
+  const timers = new Map<number, TimerEntry>();
+  let nextTimerId = 1;
+  const schedulerDeps = useControlled
+    ? {
+        scheduler: (cb: () => void, ms: number): unknown => {
+          const id = nextTimerId++;
+          timers.set(id, { cb, remainingMs: ms });
+          return id;
+        },
+        clearScheduler: (handle: unknown): void => {
+          timers.delete(handle as number);
+        },
+      }
+    : {};
+  const advance = (ms: number): void => {
+    if (!useControlled) {
+      throw new Error('advance() unavailable when controlledScheduler is false');
+    }
+    // Walk a snapshot — timer fires may schedule new timers; we don't
+    // want to advance those by the same tick.
+    const entries = Array.from(timers.entries());
+    for (const [id, entry] of entries) {
+      entry.remainingMs -= ms;
+      if (entry.remainingMs <= 0) {
+        timers.delete(id);
+        entry.cb();
+      }
+    }
+  };
+
+  // `pendingInjectOptions` — captured by feedDeepgramFinal so that when
+  // a buffer eventually fires, the options threaded from the original
+  // caller (utteranceId / inResponseTo) reach the dispatcher. Single-
+  // slot, last-wins — matches the provider's behaviour where each
+  // dispatched final is treated independently.
+  let pendingInjectOptions: InjectOptions | null = null;
+  const _injectFinalImpl = (text: string, opts: InjectOptions): InjectResult => {
+    const normalisedText = normaliseTranscriptText(text);
+    cumulativeTranscript = cumulativeTranscript
+      ? `${cumulativeTranscript} ${normalisedText}`
+      : normalisedText;
+    const matchResult = matcher.match(cumulativeTranscript, jobSnapshot);
+    const applied = applyRegexMatchToJob(jobSnapshot, matchResult, tracker);
+    let changedKeys: string[] = [];
+    if (applied) {
+      changedKeys = applied.changedKeys;
+      jobSnapshot = {
+        ...jobSnapshot,
+        ...(applied.patch as Partial<JobDetail>),
+      };
+    }
+    const writtenKeys = tracker.consumeTurnWrites();
+    const regexResults = buildRegexSummary(writtenKeys, jobSnapshot);
+    session.sendTranscript(normalisedText, {
+      utteranceId: opts.utteranceId,
+      confirmationsEnabled: opts.confirmationsEnabled ?? false,
+      regexResults,
+      inResponseTo: opts.inResponseTo,
+    });
+    if (opts.inFlightToolCallId) {
+      session.sendAskUserAnswered(opts.inFlightToolCallId, normalisedText, opts.utteranceId);
+    }
+    return {
+      rawText: text,
+      normalisedText,
+      cumulativeTranscript,
+      changedKeys,
+      regexResults,
+      job: jobSnapshot,
+    };
+  };
+
+  // Burst buffer feeds into the dispatcher; naming buffer feeds into
+  // the burst buffer. Wire order mirrors recording-context.tsx:
+  // Deepgram final → naming buffer → burst buffer → dispatch.
+  const burstBuffer = new BurstBuffer(
+    (text) => {
+      _injectFinalImpl(text, pendingInjectOptions ?? {});
+    },
+    options.burstBufferWindowMs ?? 500,
+    schedulerDeps
+  );
+  const namingBuffer = new NamingBuffer(
+    (text, confidence) => {
+      burstBuffer.feed(text, confidence);
+    },
+    options.namingBufferWindowMs ?? 3000,
+    schedulerDeps
+  );
+
   return {
     session,
     server,
     getJob: () => jobSnapshot,
 
     injectFinal(text: string, opts: InjectOptions = {}): InjectResult {
-      const normalisedText = normaliseTranscriptText(text);
+      return _injectFinalImpl(text, opts);
+    },
 
-      // Build the cumulative buffer the way recording-context.tsx:1342 does.
-      cumulativeTranscript = cumulativeTranscript
-        ? `${cumulativeTranscript} ${normalisedText}`
-        : normalisedText;
+    feedDeepgramFinal(text: string, confidence = 0.9, opts: InjectOptions = {}): void {
+      pendingInjectOptions = opts;
+      namingBuffer.feed(text, confidence);
+    },
 
-      // Run the matcher exactly as the live pipeline does.
-      const matchResult = matcher.match(cumulativeTranscript, jobSnapshot);
-      const applied = applyRegexMatchToJob(jobSnapshot, matchResult, tracker);
+    advance,
 
-      let changedKeys: string[] = [];
-      if (applied) {
-        changedKeys = applied.changedKeys;
-        // Apply the patch into the live snapshot so subsequent turns see
-        // the mutated job (matcher uses job to resolve circuit refs).
-        jobSnapshot = {
-          ...jobSnapshot,
-          ...(applied.patch as Partial<JobDetail>),
-        };
-      }
-
-      const writtenKeys = tracker.consumeTurnWrites();
-      const regexResults = buildRegexSummary(writtenKeys, jobSnapshot);
-
-      // Wire emit — mirrors recording-context.tsx:1387.
-      session.sendTranscript(normalisedText, {
-        utteranceId: opts.utteranceId,
-        confirmationsEnabled: opts.confirmationsEnabled ?? false,
-        regexResults,
-        inResponseTo: opts.inResponseTo,
-      });
-
-      // Ask-answer path — recording-context.tsx:1396.
-      if (opts.inFlightToolCallId) {
-        session.sendAskUserAnswered(opts.inFlightToolCallId, normalisedText, opts.utteranceId);
-      }
-
-      return {
-        rawText: text,
-        normalisedText,
-        cumulativeTranscript,
-        changedKeys,
-        regexResults,
-        job: jobSnapshot,
-      };
+    flushBuffers(): void {
+      namingBuffer.flush();
+      burstBuffer.flush();
     },
 
     async nextWireMessage(): Promise<Record<string, unknown>> {
