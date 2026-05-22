@@ -86,29 +86,120 @@ when truthy (iOS canon `ServerWebSocketService.swift:509-511`). One
 sonnet-session.test.ts assertion updated from `.toBe(false)` to
 `.toBeUndefined()` to pin the new shape.
 
-## 3. Possible-divergence rows (need scenario coverage to confirm)
+## 3. Verification pass — 2026-05-22
 
-The static read couldn't fully prove these one way or the other — the
-transcript-injection harness will be authoritative. Listed so the next
-session can pin them down.
+Re-audited the four rows previously flagged "needs scenario coverage."
 
-- **Pending-readings buffer behaviour** — both clients have a
-  `pendingReadings` counter and a re-ask timeout. PWA's counter is exposed
-  on the context state (`recording-context.tsx:628`). Need to verify the
-  trigger window + the re-ask shape match iOS.
-- **Burst-buffer separator** — PWA uses `' ... '` (server-legacy batching
-  separator) on consecutive Deepgram finals within 500 ms.
-  `recording-context.tsx:790-807` documents the rationale. iOS has no
-  client-side burst buffer (kept off backend for the "backend immutable"
-  rule, so this is a deliberate PWA-only addition). Confirm scenario
-  scripts produce the documented `'A ... B'` shape and not just `'A B'`.
-- **TTS-echo discard** — `recording-context.tsx:1561` runs `isTTSEcho()`
-  on every final and drops it before any other gating. Need scenario
-  coverage to verify the predicate matches iOS's analogous gate.
-- **Barge-in path** — iOS uses on-device VAD + speaker isolation; PWA
-  delegates to "Deepgram text-final-during-TTS triggers
-  `cancelSpeech + sendBargeIn`" (`recording-context.tsx:951-967`).
-  Functionally equivalent — confirm via scenario.
+- **Burst-buffer separator** ✅ verified by `inject-burst-buffer.test.ts`.
+  Three scenarios pin the `' ... '` separator, the 500 ms window, and
+  the timeout-dispatch path. iOS has no client-side burst buffer — this
+  is a deliberate PWA-only addition tied to the "backend immutable"
+  rule (2026-05-13 sess_mp4jg2mt_231n fix). Behaviour matches the
+  production code at `recording-context.tsx:790-807`.
+
+- **TTS-echo discard** ✅ aligned. iOS `isTTSEcho`
+  (`DeepgramRecordingViewModel.swift:2940`) and PWA `isTTSEcho`
+  (`web/src/lib/recording/tts.ts:291`) share the 15 s fingerprint window
+  contract. PWA docstring explicitly cites the iOS line.
+
+- **Barge-in path** ✅ aligned. PWA emits
+  `{type: 'tts_cancelled_by_user', reason, vad_probability?}` via
+  `SonnetSession.sendBargeIn` (`sonnet-session.ts:1224`). iOS emits the
+  same frame via `notifyBargeInFired` at
+  `RecordingSessionCoordinator.swift:741-772`. Backend accepts both
+  paths at `sonnet-stream.js:1387` as telemetry-only — no server action
+  required. PWA decision to use Deepgram-text-final-during-TTS as the
+  detector (vs iOS's on-device VAD) is platform-driven (web AEC is
+  software-only and self-trips on speaker bleed-through — see
+  `recording-context.tsx:951-967` comment) and produces an identical
+  wire frame.
+
+## 4. New divergences surfaced 2026-05-22
+
+### D4 — Pending-readings auto-re-ask system (MEDIUM, open)
+
+**iOS:** complete buffer + 2 s timer + auto-question system. When Sonnet
+returns a reading with `circuit == 0` (orphaned — inspector said the
+value without a circuit reference), iOS:
+1. Buffers it in `transcriptProcessor.pendingReadings`
+   (`TranscriptProcessor.swift:213-218`).
+2. Starts a 2 s timer
+   (`TranscriptProcessor.swift:279-287 startPendingReadingsTimer`).
+3. On timeout, fires `askAboutPendingReadings`
+   (`DeepgramRecordingViewModel.swift:5417-5459`) which:
+   - Dedup-checks via `questionAskCounts[key] < maxAsksPerQuestion`.
+   - Snapshots the pending readings for resolution.
+   - Builds a question: "Which circuit was that Zs 0.3 reading for?".
+   - Routes via `askAlert` → TTS + in-flight slot → `in_response_to`
+     on the inspector's reply.
+
+Also has cross-system hooks:
+- `removeResolvedReadings` (line 266) — drops pending entries when
+  Sonnet later returns the same reading with a resolved circuit.
+- `suppressSelfRetry` (line 259) — cancels the iOS timer when the
+  server has already asked an equivalent disambiguation question (per
+  the 2026-04-21 sess_80723FDE incident).
+
+**PWA:** only `pendingReadings: number` state counter
+(`recording-context.tsx:629`). No buffer, no timer, no auto-question.
+The UI bumps a badge but the inspector never hears "which circuit?".
+
+**Severity rationale:** users sometimes dictate a Zs/R1+R2 reading
+expecting Sonnet to figure out the circuit from context. iOS handles
+this gracefully by prompting. PWA silently drops the reading until the
+inspector re-dictates with circuit attribution or types it manually.
+Not a wire bug — a UX gap.
+
+**Fix scope:** ~150 lines plus tests.
+- New `web/src/lib/recording/pending-readings-buffer.ts` (pure
+  module, port of `TranscriptProcessor.swift:54-287`).
+- Apply-extraction integration: detect orphaned readings on the
+  extraction envelope, route them into the buffer instead of dropping.
+- Wire timeout callback into the existing
+  `inFlightQuestionRef.enqueue` + `speak` path so the re-ask gets
+  `in_response_to` context on the reply.
+- Parity scenarios for the buffer + timeout + dedup + cancellation
+  paths (similar shape to `inject-in-flight-question` + the buffer
+  tests).
+
+### D5 — Barge-in wire emit ✅ closed (no divergence)
+
+Initially suspected from the audit, but `sendBargeIn` mirrors iOS exactly
+(see §3 above).
+
+### D6 — Per-field Sonnet TTS confirmation (MEDIUM, open)
+
+**iOS:** complete system. `confirmedFieldKeys: Set<String>` per session
+(`DeepgramRecordingViewModel.swift:303`). When `applySonnetValue`
+overwrites a field that previously had a different value, iOS:
+1. Builds a dedup key (line 3308).
+2. Calls `alertManager.speakBriefConfirmation(conf.text)` (line 3316)
+   to TTS "Updated Zs to 0.62".
+3. Inserts the key into `confirmedFieldKeys` so repeat overwrites
+   don't re-announce.
+4. Resets the set on session start (line 799).
+
+**PWA:** stub at `recording-context.tsx:3123` (`speak('Updated')`).
+No `confirmedFieldKeys` equivalent. No per-field announcement system
+inside `applyExtraction`. The inspector loses the audio signal that
+Sonnet just corrected a field.
+
+**Severity rationale:** medium UX. Inspectors who develop the habit
+of glancing at the screen instead of relying on audio feedback won't
+notice (and that's most inspectors after a session or two), but
+hands-free workflows lose feedback parity.
+
+**Fix scope:** ~80 lines plus tests.
+- Add `sessionConfirmedKeysRef` to `recording-context.tsx`.
+- Inside `applyExtraction` (currently `apply-extraction.ts`), call a
+  new `announceFieldUpdate(key, newValue, prevValue)` helper when a
+  Sonnet value overwrites a different non-empty prior value AND the
+  dedup key hasn't fired yet this session.
+- Helper formats "Updated <friendlyFieldName(key)> to <value>" and
+  calls `speak` (which already routes through the in-flight tracker
+  bridge so the announcement TTS won't accidentally anchor a question
+  slot).
+- Reset the Set on session start alongside other state.
 
 ## 4. iOS-only paths (deliberate, not gaps)
 
