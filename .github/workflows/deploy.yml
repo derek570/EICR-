@@ -516,6 +516,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Drift guardrails (added 2026-05-22) — runs BEFORE register-task-
+      # definition so an out-of-band env-var hotfix can't be silently
+      # stripped from the live task def by re-registering from the
+      # source template. See CLAUDE.md "MANDATORY — Infrastructure
+      # changes must come from source" + scripts/check-task-def-env-drift.sh
+      # header for the full failure-mode story.
+      #
+      # Bypass: include [skip-drift-check] in the commit message AND
+      # follow up with a real source commit immediately after. Emergency
+      # only — do not normalise.
+
+      - name: Check Frontend Task-Def Drift
+        if: steps.scope.outputs.target != 'backend'
+        env:
+          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ALLOW_TASKDEF_DRIFT: ${{ contains(github.event.head_commit.message, '[skip-drift-check]') && '1' || '' }}
+        run: |
+          ./scripts/check-task-def-env-drift.sh ${{ env.ECS_SERVICE_FRONTEND }} ecs/task-def-frontend.json
+
       - name: Register ARM64 Frontend Task Definition
         if: steps.scope.outputs.target != 'backend'
         id: register-frontend-taskdef
@@ -526,6 +546,15 @@ jobs:
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Check Backend Task-Def Drift
+        if: steps.scope.outputs.target != 'frontend'
+        env:
+          ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ALLOW_TASKDEF_DRIFT: ${{ contains(github.event.head_commit.message, '[skip-drift-check]') && '1' || '' }}
+        run: |
+          ./scripts/check-task-def-env-drift.sh ${{ env.ECS_SERVICE_BACKEND }} ecs/task-def-backend.json
 
       - name: Register ARM64 Backend Task Definition
         if: steps.scope.outputs.target != 'frontend'
