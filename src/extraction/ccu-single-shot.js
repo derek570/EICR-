@@ -78,6 +78,31 @@ const DEWARP_MAX_WIDTH =
 const SINGLE_SHOT_TIMEOUT_MS = Number(process.env.CCU_SINGLE_SHOT_TIMEOUT_MS || 90_000);
 const SINGLE_SHOT_MAX_TOKENS = Number(process.env.CCU_SINGLE_SHOT_MAX_TOKENS || 4096);
 
+// Horizontal margin (as a fraction of rail width) added by the dewarp on
+// each side of the rail when assembling the image sent to the VLM.
+//
+// Bumped 0.10 → 0.15 on 2026-05-22 after production extraction
+// 1779468040371-vwj60m dropped the right-edge main switch + a Lighting
+// circuit on a Wylex NHRS12SL. A morning extraction of the same board
+// (1779438896822-l64kfa) with looser framing got all 16 modules right;
+// the failing photo was framed ~3% tighter (rail/image ratio 80.9% vs
+// 78.1%). With less surrounding image past the rail edge, gpt-5.5's
+// edge-attention falloff dropped the rightmost devices.
+//
+// Trade-off at 0.15: rail occupies 70% of dewarp output instead of 80%.
+// Per-module pixel density drops ~12% (~296 → ~259 px/module on a
+// 5917-wide native output). Still well above the threshold for reading
+// device-face text — empirically ~20-40 px/character is enough, devices
+// give us 60-80 px/character at 259 px/module.
+//
+// Override via CCU_DEWARP_MARGIN_HORIZONTAL=<float> on the task def.
+// Set to "0.1" to roll back to the prior behaviour.
+const DEWARP_MARGIN_HORIZONTAL_RAW = process.env.CCU_DEWARP_MARGIN_HORIZONTAL;
+const DEWARP_MARGIN_HORIZONTAL =
+  DEWARP_MARGIN_HORIZONTAL_RAW && Number(DEWARP_MARGIN_HORIZONTAL_RAW) > 0
+    ? Number(DEWARP_MARGIN_HORIZONTAL_RAW)
+    : 0.15;
+
 // Feature flag for the position-based label matcher introduced 2026-05-21.
 // New prompt asks gpt-5.5 to return labels and devices as two arrays with
 // normalised position_x values; downstream code does the nearest-neighbour
@@ -271,13 +296,16 @@ async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireabl
         imageBuffer,
         quad: prepared.railQuad,
         // 200% vertical margin on each side captures the label strips
-        // above and below the rail. Horizontal margin is 10% of rail
-        // width on each end (~1 module on a 19-way board) — gives the
-        // VLM breathing room when the box-tightener clips the rail
-        // short, without dragging in an adjacent CU.
+        // above and below the rail. Horizontal margin is configurable
+        // via DEWARP_MARGIN_HORIZONTAL (default 0.15 since 2026-05-22)
+        // — see the constant declaration above for the trade-off
+        // analysis and the prod incident that motivated the bump from
+        // 0.10. Gives the VLM enough surrounding-image context that
+        // edge-of-rail devices (main switch, last MCB in run) don't
+        // fall into its attention-falloff zone.
         marginAboveFraction: 2.0,
         marginBelowFraction: 2.0,
-        marginHorizontalFraction: 0.1,
+        marginHorizontalFraction: DEWARP_MARGIN_HORIZONTAL,
         outputWidth: DEWARP_OUTPUT_WIDTH,
         maxOutputWidth: DEWARP_MAX_WIDTH,
       });
