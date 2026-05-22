@@ -1311,6 +1311,14 @@ export function assembleGeometricResult(perSlotState) {
       imageHeight: prepared.imageHeight,
       timings,
       usage: totalUsage,
+      // Forward the single-shot label-matcher diagnostic + raw VLM positions.
+      // These are added in extractViaSingleShot's return shape so the route
+      // handler can surface them as analysis.vlm_* fields for offline replay.
+      // Null fallback covers the legacy sliding-window + soft-fail paths
+      // which never set these.
+      labelArrayRaw: cls.labelArrayRaw ?? null,
+      entriesRaw: cls.entriesRaw ?? null,
+      labelMatcherDiag: cls.labelMatcherDiag ?? null,
       stageOutputs: {
         stage1: prepared.stageOutputs.stage1,
         stage2: prepared.stageOutputs.stage2,
@@ -1342,6 +1350,12 @@ export function assembleGeometricResult(perSlotState) {
     stage3Error: cls.stage3Error,
     timings,
     usage: totalUsage,
+    // See rewireable branch above for why these are forwarded — same fields
+    // populated by extractViaSingleShot, consumed by the route handler to
+    // attach analysis.vlm_labels_raw / vlm_entries_raw / vlm_label_matcher_diag.
+    labelArrayRaw: cls.labelArrayRaw ?? null,
+    entriesRaw: cls.entriesRaw ?? null,
+    labelMatcherDiag: cls.labelMatcherDiag ?? null,
     stageOutputs: {
       stage1: prepared.stageOutputs.stage1,
       stage2: prepared.stageOutputs.stage2,
