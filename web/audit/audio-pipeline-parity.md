@@ -116,51 +116,45 @@ Re-audited the four rows previously flagged "needs scenario coverage."
 
 ## 4. New divergences surfaced 2026-05-22
 
-### D4 — Pending-readings auto-re-ask system (MEDIUM, open)
+### D4 — Pending-readings auto-re-ask system ✅ closed 2026-05-22
 
-**iOS:** complete buffer + 2 s timer + auto-question system. When Sonnet
-returns a reading with `circuit == 0` (orphaned — inspector said the
-value without a circuit reference), iOS:
-1. Buffers it in `transcriptProcessor.pendingReadings`
-   (`TranscriptProcessor.swift:213-218`).
-2. Starts a 2 s timer
-   (`TranscriptProcessor.swift:279-287 startPendingReadingsTimer`).
-3. On timeout, fires `askAboutPendingReadings`
-   (`DeepgramRecordingViewModel.swift:5417-5459`) which:
-   - Dedup-checks via `questionAskCounts[key] < maxAsksPerQuestion`.
-   - Snapshots the pending readings for resolution.
-   - Builds a question: "Which circuit was that Zs 0.3 reading for?".
-   - Routes via `askAlert` → TTS + in-flight slot → `in_response_to`
-     on the inspector's reply.
+`web/src/lib/recording/pending-readings-buffer.ts` is the pure port of
+iOS `TranscriptProcessor.swift:52-287`. `recording-context.tsx`:
+- Detects orphan readings in `onExtraction` (`circuit < 1`) and routes
+  them to `pendingReadingsBufferRef.addAll(orphans)`.
+- Routes resolved readings (`circuit >= 1`) to `removeResolved` so
+  Sonnet's later turn drops a previously-orphaned entry.
+- Wires the 2 s timeout to:
+    1. `buildPendingReadingsQuestion(readings)` — singular/plural
+       phrasing identical to iOS canon (
+       `DeepgramRecordingViewModel.swift:5422-5426`).
+    2. `inFlightQuestionRef.enqueue({type: 'circuit_disambiguation',
+       question, field})` so the inspector's "circuit 3" reply gets
+       `in_response_to` context.
+    3. `playAttentionTone()` then `speak(question)` — same TTS path
+       as Sonnet-emitted questions.
+- `suppressSelfRetry(field)` is called on `onQuestion` when the server
+  emits an orphaned-shape question (matches iOS's
+  `TranscriptProcessor.suppressSelfRetry` for the sess_80723FDE
+  duplicate-TTS regression).
+- Buffer reset on session start + on stop teardown.
 
-Also has cross-system hooks:
-- `removeResolvedReadings` (line 266) — drops pending entries when
-  Sonnet later returns the same reading with a resolved circuit.
-- `suppressSelfRetry` (line 259) — cancels the iOS timer when the
-  server has already asked an equivalent disambiguation question (per
-  the 2026-04-21 sess_80723FDE incident).
+`friendlyFieldName` ported verbatim from iOS (Zs, R1+R2, ring R1/RN/R2,
+IR L-E / L-L, RCD trip time, polarity, OCPD rating, pass-through
+fallback for unmapped fields).
 
-**PWA:** only `pendingReadings: number` state counter
-(`recording-context.tsx:629`). No buffer, no timer, no auto-question.
-The UI bumps a badge but the inspector never hears "which circuit?".
+Covered by 23 unit tests in `web/tests/pending-readings-buffer.test.ts`
+(scheduler-injected; pins timer restart / removeResolved /
+clearResolved / suppressSelfRetry / reset / friendly names / question
+phrasing).
 
-**Severity rationale:** users sometimes dictate a Zs/R1+R2 reading
-expecting Sonnet to figure out the circuit from context. iOS handles
-this gracefully by prompting. PWA silently drops the reading until the
-inspector re-dictates with circuit attribution or types it manually.
-Not a wire bug — a UX gap.
-
-**Fix scope:** ~150 lines plus tests.
-- New `web/src/lib/recording/pending-readings-buffer.ts` (pure
-  module, port of `TranscriptProcessor.swift:54-287`).
-- Apply-extraction integration: detect orphaned readings on the
-  extraction envelope, route them into the buffer instead of dropping.
-- Wire timeout callback into the existing
-  `inFlightQuestionRef.enqueue` + `speak` path so the re-ask gets
-  `in_response_to` context on the reply.
-- Parity scenarios for the buffer + timeout + dedup + cancellation
-  paths (similar shape to `inject-in-flight-question` + the buffer
-  tests).
+**Known gap remaining (lower priority):** the iOS canon also implements
+a `snapshot → apply-to-named-circuit` resolve path so the inspector's
+reply directly mutates the named circuit without a Sonnet round-trip.
+The MVP shipped here relies on Sonnet's normal extraction with
+`in_response_to` context to land the buffered values, which is one
+extra ~1 s round-trip but functionally equivalent. iOS-canon snapshot
+resolve is tracked as a follow-up.
 
 ### D5 — Barge-in wire emit ✅ closed (no divergence)
 

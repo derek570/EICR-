@@ -27,6 +27,11 @@ import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { InFlightQuestionTracker } from './recording/in-flight-question';
+import {
+  PendingReadingsBuffer,
+  buildPendingReadingsQuestion,
+  type PendingReading,
+} from './recording/pending-readings-buffer';
 import { normalise as normaliseTranscriptText } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
@@ -1013,6 +1018,48 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     lastSpokenTextRef.current = text;
     speakRaw(text);
   }, []);
+  // D4 — pending-readings buffer. iOS canon
+  // `TranscriptProcessor.swift:52-287` + `askAboutPendingReadings` at
+  // `DeepgramRecordingViewModel.swift:5417`. When Sonnet returns a
+  // reading with circuit<1 (orphan — inspector said the value without
+  // a circuit ref), buffer for 2 s and re-ask "Which circuit was that
+  // <name> <value> for?". Pre-fix the PWA silently dropped orphans at
+  // `apply-extraction.ts:588`, leaving the inspector to re-state.
+  //
+  // The timeout callback uses the same `speak` wrapper (which stamps
+  // lastSpokenTextRef) + `inFlightQuestionRef.enqueue` so the
+  // inspector's reply gets in_response_to context for Sonnet to apply
+  // the buffered values to the named circuit. iOS-canon snapshot
+  // resolution (`snapshotForQuestion` + apply-to-circuit-on-reply) is
+  // a follow-up — for MVP the standard Sonnet round-trip with
+  // in_response_to context lands the answer.
+  const pendingReadingsBufferRef = React.useRef<PendingReadingsBuffer | null>(null);
+  if (pendingReadingsBufferRef.current === null) {
+    pendingReadingsBufferRef.current = new PendingReadingsBuffer((readings) => {
+      const buffer = pendingReadingsBufferRef.current;
+      if (!buffer) return;
+      const question = buildPendingReadingsQuestion(readings);
+      if (!question) return;
+      buffer.snapshotForQuestion();
+      clientDiagnostic('pending_readings_ask', {
+        count: readings.length,
+        fieldsPreview: readings
+          .map((r) => r.field)
+          .slice(0, 5)
+          .join(','),
+      });
+      // Anchor the re-ask in the in-flight tracker so the inspector's
+      // reply ("circuit 3", "second one") carries in_response_to
+      // context. type "circuit_disambiguation" matches iOS canon.
+      inFlightQuestionRef.current.enqueue({
+        type: 'circuit_disambiguation',
+        question,
+        field: readings[0]?.field ?? null,
+      });
+      playAttentionTone();
+      speak(question);
+    });
+  }
   // Post-wake transcript monitor — mirrors iOS
   // `RecordingSessionCoordinator.swift:530-577 monitorPostWakeTranscript`.
   // 15s after sleep→active wake, if no final has arrived AND no
@@ -1938,6 +1985,33 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       },
       onExtraction: (result) => {
         applyExtraction(result);
+        // D4 — pending-readings buffer.
+        // 1. Drop any pending entries that this extraction resolved
+        //    (Sonnet found the circuit on a subsequent turn).
+        // 2. Buffer any new orphans (circuit < 1) so the 2 s timer
+        //    can ask "Which circuit was that for?" if nothing
+        //    resolves them.
+        const buffer = pendingReadingsBufferRef.current;
+        if (!buffer) return;
+        const readings = Array.isArray(result.readings) ? result.readings : [];
+        const resolved: PendingReading[] = [];
+        const orphans: PendingReading[] = [];
+        for (const r of readings) {
+          if (!r || typeof r.field !== 'string' || r.field.length === 0) continue;
+          const value =
+            typeof r.value === 'string'
+              ? r.value
+              : r.value == null
+                ? ''
+                : String(r.value as unknown);
+          if (typeof r.circuit === 'number' && r.circuit >= 1) {
+            resolved.push({ field: r.field, value });
+          } else {
+            orphans.push({ field: r.field, value });
+          }
+        }
+        if (resolved.length > 0) buffer.removeResolved(resolved);
+        if (orphans.length > 0) buffer.addAll(orphans);
       },
       onQuestion: (q) => {
         clientDiagnostic('onQuestion_entered', {
@@ -1988,6 +2062,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // the UI simultaneously showed an orphaned-reading question.
         if (q.question_type === 'orphaned') {
           setPendingReadings((n) => n + 1);
+          // D4 — server-side suppression hook. iOS canon
+          // `TranscriptProcessor.suppressSelfRetry`
+          // (`TranscriptProcessor.swift:259-263`). If the server has
+          // ALREADY asked an equivalent disambiguation, cancel the
+          // local 2 s timer so the two TTS prompts don't stack
+          // (sess_80723FDE-style regression). Pending entries stay
+          // in the buffer so the inspector's reply to the server's
+          // question can still clear them via removeResolved on the
+          // next extraction.
+          if (typeof q.field === 'string' && q.field.length > 0) {
+            pendingReadingsBufferRef.current?.suppressSelfRetry(q.field);
+          }
         }
         // Speak only newly-appearing questions. The attention tone plays
         // BEFORE TTS to give the inspector a half-second of warning that
@@ -2717,6 +2803,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setQuestions([]);
     setProcessingCount(0);
     setPendingReadings(0);
+    // D4 — drop any orphan readings carried over from a previous
+    // session so the 2 s timer doesn't fire mid-warmup.
+    pendingReadingsBufferRef.current?.reset();
     liveFill.reset();
     // Capture the new session id synchronously and snapshot it locally so
     // that any async handler resolving below (mic permission prompt, WS
@@ -2911,6 +3000,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setQuestions([]);
     setProcessingCount(0);
     setPendingReadings(0);
+    // D4 — release the orphan buffer + cancel any armed timer so a
+    // post-stop fire doesn't speak into a torn-down TTS pipeline.
+    pendingReadingsBufferRef.current?.reset();
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
