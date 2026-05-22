@@ -26,6 +26,7 @@ import { applyRegexMatchToJob } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
+import { InFlightQuestionTracker } from './recording/in-flight-question';
 import { normalise as normaliseTranscriptText } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
@@ -45,7 +46,7 @@ import {
   isWithinTtsWindow,
   primeTts,
   setTtsLifecycleObserver,
-  speak,
+  speak as speakRaw,
   speakConfirmation,
 } from './recording/tts';
 import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tts';
@@ -984,6 +985,34 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // the iOS canon at `AlertManager.swift:1144-1179` is similarly
   // single-slot. Cleared on session teardown.
   const deferredTtsRef = React.useRef<{ text: string; toolCallId: string | null } | null>(null);
+  // In-flight TTS question tracker — single source of truth for the
+  // `in_response_to` payload attached to outbound transcript frames.
+  // Mirrors iOS DeepgramRecordingViewModel.swift:2474-2900 (the
+  // InFlightQuestion slot + FIFO + takeInResponseToPayload). Enqueued
+  // when `onQuestion` fires, promoted to the active slot on TTS-start,
+  // re-anchored on TTS-end (Fix 2 — count the 10s stale window from when
+  // the inspector could physically reply), consumed on dispatch.
+  // Pre-fix the PWA had no equivalent, so backend
+  // sonnet-stream.js:3193-3243 never saw the question context and bare
+  // replies like "yes"/"no"/"code 2" lost attribution.
+  const inFlightQuestionRef = React.useRef(new InFlightQuestionTracker());
+  // Stamps the most-recent text passed to `speak()`. The TTS lifecycle
+  // observer (event: 'start' | 'end') doesn't carry the spoken text,
+  // but the in-flight tracker matches FIFO entries by exact question
+  // text — we need to bridge those. The `speak` callback below shadows
+  // the renamed `speakRaw` import so existing call sites in this file
+  // stay unchanged and every spoken text lands here.
+  const lastSpokenTextRef = React.useRef<string | null>(null);
+  // Wrap the raw TTS so every spoken text is captured for the
+  // TTS lifecycle observer (which only gets 'start' | 'end' events, no
+  // text). The InFlightQuestionTracker matches FIFO entries by exact
+  // question text, so the observer needs to know what's playing.
+  // Naming: `speak` shadows the renamed import (`speakRaw`) so existing
+  // call sites elsewhere in this file continue to work unchanged.
+  const speak = React.useCallback((text: string) => {
+    lastSpokenTextRef.current = text;
+    speakRaw(text);
+  }, []);
   // Post-wake transcript monitor — mirrors iOS
   // `RecordingSessionCoordinator.swift:530-577 monitorPostWakeTranscript`.
   // 15s after sleep→active wake, if no final has arrived AND no
@@ -1384,12 +1413,34 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           hasInFlightAsk: Boolean(inFlightToolCallId),
           regexHintsCount: regexResults?.length ?? 0,
         });
+        // iOS canon DeepgramRecordingViewModel.swift:2122 — attach
+        // `in_response_to` when a TTS question is alive within the 10 s
+        // stale window. takePayload() also burns the slot on substantive
+        // transcripts so noise (uh, cough) doesn't drop the real reply.
+        //
+        // Branch parity with iOS: when a Stage 6 ask is being answered
+        // (inFlightToolCallId set), the wire-canonical path is
+        // ask_user_answered — the legacy in_response_to annotation is
+        // suppressed to avoid double-attribution
+        // (DeepgramRecordingViewModel.swift:1955-1964). We still call
+        // takePayload to drain the slot so it can't mis-attach to the
+        // NEXT unrelated transcript.
+        const drainedPayload = inFlightQuestionRef.current.takePayload(text);
+        const inResponseTo = inFlightToolCallId ? undefined : (drainedPayload ?? undefined);
         sonnetRef.current?.sendTranscript(text, {
           confirmationsEnabled: getConfirmationModeEnabled(),
           utteranceId,
           regexResults,
+          inResponseTo,
         });
         if (inFlightToolCallId) {
+          // Force-clear: takePayload above only burned the slot on a
+          // substantive transcript; a short reply ("0.6", "TT") would
+          // leave it alive. The Stage 6 ask_user_answered is the
+          // canonical resolution path, so we drop the legacy slot
+          // unconditionally. iOS canon: line 2066 — explicit
+          // `inFlightQuestion = nil` inside the stage6Substantive branch.
+          inFlightQuestionRef.current.clear();
           console.info(
             `[recording:pipeline] stage=ask_user_answered toolCallId=${inFlightToolCallId.slice(0, 12)} userText="${text.slice(0, 40)}"`
           );
@@ -1944,9 +1995,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // AlertManager.swift:717 (playAttentionTone() immediately before
         // speakAlertMessage()).
         if (q.question) {
+          // Enqueue into the in-flight tracker. The active slot is only
+          // promoted on TTS-start (handled in setTtsLifecycleObserver
+          // below) so a dropped/skipped TTS doesn't anchor a question
+          // the inspector never heard.
+          inFlightQuestionRef.current.enqueue({
+            type: q.question_type ?? 'unknown',
+            question: q.question,
+            field: q.field ?? null,
+            circuit: q.circuit ?? null,
+            toolCallId: typeof q.tool_call_id === 'string' ? q.tool_call_id : null,
+          });
           clientDiagnostic('onQuestion_speaking', {
             queueDepth: next.length,
             questionPreview: q.question.slice(0, 80),
+            inFlightPendingCount: inFlightQuestionRef.current.pendingCount,
           });
           // Switch the sleep timer to the 75s question-answer window
           // so the inspector has time to hear, think, and reply
@@ -2601,6 +2664,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // (DeepgramRecordingViewModel.swift:828). The 500ms swallows the
       // audio-out tail of the spoken question without clipping a fast
       // verbal answer.
+      // In-flight question anchoring. iOS canon:
+      //  - handleAlertTTSStarted (line 2572) — pop matching pending entry
+      //    into the active slot and stamp askedAt = now.
+      //  - handleAlertTTSFinished (line 2655) — re-anchor askedAt to TTS-
+      //    end so the 10s stale window measures from when the inspector
+      //    could physically reply, not from when ElevenLabs started.
+      // Match-by-text — the tracker is a no-op when the spoken text
+      // doesn't correspond to any pending entry (non-question TTS like
+      // "Updated" or voice-command responses).
+      const spokenText = lastSpokenTextRef.current;
+      if (event === 'start' && spokenText) {
+        const matched = inFlightQuestionRef.current.onTtsStart(spokenText);
+        if (matched) {
+          clientDiagnostic('inflight_question_anchored', {
+            questionPreview: spokenText.slice(0, 80),
+          });
+        }
+      } else if (event === 'end' && spokenText) {
+        inFlightQuestionRef.current.onTtsEnd(spokenText);
+      }
       if (event === 'start') {
         if (ttsResumeTimerRef.current) {
           clearTimeout(ttsResumeTimerRef.current);

@@ -44,61 +44,47 @@ summaries had casing errors and an out-of-date memory of the wire shapes.
 | `session_pause` / `session_resume` / `chitchat_resume` / `select_board` / `correction` | wire shapes match | identical | ✓ |
 | `sendJobStateUpdate` debounced push | called on every applied mutation | 120 ms debounce on PWA, parity intent matches | ✓ |
 
-## 2. Confirmed divergences
+## 2. Closed divergences
 
-### D1 — PWA does not send `in_response_to` (MEDIUM)
+### D1 — PWA now sends `in_response_to` ✅ closed 2026-05-22
 
-**iOS:** `DeepgramRecordingViewModel.swift:1942` attaches an `in_response_to`
-payload (the most recent TTS question text + question type) to any transcript
-that arrives inside an answer window. `ServerWebSocketService.swift:498-518`
-adds it to the outbound `transcript` frame.
+`sonnet-session.ts:sendTranscript` accepts an `inResponseTo` option
+(`{type, question, field?, circuit?}`) attached as snake_case
+`in_response_to` on the wire. `recording-context.tsx` owns a single
+`InFlightQuestionTracker` instance (`web/src/lib/recording/in-flight-
+question.ts`) that:
+- enqueues on `onQuestion` (Sonnet emitted the question),
+- promotes the matching FIFO entry into an active slot on TTS-start
+  via the TTS lifecycle observer,
+- re-anchors `askedAt` on TTS-end so the 10 s stale window counts from
+  the moment the inspector could physically reply (iOS Fix 2 mirror),
+- consumes a payload on dispatch (`takePayload`) — attaches context
+  whenever the slot is alive, burns the slot only on substantive
+  transcripts (whitelist / ≥10 chars / ≥3 tokens / circuit-shape /
+  single-token ≥4 chars — verbatim port of iOS
+  `transcriptConsumesInFlight`),
+- force-clears the slot when a Stage 6 `ask_user_answered` fires
+  (legacy `in_response_to` is suppressed to avoid double-attribution,
+  matching `DeepgramRecordingViewModel.swift:1955-1964`).
 
-**Backend:** `src/extraction/sonnet-stream.js:3193-3243` reads
-`msg.in_response_to.question` + `.type` and prepends them to Sonnet's
-user-turn context as
-> CONTEXT: This is in response to the question "<Q>" (type: <T>).
+Covered by 36 unit tests in `web/tests/in-flight-question.test.ts` and
+1 parity scenario in `web/tests/parity/inject-smoke.test.ts`. Backend
+change: zero — the receive path at `sonnet-stream.js:3193-3243` was
+already in place.
 
-so bare replies like `"yes"`, `"no"`, `"code 2"`, `"FI"` get disambiguated
-against the question they actually answer.
+### D2 — PWA now sends `timestamp` ✅ closed 2026-05-22
 
-**PWA:** `web/src/lib/recording/sonnet-session.ts:951` `sendTranscript()` only
-accepts `{confirmationsEnabled, utteranceId, regexResults}`. No
-`inResponseTo` option, no caller plumbing. Sonnet receives the bare reply
-text with no question context → may mis-route, may re-ask, may apply to the
-wrong field.
+`sonnet-session.ts:sendTranscript` always stamps `timestamp` as
+`new Date().toISOString()` (iOS canon `ServerWebSocketService.swift:504`).
+No backend consumer load-bears on it today, but the wire diff between
+platforms is now zero.
 
-**Repro shape:** TTS asks "Should I log that as an observation?" → user says
-"yes" → PWA sends `{type:'transcript', text:'yes', ...}` with no
-`in_response_to`. iOS would send `{..., in_response_to:{question:'Should
-I log…', type:'observation_confirmation'}}`.
+### D3 — `confirmations_enabled` now conditional ✅ closed 2026-05-22
 
-**Fix scope:** add `inResponseTo?: {question, type}` to `SonnetSession`,
-track most-recent-TTS-question slot in `recording-context.tsx` (parallel to
-the existing `pendingQuestionForResponse` slot on iOS), thread it into the
-dispatch path. Backend change: zero — the receive path already exists.
-
-### D2 — PWA does not send `timestamp` (LOW)
-
-**iOS:** `ServerWebSocketService.swift:504` always stamps
-`"timestamp": Formatters.iso8601.string(from: Date())` on every transcript
-frame.
-
-**PWA:** No `timestamp` on outbound transcript.
-
-**Backend usage:** grep `src/extraction/sonnet-stream.js` — backend logs and
-de-dup uses `utterance_id`, not `timestamp`. No functional impact today, but
-it's a behavioural divergence worth either matching (one line) or
-documenting as deliberate.
-
-**Fix scope:** one-line add in `sendTranscript`. Decide and ship.
-
-### D3 — `confirmations_enabled` always-present on PWA, conditional on iOS (TRIVIAL)
-
-**iOS:** only adds the key when `confirmationsEnabled == true`.
-**PWA:** always emits `confirmations_enabled: false` (truthy or falsy).
-
-Backend reads it as a truthy check, so behaviour is identical. Cosmetic
-wire-shape difference only. Leave as-is or align — preference call.
+`sonnet-session.ts:sendTranscript` only emits `confirmations_enabled`
+when truthy (iOS canon `ServerWebSocketService.swift:509-511`). One
+sonnet-session.test.ts assertion updated from `.toBe(false)` to
+`.toBeUndefined()` to pin the new shape.
 
 ## 3. Possible-divergence rows (need scenario coverage to confirm)
 
