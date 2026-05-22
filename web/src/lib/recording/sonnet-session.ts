@@ -954,6 +954,26 @@ export class SonnetSession {
       confirmationsEnabled?: boolean;
       utteranceId?: string;
       regexResults?: RegexResultsWire;
+      /**
+       * Preceding-TTS-question context. When a transcript arrives within
+       * the post-TTS answer window, the client attaches the question text
+       * + type (and optionally field/circuit) so backend
+       * `src/extraction/sonnet-stream.js:3193-3243` can prepend
+       * "CONTEXT: This is in response to the question '<Q>' (type: <T>)"
+       * to Sonnet's user turn. Without this, bare replies like "yes",
+       * "no", "code 2" lose attribution.
+       *
+       * iOS canon: ServerWebSocketService.swift:498-518. iOS only attaches
+       * when the in-flight question slot is alive and within the 10s
+       * stale window (DeepgramRecordingViewModel.swift:2840-2900).
+       * Caller (recording-context.tsx) computes that.
+       */
+      inResponseTo?: {
+        type: string;
+        question: string;
+        field?: string | null;
+        circuit?: number | null;
+      };
     }
   ): void {
     const trimmed = text?.trim();
@@ -964,13 +984,28 @@ export class SonnetSession {
     const msg: Record<string, unknown> = {
       type: 'transcript',
       text: trimmed,
-      confirmations_enabled: options?.confirmationsEnabled ?? false,
+      // iOS canon: ServerWebSocketService.swift:504 always stamps an ISO
+      // 8601 timestamp. Kept for parity even though the backend doesn't
+      // load-bear on it today — a future server-side replay or audit pass
+      // will use it, and the wire diff between platforms should be empty.
+      timestamp: new Date().toISOString(),
     };
+    // iOS-conditional: only emit `confirmations_enabled` when truthy.
+    // ServerWebSocketService.swift:509-511 — `if confirmationsEnabled`.
+    if (options?.confirmationsEnabled) {
+      msg.confirmations_enabled = true;
+    }
     if (options?.utteranceId) {
       msg.utterance_id = options.utteranceId;
     }
     if (options?.regexResults && options.regexResults.length > 0) {
       msg.regexResults = options.regexResults;
+    }
+    // iOS canon: ServerWebSocketService.swift:516-518 — only attach when
+    // the payload is non-empty. The `question` key is the load-bearer
+    // (backend at sonnet-stream.js:3202 short-circuits without it).
+    if (options?.inResponseTo && options.inResponseTo.question) {
+      msg.in_response_to = options.inResponseTo;
     }
     pipelineLog('sonnet_send_transcript', {
       textLength: trimmed.length,
@@ -979,6 +1014,7 @@ export class SonnetSession {
         typeof options?.utteranceId === 'string' ? options.utteranceId.slice(0, 11) : null,
       regexHints: options?.regexResults?.length ?? 0,
       confirmationsEnabled: options?.confirmationsEnabled ?? false,
+      hasInResponseTo: Boolean(options?.inResponseTo?.question),
       state: this.state,
       willBuffer: this.state !== 'connected',
     });

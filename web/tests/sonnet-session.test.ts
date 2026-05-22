@@ -677,7 +677,10 @@ describe('SonnetSession', () => {
       expect(frame.type).toBe('transcript');
       expect(frame.text).toBe('cooker');
       expect(frame.utterance_id).toBe('u-1234');
-      expect(frame.confirmations_enabled).toBe(false);
+      // iOS-conditional: confirmations_enabled is OMITTED when false to
+      // match ServerWebSocketService.swift:509-511. Pre-fix the wire
+      // shape always included `false`; post-fix the key is absent.
+      expect(frame.confirmations_enabled).toBeUndefined();
     });
 
     it('sendAskUserAnswered emits transcript-then-ask in correct shape', async () => {
