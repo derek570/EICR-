@@ -2816,18 +2816,14 @@ router.post(
       // output we can't trust. Design intent: never return wrong data
       // silently. The gate is intentionally conservative — it fires only
       // on hard signals (low Stage 1 confidence, severely keystoned quad,
-      // mostly-null device ratings, VLM under-count by 2+).
-      //
-      // VLM↔CV count: re-introduced ASYMMETRIC on 2026-05-22 after
-      // extraction 1779468040371-vwj60m dropped 2 right-edge modules on
-      // a Wylex NHRS12SL (lost a Lighting circuit + the main switch).
-      // Asymmetric to dodge the F2014MX false-positives that motivated
-      // the original removal — see ccu-quality-gate.js header.
+      // mostly-null device ratings). VLM↔CV count agreement was dropped
+      // 2026-05-14 because CV's autocorrelation count is unreliable on
+      // non-standard rails (ADRBs, SPDs, multi-pole devices) and was
+      // producing false positives on clean photos — see ccu-quality-gate.js
+      // header comment.
       const gate = evaluateQualityGate({
         classifierConfidence: boardClassification?.confidence ?? null,
         rectNormCorr: geometricResult?.chunkingDiag?.refinement?.quadDiag?.rectNormCorr ?? null,
-        vlmCount: geometricResult?.vlmCount ?? null,
-        cvCount: geometricResult?.cvPitchDiag?.moduleCountFromCv ?? null,
         circuits: analysis.circuits ?? [],
       });
       logger.info('CCU quality gate evaluated', {

@@ -121,32 +121,28 @@ describe('evaluateQualityGate', () => {
     expect(result.diagnostic.ocpdSlotCount).toBe(2);
   });
 
-  test('VLM-vs-CV count signals are tolerated when both are absent (legacy passthrough)', () => {
-    // The original symmetric vlmCountAgreesWithCv signal was removed
-    // 2026-05-14 (CV false-positives on F2014MX). An asymmetric
-    // re-introduction landed 2026-05-22 — see the dedicated VLM_UNDERCOUNT
-    // tests below. When NEITHER count is supplied (legacy callers, or
-    // CV failed to estimate), the gate cannot fire on this signal.
+  test('VLM-vs-CV count disagreement no longer triggers a retake', () => {
+    // The hard-fail block on `vlmCountAgreesWithCv === false` was removed
+    // 2026-05-14. The gate ignores VLM/CV count signals entirely now;
+    // even an extreme mismatch passes if the other signals are healthy.
+    // (CV is unreliable on real-world boards — see header comment.)
     const result = evaluateQualityGate(goodArgs());
     expect(result.pass).toBe(true);
   });
 
-  test('diagnostic includes every signal we evaluated, including vlm/cv counts when supplied', () => {
-    const result = evaluateQualityGate({
-      ...goodArgs(),
-      vlmCount: 14,
-      cvCount: 14,
-    });
+  test('diagnostic includes every signal we evaluated', () => {
+    const result = evaluateQualityGate(goodArgs());
     expect(result.diagnostic).toMatchObject({
       classifierConfidence: 0.95,
       rectNormCorr: 0.44,
-      vlmCount: 14,
-      cvCount: 14,
-      vlmUndershoot: 0,
       ocpdSlotCount: 3,
       ocpdNullRatingCount: 0,
       ratingNullFraction: 0,
     });
+    // VLM/CV fields are no longer present in the diagnostic.
+    expect(result.diagnostic).not.toHaveProperty('vlmCount');
+    expect(result.diagnostic).not.toHaveProperty('cvCount');
+    expect(result.diagnostic).not.toHaveProperty('vlmCountAgreesWithCv');
   });
 
   test('honours threshold overrides for tests', () => {
@@ -157,73 +153,5 @@ describe('evaluateQualityGate', () => {
     });
     expect(result.pass).toBe(false);
     expect(result.reason).toBe(RETAKE_REASONS.CLASSIFIER_LOW_CONFIDENCE);
-  });
-
-  // ---------------------------------------------------------------------------
-  // VLM under-count gate (re-introduced 2026-05-22, asymmetric)
-  // ---------------------------------------------------------------------------
-
-  test('fails with VLM_UNDERCOUNT when vlmCount is 2+ below cvCount (the 2026-05-22 Wylex case)', () => {
-    // Real values from production extraction 1779468040371-vwj60m:
-    // vlm=14, cv=16 → undershoot 2, fails.
-    const result = evaluateQualityGate({
-      ...goodArgs(),
-      vlmCount: 14,
-      cvCount: 16,
-    });
-    expect(result.pass).toBe(false);
-    expect(result.reason).toBe(RETAKE_REASONS.VLM_UNDERCOUNT);
-    expect(result.diagnostic.vlmUndershoot).toBe(2);
-  });
-
-  test('passes when vlmCount is exactly 1 below cvCount (CV off-by-one noise band)', () => {
-    // Today's 11:19 UTC extraction: vlm=15, cv=16, undershoot 1. Single-
-    // slot disagreement is in CV's normal noise band on multi-pole devices,
-    // doesn't warrant a retake.
-    const result = evaluateQualityGate({
-      ...goodArgs(),
-      vlmCount: 15,
-      cvCount: 16,
-    });
-    expect(result.pass).toBe(true);
-  });
-
-  test('passes when vlmCount > cvCount (the F2014MX false-positive case the 2026-05-14 removal was about)', () => {
-    // F2014MX boards have ADRBs / SPDs that break CV's autocorrelation;
-    // CV undercounts the rail, VLM correctly enumerates everything. The
-    // asymmetric gate must NOT retake-required this case, otherwise we
-    // re-introduce the bug that motivated dropping the symmetric gate.
-    const result = evaluateQualityGate({
-      ...goodArgs(),
-      vlmCount: 18,
-      cvCount: 14,
-    });
-    expect(result.pass).toBe(true);
-  });
-
-  test('passes when vlmCount and cvCount agree', () => {
-    const result = evaluateQualityGate({
-      ...goodArgs(),
-      vlmCount: 16,
-      cvCount: 16,
-    });
-    expect(result.pass).toBe(true);
-  });
-
-  test('passes when either count is null (signal unavailable)', () => {
-    expect(evaluateQualityGate({ ...goodArgs(), vlmCount: null, cvCount: 16 }).pass).toBe(true);
-    expect(evaluateQualityGate({ ...goodArgs(), vlmCount: 14, cvCount: null }).pass).toBe(true);
-  });
-
-  test('honours vlmCountUndershootMin threshold override', () => {
-    // Lower the threshold to 1 — now an off-by-one fails.
-    const result = evaluateQualityGate({
-      ...goodArgs(),
-      vlmCount: 15,
-      cvCount: 16,
-      thresholds: { vlmCountUndershootMin: 1 },
-    });
-    expect(result.pass).toBe(false);
-    expect(result.reason).toBe(RETAKE_REASONS.VLM_UNDERCOUNT);
   });
 });

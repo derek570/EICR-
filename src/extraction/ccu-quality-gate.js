@@ -25,31 +25,15 @@
  * main switches, and any non-standard device face breaks the periodic
  * signature the pitch estimator depends on. The result was a high
  * false-positive rate (clean F2014MX photos being rejected three retakes
- * in a row because CV under-counted by 2).
- *
- * Re-introduced ASYMMETRIC on 2026-05-22 to catch the inverse failure
- * mode observed in production: extraction 1779468040371-vwj60m, Wylex
- * NHRS12SL, returned 14 entries when CV correctly counted 16. A clean
- * morning extraction on the same physical board returned all 16. The
- * VLM-undercount-by-2 dropped a Lighting circuit and the main switch
- * entirely. To avoid re-introducing the F2014MX false positives, the
- * gate fires ONLY when vlmCount < cvCount - 1 (VLM under-enumerated):
- *
- *   - cv=16, vlm=14  →  fail (VLM dropped modules)
- *   - cv=14, vlm=16  →  pass (CV under-counted ADRB; VLM is likely right)
- *   - cv=16, vlm=15  →  pass (off-by-one is in CV's normal noise band)
- *   - cv=16, vlm=16  →  pass (agreement)
- *
- * The asymmetry encodes the empirical observation that VLM-low-vs-CV is
- * a stronger signal of an actual miss than VLM-high-vs-CV is of a fake
- * extra device.
+ * in a row because CV under-counted by 2). Modern GPT-5.5 enumeration
+ * is more reliable than CV's geometric count on the variety of boards
+ * we see in the field; the count is now logged for telemetry only.
  */
 
 export const RETAKE_REASONS = {
   CLASSIFIER_LOW_CONFIDENCE: 'classifier_low_confidence',
   POOR_QUAD_FIT: 'poor_quad_fit',
   TOO_MANY_NULLS: 'too_many_nulls',
-  VLM_UNDERCOUNT: 'vlm_undercount',
 };
 
 const MESSAGES = {
@@ -59,8 +43,6 @@ const MESSAGES = {
     'The consumer unit is at too steep an angle in this photo. Please retake from a more head-on position.',
   [RETAKE_REASONS.TOO_MANY_NULLS]:
     'Many of the device ratings aren’t readable in this photo. Please retake with brighter light and a closer, head-on angle so the printed text on each device is clear.',
-  [RETAKE_REASONS.VLM_UNDERCOUNT]:
-    'A couple of devices on the edge of the rail look like they were cut off. Please retake with the whole consumer unit (both ends of the rail) in frame.',
 };
 
 const DEFAULT_THRESHOLDS = {
@@ -77,13 +59,6 @@ const DEFAULT_THRESHOLDS = {
   // the extraction is unusable for an inspector. Below this we still
   // pass — a couple of unreadable labels is recoverable in the UI.
   ratingNullFractionMax: 0.5,
-  // VLM under-count threshold: fail when vlmCount <= cvCount - this.
-  // Value of 2 means single-slot disagreement is tolerated (CV's
-  // autocorrelation routinely off-by-one on multi-pole devices and
-  // narrow SPDs), but a 2+ undercount strongly suggests the VLM cut
-  // off a real region of the rail. See header comment for the data
-  // that motivated this threshold.
-  vlmCountUndershootMin: 2,
 };
 
 /**
@@ -96,12 +71,6 @@ const DEFAULT_THRESHOLDS = {
  *        From `boardClassification.confidence`.
  * @param {number|null} [args.rectNormCorr]
  *        From `geometricResult.chunkingDiag.refinement.quadDiag.rectNormCorr`.
- * @param {number|null} [args.vlmCount]
- *        Slot count returned by the single-shot VLM call. Compared
- *        ASYMMETRICALLY against cvCount — see header.
- * @param {number|null} [args.cvCount]
- *        Module count derived by the CV pitch estimator
- *        (`geometricResult.cvPitchDiag.moduleCountFromCv`).
  * @param {Array} [args.circuits] — `analysis.circuits` after merger.
  * @param {object} [args.thresholds] — overrides for tests.
  * @returns {{
@@ -114,8 +83,6 @@ const DEFAULT_THRESHOLDS = {
 export function evaluateQualityGate({
   classifierConfidence = null,
   rectNormCorr = null,
-  vlmCount = null,
-  cvCount = null,
   circuits = null,
   thresholds = {},
 } = {}) {
@@ -124,10 +91,6 @@ export function evaluateQualityGate({
   const diagnostic = {
     classifierConfidence,
     rectNormCorr,
-    vlmCount,
-    cvCount,
-    vlmUndershoot:
-      typeof vlmCount === 'number' && typeof cvCount === 'number' ? cvCount - vlmCount : null,
     ocpdSlotCount: null,
     ocpdNullRatingCount: null,
     ratingNullFraction: null,
@@ -150,24 +113,6 @@ export function evaluateQualityGate({
       pass: false,
       reason: RETAKE_REASONS.POOR_QUAD_FIT,
       message: MESSAGES[RETAKE_REASONS.POOR_QUAD_FIT],
-      diagnostic,
-    };
-  }
-
-  // Asymmetric VLM-undercount gate (re-introduced 2026-05-22 — see
-  // header). Fires only when both counts are present AND the VLM
-  // returned strictly fewer entries than CV by the configured margin.
-  // Over-count (VLM > CV) is tolerated because it's been a CV bug on
-  // F2014MX-style boards historically.
-  if (
-    typeof vlmCount === 'number' &&
-    typeof cvCount === 'number' &&
-    cvCount - vlmCount >= cfg.vlmCountUndershootMin
-  ) {
-    return {
-      pass: false,
-      reason: RETAKE_REASONS.VLM_UNDERCOUNT,
-      message: MESSAGES[RETAKE_REASONS.VLM_UNDERCOUNT],
       diagnostic,
     };
   }
