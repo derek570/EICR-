@@ -51,6 +51,7 @@ import postcodeRouter from './routes/postcode.js';
 import accountRouter from './routes/account.js';
 import legalRouter from './routes/legal.js';
 import certAttestationsRouter from './routes/cert-attestations.js';
+import voiceLatencyBenchRouter from './routes/voice-latency-bench.js';
 import { requireConsent } from './middleware/require-consent.js';
 
 // WebSocket recording server (re-exported for server.js)
@@ -277,6 +278,7 @@ app.use('/api', auth.requireAuth, requireConsent, exportRouter); // CSV / archiv
 app.use('/api', auth.requireAuth, requireConsent, ocrRouter); // doc OCR — may contain PII
 app.use('/api', sleepLogRouter); // /api/sleep-log
 app.use('/api', postcodeRouter); // /api/postcode/:postcode
+app.use('/api', voiceLatencyBenchRouter); // /api/test/elevenlabs-*-stream — throwaway Stage 0 bench (gated by STAGE0_BENCH=1)
 
 // ============= Error Handling (must be last) =============
 app.use(notFoundHandler);

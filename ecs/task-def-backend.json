@@ -37,7 +37,8 @@
         { "name": "CCU_STAGE2_GROUPS",  "value": "true" },
         { "name": "CCU_SLIDING_WINDOW", "value": "true" },
         { "name": "CCU_SLIDING_WINDOW_MODEL", "value": "gpt-5.5" },
-        { "name": "CCU_USE_SINGLE_SHOT", "value": "true" }
+        { "name": "CCU_USE_SINGLE_SHOT", "value": "true" },
+        { "name": "STAGE0_BENCH",       "value": "0" }
       ],
       "mountPoints": [],
       "volumesFrom": [],
