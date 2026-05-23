@@ -43,6 +43,22 @@ export class CostTracker {
     };
 
     this.elevenLabsCharacters = 0;
+    // Stage 2 commit 2.6 — split streaming accounting per PLAN_v4 §A.10.
+    // chars_started: idempotent counter incremented exactly ONCE per
+    // correlationId on the `synthesising` transition (text-sent to
+    // vendor). This is the BILLABLE total — ElevenLabs charges when
+    // text is accepted, not when audio plays.
+    // *_completed/_cancelled/_failed: counters incremented on the
+    // terminal transition. invariant:
+    //   chars_completed + chars_cancelled + chars_failed = chars_started.
+    this.elevenLabsStreaming = {
+      charsStarted: 0,
+      charsCompleted: 0,
+      charsCancelled: 0,
+      charsFailed: 0,
+      _seenCorrelationIds: new Set(), // dedupe for idempotency
+      _terminalCorrelationIds: new Set(), // dedupe for terminal call
+    };
 
     this.gptVision = {
       photos: 0,
@@ -106,6 +122,47 @@ export class CostTracker {
   // ElevenLabs TTS usage
   addElevenLabsUsage(characterCount) {
     this.elevenLabsCharacters += characterCount;
+  }
+
+  /**
+   * Stage 2 commit 2.6 — streaming "started" accounting per PLAN_v4 §A.10.
+   * Called once per correlationId when the streaming-confirmation route
+   * (or fast-path route in Stage 4) sends the text to ElevenLabs. This
+   * is the billable transition; ElevenLabs charges when text is accepted.
+   *
+   * Idempotent: a duplicate call with the same correlationId is a no-op,
+   * so retry/cleanup paths can call it freely without double-counting.
+   */
+  recordElevenLabsStreamingStarted(characterCount, correlationId) {
+    if (!correlationId) return false;
+    if (this.elevenLabsStreaming._seenCorrelationIds.has(correlationId)) return false;
+    this.elevenLabsStreaming._seenCorrelationIds.add(correlationId);
+    this.elevenLabsStreaming.charsStarted += characterCount;
+    // Mirror into the existing single-counter so legacy cost calc + the
+    // cost_update wire shape continue to surface streaming spend
+    // without any consumer changes. Stage 6 cost-reconciliation cron
+    // (commit 6.5) compares this number to the vendor-reported total.
+    this.elevenLabsCharacters += characterCount;
+    return true;
+  }
+
+  /**
+   * Stage 2 commit 2.6 — streaming "terminal" counter per PLAN_v4 §A.10.
+   * Called on terminal state (synth_complete | cancelled | failed). Does
+   * NOT add billable chars (recordElevenLabsStreamingStarted already did).
+   * Idempotent on correlationId.
+   *
+   * terminal ∈ { 'completed', 'cancelled', 'failed' }
+   */
+  recordElevenLabsStreamingTerminal(correlationId, terminal, characterCount = 0) {
+    if (!correlationId) return false;
+    if (terminal !== 'completed' && terminal !== 'cancelled' && terminal !== 'failed') return false;
+    if (this.elevenLabsStreaming._terminalCorrelationIds.has(correlationId)) return false;
+    this.elevenLabsStreaming._terminalCorrelationIds.add(correlationId);
+    if (terminal === 'completed') this.elevenLabsStreaming.charsCompleted += characterCount;
+    else if (terminal === 'cancelled') this.elevenLabsStreaming.charsCancelled += characterCount;
+    else if (terminal === 'failed') this.elevenLabsStreaming.charsFailed += characterCount;
+    return true;
   }
 
   get elevenLabsCost() {

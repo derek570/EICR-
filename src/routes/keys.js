@@ -217,6 +217,86 @@ router.post('/proxy/deepgram-tts', auth.requireAuth, async (req, res) => {
 });
 
 /**
+ * Stage 2 commit 2.5 — stream an ElevenLabs confirmation synth into the
+ * caller's chunked HTTP response. Pipes vendor PCM/MP3 frames straight
+ * out as they arrive (Strategy C — iOS plays as bytes land, not after
+ * full buffer). Cost-tracker called on synthesising-transition per
+ * PLAN_v4 §A.10; terminal counter incremented on completion.
+ *
+ * Mints a correlation ID (vl_confirmation_*) and echoes it on the
+ * response header so the iOS-side ack (Stage 1b commit 1b.5) can pair
+ * up.
+ */
+async function streamConfirmationViaElevenLabs({
+  text,
+  sessionId,
+  apiKey,
+  res,
+  useMultiContext,
+  recordStartedAttribution,
+  recordTerminalAttribution,
+}) {
+  const { ElevenLabsStreamClient, contentTypeForFormat } =
+    await import('../extraction/elevenlabs-stream-client.js');
+  const { mintCorrelationId, recordOutcome } =
+    await import('../extraction/voice-latency-telemetry.js');
+
+  const correlationId = mintCorrelationId(sessionId, 'confirmation');
+  const client = new ElevenLabsStreamClient({ apiKey, multiContext: useMultiContext });
+
+  res.set('Content-Type', contentTypeForFormat(client.outputFormat));
+  res.set('Transfer-Encoding', 'chunked');
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Voice-Latency-Correlation-Id', correlationId);
+  res.set('X-Voice-Latency-Source', 'confirmation');
+
+  // Billable counter — once per correlation, regardless of terminal state.
+  recordStartedAttribution(sessionId, text.length, correlationId);
+
+  let terminal = 'failed';
+  try {
+    const opts = {
+      onAudio: (buf) => {
+        if (!res.writableEnded) res.write(buf);
+      },
+    };
+    if (useMultiContext) opts.contextId = `conf_${correlationId}`;
+    await client.synth(text, opts);
+    terminal = 'completed';
+    if (!res.writableEnded) res.end();
+    recordOutcome(correlationId, 'sent_to_client', { meta: { sessionId, source: 'confirmation' } });
+  } catch (err) {
+    terminal = String(err?.message || '').includes('aborted') ? 'cancelled' : 'failed';
+    recordOutcome(correlationId, terminal === 'cancelled' ? 'cancelled' : 'synth_failed', {
+      meta: { sessionId, source: 'confirmation', error: err?.message },
+    });
+    if (!res.headersSent) {
+      res.status(502).json({ error: err?.message || 'stream_failed' });
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+    logger.warn('voice_latency.stream_synth_failed', {
+      correlationId,
+      sessionId,
+      source: 'confirmation',
+      error: err?.message,
+    });
+  } finally {
+    recordTerminalAttribution(sessionId, correlationId, terminal, text.length);
+    logger.info('ElevenLabs TTS streaming complete', {
+      correlationId,
+      sessionId,
+      source: 'confirmation',
+      terminal,
+      textLength: text.length,
+      textPreview: text.slice(0, 120),
+      output_format: client.outputFormat,
+      multi_context: useMultiContext,
+    });
+  }
+}
+
+/**
  * Proxy ElevenLabs TTS calls from the web app
  * POST /api/proxy/elevenlabs-tts
  */
@@ -252,6 +332,53 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       typeof rawSource === 'string' && rawSource.length > 0 ? rawSource : 'confirmation';
     if (!text) {
       return res.status(400).json({ error: 'text field required' });
+    }
+
+    // Stage 2 commit 2.5 — streaming-confirmations branch.
+    // Gate is AND of:
+    //   1. source === 'confirmation' — Stage 5 will route 'question'
+    //      through ask_user-streaming instead; corrections + notifications
+    //      stay on the batch path for now.
+    //   2. session has VOICE_LATENCY_STREAM_CONFIRMATIONS=true (per-session
+    //      snapshot from 1a.2). A mid-session env flip doesn't change
+    //      a session already running.
+    //   3. iOS client advertised `streaming_http_audio` capability (1a.3).
+    //      Older iOS builds without StreamingAudioPlayer fall through to
+    //      the legacy batch path so their AVAudioPlayer keeps working.
+    //   4. Kill switch is not active (1a.2 live override).
+    if (source === 'confirmation' && sessionId) {
+      try {
+        const {
+          getVoiceLatencyForSession,
+          recordElevenLabsStreamingStartedForSession,
+          recordElevenLabsStreamingTerminalForSession,
+        } = await import('../extraction/active-sessions.js');
+        const { isKillSwitchActive } = await import('../extraction/voice-latency-config.js');
+        const vl = getVoiceLatencyForSession(sessionId);
+        const eligible =
+          vl?.flags?.streamConfirmations === true &&
+          vl?.capabilities?.hasStreamingHttpAudio === true &&
+          !isKillSwitchActive();
+        if (eligible) {
+          await streamConfirmationViaElevenLabs({
+            text,
+            sessionId,
+            apiKey: elevenLabsKey,
+            res,
+            useMultiContext: vl.flags.useMultiContext === true,
+            recordStartedAttribution: recordElevenLabsStreamingStartedForSession,
+            recordTerminalAttribution: recordElevenLabsStreamingTerminalForSession,
+          });
+          return;
+        }
+      } catch (err) {
+        // Fall through to legacy path on any setup error — never let the
+        // streaming gate break the existing flow.
+        logger.warn('voice_latency.stream_gate_failed_falling_back', {
+          sessionId,
+          error: err.message,
+        });
+      }
     }
 
     const voiceId = 'Fahco4VZzobUeiPqni1S'; // Archer Conversational

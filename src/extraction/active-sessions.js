@@ -36,3 +36,61 @@ export function recordElevenLabsUsageForSession(sessionId, characterCount) {
   entry.session.costTracker.addElevenLabsUsage(characterCount);
   return true;
 }
+
+/**
+ * Stage 2 commit 2.6 — attribute streaming-TTS started chars to a session's
+ * CostTracker, idempotent per correlationId. Mirrors the convenience pattern
+ * of recordElevenLabsUsageForSession above (sessionId → tracker lookup +
+ * silent no-op when unknown).
+ *
+ * @returns {boolean} true if attribution applied; false on missing session or
+ *                    duplicate correlationId.
+ */
+export function recordElevenLabsStreamingStartedForSession(
+  sessionId,
+  characterCount,
+  correlationId
+) {
+  if (!sessionId || typeof characterCount !== 'number' || characterCount <= 0 || !correlationId) {
+    return false;
+  }
+  const entry = activeSessions.get(sessionId);
+  if (!entry?.session?.costTracker?.recordElevenLabsStreamingStarted) return false;
+  return entry.session.costTracker.recordElevenLabsStreamingStarted(characterCount, correlationId);
+}
+
+/**
+ * Stage 2 commit 2.6 — attribute streaming-TTS terminal state to a session.
+ * Idempotent per correlationId; no-op when session unknown.
+ *
+ * @param {string} sessionId
+ * @param {string} correlationId
+ * @param {'completed'|'cancelled'|'failed'} terminal
+ * @param {number} [characterCount=0]
+ */
+export function recordElevenLabsStreamingTerminalForSession(
+  sessionId,
+  correlationId,
+  terminal,
+  characterCount = 0
+) {
+  if (!sessionId || !correlationId || !terminal) return false;
+  const entry = activeSessions.get(sessionId);
+  if (!entry?.session?.costTracker?.recordElevenLabsStreamingTerminal) return false;
+  return entry.session.costTracker.recordElevenLabsStreamingTerminal(
+    correlationId,
+    terminal,
+    characterCount
+  );
+}
+
+/**
+ * Stage 2 commit 2.5 — convenience read of the per-session voice-latency
+ * snapshot (flags + capabilities). Returns null when session unknown so
+ * callers can fall through to the legacy path.
+ */
+export function getVoiceLatencyForSession(sessionId) {
+  if (!sessionId) return null;
+  const entry = activeSessions.get(sessionId);
+  return entry?.voiceLatency ?? null;
+}
