@@ -1,0 +1,33 @@
+name: fast_path_npts
+suite: baseline
+description: |
+  Stage 4 fast-path: simulated Deepgram transcript with iOS-side
+  regex hit. Skips Sonnet entirely; POSTs direct to
+  /api/voice-latency/regex-fast-tts. Measures TRANSCRIPT-INPUT →
+  AUDIBLE-OUTPUT through the whole backend on the fast-path.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five."
+    fast_path: true
+    candidate:
+      field: number_of_points
+      circuit: 1
+      value: 5
+
+config:
+  timeout_ms: 30000
+  drain_ms: 1000
+  fetch_tts: false

@@ -301,6 +301,7 @@ class ScenarioRunner {
     await new Promise((r) => setTimeout(r, 50));
 
     const startTimeline = process.hrtime.bigint();
+    this._fastPathTimings = [];
     for (const t of this.s.transcript ?? []) {
       const dueAtMs = t.at_ms ?? 0;
       const elapsedMs = ns2ms(startTimeline, process.hrtime.bigint());
@@ -309,6 +310,40 @@ class ScenarioRunner {
       }
       const sendNs = process.hrtime.bigint();
       this.transcriptSentAt.push(sendNs);
+      // Fast-path scenario: POST direct to /api/voice-latency/regex-fast-tts
+      // INSTEAD of sending a transcript over the WS. Times the full
+      // request lifecycle (POST → first audio byte).
+      if (t.fast_path === true && t.candidate) {
+        const fpStart = process.hrtime.bigint();
+        let firstByteNs = 0n;
+        let bytes = 0;
+        try {
+          const res = await fetch(`${BASE_URL}/api/voice-latency/regex-fast-tts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.token}` },
+            body: JSON.stringify({ sessionId: this.s.sessionId, transcript: t.text, candidate: t.candidate }),
+          });
+          if (!res.ok) {
+            this.errors.push(`fast_path HTTP ${res.status}: ${(await res.text()).slice(0,160)}`);
+          } else {
+            const reader = res.body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (firstByteNs === 0n) firstByteNs = process.hrtime.bigint();
+              bytes += value.length;
+            }
+          }
+        } catch (err) {
+          this.errors.push(`fast_path threw: ${err.message}`);
+        }
+        const fpEnd = process.hrtime.bigint();
+        const fb = firstByteNs === 0n ? null : Number((firstByteNs - fpStart) / 1000000n);
+        const total = Number((fpEnd - fpStart) / 1000000n);
+        this._fastPathTimings.push({ text: t.text, firstByteMs: fb, totalMs: total, bytes });
+        this.record('fast_path_complete', { firstByteMs: fb, totalMs: total, bytes });
+        continue;
+      }
       const payload = {
         type: 'transcript',
         text: t.text,
@@ -435,6 +470,7 @@ class ScenarioRunner {
         0,
       ),
       tts_fetches: this.ttsTimings,
+      fast_path: this._fastPathTimings ?? [],
     };
 
     return {

@@ -252,6 +252,10 @@ app.use('/api/companies', auth.requireAuth, companiesRouter);
 // either auth.requireAuth for the synth routes or X-Bench-Secret for the
 // JWT-mint route). Removed in the Stage 0 cleanup commit.
 app.use('/api', voiceLatencyBenchRouter);
+// Stage 4 minimum-viable fast-path endpoint — mounted EARLY for same
+// reason as bench router (auth handled per-route). Gated server-side
+// by VOICE_LATENCY_REGEX_FAST_TTS=true + capability handshake.
+import('./routes/voice-latency-fast-tts.js').then((m) => app.use('/api', m.default));
 
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/account', accountRouter); // /api/account/consent/accept, /api/account/consent/status
