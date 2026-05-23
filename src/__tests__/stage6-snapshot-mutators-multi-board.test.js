@@ -113,27 +113,28 @@ describe('applyReadingMultiBoard — write semantics', () => {
 });
 
 describe('clearReadingMultiBoard', () => {
-  test('removes the field and reports cleared:true', () => {
+  test('removes the field and reports cleared:true with previousValue', () => {
+    // 1a.6 — return shape now also carries previousValue.
     const snapshot = makeSnapshot({
       circuits: { 'main::3': { circuit: 3, board_id: 'main', ze: '0.42', pfc: '1.5' } },
     });
     const r = clearReadingMultiBoard(snapshot, { circuit: 3, field: 'ze' });
-    expect(r).toEqual({ cleared: true });
+    expect(r).toEqual({ cleared: true, previousValue: '0.42' });
     expect(snapshot.circuits['main::3']).toEqual({ circuit: 3, board_id: 'main', pfc: '1.5' });
   });
 
-  test('reports cleared:false when the bucket is missing', () => {
+  test('reports cleared:false + previousValue:null when the bucket is missing', () => {
     const snapshot = makeSnapshot();
     const r = clearReadingMultiBoard(snapshot, { circuit: 99, field: 'ze' });
-    expect(r).toEqual({ cleared: false });
+    expect(r).toEqual({ cleared: false, previousValue: null });
   });
 
-  test('reports cleared:false when the field is absent on the bucket', () => {
+  test('reports cleared:false + previousValue:null when the field is absent on the bucket', () => {
     const snapshot = makeSnapshot({
       circuits: { 'main::3': { circuit: 3, board_id: 'main', ze: '0.42' } },
     });
     const r = clearReadingMultiBoard(snapshot, { circuit: 3, field: 'pfc' });
-    expect(r).toEqual({ cleared: false });
+    expect(r).toEqual({ cleared: false, previousValue: null });
     expect(snapshot.circuits['main::3'].ze).toBe('0.42');
   });
 });

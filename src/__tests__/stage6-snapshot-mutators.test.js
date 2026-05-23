@@ -48,25 +48,35 @@ describe('applyReadingToSnapshot', () => {
 });
 
 describe('clearReadingInSnapshot', () => {
-  test('clears an existing value and returns {cleared: true}', () => {
+  test('clears an existing value and returns {cleared: true, previousValue}', () => {
+    // 1a.6 — return shape now also carries previousValue so the dispatcher
+    // can emit field_corrected with the wire-pinned `previous_value`.
     const snap = { circuits: { 3: { Ze_ohms: '0.35' } } };
     const res = clearReadingInSnapshot(snap, { circuit: 3, field: 'Ze_ohms' });
-    expect(res).toEqual({ cleared: true });
+    expect(res).toEqual({ cleared: true, previousValue: '0.35' });
     expect(snap.circuits).toEqual({ 3: {} });
   });
 
-  test('noop on missing circuit — returns {cleared: false}, snapshot unchanged', () => {
+  test('noop on missing circuit — returns {cleared: false, previousValue: null}, snapshot unchanged', () => {
     const snap = { circuits: {} };
     const res = clearReadingInSnapshot(snap, { circuit: 99, field: 'Ze_ohms' });
-    expect(res).toEqual({ cleared: false });
+    expect(res).toEqual({ cleared: false, previousValue: null });
     expect(snap).toEqual({ circuits: {} });
   });
 
-  test('noop on missing field — returns {cleared: false}, snapshot unchanged', () => {
+  test('noop on missing field — returns {cleared: false, previousValue: null}, snapshot unchanged', () => {
     const snap = { circuits: { 3: { Zs_ohms: '0.43' } } };
     const res = clearReadingInSnapshot(snap, { circuit: 3, field: 'Ze_ohms' });
-    expect(res).toEqual({ cleared: false });
+    expect(res).toEqual({ cleared: false, previousValue: null });
     expect(snap.circuits[3]).toEqual({ Zs_ohms: '0.43' });
+  });
+
+  test('1a.6: stringifies numeric/boolean values when cleared', () => {
+    const snap = { circuits: { 3: { polarity_confirmed: true, count: 5 } } };
+    const a = clearReadingInSnapshot(snap, { circuit: 3, field: 'polarity_confirmed' });
+    expect(a).toEqual({ cleared: true, previousValue: 'true' });
+    const b = clearReadingInSnapshot(snap, { circuit: 3, field: 'count' });
+    expect(b).toEqual({ cleared: true, previousValue: '5' });
   });
 });
 

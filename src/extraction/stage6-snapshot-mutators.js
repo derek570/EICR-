@@ -84,9 +84,17 @@ export function applyBoardReadingToSnapshot(snapshot, { field, value }) {
  */
 export function clearReadingInSnapshot(snapshot, { circuit, field }) {
   const bucket = snapshot.circuits?.[circuit];
-  if (!bucket || !(field in bucket)) return { cleared: false };
+  if (!bucket || !(field in bucket)) return { cleared: false, previousValue: null };
+  // 1a.6: capture pre-clear value so the dispatcher can emit
+  // field_corrected with `previous_value`. Stringify everything so the
+  // wire shape (PLAN_v3 §4.5) is always string|null even when the
+  // bucket held a number/boolean.
+  const previousValue = bucket[field];
   delete bucket[field];
-  return { cleared: true };
+  return {
+    cleared: true,
+    previousValue: previousValue == null ? null : String(previousValue),
+  };
 }
 
 /**
@@ -252,9 +260,15 @@ export function clearReadingMultiBoard(snapshot, { circuit, field, boardId }) {
   const id = resolveBoardId(snapshot, boardId);
   const key = compositeKey(id, circuit);
   const bucket = snapshot?.circuits?.[key];
-  if (!bucket || !(field in bucket)) return { cleared: false };
+  if (!bucket || !(field in bucket)) return { cleared: false, previousValue: null };
+  // 1a.6: capture pre-clear value for field_corrected emission (see
+  // sibling clearReadingInSnapshot above for the wire-shape rationale).
+  const previousValue = bucket[field];
   delete bucket[field];
-  return { cleared: true };
+  return {
+    cleared: true,
+    previousValue: previousValue == null ? null : String(previousValue),
+  };
 }
 
 /**

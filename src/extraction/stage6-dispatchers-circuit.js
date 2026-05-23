@@ -223,7 +223,7 @@ export async function dispatchClearReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  const { cleared } = clearReadingFlagAware(session.stateSnapshot, {
+  const { cleared, previousValue } = clearReadingFlagAware(session.stateSnapshot, {
     circuit: input.circuit,
     field: input.field,
     boardId: input.board_id,
@@ -255,6 +255,18 @@ export async function dispatchClearReading(call, ctx) {
     field: input.field,
     circuit: input.circuit,
     reason: input.reason,
+  });
+  // 1a.6: enqueue a field_corrected WS event so iOS clients with the
+  // Stage 1b handler can patch local state when Sonnet clears a value.
+  // Wire shape pinned in PLAN_v3 §4.5 (snake_case keys + closed reason
+  // enum). board_id surfaced for multi-board sessions; null otherwise.
+  perTurnWrites.fieldCorrections.push({
+    type: 'field_corrected',
+    circuit: input.circuit,
+    field: input.field,
+    previous_value: previousValue,
+    reason: 'clear_reading',
+    board_id: input.board_id ?? null,
   });
 
   logToolCall(logger, {

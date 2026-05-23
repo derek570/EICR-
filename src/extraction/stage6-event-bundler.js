@@ -248,6 +248,15 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   if (perTurnWrites.deletedObservations.length > 0) {
     result.observation_deletions = [...perTurnWrites.deletedObservations];
   }
+  // 1a.6 — field_corrected event payloads. Carried on result so the
+  // orchestrator (sonnet-stream.js) can iterate after sending the
+  // extraction envelope and emit each as a separate WS message with the
+  // pinned wire shape from PLAN_v3 §4.5 (type/circuit/field/
+  // previous_value/reason). OMITTED when empty so back-compat decoders
+  // never see the key.
+  if (Array.isArray(perTurnWrites.fieldCorrections) && perTurnWrites.fieldCorrections.length > 0) {
+    result.field_corrections = [...perTurnWrites.fieldCorrections];
+  }
 
   // 7. Phase 2 carryover slot — supply / installation / board-level writes
   //    via record_board_reading. Same shape as extracted_readings (field +

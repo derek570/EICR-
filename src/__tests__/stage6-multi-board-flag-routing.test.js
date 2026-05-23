@@ -269,7 +269,9 @@ describe('dual-shape mutator wrappers', () => {
       'sub-1::3': { circuit: 3, board_id: 'sub-1', ze: '0.42', pfc: '1.5' },
     }).stateSnapshot;
     const r = clearReadingFlagAware(snapshot, { circuit: 3, field: 'ze' });
-    expect(r).toEqual({ cleared: true });
+    // 1a.6 — clearReading{InSnapshot,MultiBoard} now also return previousValue
+    // so dispatchClearReading can emit field_corrected with the pre-clear value.
+    expect(r).toEqual({ cleared: true, previousValue: '0.42' });
     expect(snapshot.circuits['sub-1::3'].ze).toBeUndefined();
     expect(snapshot.circuits['sub-1::3'].pfc).toBe('1.5');
   });

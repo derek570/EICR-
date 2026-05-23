@@ -3930,6 +3930,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // observation.
         dispatchObservationUpdates(ws, sessionId, observationUpdates);
 
+        // Stage 1a 1a.6 — emit each `field_corrected` WS event after the
+        // extraction envelope. iOS handler at Stage6Messages.swift:138-165
+        // decodes the snake_case wire shape and patches local state.
+        // Stage 3 will consume these events to invalidate matching
+        // suppression entries; in 1a.6 the emission is informational
+        // (iOS handler exists but does nothing user-facing until Stage 1b
+        // ships a UI hook).
+        if (Array.isArray(result.field_corrections) && result.field_corrections.length > 0) {
+          for (const evt of result.field_corrections) {
+            try {
+              ws.send(JSON.stringify(evt));
+            } catch (err) {
+              logger.warn('field_corrected emit failed', {
+                sessionId,
+                circuit: evt?.circuit,
+                field: evt?.field,
+                error: err?.message,
+              });
+            }
+          }
+        }
+
         // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
         // AFTER extraction is sent so the inspector sees the observation
         // immediately; the refined code/regulation arrives a second or two
