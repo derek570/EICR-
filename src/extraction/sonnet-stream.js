@@ -647,6 +647,15 @@ function createMessageRateLimiter(maxMessages, windowMs) {
 // WS-handler import graph into their context. See `active-sessions.js`.
 import { activeSessions } from './active-sessions.js';
 
+// Stage 1a commit 1a.2 — voice-latency flag snapshot. Per PLAN_v3 §4.2,
+// flags are read ONCE at session_start and frozen for the session
+// lifetime; mid-session env flips affect only NEW sessions. The kill
+// switch is the exception (live override) and is queried on demand.
+import {
+  snapshotFlagsForSession as snapshotVoiceLatencyFlags,
+  SNAPSHOT_FLAG_ENV_NAMES as VOICE_LATENCY_SNAPSHOT_ENV_NAMES,
+} from './voice-latency-config.js';
+
 // Known valid field names that iOS can handle
 const KNOWN_FIELDS = new Set([
   // Supply fields
@@ -2566,6 +2575,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // restrainedMode/pendingAsks (the disconnectTimer fire at ~L1263
       // and the handleSessionStop bottom at ~L2788).
       askBudget: createAskBudget(),
+      // Stage 1a 1a.2 — voice-latency snapshot. Sealed at session_start so a
+      // mid-session env flip can't mutate this session's behaviour.
+      // Stages 2-5 emitters read entry.voiceLatency.flags.<flag> on every
+      // gate check; the live kill switch is queried separately via
+      // isKillSwitchActive() at the gate (NOT snapshotted here — see
+      // voice-latency-config.js header).
+      voiceLatency: {
+        flags: snapshotVoiceLatencyFlags(),
+        capabilities: null, // filled in by 1a.3 (capability handshake)
+        // audioSeq counters live here so Stage 3 reservation records +
+        // Stage 4 fast-path race resolution can attribute audio to the
+        // owning logical slot. Per PLAN_v4 §A.4: iOS-owned counter,
+        // server merely records what arrives.
+        lastAudioSeqByCorrelation: new Map(),
+      },
       // Stage 6 Phase 5 Plan 05-02 — filled-slots shadow logger. Side-effect-
       // only adapter wrapping the Stage 5 filter; the ask-gate-wrapper invokes
       // it PRE-WRAPPER on every ask_user (before any restrained / budget /
