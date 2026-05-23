@@ -16,8 +16,13 @@ export class CostTracker {
       output: 15.0,
     };
 
-    // ElevenLabs pricing: $0.030 per 1,000 characters (Scale plan)
-    this.ELEVENLABS_RATE_PER_CHAR = 0.00003;
+    // ElevenLabs pricing: $0.050 per 1,000 characters (current Scale tier
+    // post-2026-04 pricing update). Was 0.00003 — bump per voice-latency
+    // Loaded Barrel plan v6 §G so per-correlation cost attribution matches
+    // the invoice we actually pay. Telemetry/cost reports use this rate
+    // directly; downstream session-optimizer + analyse-session both read
+    // CostTracker.elevenLabsCost.
+    this.ELEVENLABS_RATE_PER_CHAR = 0.00005;
 
     // GPT Vision pricing (per token, per image)
     this.GPT_VISION_RATES = {

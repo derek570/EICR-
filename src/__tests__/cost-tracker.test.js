@@ -27,7 +27,7 @@ describe('CostTracker', () => {
       expect(tracker.SONNET_RATES.cacheWrite).toBe(3.75);
       expect(tracker.SONNET_RATES.input).toBe(3.0);
       expect(tracker.SONNET_RATES.output).toBe(15.0);
-      expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.00003);
+      expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.00005);
     });
   });
 
@@ -156,7 +156,7 @@ describe('CostTracker', () => {
       tracker.addElevenLabsUsage(200);
 
       expect(tracker.elevenLabsCharacters).toBe(300);
-      expect(tracker.elevenLabsCost).toBeCloseTo(300 * 0.00003, 6);
+      expect(tracker.elevenLabsCost).toBeCloseTo(300 * 0.00005, 6);
     });
   });
 
@@ -292,7 +292,7 @@ describe('recordElevenLabsUsageForSession', () => {
 
     expect(result).toBe(true);
     expect(costTracker.elevenLabsCharacters).toBe(120);
-    expect(costTracker.elevenLabsCost).toBeCloseTo(120 * 0.00003, 6);
+    expect(costTracker.elevenLabsCost).toBeCloseTo(120 * 0.00005, 6);
   });
 
   test('accumulates across multiple TTS proxy calls within the same session', () => {
