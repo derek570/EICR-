@@ -566,6 +566,7 @@ Resolved 2026-05-23 (Derek):
 8. **Codex angle #7 (BT route change):** ✅ DETECTION ONLY — confirmed. Full prevention deferred to a follow-up sprint if Stage 4 telemetry shows it's a real-world issue.
 9. **Future-ambiguity fast-vs-ask_user (Codex v2 PARTIAL B3):** ✅ STRATEGY B — start at 0.85 confidence floor, telemetry-driven tune to 0.95 only if field-test rate > 5%. Strategy A (start strict at 0.95) explicitly rejected.
 10. **Stage 4 conditional execution:** ✅ CONFIRMED — Stage 4 work begins only after Derek assesses Stage 2+3 audible latency in real cert sessions. See locked decision 1.21 + §7 intro. If Stage 2+3 feels acceptable in field use, Stage 4 deferred or cancelled.
+11. **Deferred / parked: bundled "received tick" audio cue.** Idea surfaced during 2026-05-23 planning discussion: a 50ms bundled audio cue (similar to the existing bundled tour-audio mechanism in `Sources/Resources/TourAudio/`) played at *utterance-final* on iOS — not a confirmation, just a "heard you" signal. Would close the "is it listening?" anxiety in ~40ms without invoking any Stage 4 machinery. **NOT in current sprint scope.** Revisit ONLY if Stage 2+3 P95 telemetry shows the anxiety actually happens in field use AND Stage 4 is being skipped. Implementation surface (if revisited): ~1 day — pre-generate the cue with `say` or AudioKit, bundle in iOS resources, play from `AlertManager` on `utterance_final` hop. Mic-pause coupling needs same treatment as TTS playback.
 
 ---
 
