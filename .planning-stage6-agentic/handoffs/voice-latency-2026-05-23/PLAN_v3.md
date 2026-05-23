@@ -51,6 +51,9 @@ Carry forward all 13 PLAN_v2 §1 decisions, plus:
 | 1.16 | **Stage 0.G transcript-replay harness ships with the foundation.** Backend-only changes get E2E coverage without iOS rebuild for the lifetime of the sprint. | Derek 2026-05-23 |
 | 1.17 | **`field_corrected` wire shape: snake_case keys, decoder-compatible.** Exact shape: `{"type": "field_corrected", "circuit": <int>, "field": <string>, "previous_value": <string\|null>, "reason": "clear_reading"\|"same_turn_correction"\|"replace_value"}`. Verified against `Stage6Messages.swift:138-165`. | Claude v2 NB1 |
 | 1.18 | **iOS playback ack outcome is `playback_completed`** (with `source` metadata). `fast_heard` is the aggregate iOS-acked-server-emitted metric, computed by the analyser. | Codex v2 NN2 |
+| 1.19 | **BT route change: detection only, no prevention.** iOS logs `AVAudioSession.routeChangeNotification` events as telemetry hops. Stage 4 field test covers 4 routes (built-in / AirPods / BT headset / wired). If field data shows route-change UX problems, fix in a follow-up sprint. | Derek 2026-05-23 (Q8 resolved) |
+| 1.20 | **iOS regex confidence floor: 0.85 (Strategy B).** Fast-path accepts regex hits at confidence ≥ 0.85. Telemetry tracks `fast_then_ask_user_emerged` count. If field-test rate > 5%, raise floor to 0.95 in a follow-up — but DO NOT pre-tighten. Strategy A (start at 0.95) explicitly rejected. | Derek 2026-05-23 (Q9 resolved) |
+| 1.21 | **Stage 4 is CONDITIONAL — assess after Stage 3 ships.** Run Stages 0 + 1 + 2 + 3 first. Field-test the Stage 2 warm/cold P50 audible latency in real cert sessions. If "good enough" (Derek's subjective judgement based on inspector use), defer Stage 4 to a future sprint OR cancel. The regex-fast path is structurally faster than the Sonnet path by ~1 s (because Sonnet's TTFT + tool_use finalisation has an irreducible ~1.5–2 s floor), but the Stage 2+3 latency may be acceptable enough that Stage 4's engineering cost (race resolution, fast-eligibility, transcript-context anchoring) isn't justified. **Decision gate: end of Stage 3, before Stage 4 commits begin.** | Derek 2026-05-23 |
 
 ---
 
@@ -446,7 +449,20 @@ Renumbered to add the cost-tracker integration (was 2.6 in §5.5). Otherwise unc
 
 ---
 
-## 7. Stage 4 — iOS regex-fast path (corrections per v2 reviews)
+## 7. Stage 4 — iOS regex-fast path (CONDITIONAL — assess after Stage 3)
+
+**Per locked decision 1.21**, Stage 4 work begins ONLY if Derek's post-Stage-3 assessment concludes the Stage 2+3 audible latency is insufficient. Decision gate process:
+
+1. Stage 3 ships with `VOICE_LATENCY_STREAM_CONFIRMATIONS=true` and `VOICE_LATENCY_SUPPRESSION=true`.
+2. Derek runs ~5 normal cert sessions in real field conditions.
+3. Telemetry P50/P95 audible-confirmation latency captured per session.
+4. Derek subjectively assesses: does the inspector experience feel acceptable? Are confirmations fast enough that you don't notice the lag?
+5. Three outcomes:
+   - **"Acceptable, don't pursue Stage 4"** → close sprint at Stage 5 (ask_user streaming) + Stage 6 (rollout). Save the engineering cost of Stage 4.
+   - **"Borderline, but Stage 0.F also failed (multi-context unavailable)"** → defer Stage 4 to a future sprint, possibly re-prioritise after other work.
+   - **"Still too slow, proceed"** → execute Stage 4 as planned below.
+
+**Why this gate exists:** the regex-fast path is structurally faster than Sonnet (Sonnet has an irreducible ~1.5–2 s TTFT+finalisation floor that fast-path skips entirely), so Stage 4 would always be measurably faster. But measurably faster isn't always *usefully* faster. If 2.0 s feels OK and the cost of Stage 4 is the riskiest commit set in the sprint (R1–R8 race fixtures, transcript-context-anchoring, fast-eligibility), the trade-off may not be worth it. Decision is yours after seeing real numbers.
 
 Carried from PLAN_v2 §7, with these fixes:
 
@@ -538,27 +554,47 @@ Carried from PLAN_v2 §11. New `docs/reference/voice-latency.md` documents:
 
 ## 12. Open questions (consolidated)
 
-Carried from PLAN_v2 §12 with these updates:
+Resolved 2026-05-23 (Derek):
 
-1. **Stage 0.F worth a full day?** Confirm.
-2. **PCM vs MP3 default for ElevenLabs output:** Stage 0.D decides (Derek listens). Recommend PCM. **NEW DECISION REQUIRED.**
-3. **Sprint timeline:** with all the additions (Stage 0.G harness, Stage 1 split into 1a+1b, MP3 contingency), realistic: **2–2.5 weeks.** Confirm.
-4. **`async-mutex` dep:** hand-rolled or library. Recommendation: hand-rolled (~30 lines).
+1. **Stage 0.F worth a full day?** ✅ YES — confirmed.
+2. **PCM vs MP3 default for ElevenLabs output:** ✅ PCM — confirmed. PCM is proper for Apple's audio stack (AVAudioPlayerNode native), ElevenLabs documents lowest TTFB, bandwidth differential negligible on 4G/iPad. Stage 0.D still A/B verifies quality. MP3 contingency only if PCM is audibly worse to Derek's ear.
+3. **Sprint timeline:** ✅ 2–2.5 weeks confirmed.
+4. **`async-mutex` dep:** hand-rolled (~30 lines) — confirmed approach.
 5. **Single-instance backend assumption:** verified via AWS console `eicr-backend` service `desiredCount=1` (NOT in source). Document in `docs/reference/architecture.md` + add note to `ecs/task-def-backend.json` comment. (PLAN_v2 N4 fix.)
-6. **Eligibility broadening (Stage 4.5):** ring values, others. Driven by production telemetry post-Stage-4. Out of sprint exit gate.
+6. **Eligibility broadening (Stage 4.5):** ring values, others. Driven by production telemetry post-Stage-4. Out of sprint exit gate. (Also conditional on Stage 4 actually proceeding — see Q10 below.)
 7. **iOS playback ack overhead:** confirmed acceptable.
-8. **Codex angle #7 (BT route change) prevention:** detection only in this sprint. Full prevention deferred. **NEW DECISION REQUIRED** — is detection adequate or does Derek want route-change handling in scope?
-9. **Future-ambiguity fast-vs-ask_user (Codex v2 PARTIAL B3):** field-test-driven mitigation. If rate > 5% of fast-eligible turns, raise iOS regex confidence floor from 0.85 to 0.95. **NEW DECISION REQUIRED** — Derek confirms post-Stage-4 review.
+8. **Codex angle #7 (BT route change):** ✅ DETECTION ONLY — confirmed. Full prevention deferred to a follow-up sprint if Stage 4 telemetry shows it's a real-world issue.
+9. **Future-ambiguity fast-vs-ask_user (Codex v2 PARTIAL B3):** ✅ STRATEGY B — start at 0.85 confidence floor, telemetry-driven tune to 0.95 only if field-test rate > 5%. Strategy A (start strict at 0.95) explicitly rejected.
+10. **Stage 4 conditional execution:** ✅ CONFIRMED — Stage 4 work begins only after Derek assesses Stage 2+3 audible latency in real cert sessions. See locked decision 1.21 + §7 intro. If Stage 2+3 feels acceptable in field use, Stage 4 deferred or cancelled.
 
 ---
 
 ## 13. Exit criteria
 
-Carried from PLAN_v2 §13 with these honesty updates:
+Two tiers, depending on the post-Stage-3 decision gate (locked decision 1.21):
 
-- **Stage 2 P50 audible-confirmation latency target ≤ 3.0 s cold / ≤ 2.5 s warm** (not 1.5 s). Reflects honest arithmetic.
-- **Stage 4 P50 audible-latency target ≤ 1,200 ms cold / ≤ 700 ms warm.** Warm requires Stage 0.F passing.
-- **All Stage 0 gates (A, B, C, D, E, F, G) documented.** Each tunable annotated with its measured value in `STAGE0_RESULTS_TUNING.md`.
+### 13.1 Minimum-Viable Sprint Exit (Stages 0 + 1 + 2 + 3 + 5 + 6 — Stage 4 skipped)
+
+If Derek's post-Stage-3 assessment says "Stage 2+3 is good enough, skip Stage 4":
+
+- **Stage 2 P50 audible-confirmation latency** ≤ 3.0 s cold / ≤ 2.5 s warm (honest arithmetic — Sonnet TTFT dominates).
+- Stage 3 suppression machinery proven against zero sources of duplication (suppression rate = 0% in steady state — validates wiring).
+- Stage 5 (ask_user streaming) lands separately — useful regardless.
+- Stage 0 gates A, B, C, D, E, F, G all documented with measured tunables in `STAGE0_RESULTS_TUNING.md`.
+- Sprint closes at "infrastructure laid, audible latency improved ~17–33%."
+
+### 13.2 Full Sprint Exit (Stages 0 + 1 + 2 + 3 + 4 + 5 + 6 — Stage 4 executed)
+
+If Derek's post-Stage-3 assessment says "still too slow, proceed":
+
+- Stage 2 targets as above.
+- **Stage 4 P50 audible-latency target** ≤ 1,200 ms cold / ≤ 700 ms warm. Warm requires Stage 0.F passing.
+- All Stage 0 gates documented.
+- All race fixtures R1–R8 pass deterministically.
+- Field-test outcome: ≥ 80% of fast-eligible turns reach `fast_heard`; suppression rate ≥ 90% of `fast_heard`.
+- Sprint closes at "headline target achieved."
+
+Either exit is a valid sprint outcome.
 - **Transcript-replay scenario library** runs in CI with 100% pass rate at sprint exit.
 
 ---
