@@ -232,7 +232,24 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // only send `{text}` keep working. When iOS includes it (Build 75+) we
     // use it in the success log + the Commit 2 cost-tracker wiring so a
     // single CloudWatch query per session reconstructs the full TTS stream.
+    //
+    // Stage 1a commit 1a.5 — `source` field. Older iOS builds that don't
+    // send it default to 'confirmation' (the only existing flow). When
+    // Stage 1b ships, iOS will tag every TTS call with one of:
+    //   confirmation  — readback after a successful extraction
+    //   correction    — overriding/fixing a prior reading
+    //   question      — ask_user TTS
+    //   notification  — speakCriticalNotification path (suppression-exempt)
+    //   tour          — bundled tour audio (rarely TTS'd via this proxy)
+    //   alert         — non-critical alerts (suppression-exempt)
+    // Stage 3 (suppression) gates on `source` to decide whether to
+    // intercept identical re-asks; Stage 5 (ask_user streaming) routes
+    // `question` through a different vendor path. Behaviour is unchanged
+    // in 1a.5 — we parse, default, and log it. Tests pin the wire shape.
     const { text, sessionId } = req.body;
+    const rawSource = req.body?.source;
+    const source =
+      typeof rawSource === 'string' && rawSource.length > 0 ? rawSource : 'confirmation';
     if (!text) {
       return res.status(400).json({ error: 'text field required' });
     }
@@ -279,9 +296,8 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     let trackerRecorded = false;
     if (sessionId) {
       try {
-        const { recordElevenLabsUsageForSession } = await import(
-          '../extraction/active-sessions.js'
-        );
+        const { recordElevenLabsUsageForSession } =
+          await import('../extraction/active-sessions.js');
         trackerRecorded = recordElevenLabsUsageForSession(sessionId, text.length);
       } catch (err) {
         logger.warn('ElevenLabs cost attribution failed', {
@@ -299,6 +315,7 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // (e.g. TTS after WS close) in CloudWatch.
     logger.info('ElevenLabs TTS success', {
       sessionId: sessionId || null,
+      source,
       textPreview: text.slice(0, 120),
       textLength: text.length,
       bytes: buffer.length,
