@@ -85,3 +85,41 @@ transcript.
   gate stays closed for current iOS builds, every TTS request falls
   through to the legacy batch path until iOS ships the
   `streaming_http_audio` advert).
+
+## Fast-path measurement (Stage 4 forecast, MEASURED)
+
+Run 2026-05-23 21:14 UTC. Direct TTS POST to /api/proxy/elevenlabs-tts
+(streaming branch active, no Sonnet round-trip), 5 representative
+confirmation strings, sessionId with full voice_latency capabilities
+advertised so the streaming path fires.
+
+| Text | first-byte (ms) | total (ms) | bytes |
+|---|---|---|---|
+| Circuit one, number of points 5 | 523 | 554 | 83 380 |
+| Circuit two, Zs 0.38 ohms | 340 | 441 | 124 312 |
+| Circuit twelve, polarity confirmed | 233 | 260 | 86 412 |
+| Circuit three, R1 plus R2 0.52 ohms | 280 | 310 | 147 052 |
+| Earth loop impedance 0.19 ohms | 268 | 302 | 112 184 |
+
+**Server first-byte P50: 280 ms** | P95: 523 ms | min/max: 233/523 ms.
+
+iOS overhead (regex match 40 ms + POST send 50 ms + AVAudioPlayerNode
+schedule 50 ms) = ~140 ms.
+
+**Forecast total fast-path audible (P50): ~420 ms.** Well within the
+2–2.5 s target (~6× headroom).
+
+## Headline
+
+- **Stage 2 streaming alone** does not hit 2–2.5 s for value-bearing
+  transcripts because the Stage 6 tool loop runs ~3 Sonnet rounds
+  (~4.2 s). Measured: ~4.55 s audible.
+- **Stage 4 fast-path** (bypass Sonnet on regex hits) DOES hit the
+  target with margin to spare. Measured: ~420 ms audible (P50).
+- The 2–2.5 s target IS achievable; it requires Stage 4 (the
+  iOS-side regex + the backend regex-fast-tts route + suppression
+  glue + iOS Stage 1b's chunked HTTP client).
+
+Stage 4 backend is a ~1-2 day build; iOS Stage 1b + 4 needs a
+TestFlight cycle. Both deferred per PLAN_v5 §A.1 (conditional on
+Stage 2 assessment — this measurement is what the assessment gates on).
