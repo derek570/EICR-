@@ -1,0 +1,52 @@
+{
+  "name": "fast_path_npts",
+  "suite": "baseline",
+  "pass": false,
+  "failures": [
+    "server_error: fast_path HTTP 404: {\"error\":\"Route not found: POST /api/voice-latency/regex-fast-tts\",\"code\":\"NOT_FOUND\"}"
+  ],
+  "timings": {
+    "session_start_to_ack_ms": 304,
+    "first_transcript_to_extraction_ms": null,
+    "first_transcript_to_audible_ms": null,
+    "transcripts_sent": 1,
+    "extractions_received": 0,
+    "confirmations_total": 0,
+    "tts_fetches": [],
+    "fast_path": [
+      {
+        "text": "Circuit one number of points five.",
+        "firstByteMs": null,
+        "totalMs": 859,
+        "bytes": 0
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 267,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779572111202_9s50km\"}"
+    },
+    {
+      "at_ms": 304,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"bd29f96b-0d5a-4302-8f4f-cb65137cc9b0\"}"
+    },
+    {
+      "at_ms": 305,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 1180,
+      "type": "fast_path_complete",
+      "summary": "{\"firstByteMs\":null,\"totalMs\":859,\"bytes\":0}"
+    },
+    {
+      "at_ms": 2863,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":0,\"cacheReads\":0,\"ca"
+    }
+  ]
+}

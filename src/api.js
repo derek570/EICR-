@@ -52,6 +52,7 @@ import accountRouter from './routes/account.js';
 import legalRouter from './routes/legal.js';
 import certAttestationsRouter from './routes/cert-attestations.js';
 import voiceLatencyBenchRouter from './routes/voice-latency-bench.js';
+import voiceLatencyFastTtsRouter from './routes/voice-latency-fast-tts.js';
 import { requireConsent } from './middleware/require-consent.js';
 
 // WebSocket recording server (re-exported for server.js)
@@ -255,7 +256,7 @@ app.use('/api', voiceLatencyBenchRouter);
 // Stage 4 minimum-viable fast-path endpoint — mounted EARLY for same
 // reason as bench router (auth handled per-route). Gated server-side
 // by VOICE_LATENCY_REGEX_FAST_TTS=true + capability handshake.
-import('./routes/voice-latency-fast-tts.js').then((m) => app.use('/api', m.default));
+app.use('/api', voiceLatencyFastTtsRouter);
 
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/account', accountRouter); // /api/account/consent/accept, /api/account/consent/status
