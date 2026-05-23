@@ -2653,6 +2653,45 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       recentTranscripts: [],
     });
 
+    // Stage 1a commit 1a.4 — startup log of voice-latency effective config.
+    // One line per session_start (the natural per-session granularity)
+    // captures (a) snapshotted flags, (b) parsed iOS capabilities, (c)
+    // resolved multi-context decision. Lets ops eyeball CloudWatch and
+    // confirm a session is running on the path they expect after a
+    // task-def env flip OR an iOS TestFlight bump, without needing to
+    // grep the env at runtime. Includes the bench-derived facts (cf.
+    // STAGE0_RESULTS_TUNING.md) so the log is self-describing.
+    {
+      const _vlEntry = activeSessions.get(sessionId);
+      const _vl = _vlEntry?.voiceLatency;
+      const _caps = _vl?.capabilities;
+      const _flags = _vl?.flags;
+      const _multiContextEffective =
+        _flags?.useMultiContext === true && _flags?.streamConfirmations === true;
+      logger.info('voice_latency.startup_log', {
+        sessionId,
+        protocol_version: protocolVersion,
+        flags_snapshot: _flags,
+        kill_switch_live:
+          !!process.env.VOICE_LATENCY_KILL_SWITCH &&
+          ['true', '1', 'yes', 'on'].includes(
+            String(process.env.VOICE_LATENCY_KILL_SWITCH).trim().toLowerCase()
+          ),
+        capabilities: _caps
+          ? {
+              version: _caps.version,
+              supports: [..._caps.supports],
+              has_streaming_http_audio: _caps.hasStreamingHttpAudio,
+              has_source_field_in_tts_post: _caps.hasSourceFieldInTtsPost,
+              has_voice_latency_ack: _caps.hasVoiceLatencyAck,
+              has_regex_fast_tts: _caps.hasRegexFastTts,
+              has_kill_switch_drop_queue: _caps.hasKillSwitchDropQueue,
+            }
+          : null,
+        multi_context_effective: _multiContextEffective,
+      });
+    }
+
     ws.send(
       JSON.stringify({ type: 'session_ack', status: 'started', sessionId: rehydrateSessionId })
     );
