@@ -23,8 +23,11 @@
 
 import { Router } from 'express';
 import WebSocket from 'ws';
+import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import * as auth from '../auth.js';
-import { getElevenLabsKey } from '../services/secrets.js';
+import { getElevenLabsKey, getSecret } from '../services/secrets.js';
+import { getUserByEmail } from '../db.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -189,6 +192,71 @@ router.post('/test/elevenlabs-pcm-stream', auth.requireAuth, async (req, res) =>
     if (!res.headersSent) res.status(502).json({ error: err.message });
     else res.end();
   }
+});
+
+/**
+ * Mint a bench JWT for an existing user, gated by:
+ *   - STAGE0_BENCH=1 env var
+ *   - X-Bench-Secret header that matches the live JWT_SECRET
+ *     (proves the caller can fetch from AWS Secrets Manager, which is
+ *     the same trust boundary that protects every other server secret)
+ *
+ * Body: { email: "string" }
+ * Response: { token: "...", userId: "...", expiresInSec: 3600 }
+ *
+ * Throwaway — removed in the same Stage 0 cleanup commit that drops
+ * the bench routes file.
+ */
+router.post('/test/harness-mint-jwt', async (req, res) => {
+  if (!benchEnabled()) return res.status(404).end();
+
+  let knownSecret;
+  try {
+    knownSecret = await getSecret('JWT_SECRET');
+  } catch (err) {
+    logger.error('stage0_bench_mint_jwt_secret_lookup_failed', { error: err.message });
+    return res.status(500).json({ error: 'JWT_SECRET unavailable' });
+  }
+  if (!knownSecret) return res.status(500).json({ error: 'JWT_SECRET unavailable' });
+
+  const providedSecret = req.header('X-Bench-Secret') || '';
+  // Constant-time compare to keep this away from any timing-side-channel
+  // tomfoolery, even though the gate is also behind STAGE0_BENCH.
+  const a = Buffer.from(providedSecret);
+  const b = Buffer.from(knownSecret);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(403).json({ error: 'bench secret mismatch' });
+  }
+
+  const { email } = req.body || {};
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ error: 'email required' });
+  }
+  const user = await getUserByEmail(email);
+  if (!user || !user.is_active) {
+    return res.status(404).json({ error: 'user not found or inactive' });
+  }
+
+  const token = jwt.sign(
+    {
+      userId: user.id,
+      email: user.email,
+      role: user.role || 'user',
+      company_id: user.company_id || null,
+      company_role: user.company_role || 'employee',
+      tv: user.token_version || 0,
+      jti: crypto.randomUUID(),
+      _bench: true, // marker for log correlation only
+    },
+    knownSecret,
+    { expiresIn: '1h' }
+  );
+  logger.info('stage0_bench_mint_jwt_issued', {
+    userId: user.id,
+    email: user.email,
+    role: user.role || 'user',
+  });
+  res.json({ token, userId: user.id, expiresInSec: 3600 });
 });
 
 router.post('/test/elevenlabs-mp3-stream', auth.requireAuth, async (req, res) => {

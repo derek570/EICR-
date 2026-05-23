@@ -34,6 +34,7 @@ jest.unstable_mockModule('../services/secrets.js', () => ({
 
 // auth.requireAuth resolves the JWT against db.getUserById — mock a valid
 // active user so authenticated requests get through to the route handler.
+// getUserByEmail mocked for the bench-mint-jwt endpoint.
 jest.unstable_mockModule('../db.js', () => ({
   getUserById: jest.fn().mockResolvedValue({
     id: 'tester',
@@ -43,6 +44,16 @@ jest.unstable_mockModule('../db.js', () => ({
     role: 'user',
     company_id: null,
     company_role: 'employee',
+  }),
+  getUserByEmail: jest.fn().mockResolvedValue({
+    id: 'tester',
+    email: 'tester@example.com',
+    name: 'Test User',
+    is_active: true,
+    role: 'user',
+    company_id: null,
+    company_role: 'employee',
+    token_version: 0,
   }),
 }));
 
