@@ -38,7 +38,7 @@
         { "name": "CCU_SLIDING_WINDOW", "value": "true" },
         { "name": "CCU_SLIDING_WINDOW_MODEL", "value": "gpt-5.5" },
         { "name": "CCU_USE_SINGLE_SHOT", "value": "true" },
-        { "name": "STAGE0_BENCH",       "value": "1" },
+        { "name": "STAGE0_BENCH",       "value": "0" },
         { "name": "VOICE_LATENCY_STREAM_CONFIRMATIONS", "value": "true" },
         { "name": "VOICE_LATENCY_SUPPRESSION",          "value": "false" },
         { "name": "VOICE_LATENCY_REGEX_FAST_TTS",       "value": "true" },
