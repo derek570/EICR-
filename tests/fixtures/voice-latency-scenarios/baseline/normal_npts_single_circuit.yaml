@@ -1,0 +1,41 @@
+name: normal_npts_single_circuit
+suite: baseline
+description: |
+  Simplest possible scenario: one transcript "circuit one number of
+  points five", expect Sonnet to extract number_of_points=5 for circuit 1
+  and emit a confirmation. Audible-latency budget is BASELINE (current
+  production path: non-streaming TTS, full MP3 buffered then sent).
+  Stage 2 will tighten this number.
+
+job_state:
+  boards:
+    - id: main
+      designation: Main DB
+      circuits:
+        - number: 1
+          designation: Lighting
+          ocpd_rating: 6
+          ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 5
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # Baseline budget — current prod path. Will be reasserted with a tighter
+  # max once Stage 2 streaming ships.
+  audible_latency_ms_p50: { max: 6000 }
+
+config:
+  timeout_ms: 25000
+  drain_ms: 6000
+  fetch_tts: true

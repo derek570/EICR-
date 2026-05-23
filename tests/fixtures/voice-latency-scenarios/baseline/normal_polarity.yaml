@@ -1,0 +1,40 @@
+name: normal_polarity
+suite: baseline
+description: |
+  Polarity confirmed for a single circuit. The stricter eligibility
+  anchor (PLAN_v3 §7.3) requires explicit "circuit N polarity confirmed"
+  phrasing; bare "polarity confirmed" is rejected for fast-path
+  eligibility but Sonnet should still extract it (it has the full
+  state snapshot).
+
+job_state:
+  boards:
+    - id: main
+      designation: Main DB
+      circuits:
+        - number: 1
+          designation: Lighting
+          ocpd_rating: 6
+          ocpd_type: B
+        - number: 12
+          designation: Cooker
+          ocpd_rating: 32
+          ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit twelve polarity confirmed."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 12
+      field: polarity_confirmed
+      value: true
+  audible_latency_ms_p50: { max: 6000 }
+
+config:
+  timeout_ms: 25000
+  drain_ms: 6000
+  fetch_tts: true
