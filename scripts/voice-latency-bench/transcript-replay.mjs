@@ -269,13 +269,29 @@ class ScenarioRunner {
       sessionId,
       jobId,
       jobState: this.s.job_state ?? defaultJobState(),
+      // Advertise the stage6 protocol so the backend's ask_user dispatcher
+      // doesn't fall back to shadow-mode (protocol_version_mismatch_shadow
+      // log line). Scenario can override.
+      protocol_version: this.s.protocol_version ?? 'stage6',
+      // Tell backend we want confirmation read-backs so result.confirmations[]
+      // gets populated and the harness can time the TTS leg.
+      confirmations_enabled: this.s.confirmations_enabled ?? true,
     };
-    if (this.s.capabilities) {
-      sessionStart.capabilities = this.s.capabilities;
-    }
-    if (this.s.protocol_version) {
-      sessionStart.protocol_version = this.s.protocol_version;
-    }
+    // Advertise streaming capabilities by default so the Stage 2 streaming
+    // path activates when VOICE_LATENCY_STREAM_CONFIRMATIONS=true on the
+    // server. A scenario can pass `capabilities: null` to opt OUT for a
+    // baseline-only run, or override with a subset.
+    sessionStart.capabilities = this.s.capabilities ?? {
+      voice_latency: {
+        version: 1,
+        supports: [
+          'streaming_http_audio',
+          'source_field_in_tts_post',
+          'voice_latency_ack',
+          'kill_switch_drop_queue',
+        ],
+      },
+    };
     this.ws.send(JSON.stringify(sessionStart));
     this.record('session_start_sent', { sessionId });
 
@@ -297,6 +313,10 @@ class ScenarioRunner {
         type: 'transcript',
         text: t.text,
         isFinal: t.isFinal ?? true,
+        // confirmations_enabled is read from the TRANSCRIPT message
+        // (per sonnet-stream.js:3777), NOT from session_start. iOS sends
+        // it on every transcript with the Voice toggle's current value.
+        confirmations_enabled: this.s.confirmations_enabled ?? true,
       };
       if (t.regexResults) payload.regexResults = t.regexResults;
       this.ws.send(JSON.stringify(payload));
@@ -339,8 +359,12 @@ class ScenarioRunner {
             (need.value === undefined || String(r.value) === String(need.value)),
         );
         if (!match) {
+          // Surface what we DID get so debug doesn't need a re-run.
+          const actual = allReadings
+            .map((r) => `${r.field}=${JSON.stringify(r.value)} (circuit=${r.circuit})`)
+            .join(', ');
           failures.push(
-            `has_reading missing: circuit=${need.circuit} field=${need.field} value=${need.value ?? '*'}`,
+            `has_reading missing: circuit=${need.circuit} field=${need.field} value=${need.value ?? '*'} | actual readings: [${actual || 'none'}]`,
           );
         }
       }
@@ -425,26 +449,17 @@ class ScenarioRunner {
 }
 
 function defaultJobState() {
+  // Shape MUST match what _seedStateFromJobState reads in
+  // src/extraction/eicr-extraction-session.js — flat `circuits[]` at
+  // top level (NOT nested inside boards[].circuits). Each circuit
+  // carries `number` (or ref/circuitNumber) + `board_id`. Without
+  // this shape the seeder bails (`if (!jobState?.circuits) return;`)
+  // and Sonnet's record_reading hits `circuit_not_found` validation.
   return {
-    boards: [
-      {
-        id: 'main',
-        designation: 'Main DB',
-        circuits: [
-          {
-            number: 1,
-            designation: 'Lighting',
-            ocpd_rating: 6,
-            ocpd_type: 'B',
-          },
-          {
-            number: 2,
-            designation: 'Sockets',
-            ocpd_rating: 32,
-            ocpd_type: 'B',
-          },
-        ],
-      },
+    boards: [{ id: 'main', designation: 'DB-1', board_type: 'main' }],
+    circuits: [
+      { number: 1, board_id: 'main', designation: 'Lighting', ocpd_rating_a: 6, ocpd_type: 'B' },
+      { number: 2, board_id: 'main', designation: 'Sockets', ocpd_rating_a: 32, ocpd_type: 'B' },
     ],
   };
 }

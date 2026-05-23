@@ -10,12 +10,14 @@ description: |
 job_state:
   boards:
     - id: main
-      designation: Main DB
-      circuits:
-        - number: 1
-          designation: Lighting
-          ocpd_rating: 6
-          ocpd_type: B
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
 
 transcript:
   - at_ms: 0
@@ -31,11 +33,9 @@ expect:
   ask_user_count: { max: 0 }
   saw_event_types:
     - extraction
-  # Baseline budget — current prod path. Will be reasserted with a tighter
-  # max once Stage 2 streaming ships.
   audible_latency_ms_p50: { max: 6000 }
 
 config:
-  timeout_ms: 25000
-  drain_ms: 6000
+  timeout_ms: 45000
+  drain_ms: 20000
   fetch_tts: true

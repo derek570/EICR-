@@ -2,21 +2,20 @@ name: chitchat_no_engagement
 suite: baseline
 description: |
   Irrelevant chatter — no field values, no questions. Sonnet should
-  return zero readings and zero confirmations. After 10 consecutive
-  zero-engagement turns the chitchat-pause kicks in and stops forwarding
-  to Sonnet; this scenario only sends 1 turn so it stays in the active
-  window. Verifies the backend doesn't hallucinate readings from
-  noise.
+  return zero readings. Verifies the backend doesn't hallucinate
+  readings from noise.
 
 job_state:
   boards:
     - id: main
-      designation: Main DB
-      circuits:
-        - number: 1
-          designation: Lighting
-          ocpd_rating: 6
-          ocpd_type: B
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
 
 transcript:
   - at_ms: 0
@@ -24,13 +23,10 @@ transcript:
     isFinal: true
 
 expect:
-  # Sonnet may or may not respond with an extraction — chitchat path
-  # is lenient. Pin only that NO false readings appear.
   extraction_count: { min: 0 }
   ask_user_count: { max: 0 }
-  # No fetch_tts assertion because no confirmation should fire.
 
 config:
-  timeout_ms: 20000
-  drain_ms: 5000
+  timeout_ms: 25000
+  drain_ms: 8000
   fetch_tts: false

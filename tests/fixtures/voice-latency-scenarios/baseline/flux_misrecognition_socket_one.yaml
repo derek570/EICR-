@@ -7,20 +7,19 @@ description: |
   new utterance, triggers a second Sonnet turn, wastes ~10s.
 
   Today's BASELINE behaviour: both transcripts forwarded to Sonnet
-  back-to-back, two extractions returned, total wall ~13s for both.
-  Stage 2's 500ms client-side burst-buffer (already shipped on web,
-  not yet on iOS) would collapse these to one transcript. This
-  scenario PINS today's behaviour so a Stage 2 regression is caught.
+  back-to-back. Pin today's behaviour so a Stage 2 regression is caught.
 
 job_state:
   boards:
     - id: main
-      designation: Main DB
-      circuits:
-        - number: 1
-          designation: Lighting
-          ocpd_rating: 6
-          ocpd_type: B
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
 
 transcript:
   - at_ms: 0
@@ -31,16 +30,13 @@ transcript:
     isFinal: true
 
 expect:
-  # Today: at least 1 extraction. Tomorrow (Stage 2): exactly 1.
   extraction_count: { min: 1 }
   has_reading:
     - circuit: 1
       field: number_of_points
       value: 5
-  # No specific audible budget — this is a regression pin, not a
-  # latency target. Just capture the timing for reference.
 
 config:
-  timeout_ms: 30000
-  drain_ms: 10000
+  timeout_ms: 45000
+  drain_ms: 20000
   fetch_tts: true

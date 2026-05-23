@@ -1,0 +1,52 @@
+{
+  "name": "chitchat_no_engagement",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 191,
+    "first_transcript_to_extraction_ms": 1784,
+    "first_transcript_to_audible_ms": null,
+    "transcripts_sent": 1,
+    "extractions_received": 1,
+    "confirmations_total": 0,
+    "tts_fetches": []
+  },
+  "events": [
+    {
+      "at_ms": 155,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779566222180_7crceh\"}"
+    },
+    {
+      "at_ms": 191,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"a3b050d4-2026-418e-92d8-16a5723c8625\"}"
+    },
+    {
+      "at_ms": 191,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 208,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Right, let me grab a coffee before we carry on.\"}"
+    },
+    {
+      "at_ms": 1992,
+      "type": "extraction",
+      "summary": "readings=0 confirmations=0"
+    },
+    {
+      "at_ms": 1992,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 8815,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":1,\"cacheReads\":20097"
+    }
+  ]
+}

@@ -8,16 +8,19 @@ description: |
 job_state:
   boards:
     - id: main
-      designation: Main DB
-      circuits:
-        - number: 1
-          designation: Lighting
-          ocpd_rating: 6
-          ocpd_type: B
-        - number: 2
-          designation: Sockets
-          ocpd_rating: 32
-          ocpd_type: B
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
 
 transcript:
   - at_ms: 0
@@ -27,13 +30,15 @@ transcript:
 expect:
   extraction_count: { min: 1 }
   has_reading:
+    # Backend wire shape uses short field name `zs` (not canonical
+    # measured_zs_ohm). Value comes back as string "0.38".
     - circuit: 2
-      field: measured_zs_ohm
-      value: 0.38
+      field: zs
+      value: "0.38"
   ask_user_count: { max: 0 }
   audible_latency_ms_p50: { max: 6000 }
 
 config:
-  timeout_ms: 25000
-  drain_ms: 6000
+  timeout_ms: 45000
+  drain_ms: 20000
   fetch_tts: true

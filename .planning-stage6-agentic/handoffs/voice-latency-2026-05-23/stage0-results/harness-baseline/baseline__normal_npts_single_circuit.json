@@ -1,0 +1,59 @@
+{
+  "name": "normal_npts_single_circuit",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 183,
+    "first_transcript_to_extraction_ms": 4719,
+    "first_transcript_to_audible_ms": 5189,
+    "transcripts_sent": 1,
+    "extractions_received": 1,
+    "confirmations_total": 1,
+    "tts_fetches": [
+      {
+        "text_preview": "Circuit 1, points 5",
+        "first_byte_ms": 470,
+        "total_ms": 471,
+        "bytes": 28465
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 136,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779566252631_lqlw31\"}"
+    },
+    {
+      "at_ms": 183,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"97fc2593-05d9-4d0a-9c69-0956ea98e7f9\"}"
+    },
+    {
+      "at_ms": 183,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 188,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Circuit one number of points five.\"}"
+    },
+    {
+      "at_ms": 4907,
+      "type": "extraction",
+      "summary": "readings=1 confirmations=1"
+    },
+    {
+      "at_ms": 4908,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 21259,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":1,\"cacheReads\":40999"
+    }
+  ]
+}
