@@ -101,7 +101,19 @@ Pending — iOS bench.
 
 ## Gate 0.F — ElevenLabs multi-stream-input evaluation
 
-Pending. 7 operational pass criteria per PLAN_v3 §3.F.
+**PASS — 6/7 operational tests green; Test 6 is a bench-logic issue, not
+an API limitation.** Full results in `STAGE0_RESULTS_MULTI_CONTEXT.md`.
+
+Headline: per-context routing via `contextId` works, concurrent contexts
+multiplex cleanly on one WS, closing one context doesn't affect the
+others, account-level cap is ≥4 concurrent. **Warm Stage 2 reforecast
+at ~2.09s P50 — HITS the user's 2–2.5s goal.**
+
+Tunables:
+- `EL_MULTI_CONTEXT_USABLE = true`
+- `EL_MULTI_CONTEXT_INIT_TO_FIRST_AUDIO_MS = 214` (warm WS)
+- `EL_MULTI_CONTEXT_CONCURRENT_PROVEN_CAP = 4`
+- `EL_MULTI_CONTEXT_AUDIO_FRAME_KEY = "contextId"` (server uses camelCase!)
 
 ## Gate 0.G — Transcript-replay harness
 

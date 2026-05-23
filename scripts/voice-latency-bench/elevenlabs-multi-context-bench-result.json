@@ -1,0 +1,67 @@
+{
+  "run_date": "2026-05-23T17:46:11.758Z",
+  "endpoint": "wss://api.elevenlabs.io/v1/text-to-speech/<voice>/multi-stream-input",
+  "model": "eleven_flash_v2_5",
+  "output_format": "pcm_22050",
+  "tests": {
+    "t1_single_context": {
+      "pass": true,
+      "wsToFirstAudioMs": 475,
+      "initToFirstAudioMs": 214,
+      "textToFirstAudioMs": 214,
+      "initToFinalMs": 261,
+      "bytes": 97024,
+      "audioChunks": 2,
+      "audioContextIds": [
+        "ctx_a"
+      ],
+      "finalContextId": "ctx_a"
+    },
+    "t2_concurrent_contexts": {
+      "pass": true,
+      "aClean": true,
+      "bClean": true,
+      "aBytes": 106120,
+      "bBytes": 125828,
+      "totalMs": 308
+    },
+    "t3_independent_finality": {
+      "pass": true,
+      "aMs": 188,
+      "bMs": 340
+    },
+    "t4_close_one_survives": {
+      "pass": true,
+      "aFinalReceived": true,
+      "bFinalReceived": true,
+      "bAudioChunks": 2,
+      "aFinalMs": 174,
+      "bFinalMs": 365
+    },
+    "t5_concurrent_limit_probe": {
+      "pass": true,
+      "attempted": 4,
+      "completed": 4,
+      "errorCount": 0,
+      "errorSample": [],
+      "note": "plan only needs 2-3 concurrent for Stage 4 pool"
+    },
+    "t6_voice_continuity": {
+      "pass": false,
+      "reason": "first isFinal never arrived"
+    },
+    "t7_post_close_error": {
+      "pass": true,
+      "firstFinalReceived": true,
+      "errorsAfterClose": [],
+      "socketSurvived": true,
+      "healthCheckAudio": 1
+    }
+  },
+  "verdict": "PARTIAL — core multi-context works; check individual test failures for impact",
+  "summary": {
+    "pass_count": 6,
+    "total_count": 7,
+    "fully_passed": false
+  }
+}
