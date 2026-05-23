@@ -80,3 +80,80 @@ export function isKillSwitchActive() {
  * list.
  */
 export const SNAPSHOT_FLAG_ENV_NAMES = SNAPSHOTTED_FLAGS;
+
+/**
+ * Stage 1a commit 1a.3 — capability handshake parser.
+ *
+ * iOS Stage 1b (commit 1b.3) ships `session_start` with a
+ * `capabilities.voice_latency = { version, supports[] }` block. Older
+ * iOS builds (anything pre-1b.3) omit it entirely.
+ *
+ * Returns a normalised block:
+ *   {
+ *     version: 0 | 1,
+ *     supports: Set<string>,
+ *     // Convenience predicates the emitters can branch on without
+ *     // re-implementing Set lookups everywhere:
+ *     hasStreamingHttpAudio: boolean,
+ *     hasSourceFieldInTtsPost: boolean,
+ *     hasVoiceLatencyAck: boolean,
+ *     hasRegexFastTts: boolean,
+ *     hasKillSwitchDropQueue: boolean,
+ *     // Original raw value preserved for the startup log.
+ *     raw: any,
+ *   }
+ *
+ * Defensive defaults:
+ *   - missing / null / non-object capabilities → version 0, supports []
+ *   - capabilities.voice_latency missing → version 0, supports []
+ *   - version not 1 → supports forced to []
+ *   - supports not an array → []
+ *   - non-string entries inside supports → dropped (warn)
+ *
+ * Codex v2 I4 — pin every defensive default in the test surface.
+ */
+const KNOWN_SUPPORTS = Object.freeze([
+  'streaming_http_audio',
+  'source_field_in_tts_post',
+  'regex_fast_tts',
+  'voice_latency_ack',
+  'kill_switch_drop_queue',
+]);
+
+export function parseVoiceLatencyCapabilities(capabilitiesObj) {
+  const raw = capabilitiesObj ?? null;
+  const empty = () => ({
+    version: 0,
+    supports: new Set(),
+    hasStreamingHttpAudio: false,
+    hasSourceFieldInTtsPost: false,
+    hasVoiceLatencyAck: false,
+    hasRegexFastTts: false,
+    hasKillSwitchDropQueue: false,
+    raw,
+  });
+
+  if (!raw || typeof raw !== 'object') return empty();
+  const vl = raw.voice_latency;
+  if (!vl || typeof vl !== 'object') return empty();
+
+  const version = Number.isInteger(vl.version) ? vl.version : 0;
+  if (version !== 1) return { ...empty(), version };
+
+  const rawSupports = Array.isArray(vl.supports) ? vl.supports : [];
+  const supports = new Set(rawSupports.filter((s) => typeof s === 'string'));
+
+  return {
+    version,
+    supports,
+    hasStreamingHttpAudio: supports.has('streaming_http_audio'),
+    hasSourceFieldInTtsPost: supports.has('source_field_in_tts_post'),
+    hasVoiceLatencyAck: supports.has('voice_latency_ack'),
+    hasRegexFastTts: supports.has('regex_fast_tts'),
+    hasKillSwitchDropQueue: supports.has('kill_switch_drop_queue'),
+    raw,
+  };
+}
+
+/** Known supports list for documentation / log enumeration. */
+export const VOICE_LATENCY_KNOWN_SUPPORTS = KNOWN_SUPPORTS;

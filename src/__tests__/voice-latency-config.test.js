@@ -119,3 +119,129 @@ describe('SNAPSHOT_FLAG_ENV_NAMES', () => {
     expect(flags.SNAPSHOT_FLAG_ENV_NAMES).not.toContain('VOICE_LATENCY_KILL_SWITCH');
   });
 });
+
+describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
+  test('missing capabilities → version 0, supports empty', () => {
+    const c = flags.parseVoiceLatencyCapabilities(undefined);
+    expect(c.version).toBe(0);
+    expect(c.supports.size).toBe(0);
+    expect(c.hasStreamingHttpAudio).toBe(false);
+  });
+
+  test('null capabilities → version 0', () => {
+    const c = flags.parseVoiceLatencyCapabilities(null);
+    expect(c.version).toBe(0);
+  });
+
+  test('non-object capabilities → version 0', () => {
+    expect(flags.parseVoiceLatencyCapabilities('string').version).toBe(0);
+    expect(flags.parseVoiceLatencyCapabilities(42).version).toBe(0);
+    expect(flags.parseVoiceLatencyCapabilities([]).version).toBe(0);
+  });
+
+  test('capabilities without voice_latency → version 0', () => {
+    const c = flags.parseVoiceLatencyCapabilities({ other_namespace: { version: 1 } });
+    expect(c.version).toBe(0);
+    expect(c.supports.size).toBe(0);
+  });
+
+  test('voice_latency.version=0 → supports forced empty even if supports[] populated', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 0, supports: ['streaming_http_audio'] },
+    });
+    expect(c.version).toBe(0);
+    expect(c.supports.size).toBe(0);
+    expect(c.hasStreamingHttpAudio).toBe(false);
+  });
+
+  test('voice_latency.version=2 (future) → supports empty for safety', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 2, supports: ['streaming_http_audio'] },
+    });
+    expect(c.version).toBe(2);
+    expect(c.supports.size).toBe(0);
+    expect(c.hasStreamingHttpAudio).toBe(false);
+  });
+
+  test('valid v1 + all supports → predicates all true', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: {
+        version: 1,
+        supports: [
+          'streaming_http_audio',
+          'source_field_in_tts_post',
+          'regex_fast_tts',
+          'voice_latency_ack',
+          'kill_switch_drop_queue',
+        ],
+      },
+    });
+    expect(c.version).toBe(1);
+    expect(c.hasStreamingHttpAudio).toBe(true);
+    expect(c.hasSourceFieldInTtsPost).toBe(true);
+    expect(c.hasRegexFastTts).toBe(true);
+    expect(c.hasVoiceLatencyAck).toBe(true);
+    expect(c.hasKillSwitchDropQueue).toBe(true);
+  });
+
+  test('valid v1 + partial supports → matching predicates only', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: {
+        version: 1,
+        supports: ['streaming_http_audio', 'voice_latency_ack'],
+      },
+    });
+    expect(c.hasStreamingHttpAudio).toBe(true);
+    expect(c.hasVoiceLatencyAck).toBe(true);
+    expect(c.hasSourceFieldInTtsPost).toBe(false);
+    expect(c.hasRegexFastTts).toBe(false);
+    expect(c.hasKillSwitchDropQueue).toBe(false);
+  });
+
+  test('supports non-array → supports empty', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: 'streaming_http_audio' },
+    });
+    expect(c.supports.size).toBe(0);
+  });
+
+  test('non-string entries inside supports are dropped', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: {
+        version: 1,
+        supports: ['streaming_http_audio', 42, null, { x: 1 }, 'voice_latency_ack'],
+      },
+    });
+    expect(c.supports.size).toBe(2);
+    expect(c.hasStreamingHttpAudio).toBe(true);
+    expect(c.hasVoiceLatencyAck).toBe(true);
+  });
+
+  test('unknown support string is preserved in supports Set but not exposed as a predicate', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: ['future_feature_x', 'streaming_http_audio'] },
+    });
+    expect(c.supports.has('future_feature_x')).toBe(true);
+    expect(c.hasStreamingHttpAudio).toBe(true);
+  });
+
+  test('preserves raw payload for startup log', () => {
+    const raw = {
+      voice_latency: { version: 1, supports: ['streaming_http_audio'], extra_field: 'ignored' },
+    };
+    const c = flags.parseVoiceLatencyCapabilities(raw);
+    expect(c.raw).toBe(raw);
+  });
+});
+
+describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
+  test('lists exactly the 5 known support strings', () => {
+    expect([...flags.VOICE_LATENCY_KNOWN_SUPPORTS]).toEqual([
+      'streaming_http_audio',
+      'source_field_in_tts_post',
+      'regex_fast_tts',
+      'voice_latency_ack',
+      'kill_switch_drop_queue',
+    ]);
+  });
+});

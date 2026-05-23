@@ -651,8 +651,11 @@ import { activeSessions } from './active-sessions.js';
 // flags are read ONCE at session_start and frozen for the session
 // lifetime; mid-session env flips affect only NEW sessions. The kill
 // switch is the exception (live override) and is queried on demand.
+// Stage 1a commit 1a.3 adds parseVoiceLatencyCapabilities for the
+// session_start handshake (PLAN_v3 §4.3).
 import {
   snapshotFlagsForSession as snapshotVoiceLatencyFlags,
+  parseVoiceLatencyCapabilities,
   SNAPSHOT_FLAG_ENV_NAMES as VOICE_LATENCY_SNAPSHOT_ENV_NAMES,
 } from './voice-latency-config.js';
 
@@ -2583,7 +2586,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // voice-latency-config.js header).
       voiceLatency: {
         flags: snapshotVoiceLatencyFlags(),
-        capabilities: null, // filled in by 1a.3 (capability handshake)
+        // 1a.3 — parsed from msg.capabilities at session_start. Older iOS
+        // builds that don't send `capabilities` get version=0 / supports=[]
+        // (Codex v2 I4 defensive default) so every emitter branch falls
+        // through to the legacy path.
+        capabilities: parseVoiceLatencyCapabilities(msg.capabilities),
         // audioSeq counters live here so Stage 3 reservation records +
         // Stage 4 fast-path race resolution can attribute audio to the
         // owning logical slot. Per PLAN_v4 §A.4: iOS-owned counter,
