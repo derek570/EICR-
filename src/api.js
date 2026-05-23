@@ -245,6 +245,14 @@ app.use('/api/admin/users', auth.requireAuth, auth.requireAdmin, adminUsersRoute
 app.use('/api/companies', auth.requireAuth, companiesRouter);
 
 // Pre-existing route modules
+// Voice-latency Stage 0 throwaway bench routes — MOUNTED EARLY so the
+// downstream `app.use('/api', auth.requireAuth, ...)` mounts don't catch
+// the un-authed /api/test/harness-mint-jwt before it reaches its handler.
+// Each route inside this router enforces its own gate (STAGE0_BENCH=1 +
+// either auth.requireAuth for the synth routes or X-Bench-Secret for the
+// JWT-mint route). Removed in the Stage 0 cleanup commit.
+app.use('/api', voiceLatencyBenchRouter);
+
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/account', accountRouter); // /api/account/consent/accept, /api/account/consent/status
 app.use('/api/legal', legalRouter); // /api/legal/text-versions (unauthenticated; UI copy)
@@ -278,7 +286,6 @@ app.use('/api', auth.requireAuth, requireConsent, exportRouter); // CSV / archiv
 app.use('/api', auth.requireAuth, requireConsent, ocrRouter); // doc OCR — may contain PII
 app.use('/api', sleepLogRouter); // /api/sleep-log
 app.use('/api', postcodeRouter); // /api/postcode/:postcode
-app.use('/api', voiceLatencyBenchRouter); // /api/test/elevenlabs-*-stream — throwaway Stage 0 bench (gated by STAGE0_BENCH=1)
 
 // ============= Error Handling (must be last) =============
 app.use(notFoundHandler);
