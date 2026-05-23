@@ -23,11 +23,8 @@
 
 import { Router } from 'express';
 import WebSocket from 'ws';
-import jwt from 'jsonwebtoken';
-import crypto from 'node:crypto';
 import * as auth from '../auth.js';
-import { getElevenLabsKey, getSecret } from '../services/secrets.js';
-import { getUserByEmail } from '../db.js';
+import { getElevenLabsKey } from '../services/secrets.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -194,45 +191,9 @@ router.post('/test/elevenlabs-pcm-stream', auth.requireAuth, async (req, res) =>
   }
 });
 
-// /api/test/harness-mint-jwt — re-added for warm-path measurement run
-// (Stage 0.G follow-up). Gated by STAGE0_BENCH=1 + X-Bench-Secret =
-// JWT_SECRET (proves AWS Secrets access).
-router.post('/test/harness-mint-jwt', async (req, res) => {
-  if (!benchEnabled()) return res.status(404).end();
-  let knownSecret;
-  try {
-    knownSecret = await getSecret('JWT_SECRET');
-  } catch (err) {
-    return res.status(500).json({ error: 'JWT_SECRET unavailable' });
-  }
-  if (!knownSecret) return res.status(500).json({ error: 'JWT_SECRET unavailable' });
-  const providedSecret = req.header('X-Bench-Secret') || '';
-  const a = Buffer.from(providedSecret);
-  const b = Buffer.from(knownSecret);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    return res.status(403).json({ error: 'bench secret mismatch' });
-  }
-  const { email } = req.body || {};
-  if (!email || typeof email !== 'string') return res.status(400).json({ error: 'email required' });
-  const user = await getUserByEmail(email);
-  if (!user || !user.is_active) return res.status(404).json({ error: 'user not found' });
-  const token = jwt.sign(
-    {
-      userId: user.id,
-      email: user.email,
-      role: user.role || 'user',
-      company_id: user.company_id || null,
-      company_role: user.company_role || 'employee',
-      tv: user.token_version || 0,
-      jti: crypto.randomUUID(),
-      _bench: true,
-    },
-    knownSecret,
-    { expiresIn: '1h' }
-  );
-  logger.info('stage0_bench_mint_jwt_issued', { userId: user.id, email: user.email });
-  res.json({ token, userId: user.id, expiresInSec: 3600 });
-});
+// /api/test/harness-mint-jwt — removed in final cleanup. Was throwaway
+// auth surface for Stage 0.G harness runs. See
+// stage0-results/STAGE0_RESULTS_TRANSCRIPT_HARNESS.md.
 
 router.post('/test/elevenlabs-mp3-stream', auth.requireAuth, async (req, res) => {
   if (!benchEnabled()) return res.status(404).end();

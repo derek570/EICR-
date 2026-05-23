@@ -1,0 +1,69 @@
+{
+  "name": "flux_misrecognition_socket_one",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 181,
+    "first_transcript_to_extraction_ms": 3814,
+    "first_transcript_to_audible_ms": 4527,
+    "transcripts_sent": 2,
+    "extractions_received": 1,
+    "confirmations_total": 1,
+    "tts_fetches": [
+      {
+        "text_preview": "Circuit 1, points 5",
+        "first_byte_ms": 713,
+        "total_ms": 803,
+        "bytes": 65188
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 147,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779570350663_ax6bay\"}"
+    },
+    {
+      "at_ms": 181,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"774a2de1-9d83-48a9-b1b5-d9505fcbb706\"}"
+    },
+    {
+      "at_ms": 181,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 200,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Circuit one. Number of points five.\"}"
+    },
+    {
+      "at_ms": 202,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Socket 1.\"}"
+    },
+    {
+      "at_ms": 4015,
+      "type": "extraction",
+      "summary": "readings=1 confirmations=1"
+    },
+    {
+      "at_ms": 4015,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 10392,
+      "type": "ask_user_started",
+      "summary": "{\"type\":\"ask_user_started\",\"tool_call_id\":\"toolu_01XDzbYXqxxx4p4dNb9hboA5\",\"question\":\"Did you mean circuit 1 is a socke"
+    },
+    {
+      "at_ms": 21663,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":1,\"cacheReads\":40194"
+    }
+  ]
+}
