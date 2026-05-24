@@ -386,6 +386,66 @@ export async function dispatchCreateCircuit(call, ctx) {
     }
   }
 
+  // 2026-05-24 phantom-circuit guard (regression scenario
+  // hallucinated_phantom_circuit + prod 286D500D-2026-05-24 follow-up).
+  // Reject when another circuit on the SAME board already carries this
+  // designation — the model occasionally invents a duplicate (e.g. c1
+  // "Upstairs Lighting" after c2 was already created with that same
+  // designation in a prior turn) and routes subsequent readings to the
+  // phantom. The prompt rule fired 1/5 in isolation; this dispatcher
+  // check is the structural backstop. The tool_result steers Sonnet to
+  // record_reading against the EXISTING ref rather than retry create.
+  //
+  // Scope: same board only — legitimate cross-board collisions ("Lighting"
+  // on DB-1 vs "Lighting" on DB-2) MUST be allowed. Comparison is
+  // case-insensitive + trim only; no synonym/substring softening, to
+  // avoid false positives on genuinely-different circuits sharing a
+  // word ("Lighting" vs "Outside Lighting").
+  if (typeof input.designation === 'string') {
+    const wantedDesig = input.designation.trim().toLowerCase();
+    if (wantedDesig) {
+      const sameBoardRefs = listCircuitRefsInBoard(session.stateSnapshot, input.board_id);
+      for (const existingRef of sameBoardRefs) {
+        if (existingRef === input.circuit_ref) continue;
+        const bucket = getCircuitBucket(session.stateSnapshot, existingRef, input.board_id);
+        const existingDesig = String(bucket?.circuit_designation ?? bucket?.designation ?? '')
+          .trim()
+          .toLowerCase();
+        if (existingDesig && existingDesig === wantedDesig) {
+          logToolCall(logger, {
+            sessionId: session.sessionId,
+            turnId,
+            tool_use_id: call.tool_call_id,
+            tool: 'create_circuit',
+            round,
+            is_error: true,
+            outcome: 'rejected',
+            validation_error: {
+              code: 'duplicate_designation',
+              field: 'designation',
+              existing_circuit_ref: existingRef,
+            },
+            // PII: never log the designation text itself.
+            input_summary: { circuit_ref: input.circuit_ref },
+          });
+          return envelope(
+            call.tool_call_id,
+            {
+              ok: false,
+              error: {
+                code: 'duplicate_designation',
+                field: 'designation',
+                existing_circuit_ref: existingRef,
+                message: `A circuit with this designation already exists at circuit_ref ${existingRef} on the same board. Do NOT create a duplicate — emit record_reading against circuit_ref ${existingRef} instead.`,
+              },
+            },
+            true
+          );
+        }
+      }
+    }
+  }
+
   upsertCircuitMetaFlagAware(session.stateSnapshot, {
     circuit_ref: input.circuit_ref,
     designation: input.designation,
