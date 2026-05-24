@@ -162,16 +162,37 @@ describe('voice-latency-telemetry', () => {
       expect(tel.HOPS.length).toBe(15);
     });
 
-    test('SERVER_OUTCOMES includes all 8 server states', () => {
-      expect(tel.SERVER_OUTCOMES.length).toBe(8);
+    test('SERVER_OUTCOMES includes original 8 server states + 12 loaded-barrel states', () => {
+      expect(tel.SERVER_OUTCOMES.length).toBe(20);
+      // Original 8 (pre-Loaded-Barrel) — pin for back-compat:
       expect(tel.SERVER_OUTCOMES).toContain('sent_to_client');
       expect(tel.SERVER_OUTCOMES).toContain('suppressed_after_synth');
+      expect(tel.SERVER_OUTCOMES).toContain('synth_started');
+      // Loaded Barrel Phase 1.D additions:
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_started');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_fired');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_hit');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_hit_pending');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_hit_late');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_miss');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_aborted');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_cap_skipped');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_parity_mismatch');
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_text_drift_detected');
     });
 
     test('IOS_OUTCOMES includes the 5 ack outcomes', () => {
       expect(tel.IOS_OUTCOMES.length).toBe(5);
       expect(tel.IOS_OUTCOMES).toContain('playback_completed');
       expect(tel.IOS_OUTCOMES).toContain('dropped_stale');
+    });
+
+    test('Loaded Barrel correlation IDs mint with source="loaded_barrel" (no warning)', () => {
+      // KNOWN_SOURCES additions are private; verify behaviour via mint.
+      // The mintCorrelationId function warns once per unknown source —
+      // we just check the prefix surface.
+      const id = tel.mintCorrelationId('sess-test', 'loaded_barrel');
+      expect(id).toMatch(/^vl_loaded_barrel_[a-f0-9]{10}$/);
     });
   });
 });

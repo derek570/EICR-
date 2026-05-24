@@ -56,6 +56,36 @@ export class CostTracker {
     // *_completed/_cancelled/_failed: counters incremented on the
     // terminal transition. invariant:
     //   chars_completed + chars_cancelled + chars_failed = chars_started.
+    // Loaded Barrel Phase 1.D extra (plan v10 §C) — speculative
+    // sub-ledger. Tracks chars that were billed for SPECULATIVE
+    // synthesis (i.e. the speculator opened ElevenLabs WS before iOS
+    // asked). Separate from streaming so the cost report can
+    // distinguish "served a HIT" (canonical cost) from "wasted on
+    // invalidate/TTL" (extra cost on top of today's batch).
+    //
+    // Per-correlationId chars are tracked so promoteSpeculativeToCanonical
+    // can credit the chars without the caller having to re-pass them.
+    //
+    // Memory: per-session Map sized by # speculations. At 5-10 per turn,
+    // 100-500 per session, ~80 bytes per entry → ~40KB worst case per
+    // session. Acceptable; pruned on session_stop by the speculator's
+    // session-cleanup hook.
+    //
+    // Invariant (asserted by Phase 5 fuzz test): for every entry in
+    // _seenCorrelationIds, there is EXACTLY ONE matching entry in
+    // _terminalCorrelationIds at end-of-session.
+    this.elevenLabsSpeculative = {
+      charsStarted: 0,
+      charsCompleted: 0,
+      charsCancelled: 0,
+      charsFailed: 0,
+      charsServed: 0, // subset of charsCompleted that HIT a cache lookup
+      _seenCorrelationIds: new Set(),
+      _terminalCorrelationIds: new Set(),
+      _promotedCorrelationIds: new Set(),
+      _charsByCorrelationId: new Map(),
+    };
+
     this.elevenLabsStreaming = {
       charsStarted: 0,
       charsCompleted: 0,
@@ -172,6 +202,100 @@ export class CostTracker {
 
   get elevenLabsCost() {
     return this.elevenLabsCharacters * this.ELEVENLABS_RATE_PER_CHAR;
+  }
+
+  /**
+   * Loaded Barrel Phase 1.D extra (plan v10 §C) — speculative synth
+   * "started" accounting. Called by loaded-barrel-speculator.js when it
+   * opens an ElevenLabs WS for a predicted confirmation, BEFORE iOS
+   * has POSTed for that text. ElevenLabs bills on text-accepted,
+   * which happens at BOS+EOS dispatch — the speculator pays the
+   * full per-char cost regardless of whether iOS ends up consuming
+   * the cached audio.
+   *
+   * Mirrored into `elevenLabsCharacters` so the legacy cost calc +
+   * the cost_update wire shape continue to surface the spend
+   * accurately. The speculator-vs-canonical split is recoverable
+   * from the sub-ledger counters (charsStarted - charsServed = wasted).
+   *
+   * Idempotent on correlationId.
+   * Returns true if recorded, false if no-op (missing id or duplicate).
+   */
+  recordElevenLabsSpeculativeStarted(characterCount, correlationId) {
+    if (!correlationId) return false;
+    if (!Number.isFinite(characterCount) || characterCount <= 0) return false;
+    if (this.elevenLabsSpeculative._seenCorrelationIds.has(correlationId)) return false;
+    this.elevenLabsSpeculative._seenCorrelationIds.add(correlationId);
+    this.elevenLabsSpeculative._charsByCorrelationId.set(correlationId, characterCount);
+    this.elevenLabsSpeculative.charsStarted += characterCount;
+    // Mirror into legacy aggregate so cost-update wire shape + the
+    // session-optimizer's cost summary remain accurate.
+    this.elevenLabsCharacters += characterCount;
+    return true;
+  }
+
+  /**
+   * Loaded Barrel Phase 1.D extra — speculative synth "terminal"
+   * counter. Called when the speculator's ElevenLabs WS reaches a
+   * terminal state. Does NOT add billable chars (Started already
+   * did).
+   *
+   * Reason values match the streaming sub-ledger's vocabulary so
+   * downstream analysers can use the same accumulator code:
+   *   'completed' — synth finished cleanly; cache entry CAS'd to ready
+   *   'cancelled' — abort triggered (clear/correction/cap/session_stop)
+   *   'failed'    — ElevenLabs error or network failure
+   *
+   * Audit invariant (asserted by Phase 5 fuzz): every Started call
+   * has EXACTLY ONE matching Terminal call by end-of-session.
+   *
+   * Idempotent on correlationId.
+   */
+  recordElevenLabsSpeculativeTerminal(correlationId, terminal) {
+    if (!correlationId) return false;
+    if (terminal !== 'completed' && terminal !== 'cancelled' && terminal !== 'failed') {
+      return false;
+    }
+    if (this.elevenLabsSpeculative._terminalCorrelationIds.has(correlationId)) return false;
+    this.elevenLabsSpeculative._terminalCorrelationIds.add(correlationId);
+    const chars = this.elevenLabsSpeculative._charsByCorrelationId.get(correlationId) ?? 0;
+    if (terminal === 'completed') this.elevenLabsSpeculative.charsCompleted += chars;
+    else if (terminal === 'cancelled') this.elevenLabsSpeculative.charsCancelled += chars;
+    else this.elevenLabsSpeculative.charsFailed += chars;
+    return true;
+  }
+
+  /**
+   * Loaded Barrel Phase 1.D extra — promote a speculative correlationId
+   * to "canonical served" when an iOS POST cache lookup HITs the
+   * speculator's buffer. Credits the chars into `charsServed` so the
+   * report can distinguish HIT (chars served a real request) from
+   * WASTED (chars were billed but the live path didn't end up using
+   * them — TTL expired, invalidated, lost the race, etc).
+   *
+   * MUST be called AFTER recordElevenLabsSpeculativeStarted for the
+   * same correlationId (otherwise the chars-per-correlation map has
+   * no entry to credit). Returns false in that case.
+   *
+   * Idempotent on correlationId.
+   */
+  promoteSpeculativeToCanonical(correlationId) {
+    if (!correlationId) return false;
+    if (this.elevenLabsSpeculative._promotedCorrelationIds.has(correlationId)) return false;
+    const chars = this.elevenLabsSpeculative._charsByCorrelationId.get(correlationId);
+    if (chars == null) return false; // never Started — can't promote
+    this.elevenLabsSpeculative._promotedCorrelationIds.add(correlationId);
+    this.elevenLabsSpeculative.charsServed += chars;
+    return true;
+  }
+
+  /**
+   * Diagnostic: total speculative chars that were billed but did NOT
+   * serve a HIT. Useful for the rollback-criterion check (cost overhead
+   * > 25% triggers a rollback) and for the field-test report.
+   */
+  get elevenLabsSpeculativeWastedChars() {
+    return this.elevenLabsSpeculative.charsStarted - this.elevenLabsSpeculative.charsServed;
   }
 
   // GPT Vision usage (from OpenAI response.usage in analyze-ccu)

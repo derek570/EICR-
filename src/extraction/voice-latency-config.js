@@ -24,7 +24,13 @@
  *   VOICE_LATENCY_REGEX_FAST_TTS         default false
  *   VOICE_LATENCY_STREAM_ASK_USER        default false
  *   VOICE_LATENCY_USE_MULTI_CONTEXT      default false
+ *   VOICE_LATENCY_LOADED_BARREL          default false (Phase 1.E — v10)
  *   VOICE_LATENCY_KILL_SWITCH            default false (live override)
+ *
+ * Non-flag tunables (numbers, read fresh each call — not snapshotted
+ * because they're operational tuning, not feature gates):
+ *   VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN  default 2  (plan v10 §C
+ *                                              speculator cap)
  */
 
 const SNAPSHOTTED_FLAGS = Object.freeze([
@@ -33,6 +39,7 @@ const SNAPSHOTTED_FLAGS = Object.freeze([
   'VOICE_LATENCY_REGEX_FAST_TTS',
   'VOICE_LATENCY_STREAM_ASK_USER',
   'VOICE_LATENCY_USE_MULTI_CONTEXT',
+  'VOICE_LATENCY_LOADED_BARREL',
 ]);
 
 function parseBool(s) {
@@ -55,7 +62,24 @@ export function snapshotFlagsForSession() {
     regexFastTts: parseBool(process.env.VOICE_LATENCY_REGEX_FAST_TTS),
     streamAskUser: parseBool(process.env.VOICE_LATENCY_STREAM_ASK_USER),
     useMultiContext: parseBool(process.env.VOICE_LATENCY_USE_MULTI_CONTEXT),
+    loadedBarrel: parseBool(process.env.VOICE_LATENCY_LOADED_BARREL),
   });
+}
+
+/**
+ * Loaded Barrel Phase 1.E per-turn speculation cap (plan v10 §C).
+ * Live override (not snapshotted) so the cap can be tuned without
+ * a deploy. Returns a positive integer; defaults to 2 if the env
+ * var is unset, non-numeric, or non-positive (zero would disable
+ * the speculator entirely without a flag flip, which would mask
+ * config errors as feature regressions).
+ */
+export function getLoadedBarrelMaxPerTurn() {
+  const raw = process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN;
+  if (raw == null || raw === '') return 2;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return 2;
+  return n;
 }
 
 /**

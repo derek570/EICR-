@@ -72,6 +72,39 @@ export const SERVER_OUTCOMES = Object.freeze([
   'cancelled',
   'suppressed_before_synth',
   'suppressed_after_synth',
+  // Loaded Barrel Phase 1.D (plan v10 §C). Speculator lifecycle:
+  //   - started:   speculate() ran; ElevenLabs WS BOS sent
+  //   - buffered:  audio bytes arriving and being buffered server-side
+  //   - fired:     synth completed; cache entry CAS'd pending→ready
+  //   - discarded: speculation invalidated before completion
+  //                (clear/correction/board-transition/per-turn-cap)
+  //   - hit:       iOS POST cache.peek returned ready → claimed → served
+  //   - hit_pending: iOS POST raced an in-flight synth, waited ≤200ms,
+  //                  synth resolved first
+  //   - hit_late:  iOS POST timer fired but re-peek caught completion
+  //                inside the same macrotask cycle (§A determinism note)
+  //   - miss:      iOS POST included turnId but cache empty (TTL expired
+  //                or never speculated)
+  //   - aborted:   pending entry torn down by session_stop or kill switch
+  //   - cap_skipped: 3rd+ write in turn — speculator skipped (per-turn cap=2)
+  //   - parity_mismatch: iOS expander-version header didn't match server's
+  //                  EXPANDER_VERSION → cache lookup skipped (should be 0%
+  //                  steady-state; rollback criterion fires >0.5%/1h)
+  //   - text_drift_detected: bundler's final text ≠ speculator's predicted
+  //                  text for the SAME slot → telemetry-only event; cache
+  //                  entry already invalidated by the slot key mismatch
+  'loaded_barrel_started',
+  'loaded_barrel_buffered',
+  'loaded_barrel_fired',
+  'loaded_barrel_discarded',
+  'loaded_barrel_hit',
+  'loaded_barrel_hit_pending',
+  'loaded_barrel_hit_late',
+  'loaded_barrel_miss',
+  'loaded_barrel_aborted',
+  'loaded_barrel_cap_skipped',
+  'loaded_barrel_parity_mismatch',
+  'loaded_barrel_text_drift_detected',
 ]);
 
 export const IOS_OUTCOMES = Object.freeze([
@@ -91,6 +124,10 @@ const KNOWN_SOURCES = new Set([
   'notification',
   'fast_path',
   'ask_user_stream',
+  // Loaded Barrel Phase 1.D — speculator-minted correlation IDs
+  // carry source='loaded_barrel' so the analyser can bucket them
+  // separately from canonical-streaming spans.
+  'loaded_barrel',
 ]);
 
 /**

@@ -333,3 +333,111 @@ describe('recordElevenLabsUsageForSession', () => {
     expect(recordFn('sess-half-torn-down', 100)).toBe(false);
   });
 });
+
+describe('CostTracker — Loaded Barrel speculative sub-ledger (Phase 1.D extra)', () => {
+  test('recordElevenLabsSpeculativeStarted increments chars + dedupes per correlationId', () => {
+    const t = new CostTracker();
+    expect(t.recordElevenLabsSpeculativeStarted(50, 'corr-A')).toBe(true);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(50);
+    // Mirrored into legacy aggregate so cost wire shape stays accurate.
+    expect(t.elevenLabsCharacters).toBe(50);
+
+    // Duplicate correlation ID is a no-op.
+    expect(t.recordElevenLabsSpeculativeStarted(50, 'corr-A')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(50);
+    expect(t.elevenLabsCharacters).toBe(50);
+
+    // Different correlation ID accumulates.
+    expect(t.recordElevenLabsSpeculativeStarted(30, 'corr-B')).toBe(true);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(80);
+  });
+
+  test('recordElevenLabsSpeculativeStarted rejects missing id / invalid chars', () => {
+    const t = new CostTracker();
+    expect(t.recordElevenLabsSpeculativeStarted(50, null)).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(50, '')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(0, 'corr-A')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(-1, 'corr-A')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(NaN, 'corr-A')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(0);
+  });
+
+  test('recordElevenLabsSpeculativeTerminal credits the right bucket + dedupes', () => {
+    const t = new CostTracker();
+    t.recordElevenLabsSpeculativeStarted(50, 'corr-completed');
+    t.recordElevenLabsSpeculativeStarted(30, 'corr-cancelled');
+    t.recordElevenLabsSpeculativeStarted(20, 'corr-failed');
+
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-completed', 'completed')).toBe(true);
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-cancelled', 'cancelled')).toBe(true);
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-failed', 'failed')).toBe(true);
+
+    expect(t.elevenLabsSpeculative.charsCompleted).toBe(50);
+    expect(t.elevenLabsSpeculative.charsCancelled).toBe(30);
+    expect(t.elevenLabsSpeculative.charsFailed).toBe(20);
+
+    // Duplicate terminal is no-op.
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-completed', 'completed')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsCompleted).toBe(50);
+  });
+
+  test('recordElevenLabsSpeculativeTerminal rejects invalid reason / missing id', () => {
+    const t = new CostTracker();
+    t.recordElevenLabsSpeculativeStarted(50, 'corr-A');
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-A', 'invalid')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeTerminal(null, 'completed')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeTerminal('', 'completed')).toBe(false);
+  });
+
+  test('promoteSpeculativeToCanonical credits charsServed + dedupes', () => {
+    const t = new CostTracker();
+    t.recordElevenLabsSpeculativeStarted(50, 'corr-hit');
+    t.recordElevenLabsSpeculativeTerminal('corr-hit', 'completed');
+
+    expect(t.promoteSpeculativeToCanonical('corr-hit')).toBe(true);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(50);
+
+    // Duplicate promote is no-op.
+    expect(t.promoteSpeculativeToCanonical('corr-hit')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(50);
+  });
+
+  test('promoteSpeculativeToCanonical fails when correlationId was never Started', () => {
+    const t = new CostTracker();
+    expect(t.promoteSpeculativeToCanonical('corr-unknown')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(0);
+  });
+
+  test('elevenLabsSpeculativeWastedChars = started - served (rollback criterion)', () => {
+    const t = new CostTracker();
+    // Three speculations, one HIT, two WASTED.
+    t.recordElevenLabsSpeculativeStarted(50, 'hit-1');
+    t.recordElevenLabsSpeculativeStarted(30, 'wasted-1');
+    t.recordElevenLabsSpeculativeStarted(20, 'wasted-2');
+    t.recordElevenLabsSpeculativeTerminal('hit-1', 'completed');
+    t.recordElevenLabsSpeculativeTerminal('wasted-1', 'cancelled');
+    t.recordElevenLabsSpeculativeTerminal('wasted-2', 'completed');
+    t.promoteSpeculativeToCanonical('hit-1');
+
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(100);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(50);
+    expect(t.elevenLabsSpeculativeWastedChars).toBe(50); // 100 - 50
+  });
+
+  test('audit invariant: every Started has exactly one Terminal at session-end', () => {
+    // Plan v10 §B asserted invariant. This test is a unit smoke; the
+    // full 10k-seed fuzz lands in Phase 5.
+    const t = new CostTracker();
+    for (let i = 0; i < 20; i++) {
+      const id = `corr-${i}`;
+      t.recordElevenLabsSpeculativeStarted(10 + i, id);
+      const reason = i % 3 === 0 ? 'completed' : i % 3 === 1 ? 'cancelled' : 'failed';
+      t.recordElevenLabsSpeculativeTerminal(id, reason);
+    }
+    expect(t.elevenLabsSpeculative._seenCorrelationIds.size).toBe(20);
+    expect(t.elevenLabsSpeculative._terminalCorrelationIds.size).toBe(20);
+    // Invariant: charsCompleted + charsCancelled + charsFailed = charsStarted.
+    const spec = t.elevenLabsSpeculative;
+    expect(spec.charsCompleted + spec.charsCancelled + spec.charsFailed).toBe(spec.charsStarted);
+  });
+});

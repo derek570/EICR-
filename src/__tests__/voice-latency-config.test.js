@@ -12,6 +12,8 @@ const ENV_KEYS = [
   'VOICE_LATENCY_REGEX_FAST_TTS',
   'VOICE_LATENCY_STREAM_ASK_USER',
   'VOICE_LATENCY_USE_MULTI_CONTEXT',
+  'VOICE_LATENCY_LOADED_BARREL',
+  'VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN',
   'VOICE_LATENCY_KILL_SWITCH',
 ];
 
@@ -31,6 +33,7 @@ describe('snapshotFlagsForSession', () => {
       regexFastTts: false,
       streamAskUser: false,
       useMultiContext: false,
+      loadedBarrel: false,
     });
   });
 
@@ -40,6 +43,7 @@ describe('snapshotFlagsForSession', () => {
     process.env.VOICE_LATENCY_REGEX_FAST_TTS = 'YES';
     process.env.VOICE_LATENCY_STREAM_ASK_USER = 'on';
     process.env.VOICE_LATENCY_USE_MULTI_CONTEXT = 'True';
+    process.env.VOICE_LATENCY_LOADED_BARREL = 'on';
     const snap = flags.snapshotFlagsForSession();
     expect(snap).toEqual({
       streamConfirmations: true,
@@ -47,6 +51,7 @@ describe('snapshotFlagsForSession', () => {
       regexFastTts: true,
       streamAskUser: true,
       useMultiContext: true,
+      loadedBarrel: true,
     });
   });
 
@@ -56,6 +61,7 @@ describe('snapshotFlagsForSession', () => {
     process.env.VOICE_LATENCY_REGEX_FAST_TTS = '2';
     process.env.VOICE_LATENCY_STREAM_ASK_USER = 'yes please';
     process.env.VOICE_LATENCY_USE_MULTI_CONTEXT = '';
+    process.env.VOICE_LATENCY_LOADED_BARREL = 'maybe';
     const snap = flags.snapshotFlagsForSession();
     expect(snap).toEqual({
       streamConfirmations: false,
@@ -63,6 +69,7 @@ describe('snapshotFlagsForSession', () => {
       regexFastTts: false,
       streamAskUser: false,
       useMultiContext: false,
+      loadedBarrel: false,
     });
   });
 
@@ -105,18 +112,61 @@ describe('isKillSwitchActive', () => {
 });
 
 describe('SNAPSHOT_FLAG_ENV_NAMES', () => {
-  test('lists exactly the 5 snapshotted env-var names', () => {
+  test('lists exactly the 6 snapshotted env-var names', () => {
     expect(flags.SNAPSHOT_FLAG_ENV_NAMES).toEqual([
       'VOICE_LATENCY_STREAM_CONFIRMATIONS',
       'VOICE_LATENCY_SUPPRESSION',
       'VOICE_LATENCY_REGEX_FAST_TTS',
       'VOICE_LATENCY_STREAM_ASK_USER',
       'VOICE_LATENCY_USE_MULTI_CONTEXT',
+      'VOICE_LATENCY_LOADED_BARREL',
     ]);
   });
 
   test('does NOT include the kill switch (live override)', () => {
     expect(flags.SNAPSHOT_FLAG_ENV_NAMES).not.toContain('VOICE_LATENCY_KILL_SWITCH');
+  });
+
+  test('does NOT include the per-turn cap (live tunable, not snapshotted)', () => {
+    expect(flags.SNAPSHOT_FLAG_ENV_NAMES).not.toContain('VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN');
+  });
+});
+
+describe('getLoadedBarrelMaxPerTurn (Phase 1.E live tunable)', () => {
+  test('returns 2 by default when env unset', () => {
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(2);
+  });
+
+  test('returns 2 when env value is empty string', () => {
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(2);
+  });
+
+  test('parses positive integer', () => {
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '5';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(5);
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '1';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(1);
+  });
+
+  test('defaults to 2 for non-integer / negative / zero values (defensive against config errors)', () => {
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '0';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(2);
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '-1';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(2);
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '2.5';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(2);
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = 'not a number';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(2);
+  });
+
+  test('reads fresh on every call (live override)', () => {
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '3';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(3);
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '7';
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(7);
+    delete process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN;
+    expect(flags.getLoadedBarrelMaxPerTurn()).toBe(2);
   });
 });
 
