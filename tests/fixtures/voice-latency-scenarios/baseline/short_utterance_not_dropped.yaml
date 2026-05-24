@@ -1,0 +1,35 @@
+name: short_utterance_not_dropped
+suite: baseline
+description: |
+  Inspector says "Circuit one is cooker." — a 4-word utterance.
+  Sonnet must not classify this as chitchat and drop it; it must
+  fire create_circuit with the designation set.
+
+  Reverse case of the 2026-05-06 chitchat-pause work: that fix added
+  a stop-forwarding gate when ZERO engagement signals are detected
+  for 10 turns. We need to verify the gate doesn't trigger on a
+  single short value-bearing utterance.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits: []
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one is cooker."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  tool_call_sequence:
+    - tool: create_circuit
+      input_summary: { circuit_ref: 1 }
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

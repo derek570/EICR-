@@ -1,0 +1,55 @@
+name: bulk_polarity_confirm
+suite: baseline
+description: |
+  Inspector says "all circuits polarity confirmed". With 3 non-spare
+  circuits in the schedule, Sonnet must fire set_field_for_all_circuits
+  (scope: non_spare) which writes polarity_confirmed=true to all of
+  them. Spare circuits in the schedule must be skipped.
+
+  Tests the bulk-write tool + the non_spare scope filter — that's
+  the same code path the dispatchers-circuit.js:1040 defensive
+  fallback covers (canonical-first, legacy-fallback) for tool-loop-
+  created circuits.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+    - number: 2
+      board_id: main
+      designation: Sockets
+    - number: 3
+      board_id: main
+      designation: Shower
+    - number: 4
+      board_id: main
+      designation: Spare
+
+transcript:
+  - at_ms: 0
+    text: "All circuits polarity confirmed."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: polarity_confirmed
+      value: "Y"
+    - circuit: 2
+      field: polarity_confirmed
+      value: "Y"
+    - circuit: 3
+      field: polarity_confirmed
+      value: "Y"
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

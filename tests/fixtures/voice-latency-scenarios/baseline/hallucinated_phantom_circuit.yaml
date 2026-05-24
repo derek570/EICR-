@@ -1,0 +1,50 @@
+name: hallucinated_phantom_circuit
+suite: baseline
+description: |
+  Pins the ~20% nondeterminism observed in
+  new_circuit_then_readings runs (2026-05-24): Sonnet occasionally
+  creates BOTH c1 and c2 with the same designation when the inspector
+  only ever named c2. The phantom c1 then siphons subsequent readings.
+
+  This is a separate problem from the key-mismatch fix shipped today
+  — captures it as a regression bar so future prompt changes either
+  fix it or are at least visible. Failure mode is observable as
+  final_circuits containing TWO buckets keyed by the same designation.
+
+  Once this scenario is reliably green, the prompt-engineering work
+  to suppress speculative-create can be considered done.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits: []
+
+transcript:
+  - at_ms: 0
+    text: "Circuit two is upstairs lighting."
+    isFinal: true
+  - at_ms: 5000
+    text: "Zs for upstairs lighting is 0.33."
+    isFinal: true
+  - at_ms: 10000
+    text: "R1 plus R2 for upstairs lighting is 0.64."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 3 }
+  has_reading:
+    - circuit: 2
+      field: measured_zs_ohm
+      value: 0.33
+    - circuit: 2
+      field: r1_r2_ohm
+      value: 0.64
+  ask_user_count: { max: 0 }
+  forbid_tools: []
+
+config:
+  timeout_ms: 60000
+  drain_ms: 20000
+  fetch_tts: false

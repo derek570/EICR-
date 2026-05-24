@@ -1,0 +1,36 @@
+name: observation_with_code
+suite: baseline
+description: |
+  Inspector dictates an observation with an explicit classification
+  code. Sonnet must record_observation with the text + code, NOT
+  emit any reading or contaminate a circuit bucket.
+
+  Pins the observation flow: prod sessions have repeatedly had
+  observations leak into the wrong tool (record_reading with field=
+  text), or vice versa (a designation arriving as observation_text).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Sockets
+
+transcript:
+  - at_ms: 0
+    text: "Observation. There's a crack in the socket faceplate on circuit one. Code C2."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  tool_call_sequence:
+    - tool: record_observation
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

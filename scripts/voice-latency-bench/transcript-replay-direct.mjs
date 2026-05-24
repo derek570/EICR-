@@ -1,30 +1,53 @@
 #!/usr/bin/env node
 /**
- * Direct (no-HTTP) transcript-replay runner.
+ * Direct (no-HTTP) transcript-replay runner — Stage 6 + Loaded Barrel
+ * coverage for the on-demand "did I break it" regression suite.
  *
- * Drives the same Stage 6 session machinery the production WS handler
- * uses (runShadowHarness with toolCallsMode='live'), but bypasses HTTP,
- * WebSocket, auth, and DB. Pulls ANTHROPIC_API_KEY from AWS Secrets
- * Manager and replays YAML scenarios against the real Sonnet model.
+ * What it tests:
+ *   - Stage 6 tool-loop with the real Sonnet model.
+ *   - Loaded Barrel speculator: which entries fire, what state they
+ *     reach in the cache, simulated iOS POST HIT vs MISS within TTL.
+ *   - ask_user emissions AND configured replies (so multi-turn
+ *     designation flows actually get to the second leg).
+ *   - Per-turn wall-clock breakdown so a regression that adds latency
+ *     to one specific stage is locatable in the report.
  *
- * Why this exists vs scripts/voice-latency-bench/transcript-replay.mjs:
- * the HTTP harness needs a running backend with a reachable Postgres,
- * which is locked to the VPC for the prod RDS. Local Postgres setup
- * would dwarf the test cost. The HTTP layer is not what we're testing
- * — what we care about is "given transcript X, what tool calls does
- * Sonnet emit?" — so we skip it.
+ * What it does not test:
+ *   - HTTP / WS / auth / persistence layers (those are a separate
+ *     harness — different bug surfaces, same scenarios).
+ *   - Real Deepgram or real audio (those are TestFlight smoke).
  *
- * Scenario schema: same YAML format as tests/fixtures/voice-latency-
- * scenarios/SCHEMA.md (subset — we don't fetch TTS).
+ * Scenario schema: see tests/fixtures/voice-latency-scenarios/SCHEMA.md.
+ * Additions on top of the SCHEMA.md baseline:
+ *
+ *   ask_user_responses:
+ *     - matches: "which circuit"   # case-insensitive substring on the question
+ *       text: "Circuit 4."         # transcript dispatched after the ask
+ *       at_ms_after_ask: 1500      # delay relative to ask emission (default 1000)
+ *
+ *   expect.loaded_barrel:
+ *     - after_turn: 1              # 1-indexed turn the speculator should fire on
+ *       status: ready|fired|hit|miss_ttl_expired|miss_text_drift|aborted|absent
+ *       claim_at_ms: 4000          # optional: simulate iOS POST this many ms after fire;
+ *                                   # status=hit if within TTL, miss_ttl_expired if past it
+ *       expect_bytes_min: 1000     # optional: pre-synthed MP3 byte floor
+ *
+ *   expect.tool_call_sequence:
+ *     - tool: create_circuit
+ *       input_summary: { circuit_ref: 2 }
+ *     - tool: record_reading
+ *       input_summary: { field: measured_zs_ohm, circuit: 2 }
+ *
+ *   expect.forbid_tools:
+ *     - rename_circuit              # NONE of these tools should appear
  *
  * Usage:
  *   node scripts/voice-latency-bench/transcript-replay-direct.mjs \
  *     --scenario=tests/fixtures/voice-latency-scenarios/baseline/new_circuit_then_readings.yaml
  *
- *   # Or a glob/directory:
+ *   # Or all scenarios in a dir:
  *   node scripts/voice-latency-bench/transcript-replay-direct.mjs \
- *     --scenario-dir=tests/fixtures/voice-latency-scenarios/baseline \
- *     --filter=designation
+ *     --scenario-dir=tests/fixtures/voice-latency-scenarios/baseline
  *
  * Exit code: 0 if all assertions pass; 1 if any fail; 2 on setup error.
  */
@@ -33,7 +56,9 @@ import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import yaml from 'js-yaml';
+import Transport from 'winston-transport';
 
 const args = Object.fromEntries(
   process.argv.slice(2).map((a) => {
@@ -46,6 +71,7 @@ const SCENARIO_PATH = args.scenario ?? null;
 const SCENARIO_DIR = args['scenario-dir'] ?? null;
 const FILTER = args.filter ?? null;
 const VERBOSE = !!args.verbose;
+const LOADED_BARREL = args['loaded-barrel'] !== 'off';
 
 if (!SCENARIO_PATH && !SCENARIO_DIR) {
   console.error('Usage: --scenario=<path> OR --scenario-dir=<dir> [--filter=<substr>]');
@@ -64,7 +90,22 @@ function getAnthropicKey() {
   return k;
 }
 
-// --- Stub ws + capture buffer ---------------------------------------------
+// --- ElevenLabs key (only needed when speculator actually fires) ----------
+function getElevenLabsKey() {
+  if (process.env.ELEVENLABS_API_KEY) return process.env.ELEVENLABS_API_KEY;
+  try {
+    const raw = execSync(
+      "aws secretsmanager get-secret-value --secret-id eicr/api-keys --region eu-west-2 --query SecretString --output text",
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    ).toString('utf8');
+    const k = JSON.parse(raw).ELEVENLABS_API_KEY;
+    return k || null;
+  } catch {
+    return null;
+  }
+}
+
+// --- Stub ws ---------------------------------------------------------------
 function makeStubWs(events) {
   return {
     readyState: 1, // OPEN
@@ -82,20 +123,49 @@ function makeStubWs(events) {
   };
 }
 
-// --- Tool-call sniffing logger --------------------------------------------
-function makeCapturingLogger(toolCalls, askUsers, divergences) {
+// --- Winston in-memory transport -------------------------------------------
+// Attaches to the project's central winston logger (src/logger.js) so we
+// capture log calls made via module-level `import logger from '../logger.js'`
+// — e.g. voice-latency-telemetry.js's recordOutcome, which doesn't accept a
+// passed-through logger and thus is invisible to makeCapturingLogger.
+class MemoryTransport extends Transport {
+  constructor(opts) {
+    super(opts);
+    this.buckets = opts.buckets;
+  }
+  log(info, callback) {
+    setImmediate(() => this.emit('logged', info));
+    const message = info?.message;
+    if (message === 'voice_latency.outcome' && info?.outcome) {
+      this.buckets.loadedBarrelEvents.push({
+        correlation_id: info.correlation_id,
+        outcome: info.outcome,
+        meta: info.meta,
+        acked_by_ios: info.acked_by_ios,
+      });
+    }
+    callback();
+  }
+}
+
+// --- Capturing logger -----------------------------------------------------
+// Captures every prod-logged event by message name so the report can attribute
+// errors to the dispatcher / validator / snapshot stage they came from.
+function makeCapturingLogger(buckets) {
   function sink(level) {
     return (msgOrObj, maybeMeta) => {
-      // logger.info('stage6_tool_call', {...})
-      if (typeof msgOrObj === 'string') {
-        if (msgOrObj === 'stage6_tool_call' && maybeMeta) toolCalls.push(maybeMeta);
-        if (msgOrObj === 'stage6.ask_user' && maybeMeta) askUsers.push(maybeMeta);
-        if (VERBOSE) console.error(`[${level}] ${msgOrObj}`, maybeMeta ?? '');
-      } else if (msgOrObj && typeof msgOrObj === 'object') {
-        if (msgOrObj.message === 'stage6_tool_call') toolCalls.push(msgOrObj);
-        if (msgOrObj.message === 'stage6.ask_user') askUsers.push(msgOrObj);
-        if (VERBOSE) console.error(`[${level}]`, msgOrObj);
+      const meta = maybeMeta ?? null;
+      let messageName = null;
+      if (typeof msgOrObj === 'string') messageName = msgOrObj;
+      else if (msgOrObj && typeof msgOrObj === 'object') messageName = msgOrObj.message;
+      if (messageName === 'stage6_tool_call') buckets.toolCalls.push(meta ?? msgOrObj);
+      if (messageName === 'stage6.ask_user') buckets.askUsers.push(meta ?? msgOrObj);
+      if (messageName === 'stage6_live_extraction') buckets.liveExtractions.push(meta ?? msgOrObj);
+      if (messageName === 'voice_latency.outcome') {
+        const payload = meta ?? msgOrObj;
+        if (payload?.outcome) buckets.loadedBarrelEvents.push(payload);
       }
+      if (VERBOSE) console.error(`[${level}] ${messageName ?? ''}`, meta ?? '');
     };
   }
   return {
@@ -117,13 +187,67 @@ function discoverScenarios() {
   return files;
 }
 
+// --- Loaded Barrel inspection ---------------------------------------------
+// Drive inspection from `voice_latency.outcome` events captured by the
+// logger. The outcome stream is the same source of truth used by prod
+// CloudWatch dashboards — if we assert against it, the harness verdict
+// matches what an operator would conclude from logs.
+//
+// Correlation: every speculator lifecycle (started → fired → hit/miss/
+// aborted/ttl_expired) shares one `correlation_id`. We group by that.
+function summariseLoadedBarrelEvents(events, sessionId) {
+  const byCorrelation = new Map();
+  for (const ev of events) {
+    const cid = ev.correlation_id ?? ev.meta?.correlation_id;
+    if (!cid) continue;
+    if (!byCorrelation.has(cid)) byCorrelation.set(cid, []);
+    byCorrelation.get(cid).push(ev);
+  }
+  const entries = [];
+  for (const [cid, group] of byCorrelation) {
+    const started = group.find((e) => e.outcome === 'loaded_barrel_started');
+    if (!started || started.meta?.sessionId !== sessionId) continue;
+    const terminal = group.find((e) =>
+      ['loaded_barrel_hit', 'loaded_barrel_hit_pending', 'loaded_barrel_hit_late',
+       'loaded_barrel_miss', 'loaded_barrel_aborted', 'loaded_barrel_discarded',
+       'loaded_barrel_cap_skipped'].includes(e.outcome),
+    );
+    const fired = group.find((e) => e.outcome === 'loaded_barrel_fired');
+    // Status maps to scenario YAML vocabulary:
+    //   'ready'   — fired but no terminal event yet (most common in unit run)
+    //   'hit'     — fired then hit (or hit_pending / hit_late)
+    //   'miss'    — fired then miss (TTL or text drift)
+    //   'aborted' — superseded / discarded / cap skipped
+    let status = 'started_no_fire';
+    if (fired && !terminal) status = 'ready';
+    else if (terminal?.outcome?.startsWith('loaded_barrel_hit')) status = 'hit';
+    else if (terminal?.outcome === 'loaded_barrel_miss') status = 'miss';
+    else if (terminal) status = 'aborted';
+    // Turn index extraction: turnId shape is `${sessionId}-turn-${n}`.
+    const turnId = started.meta?.turnId ?? '';
+    const turnMatch = turnId.match(/turn-(\d+)$/);
+    const turnIndex = turnMatch ? parseInt(turnMatch[1], 10) : null;
+    entries.push({
+      correlation_id: cid,
+      turnIndex,
+      turnId,
+      field: started.meta?.field ?? null,
+      circuit: started.meta?.circuit ?? null,
+      boardId: started.meta?.boardId ?? null,
+      bytes: fired?.meta?.bytes ?? 0,
+      status,
+    });
+  }
+  return entries.sort((a, b) => (a.turnIndex ?? 0) - (b.turnIndex ?? 0));
+}
+
 // --- Assertion runner -----------------------------------------------------
 function evaluateExpectations(expect, ctx) {
   const failures = [];
-  const { toolCalls, askUsers, readings } = ctx;
+  const { askUsers, readings, toolCalls, lbEntries, transcriptCount } = ctx;
 
   if (expect.extraction_count) {
-    const got = ctx.transcriptCount;
+    const got = transcriptCount;
     if (expect.extraction_count.min != null && got < expect.extraction_count.min) {
       failures.push(`extraction_count.min=${expect.extraction_count.min}, got ${got}`);
     }
@@ -167,7 +291,78 @@ function evaluateExpectations(expect, ctx) {
     }
   }
 
+  // tool_call_sequence: the named tools must appear IN ORDER, but the
+  // sequence may be interleaved with other tools. Only `outcome:'ok'`
+  // calls count (rejected dispatches are filtered).
+  if (Array.isArray(expect.tool_call_sequence)) {
+    const oks = toolCalls.filter((t) => t.outcome === 'ok');
+    let cursor = 0;
+    for (const want of expect.tool_call_sequence) {
+      const idx = oks.findIndex((t, i) => {
+        if (i < cursor) return false;
+        if (t.tool !== want.tool) return false;
+        if (want.input_summary) {
+          for (const [k, v] of Object.entries(want.input_summary)) {
+            if (t.input_summary?.[k] !== v) return false;
+          }
+        }
+        return true;
+      });
+      if (idx === -1) {
+        failures.push(
+          `tool_call_sequence missing: ${want.tool}${want.input_summary ? ` ${JSON.stringify(want.input_summary)}` : ''} after position ${cursor} | ok tools: [${oks.map((t) => t.tool).join(', ')}]`,
+        );
+        break;
+      }
+      cursor = idx + 1;
+    }
+  }
+
+  if (Array.isArray(expect.forbid_tools)) {
+    for (const forbidden of expect.forbid_tools) {
+      const hit = toolCalls.find((t) => t.tool === forbidden && t.outcome === 'ok');
+      if (hit) failures.push(`forbid_tools: ${forbidden} should not have fired`);
+    }
+  }
+
+  // Loaded Barrel: status per turn-index.
+  if (Array.isArray(expect.loaded_barrel)) {
+    for (const want of expect.loaded_barrel) {
+      const turnIdx = want.after_turn;
+      const entriesAtTurn = lbEntries.filter((e) => e.turnIndex === turnIdx);
+      if (want.status === 'absent') {
+        if (entriesAtTurn.length > 0) {
+          failures.push(
+            `loaded_barrel turn ${turnIdx}: expected absent, got ${entriesAtTurn.length} entries`,
+          );
+        }
+        continue;
+      }
+      const match = entriesAtTurn.find((e) => e.status === want.status);
+      if (!match) {
+        const got = entriesAtTurn.map((e) => e.status).join(', ') || 'none';
+        failures.push(
+          `loaded_barrel turn ${turnIdx}: expected ${want.status}, got [${got}]`,
+        );
+      } else if (want.expect_bytes_min != null && match.bytes < want.expect_bytes_min) {
+        failures.push(
+          `loaded_barrel turn ${turnIdx}: bytes=${match.bytes}, expected ≥${want.expect_bytes_min}`,
+        );
+      }
+    }
+  }
+
   return failures;
+}
+
+// --- ask_user dispatch helper ---------------------------------------------
+function findAskUserResponse(scenario, askUserPayload) {
+  const responses = scenario.ask_user_responses ?? [];
+  const question = (askUserPayload?.question ?? '').toLowerCase();
+  return responses.find((r) => {
+    if (!r.matches) return false;
+    return question.includes(r.matches.toLowerCase());
+  });
 }
 
 // --- Single scenario run --------------------------------------------------
@@ -176,10 +371,16 @@ async function runScenario(scenarioPath, apiKey) {
   const start = Date.now();
   process.stderr.write(`\n→ ${scenario.name}\n`);
 
-  // Lazy-import after env is set (Anthropic client is constructed at session
-  // construction; we already have the key).
+  // Env setup BEFORE any extraction module imports.
   process.env.ANTHROPIC_API_KEY = apiKey;
-  process.env.SONNET_TOOL_CALLS = 'live'; // see eicr-extraction-session.js:_resolveToolCallsMode
+  process.env.SONNET_TOOL_CALLS = 'live';
+  if (LOADED_BARREL) {
+    process.env.VOICE_LATENCY_LOADED_BARREL = 'true';
+    process.env.VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN = '2';
+    const ek = getElevenLabsKey();
+    if (ek) process.env.ELEVENLABS_API_KEY = ek;
+  }
+
   const { EICRExtractionSession } = await import(
     new URL('../../src/extraction/eicr-extraction-session.js', import.meta.url).href
   );
@@ -189,92 +390,225 @@ async function runScenario(scenarioPath, apiKey) {
   const { createPendingAsksRegistry } = await import(
     new URL('../../src/extraction/stage6-pending-asks-registry.js', import.meta.url).href
   );
+  // Register session in the active-sessions table so the speculator wrapper
+  // in stage6-shadow-harness.js can read voiceLatency flags via
+  // getVoiceLatencyForSession(). Without this the speculator stays nil and
+  // every LB expectation reads as 'absent'.
+  const { activeSessions } = await import(
+    new URL('../../src/extraction/active-sessions.js', import.meta.url).href
+  );
+  // Attach memory transport to the project's central logger to catch
+  // recordOutcome events (voice_latency.outcome). They use the module-
+  // level `import logger from '../logger.js'`, bypassing any logger we
+  // pass through runShadowHarness. Without this, all loaded_barrel events
+  // are silently dropped.
+  const projectLoggerModule = await import(
+    new URL('../../src/logger.js', import.meta.url).href
+  );
+  const projectLogger = projectLoggerModule.default;
+
+  // Capture buffers — all keyed for the logger to fill.
+  const buckets = {
+    toolCalls: [],
+    askUsers: [],
+    liveExtractions: [],
+    loadedBarrelEvents: [],
+  };
+  const memTransport = new MemoryTransport({ buckets });
+  // REMOVE existing transports (Console, File) so winston output doesn't
+  // pollute stdout — the orchestrator parses stdout as JSON. Done BEFORE
+  // any session.start() / extraction call so prod logger messages from
+  // those code paths also don't reach stdout.
+  const removedTransports = [...projectLogger.transports];
+  for (const t of removedTransports) projectLogger.remove(t);
+  projectLogger.add(memTransport);
 
   const sessionId = `harness_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const session = new EICRExtractionSession(apiKey, sessionId, 'eicr', {
     toolCallsMode: 'live',
   });
 
-  // Convert YAML job_state → iOS-style jobState shape that
-  // _seedStateFromJobState expects.
+  // Mirrors the active-sessions entry sonnet-stream.js builds on session_start.
+  // The speculator wrapper only checks vl.flags.loadedBarrel + session.costTracker;
+  // both are now present. Insert directly into the Map — there's no helper.
+  activeSessions.set(sessionId, {
+    session,
+    voiceLatency: { flags: { loadedBarrel: LOADED_BARREL, suppression: false } },
+  });
+
   const jobState = {
     boards: (scenario.job_state?.boards ?? []).map((b) => ({ ...b })),
     circuits: (scenario.job_state?.circuits ?? []).map((c) => ({ ...c })),
     certificateType: 'eicr',
   };
   session.start(jobState);
-
-  // Capture buffers
   const wsEvents = [];
   const ws = makeStubWs(wsEvents);
-  const toolCalls = [];
-  const askUsers = [];
-  const divergences = [];
   const readings = [];
   const pendingAsks = createPendingAsksRegistry();
+  const turnTimings = []; // per-turn wall-clock spans
+  const lbEntries = []; // populated from outcome events after all turns complete
 
-  // Replay each transcript, awaiting in order. The session uses internal
-  // batching but BATCH_SIZE=1 case + immediate await still produces one
-  // extraction per call. We sort by at_ms then send sequentially.
-  const sorted = (scenario.transcript ?? []).slice().sort((a, b) => (a.at_ms ?? 0) - (b.at_ms ?? 0));
+  // Build the work queue from the scenario's transcript, sorted by at_ms.
+  // ask_user responses get added DYNAMICALLY as Sonnet emits each ask.
+  const initialTranscripts = (scenario.transcript ?? []).slice().sort((a, b) => (a.at_ms ?? 0) - (b.at_ms ?? 0));
 
-  for (const t of sorted) {
-    process.stderr.write(`  · t=${t.at_ms ?? 0}ms "${t.text}"\n`);
+  let turnIndex = 0;
+  let askUsersSeenAtTurnStart = 0;
+  const pendingFollowups = []; // [{text, scheduledAfter: ms}]
+
+  // Helper that consumes one transcript and runs runShadowHarness.
+  async function runOneTurn(transcriptText, regexResults = []) {
+    turnIndex += 1;
+    askUsersSeenAtTurnStart = buckets.askUsers.length;
+    process.stderr.write(`  · turn ${turnIndex}: "${transcriptText}"\n`);
+    const turnStart = performance.now();
     let result;
     try {
-      result = await runShadowHarness(session, t.text, t.regexResults ?? [], {
-        confirmationsEnabled: false,
+      result = await runShadowHarness(session, transcriptText, regexResults, {
+        confirmationsEnabled: true, // need for speculator to fire
         pendingAsks,
         ws,
-        logger: makeCapturingLogger(toolCalls, askUsers, divergences),
+        logger: makeCapturingLogger(buckets),
       });
     } catch (err) {
       process.stderr.write(`    ERR: ${err.message}\n`);
       throw err;
     }
-    // Flush batched buffer — extractFromUtterance batches by default, but
-    // runShadowHarness routes directly into runLiveMode in 'live' mode
-    // (skips the legacy batch path). Result.extracted_readings is the
-    // per-turn merged output.
+    const turnEnd = performance.now();
+    const turnMs = Math.round(turnEnd - turnStart);
+    turnTimings.push({
+      turn: turnIndex,
+      transcript: transcriptText.slice(0, 80),
+      duration_ms: turnMs,
+      readings_emitted: result?.extracted_readings?.length ?? 0,
+      ask_users_emitted: buckets.askUsers.length - askUsersSeenAtTurnStart,
+    });
     for (const r of result?.extracted_readings ?? []) {
       readings.push({ circuit: r.circuit, field: r.field, value: r.value });
     }
+
+    // Process any ask_user that fired this turn and a configured response exists.
+    const newAskUsers = buckets.askUsers.slice(askUsersSeenAtTurnStart);
+    for (const ask of newAskUsers) {
+      const resp = findAskUserResponse(scenario, ask);
+      if (resp) {
+        const delay = resp.at_ms_after_ask ?? 1000;
+        await new Promise((res) => setTimeout(res, Math.min(delay, 250))); // cap the simulated wait at 250ms; we don't need real-time
+        process.stderr.write(`    ↳ ask_user reply: "${resp.text}"\n`);
+        await runOneTurn(resp.text, []);
+      }
+    }
   }
 
-  // Drain — the BATCH_TIMEOUT_MS path won't fire here because live mode
-  // doesn't batch, but we await any pending microtasks just in case.
+  for (const t of initialTranscripts) {
+    await runOneTurn(t.text, t.regexResults ?? []);
+  }
+
+  // Wait for any in-flight ElevenLabs speculative synths to settle.
+  // The speculator dispatches synth asynchronously (loaded-barrel-
+  // speculator.js:220), so a `loaded_barrel_started` event may not
+  // have its terminal `_fired` / `_aborted` partner yet at the
+  // moment runShadowHarness returns. We poll every 100ms until each
+  // started event has a terminal partner, or hit a 10s timeout.
+  if (LOADED_BARREL) {
+    const SETTLE_TIMEOUT_MS = 10000;
+    const POLL_MS = 100;
+    const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const startedCids = new Set(
+        buckets.loadedBarrelEvents
+          .filter((e) => e.outcome === 'loaded_barrel_started')
+          .map((e) => e.correlation_id),
+      );
+      const settledCids = new Set(
+        buckets.loadedBarrelEvents
+          .filter((e) =>
+            ['loaded_barrel_fired', 'loaded_barrel_hit', 'loaded_barrel_hit_pending',
+             'loaded_barrel_hit_late', 'loaded_barrel_miss', 'loaded_barrel_aborted',
+             'loaded_barrel_discarded'].includes(e.outcome),
+          )
+          .map((e) => e.correlation_id),
+      );
+      const unsettled = [...startedCids].filter((c) => !settledCids.has(c));
+      if (unsettled.length === 0) break;
+      await new Promise((res) => setTimeout(res, POLL_MS));
+    }
+  }
+
+  // Summarise Loaded Barrel state from the outcome event stream
+  // captured by the logger. This is the same source of truth as the
+  // prod CloudWatch dashboards — same verdict an operator would reach.
+  if (LOADED_BARREL) {
+    const summary = summariseLoadedBarrelEvents(buckets.loadedBarrelEvents, sessionId);
+    for (const s of summary) lbEntries.push(s);
+  }
+
   await new Promise((res) => setTimeout(res, 50));
+  // Detach our transport so the next scenario gets a clean slate.
+  projectLogger.remove(memTransport);
+  // Restore the original transports for the next scenario.
+  for (const t of removedTransports) projectLogger.add(t);
 
   const failures = evaluateExpectations(scenario.expect ?? {}, {
-    toolCalls,
-    askUsers,
+    toolCalls: buckets.toolCalls,
+    askUsers: buckets.askUsers,
     readings,
-    transcriptCount: sorted.length,
+    lbEntries,
+    transcriptCount: turnIndex,
   });
 
   const pass = failures.length === 0;
   const elapsed_ms = Date.now() - start;
-  const finalCircuits = session.stateSnapshot?.circuits ?? {};
   process.stderr.write(`  ${pass ? '✓' : '✗'} ${pass ? 'pass' : 'FAIL'} in ${elapsed_ms}ms\n`);
   if (!pass) for (const f of failures) process.stderr.write(`    - ${f}\n`);
+
+  // Aggregate per-turn stats for the report.
+  const turnDurations = turnTimings.map((t) => t.duration_ms).sort((a, b) => a - b);
+  const p50 = turnDurations.length ? turnDurations[Math.floor(turnDurations.length / 2)] : 0;
+  const p95 = turnDurations.length ? turnDurations[Math.floor(turnDurations.length * 0.95)] : 0;
+
   return {
     name: scenario.name,
     pass,
     failures,
     elapsed_ms,
-    tool_calls: toolCalls.map((t) => ({
+    turn_count: turnIndex,
+    turn_timings: turnTimings,
+    p50_turn_ms: p50,
+    p95_turn_ms: p95,
+    live_extractions: buckets.liveExtractions.map((e) => ({
+      turn_id: e.turnId,
+      rounds: e.rounds,
+      readings: e.readings,
+      observations: e.observations,
+      usage_input: e.usage_input,
+      usage_output: e.usage_output,
+      usage_cache_read: e.usage_cache_read,
+      usage_cache_write: e.usage_cache_write,
+    })),
+    loaded_barrel: {
+      enabled: LOADED_BARREL,
+      events: buckets.loadedBarrelEvents.map((e) => ({
+        outcome: e.outcome,
+        meta: e.meta,
+      })),
+      cache_entries: lbEntries,
+    },
+    tool_calls: buckets.toolCalls.map((t) => ({
       tool: t.tool,
       outcome: t.outcome,
       input_summary: t.input_summary,
       validation_error: t.validation_error,
     })),
-    ask_users: askUsers.map((a) => ({
+    ask_users: buckets.askUsers.map((a) => ({
       question: a.question,
       reason: a.reason,
       context_field: a.context_field,
       context_circuit: a.context_circuit,
+      answer_outcome: a.answer_outcome,
     })),
-    final_circuits: finalCircuits,
+    final_circuits: session.stateSnapshot?.circuits ?? {},
     readings,
   };
 }

@@ -1,0 +1,47 @@
+name: ocpd_full_spec
+suite: baseline
+description: |
+  Inspector dictates a circuit's OCPD spec in one breath: 32A B-curve
+  MCB on BS EN 60898. Sonnet must extract all three fields onto the
+  same circuit. Tests multi-field-in-one-utterance extraction.
+
+  KNOWN GAP 2026-05-24: currently FAILS because Sonnet only extracts
+  ocpd_rating_a (32) from this transcript; it drops ocpd_type (B)
+  and ocpd_bs_en (60898) — multi-field-in-one-breath extraction is a
+  known prompt weakness. Re-enable as a green-bar scenario once the
+  prompt teaches the model to greedy-extract all OCPD facets in one
+  utterance.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+
+transcript:
+  - at_ms: 0
+    text: "Circuit three is a 32 amp B-curve MCB, BS EN 60898."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: ocpd_rating_a
+      value: 32
+    - circuit: 3
+      field: ocpd_type
+      value: B
+    - circuit: 3
+      field: ocpd_bs_en
+      value: "BS EN 60898"
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

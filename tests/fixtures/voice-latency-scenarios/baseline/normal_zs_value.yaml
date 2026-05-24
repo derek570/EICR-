@@ -30,10 +30,11 @@ transcript:
 expect:
   extraction_count: { min: 1 }
   has_reading:
-    # Backend wire shape uses short field name `zs` (not canonical
-    # measured_zs_ohm). Value comes back as string "0.38".
+    # Canonical schema is `measured_zs_ohm` (field_schema.json). The old
+    # assertion above (field=zs) pre-dated the canonical-rename work
+    # and never matched reality; fixed 2026-05-24.
     - circuit: 2
-      field: zs
+      field: measured_zs_ohm
       value: "0.38"
   ask_user_count: { max: 0 }
   audible_latency_ms_p50: { max: 6000 }
