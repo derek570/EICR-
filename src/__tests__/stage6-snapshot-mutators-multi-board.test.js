@@ -152,7 +152,7 @@ describe('upsertCircuitMetaMultiBoard', () => {
     expect(snapshot.circuits['main::3']).toEqual({
       circuit: 3,
       board_id: 'main',
-      designation: 'Cooker',
+      circuit_designation: 'Cooker',
       phase: 'L1',
       rating_amps: 32,
       cable_csa_mm2: 6,
@@ -168,13 +168,15 @@ describe('upsertCircuitMetaMultiBoard', () => {
       circuit: 3,
       board_id: 'main',
       ze: '0.42',
-      designation: 'Cooker',
+      circuit_designation: 'Cooker',
     });
   });
 
   test('null meta fields leave existing values untouched', () => {
     const snapshot = makeSnapshot({
-      circuits: { 'main::3': { circuit: 3, board_id: 'main', designation: 'Cooker', phase: 'L1' } },
+      circuits: {
+        'main::3': { circuit: 3, board_id: 'main', circuit_designation: 'Cooker', phase: 'L1' },
+      },
     });
     upsertCircuitMetaMultiBoard(snapshot, {
       circuit_ref: 3,
@@ -185,7 +187,7 @@ describe('upsertCircuitMetaMultiBoard', () => {
     expect(snapshot.circuits['main::3']).toEqual({
       circuit: 3,
       board_id: 'main',
-      designation: 'Cooker',
+      circuit_designation: 'Cooker',
       phase: 'L1',
       rating_amps: 32,
     });

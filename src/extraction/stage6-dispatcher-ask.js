@@ -1006,7 +1006,11 @@ function collectAvailableCircuits(session) {
   for (const [refStr, bucket] of Object.entries(circuits)) {
     const ref = Number.parseInt(refStr, 10);
     if (!Number.isFinite(ref) || ref < 1) continue; // 0 is the board bucket
-    const designation = (bucket?.designation ?? '').toString();
+    // Read the canonical snapshot key first, fall back to the legacy key
+    // for resume-across-deploy compat (snapshots created by pre-fix
+    // upsertCircuitMeta still carry `.designation`). See
+    // stage6-snapshot-mutators.js comment + prod session 286D500D-2026-05-24.
+    const designation = (bucket?.circuit_designation ?? bucket?.designation ?? '').toString();
     if (!designation) continue;
     out.push({ circuit_ref: ref, circuit_designation: designation });
   }

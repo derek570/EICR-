@@ -68,7 +68,7 @@ function makeSession(mode = 'live') {
       // stateSnapshot.circuits is an object keyed by circuit_ref
       // (see stage6-snapshot-mutators.js:43).
       circuits: {
-        1: { designation: 'Upstairs lights' },
+        1: { circuit_designation: 'Upstairs lights' },
         2: { designation: 'Kitchen sockets' },
       },
     },
@@ -393,7 +393,7 @@ describe('Layer 2 wiring — create_circuit.designation', () => {
     expect(perTurnWrites.circuitOps[0].op).toBe('create');
     const added = session.stateSnapshot.circuits[3];
     expect(added).toBeDefined();
-    expect(added.designation).toBe('Outdoor sockets');
+    expect(added.circuit_designation).toBe('Outdoor sockets');
   });
 
   test('create_circuit with null designation → no filter activity (optional field)', async () => {
@@ -448,7 +448,7 @@ describe('Layer 2 wiring — rename_circuit.designation', () => {
     expect(body.error?.code).toBe('prompt_leak_in_designation');
 
     // The circuit's original designation is untouched.
-    expect(session.stateSnapshot.circuits[1].designation).toBe('Upstairs lights');
+    expect(session.stateSnapshot.circuits[1].circuit_designation).toBe('Upstairs lights');
   });
 
   test('rename_circuit with clean designation → normal flow', async () => {

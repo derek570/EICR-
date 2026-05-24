@@ -392,6 +392,21 @@ export async function dispatchCreateCircuit(call, ctx) {
     },
   });
 
+  // Mark the new circuit as "recent" so its full bucket (including the
+  // designation we just wrote) renders in the compact snapshot on the next
+  // turn instead of being elided to "N earlier circuits stored server-side".
+  // Without this, tool-loop-created circuits look nameless to Sonnet on the
+  // very next utterance — exactly the prod 286D500D-2026-05-24 symptom:
+  // create_circuit(2) succeeds, then "Zs for upstairs lighting" produces
+  // ambiguous_circuit because c2's designation never reached the model.
+  // Mirrors the recency push that _seedStateFromJobState (line 1125) and
+  // applyReadingFlagAware (line 2106) already do.
+  if (Array.isArray(session.recentCircuitOrder) && input.circuit_ref !== 0) {
+    const idx = session.recentCircuitOrder.indexOf(input.circuit_ref);
+    if (idx !== -1) session.recentCircuitOrder.splice(idx, 1);
+    session.recentCircuitOrder.push(input.circuit_ref);
+  }
+
   logToolCall(logger, {
     sessionId: session.sessionId,
     turnId,
@@ -547,6 +562,18 @@ export async function dispatchRenameCircuit(call, ctx) {
       cable_csa_mm2: input.cable_csa_mm2 ?? null,
     },
   });
+
+  // Mark the (renamed) circuit as "recent" so its bucket renders in the
+  // compact snapshot on the next turn — same rationale as
+  // dispatchCreateCircuit. Drop from_ref's slot first (it no longer
+  // exists in the snapshot post-rename) before pushing the new ref.
+  if (Array.isArray(session.recentCircuitOrder)) {
+    const fromIdx = session.recentCircuitOrder.indexOf(input.from_ref);
+    if (fromIdx !== -1) session.recentCircuitOrder.splice(fromIdx, 1);
+    const toIdx = session.recentCircuitOrder.indexOf(input.circuit_ref);
+    if (toIdx !== -1) session.recentCircuitOrder.splice(toIdx, 1);
+    if (input.circuit_ref !== 0) session.recentCircuitOrder.push(input.circuit_ref);
+  }
 
   logToolCall(logger, {
     sessionId: session.sessionId,
@@ -1037,7 +1064,10 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         // `\b` after `spare` is symmetric in spirit but we don't need a
         // mirror lookahead because trailing hyphens on "spare-anything"
         // ARE genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
-        const designation = String(bucket.circuit_designation ?? '').trim();
+        // Belt-and-braces: canonical first, legacy fallback for snapshots
+        // hydrated from pre-fix tool-loop creates. See stage6-snapshot-
+        // mutators.js comment.
+        const designation = String(bucket.circuit_designation ?? bucket.designation ?? '').trim();
         if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
           skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
           continue;

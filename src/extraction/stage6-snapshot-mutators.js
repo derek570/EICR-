@@ -117,7 +117,13 @@ export function upsertCircuitMeta(
 ) {
   if (!snapshot.circuits[circuit_ref]) snapshot.circuits[circuit_ref] = {};
   const target = snapshot.circuits[circuit_ref];
-  if (designation != null) target.designation = designation;
+  // Canonical snapshot key is `circuit_designation` (matches field_schema.json,
+  // _seedStateFromJobState, the Sonnet field enum, and iOS Circuit.swift's
+  // formData decoder). Writing the legacy `designation` key here made
+  // tool-loop-created circuits invisible to the canonical-key resolver
+  // (Sonnet ambiguous_circuit lookup) — prod session 286D500D-2026-05-24
+  // looped "Which circuit is the upstairs lighting?" because of it.
+  if (designation != null) target.circuit_designation = designation;
   if (phase != null) target.phase = phase;
   if (rating_amps != null) target.rating_amps = rating_amps;
   if (cable_csa_mm2 != null) target.cable_csa_mm2 = cable_csa_mm2;
@@ -291,7 +297,8 @@ export function upsertCircuitMetaMultiBoard(
     snapshot.circuits[key] = { circuit: circuit_ref, board_id: id };
   }
   const target = snapshot.circuits[key];
-  if (designation != null) target.designation = designation;
+  // Canonical key — see upsertCircuitMeta comment.
+  if (designation != null) target.circuit_designation = designation;
   if (phase != null) target.phase = phase;
   if (rating_amps != null) target.rating_amps = rating_amps;
   if (cable_csa_mm2 != null) target.cable_csa_mm2 = cable_csa_mm2;

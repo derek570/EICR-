@@ -38,7 +38,7 @@ const validPendingWrite = (overrides = {}) => ({
 const buildSession = (circuits = []) => {
   const circuitMap = {};
   circuits.forEach((c) => {
-    circuitMap[c.circuit_ref] = { designation: c.circuit_designation };
+    circuitMap[c.circuit_ref] = { circuit_designation: c.circuit_designation };
   });
   return {
     sessionId: 'sess-test',

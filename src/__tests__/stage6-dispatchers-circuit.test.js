@@ -62,8 +62,12 @@ describe('dispatchCreateCircuit', () => {
     expect(JSON.parse(result.content)).toEqual({ ok: true });
 
     // Snapshot: new bucket with all meta fields populated.
+    // Snapshot bucket uses canonical `circuit_designation` (matches
+    // field_schema.json + _seedStateFromJobState + iOS Circuit.swift formData
+    // decoder); the wire-payload `meta.designation` below is deliberately
+    // legacy because iOS `CircuitUpdate` pins that key for live updates.
     expect(session.stateSnapshot.circuits[5]).toEqual({
-      designation: 'Ring final',
+      circuit_designation: 'Ring final',
       phase: 'L1',
       rating_amps: 32,
       cable_csa_mm2: 2.5,
@@ -94,7 +98,7 @@ describe('dispatchCreateCircuit', () => {
   });
 
   test('duplicate rejection: circuit_ref already exists → {code:"circuit_already_exists"}, snapshot unchanged', async () => {
-    const session = makeSession({ circuits: { 5: { designation: 'existing' } } });
+    const session = makeSession({ circuits: { 5: { circuit_designation: 'existing' } } });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
     const d = createWriteDispatcher(session, logger, 'turn-1', writes);
@@ -368,7 +372,7 @@ describe('dispatchRenameCircuit', () => {
 
     expect(result.is_error).toBe(false);
     expect(JSON.parse(result.content)).toEqual({ ok: true });
-    expect(session.stateSnapshot.circuits[3]).toEqual({ designation: 'New name' });
+    expect(session.stateSnapshot.circuits[3]).toEqual({ circuit_designation: 'New name' });
     expect(writes.circuitOps).toHaveLength(1);
     expect(writes.circuitOps[0]).toMatchObject({
       op: 'rename',
@@ -406,7 +410,7 @@ describe('dispatchRenameCircuit', () => {
     expect(session.stateSnapshot.circuits[3]).toBeUndefined();
     expect(session.stateSnapshot.circuits[7]).toEqual({
       Ze_ohms: '0.35', // rekeyed readings preserved
-      designation: 'Upstairs sockets',
+      circuit_designation: 'Upstairs sockets',
       phase: 'L2',
     });
     expect(writes.circuitOps[0]).toMatchObject({

@@ -84,7 +84,7 @@ describe('upsertCircuitMeta', () => {
   test('creates a new bucket with only the supplied meta field', () => {
     const snap = emptySnapshot();
     upsertCircuitMeta(snap, { circuit_ref: 5, designation: 'Ring final' });
-    expect(snap.circuits).toEqual({ 5: { designation: 'Ring final' } });
+    expect(snap.circuits).toEqual({ 5: { circuit_designation: 'Ring final' } });
   });
 
   test('ignores null/undefined meta fields (no key written)', () => {
@@ -96,18 +96,18 @@ describe('upsertCircuitMeta', () => {
       rating_amps: undefined,
       cable_csa_mm2: null,
     });
-    expect(snap.circuits[5]).toEqual({ designation: 'Ring final' });
+    expect(snap.circuits[5]).toEqual({ circuit_designation: 'Ring final' });
   });
 
   test('on existing circuit, updates supplied fields and preserves unmentioned', () => {
     const snap = {
       circuits: {
-        5: { designation: 'Ring final', phase: 'L1', rating_amps: 32 },
+        5: { circuit_designation: 'Ring final', phase: 'L1', rating_amps: 32 },
       },
     };
     upsertCircuitMeta(snap, { circuit_ref: 5, phase: 'L2' });
     expect(snap.circuits[5]).toEqual({
-      designation: 'Ring final',
+      circuit_designation: 'Ring final',
       phase: 'L2',
       rating_amps: 32,
     });

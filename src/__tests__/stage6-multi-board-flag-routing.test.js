@@ -282,7 +282,7 @@ describe('dual-shape mutator wrappers', () => {
     expect(snapshot.circuits['sub-1::7']).toEqual({
       circuit: 7,
       board_id: 'sub-1',
-      designation: 'Cooker',
+      circuit_designation: 'Cooker',
     });
   });
 
@@ -427,7 +427,7 @@ describe('dispatchers against a sub-board target', () => {
     expect(session.stateSnapshot.circuits['sub-1::7']).toEqual({
       circuit: 7,
       board_id: 'sub-1',
-      designation: 'Cooker',
+      circuit_designation: 'Cooker',
       phase: 'L1',
       rating_amps: 32,
       cable_csa_mm2: 6,
@@ -479,7 +479,7 @@ describe('dispatchers against a sub-board target', () => {
 
   test('rename_circuit rekeys within the composite namespace', async () => {
     const session = makeSubBoardSession({
-      'sub-1::3': { circuit: 3, board_id: 'sub-1', designation: 'Cooker' },
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', circuit_designation: 'Cooker' },
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -499,7 +499,7 @@ describe('dispatchers against a sub-board target', () => {
     expect(session.stateSnapshot.circuits['sub-1::5']).toMatchObject({
       circuit: 5,
       board_id: 'sub-1',
-      designation: 'Cooker',
+      circuit_designation: 'Cooker',
     });
   });
 
