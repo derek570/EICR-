@@ -47,6 +47,118 @@
 import { createAssembler } from './stage6-stream-assembler.js';
 
 // ---------------------------------------------------------------------------
+// Loaded Barrel Phase 2.C — perTurnWrites snapshot/diff helpers (plan v10 §C)
+// ---------------------------------------------------------------------------
+//
+// The speculator (loaded-barrel-speculator.js) needs to see EVERY mutation
+// each dispatcher applies to the per-turn accumulator: added readings to
+// speculate on, cleared / overwritten readings to invalidate, boardOps to
+// drive prune decisions. Rather than re-implement the dispatcher chain
+// to emit per-mutation events, we snapshot the accumulator BEFORE the
+// dispatcher call and diff AFTER. The diff is shipped to the
+// onSnapshotPatch hook.
+//
+// Snapshot complexity: O(n) on each readings/boardReadings Map size. At
+// ~20 readings per session worst case, this is negligible vs the
+// dispatcher's own work. Arrays use length-only snapshots (append-only
+// invariant per createPerTurnWrites docstring).
+//
+// Why diff vs event emission: the existing dispatchers are unaware of
+// the speculator and we don't want to thread an observer through every
+// dispatcher signature. Diff keeps the speculator-vs-bundler shape
+// contract in ONE place (this file) — if a future dispatcher mutates
+// readings via a new code path, the diff catches it automatically.
+
+function captureSnapshot(perTurnWrites) {
+  if (!perTurnWrites) return null;
+  return {
+    // Map copies preserve key+value references. Equality on the value
+    // reference detects same-turn overwrites (dispatchRecordReading
+    // replaces the Map value object on a re-record, not mutates it).
+    readingsMap: new Map(perTurnWrites.readings),
+    boardReadingsMap: new Map(perTurnWrites.boardReadings),
+    // Arrays are append-only per createPerTurnWrites contract. Length
+    // alone is enough to slice the tail in the diff.
+    clearedLen: perTurnWrites.cleared.length,
+    observationsLen: perTurnWrites.observations.length,
+    deletedObservationsLen: perTurnWrites.deletedObservations.length,
+    circuitOpsLen: perTurnWrites.circuitOps.length,
+    boardOpsLen: perTurnWrites.boardOps.length,
+    fieldCorrectionsLen: Array.isArray(perTurnWrites.fieldCorrections)
+      ? perTurnWrites.fieldCorrections.length
+      : 0,
+  };
+}
+
+function diffSnapshot(before, perTurnWrites) {
+  const patch = {
+    readings: { added: [], overwritten: [], removed: [] },
+    boardReadings: { added: [], overwritten: [], removed: [] },
+    cleared: perTurnWrites.cleared.slice(before.clearedLen),
+    observations: perTurnWrites.observations.slice(before.observationsLen),
+    deletedObservations: perTurnWrites.deletedObservations.slice(before.deletedObservationsLen),
+    circuitOps: perTurnWrites.circuitOps.slice(before.circuitOpsLen),
+    boardOps: perTurnWrites.boardOps.slice(before.boardOpsLen),
+    fieldCorrections: Array.isArray(perTurnWrites.fieldCorrections)
+      ? perTurnWrites.fieldCorrections.slice(before.fieldCorrectionsLen)
+      : [],
+  };
+  for (const [key, value] of perTurnWrites.readings) {
+    if (!before.readingsMap.has(key)) {
+      patch.readings.added.push({ key, value });
+    } else if (before.readingsMap.get(key) !== value) {
+      patch.readings.overwritten.push({ key, before: before.readingsMap.get(key), after: value });
+    }
+  }
+  for (const [key, value] of before.readingsMap) {
+    if (!perTurnWrites.readings.has(key)) {
+      patch.readings.removed.push({ key, before: value });
+    }
+  }
+  for (const [key, value] of perTurnWrites.boardReadings) {
+    if (!before.boardReadingsMap.has(key)) {
+      patch.boardReadings.added.push({ key, value });
+    } else if (before.boardReadingsMap.get(key) !== value) {
+      patch.boardReadings.overwritten.push({
+        key,
+        before: before.boardReadingsMap.get(key),
+        after: value,
+      });
+    }
+  }
+  for (const [key, value] of before.boardReadingsMap) {
+    if (!perTurnWrites.boardReadings.has(key)) {
+      patch.boardReadings.removed.push({ key, before: value });
+    }
+  }
+  return patch;
+}
+
+function patchHasChanges(patch) {
+  return (
+    patch.readings.added.length > 0 ||
+    patch.readings.overwritten.length > 0 ||
+    patch.readings.removed.length > 0 ||
+    patch.boardReadings.added.length > 0 ||
+    patch.boardReadings.overwritten.length > 0 ||
+    patch.boardReadings.removed.length > 0 ||
+    patch.cleared.length > 0 ||
+    patch.observations.length > 0 ||
+    patch.deletedObservations.length > 0 ||
+    patch.circuitOps.length > 0 ||
+    patch.boardOps.length > 0 ||
+    patch.fieldCorrections.length > 0
+  );
+}
+
+/** Exposed for test introspection — production callers should use the hook. */
+export const _loadedBarrelInternals = Object.freeze({
+  captureSnapshot,
+  diffSnapshot,
+  patchHasChanges,
+});
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -164,6 +276,42 @@ export async function runToolLoop({
    * falls back to identity for that round so the turn does not crash.
    */
   sortRecords,
+  /**
+   * Loaded Barrel Phase 2.C — accessor returning the perTurnWrites
+   * accumulator the dispatchers mutate. Required if onSnapshotPatch
+   * is provided; ignored otherwise. The loop calls this fresh each
+   * dispatch so the speculator sees the post-mutation state in the
+   * patch event.
+   */
+  perTurnWritesRef,
+  /**
+   * Loaded Barrel Phase 2.C — fires after each successful (or errored)
+   * dispatcher call IF perTurnWritesRef is also provided AND the
+   * dispatch produced any state change. Hook signature:
+   *
+   *   ({patch, raw, ctx}) => void
+   *
+   * `patch` is the diff (readings/boardReadings/cleared/etc).
+   * `raw` exposes the full post-dispatch perTurnWrites for the
+   * speculator's prune subscribers (boardOps cumulative state).
+   * `ctx` carries sessionId, turnId, toolName, toolCallId, roundIdx.
+   *
+   * A throw is caught + logged as stage6.snapshot_patch_hook_error;
+   * the dispatch continues normally.
+   */
+  onSnapshotPatch,
+  /**
+   * Loaded Barrel Phase 2.C — fires AFTER the whole tool loop
+   * terminates (end_turn / cap-hit / abort). The speculator uses
+   * this for drift detection: the bundler's final confirmation text
+   * is computed at this point, so the speculator can compare its
+   * predicted text against the bundler's. Signature:
+   *
+   *   ({perTurnWrites, tool_calls, rounds, stop_reason, aborted, usage}) => void
+   *
+   * A throw is caught + logged; never affects the return value.
+   */
+  onLoopComplete,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -384,12 +532,51 @@ export async function runToolLoop({
       }
 
       const started = Date.now();
+      // Loaded Barrel Phase 2.C — snapshot perTurnWrites BEFORE dispatch
+      // so we can diff after. Only does work when both hook + accessor
+      // are wired; otherwise it's a single null-pointer check.
+      const speculatorAttached =
+        typeof onSnapshotPatch === 'function' && typeof perTurnWritesRef === 'function';
+      let snapshotBefore = null;
+      let snapshotPtw = null;
+      if (speculatorAttached) {
+        snapshotPtw = perTurnWritesRef();
+        snapshotBefore = captureSnapshot(snapshotPtw);
+      }
       try {
         const res = await dispatcher(
           { tool_call_id: rec.tool_call_id, name: rec.name, input: rec.input },
           ctx
         );
         const duration_ms = Date.now() - started;
+        // Loaded Barrel Phase 2.C — diff + emit. The hook MUST NOT
+        // affect dispatch outcome — wrap in try/catch and never
+        // re-throw so a speculator bug can't break extraction.
+        if (speculatorAttached && snapshotBefore && snapshotPtw) {
+          try {
+            const patch = diffSnapshot(snapshotBefore, snapshotPtw);
+            if (patchHasChanges(patch)) {
+              onSnapshotPatch({
+                patch,
+                raw: { perTurnWrites: snapshotPtw },
+                ctx: {
+                  sessionId: ctx?.sessionId,
+                  turnId: ctx?.turnId,
+                  toolName: rec.name,
+                  toolCallId: rec.tool_call_id,
+                  roundIdx: rounds,
+                },
+              });
+            }
+          } catch (hookErr) {
+            logger?.error?.('stage6.snapshot_patch_hook_error', {
+              sessionId: ctx?.sessionId,
+              turnId: ctx?.turnId,
+              tool_name: rec.name,
+              error: hookErr?.message,
+            });
+          }
+        }
         // STO-01: per-tool-call structured log. sessionId/turnId are
         // session+turn correlators; tool_call_id threads to the assistant's
         // tool_use.id; tool_name for metric tagging; duration_ms for the
@@ -503,6 +690,29 @@ export async function runToolLoop({
     }
 
     messages.push({ role: 'user', content: toolResults });
+  }
+
+  // Loaded Barrel Phase 2.C — onLoopComplete fires AFTER the loop
+  // terminates (end_turn / cap-hit / abort). Speculator uses this for
+  // drift detection: compares its predicted confirmation text against
+  // the bundler-computable text. Hook errors never affect return.
+  if (typeof onLoopComplete === 'function') {
+    try {
+      onLoopComplete({
+        perTurnWrites: typeof perTurnWritesRef === 'function' ? perTurnWritesRef() : null,
+        tool_calls: allCalls,
+        rounds,
+        stop_reason: stopReason,
+        aborted,
+        usage,
+      });
+    } catch (hookErr) {
+      logger?.error?.('stage6.loop_complete_hook_error', {
+        sessionId: ctx?.sessionId,
+        turnId: ctx?.turnId,
+        error: hookErr?.message,
+      });
+    }
   }
 
   return {
