@@ -353,6 +353,134 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       // Telemetry must never break the request path. Silently drop.
     }
 
+    // Loaded Barrel Phase 3 (plan v10 §A) — cache short-circuit. If the
+    // iOS POST carries a `turnId`, look up the speculator's pre-synth
+    // by composite slot key. On HIT serve the MP3 immediately (~30ms).
+    // On PENDING race the in-flight synth's promise vs a 200ms timer
+    // with re-peek inside the timer callback (covers the case where
+    // markReady fires between timer-arm and timer-fire on the same
+    // macrotask cycle — plan §A determinism note). On MISS / TIMEOUT
+    // fall through to the existing streaming-gate / batch path unchanged.
+    //
+    // Cache lookup runs BEFORE the streaming-confirmation gate so a
+    // HIT skips both the live streaming synth AND the batch fallback.
+    // This is the path that delivers the ~470ms latency win.
+    //
+    // Hard contract: cache short-circuit must NEVER 500 the request
+    // path. Any error → log + fall through. Wrapped in outer try/catch.
+    try {
+      const turnId = typeof req.body?.turnId === 'string' ? req.body.turnId : null;
+      if (sessionId && turnId) {
+        const boardId = req.body?.boardId ?? null;
+        const field = req.body?.field ?? null;
+        const circuit = req.body?.circuit ?? null;
+        const cacheMod = await import('../extraction/loaded-barrel-cache.js');
+        const sessionsMod = await import('../extraction/active-sessions.js');
+        const { recordOutcome } = await import('../extraction/voice-latency-telemetry.js');
+        const cacheKey = cacheMod.buildCacheKey({
+          sessionId,
+          turnId,
+          boardId,
+          field,
+          circuit,
+          expandedText: text,
+        });
+        const cached = cacheMod.peek(cacheKey);
+
+        if (cached && cached.state === 'ready') {
+          if (cacheMod.claim(cacheKey)) {
+            res.set('Content-Type', 'audio/mpeg');
+            res.set('Cache-Control', 'no-store');
+            res.set('X-Voice-Latency-Source', 'loaded_barrel_hit');
+            res.set('X-Voice-Latency-Correlation-Id', cached.correlationId);
+            res.write(cached.mp3Buffer);
+            res.end();
+            recordOutcome(cached.correlationId, 'loaded_barrel_hit', {
+              meta: { sessionId, bytes: cached.mp3Buffer.length },
+            });
+            sessionsMod.promoteSpeculativeToCanonicalForSession(sessionId, cached.correlationId);
+            return;
+          }
+          // Claim race lost — another consumer grabbed it. Fall through.
+        }
+
+        if (cached && cached.state === 'pending') {
+          // Race the in-flight synth's promise vs a 200ms timer. The
+          // timer-fire callback re-peeks so we catch a synth completion
+          // that lands between the promise.then registration and the
+          // timer firing on the same macrotask cycle.
+          const winner = await new Promise((resolve) => {
+            let settled = false;
+            const settle = (v) => {
+              if (!settled) {
+                settled = true;
+                resolve(v);
+              }
+            };
+            cached.promise.then((buf) => {
+              if (buf) settle({ type: 'spec', buf });
+              else settle({ type: 'timeout' });
+            });
+            setTimeout(() => {
+              const recheck = cacheMod.peek(cacheKey);
+              if (recheck && recheck.state === 'ready') {
+                settle({ type: 'spec_late', buf: recheck.mp3Buffer });
+              } else {
+                settle({ type: 'timeout' });
+              }
+            }, 200);
+          });
+
+          if ((winner.type === 'spec' || winner.type === 'spec_late') && winner.buf) {
+            if (cacheMod.claim(cacheKey)) {
+              const source =
+                winner.type === 'spec' ? 'loaded_barrel_hit_pending' : 'loaded_barrel_hit_late';
+              res.set('Content-Type', 'audio/mpeg');
+              res.set('Cache-Control', 'no-store');
+              res.set('X-Voice-Latency-Source', source);
+              res.set('X-Voice-Latency-Correlation-Id', cached.correlationId);
+              res.write(winner.buf);
+              res.end();
+              recordOutcome(cached.correlationId, source, {
+                meta: { sessionId, bytes: winner.buf.length },
+              });
+              sessionsMod.promoteSpeculativeToCanonicalForSession(sessionId, cached.correlationId);
+              return;
+            }
+          }
+          // Timer fired without ready / claim lost. Supersede the
+          // pending entry so the speculator's eventual completion
+          // doesn't pointlessly keep it alive.
+          cacheMod.markSuperseded(cacheKey, 'ios_post_timeout');
+          if (cached.correlationId) {
+            recordOutcome(cached.correlationId, 'loaded_barrel_miss', {
+              meta: { sessionId, reason: 'pending_timeout' },
+            });
+          }
+        }
+
+        if (!cached) {
+          // No entry — MISS. Recorded against a throwaway correlationId
+          // so the telemetry analyser can compute MISS rate per session.
+          // The speculator's correlationId is unknown here (it was
+          // never minted for this slot+text).
+          // Use a session-scoped synthetic correlationId so multiple
+          // misses don't collide on the same recordOutcome dedupe.
+          recordOutcome(`vl_loaded_barrel_miss_${sessionId}_${Date.now()}`, 'loaded_barrel_miss', {
+            meta: { sessionId, turnId, field, circuit, boardId },
+          });
+        }
+      }
+    } catch (cacheErr) {
+      logger.warn('voice_latency.loaded_barrel.shortcircuit_error', {
+        sessionId,
+        error: cacheErr?.message,
+      });
+      // Fall through to existing path.
+    }
+
+    if (res.headersSent || res.writableEnded) return; // safety after short-circuit
+
     // Stage 2 commit 2.5 — streaming-confirmations branch.
     // Gate is AND of:
     //   1. source === 'confirmation' — Stage 5 will route 'question'

@@ -94,3 +94,19 @@ export function getVoiceLatencyForSession(sessionId) {
   const entry = activeSessions.get(sessionId);
   return entry?.voiceLatency ?? null;
 }
+
+/**
+ * Loaded Barrel Phase 3 (plan v10 §C + §D) — credit a speculative
+ * correlationId as "served by cache HIT" on the per-session
+ * CostTracker. Called from keys.js short-circuit AFTER res.end().
+ *
+ * Returns true on success, false on missing session / missing
+ * tracker / unknown correlationId. Idempotent on correlationId via
+ * the underlying promoteSpeculativeToCanonical call.
+ */
+export function promoteSpeculativeToCanonicalForSession(sessionId, correlationId) {
+  if (!sessionId || !correlationId) return false;
+  const entry = activeSessions.get(sessionId);
+  if (!entry?.session?.costTracker?.promoteSpeculativeToCanonical) return false;
+  return entry.session.costTracker.promoteSpeculativeToCanonical(correlationId);
+}
