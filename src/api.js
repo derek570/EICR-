@@ -53,6 +53,7 @@ import legalRouter from './routes/legal.js';
 import certAttestationsRouter from './routes/cert-attestations.js';
 import voiceLatencyBenchRouter from './routes/voice-latency-bench.js';
 import voiceLatencyFastTtsRouter from './routes/voice-latency-fast-tts.js';
+import voiceLatencyReadinessRouter from './routes/voice-latency-readiness.js';
 import { requireConsent } from './middleware/require-consent.js';
 
 // WebSocket recording server (re-exported for server.js)
@@ -257,6 +258,11 @@ app.use('/api', voiceLatencyBenchRouter);
 // reason as bench router (auth handled per-route). Gated server-side
 // by VOICE_LATENCY_REGEX_FAST_TTS=true + capability handshake.
 app.use('/api', voiceLatencyFastTtsRouter);
+// Loaded Barrel Phase 1.F (plan v10 §C + §G3) — readiness probe used
+// as the gate before flipping VOICE_LATENCY_LOADED_BARREL=true. Per-
+// route auth.requireAuth on the GET handler. Mounted EARLY alongside
+// the other voice-latency routes for consistency.
+app.use('/api', voiceLatencyReadinessRouter);
 
 app.use('/api/auth', authLimiter, authRouter);
 app.use('/api/account', accountRouter); // /api/account/consent/accept, /api/account/consent/status

@@ -334,6 +334,25 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'text field required' });
     }
 
+    // Loaded Barrel Phase 1.F readiness tracking (plan v10 §C + §G3).
+    // Records the iOS Phase 4a adoption signal — whether this POST
+    // body includes `turnId` + the `x-expand-version` header — so the
+    // GET /api/voice-latency/loaded-barrel-readiness probe can answer
+    // "is iOS adoption ≥80% yet?" before the operator flips
+    // VOICE_LATENCY_LOADED_BARREL=true. Fire-and-forget; never blocks
+    // the TTS POST. userId is the authenticated user id from req.user.
+    try {
+      const { recordPost } = await import('../extraction/loaded-barrel-readiness.js');
+      const userId = req.user?.id || req.user?.user_id || req.user?.email || null;
+      const hasTurnId = typeof req.body?.turnId === 'string' && req.body.turnId.length > 0;
+      const hasExpanderVersion =
+        typeof req.headers?.['x-expand-version'] === 'string' &&
+        req.headers['x-expand-version'].length > 0;
+      recordPost({ userId, hasTurnId, hasExpanderVersion });
+    } catch (_err) {
+      // Telemetry must never break the request path. Silently drop.
+    }
+
     // Stage 2 commit 2.5 — streaming-confirmations branch.
     // Gate is AND of:
     //   1. source === 'confirmation' — Stage 5 will route 'question'
