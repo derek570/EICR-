@@ -66,6 +66,13 @@
 
 import logger from '../logger.js';
 import { runToolLoop } from './stage6-tool-loop.js';
+// Loaded Barrel Phase 2.B/2.C wire-up (plan v10 §C). Per-turn
+// speculator instantiation in runLiveMode. Cache state is module-
+// scoped so cross-turn entries survive without keeping the
+// speculator object around.
+import { createSpeculator } from './loaded-barrel-speculator.js';
+import { getVoiceLatencyForSession } from './active-sessions.js';
+import { getElevenLabsKey } from '../services/secrets.js';
 import {
   createWriteDispatcher,
   createToolDispatcher,
@@ -273,6 +280,34 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     ? session.buildAgenticSystemBlocks()
     : session.buildSystemBlocks();
 
+  // Loaded Barrel wire-up (plan v10 §C). Speculator instantiated per
+  // turn — the cache is module-scope so cross-turn state persists
+  // there; per-turn cap counter resets per-instance which matches the
+  // plan's semantics. Skip entirely when:
+  //   - voiceLatency snapshot unavailable (older harness call sites)
+  //   - flag VOICE_LATENCY_LOADED_BARREL is OFF (default in prod)
+  //   - session.costTracker missing (defensive; cost ledger required)
+  let speculator = null;
+  try {
+    const vl = getVoiceLatencyForSession(session.sessionId);
+    if (vl?.flags?.loadedBarrel === true && session.costTracker) {
+      speculator = createSpeculator({
+        sessionId: session.sessionId,
+        // apiKey via fn so a secret rotation survives without re-instantiation.
+        apiKey: () => getElevenLabsKey(),
+        costTracker: session.costTracker,
+        logger: log,
+      });
+    }
+  } catch (specErr) {
+    // Never let speculator-setup errors break the live tool loop.
+    log?.warn?.('voice_latency.loaded_barrel.speculator_setup_error', {
+      sessionId: session.sessionId,
+      error: specErr?.message,
+    });
+    speculator = null;
+  }
+
   let toolLoopOut;
   try {
     toolLoopOut = await runToolLoop({
@@ -285,6 +320,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       ctx: { sessionId: session.sessionId, turnId },
       logger: log,
       sortRecords,
+      // Loaded Barrel hooks — passed only when speculator exists,
+      // so a flag-off prod session has zero overhead from these
+      // accessors (the runToolLoop wrapper checks function-ness
+      // before calling).
+      perTurnWritesRef: speculator ? () => perTurnWrites : undefined,
+      onSnapshotPatch: speculator?.onSnapshotPatch,
+      onLoopComplete: speculator?.onLoopComplete,
     });
   } catch (err) {
     askGateForTurn?.destroy();
