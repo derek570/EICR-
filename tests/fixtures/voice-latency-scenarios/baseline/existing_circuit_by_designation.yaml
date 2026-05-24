@@ -1,0 +1,46 @@
+name: existing_circuit_by_designation
+suite: baseline
+description: |
+  Positive control: with a pre-seeded "Cooker" circuit on c1, the
+  inspector says "Zs for the cooker is 0.6". Sonnet must resolve
+  "cooker" → circuit 1 from the state snapshot's designation field
+  and record the Zs WITHOUT asking which circuit.
+
+  Pins the designation-lookup half of the recording pipeline:
+  if this fails, designation-based references aren't working at all
+  (regardless of how create_circuit behaves). If this passes but
+  create_circuit_by_designation/new_circuit_then_readings fails, the
+  bug is specifically that designation isn't being persisted on
+  creation.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Zs for the cooker is 0.6."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: measured_zs_ohm
+      value: 0.6
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false
