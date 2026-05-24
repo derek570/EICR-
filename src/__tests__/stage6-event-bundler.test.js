@@ -547,4 +547,62 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     legacyConfirmations[0].text = 'mutated';
     expect(r.confirmations[0].text).toBe('original');
   });
+
+  test('Loaded Barrel 1.B: board_id propagates from circuit reading entry to confirmation', () => {
+    // Multi-board session: dispatcher set entry.boardId on the per-turn
+    // accumulator, decodeReadingKey routes it into extracted_readings as
+    // board_id, synthesise should carry it onto the confirmation entry
+    // so the iOS cache lookup tuple has the right slot identity.
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1, 'sub-1'),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1', boardId: 'sub-1' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations).toEqual([
+      {
+        text: 'Circuit 1, Zs 0.62',
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        board_id: 'sub-1',
+      },
+    ]);
+  });
+
+  test('Loaded Barrel 1.B: board_id propagates from board reading entry', () => {
+    const writes = makePerTurnWrites();
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('earth_loop_impedance_ze', 'sub-2'),
+        { value: '0.25', confidence: 1.0, source_turn_id: 't1', boardId: 'sub-2' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    expect(r.confirmations).toEqual([
+      { text: 'Ze 0.25', field: 'earth_loop_impedance_ze', circuit: null, board_id: 'sub-2' },
+    ]);
+  });
+
+  test('Loaded Barrel 1.B: board_id absent → field omitted (single-board byte-identical)', () => {
+    // Pre-hotfix single-board sessions never set entry.boardId. After
+    // 1.B the confirmation must NOT carry an empty board_id field, so
+    // single-board wire shape stays identical to today.
+    const readings = new Map([
+      [encodeReadingKey('measured_zs_ohm', 1), { value: '0.62', confidence: 1.0 }],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations[0]).not.toHaveProperty('board_id');
+    expect(r.confirmations).toEqual([
+      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
+    ]);
+  });
 });

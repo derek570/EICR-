@@ -17,76 +17,13 @@
  */
 
 import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
+// Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
+// table moved into `confirmation-text.js` so loaded-barrel-speculator.js
+// can import the same buildConfirmationText without dragging the rest
+// of the bundler into its call site. No behavioural change here.
+import { CONFIRMATION_MIN_CONFIDENCE, buildConfirmationText } from './confirmation-text.js';
 
 export const BUNDLER_PHASE = 2;
-
-// Map of canonical field names to short spoken labels for confirmation
-// read-backs (Voice button feature). Only includes fields whose acoustic
-// feedback genuinely helps an inspector verify the dictation was understood —
-// numeric measurements and high-value categorical writes. Free-text fields
-// (designation), long-form codes (BS_EN), and address fields are intentionally
-// excluded; the inspector reads those off the screen instead.
-//
-// Address fields are also suppressed iOS-side (DeepgramRecordingViewModel.swift
-// `ttsSuppressedAddressFields`) — they're omitted here as belt-and-braces so
-// the backend doesn't ship bytes the client immediately discards.
-const CONFIRMATION_FRIENDLY_NAMES = {
-  measured_zs_ohm: 'Zs',
-  r1_r2_ohm: 'R1 plus R2',
-  r2_ohm: 'R2',
-  ring_r1_ohm: 'ring r1',
-  ring_rn_ohm: 'ring rn',
-  ring_r2_ohm: 'ring r2',
-  ir_live_earth_mohm: 'IR L to E',
-  ir_live_live_mohm: 'IR L to L',
-  ocpd_rating_a: 'OCPD rating',
-  ocpd_type: 'OCPD type',
-  rcd_operating_current_ma: 'RCD',
-  rcd_time_ms: 'RCD time',
-  rcd_type: 'RCD type',
-  number_of_points: 'points',
-  wiring_type: 'wiring type',
-  live_csa_mm2: 'live CSA',
-  cpc_csa_mm2: 'CPC CSA',
-  polarity_confirmed: 'polarity',
-  // Board-level (circuit=0 on the wire) — the friendly name carries enough
-  // context on its own; no "Circuit 0" prefix is rendered for these.
-  earth_loop_impedance_ze: 'Ze',
-  prospective_fault_current: 'PFC',
-  prospective_short_circuit_current: 'PSCC',
-  prospective_earth_fault_current: 'PEFC',
-};
-
-// Confidence threshold mirrors the legacy prompt's confirmation gate
-// ("confidence >= 0.8") at config/prompts/sonnet_extraction_system.md:283 so
-// the agentic path doesn't read back values Sonnet itself would have
-// withheld under the prose-JSON contract.
-const CONFIRMATION_MIN_CONFIDENCE = 0.8;
-
-function buildConfirmationText(field, value, circuit) {
-  const friendly = CONFIRMATION_FRIENDLY_NAMES[field];
-  if (!friendly) return null;
-  const valueStr = String(value ?? '').trim();
-  if (!valueStr) return null;
-  // Boolean polarity_confirmed comes through as the string "true"/"false".
-  // Speak "polarity confirmed" for true, suppress for false — a false
-  // polarity is an inspection failure that the inspector will edit by hand
-  // and shouldn't be acoustically reinforced as if accepted. Keep the
-  // "Circuit N" prefix when present so the inspector can tell two
-  // back-to-back polarity confirmations apart.
-  if (field === 'polarity_confirmed') {
-    if (valueStr.toLowerCase() !== 'true') return null;
-    if (circuit == null || circuit === 0) return 'polarity confirmed';
-    return `Circuit ${circuit}, polarity confirmed`;
-  }
-  // Board-level readings (circuit 0 or absent) skip the "Circuit N," prefix —
-  // "Ze 0.25" is a complete sentence in inspector parlance, "Circuit 0, Ze"
-  // would be confusing.
-  if (circuit == null || circuit === 0) {
-    return `${friendly} ${valueStr}`;
-  }
-  return `Circuit ${circuit}, ${friendly} ${valueStr}`;
-}
 
 /**
  * Synthesise brief read-back confirmations from the bundled readings.
@@ -116,17 +53,30 @@ function synthesiseConfirmations(readings, boardReadings) {
     if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
     const text = buildConfirmationText(r.field, r.value, r.circuit);
     if (!text) continue;
-    out.push({
+    const entry = {
       text,
       field: r.field,
       circuit: Number.isInteger(r.circuit) ? r.circuit : null,
-    });
+    };
+    // Loaded Barrel Phase 1.B — emit board_id when set so the iOS
+    // POST can include it in the cache-key tuple. Omit when null/
+    // undefined so single-board sessions stay byte-identical on the
+    // wire and pre-Phase-4a iOS clients (which don't decode board_id
+    // on ValueConfirmation yet) see no change.
+    if (r.board_id != null) {
+      entry.board_id = r.board_id;
+    }
+    out.push(entry);
   }
   for (const r of boardReadings) {
     if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
     const text = buildConfirmationText(r.field, r.value, null);
     if (!text) continue;
-    out.push({ text, field: r.field, circuit: null });
+    const entry = { text, field: r.field, circuit: null };
+    if (r.board_id != null) {
+      entry.board_id = r.board_id;
+    }
+    out.push(entry);
   }
   return out;
 }
