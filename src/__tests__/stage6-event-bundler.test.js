@@ -588,6 +588,27 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     ]);
   });
 
+  test('Loaded Barrel 4a: result.turn_id emitted when options.turnId supplied', () => {
+    const readings = new Map([
+      [encodeReadingKey('measured_zs_ohm', 1), { value: '0.62', confidence: 1.0 }],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'sess-foo-turn-3' }
+    );
+    expect(r.turn_id).toBe('sess-foo-turn-3');
+  });
+
+  test('Loaded Barrel 4a: result.turn_id omitted when options.turnId absent (back-compat)', () => {
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites(),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r).not.toHaveProperty('turn_id');
+  });
+
   test('Loaded Barrel 1.B: board_id absent → field omitted (single-board byte-identical)', () => {
     // Pre-hotfix single-board sessions never set entry.boardId. After
     // 1.B the confirmation must NOT carry an empty board_id field, so

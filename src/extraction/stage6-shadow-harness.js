@@ -363,6 +363,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // source so synthesis is the only path that populates result.confirmations.
   const result = bundleToolCallsIntoResult(perTurnWrites, null, {
     confirmationsEnabled: options.confirmationsEnabled === true,
+    // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
+    // trip it on the /api/proxy/elevenlabs-tts POST body for cache
+    // lookup. Omitted when undefined; legacy decoders ignore unknown
+    // keys via Swift Codable's tolerant decode.
+    turnId,
   });
 
   // iOS Build 282 only knows about `extracted_readings`. Fold any board-level

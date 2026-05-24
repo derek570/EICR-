@@ -113,6 +113,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   if (!perTurnWrites || !(perTurnWrites.readings instanceof Map)) {
     throw new TypeError('bundleToolCallsIntoResult: perTurnWrites.readings must be a Map');
   }
+  // Loaded Barrel Phase 1.B → Phase 4a wire contract. When the caller
+  // (runLiveMode / runShadowHarness) supplies the per-turn turnId via
+  // options.turnId, emit it as `result.turn_id` so iOS Phase 4a can
+  // round-trip it on the TTS POST body for cache lookup. Omitted when
+  // not supplied so legacy bundler call sites (and pre-Phase-4a iOS
+  // decoders) see byte-identical wire traffic.
+  const _turnId = typeof options.turnId === 'string' && options.turnId ? options.turnId : null;
   // boardReadings is optional for backwards compat with any caller that
   // builds the accumulator manually (e.g. older test fixtures that pre-date
   // the Bug C carryover). createPerTurnWrites() always seeds an empty Map.
@@ -185,6 +192,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     observations: [...perTurnWrites.observations],
     questions: Array.isArray(legacy.questions) ? [...legacy.questions] : [],
   };
+  if (_turnId) result.turn_id = _turnId;
 
   // 4-6. New Phase 2 slots — OMITTED when empty so iOS decoders unaware of
   //      these keys see byte-identical traffic to today. Swift Codable
