@@ -57,19 +57,20 @@ node scripts/voice-latency-bench/transcript-replay-direct.mjs \
 
 ## Current scoreboard
 
-Last clean run: **17–19/22 pass** (1–2 variance from model
-nondeterminism on multi-turn flows). The same scenarios fail every
-time except `new_circuit_then_readings` + `hallucinated_phantom_circuit`
-which flap at ~20% rate.
+**2026-05-24 update — Items 1–4 closed.** Full suite **22/22 pass**
+post-fix. Shipped via commits `272e6b7` (BS-EN), `0c9a1b9` (phantom-
+circuit), `5425479` (polarity). Not yet deployed — push to main when
+ready.
 
-| Scenario | State | Belongs to |
+| Scenario | State | Notes |
 |---|---|---|
-| 17 baseline scenarios | ✅ pass | — |
-| `bs_en_normalisation` | ❌ documented gap | **Item 1 below** |
-| `ocpd_full_spec` | ❌ documented gap | **Item 2 below** |
-| `hallucinated_phantom_circuit` | ❌ ~20% flake | **Item 3 below** |
-| `new_circuit_then_readings` | ❌ ~20% flake | **Item 3 below** (same root cause) |
-| `normal_polarity` | ✅ pass (asserts field-set, value-agnostic) | **Item 4 below** if you want strict |
+| All 22 baseline scenarios | ✅ pass | Full-suite 22/22 (2026-05-24 post-fix) |
+| `bs_en_normalisation` | ✅ pass | Item 1 — prompt + tool-schema + dispatcher BS canonical + start_dialogue_script perTurnWrites backfill. 5/5 isolated runs post-fix (was 0/5). |
+| `ocpd_full_spec` | ✅ pass | Item 2 — same prompt + tool-description fix as Item 1; 2/2 isolated runs (was 0/5). |
+| `hallucinated_phantom_circuit` | ✅ pass | Item 3 — prompt cross-turn rule + dispatcher duplicate-designation guard. 3/3 isolated. |
+| `new_circuit_then_readings` | ✅ pass | Item 3 — same fix. 5/5 isolated (was 0/5; handoff documented 20% flake, baseline today was 0%). |
+| `normal_polarity` | ✅ pass (value-pinned to "Y") | Item 4 — prompt enum guidance + dispatcher coercion (true/correct/etc. → Y). Scenario assertion tightened to require canonical. |
+| `reading_chain_one_circuit` | ✅ pass | Updated alongside Item 4 — `value: true` assertion → `value: "Y"` to match the new canonical. |
 
 ## Open items, prioritised
 
@@ -333,6 +334,105 @@ Files you'll touch most:
    `gh run watch <run-id> --exit-status` (don't poll).
 5. Update this handoff doc with what closed and what new items
    surfaced.
+
+## Open items — surfaced 2026-05-24 evening
+
+### Item 5: silent Zs no-op on unresolved designation (prod session 15C9A3AC, 22:22 BST)
+
+**Symptom.** Inspector dictated 3 separate Zs utterances against the
+"upstairs lights" circuit:
+
+  - "z s of the upstairs light said 0.6"
+  - "Zs at upstairs lights is 0.6."
+  - "zeds of the upstairs light is 0.6"
+
+All three were SILENTLY DROPPED. Sonnet emitted 0 tool calls + 0
+ask_users + 0 readings on each turn (output_tokens 33, 48, 43 — just
+stop text). User stopped the session at 21:24:52 UTC frustrated.
+
+**Root cause (hypothesis).** Turn 5 of the same session had Deepgram
+emit `"circuit circuit is upstairs light."` (duplicated "circuit" —
+Deepgram quirk). Sonnet correctly created `circuit_ref=2` but
+DID NOT also call `record_reading(designation, "upstairs lights")`.
+Circuit 2 was created with an empty designation. Subsequent turns
+referenced "the upstairs light" by name; with no designation on c2
+there was no anchor for the ask-resolver / designation-matcher to
+bind to. Instead of asking "which circuit?", Sonnet silently no-op'd
+and treated the utterances as chitchat (counter incremented 1, 2, 3
+of 8).
+
+**Sibling shape to** the 286D500D bug (key-mismatch fix shipped
+earlier today, commit `7f0cf4d`) and the phantom-circuit bug (Item 3
+above). All three are designation-loss family bugs but at different
+points in the flow:
+
+- 286D500D / phantom-circuit: designation written but not visible
+  / Sonnet creates a duplicate.
+- 15C9A3AC: designation never written in the first place, AND
+  Sonnet silently drops downstream readings instead of asking.
+
+**Where to look first.**
+
+- `config/prompts/sonnet_extraction_system.md` CIRCUIT NAMING rule
+  (line 42 — "If the user says 'circuit N is [description]'…").
+  Tighten to require BOTH a circuit_updates create AND a
+  record_reading(designation, ...) call so the canonical designation
+  field gets populated even when the Deepgram-mangled phrasing
+  ("circuit circuit is X") survives.
+- `src/extraction/stage6-dispatchers-circuit.js` dispatchCreateCircuit —
+  consider rejecting create with no designation when the transcript
+  context indicates one was intended. Or auto-prompt ask_user
+  "what's the designation?" when create lands with designation=null
+  on a previously-empty bucket.
+- Same prompt — strengthen the rule for unresolved designations:
+  when the inspector dictates a reading against "the upstairs
+  light" and NO circuit on the schedule matches, the model MUST
+  emit `ask_user("Which circuit is upstairs lights?")` rather than
+  silently no-op. Right now an unresolved designation triggers
+  chitchat-counter increments (3+ in this session) which feels
+  worse than asking.
+
+**Repro.**
+
+```yaml
+# Suggested new scenario tests/fixtures/voice-latency-scenarios/baseline/garbled_create_then_readings.yaml
+job_state:
+  boards:
+    - { id: main, designation: "DB-1", board_type: main }
+  circuits: []
+
+transcript:
+  - { at_ms: 0, text: "circuit circuit is upstairs light.", isFinal: true }
+  - { at_ms: 5000, text: "Zs at upstairs lights is 0.6.", isFinal: true }
+
+expect:
+  has_reading:
+    - { circuit: 2, field: circuit_designation, value: "upstairs lights" }  # if we make create force a designation write
+    - { circuit: 2, field: measured_zs_ohm, value: 0.6 }
+  # OR (less strict variant if create stays without designation):
+  ask_user_count: { min: 1 }  # at minimum, Sonnet must ASK rather than silently drop
+```
+
+**Verification.** New scenario flips green; re-replay session
+15C9A3AC's transcript through the harness and confirm the Zs lands.
+
+### Garbled-transcript scenarios (user-requested, evening 2026-05-24)
+
+Author additional baseline scenarios that exercise mildly-garbled
+Deepgram transcripts (duplicated words, dropped articles, run-on
+phrasing, common mishearings) so the harness pins the model's
+recovery behaviour. Item 5 above is the canonical example; sibling
+candidates:
+
+- "circuit circuit two is cooker" (duplicated word, real prod shape)
+- "circuit two is is upstairs lighting" (different position)
+- "the cooker the Zs is point six" (run-on)
+- "circuit number circuit two" (Deepgram filler)
+
+Implementation: copy the bs_en_normalisation scenario shape, vary
+the transcript, assert that either (a) the value lands AND the
+circuit is properly created with a designation, or (b) an ask_user
+fires (the model must NOT silently drop). Run 3x to measure flake.
 
 ## Items deferred to a separate work session
 
