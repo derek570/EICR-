@@ -139,6 +139,49 @@ export async function dispatchRecordReading(call, ctx) {
     if (canonical) input.value = canonical;
   }
 
+  // 2026-05-24 polarity_confirmed canonicalisation (scenario
+  // normal_polarity, prompt-engineering Item 4). Sonnet sometimes emits
+  // boolean-ish strings ("true"/"false") or English aliases
+  // ("correct"/"reversed"/"good") for polarity_confirmed despite the
+  // schema enum {"", "OK", "Y", "N"} and the prompt's explicit
+  // value-coercion guidance. The prompt nudge in isolation lands 0/3
+  // for a bare "polarity confirmed" utterance; this dispatcher coercion
+  // is the structural backstop so the cert never carries an off-enum
+  // value. Out-of-enum noise we don't recognise passes through so a
+  // future divergence still surfaces visibly rather than getting
+  // silently dropped to "".
+  if (
+    typeof input.value === 'string' &&
+    (input.field === 'polarity_confirmed' || input.field === 'supply_polarity_confirmed')
+  ) {
+    const v = input.value.trim().toLowerCase();
+    if (
+      v === 'true' ||
+      v === 'yes' ||
+      v === 'y' ||
+      v === 'correct' ||
+      v === 'pass' ||
+      v === 'passed' ||
+      v === 'good' ||
+      v === 'confirmed'
+    ) {
+      input.value = 'Y';
+    } else if (
+      v === 'false' ||
+      v === 'no' ||
+      v === 'n' ||
+      v === 'reversed' ||
+      v === 'fail' ||
+      v === 'failed' ||
+      v === 'incorrect' ||
+      v === 'wrong'
+    ) {
+      input.value = 'N';
+    } else if (v === 'ok') {
+      input.value = 'OK';
+    }
+  }
+
   applyReadingFlagAware(session.stateSnapshot, {
     circuit: input.circuit,
     field: input.field,

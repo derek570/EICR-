@@ -44,9 +44,13 @@ expect:
     - circuit: 1
       field: r1_r2_ohm
       value: 0.23
+    # Schema enum is ["", "OK", "Y", "N"]. Sonnet sometimes emits
+    # boolean true / "true" / "correct" for "polarity confirmed"; the
+    # dispatcher canonicalises those to "Y" (2026-05-24 voice-regression
+    # Item 4 fix). Asserting the canonical here pins the coercion.
     - circuit: 1
       field: polarity_confirmed
-      value: true
+      value: "Y"
   ask_user_count: { max: 0 }
   loaded_barrel:
     - after_turn: 1

@@ -29,13 +29,13 @@ transcript:
 expect:
   extraction_count: { min: 1 }
   has_reading:
-    # Schema allows ["Y", "N", "OK", ""] for polarity_confirmed. Sonnet
-    # is inconsistent: returns "Y" for bulk operations but boolean
-    # `true` (off-schema) for single-circuit utterances like this one.
-    # Asserting value-agnostic until the prompt is tightened to always
-    # emit a schema-valid enum. Field-set is the meaningful signal.
+    # Schema enum is ["", "OK", "Y", "N"]. Prompt teaches "Y" as the
+    # canonical for "polarity confirmed" — pinned here so a future
+    # prompt regression that re-emits boolean true / "correct" / etc.
+    # fails this scenario rather than silently corrupting the cert.
     - circuit: 12
       field: polarity_confirmed
+      value: "Y"
   audible_latency_ms_p50: { max: 6000 }
 
 config:
