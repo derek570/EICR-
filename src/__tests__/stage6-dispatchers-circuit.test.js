@@ -33,9 +33,7 @@ function makeSession(snapshot = { circuits: {} }) {
 }
 
 function toolCallRows(logger) {
-  return logger.info.mock.calls
-    .filter((c) => c[0] === 'stage6_tool_call')
-    .map((c) => c[1]);
+  return logger.info.mock.calls.filter((c) => c[0] === 'stage6_tool_call').map((c) => c[1]);
 }
 
 describe('dispatchCreateCircuit', () => {
@@ -57,7 +55,7 @@ describe('dispatchCreateCircuit', () => {
           cable_csa_mm2: 2.5,
         },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(false);
@@ -105,7 +103,7 @@ describe('dispatchCreateCircuit', () => {
 
     const result = await d(
       { tool_call_id: 'tu_dup', name: 'create_circuit', input: { circuit_ref: 5 } },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(true);
@@ -140,7 +138,7 @@ describe('dispatchCreateCircuit', () => {
           cable_csa_mm2: null,
         },
       },
-      {},
+      {}
     );
 
     // Bucket exists but is empty — mutator skips null-valued keys.
@@ -159,7 +157,7 @@ describe('dispatchCreateCircuit', () => {
         name: 'create_circuit',
         input: { circuit_ref: 5, rating_amps: 'thirty' },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(true);
@@ -167,6 +165,46 @@ describe('dispatchCreateCircuit', () => {
     expect(body.error).toEqual({ code: 'invalid_type', field: 'rating_amps' });
     expect(session.stateSnapshot.circuits).toEqual({});
     expect(writes.circuitOps).toHaveLength(0);
+  });
+
+  test('prod 286D500D regression: designation omitted from call → bucket {} (no designation), pins model-vs-dispatcher root-cause split', async () => {
+    // Reproduces session 286D500D-… (07:49:01 UTC, 2026-05-24): inspector
+    // said "circuit 2 is upstairs lighting"; create_circuit fired with
+    // circuit_ref=2 but no `designation` in the input. Sonnet then asked
+    // "Which circuit number is the upstairs lighting?" on the next turn
+    // because c2 had a blank designation. This test pins the dispatcher
+    // CONTRACT — designation absent in input → no designation written —
+    // so any future regression that DOES persist a derived/inferred
+    // designation will fail loudly, AND so the prod bug can be cleanly
+    // attributed upstream (prompt/model) rather than to the dispatcher.
+    const session = makeSession({ circuits: {} });
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_prod_repro',
+        name: 'create_circuit',
+        input: { circuit_ref: 2 },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.stateSnapshot.circuits[2]).toEqual({});
+    expect(session.stateSnapshot.circuits[2]).not.toHaveProperty('designation');
+    expect(writes.circuitOps).toEqual([
+      {
+        op: 'create',
+        circuit_ref: 2,
+        meta: {
+          designation: null,
+          phase: null,
+          rating_amps: null,
+          cable_csa_mm2: null,
+        },
+      },
+    ]);
   });
 
   test('PII guard: input_summary contains circuit_ref + phase only; never designation (free-text)', async () => {
@@ -186,7 +224,7 @@ describe('dispatchCreateCircuit', () => {
           cable_csa_mm2: 2.5,
         },
       },
-      {},
+      {}
     );
 
     const rows = toolCallRows(logger);
@@ -211,7 +249,7 @@ describe('dispatchRenameCircuit', () => {
         name: 'rename_circuit',
         input: { from_ref: 3, circuit_ref: 7 },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(false);
@@ -245,7 +283,7 @@ describe('dispatchRenameCircuit', () => {
 
     const result = await d(
       { tool_call_id: 'tu_snf', name: 'rename_circuit', input: { from_ref: 3, circuit_ref: 7 } },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(true);
@@ -270,7 +308,7 @@ describe('dispatchRenameCircuit', () => {
 
     const result = await d(
       { tool_call_id: 'tu_te', name: 'rename_circuit', input: { from_ref: 3, circuit_ref: 7 } },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(true);
@@ -295,7 +333,7 @@ describe('dispatchRenameCircuit', () => {
         name: 'rename_circuit',
         input: { from_ref: 3, circuit_ref: 3 },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(false);
@@ -325,7 +363,7 @@ describe('dispatchRenameCircuit', () => {
         name: 'rename_circuit',
         input: { from_ref: 3, circuit_ref: 3, designation: 'New name' },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(false);
@@ -361,7 +399,7 @@ describe('dispatchRenameCircuit', () => {
           phase: 'L2',
         },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(false);
@@ -395,7 +433,7 @@ describe('dispatchRenameCircuit', () => {
     // Attempt 1: create_circuit on existing circuit_ref → circuit_already_exists.
     const createRes = await d(
       { tool_call_id: 'tu_c1', name: 'create_circuit', input: { circuit_ref: 7 } },
-      {},
+      {}
     );
     expect(createRes.is_error).toBe(true);
     expect(JSON.parse(createRes.content).error).toEqual({
@@ -410,7 +448,7 @@ describe('dispatchRenameCircuit', () => {
         name: 'rename_circuit',
         input: { from_ref: 3, circuit_ref: 7 },
       },
-      {},
+      {}
     );
     expect(renameRes.is_error).toBe(true);
     expect(JSON.parse(renameRes.content).error).toEqual({
@@ -439,7 +477,7 @@ describe('dispatchRenameCircuit', () => {
         name: 'rename_circuit',
         input: { from_ref: 3, circuit_ref: 7, rating_amps: 'thirty' },
       },
-      {},
+      {}
     );
 
     expect(result.is_error).toBe(true);
