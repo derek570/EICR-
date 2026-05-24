@@ -107,11 +107,17 @@ describe('loaded-barrel-readiness — pruneExpired', () => {
     const fakeNow = new Date('2026-05-24T10:00:00Z').getTime();
     jest.spyOn(Date, 'now').mockReturnValue(fakeNow);
     recordPost({ userId: 'derek', hasTurnId: true });
-    Date.now.mockRestore();
 
-    pruneExpired(fakeNow + 30 * 60 * 1000); // 30 minutes later
+    // Keep Date.now mocked through getReadinessSnapshot too — it calls
+    // pruneExpired() internally using Date.now (loaded-barrel-readiness.js:73)
+    // and would otherwise prune the just-recorded entry when wall-clock
+    // is more than 1h past `fakeNow`. Pre-fix this test was a time-bomb
+    // that failed any time the suite ran after 2026-05-24 11:00 UTC.
+    Date.now.mockReturnValue(fakeNow + 30 * 60 * 1000); // 30 minutes later
+    pruneExpired(fakeNow + 30 * 60 * 1000);
     const s = getReadinessSnapshot();
     expect(s.totalClients).toBe(1);
+    Date.now.mockRestore();
   });
 
   test('getReadinessSnapshot prunes implicitly', () => {
