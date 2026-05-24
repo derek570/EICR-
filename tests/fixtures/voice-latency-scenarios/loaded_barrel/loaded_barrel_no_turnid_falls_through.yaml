@@ -1,0 +1,53 @@
+name: loaded_barrel_no_turnid_falls_through
+suite: loaded_barrel
+description: |
+  Backwards-compat path. iOS clients that don't yet ship Phase 4a
+  (turnId in POST body) MUST continue to work — the cache lookup is
+  skipped + the live path runs unchanged. This pins that the keys.js
+  short-circuit's `if (sessionId && turnId)` guard correctly bypasses
+  cache when the iOS POST omits turnId.
+
+  Equivalent to today's baseline (pre-Loaded-Barrel) latency. Catching
+  any regression here means the short-circuit code path broke
+  back-compat — flag flip should be deferred.
+
+  Harness-side: this scenario simulates a pre-Phase-4a client by
+  setting `omit_turn_id: true` in the transcript metadata (TODO —
+  harness CLI may not yet support; if not, document as a manual
+  regression test).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five."
+    isFinal: true
+    # Hypothetical metadata — see TODO above.
+    omit_turn_id: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 5
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # No HIT possible (no turnId) → falls through to live path.
+  audible_latency_ms_p50: { max: 6000 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

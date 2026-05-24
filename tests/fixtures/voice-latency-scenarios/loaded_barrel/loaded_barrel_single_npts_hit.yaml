@@ -1,0 +1,55 @@
+name: loaded_barrel_single_npts_hit
+suite: loaded_barrel
+description: |
+  Happiest cache HIT path. Single record_reading turn — speculator
+  fires the ElevenLabs synth during round 1, the bundler emits
+  confirmation text in round 2, iOS POSTs /api/proxy/elevenlabs-tts
+  with turnId, backend cache HIT serves the buffered MP3 in ~30ms.
+
+  Audible-latency budget tightens vs baseline by ~470ms (avoiding the
+  live ElevenLabs synth). Plan v10 §D rollback criterion: P95 audible
+  on HIT path > 2.5s triggers a rollback — this scenario's expectation
+  pins the upper bound at 2500ms.
+
+  Pre-requisite: VOICE_LATENCY_LOADED_BARREL=true on the deployed
+  task def + iOS Phase 4a build sending turnId in the POST body.
+  When the flag is OFF the scenario falls through to the baseline
+  live-synth path and audible_latency_ms_p50 will land near baseline.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 5
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # When the flag is ON + iOS sends turnId, HIT path serves ~280ms
+  # server-first-byte + iOS overhead ~140ms → ~420ms audible. Budget
+  # leaves comfortable headroom for the 200ms timer-race PENDING path
+  # too. Baseline (flag OFF) would land near 6000ms — this scenario
+  # is intended for post-flag-flip measurement.
+  audible_latency_ms_p50: { max: 2500 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

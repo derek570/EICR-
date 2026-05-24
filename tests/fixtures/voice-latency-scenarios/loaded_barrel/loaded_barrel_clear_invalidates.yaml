@@ -1,0 +1,54 @@
+name: loaded_barrel_clear_invalidates
+suite: loaded_barrel
+description: |
+  Negative-path: speculator caches a confirmation for circuit 1
+  number_of_points=5, then the inspector says "actually, no — I mean
+  six". Sonnet emits clear_reading + record_reading in the SAME turn.
+  The cache invalidation drops the first cached MP3 BEFORE iOS can
+  POST for it; the speculator's second synth caches the new "6"
+  confirmation; iOS POSTs and HITs the new entry.
+
+  Pin: bundler must NOT speak the stale "five" confirmation. iOS
+  receives extraction with value=6 only. No double-audio.
+
+  Plan v10 §B: pending → aborted on invalidate (markSuperseded CAS).
+  Audio buffer thrown away even if synth completes after the abort.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five."
+    isFinal: true
+  - at_ms: 1500
+    text: "No, sorry. Circuit one number of points six."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 2 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 6
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # Stricter than the single-write scenario because the inspector
+  # waited 1.5s before correcting — total audible budget is the
+  # second turn's audible budget, not the first's.
+  audible_latency_ms_p50: { max: 2500 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

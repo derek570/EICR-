@@ -1,0 +1,47 @@
+name: loaded_barrel_low_confidence_skipped
+suite: loaded_barrel
+description: |
+  shouldGenerateConfirmation gate: confidence < CONFIRMATION_MIN_CONFIDENCE
+  (0.8) → speculator skips. The reading still gets emitted by the
+  bundler at turn-end (the bundler applies its own confidence filter
+  at synth time, NOT before), but the speculator never opened a synth
+  so the iOS POST hits the live path. This pins that the speculator's
+  gate matches the bundler's gate so we don't speculate on values
+  the bundler would have dropped.
+
+  Note: this scenario depends on Sonnet emitting confidence < 0.8 in
+  the reading, which is hard to provoke deterministically. The
+  scenario is here primarily for completeness — actual confidence
+  values depend on the prompt + transcript ambiguity.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    # Ambiguous mumble — Sonnet may emit low-confidence here, may not.
+    # The scenario is primarily for human-eye review of the harness
+    # output's confidence field.
+    text: "Circuit one, maybe Zs is point five?"
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  ask_user_count: { max: 1 }
+  saw_event_types:
+    - extraction
+  audible_latency_ms_p50: { max: 6000 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true
