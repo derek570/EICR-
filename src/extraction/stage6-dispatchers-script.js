@@ -29,6 +29,8 @@
 
 import { enterScriptByName, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
+import { getCircuitBucket } from './stage6-multi-board-shape.js';
+import { encodeReadingKey } from './stage6-per-turn-writes.js';
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
@@ -55,7 +57,7 @@ function envelope(tool_use_id, body, is_error) {
  * @param {{session: object, logger: object, turnId: string, perTurnWrites: object, round: number, ws?: object}} ctx
  */
 export async function dispatchStartDialogueScript(call, ctx) {
-  const { session, logger, turnId, round, ws } = ctx;
+  const { session, logger, turnId, round, ws, perTurnWrites } = ctx;
   const input = call.input || {};
 
   // Resolve the WebSocket the engine should emit the first ask through.
@@ -99,6 +101,56 @@ export async function dispatchStartDialogueScript(call, ctx) {
   // `stage6.dialogue_script_already_active` log row (emitted from
   // enterScriptByName), so CloudWatch can join sessionId+turnId to recover
   // the full picture without polluting the tool-call enum.
+  // 2026-05-24 (voice-regression Item 1, bs_en_normalisation) — when
+  // Sonnet routes a single-field BS-EN dictation through this tool
+  // (e.g. "Circuit one OCPD BS 6898") instead of record_reading, the
+  // dialogue engine writes the value to stateSnapshot directly via
+  // applyWrite + emits an `extraction` WS message via
+  // buildExtractionPayload — but the value never reaches
+  // perTurnWrites.readings, so it's absent from the turn's
+  // `extracted_readings` wire payload. iOS sees the value via the
+  // engine's WS push, but downstream consumers (the regression harness
+  // assertions, the slot comparator, any future analytic that reads
+  // extracted_readings only) see a write-shaped silence.
+  //
+  // Backfill perTurnWrites here for every seeded write that landed on
+  // a resolved circuit_ref. Reading the value back from the snapshot
+  // (rather than mining it from input.pending_writes) covers the pivot
+  // case where runPivot rewrote schema state on the OCPD→RCBO path
+  // and mirrored ocpd_bs_en into rcd_bs_en — both fields show up in
+  // the snapshot and get the perTurnWrites entry.
+  //
+  // Tool-loop already-active path: result.status === 'already_active'
+  // means enterScriptByName did NOT touch state; seeded_writes is the
+  // existing script's prior fills. Skip the backfill in that case to
+  // avoid re-emitting prior-turn writes.
+  if (
+    result.status !== 'already_active' &&
+    perTurnWrites &&
+    perTurnWrites.readings instanceof Map &&
+    Number.isInteger(result.circuit_ref) &&
+    Array.isArray(result.seeded_writes) &&
+    result.seeded_writes.length > 0
+  ) {
+    const bucket = getCircuitBucket(session.stateSnapshot, result.circuit_ref, input.board_id);
+    for (const fieldName of result.seeded_writes) {
+      const writtenValue = bucket?.[fieldName];
+      if (writtenValue === undefined || writtenValue === null || writtenValue === '') continue;
+      const key = encodeReadingKey(fieldName, result.circuit_ref, input.board_id);
+      // Skip if record_reading or another tool already wrote this slot
+      // earlier in the same turn (Sonnet rarely double-emits but be
+      // defensive — last-write-wins via Map.set would otherwise
+      // overwrite the more-recent value).
+      if (perTurnWrites.readings.has(key)) continue;
+      perTurnWrites.readings.set(key, {
+        value: writtenValue,
+        confidence: 1.0,
+        source_turn_id: input.source_turn_id,
+        boardId: input.board_id ?? undefined,
+      });
+    }
+  }
+
   logToolCall(logger, {
     sessionId: session.sessionId,
     turnId,

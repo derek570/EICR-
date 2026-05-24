@@ -69,6 +69,7 @@ import {
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
+import { parseBsCode } from './dialogue-engine/parsers/bs-code.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -117,6 +118,25 @@ export async function dispatchRecordReading(call, ctx) {
       input_summary: { field: input.field, circuit: input.circuit },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // 2026-05-24 BS-EN canonicalisation (scenario bs_en_normalisation,
+  // prompt-engineering Item 1). Sonnet sometimes emits the schema-canonical
+  // form ("BS EN 60898"), sometimes drops the "EN" prefix ("BS 60898"),
+  // sometimes emits bare digits ("60898") despite explicit prompt
+  // guidance to use the schema-canonical string. The dialogue-engine
+  // parseBsCode already knows every reasonable variant + the Levenshtein-1
+  // fallback for Deepgram digit drift, so route every ocpd_bs_en /
+  // rcd_bs_en write through it and accept the canonical it returns.
+  // Pass-through (parseBsCode → null) preserves the raw value so a
+  // legitimately new form surfaces as a divergence rather than getting
+  // silently coerced to "".
+  if (
+    typeof input.value === 'string' &&
+    (input.field === 'ocpd_bs_en' || input.field === 'rcd_bs_en')
+  ) {
+    const canonical = parseBsCode(input.value);
+    if (canonical) input.value = canonical;
   }
 
   applyReadingFlagAware(session.stateSnapshot, {

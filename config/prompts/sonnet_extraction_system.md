@@ -105,16 +105,21 @@ COMMON SPEECH PATTERNS:
   Example 4 — Transcript: "RCD type B plus on the shower circuit"
     → [{circuit: <matched circuit>, field: "rcd_type", value: "B+"}]
     (Match "shower circuit" against schedule; if ambiguous, circuit -1 + ask)
-- BS EN standards: "60898"/"608 98" = MCB, "61009"/"610 09"/"60909" = RCBO. Reconstruct split digits.
-- BS EN NUMBERS: Deepgram often splits these into separate digits. Reconstruct:
-  "6 0 8 9 8" / "608 98" / "60898" = ocpd_bs_en: "60898-1" (MCB standard)
-  "6 1 0 0 9" / "610 09" / "61009" = ocpd_bs_en: "61009" (RCBO standard) — also set rcd_bs_en: "61009"
-  "6 1 0 0 8" / "610 08" / "600 68" / "61008" = rcd_bs_en: "61008" (RCD/RCCB standard)
-  "6 0 9 4 7" / "60947" = ocpd_bs_en: "60947-2" (MCCB) or "60947-3" (isolator/switch)
-  "3 0 3 6" / "3036" = ocpd_bs_en: "3036" (rewireable fuse)
-  "1 3 6 1" / "1361" = ocpd_bs_en: "1361" (cartridge fuse)
-  "the MCB is a 60898" / "circuit breaker is 608 98" / "BS EN 60898" = ocpd_bs_en: "60898-1"
-  "the RCD is a 61009" / "RCBO 61009" = rcd_bs_en: "61009" AND ocpd_bs_en: "61009"
+- BS EN standards: "60898"/"608 98"/"6898" (Deepgram-dropped leading 0) = MCB. "61009"/"610 09"/"60909" = RCBO. Reconstruct split digits AND restore a dropped leading "0" — Deepgram routinely turns "60898" into "6898", "61008" into "1008", "61009" into "1009". Treat any 4-digit candidate ending in 898/009/008 the same as its 5-digit canonical.
+- BS EN CANONICAL VALUES (write the SCHEMA-CANONICAL string verbatim — NOT bare digits, NOT "-1" suffix):
+  ocpd_bs_en: one of "BS EN 60898" (MCB), "BS EN 61009" (RCBO — also set rcd_bs_en), "BS EN 60947-2" (MCCB), "BS EN 60947-3" (isolator/switch), "BS EN 60269-2" (HRC fuse), "BS 3036" (rewireable), "BS 1361" (cartridge), or "N/A".
+  rcd_bs_en: one of "BS EN 61008" (RCCB), "BS EN 61009" (RCBO), "BS EN 62423" (Type F), or "N/A".
+- BS EN RECONSTRUCTION TABLE (speech → canonical):
+  "6 0 8 9 8" / "608 98" / "60898" / "6898" / "the MCB is a 60898" / "BS EN 60898" / "BS 60898" / "OCPD BS 6898" / "OCPD BS 60898" = ocpd_bs_en: "BS EN 60898"
+  "6 1 0 0 9" / "610 09" / "61009" / "1009" / "the RCD is a 61009" / "RCBO 61009" = ocpd_bs_en: "BS EN 61009" AND rcd_bs_en: "BS EN 61009"
+  "6 1 0 0 8" / "610 08" / "600 68" / "61008" / "1008" = rcd_bs_en: "BS EN 61008"
+  "6 0 9 4 7" / "60947" = ocpd_bs_en: "BS EN 60947-2" (MCCB) or "BS EN 60947-3" (isolator/switch)
+  "3 0 3 6" / "3036" = ocpd_bs_en: "BS 3036" (rewireable fuse — also implies ocpd_type: "Rew")
+  "1 3 6 1" / "1361" = ocpd_bs_en: "BS 1361" (cartridge fuse)
+- ONE-SHOT BS-EN DICTATION: When the inspector volunteers a circuit reference plus a BS-EN code (with no other OCPD fields in the same breath), use `record_reading` directly — do NOT call `start_dialogue_script`. start_dialogue_script is for when the inspector clearly opens a multi-slot walkthrough ("I'm doing the OCPD now on circuit 4"); a single bare BS-EN reading is a one-shot record_reading.
+  "Circuit one OCPD BS 6898" → record_reading(circuit: 1, field: "ocpd_bs_en", value: "BS EN 60898")
+  "Circuit four the BS-EN is 60898" → record_reading(circuit: 4, field: "ocpd_bs_en", value: "BS EN 60898")
+  "MCB on circuit 4 is BS-EN 61009" → TWO record_readings: ocpd_bs_en + rcd_bs_en, both "BS EN 61009" (RCBO mirrors)
 - "2.5 and 1.5" for cable = cable_size: "2.5" AND cable_size_earth: "1.5"
 - "5 points" / "6 points on this" = number_of_points
 - Numbers alone after a field name: "Zs... 0.35" = zs: 0.35, "Ze... 0.84" = ze: 0.84 (field from recent context OK within same utterance)
@@ -151,8 +156,8 @@ BULK OPERATIONS:
 CIRCUIT FIELDS (per circuit):
 - ocpd_type: MCB type letter (B, C, D)
 - ocpd_rating: rating in amps (e.g., 6, 16, 20, 32, 40, 50)
-- ocpd_bs_en: BS EN standard number for the overcurrent device (e.g., "60898-1" for MCB, "61009" for RCBO, "60947-2" for MCCB, "3036" for rewireable fuse). Extract when the inspector states the standard number.
-- rcd_bs_en: BS EN standard number for the RCD (e.g., "61008" for standalone RCD/RCCB, "61009" for RCBO). Extract when stated.
+- ocpd_bs_en: BS EN standard for the overcurrent device. Schema-canonical values only — "BS EN 60898" (MCB), "BS EN 61009" (RCBO), "BS EN 60947-2" (MCCB), "BS EN 60947-3" (isolator/switch), "BS EN 60269-2" (HRC fuse), "BS 3036" (rewireable), "BS 1361" (cartridge), "N/A". Extract when the inspector states the standard number. NEVER emit the bare digit form ("60898") or the legacy "-1" suffix.
+- rcd_bs_en: BS EN standard for the RCD. Schema-canonical values only — "BS EN 61008" (RCCB), "BS EN 61009" (RCBO), "BS EN 62423" (Type F), "N/A". Extract when stated. NEVER emit bare digits.
 - cable_size: live conductor mm2 (e.g., "2.5", "4.0", "6.0", "10.0")
 - cable_size_earth: earth conductor mm2 (e.g., "1.5", "2.5")
 - wiring_type: IET model EICR Schedule of Test Results key (9 codes). Return a SINGLE letter only, never a description:
