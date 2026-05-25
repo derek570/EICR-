@@ -389,6 +389,35 @@ describe('CostTracker — Loaded Barrel speculative sub-ledger (Phase 1.D extra)
     expect(t.recordElevenLabsSpeculativeTerminal('', 'completed')).toBe(false);
   });
 
+  // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.1).
+  // The Terminal API accepts an optional opts object — the structural
+  // cost-integrity fix is upstream (Pivot 11.4 moved Started after the
+  // text-sent boundary). opts.reason and opts.cancelledBeforeTextSent
+  // are vestigial post-v6 diagnostic markers that the speculator passes
+  // through. Cost accounting MUST NOT depend on them.
+  test('recordElevenLabsSpeculativeTerminal accepts opts and behaves identically to no-opts call', () => {
+    const tA = new CostTracker();
+    const tB = new CostTracker();
+    tA.recordElevenLabsSpeculativeStarted(50, 'corr-A');
+    tB.recordElevenLabsSpeculativeStarted(50, 'corr-A');
+
+    // Call with opts.
+    expect(
+      tA.recordElevenLabsSpeculativeTerminal('corr-A', 'cancelled', {
+        reason: 'cancelled_by_fast_tts_hint',
+        cancelledBeforeTextSent: false,
+      })
+    ).toBe(true);
+    // Call without opts (legacy shape).
+    expect(tB.recordElevenLabsSpeculativeTerminal('corr-A', 'cancelled')).toBe(true);
+
+    // Cost accounting must be byte-identical regardless of opts.
+    expect(tA.elevenLabsSpeculative.charsCancelled).toBe(tB.elevenLabsSpeculative.charsCancelled);
+    expect(tA.elevenLabsSpeculative.charsStarted).toBe(tB.elevenLabsSpeculative.charsStarted);
+    expect(tA.elevenLabsSpeculative.charsCompleted).toBe(tB.elevenLabsSpeculative.charsCompleted);
+    expect(tA.elevenLabsSpeculative.charsFailed).toBe(tB.elevenLabsSpeculative.charsFailed);
+  });
+
   test('promoteSpeculativeToCanonical credits charsServed + dedupes', () => {
     const t = new CostTracker();
     t.recordElevenLabsSpeculativeStarted(50, 'corr-hit');
