@@ -2597,6 +2597,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // server merely records what arrives.
         lastAudioSeqByCorrelation: new Map(),
       },
+      // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 9, 12.2).
+      // When the fast-TTS route accepts an iOS POST for a (turnId, slot)
+      // pair, the route INSERTS the slotKey here before responding so
+      // that loaded-barrel-speculator's shared _speculate() preflight
+      // can short-circuit the pre-synth before charging anything to the
+      // cost ledger. Map<turnId, Set<slotKey>>. slotKey shape:
+      //   `${field}::${circuit}::${boardId ?? ''}`
+      // Cleared per-turn by the `try { ... } finally { ... }` block in
+      // runLiveMode (Pivot 12.2) — without that, error paths leak the
+      // per-turn entry into the next turn's pre-flight.
+      pendingFastTtsSlots: new Map(),
+      // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4).
+      // Lookup from server-minted turnId to the SET of client-minted
+      // correlation ids the iOS fast-TTS route saw on transcript posts
+      // for this turn. startAudioFinalizer reads this Set to drain
+      // pre-finalizer decrements stashed by `decrementExpectedAcksByCorrelation`.
+      // Map<turnId, Set<correlationId>>. Cleared by the same `finally`
+      // block as pendingFastTtsSlots.
+      fastPathCorrelationIdByTurn: new Map(),
       // Stage 6 Phase 5 Plan 05-02 — filled-slots shadow logger. Side-effect-
       // only adapter wrapping the Stage 5 filter; the ask-gate-wrapper invokes
       // it PRE-WRAPPER on every ask_user (before any restrained / budget /
