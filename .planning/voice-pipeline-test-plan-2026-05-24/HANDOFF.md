@@ -335,6 +335,87 @@ Files you'll touch most:
 5. Update this handoff doc with what closed and what new items
    surfaced.
 
+## Stage 2 latency — Loaded Barrel Phase 2.D streamed-speculation hook (2026-05-25)
+
+**Status: shipped.** Commits `d89962f` (confirmation gate fix) +
+`f3f50d4` (Phase 2.D) on main; CI run `26383856456` deploying as of
+04:52 UTC.
+
+**What it does.** For every `record_reading` tool_use Sonnet streams,
+the speculator begins ElevenLabs pre-synth the moment the assembler
+sees `content_block_stop` — BEFORE message_stop, BEFORE the
+post-stream dispatch loop. For multi-tool turns (e.g.
+`ocpd_full_spec`'s "32 amp B-curve MCB BS-EN 60898" producing three
+`record_reading` blocks) the second and third tools' pre-synth
+runs in parallel with Sonnet's continued output, shaving
+~hundreds of ms off the audible critical path per tool.
+
+**Architecture.**
+
+```
+content_block_stop tool_use_1  →  speculator pre-synths confirmation 1
+content_block_start tool_use_2 ─┐
+content_block_delta tool_use_2  │  ← Sonnet still streaming;
+content_block_stop tool_use_2  →  speculator pre-synths confirmation 2 in parallel
+...
+message_stop                   →  dispatch loop runs; onSnapshotPatch hits dedup-noop
+                                     (cache key already pending) so no double-synth
+```
+
+**Components shipped.**
+
+| Module | Change |
+|---|---|
+| `src/extraction/record-reading-coercion.js` (NEW) | Shared `coerceRecordReadingValue(field, value)` — BS-EN parseBsCode + polarity_confirmed enum coercion. Single source of truth. |
+| `src/extraction/stage6-dispatchers-circuit.js` | `dispatchRecordReading` uses the shared helper instead of inline coercion. |
+| `src/extraction/stage6-stream-assembler.js` | New optional `onRecordComplete` callback fires at each `content_block_stop`. |
+| `src/extraction/stage6-tool-loop.js` | New optional `onToolUseStreamed` opt; wired into assembler's callback. |
+| `src/extraction/loaded-barrel-speculator.js` | New `onToolUseStreamed` method; applies coercion + calls existing `_speculate`. |
+| `src/extraction/stage6-shadow-harness.js` | `runLiveMode` threads `speculator?.onToolUseStreamed` into runToolLoop. |
+| `src/extraction/confirmation-text.js` | Polarity gate widened to accept Y/OK/true/yes (fixes hidden Item-4 regression where coercion broke the legacy "true"-only gate). |
+
+**Dedup invariant.** When the dispatch-driven onSnapshotPatch fires
+later for the same slot, `_speculate`'s existing `cachePeek` check
+finds the streamed-hook's pending entry and bails. No double-synth,
+no double-bill, no cap-counter inflation.
+
+**Coercion parity.** Shared helper means the speculator and the
+dispatcher emit the same canonical value before computing the
+expandedText that goes into the cache key. Without it, BS-EN /
+polarity_confirmed dictation would produce two different cache keys
+across the two trigger paths — neither matching iOS's POST text →
+cache MISS → audible regression.
+
+**Scope limits (carved out for future iteration).**
+- Streamed hook fires for `record_reading` only. `record_board_reading`
+  follows the same pattern but uses a separate bundler-text codepath;
+  ~1d to extend.
+- `start_dialogue_script` pending_writes still go through
+  onSnapshotPatch only. The engine writes happen synchronously
+  inside dispatch, not from tool input alone.
+
+**Verification.**
+- jest: 3778/3778 (+31 new tests across 4 files).
+- voice-regression: 22/22 green; `ocpd_full_spec` verified to emit
+  2× `loaded_barrel_started` + 2× `loaded_barrel_fired` +
+  `cap_skipped` on the 3rd record_reading inside the per-round
+  stream loop (before message_stop), proving parallel-with-Sonnet
+  behaviour is real.
+- Verbose run on `ocpd_full_spec` shows speculator firing BEFORE
+  the dispatch-driven onSnapshotPatch would have.
+
+**Tunables (unchanged from Phase 2.B/C).**
+- `VOICE_LATENCY_LOADED_BARREL` env (default false — flag flipped on
+  in prod task-def `eicr-backend:219` morning 2026-05-24).
+- `VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN` env (default 2). The
+  streamed hook fills the cap eagerly; subsequent onSnapshotPatch
+  fires for the same turn cap_skip (logged + visible in telemetry).
+
+**Rollback.** Same env-flip path as Phase 2.B (flag the speculator
+off via VOICE_LATENCY_LOADED_BARREL=false). The streamed hook is
+gated on `speculator?.onToolUseStreamed` existing — speculator-null
+sessions get zero overhead.
+
 ## Open items — surfaced 2026-05-24 evening
 
 ### Item 5: silent Zs no-op on unresolved designation (prod session 15C9A3AC, 22:22 BST)
