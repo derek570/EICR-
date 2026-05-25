@@ -14,6 +14,7 @@ const ENV_KEYS = [
   'VOICE_LATENCY_USE_MULTI_CONTEXT',
   'VOICE_LATENCY_LOADED_BARREL',
   'VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN',
+  'VOICE_LATENCY_ROUND1_EARLY_TERMINATE',
   'VOICE_LATENCY_KILL_SWITCH',
 ];
 
@@ -34,6 +35,7 @@ describe('snapshotFlagsForSession', () => {
       streamAskUser: false,
       useMultiContext: false,
       loadedBarrel: false,
+      round1EarlyTerminate: false,
     });
   });
 
@@ -44,6 +46,7 @@ describe('snapshotFlagsForSession', () => {
     process.env.VOICE_LATENCY_STREAM_ASK_USER = 'on';
     process.env.VOICE_LATENCY_USE_MULTI_CONTEXT = 'True';
     process.env.VOICE_LATENCY_LOADED_BARREL = 'on';
+    process.env.VOICE_LATENCY_ROUND1_EARLY_TERMINATE = 'TRUE';
     const snap = flags.snapshotFlagsForSession();
     expect(snap).toEqual({
       streamConfirmations: true,
@@ -52,6 +55,7 @@ describe('snapshotFlagsForSession', () => {
       streamAskUser: true,
       useMultiContext: true,
       loadedBarrel: true,
+      round1EarlyTerminate: true,
     });
   });
 
@@ -62,6 +66,7 @@ describe('snapshotFlagsForSession', () => {
     process.env.VOICE_LATENCY_STREAM_ASK_USER = 'yes please';
     process.env.VOICE_LATENCY_USE_MULTI_CONTEXT = '';
     process.env.VOICE_LATENCY_LOADED_BARREL = 'maybe';
+    process.env.VOICE_LATENCY_ROUND1_EARLY_TERMINATE = 'sometimes';
     const snap = flags.snapshotFlagsForSession();
     expect(snap).toEqual({
       streamConfirmations: false,
@@ -70,6 +75,7 @@ describe('snapshotFlagsForSession', () => {
       streamAskUser: false,
       useMultiContext: false,
       loadedBarrel: false,
+      round1EarlyTerminate: false,
     });
   });
 
@@ -112,7 +118,7 @@ describe('isKillSwitchActive', () => {
 });
 
 describe('SNAPSHOT_FLAG_ENV_NAMES', () => {
-  test('lists exactly the 6 snapshotted env-var names', () => {
+  test('lists exactly the 7 snapshotted env-var names', () => {
     expect(flags.SNAPSHOT_FLAG_ENV_NAMES).toEqual([
       'VOICE_LATENCY_STREAM_CONFIRMATIONS',
       'VOICE_LATENCY_SUPPRESSION',
@@ -120,6 +126,7 @@ describe('SNAPSHOT_FLAG_ENV_NAMES', () => {
       'VOICE_LATENCY_STREAM_ASK_USER',
       'VOICE_LATENCY_USE_MULTI_CONTEXT',
       'VOICE_LATENCY_LOADED_BARREL',
+      'VOICE_LATENCY_ROUND1_EARLY_TERMINATE',
     ]);
   });
 
@@ -223,6 +230,8 @@ describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
           'regex_fast_tts',
           'voice_latency_ack',
           'kill_switch_drop_queue',
+          'regex_fast_v2',
+          'client_playback_telemetry',
         ],
       },
     });
@@ -232,6 +241,30 @@ describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
     expect(c.hasRegexFastTts).toBe(true);
     expect(c.hasVoiceLatencyAck).toBe(true);
     expect(c.hasKillSwitchDropQueue).toBe(true);
+    expect(c.hasRegexFastV2).toBe(true);
+    expect(c.hasClientPlaybackTelemetry).toBe(true);
+  });
+
+  // Single-round latency sprint Phase 1 — regex_fast_v2 is a NEW
+  // capability marker iOS sets in addition to the legacy regex_fast_tts.
+  // The fast-TTS route handler gates on hasRegexFastV2 specifically so
+  // older iOS clients (which only have regex_fast_tts) take the path
+  // without the v2 contract guarantees.
+  test('regex_fast_v2 and client_playback_telemetry default false when absent', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: ['regex_fast_tts'] },
+    });
+    expect(c.hasRegexFastTts).toBe(true);
+    expect(c.hasRegexFastV2).toBe(false);
+    expect(c.hasClientPlaybackTelemetry).toBe(false);
+  });
+
+  test('regex_fast_v2 alone (without legacy regex_fast_tts) trips only hasRegexFastV2', () => {
+    const c = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: ['regex_fast_v2'] },
+    });
+    expect(c.hasRegexFastV2).toBe(true);
+    expect(c.hasRegexFastTts).toBe(false);
   });
 
   test('valid v1 + partial supports → matching predicates only', () => {
@@ -285,13 +318,15 @@ describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
 });
 
 describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
-  test('lists exactly the 5 known support strings', () => {
+  test('lists exactly the 7 known support strings', () => {
     expect([...flags.VOICE_LATENCY_KNOWN_SUPPORTS]).toEqual([
       'streaming_http_audio',
       'source_field_in_tts_post',
       'regex_fast_tts',
       'voice_latency_ack',
       'kill_switch_drop_queue',
+      'regex_fast_v2',
+      'client_playback_telemetry',
     ]);
   });
 });
