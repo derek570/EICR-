@@ -86,14 +86,26 @@ export function buildConfirmationText(field, value, circuit) {
   if (!friendly) return null;
   const valueStr = String(value ?? '').trim();
   if (!valueStr) return null;
-  // Boolean polarity_confirmed comes through as the string "true"/"false".
-  // Speak "polarity confirmed" for true, suppress for false — a false
-  // polarity is an inspection failure that the inspector will edit by
-  // hand and shouldn't be acoustically reinforced as if accepted. Keep
-  // the "Circuit N" prefix when present so the inspector can tell two
-  // back-to-back polarity confirmations apart.
+  // polarity_confirmed canonical enum (config/field_schema.json) is
+  // {"", "OK", "Y", "N"}. Sonnet sometimes emits the boolean-ish
+  // string "true"/"false" or English aliases — the dispatcher's
+  // coerceRecordReadingValue (record-reading-coercion.js, 2026-05-24)
+  // maps the synonyms onto Y/N/OK BEFORE this builder runs in the
+  // tool-call path. The list below accepts both the canonical
+  // values AND the pre-coercion alternatives so:
+  //   - the legacy off-mode path (no coercion) still confirms "true";
+  //   - the tool-call path (post-coercion) confirms "Y"/"OK"; and
+  //   - cached fixtures with either spelling continue to confirm.
+  // Speak "polarity confirmed" for any truthy form, suppress for
+  // falsy/empty/unknown — a false polarity is an inspection failure
+  // that the inspector will edit by hand and shouldn't be acoustically
+  // reinforced as if accepted. Keep the "Circuit N" prefix when present
+  // so the inspector can tell two back-to-back polarity confirmations
+  // apart.
   if (field === 'polarity_confirmed') {
-    if (valueStr.toLowerCase() !== 'true') return null;
+    const lc = valueStr.toLowerCase();
+    const isTrue = lc === 'true' || lc === 'y' || lc === 'ok' || lc === 'yes';
+    if (!isTrue) return null;
     if (circuit == null || circuit === 0) return 'polarity confirmed';
     return `Circuit ${circuit}, polarity confirmed`;
   }

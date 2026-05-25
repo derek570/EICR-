@@ -72,16 +72,31 @@ describe('confirmation-text — buildConfirmationText', () => {
     expect(buildConfirmationText('measured_zs_ohm', '   ', 1)).toBeNull();
   });
 
-  test('polarity_confirmed=true reads back; false/anything-else suppressed', () => {
+  test('polarity_confirmed reads back on truthy forms (Y / OK / true / yes); falsy/empty/unknown suppressed', () => {
+    // Canonical schema enum forms (post-2026-05-24 dispatcher coercion).
+    expect(buildConfirmationText('polarity_confirmed', 'Y', 1)).toBe(
+      'Circuit 1, polarity confirmed'
+    );
+    expect(buildConfirmationText('polarity_confirmed', 'OK', 1)).toBe(
+      'Circuit 1, polarity confirmed'
+    );
+    // Legacy off-mode forms still accepted (no coercion in that path).
     expect(buildConfirmationText('polarity_confirmed', 'true', 1)).toBe(
       'Circuit 1, polarity confirmed'
     );
     expect(buildConfirmationText('polarity_confirmed', 'TRUE', 1)).toBe(
       'Circuit 1, polarity confirmed'
     );
+    expect(buildConfirmationText('polarity_confirmed', 'yes', 1)).toBe(
+      'Circuit 1, polarity confirmed'
+    );
     // Board-level polarity (no circuit) → bare "polarity confirmed".
+    expect(buildConfirmationText('polarity_confirmed', 'Y', null)).toBe('polarity confirmed');
     expect(buildConfirmationText('polarity_confirmed', 'true', null)).toBe('polarity confirmed');
-    // False / non-true is suppressed.
+    // Falsy / empty / unknown is suppressed (a failed polarity is an
+    // inspection failure the inspector will edit by hand — do not
+    // acoustically reinforce it as if accepted).
+    expect(buildConfirmationText('polarity_confirmed', 'N', 1)).toBeNull();
     expect(buildConfirmationText('polarity_confirmed', 'false', 1)).toBeNull();
     expect(buildConfirmationText('polarity_confirmed', '', 1)).toBeNull();
     expect(buildConfirmationText('polarity_confirmed', 'maybe', 1)).toBeNull();
