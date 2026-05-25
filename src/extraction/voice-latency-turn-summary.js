@@ -223,6 +223,10 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
     received_acks: [],
     timer,
     armed_ns: process.hrtime.bigint(),
+    // Persist the decrement count so on-time ACK completion can also
+    // carry it on the emit (the timeout path captures it via closure;
+    // the ACK-completion path reads it off the pending entry).
+    decrements_applied: decrementCount,
   });
 }
 
@@ -272,6 +276,7 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
         ios_playback_ack: pending.received_acks,
         audio_finalizer_timeout_fired: false,
         expected_acks: pending.expected_acks,
+        decrements_applied: pending.decrements_applied,
       });
     }
     return;
