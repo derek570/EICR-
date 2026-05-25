@@ -53,6 +53,7 @@ import legalRouter from './routes/legal.js';
 import certAttestationsRouter from './routes/cert-attestations.js';
 import voiceLatencyBenchRouter from './routes/voice-latency-bench.js';
 import voiceLatencyFastTtsRouter from './routes/voice-latency-fast-tts.js';
+import voiceLatencyPlaybackAckRouter from './routes/voice-latency-playback-ack.js';
 import voiceLatencyReadinessRouter from './routes/voice-latency-readiness.js';
 import { requireConsent } from './middleware/require-consent.js';
 
@@ -258,6 +259,10 @@ app.use('/api', voiceLatencyBenchRouter);
 // reason as bench router (auth handled per-route). Gated server-side
 // by VOICE_LATENCY_REGEX_FAST_TTS=true + capability handshake.
 app.use('/api', voiceLatencyFastTtsRouter);
+// Single-round-latency sprint Phase 0 — playback-ack endpoint. iOS POSTs
+// AVAudioPlayer.didStartPlaying events here so the turn_audio_summary
+// finalizer knows when expected ACKs arrive vs. timing out at 8s.
+app.use('/api', voiceLatencyPlaybackAckRouter);
 // Loaded Barrel Phase 1.F (plan v10 §C + §G3) — readiness probe used
 // as the gate before flipping VOICE_LATENCY_LOADED_BARREL=true. Per-
 // route auth.requireAuth on the GET handler. Mounted EARLY alongside

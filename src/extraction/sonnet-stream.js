@@ -3843,6 +3843,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // contract.
         fallbackToLegacy: entry.fallbackToLegacy === true,
         ws,
+        // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4).
+        // iOS attaches `regex_fast_correlation_id` to the transcript
+        // message when it has POSTed at least one fast-TTS request for
+        // this utterance. May be a single id (legacy mid-sprint shape)
+        // or an array (one per slot in a multi-write utterance). The
+        // harness normalises both into a Set on
+        // `session.fastPathCorrelationIdByTurn` keyed by the server-
+        // minted turnId so the audio finalizer can drain pre-finalizer
+        // expected-ACK decrements stashed by the fast-TTS route's 4xx
+        // rejection path. Undefined / null / non-string-or-array values
+        // resolve to no correlation ids for this turn.
+        regexFastCorrelationId: msg.regex_fast_correlation_id,
       });
 
       // Plan 03-12 r14 Codex MAJOR — stamp seenTranscriptUtterances ONLY

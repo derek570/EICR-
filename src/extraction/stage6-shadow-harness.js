@@ -71,7 +71,9 @@ import { runToolLoop } from './stage6-tool-loop.js';
 // scoped so cross-turn entries survive without keeping the
 // speculator object around.
 import { createSpeculator } from './loaded-barrel-speculator.js';
-import { getVoiceLatencyForSession } from './active-sessions.js';
+import { getVoiceLatencyForSession, getActiveSessionEntry } from './active-sessions.js';
+// Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8).
+import { emitTurnCoreSummary, startAudioFinalizer } from './voice-latency-turn-summary.js';
 import { getElevenLabsKey } from '../services/secrets.js';
 import {
   createWriteDispatcher,
@@ -202,445 +204,582 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // (Pitfall #2 — cross-turn leak prevention from shadow harness).
   const perTurnWrites = createPerTurnWrites();
 
-  // Build the dispatcher session that the tool dispatchers mutate. In LIVE
-  // mode we want mutations to land on the LIVE session, not a clone — there's
-  // no comparison and iOS state IS the live state.
-  //
-  // Field test 2026-05-01 session DFA7FDBF — a previous version of this block
-  // built a fresh `{sessionId, stateSnapshot, extractedObservations,
-  // toolCallsMode:'live'}` literal. `stateSnapshot` and `extractedObservations`
-  // were reference-copied so mutations through them propagated, but a NEW
-  // top-level property assignment — specifically `dialogueScriptState` set by
-  // `enterScriptByName` from the `start_dialogue_script` tool — landed on the
-  // per-turn literal and was thrown away when the turn ended. Next turn, the
-  // engine read `entry.session.dialogueScriptState`, found undefined, and
-  // returned handled:false. The walk-through asked "Which circuit?" once and
-  // then the answer fell through to Sonnet because the active-state memory
-  // was on a binned object. Aliasing `session` directly is the minimal fix —
-  // matches what the comment above (and the pre-clone original) always
-  // intended. Cross-turn regression coverage in
-  // stage6-dialogue-script-state-persists.test.js.
-  const liveSession = session;
-
-  // Phase 5 ask-gate composition (same as shadow mode, but reading from the
-  // live session). Falls back to write-only dispatcher if the caller didn't
-  // thread pendingAsks through (Phase 3/4 back-compat).
-  const pendingAsks = options.pendingAsks ?? null;
-  const ws = options.ws ?? null;
-  // Pass `ws` through createWriteDispatcher's extraCtx so the
-  // start_dialogue_script dispatcher (added 2026-04-30 Silvertown
-  // follow-up) can hand it to enterScriptByName for first-ask emission.
-  // Other dispatchers in the table ignore it.
-  const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, { ws });
-  // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
-  // path into the normal write infrastructure: when ask_user carries a
-  // pending_write and the user's reply matches a circuit deterministically,
-  // the ask dispatcher invokes this hook to dispatch the buffered write
-  // through perTurnWrites + state snapshot + log rows in the same shape a
-  // Sonnet-direct write would have. Closure captures liveSession so the
-  // mutation lands on the same state Sonnet sees on the next turn.
-  const liveAutoResolveWrite = createAutoResolveWriteHook(liveSession, log, turnId, perTurnWrites);
-  let dispatcher;
-  let sortRecords;
-  let askGateForTurn = null;
-  if (pendingAsks) {
-    let asks = createAskDispatcher(liveSession, log, turnId, pendingAsks, ws, {
-      fallbackToLegacy: options.fallbackToLegacy === true,
-      autoResolveWrite: liveAutoResolveWrite,
-    });
-    if (options.askBudget && options.restrainedMode) {
-      askGateForTurn = createAskGateWrapper({
-        logger: log,
-        sessionId: liveSession.sessionId,
-        mode: 'live',
-      });
-      asks = wrapAskDispatcherWithGates(asks, {
-        askBudget: options.askBudget,
-        restrainedMode: options.restrainedMode,
-        gate: askGateForTurn,
-        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
-        logger: log,
-        sessionId: liveSession.sessionId,
-        mode: 'live',
-      });
+  // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4) + Phase 1
+  // (Pivot 9, 12.2). Resolve the activeSessions entry once at the top so
+  // we can: (a) seed `fastPathCorrelationIdByTurn` from
+  // `options.regexFastCorrelationId` so the audio finalizer's
+  // pre-decrement drain has the right correlation set; (b) read the
+  // VOICE_LATENCY_ROUND1_EARLY_TERMINATE snapshot flag to gate the new
+  // Phase 2 predicate inside runToolLoop. Anything that mutates the
+  // entry's per-turn maps below MUST be torn down in the `finally`
+  // block below the main body — error paths would otherwise leak this
+  // turn's entry forward and the speculator skip check would fire on a
+  // stale slot.
+  const entry = getActiveSessionEntry(session.sessionId);
+  if (entry) {
+    const rawCid = options?.regexFastCorrelationId;
+    // Accept legacy single-string shape AND array shape; coerce both
+    // into a Set so callers don't have to remember which is which.
+    const cids = new Set();
+    if (typeof rawCid === 'string' && rawCid) cids.add(rawCid);
+    else if (Array.isArray(rawCid)) {
+      for (const cid of rawCid) {
+        if (typeof cid === 'string' && cid) cids.add(cid);
+      }
     }
-    dispatcher = createToolDispatcher(writes, asks);
-    sortRecords = createSortRecordsAsksLast();
-  } else {
-    dispatcher = writes;
-    sortRecords = undefined;
-  }
-
-  // Drive the tool loop. The agentic prompt + state snapshot live in the
-  // cached prefix per buildAgenticSystemBlocks. iOS Build 282 doesn't yet
-  // know about the new tool-call message types — for now we don't emit them
-  // mid-loop; iOS sees ONE `extraction` message at the end of the turn,
-  // built from the bundler.
-  const systemBlocks = session.buildAgenticSystemBlocks
-    ? session.buildAgenticSystemBlocks()
-    : session.buildSystemBlocks();
-
-  // Loaded Barrel wire-up (plan v10 §C). Speculator instantiated per
-  // turn — the cache is module-scope so cross-turn state persists
-  // there; per-turn cap counter resets per-instance which matches the
-  // plan's semantics. Skip entirely when:
-  //   - voiceLatency snapshot unavailable (older harness call sites)
-  //   - flag VOICE_LATENCY_LOADED_BARREL is OFF (default in prod)
-  //   - session.costTracker missing (defensive; cost ledger required)
-  let speculator = null;
-  try {
-    const vl = getVoiceLatencyForSession(session.sessionId);
-    if (vl?.flags?.loadedBarrel === true && session.costTracker) {
-      speculator = createSpeculator({
-        sessionId: session.sessionId,
-        // apiKey via fn so a secret rotation survives without re-instantiation.
-        apiKey: () => getElevenLabsKey(),
-        costTracker: session.costTracker,
-        logger: log,
-      });
+    if (cids.size > 0 && entry.fastPathCorrelationIdByTurn instanceof Map) {
+      entry.fastPathCorrelationIdByTurn.set(turnId, cids);
     }
-  } catch (specErr) {
-    // Never let speculator-setup errors break the live tool loop.
-    log?.warn?.('voice_latency.loaded_barrel.speculator_setup_error', {
-      sessionId: session.sessionId,
-      error: specErr?.message,
-    });
-    speculator = null;
   }
+  const vlFlags = entry?.voiceLatency?.flags ?? null;
+  const earlyTerminateEnabled = vlFlags?.round1EarlyTerminate === true;
 
-  let toolLoopOut;
+  // Phase 0 server-side audible-first-byte clock + counters.
+  const runLiveStartNs = process.hrtime.bigint();
+
+  // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 12.2). Wrap the
+  // body in try/finally so the per-turn entry maps are always torn down
+  // even if the runToolLoop / bundler / observation refinement path
+  // throws unexpectedly. The early-return on the runToolLoop catch
+  // below also flows through this finally. Without it, error paths
+  // would leak this turn's pendingFastTtsSlots / fastPathCorrelationIdByTurn
+  // entries forward and the next turn's speculator preflight would skip
+  // synth on a stale slot.
   try {
-    toolLoopOut = await runToolLoop({
-      client: session.client,
-      model: SHADOW_MODEL,
-      system: systemBlocks,
-      messages: [{ role: 'user', content: transcriptText }],
-      tools: TOOL_SCHEMAS,
-      dispatcher,
-      ctx: { sessionId: session.sessionId, turnId },
-      logger: log,
-      sortRecords,
-      // Loaded Barrel hooks — passed only when speculator exists,
-      // so a flag-off prod session has zero overhead from these
-      // accessors (the runToolLoop wrapper checks function-ness
-      // before calling).
-      perTurnWritesRef: speculator ? () => perTurnWrites : undefined,
-      onSnapshotPatch: speculator?.onSnapshotPatch,
-      onLoopComplete: speculator?.onLoopComplete,
-      // Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook. Fires
-      // INSIDE the per-round stream loop as each tool_use's
-      // content_block_stop arrives, so the speculator can begin
-      // ElevenLabs pre-synth while Sonnet is still streaming subsequent
-      // tool_use blocks. Multi-tool turns save ~hundreds of ms per
-      // tool. Dedup via cachePeek inside _speculate ensures the
-      // onSnapshotPatch fire that arrives later doesn't double-synth.
-      onToolUseStreamed: speculator?.onToolUseStreamed,
-    });
-  } catch (err) {
-    askGateForTurn?.destroy();
+    // Build the dispatcher session that the tool dispatchers mutate. In LIVE
+    // mode we want mutations to land on the LIVE session, not a clone — there's
+    // no comparison and iOS state IS the live state.
+    //
+    // Field test 2026-05-01 session DFA7FDBF — a previous version of this block
+    // built a fresh `{sessionId, stateSnapshot, extractedObservations,
+    // toolCallsMode:'live'}` literal. `stateSnapshot` and `extractedObservations`
+    // were reference-copied so mutations through them propagated, but a NEW
+    // top-level property assignment — specifically `dialogueScriptState` set by
+    // `enterScriptByName` from the `start_dialogue_script` tool — landed on the
+    // per-turn literal and was thrown away when the turn ended. Next turn, the
+    // engine read `entry.session.dialogueScriptState`, found undefined, and
+    // returned handled:false. The walk-through asked "Which circuit?" once and
+    // then the answer fell through to Sonnet because the active-state memory
+    // was on a binned object. Aliasing `session` directly is the minimal fix —
+    // matches what the comment above (and the pre-clone original) always
+    // intended. Cross-turn regression coverage in
+    // stage6-dialogue-script-state-persists.test.js.
+    const liveSession = session;
+
+    // Phase 5 ask-gate composition (same as shadow mode, but reading from the
+    // live session). Falls back to write-only dispatcher if the caller didn't
+    // thread pendingAsks through (Phase 3/4 back-compat).
+    const pendingAsks = options.pendingAsks ?? null;
+    const ws = options.ws ?? null;
+    // Pass `ws` through createWriteDispatcher's extraCtx so the
+    // start_dialogue_script dispatcher (added 2026-04-30 Silvertown
+    // follow-up) can hand it to enterScriptByName for first-ask emission.
+    // Other dispatchers in the table ignore it.
+    const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, { ws });
+    // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
+    // path into the normal write infrastructure: when ask_user carries a
+    // pending_write and the user's reply matches a circuit deterministically,
+    // the ask dispatcher invokes this hook to dispatch the buffered write
+    // through perTurnWrites + state snapshot + log rows in the same shape a
+    // Sonnet-direct write would have. Closure captures liveSession so the
+    // mutation lands on the same state Sonnet sees on the next turn.
+    const liveAutoResolveWrite = createAutoResolveWriteHook(
+      liveSession,
+      log,
+      turnId,
+      perTurnWrites
+    );
+    let dispatcher;
+    let sortRecords;
+    let askGateForTurn = null;
+    if (pendingAsks) {
+      let asks = createAskDispatcher(liveSession, log, turnId, pendingAsks, ws, {
+        fallbackToLegacy: options.fallbackToLegacy === true,
+        autoResolveWrite: liveAutoResolveWrite,
+      });
+      if (options.askBudget && options.restrainedMode) {
+        askGateForTurn = createAskGateWrapper({
+          logger: log,
+          sessionId: liveSession.sessionId,
+          mode: 'live',
+        });
+        asks = wrapAskDispatcherWithGates(asks, {
+          askBudget: options.askBudget,
+          restrainedMode: options.restrainedMode,
+          gate: askGateForTurn,
+          filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+          logger: log,
+          sessionId: liveSession.sessionId,
+          mode: 'live',
+        });
+      }
+      dispatcher = createToolDispatcher(writes, asks);
+      sortRecords = createSortRecordsAsksLast();
+    } else {
+      dispatcher = writes;
+      sortRecords = undefined;
+    }
+
+    // Drive the tool loop. The agentic prompt + state snapshot live in the
+    // cached prefix per buildAgenticSystemBlocks. iOS Build 282 doesn't yet
+    // know about the new tool-call message types — for now we don't emit them
+    // mid-loop; iOS sees ONE `extraction` message at the end of the turn,
+    // built from the bundler.
+    const systemBlocks = session.buildAgenticSystemBlocks
+      ? session.buildAgenticSystemBlocks()
+      : session.buildSystemBlocks();
+
+    // Loaded Barrel wire-up (plan v10 §C). Speculator instantiated per
+    // turn — the cache is module-scope so cross-turn state persists
+    // there; per-turn cap counter resets per-instance which matches the
+    // plan's semantics. Skip entirely when:
+    //   - voiceLatency snapshot unavailable (older harness call sites)
+    //   - flag VOICE_LATENCY_LOADED_BARREL is OFF (default in prod)
+    //   - session.costTracker missing (defensive; cost ledger required)
+    let speculator = null;
     try {
-      log.error?.('stage6_live_error', {
+      const vl = getVoiceLatencyForSession(session.sessionId);
+      if (vl?.flags?.loadedBarrel === true && session.costTracker) {
+        speculator = createSpeculator({
+          sessionId: session.sessionId,
+          // apiKey via fn so a secret rotation survives without re-instantiation.
+          apiKey: () => getElevenLabsKey(),
+          costTracker: session.costTracker,
+          logger: log,
+        });
+      }
+    } catch (specErr) {
+      // Never let speculator-setup errors break the live tool loop.
+      log?.warn?.('voice_latency.loaded_barrel.speculator_setup_error', {
         sessionId: session.sessionId,
-        turnId,
-        phase: 'live',
-        error: err?.message ?? String(err),
+        error: specErr?.message,
       });
-    } catch {
-      // swallow logger failure — never break extraction
+      speculator = null;
     }
-    // No legacy fallback in live mode. Return an empty extraction so
-    // iOS sees "no readings this turn" rather than crashing on undefined.
-    // The error is in CloudWatch for diagnosis; rollback path is env-flip.
-    return {
-      extracted_readings: [],
-      observations: [],
-      questions: [],
-    };
-  }
 
-  askGateForTurn?.destroy();
-
-  // Bundle the per-turn writes into the legacy iOS shape. Pass null for
-  // legacyResultShape — there's no legacy result; bundler will produce
-  // `questions: []` from that.
-  //
-  // confirmationsEnabled flows from sonnet-stream.js (transcript message
-  // `confirmations_enabled` flag, set by iOS when the user toggles the
-  // Voice button ON) through options into the bundler's synthesis step
-  // (stage6-event-bundler.js:9). Live mode has no legacy.confirmations
-  // source so synthesis is the only path that populates result.confirmations.
-  const result = bundleToolCallsIntoResult(perTurnWrites, null, {
-    confirmationsEnabled: options.confirmationsEnabled === true,
-    // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
-    // trip it on the /api/proxy/elevenlabs-tts POST body for cache
-    // lookup. Omitted when undefined; legacy decoders ignore unknown
-    // keys via Swift Codable's tolerant decode.
-    turnId,
-  });
-
-  // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
-  // readings (record_board_reading dispatches) into extracted_readings with
-  // `circuit: 0` so they render in the existing iOS UI without a TestFlight
-  // update. The separate `extracted_board_readings` slot stays for forward
-  // compatibility — once iOS decodes it, this fold can be removed.
-  //
-  // "Work on Board" hotfix slice 1.1b (2026-05-08) — preserve board_id on
-  // the synthesised circuit:0 reading so iOS's applySonnetReadings can
-  // route board-level supply / installation writes (Ze, IPF, etc.) to the
-  // BoardInfo of the right board via the boardIndex(for:) helper rather
-  // than always pinning to boards[0]. Slice 1.1a populated br.board_id;
-  // omit-when-undefined keeps single-board sessions byte-identical.
-  if (Array.isArray(result.extracted_board_readings)) {
-    for (const br of result.extracted_board_readings) {
-      const synthesised = {
-        field: br.field,
-        circuit: 0,
-        value: br.value,
-        confidence: br.confidence,
-        source: br.source,
+    let toolLoopOut;
+    try {
+      toolLoopOut = await runToolLoop({
+        client: session.client,
+        model: SHADOW_MODEL,
+        system: systemBlocks,
+        messages: [{ role: 'user', content: transcriptText }],
+        tools: TOOL_SCHEMAS,
+        dispatcher,
+        ctx: { sessionId: session.sessionId, turnId },
+        logger: log,
+        sortRecords,
+        // Loaded Barrel hooks — onSnapshotPatch / onLoopComplete are
+        // passed only when the speculator exists, so a flag-off prod
+        // session has zero overhead. The wrapper checks function-ness
+        // before calling.
+        //
+        // Single-round latency sprint Phase 2 (PLAN_v8 §A Pivot 1, Codex
+        // round-3 I4 fix): perTurnWritesRef is now passed UNCONDITIONALLY,
+        // independent of speculator state. The Phase 2 early-terminate
+        // predicate needs to read perTurnWrites whether or not Loaded
+        // Barrel is on. The runToolLoop wrapper still no-ops the function
+        // when undefined (back-compat with tests that don't supply it).
+        perTurnWritesRef: () => perTurnWrites,
+        onSnapshotPatch: speculator?.onSnapshotPatch,
+        onLoopComplete: speculator?.onLoopComplete,
+        // Single-round latency sprint Phase 2 (PLAN_v8 §A Pivot 1).
+        // Always pass earlyTerminateEnabled + earlyTerminateSession so
+        // the predicate fires when the flag is on, regardless of LB
+        // state. Predicate guards on session.stateSnapshot internally,
+        // so passing the live session through is safe.
+        earlyTerminateEnabled,
+        earlyTerminateSession: earlyTerminateEnabled ? session : undefined,
+        // Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook. Fires
+        // INSIDE the per-round stream loop as each tool_use's
+        // content_block_stop arrives, so the speculator can begin
+        // ElevenLabs pre-synth while Sonnet is still streaming subsequent
+        // tool_use blocks. Multi-tool turns save ~hundreds of ms per
+        // tool. Dedup via cachePeek inside _speculate ensures the
+        // onSnapshotPatch fire that arrives later doesn't double-synth.
+        onToolUseStreamed: speculator?.onToolUseStreamed,
+      });
+    } catch (err) {
+      askGateForTurn?.destroy();
+      try {
+        log.error?.('stage6_live_error', {
+          sessionId: session.sessionId,
+          turnId,
+          phase: 'live',
+          error: err?.message ?? String(err),
+        });
+      } catch {
+        // swallow logger failure — never break extraction
+      }
+      // No legacy fallback in live mode. Return an empty extraction so
+      // iOS sees "no readings this turn" rather than crashing on undefined.
+      // The error is in CloudWatch for diagnosis; rollback path is env-flip.
+      return {
+        extracted_readings: [],
+        observations: [],
+        questions: [],
       };
-      if (br.board_id != null) synthesised.board_id = br.board_id;
-      result.extracted_readings.push(synthesised);
     }
-  }
 
-  // Bug-F fix (2026-04-26): also fold `circuit_updates` (create_circuit /
-  // rename_circuit ops) into `extracted_readings`. iOS Build 282 doesn't
-  // decode the circuit_updates slot — under legacy, circuits were created
-  // implicitly when a `circuit_designation` reading arrived for a new
-  // circuit_ref. Mapping each create/rename op back to that legacy shape
-  // means iOS auto-creates the row and populates the meta fields without
-  // a protocol update. Field-name mapping mirrors the legacy KNOWN_FIELDS
-  // set in sonnet-stream.js (and field_schema.json circuit_fields keys):
-  //   designation       → circuit_designation
-  //   phase             → phase
-  //   rating_amps       → ocpd_rating
-  //   cable_csa_mm2     → live_csa_mm2
-  // Field test 2026-04-26 sessionId 4CDC9FC2 surfaced this — Sonnet was
-  // calling create_circuit and rename_circuit successfully but iOS UI
-  // showed nothing because the legacy contract didn't carry "circuit
-  // created" as a first-class event.
-  if (Array.isArray(result.circuit_updates)) {
-    // Bug-G fix (2026-04-26): iOS Build 302's per-field dispatch in
-    // DeepgramRecordingViewModel.swift:3559 (`case "circuit_description",
-    // "designation":`) uses the LEGACY unprefixed field names, not the
-    // field_schema.json keys. The legacy backend KNOWN_FIELDS set in
-    // sonnet-stream.js:538-658 agrees. Schema-key names like
-    // `circuit_designation` / `live_csa_mm2` warn-and-skip via
-    // validateAndCorrectFields (logs `Unknown field name from Sonnet`)
-    // and never reach the iOS UI. Mapping table below uses the legacy
-    // names that BOTH the backend KNOWN_FIELDS and iOS dispatch agree
-    // on. `phase` has no legacy handler — iOS Circuit model has the
-    // field but the dispatch case doesn't exist, so dropping the fold
-    // here is the right call until Phase 6 protocol cutover.
-    const META_TO_LEGACY_FIELD = {
-      designation: 'designation', // iOS DeepgramRecordingViewModel.swift:3559
-      // phase: dropped — iOS has no per-field dispatch case. Sonnet still
-      //   sets it on the snapshot, just doesn't surface to the UI.
-      rating_amps: 'ocpd_rating', // iOS line 256
-      cable_csa_mm2: 'cable_size', // iOS line 260, maps to circuit.cableSize → liveCsaMm2
-    };
-    for (const op of result.circuit_updates) {
-      // op shape: { op: 'create'|'rename', circuit_ref, from_ref?, board_id?, meta? }
-      const ref = op.circuit_ref;
-      const meta = op.meta ?? {};
-      for (const [metaKey, legacyField] of Object.entries(META_TO_LEGACY_FIELD)) {
-        const v = meta[metaKey];
-        if (v == null) continue; // designed-as-null skips emission
-        // "Work on Board" hotfix slice 1.1b — propagate the op's board_id
-        // onto the synthesised meta-as-reading entry. iOS's apply path then
-        // lands the create/rename meta on the right board's circuit row
-        // rather than always main's. Omit when nullish (single-board session
-        // / pre-1.1a dispatcher write).
+    askGateForTurn?.destroy();
+
+    // Bundle the per-turn writes into the legacy iOS shape. Pass null for
+    // legacyResultShape — there's no legacy result; bundler will produce
+    // `questions: []` from that.
+    //
+    // confirmationsEnabled flows from sonnet-stream.js (transcript message
+    // `confirmations_enabled` flag, set by iOS when the user toggles the
+    // Voice button ON) through options into the bundler's synthesis step
+    // (stage6-event-bundler.js:9). Live mode has no legacy.confirmations
+    // source so synthesis is the only path that populates result.confirmations.
+    const result = bundleToolCallsIntoResult(perTurnWrites, null, {
+      confirmationsEnabled: options.confirmationsEnabled === true,
+      // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
+      // trip it on the /api/proxy/elevenlabs-tts POST body for cache
+      // lookup. Omitted when undefined; legacy decoders ignore unknown
+      // keys via Swift Codable's tolerant decode.
+      turnId,
+    });
+
+    // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
+    // readings (record_board_reading dispatches) into extracted_readings with
+    // `circuit: 0` so they render in the existing iOS UI without a TestFlight
+    // update. The separate `extracted_board_readings` slot stays for forward
+    // compatibility — once iOS decodes it, this fold can be removed.
+    //
+    // "Work on Board" hotfix slice 1.1b (2026-05-08) — preserve board_id on
+    // the synthesised circuit:0 reading so iOS's applySonnetReadings can
+    // route board-level supply / installation writes (Ze, IPF, etc.) to the
+    // BoardInfo of the right board via the boardIndex(for:) helper rather
+    // than always pinning to boards[0]. Slice 1.1a populated br.board_id;
+    // omit-when-undefined keeps single-board sessions byte-identical.
+    if (Array.isArray(result.extracted_board_readings)) {
+      for (const br of result.extracted_board_readings) {
         const synthesised = {
-          field: legacyField,
-          circuit: ref,
-          value: typeof v === 'number' ? String(v) : v,
-          confidence: 1.0,
-          source: 'tool_call',
+          field: br.field,
+          circuit: 0,
+          value: br.value,
+          confidence: br.confidence,
+          source: br.source,
         };
-        if (op.board_id != null) synthesised.board_id = op.board_id;
+        if (br.board_id != null) synthesised.board_id = br.board_id;
         result.extracted_readings.push(synthesised);
       }
     }
-  }
 
-  // Resume any paused dialogue script that was waiting for Sonnet to
-  // create / rename the circuit it was anchored to. Field repro:
-  // session C3963EA1 — inspector said "Insulation resistance for the
-  // cooker is 299 milligrams" before the cooker circuit existed.
-  // Engine paused IR (commit 2) with ambiguous_bare_value=299 and
-  // paused_designation_hint="cooker circuit". Sonnet then handled
-  // circuit creation and produced circuit_updates=[{op:'create',
-  // circuit_ref:2, meta:{designation:'Cooker'}}]. tryResumePausedScript
-  // designation-matches against the hint, binds state.circuit_ref=2,
-  // drains pending writes, and asks the next missing slot. Disambig
-  // for the bare 299 (L-L vs L-E?) lands in the follow-up commit.
-  //
-  // CRITICAL ordering: must run BEFORE `delete result.circuit_updates`
-  // below — the resume helper reads the array to confirm the matched
-  // ref came from THIS turn's create/rename op (not an unrelated
-  // pre-existing circuit). Errors in the resume path are caught and
-  // logged so iOS still gets the result envelope.
-  if (Array.isArray(result.circuit_updates) && result.circuit_updates.length > 0) {
-    try {
-      tryResumePausedScript({
-        session,
-        ws,
-        schemas: ALL_DIALOGUE_SCHEMAS,
-        circuitUpdates: result.circuit_updates,
-        logger: log,
-      });
-    } catch (e) {
-      log.warn('stage6.dialogue_resume_error', {
-        sessionId: session.sessionId,
-        error: e?.message ?? String(e),
-      });
-    }
-  }
-
-  // 2026-05-04 — delete_circuit translation. Stage 6's circuitOps shape for
-  // a delete is `{op:'delete', circuit_ref}`. iOS's CircuitUpdate Codable
-  // expects `{circuit, designation, action}` and will throw the entire
-  // extraction message away on shape mismatch (same Bug-F class). Since the
-  // create/rename path folds meta into extracted_readings and then strips
-  // the array entirely, deletes have nowhere to land — extracted_readings
-  // is for FIELD writes, not row removals.
-  //
-  // Collect the deletes BEFORE the strip below, then re-emit them as
-  // legacy-shape entries AFTER the strip. designation:'' is a placeholder
-  // (iOS ignores it for deletes — see applyCircuitUpdates handler).
-  // Capturing first lets us preserve the strip's invariant ("no Stage 6
-  // shape on the wire to iOS") while still surfacing the delete intent.
-  const legacyShapeDeletes = [];
-  if (Array.isArray(result.circuit_updates)) {
-    for (const op of result.circuit_updates) {
-      if (op && op.op === 'delete' && Number.isInteger(op.circuit_ref)) {
-        // "Work on Board" hotfix slice 1.1b — board_id rides through to iOS
-        // so the delete routes to the right board's bucket on apply.
-        // Slice 1.2 extends iOS's CircuitUpdate Codable with the optional
-        // boardId field; pre-fix iOS clients ignore it via decodeIfPresent.
-        const projected = {
-          circuit: op.circuit_ref,
-          designation: '',
-          action: 'delete',
-        };
-        if (op.board_id != null) projected.board_id = op.board_id;
-        legacyShapeDeletes.push(projected);
+    // Bug-F fix (2026-04-26): also fold `circuit_updates` (create_circuit /
+    // rename_circuit ops) into `extracted_readings`. iOS Build 282 doesn't
+    // decode the circuit_updates slot — under legacy, circuits were created
+    // implicitly when a `circuit_designation` reading arrived for a new
+    // circuit_ref. Mapping each create/rename op back to that legacy shape
+    // means iOS auto-creates the row and populates the meta fields without
+    // a protocol update. Field-name mapping mirrors the legacy KNOWN_FIELDS
+    // set in sonnet-stream.js (and field_schema.json circuit_fields keys):
+    //   designation       → circuit_designation
+    //   phase             → phase
+    //   rating_amps       → ocpd_rating
+    //   cable_csa_mm2     → live_csa_mm2
+    // Field test 2026-04-26 sessionId 4CDC9FC2 surfaced this — Sonnet was
+    // calling create_circuit and rename_circuit successfully but iOS UI
+    // showed nothing because the legacy contract didn't carry "circuit
+    // created" as a first-class event.
+    if (Array.isArray(result.circuit_updates)) {
+      // Bug-G fix (2026-04-26): iOS Build 302's per-field dispatch in
+      // DeepgramRecordingViewModel.swift:3559 (`case "circuit_description",
+      // "designation":`) uses the LEGACY unprefixed field names, not the
+      // field_schema.json keys. The legacy backend KNOWN_FIELDS set in
+      // sonnet-stream.js:538-658 agrees. Schema-key names like
+      // `circuit_designation` / `live_csa_mm2` warn-and-skip via
+      // validateAndCorrectFields (logs `Unknown field name from Sonnet`)
+      // and never reach the iOS UI. Mapping table below uses the legacy
+      // names that BOTH the backend KNOWN_FIELDS and iOS dispatch agree
+      // on. `phase` has no legacy handler — iOS Circuit model has the
+      // field but the dispatch case doesn't exist, so dropping the fold
+      // here is the right call until Phase 6 protocol cutover.
+      const META_TO_LEGACY_FIELD = {
+        designation: 'designation', // iOS DeepgramRecordingViewModel.swift:3559
+        // phase: dropped — iOS has no per-field dispatch case. Sonnet still
+        //   sets it on the snapshot, just doesn't surface to the UI.
+        rating_amps: 'ocpd_rating', // iOS line 256
+        cable_csa_mm2: 'cable_size', // iOS line 260, maps to circuit.cableSize → liveCsaMm2
+      };
+      for (const op of result.circuit_updates) {
+        // op shape: { op: 'create'|'rename', circuit_ref, from_ref?, board_id?, meta? }
+        const ref = op.circuit_ref;
+        const meta = op.meta ?? {};
+        for (const [metaKey, legacyField] of Object.entries(META_TO_LEGACY_FIELD)) {
+          const v = meta[metaKey];
+          if (v == null) continue; // designed-as-null skips emission
+          // "Work on Board" hotfix slice 1.1b — propagate the op's board_id
+          // onto the synthesised meta-as-reading entry. iOS's apply path then
+          // lands the create/rename meta on the right board's circuit row
+          // rather than always main's. Omit when nullish (single-board session
+          // / pre-1.1a dispatcher write).
+          const synthesised = {
+            field: legacyField,
+            circuit: ref,
+            value: typeof v === 'number' ? String(v) : v,
+            confidence: 1.0,
+            source: 'tool_call',
+          };
+          if (op.board_id != null) synthesised.board_id = op.board_id;
+          result.extracted_readings.push(synthesised);
+        }
       }
     }
+
+    // Resume any paused dialogue script that was waiting for Sonnet to
+    // create / rename the circuit it was anchored to. Field repro:
+    // session C3963EA1 — inspector said "Insulation resistance for the
+    // cooker is 299 milligrams" before the cooker circuit existed.
+    // Engine paused IR (commit 2) with ambiguous_bare_value=299 and
+    // paused_designation_hint="cooker circuit". Sonnet then handled
+    // circuit creation and produced circuit_updates=[{op:'create',
+    // circuit_ref:2, meta:{designation:'Cooker'}}]. tryResumePausedScript
+    // designation-matches against the hint, binds state.circuit_ref=2,
+    // drains pending writes, and asks the next missing slot. Disambig
+    // for the bare 299 (L-L vs L-E?) lands in the follow-up commit.
+    //
+    // CRITICAL ordering: must run BEFORE `delete result.circuit_updates`
+    // below — the resume helper reads the array to confirm the matched
+    // ref came from THIS turn's create/rename op (not an unrelated
+    // pre-existing circuit). Errors in the resume path are caught and
+    // logged so iOS still gets the result envelope.
+    if (Array.isArray(result.circuit_updates) && result.circuit_updates.length > 0) {
+      try {
+        tryResumePausedScript({
+          session,
+          ws,
+          schemas: ALL_DIALOGUE_SCHEMAS,
+          circuitUpdates: result.circuit_updates,
+          logger: log,
+        });
+      } catch (e) {
+        log.warn('stage6.dialogue_resume_error', {
+          sessionId: session.sessionId,
+          error: e?.message ?? String(e),
+        });
+      }
+    }
+
+    // 2026-05-04 — delete_circuit translation. Stage 6's circuitOps shape for
+    // a delete is `{op:'delete', circuit_ref}`. iOS's CircuitUpdate Codable
+    // expects `{circuit, designation, action}` and will throw the entire
+    // extraction message away on shape mismatch (same Bug-F class). Since the
+    // create/rename path folds meta into extracted_readings and then strips
+    // the array entirely, deletes have nowhere to land — extracted_readings
+    // is for FIELD writes, not row removals.
+    //
+    // Collect the deletes BEFORE the strip below, then re-emit them as
+    // legacy-shape entries AFTER the strip. designation:'' is a placeholder
+    // (iOS ignores it for deletes — see applyCircuitUpdates handler).
+    // Capturing first lets us preserve the strip's invariant ("no Stage 6
+    // shape on the wire to iOS") while still surfacing the delete intent.
+    const legacyShapeDeletes = [];
+    if (Array.isArray(result.circuit_updates)) {
+      for (const op of result.circuit_updates) {
+        if (op && op.op === 'delete' && Number.isInteger(op.circuit_ref)) {
+          // "Work on Board" hotfix slice 1.1b — board_id rides through to iOS
+          // so the delete routes to the right board's bucket on apply.
+          // Slice 1.2 extends iOS's CircuitUpdate Codable with the optional
+          // boardId field; pre-fix iOS clients ignore it via decodeIfPresent.
+          const projected = {
+            circuit: op.circuit_ref,
+            designation: '',
+            action: 'delete',
+          };
+          if (op.board_id != null) projected.board_id = op.board_id;
+          legacyShapeDeletes.push(projected);
+        }
+      }
+    }
+
+    // Bug-F fix part 2 (2026-04-26): strip slots iOS Build 302's Codable
+    // decoder either rejects or doesn't recognise. iOS DOES decode
+    // `circuit_updates` but expects shape {circuit, designation, action}; ours
+    // is {op, circuit_ref, meta:{...}} (the canonical Stage 6 shape). The
+    // Swift decoder throws on the type mismatch and the WHOLE extraction
+    // message gets rejected — same symptom as "Sonnet not connected" because
+    // no readings ever land. After folding the meta into extracted_readings
+    // above, the original circuit_updates slot is no longer needed for iOS.
+    // Strip it; same for the other Stage 6-only slots iOS doesn't recognise.
+    // Once iOS decodes these natively (Phase 6 protocol cutover) this strip
+    // can be lifted along with the folds above.
+    delete result.circuit_updates;
+    delete result.extracted_board_readings;
+    delete result.cleared_readings;
+    delete result.observation_deletions;
+
+    // Re-emit deletes in the legacy iOS shape AFTER the strip so the iOS
+    // CircuitUpdate decoder accepts them. Only set the slot if there are any —
+    // an empty array would be benign for current iOS but pointlessly noisy
+    // in session logs.
+    if (legacyShapeDeletes.length > 0) {
+      result.circuit_updates = legacyShapeDeletes;
+    }
+
+    // Bug-H fix (2026-04-28): same Codable-throw class as Bug-F, but for
+    // observations. The bundler emits per-turn observations with the canonical
+    // Stage 6 shape `{id, code, text, location, circuit, suggested_regulation}`
+    // (see stage6-dispatchers-observation.js:210). iOS `SonnetObservation` in
+    // ClaudeService.swift:140 declares `observation_text` as REQUIRED and uses
+    // wire keys `observation_id / observation_text / item_location / regulation`
+    // — none of which match the Stage 6 shape. Swift throws on the missing
+    // required key, which fails the whole `RollingExtractionResult` decode at
+    // ServerWebSocketService.swift:718, and the entire extraction message
+    // (readings + observations + everything else) is dropped silently. iOS
+    // logs `server_ws_decode_error: "Failed to decode extraction result"`;
+    // server logs `Extraction result readings:N observations:N` so it looks
+    // like everything worked. Repro session: A354882B 2026-04-28 — user said
+    // "R2 for circuit 1, ring continuity was discontinuous", server emitted
+    // 1 reading + 1 observation, iOS UI showed nothing.
+    //
+    // Same fix shape is also necessary for the BPG4 refinement path: it reads
+    // `obs.observation_text` (sonnet-stream.js:306, 323, 365, 418, 785). With
+    // the pre-fix `obs.text` shape, refinement fell back to empty string and
+    // the web-search re-coding had nothing to feed on. Renaming once at the
+    // bundle boundary fixes both consumers in one pass.
+    result.observations = renameObservationsForLegacyWire(result.observations);
+
+    // Increment turn count to match legacy's contract
+    // (extractFromUtterance does this internally).
+    session.turnCount = turnNum;
+
+    // Cost tracking — wire the multi-round tool loop's summed usage into
+    // the session's CostTracker so cost_summary.json populates the same
+    // sonnet.{turns, cacheReads, cacheWrites, input, output, cost} fields
+    // the optimiser's analyze-session.js reads at scripts/analyze-session.js
+    // (line 322, ~costSummary.sonnet). Pre-fix this was a black hole: the
+    // legacy off-mode `extract()` path called costTracker.addSonnetUsage()
+    // at eicr-extraction-session.js:1614, but the Stage 6 live path never
+    // reached that code, so the tool-loop's API calls were billed by
+    // Anthropic but invisible to dashboards (toSessionSummary returned
+    // sonnet.turns=0 / cost=0 even after 8+ extraction rounds). The
+    // 47 Ashcroft Road session 2D391936 was the smoking-gun example.
+    // One call per loop run preserves "turns === utterances" semantics
+    // (matches legacy off-mode call site) — toolLoopOut.rounds is on the
+    // return value if a future dashboard needs per-API-call granularity.
+    // Defensive: skip if costTracker isn't on the session (test harnesses
+    // sometimes pass partial sessions); skip if usage is all zeros (mock
+    // streams without usage events) so test assertions on turn counts
+    // stay stable when fixtures don't carry usage.
+    if (
+      session.costTracker &&
+      typeof session.costTracker.addSonnetUsage === 'function' &&
+      toolLoopOut.usage &&
+      (toolLoopOut.usage.input_tokens > 0 ||
+        toolLoopOut.usage.output_tokens > 0 ||
+        toolLoopOut.usage.cache_read_input_tokens > 0 ||
+        toolLoopOut.usage.cache_creation_input_tokens > 0)
+    ) {
+      session.costTracker.addSonnetUsage(toolLoopOut.usage);
+    }
+
+    // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
+    // at eicr-extraction-session.js:1474. Feeds cost_summary.extraction.readingsExtracted
+    // (added by stopSession at eicr-extraction-session.js:1161). The optimiser
+    // reads this at analyze-session.js:326 with a fallback to debug-log event
+    // counts; populating it here makes the server-authoritative path the
+    // primary signal in dashboards.
+    if (typeof session.extractedReadingsCount === 'number' && result.extracted_readings) {
+      session.extractedReadingsCount += result.extracted_readings.length;
+    }
+
+    log.info('stage6_live_extraction', {
+      sessionId: session.sessionId,
+      turnId,
+      rounds: toolLoopOut.rounds,
+      aborted: toolLoopOut.aborted ?? false,
+      abort_reason: toolLoopOut.aborted && toolLoopOut.rounds >= 8 ? 'loop_cap' : null,
+      readings: result.extracted_readings.length,
+      observations: result.observations.length,
+      // Token usage logged here for per-turn CloudWatch visibility (mirrors
+      // the legacy off-mode "Turn cost" log at eicr-extraction-session.js:1618).
+      // Cumulative session totals live on session.costTracker and ride out
+      // via cost_summary.json at session end.
+      usage_input: toolLoopOut.usage?.input_tokens ?? 0,
+      usage_output: toolLoopOut.usage?.output_tokens ?? 0,
+      usage_cache_read: toolLoopOut.usage?.cache_read_input_tokens ?? 0,
+      usage_cache_write: toolLoopOut.usage?.cache_creation_input_tokens ?? 0,
+    });
+
+    // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8).
+    //
+    // Emit the immutable `voice_latency.turn_core_summary` row carrying every
+    // Sonnet + dispatch fact knowable at end-of-runLiveMode. The companion
+    // `turn_audio_summary` is emitted by the delayed finalizer below (or
+    // its 8s timeout) and shares `{sessionId, turnId}` keys for downstream
+    // CloudWatch JOIN. Wrapped via the emitter's own try/catch so telemetry
+    // failures never break extraction.
+    try {
+      const bundlerEmittedCount = Array.isArray(result.confirmations)
+        ? result.confirmations.length
+        : 0;
+      const runLiveDurationMs = Number((process.hrtime.bigint() - runLiveStartNs) / 1000000n);
+      emitTurnCoreSummary({
+        sessionId: session.sessionId,
+        turnId,
+        rounds: toolLoopOut.rounds,
+        // Phase 2 protocol-truth split: terminal_reason carries the
+        // server-side classification (end_turn / tool_use_cap_hit /
+        // early_terminated / aborted); actual_stop_reason_per_round
+        // preserves Anthropic's stop_reason verbatim per round.
+        terminal_reason: toolLoopOut.terminal_reason ?? null,
+        early_terminated: toolLoopOut.early_terminated === true,
+        actual_stop_reason_per_round: toolLoopOut.actual_stop_reason_per_round ?? [],
+        tool_names_per_round: toolLoopOut.tool_names_per_round ?? [],
+        tool_call_count_per_round: toolLoopOut.tool_call_count_per_round ?? [],
+        tool_error_count_per_round: toolLoopOut.tool_error_count_per_round ?? [],
+        round_timings: toolLoopOut.round_timings ?? [],
+        run_live_duration_ms: runLiveDurationMs,
+        bundler_emitted_count: bundlerEmittedCount,
+        readings_count: result.extracted_readings.length,
+        observations_count: result.observations.length,
+        // Server-side audible-first-byte is null in this path — fast-path
+        // audio is iOS-driven; the bundler emits text-only confirmations
+        // here. The audio_summary row will carry the iOS-side timestamps.
+        audible_first_byte_ms: null,
+        audible_first_byte_source: null,
+        // Path classification: defaults to 'bundler_only' unless iOS
+        // attached a fast-path correlation, in which case 'fast_path_attempted'
+        // is more informative for dashboards (the audio summary then
+        // tells us whether the fast-path actually delivered audio).
+        path_classification:
+          (entry?.fastPathCorrelationIdByTurn?.get(turnId)?.size ?? 0) > 0
+            ? 'fast_path_attempted'
+            : 'bundler_only',
+      });
+
+      // Arm the audio finalizer. expected_acks =
+      //   (bundler confirmations) + (fast-TTS POSTs attempted this turn)
+      // minus any pre-finalizer decrements stashed by the fast-TTS route
+      // when it 4xx'd before runLiveMode minted this turnId. The drain is
+      // done inside startAudioFinalizer; we just supply the two counts.
+      const attemptedFastTtsCount = entry?.fastPathCorrelationIdByTurn?.get(turnId)?.size ?? 0;
+      startAudioFinalizer(session.sessionId, turnId, {
+        bundlerEmittedCount,
+        attemptedFastTtsCount,
+      });
+    } catch (telemetryErr) {
+      log?.warn?.('voice_latency.turn_summary_emit_error', {
+        sessionId: session.sessionId,
+        turnId,
+        stage: 'live_mode_emit',
+        error: telemetryErr?.message || String(telemetryErr),
+      });
+    }
+
+    return result;
+  } finally {
+    // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 12.2 + 8.4).
+    // Tear down both per-turn maps so the next turn's speculator
+    // preflight and audio finalizer start with a clean slate. .delete
+    // is idempotent — safe whether the entry exists or not.
+    if (entry) {
+      entry.pendingFastTtsSlots?.delete(turnId);
+      entry.fastPathCorrelationIdByTurn?.delete(turnId);
+    }
   }
-
-  // Bug-F fix part 2 (2026-04-26): strip slots iOS Build 302's Codable
-  // decoder either rejects or doesn't recognise. iOS DOES decode
-  // `circuit_updates` but expects shape {circuit, designation, action}; ours
-  // is {op, circuit_ref, meta:{...}} (the canonical Stage 6 shape). The
-  // Swift decoder throws on the type mismatch and the WHOLE extraction
-  // message gets rejected — same symptom as "Sonnet not connected" because
-  // no readings ever land. After folding the meta into extracted_readings
-  // above, the original circuit_updates slot is no longer needed for iOS.
-  // Strip it; same for the other Stage 6-only slots iOS doesn't recognise.
-  // Once iOS decodes these natively (Phase 6 protocol cutover) this strip
-  // can be lifted along with the folds above.
-  delete result.circuit_updates;
-  delete result.extracted_board_readings;
-  delete result.cleared_readings;
-  delete result.observation_deletions;
-
-  // Re-emit deletes in the legacy iOS shape AFTER the strip so the iOS
-  // CircuitUpdate decoder accepts them. Only set the slot if there are any —
-  // an empty array would be benign for current iOS but pointlessly noisy
-  // in session logs.
-  if (legacyShapeDeletes.length > 0) {
-    result.circuit_updates = legacyShapeDeletes;
-  }
-
-  // Bug-H fix (2026-04-28): same Codable-throw class as Bug-F, but for
-  // observations. The bundler emits per-turn observations with the canonical
-  // Stage 6 shape `{id, code, text, location, circuit, suggested_regulation}`
-  // (see stage6-dispatchers-observation.js:210). iOS `SonnetObservation` in
-  // ClaudeService.swift:140 declares `observation_text` as REQUIRED and uses
-  // wire keys `observation_id / observation_text / item_location / regulation`
-  // — none of which match the Stage 6 shape. Swift throws on the missing
-  // required key, which fails the whole `RollingExtractionResult` decode at
-  // ServerWebSocketService.swift:718, and the entire extraction message
-  // (readings + observations + everything else) is dropped silently. iOS
-  // logs `server_ws_decode_error: "Failed to decode extraction result"`;
-  // server logs `Extraction result readings:N observations:N` so it looks
-  // like everything worked. Repro session: A354882B 2026-04-28 — user said
-  // "R2 for circuit 1, ring continuity was discontinuous", server emitted
-  // 1 reading + 1 observation, iOS UI showed nothing.
-  //
-  // Same fix shape is also necessary for the BPG4 refinement path: it reads
-  // `obs.observation_text` (sonnet-stream.js:306, 323, 365, 418, 785). With
-  // the pre-fix `obs.text` shape, refinement fell back to empty string and
-  // the web-search re-coding had nothing to feed on. Renaming once at the
-  // bundle boundary fixes both consumers in one pass.
-  result.observations = renameObservationsForLegacyWire(result.observations);
-
-  // Increment turn count to match legacy's contract
-  // (extractFromUtterance does this internally).
-  session.turnCount = turnNum;
-
-  // Cost tracking — wire the multi-round tool loop's summed usage into
-  // the session's CostTracker so cost_summary.json populates the same
-  // sonnet.{turns, cacheReads, cacheWrites, input, output, cost} fields
-  // the optimiser's analyze-session.js reads at scripts/analyze-session.js
-  // (line 322, ~costSummary.sonnet). Pre-fix this was a black hole: the
-  // legacy off-mode `extract()` path called costTracker.addSonnetUsage()
-  // at eicr-extraction-session.js:1614, but the Stage 6 live path never
-  // reached that code, so the tool-loop's API calls were billed by
-  // Anthropic but invisible to dashboards (toSessionSummary returned
-  // sonnet.turns=0 / cost=0 even after 8+ extraction rounds). The
-  // 47 Ashcroft Road session 2D391936 was the smoking-gun example.
-  // One call per loop run preserves "turns === utterances" semantics
-  // (matches legacy off-mode call site) — toolLoopOut.rounds is on the
-  // return value if a future dashboard needs per-API-call granularity.
-  // Defensive: skip if costTracker isn't on the session (test harnesses
-  // sometimes pass partial sessions); skip if usage is all zeros (mock
-  // streams without usage events) so test assertions on turn counts
-  // stay stable when fixtures don't carry usage.
-  if (
-    session.costTracker &&
-    typeof session.costTracker.addSonnetUsage === 'function' &&
-    toolLoopOut.usage &&
-    (toolLoopOut.usage.input_tokens > 0 ||
-      toolLoopOut.usage.output_tokens > 0 ||
-      toolLoopOut.usage.cache_read_input_tokens > 0 ||
-      toolLoopOut.usage.cache_creation_input_tokens > 0)
-  ) {
-    session.costTracker.addSonnetUsage(toolLoopOut.usage);
-  }
-
-  // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
-  // at eicr-extraction-session.js:1474. Feeds cost_summary.extraction.readingsExtracted
-  // (added by stopSession at eicr-extraction-session.js:1161). The optimiser
-  // reads this at analyze-session.js:326 with a fallback to debug-log event
-  // counts; populating it here makes the server-authoritative path the
-  // primary signal in dashboards.
-  if (typeof session.extractedReadingsCount === 'number' && result.extracted_readings) {
-    session.extractedReadingsCount += result.extracted_readings.length;
-  }
-
-  log.info('stage6_live_extraction', {
-    sessionId: session.sessionId,
-    turnId,
-    rounds: toolLoopOut.rounds,
-    aborted: toolLoopOut.aborted ?? false,
-    abort_reason: toolLoopOut.aborted && toolLoopOut.rounds >= 8 ? 'loop_cap' : null,
-    readings: result.extracted_readings.length,
-    observations: result.observations.length,
-    // Token usage logged here for per-turn CloudWatch visibility (mirrors
-    // the legacy off-mode "Turn cost" log at eicr-extraction-session.js:1618).
-    // Cumulative session totals live on session.costTracker and ride out
-    // via cost_summary.json at session end.
-    usage_input: toolLoopOut.usage?.input_tokens ?? 0,
-    usage_output: toolLoopOut.usage?.output_tokens ?? 0,
-    usage_cache_read: toolLoopOut.usage?.cache_read_input_tokens ?? 0,
-    usage_cache_write: toolLoopOut.usage?.cache_creation_input_tokens ?? 0,
-  });
-
-  return result;
 }
 
 /**

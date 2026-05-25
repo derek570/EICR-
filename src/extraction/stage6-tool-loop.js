@@ -335,10 +335,43 @@ export async function runToolLoop({
    * to pre-Phase-2.D behaviour.
    */
   onToolUseStreamed,
+  /**
+   * Phase 2 (single-round latency sprint, PLAN_v8 §A Pivot 1 + §E).
+   * When true AND the round-1 dispatch produced exactly one clean
+   * write tool with no errors and no ask_user, skip the round-2
+   * Sonnet invocation entirely and exit the loop with
+   * `terminal_reason: 'early_terminated'`.
+   *
+   * Independent of Loaded Barrel — passed always from runLiveMode
+   * regardless of speculator state (closes Codex round-3 I4).
+   */
+  earlyTerminateEnabled = false,
+  /**
+   * Phase 2 — the session object the predicate inspects for
+   * board-count and currentBoardId. Required when
+   * earlyTerminateEnabled is true; ignored otherwise.
+   */
+  earlyTerminateSession,
 }) {
   let rounds = 0;
   let stopReason = null;
   let aborted = false;
+  // Phase 2: terminal_reason carries the SERVER-SIDE termination cause.
+  // 'end_turn'         — Anthropic returned end_turn organically.
+  // 'tool_use_cap_hit' — rounds === maxRounds with stop_reason='tool_use'.
+  // 'early_terminated' — Phase 2 predicate fired after round-1 dispatch.
+  // 'aborted'          — runtime aborted before normal termination.
+  let terminalReason = null;
+  // Phase 0: per-round timings + actual stop_reasons (the API's truth,
+  // preserved even when terminalReason supersedes it).
+  const roundTimings = [];
+  const actualStopReasonPerRound = [];
+  const toolNamesPerRound = [];
+  const toolCallCountPerRound = [];
+  const toolErrorCountPerRound = [];
+  // Phase 0: convenience timing for emitTurnCoreSummary (sonnet_round1_ms /
+  // sonnet_round2_ms). Bundler/dispatch timings come from elsewhere.
+  let earlyTerminated = false;
   const allCalls = [];
   // Per-round usage accumulator. Summed from each round's
   // stream.finalMessage().usage (Anthropic Message.usage shape). Returned
@@ -365,6 +398,9 @@ export async function runToolLoop({
     //   - iteration drives the assembler (records + stop_reason)
     //   - finalMessage() gives us the model's full assistant message to push
     //     onto `messages` so the next round sees the correct prior turn.
+    // Phase 0 (single-round latency sprint) — capture started/stream_complete/
+    // dispatch_complete timestamps per round for emitTurnCoreSummary.
+    const roundStartedNs = process.hrtime.bigint();
     const stream = client.messages.stream({
       model,
       max_tokens: 4096,
@@ -407,6 +443,13 @@ export async function runToolLoop({
     }
     const { records, stop_reason } = asm.finalize();
     stopReason = stop_reason;
+    // Phase 0 — round-level stream complete time (post-finalize).
+    const roundStreamCompleteNs = process.hrtime.bigint();
+    actualStopReasonPerRound.push(stop_reason);
+    // Per-round tool name + count summary (toolCallCountPerRound /
+    // toolErrorCountPerRound populated AFTER the dispatch loop; this is
+    // just the streamed-record name list).
+    toolNamesPerRound.push(records.map((r) => r.name || 'unknown'));
 
     // Push the assistant message on EVERY round — tool_use AND end_turn.
     // On tool_use rounds this is the tool_use-before-tool_result ordering
@@ -438,7 +481,21 @@ export async function runToolLoop({
 
     // Happy-path terminator: model said end_turn (or null / unknown — treat
     // anything other than tool_use as "we are done").
-    if (stop_reason !== 'tool_use') break;
+    if (stop_reason !== 'tool_use') {
+      terminalReason = terminalReason ?? 'end_turn';
+      // Phase 0 telemetry: record per-round timing (dispatch_complete = stream_complete on no-dispatch).
+      roundTimings.push({
+        round_idx: rounds - 1,
+        started_ns: roundStartedNs.toString(),
+        stream_complete_ns: roundStreamCompleteNs.toString(),
+        dispatch_complete_ns: roundStreamCompleteNs.toString(),
+        stream_ms: Number((roundStreamCompleteNs - roundStartedNs) / 1000000n),
+        dispatch_ms: 0,
+      });
+      toolCallCountPerRound.push(0);
+      toolErrorCountPerRound.push(0);
+      break;
+    }
 
     // CAP-HIT BRANCH (STD-10 verbatim).
     // At this point `rounds` has just been incremented to maxRounds (e.g. 8).
@@ -741,6 +798,75 @@ export async function runToolLoop({
     }
 
     messages.push({ role: 'user', content: toolResults });
+
+    // Phase 0 telemetry — capture per-round dispatch completion + counts.
+    const roundDispatchCompleteNs = process.hrtime.bigint();
+    const roundIdx = rounds - 1;
+    const toolErrorCount = toolResults.filter((tr) => tr.is_error === true).length;
+    roundTimings.push({
+      round_idx: roundIdx,
+      started_ns: roundStartedNs.toString(),
+      stream_complete_ns: roundStreamCompleteNs.toString(),
+      dispatch_complete_ns: roundDispatchCompleteNs.toString(),
+      stream_ms: Number((roundStreamCompleteNs - roundStartedNs) / 1000000n),
+      dispatch_ms: Number((roundDispatchCompleteNs - roundStreamCompleteNs) / 1000000n),
+    });
+    toolCallCountPerRound.push(records.length);
+    toolErrorCountPerRound.push(toolErrorCount);
+
+    // Phase 2 (single-round latency sprint, PLAN_v8 §A Pivot 1 + §E) —
+    // server-side round-1 early-terminate. Runs AFTER the dispatch loop
+    // pushes the real (non-empty) tool_results user message above. Anthropic
+    // protocol balance is preserved.
+    //
+    // If the predicate fires, we set terminalReason='early_terminated' and
+    // break BEFORE the next round's client.messages.stream invocation —
+    // saving the ~2.5s Sonnet round-2 wall on the dominant single-clean-
+    // record_reading turn shape. The Anthropic-reported stop_reason for
+    // round 1 stays 'tool_use' (preserved in actualStopReasonPerRound).
+    if (earlyTerminateEnabled && rounds === 1 && earlyTerminateSession) {
+      try {
+        const ptw = typeof perTurnWritesRef === 'function' ? perTurnWritesRef() : null;
+        if (ptw) {
+          // Lazy-import the predicate so the loop has no module-load
+          // dependency unless the flag is on.
+
+          const { shouldEarlyTerminate } = await import('./stage6-early-terminate.js');
+          if (
+            shouldEarlyTerminate({
+              records,
+              toolResults,
+              perTurnWrites: ptw,
+              session: earlyTerminateSession,
+            })
+          ) {
+            terminalReason = 'early_terminated';
+            earlyTerminated = true;
+            logger?.info?.('voice_latency.round1_early_terminate_fired', {
+              sessionId: ctx?.sessionId,
+              turnId: ctx?.turnId,
+              rounds,
+              tool_count: records.length,
+            });
+            break;
+          }
+        }
+      } catch (err) {
+        logger?.warn?.('voice_latency.early_terminate_predicate_error', {
+          sessionId: ctx?.sessionId,
+          turnId: ctx?.turnId,
+          error: err?.message || String(err),
+        });
+        // Fall through to normal round-2 invocation on any predicate error.
+      }
+    }
+  }
+
+  // Phase 2: set terminalReason for paths that didn't already set it.
+  if (terminalReason === null) {
+    if (aborted) terminalReason = 'aborted';
+    else if (rounds >= maxRounds && stopReason === 'tool_use') terminalReason = 'tool_use_cap_hit';
+    else terminalReason = 'end_turn';
   }
 
   // Loaded Barrel Phase 2.C — onLoopComplete fires AFTER the loop
@@ -773,5 +899,14 @@ export async function runToolLoop({
     aborted,
     messages_final: messages,
     usage,
+    // Phase 0 + Phase 2 (single-round latency sprint) — additive return fields.
+    // Legacy callers ignore unknown keys, so the back-compat is preserved.
+    terminal_reason: terminalReason,
+    early_terminated: earlyTerminated,
+    actual_stop_reason_per_round: actualStopReasonPerRound,
+    tool_names_per_round: toolNamesPerRound,
+    tool_call_count_per_round: toolCallCountPerRound,
+    tool_error_count_per_round: toolErrorCountPerRound,
+    round_timings: roundTimings,
   };
 }
