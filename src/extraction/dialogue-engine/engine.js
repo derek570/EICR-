@@ -44,7 +44,11 @@ import {
 import { applyDerivations } from './helpers/derivations.js';
 import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
 import { applyReadingToSnapshot } from '../stage6-snapshot-mutators.js';
-import { parseCircuitRange, formatBulkApplyConfirm } from './parsers/circuit-range.js';
+import {
+  parseCircuitRange,
+  formatBulkApplyConfirm,
+  detectBroadcastIntent,
+} from './parsers/circuit-range.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -68,6 +72,51 @@ export function processDialogueTurn(ctx) {
   const text = typeof transcriptText === 'string' ? transcriptText : '';
 
   const state = session.dialogueScriptState;
+
+  // Broadcast-intent pre-filter — when the inspector says "for all
+  // circuits" / "every circuit" / "circuits 1 to 6" / "circuits 1, 3, 5",
+  // bow out of script entry so Sonnet's set_field_for_all_circuits tool
+  // (stage6-tool-schemas.js / stage6-dispatchers-circuit.js) handles the
+  // broadcast. See session 27366AC6 (2026-05-25): the OCPD script
+  // trigger-matched "breaker", asked "Which circuit?", and the
+  // inspector's "all circuits" answer was quoted back as "What's the
+  // circuit number for the all circuit?" because no parser at the
+  // circuit-resolution step recognised broadcast scope.
+  //
+  // Critical guard: when the RCD post-completion bulk-apply prompt is
+  // pending (state.bulkApplyPending), DO NOT intercept. That reply path
+  // owns "yes all" / "all of them" via parseCircuitRange at line ~470
+  // and the engine emits the bulk-apply confirm TTS itself.
+  if (detectBroadcastIntent(text)) {
+    if (!state?.active) {
+      logger?.info?.('dialogue_broadcast_bypassed_entry', {
+        sessionId,
+        textPreview: text.slice(0, 80),
+      });
+      return { handled: false };
+    }
+    if (state.active && !state.bulkApplyPending) {
+      // Abort the active script: the inspector's broadcast intent
+      // supersedes the partial single-circuit walk-through. Already-
+      // committed snapshot writes (applyWrite calls earlier in this
+      // session) are NOT rolled back — they're the inspector's confirmed
+      // single-circuit readings. We only discard the in-memory working
+      // copy and any pending_writes that hadn't been drained yet.
+      logger?.info?.('dialogue_broadcast_aborted_mid_script', {
+        sessionId,
+        schemaName: state.schemaName,
+        circuit_ref: state.circuit_ref,
+        filled_keys: Object.keys(state.values ?? {}),
+        pending_writes_count: Array.isArray(state.pending_writes) ? state.pending_writes.length : 0,
+        textPreview: text.slice(0, 80),
+      });
+      clearScriptState(session);
+      return { handled: false };
+    }
+    // bulkApplyPending === true → fall through to the active-path
+    // handler below; handleBulkApplyReply takes the turn via the
+    // existing intercept.
+  }
 
   // Paused-state hard-timeout sweep — paused scripts (active=false)
   // sit waiting for the resume hook to wake them after Sonnet creates

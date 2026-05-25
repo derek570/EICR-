@@ -131,3 +131,33 @@ function rangeFromTo(start, end) {
   for (let i = start; i <= end; i += 1) out.push(i);
   return out;
 }
+
+// Broadcast-intent detection — used by the dialogue engine's pre-filter
+// (engine.js processDialogueTurn) to bail out of script entry / abort an
+// active script when the inspector signals they want a value applied to
+// every (or many) circuits, rather than the one the script is walking.
+//
+// Why a separate helper instead of reusing parseCircuitRange:
+// parseCircuitRange checks DECLINE_RE first ("no, all circuits" → 'none')
+// because in the RCD post-completion reply context, decline must beat any
+// stray "all". For the pre-filter we want the opposite — if the inspector
+// said the broadcast phrase, route to Sonnet's set_field_for_all_circuits
+// regardless of any neighbouring "no".
+//
+// Why noun-anchored on ranges and lists: codex flagged the worst-case
+// false-positive "circuit 4 is 1 to 6 megohms" / "1, 3 megohms" / "6 kA".
+// Requiring "circuits?" immediately before the digit-range / comma-list
+// keeps natural value dictation off the pre-filter's hot path.
+const BROADCAST_ALL_RE =
+  /\b(?:(?:for|across|on|to|of|in)\s+all\s+(?:circuits|the\s+circuits|of\s+(?:them|the\s+circuits))|all\s+circuits|every\s+circuit|(?:the\s+)?whole\s+board|(?:the\s+)?entire\s+board)\b/i;
+
+const BROADCAST_RANGE_RE = /\bcircuits?\s+\d{1,3}\s*(?:to|through|thru|until|-|—|–)\s*\d{1,3}\b/i;
+
+const BROADCAST_LIST_RE = /\bcircuits?\s+\d{1,3}(?:\s*(?:,|and)\s*\d{1,3}){1,}\b/i;
+
+export function detectBroadcastIntent(text) {
+  if (typeof text !== 'string' || !text) return false;
+  return (
+    BROADCAST_ALL_RE.test(text) || BROADCAST_RANGE_RE.test(text) || BROADCAST_LIST_RE.test(text)
+  );
+}
