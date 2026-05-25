@@ -96,6 +96,28 @@ export function getVoiceLatencyForSession(sessionId) {
 }
 
 /**
+ * Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.2). Returns the
+ * full activeSessions entry for the given sessionId, or null when unknown.
+ *
+ * Used by callers that need to mutate per-session state outside the
+ * sonnet-stream.js handler — specifically the fast-TTS route which writes
+ * `entry.pendingFastTtsSlots` so the loaded-barrel-speculator's
+ * `_speculate()` preflight can short-circuit a pre-synth that would
+ * otherwise charge cost for audio iOS is already going to ignore.
+ *
+ * Returning the whole entry (not just the session) keeps the API stable
+ * regardless of where individual fields live (entry.voiceLatency,
+ * entry.pendingFastTtsSlots, entry.session.costTracker, etc.).
+ *
+ * @param {string} sessionId
+ * @returns {Object | null}
+ */
+export function getActiveSessionEntry(sessionId) {
+  if (!sessionId) return null;
+  return activeSessions.get(sessionId) ?? null;
+}
+
+/**
  * Loaded Barrel Phase 3 (plan v10 §C + §D) — credit a speculative
  * correlationId as "served by cache HIT" on the per-session
  * CostTracker. Called from keys.js short-circuit AFTER res.end().

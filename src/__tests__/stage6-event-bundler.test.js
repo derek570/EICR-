@@ -398,8 +398,18 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { confirmationsEnabled: true }
     );
     expect(r.confirmations).toEqual([
-      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
-      { text: 'Circuit 2, R1 plus R2 0.6', field: 'r1_r2_ohm', circuit: 2 },
+      {
+        text: 'Circuit 1, Zs 0.62',
+        expanded_text: 'Circuit 1, zed S zero point six two',
+        field: 'measured_zs_ohm',
+        circuit: 1,
+      },
+      {
+        text: 'Circuit 2, R1 plus R2 0.6',
+        expanded_text: 'Circuit 2, R 1 plus R 2 zero point six',
+        field: 'r1_r2_ohm',
+        circuit: 2,
+      },
     ]);
   });
 
@@ -417,8 +427,18 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     ]);
     const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
     expect(r.confirmations).toEqual([
-      { text: 'Ze 0.25', field: 'earth_loop_impedance_ze', circuit: null },
-      { text: 'PFC 1.5', field: 'prospective_fault_current', circuit: null },
+      {
+        text: 'Ze 0.25',
+        expanded_text: 'zed E zero point two five',
+        field: 'earth_loop_impedance_ze',
+        circuit: null,
+      },
+      {
+        text: 'PFC 1.5',
+        expanded_text: 'PFC one point five',
+        field: 'prospective_fault_current',
+        circuit: null,
+      },
     ]);
   });
 
@@ -465,7 +485,12 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { confirmationsEnabled: true }
     );
     expect(r.confirmations).toEqual([
-      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
+      {
+        text: 'Circuit 1, Zs 0.62',
+        expanded_text: 'Circuit 1, zed S zero point six two',
+        field: 'measured_zs_ohm',
+        circuit: 1,
+      },
     ]);
   });
 
@@ -482,7 +507,12 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { confirmationsEnabled: true }
     );
     expect(r1.confirmations).toEqual([
-      { text: 'Circuit 1, polarity confirmed', field: 'polarity_confirmed', circuit: 1 },
+      {
+        text: 'Circuit 1, polarity confirmed',
+        expanded_text: 'Circuit 1, polarity confirmed',
+        field: 'polarity_confirmed',
+        circuit: 1,
+      },
     ]);
 
     const readingsFalse = new Map([
@@ -533,7 +563,12 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { confirmationsEnabled: true }
     );
     expect(r.confirmations).toEqual([
-      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
+      {
+        text: 'Circuit 1, Zs 0.62',
+        expanded_text: 'Circuit 1, zed S zero point six two',
+        field: 'measured_zs_ohm',
+        circuit: 1,
+      },
     ]);
   });
 
@@ -567,6 +602,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(r.confirmations).toEqual([
       {
         text: 'Circuit 1, Zs 0.62',
+        expanded_text: 'Circuit 1, zed S zero point six two',
         field: 'measured_zs_ohm',
         circuit: 1,
         board_id: 'sub-1',
@@ -584,7 +620,13 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     ]);
     const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
     expect(r.confirmations).toEqual([
-      { text: 'Ze 0.25', field: 'earth_loop_impedance_ze', circuit: null, board_id: 'sub-2' },
+      {
+        text: 'Ze 0.25',
+        expanded_text: 'zed E zero point two five',
+        field: 'earth_loop_impedance_ze',
+        circuit: null,
+        board_id: 'sub-2',
+      },
     ]);
   });
 
@@ -623,7 +665,40 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     );
     expect(r.confirmations[0]).not.toHaveProperty('board_id');
     expect(r.confirmations).toEqual([
-      { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1 },
+      {
+        text: 'Circuit 1, Zs 0.62',
+        expanded_text: 'Circuit 1, zed S zero point six two',
+        field: 'measured_zs_ohm',
+        circuit: 1,
+      },
     ]);
+  });
+
+  // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3). New
+  // regression test pinning the contract that every emitted confirmation
+  // carries `expanded_text`. iOS's `playFastPathAudio` (P1.8) and the
+  // bundler-confirmation TTS path will both consume this field verbatim
+  // when `regex_fast_v2` is advertised — see Sources/Recording/AlertManager.swift.
+  test('Single-round latency P1.3: every confirmation carries expanded_text alongside text', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('earth_loop_impedance_ze'),
+        { value: '0.25', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    expect(r.confirmations).toHaveLength(2);
+    for (const c of r.confirmations) {
+      expect(typeof c.text).toBe('string');
+      expect(typeof c.expanded_text).toBe('string');
+      expect(c.expanded_text.length).toBeGreaterThan(0);
+    }
   });
 });

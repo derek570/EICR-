@@ -162,8 +162,10 @@ describe('voice-latency-telemetry', () => {
       expect(tel.HOPS.length).toBe(15);
     });
 
-    test('SERVER_OUTCOMES includes original 8 server states + 12 loaded-barrel states', () => {
-      expect(tel.SERVER_OUTCOMES.length).toBe(20);
+    test('SERVER_OUTCOMES includes original 8 server states + 13 loaded-barrel states', () => {
+      // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.4)
+      // added `loaded_barrel_pretext_abort` — bumping the total to 21.
+      expect(tel.SERVER_OUTCOMES.length).toBe(21);
       // Original 8 (pre-Loaded-Barrel) — pin for back-compat:
       expect(tel.SERVER_OUTCOMES).toContain('sent_to_client');
       expect(tel.SERVER_OUTCOMES).toContain('suppressed_after_synth');
@@ -179,6 +181,8 @@ describe('voice-latency-telemetry', () => {
       expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_cap_skipped');
       expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_parity_mismatch');
       expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_text_drift_detected');
+      // Single-round latency sprint Phase 1:
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_pretext_abort');
     });
 
     test('IOS_OUTCOMES includes the 5 ack outcomes', () => {

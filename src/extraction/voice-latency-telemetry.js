@@ -105,6 +105,13 @@ export const SERVER_OUTCOMES = Object.freeze([
   'loaded_barrel_cap_skipped',
   'loaded_barrel_parity_mismatch',
   'loaded_barrel_text_drift_detected',
+  // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.4). A
+  // pre-text abort fires when the speculator's api-key resolve / client
+  // construction / abort-already-fired guard short-circuits BEFORE
+  // recordElevenLabsSpeculativeStarted is called. No cost ledger entry
+  // is opened, so this outcome is purely diagnostic — dashboards count
+  // pre-text failures distinctly from synth-time errors.
+  'loaded_barrel_pretext_abort',
 ]);
 
 export const IOS_OUTCOMES = Object.freeze([

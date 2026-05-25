@@ -22,6 +22,13 @@ import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-write
 // can import the same buildConfirmationText without dragging the rest
 // of the bundler into its call site. No behavioural change here.
 import { CONFIRMATION_MIN_CONFIDENCE, buildConfirmationText } from './confirmation-text.js';
+// Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
+// canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
+// ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
+// can play either form without forking on capability. Older iOS builds
+// that don't decode expanded_text fall through to local expansion via
+// Self.expandForTTS (Sources/Recording/AlertManager.swift).
+import { expandForTTS } from './tts-text-expander.js';
 
 export const BUNDLER_PHASE = 2;
 
@@ -55,6 +62,13 @@ function synthesiseConfirmations(readings, boardReadings) {
     if (!text) continue;
     const entry = {
       text,
+      // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3). Pre-
+      // compute the TTS-expanded form server-side. iOS Builds advertising
+      // `regex_fast_v2` consume `expanded_text` verbatim (skipping the
+      // local Self.expandForTTS) so client + server agree on the spoken
+      // form for every numeric reading. The expander is pure + ASCII so
+      // pre-computing it has zero cost beyond the string allocation.
+      expanded_text: expandForTTS(text),
       field: r.field,
       circuit: Number.isInteger(r.circuit) ? r.circuit : null,
     };
@@ -72,7 +86,12 @@ function synthesiseConfirmations(readings, boardReadings) {
     if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
     const text = buildConfirmationText(r.field, r.value, null);
     if (!text) continue;
-    const entry = { text, field: r.field, circuit: null };
+    const entry = {
+      text,
+      expanded_text: expandForTTS(text),
+      field: r.field,
+      circuit: null,
+    };
     if (r.board_id != null) {
       entry.board_id = r.board_id;
     }

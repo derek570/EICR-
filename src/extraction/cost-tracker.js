@@ -249,9 +249,24 @@ export class CostTracker {
    * Audit invariant (asserted by Phase 5 fuzz): every Started call
    * has EXACTLY ONE matching Terminal call by end-of-session.
    *
+   * Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.1).
+   * Accepts an optional `opts` object for diagnostic propagation —
+   * `opts.reason` is the speculator's textual cancellation reason
+   * (e.g. 'cancelled_by_fast_tts_hint', 'speculator_shutdown') and
+   * `opts.cancelledBeforeTextSent` is preserved as a vestigial
+   * post-v6 marker. Neither field affects the cost decision — that's
+   * structurally enforced upstream in the speculator (Started is only
+   * called once the text-sent boundary is crossed; see PLAN_v8
+   * Pivot 11.4). The opts are accepted here so the speculator can
+   * pass them through without dropping the information; downstream
+   * consumers (cost-summary analyser, ops dashboards) can read
+   * `reason` from the matching `voice_latency.speculative_terminal_reason`
+   * log emission, NOT from the cost tracker itself.
+   *
    * Idempotent on correlationId.
    */
-  recordElevenLabsSpeculativeTerminal(correlationId, terminal) {
+  // eslint-disable-next-line no-unused-vars
+  recordElevenLabsSpeculativeTerminal(correlationId, terminal, opts = {}) {
     if (!correlationId) return false;
     if (terminal !== 'completed' && terminal !== 'cancelled' && terminal !== 'failed') {
       return false;

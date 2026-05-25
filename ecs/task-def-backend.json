@@ -46,6 +46,7 @@
         { "name": "VOICE_LATENCY_USE_MULTI_CONTEXT",    "value": "true" },
         { "name": "VOICE_LATENCY_LOADED_BARREL",        "value": "true" },
         { "name": "VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN", "value": "2" },
+        { "name": "VOICE_LATENCY_ROUND1_EARLY_TERMINATE", "value": "true" },
         { "name": "VOICE_LATENCY_KILL_SWITCH",          "value": "false" }
       ],
       "mountPoints": [],
