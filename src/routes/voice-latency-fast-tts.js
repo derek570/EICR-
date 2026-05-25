@@ -1,105 +1,285 @@
 /**
- * Stage 4 minimum-viable fast-path TTS endpoint.
+ * Mode-A fast-path TTS endpoint.
  *
  * POST /api/voice-latency/regex-fast-tts
  *
- * Accepts a simulated-Deepgram transcript + a regex-recognised
- * candidate (field/circuit/value), composes a short confirmation
- * sentence, and streams TTS via the existing Stage 2.4
- * ElevenLabsStreamClient. Bypasses Sonnet entirely.
+ * iOS posts here the moment its TranscriptFieldMatcher regex-extracts
+ * an eligible numeric reading (measured_zs_ohm, r1_r2_ohm, ir_live_*,
+ * number_of_points — see `regex-fast-eligibility.js`). The backend
+ * composes the confirmation, streams ElevenLabs MP3 back, and writes
+ * the slot into the active-sessions entry's pendingFastTtsSlots map so
+ * the Loaded Barrel speculator's preflight skip check kicks in BEFORE
+ * any speculation cost is incurred for the same slot in the matching
+ * turn.
  *
- * Gated by:
- *   - VOICE_LATENCY_REGEX_FAST_TTS=true (per-session snapshot)
- *   - iOS capability `streaming_http_audio`
- *   - kill switch off
+ * Single-round latency sprint Phase 1 (PLAN_v8 §A Pivots 2, 4, 5, 9, 11,
+ * 12.2). The plan converged after 8 rounds of review; the structural
+ * guarantees this route enforces are:
  *
- * Body:
- *   {
- *     sessionId: "...",
- *     transcript: "Circuit one number of points 5",
- *     candidate: { field: "number_of_points", circuit: 1, value: "5" }
- *   }
+ *   - Eligibility: hard whitelist (regex-fast-eligibility.js). 422 on
+ *     any other field. Pre-Pivot-2 the route gladly synthesised
+ *     whatever you sent; now non-numeric / non-circuit-ref fields
+ *     return without spending an ElevenLabs character.
  *
- * Response: chunked HTTP, audio/L16 PCM (or audio/mpeg if format flips).
+ *   - Capability gate (Pivot 4): hasRegexFastV2 — NOT hasStreamingHttpAudio.
+ *     The v2 marker means iOS implements `playFastPathAudio` (bypasses
+ *     shouldDeferPlayback) + posts /playback-ack + does NOT fall back
+ *     to native TTS on 4xx. Older clients (hasStreamingHttpAudio but
+ *     not hasRegexFastV2) get 412.
  *
- * Per PLAN_v3 §7 (the conditional Stage 4). This minimum-viable build
- * intentionally OMITS the suppression machinery, race catalogue, and
- * eligibility whitelist — it exists to measure end-to-end latency, not
- * to ship to production iOS clients. Production rollout per PLAN_v5
- * locks all of §7's safeguards behind the assessment gate.
+ *   - No-native-fallback contract (Pivot 5): on 4xx / 503 / 502 the iOS
+ *     client MUST silently abandon. Speaking a value the backend just
+ *     rejected is unsafe. We document this in the route response body
+ *     so a future iOS implementer can't accidentally re-introduce the
+ *     fallback.
+ *
+ *   - Client-minted correlationId (Pivot 6): iOS mints a UUIDv4
+ *     client-side and posts it in the body. The backend doesn't mint
+ *     here — the same correlationId rides through to the turn_audio_summary
+ *     finalizer via session.fastPathCorrelationIdByTurn. If we 4xx
+ *     before the turn-id is known, decrementExpectedAcksByCorrelation
+ *     stashes the decrement so the finalizer's expected-ACK count
+ *     gets corrected when runLiveMode arms it for this turn.
+ *
+ *   - Speculator preflight integration (Pivot 9 + 11): on accept, write
+ *     the slot into entry.pendingFastTtsSlots.get(turnId) AND call
+ *     speculator.abortBySlot to cancel any in-flight speculation for
+ *     the same slot. Skips a wasted ElevenLabs spend for the
+ *     1-2 second window the speculator might otherwise race the
+ *     fast-path.
+ *
+ *   - MP3 output forced (Pivot 7): mp3_22050_32 ONLY. iOS Builds with
+ *     regex_fast_v2 use AVAudioPlayer which handles MP3 natively; PCM
+ *     would require manual framing on iOS and we don't ship that.
+ *
+ *   - confirmation-text canonical (Pivot 3): the FRIENDLY-name table
+ *     used to be duplicated here. Now we import buildConfirmationText
+ *     from confirmation-text.js so the route, the bundler, and the
+ *     speculator all produce byte-identical text for the same input.
  */
 
 import { Router } from 'express';
 import * as auth from '../auth.js';
 import { getElevenLabsKey } from '../services/secrets.js';
 import logger from '../logger.js';
+import { buildConfirmationText } from '../extraction/confirmation-text.js';
+import { isRegexFastEligible } from '../extraction/regex-fast-eligibility.js';
+import { getActiveSessionEntry, getVoiceLatencyForSession } from '../extraction/active-sessions.js';
+import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
+import { decrementExpectedAcksByCorrelation } from '../extraction/voice-latency-turn-summary.js';
 
 const router = Router();
+const FORCED_OUTPUT_FORMAT = 'mp3_22050_32';
 
-const FRIENDLY = {
-  number_of_points: 'number of points',
-  measured_zs_ohm: 'Zs',
-  zs: 'Zs',
-  r1_r2_ohm: 'R1 plus R2',
-  polarity_confirmed: 'polarity confirmed',
-  polarity: 'polarity confirmed',
-  ir_live_earth_mohm: 'IR L to E',
-  ir_live_live_mohm: 'IR L to L',
-  earth_loop_impedance_ze: 'Ze',
-  prospective_fault_current: 'PFC',
-};
-
-function buildFastConfirmation(candidate) {
-  if (!candidate || typeof candidate !== 'object') return null;
-  const { field, circuit, value } = candidate;
-  const friendly = FRIENDLY[field] ?? field;
-  if (field === 'polarity_confirmed' || field === 'polarity') {
-    return circuit ? `Circuit ${circuit}, polarity confirmed` : 'polarity confirmed';
+/**
+ * Validate the request body. Returns null on success, an error string
+ * on failure. Strict — the iOS client mints these to a defined schema;
+ * tolerate-and-coerce would invite drift.
+ */
+function validateBody(body) {
+  if (!body || typeof body !== 'object') return 'body required';
+  if (typeof body.sessionId !== 'string' || !body.sessionId) return 'sessionId required';
+  if (typeof body.turnId !== 'string' || !body.turnId) return 'turnId required';
+  if (typeof body.correlationId !== 'string' || !body.correlationId) {
+    return 'correlationId required';
   }
-  if (circuit == null || circuit === 0) return `${friendly} ${value}`;
-  return `Circuit ${circuit}, ${friendly} ${value}`;
+  const c = body.candidate;
+  if (!c || typeof c !== 'object') return 'candidate required';
+  if (typeof c.field !== 'string' || !c.field) return 'candidate.field required';
+  if (
+    c.circuit !== null &&
+    c.circuit !== undefined &&
+    !(typeof c.circuit === 'number' && Number.isInteger(c.circuit))
+  ) {
+    return 'candidate.circuit must be integer or null';
+  }
+  if (typeof c.value !== 'string' || !c.value) return 'candidate.value required';
+  if (c.boardId !== undefined && c.boardId !== null && typeof c.boardId !== 'string') {
+    return 'candidate.boardId must be string or null';
+  }
+  return null;
+}
+
+function buildSlotKey({ field, circuit, boardId }) {
+  const normBoardId = typeof boardId === 'string' && boardId.length > 0 ? boardId : '';
+  return `${field}::${circuit ?? 'null'}::${normBoardId}`;
+}
+
+/**
+ * Reject with the given status + error AFTER decrementing the
+ * expected-ACK stash. The iOS client treats every non-2xx as "abandon
+ * silently — do NOT speak native TTS"; this helper also takes care of
+ * the turn_audio_summary accounting so the finalizer doesn't time out
+ * waiting for an ACK that's never coming.
+ */
+function rejectWithDecrement(res, sessionId, correlationId, status, errorBody) {
+  if (correlationId && sessionId) {
+    try {
+      decrementExpectedAcksByCorrelation(sessionId, correlationId);
+    } catch (err) {
+      logger.warn('voice_latency.fast_tts_decrement_error', {
+        sessionId,
+        correlationId,
+        error: err?.message || String(err),
+      });
+    }
+  }
+  return res.status(status).json(errorBody);
 }
 
 router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) => {
   const t0 = process.hrtime.bigint();
 
-  const { sessionId, transcript, candidate } = req.body || {};
-  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
-  if (!candidate) return res.status(400).json({ error: 'candidate required' });
+  // Order matters: kill switch FIRST so a panicked ops flip drops every
+  // in-flight POST regardless of body shape.
+  if (isKillSwitchActive()) {
+    // No correlationId may exist yet — caller-minted but we never read
+    // it on this path. Skip decrement (we never opened a finalizer
+    // entry to decrement).
+    return res.status(503).json({
+      error: 'kill switch active',
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
 
-  const text = buildFastConfirmation(candidate);
-  if (!text) return res.status(400).json({ error: 'unable to build confirmation' });
+  const validationErr = validateBody(req.body);
+  if (validationErr) {
+    // Body malformed — correlationId might be missing or bogus. Pull
+    // it defensively for the decrement attempt.
+    const cid = typeof req.body?.correlationId === 'string' ? req.body.correlationId : null;
+    const sid = typeof req.body?.sessionId === 'string' ? req.body.sessionId : null;
+    return rejectWithDecrement(res, sid, cid, 400, {
+      error: validationErr,
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
 
-  // Per-session voice-latency snapshot + kill switch check.
-  const { getVoiceLatencyForSession } = await import('../extraction/active-sessions.js');
-  const { isKillSwitchActive } = await import('../extraction/voice-latency-config.js');
+  const { sessionId, turnId, correlationId, transcript, candidate } = req.body;
+  const { field, circuit, value, boardId = null } = candidate;
+
+  // Eligibility whitelist (Pivot 2). Non-whitelisted fields can drift
+  // (booleans like polarity_confirmed) or have no iOS regex pattern
+  // (rcd_time_ms) — see regex-fast-eligibility.js header.
+  if (!isRegexFastEligible(field)) {
+    return rejectWithDecrement(res, sessionId, correlationId, 422, {
+      error: 'field not eligible for fast path',
+      field,
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
+
+  // Per-session voice-latency snapshot lookup.
   const vl = getVoiceLatencyForSession(sessionId);
-  if (!vl) return res.status(404).json({ error: 'session not found' });
-  if (isKillSwitchActive()) return res.status(503).json({ error: 'kill switch active' });
-  if (vl.flags?.regexFastTts !== true) return res.status(404).end();
-  if (vl.capabilities?.hasStreamingHttpAudio !== true) {
-    return res.status(412).json({ error: 'iOS client did not advertise streaming_http_audio' });
+  if (!vl) {
+    return rejectWithDecrement(res, sessionId, correlationId, 404, {
+      error: 'session not found',
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
+  if (vl.flags?.regexFastTts !== true) {
+    // Flag-off: route exists but is gated. Return 404 to match the
+    // legacy "endpoint inactive" semantics rather than 503.
+    return rejectWithDecrement(res, sessionId, correlationId, 404, {
+      error: 'fast path disabled',
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
+
+  // Capability gate (Pivot 4): regex_fast_v2 — NOT hasStreamingHttpAudio.
+  // Older clients (regex_fast_tts only) get 412 with a hint.
+  if (vl.capabilities?.hasRegexFastV2 !== true) {
+    return rejectWithDecrement(res, sessionId, correlationId, 412, {
+      error: 'iOS client did not advertise regex_fast_v2',
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
+
+  // boardId validation: when present must be a board the session knows
+  // about (mainly defensive — iOS shouldn't post for an invented board
+  // but Sonnet sometimes generates ids that drift).
+  const entry = getActiveSessionEntry(sessionId);
+  if (boardId && entry?.session?.stateSnapshot?.boards) {
+    const known = entry.session.stateSnapshot.boards.some((b) => b.id === boardId);
+    if (!known) {
+      return rejectWithDecrement(res, sessionId, correlationId, 422, {
+        error: 'boardId not known to session',
+        boardId,
+        hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+      });
+    }
+  }
+
+  // Build the confirmation. buildConfirmationText handles the canonical
+  // friendly-name lookup, value coercion, and Circuit-N prefix. Returns
+  // null when the field isn't in the friendly-name table — but the
+  // eligibility whitelist above already filtered those, so this is
+  // belt-and-braces.
+  const text = buildConfirmationText(field, value, circuit);
+  if (!text) {
+    return rejectWithDecrement(res, sessionId, correlationId, 422, {
+      error: 'unable to build confirmation for candidate',
+      field,
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
+
+  // Speculator preflight integration (Pivot 9 + 11). Two writes BEFORE
+  // we start streaming audio: (a) seed pendingFastTtsSlots so any
+  // subsequent speculator dispatch for this slot skips synthesis;
+  // (b) abortBySlot any in-flight speculation already running for the
+  // slot — iOS is going to play our MP3 within ~500ms so finishing
+  // the speculator's audio wastes ElevenLabs chars + ledger.
+  const slotKey = buildSlotKey({ field, circuit, boardId });
+  if (entry?.pendingFastTtsSlots instanceof Map) {
+    if (!entry.pendingFastTtsSlots.has(turnId)) {
+      entry.pendingFastTtsSlots.set(turnId, new Set());
+    }
+    entry.pendingFastTtsSlots.get(turnId).add(slotKey);
+  }
+  if (entry?.session?.loadedBarrelSpeculator?.abortBySlot) {
+    try {
+      entry.session.loadedBarrelSpeculator.abortBySlot({
+        sessionId,
+        turnId,
+        field,
+        circuit,
+        boardId,
+      });
+    } catch (err) {
+      logger.warn('voice_latency.fast_tts_abort_by_slot_error', {
+        sessionId,
+        correlationId,
+        slotKey,
+        error: err?.message || String(err),
+      });
+    }
   }
 
   const apiKey = await getElevenLabsKey();
-  if (!apiKey) return res.status(500).json({ error: 'ElevenLabs API key not configured' });
+  if (!apiKey) {
+    return rejectWithDecrement(res, sessionId, correlationId, 500, {
+      error: 'ElevenLabs API key not configured',
+    });
+  }
 
   const { ElevenLabsStreamClient, contentTypeForFormat } =
     await import('../extraction/elevenlabs-stream-client.js');
-  const { mintCorrelationId, recordSpan, recordOutcome } =
-    await import('../extraction/voice-latency-telemetry.js');
+  const { recordSpan, recordOutcome } = await import('../extraction/voice-latency-telemetry.js');
 
-  const correlationId = mintCorrelationId(sessionId, 'fast_path');
-  const useMultiContext = vl.flags?.useMultiContext === true;
-  const client = new ElevenLabsStreamClient({ apiKey, multiContext: useMultiContext });
+  // Force MP3 output (Pivot 7). iOS's playFastPathAudio uses AVAudioPlayer
+  // which handles MP3 natively. PCM would require iOS-side framing
+  // which we don't ship.
+  const client = new ElevenLabsStreamClient({
+    apiKey,
+    outputFormat: FORCED_OUTPUT_FORMAT,
+  });
 
   recordSpan(correlationId, 'backend_recv', t0, process.hrtime.bigint(), {
     transcript: typeof transcript === 'string' ? transcript.slice(0, 80) : null,
-    field: candidate.field,
-    circuit: candidate.circuit,
+    field,
+    circuit,
+    boardId,
   });
-  const eligibilityNs = process.hrtime.bigint();
-  recordSpan(correlationId, 'eligibility_decision', t0, eligibilityNs);
 
   res.set('Content-Type', contentTypeForFormat(client.outputFormat));
   res.set('Transfer-Encoding', 'chunked');
@@ -114,7 +294,6 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
         if (!res.writableEnded) res.write(buf);
       },
     };
-    if (useMultiContext) opts.contextId = `fp_${correlationId}`;
     const timings = await client.synth(text, opts);
     terminal = 'completed';
     if (!res.writableEnded) res.end();
@@ -123,8 +302,9 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
     logger.info('voice_latency.fast_path_complete', {
       correlationId,
       sessionId,
+      turnId,
+      slotKey,
       text_preview: text.slice(0, 80),
-      transcript_preview: typeof transcript === 'string' ? transcript.slice(0, 80) : null,
       backend_to_first_audio_ms:
         timings.firstAudioNs > 0n ? Number((timings.firstAudioNs - t0) / 1000000n) : null,
       total_ms: Number((process.hrtime.bigint() - t0) / 1000000n),
@@ -134,11 +314,22 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
     recordOutcome(correlationId, terminal === 'cancelled' ? 'cancelled' : 'synth_failed', {
       meta: { sessionId, error: err?.message },
     });
-    if (!res.headersSent) res.status(502).json({ error: err?.message || 'fast_path_failed' });
-    else if (!res.writableEnded) res.end();
+    if (!res.headersSent) {
+      // Decrement here too — the synth failed BEFORE any audio reached
+      // the wire, so iOS will treat this as a hard reject and not call
+      // playback-ack.
+      return rejectWithDecrement(res, sessionId, correlationId, 502, {
+        error: err?.message || 'fast_path_failed',
+        hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+      });
+    } else if (!res.writableEnded) {
+      res.end();
+    }
     logger.warn('voice_latency.fast_path_failed', {
       correlationId,
       sessionId,
+      turnId,
+      slotKey,
       error: err?.message,
     });
   }
