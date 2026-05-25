@@ -547,8 +547,21 @@ async function runScenario(scenarioPath, apiKey) {
   await new Promise((res) => setTimeout(res, 50));
   // Detach our transport so the next scenario gets a clean slate.
   projectLogger.remove(memTransport);
-  // Restore the original transports for the next scenario.
-  for (const t of removedTransports) projectLogger.add(t);
+  // INTENTIONALLY DO NOT restore the Console transport between
+  // scenarios. ElevenLabs synth callbacks resolve asynchronously and
+  // can emit Winston log lines well after the scenario returns; with
+  // the Console transport reattached those lines hit stdout and break
+  // the orchestrator's `extractJsonArray` heuristic (which expects the
+  // first `[` to be the JSON results array). File transports stay
+  // omitted too — the orchestrator's parser is the only consumer of
+  // stdout, and the memory transport on the NEXT scenario will pick
+  // up its own events fresh. (Pre-fix this restore/remove cycle
+  // produced the `Failed to parse harness output as JSON` error
+  // intermittently — see voice-regression-report.md commits 2026-05-24
+  // onward.) `removedTransports` is still captured so a future fix
+  // can restore globally at process-exit if a CI consumer ever
+  // needs the post-run logs.
+  void removedTransports;
 
   const failures = evaluateExpectations(scenario.expect ?? {}, {
     toolCalls: buckets.toolCalls,
@@ -630,7 +643,15 @@ for (const s of scenarios) {
   }
 }
 
-console.log(JSON.stringify(results, null, 2));
+// Write the JSON to stdout, then SET exitCode rather than calling
+// process.exit(). process.exit() terminates synchronously even when
+// stdout is a pipe with pending async writes — under
+// `execSync(..., {stdio:['ignore','pipe','inherit']})` the orchestrator
+// receives an empty/truncated stdout buffer and falls into the
+// "no JSON array found in harness stdout" branch despite the harness
+// having produced clean JSON. Setting exitCode lets Node exit
+// naturally after the event loop drains, including the stdout pipe.
+process.stdout.write(JSON.stringify(results, null, 2) + '\n');
 const failed = results.filter((r) => !r.pass).length;
 process.stderr.write(`\n=== ${results.length - failed}/${results.length} pass ===\n`);
-process.exit(failed === 0 ? 0 : 1);
+process.exitCode = failed === 0 ? 0 : 1;
