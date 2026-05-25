@@ -58,6 +58,7 @@ import {
 import { mintCorrelationId, recordOutcome } from './voice-latency-telemetry.js';
 import { getLoadedBarrelMaxPerTurn } from './voice-latency-config.js';
 import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
+import { coerceRecordReadingValue } from './record-reading-coercion.js';
 
 const DEFAULT_OUTPUT_FORMAT = 'mp3_22050_32';
 
@@ -453,6 +454,81 @@ export function createSpeculator({
   }
 
   /**
+   * Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook.
+   *
+   * Fires from inside runToolLoop's per-round stream loop the moment a
+   * tool_use's `content_block_stop` finalises its input. The phase 2.B
+   * onSnapshotPatch path still fires LATER (after the post-stream
+   * dispatch loop runs the dispatcher); this hook gives the
+   * speculator a head start of ~hundreds of ms per multi-tool turn
+   * because Sonnet's stream is still emitting subsequent tool_use
+   * blocks when we start the ElevenLabs pre-synth.
+   *
+   * Dedup is via the existing cachePeek check in `_speculate` — the
+   * onSnapshotPatch fire that arrives later for the same slot sees
+   * the cache key already populated and bails without double-billing
+   * the cap.
+   *
+   * Value coercion: applies the same record_reading coercion the
+   * dispatcher applies (BS-EN canonicalisation, polarity enum), so
+   * the speculator-text doesn't drift from the bundler-text the
+   * dispatcher will produce. Shared helper at
+   * `record-reading-coercion.js`.
+   *
+   * Scope: ONLY `record_reading` is handled. board_reading,
+   * observations, circuit ops, and dialogue-script writes go through
+   * onSnapshotPatch as before. Extending to other tools is a
+   * follow-up; record_reading is by far the dominant multi-tool
+   * pattern (3+ readings per OCPD utterance, multi-circuit batches,
+   * etc.) so this covers the highest-value cases first.
+   *
+   * Error records (invalid_json / orphan_delta from the assembler)
+   * have no input — silently skipped.
+   *
+   * @param {{record: object, ctx: {sessionId, turnId, roundIdx}}} evt
+   */
+  function onToolUseStreamed({ record, ctx }) {
+    if (!record || !ctx) return;
+    if (record.error) return; // assembler couldn't parse — no input to speculate from
+    if (record.name !== 'record_reading') return;
+    const input = record.input;
+    if (!input || typeof input !== 'object') return;
+
+    const field = input.field;
+    const rawValue = input.value;
+    if (typeof field !== 'string' || typeof rawValue !== 'string') return;
+
+    const circuit = parseCircuit(input.circuit);
+    if (circuit == null) return;
+
+    // Apply the same coercion the dispatcher applies — otherwise the
+    // pre-synth text would drift from the bundler's post-coercion text
+    // (e.g. "polarity confirmed true" vs "polarity confirmed Y"),
+    // producing a parity_mismatch + cache MISS at iOS POST time.
+    const value = coerceRecordReadingValue(field, rawValue);
+
+    _speculate({
+      field,
+      circuit,
+      boardId: typeof input.board_id === 'string' ? input.board_id : null,
+      value,
+      confidence: typeof input.confidence === 'number' ? input.confidence : 1.0,
+      turnId: ctx.turnId,
+    }).catch((err) => {
+      // _speculate already swallows synth errors internally; this
+      // catch is belt-and-braces for any sync-throw before the synth
+      // promise is even attached.
+      logger?.warn?.('voice_latency.loaded_barrel.streamed_speculate_error', {
+        sessionId,
+        turnId: ctx.turnId,
+        field,
+        circuit,
+        error: err?.message,
+      });
+    });
+  }
+
+  /**
    * Tear down on session_stop / WS close. Aborts every in-flight
    * controller + drops every session entry from the cache (which also
    * resolves their pending promises with null).
@@ -474,6 +550,7 @@ export function createSpeculator({
   return {
     onSnapshotPatch,
     onLoopComplete,
+    onToolUseStreamed,
     shutdown,
     _internalState: {
       get pendingCount() {

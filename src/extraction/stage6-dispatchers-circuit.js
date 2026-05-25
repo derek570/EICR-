@@ -69,7 +69,7 @@ import {
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
-import { parseBsCode } from './dialogue-engine/parsers/bs-code.js';
+import { coerceRecordReadingValue } from './record-reading-coercion.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -120,67 +120,15 @@ export async function dispatchRecordReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  // 2026-05-24 BS-EN canonicalisation (scenario bs_en_normalisation,
-  // prompt-engineering Item 1). Sonnet sometimes emits the schema-canonical
-  // form ("BS EN 60898"), sometimes drops the "EN" prefix ("BS 60898"),
-  // sometimes emits bare digits ("60898") despite explicit prompt
-  // guidance to use the schema-canonical string. The dialogue-engine
-  // parseBsCode already knows every reasonable variant + the Levenshtein-1
-  // fallback for Deepgram digit drift, so route every ocpd_bs_en /
-  // rcd_bs_en write through it and accept the canonical it returns.
-  // Pass-through (parseBsCode → null) preserves the raw value so a
-  // legitimately new form surfaces as a divergence rather than getting
-  // silently coerced to "".
-  if (
-    typeof input.value === 'string' &&
-    (input.field === 'ocpd_bs_en' || input.field === 'rcd_bs_en')
-  ) {
-    const canonical = parseBsCode(input.value);
-    if (canonical) input.value = canonical;
-  }
-
-  // 2026-05-24 polarity_confirmed canonicalisation (scenario
-  // normal_polarity, prompt-engineering Item 4). Sonnet sometimes emits
-  // boolean-ish strings ("true"/"false") or English aliases
-  // ("correct"/"reversed"/"good") for polarity_confirmed despite the
-  // schema enum {"", "OK", "Y", "N"} and the prompt's explicit
-  // value-coercion guidance. The prompt nudge in isolation lands 0/3
-  // for a bare "polarity confirmed" utterance; this dispatcher coercion
-  // is the structural backstop so the cert never carries an off-enum
-  // value. Out-of-enum noise we don't recognise passes through so a
-  // future divergence still surfaces visibly rather than getting
-  // silently dropped to "".
-  if (
-    typeof input.value === 'string' &&
-    (input.field === 'polarity_confirmed' || input.field === 'supply_polarity_confirmed')
-  ) {
-    const v = input.value.trim().toLowerCase();
-    if (
-      v === 'true' ||
-      v === 'yes' ||
-      v === 'y' ||
-      v === 'correct' ||
-      v === 'pass' ||
-      v === 'passed' ||
-      v === 'good' ||
-      v === 'confirmed'
-    ) {
-      input.value = 'Y';
-    } else if (
-      v === 'false' ||
-      v === 'no' ||
-      v === 'n' ||
-      v === 'reversed' ||
-      v === 'fail' ||
-      v === 'failed' ||
-      v === 'incorrect' ||
-      v === 'wrong'
-    ) {
-      input.value = 'N';
-    } else if (v === 'ok') {
-      input.value = 'OK';
-    }
-  }
+  // 2026-05-24 value canonicalisation — routes both BS-EN (ocpd_bs_en /
+  // rcd_bs_en, via parseBsCode + Levenshtein-1 fallback) AND
+  // polarity_confirmed/supply_polarity_confirmed (enum coercion to
+  // Y/N/OK) through a single helper. Same helper used by the Loaded
+  // Barrel speculator's streamed-tool hook (record-reading-coercion.js)
+  // so dispatcher and pre-synth agree on the post-coercion value —
+  // otherwise speculator-text would drift from bundler-text on these
+  // fields, defeating the cache HIT path.
+  input.value = coerceRecordReadingValue(input.field, input.value);
 
   applyReadingFlagAware(session.stateSnapshot, {
     circuit: input.circuit,

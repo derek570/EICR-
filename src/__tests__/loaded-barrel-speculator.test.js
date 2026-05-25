@@ -629,3 +629,152 @@ describe('shutdown', () => {
     expect(peek(key)).toBe(null);
   });
 });
+
+// Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook tests.
+// Fires from inside runToolLoop's per-round stream loop, BEFORE the
+// post-stream dispatcher runs. The speculator must begin pre-synth
+// against the streamed input (with coercion applied) so multi-tool
+// turns get a head start.
+describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
+  /** Helper to build the streamed-hook event shape for a single tool_use. */
+  function streamedEvent({ field, circuit, value, boardId, confidence = 1.0, turnId = 'T1' }) {
+    return {
+      record: {
+        index: 0,
+        tool_call_id: 'tc_stream_1',
+        name: 'record_reading',
+        input: {
+          field,
+          circuit,
+          value,
+          confidence,
+          source_turn_id: turnId,
+          ...(boardId != null ? { board_id: boardId } : {}),
+        },
+      },
+      ctx: { sessionId: 'S', turnId, roundIdx: 1 },
+    };
+  }
+
+  test('record_reading streamed → begins pre-synth before any onSnapshotPatch fires', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed(streamedEvent({ field: 'measured_zs_ohm', circuit: 1, value: '0.5' }));
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(synths).toHaveLength(1);
+    // Same expanded text as the onSnapshotPatch happy-path test —
+    // proving speculator-text is identical regardless of which hook
+    // fires it (parity invariant for HIT path).
+    expect(synths[0].text).toBe('Circuit 1, zed S zero point five');
+  });
+
+  test('later onSnapshotPatch for the same slot DOES NOT double-synth (dedup via cachePeek)', async () => {
+    const { factory } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed(streamedEvent({ field: 'measured_zs_ohm', circuit: 1, value: '0.5' }));
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(1);
+    // Simulate the post-stream dispatch firing onSnapshotPatch for the
+    // SAME slot. The speculator's cachePeek should find the in-flight
+    // entry and bail.
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'measured_zs_ohm', circuit: 1, boardId: null, value: '0.5' })
+    );
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  test('ocpd_bs_en streamed → coercion applies but field is not in CONFIRMATION_FRIENDLY_NAMES so no synth fires (parity with bundler)', async () => {
+    // ocpd_bs_en intentionally has no friendly-name entry — confirmation
+    // TTS isn't generated for BS-EN dictation today. The streamed hook
+    // should respect the same gate. Test pins the shared-coercion call
+    // happens (i.e. doesn't throw on BS-EN field) but no synth is opened.
+    const { factory } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed(streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'BS 60898' }));
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(0);
+  });
+
+  test('polarity_confirmed="true" coerced to "Y" before pre-synth (matches dispatcher)', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed(
+      streamedEvent({ field: 'polarity_confirmed', circuit: 1, value: 'true' })
+    );
+    await flush();
+    // "Y" produces a non-null confirmation; raw "true" would not.
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(synths[0].text).toBeTruthy();
+  });
+
+  test('non-record_reading records (observation, ask_user, etc.) are silently skipped', async () => {
+    const { factory } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed({
+      record: {
+        index: 0,
+        tool_call_id: 'tc_obs',
+        name: 'record_observation',
+        input: { code: 'C2', location: 'kitchen', text: 'broken socket' },
+      },
+      ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+    });
+    spec.onToolUseStreamed({
+      record: {
+        index: 1,
+        tool_call_id: 'tc_ask',
+        name: 'ask_user',
+        input: { question: 'which circuit?', reason: 'missing_context' },
+      },
+      ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+    });
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(0);
+  });
+
+  test('error-shaped records (invalid_json from assembler) are silently skipped', async () => {
+    const { factory } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed({
+      record: {
+        index: 0,
+        tool_call_id: 'tc_bad',
+        name: 'record_reading',
+        error: 'invalid_json',
+        raw_partial: '{not valid',
+      },
+      ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+    });
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(0);
+  });
+
+  test('non-string circuit (null / undefined / non-integer) silently skipped', async () => {
+    const { factory } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed({
+      record: {
+        index: 0,
+        tool_call_id: 'tc_null',
+        name: 'record_reading',
+        input: { field: 'measured_zs_ohm', circuit: null, value: '0.5', confidence: 1.0 },
+      },
+      ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+    });
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(0);
+  });
+
+  test('three streamed record_readings in one turn → first two synth, third hits per-turn cap', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed(streamedEvent({ field: 'measured_zs_ohm', circuit: 1, value: '0.1' }));
+    spec.onToolUseStreamed(streamedEvent({ field: 'measured_zs_ohm', circuit: 2, value: '0.2' }));
+    spec.onToolUseStreamed(streamedEvent({ field: 'measured_zs_ohm', circuit: 3, value: '0.3' }));
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(synths).toHaveLength(2);
+  });
+});

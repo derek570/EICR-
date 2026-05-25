@@ -229,11 +229,43 @@ describe('stage6-stream-assembler', () => {
       // is no tool_result pairing id_B. Anthropic rejects that with a 400.
       const log = { warn: jest.fn() };
       const asm = createAssembler({ logger: log });
-      asm.handle({ type: 'message_start', message: { id: 'm1', role: 'assistant', content: [], model: 'claude-sonnet-4-6', stop_reason: null } });
-      asm.handle({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_A', name: 'record_reading', input: {} } });
-      asm.handle({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_B', name: 'record_reading', input: {} } });
-      asm.handle({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"field":"measured_zs_ohm","circuit":1,"value":"0.43","confidence":0.95,"source_turn_id":"t"}' } });
-      asm.handle({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"field":"measured_zs_ohm","circuit":2,' } }); // truncated mid-JSON
+      asm.handle({
+        type: 'message_start',
+        message: {
+          id: 'm1',
+          role: 'assistant',
+          content: [],
+          model: 'claude-sonnet-4-6',
+          stop_reason: null,
+        },
+      });
+      asm.handle({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_A', name: 'record_reading', input: {} },
+      });
+      asm.handle({
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'tool_use', id: 'toolu_B', name: 'record_reading', input: {} },
+      });
+      asm.handle({
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'input_json_delta',
+          partial_json:
+            '{"field":"measured_zs_ohm","circuit":1,"value":"0.43","confidence":0.95,"source_turn_id":"t"}',
+        },
+      });
+      asm.handle({
+        type: 'content_block_delta',
+        index: 1,
+        delta: {
+          type: 'input_json_delta',
+          partial_json: '{"field":"measured_zs_ohm","circuit":2,',
+        },
+      }); // truncated mid-JSON
       asm.handle({ type: 'content_block_stop', index: 0 });
       // NO content_block_stop for index 1 — simulates mid-stream truncation.
       const { records, stop_reason } = asm.finalize();
@@ -242,7 +274,13 @@ describe('stage6-stream-assembler', () => {
       // Index 0 finished cleanly.
       expect(records[0].index).toBe(0);
       expect(records[0].tool_call_id).toBe('toolu_A');
-      expect(records[0].input).toEqual({ field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.95, source_turn_id: 't' });
+      expect(records[0].input).toEqual({
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        value: '0.43',
+        confidence: 0.95,
+        source_turn_id: 't',
+      });
       expect(records[0].error).toBeUndefined();
       // Index 1 was flushed as an incomplete_stream error record with its
       // real tool_call_id preserved so the loop can emit a synthetic
@@ -263,8 +301,16 @@ describe('stage6-stream-assembler', () => {
       // subsequent finalize() must not re-flush (would produce dupes) and
       // must still return the same records.
       const asm = createAssembler();
-      asm.handle({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_X', name: 'record_reading', input: {} } });
-      asm.handle({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"partial":' } });
+      asm.handle({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_X', name: 'record_reading', input: {} },
+      });
+      asm.handle({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"partial":' },
+      });
       const first = asm.finalize();
       const second = asm.finalize();
       expect(first.records).toHaveLength(1);
@@ -283,6 +329,146 @@ describe('stage6-stream-assembler', () => {
       const { records } = asm.finalize();
       expect(records[0].input).not.toEqual({});
       expect(records[0].input.field).toBe('measured_zs_ohm');
+    });
+  });
+
+  // Loaded Barrel Phase 2.D (2026-05-25) — onRecordComplete callback
+  describe('onRecordComplete callback (Phase 2.D streamed-speculation hook)', () => {
+    it('fires once per tool_use as each content_block_stop arrives, before message_stop', () => {
+      const onRecordComplete = jest.fn();
+      const asm = createAssembler({ onRecordComplete });
+      const events = loadFixture('multiple-tools.json');
+
+      // Track callback invocations relative to event index so we can
+      // assert the hook fires AT THE content_block_stop event, not at
+      // message_stop or finalize() time.
+      const fireOrder = [];
+      const originalMock = onRecordComplete.getMockImplementation();
+      onRecordComplete.mockImplementation((rec) => {
+        fireOrder.push({ eventsConsumed: consumedSoFar, record: rec });
+        if (originalMock) originalMock(rec);
+      });
+
+      let consumedSoFar = 0;
+      for (const ev of events) {
+        consumedSoFar += 1;
+        asm.handle(ev);
+      }
+
+      // multi-blocks fixture has 3 tool_use blocks. The hook should fire
+      // exactly 3 times.
+      expect(onRecordComplete).toHaveBeenCalledTimes(3);
+
+      // The first fire arrives BEFORE message_stop is consumed.
+      const messageStopIdx = events.findIndex((e) => e.type === 'message_stop');
+      expect(fireOrder[0].eventsConsumed).toBeLessThan(messageStopIdx + 1);
+
+      // Each fire receives the same record shape that ends up in records[].
+      const { records } = asm.finalize();
+      expect(records).toHaveLength(3);
+      for (let i = 0; i < 3; i++) {
+        const calledWith = onRecordComplete.mock.calls[i][0];
+        expect(calledWith.tool_call_id).toBeTruthy();
+        expect(typeof calledWith.name).toBe('string');
+        expect(calledWith.error).toBeUndefined();
+      }
+    });
+
+    it('passes error-shaped records on JSON parse failure (assembler error path)', () => {
+      const onRecordComplete = jest.fn();
+      const asm = createAssembler({ onRecordComplete });
+      asm.handle({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_bad', name: 'record_reading', input: {} },
+      });
+      asm.handle({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{not valid json' },
+      });
+      asm.handle({ type: 'content_block_stop', index: 0 });
+
+      expect(onRecordComplete).toHaveBeenCalledTimes(1);
+      const record = onRecordComplete.mock.calls[0][0];
+      expect(record.tool_call_id).toBe('toolu_bad');
+      expect(record.error).toBe('invalid_json');
+      expect(record.raw_partial).toBe('{not valid json');
+      expect(record.input).toBeUndefined();
+    });
+
+    it('swallows hook exceptions and logs warn (assembler contract: no observable side effect from hook errors)', () => {
+      const log = { warn: jest.fn() };
+      const onRecordComplete = jest.fn(() => {
+        throw new Error('boom');
+      });
+      const asm = createAssembler({ logger: log, onRecordComplete });
+      asm.handle({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_X', name: 'record_reading', input: {} },
+      });
+      asm.handle({
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'input_json_delta',
+          partial_json:
+            '{"field":"measured_zs_ohm","circuit":1,"value":"0.4","confidence":0.9,"source_turn_id":"t"}',
+        },
+      });
+      // Must NOT throw despite the callback throwing.
+      expect(() => asm.handle({ type: 'content_block_stop', index: 0 })).not.toThrow();
+      // Warning logged with the assembler's contract message name.
+      expect(log.warn).toHaveBeenCalledWith(
+        'stage6.assembler.on_record_complete_error',
+        expect.objectContaining({ tool_call_id: 'toolu_X', error: 'boom' })
+      );
+      // Record still landed in completed[] — hook failure doesn't lose data.
+      const { records } = asm.finalize();
+      expect(records).toHaveLength(1);
+      expect(records[0].tool_call_id).toBe('toolu_X');
+    });
+
+    it('does not fire when content_block_stop closes a text block (only tool_use blocks)', () => {
+      const onRecordComplete = jest.fn();
+      const asm = createAssembler({ onRecordComplete });
+      // A text block has no entry in the assemblers map — content_block_stop
+      // for it is a no-op. Hook must not fire.
+      asm.handle({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      });
+      asm.handle({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hello' },
+      });
+      asm.handle({ type: 'content_block_stop', index: 0 });
+      expect(onRecordComplete).not.toHaveBeenCalled();
+    });
+
+    it('default omitted = no-op (existing callers see byte-identical behaviour)', () => {
+      // Pin the default-omitted contract — runFixture's existing tests
+      // already do this implicitly, but assert explicitly that a no-arg
+      // createAssembler doesn't crash when content_block_stop fires.
+      const asm = createAssembler();
+      asm.handle({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_Y', name: 'record_reading', input: {} },
+      });
+      asm.handle({
+        type: 'content_block_delta',
+        index: 0,
+        delta: {
+          type: 'input_json_delta',
+          partial_json:
+            '{"field":"measured_zs_ohm","circuit":1,"value":"0.4","confidence":0.9,"source_turn_id":"t"}',
+        },
+      });
+      expect(() => asm.handle({ type: 'content_block_stop', index: 0 })).not.toThrow();
     });
   });
 });

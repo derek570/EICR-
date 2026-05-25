@@ -327,6 +327,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       perTurnWritesRef: speculator ? () => perTurnWrites : undefined,
       onSnapshotPatch: speculator?.onSnapshotPatch,
       onLoopComplete: speculator?.onLoopComplete,
+      // Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook. Fires
+      // INSIDE the per-round stream loop as each tool_use's
+      // content_block_stop arrives, so the speculator can begin
+      // ElevenLabs pre-synth while Sonnet is still streaming subsequent
+      // tool_use blocks. Multi-tool turns save ~hundreds of ms per
+      // tool. Dedup via cachePeek inside _speculate ensures the
+      // onSnapshotPatch fire that arrives later doesn't double-synth.
+      onToolUseStreamed: speculator?.onToolUseStreamed,
     });
   } catch (err) {
     askGateForTurn?.destroy();

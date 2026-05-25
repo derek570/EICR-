@@ -462,3 +462,134 @@ describe('runToolLoop + onLoopComplete — integration', () => {
     );
   });
 });
+
+// Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook integration.
+// Fires from inside the for-await loop as each tool_use's
+// content_block_stop arrives — BEFORE message_stop and BEFORE the
+// post-stream dispatch loop runs. The hook lets the speculator start
+// ElevenLabs pre-synth in parallel with Sonnet's continued streaming.
+describe('runToolLoop + onToolUseStreamed — integration', () => {
+  test('hook fires once per tool_use as content_block_stop arrives in the per-round stream', async () => {
+    const dispatcher = jest.fn(async (call) => ({
+      tool_use_id: call.tool_call_id,
+      content: JSON.stringify({ ok: true }),
+      is_error: false,
+    }));
+    const streamed = [];
+    const onToolUseStreamed = jest.fn((evt) => streamed.push(evt));
+
+    const client = makeTwoRoundClient({
+      toolCalls: [
+        {
+          id: 't1_a',
+          name: 'record_reading',
+          input: { field: 'measured_zs_ohm', circuit: 1, value: '0.5' },
+        },
+        {
+          id: 't1_b',
+          name: 'record_reading',
+          input: { field: 'r1_r2_ohm', circuit: 2, value: '0.6' },
+        },
+        {
+          id: 't1_c',
+          name: 'record_reading',
+          input: { field: 'polarity_confirmed', circuit: 3, value: 'true' },
+        },
+      ],
+    });
+
+    await runToolLoop({
+      client,
+      model: 'm',
+      system: 's',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      dispatcher,
+      ctx: { sessionId: 'S', turnId: 'T' },
+      onToolUseStreamed,
+    });
+
+    // Three tool_uses → three streamed-hook fires.
+    expect(onToolUseStreamed).toHaveBeenCalledTimes(3);
+    expect(streamed[0].record.tool_call_id).toBe('t1_a');
+    expect(streamed[0].record.name).toBe('record_reading');
+    expect(streamed[0].record.input).toEqual({
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      value: '0.5',
+    });
+    expect(streamed[0].ctx).toEqual({ sessionId: 'S', turnId: 'T', roundIdx: 1 });
+    expect(streamed[1].record.tool_call_id).toBe('t1_b');
+    expect(streamed[2].record.input.field).toBe('polarity_confirmed');
+    // Dispatcher still runs after the stream (existing behaviour preserved).
+    expect(dispatcher).toHaveBeenCalledTimes(3);
+  });
+
+  test('hook throw is caught + logged, does NOT break the loop', async () => {
+    const dispatcher = jest.fn(async (call) => ({
+      tool_use_id: call.tool_call_id,
+      content: JSON.stringify({ ok: true }),
+      is_error: false,
+    }));
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const onToolUseStreamed = jest.fn(() => {
+      throw new Error('speculator boom');
+    });
+    const client = makeTwoRoundClient({
+      toolCalls: [
+        { id: 't1', name: 'record_reading', input: { field: 'X', circuit: 1, value: '1' } },
+      ],
+    });
+
+    const out = await runToolLoop({
+      client,
+      model: 'm',
+      system: 's',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      dispatcher,
+      ctx: { sessionId: 'S', turnId: 'T' },
+      logger,
+      onToolUseStreamed,
+    });
+
+    expect(out.stop_reason).toBe('end_turn');
+    // The assembler's own warn (on_record_complete_error) catches the
+    // synchronous throw from the callback before the tool-loop's
+    // outer error path sees it — pin either log surface, whichever
+    // fires first.
+    const allCalls = [...logger.warn.mock.calls, ...logger.error.mock.calls];
+    const errorMsg = JSON.stringify(allCalls);
+    expect(errorMsg).toContain('speculator boom');
+    // Dispatcher still ran despite the streamed hook throwing.
+    expect(dispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  test('hook omitted → byte-identical behaviour to pre-Phase-2.D (no streamed callback at all)', async () => {
+    const dispatcher = jest.fn(async (call) => ({
+      tool_use_id: call.tool_call_id,
+      content: JSON.stringify({ ok: true }),
+      is_error: false,
+    }));
+
+    const client = makeTwoRoundClient({
+      toolCalls: [
+        { id: 't1', name: 'record_reading', input: { field: 'X', circuit: 1, value: '1' } },
+      ],
+    });
+
+    const out = await runToolLoop({
+      client,
+      model: 'm',
+      system: 's',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      dispatcher,
+      ctx: { sessionId: 'S', turnId: 'T' },
+      // onToolUseStreamed intentionally omitted.
+    });
+
+    expect(out.stop_reason).toBe('end_turn');
+    expect(dispatcher).toHaveBeenCalledTimes(1);
+  });
+});

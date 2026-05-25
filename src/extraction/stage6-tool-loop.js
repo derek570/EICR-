@@ -312,6 +312,29 @@ export async function runToolLoop({
    * A throw is caught + logged; never affects the return value.
    */
   onLoopComplete,
+  /**
+   * Loaded Barrel Phase 2.D (2026-05-25) — fires INSIDE the per-round
+   * stream loop, the moment each tool_use's `content_block_stop`
+   * arrives and the assembler has a complete record. Lets the
+   * speculator begin ElevenLabs pre-synth while Sonnet is still
+   * emitting subsequent tool_use blocks in the same response. For
+   * multi-tool turns (e.g. "32 amp B-curve MCB BS-EN 60898" producing
+   * three record_reading calls) the second/third tools' pre-synth
+   * starts ~hundreds of ms earlier than the dispatch-driven
+   * onSnapshotPatch path. Signature:
+   *
+   *   ({record, ctx}) => void
+   *
+   * `record` is the assembler's finalised record (happy-path:
+   * `{index, tool_call_id, name, input}`; error path:
+   * `{index, tool_call_id, name, error, raw_partial}`).
+   * `ctx` mirrors onSnapshotPatch — `{sessionId, turnId, roundIdx}`.
+   *
+   * A throw is caught + logged by the assembler; never affects the
+   * stream or the dispatch loop. Default omitted = byte-identical
+   * to pre-Phase-2.D behaviour.
+   */
+  onToolUseStreamed,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -350,7 +373,35 @@ export async function runToolLoop({
       tools,
     });
 
-    const asm = createAssembler({ logger });
+    // Loaded Barrel Phase 2.D (2026-05-25) — pipe each finalised
+    // tool_use record into the speculator's streamed hook the moment
+    // its content_block_stop fires. The hook fires from inside
+    // assembler.handle(); the for-await loop above is unchanged. We
+    // capture the closure's roundIdx so the speculator's telemetry
+    // can correlate streamed-fire vs dispatch-time-fire.
+    const streamedHook =
+      typeof onToolUseStreamed === 'function'
+        ? (record) => {
+            try {
+              onToolUseStreamed({
+                record,
+                ctx: {
+                  sessionId: ctx?.sessionId,
+                  turnId: ctx?.turnId,
+                  roundIdx: rounds,
+                },
+              });
+            } catch (err) {
+              logger?.error?.('stage6.tool_loop_streamed_hook_error', {
+                sessionId: ctx?.sessionId,
+                turnId: ctx?.turnId,
+                tool_name: record?.name,
+                error: err?.message,
+              });
+            }
+          }
+        : undefined;
+    const asm = createAssembler({ logger, onRecordComplete: streamedHook });
     for await (const ev of stream) {
       asm.handle(ev);
     }
