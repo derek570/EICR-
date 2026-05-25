@@ -85,19 +85,30 @@ const VOLTAGE_PROMPT = 'What was the test voltage?';
  *
  * Garbled Deepgram variants of "resistance" tolerated up to similar shape.
  *
- * Head-word alternation `(?:insulation|installation)` (2026-04-29, session
- * 6754FE6E): Deepgram routinely mishears "insulation" as "installation"
- * — both end in "-stallation"-shaped acoustics and "installation
- * resistance" is a phrase the model favours from training data. Without
- * this alternation, the IR script never enters and the IR walk-through
- * is skipped entirely (the failure mode that left a half-filled IR row
- * in session 6754FE6E). Acceptable false-positive surface: someone
- * narrating about an actual installation alongside the word "resistance"
- * — vanishingly unlikely in mid-test dictation.
+ * Head-word alternation `(?:insulation|installation|international)`
+ * (2026-04-29 added `installation`, session 6754FE6E; 2026-05-25 added
+ * `international`, session 87D33579): Deepgram routinely mishears
+ * "insulation" as either "installation" (training-data favouring) or
+ * "International" (initial-syllable confusion — "insul-" and "intern-"
+ * share the same fricative+nasal opening). Both end in a "-ation"
+ * shape and the meter+"resistance" trailer biases Deepgram's word
+ * model toward these high-frequency English words. Without all three
+ * variants in the alternation, the IR script never enters and the IR
+ * walk-through is skipped — the failure mode that:
+ *   - 2026-04-29 left a half-filled IR row in session 6754FE6E
+ *   - 2026-05-25 left ZERO IR fields filled in session 87D33579
+ *     ("International resistance for the clicker is greater than 299
+ *     MΩ on the live to live" — both the head-word AND the circuit
+ *     name were garbled; Sonnet fell back to circuit disambiguation
+ *     and the session ended before any IR data was recorded).
+ *
+ * Acceptable false-positive surface: someone narrating about an
+ * actual international standard or installation alongside the word
+ * "resistance" — vanishingly unlikely in mid-test dictation.
  */
 const IR_ENTRY_PATTERNS = [
-  // 1. Full: "insulation/installation resistance" + optional "circuit N"
-  /\b(?:insulation|installation)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  // 1. Full: "insulation/installation/international resistance" + optional "circuit N"
+  /\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // 2. Terse: "IR for circuit N" — requires "circuit N" trailer.
   /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];

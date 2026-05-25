@@ -826,6 +826,83 @@ describe('"installation" Deepgram garbling tolerance', () => {
 });
 
 // ---------------------------------------------------------------------------
+// "international" Deepgram garbling tolerance (2026-05-25, session 87D33579)
+// ---------------------------------------------------------------------------
+//
+// Second-generation IR head-word garble: Deepgram mishears "insulation"
+// as "International" (initial-syllable confusion — both start with the
+// fricative+nasal /ɪn-/ opening and end in "-ation"). Documented as the
+// root cause of session 87D33579 (2026-05-25) leaving ZERO IR fields
+// filled when the inspector said "Insulation resistance for the cooker
+// is greater than 299 MΩ on the live to live" but Deepgram returned
+// "International resistance for the clicker is greater than 299..." The
+// head-word miss meant `detectEntry` returned `{matched: false}`,
+// Sonnet fell back to circuit disambiguation ("Which circuit is the
+// clicker?"), and the session ended ~23s later before any IR data
+// could be recorded.
+//
+// Mirror of the 2026-04-29 "installation" fix — same shape, same risk
+// surface, same false-positive analysis. The IR script is gated on the
+// "resistance" trailer so generic uses of "international" in normal
+// speech don't trip it.
+describe('"international" Deepgram garbling tolerance', () => {
+  test('detectEntry accepts "international resistance for circuit 3"', () => {
+    expect(detectEntry('International resistance for circuit 3.')).toEqual({
+      matched: true,
+      circuit_ref: 3,
+    });
+  });
+
+  test('detectEntry accepts "international resistance" without circuit', () => {
+    expect(detectEntry('International resistance.')).toEqual({
+      matched: true,
+      circuit_ref: null,
+    });
+  });
+
+  test('detectEntry accepts the full session 87D33579 transcript verbatim', () => {
+    // Exact transcript from CloudWatch event 2026-05-25T15:36:35:
+    //   "International resistance for the clicker is greater than 299 MΩ
+    //    on the live to l[ive]"
+    // The clicker garble of "cooker" is separate — circuit naming is
+    // Sonnet's problem; what matters here is that the IR script DOES
+    // match the head word so the walk-through enters and the inspector
+    // gets prompted for follow-ups.
+    expect(
+      detectEntry(
+        'International resistance for the clicker is greater than 299 MΩ on the live to live'
+      ).matched
+    ).toBe(true);
+  });
+
+  test('"international standard for resistance" does NOT match — needs adjacent "resistance" trailer', () => {
+    // False-positive guard: the regex requires the resistance word to
+    // immediately follow the head word (with only whitespace between),
+    // so "international standard for resistance" — distinct topic — won't
+    // accidentally enter the IR script. Confirms the alternation widening
+    // didn't inadvertently broaden the trigger surface.
+    expect(detectEntry('international standard for resistance').matched).toBe(false);
+  });
+
+  test('full session repro — "international resistance for upstairs sockets" enters and resolves', () => {
+    const session = buildSession({
+      2: { designation: 'Upstairs Sockets' },
+    });
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'International resistance for upstairs sockets.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.insulationResistanceScript.circuit_ref).toBe(2);
+    expect(ws.sent[0].context_field).toBe('ir_live_live_mohm');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // "LIM" / "Limitation" must NOT parse as a value.
 // ---------------------------------------------------------------------------
 //
