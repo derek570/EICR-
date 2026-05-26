@@ -216,8 +216,12 @@ describe('EICRExtractionSession', () => {
 
     test('should include regex results when provided', () => {
       const msg = session.buildUserMessage('Zs 0.35', [{ field: 'zs', value: '0.35' }]);
-      expect(msg).toContain('Regex pre-filled fields');
+      // 2026-05-26 — buildUserMessage phrasing swap (VOICE_REGEX_PRE_APPLY).
+      // Field name still appears; the wrapping prose is now imperative
+      // ("DO NOT extract") rather than "confirm or correct". Phrasing-mode
+      // coverage lives in eicr-extraction-session.snapshot-refactor.test.js.
       expect(msg).toContain('zs');
+      expect(msg).toMatch(/DO NOT extract|Regex pre-filled fields/);
     });
 
     // The next four tests assert the OFF-mode buildUserMessage shape —
