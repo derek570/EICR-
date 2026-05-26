@@ -1873,7 +1873,34 @@ export class EICRExtractionSession {
     const parts = [];
     parts.push(`NEW utterance: ${transcriptText}`);
     if (regexResults && regexResults.length > 0) {
-      parts.push(`Regex pre-filled fields (confirm or correct): ${JSON.stringify(regexResults)}`);
+      // 2026-05-26 — VOICE_REGEX_PRE_APPLY swap.
+      // Pre-2026-05-26 phrasing was "Regex pre-filled fields (confirm or
+      // correct)" + the full JSON array of every regex hit. That prompted
+      // Sonnet to emit defensive `record_reading` tool calls for the same
+      // fields iOS had already written — Sonnet's interpretation of "confirm"
+      // was almost always to re-emit the value, costing ~50–100 output
+      // tokens per duplicate write × ~10 regex turns per session.
+      //
+      // New phrasing is imperative ("DO NOT extract or emit a tool call"),
+      // names the fields without the full JSON payload (cheaper cache key),
+      // and explicitly invites Sonnet to focus on what it CAN still add
+      // (observations, additional readings, corrections). Field values reach
+      // the snapshot via the next `job_state_update` from iOS — Sonnet
+      // doesn't need to re-extract them. The flag exists so a regression
+      // can be rolled back via the ECS task-def without a code change.
+      const usePreApply = process.env.VOICE_REGEX_PRE_APPLY !== 'false';
+      if (usePreApply) {
+        const fieldNames = regexResults
+          .map((r) => (r && typeof r.field === 'string' ? r.field : null))
+          .filter((f) => f !== null);
+        if (fieldNames.length > 0) {
+          parts.push(
+            `Inspector's app already wrote these fields from this utterance — DO NOT extract them or emit a record_reading / set_field tool call for any of them. The next job_state_update will reflect the values. Focus only on anything ELSE in the utterance (observations, additional readings on other fields, explicit corrections): ${fieldNames.join(', ')}`
+          );
+        }
+      } else {
+        parts.push(`Regex pre-filled fields (confirm or correct): ${JSON.stringify(regexResults)}`);
+      }
     }
     if (postcodeLookup) {
       if (postcodeLookup.valid) {

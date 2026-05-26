@@ -317,6 +317,83 @@ describe('Plan 04-02 — buildUserMessage per-turn minimalism in non-off mode', 
 });
 
 // ---------------------------------------------------------------------------
+// 2026-05-26 — VOICE_REGEX_PRE_APPLY swap in buildUserMessage.
+//
+// Pre-swap phrasing "Regex pre-filled fields (confirm or correct)" invited
+// Sonnet to re-emit record_reading for fields iOS regex had already written.
+// Swap replaces it with imperative phrasing that explicitly tells Sonnet
+// not to extract those fields, listing names only (no JSON payload), and
+// invites focus on observations / corrections.
+// ---------------------------------------------------------------------------
+describe('VOICE_REGEX_PRE_APPLY — regex hint phrasing swap', () => {
+  const originalFlag = process.env.VOICE_REGEX_PRE_APPLY;
+  afterEach(() => {
+    if (originalFlag === undefined) {
+      delete process.env.VOICE_REGEX_PRE_APPLY;
+    } else {
+      process.env.VOICE_REGEX_PRE_APPLY = originalFlag;
+    }
+  });
+
+  test('default (flag absent → enabled): imperative phrasing, field names only', () => {
+    delete process.env.VOICE_REGEX_PRE_APPLY;
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
+    const msg = s.buildUserMessage('rear heater r1 plus r2 is 0.24', [
+      { field: 'circuits.3.r1_r2_ohm' },
+      { field: 'supply.polarity' },
+    ]);
+    expect(msg).toContain("Inspector's app already wrote these fields");
+    expect(msg).toContain('DO NOT extract');
+    expect(msg).toContain('circuits.3.r1_r2_ohm');
+    expect(msg).toContain('supply.polarity');
+    // Legacy phrasing must not appear when the swap is on.
+    expect(msg).not.toContain('Regex pre-filled fields (confirm or correct)');
+    // Full JSON payload no longer leaks into the prompt.
+    expect(msg).not.toContain('"field":"circuits.3.r1_r2_ohm"');
+  });
+
+  test('flag explicitly true: same behaviour as default', () => {
+    process.env.VOICE_REGEX_PRE_APPLY = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
+    const msg = s.buildUserMessage('test', [{ field: 'circuits.1.zs_ohm' }]);
+    expect(msg).toContain('DO NOT extract');
+    expect(msg).toContain('circuits.1.zs_ohm');
+  });
+
+  test('flag false: legacy "confirm or correct" phrasing restored', () => {
+    process.env.VOICE_REGEX_PRE_APPLY = 'false';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
+    const msg = s.buildUserMessage('test', [{ field: 'circuits.1.zs_ohm' }]);
+    expect(msg).toContain('Regex pre-filled fields (confirm or correct)');
+    expect(msg).not.toContain("Inspector's app already wrote");
+  });
+
+  test('empty regexResults: neither phrasing appears (both modes)', () => {
+    process.env.VOICE_REGEX_PRE_APPLY = 'true';
+    const sOn = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
+    expect(sOn.buildUserMessage('test', [])).not.toContain("Inspector's app");
+    expect(sOn.buildUserMessage('test', [])).not.toContain('Regex pre-filled');
+    process.env.VOICE_REGEX_PRE_APPLY = 'false';
+    const sOff = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
+    expect(sOff.buildUserMessage('test', [])).not.toContain('Regex pre-filled');
+  });
+
+  test('malformed regexResults entry without field is filtered out (no crash, no garbage)', () => {
+    process.env.VOICE_REGEX_PRE_APPLY = 'true';
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'live' });
+    const msg = s.buildUserMessage('test', [
+      { field: 'circuits.1.zs_ohm' },
+      { notAField: 'oops' },
+      null,
+      { field: 42 }, // wrong type
+    ]);
+    expect(msg).toContain('circuits.1.zs_ohm');
+    expect(msg).not.toContain('oops');
+    expect(msg).not.toContain('42');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Plan 04-08 (r2-#1) — cached-prefix digest regression.
 //
 // WHY THIS GROUP EXISTS: Codex r2 (2026-04-23) found that Plan 04-02's
