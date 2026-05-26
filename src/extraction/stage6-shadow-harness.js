@@ -99,6 +99,7 @@ import {
   tryEnterScriptFromWrites,
   ALL_DIALOGUE_SCHEMAS,
 } from './dialogue-engine/index.js';
+import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 
 /**
  * Sonnet model literal used by shadow-mode tool loop. Mirrors the literal at
@@ -591,6 +592,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ws,
           schemas: ALL_DIALOGUE_SCHEMAS,
           readings: result.extracted_readings,
+          // FIELD_CORRECTIONS lets the hook resolve Sonnet's canonical
+          // names (e.g. `rcd_time_ms`) to schema slot names (e.g.
+          // `rcd_trip_time`). validateAndCorrectFields rewrites the
+          // wire field names later in sonnet-stream.js — too late for
+          // this in-runLiveMode hook to use without the alias map.
+          // See session 904344CD turn-10 (2026-05-26) repro.
+          fieldAliases: FIELD_CORRECTIONS,
           logger: log,
         });
       } catch (e) {

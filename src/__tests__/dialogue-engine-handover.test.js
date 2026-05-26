@@ -353,6 +353,69 @@ describe('tryEnterScriptFromWrites — post-Sonnet re-entry', () => {
     expect(skipLog).toBeDefined();
   });
 
+  test('resolves field aliases — Sonnet "rcd_time_ms" enters rcdSchema via FIELD_CORRECTIONS', () => {
+    // Session 904344CD turn-10 repro (2026-05-26). Sonnet emitted
+    // `record_reading {field: 'rcd_time_ms'}` for the "I'll see the
+    // trip time for the downstairs lights is 25 ms" utterance. The
+    // RCD schema slot is `rcd_trip_time`, not `rcd_time_ms`. Without
+    // alias resolution the hook bailed; with FIELD_CORRECTIONS
+    // (rcd_time_ms → rcd_trip_time) it enters the walk-through and
+    // asks the next slot.
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: {
+        circuit_designation: 'Downstairs Lights',
+        // Simulate post-dispatch state: validateAndCorrectFields will
+        // have rewritten the field name to rcd_trip_time on the wire,
+        // but the snapshot was written via the canonical-name path
+        // already so the slot is filled under rcd_trip_time.
+        rcd_trip_time: '25',
+      },
+    });
+    const logger = makeLogger();
+
+    const out = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      // Sonnet's tool-call shape — field uses canonical Stage-6 name.
+      readings: [{ field: 'rcd_time_ms', circuit: 2, value: '25' }],
+      fieldAliases: { rcd_time_ms: 'rcd_trip_time' },
+      logger,
+      now: 2000,
+    });
+
+    expect(out).toMatchObject({ entered: true, schemaName: 'rcd', circuit_ref: 2 });
+    expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    const enteredLog = logger.events.find(
+      (e) => e.name === 'stage6.rcd_script_entered_from_sonnet_write'
+    );
+    expect(enteredLog).toBeDefined();
+    expect(enteredLog.payload.trigger_field).toBe('rcd_time_ms');
+    expect(enteredLog.payload.resolved_field).toBe('rcd_trip_time');
+  });
+
+  test('without fieldAliases, the canonical-name write still bails — preserves old behaviour', () => {
+    // Regression guard: alias resolution is OPTIONAL. Callers that
+    // don't supply fieldAliases get the pre-2026-05-26 behaviour
+    // (raw field name vs slot list, no alias lookup).
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: { circuit_designation: 'Downstairs Lights', rcd_trip_time: '25' },
+    });
+
+    const out = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'rcd_time_ms', circuit: 2, value: '25' }],
+      // fieldAliases omitted
+      now: 2000,
+    });
+
+    expect(out).toEqual({ entered: false, reason: 'no_matching_schema' });
+  });
+
   test('no-op for writes on a circuit not in the snapshot', () => {
     const ws = new FakeWS();
     const session = buildSession({ 2: {} });

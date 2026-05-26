@@ -2004,6 +2004,7 @@ export function tryEnterScriptFromWrites({
   ws,
   schemas,
   readings,
+  fieldAliases,
   logger,
   now = Date.now(),
 }) {
@@ -2018,14 +2019,38 @@ export function tryEnterScriptFromWrites({
     return { entered: false, reason: 'script_already_active' };
   }
 
+  // Resolve a Sonnet-emitted field name to the name a schema's slot
+  // list might use. Some schemas list the canonical Stage-6 wire name
+  // Sonnet emits (e.g. IR's `ir_live_live_mohm`); others list the
+  // legacy iOS-facing name (e.g. RCD's `rcd_trip_time`). The optional
+  // `fieldAliases` map (FIELD_CORRECTIONS at the call site) maps
+  // canonical → legacy. We try the raw field first, then the
+  // resolved alias, so callers don't have to know which direction
+  // any given schema chose.
+  //
+  // Repro for the alias path: session 904344CD turn-10 (2026-05-26).
+  // Sonnet emitted `record_reading {field: 'rcd_time_ms'}`. Direct
+  // slot match against rcdSchema (`rcd_trip_time`) failed; the alias
+  // lookup resolves `rcd_time_ms` → `rcd_trip_time` and the hook
+  // enters the RCD walk-through. validateAndCorrectFields rewrites
+  // the wire name post-hook so iOS still sees the legacy name.
+  const resolveCandidates = (rawField) => {
+    if (!fieldAliases || typeof fieldAliases !== 'object') return [rawField];
+    const alias = fieldAliases[rawField];
+    return alias ? [rawField, alias] : [rawField];
+  };
+
   for (const reading of readings) {
     const field = reading?.field;
     const circuitRef = Number(reading?.circuit);
     if (!field || !Number.isInteger(circuitRef) || circuitRef <= 0) continue;
 
+    const candidates = resolveCandidates(field);
+
     for (const schema of schemas) {
       const slotFields = schema.slots.map((s) => s.field);
-      if (!slotFields.includes(field)) continue;
+      const matchedField = candidates.find((c) => slotFields.includes(c));
+      if (!matchedField) continue;
 
       // Circuit must exist on the snapshot before we can read existing
       // slot values; the paused-script resume path covers the
@@ -2039,6 +2064,7 @@ export function tryEnterScriptFromWrites({
           sessionId: session.sessionId,
           circuit_ref: circuitRef,
           trigger_field: field,
+          resolved_field: matchedField,
         });
         continue;
       }
@@ -2055,6 +2081,7 @@ export function tryEnterScriptFromWrites({
         sessionId: session.sessionId,
         circuit_ref: circuitRef,
         trigger_field: field,
+        resolved_field: matchedField,
         pre_existing_filled: Object.keys(existing).filter((f) => slotFields.includes(f)),
         next_slot: next.field,
       });
