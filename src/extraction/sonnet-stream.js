@@ -54,6 +54,16 @@ import {
   drainReplayBuffer,
   shouldLogSuppression,
 } from './chitchat-pause.js';
+// Pre-LLM transcript gate (2026-05-26). Blocks single-word filler and
+// background-chatter transcripts before they cost a Sonnet round + TTS.
+// Session 33E6613D-49A7-4B42-A73B-1E2C6A82174D burnt ~£0.30 on 14 such
+// transcripts; the gate is conservative (only blocks empty / digit-free /
+// trigger-free / ≤2-content-word text) and bypasses pending asks,
+// in_response_to replies, and drained-retry replays. Telemetry:
+// voice_latency.gate_blocked. Kill-switch: VOICE_PRE_LLM_GATE=false.
+import { shouldForwardToSonnet, GATE_REASONS } from './pre-llm-gate.js';
+
+const PRE_LLM_GATE_ENABLED = process.env.VOICE_PRE_LLM_GATE !== 'false';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
 // duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
 // loss surfaced by session B107472D (06:23, 2026-04-29) where "Neutrals are."
@@ -3166,6 +3176,37 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }
       }
     };
+
+    // 2026-05-26 — pre-LLM transcript gate. Conservative rule (no digit,
+    // no trigger word, no regex hit, ≤2 distinct content words) drops
+    // single-word filler and background chatter before it costs a
+    // Sonnet round + TTS. Bypassed when there's a pending ask (the
+    // utterance might be the answer), when iOS tagged `in_response_to`,
+    // on the drained-retry path, and on chitchat-paused state (handled
+    // upstream — paused transcripts never reach handleTranscript).
+    //
+    // Block experience is silence: no canned TTS, no audio cue. If the
+    // inspector said something real the gate didn't recognise, they
+    // repeat; otherwise the agent stays quiet rather than re-asking.
+    // Skipping the gate-tick AND the extractor avoids the panic-burst
+    // pattern documented in session 33E6613D (2026-05-26).
+    const gateDecision = shouldForwardToSonnet(msg.text, {
+      regexResults: Array.isArray(msg.regexResults) ? msg.regexResults : null,
+      hasPendingAsk: entry.pendingAsks && entry.pendingAsks.size > 0,
+      inResponseTo: !!(msg.in_response_to && typeof msg.in_response_to === 'object'),
+      drainedRetry: !!msg._drainedRetry,
+      gateEnabled: PRE_LLM_GATE_ENABLED,
+    });
+    if (!gateDecision.forward) {
+      logger.info('voice_latency.gate_blocked', {
+        sessionId,
+        reason: gateDecision.reason,
+        textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
+        distinct_content_words: gateDecision.distinctContentWords ?? null,
+        had_pending_ask: entry.pendingAsks && entry.pendingAsks.size > 0,
+      });
+      return;
+    }
 
     // Plan 03-12 r13 Codex MINOR — suppress questionGate.onNewUtterance()
     // on the drained re-entry of a deferred user_moved_on transcript.

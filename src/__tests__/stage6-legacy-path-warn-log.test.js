@@ -272,7 +272,9 @@ describe('Group 1 — legacy_path_invoked fires once on off-mode legacy paths', 
     await sendFrame(ws, {
       type: 'transcript',
       utterance_id: 'utt-1',
-      text: 'arbitrary',
+      // 2026-05-26 pre-LLM gate forwards anything with a digit, so include
+      // one here; the test pins legacy-path warn behaviour, not gate logic.
+      text: 'arbitrary 1',
     });
     const warnRows = loggerWarnSpy.mock.calls.filter(isLegacyPathInvokedWarn);
     expect(warnRows.length).toBe(1);
@@ -302,7 +304,8 @@ describe('Group 1 — legacy_path_invoked fires once on off-mode legacy paths', 
     await sendFrame(ws, {
       type: 'transcript',
       utterance_id: 'utt-rev',
-      text: 'review trigger',
+      // Pre-LLM gate (2026-05-26): trigger word "circuit" so this passes.
+      text: 'circuit review trigger',
     });
     const warnRows = loggerWarnSpy.mock.calls.filter(isLegacyPathInvokedWarn);
     expect(warnRows.length).toBe(1);

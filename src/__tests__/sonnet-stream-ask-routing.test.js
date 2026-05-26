@@ -955,7 +955,9 @@ describe('Group E — runShadowHarness receives identity-preserved pendingAsks +
 
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'sample utterance',
+      // Includes "circuit" so the 2026-05-26 pre-LLM gate forwards;
+      // this test cares about runShadowHarness arg identity, not content.
+      text: 'sample circuit utterance',
       regexResults: [],
     });
 
@@ -1247,7 +1249,9 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
 
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'five',
+      // Digit forces the 2026-05-26 pre-LLM gate to forward — this test
+      // pins expired-anchor flow-through, not gate behaviour.
+      text: 'circuit 5 five',
       utterance_id: 'u-late',
       regexResults: [],
     });
@@ -1762,15 +1766,18 @@ describe('STT-09 — bidirectional utterance dedupe (transcript-then-answer race
     expect(entry.seenTranscriptUtterances).toBeDefined();
     expect(entry.seenTranscriptUtterances.size).toBe(0);
 
+    // Pre-LLM gate (2026-05-26): include a trigger word so both
+    // transcripts forward — this test pins seenTranscriptUtterances
+    // stamping, not gate behaviour.
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'first frame',
+      text: 'first circuit frame',
       utterance_id: 'u-first',
       regexResults: [],
     });
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'second frame',
+      text: 'second circuit frame',
       utterance_id: 'u-second',
       regexResults: [],
     });
@@ -1781,10 +1788,11 @@ describe('STT-09 — bidirectional utterance dedupe (transcript-then-answer race
 
     // Transcripts with no utterance_id must NOT stamp the set (defensive: the
     // dedupe only works on anchored utterances, and nothing in the handler
-    // should add `undefined` to the set).
+    // should add `undefined` to the set). Includes "circuit" so the pre-LLM
+    // gate forwards; this test pins stamp behaviour, not gate behaviour.
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'no id',
+      text: 'circuit no id',
       regexResults: [],
     });
     expect(entry.seenTranscriptUtterances.size).toBe(2);

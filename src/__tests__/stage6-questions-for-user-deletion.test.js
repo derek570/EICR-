@@ -203,7 +203,7 @@ const SAMPLE_QUESTIONS = [
     circuit: 2,
     type: 'unclear',
     heard_value: 'unclear',
-    question: "Could you repeat the R1+R2 reading for circuit 2?",
+    question: 'Could you repeat the R1+R2 reading for circuit 2?',
   },
 ];
 
@@ -379,7 +379,9 @@ describe('Group 3 — handleTranscript sync-path respects toolCallsMode', () => 
     });
     const offCalls = loggerInfoSpy.mock.calls.filter(isExtractionResultLog);
     // Sync-path Extraction result row should say questions=1.
-    expect(offCalls.find((c) => c[1].sessionId === 'sess-off' && c[1].questions === 1)).toBeDefined();
+    expect(
+      offCalls.find((c) => c[1].sessionId === 'sess-off' && c[1].questions === 1)
+    ).toBeDefined();
 
     // Now shadow path on a SECOND session (mode latches at construction).
     loggerInfoSpy.mockClear();
@@ -412,12 +414,20 @@ describe('Group 4 — reviewForOrphanedValues respects toolCallsMode', () => {
     // mock so the branch fires this turn.
     runShadowHarnessSpy.mockImplementationOnce(async () => {
       entry.session.turnCount = 10;
-      return { extracted_readings: [], questions_for_user: [], observations: [], confirmations: [] };
+      return {
+        extracted_readings: [],
+        questions_for_user: [],
+        observations: [],
+        confirmations: [],
+      };
     });
     mockReviewForOrphanedValues.mockResolvedValueOnce({ questions_for_user: SAMPLE_QUESTIONS });
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'ten',
+      // Pre-LLM gate (2026-05-26): single-word "ten" was blocked. The test
+      // pins review-path behaviour, not gate behaviour, so the digit forces
+      // unconditional forward through the gate.
+      text: 'turn 10',
       regexResults: [],
     });
     expect(mockReviewForOrphanedValues).toHaveBeenCalledTimes(1);
@@ -428,12 +438,17 @@ describe('Group 4 — reviewForOrphanedValues respects toolCallsMode', () => {
     const { ws, entry } = await startSession('shadow');
     runShadowHarnessSpy.mockImplementationOnce(async () => {
       entry.session.turnCount = 10;
-      return { extracted_readings: [], questions_for_user: [], observations: [], confirmations: [] };
+      return {
+        extracted_readings: [],
+        questions_for_user: [],
+        observations: [],
+        confirmations: [],
+      };
     });
     mockReviewForOrphanedValues.mockResolvedValueOnce({ questions_for_user: SAMPLE_QUESTIONS });
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'ten',
+      text: 'turn 10',
       regexResults: [],
     });
     // Review itself may or may not be called; what matters is enqueue is NOT called.
@@ -451,7 +466,8 @@ describe('Group 5 — cross-mode smoke + regression guards', () => {
     runShadowHarnessSpy.mockImplementationOnce(async () => extractionResult());
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'some utterance',
+      // Pre-LLM gate (2026-05-26) needs ≥3 content words or a trigger word.
+      text: 'some sample circuit utterance',
       regexResults: [],
     });
     expect(entry.questionGate.pendingQuestions).toEqual([]);
