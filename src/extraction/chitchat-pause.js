@@ -67,6 +67,35 @@
 // so equivalent chitchat would tick the counter more slowly.
 export const CHITCHAT_PAUSE_THRESHOLD = 8;
 
+// 2026-05-26 — second, faster trip threshold for the "panic re-ask" pattern.
+//
+// Distinct from CHITCHAT_PAUSE_THRESHOLD (which counts ALL zero-engagement
+// turns), this counts only consecutive ask_user emissions whose `reason` is
+// `missing_context` (Sonnet emitting "Sorry, I didn't catch that — what
+// circuit are you on?"-style asks). Session 33E6613D-49A7-4B42-A73B-1E2C6A82174D
+// burst 6 such asks in 31 s; the existing 8-turn threshold never tripped
+// because intervening turns produced "draft" observation_confirmations that
+// reset the engagement counter.
+//
+// 3 is conservative: a single mis-heard reading + one repeat is the natural
+// ambient rate; only when the inspector is genuinely off-mic / off-topic do
+// we see 3+ in a row. Setting too low (e.g. 2) would pause prematurely on a
+// reading that needs a quick clarifying follow-up; setting too high (e.g. 5)
+// keeps burning ~$0.027/ask through the burst window. Re-evaluate downward
+// only if field tests show the model isn't entering legitimate clarification
+// loops without tripping.
+//
+// Tunable at runtime via CHITCHAT_MISSING_CONTEXT_THRESHOLD env var; the
+// CHITCHAT_COUNT_MISSING_CONTEXT flag disables the whole mechanism (kill
+// switch for fast rollback).
+const _envMissingCtxThreshold = parseInt(process.env.CHITCHAT_MISSING_CONTEXT_THRESHOLD || '', 10);
+export const CHITCHAT_MISSING_CONTEXT_THRESHOLD =
+  Number.isFinite(_envMissingCtxThreshold) && _envMissingCtxThreshold > 0
+    ? _envMissingCtxThreshold
+    : 3;
+export const CHITCHAT_COUNT_MISSING_CONTEXT =
+  process.env.CHITCHAT_COUNT_MISSING_CONTEXT !== 'false';
+
 // How many seconds of recent paused-transcript text to replay back to
 // Sonnet on wake. Caps at the configured horizon so a session that sits
 // in chitchat for an hour doesn't accumulate megabytes of dead text and
@@ -133,6 +162,12 @@ export function ensureChitchatState(entry) {
       // 0 means "never logged this pause cycle". Reset to 0 on
       // exitChitchatPause so a future pause starts with a fresh log.
       lastSuppressLogAt: 0,
+      // 2026-05-26 — separate counter for consecutive ask_user emissions
+      // with reason=missing_context. Increments from the ask dispatcher;
+      // resets on any successful extraction turn AND on exitChitchatPause.
+      // Trip threshold is CHITCHAT_MISSING_CONTEXT_THRESHOLD; pause reason
+      // is 'missing_context_streak' so CloudWatch / iOS can distinguish.
+      missingContextAskStreak: 0,
     };
   }
   return entry.chitchatState;
@@ -195,6 +230,19 @@ export function recordTurn({ state, result, sendEnvelope, logger, sessionId }) {
       });
     }
     state.turnsSinceExtraction = 0;
+    // 2026-05-26 — also reset the missing-context streak on engagement.
+    // A successful extraction proves Sonnet caught the inspector's intent,
+    // so the prior "Sorry, I didn't catch that" run was either resolved
+    // or superseded by a clean reading. Either way the streak shouldn't
+    // carry forward across the engagement boundary.
+    if (state.missingContextAskStreak > 0) {
+      logger?.info?.('chitchat.missing_context_streak_reset', {
+        sessionId,
+        prev_count: state.missingContextAskStreak,
+        reason: 'engagement',
+      });
+      state.missingContextAskStreak = 0;
+    }
     return;
   }
   state.turnsSinceExtraction += 1;
@@ -211,20 +259,92 @@ export function recordTurn({ state, result, sendEnvelope, logger, sessionId }) {
 /**
  * Enter the paused state. Stops forwarding transcripts to Sonnet until
  * `exitChitchatPause` is called. Idempotent.
+ *
+ * @param {object} args
+ * @param {string} [args.reason] — pause trigger; defaults to the legacy
+ *                 'turns_without_extraction'. 'missing_context_streak' is
+ *                 used when the new ask-dispatcher hook trips.
+ * @param {number} [args.threshold] — value reported back to the iOS client
+ *                 envelope for the analytics log. Defaults to
+ *                 CHITCHAT_PAUSE_THRESHOLD; the missing-context path passes
+ *                 CHITCHAT_MISSING_CONTEXT_THRESHOLD instead so the analyzer
+ *                 doesn't conflate the two trip mechanisms.
  */
-export function enterChitchatPause({ state, sendEnvelope, logger, sessionId }) {
+export function enterChitchatPause({ state, sendEnvelope, logger, sessionId, reason, threshold }) {
   if (!state || state.paused) return;
   state.paused = true;
   state.pausedAt = Date.now();
+  const resolvedReason = reason || 'turns_without_extraction';
+  const resolvedThreshold = Number.isFinite(threshold) ? threshold : CHITCHAT_PAUSE_THRESHOLD;
   logger?.info?.('chitchat.paused', {
     sessionId,
-    threshold: CHITCHAT_PAUSE_THRESHOLD,
-    reason: 'turns_without_extraction',
+    threshold: resolvedThreshold,
+    reason: resolvedReason,
   });
   try {
-    sendEnvelope?.({ type: 'chitchat_paused', threshold: CHITCHAT_PAUSE_THRESHOLD });
+    sendEnvelope?.({
+      type: 'chitchat_paused',
+      threshold: resolvedThreshold,
+      reason: resolvedReason,
+    });
   } catch (err) {
     logger?.warn?.('chitchat.send_paused_failed', { sessionId, error: err?.message });
+  }
+}
+
+/**
+ * 2026-05-26 — second pause-trip channel for the "panic re-ask" pattern.
+ *
+ * Called by stage6-dispatcher-ask.js when Sonnet emits an `ask_user` whose
+ * `reason` is `missing_context`. Counts consecutive such asks and trips the
+ * pause once the count reaches CHITCHAT_MISSING_CONTEXT_THRESHOLD. Resets
+ * on engagement (handled in recordTurn above) and on any non-missing_context
+ * ask (a real clarifying question doesn't carry the same panic signal).
+ *
+ * The mechanism is gated by CHITCHAT_COUNT_MISSING_CONTEXT (default true);
+ * setting the env var to `false` is the kill switch.
+ *
+ * @param {object} args
+ * @param {object} args.state          chitchatState
+ * @param {string} args.askReason      ask_user.input.reason (free-text)
+ * @param {function} args.sendEnvelope (envelope) => void
+ * @param {function} [args.logger]
+ * @param {string}   [args.sessionId]
+ */
+export function noteMissingContextAsk({ state, askReason, sendEnvelope, logger, sessionId }) {
+  if (!CHITCHAT_COUNT_MISSING_CONTEXT) return;
+  if (!state || state.paused) return;
+  // Only the literal 'missing_context' reason increments the streak. Real
+  // clarifying asks ('orphaned_reading', 'observation_confirmation',
+  // 'missing_value') reflect a productive disambiguation conversation —
+  // not a panic loop — and reset the streak.
+  if (askReason !== 'missing_context') {
+    if (state.missingContextAskStreak > 0) {
+      logger?.info?.('chitchat.missing_context_streak_reset', {
+        sessionId,
+        prev_count: state.missingContextAskStreak,
+        reason: 'non_missing_context_ask',
+        ask_reason: askReason || null,
+      });
+      state.missingContextAskStreak = 0;
+    }
+    return;
+  }
+  state.missingContextAskStreak += 1;
+  logger?.info?.('chitchat.missing_context_streak_increment', {
+    sessionId,
+    count: state.missingContextAskStreak,
+    threshold: CHITCHAT_MISSING_CONTEXT_THRESHOLD,
+  });
+  if (state.missingContextAskStreak >= CHITCHAT_MISSING_CONTEXT_THRESHOLD) {
+    enterChitchatPause({
+      state,
+      sendEnvelope,
+      logger,
+      sessionId,
+      reason: 'missing_context_streak',
+      threshold: CHITCHAT_MISSING_CONTEXT_THRESHOLD,
+    });
   }
 }
 
@@ -239,6 +359,10 @@ export function exitChitchatPause({ state, sendEnvelope, logger, sessionId, reas
   state.paused = false;
   state.pausedAt = null;
   state.turnsSinceExtraction = 0;
+  // 2026-05-26 — clear the missing-context streak on resume. The pre-pause
+  // streak shouldn't survive the wake — the inspector intentionally
+  // re-engaged, signalling that the prior panic loop is over.
+  state.missingContextAskStreak = 0;
   // Reset the suppression-log throttle so the next pause cycle gets
   // its first-suppression log line, not a silent skip.
   state.lastSuppressLogAt = 0;

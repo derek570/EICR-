@@ -53,6 +53,7 @@ import {
   bufferTranscript,
   drainReplayBuffer,
   shouldLogSuppression,
+  noteMissingContextAsk,
 } from './chitchat-pause.js';
 // Pre-LLM transcript gate (2026-05-26). Blocks single-word filler and
 // background-chatter transcripts before they cost a Sonnet round + TTS.
@@ -3813,6 +3814,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // contract.
         fallbackToLegacy: entry.fallbackToLegacy === true,
         ws,
+        // 2026-05-26 — chitchat-pause panic-ask streak notifier. Threaded
+        // down to createAskDispatcher via the harness so each emitted
+        // ask_user updates the per-session streak counter. The dispatcher
+        // doesn't know about activeSessions, so the closure here is the
+        // bridge that lets it touch entry.chitchatState. ws is the live
+        // socket at runShadowHarness time; the notifier emits the
+        // chitchat_paused envelope on it if the streak trips.
+        chitchatNotifier: (askReason) => {
+          const ccState = ensureChitchatState(entry);
+          noteMissingContextAsk({
+            state: ccState,
+            askReason,
+            sendEnvelope: (env) => {
+              if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(env));
+            },
+            logger,
+            sessionId,
+          });
+        },
         // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4).
         // iOS attaches `regex_fast_correlation_id` to the transcript
         // message when it has POSTed at least one fast-TTS request for
