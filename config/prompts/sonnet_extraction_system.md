@@ -286,11 +286,16 @@ QUESTION STYLE:
 - If a reading looks INCOMPLETE (just "0", "nought", trailing off) set confidence LOW (0.1-0.3) instead of generating a question -- the next utterance will likely complete it
 
 CONFIRMATION MODE:
-- When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 5 words, confidence >= 0.8) to "confirmations" array: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }]
+- When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 8 words, confidence >= 0.8) for EVERY value extracted on this turn — including numeric readings, Yes/No flags, AND free-text fields (address, client name, postcode, etc.). Earlier the address family was excluded; the 2026-05-26 field-test ask is "confirmation for every value, including free text" so the inspector hears it via AirPods when working away from the iPad.
+- Text format:
+    - Circuit-scoped fields: `"Circuit <ref> <designation>, <value>"` — look up `circuit_designation` from the CIRCUIT SCHEDULE in the snapshot. Examples: `"Circuit 3 sockets, 0.35"`, `"Circuit 1 upstairs lighting, 0.42"`, `"Circuit 5 cooker, Yes"` (Yes/No for booleans). If the circuit has NO designation in the snapshot yet, fall back to bare `"Circuit <ref>, <value>"`.
+    - Board / supply fields (no circuit): `"<spoken field name>, <value>"` — e.g. `"Ze, 0.34"`, `"PFC, 1.2 kA"`, `"Main switch rating, 100"`.
+    - Job-level free text: `"<spoken field name>, <value>"` — e.g. `"Address, 123 Main Street"`, `"Client, John Smith"`, `"Postcode, RG30 4XW"`. Keep the value spoken naturally; don't expand abbreviations.
+- Wire shape unchanged: `[{ "text": "Circuit 3 sockets, 0.35", "field": "zs", "circuit": 3 }]`. The `field` and `circuit` keys are still used by iOS for dedup; `text` is what's spoken.
 - CRITICAL: Only add confirmations for readings you are extracting from the CURRENT utterance. If the snapshot already contains the same circuit/field with the SAME value, skip confirmation — it was already confirmed in a previous turn. However, if the current utterance is CORRECTING or CHANGING a value (new value differs from snapshot), confirmation IS allowed.
 - Before adding any confirmation, check the snapshot: if circuit X / field Y already has the same value, skip it. If the snapshot does not show that field (e.g., circuit not in the 3 most recent), do not assume it is absent — only dedupe against fields explicitly visible in the snapshot.
-- Example (dedup): Snapshot shows circuit 3 zs=0.35. Current utterance says "insulation 200 on circuit 3". Confirm ONLY insulation, NOT zs (already in snapshot with same value). Wrong: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }, { "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }]. Correct: [{ "text": "Circuit 3, >200", "field": "insulation_resistance_l_e", "circuit": 3 }].
-- Example (correction allowed): Snapshot shows circuit 3 zs=0.35. Current utterance says "no, Zs is 0.53 on circuit 3". The value changed (0.35 -> 0.53), so confirm: [{ "text": "Circuit 3, 0.53", "field": "zs", "circuit": 3 }].
+- Example (dedup): Snapshot shows circuit 3 (Sockets) zs=0.35. Current utterance says "insulation 200 on circuit 3". Confirm ONLY insulation, NOT zs (already in snapshot with same value). Wrong: [{ "text": "Circuit 3 sockets, 0.35", "field": "zs", "circuit": 3 }, { "text": "Circuit 3 sockets, >200", "field": "insulation_resistance_l_e", "circuit": 3 }]. Correct: [{ "text": "Circuit 3 sockets, >200", "field": "insulation_resistance_l_e", "circuit": 3 }].
+- Example (correction allowed): Snapshot shows circuit 3 (Sockets) zs=0.35. Current utterance says "no, Zs is 0.53 on circuit 3". The value changed (0.35 -> 0.53), so confirm: [{ "text": "Circuit 3 sockets, 0.53", "field": "zs", "circuit": 3 }].
 
 OBSERVATIONS — SIX RULES (follow in order):
 
@@ -600,7 +605,7 @@ Return ONLY valid JSON in this format. Omit any top-level array that would be em
     { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation|observation_confirmation>" }
   ],
   "confirmations": [
-    { "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }
+    { "text": "Circuit 3 sockets, 0.35", "field": "zs", "circuit": 3 }
   ],
   "spoken_response": "<string or null — TTS response for queries/commands only>",
   "action": { "type": "<action_type>", "params": { ... } }

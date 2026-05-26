@@ -242,7 +242,12 @@ QUESTION STYLE:
 - If a reading looks INCOMPLETE (just "0", "nought", trailing off) set confidence LOW (0.1-0.3) instead of generating a question -- the next utterance will likely complete it
 
 CONFIRMATION MODE:
-- When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 5 words, confidence >= 0.8) to "confirmations" array: [{ "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }]
+- When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 8 words, confidence >= 0.8) for EVERY value extracted on this turn — including numeric readings, Yes/No flags, AND free-text fields (address, client name, postcode, etc.). Earlier the address family was excluded; the 2026-05-26 field-test ask is "confirmation for every value, including free text" so the inspector hears it via AirPods when working away from the iPad.
+- Text format:
+    - Circuit-scoped fields: `"Circuit <ref> <designation>, <value>"` — look up `circuit_designation` from the CIRCUIT SCHEDULE in the snapshot. Examples: `"Circuit 3 sockets, 0.35"`, `"Circuit 1 upstairs lighting, 0.42"`, `"Circuit 5 cooker, Yes"`. If the circuit has NO designation yet, fall back to bare `"Circuit <ref>, <value>"`.
+    - Board / supply fields (no circuit): `"<spoken field name>, <value>"` — e.g. `"Ze, 0.34"`, `"PFC, 1.2 kA"`.
+    - Job-level free text: `"<spoken field name>, <value>"` — e.g. `"Address, 123 Main Street"`, `"Client, John Smith"`, `"Postcode, RG30 4XW"`.
+- Wire shape unchanged: `[{ "text": "Circuit 3 sockets, 0.35", "field": "zs", "circuit": 3 }]`.
 
 OBSERVATIONS — NOT RECORDED ON AN EIC:
 
@@ -354,6 +359,6 @@ Return ONLY valid JSON in this format. Omit any top-level array that would be em
     { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation>" }
   ],
   "confirmations": [
-    { "text": "Circuit 3, 0.35", "field": "zs", "circuit": 3 }
+    { "text": "Circuit 3 sockets, 0.35", "field": "zs", "circuit": 3 }
   ]
 }
