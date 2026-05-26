@@ -13,11 +13,7 @@
  */
 
 import { jest } from '@jest/globals';
-import {
-  runToolLoop,
-  NOOP_DISPATCHER,
-  LOOP_CAP,
-} from '../extraction/stage6-tool-loop.js';
+import { runToolLoop, NOOP_DISPATCHER, LOOP_CAP } from '../extraction/stage6-tool-loop.js';
 import { mockClient, mockStream } from './helpers/mockStream.js';
 import { TOOL_SCHEMAS } from '../extraction/stage6-tool-schemas.js';
 
@@ -95,7 +91,7 @@ describe('stage6-tool-loop', () => {
   test('NOOP_DISPATCHER returns {tool_use_id, content, is_error:false}', async () => {
     const res = await NOOP_DISPATCHER(
       { tool_call_id: 'toolu_abc', name: 'record_reading', input: { field: 'x' } },
-      baseCtx(),
+      baseCtx()
     );
     expect(res).toEqual({
       tool_use_id: 'toolu_abc',
@@ -132,7 +128,17 @@ describe('stage6-tool-loop', () => {
   test('two rounds: tool_use then end_turn → 1 dispatch, messages extended (STD-02)', async () => {
     const client = mockClient([
       toolUseRound([
-        { id: 'toolu_1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.95, source_turn_id: 't1' } },
+        {
+          id: 'toolu_1',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 1,
+            value: '0.43',
+            confidence: 0.95,
+            source_turn_id: 't1',
+          },
+        },
       ]),
       endTurnRound('ok'),
     ]);
@@ -205,9 +211,39 @@ describe('stage6-tool-loop', () => {
   test('three tool_use blocks in one response → 3 dispatches + 3 tool_results in order', async () => {
     const client = mockClient([
       toolUseRound([
-        { id: 'toolu_a', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.9, source_turn_id: 't1' } },
-        { id: 'toolu_b', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.51', confidence: 0.9, source_turn_id: 't1' } },
-        { id: 'toolu_c', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 3, value: '0.77', confidence: 0.9, source_turn_id: 't1' } },
+        {
+          id: 'toolu_a',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 1,
+            value: '0.43',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
+        {
+          id: 'toolu_b',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 2,
+            value: '0.51',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
+        {
+          id: 'toolu_c',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 3,
+            value: '0.77',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
       ]),
       endTurnRound('all done'),
     ]);
@@ -230,13 +266,27 @@ describe('stage6-tool-loop', () => {
     expect(dispatcher).toHaveBeenCalledTimes(3);
     // tool_result message (index 2) has 3 tool_result blocks in the same order.
     expect(messages[2].content).toHaveLength(3);
-    expect(messages[2].content.map((b) => b.tool_use_id)).toEqual(['toolu_a', 'toolu_b', 'toolu_c']);
+    expect(messages[2].content.map((b) => b.tool_use_id)).toEqual([
+      'toolu_a',
+      'toolu_b',
+      'toolu_c',
+    ]);
   });
 
   test('STO-01: logger.info called with "stage6.tool_call" for each dispatch', async () => {
     const client = mockClient([
       toolUseRound([
-        { id: 'toolu_log1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.9, source_turn_id: 't1' } },
+        {
+          id: 'toolu_log1',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 1,
+            value: '0.43',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
       ]),
       endTurnRound('ok'),
     ]);
@@ -262,12 +312,10 @@ describe('stage6-tool-loop', () => {
         tool_call_id: 'toolu_log1',
         tool_name: 'record_reading',
         outcome: 'stub_ok',
-      }),
+      })
     );
     // duration_ms is a number (may be 0 on fast mocks — >= 0 is sufficient)
-    const callArgs = logger.info.mock.calls.find(
-      ([tag]) => tag === 'stage6.tool_call',
-    )[1];
+    const callArgs = logger.info.mock.calls.find(([tag]) => tag === 'stage6.tool_call')[1];
     expect(typeof callArgs.duration_ms).toBe('number');
     expect(callArgs.duration_ms).toBeGreaterThanOrEqual(0);
   });
@@ -280,9 +328,15 @@ describe('stage6-tool-loop', () => {
           {
             id: `toolu_r${i}`,
             name: 'record_reading',
-            input: { field: 'measured_zs_ohm', circuit: i, value: '0.0', confidence: 0.9, source_turn_id: `t${i}` },
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: i,
+              value: '0.0',
+              confidence: 0.9,
+              source_turn_id: `t${i}`,
+            },
           },
-        ]),
+        ])
       );
     }
     const client = mockClient(rounds);
@@ -321,9 +375,9 @@ describe('stage6-tool-loop', () => {
     // ordering invariant, Research §Pitfall 3).
     const secondLastMsg = messages[messages.length - 2];
     expect(secondLastMsg.role).toBe('assistant');
-    expect(
-      secondLastMsg.content.some((b) => b.type === 'tool_use' && b.id === 'toolu_r8'),
-    ).toBe(true);
+    expect(secondLastMsg.content.some((b) => b.type === 'tool_use' && b.id === 'toolu_r8')).toBe(
+      true
+    );
     // STD-10 log emitted.
     expect(logger.warn).toHaveBeenCalledWith(
       'tool_loop_cap_hit',
@@ -332,7 +386,7 @@ describe('stage6-tool-loop', () => {
         turnId: 'turn-1',
         rounds: 8,
         pending_tool_uses: 1,
-      }),
+      })
     );
   });
 
@@ -345,18 +399,54 @@ describe('stage6-tool-loop', () => {
           {
             id: `toolu_r${i}`,
             name: 'record_reading',
-            input: { field: 'measured_zs_ohm', circuit: i, value: '0.0', confidence: 0.9, source_turn_id: `t${i}` },
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: i,
+              value: '0.0',
+              confidence: 0.9,
+              source_turn_id: `t${i}`,
+            },
           },
-        ]),
+        ])
       );
     }
     // Round 8: THREE tool_use blocks.
     rounds.push(
       toolUseRound([
-        { id: 'toolu_r8a', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 8, value: '0.1', confidence: 0.9, source_turn_id: 't8' } },
-        { id: 'toolu_r8b', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 9, value: '0.2', confidence: 0.9, source_turn_id: 't8' } },
-        { id: 'toolu_r8c', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 10, value: '0.3', confidence: 0.9, source_turn_id: 't8' } },
-      ]),
+        {
+          id: 'toolu_r8a',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 8,
+            value: '0.1',
+            confidence: 0.9,
+            source_turn_id: 't8',
+          },
+        },
+        {
+          id: 'toolu_r8b',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 9,
+            value: '0.2',
+            confidence: 0.9,
+            source_turn_id: 't8',
+          },
+        },
+        {
+          id: 'toolu_r8c',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 10,
+            value: '0.3',
+            confidence: 0.9,
+            source_turn_id: 't8',
+          },
+        },
+      ])
     );
     const client = mockClient(rounds);
     const messages = [{ role: 'user', content: 'start' }];
@@ -397,7 +487,7 @@ describe('stage6-tool-loop', () => {
     }
     expect(logger.warn).toHaveBeenCalledWith(
       'tool_loop_cap_hit',
-      expect.objectContaining({ rounds: 8, pending_tool_uses: 3 }),
+      expect.objectContaining({ rounds: 8, pending_tool_uses: 3 })
     );
   });
 
@@ -498,7 +588,18 @@ describe('stage6-tool-loop', () => {
     // tool_use id (toolu_phantom) to appear in the finalMessage() content
     // by constructing a minimal custom stream that forks.
     const phantomAssistantContent = [
-      { type: 'tool_use', id: 'toolu_phantom', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.51', confidence: 0.9, source_turn_id: 't' } },
+      {
+        type: 'tool_use',
+        id: 'toolu_phantom',
+        name: 'record_reading',
+        input: {
+          field: 'measured_zs_ohm',
+          circuit: 2,
+          value: '0.51',
+          confidence: 0.9,
+          source_turn_id: 't',
+        },
+      },
     ];
     const customStream = {
       async *[Symbol.asyncIterator]() {
@@ -555,7 +656,7 @@ describe('stage6-tool-loop', () => {
     });
     // Observability: warn log emitted with outcome='internal_no_result'.
     const warnCall = logger.warn.mock.calls.find(
-      (c) => c[0] === 'stage6.tool_call' && c[1]?.outcome === 'internal_no_result',
+      (c) => c[0] === 'stage6.tool_call' && c[1]?.outcome === 'internal_no_result'
     );
     expect(warnCall).toBeDefined();
     expect(warnCall[1].tool_call_id).toBe('toolu_phantom');
@@ -608,7 +709,7 @@ describe('stage6-tool-loop', () => {
       'stage6.tool_loop_invariant',
       expect.objectContaining({
         reason: 'tool_use_stop_reason_with_no_tool_use_blocks',
-      }),
+      })
     );
   });
 
@@ -630,9 +731,15 @@ describe('stage6-tool-loop', () => {
           {
             id: `toolu_r${i}`,
             name: 'record_reading',
-            input: { field: 'measured_zs_ohm', circuit: i, value: '0.0', confidence: 0.9, source_turn_id: `t${i}` },
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: i,
+              value: '0.0',
+              confidence: 0.9,
+              source_turn_id: `t${i}`,
+            },
           },
-        ]),
+        ])
       );
     }
     const emptyRound8 = {
@@ -690,7 +797,7 @@ describe('stage6-tool-loop', () => {
       expect.objectContaining({
         reason: 'tool_use_stop_reason_with_no_tool_use_blocks_at_cap',
         rounds: 8,
-      }),
+      })
     );
     // Dispatcher called 7× (rounds 1–7 normal), NOT called on round 8 (cap).
     expect(dispatcher).toHaveBeenCalledTimes(7);
@@ -706,7 +813,17 @@ describe('stage6-tool-loop', () => {
     // so ops can find the buggy dispatcher.
     const client = mockClient([
       toolUseRound([
-        { id: 'toolu_real', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.9, source_turn_id: 't1' } },
+        {
+          id: 'toolu_real',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 1,
+            value: '0.43',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
       ]),
       endTurnRound('ok'),
     ]);
@@ -751,7 +868,7 @@ describe('stage6-tool-loop', () => {
         tool_call_id: 'toolu_real',
         dispatcher_returned_id: 'toolu_WRONG_ID',
         tool_name: 'record_reading',
-      }),
+      })
     );
   });
 
@@ -765,9 +882,39 @@ describe('stage6-tool-loop', () => {
     test('omitted → dispatch order equals assembler.finalize() order (identity default)', async () => {
       const client = mockClient([
         toolUseRound([
-          { id: 'toolu_0', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
-          { id: 'toolu_1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
-          { id: 'toolu_2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 3, value: '0.3', confidence: 0.9, source_turn_id: 't1' } },
+          {
+            id: 'toolu_0',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.1',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+          {
+            id: 'toolu_1',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 2,
+              value: '0.2',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+          {
+            id: 'toolu_2',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 3,
+              value: '0.3',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
         ]),
         endTurnRound('done'),
       ]);
@@ -796,9 +943,39 @@ describe('stage6-tool-loop', () => {
     test('provided (reverse) → dispatch order follows hook output', async () => {
       const client = mockClient([
         toolUseRound([
-          { id: 'toolu_0', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
-          { id: 'toolu_1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
-          { id: 'toolu_2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 3, value: '0.3', confidence: 0.9, source_turn_id: 't1' } },
+          {
+            id: 'toolu_0',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.1',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+          {
+            id: 'toolu_1',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 2,
+              value: '0.2',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+          {
+            id: 'toolu_2',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 3,
+              value: '0.3',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
         ]),
         endTurnRound('done'),
       ]);
@@ -828,8 +1005,28 @@ describe('stage6-tool-loop', () => {
     test('called exactly once per round with the full record array', async () => {
       const client = mockClient([
         toolUseRound([
-          { id: 'toolu_a', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
-          { id: 'toolu_b', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
+          {
+            id: 'toolu_a',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.1',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+          {
+            id: 'toolu_b',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 2,
+              value: '0.2',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
         ]),
         endTurnRound('ok'),
       ]);
@@ -860,8 +1057,32 @@ describe('stage6-tool-loop', () => {
 
     test('called once per round across a multi-round turn (N tool_use rounds → N hook invocations)', async () => {
       const client = mockClient([
-        toolUseRound([{ id: 'toolu_r1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } }]),
-        toolUseRound([{ id: 'toolu_r2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't2' } }]),
+        toolUseRound([
+          {
+            id: 'toolu_r1',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.1',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+        ]),
+        toolUseRound([
+          {
+            id: 'toolu_r2',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 2,
+              value: '0.2',
+              confidence: 0.9,
+              source_turn_id: 't2',
+            },
+          },
+        ]),
         endTurnRound('done'),
       ]);
       const messages = [{ role: 'user', content: 'start' }];
@@ -891,7 +1112,17 @@ describe('stage6-tool-loop', () => {
       // shape (dispatcher_error with is_error:true) is reused.
       const client = mockClient([
         toolUseRound([
-          { id: 'toolu_throw', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
+          {
+            id: 'toolu_throw',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.1',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
         ]),
         endTurnRound('ok'),
       ]);
@@ -916,7 +1147,12 @@ describe('stage6-tool-loop', () => {
       // Loop did not crash.
       expect(result.rounds).toBeGreaterThanOrEqual(1);
       // An error was logged against the loop.
-      const errorLogged = logger.error.mock.calls.some(([tag]) => tag === 'stage6.tool_call' || tag === 'stage6.tool_loop_invariant' || tag === 'stage6.tool_loop_sort_error');
+      const errorLogged = logger.error.mock.calls.some(
+        ([tag]) =>
+          tag === 'stage6.tool_call' ||
+          tag === 'stage6.tool_loop_invariant' ||
+          tag === 'stage6.tool_loop_sort_error'
+      );
       expect(errorLogged).toBe(true);
     });
 
@@ -932,9 +1168,37 @@ describe('stage6-tool-loop', () => {
     test('hook throws → emergency STA-02 fallback moves ask_user to tail (r15 MAJOR#1)', async () => {
       const client = mockClient([
         toolUseRound([
-          { id: 'toolu_ask', name: 'ask_user', input: { question: 'Which circuit did you mean — 3 or 4?', reason: 'ambiguous_circuit', expected_answer_shape: 'circuit_ref' } },
-          { id: 'toolu_r1', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.1', confidence: 0.9, source_turn_id: 't1' } },
-          { id: 'toolu_r2', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 2, value: '0.2', confidence: 0.9, source_turn_id: 't1' } },
+          {
+            id: 'toolu_ask',
+            name: 'ask_user',
+            input: {
+              question: 'Which circuit did you mean — 3 or 4?',
+              reason: 'ambiguous_circuit',
+              expected_answer_shape: 'circuit_ref',
+            },
+          },
+          {
+            id: 'toolu_r1',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.1',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+          {
+            id: 'toolu_r2',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 2,
+              value: '0.2',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
         ]),
         endTurnRound('done'),
       ]);
@@ -967,7 +1231,7 @@ describe('stage6-tool-loop', () => {
       expect(seen).toEqual(['toolu_r1', 'toolu_r2', 'toolu_ask']);
       // The error is still logged so CloudWatch alarms can fire.
       const errorLogged = logger.error.mock.calls.some(
-        ([tag]) => tag === 'stage6.tool_loop_sort_error',
+        ([tag]) => tag === 'stage6.tool_loop_sort_error'
       );
       expect(errorLogged).toBe(true);
     });
@@ -976,7 +1240,17 @@ describe('stage6-tool-loop', () => {
   test('dispatcher error path → tool_result with is_error:true, loop continues', async () => {
     const client = mockClient([
       toolUseRound([
-        { id: 'toolu_err', name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: 1, value: '0.43', confidence: 0.9, source_turn_id: 't1' } },
+        {
+          id: 'toolu_err',
+          name: 'record_reading',
+          input: {
+            field: 'measured_zs_ohm',
+            circuit: 1,
+            value: '0.43',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
       ]),
       endTurnRound('ok'),
     ]);
@@ -1015,7 +1289,100 @@ describe('stage6-tool-loop', () => {
       expect.objectContaining({
         tool_call_id: 'toolu_err',
         outcome: 'dispatcher_error',
-      }),
+      })
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // toolChoiceAnyOnRound1 (2026-05-26 voice-latency fix)
+  //
+  // Round-1 of every turn passes tool_choice: { type: "any" } so Sonnet
+  // emits the tool_use FIRST rather than emitting reasoning text first
+  // (which delays the Loaded Barrel streamed-speculation hook). Round-2+
+  // omit the tool_choice so end_turn paths still work.
+  //
+  // Pinned by session 904344CD (2026-05-26): every bundler-confirmation
+  // turn showed loaded_barrel_hit_pending because the tool_use streamed
+  // at end-of-Sonnet instead of start.
+  // ---------------------------------------------------------------------------
+
+  describe('toolChoiceAnyOnRound1 (Loaded Barrel speculator window)', () => {
+    test('flag ON → round-1 stream args carry tool_choice:{type:"any"}', async () => {
+      const client = mockClient([
+        toolUseRound([
+          {
+            id: 'toolu_0',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.6',
+              confidence: 0.95,
+              source_turn_id: 't1',
+            },
+          },
+        ]),
+        endTurnRound('done'),
+      ]);
+      const logger = makeLogger();
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages: [{ role: 'user', content: 'Zs upstairs is 0.6' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher: NOOP_DISPATCHER,
+        ctx: baseCtx(),
+        logger,
+        toolChoiceAnyOnRound1: true,
+      });
+      // Round-1 had tool_choice set...
+      expect(client._calls[0].tool_choice).toEqual({ type: 'any' });
+      // ...round-2 did NOT (otherwise Sonnet would be forced to emit a tool
+      // when it should be free to end_turn).
+      expect(client._calls[1]).toBeDefined();
+      expect(client._calls[1].tool_choice).toBeUndefined();
+      // Diagnostic log fired exactly once with the round index.
+      expect(logger.info).toHaveBeenCalledWith(
+        'voice_latency.tool_choice_any_emitted',
+        expect.objectContaining({ sessionId: 'sess-xyz', turnId: 'turn-1', roundIdx: 1 })
+      );
+    });
+
+    test('flag OFF (default) → round-1 has no tool_choice (back-compat)', async () => {
+      const client = mockClient([
+        toolUseRound([
+          {
+            id: 'toolu_0',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 1,
+              value: '0.6',
+              confidence: 0.95,
+              source_turn_id: 't1',
+            },
+          },
+        ]),
+        endTurnRound('done'),
+      ]);
+      const logger = makeLogger();
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages: [{ role: 'user', content: 'Zs upstairs is 0.6' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher: NOOP_DISPATCHER,
+        ctx: baseCtx(),
+        logger,
+        // toolChoiceAnyOnRound1 omitted — defaults to false
+      });
+      expect(client._calls[0].tool_choice).toBeUndefined();
+      expect(logger.info).not.toHaveBeenCalledWith(
+        'voice_latency.tool_choice_any_emitted',
+        expect.anything()
+      );
+    });
   });
 });
