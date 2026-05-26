@@ -12,14 +12,19 @@
  * goal is the engine extraction itself with byte-identical behaviour.
  */
 
-import { processDialogueTurn, enterScriptByName, tryResumePausedScript } from './engine.js';
+import {
+  processDialogueTurn,
+  enterScriptByName,
+  tryResumePausedScript,
+  tryEnterScriptFromWrites,
+} from './engine.js';
 import { ringContinuitySchema } from './schemas/ring-continuity.js';
 import { insulationResistanceSchema } from './schemas/insulation-resistance.js';
 import { ocpdSchema } from './schemas/ocpd.js';
 import { rcdSchema } from './schemas/rcd.js';
 import { rcboSchema } from './schemas/rcbo.js';
 
-export { processDialogueTurn, enterScriptByName, tryResumePausedScript };
+export { processDialogueTurn, enterScriptByName, tryResumePausedScript, tryEnterScriptFromWrites };
 export { ringContinuitySchema, insulationResistanceSchema, ocpdSchema, rcdSchema, rcboSchema };
 
 /**

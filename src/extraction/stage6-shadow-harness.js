@@ -94,7 +94,11 @@ import { createPerTurnWrites } from './stage6-per-turn-writes.js';
 import { bundleToolCallsIntoResult, BUNDLER_PHASE } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { TOOL_SCHEMAS } from './stage6-tool-schemas.js';
-import { tryResumePausedScript, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
+import {
+  tryResumePausedScript,
+  tryEnterScriptFromWrites,
+  ALL_DIALOGUE_SCHEMAS,
+} from './dialogue-engine/index.js';
 
 /**
  * Sonnet model literal used by shadow-mode tool loop. Mirrors the literal at
@@ -556,6 +560,41 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         });
       } catch (e) {
         log.warn('stage6.dialogue_resume_error', {
+          sessionId: session.sessionId,
+          error: e?.message ?? String(e),
+        });
+      }
+    }
+
+    // Handover-from-Sonnet entry. Symmetric to tryResumePausedScript:
+    // when Sonnet writes a value that belongs to a dialogue schema's
+    // slot list AND no script is currently active, enter the script
+    // with the value pre-seeded so the inspector gets the remaining
+    // slot walk-through they would have got on the regex-happy path.
+    //
+    // Field repro: session 87856B72 (2026-05-26). "RCD triptan for
+    // upstairs lighting is 25 ms" — Deepgram garbled "trip time" →
+    // "triptan", the RCD trigger /\bRCD\b/ matched but the entry
+    // parser harvested nothing, and the engine asked the next slot
+    // without the 25 ms ever being captured. runEntry now bails to
+    // Sonnet when an utterance carries a number+unit but nothing
+    // got harvested; Sonnet writes rcd_trip_time=25; this hook then
+    // enters rcdSchema and asks rcd_bs_en. Same UX as the happy path.
+    //
+    // No-op when the script is already active (don't disturb mid-
+    // walk-through) or when no extracted reading matches any
+    // schema's slots — common case in non-protective-device turns.
+    if (Array.isArray(result.extracted_readings) && result.extracted_readings.length > 0) {
+      try {
+        tryEnterScriptFromWrites({
+          session,
+          ws,
+          schemas: ALL_DIALOGUE_SCHEMAS,
+          readings: result.extracted_readings,
+          logger: log,
+        });
+      } catch (e) {
+        log.warn('stage6.dialogue_enter_from_write_error', {
           sessionId: session.sessionId,
           error: e?.message ?? String(e),
         });

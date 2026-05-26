@@ -822,20 +822,30 @@ describe('engine — IR bare-value capture at entry (session C3963EA1)', () => {
     ]);
   });
 
-  test('does NOT capture when circuit_ref resolves at entry', () => {
+  test('resolved-circuit + bare value + missed named-extractor → bails to Sonnet (handover)', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
-    processInsulationResistanceTurn({
+    const out = processInsulationResistanceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
       transcriptText: 'Insulation resistance for the cooker is 299 megaohms.',
       now: 1000,
     });
-    // Resolved-circuit path runs the existing walk-through; bare capture
-    // is gated on circuit_ref === null.
-    expect(session.dialogueScriptState.circuit_ref).toBe(13);
-    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+    // 2026-05-26 handover-to-Sonnet fix (session 87856B72 lineage):
+    // when the trigger matched and the named-extractor missed but the
+    // utterance carries a number+unit, the engine bails so Sonnet can
+    // rescue the value via record_reading. tryEnterScriptFromWrites
+    // then re-enters IR with the value pre-seeded. Old behaviour
+    // entered the script with circuit_ref=13 and silently dropped
+    // 299 — same bug class as the RCD trip-time miss.
+    //
+    // bareEntryParser still only fires on the unresolved-circuit
+    // path (see "captures saturation sentinel" test above) — that
+    // contract is unchanged because the bail's bareParserWouldCapture
+    // gate requires circuitRef === null.
+    expect(out).toEqual({ handled: false });
+    expect(session.dialogueScriptState).toBeFalsy();
   });
 });
 

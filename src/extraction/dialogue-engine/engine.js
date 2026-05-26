@@ -231,6 +231,28 @@ function clearScriptState(session) {
 }
 
 /**
+ * Detect whether the utterance carries a number+unit pattern that's
+ * worth handing to Sonnet when the entry parsers missed everything.
+ * Covers the EICR test-reading vocabulary: ms, ohms / mΩ / MΩ, mA,
+ * volts, amps, kA. A bare digit ("RCD on circuit 2") deliberately
+ * does NOT match — without a unit, "2" is a circuit number, not a
+ * value, and the engine should still enter the walk-through.
+ *
+ * Repro: session 87856B72 (2026-05-26). Deepgram garbled "trip
+ * time" → "triptan", so the RCD trigger /\bRCD\b/ matched but the
+ * `\btrip\s*time\b` named-extractor missed. With this helper
+ * returning true on "25 ms", runEntry bails to Sonnet, which
+ * extracts the value via record_reading; tryEnterScriptFromWrites
+ * then re-enters the script with the value pre-seeded.
+ */
+function hasNumericValueWithUnit(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return /\d+(?:\.\d+)?\s*(?:m\s*s\b|millisecond|milliseconds|ohm|ohms|m\s*Ω|kΩ|MΩ|mega\s*ohms?|kilo\s*ohms?|mA\b|milli\s*amps?|amps?\b|kA\b|kilo\s*amps?|volts?\b|kV\b|kilo\s*volts?)/i.test(
+    text
+  );
+}
+
+/**
  * Build the re-ask question for the "couldn't resolve circuit" recovery
  * path. Quotes the user's failed answer back so the second attempt is
  * unambiguous: "What's the circuit number for the upstairs sockets?"
@@ -347,6 +369,48 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
   const slotFields = schema.slots.map((s) => s.field);
   const existing = circuitRef ? readExistingValues(session, circuitRef, slotFields) : {};
   const volunteered = extractNamedFieldValues(text, schema.slots);
+
+  // Handover-to-Sonnet bail. See session 87856B72 (2026-05-26): the
+  // RCD trigger /\bRCD\b/ matched on "RCD triptan for upstairs
+  // lighting is 25 ms" (Deepgram garbled "trip time" → "triptan"),
+  // but the named-extractor missed the bare value. Old behaviour:
+  // enter the script, immediately ask "What's the BS number?", and
+  // the 25 ms is lost. New behaviour: when every entry-time signal
+  // is empty (no named harvest, no snapshot context, no designation
+  // ambiguity, AND the schema's bareEntryParser — if any — would
+  // also miss) AND the utterance plainly carries a measurement
+  // (hasNumericValueWithUnit), bail to Sonnet. The post-dispatch
+  // tryEnterScriptFromWrites hook re-enters the script once Sonnet
+  // writes a slot-owned value via record_reading.
+  //
+  // Skip reasons:
+  //   - bare entry phrase ("RCD on circuit 2") — no number+unit, so
+  //     the script enters as before to walk BS/type/mA.
+  //   - designation ambiguity — engine owes a "Which 'sockets' — 2,
+  //     4 or 7?" question that Sonnet can't replicate.
+  //   - circuitRef===null + schema has bareEntryParser — the IR
+  //     "299 megaohms before the cooker exists" path captures the
+  //     bare value into the paused state for the resume hook. Bail
+  //     here would drop that pause anchor.
+  const bareParserWouldCapture =
+    circuitRef === null &&
+    volunteered.length === 0 &&
+    typeof schema.bareEntryParser === 'function' &&
+    schema.bareEntryParser(text) != null;
+  if (
+    volunteered.length === 0 &&
+    Object.keys(existing).length === 0 &&
+    designationCandidates.length === 0 &&
+    !bareParserWouldCapture &&
+    hasNumericValueWithUnit(text)
+  ) {
+    logger?.info?.(`${schema.logEventPrefix}_entry_handover_to_sonnet`, {
+      sessionId,
+      circuit_ref: circuitRef,
+      textPreview: text.slice(0, 80),
+    });
+    return { handled: false };
+  }
 
   initScriptState(session, schema, circuitRef, now);
   const state = session.dialogueScriptState;
@@ -1904,10 +1968,110 @@ export function tryResumePausedScript({
   return { resumed: true, circuit_ref: matchedRef };
 }
 
+/**
+ * Post-dispatch hook — enter a dialogue script after Sonnet writes a
+ * value belonging to one of the schema's slots, when no script is
+ * currently active for the session. Symmetric counterpart to
+ * tryResumePausedScript: that one resumes a paused script when a
+ * circuit gets created mid-walk-through; this one starts a fresh
+ * script when a slot-owned value lands without a prior trigger
+ * (because runEntry bailed to Sonnet — see hasNumericValueWithUnit
+ * branch above) OR without any trigger at all (e.g. Sonnet decided
+ * to record_reading after a question outside the script flow).
+ *
+ * Motivating case: session 87856B72 (2026-05-26). Deepgram garbled
+ * "trip time" → "triptan" so the RCD trigger fired but the entry
+ * parser harvested nothing. runEntry now bails to Sonnet
+ * (handover-to-sonnet branch). Sonnet writes rcd_trip_time=25 via
+ * record_reading. This hook then enters rcdSchema with
+ * circuit_ref=2, seeds pre_existing from the snapshot (which now
+ * includes the 25), and asks the next missing slot (rcd_bs_en) —
+ * same UX the inspector would have got on the happy path.
+ *
+ * Guards:
+ *   - no-op if a script is already active (don't disturb)
+ *   - skip writes whose field isn't a slot in any registered schema
+ *   - only the FIRST matching schema enters per call — multi-domain
+ *     volunteered fields are rare; subsequent matches will trigger
+ *     on a later turn or via a fresh utterance
+ *   - skip when nextMissingSlot returns null (every slot already
+ *     filled — silent no-op; no question worth asking)
+ *
+ * @returns {{entered: boolean, schemaName?: string, circuit_ref?: number, reason?: string}}
+ */
+export function tryEnterScriptFromWrites({
+  session,
+  ws,
+  schemas,
+  readings,
+  logger,
+  now = Date.now(),
+}) {
+  if (!session) return { entered: false, reason: 'no_session' };
+  if (!Array.isArray(schemas) || schemas.length === 0) {
+    return { entered: false, reason: 'no_schemas' };
+  }
+  if (!Array.isArray(readings) || readings.length === 0) {
+    return { entered: false, reason: 'no_readings' };
+  }
+  if (session.dialogueScriptState?.active) {
+    return { entered: false, reason: 'script_already_active' };
+  }
+
+  for (const reading of readings) {
+    const field = reading?.field;
+    const circuitRef = Number(reading?.circuit);
+    if (!field || !Number.isInteger(circuitRef) || circuitRef <= 0) continue;
+
+    for (const schema of schemas) {
+      const slotFields = schema.slots.map((s) => s.field);
+      if (!slotFields.includes(field)) continue;
+
+      // Circuit must exist on the snapshot before we can read existing
+      // slot values; the paused-script resume path covers the
+      // value-before-circuit-create case (see tryResumePausedScript).
+      if (!circuitExistsInSnapshot(session.stateSnapshot, circuitRef)) continue;
+
+      const existing = readExistingValues(session, circuitRef, slotFields);
+      const next = nextMissingSlot(existing, schema.slots, new Set());
+      if (!next) {
+        logger?.info?.(`${schema.logEventPrefix}_entry_from_write_skipped_all_filled`, {
+          sessionId: session.sessionId,
+          circuit_ref: circuitRef,
+          trigger_field: field,
+        });
+        continue;
+      }
+
+      initScriptState(session, schema, circuitRef, now);
+      const state = session.dialogueScriptState;
+      for (const [f, v] of Object.entries(existing)) {
+        if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
+          state.values[f] = v;
+        }
+      }
+
+      logger?.info?.(`${schema.logEventPrefix}_entered_from_sonnet_write`, {
+        sessionId: session.sessionId,
+        circuit_ref: circuitRef,
+        trigger_field: field,
+        pre_existing_filled: Object.keys(existing).filter((f) => slotFields.includes(f)),
+        next_slot: next.field,
+      });
+
+      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
+      return { entered: true, schemaName: schema.name, circuit_ref: circuitRef };
+    }
+  }
+
+  return { entered: false, reason: 'no_matching_schema' };
+}
+
 // Test-only exports for unit tests.
 export const __testing__ = {
   detectEntry,
   detectDifferentEntry,
   initScriptState,
   clearScriptState,
+  hasNumericValueWithUnit,
 };
