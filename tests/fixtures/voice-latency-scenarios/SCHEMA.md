@@ -1,7 +1,7 @@
 # Voice-latency scenario schema
 
 Scenarios are YAML files consumed by
-`scripts/voice-latency-bench/transcript-replay.js`. Each file describes
+`scripts/voice-latency-bench/transcript-replay.mjs`. Each file describes
 a single replayable interaction: connect to backend WS, send N
 `transcript` messages with timing offsets, capture every response,
 optionally pull the chunked TTS audio for each `confirmations[]` entry,
@@ -124,3 +124,40 @@ unhandled errors.
 - Currently the harness does NOT play audio — TTS bytes are fetched
   and timed but discarded. iOS-side playback latency is measured by
   the Stage 0.A bench (separate concern).
+
+## Field names — use LEGACY wire-format names in `has_reading`
+
+`has_reading` runs against `extraction.result.readings[]` (the message
+the harness receives over WS). Stage 6's bundler writes Sonnet's
+CANONICAL `record_reading` field names into the result, and then
+`validateAndCorrectFields` in `src/extraction/sonnet-stream.js`
+REWRITES every canonical name to its legacy wire form via
+`src/extraction/field-name-corrections.js` BEFORE the WS send. So
+scenarios that assert `has_reading[].field` must use the LEGACY name
+after rewrite. Quick map for the common ones:
+
+| Canonical (Sonnet emits) | Legacy (wire / iOS / harness sees) |
+|---|---|
+| `measured_zs_ohm` | `zs` |
+| `r1_r2_ohm` | `r1_plus_r2` |
+| `rcd_time_ms` | `rcd_trip_time` |
+| `ir_live_live_mohm` | `insulation_resistance_l_l` |
+| `ir_live_earth_mohm` | `insulation_resistance_l_e` |
+| `ir_test_voltage_v` | `ir_test_voltage` |
+| `ring_r1_ohm` | `ring_continuity_r1` |
+| `ring_rn_ohm` | `ring_continuity_rn` |
+| `ring_r2_ohm` | `ring_continuity_r2` |
+| `r2_ohm` | `r2` |
+| `ocpd_rating_a` | `ocpd_rating` |
+| `cpc_csa_mm2` | `cable_size_earth` |
+| `live_csa_mm2` | `cable_size` |
+| `polarity_confirmed` | `polarity` |
+| `circuit_designation` | `designation` |
+| `rcd_rating_ma` | `rcd_rating_a` |
+| `earth_loop_impedance_ze` | `ze` |
+| `prospective_fault_current` | `pfc` |
+
+Names in the LEFT column will NOT match the wire shape. If you must
+add a new mapping, see `KNOWN_FIELDS` + `FIELD_CORRECTIONS` in
+`src/extraction/sonnet-stream.js` and
+`src/extraction/field-name-corrections.js` respectively.

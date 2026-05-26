@@ -115,6 +115,7 @@ class ScenarioRunner {
     this.transcriptSentAt = []; // monotonic ns per transcript sent
     this.extractions = []; // raw extraction payloads
     this.askUsers = [];
+    this.askUserToolCallIds = new Set(); // dedupe ask_user_started by tool_call_id
     this.errors = [];
     this.firstExtractionAt = null;
     this.sessionAckAt = null;
@@ -138,6 +139,9 @@ class ScenarioRunner {
       return `readings=${readings} confirmations=${confs}`;
     }
     if (type === 'question') return `q=${(payload.question || '').slice(0, 60)}`;
+    if (type === 'ask_user_started') {
+      return `ask=${(payload.question || '').slice(0, 60)} reason=${payload.reason ?? '?'} ctx_field=${payload.context_field ?? 'null'} ctx_circuit=${payload.context_circuit ?? 'null'}`;
+    }
     if (type === 'cost_update') return `running=$${payload.running_cost ?? '?'}`;
     return JSON.stringify(payload).slice(0, 120);
   }
@@ -241,8 +245,40 @@ class ScenarioRunner {
           if (this.firstExtractionAt === null) this.firstExtractionAt = process.hrtime.bigint();
           this.extractions.push(msg);
         }
-        if (msg.type === 'question' && msg.question_type === 'ask_user') {
-          this.askUsers.push(msg);
+        // Count asks from BOTH wire shapes:
+        //   - legacy `type: "question"` with `question_type: "ask_user"`
+        //     (pre-Stage-6 / shadow-mode fallback path through
+        //     sonnet-stream.js QuestionGate)
+        //   - Stage 6 `type: "ask_user_started"` emitted by
+        //     stage6-dispatcher-ask.js:399 when the session advertises
+        //     `protocol_version: "stage6"` (the harness's default), AND
+        //     by the dialogue-engine wire helpers (buildScriptAsk /
+        //     buildScriptConfirm) which reuse the same wire shape.
+        //
+        // Filter out INFO-shape `ask_user_started` messages: the engine
+        // also uses this wire type for `finishMessage`, `cancelMessage`,
+        // and similar TTS-only announcements (via buildScriptInfo in
+        // helpers/wire-emit.js), distinguished by
+        // `expected_answer_shape: 'none'` and `reason: 'info'`. Those
+        // are spoken to the inspector but don't block on a reply, so
+        // ask_user_count assertions must skip them.
+        //
+        // Dedupe by `tool_call_id` when present so a retried emission for
+        // the same ask doesn't inflate the count. The Stage 6 dispatcher
+        // guards with DUPLICATE_TOOL_CALL_ID, but defence in depth here
+        // keeps assertions stable across future emit changes.
+        const isLegacyAsk = msg.type === 'question' && msg.question_type === 'ask_user';
+        const isStage6Ask = msg.type === 'ask_user_started';
+        const isInfoShape =
+          msg.expected_answer_shape === 'none' || msg.reason === 'info';
+        if ((isLegacyAsk || isStage6Ask) && !isInfoShape) {
+          const tcid = msg.tool_call_id ?? null;
+          if (tcid && this.askUserToolCallIds.has(tcid)) {
+            // duplicate; skip
+          } else {
+            if (tcid) this.askUserToolCallIds.add(tcid);
+            this.askUsers.push(msg);
+          }
         }
         if (msg.type === 'session_ack' && this.sessionAckAt === null) {
           this.sessionAckAt = process.hrtime.bigint();
