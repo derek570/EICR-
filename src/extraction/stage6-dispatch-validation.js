@@ -296,18 +296,30 @@ export function validateAskUser(input) {
   if (!ASK_USER_REASONS.includes(input.reason)) {
     return { code: 'invalid_reason', field: 'reason' };
   }
-  // context_field is nullable per the schema; only non-null values are
-  // enum-checked. CONTEXT_FIELD_ENUM itself contains null as a terminal
-  // member, but we special-case the null path so a 0 / '' / undefined does
-  // not silently sneak through an includes() check on an array that holds
-  // null.
-  if (input.context_field !== null && !CONTEXT_FIELD_ENUM.includes(input.context_field)) {
+  // context_field is nullable per the schema. Coerce undefined → null so a
+  // missing key is treated the same as an explicit null — the dispatcher's
+  // logging path already does `?? null` at line ~192, so the two sides
+  // agree on the semantic. Pre-coercion bug (session 1B496E8A turn-2,
+  // 2026-05-26 11:47:15): Sonnet emitted ask_user without a context_field
+  // key for a no-clarification recovery ("Sorry, I didn't catch that…").
+  // `input.context_field` was undefined; `!== null` was true; the enum
+  // .includes(undefined) was false; validator rejected with
+  // `invalid_context_field`. The wire-shape contract says "nullable" — a
+  // missing key IS the null case; tool-schema codegen makes the field
+  // optional, so absence is well-formed.
+  const ctxField = input.context_field ?? null;
+  if (ctxField !== null && !CONTEXT_FIELD_ENUM.includes(ctxField)) {
     return { code: 'invalid_context_field', field: 'context_field' };
   }
-  // context_circuit is nullable per the schema; only non-null values are
-  // integer-checked. Number.isInteger(null) is false so the explicit null
-  // guard is required.
-  if (input.context_circuit !== null && !Number.isInteger(input.context_circuit)) {
+  // context_circuit follows the same nullable + omittable contract.
+  // Number.isInteger(null) and Number.isInteger(undefined) both return
+  // false; coerce upstream so the integer check only fires on a real
+  // non-null value the caller affirmatively supplied. Same repro pinned
+  // the bug — Sonnet's recovery ask had no context_circuit key, the
+  // dispatcher rejected, the tool returned validation_error and
+  // SonnetStream disconnected ~2 s later.
+  const ctxCircuit = input.context_circuit ?? null;
+  if (ctxCircuit !== null && !Number.isInteger(ctxCircuit)) {
     return { code: 'invalid_context_circuit', field: 'context_circuit' };
   }
   if (!ASK_USER_ANSWER_SHAPES.includes(input.expected_answer_shape)) {

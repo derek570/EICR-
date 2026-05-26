@@ -357,6 +357,49 @@ describe('validateAskUser', () => {
     });
   });
 
+  // 2026-05-26 — session 1B496E8A turn-2 repro. Sonnet emitted a recovery
+  // ask ("Sorry, I didn't catch that…") in response to chitchat WITHOUT
+  // either context_field or context_circuit on the input (both nullable
+  // per the tool schema). Pre-fix, the validator's `!== null` guard let
+  // `undefined` through to enum/integer checks, which both returned false,
+  // and the ask was rejected with `invalid_context_circuit` →
+  // tool_error_count_per_round[0]=1 → SonnetStream disconnected ~2s later.
+  // Coercing undefined → null pre-check matches the dispatcher's own
+  // logging path (`input.context_circuit ?? null`) and the schema's
+  // nullable contract (absent key === null).
+  describe('missing-key tolerance (undefined === null per schema)', () => {
+    test('context_field absent → null → passes', () => {
+      const input = validInput();
+      delete input.context_field;
+      expect(validateAskUser(input)).toBeNull();
+    });
+    test('context_circuit absent → null → passes', () => {
+      const input = validInput();
+      delete input.context_circuit;
+      expect(validateAskUser(input)).toBeNull();
+    });
+    test('both context fields absent → passes (the session 1B496E8A recovery-ask shape)', () => {
+      const input = validInput();
+      delete input.context_field;
+      delete input.context_circuit;
+      expect(validateAskUser(input)).toBeNull();
+    });
+    test('context_circuit absent AND context_field="none" → passes (chitchat recovery)', () => {
+      const input = validInput();
+      delete input.context_circuit;
+      input.context_field = 'none';
+      expect(validateAskUser(input)).toBeNull();
+    });
+    test('explicit context_circuit:undefined → passes', () => {
+      const input = { ...validInput(), context_circuit: undefined };
+      expect(validateAskUser(input)).toBeNull();
+    });
+    test('explicit context_field:undefined → passes', () => {
+      const input = { ...validInput(), context_field: undefined };
+      expect(validateAskUser(input)).toBeNull();
+    });
+  });
+
   describe('invalid_expected_answer_shape', () => {
     test('unknown shape → {code:invalid_expected_answer_shape, field:expected_answer_shape}', () => {
       const input = { ...validInput(), expected_answer_shape: 'essay' };
