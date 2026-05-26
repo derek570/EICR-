@@ -432,7 +432,7 @@ describe('processRingContinuityTurn — inactive / entry', () => {
     expect(ws.sent[0].context_field).toBe('ring_rn_ohm');
   });
 
-  test('all-three volunteered on entry emits completion immediately', () => {
+  test('all-three volunteered on entry transitions to confirmation', () => {
     const session = buildSession();
     const ws = new MockWS();
     processRingContinuityTurn({
@@ -447,18 +447,28 @@ describe('processRingContinuityTurn — inactive / entry', () => {
       ring_rn_ohm: '0.43',
       ring_r2_ohm: '0.78',
     });
-    // State cleared on completion.
-    expect(session.ringContinuityScript).toBeFalsy();
-    // Wire: 1× extraction with all three readings, 1× completion info.
+    // 2026-05-26: state is NOT cleared at this point — the inspector
+    // gets a confirmation prompt before completion so they can amend
+    // any Deepgram-garbled value. State clears only on positive
+    // confirmation or cancel.
+    expect(session.ringContinuityScript.active).toBe(true);
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    // Wire: 1× extraction (3 readings) + 1× confirmation ask. The
+    // confirmation ask uses the `confirm_ring_continuity` reason and
+    // expects a value-shaped answer (yes / amend).
     expect(ws.sent).toHaveLength(2);
     expect(ws.sent[0].type).toBe('extraction');
     expect(ws.sent[0].result.readings).toHaveLength(3);
     expect(ws.sent[1]).toMatchObject({
       type: 'ask_user_started',
-      reason: 'info',
-      expected_answer_shape: 'none',
+      reason: 'confirm_ring_continuity',
+      context_circuit: 13,
+      expected_answer_shape: 'value',
     });
-    expect(ws.sent[1].question).toMatch(/got it/i);
+    expect(ws.sent[1].question).toMatch(/all correct\??/i);
+    expect(ws.sent[1].question).toContain('R1 0.43');
+    expect(ws.sent[1].question).toContain('Rn 0.43');
+    expect(ws.sent[1].question).toContain('R2 0.78');
   });
 });
 
@@ -517,7 +527,17 @@ describe('processRingContinuityTurn — active', () => {
       ring_rn_ohm: '0.43',
       ring_r2_ohm: '0.78',
     });
-    // Script cleared on completion.
+    // 2026-05-26: state moves to confirmation, not cleared. A
+    // positive "yes" on the next turn finalises and clears.
+    expect(session.ringContinuityScript.active).toBe(true);
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'yes.',
+      now: 16000,
+    });
     expect(session.ringContinuityScript).toBeFalsy();
   });
 
@@ -634,7 +654,7 @@ describe('processRingContinuityTurn — active', () => {
     expect(ws.sent[0].context_field).toBe('ring_r1_ohm');
   });
 
-  test('discontinuous CPC writes "∞" and finishes', () => {
+  test('discontinuous CPC writes "∞" and goes to confirmation', () => {
     const session = buildSession({
       13: { ring_r1_ohm: '0.43', ring_rn_ohm: '0.43' },
     });
@@ -655,6 +675,16 @@ describe('processRingContinuityTurn — active', () => {
       now: 2000,
     });
     expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('∞');
+    // 2026-05-26: all-three-filled triggers confirmation phase, not
+    // immediate completion. State clears on positive response.
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'yes',
+      now: 3000,
+    });
     expect(session.ringContinuityScript).toBeFalsy();
   });
 
@@ -739,7 +769,19 @@ describe('integration with ring-continuity-timeout', () => {
       transcriptText: 'Ring continuity for circuit 13. Lives 0.43, neutrals 0.43, earths 0.78.',
       now: 1000,
     });
-    // Bucket full → script cleared its own state AND the timer state.
+    // After R2 lands the script awaits confirmation — timer state is
+    // still tracked so the 60s partial-fill watcher can resume if the
+    // user walks away mid-confirmation.
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    // Positive confirmation completes — now script clears both its
+    // own state AND the timer state.
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'all correct',
+      now: 2000,
+    });
     expect(session.ringContinuityScript).toBeFalsy();
     expect(session.ringContinuityState?.has?.(13) ?? false).toBe(false);
   });
@@ -1372,7 +1414,16 @@ describe('Session 74201B27 repro — Fixes A+B salvage the dictation', () => {
       ring_rn_ohm: '0.75',
       ring_r2_ohm: '0.32',
     });
-    // Script cleared on completion.
+    // 2026-05-26: state goes to confirmation rather than clearing
+    // immediately; positive "yes" on the next turn clears.
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'yes',
+      now: 5000,
+    });
     expect(session.ringContinuityScript).toBeFalsy();
   });
 });
@@ -1524,5 +1575,276 @@ describe('entry-time designation lookup', () => {
     const entered = calls.find((c) => c.msg === 'stage6.ring_continuity_script_entered');
     expect(entered.fields.entry_designation_matched).toBe(false);
     expect(entered.fields.circuit_ref).toBe(13);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-of-loop confirmation (2026-05-26)
+//
+// Pre-fix: when all three slots filled, the script emitted a one-way
+// `buildScriptInfo` "Got it. R1 X, Rn Y, R2 Z." readback and cleared
+// state. Inspectors hit this trap when Deepgram garbled a reading
+// mid-loop — re-entering "ring continuity for circuit N" replayed the
+// readback with no chance to amend. Field-test ask 2026-05-26: ask for
+// confirmation, and accept named-field values as overwrites during the
+// confirmation phase.
+// ---------------------------------------------------------------------------
+
+describe('processRingContinuityTurn — confirmation phase (2026-05-26)', () => {
+  /** Drive the script to all-three-filled (R2 lands last). State will
+   *  end the call with `awaiting_confirmation = true`. */
+  function driveToConfirmation(session, ws) {
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13. Lives 0.50, neutrals 0.60, earths 0.70.',
+      now: 1000,
+    });
+  }
+
+  test('all-three-filled emits confirmation ask (not info)', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    const last = ws.sent[ws.sent.length - 1];
+    expect(last.reason).toBe('confirm_ring_continuity');
+    expect(last.expected_answer_shape).toBe('value');
+    expect(last.question).toMatch(/all correct\??/i);
+    expect(last.question).toMatch(/R1 0\.5/);
+    expect(last.question).toMatch(/Rn 0\.6/);
+    expect(last.question).toMatch(/R2 0\.7/);
+  });
+
+  test('positive "yes" finalises and clears state', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+    ws.sent.length = 0;
+
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'yes.',
+      now: 2000,
+    });
+    expect(session.ringContinuityScript).toBeFalsy();
+    // The completion path emits the legacy "Got it." info readback.
+    const last = ws.sent[ws.sent.length - 1];
+    expect(last.reason).toBe('info');
+    expect(last.question).toMatch(/got it/i);
+  });
+
+  test('positive "all correct" finalises', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'all correct',
+      now: 2000,
+    });
+    expect(session.ringContinuityScript).toBeFalsy();
+  });
+
+  test('positive "okay" finalises', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'okay',
+      now: 2000,
+    });
+    expect(session.ringContinuityScript).toBeFalsy();
+  });
+
+  test('named-field overwrite during confirmation replaces value + re-emits confirm', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+    ws.sent.length = 0;
+
+    // Inspector spotted that R1 (lives) was wrong — say the right value.
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'lives 0.55',
+      now: 2000,
+    });
+
+    // R1 overwritten in snapshot AND in script state.
+    expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.55');
+    expect(session.ringContinuityScript.values.ring_r1_ohm).toBe('0.55');
+    // Still awaiting confirmation (script not cleared).
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+
+    // Wire: 1× extraction (R1 overwrite), 1× re-emitted confirmation
+    // showing the new value.
+    expect(ws.sent).toHaveLength(2);
+    expect(ws.sent[0].type).toBe('extraction');
+    expect(ws.sent[0].result.readings[0]).toMatchObject({
+      field: 'ring_r1_ohm',
+      circuit: 13,
+      value: '0.55',
+    });
+    expect(ws.sent[1].reason).toBe('confirm_ring_continuity');
+    expect(ws.sent[1].question).toMatch(/R1 0\.55/);
+  });
+
+  test('re-entry while awaiting confirmation re-emits the prompt', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+    ws.sent.length = 0;
+
+    // Inspector re-says the trigger ("just want to check those readings").
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 2000,
+    });
+
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    expect(ws.sent).toHaveLength(1);
+    expect(ws.sent[0].reason).toBe('confirm_ring_continuity');
+  });
+
+  test('cancel during confirmation clears state and preserves writes', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+    ws.sent.length = 0;
+
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cancel',
+      now: 2000,
+    });
+
+    expect(session.ringContinuityScript).toBeFalsy();
+    // Values written before confirmation stay on the certificate.
+    expect(session.stateSnapshot.circuits[13]).toMatchObject({
+      ring_r1_ohm: '0.50',
+      ring_rn_ohm: '0.60',
+      ring_r2_ohm: '0.70',
+    });
+  });
+
+  test('topic switch during confirmation exits with fallthrough=true', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Zs is 0.62 on circuit 6.',
+      now: 2000,
+    });
+
+    expect(out).toEqual({
+      handled: true,
+      fallthrough: true,
+      transcriptText: 'Zs is 0.62 on circuit 6.',
+    });
+    // Topic switch clears the script — Sonnet picks up the Zs reading.
+    expect(session.ringContinuityScript).toBeFalsy();
+  });
+
+  test('off-topic chatter falls through without clearing state', () => {
+    const session = buildSession();
+    const ws = new MockWS();
+    driveToConfirmation(session, ws);
+    ws.sent.length = 0;
+
+    // Random utterance that isn't a topic switch, value, or confirm.
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'the cooker is on the right',
+      now: 2000,
+    });
+
+    expect(out.handled).toBe(true);
+    expect(out.fallthrough).toBe(true);
+    // State survives — inspector can amend or confirm later.
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    // No new wire emit during fall-through.
+    expect(ws.sent).toEqual([]);
+  });
+
+  test('re-entry with all three already in snapshot goes straight to confirmation', () => {
+    // Bug-fix repro: pre-fix this case emitted a one-way "Got it." info
+    // and cleared state — no chance to amend.
+    const session = buildSession({
+      13: { ring_r1_ohm: '0.43', ring_rn_ohm: '0.50', ring_r2_ohm: '0.71' },
+    });
+    const ws = new MockWS();
+
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+
+    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
+    const last = ws.sent[ws.sent.length - 1];
+    expect(last.reason).toBe('confirm_ring_continuity');
+    expect(last.question).toMatch(/R1 0\.43/);
+    expect(last.question).toMatch(/Rn 0\.5/);
+    expect(last.question).toMatch(/R2 0\.71/);
+  });
+
+  test('detectConfirmationPositive recognises the canonical positive forms', () => {
+    const positives = [
+      'yes',
+      'yeah',
+      'yep',
+      'yup',
+      'ok',
+      'okay',
+      'correct',
+      'all correct',
+      'all good',
+      'all right',
+      "that's correct",
+      "that's right",
+      'confirmed',
+      'confirm',
+    ];
+    for (const t of positives) {
+      expect(__testing__.detectConfirmationPositive(t)).toBe(true);
+    }
+  });
+
+  test('detectConfirmationPositive does NOT match filler / unrelated words', () => {
+    const negatives = [
+      'right then', // "right" alone is too common as filler to count
+      'good', // ditto
+      'no',
+      'lives 0.55',
+      'the cooker is on the right',
+      '',
+    ];
+    for (const t of negatives) {
+      expect(__testing__.detectConfirmationPositive(t)).toBe(false);
+    }
   });
 });

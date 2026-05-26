@@ -424,6 +424,73 @@ function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind }) {
 }
 
 /**
+ * Build the end-of-loop confirmation ask. Reads the three filled values
+ * back to the inspector and waits for either "yes/correct/etc" (→ real
+ * finishScript) or a named-field overwrite ("lives 0.65" → replace R1
+ * + re-emit confirmation). Added 2026-05-26 in response to the
+ * field-test ask: Deepgram garbles continuity readings, and the
+ * pre-fix flow (a one-way `buildScriptInfo` "Got it." readback) gave
+ * no opportunity to amend after re-entry. Sits on the same
+ * `ask_user_started` wire shape as `buildScriptAsk` so iOS doesn't
+ * need a new payload type; the distinguishing marker is the `confirm`
+ * tool_call_id suffix and `reason: 'confirm_ring_continuity'`.
+ */
+function buildScriptConfirm({ sessionId, circuit_ref, values, now }) {
+  const r1 = values.ring_r1_ohm ?? '?';
+  const rn = values.ring_rn_ohm ?? '?';
+  const r2 = values.ring_r2_ohm ?? '?';
+  return {
+    type: 'ask_user_started',
+    tool_call_id: `srv-rcs-${sessionId}-${circuit_ref}-confirm-${now}`,
+    question: `R1 ${r1}, Rn ${rn}, R2 ${r2}. All correct?`,
+    reason: 'confirm_ring_continuity',
+    context_field: null,
+    context_circuit: circuit_ref,
+    expected_answer_shape: 'value',
+  };
+}
+
+/**
+ * Detect a positive confirmation response. Narrow vocabulary on
+ * purpose — "right" / "good" alone are too common as filler words to
+ * count as confirmation; the inspector must say one of these explicit
+ * forms. Anything else routes to the overwrite branch (named-field
+ * value) or fall-through (Sonnet handles).
+ */
+function detectConfirmationPositive(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return /\b(?:yes|yeah|yep|yup|ok(?:ay)?|correct|confirm(?:ed)?|all\s+(?:correct|good|right)|that's\s+(?:correct|right))\b/i.test(
+    text
+  );
+}
+
+/**
+ * Transition the script into confirmation mode. Sets the flag,
+ * emits the confirmation ask, and logs. Called from both the
+ * entry path (all 3 already filled at entry) and the active path
+ * (all 3 just became filled after a write).
+ */
+function transitionToConfirmation(ws, session, sessionId, now, logger) {
+  const state = session.ringContinuityScript;
+  if (!state) return;
+  state.awaiting_confirmation = true;
+  safeSend(
+    ws,
+    buildScriptConfirm({
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      values: state.values,
+      now,
+    })
+  );
+  logger?.info?.('stage6.ring_continuity_script_awaiting_confirmation', {
+    sessionId,
+    circuit_ref: state.circuit_ref,
+    values: { ...state.values },
+  });
+}
+
+/**
  * Build a completion / cancellation TTS payload. We piggyback on
  * `ask_user_started` because that's the wire shape iOS already plays
  * through ElevenLabs; the alternative would be a new wire type and an
@@ -654,8 +721,12 @@ export function processRingContinuityTurn(ctx) {
 
     const nextField = nextMissingField(session.ringContinuityScript.values);
     if (!nextField) {
-      // All three filled (volunteered + existing) — emit completion and clear.
-      finishScript(ws, session, sessionId, now, logger);
+      // All three filled (volunteered + existing) — ask the inspector
+      // to confirm, with the chance to overwrite any garbled reading.
+      // Was finishScript(); replaced 2026-05-26 to close the "stuck
+      // with whatever Deepgram heard first" trap. See
+      // `buildScriptConfirm` doc for the wire-shape choice.
+      transitionToConfirmation(ws, session, sessionId, now, logger);
       return { handled: true, fallthrough: false };
     }
     safeSend(
@@ -726,6 +797,60 @@ export function processRingContinuityTurn(ctx) {
       textPreview: text.slice(0, 80),
     });
     clearScript(session);
+    return { handled: true, fallthrough: true, transcriptText };
+  }
+
+  // 3.5. Confirmation mode — all 3 values are filled and we're waiting
+  //      for the inspector to confirm or correct. Field-test ask
+  //      2026-05-26: Deepgram garbles continuity readings and the
+  //      pre-fix flow gave no opportunity to amend (re-entry just
+  //      replayed the readback).
+  //
+  //      Resolution order on this turn:
+  //        a) Named-field overwrite ("lives 0.65" / "neutrals 0.42" /
+  //           "CPC 0.71") → overwrite that slot, re-emit confirmation
+  //           with the updated values, stay in confirmation mode.
+  //        b) Positive confirmation ("yes" / "all correct" / etc.) →
+  //           run the real finishScript and clear state.
+  //        c) Inspector re-saying the entry trigger ("ring continuity
+  //           for circuit 1") → re-emit the confirmation prompt.
+  //        d) Otherwise → fall through to Sonnet without clearing.
+  //           State survives so a follow-up amend or confirm can land.
+  //           Hard timeout (180s) eventually clears stale state.
+  if (state.awaiting_confirmation) {
+    const named = extractNamedFieldValues(text);
+    if (named.length > 0) {
+      // Overwrite is intentional during confirmation — bypasses the
+      // "skip if already set" guard the normal value loop applies.
+      const overwrites = [];
+      for (const w of named) {
+        applyWrite(session, state.circuit_ref, w.field, w.value, now);
+        overwrites.push(w);
+      }
+      if (overwrites.length > 0) {
+        safeSend(ws, buildExtractionPayload(state.circuit_ref, overwrites));
+      }
+      transitionToConfirmation(ws, session, sessionId, now, logger);
+      logger?.info?.('stage6.ring_continuity_script_confirmation_amended', {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        overwritten: overwrites.map((w) => w.field),
+      });
+      return { handled: true, fallthrough: false };
+    }
+    if (detectConfirmationPositive(text)) {
+      finishScript(ws, session, sessionId, now, logger);
+      return { handled: true, fallthrough: false };
+    }
+    if (detectEntry(text).matched) {
+      transitionToConfirmation(ws, session, sessionId, now, logger);
+      return { handled: true, fallthrough: false };
+    }
+    logger?.info?.('stage6.ring_continuity_script_confirmation_idle', {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      textPreview: text.slice(0, 80),
+    });
     return { handled: true, fallthrough: true, transcriptText };
   }
 
@@ -909,10 +1034,12 @@ export function processRingContinuityTurn(ctx) {
     safeSend(ws, buildExtractionPayload(state.circuit_ref, writes));
   }
 
-  // 7. Are we done?
+  // 7. Are we done filling? Yes → confirmation phase. No → ask next.
+  //    Confirmation gives the inspector a chance to amend any reading
+  //    Deepgram garbled before we finalise. See `buildScriptConfirm`.
   const nextField = nextMissingField(state.values);
   if (!nextField) {
-    finishScript(ws, session, sessionId, now, logger);
+    transitionToConfirmation(ws, session, sessionId, now, logger);
     return { handled: true, fallthrough: false };
   }
 
@@ -1080,5 +1207,7 @@ export const __testing__ = {
   clearScript,
   buildScriptAsk,
   buildScriptInfo,
+  buildScriptConfirm,
   buildExtractionPayload,
+  detectConfirmationPositive,
 };
