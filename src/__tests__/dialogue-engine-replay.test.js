@@ -87,37 +87,6 @@ function expectIdentical(engineRun, legacyRun) {
   expect(engineRun.snapshot.circuits).toEqual(legacyRun.snapshot.circuits);
 }
 
-/**
- * Variant for scenarios that drive all three ring fields filled.
- * 2026-05-26: the legacy ring script now ends a fully-filled bucket
- * with a `confirm_ring_continuity` ask (so the inspector can amend a
- * Deepgram-garbled reading) instead of the one-way `info` "Got it."
- * readback. The dialogue-engine schema still emits the old info shape
- * — porting confirmation to the engine is out of scope for this fix
- * (dead-code path; engine ships behind a later PR per the file header).
- *
- * So byte-identity holds for every emit EXCEPT the last on the legacy
- * side. This helper splits the assertion: identical prefix, then
- * separate shape checks on the divergent final emits.
- */
-function expectIdenticalUntilCompletion(engineRun, legacyRun) {
-  // All emits except the legacy's final confirmation-ask must match
-  // the engine's emit sequence exactly.
-  const legacySansFinal = legacyRun.sent.slice(0, -1);
-  expect(engineRun.sent.slice(0, legacySansFinal.length)).toEqual(legacySansFinal);
-  expect(engineRun.snapshot.circuits).toEqual(legacyRun.snapshot.circuits);
-
-  // Legacy: confirmation ask. Engine: still emits "Got it." info.
-  const legacyFinal = legacyRun.sent[legacyRun.sent.length - 1];
-  expect(legacyFinal.reason).toBe('confirm_ring_continuity');
-  expect(legacyFinal.expected_answer_shape).toBe('value');
-
-  const engineFinal = engineRun.sent[engineRun.sent.length - 1];
-  expect(engineFinal.reason).toBe('info');
-  expect(engineFinal.expected_answer_shape).toBe('none');
-  expect(engineFinal.question).toMatch(/got it/i);
-}
-
 // ---------------------------------------------------------------------------
 // Ring continuity scenarios
 // ---------------------------------------------------------------------------
@@ -134,9 +103,7 @@ describe('replay — ring continuity', () => {
     const initialCircuits = { 13: {} };
     const engineRun = runScenario(engineRing, transcripts, initialCircuits);
     const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
-    // Reaches all-three-filled — legacy now emits a confirmation ask,
-    // engine still emits the old "Got it." info. See helper doc.
-    expectIdenticalUntilCompletion(engineRun, legacyRun);
+    expectIdentical(engineRun, legacyRun);
   });
 
   test('74201B27: entry without circuit → designation answer drains pending writes', () => {
@@ -149,8 +116,7 @@ describe('replay — ring continuity', () => {
     const initialCircuits = { 1: { circuit_designation: 'downstairs sockets' } };
     const engineRun = runScenario(engineRing, transcripts, initialCircuits);
     const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
-    // Reaches all-three-filled — see helper doc.
-    expectIdenticalUntilCompletion(engineRun, legacyRun);
+    expectIdentical(engineRun, legacyRun);
   });
 
   test('361A638D: bare ring entry → value-only turns queue → designation resolves', () => {
@@ -213,9 +179,7 @@ describe('replay — ring continuity', () => {
     const initialCircuits = { 7: {} };
     const engineRun = runScenario(engineRing, transcripts, initialCircuits);
     const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
-    // Reaches all-three-filled — legacy now asks "All correct?", engine
-    // still emits the old "Got it." info. See helper doc.
-    expectIdenticalUntilCompletion(engineRun, legacyRun);
+    expectIdentical(engineRun, legacyRun);
   });
 
   test('different ring entry mid-script switches circuit', () => {

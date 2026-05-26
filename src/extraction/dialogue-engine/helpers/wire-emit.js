@@ -108,6 +108,36 @@ function formatCircuitList(refs) {
 }
 
 /**
+ * Build the end-of-loop confirmation ask. Used by schemas that opt in
+ * via `confirmationMessage(values)` — e.g. ring-continuity asks "R1 X,
+ * Rn Y, R2 Z. All correct?" so the inspector can amend a Deepgram-
+ * garbled reading before completion. Mirrors `buildScriptAsk`'s
+ * `ask_user_started` shape so iOS doesn't need a new payload type;
+ * distinguished by the `confirm` tool_call_id segment and the
+ * schema-supplied `reason`. Byte-identical to the legacy
+ * ring-continuity-script.js `buildScriptConfirm` when called with the
+ * same prefix / sessionId / circuit_ref / now arguments.
+ */
+export function buildScriptConfirm({
+  toolCallIdPrefix,
+  sessionId,
+  circuit_ref,
+  question,
+  reason,
+  now,
+}) {
+  return {
+    type: 'ask_user_started',
+    tool_call_id: `${toolCallIdPrefix}-${sessionId}-${circuit_ref}-confirm-${now}`,
+    question,
+    reason,
+    context_field: null,
+    context_circuit: circuit_ref,
+    expected_answer_shape: 'value',
+  };
+}
+
+/**
  * Build a completion / cancellation TTS payload. Piggybacks on
  * `ask_user_started` with `expected_answer_shape: 'none'` because that's
  * the wire shape iOS already plays through ElevenLabs; iOS treats the

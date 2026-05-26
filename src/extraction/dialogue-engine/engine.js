@@ -37,6 +37,7 @@ import { applyWrite } from './helpers/snapshot-write.js';
 import {
   buildScriptAsk,
   buildScriptInfo,
+  buildScriptConfirm,
   buildExtractionPayload,
   buildDisambiguationQuestion,
   safeSend,
@@ -330,7 +331,44 @@ function initScriptState(session, schema, circuit_ref, now) {
     // before falling through to Sonnet, mirroring circuit_retry.
     pending_designation_candidates: null,
     designation_disambiguation_retry_attempted: false,
+    // 2026-05-26: end-of-loop confirmation. Set true by the engine
+    // when all slots fill and the schema declares a `confirmation`
+    // block. The next active turn runs through the confirmation
+    // branch: named-field replies overwrite + re-emit confirmation,
+    // positive replies call finishScript, anything else falls
+    // through to Sonnet without clearing state.
+    awaiting_confirmation: false,
   };
+}
+
+/**
+ * 2026-05-26: transition the active script to end-of-loop confirmation.
+ * Sets the flag and emits the schema's confirmation ask. Called from
+ * `askNextOrFinish` when all slots are filled and the schema declares
+ * a `confirmation` block. Mirrors the legacy
+ * `ring-continuity-script.js#transitionToConfirmation` shape exactly so
+ * the byte-identical replay tests stay green.
+ */
+function transitionToConfirmation({ ws, session, sessionId, schema, logger, now }) {
+  const state = session.dialogueScriptState;
+  if (!state || !schema?.confirmation?.buildMessage) return;
+  state.awaiting_confirmation = true;
+  safeSend(
+    ws,
+    buildScriptConfirm({
+      toolCallIdPrefix: schema.toolCallIdPrefix,
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      question: schema.confirmation.buildMessage({ values: state.values }),
+      reason: schema.confirmation.reason,
+      now,
+    })
+  );
+  logger?.info?.(`${schema.logEventPrefix}_awaiting_confirmation`, {
+    sessionId,
+    circuit_ref: state.circuit_ref,
+    values: { ...state.values },
+  });
 }
 
 /**
@@ -738,6 +776,67 @@ function runActivePath({
       textPreview: text.slice(0, 80),
     });
     clearScriptState(session);
+    return { handled: true, fallthrough: true, transcriptText };
+  }
+
+  // 3.5. Confirmation reply (2026-05-26). When the engine emitted the
+  //      schema's `confirmation` ask last turn, route this turn's text
+  //      through the four-way confirmation branch:
+  //        a) Named-field overwrite → replace the slot value, re-emit
+  //           confirmation with the updated readings. This is the
+  //           explicit "say a new reading to amend an existing one"
+  //           semantics — bypasses the normal skip-if-set guard.
+  //        b) Schema-supplied positive confirmation → run finishScript
+  //           (the canonical "Got it. R1 X, Rn Y, R2 Z." path) and
+  //           clear state.
+  //        c) Re-entry trigger ("ring continuity for circuit N" or
+  //           equivalent for other schemas) → re-emit the confirmation
+  //           ask. Handles inspectors re-stating the entry to revisit
+  //           the readback.
+  //        d) Anything else → fall through to Sonnet without clearing.
+  //           State survives so the inspector can still amend or
+  //           confirm on a later turn. Hard timeout eventually clears
+  //           stale awaiting_confirmation state.
+  if (state.awaiting_confirmation && schema.confirmation?.buildMessage) {
+    const named = extractNamedFieldValues(text, schema.slots);
+    if (named.length > 0) {
+      const overwrites = [];
+      for (const w of named) {
+        const slot = schema.slots.find((s) => s.field === w.field);
+        applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
+        state.values[w.field] = w.value;
+        overwrites.push(w);
+      }
+      if (overwrites.length > 0) {
+        safeSend(
+          ws,
+          buildExtractionPayload(state.circuit_ref, overwrites, schema.extractionSource)
+        );
+      }
+      transitionToConfirmation({ ws, session, sessionId, schema, logger, now });
+      logger?.info?.(`${schema.logEventPrefix}_confirmation_amended`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        overwritten: overwrites.map((w) => w.field),
+      });
+      return { handled: true, fallthrough: false };
+    }
+    if (
+      typeof schema.confirmation.detectPositive === 'function' &&
+      schema.confirmation.detectPositive(text)
+    ) {
+      finishScript({ ws, session, sessionId, schema, logger, now });
+      return { handled: true, fallthrough: false };
+    }
+    if (detectEntry(text, schema).matched) {
+      transitionToConfirmation({ ws, session, sessionId, schema, logger, now });
+      return { handled: true, fallthrough: false };
+    }
+    logger?.info?.(`${schema.logEventPrefix}_confirmation_idle`, {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      textPreview: text.slice(0, 80),
+    });
     return { handled: true, fallthrough: true, transcriptText };
   }
 
@@ -1276,6 +1375,17 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
         circuit_ref: state.circuit_ref,
         values: { ...state.values },
       });
+      return { handled: true, fallthrough: false };
+    }
+    // End-of-loop confirmation (2026-05-26). Same opt-in pattern as
+    // `postCompletionAsk` above: when the schema declares a
+    // `confirmation` block and the engine hasn't emitted the prompt
+    // yet on this script-run, emit it instead of finishing. The
+    // active-path's confirmation intercept routes the inspector's
+    // reply on the next turn. Mutually exclusive with bulk-apply in
+    // practice (ring-continuity has confirmation; RCD has bulk-apply).
+    if (schema.confirmation?.buildMessage && !state.awaiting_confirmation) {
+      transitionToConfirmation({ ws, session, sessionId, schema, logger, now });
       return { handled: true, fallthrough: false };
     }
     finishScript({ ws, session, sessionId, schema, logger, now });

@@ -168,7 +168,26 @@ describe('engine — ring continuity', () => {
       transcriptText: '0.78',
       now: 4000,
     });
-    // Last emit is the completion info
+    // 2026-05-26: all-three-filled emits the confirmation ask first
+    // (so the inspector can amend a Deepgram-garbled reading). Used
+    // to be the one-way "Got it." info; that now lands after the
+    // positive-confirmation turn below.
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      reason: 'confirm_ring_continuity',
+      question: 'R1 0.43, Rn 0.43, R2 0.78. All correct?',
+      expected_answer_shape: 'value',
+    });
+    expect(session.dialogueScriptState.awaiting_confirmation).toBe(true);
+
+    // Inspector confirms → real finishScript runs and clears state.
+    out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'yes',
+      now: 5000,
+    });
     expect(ws.sent.at(-1)).toMatchObject({
       type: 'ask_user_started',
       reason: 'info',

@@ -99,6 +99,26 @@ const topicSwitchTriggers = [
   /\bpolarity\b/i,
 ];
 
+// End-of-loop confirmation (2026-05-26). After all three slots fill,
+// the engine asks "R1 X, Rn Y, R2 Z. All correct?" instead of
+// finishing immediately so the inspector can amend a Deepgram-garbled
+// reading. Mirrors the legacy `ring-continuity-script.js` confirmation
+// flow byte-for-byte — same question text, same `confirm_ring_continuity`
+// reason on the wire, same positive-vocabulary detector.
+function buildRingContinuityConfirmation({ values }) {
+  const r1 = values.ring_r1_ohm ?? '?';
+  const rn = values.ring_rn_ohm ?? '?';
+  const r2 = values.ring_r2_ohm ?? '?';
+  return `R1 ${r1}, Rn ${rn}, R2 ${r2}. All correct?`;
+}
+
+function detectRingContinuityPositive(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return /\b(?:yes|yeah|yep|yup|ok(?:ay)?|correct|confirm(?:ed)?|all\s+(?:correct|good|right)|that's\s+(?:correct|right))\b/i.test(
+    text
+  );
+}
+
 export const ringContinuitySchema = {
   name: 'ring_continuity',
   triggers,
@@ -117,6 +137,17 @@ export const ringContinuitySchema = {
     const rn = values.ring_rn_ohm ?? '?';
     const r2 = values.ring_r2_ohm ?? '?';
     return `Got it. R1 ${r1}, Rn ${rn}, R2 ${r2}.`;
+  },
+  // 2026-05-26: confirmation gate. When the engine sees all slots
+  // filled, it emits `confirmationMessage(values)` as an
+  // `ask_user_started` (reason `confirmation.reason`) instead of
+  // finishing. The next turn runs through the engine's confirmation
+  // branch which routes positive replies to finishScript and
+  // named-field replies to overwrite-and-re-emit.
+  confirmation: {
+    reason: 'confirm_ring_continuity',
+    buildMessage: buildRingContinuityConfirmation,
+    detectPositive: detectRingContinuityPositive,
   },
   // Sync the 60s timeout module's per-circuit timestamp on every write
   // so its findExpiredPartial sees an up-to-date last-turn-at.
