@@ -97,6 +97,70 @@ describe('redactPiiInPlace', () => {
     expect(info.supplyData).not.toBe(supply);
   });
 
+  test('preserves non-plain objects (Date, Map, Set, Buffer, RegExp) without flattening', () => {
+    // Regression: an earlier version of this fix used `{ ...value }` to
+    // copy-on-write nested objects, which silently destroyed non-plain
+    // values — `{...new Date()}` is `{}`, `{...new Map([['k','v']])}`
+    // is `{}`, `{...Buffer.from('hi')}` is `{0: 104, 1: 105}`, etc. The
+    // old in-place walker happened to be safe because `Object.keys(date)`
+    // returns []. The `isPlainObject` guard preserves that behaviour.
+    const date = new Date('2026-05-27T12:00:00Z');
+    const map = new Map([['k', 'v']]);
+    const set = new Set([1, 2, 3]);
+    const buf = Buffer.from('hi');
+    const regex = /abc/g;
+    class CustomClass {
+      constructor() {
+        this.address = 'should-not-be-redacted-on-class-instance';
+      }
+    }
+    const instance = new CustomClass();
+
+    const info = {
+      jobId: 'abc',
+      startedAt: date,
+      cache: map,
+      seen: set,
+      payload: buf,
+      pattern: regex,
+      custom: instance,
+    };
+    redactPiiInPlace(info);
+
+    // Non-plain values must be passed through by reference, not flattened.
+    expect(info.startedAt).toBe(date);
+    expect(info.cache).toBe(map);
+    expect(info.seen).toBe(set);
+    expect(info.payload).toBe(buf);
+    expect(info.pattern).toBe(regex);
+    // Class instances are also non-plain — left alone (mirrors old
+    // behaviour). Note: their PII properties are NOT redacted; the
+    // logger is conservative-by-design (PII scanning is for plain meta
+    // objects, not domain models). Documented here as the deliberate
+    // trade-off.
+    expect(info.custom).toBe(instance);
+    expect(info.custom.address).toBe('should-not-be-redacted-on-class-instance');
+  });
+
+  test('shared sub-graph: same nested object referenced twice is cloned twice', () => {
+    // Documents (does not optimise) the alias-loss in emitted logs:
+    // if two meta keys reference the same underlying object, each gets
+    // its own clone in the output. Caller's original is untouched. Pin
+    // the behaviour so a future "share-clone-via-Map" optimisation
+    // doesn't accidentally restore the cross-mutation hazard.
+    const shared = { address: '1 Test St', postcode: 'TS1 1AA' };
+    const info = { primary: shared, mirror: shared };
+    redactPiiInPlace(info);
+
+    // Both copies redacted, but distinct references — and original is
+    // unmutated.
+    expect(info.primary.address).toBe('[REDACTED]');
+    expect(info.mirror.address).toBe('[REDACTED]');
+    expect(info.primary).not.toBe(info.mirror);
+    expect(shared.address).toBe('1 Test St');
+    expect(shared.postcode).toBe('TS1 1AA');
+  });
+
   test('ignores arrays and primitive inputs', () => {
     // Arrays are intentionally skipped — winston doesn't pass arrays as info
     // and PII rarely sits in array form. Keeps the function simple.
