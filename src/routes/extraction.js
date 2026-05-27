@@ -3073,16 +3073,44 @@ router.post(
  *
  * POST /api/analyze-document
  */
+// Multi-photo upload caps. Anthropic's vision API accepts up to 100
+// images per request; we cap at 12 here because (a) it covers the
+// realistic worst case of a 4-page EICR + a couple of handwritten
+// supplement sheets, and (b) it bounds per-request cost so a runaway
+// upload can't bill $5+ in one call. The legacy `photo` field stays
+// alongside `photos[]` so older iOS clients (TestFlight builds shipped
+// before this change) keep working without a forced re-deploy.
+const DOCUMENT_MAX_PHOTOS = 12;
+
 router.post(
   '/analyze-document',
   auth.requireAuth,
-  documentUpload.single('photo'),
+  documentUpload.fields([
+    { name: 'photos', maxCount: DOCUMENT_MAX_PHOTOS },
+    { name: 'photo', maxCount: 1 },
+  ]),
   async (req, res) => {
-    const tempPath = req.file?.path;
+    // Gather every uploaded file (both new `photos[]` and legacy
+    // singular `photo`) into one ordered array so the rest of the
+    // handler doesn't care which field name the client used.
+    const photosField = Array.isArray(req.files?.photos) ? req.files.photos : [];
+    const photoField = Array.isArray(req.files?.photo) ? req.files.photo : [];
+    const allFiles = [...photosField, ...photoField];
+    const tempPaths = allFiles.map((f) => f.path);
 
     try {
-      if (!req.file) {
+      if (allFiles.length === 0) {
         return res.status(400).json({ error: 'No photo uploaded' });
+      }
+      // Total-count guard. Multer's `.fields([{photos:12},{photo:1}])`
+      // enforces per-field caps independently, so a client that posts
+      // 12 files in `photos[]` AND 1 in `photo` would otherwise sneak
+      // 13 files past the cap. Belt-and-braces with the per-field
+      // limits so cost ceiling holds regardless of field-name shape.
+      if (allFiles.length > DOCUMENT_MAX_PHOTOS) {
+        return res.status(413).json({
+          error: `Too many files (${allFiles.length}). Maximum is ${DOCUMENT_MAX_PHOTOS} per upload.`,
+        });
       }
 
       const anthropicKey = process.env.ANTHROPIC_API_KEY;
@@ -3092,68 +3120,120 @@ router.post(
 
       const model = (process.env.DOC_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
 
-      // Branch on PDF vs image. Detect via Content-Type with a magic-byte
-      // backstop because some HTTP clients (and our own iOS Alamofire
-      // multipart) can mislabel the part. PDF files start with "%PDF".
-      let fileBytes = await fs.readFile(tempPath);
-      const looksLikePdf =
-        fileBytes.length >= 4 &&
-        fileBytes[0] === 0x25 &&
-        fileBytes[1] === 0x50 &&
-        fileBytes[2] === 0x44 &&
-        fileBytes[3] === 0x46;
-      const isPdf = req.file.mimetype === 'application/pdf' || looksLikePdf;
+      // Per-file branch: detect PDF vs image with a magic-byte backstop
+      // (some HTTP clients, including iOS Alamofire multipart, can
+      // mislabel the mimetype). Build one Anthropic content block per
+      // file. The model treats N image blocks as pages of a single
+      // document, which is exactly what we want for a multi-page
+      // schedule of test results photographed one page at a time.
+      const MAX_BASE64_BYTES = 5 * 1024 * 1024;
+      const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
+      const MAX_PDF_BYTES = 32 * 1024 * 1024;
 
-      logger.info('Document extraction requested', {
-        userId: req.user.id,
-        fileSize: req.file.size,
-        mimetype: req.file.mimetype,
-        isPdf,
-        model,
-      });
+      const contentBlocks = [];
+      let pdfCount = 0;
+      let imageCount = 0;
+      let totalBytesUploaded = 0;
 
-      if (!isPdf) {
-        // Anthropic's image vision rejects base64 payloads larger than ~5MB.
-        // iOS already scales client-side via ImageScaler (max 2048px, JPEG
-        // 0.80) but the web client can still exceed the cap. Mirror the CCU
-        // resize pattern. PDFs do NOT need this — Anthropic accepts up to
-        // 32MB / 100 pages natively in the document content block.
-        const MAX_BASE64_BYTES = 5 * 1024 * 1024;
-        const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
+      for (let i = 0; i < allFiles.length; i++) {
+        const file = allFiles[i];
+        totalBytesUploaded += file.size;
+        let fileBytes = await fs.readFile(file.path);
+        const looksLikePdf =
+          fileBytes.length >= 4 &&
+          fileBytes[0] === 0x25 &&
+          fileBytes[1] === 0x50 &&
+          fileBytes[2] === 0x44 &&
+          fileBytes[3] === 0x46;
+        const isPdf = file.mimetype === 'application/pdf' || looksLikePdf;
 
-        if (fileBytes.length > MAX_RAW_BYTES) {
-          logger.info('Document image too large for API, resizing with sharp', {
-            originalBytes: fileBytes.length,
-            maxBytes: MAX_RAW_BYTES,
-          });
+        if (isPdf) {
+          if (fileBytes.length > MAX_PDF_BYTES) {
+            return res.status(413).json({
+              error: `PDF #${i + 1} exceeds Anthropic's 32MB limit (${(fileBytes.length / 1024 / 1024).toFixed(1)}MB). Try a smaller or split file.`,
+            });
+          }
+          pdfCount += 1;
+        } else {
+          // ALWAYS transcode non-PDF input through sharp's JPEG encoder.
+          // The web picker accepts `image/*` (PNG screenshots, HEIC from
+          // iPhone library, WebP, GIF) but the Anthropic content block
+          // hard-codes `media_type: 'image/jpeg'` below. Without the
+          // forced transcode we'd send PNG bytes with a JPEG MIME label,
+          // which Anthropic may reject or misinterpret. Sharp normalises
+          // any common input format to JPEG, AND simultaneously bounds
+          // the output to <= MAX_RAW_BYTES (Anthropic's vision base64
+          // cap) via the resize step. PDFs do NOT need this — Anthropic
+          // accepts them up to 32MB / 100 pages natively.
+          const originalBytes = fileBytes.length;
           fileBytes = await sharp(fileBytes)
+            .rotate() // honour EXIF orientation so portrait photos stay portrait
             .resize(2400, 2400, { fit: 'inside', withoutEnlargement: true })
             .jpeg({ quality: 85 })
             .toBuffer();
-          logger.info('Document image resized', { newBytes: fileBytes.length });
+          if (fileBytes.length > MAX_RAW_BYTES) {
+            // Second pass at lower quality if a very-detail-rich photo
+            // still exceeds the Anthropic base64 cap after resize+q85.
+            // Cheaper than re-uploading from the inspector's side.
+            logger.info('Document image still over cap after q=85, re-encoding at q=70', {
+              fileIndex: i,
+              afterFirstPassBytes: fileBytes.length,
+            });
+            fileBytes = await sharp(fileBytes).jpeg({ quality: 70 }).toBuffer();
+          }
+          if (originalBytes !== fileBytes.length) {
+            logger.info('Document image transcoded/resized', {
+              fileIndex: i,
+              originalBytes,
+              newBytes: fileBytes.length,
+              originalMime: file.mimetype,
+            });
+          }
+          imageCount += 1;
         }
-      } else {
-        // Anthropic caps PDF uploads at 32MB. This is unlikely for a typical
-        // 4-page EICR (~1-3MB) but enforce it loudly rather than letting
-        // the API surface a generic 400.
-        const MAX_PDF_BYTES = 32 * 1024 * 1024;
-        if (fileBytes.length > MAX_PDF_BYTES) {
-          return res.status(413).json({
-            error: `PDF exceeds Anthropic's 32MB limit (${(fileBytes.length / 1024 / 1024).toFixed(1)}MB). Try a smaller or split file.`,
-          });
-        }
+
+        const base64 = fileBytes.toString('base64');
+        contentBlocks.push(
+          isPdf
+            ? {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+              }
+            : {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
+              }
+        );
       }
 
-      const base64 = Buffer.from(fileBytes).toString('base64');
+      logger.info('Document extraction requested', {
+        userId: req.user.id,
+        fileCount: allFiles.length,
+        imageCount,
+        pdfCount,
+        totalBytesUploaded,
+        model,
+      });
 
-      const prompt = `You are an expert UK electrician extracting structured data from a photographed or scanned electrical document for the CertMate EICR/EIC certificate workflow.
+      // Tell the model the file count up front. With N images the
+      // model treats them as N pages of one document; the cover-page
+      // rules in MULTI-PAGE CONTEXT then apply across all of them.
+      const docCountSentence =
+        allFiles.length === 1
+          ? 'The attached document is ONE file.'
+          : `The attached document is ${allFiles.length} files — treat them as pages of ONE multi-page document, in the order attached.`;
+
+      const prompt = `You are an expert UK electrician extracting structured data from photographed or scanned electrical documents for the CertMate EICR/EIC certificate workflow.
 
 ## INPUT
-The attached document is one of:
+${docCountSentence}
+
+The document(s) can be any of:
 - A multi-page typed PDF EICR (Electrical Installation Condition Report) — periodic inspection
 - A multi-page typed PDF EIC (Electrical Installation Certificate) — new installation
-- A photograph of a printed certificate or test results sheet
-- A photograph of handwritten inspector notes
+- One or more photographs of a printed certificate or test results sheet (each photo is usually one page)
+- One or more photographs of HANDWRITTEN inspector notes, scribbled test sheets, or hand-completed cert pages
+- A mix of typed and handwritten pages
 - Any document containing electrical installation data
 
 If the input is a PDF, READ EVERY PAGE. EICR PDFs commonly have 3–6 pages: cover / installation details / supply / observations / schedule of test results (often spanning multiple pages with 8–12 circuits per page). The schedule on later pages is just as important as the cover page — DO NOT stop at page 1.
@@ -3162,13 +3242,35 @@ If the input is a PDF, READ EVERY PAGE. EICR PDFs commonly have 3–6 pages: cov
 Extract EVERY legible value into the JSON schema below. The schema field names match the certificate database keys exactly — emit them verbatim so the values land on the correct tab in the iOS app. The inspector is importing a previous certificate to seed a new job, so be thorough: every value you skip is one they have to retype.
 
 ## CRITICAL RULES
-1. ONLY emit values you can actually read in the image. Never guess, infer, or fabricate. If a field is illegible or absent, OMIT the key entirely (do not write null, do not write "").
+1. ONLY emit values you can actually read in the image. Never guess, infer, or fabricate. If a field is illegible, scrubbed, or absent, OMIT the key entirely (do not write null, do not write ""). It is far better to omit a key than to invent a plausible-sounding value.
 2. Use the exact JSON keys shown in the schema. Do not invent new keys, rename, or reorder nested objects.
 3. All numeric values are returned as STRINGS (e.g. "32" not 32, "0.35" not 0.35). The only Int field is "next_inspection_years".
 4. For "≥200", "> 200", ">200 MΩ" etc on insulation resistance, normalise to ">200".
-5. For tick / cross / Y / N fields, emit "✓" for confirmed and "✗" for not confirmed (or omit if blank).
-6. If the image shows multiple boards or multiple pages of circuits, include ALL circuits.
-7. Return ONLY the JSON object. No markdown fences, no commentary, no leading/trailing text.
+5. For per-circuit confirmation fields (\`polarity_confirmed\`, \`rcd_button_confirmed\`, \`afdd_button_confirmed\`), emit ONLY one of these exact strings: "OK" (pass), "Y" (pass), "N" (fail), or omit the key if blank. Do NOT use tick / cross / "✓" / "✗" Unicode glyphs — the downstream UI is a 3-option picker that does not recognise them.
+6. For boolean Yes/No fields (\`installation_records_available\`, \`evidence_of_additions_alterations\`, \`supply_polarity_confirmed\`, \`means_earthing_distributor\`, \`means_earthing_electrode\`, \`bonding_other_na\`), emit the strings "Yes" or "No" verbatim.
+7. If the image shows multiple boards or multiple pages of circuits, include ALL circuits.
+8. Return ONLY the JSON object. No markdown fences, no commentary, no leading/trailing text.
+
+## HANDWRITING & MESSY IMAGES — READ CAREFULLY
+Inspectors photograph handwritten test sheets that are often messy, sun-faded, gloved-fingerprinted, or shot at an angle. Apply these rules:
+
+- **Digit confusables**: handwritten 1 vs 7, 4 vs 9, 0 vs 6, 3 vs 8, 2 vs Z are the common pairs. If a digit could read either way and there is no surrounding context (cable size 2.5/4.0/6.0/10.0, OCPD rating 6/10/16/20/32/40/45, Zs <2.0, etc.) to disambiguate, OMIT the key. Do not pick the more "common" value as a guess.
+- **Decimal points**: handwritten decimals are often a tiny dot easily missed. A reading written "088" in the Ze column is almost certainly "0.88", not "88". A reading written "32" in a Zs column where every other circuit is around "0.4-1.5" is almost certainly mis-transcribed — omit unless the decimal is clear.
+- **Crossed-out values**: when a value has been struck through and a replacement written above/beside it, ALWAYS use the replacement, never the crossed-out original.
+- **Multiple writing layers**: certs often have a printed background table with handwritten readings on top. Read the HANDWRITTEN value into the corresponding field key — the printed example values in the form template are not real readings.
+- **Units written sloppily**: "kohms" / "MΩ" / "M" are common on IR columns. Normalise to a bare numeric string. "1k" in an Ipf column means "1.0" kA; "100" in an Ipf column is more likely "100 A" (an OCPD rating mis-filed), so omit if unsure.
+- **Ditto marks** ("'' or " or ditto): if a row leaves a column blank but the row above has a value AND a ditto mark is visible, propagate the value above. If no ditto mark is visible, omit.
+- **Sun-faded / smudged**: if a row is partially illegible, populate the cells you CAN read and omit the ones you can't. Don't drop the whole circuit just because two columns are unreadable.
+- **Tick variants**: "✓", "Y", "OK", "P", "yes", "✔" all mean confirmed → emit "✓". "✗", "X", "N", "fail", "no", "F" all mean not confirmed → emit "✗". A circle or "L" usually means limitation — emit "LIM" where the schema accepts it.
+
+## MULTI-PAGE / MULTI-PHOTO CONTEXT
+When more than one image is attached (or a PDF has multiple pages), treat them as ONE document:
+
+- **Cover page is global**: \`installation_details\` (client name, address, postcode), \`supply_characteristics\` (earthing arrangement, Ze, Ipf), \`board_info\` (manufacturer, location) usually appear on page 1 only. Apply them to the whole job — DO NOT duplicate them per circuit.
+- **Schedule continues across pages**: a circuit numbered "13" on page 2 of a test schedule is the same circuit numbering as "1-12" on page 1 — preserve the original numbering, do not restart at 1. Two boards on separate pages each have their own 1-N numbering — keep them separate (see boards rule below).
+- **DEDUPE circuits that appear twice**: if the same circuit (same ref + designation + readings) appears in two photos because the inspector overlapped two shots, emit it ONCE. If two photos show the same circuit ref but different readings (e.g. one photo is the original cert and another is the handwritten amendment), prefer the photo whose readings look NEWER / clearly inked, and emit ONE entry — never duplicate.
+- **Observations span pages**: observations are usually on their own page. Collect every legible C1/C2/C3/FI from every page into the single \`observations[]\` array.
+- **Schedule of Inspections vs Schedule of Test Results**: these are TWO different tables. The Schedule of Test Results is the multi-column table with circuit numbers down the left and readings (Zs, R1+R2, IR, etc.) across — extract its rows into \`circuits[]\`. The Schedule of Inspections is a checklist of BS 7671 items with tick/N-A/C1-3 outcomes — extract relevant defects from it into \`observations[]\` (each non-tick outcome is an observation), and IGNORE the tick rows.
 
 ## CIRCUIT COVERAGE — READ CAREFULLY
 The schedule of test results is the most important part of the document. It is laid out as a TABLE with one ROW per circuit. Every legible row is a separate \`circuits[]\` entry — there is NO upper limit and NO need to keep the output short.
@@ -3178,7 +3280,7 @@ The schedule of test results is the most important part of the document. It is l
 - Walk the table TOP TO BOTTOM. For each row, emit one object — even if some test reading cells in that row are blank or hard to read (just omit those specific keys, not the whole circuit).
 - Any row with a circuit number, a designation, or any visible reading (Zs, R1+R2, IR, RCD time, etc.) gets its own circuits[] entry.
 - A blank cell ≠ skip the circuit. A blank cell = omit that one key.
-- If two boards are shown (e.g. a main DB plus a sub-main board), include circuits from both — preserve their original numbering.
+- If two boards are shown (e.g. a main DB plus a sub-main board), include circuits from both — preserve their original numbering AND tag the distribution circuit on the upstream board via \`is_distribution_circuit: "yes"\`. Do NOT invent board IDs; the app reconciles which board each circuit belongs to via \`board_info.feed_circuit_ref\`.
 
 ## CLIENT vs PROPERTY ADDRESS — DO NOT CONFLATE
 EICRs typically show two distinct things: the client/owner being billed, and the property address being inspected. Often they are the same person and the same address; sometimes they are different (landlord client / tenant property). Map them like this:
@@ -3192,33 +3294,44 @@ EICRs typically show two distinct things: the client/owner being billed, and the
 If the cert has a single combined address block like "Mr J Smith, 12 Acacia Avenue, Maidenhead, Berkshire, SL6 4QH", split it across the five keys above — do NOT dump the whole thing into \`client_name\` or into \`address\`.
 
 ## ENUM REFERENCE (use these exact strings)
-- earthing_arrangement: "TN-C-S" | "TN-S" | "TT" | "IT"
-- ocpd_type: "B" | "C" | "D" | "Rew" | "HRC" (Rew = BS 3036 rewireable, HRC = BS 1361 cartridge)
+- earthing_arrangement: "TN-C-S" | "TN-S" | "TT" | "TN-C" | "IT"
+- live_conductors: "AC - 1-phase (2 wire)" | "AC - 1-phase (3 wire)" | "AC - 3-phase (3 wire)" | "AC - 3-phase (4 wire)" | "DC - 2 pole" | "DC - 3 pole"
+- ocpd_type: "B" | "C" | "D" | "gG" | "gM" | "aM" | "HRC" | "Rew" | "N/A" (Rew = BS 3036 rewireable, HRC = BS 1361 cartridge)
 - ocpd_bs_en: "BS EN 60898" | "BS EN 61009" | "BS EN 60947-2" | "BS EN 60947-3" | "BS EN 60269-2" | "BS 3036" | "BS 1361" | "N/A"
-- rcd_type: "AC" | "A" | "B" | "F" | "S"
+- rcd_type: "AC" | "A" | "F" | "B" | "S" | "N/A"
 - rcd_bs_en: "BS EN 61008" | "BS EN 61009" | "BS EN 62423" | "N/A"
-- wiring_type: "A" (PVC singles in conduit) | "B" (PVC singles in trunking) | "C" (PVC/PVC flat twin & earth, clipped direct) | "D" (Mineral insulated) | "E" (PVC singles in metal trunking) | "F" (Other)
+- wiring_type (IET 9-code key): "A" PVC/PVC T&E | "B" PVC in metallic conduit | "C" PVC in non-metallic conduit | "D" PVC in metallic trunking | "E" PVC in non-metallic trunking | "F" PVC/SWA | "G" XLPE/SWA | "H" MICC/mineral/pyro | "O" Other (FP200, flex, SY/YY/CY)
+- ref_method: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "100" | "101" | "102" | "103"
+- polarity_confirmed / rcd_button_confirmed / afdd_button_confirmed: "OK" | "Y" | "N" (or omit)
 - spd_status: "Fitted" | "Not Fitted" | "Not Required"
+- spd_type: "Type 1" | "Type 2" | "Type 3" | "Type 1+2" | "Type 2+3"
+- premises_description: "Residential" | "Commercial" | "Industrial" | "Agricultural" | "Other"
 - observation code: "C1" (danger present) | "C2" (potentially dangerous) | "C3" (improvement recommended) | "FI" (further investigation required)
-- next_inspection_years: integer 1-10
-- nominal_voltage_u: usually "230"
+- next_inspection_years: integer 1, 2, 3, 4, 5, or 10
+- nominal_voltage_u / nominal_voltage_uo: usually "230" (single phase domestic), "400" (three-phase)
 - nominal_frequency: usually "50"
+- earth_electrode_type: "Rod" | "Plate" | "Tape" | "Mat" | "Foundation" | "Other" | "N/A"
+- earthing_conductor_material / bonding_conductor_material / main_switch_conductor_material / sub_main_cable_material: "Copper" | "Aluminium" | "Steel" | "N/A"
+- bonding_water / bonding_gas / bonding_oil / bonding_structural_steel / bonding_lightning / earthing_conductor_continuity / bonding_conductor_continuity: "PASS" | "FAIL" | "LIM" | "N/A"
+- main_switch_bs_en: "60947-3" | "61008 RCD" | "60947-2 MCCB" | "3036 (S-E)" | "1361 type 1" | "4293 RCD" | "88 type gG" | "N/A"
+- board_type: "main" | "sub_distribution" | "sub_main" (omit for legacy single-board jobs)
+- installation_type (EIC only): "new_installation" | "addition" | "alteration"
 
 ## DATE FORMATS
 All date fields use UK format DD/MM/YYYY as a string (e.g. "15/03/2024").
 
 ## SCHEMA
-Return ONLY this JSON. Omit any key whose value is not legibly present in the image.
+Return ONLY this JSON. Omit any key whose value is not legibly present in the image. Every key below is optional — present the keys you can read, omit the rest.
 
 {
   "installation_details": {
-    "client_name": "Householder or company name",
-    "address": "Full street address WITHOUT postcode/town/county on the same line — e.g. '12 Acacia Avenue'",
-    "postcode": "UK postcode in standard format e.g. 'SL6 4QH'",
+    "client_name": "Householder or company name — PERSON/COMPANY ONLY, never an address",
+    "address": "Street line of the installation premises — no postcode/town/county here",
+    "postcode": "UK postcode, e.g. 'SL6 4QH'",
     "town": "Post town",
     "county": "County",
-    "premises_description": "e.g. '3-bed semi-detached house', 'Retail shop with flat above'",
-    "occupier_name": "If different from client",
+    "premises_description": "Residential | Commercial | Industrial | Agricultural | Other",
+    "occupier_name": "Only if explicitly named separately from client",
     "client_phone": "Phone number digits only",
     "client_email": "Email address",
     "reason_for_report": "e.g. 'Periodic inspection', 'Change of tenancy', 'Insurance request', 'Pre-purchase'",
@@ -3228,7 +3341,7 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
     "operational_limitations": "Operational limitations encountered during inspection",
     "estimated_age_of_installation": "Years as a string e.g. '15'",
     "general_condition_of_installation": "Free-text condition summary as written on the cert",
-    "date_of_inspection": "DD/MM/YYYY of THIS inspection (use only the inspection date — not the report-issue date if different)",
+    "date_of_inspection": "DD/MM/YYYY of THIS inspection (use the inspection date, not the report-issue date if different)",
     "date_of_previous_inspection": "DD/MM/YYYY of the previous inspection if recorded",
     "previous_certificate_number": "Cert number string",
     "next_inspection_years": 5,
@@ -3237,18 +3350,54 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
   },
   "supply_characteristics": {
     "earthing_arrangement": "TN-C-S",
+    "live_conductors": "AC - 1-phase (2 wire)",
+    "number_of_supplies": "1",
     "nominal_voltage_u": "230",
+    "nominal_voltage_uo": "230",
     "nominal_frequency": "50",
     "prospective_fault_current": "0.88",
-    "earth_loop_impedance_ze": "0.35"
+    "earth_loop_impedance_ze": "0.35",
+    "supply_polarity_confirmed": "Yes",
+    "means_earthing_distributor": "Yes",
+    "means_earthing_electrode": "No",
+    "earth_electrode_type": "Rod",
+    "earth_electrode_resistance": "12.5",
+    "earth_electrode_location": "Where the electrode is — e.g. 'Front garden'",
+    "spd_bs_en": "Standard for DNO supply cutout fuse",
+    "spd_type_supply": "DNO cutout fuse type, e.g. 'gG'",
+    "spd_short_circuit": "DNO cutout breaking capacity in kA",
+    "spd_rated_current": "DNO cutout rating in amps",
+    "main_switch_bs_en": "60947-3",
+    "main_switch_poles": "2",
+    "main_switch_voltage": "230",
+    "main_switch_current": "100",
+    "main_switch_fuse_setting": "Adjustable fuse setting if shown",
+    "main_switch_location": "e.g. 'Integral to CU'",
+    "main_switch_conductor_material": "Copper",
+    "main_switch_conductor_csa": "25",
+    "rcd_operating_current": "Main RCD IΔn in mA if present, e.g. '100'",
+    "rcd_time_delay": "S-type time delay if applicable",
+    "rcd_operating_time": "Measured trip time of main RCD in ms",
+    "earthing_conductor_material": "Copper",
+    "earthing_conductor_csa": "16",
+    "earthing_conductor_continuity": "PASS",
+    "bonding_conductor_material": "Copper",
+    "bonding_conductor_csa": "10",
+    "bonding_conductor_continuity": "PASS",
+    "bonding_water": "PASS",
+    "bonding_gas": "PASS",
+    "bonding_oil": "N/A",
+    "bonding_structural_steel": "N/A",
+    "bonding_lightning": "N/A",
+    "bonding_other": "Other items bonded, free text"
   },
   "board_info": {
     "manufacturer": "e.g. 'Wylex', 'Hager', 'MK', 'Crabtree', 'Schneider', 'BG', 'Eaton'",
     "name": "Board model code e.g. 'NHRS12SL', 'VML112'",
     "location": "Where the board is located e.g. 'Hallway under stairs'",
-    "phases": "Single Phase | Three Phase",
+    "phases": "1",
     "earthing_arrangement": "Repeat from supply characteristics if shown on board section",
-    "ze": "External earth loop impedance in ohms — string",
+    "ze": "External earth loop impedance in ohms",
     "ze_at_db": "Ze measured at the distribution board if shown — string",
     "ipf_at_db": "Prospective fault current at the DB in kA — string",
     "rated_current": "Main switch rating in amps as a string e.g. '100'",
@@ -3258,13 +3407,18 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
     "rcd_rating_ma": "Main RCD rating in mA string if board has a main RCD",
     "rcd_trip_time": "Main RCD trip time in ms string",
     "spd_status": "Fitted",
-    "spd_type": "Type 1 | Type 2 | Type 3 | Type 1+2 | Type 2+3"
+    "spd_type": "Type 2",
+    "board_type": "main",
+    "feed_circuit_ref": "ONLY for sub-boards — circuit number on the parent board that feeds this one (the app resolves the parent board id from this and board_type)",
+    "sub_main_cable_material": "Copper",
+    "sub_main_cable_csa": "16",
+    "sub_main_cpc_csa": "6"
   },
   "circuits": [
     {
       "circuit_ref": "1",
       "circuit_designation": "Ring Main Sockets — Ground Floor",
-      "wiring_type": "C",
+      "wiring_type": "A",
       "ref_method": "C",
       "number_of_points": "8",
       "live_csa_mm2": "2.5",
@@ -3287,11 +3441,12 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
       "ir_test_voltage_v": "500",
       "ir_live_live_mohm": ">200",
       "ir_live_earth_mohm": ">200",
-      "polarity_confirmed": "✓",
+      "polarity_confirmed": "OK",
       "measured_zs_ohm": "0.45",
       "rcd_time_ms": "18",
-      "rcd_button_confirmed": "✓",
-      "afdd_button_confirmed": "✓"
+      "rcd_button_confirmed": "OK",
+      "afdd_button_confirmed": "OK",
+      "is_distribution_circuit": "no"
     }
   ],
   "observations": [
@@ -3311,31 +3466,29 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
       const Anthropic = (await import('@anthropic-ai/sdk')).default;
       const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-      // PDFs ship as a `document` content block (Anthropic processes every
-      // page natively at full fidelity — the right path for typed cert
-      // exports, which are most "previous EICRs"). Images ship as an
-      // `image` block — for camera-shot photos of a printed cert, scribbled
-      // notes, etc.
-      const documentBlock = isPdf
-        ? {
-            type: 'document',
-            source: { type: 'base64', media_type: 'application/pdf', data: base64 },
-          }
-        : { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } };
+      // `contentBlocks` was built per-file above. PDFs ship as a
+      // `document` content block (Anthropic processes every page
+      // natively at full fidelity — right for typed cert exports);
+      // images ship as `image` blocks. With multiple images, Anthropic
+      // sees them as a multi-page document in the order attached, which
+      // is exactly what the MULTI-PAGE CONTEXT section of the prompt
+      // tells the model to do.
+      //
+      // Scale max_tokens with file count so a 4-photo schedule (~30-40
+      // circuits) doesn't get truncated. 8000 was sized for a
+      // 12-circuit single-page cert; we add 2000 per extra image up to
+      // a 16000 ceiling (Sonnet 4.6's practical headroom on a single
+      // assistant turn).
+      const maxTokens = Math.min(16000, 8000 + Math.max(0, allFiles.length - 1) * 2000);
 
       const startMs = Date.now();
       const response = await anthropic.messages.create({
         model,
-        // 8000 covers a fully-populated 12-circuit EICR with observations and
-        // free-text fields. Multi-page PDFs with two boards / 24 circuits
-        // can press against this; if we see truncation in the wild we'll
-        // bump it. Hitting the cap surfaces as a 502 below so the inspector
-        // sees a clear failure rather than a half-populated form.
-        max_tokens: 8000,
+        max_tokens: maxTokens,
         messages: [
           {
             role: 'user',
-            content: [documentBlock, { type: 'text', text: prompt }],
+            content: [...contentBlocks, { type: 'text', text: prompt }],
           },
         ],
       });
@@ -3354,6 +3507,10 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
       logger.info('Document extraction complete', {
         userId: req.user.id,
         model,
+        fileCount: allFiles.length,
+        imageCount,
+        pdfCount,
+        maxTokens,
         inputTokens,
         outputTokens,
         responseLength: rawContent.length,
@@ -3478,9 +3635,12 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
       });
       res.status(500).json({ error: error.message });
     } finally {
-      if (tempPath) {
+      // Multer wrote each uploaded part to a temp file in os.tmpdir().
+      // Clean them all up so /tmp doesn't fill on the ECS task — N
+      // photos = N temp files, not just one.
+      for (const p of tempPaths) {
         try {
-          await fs.unlink(tempPath);
+          await fs.unlink(p);
         } catch {
           /* ignore cleanup errors */
         }
