@@ -803,6 +803,30 @@ export class EICRExtractionSession {
     // bad value warns independently. GC'd with the session
     // instance.
     this._loggedUnknownValidationAlerts = new Set();
+
+    // Phase 0 of the 2026-05-27 snapshot-restructure sprint —
+    // per-session schedule-rebuild identity counter. Tracks how often a
+    // call to `updateJobState` produces a schedule string IDENTICAL to
+    // the previous one (cache stayed warm) vs CHANGED (cache miss).
+    //
+    // The Day-3 canary gate for Phase 1 is `identity_rate > 0.7`: if
+    // most jobState updates produce no schedule change, the cached
+    // prefix is doing its job and the split-blocks layout will land
+    // its expected savings. If <70%, the schedule is churning every
+    // tick (probably because iOS sends a new jobState very turn) and
+    // Phase 1 won't pay off — surface the divergence early.
+    //
+    // Logged at session-end alongside the cost summary so canary
+    // analysis can correlate against the CostTracker cache totals.
+    this._scheduleRebuildStats = {
+      total: 0,
+      identical: 0,
+    };
+    // Sentinel value (null, not '') so the very FIRST updateJobState always
+    // counts as a change — even when iOS sends an empty initial jobState,
+    // which would produce the same '' as the constructor default and
+    // wrongly count as "cache hit" with an empty-string sentinel.
+    this._lastScheduleText = null;
   }
 
   /**
@@ -1317,6 +1341,23 @@ export class EICRExtractionSession {
     const summary = this.costTracker.toSessionSummary();
     summary.extraction.readingsExtracted = this.extractedReadingsCount;
     summary.extraction.questionsAsked = this.askedQuestions.length;
+    // Phase 0 — schedule_block_rebuild identity rate (snapshot-restructure
+    // sprint, 2026-05-27). Day-3 canary gate for Phase 1 is `identityRate >
+    // 0.7`. Surface raw counts so post-hoc analysis can spot anomalies
+    // (e.g. total=0 when a session genuinely never received a job_state
+    // update, vs identical=total when iOS keeps re-pushing an unchanged
+    // jobState — both look like "1.0 identity" on the ratio alone).
+    const identityRate =
+      this._scheduleRebuildStats.total > 0
+        ? this._scheduleRebuildStats.identical / this._scheduleRebuildStats.total
+        : null;
+    logger.info('snapshot.schedule_block_rebuild', {
+      sessionId: this.sessionId,
+      total: this._scheduleRebuildStats.total,
+      identical: this._scheduleRebuildStats.identical,
+      identityRate,
+      snapshotFormat: this.snapshotFormat ?? 'single_block',
+    });
     logger.info(`Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}`);
     return summary;
   }
@@ -1382,7 +1423,19 @@ export class EICRExtractionSession {
   }
 
   updateJobState(jobState) {
-    this.circuitSchedule = this.buildCircuitSchedule(jobState);
+    const nextSchedule = this.buildCircuitSchedule(jobState);
+    // Phase 0 — schedule_block_rebuild identity counter (snapshot-restructure
+    // sprint, 2026-05-27). `_lastScheduleText` starts as `''` so the very
+    // first rebuild correctly counts as a change (not an identical no-op)
+    // even when iOS sends an empty initial jobState. Comparison is exact
+    // string-equality — facts-only schedules diverge byte-by-byte if any
+    // installation property changes.
+    this._scheduleRebuildStats.total += 1;
+    if (nextSchedule === this._lastScheduleText) {
+      this._scheduleRebuildStats.identical += 1;
+    }
+    this._lastScheduleText = nextSchedule;
+    this.circuitSchedule = nextSchedule;
     this.circuitScheduleIncluded = false; // Force re-send on next utterance
   }
 
