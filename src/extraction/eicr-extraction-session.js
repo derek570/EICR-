@@ -572,6 +572,192 @@ const VALIDATION_ALERT_KNOWN_TYPES = new Set(['myth_rejected', 'nc_only', 'value
 const VALIDATION_ALERT_KNOWN_SEVERITIES = new Set(['info', 'warning', 'critical']);
 
 /**
+ * Snapshot-restructure sprint (2026-05-27) — §2.2A FACT_FIELDS Set.
+ *
+ * Classifies every field that can land in a `stateSnapshot.circuits[n]`,
+ * `stateSnapshot.circuits[0]` (supply), or `stateSnapshot.boards[n]`
+ * bucket as either a FACT (installation property — known from CCU
+ * extraction, manual edit, or previous cert) or a READING (test result
+ * recorded during the live inspection).
+ *
+ * Used by two surfaces:
+ *
+ *   1. `_mergeCircuitOrBoardFields` (Commit 1 — this file). For each
+ *      field arriving from `updateJobState`'s jobState argument:
+ *      - FACT  → iOS-authoritative: overwrite the snapshot cell
+ *                unconditionally. iOS is the source of truth for
+ *                installation properties; manual edits on the iPad must
+ *                round-trip through the snapshot or Sonnet sees a stale
+ *                designation / OCPD rating / cable size.
+ *      - READING (anything not in this Set) → snapshot-canonical wins:
+ *                only fill the cell if it's empty (`== null` or `''`).
+ *                Sonnet's heard-it-from-the-inspector value is more
+ *                trustworthy than iOS's round-trip echo, because iOS
+ *                gets the value FROM Sonnet via job_state_update; if
+ *                Sonnet has already overwritten with a correction
+ *                ("actually, 0.13"), iOS's older echo must not undo it.
+ *
+ *   2. `buildCircuitSchedule` (Commit 2 — same file). Schedule emits
+ *      FACTS only — readings live in the EXTRACTED block of the state
+ *      snapshot. Same Set drives both surfaces so the strip and the
+ *      merge cannot drift apart.
+ *
+ * Canonical names sourced from `config/field_schema.json`. Camel-case
+ * aliases (the shape iOS uses on the wire today, see `buildCircuitSchedule`
+ * which accepts both via `||` chains) included so the merge classifies
+ * either spelling without first canonicalising. Identity fields (`ref`,
+ * `circuit_ref`, `circuitNumber`, `number`, `id`, `board_id`) are not
+ * facts — they identify the bucket; the merge skips them at the call
+ * site rather than listing them here.
+ *
+ * If a field is missing from this Set it defaults to the READING branch
+ * (Sonnet wins on conflict; iOS can populate empties). This is the
+ * SAFER default — for a genuinely unknown new field, the worst case is
+ * iOS edits get reflected slightly slower (one extra Sonnet turn). The
+ * inverse default (everything is a FACT) would let an iOS echo undo a
+ * just-spoken correction, which is the failure mode the EXTRACTED block
+ * was designed to prevent.
+ */
+const FACT_FIELDS = new Set([
+  // --- Circuit-level facts (from config/field_schema.json circuit_fields) ---
+  // Identifiers / names
+  'circuit_designation',
+  'designation', // upsertCircuitMeta storage key
+  'description',
+  'circuit_description',
+  // Topology
+  'feeds_board_id',
+  'is_distribution_circuit',
+  // Cable
+  'cpc_csa_mm2',
+  'cable_size_earth', // legacy alias
+  'cpcCsaMm2',
+  'live_csa_mm2',
+  'cable_size_live', // legacy alias
+  'cable_size', // legacy alias
+  'liveCsaMm2',
+  // Wiring / installation
+  'wiring_type',
+  'wiringType',
+  'ref_method',
+  'refMethod',
+  // OCPD device properties
+  'ocpd_type',
+  'ocpdType',
+  'ocpd_rating_a',
+  'ocpd_rating',
+  'ocpdRatingA',
+  'ocpd_bs_en',
+  'ocpd_breaking_capacity_ka',
+  'ocpd_breaking_capacity',
+  'ocpd_max_zs_ohm',
+  // RCD device properties (rating + standard, NOT trip-time which is a reading)
+  'rcd_type',
+  'rcd_bs_en',
+  'rcd_operating_current_ma',
+  'rcd_rating_a',
+  'rcdRatingA',
+  // Outlets / points
+  'number_of_points',
+  'numberOfPoints',
+  // Test config (regulator-determined, not a result)
+  'ir_test_voltage_v',
+  'ir_test_voltage',
+  'max_disconnect_time_s',
+  'max_disconnect_time',
+  // Phase / circuit_type
+  'phase',
+  'circuit_type',
+
+  // --- Supply-level facts (from config/field_schema.json supply_characteristics_fields) ---
+  'earthing_arrangement',
+  'earthingArrangement',
+  'live_conductors',
+  'number_of_supplies',
+  'nominal_voltage_u',
+  'nominal_voltage_uo',
+  'nominal_frequency',
+  'supply_voltage',
+  'supplyVoltage',
+  'supply_type',
+  'earthing_system',
+  // SPD device facts
+  'spd_bs_en',
+  'spd_type_supply',
+  'spd_short_circuit',
+  'spd_rated_current',
+  // Earthing-presence flags
+  'means_earthing_distributor',
+  'means_earthing_electrode',
+  // Earth electrode topology (the type / location are facts; the
+  // resistance measurement IS a reading and is intentionally not here)
+  'earth_electrode_type',
+  'earthElectrodeType',
+  'earth_electrode_location',
+  // Earthing / bonding conductor specs
+  'earthing_conductor_material',
+  'earthing_conductor_csa',
+  'earthingConductorCsa',
+  'main_earth_conductor_csa', // legacy alias
+  'bonding_conductor_material',
+  'bonding_conductor_csa',
+  'mainBondingCsa',
+  'main_bonding_conductor_csa', // legacy alias
+  // Bonding-presence flags
+  'bonding_water',
+  'bondingWater',
+  'bonding_gas',
+  'bondingGas',
+  'bonding_oil',
+  'bonding_structural_steel',
+  'bonding_lightning',
+  'bonding_other',
+  'bonding_other_na',
+  // Main switch device facts
+  'main_switch_bs_en',
+  'main_switch_poles',
+  'main_switch_voltage',
+  'main_switch_current',
+  'main_switch_rating',
+  'main_switch_fuse_setting',
+  'main_switch_location',
+  'main_switch_conductor_material',
+  'main_switch_conductor_csa',
+  // Supply RCD device facts (rating/delay configured, not measured)
+  'rcd_operating_current',
+  'rcd_time_delay',
+
+  // --- Board-level facts (from config/field_schema.json board_fields) ---
+  // (`id` is intentionally NOT listed — it's the identity key the merge
+  // matches on, not a writeable field. Same for `circuit_ref` etc.)
+  'board_type',
+  'location',
+  'manufacturer',
+  'name',
+  'parent_board_id',
+  'phases',
+  'sort_order',
+  'sub_main_cable_csa',
+  'sub_main_cable_material',
+  'sub_main_cpc_csa',
+  'feed_circuit_ref',
+]);
+
+/**
+ * Identity / addressing field names that the merge MUST NOT write
+ * through to the target bucket. Listed at module level so the merge
+ * helper is a tight loop without a long `if` chain.
+ */
+const MERGE_SKIP_KEYS = new Set([
+  'id',
+  'ref',
+  'circuit_ref',
+  'circuitNumber',
+  'number',
+  'board_id',
+]);
+
+/**
  * Plan 04-18 r12-#1 — look up the wrap policy for a field. Unknown
  * fields fall through to 'user_derived' as a fail-safe default
  * (over-apply wrap rather than under-apply).
@@ -1423,9 +1609,22 @@ export class EICRExtractionSession {
   }
 
   updateJobState(jobState) {
+    // Phase 1 §2.2A precondition (snapshot-restructure sprint, 2026-05-27).
+    // Merge any iOS-known circuit / supply / board values into the
+    // stateSnapshot BEFORE rebuilding the schedule. Required because
+    // Commit 2 will strip readings from the schedule string — without
+    // this merge, an iOS-round-tripped reading would vanish from
+    // Sonnet's view entirely (the schedule no longer carries it AND
+    // the snapshot never received it). See plan §2.2A for the full
+    // failure-mode story.
+    //
+    // Merge runs even with `jobState == null` (the helper no-ops on
+    // missing input) so the contract is one-line for the caller.
+    this._mergeIncomingJobStateIntoSnapshot(jobState);
+
     const nextSchedule = this.buildCircuitSchedule(jobState);
     // Phase 0 — schedule_block_rebuild identity counter (snapshot-restructure
-    // sprint, 2026-05-27). `_lastScheduleText` starts as `''` so the very
+    // sprint, 2026-05-27). `_lastScheduleText` starts as `null` so the very
     // first rebuild correctly counts as a change (not an identical no-op)
     // even when iOS sends an empty initial jobState. Comparison is exact
     // string-equality — facts-only schedules diverge byte-by-byte if any
@@ -1437,6 +1636,105 @@ export class EICRExtractionSession {
     this._lastScheduleText = nextSchedule;
     this.circuitSchedule = nextSchedule;
     this.circuitScheduleIncluded = false; // Force re-send on next utterance
+  }
+
+  /**
+   * Phase 1 §2.2A — merge an incoming jobState into `this.stateSnapshot`.
+   *
+   * Three branches (one per top-level jobState shape):
+   *   - jobState.circuits[] → stateSnapshot.circuits[<ref>]
+   *   - jobState.supply     → stateSnapshot.circuits[0]  (supply bucket
+   *                            convention from buildStateSnapshotMessage)
+   *   - jobState.boards[]   → stateSnapshot.boards[]    (matched BY ID,
+   *                            not by index — Codex v5 F2: boards can
+   *                            reorder client-side; only the id is stable)
+   *
+   * Per-field precedence inside each branch is the same:
+   *   - FACT     → iOS overwrites unconditionally
+   *   - READING  → iOS only fills empty cells; Sonnet-canonical wins
+   *
+   * Quiet no-op when `jobState` is null / undefined / shape-malformed.
+   * The caller (`updateJobState`) always invokes this first, so this
+   * contract MUST be tolerant of every input shape today's code can
+   * hand it.
+   */
+  _mergeIncomingJobStateIntoSnapshot(jobState) {
+    if (!jobState || typeof jobState !== 'object') return;
+
+    // --- CIRCUITS ---
+    if (Array.isArray(jobState.circuits)) {
+      for (const incoming of jobState.circuits) {
+        if (!incoming || typeof incoming !== 'object') continue;
+        const ref = incoming.ref ?? incoming.circuitNumber ?? incoming.number;
+        if (ref == null) continue;
+        // Existing snapshot bucket keying is numeric for legacy main-board
+        // refs (the supply bucket lives at `0`); composite keys ("main::1")
+        // exist for sub-board circuits but are written by Sonnet
+        // tool-dispatch rather than by iOS jobState pushes. Round-trip
+        // through Number() only when the raw ref is a numeric-looking
+        // string so we don't break existing numeric-key semantics.
+        const key = typeof ref === 'number' || /^\d+$/.test(String(ref)) ? Number(ref) : ref;
+        const target = this.stateSnapshot.circuits[key] || (this.stateSnapshot.circuits[key] = {});
+        this._mergeCircuitOrBoardFields(target, incoming);
+      }
+    }
+
+    // --- SUPPLY (lives at circuits[0] per the supply-bucket convention) ---
+    if (jobState.supply && typeof jobState.supply === 'object') {
+      const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
+      this._mergeCircuitOrBoardFields(target, jobState.supply);
+    }
+
+    // --- BOARDS — match by id, not by index (Codex v5 F2) ---
+    if (Array.isArray(jobState.boards)) {
+      if (!Array.isArray(this.stateSnapshot.boards)) {
+        this.stateSnapshot.boards = [];
+      }
+      for (const incoming of jobState.boards) {
+        if (!incoming || typeof incoming !== 'object' || !incoming.id) continue;
+        let target = this.stateSnapshot.boards.find((b) => b && b.id === incoming.id);
+        if (!target) {
+          target = { id: incoming.id };
+          this.stateSnapshot.boards.push(target);
+        }
+        this._mergeCircuitOrBoardFields(target, incoming);
+      }
+    }
+  }
+
+  /**
+   * Phase 1 §2.2A — field-level merge with fact-vs-reading precedence.
+   * Shared by the circuit, supply, and board branches above so the
+   * precedence rule cannot drift across surfaces.
+   *
+   *   - Identity / addressing keys (id, ref, circuitNumber, …) → skipped
+   *     here; the parent branch picks the bucket via those keys.
+   *   - FACT_FIELDS membership → iOS authoritative (overwrite).
+   *   - Anything else → READING; iOS only fills empty cells (`== null`
+   *     or `''`). An existing Sonnet-written value is preserved.
+   *
+   * `null` / `undefined` incoming values are written through for facts
+   * (clearing an iOS-corrected installation property must propagate)
+   * but skipped for readings (don't let an iOS null punch out a Sonnet
+   * reading — the same value will still be there next push).
+   */
+  _mergeCircuitOrBoardFields(target, incoming) {
+    if (!incoming || typeof incoming !== 'object') return;
+    for (const [field, value] of Object.entries(incoming)) {
+      if (MERGE_SKIP_KEYS.has(field)) continue;
+      if (FACT_FIELDS.has(field)) {
+        target[field] = value;
+      } else {
+        // Reading: only fill an empty cell. The empty-string check
+        // mirrors the same null/empty contract the snapshot serialiser
+        // uses elsewhere (an empty string is functionally absent for
+        // EXTRACTED-block emission purposes).
+        if (value == null || value === '') continue;
+        if (target[field] == null || target[field] === '') {
+          target[field] = value;
+        }
+      }
+    }
   }
 
   /**

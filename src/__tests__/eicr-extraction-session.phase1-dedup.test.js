@@ -119,7 +119,7 @@ describe('Phase 0 — audit-env-var-source.sh', () => {
 // Commit 1 — §2.2A updateJobState merge precondition
 //   Tests 18, 19, 20, 24 from §2.6.
 // ---------------------------------------------------------------------------
-describe.skip('Commit 1 — updateJobState merges iOS state into stateSnapshot', () => {
+describe('Commit 1 — updateJobState merges iOS state into stateSnapshot', () => {
   test('case 18 — merge empty cell: iOS-supplied reading lands in stateSnapshot', () => {
     const s = makeSession();
     expect(s.stateSnapshot.circuits[3]).toBeUndefined();
