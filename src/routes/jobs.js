@@ -507,9 +507,7 @@ router.get('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
       logger.info('Loaded extracted_data.json (user-edited)', {
         jobId,
         hasSupply: !!extractedData.supply_characteristics,
-        supplyData: extractedData.supply_characteristics,
         hasInstallation: !!extractedData.installation_details,
-        installationData: extractedData.installation_details,
       });
       if (extractedData.installation_details?.address && !extractedData.address) {
         extractedData.address = extractedData.installation_details.address;
