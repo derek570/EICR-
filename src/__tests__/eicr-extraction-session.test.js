@@ -288,7 +288,7 @@ describe('EICRExtractionSession', () => {
       expect(session.buildCircuitSchedule({})).toBe('');
     });
 
-    test('should format circuit with all fields', () => {
+    test('should format circuit with facts (post-Phase-1 strip — readings live in EXTRACTED snapshot block)', () => {
       const schedule = session.buildCircuitSchedule({
         circuits: [
           {
@@ -298,17 +298,20 @@ describe('EICRExtractionSession', () => {
             ocpd_rating: 32,
             cable_size: '2.5',
             cable_size_earth: '1.5',
-            zs: '0.35',
-            r1_plus_r2: '0.47',
+            zs: '0.35', // reading — stripped post Phase 1
+            r1_plus_r2: '0.47', // reading — stripped post Phase 1
           },
         ],
       });
 
+      // Facts retained
       expect(schedule).toContain('Circuit 1: Ring Final');
       expect(schedule).toContain('ocpd=B/32A');
       expect(schedule).toContain('cable=2.5/1.5mm');
-      expect(schedule).toContain('zs=0.35');
-      expect(schedule).toContain('r1r2=0.47');
+      // Readings stripped (snapshot-restructure sprint 2026-05-27 §2.5).
+      // They reach Sonnet via the EXTRACTED block now, not the schedule.
+      expect(schedule).not.toContain('zs=');
+      expect(schedule).not.toContain('r1r2=');
     });
 
     test('should derive circuit type from designation', () => {
@@ -323,20 +326,25 @@ describe('EICRExtractionSession', () => {
       expect(schedule).toContain('Lighting');
     });
 
-    test('should include supply section', () => {
+    test('should include supply section with facts (post-Phase-1 strip — PFC/Ze readings live in EXTRACTED snapshot block)', () => {
       const schedule = session.buildCircuitSchedule({
         circuits: [],
         supply: {
           earthingArrangement: 'TN-C-S',
-          pfc: '1.2',
-          ze: '0.35',
+          pfc: '1.2', // reading — stripped post Phase 1
+          ze: '0.35', // reading — stripped post Phase 1
+          supplyVoltage: '230',
         },
       });
 
       expect(schedule).toContain('Supply:');
       expect(schedule).toContain('earthing=TN-C-S');
-      expect(schedule).toContain('PFC=1.2kA');
-      expect(schedule).toContain('Ze=0.35ohms');
+      expect(schedule).toContain('voltage=230V');
+      // PFC and Ze are readings — they reach Sonnet via the EXTRACTED
+      // block of the state snapshot, not the schedule (snapshot-
+      // restructure sprint 2026-05-27 §2.5).
+      expect(schedule).not.toContain('PFC=');
+      expect(schedule).not.toContain('Ze=');
     });
   });
 
