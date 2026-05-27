@@ -59,6 +59,44 @@ describe('redactPiiInPlace', () => {
     expect(obj.address).toBe('[REDACTED]');
   });
 
+  test('does not mutate caller-owned nested objects', () => {
+    // Regression: GET /api/job/:userId/:jobId used to log
+    // `installationData: extractedData.installation_details` directly. The
+    // pre-fix in-place recursion overwrote address/postcode/client_name on
+    // the live object, and the handler then returned the mutated reference
+    // to the client — the next auto-save persisted '[REDACTED]' to S3 and
+    // the jobs.address DB column. Pin the invariant: caller objects passed
+    // in via logger meta must come back unchanged.
+    const installation = {
+      address: '1 MacArthur Close',
+      postcode: 'RG30 4XW',
+      client_name: 'John Smith',
+      not_pii: 'keep me',
+    };
+    const supply = { earthing_arrangement: 'TN-S', client_phone: '07700 900123' };
+    const info = { jobId: 'abc', installationData: installation, supplyData: supply };
+
+    redactPiiInPlace(info);
+
+    // Logger output is redacted (info-level fields)
+    expect(info.installationData.address).toBe('[REDACTED]');
+    expect(info.installationData.postcode).toBe('[REDACTED]');
+    expect(info.installationData.client_name).toBe('[REDACTED]');
+    expect(info.supplyData.client_phone).toBe('[REDACTED]');
+
+    // Caller's original objects are untouched
+    expect(installation.address).toBe('1 MacArthur Close');
+    expect(installation.postcode).toBe('RG30 4XW');
+    expect(installation.client_name).toBe('John Smith');
+    expect(installation.not_pii).toBe('keep me');
+    expect(supply.client_phone).toBe('07700 900123');
+    expect(supply.earthing_arrangement).toBe('TN-S');
+
+    // The redacted copy must be a different reference
+    expect(info.installationData).not.toBe(installation);
+    expect(info.supplyData).not.toBe(supply);
+  });
+
   test('ignores arrays and primitive inputs', () => {
     // Arrays are intentionally skipped — winston doesn't pass arrays as info
     // and PII rarely sits in array form. Keeps the function simple.

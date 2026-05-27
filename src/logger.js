@@ -29,24 +29,43 @@ export const PII_FIELDS = new Set([
 
 const REDACTED = '[REDACTED]';
 
-export function redactPiiInPlace(obj, depth = 0) {
+// Copy-on-write redaction. The top-level `obj` is mutated (winston owns the
+// `info` object passed to format chains, so that's safe), but any nested
+// sub-object referenced by `obj` is shallow-cloned before recursion — we
+// never mutate a value the caller still holds a reference to. This matters
+// because logger metadata routinely contains live references to request /
+// session data: prior to this guard, a `logger.info('...', { foo: jobData })`
+// call would walk into `jobData.installation_details` and overwrite the
+// real `address` / `postcode` strings with `[REDACTED]`. The route handler
+// would then return (and persist) the redacted value to S3 and the `jobs.address`
+// DB column on the next PUT — observed in `src/routes/jobs.js:507-513` where
+// the GET handler logged `installationData: extractedData.installation_details`,
+// causing every job-open to flip the saved address to `[REDACTED]` on the
+// client's next auto-save.
+export function redactPiiInPlace(obj, depth = 0, seen) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj) || depth > 6) {
     return;
   }
+  if (!seen) seen = new WeakSet();
+  if (seen.has(obj)) return;
+  seen.add(obj);
+
   for (const key of Object.keys(obj)) {
     const value = obj[key];
     if (PII_FIELDS.has(key) && value != null) {
       obj[key] = REDACTED;
-    } else if (value && typeof value === 'object') {
-      redactPiiInPlace(value, depth + 1);
+    } else if (value && typeof value === 'object' && !Array.isArray(value) && !seen.has(value)) {
+      const clone = { ...value };
+      obj[key] = clone;
+      redactPiiInPlace(clone, depth + 1, seen);
     }
   }
 }
 
 // Winston format factory — runs in the chain before printf so the console
-// and JSON serialisers only see redacted metadata. Operates on the `info`
-// object in place; winston gives each format invocation a fresh object so
-// mutation is safe.
+// and JSON serialisers only see redacted metadata. Mutates the top-level
+// `info` object in place; nested sub-objects are cloned by `redactPiiInPlace`
+// so caller-owned data is never touched.
 const redactPiiFormat = winston.format((info) => {
   redactPiiInPlace(info);
   return info;
