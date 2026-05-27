@@ -393,21 +393,30 @@ export const api = {
   },
 
   /**
-   * Extract EICR/EIC form data from a photo of a prior certificate,
-   * handwritten test sheet, or typed record. Backend uses GPT Vision
-   * and returns the full formData envelope (installation, supply,
-   * board, circuits, observations). Image only — PDFs not supported
-   * because the backend hard-codes the `image/jpeg` data URL
-   * (`src/routes/extraction.js:1425`).
+   * Extract EICR/EIC form data from ONE OR MORE photos of a prior
+   * certificate, handwritten test sheet, or typed record. The backend
+   * accepts up to 12 files and treats N images as pages of a single
+   * document — handy for photographing a multi-page schedule of test
+   * results page-by-page. Both images and PDFs are accepted; the
+   * backend detects each per-file by magic bytes.
    *
-   * Same multipart shape as `analyzeCCU` — single file under the
-   * field name "photo". Merge helper
-   * (`apply-document-extraction.ts`) handles the 3-tier priority
-   * guard and section routing.
+   * Multipart shape: each file appended under field name "photos".
+   * The backend ALSO accepts the legacy singular "photo" field for
+   * any TestFlight iOS builds that pre-date this change.
+   *
+   * Returns the same {success, formData} envelope as the single-photo
+   * path. Merge helper (`apply-document-extraction.ts`) handles the
+   * 3-tier priority guard and section routing.
    */
-  analyzeDocument(photo: Blob | File): Promise<DocumentExtractionResponse> {
+  analyzeDocument(photos: Blob | File | Array<Blob | File>): Promise<DocumentExtractionResponse> {
+    const list = Array.isArray(photos) ? photos : [photos];
+    if (list.length === 0) {
+      return Promise.reject(new Error('No photos provided'));
+    }
     const form = new FormData();
-    form.append('photo', photo);
+    for (const p of list) {
+      form.append('photos', p);
+    }
     return request<DocumentExtractionResponse>(
       '/api/analyze-document',
       { method: 'POST', body: form },

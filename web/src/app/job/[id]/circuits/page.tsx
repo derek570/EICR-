@@ -547,15 +547,26 @@ export default function CircuitsPage() {
   };
 
   const handleDocFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const fileList = event.target.files;
+    const files = fileList ? Array.from(fileList) : [];
     event.target.value = '';
-    if (!file) return;
+    if (files.length === 0) return;
+
+    // Backend caps at 12 photos per call — keep the UI in sync so the
+    // inspector gets a clear error instead of a 400 from multer.
+    const MAX_PHOTOS = 12;
+    if (files.length > MAX_PHOTOS) {
+      setDocError(
+        `Too many photos selected (${files.length}). Please select ${MAX_PHOTOS} or fewer per upload.`
+      );
+      return;
+    }
 
     setDocBusy(true);
     setDocError(null);
-    setActionHint('Reading document…');
+    setActionHint(files.length === 1 ? 'Reading document…' : `Reading ${files.length} pages…`);
     try {
-      const response = await api.analyzeDocument(file);
+      const response = await api.analyzeDocument(files);
       const { patch, summary } = applyDocumentExtractionToJob(job, response, {
         targetBoardId: selectedBoardId,
       });
@@ -573,10 +584,9 @@ export default function CircuitsPage() {
       if (summary.observations > 0) {
         bits.push(`${summary.observations} observation${summary.observations === 1 ? '' : 's'}`);
       }
+      const source = files.length === 1 ? 'Document read' : `Document read (${files.length} pages)`;
       setActionHint(
-        bits.length > 0
-          ? `Document read — ${bits.join(', ')} merged.`
-          : 'Document read — no new data.'
+        bits.length > 0 ? `${source} — ${bits.join(', ')} merged.` : `${source} — no new data.`
       );
     } catch (err) {
       const message =
@@ -685,14 +695,17 @@ export default function CircuitsPage() {
           {/* Doc extraction picker — no `capture` hint because
               documents (prior certs, handwritten sheets) are usually
               photographed ahead of time and a library picker is more
-              ergonomic. Image only: the backend (/api/analyze-document)
-              hard-codes the image/jpeg data URL so PDFs can't be
-              rendered server-side. PDF support is a separate follow-up
-              (requires a client-side pdfjs-dist render). */}
+              ergonomic. Accepts images AND PDFs because the backend
+              detects each file's type per-magic-byte and packs both
+              kinds into the Anthropic call. `multiple` is on so the
+              inspector can pick every page of a multi-page schedule
+              of test results in one go — the backend processes up to
+              12 files per call as pages of one document. */}
           <input
             ref={docInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,application/pdf"
+            multiple
             onChange={handleDocFile}
             className="sr-only"
             aria-hidden
