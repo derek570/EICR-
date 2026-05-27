@@ -48,7 +48,7 @@
         { "name": "VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN", "value": "12" },
         { "name": "VOICE_LATENCY_ROUND1_EARLY_TERMINATE", "value": "true" },
         { "name": "VOICE_LATENCY_KILL_SWITCH",          "value": "false" },
-        { "name": "SNAPSHOT_FORMAT",                    "value": "single_block" }
+        { "name": "SNAPSHOT_FORMAT",                    "value": "split_blocks" }
       ],
       "mountPoints": [],
       "volumesFrom": [],
