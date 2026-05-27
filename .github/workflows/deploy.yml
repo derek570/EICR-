@@ -556,6 +556,18 @@ jobs:
         run: |
           ./scripts/check-task-def-env-drift.sh ${{ env.ECS_SERVICE_BACKEND }} ecs/task-def-backend.json
 
+      # Phase 0 of the 2026-05-27 snapshot-restructure sprint — second
+      # layer of the task-def source-of-truth guard. Catches the OPPOSITE
+      # drift direction to the check above: env vars referenced by code
+      # but missing from the source template AND missing from the
+      # allowlist baked into the script. Fires before
+      # register-task-definition so a new flag that needs to ride into
+      # production can't be silently defaulted.
+      - name: Audit Env-Var Source (backend code vs task-def)
+        if: steps.scope.outputs.target != 'frontend'
+        run: |
+          ./scripts/audit-env-var-source.sh ecs/task-def-backend.json
+
       - name: Register ARM64 Backend Task Definition
         if: steps.scope.outputs.target != 'frontend'
         id: register-backend-taskdef

@@ -572,6 +572,192 @@ const VALIDATION_ALERT_KNOWN_TYPES = new Set(['myth_rejected', 'nc_only', 'value
 const VALIDATION_ALERT_KNOWN_SEVERITIES = new Set(['info', 'warning', 'critical']);
 
 /**
+ * Snapshot-restructure sprint (2026-05-27) — §2.2A FACT_FIELDS Set.
+ *
+ * Classifies every field that can land in a `stateSnapshot.circuits[n]`,
+ * `stateSnapshot.circuits[0]` (supply), or `stateSnapshot.boards[n]`
+ * bucket as either a FACT (installation property — known from CCU
+ * extraction, manual edit, or previous cert) or a READING (test result
+ * recorded during the live inspection).
+ *
+ * Used by two surfaces:
+ *
+ *   1. `_mergeCircuitOrBoardFields` (Commit 1 — this file). For each
+ *      field arriving from `updateJobState`'s jobState argument:
+ *      - FACT  → iOS-authoritative: overwrite the snapshot cell
+ *                unconditionally. iOS is the source of truth for
+ *                installation properties; manual edits on the iPad must
+ *                round-trip through the snapshot or Sonnet sees a stale
+ *                designation / OCPD rating / cable size.
+ *      - READING (anything not in this Set) → snapshot-canonical wins:
+ *                only fill the cell if it's empty (`== null` or `''`).
+ *                Sonnet's heard-it-from-the-inspector value is more
+ *                trustworthy than iOS's round-trip echo, because iOS
+ *                gets the value FROM Sonnet via job_state_update; if
+ *                Sonnet has already overwritten with a correction
+ *                ("actually, 0.13"), iOS's older echo must not undo it.
+ *
+ *   2. `buildCircuitSchedule` (Commit 2 — same file). Schedule emits
+ *      FACTS only — readings live in the EXTRACTED block of the state
+ *      snapshot. Same Set drives both surfaces so the strip and the
+ *      merge cannot drift apart.
+ *
+ * Canonical names sourced from `config/field_schema.json`. Camel-case
+ * aliases (the shape iOS uses on the wire today, see `buildCircuitSchedule`
+ * which accepts both via `||` chains) included so the merge classifies
+ * either spelling without first canonicalising. Identity fields (`ref`,
+ * `circuit_ref`, `circuitNumber`, `number`, `id`, `board_id`) are not
+ * facts — they identify the bucket; the merge skips them at the call
+ * site rather than listing them here.
+ *
+ * If a field is missing from this Set it defaults to the READING branch
+ * (Sonnet wins on conflict; iOS can populate empties). This is the
+ * SAFER default — for a genuinely unknown new field, the worst case is
+ * iOS edits get reflected slightly slower (one extra Sonnet turn). The
+ * inverse default (everything is a FACT) would let an iOS echo undo a
+ * just-spoken correction, which is the failure mode the EXTRACTED block
+ * was designed to prevent.
+ */
+const FACT_FIELDS = new Set([
+  // --- Circuit-level facts (from config/field_schema.json circuit_fields) ---
+  // Identifiers / names
+  'circuit_designation',
+  'designation', // upsertCircuitMeta storage key
+  'description',
+  'circuit_description',
+  // Topology
+  'feeds_board_id',
+  'is_distribution_circuit',
+  // Cable
+  'cpc_csa_mm2',
+  'cable_size_earth', // legacy alias
+  'cpcCsaMm2',
+  'live_csa_mm2',
+  'cable_size_live', // legacy alias
+  'cable_size', // legacy alias
+  'liveCsaMm2',
+  // Wiring / installation
+  'wiring_type',
+  'wiringType',
+  'ref_method',
+  'refMethod',
+  // OCPD device properties
+  'ocpd_type',
+  'ocpdType',
+  'ocpd_rating_a',
+  'ocpd_rating',
+  'ocpdRatingA',
+  'ocpd_bs_en',
+  'ocpd_breaking_capacity_ka',
+  'ocpd_breaking_capacity',
+  'ocpd_max_zs_ohm',
+  // RCD device properties (rating + standard, NOT trip-time which is a reading)
+  'rcd_type',
+  'rcd_bs_en',
+  'rcd_operating_current_ma',
+  'rcd_rating_a',
+  'rcdRatingA',
+  // Outlets / points
+  'number_of_points',
+  'numberOfPoints',
+  // Test config (regulator-determined, not a result)
+  'ir_test_voltage_v',
+  'ir_test_voltage',
+  'max_disconnect_time_s',
+  'max_disconnect_time',
+  // Phase / circuit_type
+  'phase',
+  'circuit_type',
+
+  // --- Supply-level facts (from config/field_schema.json supply_characteristics_fields) ---
+  'earthing_arrangement',
+  'earthingArrangement',
+  'live_conductors',
+  'number_of_supplies',
+  'nominal_voltage_u',
+  'nominal_voltage_uo',
+  'nominal_frequency',
+  'supply_voltage',
+  'supplyVoltage',
+  'supply_type',
+  'earthing_system',
+  // SPD device facts
+  'spd_bs_en',
+  'spd_type_supply',
+  'spd_short_circuit',
+  'spd_rated_current',
+  // Earthing-presence flags
+  'means_earthing_distributor',
+  'means_earthing_electrode',
+  // Earth electrode topology (the type / location are facts; the
+  // resistance measurement IS a reading and is intentionally not here)
+  'earth_electrode_type',
+  'earthElectrodeType',
+  'earth_electrode_location',
+  // Earthing / bonding conductor specs
+  'earthing_conductor_material',
+  'earthing_conductor_csa',
+  'earthingConductorCsa',
+  'main_earth_conductor_csa', // legacy alias
+  'bonding_conductor_material',
+  'bonding_conductor_csa',
+  'mainBondingCsa',
+  'main_bonding_conductor_csa', // legacy alias
+  // Bonding-presence flags
+  'bonding_water',
+  'bondingWater',
+  'bonding_gas',
+  'bondingGas',
+  'bonding_oil',
+  'bonding_structural_steel',
+  'bonding_lightning',
+  'bonding_other',
+  'bonding_other_na',
+  // Main switch device facts
+  'main_switch_bs_en',
+  'main_switch_poles',
+  'main_switch_voltage',
+  'main_switch_current',
+  'main_switch_rating',
+  'main_switch_fuse_setting',
+  'main_switch_location',
+  'main_switch_conductor_material',
+  'main_switch_conductor_csa',
+  // Supply RCD device facts (rating/delay configured, not measured)
+  'rcd_operating_current',
+  'rcd_time_delay',
+
+  // --- Board-level facts (from config/field_schema.json board_fields) ---
+  // (`id` is intentionally NOT listed — it's the identity key the merge
+  // matches on, not a writeable field. Same for `circuit_ref` etc.)
+  'board_type',
+  'location',
+  'manufacturer',
+  'name',
+  'parent_board_id',
+  'phases',
+  'sort_order',
+  'sub_main_cable_csa',
+  'sub_main_cable_material',
+  'sub_main_cpc_csa',
+  'feed_circuit_ref',
+]);
+
+/**
+ * Identity / addressing field names that the merge MUST NOT write
+ * through to the target bucket. Listed at module level so the merge
+ * helper is a tight loop without a long `if` chain.
+ */
+const MERGE_SKIP_KEYS = new Set([
+  'id',
+  'ref',
+  'circuit_ref',
+  'circuitNumber',
+  'number',
+  'board_id',
+]);
+
+/**
  * Plan 04-18 r12-#1 — look up the wrap policy for a field. Unknown
  * fields fall through to 'user_derived' as a fail-safe default
  * (over-apply wrap rather than under-apply).
@@ -724,6 +910,18 @@ export class EICRExtractionSession {
     // 4 — env mutation post-construction must NOT drift the mode). Plan 06
     // consumes this on the shadow harness; Phase 1 only exposes it.
     this.toolCallsMode = this._resolveToolCallsMode(options.toolCallsMode);
+
+    // Snapshot-restructure sprint (2026-05-27) Phase 1 §2.5 — same
+    // constructor-locked pattern as toolCallsMode. Decides whether
+    // `buildSystemBlocks` emits the legacy 2-block layout (base +
+    // full snapshot) or the new 3-block split (base + stable prefix +
+    // volatile tail). Mid-session env mutation MUST NOT drift the
+    // mode — same Research §Pitfall 4 contract toolCallsMode already
+    // respects. Default `single_block` keeps every non-flag deploy
+    // byte-identical to today's main; `split_blocks` is the Day-3
+    // canary flip.
+    this.snapshotFormat = this._resolveSnapshotFormat(options.snapshotFormat);
+
     // Stage 6 Phase 4: mode-gated prompt selection.
     //   off         → legacy cert-specific prompt (STR-01 rollback path).
     //   shadow/live → cert-agnostic agentic prompt; cert-specific facts
@@ -803,6 +1001,30 @@ export class EICRExtractionSession {
     // bad value warns independently. GC'd with the session
     // instance.
     this._loggedUnknownValidationAlerts = new Set();
+
+    // Phase 0 of the 2026-05-27 snapshot-restructure sprint —
+    // per-session schedule-rebuild identity counter. Tracks how often a
+    // call to `updateJobState` produces a schedule string IDENTICAL to
+    // the previous one (cache stayed warm) vs CHANGED (cache miss).
+    //
+    // The Day-3 canary gate for Phase 1 is `identity_rate > 0.7`: if
+    // most jobState updates produce no schedule change, the cached
+    // prefix is doing its job and the split-blocks layout will land
+    // its expected savings. If <70%, the schedule is churning every
+    // tick (probably because iOS sends a new jobState very turn) and
+    // Phase 1 won't pay off — surface the divergence early.
+    //
+    // Logged at session-end alongside the cost summary so canary
+    // analysis can correlate against the CostTracker cache totals.
+    this._scheduleRebuildStats = {
+      total: 0,
+      identical: 0,
+    };
+    // Sentinel value (null, not '') so the very FIRST updateJobState always
+    // counts as a change — even when iOS sends an empty initial jobState,
+    // which would produce the same '' as the constructor default and
+    // wrongly count as "cache hit" with an empty-string sentinel.
+    this._lastScheduleText = null;
   }
 
   /**
@@ -829,6 +1051,44 @@ export class EICRExtractionSession {
       sessionId: this.sessionId,
     });
     return 'live';
+  }
+
+  /**
+   * Snapshot-restructure sprint (2026-05-27) Phase 1 §2.5 — resolve the
+   * SNAPSHOT_FORMAT mode. Called ONCE from the constructor — do not
+   * invoke at runtime (same Research §Pitfall 4 contract as
+   * _resolveToolCallsMode). Accepts an explicit override (constructor
+   * options) that supersedes the env var.
+   *
+   *   single_block (default)  → legacy 2-block layout; byte-identical
+   *                              to today's main. `buildSystemBlocks`
+   *                              returns [base, full_snapshot]. Day-1
+   *                              and Day-2 ship with this default;
+   *                              Day-3 canary flips a single task to
+   *                              `split_blocks` for telemetry capture
+   *                              before fleet rollout.
+   *   split_blocks            → 3-block layout: [base, stable_prefix,
+   *                              volatile_tail]. Stable prefix carries
+   *                              the preamble + (facts-only) CIRCUIT
+   *                              SCHEDULE + BOARDS; volatile tail
+   *                              carries EXTRACTED + observations +
+   *                              asked-questions. Cache hits on the
+   *                              stable prefix survive across Sonnet
+   *                              turns even when the tail changes.
+   *
+   * Anything else falls back to `single_block` with a warning so a
+   * typo in the task-def env var can't silently change billing
+   * characteristics.
+   */
+  _resolveSnapshotFormat(override) {
+    const raw = override ?? process.env.SNAPSHOT_FORMAT ?? 'single_block';
+    if (raw === 'single_block' || raw === 'split_blocks') return raw;
+    logger.warn('snapshot.invalid_format', {
+      value: raw,
+      fallback: 'single_block',
+      sessionId: this.sessionId,
+    });
+    return 'single_block';
   }
 
   /**
@@ -1317,6 +1577,23 @@ export class EICRExtractionSession {
     const summary = this.costTracker.toSessionSummary();
     summary.extraction.readingsExtracted = this.extractedReadingsCount;
     summary.extraction.questionsAsked = this.askedQuestions.length;
+    // Phase 0 — schedule_block_rebuild identity rate (snapshot-restructure
+    // sprint, 2026-05-27). Day-3 canary gate for Phase 1 is `identityRate >
+    // 0.7`. Surface raw counts so post-hoc analysis can spot anomalies
+    // (e.g. total=0 when a session genuinely never received a job_state
+    // update, vs identical=total when iOS keeps re-pushing an unchanged
+    // jobState — both look like "1.0 identity" on the ratio alone).
+    const identityRate =
+      this._scheduleRebuildStats.total > 0
+        ? this._scheduleRebuildStats.identical / this._scheduleRebuildStats.total
+        : null;
+    logger.info('snapshot.schedule_block_rebuild', {
+      sessionId: this.sessionId,
+      total: this._scheduleRebuildStats.total,
+      identical: this._scheduleRebuildStats.identical,
+      identityRate,
+      snapshotFormat: this.snapshotFormat ?? 'single_block',
+    });
     logger.info(`Session ${this.sessionId} Stopped. Cost: $${summary.totalJobCost.toFixed(4)}`);
     return summary;
   }
@@ -1382,8 +1659,132 @@ export class EICRExtractionSession {
   }
 
   updateJobState(jobState) {
-    this.circuitSchedule = this.buildCircuitSchedule(jobState);
+    // Phase 1 §2.2A precondition (snapshot-restructure sprint, 2026-05-27).
+    // Merge any iOS-known circuit / supply / board values into the
+    // stateSnapshot BEFORE rebuilding the schedule. Required because
+    // Commit 2 will strip readings from the schedule string — without
+    // this merge, an iOS-round-tripped reading would vanish from
+    // Sonnet's view entirely (the schedule no longer carries it AND
+    // the snapshot never received it). See plan §2.2A for the full
+    // failure-mode story.
+    //
+    // Merge runs even with `jobState == null` (the helper no-ops on
+    // missing input) so the contract is one-line for the caller.
+    this._mergeIncomingJobStateIntoSnapshot(jobState);
+
+    const nextSchedule = this.buildCircuitSchedule(jobState);
+    // Phase 0 — schedule_block_rebuild identity counter (snapshot-restructure
+    // sprint, 2026-05-27). `_lastScheduleText` starts as `null` so the very
+    // first rebuild correctly counts as a change (not an identical no-op)
+    // even when iOS sends an empty initial jobState. Comparison is exact
+    // string-equality — facts-only schedules diverge byte-by-byte if any
+    // installation property changes.
+    this._scheduleRebuildStats.total += 1;
+    if (nextSchedule === this._lastScheduleText) {
+      this._scheduleRebuildStats.identical += 1;
+    }
+    this._lastScheduleText = nextSchedule;
+    this.circuitSchedule = nextSchedule;
     this.circuitScheduleIncluded = false; // Force re-send on next utterance
+  }
+
+  /**
+   * Phase 1 §2.2A — merge an incoming jobState into `this.stateSnapshot`.
+   *
+   * Three branches (one per top-level jobState shape):
+   *   - jobState.circuits[] → stateSnapshot.circuits[<ref>]
+   *   - jobState.supply     → stateSnapshot.circuits[0]  (supply bucket
+   *                            convention from buildStateSnapshotMessage)
+   *   - jobState.boards[]   → stateSnapshot.boards[]    (matched BY ID,
+   *                            not by index — Codex v5 F2: boards can
+   *                            reorder client-side; only the id is stable)
+   *
+   * Per-field precedence inside each branch is the same:
+   *   - FACT     → iOS overwrites unconditionally
+   *   - READING  → iOS only fills empty cells; Sonnet-canonical wins
+   *
+   * Quiet no-op when `jobState` is null / undefined / shape-malformed.
+   * The caller (`updateJobState`) always invokes this first, so this
+   * contract MUST be tolerant of every input shape today's code can
+   * hand it.
+   */
+  _mergeIncomingJobStateIntoSnapshot(jobState) {
+    if (!jobState || typeof jobState !== 'object') return;
+
+    // --- CIRCUITS ---
+    if (Array.isArray(jobState.circuits)) {
+      for (const incoming of jobState.circuits) {
+        if (!incoming || typeof incoming !== 'object') continue;
+        const ref = incoming.ref ?? incoming.circuitNumber ?? incoming.number;
+        if (ref == null) continue;
+        // Existing snapshot bucket keying is numeric for legacy main-board
+        // refs (the supply bucket lives at `0`); composite keys ("main::1")
+        // exist for sub-board circuits but are written by Sonnet
+        // tool-dispatch rather than by iOS jobState pushes. Round-trip
+        // through Number() only when the raw ref is a numeric-looking
+        // string so we don't break existing numeric-key semantics.
+        const key = typeof ref === 'number' || /^\d+$/.test(String(ref)) ? Number(ref) : ref;
+        const target = this.stateSnapshot.circuits[key] || (this.stateSnapshot.circuits[key] = {});
+        this._mergeCircuitOrBoardFields(target, incoming);
+      }
+    }
+
+    // --- SUPPLY (lives at circuits[0] per the supply-bucket convention) ---
+    if (jobState.supply && typeof jobState.supply === 'object') {
+      const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
+      this._mergeCircuitOrBoardFields(target, jobState.supply);
+    }
+
+    // --- BOARDS — match by id, not by index (Codex v5 F2) ---
+    if (Array.isArray(jobState.boards)) {
+      if (!Array.isArray(this.stateSnapshot.boards)) {
+        this.stateSnapshot.boards = [];
+      }
+      for (const incoming of jobState.boards) {
+        if (!incoming || typeof incoming !== 'object' || !incoming.id) continue;
+        let target = this.stateSnapshot.boards.find((b) => b && b.id === incoming.id);
+        if (!target) {
+          target = { id: incoming.id };
+          this.stateSnapshot.boards.push(target);
+        }
+        this._mergeCircuitOrBoardFields(target, incoming);
+      }
+    }
+  }
+
+  /**
+   * Phase 1 §2.2A — field-level merge with fact-vs-reading precedence.
+   * Shared by the circuit, supply, and board branches above so the
+   * precedence rule cannot drift across surfaces.
+   *
+   *   - Identity / addressing keys (id, ref, circuitNumber, …) → skipped
+   *     here; the parent branch picks the bucket via those keys.
+   *   - FACT_FIELDS membership → iOS authoritative (overwrite).
+   *   - Anything else → READING; iOS only fills empty cells (`== null`
+   *     or `''`). An existing Sonnet-written value is preserved.
+   *
+   * `null` / `undefined` incoming values are written through for facts
+   * (clearing an iOS-corrected installation property must propagate)
+   * but skipped for readings (don't let an iOS null punch out a Sonnet
+   * reading — the same value will still be there next push).
+   */
+  _mergeCircuitOrBoardFields(target, incoming) {
+    if (!incoming || typeof incoming !== 'object') return;
+    for (const [field, value] of Object.entries(incoming)) {
+      if (MERGE_SKIP_KEYS.has(field)) continue;
+      if (FACT_FIELDS.has(field)) {
+        target[field] = value;
+      } else {
+        // Reading: only fill an empty cell. The empty-string check
+        // mirrors the same null/empty contract the snapshot serialiser
+        // uses elsewhere (an empty string is functionally absent for
+        // EXTRACTED-block emission purposes).
+        if (value == null || value === '') continue;
+        if (target[field] == null || target[field] === '') {
+          target[field] = value;
+        }
+      }
+    }
   }
 
   /**
@@ -1834,8 +2235,15 @@ export class EICRExtractionSession {
     const blockCount = messages.length;
     if (blockCount <= 20) return;
     // Anthropic allows max 4 cache_control blocks total.
-    // 1 is on the system prompt, 1 on the latest user message,
-    // so we can place at most 2 mid-conversation breakpoints.
+    // single_block: 1 system + 1 latest user → 2 left for mid-conv.
+    // split_blocks (Phase 1 §2.5, snapshot-restructure sprint
+    //   2026-05-27): 1 system base + 1 stable_prefix + 1 volatile_tail
+    //   + 1 latest user = 4 cache breakpoints already used on
+    //   prefix+message, leaving 0 for mid-conv. Cap at 1 (overage will
+    //   be silently dropped by Anthropic in favour of the latest one)
+    //   so the mid-conv break can still help long sessions when the
+    //   tail is empty (degenerated 3-block layout), at the cost of
+    //   eviction churn when both halves are present.
     //
     // IMPORTANT: First strip ALL stale cache_control from conversation history
     // messages (all except the last one, which is the new user message).
@@ -1851,7 +2259,7 @@ export class EICRExtractionSession {
         }
       }
     }
-    // Collect all eligible positions, then keep only the last 2
+    // Collect all eligible positions, then keep only the last N
     // (nearest the end) for best cache hit rates.
     const candidates = [];
     for (let i = 18; i < blockCount - 2; i += 18) {
@@ -1860,8 +2268,9 @@ export class EICRExtractionSession {
         candidates.push(i);
       }
     }
-    // Keep only the last 2 candidates
-    const selected = candidates.slice(-2);
+    // single_block → 2 mid-conv breakpoints; split_blocks → 1.
+    const maxMidConv = this.snapshotFormat === 'split_blocks' ? 1 : 2;
+    const selected = candidates.slice(-maxMidConv);
     for (const idx of selected) {
       const msg = messages[idx];
       const lastBlock = msg.content[msg.content.length - 1];
@@ -1943,12 +2352,23 @@ export class EICRExtractionSession {
    *     ephemeral 5m. Callers continue to inject the snapshot into the messages
    *     array (see buildMessageWindow off-mode branch) so the off path stays
    *     byte-identical to pre-Phase-4.
-   *   - shadow/live: two-block array — [base agentic prompt, state snapshot],
-   *     both cache_control ephemeral 5m. When the snapshot is empty (no
-   *     circuits, no schedule, no observations) the array COLLAPSES to one
-   *     element — we never emit a two-block array with an empty-string second
-   *     block because Anthropic's cache key includes all blocks, so that would
-   *     cache-miss every call with no snapshot yet.
+   *   - shadow/live + snapshotFormat='single_block' (default): two-block
+   *     array — [base agentic prompt, state snapshot], both cache_control
+   *     ephemeral 5m. When the snapshot is empty (no circuits, no
+   *     schedule, no observations) the array COLLAPSES to one element —
+   *     we never emit a two-block array with an empty-string second
+   *     block because Anthropic's cache key includes all blocks, so
+   *     that would cache-miss every call with no snapshot yet.
+   *   - shadow/live + snapshotFormat='split_blocks' (Phase 1 §2.5,
+   *     snapshot-restructure sprint 2026-05-27): up-to-three-block
+   *     array — [base, stable_prefix, volatile_tail]. Same collapse
+   *     behaviour: either of the snapshot halves being empty
+   *     degenerates the array to fewer blocks. The cache breakpoint
+   *     between stable and volatile means a per-turn change to the
+   *     volatile tail (e.g. a new EXTRACTED reading) only invalidates
+   *     the tail's cache region, not the stable prefix's — which is
+   *     where the largest, slowest-changing content lives
+   *     (preamble + CIRCUIT SCHEDULE + BOARDS).
    *
    * Cost model: cache writes are 1.25x input-token cost; cache reads are 0.1x.
    * A typical turn carries a small-delta snapshot — the write amortises across
@@ -1962,6 +2382,34 @@ export class EICRExtractionSession {
       cache_control: { type: 'ephemeral', ttl: '5m' },
     };
     if (this.toolCallsMode === 'off') return [base];
+
+    // Phase 1 §2.5 — split_blocks branch (snapshot-restructure sprint
+    // 2026-05-27). Emit [base, stable_prefix, volatile_tail], collapsing
+    // any empty half. Both halves get the same cache_control as the
+    // legacy second block so the cache breakpoint structure is
+    // [base|prefix|tail|user] with one breakpoint per segment.
+    if (this.snapshotFormat === 'split_blocks') {
+      const prefix = this.buildStableSnapshotPrefix();
+      const tail = this.buildVolatileSnapshotTail();
+      const blocks = [base];
+      if (prefix !== '') {
+        blocks.push({
+          type: 'text',
+          text: prefix,
+          cache_control: { type: 'ephemeral', ttl: '5m' },
+        });
+      }
+      if (tail !== '') {
+        blocks.push({
+          type: 'text',
+          text: tail,
+          cache_control: { type: 'ephemeral', ttl: '5m' },
+        });
+      }
+      return blocks;
+    }
+
+    // Default — single_block layout. Byte-identical to pre-Phase-1.
     const snapshot = this.buildStateSnapshotMessage();
     if (!snapshot) return [base];
     return [
@@ -2188,8 +2636,106 @@ export class EICRExtractionSession {
    * Includes the circuit schedule (designations, supply info, hardware) alongside
    * extracted values so Sonnet retains full context even when older conversational
    * messages drop out of the sliding window.
+   *
+   * Snapshot-restructure sprint (2026-05-27) Phase 1 §2.5 — concrete layout
+   * is computed by `_computeSnapshotParts()` (single source of truth) and
+   * projected via `buildStableSnapshotPrefix` + `buildVolatileSnapshotTail`
+   * for the split_blocks layout. This function preserves the LEGACY
+   * single-block surface for callers that don't care about the split
+   * (off-mode `buildMessageWindow`, the keepalive path, tests written
+   * against the original byte stream): it returns the same joined
+   * string the pre-Phase-1 implementation produced.
    */
   buildStateSnapshotMessage() {
+    const parts = this._computeSnapshotParts();
+    if (parts.isEmpty) return null;
+    // Byte-identical to pre-Phase-1 single-block join: stable_prefix +
+    // volatile_tail concatenated with the same '\n\n' separator the
+    // original `parts.join('\n\n')` produced. Filter out an empty
+    // tail string so we don't emit a trailing '\n\n' when no tail
+    // surface fired (e.g. CIRCUIT SCHEDULE only).
+    const joined = [parts.prefixText, parts.tailText].filter((s) => s !== '').join('\n\n');
+    // Log token estimate for monitoring snapshot growth in long
+    // sessions (kept on this caller because the helpers are also used
+    // by buildSystemBlocks where the token estimate is already
+    // computed via CostTracker on the real API call).
+    const tokenStatRefs = listCircuitRefsInBoard(this.stateSnapshot, parts.currentBoardId);
+    const recentCount = Math.min(this.recentCircuitOrder.length, SNAPSHOT_RECENT_CIRCUITS);
+    const compactedCount = tokenStatRefs.length - recentCount;
+    const estimate = Math.ceil(joined.length / 4);
+    logger.info(
+      `[StateSnapshot] Estimated tokens: ${estimate}, circuits: ${tokenStatRefs.length}, compacted: ${compactedCount}`
+    );
+    return joined;
+  }
+
+  /**
+   * Snapshot-restructure sprint (2026-05-27) Phase 1 §2.5 — stable
+   * prefix half of the cached snapshot. Carries the preamble + CIRCUIT
+   * SCHEDULE + BOARDS sections. These rarely change between Sonnet
+   * turns (schedule changes only on iOS jobState pushes; boards
+   * changes only on add_board / reorder), so they're a natural cache
+   * breakpoint when split_blocks is active.
+   *
+   * Returns `''` (not null) when no prefix-eligible surface is
+   * populated — callers should check `=== ''` before emitting a block.
+   * The empty-string return is intentional so the helper can be
+   * called speculatively without a null-guard at every call site.
+   */
+  buildStableSnapshotPrefix() {
+    return this._computeSnapshotParts().prefixText;
+  }
+
+  /**
+   * Snapshot-restructure sprint (2026-05-27) Phase 1 §2.5 — volatile
+   * tail half. Carries EXTRACTED + OBSERVATIONS ALREADY RECORDED +
+   * ASKED QUESTIONS + EXTRACTED OBSERVATIONS. Each of these changes
+   * frequently across Sonnet turns (every reading write touches
+   * EXTRACTED; observations + asked-questions grow); keeping them
+   * downstream of the stable prefix means a per-turn change only
+   * invalidates the tail's cache breakpoint, not the prefix's.
+   *
+   * Returns `''` (not null) when no tail-eligible surface is
+   * populated. Same calling contract as buildStableSnapshotPrefix.
+   */
+  buildVolatileSnapshotTail() {
+    return this._computeSnapshotParts().tailText;
+  }
+
+  /**
+   * Snapshot-restructure sprint (2026-05-27) Phase 1 §2.5 — single
+   * computation point for the snapshot's stable prefix and volatile
+   * tail. Both `buildStateSnapshotMessage` (single-block parity) and
+   * `buildStableSnapshotPrefix` / `buildVolatileSnapshotTail`
+   * (split_blocks emission) project from this. Keeps the gate logic
+   * (`hasCircuits`, `hasBoards`, etc.) in one place so the prefix /
+   * tail split cannot drift from the legacy single-block emission.
+   *
+   * Returns:
+   *   {
+   *     prefixText:      string ('' if no stable surface populated)
+   *     tailText:        string ('' if no volatile surface populated)
+   *     isEmpty:         true when EVERY surface is empty (caller
+   *                      should return null instead of an empty
+   *                      string — same null contract the pre-Phase-1
+   *                      buildStateSnapshotMessage offered).
+   *     currentBoardId:  string — exposed for the token-stats log
+   *                      computation in buildStateSnapshotMessage.
+   *   }
+   *
+   * Stable prefix = preamble + CIRCUIT SCHEDULE + BOARDS.
+   * Volatile tail = EXTRACTED + OBSERVATIONS + ASKED + EXTRACTED OBS.
+   *
+   * Why this split: cache-frequency ordering. The preamble is
+   * static; the schedule changes only when iOS pushes a new jobState
+   * (a handful of times per session at most after Phase 1 facts-only
+   * strip); the BOARDS listing changes only on add_board / reorder
+   * (rare). The volatile half changes EVERY Sonnet turn that writes a
+   * reading or records an observation. Putting the stable half first
+   * means the cached prefix breakpoint up to the volatile-tail
+   * boundary stays warm across the steady-state per-turn churn.
+   */
+  _computeSnapshotParts() {
     // "Work on Board" sprint Phase A.4 — dual-shape supply / circuit reads.
     // Replaces the previous STAGE6_MULTI_BOARD env-flag branch. The choice
     // is per-call:
@@ -2279,10 +2825,21 @@ export class EICRExtractionSession {
       !hasExtractedObs &&
       !hasBoards
     ) {
-      return null;
+      return {
+        prefixText: '',
+        tailText: '',
+        isEmpty: true,
+        currentBoardId,
+      };
     }
 
-    const parts = [];
+    // Phase 1 §2.5 — split parts into the cache-stable prefix half
+    // (preamble + CIRCUIT SCHEDULE + BOARDS) and the per-turn-volatile
+    // tail half (EXTRACTED + observations + asked-questions). Both
+    // halves share the same gate computation above so the prefix /
+    // tail split cannot drift from the single-block emission.
+    const prefixParts = [];
+    const tailParts = [];
 
     // Plan 04-15 r9-#2 — FRAMING IS UNIVERSAL. Pre-r9 state had a
     // `const includeFraming = this.toolCallsMode !== 'off'` gate
@@ -2347,7 +2904,7 @@ export class EICRExtractionSession {
       this.toolCallsMode === 'off'
         ? SNAPSHOT_TRUST_BOUNDARY_PREAMBLE_USER_CHANNEL
         : SNAPSHOT_TRUST_BOUNDARY_PREAMBLE_SYSTEM_CHANNEL;
-    parts.push(preamble);
+    prefixParts.push(preamble);
 
     // Include circuit schedule so Sonnet knows circuit designations, supply info,
     // and hardware details even after early messages drop from the sliding window.
@@ -2363,7 +2920,7 @@ export class EICRExtractionSession {
     if (hasSchedule) {
       const sanitisedSchedule = sanitiseSnapshotField(this.circuitSchedule);
       const scheduleContent = wrapSnapshotUserText(sanitisedSchedule);
-      parts.push(
+      prefixParts.push(
         `CIRCUIT SCHEDULE (confirmed values — do NOT question these):\n${scheduleContent}`
       );
     }
@@ -2404,7 +2961,7 @@ export class EICRExtractionSession {
         boardLines.push(JSON.stringify(compact));
       }
       if (boardLines.length > 0) {
-        parts.push(
+        prefixParts.push(
           `BOARDS (use these EXACT ids when calling add_board.parent_board_id, ` +
             `select_board.board_id, or mark_distribution_circuit.feeds_board_id):\n` +
             boardLines.join('\n')
@@ -2679,7 +3236,7 @@ export class EICRExtractionSession {
         lines.push(`alerts:${JSON.stringify(wrappedAlerts)}`);
       }
 
-      parts.push(
+      tailParts.push(
         `EXTRACTED (field IDs per system prompt — do NOT re-emit identical values, but DO output corrections with DIFFERENT values):\n${lines.join('\n')}`
       );
     }
@@ -2702,7 +3259,7 @@ export class EICRExtractionSession {
         const content = wrapSnapshotUserText(sanitised);
         return `${i + 1}. ${content}`;
       });
-      parts.push(
+      tailParts.push(
         `OBSERVATIONS ALREADY RECORDED (${this.stateSnapshot.observations.length} total, do NOT re-extract):\n${condensed.join('\n')}`
       );
     }
@@ -2712,7 +3269,7 @@ export class EICRExtractionSession {
     // buildUserMessage). Matches legacy off-mode wording so the model sees
     // the same constraint on both branches.
     if (hasAsked) {
-      parts.push(
+      tailParts.push(
         `ASKED QUESTIONS (already answered or deferred — do NOT re-ask): ${this.askedQuestions.join('; ')}`
       );
     }
@@ -2739,28 +3296,47 @@ export class EICRExtractionSession {
           return wrapSnapshotUserText(sanitiseSnapshotField(rawText));
         })
         .join('\n');
-      parts.push(
+      tailParts.push(
         `EXTRACTED OBSERVATIONS (ID-tracked — already emitted, do NOT re-extract):\n${list}`
       );
     }
 
-    const snapshot = parts.join('\n\n');
-
-    // Log token estimate for monitoring snapshot growth in long sessions.
-    // Phase 5.5.3 — flag-aware iteration via listCircuitRefsInBoard so the
-    // compacted-circuit count under flag-on reflects the active board's
-    // composite-keyed buckets, not legacy numeric keys.
-    const tokenStatRefs = listCircuitRefsInBoard(this.stateSnapshot, currentBoardId);
-    const recentCount = Math.min(this.recentCircuitOrder.length, SNAPSHOT_RECENT_CIRCUITS);
-    const compactedCount = tokenStatRefs.length - recentCount;
-    const estimate = Math.ceil(snapshot.length / 4);
-    logger.info(
-      `[StateSnapshot] Estimated tokens: ${estimate}, circuits: ${tokenStatRefs.length}, compacted: ${compactedCount}`
-    );
-
-    return snapshot;
+    return {
+      prefixText: prefixParts.join('\n\n'),
+      tailText: tailParts.join('\n\n'),
+      isEmpty: false,
+      currentBoardId,
+    };
   }
 
+  /**
+   * Build the CIRCUIT SCHEDULE block.
+   *
+   * Snapshot-restructure sprint (2026-05-27) Phase 1 §2.5 — facts only.
+   * Pre-Phase-1 this function also emitted readings (zs, r1+r2, r2,
+   * ring continuity, IR, polarity, RCD trip time, RCD/AFDD button
+   * confirmations, supply PFC / Ze / Zs-at-DB / electrode resistance /
+   * supply polarity). Those moved to the EXTRACTED block of the state
+   * snapshot, where:
+   *   - They live alongside Sonnet's own writes (single source of truth
+   *     for current readings — the schedule is no longer a competing
+   *     view that could go stale).
+   *   - The schedule string is now stable across Sonnet turns within a
+   *     given iOS jobState push, so the cached prefix it rides in
+   *     (`buildStableSnapshotPrefix` under split_blocks) stays warm
+   *     and the per-turn cache cost stays at the cache_read rate
+   *     (0.1× input) instead of cache_creation (1.25× input).
+   *
+   * The pre-existing `_mergeIncomingJobStateIntoSnapshot` precondition
+   * (Commit 1 of this sprint) makes the strip safe: any iOS-known
+   * reading is now written into `stateSnapshot.circuits[<ref>]` BEFORE
+   * the schedule is rebuilt, so the readings still reach Sonnet via
+   * the EXTRACTED block. Without that merge in place first, this
+   * strip would silently lose iOS-round-tripped readings entirely.
+   *
+   * Field classifications match the module-level `FACT_FIELDS` Set —
+   * both surfaces use the same set so they cannot drift apart.
+   */
   buildCircuitSchedule(jobState) {
     if (!jobState || !jobState.circuits) return '';
     const lines = [];
@@ -2770,7 +3346,7 @@ export class EICRExtractionSession {
         circuit.designation || circuit.description || circuit.circuit_description || 'unnamed';
       const fields = [];
 
-      // Derive circuit type from designation
+      // FACT — derive circuit type from designation when not set explicitly
       if (circuit.circuit_type) {
         fields.push(`${circuit.circuit_type}`);
       } else {
@@ -2786,70 +3362,51 @@ export class EICRExtractionSession {
           fields.push('Radial');
       }
 
-      // OCPD
+      // FACT — OCPD device label (type + rating)
       const ocpdType = circuit.ocpdType || circuit.ocpd_type;
       const ocpdRating = circuit.ocpdRatingA || circuit.ocpd_rating;
       if (ocpdType && ocpdRating) fields.push(`ocpd=${ocpdType}/${ocpdRating}A`);
       else if (ocpdType) fields.push(`ocpd=${ocpdType}`);
       else if (ocpdRating) fields.push(`${ocpdRating}A`);
 
-      // Cable sizes
+      // FACT — cable sizes
       const liveCsa = circuit.liveCsaMm2 || circuit.cable_size_live || circuit.cable_size;
       const earthCsa = circuit.cpcCsaMm2 || circuit.cable_size_earth;
       if (liveCsa && earthCsa) fields.push(`cable=${liveCsa}/${earthCsa}mm`);
       else if (liveCsa) fields.push(`cable=${liveCsa}mm`);
 
-      // Wiring and ref method
+      // FACT — wiring + reference method
       if (circuit.wiringType || circuit.wiring_type)
         fields.push(`wiring=${circuit.wiringType || circuit.wiring_type}`);
       if (circuit.refMethod || circuit.ref_method)
         fields.push(`ref=${circuit.refMethod || circuit.ref_method}`);
 
-      // Test readings
-      if (circuit.measuredZsOhm || circuit.zs)
-        fields.push(`zs=${circuit.measuredZsOhm || circuit.zs}`);
-      if (circuit.r1R2Ohm || circuit.r1_plus_r2)
-        fields.push(`r1r2=${circuit.r1R2Ohm || circuit.r1_plus_r2}`);
-      if (circuit.r2Ohm || circuit.r2) fields.push(`r2=${circuit.r2Ohm || circuit.r2}`);
-      if (circuit.ringR1Ohm) fields.push(`ringR1=${circuit.ringR1Ohm}`);
-      if (circuit.ringRnOhm) fields.push(`ringRn=${circuit.ringRnOhm}`);
-      if (circuit.ringR2Ohm) fields.push(`ringR2=${circuit.ringR2Ohm}`);
-      if (circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e)
-        fields.push(`irLE=${circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e}`);
-      if (circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l)
-        fields.push(`irLL=${circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l}`);
-
-      // Polarity
-      if (circuit.polarityConfirmed || circuit.polarity)
-        fields.push(`polarity=${circuit.polarityConfirmed || circuit.polarity}`);
-
-      // RCD
-      const rcdTime = circuit.rcdTimeMs || circuit.rcd_trip_time;
+      // FACT — RCD device rating (the rated trip current is a device
+      // property, not a measurement). The trip-TIME reading was
+      // previously rendered alongside it as `rcd=20ms/30mA`; that
+      // reading moved to the EXTRACTED block. We keep only the rating
+      // here so Sonnet still sees what device is installed.
       const rcdRating = circuit.rcdRatingA || circuit.rcd_rating_a;
-      if (rcdTime && rcdRating) fields.push(`rcd=${rcdTime}ms/${rcdRating}mA`);
-      else if (rcdTime) fields.push(`rcd=${rcdTime}ms`);
-      else if (rcdRating) fields.push(`rcd=${rcdRating}mA`);
+      if (rcdRating) fields.push(`rcd=${rcdRating}mA`);
 
-      // RCD/AFDD buttons
-      if (circuit.rcdButtonConfirmed) fields.push(`rcdBtn=OK`);
-      if (circuit.afddButtonConfirmed) fields.push(`afddBtn=OK`);
-
-      // Points
+      // FACT — number of outlets installed
       if (circuit.numberOfPoints || circuit.number_of_points)
         fields.push(`points=${circuit.numberOfPoints || circuit.number_of_points}`);
 
       lines.push(`  Circuit ${num}: ${desc} [${fields.join(', ')}]`);
     }
 
-    // Supply section
+    // Supply section — also facts only post-Phase-1. The supply
+    // readings (PFC, Ze, Zs-at-DB, earth-electrode resistance, supply
+    // polarity confirmation) all moved to the EXTRACTED block via the
+    // `circuits[0]` supply bucket. Sonnet reads them from EXTRACTED;
+    // the schedule carries only the installation facts that an
+    // inspector wouldn't re-measure.
     if (jobState.supply) {
       const s = jobState.supply;
       const supplyFields = [];
       if (s.earthingArrangement || s.earthing_arrangement)
         supplyFields.push(`earthing=${s.earthingArrangement || s.earthing_arrangement}`);
-      if (s.pfc || s.pfc_at_origin) supplyFields.push(`PFC=${s.pfc || s.pfc_at_origin}kA`);
-      if (s.ze) supplyFields.push(`Ze=${s.ze}ohms`);
-      if (s.zsAtDb || s.zs_at_db) supplyFields.push(`ZsDb=${s.zsAtDb || s.zs_at_db}`);
       if (s.earthingConductorCsa || s.main_earth_conductor_csa)
         supplyFields.push(
           `earthConductor=${s.earthingConductorCsa || s.main_earth_conductor_csa}mm2`
@@ -2860,11 +3417,6 @@ export class EICRExtractionSession {
       if (s.bondingGas || s.bonding_gas) supplyFields.push(`gas=Yes`);
       if (s.earthElectrodeType || s.earth_electrode_type)
         supplyFields.push(`electrodeType=${s.earthElectrodeType || s.earth_electrode_type}`);
-      if (s.earthElectrodeResistance || s.earth_electrode_resistance)
-        supplyFields.push(
-          `electrodeRA=${s.earthElectrodeResistance || s.earth_electrode_resistance}`
-        );
-      if (s.supplyPolarity || s.supply_polarity_confirmed) supplyFields.push(`polarity=confirmed`);
       if (s.supplyVoltage || s.supply_voltage)
         supplyFields.push(`voltage=${s.supplyVoltage || s.supply_voltage}V`);
       lines.unshift(`  Supply: [${supplyFields.join(', ')}]`);
