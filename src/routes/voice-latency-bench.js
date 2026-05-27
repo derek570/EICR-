@@ -23,8 +23,11 @@
 
 import { Router } from 'express';
 import WebSocket from 'ws';
+import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 import * as auth from '../auth.js';
-import { getElevenLabsKey } from '../services/secrets.js';
+import { getElevenLabsKey, getSecret } from '../services/secrets.js';
+import { getUserByEmail } from '../db.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -191,8 +194,49 @@ router.post('/test/elevenlabs-pcm-stream', auth.requireAuth, async (req, res) =>
   }
 });
 
-// /api/test/harness-mint-jwt — REMOVED in final cleanup (was throwaway
-// auth for harness runs).
+// /api/test/harness-mint-jwt — re-added 2026-05-27 for the
+// voice-latency-suite sprint's Wave A prod smoke runs. Gated by
+// STAGE0_BENCH=1 AND X-Bench-Secret = JWT_SECRET (proves AWS
+// Secrets access — only the dev box with the eicr/api-keys
+// permission can mint). Returns a 1h JWT keyed to the requested
+// user's row. Remove both this route AND the STAGE0_BENCH=1 flag
+// when the sprint completes (tracked).
+router.post('/test/harness-mint-jwt', async (req, res) => {
+  if (!benchEnabled()) return res.status(404).end();
+  let knownSecret;
+  try {
+    knownSecret = await getSecret('JWT_SECRET');
+  } catch {
+    return res.status(500).json({ error: 'JWT_SECRET unavailable' });
+  }
+  if (!knownSecret) return res.status(500).json({ error: 'JWT_SECRET unavailable' });
+  const providedSecret = req.header('X-Bench-Secret') || '';
+  const a = Buffer.from(providedSecret);
+  const b = Buffer.from(knownSecret);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(403).json({ error: 'bench secret mismatch' });
+  }
+  const { email } = req.body || {};
+  if (!email || typeof email !== 'string') return res.status(400).json({ error: 'email required' });
+  const user = await getUserByEmail(email);
+  if (!user || !user.is_active) return res.status(404).json({ error: 'user not found' });
+  const token = jwt.sign(
+    {
+      userId: user.id,
+      email: user.email,
+      role: user.role || 'user',
+      company_id: user.company_id || null,
+      company_role: user.company_role || 'employee',
+      tv: user.token_version || 0,
+      jti: crypto.randomUUID(),
+      _bench: true,
+    },
+    knownSecret,
+    { expiresIn: '1h' }
+  );
+  logger.info('stage0_bench_mint_jwt_issued', { userId: user.id, email: user.email });
+  res.json({ token, userId: user.id, expiresInSec: 3600 });
+});
 
 router.post('/test/elevenlabs-mp3-stream', auth.requireAuth, async (req, res) => {
   if (!benchEnabled()) return res.status(404).end();

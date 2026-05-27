@@ -253,7 +253,8 @@ app.use('/api/companies', auth.requireAuth, companiesRouter);
 // the un-authed /api/test/harness-mint-jwt before it reaches its handler.
 // Each route inside this router enforces its own gate (STAGE0_BENCH=1 +
 // either auth.requireAuth for the synth routes or X-Bench-Secret for the
-// JWT-mint route). Removed in the Stage 0 cleanup commit.
+// JWT-mint route). Re-added 2026-05-27 for the voice-latency-suite
+// sprint Wave A prod smoke runs; remove again when the sprint closes.
 app.use('/api', voiceLatencyBenchRouter);
 // Stage 4 minimum-viable fast-path endpoint — mounted EARLY for same
 // reason as bench router (auth handled per-route). Gated server-side
