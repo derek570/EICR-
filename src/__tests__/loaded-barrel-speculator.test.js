@@ -777,4 +777,159 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
     expect(factory).toHaveBeenCalledTimes(2);
     expect(synths).toHaveLength(2);
   });
+
+  // 2026-05-28 widening — record_board_reading also gets the streamed
+  // head start. Same wire shape (no circuit, has board_id), same
+  // coercion, same friendly-name table.
+  describe('record_board_reading (2026-05-28 widening)', () => {
+    function boardStreamedEvent({
+      field,
+      value,
+      boardId = 'main',
+      confidence = 1.0,
+      turnId = 'T1',
+    }) {
+      return {
+        record: {
+          index: 0,
+          tool_call_id: 'tc_bs_1',
+          name: 'record_board_reading',
+          input: {
+            field,
+            value,
+            confidence,
+            board_id: boardId,
+            source_turn_id: turnId,
+          },
+        },
+        ctx: { sessionId: 'S', turnId, roundIdx: 1 },
+      };
+    }
+
+    test('record_board_reading streamed → begins pre-synth (Ze)', async () => {
+      const { factory, synths } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed(
+        boardStreamedEvent({ field: 'earth_loop_impedance_ze', value: '0.25', boardId: 'main' })
+      );
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(synths).toHaveLength(1);
+      // Board-level confirmation has no "Circuit N," prefix.
+      expect(synths[0].text).not.toMatch(/Circuit/i);
+      expect(synths[0].text.toLowerCase()).toContain('z');
+    });
+
+    test('record_board_reading with no board_id → boardId=null on speculation slot', async () => {
+      const { factory, synths } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed({
+        record: {
+          index: 0,
+          tool_call_id: 'tc_bs_noboard',
+          name: 'record_board_reading',
+          input: {
+            field: 'earth_loop_impedance_ze',
+            value: '0.18',
+            confidence: 1.0,
+            source_turn_id: 'T1',
+          },
+        },
+        ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+      });
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(synths).toHaveLength(1);
+    });
+
+    test('record_board_reading dedups with later onSnapshotPatch for same slot', async () => {
+      const { factory } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed(
+        boardStreamedEvent({ field: 'earth_loop_impedance_ze', value: '0.30', boardId: 'main' })
+      );
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(1);
+
+      // onSnapshotPatch for the same slot — should NOT double-synth.
+      spec.onSnapshotPatch({
+        patch: {
+          readings: { added: [], overwritten: [], removed: [] },
+          boardReadings: {
+            added: [
+              {
+                key: 'earth_loop_impedance_ze::main',
+                value: { value: '0.30', confidence: 1.0 },
+              },
+            ],
+            overwritten: [],
+            removed: [],
+          },
+          cleared: [],
+          boardOps: [],
+        },
+        raw: {},
+        ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+      });
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(1);
+    });
+
+    test('non-board-friendly field (sub_main_cable_length) is silently skipped', async () => {
+      const { factory } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed(boardStreamedEvent({ field: 'sub_main_cable_length', value: '10' }));
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(0);
+    });
+
+    test('record_board_reading missing value silently skipped', async () => {
+      const { factory } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed({
+        record: {
+          index: 0,
+          tool_call_id: 'tc_bs_novalue',
+          name: 'record_board_reading',
+          input: {
+            field: 'earth_loop_impedance_ze',
+            confidence: 1.0,
+            board_id: 'main',
+            source_turn_id: 'T1',
+          },
+        },
+        ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+      });
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(0);
+    });
+
+    test('error-shaped record_board_reading silently skipped', async () => {
+      const { factory } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed({
+        record: {
+          index: 0,
+          tool_call_id: 'tc_bs_err',
+          name: 'record_board_reading',
+          error: 'invalid_json',
+        },
+        ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
+      });
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(0);
+    });
+
+    test('mixed record_reading + record_board_reading streamed in same turn → both synth', async () => {
+      const { factory, synths } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed(streamedEvent({ field: 'measured_zs_ohm', circuit: 1, value: '0.5' }));
+      spec.onToolUseStreamed(
+        boardStreamedEvent({ field: 'earth_loop_impedance_ze', value: '0.20', boardId: 'main' })
+      );
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(2);
+      expect(synths).toHaveLength(2);
+    });
+  });
 });

@@ -740,12 +740,17 @@ export function createSpeculator({
    * dispatcher will produce. Shared helper at
    * `record-reading-coercion.js`.
    *
-   * Scope: ONLY `record_reading` is handled. board_reading,
-   * observations, circuit ops, and dialogue-script writes go through
-   * onSnapshotPatch as before. Extending to other tools is a
-   * follow-up; record_reading is by far the dominant multi-tool
-   * pattern (3+ readings per OCPD utterance, multi-circuit batches,
-   * etc.) so this covers the highest-value cases first.
+   * Scope (2026-05-28 widening): `record_reading` AND
+   * `record_board_reading`. The two share the same wire shape —
+   * field + value + confidence + (board_id) — and the dispatcher
+   * applies the same value coercion to both. The board-reading branch
+   * targets circuit:null with the input's board_id; the read path
+   * (cache lookup at iOS POST time) keys by (field, boardId, circuit)
+   * so cross-tool collisions are structurally impossible.
+   *
+   * Observations, circuit ops, and dialogue-script writes still go
+   * through onSnapshotPatch — they have different input shapes and
+   * different confirmation-text recipes.
    *
    * Error records (invalid_json / orphan_delta from the assembler)
    * have no input — silently skipped.
@@ -755,7 +760,7 @@ export function createSpeculator({
   function onToolUseStreamed({ record, ctx }) {
     if (!record || !ctx) return;
     if (record.error) return; // assembler couldn't parse — no input to speculate from
-    if (record.name !== 'record_reading') return;
+    if (record.name !== 'record_reading' && record.name !== 'record_board_reading') return;
     const input = record.input;
     if (!input || typeof input !== 'object') return;
 
@@ -763,8 +768,13 @@ export function createSpeculator({
     const rawValue = input.value;
     if (typeof field !== 'string' || typeof rawValue !== 'string') return;
 
-    const circuit = parseCircuit(input.circuit);
-    if (circuit == null) return;
+    // record_reading needs a parseable circuit; record_board_reading has
+    // none (board fields live on the board, not on a circuit row).
+    let circuit = null;
+    if (record.name === 'record_reading') {
+      circuit = parseCircuit(input.circuit);
+      if (circuit == null) return;
+    }
 
     // Apply the same coercion the dispatcher applies — otherwise the
     // pre-synth text would drift from the bundler's post-coercion text
