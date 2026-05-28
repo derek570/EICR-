@@ -146,17 +146,28 @@ class ScenarioRunner {
     return JSON.stringify(payload).slice(0, 120);
   }
 
-  async fetchTTS(text) {
+  async fetchTTS(text, slot = null) {
     const startNs = process.hrtime.bigint();
     let firstByteNs = 0n;
     let bytes = 0;
+    // 2026-05-28: pass turnId + slot tuple so the backend Loaded Barrel
+    // cache short-circuit fires. Pre-fix the harness sent only {text,
+    // sessionId} which cache-missed every time (~400ms first_byte vs the
+    // ~30-100ms a real iOS POST sees via the HIT path). The cache key is
+    // (sessionId, turnId, boardId, field, circuit, expandedText), so we
+    // need all of them to land on the same entry the speculator created.
+    const body = { text, sessionId: this.s.sessionId ?? null };
+    if (slot?.turnId) body.turnId = slot.turnId;
+    if (slot?.boardId) body.boardId = slot.boardId;
+    if (slot?.field) body.field = slot.field;
+    if (slot?.circuit != null) body.circuit = String(slot.circuit);
     const res = await fetch(`${BASE_URL}/api/proxy/elevenlabs-tts`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.token}`,
       },
-      body: JSON.stringify({ text, sessionId: this.s.sessionId ?? null }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const body = await res.text();
@@ -203,18 +214,13 @@ class ScenarioRunner {
           await new Promise((r) => setTimeout(r, 500));
           // Fetch TTS for each confirmation if requested.
           const fetchTTS = this.s.config?.fetch_tts ?? true;
+          // TTS fetches now fire inline on extraction event arrival (see
+          // ws.on('message') handler). The post-timeline fetch block was
+          // serial and waited for the 20 s drain, busting the 15 s
+          // Loaded Barrel cache TTL. Keep a short wait here so the inline
+          // microtasks can complete before we close the WS.
           if (fetchTTS) {
-            const allConfirmations = this.extractions
-              .flatMap((e) => e.result?.confirmations ?? [])
-              .map((c) => (typeof c === 'string' ? c : c?.text))
-              .filter(Boolean);
-            for (const text of allConfirmations) {
-              try {
-                await this.fetchTTS(text);
-              } catch (err) {
-                this.errors.push(`TTS fetch failed: ${err.message}`);
-              }
-            }
+            await new Promise((r) => setTimeout(r, 1500));
           }
           if (this.s.config?.session_stop_at_end !== false) {
             ws.send(JSON.stringify({ type: 'session_stop' }));
@@ -244,6 +250,34 @@ class ScenarioRunner {
         if (msg.type === 'extraction') {
           if (this.firstExtractionAt === null) this.firstExtractionAt = process.hrtime.bigint();
           this.extractions.push(msg);
+          // 2026-05-28: fetch TTS IMMEDIATELY on extraction arrival, in
+          // parallel with the timeline drain. Pre-fix the harness deferred
+          // fetches until after a 20s drain, by which point the Loaded
+          // Barrel cache entries (15s TTL) had expired — every fetch
+          // cache-MISSED and measured fresh-synth latency instead of
+          // the HIT path iOS actually exercises. Matches iOS's
+          // post-extraction POST behavior.
+          const fetchTTS = this.s.config?.fetch_tts ?? true;
+          if (fetchTTS && !this._inlineFetchScheduled) {
+            this._inlineFetchScheduled = true;
+            // Schedule on a microtask so we don't block the WS reader.
+            queueMicrotask(async () => {
+              const turnId = msg.result?.turn_id ?? null;
+              for (const c of msg.result?.confirmations ?? []) {
+                const text = typeof c === 'string' ? c : (c?.expanded_text ?? c?.text ?? '');
+                if (!text) continue;
+                const slot = typeof c === 'string'
+                  ? { turnId }
+                  : { turnId, boardId: c?.board_id ?? null, field: c?.field ?? null, circuit: c?.circuit ?? null };
+                try {
+                  await this.fetchTTS(text, slot);
+                } catch (err) {
+                  this.errors.push(`TTS fetch failed: ${err.message}`);
+                }
+              }
+              this._inlineFetchScheduled = false;
+            });
+          }
         }
         // Count asks from BOTH wire shapes:
         //   - legacy `type: "question"` with `question_type: "ask_user"`
