@@ -54,6 +54,18 @@ function circuitsForSchedule(circuits: CCUAnalysisCircuit[]): CCUAnalysisCircuit
   return circuits.filter((c) => c.is_rcd_device !== true && c.circuit_number != null);
 }
 
+/**
+ * A circuit is "unscoped" if it carries no board attribution.
+ * Treat null, undefined, AND the empty string as unscoped — the empty
+ * string is what `parseCSV` (src/utils/jobs.js) writes for legacy
+ * single-board CSVs that pre-date the `board_id` column. Without the
+ * empty-string clause, legacy circuits get classified as "belongs to
+ * another board" and the per-board flows skip over them.
+ */
+function isUnscopedBoardId(id: unknown): boolean {
+  return id == null || id === '';
+}
+
 /** Test-reading fields that, if populated on a matched-but-now-missing
  *  circuit, cause the row to be preserved at the end of the list
  *  instead of being dropped. Matches the iOS checklist. */
@@ -263,10 +275,10 @@ function buildCircuitsPatchNamesOnly(
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
   const boardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
   );
   const otherBoardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) !== boardId && c.board_id != null
+    (c) => (c.board_id as string | undefined) !== boardId && !isUnscopedBoardId(c.board_id)
   );
 
   const existingByRef = new Map<string, CircuitRow>();
@@ -328,10 +340,10 @@ function buildCircuitsPatchFullCapture(
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
   const boardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
   );
   const otherBoardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) !== boardId && c.board_id != null
+    (c) => (c.board_id as string | undefined) !== boardId && !isUnscopedBoardId(c.board_id)
   );
 
   const existingByRef = new Map<string, CircuitRow>();
@@ -391,10 +403,10 @@ function buildCircuitsPatchHardwareUpdate(
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
   const boardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
   );
   const otherBoardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) !== boardId && c.board_id != null
+    (c) => (c.board_id as string | undefined) !== boardId && !isUnscopedBoardId(c.board_id)
   );
 
   const matchedOldIds = new Set<string>(
@@ -661,7 +673,7 @@ function applyAppendRailMode(
   // fallback to the array length, matching iOS.
   const allCircuits = ((job.circuits as CircuitRow[] | undefined) ?? []).slice();
   const boardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
   );
   let baseOffset = 0;
   let nonNumericPresent = false;

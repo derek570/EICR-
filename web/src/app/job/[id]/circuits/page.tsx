@@ -181,17 +181,25 @@ export default function CircuitsPage() {
     boards[0]?.id ?? null
   );
 
+  // Legacy rows (CSV-parsed) carry `board_id: ''` instead of null/undefined
+  // because parseCSV (src/utils/jobs.js) writes "" for missing cells. Without
+  // catching that here the Circuits tab silently empties for any job whose
+  // circuits pre-date the multi-board sprint while `boards` has one entry.
+  // See: 36 Wittenham Ave / former 34 Wittenham — recorded Feb 23 before the
+  // board_id CSV column existed, then re-saved post-multi-board with empty
+  // values for the new column.
+  const isUnscopedBoardId = (id: unknown): boolean => id == null || id === '';
   const visible = selectedBoardId
-    ? circuits.filter((c) => c.board_id === selectedBoardId || c.board_id == null)
+    ? circuits.filter((c) => c.board_id === selectedBoardId || isUnscopedBoardId(c.board_id))
     : circuits;
 
   // Bulk actions (Apply Defaults / Calculate Zs / Calculate R1+R2 /
   // Delete all) must only target circuits that are DEFINITELY on the
-  // active board. `visible` intentionally includes legacy boardless
-  // rows (board_id == null) so they stay editable from any board, but
-  // sweeping them into a bulk action is collateral — "Delete all on
-  // Board 2" must not silently wipe legacy unassigned circuits. When
-  // no board is selected, the bulk target is the whole list.
+  // active board. `visible` intentionally includes legacy unscoped rows
+  // (no board_id) so they stay editable from any board, but sweeping
+  // them into a bulk action is collateral — "Delete all on Board 2"
+  // must not silently wipe legacy unassigned circuits. When no board is
+  // selected, the bulk target is the whole list.
   const boardScoped = selectedBoardId
     ? circuits.filter((c) => c.board_id === selectedBoardId)
     : circuits;
