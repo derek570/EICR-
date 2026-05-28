@@ -2,7 +2,33 @@
 
 **Read this first** in a new session. Full plan in sibling [`PLAN.md`](PLAN.md) (~530 lines, refer as needed).
 Drafted 2026-05-13.
-Status: **Planned. Decisions PROPOSED, not locked. No code yet.**
+Status: **PARKED 2026-05-28 — code complete on branch, awaiting rebase sprint.** (See "Parking note" below.)
+
+---
+
+## Parking note — 2026-05-28
+
+**What's parked:** the 6-phase L2 sprint planned in this doc was IMPLEMENTED 2026-05-13 across four commits (Phases 3–6) on branch `pwa-observation-photo-autolink-2026-05-13` (also at `origin/pwa-observation-photo-autolink-2026-05-13`). Phases 1+2 (IDB v3→v4 + recording-context refs + rehydration) already on `main` from 2026-05-13.
+
+**Commits parked (in order):**
+- `e880043d` feat(pwa): observation photo forward-link in applyObservations (L2 phase 3) — 16 tests
+- `efe7449b` feat(pwa): image resize + observation-photo capture handler (L2 phase 4) — 10 tests
+- `b0730325` feat(pwa): Photo button + camera/library chooser on recording chrome (L2 phase 5)
+- `577f8107` feat(pwa): unassigned_photos pool + From-Job picker (L2 phase 6) — 7 tests
+
+**Why parked, not merged:** main has gained 172 commits since the branch diverged on 2026-05-13. 20+ of those commits touch `web/src/lib/recording-context.tsx` — the branch's primary collision surface — including audit-driven fixes for BFCache lifecycle, session-resume, observation_confirmation UX, amplitude barge-in, pending-readings buffer wiring, and a partial Wave 5 refactor that DELETED several files the branch may still reference (`dispatch-buffers.ts`, `in-flight-question.ts`, `pending-readings-buffer.ts`, `session-resume.ts`). A naive `git rebase main` will produce non-trivial conflicts that require replaying the Phase 4 capture orchestration against main's new recording-context shape, not a casual auto-merge. Estimated ½–1 day of focused work.
+
+**How to resume:**
+1. `git checkout pwa-observation-photo-autolink-2026-05-13 && git rebase main` — expect conflicts in `web/src/lib/recording-context.tsx`, likely also in `web/src/lib/recording/apply-extraction.ts`.
+2. Re-read this HANDOFF (and `PLAN.md`) cold; verify the "deal-breakers / verified gotchas" section still holds against main's current shape — in particular Deal-breaker #3 (`unassigned_photos[]` backend round-trip) which was the Phase 0 gate.
+3. Re-run the 33 tests added in Phases 3, 4, 6 (`web/tests/observation-photo.test.ts`, `apply-extraction-photo-link.test.ts`, `capture-observation-photo.test.ts`, `job-photos-picker.test.ts`) and patch any that broke due to context refactors.
+4. Smoke-test on actual iPad Safari (Deal-breaker #1 the upload-during-resize race, and §Risks for the iPad camera quirks).
+
+**Why this work matters:** behavioural parity with iOS canon (`DeepgramRecordingViewModel.swift:1504-1591` capture flow + `:5581-5599` forward-link, in production on iOS since ≥2026-04-22). Without this, photos can only be attached by opening the observation sheet after the fact — the inspector's natural "snap during dictation" flow is broken on web. The parity ledger memory (33d old, `missing: 0` as of 2026-04-24 Phases 0–9 audit) does NOT cover this gap because the gap was identified in the 2026-05-12 follow-up audit and the closing work landed on this side-branch instead of main.
+
+**Why we're not killing it:** the branch is complete, tested, well-documented work — not a half-baked spike. The rebase cost is real but bounded; rewriting from scratch against main's current shape is strictly more expensive than rebasing. Branch is on origin so the work is durable from machine loss.
+
+---
 
 ---
 

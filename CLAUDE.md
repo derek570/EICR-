@@ -193,6 +193,7 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 - **Web rebuild shipped to production 2026-04-18** via PR derek570/EICR-#1 (merge commit `9202351c`). `web-rebuild` merged into `main`; branch retained for reference. certmate.uk now serves the Next 16 / React 19 / PWA client from `web/`; `eicr-pwa` + `eicr-backend` ECS services updated (task defs `eicr-pwa:30`, `eicr-backend:27`), smoke tests green.
 - Deepgram auto-sleep (3-tier Active/Dozing/Sleeping) + server-side Sonnet v3 multi-turn — live in production.
 - Next candidates: debounced-save flush wiring `queueSaveJob` into JobProvider's save path (outbox is plumbed but has no production caller yet); Playwright E2E coverage for offline-sync flows.
+- **PARKED 2026-05-28:** PWA observation-photo auto-link sprint (Phases 3–6, 4 commits + 33 tests) lives on `origin/pwa-observation-photo-autolink-2026-05-13`. Code complete, awaiting rebase against the 172 commits main has gained since 2026-05-13 (heavy collision in `web/src/lib/recording-context.tsx`). Full resumption playbook: [.planning-stage6-agentic/handoffs/pwa-observation-photo-autolink-2026-05-13/HANDOFF.md](.planning-stage6-agentic/handoffs/pwa-observation-photo-autolink-2026-05-13/HANDOFF.md).
 
 ## Changelog
 
