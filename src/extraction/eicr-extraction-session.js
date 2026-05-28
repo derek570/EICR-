@@ -922,6 +922,19 @@ export class EICRExtractionSession {
     // canary flip.
     this.snapshotFormat = this._resolveSnapshotFormat(options.snapshotFormat);
 
+    // Snapshot-restructure sprint Phase 3 (2026-05-27) — same constructor-
+    // locked pattern. `recent_3` (default) reproduces today's rotating
+    // last-N window driven by `recentCircuitOrder`; `ascending` renders
+    // every circuit on the active board in ascending numeric order so the
+    // EXTRACTED block grows append-only across turns. Under split_blocks
+    // (Phase 1), ascending preserves the volatile-tail prefix turn-to-turn
+    // even when the inspector moves between circuits — the rotation under
+    // recent_3 would otherwise reshuffle the tail and collapse the cache
+    // prefix hit. recentCircuitOrder is still maintained in both modes
+    // (the golden-divergence harness reads SNAPSHOT_RECENT_CIRCUITS and
+    // the array is cheap); only the renderer's consumption differs.
+    this.circuitOrder = this._resolveCircuitOrder(options.circuitOrder);
+
     // Stage 6 Phase 4: mode-gated prompt selection.
     //   off         → legacy cert-specific prompt (STR-01 rollback path).
     //   shadow/live → cert-agnostic agentic prompt; cert-specific facts
@@ -1089,6 +1102,42 @@ export class EICRExtractionSession {
       sessionId: this.sessionId,
     });
     return 'single_block';
+  }
+
+  /**
+   * Snapshot-restructure sprint (2026-05-27) Phase 3 — resolve the
+   * CIRCUIT_ORDER mode. Same constructor-locked contract as
+   * _resolveSnapshotFormat (Research §Pitfall 4: env mutation
+   * post-construction must NOT drift the mode).
+   *
+   *   recent_3 (default)  → today's rotating last-N window; the renderer
+   *                          slices `recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS)`
+   *                          and emits older circuits as the
+   *                          "X earlier circuits (1,2) stored server-side"
+   *                          summary line. Byte-identical to pre-Phase-3
+   *                          main.
+   *   ascending           → renderer iterates every circuit on the active
+   *                          board in ascending numeric order with full
+   *                          detail. No "stored server-side" summary
+   *                          (nothing is hidden). Under Phase 1
+   *                          split_blocks this lets the volatile-tail
+   *                          prefix stay byte-identical across turns when
+   *                          the inspector moves between circuits — the
+   *                          new reading extends the bottom of the tail
+   *                          rather than reshuffling its membership.
+   *
+   * Anything else falls back to `recent_3` with a warning so a typo in
+   * the task-def env var can't silently change snapshot shape mid-fleet.
+   */
+  _resolveCircuitOrder(override) {
+    const raw = override ?? process.env.CIRCUIT_ORDER ?? 'recent_3';
+    if (raw === 'recent_3' || raw === 'ascending') return raw;
+    logger.warn('snapshot.invalid_circuit_order', {
+      value: raw,
+      fallback: 'recent_3',
+      sessionId: this.sessionId,
+    });
+    return 'recent_3';
   }
 
   /**
@@ -3016,14 +3065,28 @@ export class EICRExtractionSession {
       // pre-existing `n !== 0` predicate exactly for any seeded snapshot
       // (the `>= 1` floor also drops historical edge cases like negative
       // refs that the old filter accepted but were never written).
-      const recentNums = this.recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS);
+      // Phase 3 (snapshot-restructure sprint 2026-05-27) — branch on
+      // this.circuitOrder. `recent_3` keeps today's rotating last-N
+      // window (byte-identical to pre-Phase-3 main); `ascending`
+      // renders every circuit on the board in ascending numeric
+      // order with no "stored server-side" summary line. The
+      // ascending path makes the EXTRACTED block append-only under
+      // Phase 1's split_blocks layout, preserving the cache prefix
+      // across turns when the inspector moves between circuits.
       const allNonSupply = listCircuitRefsInBoard(this.stateSnapshot, currentBoardId);
-      const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
+      let circuitsToRender;
+      if (this.circuitOrder === 'ascending') {
+        circuitsToRender = [...allNonSupply].sort((a, b) => a - b);
+      } else {
+        const recentNums = this.recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS);
+        const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
 
-      if (olderNums.length > 0) {
-        lines.push(
-          `${olderNums.length} earlier circuits (${olderNums.join(',')}) stored server-side`
-        );
+        if (olderNums.length > 0) {
+          lines.push(
+            `${olderNums.length} earlier circuits (${olderNums.join(',')}) stored server-side`
+          );
+        }
+        circuitsToRender = recentNums;
       }
 
       // Recent circuits — compact field IDs
@@ -3067,7 +3130,7 @@ export class EICRExtractionSession {
       // keys from the compact projection — for main, the strip is a
       // no-op (keys are absent); for sub-boards, it preserves the
       // byte-equivalent shape with main's emitted JSON.
-      for (const num of recentNums) {
+      for (const num of circuitsToRender) {
         const fields = getCircuitBucket(this.stateSnapshot, num, currentBoardId);
         if (!fields) continue;
         const compact = {};

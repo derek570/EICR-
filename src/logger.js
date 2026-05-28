@@ -29,9 +29,25 @@ export const PII_FIELDS = new Set([
 
 const REDACTED = '[REDACTED]';
 
+// Plain-object check: only recurse into objects whose prototype is
+// `Object.prototype` or null. Non-plain types (Date, Map, Set, Buffer,
+// RegExp, class instances, etc.) are left alone — recursing into them
+// via spread would silently destroy their content (`{...new Date()}` is
+// `{}`, `{...new Map([['k','v']])}` is `{}`, `{...Buffer.from('hi')}` is
+// `{0: 104, 1: 105}`). The old in-place walker happened to be safe for
+// these because `Object.keys(date)` returns [] — i.e. it was a noop on
+// non-plain values. Preserving that behaviour means winston's downstream
+// printer still sees the original value and formats it sensibly (Date →
+// ISO string, Error → already-flattened-by-format.errors, etc.).
+function isPlainObject(value) {
+  if (value === null || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
+}
+
 // Copy-on-write redaction. The top-level `obj` is mutated (winston owns the
 // `info` object passed to format chains, so that's safe), but any nested
-// sub-object referenced by `obj` is shallow-cloned before recursion — we
+// plain object referenced by `obj` is shallow-cloned before recursion — we
 // never mutate a value the caller still holds a reference to. This matters
 // because logger metadata routinely contains live references to request /
 // session data: prior to this guard, a `logger.info('...', { foo: jobData })`
@@ -54,7 +70,7 @@ export function redactPiiInPlace(obj, depth = 0, seen) {
     const value = obj[key];
     if (PII_FIELDS.has(key) && value != null) {
       obj[key] = REDACTED;
-    } else if (value && typeof value === 'object' && !Array.isArray(value) && !seen.has(value)) {
+    } else if (isPlainObject(value) && !seen.has(value)) {
       const clone = { ...value };
       obj[key] = clone;
       redactPiiInPlace(clone, depth + 1, seen);
