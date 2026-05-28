@@ -1,0 +1,50 @@
+# BLOCKER
+
+## Configure payload shape is wrong
+PLAN.md:105-126 sends `eot_threshold`, `eot_timeout_ms`, and `eager_eot_threshold` at the top level; Deepgram's current Flux Configure docs say thresholds must be nested under `"thresholds"` and omitted threshold fields mean "no change" (https://developers.deepgram.com/docs/flux/configure, lines 141-151 and 203-220 in the fetched doc). The proposed restore uses `"eager_eot_threshold": null`, but the docs only define omit-vs-empty behavior and validation, not null-as-clear for thresholds; a failed Configure leaves the old config active. The iOS handler treats `ConfigureFailure` as an error via `notifyError(DeepgramServiceError.connectionFailed("Flux ConfigureFailure"))` at `CertMateUnified/Sources/Services/DeepgramService.swift:877-880`, so the first focused-mode entry can become a user-visible STT error instead of a no-op.
+
+## Layer 2 trust-and-accept is structurally unsafe
+Deepgram's eager-EOT docs explicitly say `TurnResumed` means the user was not finished and the draft response should be cancelled, and the state-machine docs only guarantee `EndOfTurn` matches an `EagerEndOfTurn` when no transcript change occurred first (https://developers.deepgram.com/docs/flux/voice-agent-eager-eot, lines 120-131 and 153-162; https://developers.deepgram.com/docs/flux/state, lines 101-110). PLAN.md:178 and PLAN.md:240 lock "no retract path" and claim false positives ride the existing value-correction flow. That flow is not guaranteed: the current Stage 6 final path inserts `firedAskUserAnsweredToolCallIds` and clears `inFlightQuestion` before the wire emit at `CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift:2046-2075`, while backend value auto-resolve is tied to a live pending ask via `ask_user_answered`/`pendingAsks.resolve` at `src/extraction/sonnet-stream.js:1451-1778` and `resolveValueAnswer` at `src/extraction/stage6-answer-resolver.js:604-700`.
+
+## The "eight" then "eight point five" correction case is not proven and likely loses context
+The exact failure depends on how S6 is implemented, but every current path is bad. If eager reuses the existing Stage 6 answer path, the ask is resolved and the slot is cleared at `DeepgramRecordingViewModel.swift:2046-2075`; a later corrected final cannot resolve the same `toolCallId`. If eager only adds the idempotency mark and leaves the slot alive, the normal final hits the false branch at `DeepgramRecordingViewModel.swift:2037-2045` and goes out as a legacy transcript via `takeInResponseToPayload` at `DeepgramRecordingViewModel.swift:2130-2137`, while the backend pending ask has already been consumed; that is not the deterministic value-correction path PLAN.md:215-217 claims.
+
+## There is no real 10s focused-mode exit timer in the plan
+PLAN.md:115-116 and PLAN.md:175 say restore happens on a 10s timeout, but the existing `inFlightQuestionStaleWindow` is not a timer; it is checked only when a transcript calls `takeInResponseToPayload` at `DeepgramRecordingViewModel.swift:2848-2853`. If the inspector says nothing, or pauses to look at the board, focused Flux config stays active until some later transcript happens to run the stale check unless S3 adds a real cancellable timer. That means the next normal dictation can run under `eot_timeout_ms=1500` and eager mode, exactly the normal-dictation chop risk Option A rejected.
+
+## Layer 3 `Finalize` is not documented as a Flux control message
+PLAN.md:162-165 and PLAN.md:179 propose sending `{"type":"Finalize"}` on the Flux socket. Deepgram's Flux feature matrix lists Flux control messages as `Configure` and `Close Stream`, not `Finalize` (https://developers.deepgram.com/docs/flux/feature-overview, Control Messages section), while the `Finalize` docs are under Streaming:Nova and show `/v1/listen`. In this codebase Flux already rejected `KeepAlive` JSON as `UNPARSABLE_CLIENT_MESSAGE` (`DeepgramService.swift:553-565`), so assuming a Nova control frame works on `/v2/listen` is production roulette.
+
+## Replay harness cannot validate the latency claim
+PLAN.md:191-201 proposes focused-answer fixtures in `scripts/voice-latency-bench/transcript-replay.mjs`, but that harness is explicitly "simulated Deepgram" and sends backend WS `transcript` messages directly (`scripts/voice-latency-bench/transcript-replay.mjs:1-12`, `:347-358`). It never opens the iOS Deepgram socket, never sends audio, never receives Flux `EagerEndOfTurn`/`TurnResumed`, and never exercises `DeepgramRecordingViewModel`. Those fixtures can test backend Sonnet behavior after a transcript exists; they cannot prove Flux commits "eight" in 800ms or that iOS Configure/Eager wiring works.
+
+# IMPORTANT
+
+## iOS can send string and binary frames on the same socket, but the proof-of-life is weak
+`URLSessionWebSocketTask` is already used for binary PCM via `.data` at `DeepgramService.swift:532-536` and for a JSON `CloseStream` `.string` at `DeepgramService.swift:446-447`, so the client API can send both frame types on the same WebSocket. There is no surviving successful mid-stream JSON proof on the Deepgram socket; the old KeepAlive path was deleted because Flux rejected `{"type":"KeepAlive"}` as unparseable at `DeepgramService.swift:553-565` and `:624-631`. S1 needs an on-device smoke test that waits for `ConfigureSuccess` and asserts the echoed thresholds/keyterms, not just a JSON encoder unit test.
+
+## TTS pause itself does not close the Deepgram socket
+`AlertManager.markTTSStarted()` fires `onTTSPlaybackStarted` at `AlertManager.swift:1215-1227`, and the ViewModel callback calls `deepgramService.pauseAudioStream()` at `DeepgramRecordingViewModel.swift:850-855`. `pauseAudioStream()` only sets `isStreamingPaused`, records pause timing, and clears the Flux audio batch at `DeepgramService.swift:566-585`; it does not cancel `webSocketTask`. Sending Configure during TTS is mechanically fine, but starting the 10s restore budget at TTS start would burn time before the inspector can answer; current code separately re-anchors answer context at TTS end at `DeepgramRecordingViewModel.swift:2663-2684`.
+
+## Keyterms are replacement, not append, unless S4 carries the full session list
+PLAN.md:242 says focused keyterms are appended to session defaults, but Deepgram Configure keyterms replace the entire list unless the client sends the combined list (https://developers.deepgram.com/docs/flux/configure, lines 189-200). The current session keyterms are generated once and passed to `DeepgramService.connect` at startup per `RESEARCH_PIPELINE.md`, while `DeepgramService.updateKeywords()` reconnects at `DeepgramService.swift:637-647`. S1/S2 need to store the original Flux keyterms in `DeepgramService` or `DeepgramRecordingViewModel`; otherwise focused mode silently drops board-specific terms like manufacturer and circuit labels.
+
+## Compile-time rollback is not a safety valve
+PLAN.md:219-234 frames rollback as "flip flag + rebuild", but `deploy-testflight.sh` archives, uploads, polls processing for up to 30 minutes, attaches the external group, then retries beta review submission up to 10 minutes (`CertMateUnified/deploy-testflight.sh:95-158`, `:206-229`, `:252-295`). `CertMateUnified/CLAUDE.md:110-120` says TestFlight deployment is the release mechanism, and the voice-latency status says iOS changes need a TestFlight cycle (`voice-latency-2026-05-23/STATUS_2026-05-23.md:80-98`). A compile-time flag is a redeploy path, not an operational kill switch.
+
+## The cost claim is false
+PLAN.md:247-250 says eager mode has "~0 runtime" and "no global LLM-call inflation". If focused asks per session are `N` and TurnResumed rate is `r`, eager false starts add roughly `N*r` extra Sonnet turns; with Deepgram's cited `r=5%`, `N=20` focused asks means about 1 extra Sonnet turn per session. If focused turns are 5% of all turns, the all-turn inflation is about `0.05 * 0.05 = 0.25%`, not 0%; if a session is ask-heavy, the focused-answer LLM inflation is 5%.
+
+## The sprint collides with voice-latency iOS work on the same TTS surfaces
+The voice-latency sprint says backend streaming is shipped but iOS Stage 1b and 2.1/2.2 still need TestFlight (`STATUS_2026-05-23.md:73-98`, `:150-162`). Those changes touch the capability handshake and `AlertManager` playback path; this plan also touches `AlertManager` callbacks, TTS start/finish timing, and telemetry at PLAN.md:175 and PLAN.md:180. Current `ServerWebSocketService.sendSessionStart` only sends `protocol_version` and no voice-latency capabilities (`ServerWebSocketService.swift:472-490`), so S8 cannot assume that telemetry channel exists on the iOS side.
+
+## Eager confirmation may bypass Loaded Barrel context
+Loaded Barrel added `turnId`/slot tuple support to `speakBriefConfirmation` and the TTS proxy (`ServiceProtocols.swift:190-195`, `AlertManager.swift:1048-1057`, `AlertManager.swift:1109-1115`, `APIClient.swift:846-875`). PLAN.md:141-144 says S6 starts confirmation TTS optimistically, but it never says where the source `turnId`, `boardId`, `field`, and `circuit` come from for that eager ask. If the eager path calls the convenience overload with nil context, it misses the cache and also muddies the voice-latency/Loaded-Barrel telemetry story.
+
+# NIT
+
+## ConfigureSuccess logging is too thin for field rollout
+`DeepgramService` logs `FLUX_CONFIGURED` with an empty detail string at `DeepgramService.swift:872-875`. For this sprint, that log needs to include echoed thresholds and keyterm count, because the entire plan depends on proving the server accepted the focused and restore configs. Without that, CloudWatch/device logs can show "configured" while the wrong thresholds or a replaced keyterm list are live.
+
+## S5 and S6 should not ship as one slice
+PLAN.md:177-178 and PLAN.md:240-243 ship Eager event parsing and eager dispatch together. Given the documented `TurnResumed` cancellation semantics and the current unresolved correction path, telemetry-only first is not optional risk theatre. Wire Eager/TurnResumed, log rates for field sessions, then decide whether dispatch is worth the cost and retract plumbing.
