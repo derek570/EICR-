@@ -201,6 +201,23 @@ export function createSpeculator({
   logger = null,
   clientFactory = defaultClientFactory,
   outputFormat = DEFAULT_OUTPUT_FORMAT,
+  // 2026-05-28 mid-stream extraction emit (lever 1). Optional callback
+  // fired AFTER the ElevenLabs synth completes successfully and the
+  // MP3 buffer is in the cache (post-markReady CAS). Lets the
+  // sonnet-stream.js WS layer emit a preliminary `extraction` event so
+  // iOS POSTs for the cached audio BEFORE Sonnet's round-1 stream
+  // finishes — saving the wrap-up token wall (~500-720 ms measured in
+  // production turn_core_summary timings).
+  //
+  // Callback signature:
+  //   onSlotAudioReady({
+  //     turnId, field, circuit, boardId, value, confidence,
+  //     text, expandedText, cacheKey, correlationId,
+  //   }) → void (sync; errors swallowed by the speculator)
+  //
+  // Default null = legacy behaviour: bundler emits canonical event
+  // when round-1 stream completes, no mid-stream emit.
+  onSlotAudioReady = null,
 }) {
   if (!sessionId) throw new TypeError('createSpeculator: sessionId required');
   if (!costTracker) throw new TypeError('createSpeculator: costTracker required');
@@ -505,6 +522,34 @@ export function createSpeculator({
             meta: { sessionId, bytes: mp3Buffer.length },
           });
           _maybeRecordTerminal(correlationId, cacheKey, 'completed');
+          // 2026-05-28 mid-stream extraction emit (lever 1). Fires AFTER
+          // the cache is populated + CAS confirmed ready, so the moment
+          // the caller emits the WS event iOS's subsequent POST will
+          // resolve to a HIT (no PENDING race window). Wrapped in
+          // try/catch because the speculator's hot path must never
+          // throw — a bad callback shouldn't break audio caching.
+          if (typeof onSlotAudioReady === 'function') {
+            try {
+              onSlotAudioReady({
+                turnId,
+                field,
+                circuit,
+                boardId,
+                value,
+                confidence,
+                text,
+                expandedText,
+                cacheKey,
+                correlationId,
+              });
+            } catch (cbErr) {
+              logger?.warn?.('voice_latency.loaded_barrel.on_slot_audio_ready_error', {
+                sessionId,
+                correlationId,
+                error: cbErr?.message,
+              });
+            }
+          }
         } else {
           // Late synth completion after abort. The buffer is thrown
           // away. Terminal is 'cancelled' for cost-tracking purposes.

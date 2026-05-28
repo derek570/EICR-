@@ -347,6 +347,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     //   - voiceLatency snapshot unavailable (older harness call sites)
     //   - flag VOICE_LATENCY_LOADED_BARREL is OFF (default in prod)
     //   - session.costTracker missing (defensive; cost ledger required)
+    // 2026-05-28 mid-stream extraction emit (lever 1). Track slots whose
+    // audio was preliminarily emitted via the speculator's onSlotAudioReady
+    // hook so the canonical bundler emit at end-of-round can skip them
+    // (avoids iOS double-receiving the same reading + double-playing the
+    // confirmation). Per-turn — the Set is scoped to this runLiveMode call.
+    const midStreamEmittedSlots = new Set();
     let speculator = null;
     try {
       const vl = getVoiceLatencyForSession(session.sessionId);
@@ -357,6 +363,81 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           apiKey: () => getElevenLabsKey(),
           costTracker: session.costTracker,
           logger: log,
+          // 2026-05-28 mid-stream emit. Fires the moment the speculator's
+          // ElevenLabs synth completes + the cache CAS confirms ready.
+          // Pushes a preliminary `extraction` WS message with just this
+          // slot's reading + confirmation so iOS can POST for the cached
+          // audio ~500-720 ms BEFORE Sonnet's round-1 stream completes.
+          // Production turn_core_summary timings (turn 11, session DFE90C4F)
+          // showed loaded_barrel_fired at 07.300 vs canonical emit at
+          // 07.822 — the wrap-up window we're cutting.
+          //
+          // Slot tracking: each emitted slot keyed by (field, circuit,
+          // boardId) so the canonical end-of-round emit can filter them
+          // out of `extracted_readings` / `confirmations`. iOS already
+          // accumulates extractions idempotently (RollingExtractionResult),
+          // but filtering avoids double-POSTing for the same audio.
+          onSlotAudioReady: ws
+            ? (slot) => {
+                if (!slot || !ws || ws.readyState !== ws.OPEN) return;
+                const slotKey = `${slot.field}::${slot.circuit ?? 0}::${slot.boardId ?? ''}`;
+                if (midStreamEmittedSlots.has(slotKey)) return;
+                midStreamEmittedSlots.add(slotKey);
+                // Build a minimal extraction envelope mirroring the
+                // bundler's wire shape. iOS's handleServerExtraction
+                // applies extractedReadings + iterates confirmations
+                // for TTS POSTs. Empty arrays for other channels keep
+                // the decoder happy on legacy/strict builds.
+                const reading = {
+                  field: slot.field,
+                  value: slot.value,
+                  confidence: slot.confidence,
+                  source: 'tool_call',
+                };
+                if (Number.isInteger(slot.circuit)) reading.circuit = String(slot.circuit);
+                else reading.circuit = '0';
+                if (slot.boardId != null) reading.board_id = slot.boardId;
+                const confirmation = {
+                  text: slot.text,
+                  expanded_text: slot.expandedText,
+                  field: slot.field,
+                  circuit: Number.isInteger(slot.circuit) ? slot.circuit : null,
+                };
+                if (slot.boardId != null) confirmation.board_id = slot.boardId;
+                const envelope = {
+                  type: 'extraction',
+                  result: {
+                    readings: [reading],
+                    confirmations: [confirmation],
+                    observations: [],
+                    cleared_readings: [],
+                    circuit_updates: [],
+                    board_ops: [],
+                    validation_alerts: [],
+                    questions: [],
+                    turn_id: turnId,
+                    mid_stream_preview: true,
+                  },
+                };
+                try {
+                  ws.send(JSON.stringify(envelope));
+                  log?.info?.('voice_latency.mid_stream_emit', {
+                    sessionId: session.sessionId,
+                    turnId,
+                    field: slot.field,
+                    circuit: slot.circuit,
+                    boardId: slot.boardId,
+                    correlationId: slot.correlationId,
+                  });
+                } catch (sendErr) {
+                  log?.warn?.('voice_latency.mid_stream_emit_error', {
+                    sessionId: session.sessionId,
+                    turnId,
+                    error: sendErr?.message,
+                  });
+                }
+              }
+            : null,
         });
       }
     } catch (specErr) {
@@ -704,6 +785,55 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the web-search re-coding had nothing to feed on. Renaming once at the
     // bundle boundary fixes both consumers in one pass.
     result.observations = renameObservationsForLegacyWire(result.observations);
+
+    // 2026-05-28 mid-stream extraction emit (lever 1) — filter slots that
+    // were already emitted via onSlotAudioReady out of the canonical
+    // extraction envelope. iOS's handleServerExtraction applies readings
+    // idempotently (state writes are safe to repeat) but the confirmations
+    // array drives separate /api/proxy/elevenlabs-tts POSTs — sending the
+    // same slot twice would trigger a double-POST and (depending on iOS-
+    // side dedup) a double audio play. Filtering at the bundle boundary
+    // keeps the wire shape clean.
+    //
+    // Slot key matches the speculator's: (field, circuit, boardId). The
+    // canonical bundler uses `circuit` as a string ("0" for board-level)
+    // and the mid-stream key uses the same coercion (Integer ? String :
+    // "0"). board_id matches verbatim (null/undefined → '').
+    if (midStreamEmittedSlots.size > 0) {
+      const slotKeyOf = (r) => {
+        // Bundler emits circuit as string (board-level = "0"); speculator
+        // tracked numeric circuit. Coerce identically.
+        const circ = r.circuit;
+        const circStr =
+          circ == null || circ === '' ? '0' : typeof circ === 'string' ? circ : String(circ);
+        return `${r.field}::${circStr}::${r.board_id ?? ''}`;
+      };
+      if (Array.isArray(result.extracted_readings)) {
+        const before = result.extracted_readings.length;
+        result.extracted_readings = result.extracted_readings.filter(
+          (r) => !midStreamEmittedSlots.has(slotKeyOf(r))
+        );
+        const filtered = before - result.extracted_readings.length;
+        if (filtered > 0) {
+          log?.info?.('voice_latency.mid_stream_canonical_filter', {
+            sessionId: session.sessionId,
+            turnId,
+            readings_filtered: filtered,
+            mid_stream_slot_count: midStreamEmittedSlots.size,
+          });
+        }
+      }
+      if (Array.isArray(result.confirmations)) {
+        const confKeyOf = (c) => {
+          const circ = c.circuit;
+          const circStr = circ == null ? '0' : typeof circ === 'string' ? circ : String(circ);
+          return `${c.field}::${circStr}::${c.board_id ?? ''}`;
+        };
+        result.confirmations = result.confirmations.filter(
+          (c) => !midStreamEmittedSlots.has(confKeyOf(c))
+        );
+      }
+    }
 
     // Increment turn count to match legacy's contract
     // (extractFromUtterance does this internally).
