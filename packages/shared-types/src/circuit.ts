@@ -6,7 +6,7 @@
  * `.planning-stage6-agentic/handoffs/multi-board-support-2026-05-07/PLAN.md`.
  */
 
-export type BoardType = 'main' | 'sub_distribution' | 'sub_main';
+export type BoardType = 'main' | 'sub_distribution' | 'sub_main' | 'off_peak';
 
 export interface Circuit {
   circuit_ref: string;

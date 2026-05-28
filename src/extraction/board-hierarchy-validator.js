@@ -16,7 +16,10 @@
  *   circular_reference   — DFS up the parent chain revisits a board
  *   multiple_main_boards — more than one board has board_type === 'main'
  *                          (a missing/empty board_type is treated as 'main' so
- *                          legacy single-board snapshots stay valid)
+ *                          legacy single-board snapshots stay valid; off_peak
+ *                          boards are NOT counted as main — they are siblings
+ *                          to the main board, fed independently from the
+ *                          supply mains rather than from another board)
  *   feed_circuit_not_found — board.feed_circuit_ref points at a circuit that
  *                            doesn't exist on board.parent_board_id
  *

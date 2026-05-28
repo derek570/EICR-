@@ -73,6 +73,32 @@ describe('validateBoardHierarchy', () => {
     expect(result.errors).toContainEqual({ code: 'multiple_main_boards', count: 2 });
   });
 
+  it('accepts main + off_peak side by side (off-peak is a sibling, not a second main)', () => {
+    // Off-peak boards are fed directly from the supply mains and are
+    // siblings of the main board, not children of it. The validator must
+    // NOT count off_peak toward the main-board count, otherwise a job
+    // with a primary CU + an Economy 7 storage-heater CU would fail
+    // persistence.
+    const boards = [
+      { id: 'main', designation: 'DB-1', board_type: 'main' },
+      { id: 'off-peak-1', designation: 'Off-Peak Board', board_type: 'off_peak' },
+    ];
+    expect(validateBoardHierarchy(boards, [])).toEqual({ ok: true, errors: [] });
+  });
+
+  it('still flags multiple_main_boards when off_peak coexists with two mains', () => {
+    // Off-peak is excluded from the main count, but it shouldn't MASK
+    // a genuine multi-main snapshot. Two main + one off_peak still fails.
+    const boards = [
+      { id: 'main-1', board_type: 'main' },
+      { id: 'main-2', board_type: 'main' },
+      { id: 'off-peak-1', board_type: 'off_peak' },
+    ];
+    const result = validateBoardHierarchy(boards, []);
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContainEqual({ code: 'multiple_main_boards', count: 2 });
+  });
+
   it('flags feed_circuit_not_found when feed_circuit_ref does not exist on parent', () => {
     const boards = [
       { id: 'main', board_type: 'main' },
