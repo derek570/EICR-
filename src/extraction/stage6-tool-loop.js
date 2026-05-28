@@ -439,8 +439,24 @@ export async function runToolLoop({
     const roundStartedNs = process.hrtime.bigint();
     // Round-1 only: force Sonnet to emit a tool_use first (no
     // preamble text). See `toolChoiceAnyOnRound1` docstring above.
+    //
+    // 2026-05-28 mid-stream emit follow-up: round-1 model override. The
+    // dominant short-utterance turn shape (single record_reading on a
+    // ~120-token output) is bottlenecked by Sonnet 4.6's ~2.7-3.0 s
+    // round-1 stream wall — too slow to clear the 2.5 s audible budget
+    // even with cache HIT (~250 ms first-byte) and Loaded Barrel running.
+    // VOICE_LATENCY_ROUND1_MODEL lets ops route round-1 to a faster
+    // model (typically claude-haiku-4-5-20251001, ~half the wall) while
+    // round-2+ stays on the default Sonnet model. Unset / empty = no
+    // override = legacy behaviour. The flag is live-read so a flip
+    // takes effect on the next API call without a restart.
+    const round1ModelOverride = process.env.VOICE_LATENCY_ROUND1_MODEL;
+    const effectiveModel =
+      rounds === 1 && typeof round1ModelOverride === 'string' && round1ModelOverride
+        ? round1ModelOverride
+        : model;
     const streamArgs = {
-      model,
+      model: effectiveModel,
       max_tokens: 4096,
       system,
       messages,
@@ -452,6 +468,14 @@ export async function runToolLoop({
         sessionId: ctx?.sessionId,
         turnId: ctx?.turnId,
         roundIdx: rounds,
+      });
+    }
+    if (effectiveModel !== model) {
+      logger?.info?.('voice_latency.round1_model_override', {
+        sessionId: ctx?.sessionId,
+        turnId: ctx?.turnId,
+        default_model: model,
+        round1_model: effectiveModel,
       });
     }
     const stream = client.messages.stream(streamArgs);
