@@ -34,6 +34,7 @@
 // `ttsSuppressedAddressFields`) — they're omitted here as belt-and-braces
 // so the backend doesn't ship bytes the client immediately discards.
 export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
+  // ─── Measurements ────────────────────────────────────────────────
   measured_zs_ohm: 'Zs',
   r1_r2_ohm: 'R1 plus R2',
   r2_ohm: 'R2',
@@ -42,22 +43,47 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   ring_r2_ohm: 'ring r2',
   ir_live_earth_mohm: 'IR L to E',
   ir_live_live_mohm: 'IR L to L',
+  ir_test_voltage_v: 'IR test voltage',
+  // ─── OCPD / RCD / AFDD ───────────────────────────────────────────
   ocpd_rating_a: 'OCPD rating',
   ocpd_type: 'OCPD type',
+  ocpd_bs_en: 'OCPD BS EN',
+  ocpd_breaking_capacity_ka: 'OCPD breaking capacity',
+  ocpd_max_zs_ohm: 'OCPD max Zs',
   rcd_operating_current_ma: 'RCD',
   rcd_time_ms: 'RCD time',
   rcd_type: 'RCD type',
+  rcd_bs_en: 'RCD BS EN',
+  rcd_button_confirmed: 'RCD button',
+  afdd_button_confirmed: 'AFDD button',
+  // ─── Circuit characteristics ─────────────────────────────────────
+  circuit_designation: '__DESIGNATION__', // special-cased in builder
   number_of_points: 'points',
   wiring_type: 'wiring type',
+  ref_method: 'reference method',
+  max_disconnect_time_s: 'disconnection time',
   live_csa_mm2: 'live CSA',
   cpc_csa_mm2: 'CPC CSA',
   polarity_confirmed: 'polarity',
-  // Board-level (circuit=0 on the wire) — the friendly name carries
-  // enough context on its own; no "Circuit 0" prefix is rendered.
+  is_distribution_circuit: 'distribution circuit',
+  // ─── Board-level (circuit=0 on the wire) ─────────────────────────
+  // The friendly name carries enough context on its own; no "Circuit 0"
+  // prefix is rendered.
   earth_loop_impedance_ze: 'Ze',
   prospective_fault_current: 'PFC',
   prospective_short_circuit_current: 'PSCC',
   prospective_earth_fault_current: 'PEFC',
+  // Board metadata (read back so the inspector can walk away during
+  // board details dictation).
+  name: 'board name',
+  location: 'board location',
+  manufacturer: 'board manufacturer',
+  phases: 'phases',
+  earthing_arrangement: 'earthing arrangement',
+  board_type: 'board type',
+  sub_main_cable_material: 'sub-main cable material',
+  sub_main_cable_csa: 'sub-main cable size',
+  sub_main_cpc_csa: 'sub-main CPC size',
 });
 
 // Confidence threshold mirrors the legacy prompt's confirmation gate
@@ -81,11 +107,34 @@ export const CONFIRMATION_MIN_CONFIDENCE = 0.8;
  *   board-level (skips the "Circuit N, " prefix).
  * @returns {string|null}
  */
-export function buildConfirmationText(field, value, circuit) {
+export function buildConfirmationText(field, value, circuit, designation = null) {
   const friendly = CONFIRMATION_FRIENDLY_NAMES[field];
   if (!friendly) return null;
   const valueStr = String(value ?? '').trim();
   if (!valueStr) return null;
+
+  // Designation prefix: when a circuit-level reading lands and we know
+  // the circuit's name ("Cooker", "Upstairs lights"), use the name as
+  // the spoken anchor. Falls back to "Circuit N" when no designation is
+  // known (new circuit, or designation not yet entered). Designation is
+  // trimmed + length-capped so a verbose "Upstairs sockets, lights, and
+  // smoke alarms" doesn't dominate every TTS line.
+  const desigStr =
+    typeof designation === 'string' && designation.trim() ? designation.trim().slice(0, 40) : null;
+  const circuitPrefix =
+    circuit == null || circuit === 0
+      ? null
+      : desigStr
+        ? `${desigStr}, circuit ${circuit}`
+        : `Circuit ${circuit}`;
+
+  // circuit_designation field is special — the value IS the new
+  // designation, so phrase the confirmation as "Circuit N is now the
+  // Cooker" rather than the generic "{prefix}, designation Cooker".
+  if (field === 'circuit_designation') {
+    if (circuit == null || circuit === 0) return null;
+    return `Circuit ${circuit} is now the ${valueStr}`;
+  }
   // polarity_confirmed canonical enum (config/field_schema.json) is
   // {"", "OK", "Y", "N"}. Sonnet sometimes emits the boolean-ish
   // string "true"/"false" or English aliases — the dispatcher's
@@ -107,15 +156,15 @@ export function buildConfirmationText(field, value, circuit) {
     const isTrue = lc === 'true' || lc === 'y' || lc === 'ok' || lc === 'yes';
     if (!isTrue) return null;
     if (circuit == null || circuit === 0) return 'polarity confirmed';
-    return `Circuit ${circuit}, polarity confirmed`;
+    return `${circuitPrefix}, polarity confirmed`;
   }
-  // Board-level readings (circuit 0 or absent) skip the "Circuit N,"
-  // prefix — "Ze 0.25" is a complete sentence in inspector parlance,
-  // "Circuit 0, Ze" would be confusing.
+  // Board-level readings (circuit 0 or absent) skip the prefix — "Ze
+  // 0.25" is a complete sentence in inspector parlance, "Circuit 0, Ze"
+  // would be confusing.
   if (circuit == null || circuit === 0) {
     return `${friendly} ${valueStr}`;
   }
-  return `Circuit ${circuit}, ${friendly} ${valueStr}`;
+  return `${circuitPrefix}, ${friendly} ${valueStr}`;
 }
 
 /**

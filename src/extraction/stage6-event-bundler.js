@@ -54,11 +54,27 @@ export const BUNDLER_PHASE = 2;
  *   Board-scoped readings (bundler output extracted_board_readings).
  * @returns {Array<{text: string, field: string, circuit: number|null}>}
  */
-function synthesiseConfirmations(readings, boardReadings) {
+function synthesiseConfirmations(readings, boardReadings, designations = null) {
   const out = [];
+  const lookupDesignation = (circuit) => {
+    if (!designations) return null;
+    if (designations instanceof Map) {
+      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
+    }
+    if (typeof designations === 'object') {
+      return designations[circuit] ?? designations[String(circuit)] ?? null;
+    }
+    return null;
+  };
   for (const r of readings) {
     if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
-    const text = buildConfirmationText(r.field, r.value, r.circuit);
+    // 2026-05-29 — pass designation so the TTS reads "Cooker, Zs 0.62"
+    // instead of "Circuit 1, Zs 0.62". Lookup uses the same per-turn
+    // circuit_designation write so a brand-new circuit confirmed in the
+    // SAME turn (Sonnet: create_circuit + record_reading) speaks with
+    // its name immediately.
+    const designation = lookupDesignation(r.circuit);
+    const text = buildConfirmationText(r.field, r.value, r.circuit, designation);
     if (!text) continue;
     const entry = {
       text,
@@ -324,7 +340,16 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     const boardReadings = Array.isArray(result.extracted_board_readings)
       ? result.extracted_board_readings
       : [];
-    const confirmations = synthesiseConfirmations(extracted_readings, boardReadings);
+    // 2026-05-29 — circuit-designation lookup so TTS reads circuit names.
+    // The caller (stage6-shadow-harness.js) builds the map from
+    // session.stateSnapshot.circuits + the same-turn circuit_designation
+    // writes in perTurnWrites.readings (so a freshly-named circuit
+    // confirms with its NEW name, not "Circuit N").
+    const confirmations = synthesiseConfirmations(
+      extracted_readings,
+      boardReadings,
+      options.circuitDesignations
+    );
     if (confirmations.length > 0) {
       result.confirmations = confirmations;
     }

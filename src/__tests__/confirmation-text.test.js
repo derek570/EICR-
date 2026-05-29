@@ -59,10 +59,58 @@ describe('confirmation-text — buildConfirmationText', () => {
     expect(buildConfirmationText('earth_loop_impedance_ze', '0.19', 0)).toBe('Ze 0.19');
   });
 
-  test('unknown field returns null (no friendly name → no confirmation)', () => {
-    expect(buildConfirmationText('circuit_designation', 'Cooker', 1)).toBeNull();
+  test('unknown / PII-suppressed field returns null', () => {
+    // address / postcode / client-name / dates stay suppressed — the
+    // inspector reads those on screen, and PII shouldn't be TTS'd.
     expect(buildConfirmationText('address', '1 Tilehurst Road', null)).toBeNull();
-    expect(buildConfirmationText('ocpd_bs_en', 'BS EN 60898', 1)).toBeNull();
+    expect(buildConfirmationText('client_name', 'Mr Smith', null)).toBeNull();
+    expect(buildConfirmationText('postcode', 'RG5 4RD', null)).toBeNull();
+    // Truly unknown field → still null.
+    expect(buildConfirmationText('some_made_up_field', 'value', 1)).toBeNull();
+  });
+
+  test('2026-05-29: circuit_designation speaks "Circuit N is now the {value}"', () => {
+    expect(buildConfirmationText('circuit_designation', 'Cooker', 1)).toBe(
+      'Circuit 1 is now the Cooker'
+    );
+    // Board-level (circuit=0/null) → suppress, designation is a circuit
+    // concept and the supply bucket has no name to report.
+    expect(buildConfirmationText('circuit_designation', 'Cooker', 0)).toBeNull();
+    expect(buildConfirmationText('circuit_designation', 'Cooker', null)).toBeNull();
+  });
+
+  test('2026-05-29: ocpd_bs_en and other expanded fields now confirm', () => {
+    expect(buildConfirmationText('ocpd_bs_en', 'BS EN 60898', 1)).toBe(
+      'Circuit 1, OCPD BS EN BS EN 60898'
+    );
+    expect(buildConfirmationText('rcd_bs_en', 'BS EN 61008', 1)).toBe(
+      'Circuit 1, RCD BS EN BS EN 61008'
+    );
+    expect(buildConfirmationText('max_disconnect_time_s', '0.4', 1)).toBe(
+      'Circuit 1, disconnection time 0.4'
+    );
+  });
+
+  test('2026-05-29: designation prefix replaces "Circuit N" when provided', () => {
+    expect(buildConfirmationText('measured_zs_ohm', '0.62', 1, 'Cooker')).toBe(
+      'Cooker, circuit 1, Zs 0.62'
+    );
+    expect(buildConfirmationText('polarity_confirmed', 'Y', 1, 'Upstairs lights')).toBe(
+      'Upstairs lights, circuit 1, polarity confirmed'
+    );
+    // null/empty designation falls back to "Circuit N".
+    expect(buildConfirmationText('measured_zs_ohm', '0.62', 1, null)).toBe('Circuit 1, Zs 0.62');
+    expect(buildConfirmationText('measured_zs_ohm', '0.62', 1, '')).toBe('Circuit 1, Zs 0.62');
+    // Length cap at 40 chars (prevents "Upstairs sockets and lights and
+    // smoke alarm" dominating every TTS line).
+    expect(
+      buildConfirmationText(
+        'measured_zs_ohm',
+        '0.62',
+        1,
+        'Upstairs sockets, lights, and smoke alarms in hall'
+      )
+    ).toBe('Upstairs sockets, lights, and smoke alar, circuit 1, Zs 0.62');
   });
 
   test('empty value returns null', () => {
@@ -114,9 +162,14 @@ describe('confirmation-text — shouldGenerateConfirmation', () => {
     expect(shouldGenerateConfirmation(undefined)).toBe(false);
   });
 
-  test('returns false for unknown field (not in friendly-name table)', () => {
-    expect(shouldGenerateConfirmation({ field: 'circuit_designation' })).toBe(false);
+  test('returns false for PII-suppressed / unknown field', () => {
     expect(shouldGenerateConfirmation({ field: 'address' })).toBe(false);
+    expect(shouldGenerateConfirmation({ field: 'client_name' })).toBe(false);
+    expect(shouldGenerateConfirmation({ field: 'some_made_up_field' })).toBe(false);
+  });
+
+  test('2026-05-29: returns true for circuit_designation (newly opted into TTS)', () => {
+    expect(shouldGenerateConfirmation({ field: 'circuit_designation' })).toBe(true);
   });
 
   test('returns true for known field without confidence (legacy callers default to true)', () => {

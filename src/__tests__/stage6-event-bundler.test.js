@@ -442,7 +442,13 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     ]);
   });
 
-  test('opt-in: unknown fields (free-text designation, BS_EN, address) are filtered out', () => {
+  test('2026-05-29: circuit_designation + ocpd_bs_en now opted into TTS; address/postcode stay suppressed', () => {
+    // Field test 2026-05-29: inspector requested TTS feedback on
+    // "everything entered" so they can walk away during dictation.
+    // circuit_designation, ocpd_bs_en, and the rest of the inspection
+    // fields were added to the friendly-name table; address/postcode
+    // /PII stay suppressed. This test now verifies the partition rather
+    // than the previous "everything outside the core set is filtered".
     const readings = new Map([
       [
         encodeReadingKey('circuit_designation', 1),
@@ -465,10 +471,13 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       ],
     ]);
     const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
-    // Every field in the fixture is intentionally outside the friendly-name
-    // map: no confirmations should land, and the slot stays omitted to keep
-    // wire traffic byte-identical to the no-readings case.
-    expect(r).not.toHaveProperty('confirmations');
+    // Two confirmations land — designation + BS-EN — but address/postcode
+    // do NOT (still PII-suppressed).
+    expect(r.confirmations).toHaveLength(2);
+    const fields = new Set(r.confirmations.map((c) => c.field));
+    expect(fields).toEqual(new Set(['circuit_designation', 'ocpd_bs_en']));
+    expect(fields.has('address')).toBe(false);
+    expect(fields.has('postcode')).toBe(false);
   });
 
   test('opt-in: low-confidence readings (<0.8) are skipped, mirroring legacy prompt gate', () => {

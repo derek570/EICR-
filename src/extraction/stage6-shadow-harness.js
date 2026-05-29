@@ -545,6 +545,40 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // Voice button ON) through options into the bundler's synthesis step
     // (stage6-event-bundler.js:9). Live mode has no legacy.confirmations
     // source so synthesis is the only path that populates result.confirmations.
+    // 2026-05-29 — build the circuit-designation map for confirmation
+    // TTS. Source priority: same-turn circuit_designation writes (Sonnet
+    // just renamed circuit N) > existing snapshot value. Both keyed by
+    // numeric circuit_ref; the bundler tolerates either number or string
+    // keys via Map.get coercion.
+    const circuitDesignations = new Map();
+    const snapshotCircuits = session?.stateSnapshot?.circuits;
+    if (snapshotCircuits && typeof snapshotCircuits === 'object') {
+      for (const [key, circ] of Object.entries(snapshotCircuits)) {
+        if (!circ || typeof circ !== 'object') continue;
+        const refNum = Number(key);
+        if (!Number.isInteger(refNum) || refNum <= 0) continue;
+        const d = circ.circuit_designation;
+        if (typeof d === 'string' && d.trim()) {
+          circuitDesignations.set(refNum, d.trim());
+        }
+      }
+    }
+    // Overlay: same-turn circuit_designation writes win. Sonnet emitting
+    // create_circuit + record_reading(designation) + record_reading(zs)
+    // in one turn must hear "Cooker, Zs 0.62" — not "Circuit 4, Zs 0.62".
+    for (const [key, entry] of perTurnWrites.readings ?? new Map()) {
+      // Bundler's decodeReadingKey is what splits these in production;
+      // here we just need the field + circuit prefix, so a string parse
+      // suffices.
+      const m = /^circuit_designation::(\d+)(?:\0|$)/.exec(key);
+      if (!m) continue;
+      const refNum = Number(m[1]);
+      const valueStr = String(entry?.value ?? '').trim();
+      if (Number.isInteger(refNum) && refNum > 0 && valueStr) {
+        circuitDesignations.set(refNum, valueStr);
+      }
+    }
+
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
       confirmationsEnabled: options.confirmationsEnabled === true,
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
@@ -552,6 +586,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // lookup. Omitted when undefined; legacy decoders ignore unknown
       // keys via Swift Codable's tolerant decode.
       turnId,
+      circuitDesignations,
     });
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level

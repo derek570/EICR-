@@ -188,15 +188,19 @@ describe('speculate — happy path', () => {
     expect(factory).toHaveBeenCalledTimes(0);
   });
 
-  test('unknown field skipped (not in friendly-name table)', async () => {
+  test('truly unknown field skipped (not in friendly-name table)', async () => {
+    // 2026-05-29: circuit_designation MOVED into the friendly-name
+    // table so the inspector can hear "Circuit 1 is now the Cooker"
+    // during walk-away dictation. Use a synthetic field guaranteed
+    // not to be in the table to keep the test's intent.
     const { factory } = makeMockClientFactory();
     const spec = makeSpeculator({ factory });
     spec.onSnapshotPatch(
       patchForAdded({
-        field: 'circuit_designation',
+        field: 'some_made_up_field_not_in_table',
         circuit: 1,
         boardId: null,
-        value: 'Cooker',
+        value: 'whatever',
       })
     );
     await flush();
@@ -685,16 +689,16 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
     expect(factory).toHaveBeenCalledTimes(1);
   });
 
-  test('ocpd_bs_en streamed → coercion applies but field is not in CONFIRMATION_FRIENDLY_NAMES so no synth fires (parity with bundler)', async () => {
-    // ocpd_bs_en intentionally has no friendly-name entry — confirmation
-    // TTS isn't generated for BS-EN dictation today. The streamed hook
-    // should respect the same gate. Test pins the shared-coercion call
-    // happens (i.e. doesn't throw on BS-EN field) but no synth is opened.
+  test('2026-05-29: ocpd_bs_en streamed → coercion applies AND synth fires (now in friendly-name table)', async () => {
+    // ocpd_bs_en was added to CONFIRMATION_FRIENDLY_NAMES on 2026-05-29
+    // so inspectors hear BS-EN code reads back during walk-away
+    // dictation. Mid-stream speculator emit fires when the streamed
+    // value lands.
     const { factory } = makeMockClientFactory();
     const spec = makeSpeculator({ factory });
     spec.onToolUseStreamed(streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'BS 60898' }));
     await flush();
-    expect(factory).toHaveBeenCalledTimes(0);
+    expect(factory).toHaveBeenCalledTimes(1);
   });
 
   test('polarity_confirmed="true" coerced to "Y" before pre-synth (matches dispatcher)', async () => {
