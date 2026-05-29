@@ -62,7 +62,7 @@ import {
 // trigger-free / ≤2-content-word text) and bypasses pending asks,
 // in_response_to replies, and drained-retry replays. Telemetry:
 // voice_latency.gate_blocked. Kill-switch: VOICE_PRE_LLM_GATE=false.
-import { shouldForwardToSonnet, GATE_REASONS } from './pre-llm-gate.js';
+import { shouldForwardToSonnet, GATE_REASONS, OBSERVATION_PATTERN } from './pre-llm-gate.js';
 
 const PRE_LLM_GATE_ENABLED = process.env.VOICE_PRE_LLM_GATE !== 'false';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
@@ -976,7 +976,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               if (ccState?.paused) {
                 const wakeWord = isWakeWordTranscript(msg.text);
                 const regexHit = Array.isArray(msg.regexResults) && msg.regexResults.length > 0;
-                if (wakeWord || regexHit) {
+                // 2026-05-29 PLAN_v4 chitchat wake widening — explicit
+                // observation utterances (matched by OBSERVATION_PATTERN,
+                // including Deepgram garbles like 'obvashon', 'abservation')
+                // wake a paused session. Without this, the gate forwards
+                // 'Observation: socket cracked' but chitchat-pause then
+                // silently swallows it. See pre-llm-gate.js OBSERVATION_PATTERN
+                // for the matched-word inventory.
+                const observationHit = OBSERVATION_PATTERN.test(
+                  typeof msg.text === 'string' ? msg.text : ''
+                );
+                if (wakeWord || regexHit || observationHit) {
                   const replay = drainReplayBuffer(ccState);
                   if (replay) {
                     msg = {
@@ -987,7 +997,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     logger.info('chitchat.replay_prepended', {
                       sessionId: currentSessionId,
                       replay_chars: replay.length,
-                      wake_reason: wakeWord ? 'wake_word' : 'regex_hint',
+                      wake_reason: wakeWord
+                        ? 'wake_word'
+                        : regexHit
+                          ? 'regex_hint'
+                          : 'observation_prefix',
                     });
                   }
                   exitChitchatPause({
@@ -995,7 +1009,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     sendEnvelope: (env) => ws.send(JSON.stringify(env)),
                     logger,
                     sessionId: currentSessionId,
-                    reason: wakeWord ? 'wake_word' : 'regex_hint',
+                    reason: wakeWord ? 'wake_word' : regexHit ? 'regex_hint' : 'observation_prefix',
                   });
                   // fall through to handleTranscript with the
                   // (possibly replay-prefixed) wake utterance

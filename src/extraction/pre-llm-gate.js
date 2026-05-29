@@ -12,19 +12,32 @@
 // not catch it because the model's emit rate (~5 s/turn) sits just
 // above the gate window.
 //
-// The rule is conservative on purpose — better to forward marginal
-// text and waste a Sonnet turn than to silently drop a real reading
-// and force the inspector to repeat. Block if and only if ALL of:
-//   1. no digit anywhere in the text
-//   2. no trigger word (field/circuit/board/action keyword)
-//   3. no iOS regex hit attached to the message
-//   4. ≤ 2 distinct alphabetic content words (excluding stopwords)
+// 2026-05-29 PLAN_v4 tightening — observation-gated architecture.
+// User direction: observations are gated behind the explicit keyword
+// "observation" (and Deepgram garbles); damage-adjective utterances
+// like "socket cracked" no longer forward without that prefix. This
+// collapses the original 94-word trigger list into:
+//   - STRONG_TRIGGER_WORDS (~20) — measurement abbreviations,
+//     equipment abbreviations, state-change verbs; forward alone.
+//   - OBSERVATION_PATTERN — fuzzy regex matching "observation" +
+//     Deepgram garbles; forwards alone with reason
+//     HAS_OBSERVATION_PREFIX.
+//   - WEAK_TRIGGER_WORDS (~75) — room/appliance/navigation/generic
+//     words; no forward authority alone, still feed the distinct-
+//     content-word count.
 //
-// Block-decision is bypassed when the session has a pending ask
-// (the transcript might be the answer), when iOS tagged the
-// transcript as `in_response_to` a TTS question, or when this is
-// the drained-retry replay path. None of those should ever be
-// silently dropped.
+// Forward decision order:
+//   1. !gateEnabled                          → forward (BYPASS_DISABLED)
+//   2. drainedRetry                          → forward (BYPASS_DRAINED_RETRY)
+//   3. hasPendingAsk                         → forward (BYPASS_PENDING_ASK)
+//   4. inResponseTo                          → forward (BYPASS_IN_RESPONSE_TO)
+//   5. regexResults non-empty                → forward (HAS_REGEX_HINT)
+//   6. text empty                            → block   (EMPTY)
+//   7. hasDigit                              → forward (HAS_DIGIT)
+//   8. OBSERVATION_PATTERN match             → forward (HAS_OBSERVATION_PREFIX)
+//   9. hasStrongTrigger                      → forward (HAS_STRONG_TRIGGER)
+//  10. ≥3 distinct content words             → forward (FALLBACK_FORWARD)
+//  11. else                                  → block   (LOW_CONTENT)
 //
 // Telemetry: each block emits `voice_latency.gate_blocked` with the
 // reason; the user experience is silence — no canned TTS, no audio
@@ -33,7 +46,107 @@
 // feedback here would re-introduce the panic-ask pattern the gate
 // exists to prevent.
 
-const TRIGGER_WORDS = new Set(
+// =============================================================================
+// STRONG_TRIGGER_WORDS — 20 words, forward alone
+// =============================================================================
+// Words whose appearance reliably indicates an extraction-worthy utterance.
+// Triggering on these alone is safe; in production this is almost always
+// followed by a value or is itself a state-change command.
+//
+// Composition: 18 promoted/kept from the original 94-word trigger list +
+// 2 explicit additions (afdd, r1r2) justified inline below.
+const STRONG_TRIGGER_WORDS = new Set(
+  [
+    // Test field abbreviations.
+    'zs',
+    'ze',
+    'pfc',
+    'psc',
+    'ipfc',
+    'r1',
+    'r2',
+    // Equipment abbreviations — inspector-only acronyms; near-zero false-
+    // positive in everyday speech.
+    'mcb',
+    'rcd',
+    'rcbo',
+    'spd',
+    // Test concepts — always paired with values in real usage; bare word
+    // appears in inspector context.
+    'polarity',
+    'continuity',
+    'insulation',
+    // State-change verbs that map to existing Sonnet tools.
+    'delete',
+    'remove',
+    // Specialist abbreviation promoted (was in original WEAK list at line
+    // 71; FCU = fused connection unit, narrow inspector vocabulary).
+    'fcu',
+    // Justified additions (not in original 94):
+    //   afdd — 4-letter equipment abbreviation, follows MCB/RCD/RCBO
+    //          cluster, near-zero everyday false-positive
+    //   cpc  — circuit protective conductor; specialist inspector vocab
+    //          that's unambiguous out of context ("CPC discontinuous")
+    //
+    // Note: 'r1r2' as a compact form was considered but is redundant —
+    // any 'r1r2' string contains digits, so HAS_DIGIT fires first.
+    'afdd',
+    'cpc',
+  ].map((w) => w.toLowerCase())
+);
+
+const STRONG_TRIGGER_REGEX = new RegExp(
+  `\\b(${[...STRONG_TRIGGER_WORDS].map((w) => w.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|')})\\b`,
+  'i'
+);
+
+// =============================================================================
+// OBSERVATION_PATTERN — fuzzy regex for "observation" + Deepgram garbles
+// =============================================================================
+// Matches the explicit `observation` keyword and recognised Deepgram garbles.
+// Deliberately STRICT — verb forms (observe/observed/observing/observer) are
+// NOT matched per user Q2 2026-05-29 directive. Inspector must say
+// "observation" (or a recognised garble of it).
+//
+// Decomposition: /ˌɒb.zəˈveɪ.ʃən/ → ob-zer-vey-shun. Each syllable is
+// independently mis-transcribable, so the regex tolerates each axis.
+//
+// Structure:
+//   - First branch: 'obs' alone (truncation form inspectors use as shorthand)
+//   - Second branch: [oa]? b [a-z]{0,5} v [a-z]{0,4} <suffix> s?
+//     - [oa]? — optional initial vowel (handles 'b-only' and 'ab-' prefixes)
+//     - b      — required (anchors the ob-/ab- prefix)
+//     - [a-z]{0,5} — 0-5 letters between b and v (handles obs/obz/obser/obstr/...)
+//     - v      — required (anchors mid-syllable)
+//     - [a-z]{0,4} — 0-4 letters between v and suffix
+//     - Suffix alternation: tion|sion|shun|shen|shan|shon|nce|tor|tior|ation
+//     - s?     — optional plural
+//
+// Verified matches (Node test 2026-05-29):
+//   observation, observations, obs, observance, obvashon, abservation,
+//   obviation, obstervation, obvashen, observatior
+//
+// Verified rejects:
+//   observe, observed, observing, observer, obstruction, operation,
+//   objection, obsession, aviation, obvious, absurd, absorb, obscure,
+//   obesity, obscene
+//
+// Accepted false positive:
+//   abbreviation — rare in inspector speech; cost = 1 Sonnet round
+//   (~$0.005-0.013) per occurrence.
+export const OBSERVATION_PATTERN =
+  /\b(?:obs|[oa]?b[a-z]{0,5}v[a-z]{0,4}(?:tion|sion|shun|shen|shan|shon|nce|tor|tior|ation))s?\b/i;
+
+// =============================================================================
+// WEAK_TRIGGER_WORDS — 75 words, require digit/strong/observation to forward
+// =============================================================================
+// Remaining words from the original 94. Demoted because the bare word is too
+// common in everyday speech to justify forward-authority on its own, or because
+// the inspector workflow always pairs them with a digit (circuit ref) or
+// strong trigger.
+//
+// These still feed the distinct-content-word count for FALLBACK_FORWARD.
+const WEAK_TRIGGER_WORDS = new Set(
   [
     // Circuit and board nouns
     'circuit',
@@ -45,11 +158,15 @@ const TRIGGER_WORDS = new Set(
     'sockets',
     'lights',
     'light',
+    // Appliance designations
     'shower',
     'cooker',
     'oven',
     'hob',
-    // Room names that commonly anchor a circuit ref
+    'heater',
+    'immersion',
+    'spur',
+    // Room names
     'kitchen',
     'lounge',
     'living',
@@ -62,24 +179,33 @@ const TRIGGER_WORDS = new Set(
     'loft',
     'attic',
     'landing',
-    // Appliance + protection device terms
-    'heater',
-    'immersion',
+    // Smoke / alarm
     'smoke',
     'alarm',
-    'spur',
-    'fcu',
+    // Generic electrical descriptors
     'radial',
     'main',
     'sub-main',
     'submain',
-    'spd',
-    'rcd',
-    'rcbo',
-    'mcb',
     'fuse',
-    // Observation language
-    'observation',
+    'trip',
+    'breaker',
+    // Generic conductor terms — ring-continuity language always includes
+    // digits ('lives 0.32', 'neutrals are 0.41'), so HAS_DIGIT catches
+    // those even without 'live'/'neutral' as a strong trigger.
+    'live',
+    'neutral',
+    'protective',
+    'conductor',
+    'cable',
+    'wiring',
+    'colour',
+    'color',
+    // Observation / safety language — DEMOTED to WEAK per 2026-05-29
+    // user Q3 directive. The explicit `observation` keyword (matched by
+    // OBSERVATION_PATTERN above) is the sole gate trigger for the
+    // observation flow. `observe` is intentionally not in
+    // OBSERVATION_PATTERN per Q2 strictness.
     'observe',
     'defect',
     'issue',
@@ -93,59 +219,40 @@ const TRIGGER_WORDS = new Set(
     'exposed',
     'loose',
     'corroded',
-    // Action verbs
+    'earth',
+    'bond',
+    'bonding',
+    // Navigation / UI commands
     'note',
     'record',
     'fill',
     'add',
-    'delete',
-    'remove',
     'move',
     'next',
     'previous',
     'done',
     'finish',
     'skip',
-    // Test-reading field shorthand
-    'zs',
-    'ze',
-    'pfc',
-    'psc',
-    'ipfc',
-    'r1',
-    'r2',
-    'continuity',
-    'insulation',
-    'polarity',
-    'earth',
-    'bond',
-    'bonding',
-    // Wiring / device language
-    'trip',
-    'breaker',
-    'live',
-    'neutral',
-    'protective',
-    'conductor',
-    'cable',
-    'wiring',
-    'colour',
-    'color',
-    // Confirmation verbs that are meaningful even outside an ask
-    // context (e.g. "confirm circuit 3 readings"). Bare "yes" / "no" /
-    // "ok" intentionally NOT included — those only carry signal as
-    // answers to an existing question, and the hasPendingAsk bypass
-    // forwards them when an ask is open. Outside that bypass they're
-    // background-conversation noise (8 of 11 blocks on session
-    // 33E6613D were exactly that — see fixture set).
+    // Confirmation / inspection vocabulary
     'confirm',
     'correct',
-    // Inspection vocabulary
     'overall',
     'summary',
     'inspection',
   ].map((w) => w.toLowerCase())
 );
+
+// =============================================================================
+// Legacy TRIGGER_WORDS / TRIGGER_REGEX — preserved for back-compat
+// =============================================================================
+// Used by:
+//   - existing _internals export consumers (none in-repo besides tests)
+//   - any external dashboard reading the GATE_REASONS.HAS_TRIGGER value
+//
+// Built as the union of STRONG + WEAK + the literal `observation` token so
+// the legacy "any of these words triggers" mental model still resolves
+// completely. Not used by the new shouldForwardToSonnet logic.
+const TRIGGER_WORDS = new Set([...STRONG_TRIGGER_WORDS, ...WEAK_TRIGGER_WORDS, 'observation']);
 
 const TRIGGER_REGEX = new RegExp(
   `\\b(${[...TRIGGER_WORDS].map((w) => w.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|')})\\b`,
@@ -171,6 +278,12 @@ const MIN_DISTINCT_CONTENT_WORDS = 3; // strict < this triggers block
 export const GATE_REASONS = Object.freeze({
   EMPTY: 'empty',
   HAS_DIGIT: 'has_digit',
+  HAS_OBSERVATION_PREFIX: 'has_observation_prefix',
+  HAS_STRONG_TRIGGER: 'has_strong_trigger',
+  // 2026-05-29 PLAN_v4: HAS_TRIGGER value retained but no longer reachable
+  // from the new logic. Kept in the enum so any external CloudWatch dashboard
+  // filtering on `has_trigger` continues to parse cleanly. The distribution
+  // will narrow to zero post-deploy.
   HAS_TRIGGER: 'has_trigger',
   HAS_REGEX_HINT: 'has_regex_hint',
   LOW_CONTENT: 'low_content',
@@ -233,8 +346,13 @@ export function shouldForwardToSonnet(text, opts = {}) {
   if (DIGIT_REGEX.test(trimmed)) {
     return { forward: true, reason: GATE_REASONS.HAS_DIGIT };
   }
-  if (TRIGGER_REGEX.test(trimmed)) {
-    return { forward: true, reason: GATE_REASONS.HAS_TRIGGER };
+  // PLAN_v4 step 8 — observation pattern before strong trigger so explicit
+  // observation utterances log with the cleaner reason code.
+  if (OBSERVATION_PATTERN.test(trimmed)) {
+    return { forward: true, reason: GATE_REASONS.HAS_OBSERVATION_PREFIX };
+  }
+  if (STRONG_TRIGGER_REGEX.test(trimmed)) {
+    return { forward: true, reason: GATE_REASONS.HAS_STRONG_TRIGGER };
   }
 
   const distinctContent = new Set();
@@ -263,6 +381,9 @@ export function shouldForwardToSonnet(text, opts = {}) {
 
 export const _internals = Object.freeze({
   TRIGGER_WORDS,
+  STRONG_TRIGGER_WORDS,
+  WEAK_TRIGGER_WORDS,
+  OBSERVATION_PATTERN,
   STOPWORDS,
   MIN_DISTINCT_CONTENT_WORDS,
 });

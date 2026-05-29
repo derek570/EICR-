@@ -1122,14 +1122,18 @@ describe('STT-08 — utterance-consumption dedupe on ask_user_answered', () => {
     });
     expect(entry.recentAskAnswers).toHaveLength(1);
 
-    // Unrelated transcript — 'move to three' is NOT normalised-equal
-    // to 'three' (substring != equality), so the content-anchor does
-    // NOT match and this transcript flows through normally. This is
-    // the regression guard against blanket time-window suppression
-    // that Codex r16 MAJOR#1 flagged.
+    // Unrelated transcript — NOT normalised-equal to 'three' (substring !=
+    // equality), so the content-anchor does NOT match and this transcript
+    // flows through normally. This is the regression guard against blanket
+    // time-window suppression that Codex r16 MAJOR#1 flagged.
+    //
+    // 2026-05-29 PLAN_v4 gate tightening: original text 'move to three'
+    // is now blocked at the pre-LLM gate (low_content, no digit / strong
+    // trigger). Switched to a digit-bearing phrase that still doesn't
+    // normalise-equal the anchor 'three'.
     await sendFrame(ws, {
       type: 'transcript',
-      text: 'move to three',
+      text: 'move to circuit 3',
       utterance_id: 'u-unrelated',
       regexResults: [],
     });
