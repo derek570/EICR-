@@ -22,17 +22,47 @@
  * underlying text is byte-identical when iOS POSTs.
  */
 
-// Map of canonical field names to short spoken labels for confirmation
-// read-backs (Voice button feature). Only includes fields whose acoustic
-// feedback genuinely helps an inspector verify the dictation was
-// understood — numeric measurements and high-value categorical writes.
-// Free-text fields (designation), long-form codes (BS_EN), and address
-// fields are intentionally excluded; the inspector reads those off the
-// screen instead.
+// 2026-05-29 policy flip — deny-list, not allow-list.
 //
-// Address fields are also suppressed iOS-side (DeepgramRecordingViewModel
-// `ttsSuppressedAddressFields`) — they're omitted here as belt-and-braces
-// so the backend doesn't ship bytes the client immediately discards.
+// Inspector workflow: AirPods, iPad-by-the-CU, walking the house and
+// dictating every reading. Wants TTS confirmation on EVERYTHING that
+// lands in the UI — addresses, names, dates, every field, no
+// silent-write surprises.
+//
+// New policy: speak unless field is on SUPPRESSED_TTS_FIELDS (internal
+// IDs and metadata) OR field ends in `_id` (foreign-key style fields
+// that have no spoken form). For known fields, the friendly-name table
+// below provides the preferred phrasing; for everything else, fall
+// back to snake_case → spaces with acronym fix-up.
+//
+// Previous allow-list approach silently dropped any field not in the
+// table — including all PII / address fields the inspector expressly
+// asked to hear in the AirPods workflow.
+export const SUPPRESSED_TTS_FIELDS = Object.freeze(
+  new Set([
+    // The circuit number itself is the anchor for every other TTS line;
+    // "circuit_ref 4" would be redundant with "Circuit 4 created".
+    'circuit_ref',
+    // UI sort/visibility metadata — not user-facing values.
+    'sort_order',
+    'suppress_from_report',
+    // File paths / linkage metadata.
+    'signature_file',
+    'schedule_item',
+    'defaults_by_circuit',
+    // Observation metadata wrapped in its own dedicated TTS path
+    // (the observation text + code are spoken via record_observation,
+    // not via the confirmation table).
+    '_outcome_meanings',
+    'code',
+  ])
+);
+
+// Map of canonical field names to PREFERRED short spoken labels. Used
+// before the snake_case fallback in buildConfirmationText. Anything
+// missing from this table is still spoken (deny-list policy) — the
+// table just provides nicer phrasing for the common high-frequency
+// fields where the inspector benefits from a brief acoustic label.
 export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   // ─── Measurements ────────────────────────────────────────────────
   measured_zs_ohm: 'Zs',
@@ -107,9 +137,48 @@ export const CONFIRMATION_MIN_CONFIDENCE = 0.8;
  *   board-level (skips the "Circuit N, " prefix).
  * @returns {string|null}
  */
+// Acronym fix-up so snake_case→spaces produces sensible TTS for
+// inspection vocabulary the friendly-name table doesn't cover.
+const ACRONYM_FIXES = [
+  [/\bocpd\b/gi, 'OCPD'],
+  [/\brcd\b/gi, 'RCD'],
+  [/\bafdd\b/gi, 'AFDD'],
+  [/\bspd\b/gi, 'SPD'],
+  [/\bcpc\b/gi, 'CPC'],
+  [/\bcsa\b/gi, 'CSA'],
+  [/\bbs en\b/gi, 'BS EN'],
+  [/\bbs\b/gi, 'BS'],
+  [/\bze\b/gi, 'Ze'],
+  [/\bzs\b/gi, 'Zs'],
+  [/\bir\b/gi, 'IR'],
+  [/\bipf\b/gi, 'IPF'],
+  [/\bpfc\b/gi, 'PFC'],
+  [/\bpscc\b/gi, 'PSCC'],
+  [/\bpefc\b/gi, 'PEFC'],
+  [/\bmohm\b/gi, 'megohms'],
+  [/\bohm\b/gi, 'ohms'],
+  [/\bma\b/gi, 'milliamps'],
+  [/\bka\b/gi, 'kiloamps'],
+  [/\bms\b/gi, 'milliseconds'],
+  [/\bmm2\b/gi, 'square millimetres'],
+  [/\buo\b/gi, 'U-zero'],
+  [/\bdb\b/gi, 'DB'],
+];
+
+function deriveFriendlyName(field) {
+  let s = field.replace(/_/g, ' ');
+  for (const [re, repl] of ACRONYM_FIXES) {
+    s = s.replace(re, repl);
+  }
+  return s;
+}
+
 export function buildConfirmationText(field, value, circuit, designation = null) {
-  const friendly = CONFIRMATION_FRIENDLY_NAMES[field];
-  if (!friendly) return null;
+  // 2026-05-29 — deny-list policy. Speak every field with a value
+  // unless explicitly suppressed (internal IDs / metadata).
+  if (SUPPRESSED_TTS_FIELDS.has(field)) return null;
+  if (typeof field === 'string' && field.endsWith('_id')) return null;
+  const friendly = CONFIRMATION_FRIENDLY_NAMES[field] ?? deriveFriendlyName(field);
   const valueStr = String(value ?? '').trim();
   if (!valueStr) return null;
 
@@ -190,7 +259,9 @@ export function buildConfirmationText(field, value, circuit, designation = null)
  */
 export function shouldGenerateConfirmation(slot) {
   if (!slot) return false;
-  if (!CONFIRMATION_FRIENDLY_NAMES[slot.field]) return false;
+  // 2026-05-29 — match buildConfirmationText's deny-list policy.
+  if (SUPPRESSED_TTS_FIELDS.has(slot.field)) return false;
+  if (typeof slot.field === 'string' && slot.field.endsWith('_id')) return false;
   if (typeof slot.confidence === 'number' && slot.confidence < CONFIRMATION_MIN_CONFIDENCE) {
     return false;
   }

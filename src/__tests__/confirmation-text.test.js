@@ -59,14 +59,25 @@ describe('confirmation-text — buildConfirmationText', () => {
     expect(buildConfirmationText('earth_loop_impedance_ze', '0.19', 0)).toBe('Ze 0.19');
   });
 
-  test('unknown / PII-suppressed field returns null', () => {
-    // address / postcode / client-name / dates stay suppressed — the
-    // inspector reads those on screen, and PII shouldn't be TTS'd.
-    expect(buildConfirmationText('address', '1 Tilehurst Road', null)).toBeNull();
-    expect(buildConfirmationText('client_name', 'Mr Smith', null)).toBeNull();
-    expect(buildConfirmationText('postcode', 'RG5 4RD', null)).toBeNull();
-    // Truly unknown field → still null.
-    expect(buildConfirmationText('some_made_up_field', 'value', 1)).toBeNull();
+  test('2026-05-29 v2: deny-list policy — speak unless on SUPPRESSED list or *_id', () => {
+    // Inspector explicitly asked for TTS on EVERYTHING that lands in
+    // the UI (hands-free AirPods workflow). Address, client name,
+    // postcode NOW speak. Internal IDs and sort metadata still skip.
+    expect(buildConfirmationText('address', '1 Tilehurst Road', null)).toBe(
+      'address 1 Tilehurst Road'
+    );
+    expect(buildConfirmationText('client_name', 'Mr Smith', null)).toBe('client name Mr Smith');
+    expect(buildConfirmationText('postcode', 'RG5 4RD', null)).toBe('postcode RG5 4RD');
+    // Truly unknown field also speaks via snake_case fallback.
+    expect(buildConfirmationText('some_made_up_field', 'value', 1)).toBe(
+      'Circuit 1, some made up field value'
+    );
+    // Suppressed: internal IDs and metadata.
+    expect(buildConfirmationText('circuit_ref', 7, null)).toBeNull();
+    expect(buildConfirmationText('board_id', 'main', null)).toBeNull();
+    expect(buildConfirmationText('parent_board_id', 'main', null)).toBeNull();
+    expect(buildConfirmationText('sort_order', '5', null)).toBeNull();
+    expect(buildConfirmationText('signature_file', '/tmp/sig.png', null)).toBeNull();
   });
 
   test('2026-05-29: circuit_designation speaks "Circuit N is now the {value}"', () => {
@@ -162,10 +173,15 @@ describe('confirmation-text — shouldGenerateConfirmation', () => {
     expect(shouldGenerateConfirmation(undefined)).toBe(false);
   });
 
-  test('returns false for PII-suppressed / unknown field', () => {
-    expect(shouldGenerateConfirmation({ field: 'address' })).toBe(false);
-    expect(shouldGenerateConfirmation({ field: 'client_name' })).toBe(false);
-    expect(shouldGenerateConfirmation({ field: 'some_made_up_field' })).toBe(false);
+  test('2026-05-29 v2: returns false only for suppressed/ID fields', () => {
+    // Deny-list policy: address/client_name/unknown fields now speak.
+    expect(shouldGenerateConfirmation({ field: 'address' })).toBe(true);
+    expect(shouldGenerateConfirmation({ field: 'client_name' })).toBe(true);
+    expect(shouldGenerateConfirmation({ field: 'some_made_up_field' })).toBe(true);
+    // Internal IDs and metadata still skip.
+    expect(shouldGenerateConfirmation({ field: 'circuit_ref' })).toBe(false);
+    expect(shouldGenerateConfirmation({ field: 'board_id' })).toBe(false);
+    expect(shouldGenerateConfirmation({ field: 'sort_order' })).toBe(false);
   });
 
   test('2026-05-29: returns true for circuit_designation (newly opted into TTS)', () => {
