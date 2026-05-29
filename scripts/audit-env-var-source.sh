@@ -120,6 +120,7 @@ STRIPE_WEBHOOK_SECRET              # same as above; webhook handler skipped when
 VAPID_PRIVATE_KEY                  # web push keys; PWA push notifications not yet enabled in prod
 VAPID_PUBLIC_KEY                   # web push keys; PWA push notifications not yet enabled in prod
 VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1   # voice-latency sprint kill-switch; in-code default is the prod behaviour
+VOICE_MID_STREAM_FILTER            # Loaded Barrel mid-stream canonical-emit filter; in-code default OFF (field-test rollback 2026-05-29 — re-enable when iOS preliminary-receive path verified)
 VOICE_PRE_LLM_GATE                 # sonnet-stream.js gates on `!== 'false'`; in-code default ON matches prod
 WHATSAPP_PHONE_NUMBER_ID           # WhatsApp integration not used by EICR (lives in a different repo)
 WHATSAPP_TOKEN                     # WhatsApp integration not used by EICR

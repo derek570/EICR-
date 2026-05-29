@@ -799,7 +799,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // canonical bundler uses `circuit` as a string ("0" for board-level)
     // and the mid-stream key uses the same coercion (Integer ? String :
     // "0"). board_id matches verbatim (null/undefined → '').
-    if (midStreamEmittedSlots.size > 0) {
+    // 2026-05-29 field-test rollback: disabled by default. The mid-stream
+    // emit path (Loaded Barrel onSlotAudioReady → preliminary WS extraction)
+    // isn't reliably reaching iOS — field session 36602959 had Sonnet
+    // record_reading succeed but the value never landed in the UI, because
+    // this filter removed it from the canonical bundle assuming iOS already
+    // had it from the mid-stream preliminary. Until the mid-stream channel
+    // is verified end-to-end, ALWAYS emit canonical and let iOS dedupe via
+    // RollingExtractionResult. Re-enable with VOICE_MID_STREAM_FILTER=true
+    // when the mid-stream path is debugged.
+    if (process.env.VOICE_MID_STREAM_FILTER === 'true' && midStreamEmittedSlots.size > 0) {
       const slotKeyOf = (r) => {
         // Bundler emits circuit as string (board-level = "0"); speculator
         // tracked numeric circuit. Coerce identically.
@@ -833,6 +842,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           (c) => !midStreamEmittedSlots.has(confKeyOf(c))
         );
       }
+    } else if (midStreamEmittedSlots.size > 0) {
+      log?.info?.('voice_latency.mid_stream_canonical_filter_skipped', {
+        sessionId: session.sessionId,
+        turnId,
+        mid_stream_slot_count: midStreamEmittedSlots.size,
+        reason: 'flag_off',
+      });
     }
 
     // Increment turn count to match legacy's contract
