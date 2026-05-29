@@ -54,6 +54,103 @@ export const BUNDLER_PHASE = 2;
  *   Board-scoped readings (bundler output extracted_board_readings).
  * @returns {Array<{text: string, field: string, circuit: number|null}>}
  */
+/**
+ * 2026-05-29 — synthesise TTS confirmations for state-change ops
+ * (create_circuit, rename_circuit, delete_circuit, add_board,
+ * select_board). Pre-existing synthesis only covered record_reading
+ * outcomes, so circuit creation/rename/delete and board switching
+ * were silent under the hands-free AirPods workflow. Inspector said
+ * "Circuit 1 is the cooker" → Sonnet called create_circuit only →
+ * no TTS, inspector couldn't tell whether the system heard them.
+ *
+ * Dedup: if a record_reading(circuit_designation) for the same
+ * circuit is in the same turn, skip the op confirmation — the
+ * existing designation TTS path ("Circuit N is now the Cooker")
+ * already carries the same intent.
+ *
+ * @param {Array} circuitOps perTurnWrites.circuitOps
+ * @param {Array} boardOps perTurnWrites.boardOps
+ * @param {Set<number>} skipCircuitDesignations circuits whose
+ *   designation was already covered by a record_reading
+ * @param {Map<string,string>|null} boardDesignations optional
+ *   board_id → designation map for select_board lookup
+ * @returns {Array<{text, expanded_text, field, circuit}>}
+ */
+function synthesiseStateChangeConfirmations(
+  circuitOps,
+  boardOps,
+  skipCircuitDesignations,
+  boardDesignations
+) {
+  const out = [];
+  if (Array.isArray(circuitOps)) {
+    for (const op of circuitOps) {
+      const ref = op.circuit_ref;
+      if (!Number.isInteger(ref) || ref <= 0) continue;
+      let text = null;
+      if (op.op === 'create') {
+        if (skipCircuitDesignations.has(ref)) continue; // covered by reading TTS
+        const desig = op?.meta?.designation;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `Circuit ${ref} is now the ${desig.trim()}`;
+        } else {
+          text = `Circuit ${ref} created`;
+        }
+      } else if (op.op === 'rename') {
+        if (skipCircuitDesignations.has(ref)) continue;
+        const desig = op?.meta?.designation;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `Circuit ${ref} is now the ${desig.trim()}`;
+        } else if (Number.isInteger(op.from_ref) && op.from_ref !== ref) {
+          text = `Circuit ${op.from_ref} renumbered to ${ref}`;
+        }
+      } else if (op.op === 'delete') {
+        text = `Circuit ${ref} deleted`;
+      }
+      if (!text) continue;
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'circuit_op',
+        circuit: ref,
+      });
+    }
+  }
+  if (Array.isArray(boardOps)) {
+    for (const op of boardOps) {
+      let text = null;
+      if (op.op === 'add_board') {
+        const desig = op.designation;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `${desig.trim()} board added`;
+        } else {
+          text = `Board added`;
+        }
+      } else if (op.op === 'select_board') {
+        const desig = boardDesignations instanceof Map ? boardDesignations.get(op.board_id) : null;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `Switched to the ${desig.trim()} board`;
+        } else {
+          text = `Switched board`;
+        }
+      } else if (op.op === 'mark_distribution_circuit') {
+        const ref = op.circuit_ref;
+        if (Number.isInteger(ref) && ref > 0) {
+          text = `Circuit ${ref} marked as feeding the sub-board`;
+        }
+      }
+      if (!text) continue;
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'board_op',
+        circuit: null,
+      });
+    }
+  }
+  return out;
+}
+
 function synthesiseConfirmations(readings, boardReadings, designations = null) {
   const out = [];
   const lookupDesignation = (circuit) => {
@@ -350,8 +447,27 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       boardReadings,
       options.circuitDesignations
     );
-    if (confirmations.length > 0) {
-      result.confirmations = confirmations;
+    // 2026-05-29 — state-change confirmations (create_circuit, rename,
+    // delete, add_board, select_board, mark_distribution_circuit) so the
+    // AirPods-only inspector hears EVERY state change, not just record_
+    // reading writes. Dedup against the per-turn circuit_designation
+    // writes so we don't double-announce "Circuit 1 is now the Cooker"
+    // when Sonnet pairs create_circuit + record_reading.
+    const skipDesignations = new Set();
+    for (const r of extracted_readings) {
+      if (r.field === 'circuit_designation' && Number.isInteger(r.circuit)) {
+        skipDesignations.add(r.circuit);
+      }
+    }
+    const stateChanges = synthesiseStateChangeConfirmations(
+      perTurnWrites.circuitOps,
+      perTurnWrites.boardOps,
+      skipDesignations,
+      options.boardDesignations
+    );
+    const merged = confirmations.concat(stateChanges);
+    if (merged.length > 0) {
+      result.confirmations = merged;
     }
   }
 

@@ -579,6 +579,38 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
+    // 2026-05-29 — board designations for state-change select_board TTS.
+    // Built from session snapshot so "Switched to the kitchen sub-board"
+    // resolves on a select_board op carrying only board_id. Inline same-
+    // turn add_board designations win over the snapshot so a freshly-
+    // added-then-selected board speaks with its new name.
+    const boardDesignations = new Map();
+    const snapshotBoards = session?.stateSnapshot?.boards;
+    if (Array.isArray(snapshotBoards)) {
+      for (const b of snapshotBoards) {
+        if (
+          b &&
+          typeof b.id === 'string' &&
+          typeof b.designation === 'string' &&
+          b.designation.trim()
+        ) {
+          boardDesignations.set(b.id, b.designation.trim());
+        }
+      }
+    }
+    if (Array.isArray(perTurnWrites.boardOps)) {
+      for (const op of perTurnWrites.boardOps) {
+        if (
+          op.op === 'add_board' &&
+          op.board_id &&
+          typeof op.designation === 'string' &&
+          op.designation.trim()
+        ) {
+          boardDesignations.set(op.board_id, op.designation.trim());
+        }
+      }
+    }
+
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
       confirmationsEnabled: options.confirmationsEnabled === true,
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
@@ -587,6 +619,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // keys via Swift Codable's tolerant decode.
       turnId,
       circuitDesignations,
+      boardDesignations,
     });
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
