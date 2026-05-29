@@ -43,19 +43,35 @@ describe('shouldForwardToSonnet — forwarding decisions', () => {
     ['R1 plus R2 for rear heater is 0.24.', GATE_REASONS.HAS_DIGIT],
     ['Zs for socket 7, 0.62.', GATE_REASONS.HAS_DIGIT],
     ['Circuit 8 is heater rear bedroom.', GATE_REASONS.HAS_DIGIT],
-    // 2026-05-29 PLAN_v4 — updated expectations. Pre-v4 these forwarded
-    // as HAS_TRIGGER (any of 94 trigger words). Post-v4 they forward via
-    // FALLBACK_FORWARD (≥3 distinct content words) or HAS_OBSERVATION_PREFIX.
-    ['Yeah. So this is a circuit. I don’t know what it does.', GATE_REASONS.FALLBACK_FORWARD],
-    ['Could be for an old alarm.', GATE_REASONS.FALLBACK_FORWARD],
-    ['Move to the next circuit.', GATE_REASONS.FALLBACK_FORWARD],
+    // 2026-05-29 PLAN_v5 — weak triggers now require ≥3 content words.
+    // Pure chitchat ("toilet please") blocks at HAS_WEAK_TRIGGER level.
+    ['Yeah. So this is a circuit. I don’t know what it does.', GATE_REASONS.HAS_WEAK_TRIGGER],
+    ['Could be for an old alarm.', GATE_REASONS.HAS_WEAK_TRIGGER],
+    ['Move to the next circuit.', GATE_REASONS.HAS_WEAK_TRIGGER],
     ['Add an observation about the cooker.', GATE_REASONS.HAS_OBSERVATION_PREFIX],
-    // Fallback — three or more distinct content words, no digit, no trigger
-    ['I never use your toilet a sec.', GATE_REASONS.FALLBACK_FORWARD],
-    ['Cheers fellas thank you mate.', GATE_REASONS.FALLBACK_FORWARD],
   ])('forwards "%s" with reason=%s', (text, expectedReason) => {
     const result = shouldForwardToSonnet(text);
     expect(result.forward).toBe(true);
+    expect(result.reason).toBe(expectedReason);
+  });
+
+  // 2026-05-29 PLAN_v5 — pure conversational English (no inspection
+  // vocabulary) now blocks. Field test session 1FBAE6E0: inspector said
+  // "Can I use the toilet, please?" expecting silence; pre-v5 forwarded
+  // via FALLBACK_FORWARD (6 content words) and Sonnet replied with a
+  // toilet-facilities quip. v5 requires a weak/strong/observation/digit
+  // signal for forward authority.
+  test.each([
+    ['I never use your toilet a sec.', GATE_REASONS.LOW_CONTENT],
+    ['Cheers fellas thank you mate.', GATE_REASONS.LOW_CONTENT],
+    ['Can I use the toilet, please?', GATE_REASONS.LOW_CONTENT],
+    ['Hello, my name is Michael McGinley.', GATE_REASONS.LOW_CONTENT],
+    // "Where is the bathroom?" has weak (bathroom) but only 2 content
+    // words ("where", "bathroom"; "is", "the" are stopwords) — fails
+    // the ≥3 threshold so still blocks. Good outcome.
+    ['Where is the bathroom?', GATE_REASONS.LOW_CONTENT],
+  ])('blocks-or-forwards chitchat "%s" with reason=%s', (text, expectedReason) => {
+    const result = shouldForwardToSonnet(text);
     expect(result.reason).toBe(expectedReason);
   });
 });
@@ -324,8 +340,11 @@ describe('shouldForwardToSonnet — distinct-content-word count', () => {
     expect(r.distinctContentWords).toBe(1);
   });
 
-  test('exposes content-word count on fallback forwards', () => {
+  test('exposes content-word count on chitchat blocks (post-v5)', () => {
+    // 2026-05-29 PLAN_v5 — "I never use your toilet a sec." now blocks
+    // (no weak trigger). Content count is still exposed for telemetry.
     const r = shouldForwardToSonnet('I never use your toilet a sec.');
+    expect(r.forward).toBe(false);
     expect(r.distinctContentWords).toBeGreaterThanOrEqual(3);
   });
 

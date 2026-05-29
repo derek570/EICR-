@@ -36,8 +36,18 @@
 //   7. hasDigit                              → forward (HAS_DIGIT)
 //   8. OBSERVATION_PATTERN match             → forward (HAS_OBSERVATION_PREFIX)
 //   9. hasStrongTrigger                      → forward (HAS_STRONG_TRIGGER)
-//  10. ≥3 distinct content words             → forward (FALLBACK_FORWARD)
+//  10. hasWeakTrigger                        → forward (HAS_WEAK_TRIGGER) [2026-05-29]
 //  11. else                                  → block   (LOW_CONTENT)
+//
+// 2026-05-29 — dropped the "≥3 distinct content words" fallback. Field
+// session 1FBAE6E0 (Build 385 chitchat test): "Can I use the toilet,
+// please?" passed FALLBACK_FORWARD (6 content words), reached Sonnet,
+// got a "No toilet facilities here, I'm afraid!" reply. The inspector
+// expected silence. Pure content-word counting let any conversational
+// English through; the new policy requires an inspection-domain
+// trigger (digit / strong / observation / weak vocab) for forward
+// authority. "Lights are radial" still passes (weak: lights+radial).
+// "Hello my name is Michael McGinley" still blocks (no trigger).
 //
 // Telemetry: each block emits `voice_latency.gate_blocked` with the
 // reason; the user experience is silence — no canned TTS, no audio
@@ -259,6 +269,15 @@ const TRIGGER_REGEX = new RegExp(
   'i'
 );
 
+// 2026-05-29 — dedicated weak-trigger regex for the new
+// HAS_WEAK_TRIGGER forward path. Built from WEAK_TRIGGER_WORDS only
+// (no overlap with STRONG/observation), so a weak-word hit is the
+// distinct signal that bypasses the previous content-word fallback.
+const WEAK_TRIGGER_REGEX = new RegExp(
+  `\\b(${[...WEAK_TRIGGER_WORDS].map((w) => w.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|')})\\b`,
+  'i'
+);
+
 const DIGIT_REGEX = /\d/;
 const WORD_REGEX = /[A-Za-z']+/g;
 
@@ -280,6 +299,10 @@ export const GATE_REASONS = Object.freeze({
   HAS_DIGIT: 'has_digit',
   HAS_OBSERVATION_PREFIX: 'has_observation_prefix',
   HAS_STRONG_TRIGGER: 'has_strong_trigger',
+  // 2026-05-29 — new forward authority. Weak vocab (room/appliance/
+  // navigation words) now passes the gate on its own; previously these
+  // only counted toward the content-word fallback.
+  HAS_WEAK_TRIGGER: 'has_weak_trigger',
   // 2026-05-29 PLAN_v4: HAS_TRIGGER value retained but no longer reachable
   // from the new logic. Kept in the enum so any external CloudWatch dashboard
   // filtering on `has_trigger` continues to parse cleanly. The distribution
@@ -355,6 +378,13 @@ export function shouldForwardToSonnet(text, opts = {}) {
     return { forward: true, reason: GATE_REASONS.HAS_STRONG_TRIGGER };
   }
 
+  // 2026-05-29 — replaces the pure "≥3 distinct content words"
+  // FALLBACK_FORWARD. New policy: forward only if the utterance has at
+  // least one weak-trigger word (inspection vocabulary) AND meets the
+  // content threshold. Pure-English chitchat ("Can I use the toilet,
+  // please?" — 6 content words, 0 weak triggers) now blocks; damage-
+  // only utterances ("Socket cracked." — 1 weak, 2 content) keep
+  // blocking per the PLAN_v4 observation-gated design.
   const distinctContent = new Set();
   let match;
   WORD_REGEX.lastIndex = 0;
@@ -364,17 +394,17 @@ export function shouldForwardToSonnet(text, opts = {}) {
       distinctContent.add(w);
     }
   }
-  if (distinctContent.size < MIN_DISTINCT_CONTENT_WORDS) {
+  const hasWeak = WEAK_TRIGGER_REGEX.test(trimmed);
+  if (hasWeak && distinctContent.size >= MIN_DISTINCT_CONTENT_WORDS) {
     return {
-      forward: false,
-      reason: GATE_REASONS.LOW_CONTENT,
+      forward: true,
+      reason: GATE_REASONS.HAS_WEAK_TRIGGER,
       distinctContentWords: distinctContent.size,
     };
   }
-
   return {
-    forward: true,
-    reason: GATE_REASONS.FALLBACK_FORWARD,
+    forward: false,
+    reason: GATE_REASONS.LOW_CONTENT,
     distinctContentWords: distinctContent.size,
   };
 }
