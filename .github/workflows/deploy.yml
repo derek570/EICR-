@@ -579,6 +579,85 @@ jobs:
             --output text)
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
 
+      # Apply any pending node-pg-migrate migrations BEFORE rolling the
+      # backend service onto the new image. The migration task uses the
+      # task-def we just registered, so it runs against the same image
+      # (same migrations folder) the service is about to use. Service
+      # update is blocked until the migration task exits 0.
+      #
+      # Why this step exists: prior to 2026-05-29 there was no migration
+      # step in CI. Migration 010_account_consents and 011_cert_attestations
+      # (committed alongside the route code in 02e13380) sat un-applied
+      # in production, surfacing on the iOS app as the "failed to record
+      # attestations" 500 when the inspector tried to issue a PDF. See
+      # scripts/migrate-from-secrets.js for the full back-story.
+      #
+      # Failure semantics: if the migration task exits non-zero (or the
+      # task itself fails to start), this step exits 1 and the deploy
+      # stops here — old code keeps serving against the old schema, which
+      # is the right side to fail to during a botched migration.
+      - name: Run DB migrations (one-off Fargate task)
+        if: steps.scope.outputs.target != 'frontend'
+        run: |
+          set -euo pipefail
+
+          # Network config matches the running backend service — same
+          # subnets and security group so the one-off task has the same
+          # RDS reachability as a real backend container.
+          NET=$(aws ecs describe-services \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services ${{ env.ECS_SERVICE_BACKEND }} \
+            --region ${{ env.AWS_REGION }} \
+            --query 'services[0].networkConfiguration' \
+            --output json)
+
+          OVERRIDES=$(jq -nc \
+            --arg cmd0 "node" --arg cmd1 "scripts/migrate-from-secrets.js" \
+            '{containerOverrides:[{name:"eicr-backend", command:[$cmd0, $cmd1]}]}')
+
+          echo "Starting migration task..."
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task-definition ${{ steps.register-backend-taskdef.outputs.task_arn }} \
+            --launch-type FARGATE \
+            --network-configuration "$NET" \
+            --overrides "$OVERRIDES" \
+            --started-by "ci-migrate-${{ github.sha }}" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'tasks[0].taskArn' \
+            --output text)
+
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::Failed to start migration task"
+            exit 1
+          fi
+          echo "Migration task: $TASK_ARN"
+
+          echo "Waiting for migration task to finish (max 10 min)..."
+          aws ecs wait tasks-stopped \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks "$TASK_ARN" \
+            --region ${{ env.AWS_REGION }}
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks "$TASK_ARN" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'tasks[0].containers[?name==`eicr-backend`].exitCode | [0]' \
+            --output text)
+          STOP_REASON=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks "$TASK_ARN" \
+            --region ${{ env.AWS_REGION }} \
+            --query 'tasks[0].stoppedReason' \
+            --output text)
+          echo "Migration task exit code: $EXIT_CODE (stoppedReason: $STOP_REASON)"
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migration failed (exit $EXIT_CODE). Check CloudWatch /ecs/eicr/eicr-backend for task $TASK_ARN."
+            exit 1
+          fi
+
       - name: Update ECS Frontend Service
         if: steps.scope.outputs.target != 'backend'
         run: |

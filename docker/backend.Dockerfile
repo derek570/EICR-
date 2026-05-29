@@ -62,6 +62,14 @@ COPY config/ ./config/
 COPY assets/ ./assets/
 COPY python/ ./python/
 
+# Migrations + the runner script used by the one-off CI migrate task.
+# Without these the deploy.yml "Run DB migrations" step has nothing to
+# execute and the schema drifts behind the code — exactly the failure
+# that left cert_attestations un-applied for weeks (see
+# scripts/migrate-from-secrets.js for the full story).
+COPY migrations/ ./migrations/
+COPY scripts/migrate-from-secrets.js ./scripts/migrate-from-secrets.js
+
 # Create data directories
 RUN mkdir -p ./data/INCOMING ./data/OUTPUT ./data/DONE ./data/FAILED
 
