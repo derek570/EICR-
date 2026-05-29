@@ -394,8 +394,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                   confidence: slot.confidence,
                   source: 'tool_call',
                 };
-                if (Number.isInteger(slot.circuit)) reading.circuit = String(slot.circuit);
-                else reading.circuit = '0';
+                // Canonical bundler at stage6-event-bundler.js:177-180 emits
+                // `circuit` as Int when parseable. iOS' ExtractedReading
+                // (CertMateUnified/Sources/Services/ClaudeService.swift:54)
+                // is typed `let circuit: Int`. The prior shape sent a
+                // string here, which made iOS' Codable decoder reject the
+                // entire preliminary frame and silently drop the reading
+                // (it was caught by the catch-all at
+                // ServerWebSocketService.swift:922). Aligning the
+                // preliminary's circuit type with the canonical bundler
+                // makes the speculator preview actually land in the UI.
+                if (Number.isInteger(slot.circuit)) reading.circuit = slot.circuit;
+                else reading.circuit = 0;
                 if (slot.boardId != null) reading.board_id = slot.boardId;
                 const confirmation = {
                   text: slot.text,
