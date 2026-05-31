@@ -2151,6 +2151,50 @@ export function tryEnterScriptFromWrites({
     return { entered: false, reason: 'script_already_active' };
   }
 
+  // 2026-06-01 — multi-circuit broadcast guard. When the same field
+  // appears across ≥2 distinct circuits in this turn's writes, the
+  // inspector's intent is batch-set ("RCD trip time for circuits 2,
+  // 3, and 4 to 25 ms.") — NOT a walk-through trigger for the first
+  // circuit. Pre-guard the hook would enter the schema for the
+  // first matching reading and ambush the inspector with "What's
+  // the BS number?" while they were mid-batch.
+  //
+  // Field repro: session D68ACD24-1D3A-4896-A59B-A9D9A888386E
+  // (2026-05-31 23:53 BST). Inspector said "RCD, trip time for
+  // circuits 2, 3, and 4 to 25 ms.". The `processDialogueTurn`
+  // pre-filter correctly recognised the broadcast intent and bailed
+  // (`dialogue_broadcast_bypassed_entry` ×3); Sonnet then wrote
+  // rcd_time_ms to circuits 2, 3, 4. This hook ran on the post-
+  // dispatch readings array, saw circuit 2 first, and entered the
+  // RCD walk-through anyway. The inspector heard "What's the BS
+  // number?" milliseconds after their batch utterance — UX disaster.
+  //
+  // Detection: build a {field → Set<circuit>} map; if ANY field
+  // crosses ≥2 distinct circuits, treat as broadcast and skip.
+  // Multi-field-same-circuit ("circuit 5 trip time 25 ms, type AC")
+  // is unaffected — each field appears with one circuit only, so
+  // the walk-through still kicks in to fill the remaining slots.
+  const fieldCircuits = new Map();
+  for (const r of readings) {
+    if (!r?.field) continue;
+    const c = Number(r?.circuit);
+    if (!Number.isInteger(c) || c <= 0) continue;
+    const set = fieldCircuits.get(r.field) ?? new Set();
+    set.add(c);
+    fieldCircuits.set(r.field, set);
+  }
+  for (const [f, circuits] of fieldCircuits.entries()) {
+    if (circuits.size >= 2) {
+      logger?.info?.('dialogue_entry_from_write_skipped_broadcast', {
+        sessionId: session.sessionId,
+        broadcast_field: f,
+        circuit_count: circuits.size,
+        circuits: [...circuits].sort((a, b) => a - b),
+      });
+      return { entered: false, reason: 'multi_circuit_broadcast' };
+    }
+  }
+
   // Resolve a Sonnet-emitted field name to the name a schema's slot
   // list might use. Some schemas list the canonical Stage-6 wire name
   // Sonnet emits (e.g. IR's `ir_live_live_mohm`); others list the
