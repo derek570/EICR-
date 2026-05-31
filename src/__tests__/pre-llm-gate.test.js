@@ -282,6 +282,49 @@ describe('shouldForwardToSonnet — bypasses', () => {
     });
   });
 
+  // 2026-05-31 — server-side dialogue-engine asks (RCD / OCPD / RCBO / IR /
+  // ring-continuity walk-throughs) don't register in pendingAsks because
+  // they use the `srv-*` tool-call-id prefix; the engine reads its own
+  // dialogueScriptState and needs every utterance forwarded so its defer /
+  // skip / cancel / topic-switch parsers can fire. Repro: inspector replies
+  // bare "later" to "What's the BS number? Or do you want to fill that in
+  // later?" — without this bypass the gate blocks LOW_CONTENT and the
+  // engine's deferTriggers regex `/^\s*later[.!?]?\s*$/i` (rcd.js:148)
+  // never sees the reply.
+  test('forwards single-word "later" when a dialogue script is active', () => {
+    expect(shouldForwardToSonnet('later', { hasActiveDialogueScript: true })).toEqual({
+      forward: true,
+      reason: GATE_REASONS.BYPASS_DIALOGUE_SCRIPT_ACTIVE,
+    });
+  });
+
+  test('forwards bare "skip" when a dialogue script is active', () => {
+    expect(shouldForwardToSonnet('Skip.', { hasActiveDialogueScript: true })).toEqual({
+      forward: true,
+      reason: GATE_REASONS.BYPASS_DIALOGUE_SCRIPT_ACTIVE,
+    });
+  });
+
+  test('forwards bare "AC" type answer when a dialogue script is active', () => {
+    // RCD slot question "What RCD type? AC, A, F, or B?" — bare "AC"
+    // would block LOW_CONTENT without the bypass (1 content word, no
+    // weak/strong trigger).
+    expect(shouldForwardToSonnet('AC', { hasActiveDialogueScript: true })).toEqual({
+      forward: true,
+      reason: GATE_REASONS.BYPASS_DIALOGUE_SCRIPT_ACTIVE,
+    });
+  });
+
+  test('dialogue-script bypass works even when text is empty', () => {
+    // Empty payload reaches the engine and falls through harmlessly;
+    // we don't want the gate to silently drop replies that contain only
+    // the answer's punctuation or get whitespace-clipped by Deepgram.
+    expect(shouldForwardToSonnet('   ', { hasActiveDialogueScript: true })).toEqual({
+      forward: true,
+      reason: GATE_REASONS.BYPASS_DIALOGUE_SCRIPT_ACTIVE,
+    });
+  });
+
   test('forwards drained-retry replays unconditionally', () => {
     expect(shouldForwardToSonnet('Yeah.', { drainedRetry: true })).toEqual({
       forward: true,
@@ -312,7 +355,8 @@ describe('shouldForwardToSonnet — bypasses', () => {
 
 describe('shouldForwardToSonnet — bypass precedence', () => {
   // The gate evaluates bypasses in a deterministic order:
-  //   disabled > drainedRetry > pendingAsk > inResponseTo > regexHits > text rules
+  //   disabled > drainedRetry > pendingAsk > activeDialogueScript >
+  //   inResponseTo > regexHits > text rules
   test('disabled flag dominates every bypass', () => {
     expect(
       shouldForwardToSonnet('Yeah.', {
@@ -331,6 +375,29 @@ describe('shouldForwardToSonnet — bypass precedence', () => {
         regexResults: [{ field: 'zs', value: 0.5 }],
       }).reason
     ).toBe(GATE_REASONS.BYPASS_DRAINED_RETRY);
+  });
+
+  test('pendingAsk wins over activeDialogueScript', () => {
+    // pendingAsk (Sonnet `ask_user` outstanding) is the older signal and
+    // sits one step higher in the order. When both fire on the same
+    // utterance (e.g. mid-script Sonnet also asked for a clarification),
+    // attributing to pendingAsk preserves existing telemetry semantics.
+    expect(
+      shouldForwardToSonnet('later', {
+        hasPendingAsk: true,
+        hasActiveDialogueScript: true,
+      }).reason
+    ).toBe(GATE_REASONS.BYPASS_PENDING_ASK);
+  });
+
+  test('activeDialogueScript wins over inResponseTo + regexHits', () => {
+    expect(
+      shouldForwardToSonnet('later', {
+        hasActiveDialogueScript: true,
+        inResponseTo: true,
+        regexResults: [{ field: 'rcd_bs_en', value: '60898' }],
+      }).reason
+    ).toBe(GATE_REASONS.BYPASS_DIALOGUE_SCRIPT_ACTIVE);
   });
 });
 

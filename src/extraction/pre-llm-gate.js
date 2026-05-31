@@ -30,14 +30,33 @@
 //   1. !gateEnabled                          → forward (BYPASS_DISABLED)
 //   2. drainedRetry                          → forward (BYPASS_DRAINED_RETRY)
 //   3. hasPendingAsk                         → forward (BYPASS_PENDING_ASK)
-//   4. inResponseTo                          → forward (BYPASS_IN_RESPONSE_TO)
-//   5. regexResults non-empty                → forward (HAS_REGEX_HINT)
-//   6. text empty                            → block   (EMPTY)
-//   7. hasDigit                              → forward (HAS_DIGIT)
-//   8. OBSERVATION_PATTERN match             → forward (HAS_OBSERVATION_PREFIX)
-//   9. hasStrongTrigger                      → forward (HAS_STRONG_TRIGGER)
-//  10. hasWeakTrigger                        → forward (HAS_WEAK_TRIGGER) [2026-05-29]
-//  11. else                                  → block   (LOW_CONTENT)
+//   4. hasActiveDialogueScript               → forward (BYPASS_DIALOGUE_SCRIPT_ACTIVE) [2026-05-31]
+//   5. inResponseTo                          → forward (BYPASS_IN_RESPONSE_TO)
+//   6. regexResults non-empty                → forward (HAS_REGEX_HINT)
+//   7. text empty                            → block   (EMPTY)
+//   8. hasDigit                              → forward (HAS_DIGIT)
+//   9. OBSERVATION_PATTERN match             → forward (HAS_OBSERVATION_PREFIX)
+//  10. hasStrongTrigger                      → forward (HAS_STRONG_TRIGGER)
+//  11. hasWeakTrigger                        → forward (HAS_WEAK_TRIGGER) [2026-05-29]
+//  12. else                                  → block   (LOW_CONTENT)
+//
+// 2026-05-31 — BYPASS_DIALOGUE_SCRIPT_ACTIVE. The dialogue engine's
+// RCD / OCPD / RCBO / IR / ring-continuity walk-throughs emit TTS
+// questions ("What's the BS number? Or do you want to fill that in
+// later?") via the server-side script path (`srv-rcd`/`srv-ocpd`/…
+// tool-call-id prefixes) which NEVER register in `entry.pendingAsks`
+// (sonnet-stream.js:~1429 — these are server-driven, not Sonnet
+// `ask_user` calls). Pre-2026-05-31 the gate had no signal that a
+// script was awaiting an answer, so terse replies like bare "later"
+// failed the weak-trigger + content threshold and never reached
+// engine.js's defer branch (rcd.js:144-149 deferTriggers includes
+// `^\s*later[.!?]?\s*$`). Field repro: inspector replies "later" to
+// the RCD BS-number ask, gate blocks with LOW_CONTENT, engine never
+// sees the reply, RCD focus persists past the inspector's intent to
+// defer. Fix: surface `session.dialogueScriptState?.active` to the
+// gate as `hasActiveDialogueScript`; when a script owns the floor,
+// every utterance forwards regardless of length so the engine's
+// defer / skip / cancel / topic-switch parsers get a chance to fire.
 //
 // 2026-05-29 — dropped the "≥3 distinct content words" fallback. Field
 // session 1FBAE6E0 (Build 385 chitchat test): "Can I use the toilet,
@@ -313,6 +332,7 @@ export const GATE_REASONS = Object.freeze({
   FALLBACK_FORWARD: 'fallback',
   // Bypass reasons (always forward)
   BYPASS_PENDING_ASK: 'bypass_pending_ask',
+  BYPASS_DIALOGUE_SCRIPT_ACTIVE: 'bypass_dialogue_script_active',
   BYPASS_IN_RESPONSE_TO: 'bypass_in_response_to',
   BYPASS_DRAINED_RETRY: 'bypass_drained_retry',
   BYPASS_DISABLED: 'bypass_flag_off',
@@ -328,6 +348,15 @@ export const GATE_REASONS = Object.freeze({
  * @param {boolean} [opts.hasPendingAsk] True if the session has unresolved asks.
  *                  When true the gate forwards unconditionally — the transcript
  *                  may be the inspector's answer to a question.
+ * @param {boolean} [opts.hasActiveDialogueScript] True if a server-side dialogue
+ *                  script (RCD / OCPD / RCBO / IR / ring-continuity walk-
+ *                  through) is currently awaiting a reply. These asks bypass
+ *                  the `pendingAsks` registry (they're not Sonnet `ask_user`
+ *                  calls) so the gate needs a separate signal to know an
+ *                  in-flight question is on the wire. When true, forward
+ *                  unconditionally — the engine's defer / skip / cancel /
+ *                  topic-switch parsers must get a chance to fire on every
+ *                  reply, including terse ones ("later", "skip", "blank").
  * @param {boolean} [opts.inResponseTo] True if iOS tagged the transcript as
  *                  responding to a specific TTS question.
  * @param {boolean} [opts.drainedRetry] True if this is the replay path; never
@@ -341,6 +370,7 @@ export function shouldForwardToSonnet(text, opts = {}) {
   const {
     regexResults,
     hasPendingAsk = false,
+    hasActiveDialogueScript = false,
     inResponseTo = false,
     drainedRetry = false,
     gateEnabled = true,
@@ -354,6 +384,9 @@ export function shouldForwardToSonnet(text, opts = {}) {
   }
   if (hasPendingAsk) {
     return { forward: true, reason: GATE_REASONS.BYPASS_PENDING_ASK };
+  }
+  if (hasActiveDialogueScript) {
+    return { forward: true, reason: GATE_REASONS.BYPASS_DIALOGUE_SCRIPT_ACTIVE };
   }
   if (inResponseTo) {
     return { forward: true, reason: GATE_REASONS.BYPASS_IN_RESPONSE_TO };

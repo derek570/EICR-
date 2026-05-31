@@ -3205,9 +3205,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // repeat; otherwise the agent stays quiet rather than re-asking.
     // Skipping the gate-tick AND the extractor avoids the panic-burst
     // pattern documented in session 33E6613D (2026-05-26).
+    // 2026-05-31 — surface dialogueScriptState.active to the gate so
+    // server-side script asks (RCD / OCPD / RCBO / IR / ring-continuity)
+    // get reply forwarding. These asks DO NOT register in pendingAsks
+    // (the registry tracks Sonnet `ask_user` calls; engine asks use the
+    // `srv-*` toolCallIdPrefix and bypass it on purpose — see
+    // sonnet-stream.js:~1429), so without this flag the gate had no
+    // signal that a script was awaiting an answer. Field repro: inspector
+    // replies bare "later" to "What's the BS number? Or do you want to
+    // fill that in later?", gate blocks LOW_CONTENT (1 content word, no
+    // weak trigger), engine never sees the reply, RCD focus persists.
+    const hasActiveDialogueScript = entry.session?.dialogueScriptState?.active === true;
     const gateDecision = shouldForwardToSonnet(msg.text, {
       regexResults: Array.isArray(msg.regexResults) ? msg.regexResults : null,
       hasPendingAsk: entry.pendingAsks && entry.pendingAsks.size > 0,
+      hasActiveDialogueScript,
       inResponseTo: !!(msg.in_response_to && typeof msg.in_response_to === 'object'),
       drainedRetry: !!msg._drainedRetry,
       gateEnabled: PRE_LLM_GATE_ENABLED,
@@ -3219,6 +3231,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
         distinct_content_words: gateDecision.distinctContentWords ?? null,
         had_pending_ask: entry.pendingAsks && entry.pendingAsks.size > 0,
+        had_active_dialogue_script: hasActiveDialogueScript,
       });
       return;
     }
