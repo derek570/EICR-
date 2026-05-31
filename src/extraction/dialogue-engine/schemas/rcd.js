@@ -125,27 +125,57 @@ const skipSlotTriggers = [
 // rcd_trip_time written at entry) stay in the snapshot; only the
 // remaining unfilled slots are abandoned.
 //
-// Phrasings deliberately scoped to defer-intent verbs. Bare "later"
-// is included for terse replies to the ask, but the
-// acceptsDeferAnswer gate at the slot level ensures it only matches
-// when the inspector is replying to the BS-number prompt — bare
-// "later" in any other context (e.g. mid-IR script) won't trigger
-// because no other slot opts in.
-// Verb-prefix + "later" patterns. Filler between the verb and "later"
-// is bounded (≤ 20 chars, no digits) so the regex can't accidentally
-// span a sentence ("I'll fill in the form. Read me back the value
-// later" must not defer). Verb prefixes cover the natural deferral
-// phrasings: "fill in/it/them later", "fill it in later", "do it
-// later", "come back to it later", "back to it later". Bare "later"
-// is allowed only when the inspector's entire reply is the single
-// word (or "later." with full-stop) so it can't pick up "later" out
-// of unrelated sentences ("I'll deal with that later, but right now
-// the BS is 60898").
+// Phrasings deliberately scoped to defer-intent verbs / adverbs;
+// the acceptsDeferAnswer gate at the slot level ensures these only
+// fire when the inspector is replying to the BS-number prompt, so
+// stray matches elsewhere in the script cannot trigger.
+//
+// 2026-05-31 widening (session E8C6B716 — inspector heard a
+// repeating BS-number ask, attempted to defer four ways: "you
+// filled in.", "in later.", and the failures landed in CloudWatch
+// as `ask_user_answered_routed_to_engine` events the engine
+// silently re-asked because none of the regexes matched). Two
+// additions:
+//   - bare "later" anchor relaxed from the ENTIRE reply to a leading
+//     prefix (≤ 2 lead words) so Deepgram's "in later.", "and later",
+//     "uh later." also defer. The 2-word lead bound keeps
+//     unrelated sentences containing "later" from accidentally
+//     deferring ("I'll deal with that later, but right now the BS
+//     is 60898" still fails — three+ leading words).
+//   - "leave it" / "leave that" — common Deepgram form, sometimes
+//     mis-heard as "leve it" / "we'd it" / "you filled in" /
+//     "leave it for later". Anchored to short replies (≤ 30 chars)
+//     so it cannot fire inside a regular sentence. "fill it in"
+//     and "filled in" included as the most-common garbles of "fill
+//     it in later" where Deepgram dropped the trailing "later".
+//
+// Background: 2026-05-29 PLAN_v4 chose to leave inspectors with
+// silence when the gate blocks a reply rather than panic-ask. But
+// when the ENGINE itself can't recognise a defer phrasing, the
+// alternative is far worse — inspector hears the same prompt every
+// 6 seconds and rage-quits the session (E8C6B716 ended at "Oh,
+// fuck off." then "I give up. Stop."). Better to defer too eagerly
+// at this slot than to loop.
 const deferTriggers = [
+  // Verb-prefix + "later" patterns. Filler between the verb and
+  // "later" is bounded (≤ 20 chars, no digits) so the regex can't
+  // accidentally span a sentence.
   /\bfill\s+[^\d?!]{0,20}?later\b/i,
   /\bdo\s+[^\d?!]{0,15}?later\b/i,
   /\b(?:come\s+)?back\s+[^\d?!]{0,20}?later\b/i,
-  /^\s*later[.!?]?\s*$/i,
+  // Leading-"later" variants — entire reply OR ≤ 2 lead words +
+  // "later" + optional terminal punctuation. Catches "later.",
+  // "in later.", "and later.", "uh later." but NOT "I'll deal with
+  // that later, but right now ..." (3+ lead words).
+  /^\s*(?:\S+\s+){0,2}later[.!?,]?\s*$/i,
+  // Short-reply "leave it" / "leave that" — and the common Deepgram
+  // garble "filled in" / "filed in" for the post-prompt deferral
+  // form ("fill it in [later]" with the trailing time-word dropped).
+  // Bounded to ≤ 30 chars total so this cannot match inside a
+  // longer recorded value or observation sentence. Trailing tail
+  // bumped to 20 chars to admit "leave it for later." / "leave that
+  // until later." while still rejecting full sentences.
+  /^.{0,30}\b(?:leave\s+(?:it|that|them|those)|fil(?:l(?:ed)?|ed)\s+(?:it\s+)?in|skip\s+(?:for|until)\s+later)\b.{0,20}$/i,
 ];
 
 const topicSwitchTriggers = [
