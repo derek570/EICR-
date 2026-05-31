@@ -50,6 +50,7 @@ import {
   formatBulkApplyConfirm,
   detectBroadcastIntent,
 } from './parsers/circuit-range.js';
+import { OBSERVATION_PATTERN } from '../pre-llm-gate.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -176,6 +177,27 @@ export function processDialogueTurn(ctx) {
         });
       }
     }
+  }
+
+  // 2026-05-31 — observation-prefixed utterances skip entry detection.
+  // Field repro: inspector says "Observation: the RCD cover is cracked."
+  // intending to log a defect. RCD schema's trigger regex (rcd.js:107
+  // `\bRCD\b...`) matches the bare RCD mention and runEntry below
+  // captures the turn — emitting "What's the BS number?" and clearing
+  // any chance for Sonnet to call `record_observation`. The OBSERVATION_
+  // PATTERN (pre-llm-gate.js:147) is the canonical signal that the
+  // utterance is in observation-flow; honour it here by bailing to
+  // Sonnet so the observation tool runs. Reached only when no script
+  // is active — the active-path block above already returned for any
+  // in-flight script (and an active script's own active-path handles
+  // observation utterances via its existing topicSwitchTriggers list,
+  // left untouched in this change).
+  if (OBSERVATION_PATTERN.test(text)) {
+    logger?.info?.('dialogue_entry_bypassed_observation', {
+      sessionId,
+      textPreview: text.slice(0, 80),
+    });
+    return { handled: false };
   }
 
   // Entry detection — first matching schema wins.
