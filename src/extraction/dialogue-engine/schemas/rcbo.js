@@ -29,19 +29,44 @@ const slots = [
     namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
     acceptsBareValue: true,
     // Mirror to rcd_bs_en — by convention an RCBO populates both
-    // OCPD and RCD columns with the same BS code. No pivot here
-    // (we ARE the RCBO schema; nothing to pivot to).
-    derivations: [{ value: '61009', mirrors: ['rcd_bs_en'] }],
+    // OCPD and RCD columns with the same BS code (single device,
+    // single type-test classification). No pivot here (we ARE the
+    // RCBO schema; nothing to pivot to).
+    //
+    // 2026-05-31: dropped the `value: '61009'` gate so the mirror
+    // fires for any code the inspector dictates. Was: with the gate
+    // in place, entering anything other than 61009 (e.g. 61008 —
+    // session E8C6B716) left rcd_bs_en empty, so `nextMissingSlot`
+    // then asked the identical "What's the BS number?" prompt for
+    // the rcd_bs_en slot, which the inspector reasonably heard as
+    // "the system didn't register my answer". For an RCBO the OCPD
+    // BS code IS the RCD BS code, so unconditional mirror is the
+    // correct semantic regardless of which standard the inspector
+    // names.
+    derivations: [{ mirrors: ['rcd_bs_en'] }],
   },
   {
     field: 'rcd_bs_en',
     kind: 'bs_code',
     label: 'RCD BS number',
-    question: "What's the BS number?",
+    question: "What's the RCD's BS number?",
     parser: parseBsCode,
     namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
     acceptsBareValue: true,
-    derivations: [{ value: '61009', mirrors: ['ocpd_bs_en'] }],
+    // 2026-05-31: never auto-asked. The ocpd_bs_en mirror above
+    // unconditionally fills this field, so the inspector hears the
+    // BS-number prompt exactly once per RCBO walk-through.
+    //
+    // The slot is preserved (rather than deleted) so the
+    // namedExtractor still harvests volunteered values when the
+    // inspector dictates the RCD code first ("the RCD BS code is
+    // 61009 …"); the symmetric mirror below then fills ocpd_bs_en.
+    // The question text is reworded ("…the RCD's BS number?") as
+    // defence-in-depth — if some future code path ever bypasses the
+    // mirror, the inspector at least hears WHICH BS number is being
+    // asked for instead of an identical-sounding duplicate.
+    volunteeredOnly: true,
+    derivations: [{ mirrors: ['ocpd_bs_en'] }],
   },
   {
     field: 'ocpd_type',

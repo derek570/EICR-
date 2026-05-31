@@ -14,13 +14,14 @@
  *     active script state, only reports the intent.
  *
  * Each slot's `derivations` is an array of objects of shape:
- *   { value, sets?, mirrors?, pivot? }
+ *   { value?, sets?, mirrors?, pivot? }
  *
  * `value` is the literal canonical value the parser produced (the
  * BS code parser returns "BS EN 61009"; downstream we compare via
  * `bsCodeDigits` so the matcher accepts either the full-prefixed
  * or bare-digit form). For other slot kinds (curve letters, RCD
- * types) the match is a direct string equality.
+ * types) the match is a direct string equality. Omitting `value`
+ * makes the derivation unconditional — fires on every write.
  */
 import { applyReadingToSnapshot } from '../../stage6-snapshot-mutators.js';
 import { bsCodeDigits } from '../parsers/bs-code.js';
@@ -30,8 +31,23 @@ import { bsCodeDigits } from '../parsers/bs-code.js';
  * written to the slot. For BS-code slots we compare the digit
  * suffix (so "BS EN 61009" derivation matches written value
  * "BS EN 61009"); other slots compare canonical string.
+ *
+ * 2026-05-31: a derivation with `value` omitted (or explicitly
+ * `undefined`) is treated as ALWAYS matching. Use case: the RCBO
+ * schema mirrors `ocpd_bs_en` to `rcd_bs_en` regardless of which
+ * BS code the inspector dictates — for an RCBO, by convention both
+ * columns carry the same value, and gating the mirror on a single
+ * literal ("61009") created a duplicate-prompt bug when the
+ * inspector entered any other code (session E8C6B716, 2026-05-31:
+ * inspector entered "61008" for `ocpd_bs_en`, mirror skipped, then
+ * heard the identical "What's the BS number?" prompt for `rcd_bs_en`
+ * and reasonably concluded the system had lost the answer).
+ * Existing literal-value derivations are unaffected — every
+ * in-tree derivation specifies `value`, so the new branch is dead
+ * code for them.
  */
 function derivationMatches(derivation, writtenValue, slotKind) {
+  if (derivation.value === undefined) return true;
   if (slotKind === 'bs_code') {
     const digits = bsCodeDigits(writtenValue);
     return digits === derivation.value;
