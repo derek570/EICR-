@@ -74,6 +74,13 @@ export async function dispatchStartDialogueScript(call, ctx) {
     schemaName: input.schema,
     circuit_ref: input.circuit ?? null,
     pending_writes: Array.isArray(input.pending_writes) ? input.pending_writes : [],
+    // Forward the live turn's transcript so the engine can run its
+    // broadcast-intent guard (engine.js enterScriptByName). The
+    // harness stashes this on `session.activeTurnTranscript` at the
+    // top of runLiveMode and clears it in the finally; reading it
+    // here keeps the dispatcher stateless. Falls back to null on
+    // test paths that don't set up the harness.
+    transcriptText: session.activeTurnTranscript ?? null,
     ws: targetWs,
     logger,
     now: Date.now(),

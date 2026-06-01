@@ -242,6 +242,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // Phase 0 server-side audible-first-byte clock + counters.
   const runLiveStartNs = process.hrtime.bigint();
 
+  // Stash this turn's raw transcript on the session so dispatchers
+  // (notably dispatchStartDialogueScript) can read it without having to
+  // thread the text down through ctx. Pre-fix: only the engine's regex
+  // entry path saw the text and ran detectBroadcastIntent; Sonnet-
+  // initiated start_dialogue_script had no visibility, so e.g.
+  // "Insulation resistance for all circuits live to live is greater than
+  // 299" would correctly bypass the regex entry — but Sonnet would then
+  // call start_dialogue_script(ir) anyway and the IR walk-through would
+  // ask "Which circuit?" with no broadcast guard. The finally below
+  // clears the field so cross-turn reads are impossible.
+  session.activeTurnTranscript = transcriptText;
+
   // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 12.2). Wrap the
   // body in try/finally so the per-turn entry maps are always torn down
   // even if the runToolLoop / bundler / observation refinement path
@@ -1067,6 +1079,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       entry.pendingFastTtsSlots?.delete(turnId);
       entry.fastPathCorrelationIdByTurn?.delete(turnId);
     }
+    // Drop the per-turn transcript pointer so a dispatcher firing on
+    // the next turn can't accidentally reuse this turn's text.
+    session.activeTurnTranscript = null;
   }
 }
 

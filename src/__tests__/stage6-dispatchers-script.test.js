@@ -152,6 +152,57 @@ describe('enterScriptByName — engine back door', () => {
     expect(ws.sent.length).toBe(sentBefore);
   });
 
+  test('broadcast-intent guard rejects "for all circuits" when no script active (B95B2EE1 repro)', () => {
+    const session = buildSession({ 1: {}, 4: {}, 5: {}, 7: {} });
+    const result = enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'insulation_resistance',
+      circuit_ref: null,
+      transcriptText: 'Insulation resistance for all circuits live to live is greater than 299',
+      now: 1000,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('broadcast_intent_detected');
+    expect(result.error.schema).toBe('insulation_resistance');
+    expect(result.error.hint).toMatch(/set_field_for_all_circuits/);
+    // State must NOT be initialised — Sonnet should retry via the
+    // broadcast tool, and a half-entered IR script would block that.
+    expect(session.dialogueScriptState).toBeUndefined();
+  });
+
+  test('broadcast-intent guard does NOT trip when transcript is single-circuit', () => {
+    const session = buildSession({ 4: {} });
+    const result = enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'insulation_resistance',
+      circuit_ref: 4,
+      transcriptText: 'Circuit four insulation resistance live to live is greater than 299',
+      now: 1000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('entered');
+    expect(session.dialogueScriptState.active).toBe(true);
+  });
+
+  test('broadcast-intent guard skipped when no transcript supplied (test paths)', () => {
+    const session = buildSession({ 4: {} });
+    const result = enterScriptByName({
+      session,
+      sessionId: 'sess_test',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'insulation_resistance',
+      circuit_ref: 4,
+      // No transcriptText — equivalent to legacy callers.
+      now: 1000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('entered');
+  });
+
   test('rejects unknown schema name', () => {
     const session = buildSession({ 4: {} });
     const result = enterScriptByName({

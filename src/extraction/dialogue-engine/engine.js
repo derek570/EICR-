@@ -1635,6 +1635,7 @@ export function enterScriptByName({
   schemaName,
   circuit_ref = null,
   pending_writes = [],
+  transcriptText = null,
   ws = null,
   logger = null,
   now = Date.now(),
@@ -1646,6 +1647,47 @@ export function enterScriptByName({
   const schema = schemas.find((s) => s.name === schemaName);
   if (!schema) {
     return { ok: false, error: { code: 'unknown_schema', schema: schemaName } };
+  }
+
+  // Broadcast-intent guard (2026-06-01 — session B95B2EE1 regression).
+  //
+  // processDialogueTurn at line ~92 already rejects entry when the raw
+  // transcript contains "for all circuits" / "across the board" etc.,
+  // because the inspector intends a fan-out, not a per-circuit walk-
+  // through. Sonnet-initiated start_dialogue_script was a second entry
+  // path that DIDN'T see the transcript and so couldn't run the same
+  // guard — IR ended up asking "Which circuit?" while
+  // set_field_for_all_circuits could and should have handled the read.
+  //
+  // We trust the call site (stage6-shadow-harness.js stashes the live
+  // turn's text onto session.activeTurnTranscript and the script
+  // dispatcher threads it through here). Only reject when:
+  //   (a) text was supplied (test paths often skip it),
+  //   (b) detectBroadcastIntent matches,
+  //   (c) no script is currently active — once a script is mid-run, the
+  //       active-path block at line ~143 owns the abort-mid-script
+  //       semantic and we don't want to fight it.
+  // ok:false + dedicated code lets Sonnet retry via
+  // set_field_for_all_circuits without re-entering this branch.
+  if (
+    typeof transcriptText === 'string' &&
+    transcriptText.length > 0 &&
+    !session.dialogueScriptState?.active &&
+    detectBroadcastIntent(transcriptText)
+  ) {
+    logger?.info?.('stage6.dialogue_script_broadcast_intent_rejected', {
+      sessionId,
+      requested_schema: schemaName,
+      transcript_preview: transcriptText.slice(0, 80),
+    });
+    return {
+      ok: false,
+      error: {
+        code: 'broadcast_intent_detected',
+        schema: schemaName,
+        hint: 'Inspector said "for all circuits" / "across the board" — use set_field_for_all_circuits instead of entering a per-circuit walk-through.',
+      },
+    };
   }
 
   // Idempotency: if a script is already in flight, return an
