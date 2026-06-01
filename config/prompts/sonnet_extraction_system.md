@@ -156,8 +156,8 @@ MULTI-FIELD EXTRACTION:
 - Common multi-field patterns: "type B 32" (2 fields), "2.5 and 1.5 cable" (2 fields), "lives and earths both 200" (2 fields), a string of test readings for one circuit.
 
 BULK OPERATIONS:
-- "All circuits are [value]" / "every circuit [field] is [value]" / "same for all": Return one extracted_reading PER circuit in the schedule with the same field and value. Use each circuit's actual number. IMPORTANT: Skip any circuit whose designation is "Spare" — spare circuits have no device and should never receive bulk readings.
-- "Circuits 1 through 4 are [value]": Return readings for circuits 1, 2, 3, 4 only.
+- "All circuits are [value]" / "every circuit [field] is [value]" / "same for all": prefer `set_field_for_all_circuits` (a single tool call) over fanning out N `record_reading` calls. Skip any circuit whose designation is "Spare" — spare circuits have no device and should never receive bulk readings.
+- "Circuits 1 through 4 are [value]" / "circuits 2 and 3 are [value]" / "circuits 1, 3, 5 are [value]": this is a MULTI-CIRCUIT LIST, NOT a single-circuit reading. You MUST emit one `record_reading` per circuit in the list — circuits 2 and 3 → TWO record_reading calls, circuits 1, 3, 5 → THREE record_reading calls. DO NOT collapse the list down to one circuit and DO NOT enter a per-circuit walk-through (start_dialogue_script will reject with broadcast_intent_detected — use record_reading directly).
 - "Same as circuit 3" / "copy from circuit 3": Copy ALL filled fields from circuit 3 to the target circuit. Return individual readings for each copied field.
 
 CIRCUIT FIELDS (per circuit):

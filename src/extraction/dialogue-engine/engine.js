@@ -2289,11 +2289,40 @@ export function tryEnterScriptFromWrites({
 
       initScriptState(session, schema, circuitRef, now);
       const state = session.dialogueScriptState;
+      const mirroredKeys = [];
       for (const [f, v] of Object.entries(existing)) {
         if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
           state.values[f] = v;
+          // Field-test repro 2026-06-01 (session 65AA5C76, circuit 3):
+          // inspector said "RCD BS number is 61008", Sonnet wrote
+          // rcd_bs_en via record_reading, tryEnterScriptFromWrites
+          // entered RCBO — but the rcbo.js mirror `{ mirrors:
+          // ['ocpd_bs_en'] }` on rcd_bs_en never fired because the
+          // seed loop above writes directly to state.values without
+          // going through the slot-write path that calls
+          // applyDerivations. Engine then walked to ocpd_bs_en as the
+          // "next missing slot" and asked "What's the BS number?" —
+          // the inspector had just answered the same question.
+          //
+          // Apply derivations for every seeded slot so mirrors land in
+          // the snapshot AND in state.values before nextMissingSlot
+          // computes. Pivots are intentionally NOT followed here —
+          // tryEnterScriptFromWrites already resolved the target
+          // schema and chasing a pivot mid-seed would re-enter the
+          // loop with the wrong schema.
+          const slot = schema.slots.find((s) => s.field === f);
+          if (slot && Array.isArray(slot.derivations)) {
+            applyDerivations({ session, schema, slot, value: v });
+            mirroredKeys.push(f);
+          }
         }
       }
+
+      // Recompute nextMissingSlot after derivations — the mirrors may
+      // have filled the slot we were about to ask about, so the
+      // walk-through should skip straight past it.
+      const nextAfterMirrors =
+        mirroredKeys.length > 0 ? nextMissingSlot(state.values, schema.slots, new Set()) : next;
 
       logger?.info?.(`${schema.logEventPrefix}_entered_from_sonnet_write`, {
         sessionId: session.sessionId,
@@ -2301,8 +2330,17 @@ export function tryEnterScriptFromWrites({
         trigger_field: field,
         resolved_field: matchedField,
         pre_existing_filled: Object.keys(existing).filter((f) => slotFields.includes(f)),
-        next_slot: next.field,
+        next_slot: nextAfterMirrors ? nextAfterMirrors.field : null,
+        mirror_fields_applied: mirroredKeys,
       });
+
+      // All slots filled after mirrors → finish the script straight
+      // away instead of walking the inspector through a question for a
+      // field the engine just derived from the volunteered value.
+      if (!nextAfterMirrors) {
+        clearScriptState(session);
+        return { entered: true, schemaName: schema.name, circuit_ref: circuitRef, finished: true };
+      }
 
       askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
       return { entered: true, schemaName: schema.name, circuit_ref: circuitRef };
