@@ -165,7 +165,7 @@ const ACRONYM_FIXES = [
   [/\bdb\b/gi, 'DB'],
 ];
 
-function deriveFriendlyName(field) {
+export function deriveFriendlyName(field) {
   let s = field.replace(/_/g, ' ');
   for (const [re, repl] of ACRONYM_FIXES) {
     s = s.replace(re, repl);

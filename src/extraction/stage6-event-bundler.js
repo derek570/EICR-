@@ -22,9 +22,11 @@ import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-write
 // can import the same buildConfirmationText without dragging the rest
 // of the bundler into its call site. No behavioural change here.
 import {
+  CONFIRMATION_FRIENDLY_NAMES,
   CONFIRMATION_MIN_CONFIDENCE,
   buildConfirmationText,
   buildGroupedConfirmationText,
+  deriveFriendlyName,
 } from './confirmation-text.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
@@ -152,6 +154,130 @@ function synthesiseStateChangeConfirmations(
       });
     }
   }
+  return out;
+}
+
+/**
+ * Issue 8 from 2026-05-31 field test. Inspector wants every UI write
+ * read back via TTS so the iPad can sit in another room while they
+ * work in AirPods. record_reading + state-change ops were already
+ * spoken (synthesiseConfirmations + synthesiseStateChangeConfirm-
+ * ations). The three missing categories — observations, observation
+ * deletions, and explicit clear_reading corrections — are covered
+ * here.
+ *
+ * @param {Array} observations perTurnWrites.observations
+ * @param {Array} deletedObservations perTurnWrites.deletedObservations
+ * @param {Array} fieldCorrections perTurnWrites.fieldCorrections
+ *   (carries the previous_value + reason for clear_reading writes;
+ *   per-reading "field_corrected" is the only category we speak —
+ *   record_reading-driven corrections already go via the main
+ *   confirmation path)
+ * @param {Map<number,string>|null} designations circuit ref →
+ *   designation, used to prefix cleared circuit-level readings with
+ *   the spoken circuit name when known.
+ * @returns {Array<{text, expanded_text, field, circuit}>}
+ */
+const OBSERVATION_TTS_TEXT_MAX_CHARS = 50;
+
+function synthesiseObservationAndClearedConfirmations(
+  observations,
+  deletedObservations,
+  fieldCorrections,
+  designations = null
+) {
+  const out = [];
+  const lookupDesignation = (circuit) => {
+    if (!designations) return null;
+    if (designations instanceof Map) {
+      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
+    }
+    if (typeof designations === 'object') {
+      return designations[circuit] ?? designations[String(circuit)] ?? null;
+    }
+    return null;
+  };
+
+  if (Array.isArray(observations)) {
+    for (const obs of observations) {
+      if (!obs) continue;
+      const code = typeof obs.code === 'string' && obs.code.trim() ? obs.code.trim() : null;
+      const rawText = typeof obs.text === 'string' ? obs.text.trim() : '';
+      let text;
+      if (code && rawText) {
+        const truncated =
+          rawText.length > OBSERVATION_TTS_TEXT_MAX_CHARS
+            ? `${rawText.slice(0, OBSERVATION_TTS_TEXT_MAX_CHARS).trim()}…`
+            : rawText;
+        text = `Observation ${code} — ${truncated}`;
+      } else if (code) {
+        text = `Observation ${code} recorded`;
+      } else if (rawText) {
+        const truncated =
+          rawText.length > OBSERVATION_TTS_TEXT_MAX_CHARS
+            ? `${rawText.slice(0, OBSERVATION_TTS_TEXT_MAX_CHARS).trim()}…`
+            : rawText;
+        text = `Observation — ${truncated}`;
+      } else {
+        // Empty observation with no code or text — don't speak anything.
+        continue;
+      }
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'observation',
+        circuit: Number.isInteger(obs.circuit) ? obs.circuit : null,
+      });
+    }
+  }
+
+  if (Array.isArray(deletedObservations)) {
+    for (const d of deletedObservations) {
+      if (!d) continue;
+      const text = 'Observation deleted';
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'observation_deletion',
+        circuit: null,
+      });
+    }
+  }
+
+  if (Array.isArray(fieldCorrections)) {
+    for (const c of fieldCorrections) {
+      if (!c) continue;
+      // Only speak explicit clears; field_corrected with a non-clear
+      // reason is a side-effect of a regular record_reading that the
+      // main confirmation path already covers.
+      if (c.reason !== 'clear_reading') continue;
+      const field = c.field;
+      if (typeof field !== 'string' || field.length === 0) continue;
+      // Skip suppressed fields + *_id (mirrors buildConfirmationText
+      // gating so we don't speak internal IDs being cleared).
+      // Match by re-importing the predicate would tighten the dep
+      // graph; for now inline the same check.
+      if (typeof field === 'string' && field.endsWith('_id')) continue;
+      const friendly = CONFIRMATION_FRIENDLY_NAMES[field] ?? deriveFriendlyName(field);
+      const circ = Number.isInteger(c.circuit) ? c.circuit : null;
+      let text;
+      if (circ == null || circ === 0) {
+        text = `${friendly} cleared`;
+      } else {
+        const desig = lookupDesignation(circ);
+        const prefix =
+          typeof desig === 'string' && desig.trim() ? desig.trim().slice(0, 40) : `Circuit ${circ}`;
+        text = `${prefix}, ${friendly} cleared`;
+      }
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'field_cleared',
+        circuit: circ,
+      });
+    }
+  }
+
   return out;
 }
 
@@ -547,7 +673,17 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       skipDesignations,
       options.boardDesignations
     );
-    const merged = confirmations.concat(stateChanges);
+    // 2026-06-01 Issue 8 — observations, observation deletions and
+    // explicit clear_reading corrections were silent. Inspector
+    // running AirPods-only would never know whether the system had
+    // logged their dictated defect.
+    const obsAndClears = synthesiseObservationAndClearedConfirmations(
+      perTurnWrites.observations,
+      perTurnWrites.deletedObservations,
+      perTurnWrites.fieldCorrections,
+      options.circuitDesignations
+    );
+    const merged = confirmations.concat(stateChanges).concat(obsAndClears);
     if (merged.length > 0) {
       result.confirmations = merged;
     }
