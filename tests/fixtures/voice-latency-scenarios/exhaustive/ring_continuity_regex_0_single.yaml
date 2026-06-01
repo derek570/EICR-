@@ -1,0 +1,120 @@
+name: ring_continuity_regex_0_single
+suite: exhaustive
+description: >-
+  Ring continuity REGEX 0 value walk-through for circuit 3.
+
+  Dialogue-engine trigger pre-empts Sonnet, harvests entry values with the schema named extractors,
+  and asks only for remaining script slots.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Outside Lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+transcript:
+  - at_ms: 0
+    text: Ring continuity on circuit 3.
+    isFinal: true
+  - at_ms: 7000
+    text: Lives 0.43.
+    isFinal: true
+  - at_ms: 13000
+    text: Neutrals 0.44.
+    isFinal: true
+  - at_ms: 19000
+    text: CPC 0.45.
+    isFinal: true
+  - at_ms: 25000
+    text: Yes.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 3
+      field: ring_r1_ohm
+      value: "0.43"
+    - circuit: 3
+      field: ring_rn_ohm
+      value: "0.44"
+    - circuit: 3
+      field: ring_r2_ohm
+      value: "0.45"
+  has_no_reading:
+    - circuit: 1
+      field: ring_r1_ohm
+      value: "0.43"
+    - circuit: 1
+      field: ring_rn_ohm
+      value: "0.44"
+    - circuit: 1
+      field: ring_r2_ohm
+      value: "0.45"
+    - circuit: 2
+      field: ring_r1_ohm
+      value: "0.43"
+    - circuit: 2
+      field: ring_rn_ohm
+      value: "0.44"
+    - circuit: 2
+      field: ring_r2_ohm
+      value: "0.45"
+    - circuit: 4
+      field: ring_r1_ohm
+      value: "0.43"
+    - circuit: 4
+      field: ring_rn_ohm
+      value: "0.44"
+    - circuit: 4
+      field: ring_r2_ohm
+      value: "0.45"
+    - circuit: 5
+      field: ring_r1_ohm
+      value: "0.43"
+    - circuit: 5
+      field: ring_rn_ohm
+      value: "0.44"
+    - circuit: 5
+      field: ring_r2_ohm
+      value: "0.45"
+  ask_user_count:
+    min: 4
+    max: 4
+  ask_user:
+    - field: ring_r1_ohm
+      text_matches: lives
+    - field: ring_rn_ohm
+      text_matches: neutrals
+    - field: ring_r2_ohm
+      text_matches: CPC
+    - field: null
+      text_matches: All correct
+config:
+  timeout_ms: 70000
+  drain_ms: 25000
+  fetch_tts: false
