@@ -18,6 +18,7 @@ import {
 } from './stage6-multi-board-shape.js';
 import { CONTROL_CHAR_PATTERN } from './stage6-sanitise-user-text.js';
 import { lookupPostcode } from '../postcode_lookup.js';
+import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
 import logger from '../logger.js';
 
 // RULE 6 correction lead-in phrases — if Sonnet emits an observation whose
@@ -1965,6 +1966,23 @@ export class EICRExtractionSession {
         }
       }
     }
+
+    // Apply the lookup result back to circuits[0] BEFORE building the
+    // prompt and BEFORE Sonnet's tool loop runs. Previous behaviour
+    // (commit history pre-2026-06-01) only injected the lookup
+    // informationally into buildUserMessage; Sonnet still extracted
+    // town/county independently from the transcript and frequently
+    // ended up writing the ITL1 region ("South East", "South West")
+    // rather than the administrative county returned by postcodes.io.
+    // Sessions B95B2EE1 + D68ACD24 (2026-05-31, both RG1 5QA) both
+    // landed county="South East" in the final job snapshot despite
+    // a valid postcode lookup returning "Berkshire".
+    //
+    // Override policy (Derek 2026-06-01): lookup wins on empty OR on
+    // a drift signal (existing value matches a known UK region rather
+    // than a real administrative town/county). Manually-correct
+    // values are preserved.
+    applyPostcodeLookupToSnapshot(this.stateSnapshot, postcodeLookupResult, this.sessionId);
 
     // Build the windowed message history first (may reset circuitScheduleIncluded flag)
     const windowMessages = this.buildMessageWindow();
