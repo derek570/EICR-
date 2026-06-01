@@ -21,6 +21,18 @@ import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
 import logger from '../logger.js';
 
+// 2026-06-01 — single point of control for the ephemeral-cache TTL on
+// every cache_control block this module emits. Prod default '5m' is
+// optimal for live sessions (one cache write amortises across the
+// next few minutes of turns). Dev/harness runs set SONNET_CACHE_TTL=1h
+// so cached prefixes survive across the whole scenario suite — the
+// per-1h write cost (2× base) is paid once and recouped after ~10
+// cache reads (each at 0.1× base). Anthropic API rejects unknown TTL
+// strings, so we clamp to the two known-good values; unknown input
+// falls back to '5m'.
+const CACHE_TTL_RAW = (process.env.SONNET_CACHE_TTL || '5m').trim();
+const CACHE_TTL = CACHE_TTL_RAW === '1h' ? '1h' : '5m';
+
 // RULE 6 correction lead-in phrases — if Sonnet emits an observation whose
 // observation_text starts with one of these, treat it as an *edit* of the
 // most-recent matching observation rather than a new one. This rides
@@ -1668,7 +1680,11 @@ export class EICRExtractionSession {
             {
               role: 'user',
               content: [
-                { type: 'text', text: snapshot, cache_control: { type: 'ephemeral', ttl: '5m' } },
+                {
+                  type: 'text',
+                  text: snapshot,
+                  cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
+                },
               ],
             },
             { role: 'assistant', content: [{ type: 'text', text: '{"acknowledged": true}' }] }
@@ -1678,7 +1694,11 @@ export class EICRExtractionSession {
       messages.push({ role: 'user', content: [{ type: 'text', text: '[keepalive]' }] });
 
       const response = await this.client.messages.create({
-        model: 'claude-sonnet-4-6',
+        // SONNET_EXTRACT_MODEL must match the other call sites in this
+        // file AND stage6-shadow-harness.js SHADOW_MODEL — Anthropic
+        // prompt cache is keyed by model, so a split here would make
+        // every keepalive miss the cache it's meant to warm.
+        model: (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim(),
         max_tokens: 1,
         system: this.buildSystemBlocks(),
         messages,
@@ -2017,7 +2037,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: userMessage,
-            cache_control: { type: 'ephemeral', ttl: '5m' },
+            cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
           },
         ],
       },
@@ -2270,7 +2290,11 @@ export class EICRExtractionSession {
     // Build request params. Tools + tool_choice are included only when the
     // caller opts in, so keepalive / non-extraction calls stay cheap.
     const requestParams = {
-      model: 'claude-sonnet-4-6',
+      // SONNET_EXTRACT_MODEL must match the keepalive call site above
+      // AND stage6-shadow-harness.js SHADOW_MODEL — prompt cache is
+      // keyed by model. Default kept as the production Sonnet model so
+      // unsetting the var is a no-op rollback.
+      model: (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim(),
       max_tokens: maxTokens,
       system,
       messages,
@@ -2446,7 +2470,7 @@ export class EICRExtractionSession {
     const base = {
       type: 'text',
       text: this.systemPrompt,
-      cache_control: { type: 'ephemeral', ttl: '5m' },
+      cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
     };
     if (this.toolCallsMode === 'off') return [base];
 
@@ -2463,14 +2487,14 @@ export class EICRExtractionSession {
         blocks.push({
           type: 'text',
           text: prefix,
-          cache_control: { type: 'ephemeral', ttl: '5m' },
+          cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
         });
       }
       if (tail !== '') {
         blocks.push({
           type: 'text',
           text: tail,
-          cache_control: { type: 'ephemeral', ttl: '5m' },
+          cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
         });
       }
       return blocks;
@@ -2484,7 +2508,7 @@ export class EICRExtractionSession {
       {
         type: 'text',
         text: snapshot,
-        cache_control: { type: 'ephemeral', ttl: '5m' },
+        cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
       },
     ];
   }
@@ -2519,7 +2543,7 @@ export class EICRExtractionSession {
       if (snapshot) {
         const snapshotBlock = { type: 'text', text: snapshot };
         if (snapshot === this._lastSnapshotText) {
-          snapshotBlock.cache_control = { type: 'ephemeral', ttl: '5m' };
+          snapshotBlock.cache_control = { type: 'ephemeral', ttl: CACHE_TTL };
         }
         this._lastSnapshotText = snapshot;
 
@@ -3522,7 +3546,7 @@ export class EICRExtractionSession {
           {
             type: 'text',
             text: reviewMessage,
-            cache_control: { type: 'ephemeral', ttl: '5m' },
+            cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
           },
         ],
       },

@@ -106,7 +106,14 @@ import { FIELD_CORRECTIONS } from './field-name-corrections.js';
  * eicr-extraction-session.js:365,823. If the session ever takes a configurable
  * model, thread it through here.
  */
-const SHADOW_MODEL = 'claude-sonnet-4-6';
+// 2026-06-01 — harness-cost work: a single env var unifies the extraction
+// model across keepalive (eicr-extraction-session.js:1681), main
+// extraction (line 2273) and the stage6 tool loop here. Same default as
+// production; harness runs set SONNET_EXTRACT_MODEL=claude-haiku-4-5 to
+// drop costs ~10×. The keepalive at the other two sites uses the SAME
+// env var on purpose — the prompt cache is keyed by model, so the three
+// call sites MUST agree or the cache misses every turn.
+const SHADOW_MODEL = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
 
 /**
  * Bug-H fix (2026-04-28) — rewrite Stage 6 per-turn observations into the
