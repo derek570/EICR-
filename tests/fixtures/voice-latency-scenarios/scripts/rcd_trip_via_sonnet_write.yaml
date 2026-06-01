@@ -1,0 +1,114 @@
+name: rcd_trip_via_sonnet_write
+suite: scripts
+description: |
+  RCD symmetric of rcbo_bs_via_sonnet_write — pins
+  `tryEnterScriptFromWrites` for the RCD schema. Codex review
+  2026-06-01 flagged that "RCD trip time 25 ms for the cooker"
+  matches the RCD trigger (`\bRCD\b` in rcd.js:107) and the engine
+  pre-empts. Use a transcript that omits the literal "RCD" word.
+
+  Transcript: "Trip time 25 ms for circuit 3." — has "trip time"
+  but no `\bRCD\b` literal, so no script trigger matches and Sonnet
+  runs. Sonnet should emit `record_reading(rcd_time_ms=25,
+  circuit=3)` from the trip-time + ms context. The canonical name
+  gets rewritten to legacy `rcd_trip_time` by validateAndCorrectFields.
+
+  Post-write:
+    1. tryEnterScriptFromWrites iterates schemas; RCD has
+       rcd_trip_time slot (legacy form — the schema uses the legacy
+       name directly). Alias resolution via FIELD_CORRECTIONS maps
+       Sonnet's canonical `rcd_time_ms` → `rcd_trip_time`. Match.
+    2. Seed loop fills rcd_trip_time. No derivations on this slot,
+       so applyDerivations no-ops.
+    3. nextMissingSlot skips rcd_trip_time (volunteeredOnly +
+       filled) and returns rcd_bs_en. Engine asks "What's the BS
+       number? Or do you want to fill that in later?".
+    4. Inspector "BS EN 61008." → fills rcd_bs_en. Derivation
+       gated on '61009' doesn't fire (value is '61008'). Engine
+       asks rcd_type.
+    5. Inspector "AC." → fills rcd_type. Engine asks
+       rcd_operating_current_ma.
+    6. Inspector "30." → fills rcd_operating_current_ma. All three
+       RCD device fields filled.
+    7. Engine fires `postCompletionAsk` ("Apply these RCD details
+       to any other circuits? Say 'all' or a range like '1 to 6'.")
+       — see rcd.js:218-222. context_field is null on this ask.
+    8. Inspector "No." → declines the bulk-apply, script finishes.
+
+  Total: 4 asks (BS, type, mA, bulk-apply), 4 readings
+  (rcd_trip_time + rcd_bs_en + rcd_type + rcd_operating_current_ma).
+
+  Bug-pin parallel: scenario asserts each ask's `context_field` so a
+  regression that re-asks an already-filled slot (e.g. rcd_trip_time)
+  fails the per-ask field check.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    # Deliberately omits "RCD" so the rcd.js trigger does not match
+    # and Sonnet runs. "trip time" alone is not a trigger word.
+    text: "Trip time 25 ms for circuit 3."
+    isFinal: true
+  - at_ms: 7000
+    text: "BS EN 61008."
+    isFinal: true
+  - at_ms: 13000
+    text: "AC."
+    isFinal: true
+  - at_ms: 18000
+    text: "30."
+    isFinal: true
+  - at_ms: 24000
+    # Decline the bulk-apply prompt so the script finishes cleanly
+    # instead of timing out on a pending ask.
+    text: "No."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    # `rcd_trip_time` is in KNOWN_FIELDS so it stays as-is on the
+    # wire (Sonnet may emit either canonical `rcd_time_ms` or
+    # legacy `rcd_trip_time`; validateAndCorrectFields rewrites
+    # the former).
+    - circuit: 3
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 3
+      field: rcd_bs_en
+      value: "BS EN 61008"
+    - circuit: 3
+      field: rcd_type
+      value: "AC"
+    - circuit: 3
+      field: rcd_operating_current_ma
+      value: "30"
+  # Four asks: three slot asks + the bulk-apply prompt that fires
+  # after all three RCD device fields are filled.
+  ask_user_count: { min: 4, max: 4 }
+  ask_user:
+    - field: rcd_bs_en
+      text_matches: "BS number"
+    - field: rcd_type
+      text_matches: "RCD type"
+    - field: rcd_operating_current_ma
+      text_matches: "operating current"
+    # Bulk-apply ask: context_field is null (per
+    # wire-emit.js:50-60 'bulk_apply' kind).
+    - text_matches: "Apply these RCD details"
+
+config:
+  timeout_ms: 60000
+  drain_ms: 25000
+  fetch_tts: false

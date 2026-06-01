@@ -1,0 +1,102 @@
+name: ir_partial_via_sonnet_write
+suite: scripts
+description: |
+  IR-side symmetric of rcbo_bs_via_sonnet_write — pins the
+  `tryEnterScriptFromWrites` recovery path for the IR schema.
+
+  Codex review 2026-06-01 flagged that "IR L-to-L 200 megohms"
+  matches the IR dialogue trigger (`/\b(?:insulation|installation)
+  \s+(?:resistance|...)\b/`) AND the bare "ir + circuit" trigger,
+  pre-empting Sonnet. We must instead use a transcript that omits
+  the trigger words but still has enough context for Sonnet to write
+  `ir_live_live_mohm` via record_reading.
+
+  Transcript: "L to L for circuit 4 is 200 megohms." — no
+  "insulation" / "installation" / "IR + circuit" matches, so
+  `processDialogueTurn` returns `handled: false` and Sonnet runs.
+
+  Sonnet should emit `record_reading(ir_live_live_mohm=200,
+  circuit=4)` from the L-L + megohms context. The canonical field
+  name gets rewritten to legacy `insulation_resistance_l_l` by
+  `validateAndCorrectFields` (sonnet-stream.js:3902) BEFORE the WS
+  send, but tryEnterScriptFromWrites runs INSIDE runShadowHarness
+  on the canonical name and resolves via FIELD_CORRECTIONS aliases
+  back to the schema's canonical slot field.
+
+  Post-write:
+    1. tryEnterScriptFromWrites iterates schemas; IR has
+       ir_live_live_mohm slot → enters IR.
+    2. Seed loop fills ir_live_live_mohm. IR has no slot
+       derivations so applyDerivations is a no-op here.
+    3. nextMissingSlot returns ir_live_earth_mohm (slot order: L-L
+       → L-E → voltage).
+    4. Engine asks "What's the live-to-earth?".
+    5. Inspector replies ">299" — fills L-E.
+    6. Engine asks "What was the test voltage?".
+    7. Inspector replies "500 volts." — fills voltage. Script
+       finishes.
+
+  Critical: no ask should re-target ir_live_live_mohm (the L-L
+  value was Sonnet-written at entry; re-asking it would be the bug).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 4
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    # Deliberately omits "insulation" / "installation" / "IR" so the
+    # IR dialogue trigger does NOT match and Sonnet runs instead.
+    text: "L to L for circuit 4 is 200 megohms."
+    isFinal: true
+  - at_ms: 8000
+    # Answers ir_live_earth_mohm (the engine's first ask).
+    text: "Greater than 299."
+    isFinal: true
+  - at_ms: 14000
+    # Answers ir_test_voltage_v (the engine's second ask).
+    text: "500 volts."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Field-name shape splits by emission path (Codex review 2026-06-01):
+  #   - Turn 1's L-L value goes via Sonnet's record_reading →
+  #     validateAndCorrectFields rewrite → wire as legacy
+  #     `insulation_resistance_l_l`.
+  #   - Turns 2 + 3 emit via the dialogue engine's
+  #     `buildExtractionPayload` (wire-emit.js:163), which carries the
+  #     schema slot's `field` verbatim — CANONICAL
+  #     (`ir_live_earth_mohm`, `ir_test_voltage_v`). No rewrite step
+  #     runs on the script's direct WS sends.
+  has_reading:
+    - circuit: 4
+      field: insulation_resistance_l_l
+      value: "200"
+    - circuit: 4
+      field: ir_live_earth_mohm
+      value: ">299"
+    - circuit: 4
+      field: ir_test_voltage_v
+      value: "500"
+  # Exactly two asks: L-E then voltage. NOT a re-ask of L-L.
+  ask_user_count: { min: 2, max: 2 }
+  ask_user:
+    # context_field is the schema slot's canonical `field`.
+    - field: ir_live_earth_mohm
+      text_matches: "live[- ]to[- ]earth"
+    - field: ir_test_voltage_v
+      text_matches: "test voltage"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

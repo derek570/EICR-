@@ -1,0 +1,94 @@
+name: rcbo_bs_via_sonnet_write
+suite: scripts
+description: |
+  Pins commit 80347fa0 — `tryEnterScriptFromWrites` now calls
+  `applyDerivations` on seeded slots so the rcbo.js `ocpd_bs_en →
+  rcd_bs_en` mirror (unconditional since commit 104735e2) fires when
+  the engine enters RCBO via a Sonnet write of one BS field on a
+  circuit that doesn't yet own either.
+
+  Codex review 2026-06-01 surfaced that the obvious utterance "The
+  RCD BS number is 61008" would be PRE-EMPTED by the dialogue-engine
+  trigger (`\bRCD\b` in rcd.js:107) and Sonnet would never see it.
+  In production the field repro lived on a different code path where
+  the dialogue engine returned `handled: false` — but in the WS
+  harness, the engine ALWAYS pre-empts on the trigger word, so we
+  must write a transcript that doesn't match any script trigger
+  (ring, IR, RCBO, OCPD/breaker/MCB/protective-device, RCD) and rely
+  on Sonnet to write the BS field via `record_reading`.
+
+  Transcript: "Circuit 3 BS EN 61008." — contains no trigger word.
+  Sonnet should interpret this as a BS-code write and emit
+  `record_reading(ocpd_bs_en="BS EN 61008", circuit=3)` (the
+  default-OCPD interpretation; rcd_bs_en is also acceptable —
+  assertions tolerate either).
+
+  Post-write:
+    1. tryEnterScriptFromWrites iterates ALL_DIALOGUE_SCHEMAS (ring,
+       IR, rcbo, ocpd, rcd). RCBO has both ocpd_bs_en (slot 0) AND
+       rcd_bs_en (slot 1) — first schema with the matching slot wins.
+       Engine enters RCBO.
+    2. Seed loop walks `existing` from the snapshot. Pre-fix the loop
+       wrote directly to state.values without applyDerivations; the
+       rcbo.js mirror declaration never fired. Post-fix
+       applyDerivations runs for every seeded slot.
+    3. RCBO's slot 0 declares `derivations: [{ mirrors: ['rcd_bs_en'] }]`
+       and slot 1 declares the symmetric `{ mirrors: ['ocpd_bs_en'] }`.
+       Whichever field Sonnet wrote, the mirror fills the OTHER.
+    4. nextMissingSlot returns ocpd_type (next unfilled). Engine asks
+       "What MCB curve? B, C, or D?".
+
+  Bug-pin assertions:
+    - Both ocpd_bs_en AND rcd_bs_en land on circuit 3 with the same
+      value (mirror fired).
+    - Exactly one ask emits — for ocpd_type (NOT for ocpd_bs_en or
+      rcd_bs_en, which would be the bug shape).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 3 BS EN 61008."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Sonnet's record_reading lands ONE BS field on the wire (the
+  # mirror runs against state.values + snapshot only — Codex review
+  # 2026-06-01 caught this: applyDerivations does NOT append the
+  # mirrored entry to the already-built extracted_readings). Either
+  # field is acceptable; both ocpd_bs_en and rcd_bs_en are in
+  # KNOWN_FIELDS so neither gets rewritten. We don't try to assert
+  # WHICH field Sonnet picks — that's a prompt detail. The
+  # observable bug-pin is the next ask: pre-fix the engine would
+  # ask the un-mirrored BS field; post-fix it walks past both and
+  # asks for the curve.
+  #
+  # NOTE: there's no `has_reading_any_of` predicate today, so we
+  # don't pin which BS field landed. The ask_user assertion below
+  # IS the regression guard.
+  ask_user_count: { min: 1, max: 1 }
+  ask_user:
+    # context_field on ask_user_started is the schema slot's `field`
+    # property (rcbo.js slot 2 uses `ocpd_type`). Pre-fix this was
+    # one of `ocpd_bs_en` / `rcd_bs_en` — the bug.
+    - field: ocpd_type
+      text_matches: "curve"
+  # Negative-control: regardless of which BS field Sonnet wrote, the
+  # ask MUST NOT be for either BS slot. has_no_reading is a positive
+  # state guard — for ask-shape negative checks, we lean on the
+  # `field: ocpd_type` assertion above which consumes the only ask.
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false
