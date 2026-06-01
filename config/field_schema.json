@@ -278,9 +278,9 @@
     "afdd_button_confirmed": {
       "label": "AFDD Test Button",
       "type": "select",
-      "options": ["", "OK", "Y", "N"],
+      "options": ["", "OK", "FAIL", "N/A", "Y", "N"],
       "description": "AFDD test button operation confirmed",
-      "ai_guidance": "AFDD test button checked and working (if AFDD fitted). 'OK' or 'Y' for pass. Leave blank if no AFDD.",
+      "ai_guidance": "AFDD test button checked and working (if AFDD fitted). 'OK' or 'Y' for pass, 'FAIL' or 'N' for fail. Blank / 'N/A' if no AFDD is fitted on this circuit — iOS renders blank as 'N/A' retroactively, so leaving blank is the same as N/A.",
       "pdf_column": "AFDD btn",
       "group": "Test Results"
     },
