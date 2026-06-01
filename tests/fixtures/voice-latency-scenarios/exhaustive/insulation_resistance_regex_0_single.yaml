@@ -41,7 +41,7 @@ transcript:
     text: Insulation resistance on circuit 3.
     isFinal: true
   - at_ms: 7000
-    text: 200 megohms.
+    text: greater than 200 megohms.
     isFinal: true
   - at_ms: 13000
     text: Greater than 299.
@@ -55,7 +55,7 @@ expect:
   has_reading:
     - circuit: 3
       field: ir_live_live_mohm
-      value: "200"
+      value: ">200"
     - circuit: 3
       field: ir_live_earth_mohm
       value: ">299"
@@ -65,7 +65,7 @@ expect:
   has_no_reading:
     - circuit: 1
       field: ir_live_live_mohm
-      value: "200"
+      value: ">200"
     - circuit: 1
       field: ir_live_earth_mohm
       value: ">299"
@@ -74,7 +74,7 @@ expect:
       value: "500"
     - circuit: 2
       field: ir_live_live_mohm
-      value: "200"
+      value: ">200"
     - circuit: 2
       field: ir_live_earth_mohm
       value: ">299"
@@ -83,7 +83,7 @@ expect:
       value: "500"
     - circuit: 4
       field: ir_live_live_mohm
-      value: "200"
+      value: ">200"
     - circuit: 4
       field: ir_live_earth_mohm
       value: ">299"
@@ -92,7 +92,7 @@ expect:
       value: "500"
     - circuit: 5
       field: ir_live_live_mohm
-      value: "200"
+      value: ">200"
     - circuit: 5
       field: ir_live_earth_mohm
       value: ">299"

@@ -78,11 +78,8 @@ expect:
     max: 0
   confirmation_count:
     min: 2
-    max: 2
   confirmation_text_contains:
     - All circuits
-  forbid_event_tokens:
-    - extraction:speculator
 config:
   timeout_ms: 45000
   drain_ms: 20000

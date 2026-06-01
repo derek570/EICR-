@@ -39,7 +39,7 @@ job_state:
       ocpd_type: B
 transcript:
   - at_ms: 0
-    text: For circuit 3, L to L 200 megohms, L to E greater than 299 megohms.
+    text: For circuit 3, L to L greater than 200 megohms, L to E greater than 299 megohms.
     isFinal: true
   - at_ms: 7000
     text: 500 volts.
@@ -50,7 +50,7 @@ expect:
   has_reading:
     - circuit: 3
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 3
       field: insulation_resistance_l_e
       value: ">299"
@@ -60,7 +60,7 @@ expect:
   has_no_reading:
     - circuit: 1
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 1
       field: insulation_resistance_l_e
       value: ">299"
@@ -69,7 +69,7 @@ expect:
       value: "500"
     - circuit: 2
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 2
       field: insulation_resistance_l_e
       value: ">299"
@@ -78,7 +78,7 @@ expect:
       value: "500"
     - circuit: 4
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 4
       field: insulation_resistance_l_e
       value: ">299"
@@ -87,7 +87,7 @@ expect:
       value: "500"
     - circuit: 5
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 5
       field: insulation_resistance_l_e
       value: ">299"

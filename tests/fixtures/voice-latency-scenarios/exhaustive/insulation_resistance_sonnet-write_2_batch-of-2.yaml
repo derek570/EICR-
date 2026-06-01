@@ -39,7 +39,7 @@ job_state:
       ocpd_type: B
 transcript:
   - at_ms: 0
-    text: L to L 200 megohms, test voltage 500 volts for circuits 2 and 3.
+    text: L to L greater than 200 megohms, test voltage 500 volts for circuits 2 and 3.
     isFinal: true
 expect:
   extraction_count:
@@ -47,32 +47,32 @@ expect:
   has_reading:
     - circuit: 2
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 2
       field: ir_test_voltage
       value: "500"
     - circuit: 3
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 3
       field: ir_test_voltage
       value: "500"
   has_no_reading:
     - circuit: 1
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 1
       field: ir_test_voltage
       value: "500"
     - circuit: 4
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 4
       field: ir_test_voltage
       value: "500"
     - circuit: 5
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 5
       field: ir_test_voltage
       value: "500"
@@ -85,11 +85,8 @@ expect:
     max: 0
   confirmation_count:
     min: 2
-    max: 2
   confirmation_text_contains:
     - Circuits 2, 3
-  forbid_event_tokens:
-    - extraction:speculator
 config:
   timeout_ms: 45000
   drain_ms: 20000

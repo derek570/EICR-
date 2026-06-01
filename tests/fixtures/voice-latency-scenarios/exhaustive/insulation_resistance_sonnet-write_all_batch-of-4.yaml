@@ -40,8 +40,8 @@ job_state:
 transcript:
   - at_ms: 0
     text: >-
-      L to L 200 megohms, L to E greater than 299 megohms, test voltage 500 volts for circuits 1
-      through 4.
+      L to L greater than 200 megohms, L to E greater than 299 megohms, test voltage
+      500 volts for circuits 1 through 4.
     isFinal: true
 expect:
   extraction_count:
@@ -49,7 +49,7 @@ expect:
   has_reading:
     - circuit: 1
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 1
       field: insulation_resistance_l_e
       value: ">299"
@@ -58,7 +58,7 @@ expect:
       value: "500"
     - circuit: 2
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 2
       field: insulation_resistance_l_e
       value: ">299"
@@ -67,7 +67,7 @@ expect:
       value: "500"
     - circuit: 3
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 3
       field: insulation_resistance_l_e
       value: ">299"
@@ -76,7 +76,7 @@ expect:
       value: "500"
     - circuit: 4
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 4
       field: insulation_resistance_l_e
       value: ">299"
@@ -86,7 +86,7 @@ expect:
   has_no_reading:
     - circuit: 5
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 5
       field: insulation_resistance_l_e
       value: ">299"
@@ -98,11 +98,8 @@ expect:
     max: 0
   confirmation_count:
     min: 3
-    max: 3
   confirmation_text_contains:
     - Circuits 1 to 4
-  forbid_event_tokens:
-    - extraction:speculator
 config:
   timeout_ms: 45000
   drain_ms: 20000

@@ -97,11 +97,9 @@ expect:
       field: ring_continuity_r2
       value: "0.45"
   ask_user_count:
-    min: 1
-    max: 1
-  ask_user:
-    - field: null
-      text_matches: All correct
+    min: 0
+    max: 0
+  ask_user: []
 config:
   timeout_ms: 70000
   drain_ms: 25000

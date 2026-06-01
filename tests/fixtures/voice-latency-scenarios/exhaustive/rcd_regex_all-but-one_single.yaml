@@ -14,28 +14,18 @@ job_state:
     - number: 1
       board_id: main
       designation: Lighting
-      ocpd_rating_a: 6
-      ocpd_type: B
     - number: 2
       board_id: main
       designation: Kitchen Sockets
-      ocpd_rating_a: 32
-      ocpd_type: B
     - number: 3
       board_id: main
       designation: Cooker
-      ocpd_rating_a: 32
-      ocpd_type: B
     - number: 4
       board_id: main
       designation: Shower
-      ocpd_rating_a: 40
-      ocpd_type: B
     - number: 5
       board_id: main
       designation: Outside Lights
-      ocpd_rating_a: 6
-      ocpd_type: B
 transcript:
   - at_ms: 0
     text: RCD on circuit 3, trip time 25 ms, BS EN 61008, type AC.
