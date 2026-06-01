@@ -1,0 +1,72 @@
+name: ze_restate_existing_value
+suite: confirmation
+description: |
+  Backend-side scaffold parallel to ze_first_time_voice_confirmed,
+  covering the same-value restate case. iOS commit aed1d06 marks
+  Sonnet-restated pre-existing values as voice-confirmed; that
+  fix lives on the iOS state (`fieldSources`,
+  `originallyPreExistingKeys`) and the WS harness cannot observe it.
+
+  Backend contract under test: when the inspector says "Ze is 0.86"
+  against a job state where boards[0].ze is ALREADY "0.86", the
+  backend still emits a `record_board_reading` write and an
+  accompanying confirmation. The bundler treats this as a real write
+  (same-turn correction semantics: most recent write wins, no
+  no-op skip for same-value), and synthesiseConfirmations builds
+  a board-level confirmation for it.
+
+  If a future backend optimisation suppresses confirmation emission
+  on same-value board writes, the iOS fix in aed1d06 becomes
+  load-bearing — surface that change here as a test failure.
+
+  iOS-side regression for the aed1d06 fix is a manual TestFlight
+  check (LiveFillView green flash + fieldSources update), not a
+  harness assertion.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  # Supply-level Ze lives in `jobState.supply` per
+  # eicr-extraction-session.js:1451-1460 — the seeder writes
+  # `supply.earthLoopImpedanceZe || supply.ze` into
+  # `stateSnapshot.circuits[0].ze`. Putting `ze` on `boards[0]` was
+  # the original draft (Codex round-4 caught it 2026-06-01): the
+  # backend never reads it from there and the scenario silently
+  # devolves to the first-time write case.
+  supply:
+    ze: "0.86"
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Ze is 0.86."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    # Legacy `ze` after validateAndCorrectFields rewrite — see
+    # sibling ze_first_time_voice_confirmed.yaml for the rationale.
+    - circuit: 0
+      field: ze
+      value: "0.86"
+  ask_user_count: { max: 0 }
+  # Same emission as the first-time case — bundler doesn't dedupe
+  # same-value board writes. No max bound (Codex review 2026-06-01)
+  # because LB-on runs add the speculator's preview envelope.
+  confirmation_count: { min: 1 }
+  confirmation_text_contains:
+    - "Ze"
+  tts_fetch_count: { min: 1 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: true

@@ -1,0 +1,78 @@
+name: circuits_2_and_3_list
+suite: bulk
+description: |
+  Pins the prompt change in commit 80347fa0 (BULK OPERATIONS section
+  widened): a list like "circuits 2 and 3 are 0.13" is a MULTI-CIRCUIT
+  LIST, not a single reading. Sonnet must emit ONE record_reading per
+  circuit — not collapse to one. Field repros mid-2026-05 reported
+  "circuits 2 and 3" landing on only one circuit.
+
+  This is distinct from the broadcast guard (all_circuits_ir_broadcast)
+  because the engine's broadcast-intent regex requires the literal
+  "all circuits" phrasing. A two-element list bypasses the broadcast
+  guard but should still produce two writes — Sonnet's tool surface,
+  not the engine.
+
+  No grouped confirmation is asserted: the bundler's
+  buildGroupedConfirmationText currently rejects (returns null) when
+  the group size is < 3 (existing implementation as of 2026-06-01).
+  So two per-circuit confirmations is the expected wire shape. The
+  test does NOT pin this — a future widening to group at size ≥ 2 is
+  fine — but neither does it assert one confirmation, to avoid
+  brittling on the threshold.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Insulation L to L 200 megohms for circuits 2 and 3."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # TWO readings — one per circuit. Not one collapsed reading.
+  has_reading:
+    - circuit: 2
+      field: insulation_resistance_l_l
+      value: "200"
+    - circuit: 3
+      field: insulation_resistance_l_l
+      value: "200"
+  # Negative-control: circuit 1 MUST NOT have 200 written. If
+  # Sonnet (or a future broadcast detector regression) widens the
+  # write to a broadcast, circuit 1 would also land 200 and the
+  # bug-pin should fail (Codex review 2026-06-01).
+  has_no_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: "200"
+  ask_user_count: { max: 0 }
+  # At least 1 confirmation. We don't pin the exact number to avoid
+  # brittling on the size-≥-3 grouping threshold in
+  # buildGroupedConfirmationText.
+  confirmation_count: { min: 1 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

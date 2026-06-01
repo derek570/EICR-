@@ -1,0 +1,91 @@
+name: all_circuits_ir_broadcast
+suite: bulk
+description: |
+  Pins commit 1f53da39 — broadcast-intent guard on Sonnet-initiated
+  start_dialogue_script. With 4 non-spare circuits, the inspector
+  says "Insulation resistance for all circuits live to live greater
+  than 299." The dialogue-engine pre-filter
+  (`processDialogueTurn`) recognises the broadcast intent
+  ("dialogue_broadcast_bypassed_entry") and refuses to enter the IR
+  walk-through for any single circuit. Defensively, if Sonnet still
+  calls `start_dialogue_script(ir)` the dispatcher must reject with
+  `broadcast_intent_detected`. Sonnet then retries with
+  `set_field_for_all_circuits(insulation_resistance_l_l, ">299",
+  scope=non_spare)` — the legitimate broadcast tool — and four
+  readings land.
+
+  Grouped-confirmation pin (commit 13fb179f): the bundler must collapse
+  the 4 per-circuit confirmations into ONE grouped TTS line ("All
+  circuits, IR L to L greater than 299") rather than picking one
+  random circuit. Pre-fix the speculator picked the first per-circuit
+  confirmation it saw, surfacing "Circuit 4, IR L to L >299" while
+  the other 3 were silent — UX disaster.
+
+  Asserts:
+    - 4 record_reading equivalents on circuits 1..4 (legacy
+      `insulation_resistance_l_l = ">299"` post field-correction
+      rewrite).
+    - Exactly ONE grouped confirmation; the speculator MUST NOT have
+      raced ahead with a single-circuit confirmation.
+    - ZERO asks (broadcast bypassed entry — no walk-through).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Insulation resistance for all circuits live to live greater than 299."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: ">299"
+    - circuit: 2
+      field: insulation_resistance_l_l
+      value: ">299"
+    - circuit: 3
+      field: insulation_resistance_l_l
+      value: ">299"
+    - circuit: 4
+      field: insulation_resistance_l_l
+      value: ">299"
+  ask_user_count: { max: 0 }
+  # Exactly ONE confirmation (the grouped form) — the bundler's
+  # synthesiseConfirmations group-by-(field,value,board_id) collapse.
+  # If a regression brings back per-circuit confirmations, the count
+  # jumps to 4 and this fails fast.
+  confirmation_count: { min: 1, max: 1 }
+  confirmation_text_contains:
+    - "All circuits"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false
