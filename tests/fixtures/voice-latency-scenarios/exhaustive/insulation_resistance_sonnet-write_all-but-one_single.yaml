@@ -1,0 +1,106 @@
+name: insulation_resistance_sonnet-write_all-but-one_single
+suite: exhaustive
+description: >-
+  Insulation resistance SONNET-WRITE all-but-one value scenario for circuit 3.
+
+  The entry transcript avoids dialogue trigger words; Sonnet writes the volunteered slot values and
+  tryEnterScriptFromWrites either enters the single-circuit script or skips multi-circuit batch
+  writes.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Outside Lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+transcript:
+  - at_ms: 0
+    text: For circuit 3, L to L 200 megohms, L to E greater than 299 megohms.
+    isFinal: true
+  - at_ms: 7000
+    text: 500 volts.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 3
+      field: insulation_resistance_l_l
+      value: "200"
+    - circuit: 3
+      field: insulation_resistance_l_e
+      value: ">299"
+    - circuit: 3
+      field: ir_test_voltage_v
+      value: "500"
+  has_no_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: "200"
+    - circuit: 1
+      field: insulation_resistance_l_e
+      value: ">299"
+    - circuit: 1
+      field: ir_test_voltage_v
+      value: "500"
+    - circuit: 2
+      field: insulation_resistance_l_l
+      value: "200"
+    - circuit: 2
+      field: insulation_resistance_l_e
+      value: ">299"
+    - circuit: 2
+      field: ir_test_voltage_v
+      value: "500"
+    - circuit: 4
+      field: insulation_resistance_l_l
+      value: "200"
+    - circuit: 4
+      field: insulation_resistance_l_e
+      value: ">299"
+    - circuit: 4
+      field: ir_test_voltage_v
+      value: "500"
+    - circuit: 5
+      field: insulation_resistance_l_l
+      value: "200"
+    - circuit: 5
+      field: insulation_resistance_l_e
+      value: ">299"
+    - circuit: 5
+      field: ir_test_voltage_v
+      value: "500"
+  ask_user_count:
+    min: 1
+    max: 1
+  ask_user:
+    - field: ir_test_voltage_v
+      text_matches: test voltage
+config:
+  timeout_ms: 70000
+  drain_ms: 25000
+  fetch_tts: false
