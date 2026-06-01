@@ -1,0 +1,57 @@
+name: installation_address_asks_for_client
+suite: address
+description: |
+  Pins commit eff80433 — prompt change: ambiguous address defaults
+  to the INSTALLATION address, then asks "Use the same address for
+  the client?". Pre-fix the model sometimes wrote the installation
+  address into BOTH installation AND client fields without asking,
+  silently filling client_address from a single utterance about the
+  installation. Pre-fix this surfaced as "I never told the system the
+  client lived at the same place" — the inspector had to manually
+  delete the unintended client_address.
+
+  Post-fix: Sonnet writes the installation address (town/postcode/
+  full address), then emits ONE ask_user with
+  context_field=client_address and the question text containing
+  "Use the same address for the client?" The inspector's answer
+  determines whether client_address is copied.
+
+  This scenario verifies the ASK fires, not the answer flow — that's
+  a separate scenario. Pre-fix the ask would not fire at all.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "The address is 12 Catherine Street Reading RG1 5QA."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Installation address fields land at circuit:0.
+  has_reading:
+    - circuit: 0
+      field: postcode
+      value: "RG1 5QA"
+  # Exactly one ask — for client_address. context_field per the
+  # backend's ask_user dispatcher (stage6-tool-schemas widens the
+  # enum to include client_address).
+  ask_user_count: { min: 1, max: 1 }
+  ask_user:
+    - field: client_address
+      text_matches: "use the same address for the client"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

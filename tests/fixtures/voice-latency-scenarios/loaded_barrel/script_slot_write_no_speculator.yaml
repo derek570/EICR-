@@ -1,0 +1,103 @@
+name: script_slot_write_no_speculator
+suite: loaded_barrel
+description: |
+  Architectural assertion: Loaded Barrel does NOT directly touch
+  dialogue scripts. The speculator hooks (`onSnapshotPatch`,
+  `onToolUseStreamed`) filter on `record_reading` /
+  `record_board_reading`. Dialogue-engine writes go through
+  `helpers/snapshot-write.js` `applyWrite` which mutates
+  `session.stateSnapshot` + `state.values` directly — NOT
+  `perTurnWrites`. So script-internal slot fills should NEVER trigger
+  the speculator.
+
+  This is the answer to Derek's "does loaded barrel break scripts?"
+  question. If a future refactor accidentally routes `applyWrite`
+  through `perTurnWrites` (e.g. to unify the same-turn-correction
+  semantics), the speculator would start firing on mid-script slot
+  writes — surfacing TTS read-backs for half-filled scripts.
+
+  Scenario: trigger an RCD walk-through ("RCD on circuit 3"), then
+  let the engine ask + the inspector answer "BS EN 61008", "AC",
+  "30". After all three RCD device slots fill, the engine fires its
+  postCompletionAsk ("Apply these RCD details to any other
+  circuits?"). Inspector says "No." to decline.
+
+  Codex review 2026-06-01 surfaced two count miscounts in the
+  original draft:
+    - extraction_count was 4-6 but trigger-only turn 1 emits NO
+      extraction (only an ask). Reply turns 2-4 each emit one
+      extraction envelope. So 3 extraction envelopes total.
+    - ask_user_count was 3 but RCD's postCompletionAsk fires after
+      mA, so 4 asks (BS, type, mA, bulk-apply).
+
+  The architectural pin is the `forbid_event_tokens:
+  [extraction:speculator]` assertion — that ZERO speculator preview
+  envelopes appear across any of these turns. If a regression
+  routes applyWrite writes through perTurnWrites, the speculator's
+  onSnapshotPatch hook will see the script-internal fills and emit
+  a mid_stream_preview extraction envelope — this assertion catches
+  it.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    # Trigger only — engine enters RCD, asks rcd_bs_en. No
+    # record_reading dispatched, no extraction envelope.
+    text: "RCD on circuit 3."
+    isFinal: true
+  - at_ms: 6000
+    text: "BS EN 61008."
+    isFinal: true
+  - at_ms: 12000
+    text: "AC."
+    isFinal: true
+  - at_ms: 17000
+    text: "30."
+    isFinal: true
+  - at_ms: 22000
+    # Decline the bulk-apply prompt to finish the script cleanly.
+    text: "No."
+    isFinal: true
+
+expect:
+  # Three extraction envelopes from the three reply turns that
+  # carry slot writes. Bulk-apply decline doesn't write any new
+  # slot value and the trigger-only turn 1 writes nothing.
+  extraction_count: { min: 3, max: 3 }
+  has_reading:
+    - circuit: 3
+      field: rcd_bs_en
+      value: "BS EN 61008"
+    - circuit: 3
+      field: rcd_type
+      value: "AC"
+    - circuit: 3
+      field: rcd_operating_current_ma
+      value: "30"
+  # Four asks: BS, type, mA, bulk-apply.
+  ask_user_count: { min: 4, max: 4 }
+  # PRIMARY regression guard: the speculator NEVER fires on a
+  # script-internal slot fill. Pre-fix (if applyWrite were routed
+  # through perTurnWrites) onSnapshotPatch would emit
+  # mid_stream_preview extraction envelopes.
+  forbid_event_tokens:
+    - extraction:speculator
+  # Defence in depth: at least one bundler envelope arrives.
+  event_ordering:
+    - extraction:bundler
+
+config:
+  timeout_ms: 60000
+  drain_ms: 25000
+  fetch_tts: false

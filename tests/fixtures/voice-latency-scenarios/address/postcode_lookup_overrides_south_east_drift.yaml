@@ -1,0 +1,81 @@
+name: postcode_lookup_overrides_south_east_drift
+suite: address
+description: |
+  End-state pin for the postcode address flow that commit db85f825
+  was meant to fix. Codex review 2026-06-01 surfaced an important
+  architectural caveat: `applyPostcodeLookupToSnapshot` is wired
+  ONLY from `_extractSingle` in eicr-extraction-session.js. In live
+  mode (SONNET_TOOL_CALLS=live, the production setting), the
+  shadow-harness's `runLiveMode` never calls `extractFromUtterance`,
+  so the lookup never runs. The commit's fix therefore only takes
+  effect in shadow / off modes — meaning the WS harness against
+  prod-shape (live mode) cannot test the override directly.
+
+  What this scenario CAN pin: the user-visible end state of town
+  and county on a clean postcode transcript. If Sonnet drifts to
+  "South East" (the ITL1 region) instead of "Berkshire" (the admin
+  county), this fails. That's the user-facing symptom the field
+  reports flagged — even if the structural fix that closed it lives
+  in a different code path.
+
+  Documenting this caveat as a follow-up for Derek: the live-mode
+  postcode lookup wiring is missing (or my read of the code is
+  wrong). Either way, this scenario surfaces drift behavior in
+  whatever the live-mode path actually does. The negative-control
+  on TTS / confirmation text ("South East" must never appear) is
+  the tightest assertion available without backend wiring changes.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "The address is 12 Catherine Street Reading RG1 5QA."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Installation address fields fold into extracted_readings as
+  # circuit:0 entries (via the board-reading fold in
+  # stage6-shadow-harness.js). town and county are both in
+  # KNOWN_FIELDS so they stay canonical on the wire.
+  has_reading:
+    - circuit: 0
+      field: town
+      value: "Reading"
+    - circuit: 0
+      field: county
+      value: "Berkshire"
+    - circuit: 0
+      field: postcode
+      value: "RG1 5QA"
+  # NOTE: we DO NOT assert ask_user_count here. This scenario uses the
+  # same transcript as installation_address_asks_for_client.yaml, and
+  # that sibling scenario already pins the "Use the same address for
+  # the client?" ask — which IS expected to fire on this transcript
+  # post-eff80433. Asserting max:0 here would conflict with the
+  # sibling. This scenario's scope is the postcode→town/county
+  # override (commit db85f825); the ask is a separate concern pinned
+  # elsewhere.
+  # Negative-control on TTS text: if the override fires, the
+  # confirmation will speak the corrected values, not the drift.
+  # If the override regresses, the TTS may speak "South East" —
+  # this catches it.
+  tts_text_not_contains:
+    - "South East"
+  confirmation_text_not_contains:
+    - "South East"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: true
