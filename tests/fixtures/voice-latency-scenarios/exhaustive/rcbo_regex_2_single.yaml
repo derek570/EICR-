@@ -1,0 +1,171 @@
+name: rcbo_regex_2_single
+suite: exhaustive
+description: >-
+  RCBO REGEX 2 value walk-through for circuit 3.
+
+  Dialogue-engine trigger pre-empts Sonnet, harvests entry values with the schema named extractors,
+  and asks only for remaining script slots.
+
+  RCBO BS mirroring is state-only here: rcd_bs_en must not appear as an extracted reading unless
+  Sonnet explicitly writes it.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Outside Lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+transcript:
+  - at_ms: 0
+    text: RCBO on circuit 3, BS EN 61009, curve B.
+    isFinal: true
+  - at_ms: 7000
+    text: 32 amps.
+    isFinal: true
+  - at_ms: 13000
+    text: 6 kA.
+    isFinal: true
+  - at_ms: 19000
+    text: Type A.
+    isFinal: true
+  - at_ms: 25000
+    text: 30 mA.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 3
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 3
+      field: ocpd_type
+      value: B
+    - circuit: 3
+      field: ocpd_rating_a
+      value: "32"
+    - circuit: 3
+      field: ocpd_breaking_capacity_ka
+      value: "6"
+    - circuit: 3
+      field: rcd_type
+      value: A
+    - circuit: 3
+      field: rcd_operating_current_ma
+      value: "30"
+  has_no_reading:
+    - circuit: 1
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 1
+      field: ocpd_type
+      value: B
+    - circuit: 1
+      field: ocpd_rating_a
+      value: "32"
+    - circuit: 1
+      field: ocpd_breaking_capacity_ka
+      value: "6"
+    - circuit: 1
+      field: rcd_type
+      value: A
+    - circuit: 1
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 2
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 2
+      field: ocpd_type
+      value: B
+    - circuit: 2
+      field: ocpd_rating_a
+      value: "32"
+    - circuit: 2
+      field: ocpd_breaking_capacity_ka
+      value: "6"
+    - circuit: 2
+      field: rcd_type
+      value: A
+    - circuit: 2
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 4
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 4
+      field: ocpd_type
+      value: B
+    - circuit: 4
+      field: ocpd_rating_a
+      value: "32"
+    - circuit: 4
+      field: ocpd_breaking_capacity_ka
+      value: "6"
+    - circuit: 4
+      field: rcd_type
+      value: A
+    - circuit: 4
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 5
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 5
+      field: ocpd_type
+      value: B
+    - circuit: 5
+      field: ocpd_rating_a
+      value: "32"
+    - circuit: 5
+      field: ocpd_breaking_capacity_ka
+      value: "6"
+    - circuit: 5
+      field: rcd_type
+      value: A
+    - circuit: 5
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 3
+      field: rcd_bs_en
+      value: BS EN 61009
+  ask_user_count:
+    min: 4
+    max: 4
+  ask_user:
+    - field: ocpd_rating_a
+      text_matches: rating
+    - field: ocpd_breaking_capacity_ka
+      text_matches: breaking capacity
+    - field: rcd_type
+      text_matches: RCD type
+    - field: rcd_operating_current_ma
+      text_matches: operating current
+config:
+  timeout_ms: 70000
+  drain_ms: 25000
+  fetch_tts: false
