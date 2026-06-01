@@ -15,6 +15,7 @@ import {
   CONFIRMATION_FRIENDLY_NAMES,
   CONFIRMATION_MIN_CONFIDENCE,
   buildConfirmationText,
+  buildGroupedConfirmationText,
   shouldGenerateConfirmation,
 } from '../extraction/confirmation-text.js';
 
@@ -201,5 +202,89 @@ describe('confirmation-text — shouldGenerateConfirmation', () => {
   test('returns false for known field with confidence < threshold', () => {
     expect(shouldGenerateConfirmation({ field: 'measured_zs_ohm', confidence: 0.79 })).toBe(false);
     expect(shouldGenerateConfirmation({ field: 'measured_zs_ohm', confidence: 0.0 })).toBe(false);
+  });
+});
+
+describe('confirmation-text — buildGroupedConfirmationText (Issue 10)', () => {
+  test('"all circuits" when group size equals totalCircuitsInJob', () => {
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [1, 3, 4, 5], 4);
+    expect(text).toBe('All circuits, IR L to L >299');
+  });
+
+  test('contiguous range (>=3 circuits, no gaps)', () => {
+    const text = buildGroupedConfirmationText('measured_zs_ohm', '0.45', [1, 2, 3, 4, 5]);
+    expect(text).toBe('Circuits 1 to 5, Zs 0.45');
+  });
+
+  test('non-contiguous list when gaps exist', () => {
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [1, 3, 5]);
+    expect(text).toBe('Circuits 1, 3, 5, IR L to L >299');
+  });
+
+  test('two circuits use list form (range requires >=3)', () => {
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [1, 2]);
+    expect(text).toBe('Circuits 1, 2, IR L to L >299');
+  });
+
+  test('single circuit returns null (caller uses per-circuit text)', () => {
+    expect(buildGroupedConfirmationText('ir_live_live_mohm', '>299', [1])).toBe(null);
+  });
+
+  test('empty array returns null', () => {
+    expect(buildGroupedConfirmationText('ir_live_live_mohm', '>299', [])).toBe(null);
+  });
+
+  test('null array returns null', () => {
+    expect(buildGroupedConfirmationText('ir_live_live_mohm', '>299', null)).toBe(null);
+  });
+
+  test('empty value returns null', () => {
+    expect(buildGroupedConfirmationText('ir_live_live_mohm', '', [1, 2, 3])).toBe(null);
+  });
+
+  test('suppressed field returns null', () => {
+    expect(buildGroupedConfirmationText('circuit_ref', '1', [1, 2, 3])).toBe(null);
+  });
+
+  test('*_id fields return null', () => {
+    expect(buildGroupedConfirmationText('board_id', 'main', [1, 2, 3])).toBe(null);
+  });
+
+  test('circuit 0 or negative in input bails to null (caller handles per-circuit)', () => {
+    expect(buildGroupedConfirmationText('ir_live_live_mohm', '>299', [0, 1, 2])).toBe(null);
+    expect(buildGroupedConfirmationText('ir_live_live_mohm', '>299', [-1, 1])).toBe(null);
+  });
+
+  test('dedup + sort: [3, 1, 1, 5, 3] becomes [1, 3, 5]', () => {
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [3, 1, 1, 5, 3]);
+    expect(text).toBe('Circuits 1, 3, 5, IR L to L >299');
+  });
+
+  test('string circuit refs are parsed', () => {
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', ['1', '2', '3']);
+    expect(text).toBe('Circuits 1 to 3, IR L to L >299');
+  });
+
+  test('polarity_confirmed grouped — Y form speaks, false form suppressed', () => {
+    const yes = buildGroupedConfirmationText('polarity_confirmed', 'Y', [1, 2, 3]);
+    expect(yes).toBe('Circuits 1 to 3, polarity confirmed');
+    const no = buildGroupedConfirmationText('polarity_confirmed', 'N', [1, 2, 3]);
+    expect(no).toBe(null);
+  });
+
+  test('totalCircuitsInJob null falls through to range/list (no false "all")', () => {
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [1, 3, 4, 5]);
+    expect(text).toBe('Circuits 1, 3, 4, 5, IR L to L >299');
+  });
+
+  test('totalCircuitsInJob with partial coverage still uses range/list', () => {
+    // 5 total, only 3 covered → contiguous range (not "all")
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [1, 2, 3], 5);
+    expect(text).toBe('Circuits 1 to 3, IR L to L >299');
+  });
+
+  test('B95B2EE1 field-test repro: [4, 5, 1, 3] / total 4 → "All circuits"', () => {
+    const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [4, 5, 1, 3], 4);
+    expect(text).toBe('All circuits, IR L to L >299');
   });
 });

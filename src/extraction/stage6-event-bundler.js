@@ -21,7 +21,11 @@ import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-write
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
 // can import the same buildConfirmationText without dragging the rest
 // of the bundler into its call site. No behavioural change here.
-import { CONFIRMATION_MIN_CONFIDENCE, buildConfirmationText } from './confirmation-text.js';
+import {
+  CONFIRMATION_MIN_CONFIDENCE,
+  buildConfirmationText,
+  buildGroupedConfirmationText,
+} from './confirmation-text.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
 // ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
@@ -151,7 +155,12 @@ function synthesiseStateChangeConfirmations(
   return out;
 }
 
-function synthesiseConfirmations(readings, boardReadings, designations = null) {
+function synthesiseConfirmations(
+  readings,
+  boardReadings,
+  designations = null,
+  totalCircuitsInJob = null
+) {
   const out = [];
   const lookupDesignation = (circuit) => {
     if (!designations) return null;
@@ -163,7 +172,72 @@ function synthesiseConfirmations(readings, boardReadings, designations = null) {
     }
     return null;
   };
-  for (const r of readings) {
+
+  // Issue 10 (2026-05-31, session B95B2EE1): a fan-out write to
+  // multiple circuits used to emit one per-circuit confirmation each;
+  // the speculator picked one random circuit and the inspector heard
+  // "Circuit 4, IR L to L >299" instead of "All circuits, IR L to L
+  // >299". Group readings up-front so each (field, board_id, value)
+  // bucket fires ONE TTS line. Per-circuit readings fall through
+  // unchanged (group size 1 → buildGroupedConfirmationText returns
+  // null and we use the existing buildConfirmationText path).
+  const groups = new Map();
+  for (let i = 0; i < readings.length; i += 1) {
+    const r = readings[i];
+    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    // Group key excludes circuit on purpose — that's the dimension we
+    // want to collapse across. Board scope still matters (the same
+    // field+value on board A vs board B is two distinct broadcasts).
+    // Normalise undefined/null board_id to '' so single-board sessions
+    // bucket together cleanly.
+    const groupKey = `${r.field}|${String(r.value ?? '')}|${r.board_id ?? ''}`;
+    let bucket = groups.get(groupKey);
+    if (!bucket) {
+      bucket = { field: r.field, value: r.value, board_id: r.board_id, items: [], indices: [] };
+      groups.set(groupKey, bucket);
+    }
+    bucket.items.push(r);
+    bucket.indices.push(i);
+  }
+
+  const consumedReadingIndices = new Set();
+
+  for (const bucket of groups.values()) {
+    if (bucket.items.length < 2) continue;
+    // Only attempt the grouped form for circuit-level readings (the
+    // helper rejects circuit:0/null entries by returning null).
+    const circuits = bucket.items.map((r) => r.circuit).filter((c) => Number.isInteger(c) && c > 0);
+    if (circuits.length < 2) continue;
+    const grouped = buildGroupedConfirmationText(
+      bucket.field,
+      bucket.value,
+      circuits,
+      totalCircuitsInJob
+    );
+    if (!grouped) continue;
+    const entry = {
+      text: grouped,
+      expanded_text: expandForTTS(grouped),
+      field: bucket.field,
+      // Grouped confirmations are circuit-bag, not single-circuit;
+      // null tells iOS this isn't tied to a specific row for the
+      // anti-stale highlight logic.
+      circuit: null,
+      // Surface the underlying circuits so iOS can mark each as
+      // confirmed in the highlight buffer (so individual cells flash
+      // green) even though the spoken text is a single roll-up.
+      circuits,
+    };
+    if (bucket.board_id != null) {
+      entry.board_id = bucket.board_id;
+    }
+    out.push(entry);
+    for (const idx of bucket.indices) consumedReadingIndices.add(idx);
+  }
+
+  for (let i = 0; i < readings.length; i += 1) {
+    if (consumedReadingIndices.has(i)) continue;
+    const r = readings[i];
     if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
     // 2026-05-29 — pass designation so the TTS reads "Cooker, Zs 0.62"
     // instead of "Circuit 1, Zs 0.62". Lookup uses the same per-turn
@@ -442,10 +516,18 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // session.stateSnapshot.circuits + the same-turn circuit_designation
     // writes in perTurnWrites.readings (so a freshly-named circuit
     // confirms with its NEW name, not "Circuit N").
+    // totalCircuitsInJob lets the helper decide whether a multi-circuit
+    // group qualifies as "all circuits" vs "circuits X to Y". Sourced
+    // from the caller (stage6-shadow-harness.js builds it from
+    // session.stateSnapshot.circuits, board-scoped if a sub-board is
+    // the current target so a fan-out on board B doesn't count board
+    // A's circuits toward the total). Null means "I don't know" → the
+    // helper falls through to range/list phrasing.
     const confirmations = synthesiseConfirmations(
       extracted_readings,
       boardReadings,
-      options.circuitDesignations
+      options.circuitDesignations,
+      options.totalCircuitsInJob ?? null
     );
     // 2026-05-29 — state-change confirmations (create_circuit, rename,
     // delete, add_board, select_board, mark_distribution_circuit) so the

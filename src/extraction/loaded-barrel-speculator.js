@@ -251,10 +251,31 @@ export function createSpeculator({
   // scope.
   const costOpenByCorrelation = new Set();
 
+  // Issue 10 (2026-06-01, session B95B2EE1 repro): when a turn
+  // touches the same (field, value, board_id) on multiple circuits
+  // (broadcast: "for all circuits", set_field_for_all_circuits, or
+  // Sonnet emitting N record_reading calls back-to-back), the per-
+  // circuit speculations all fire and the user hears whichever
+  // synth completes first — a single wrong circuit name. The
+  // bundler now emits a grouped "All circuits" / "Circuits X to Y"
+  // confirmation; the speculator can't construct that text without
+  // knowing the full bucket, so the safe move is to suppress
+  // per-circuit speculations once a second hit on the same bucket
+  // shows up. The grouped TTS still arrives — just from the
+  // bundler instead, ~1-2s later. Acceptable trade because the
+  // pre-fix audio was wrong.
+  //
+  // broadcastBuckets keys: `${field}|${valueStr}|${boardId ?? ''}`.
+  // Value: { firstCircuit: int|null, correlationId: string|null,
+  //          suppressed: bool }. Reset alongside perTurnCount when
+  // turnId changes.
+  const broadcastBuckets = new Map();
+
   function _resetTurnCapIfNew(turnId) {
     if (currentTurnId !== turnId) {
       currentTurnId = turnId;
       perTurnCount = 0;
+      broadcastBuckets.clear();
     }
   }
 
@@ -317,6 +338,70 @@ export function createSpeculator({
     // Confidence + friendly-name gate. shouldGenerateConfirmation is
     // a fast-path skip that doesn't touch buildConfirmationText.
     if (!shouldGenerateConfirmation({ field, confidence })) return;
+
+    // Issue 10 multi-circuit broadcast suppression. Must run BEFORE
+    // any work — once a bucket flips to suppressed, even cached
+    // entries shouldn't get the wrong-circuit text. Apply only to
+    // circuit-level readings; circuit:0 / null are board-level and
+    // can't broadcast across circuits.
+    _resetTurnCapIfNew(turnId);
+    if (Number.isInteger(circuit) && circuit > 0) {
+      const valueStr = String(value ?? '').trim();
+      const bucketKey = `${field}|${valueStr}|${boardId ?? ''}`;
+      const bucket = broadcastBuckets.get(bucketKey);
+      if (bucket) {
+        if (bucket.suppressed) {
+          logger?.info?.('voice_latency.loaded_barrel_broadcast_suppressed', {
+            sessionId,
+            turnId,
+            field,
+            circuit,
+            boardId,
+          });
+          return;
+        }
+        if (bucket.firstCircuit !== circuit) {
+          // Second distinct circuit on the same (field, value, board)
+          // this turn → broadcast detected. Abort the first
+          // speculation (its per-circuit text would be wrong now)
+          // and mark the bucket suppressed so the third / fourth /
+          // Nth record_reading also skip.
+          bucket.suppressed = true;
+          if (bucket.correlationId) {
+            const existing = pendingByCorrelation.get(bucket.correlationId);
+            if (existing) {
+              try {
+                existing.controller.abort();
+              } catch (_e) {
+                /* ignore */
+              }
+              _maybeRecordTerminal(bucket.correlationId, existing.cacheKey, 'cancelled', {
+                reason: 'cancelled_by_broadcast_detection',
+                cancelledBeforeTextSent: !costOpenByCorrelation.has(bucket.correlationId),
+              });
+            }
+          }
+          logger?.info?.('voice_latency.loaded_barrel_broadcast_detected', {
+            sessionId,
+            turnId,
+            field,
+            boardId,
+            first_circuit: bucket.firstCircuit,
+            second_circuit: circuit,
+          });
+          return;
+        }
+        // Same circuit hit twice → cache resurface; fall through
+        // and let the cachePeek gate below handle it.
+      } else {
+        broadcastBuckets.set(bucketKey, {
+          firstCircuit: circuit,
+          correlationId: null,
+          suppressed: false,
+        });
+      }
+    }
+
     const text = buildConfirmationText(field, value, circuit);
     if (!text) return;
     const expandedText = expandForTTS(text);
@@ -381,6 +466,19 @@ export function createSpeculator({
       controller,
       cacheKey,
     });
+    // Back-link the correlationId onto the broadcast bucket so a
+    // subsequent record_reading on the same (field, value, boardId)
+    // but a different circuit can abort this speculation. Bucket
+    // may be absent for board-level readings (circuit:0/null path
+    // skips the bucket lookup above).
+    if (Number.isInteger(circuit) && circuit > 0) {
+      const valueStr = String(value ?? '').trim();
+      const bucketKey = `${field}|${valueStr}|${boardId ?? ''}`;
+      const bucket = broadcastBuckets.get(bucketKey);
+      if (bucket && !bucket.correlationId) {
+        bucket.correlationId = correlationId;
+      }
+    }
 
     let resolvePromise;
     const promise = new Promise((r) => {

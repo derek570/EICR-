@@ -173,6 +173,106 @@ function deriveFriendlyName(field) {
   return s;
 }
 
+/**
+ * Build a SINGLE grouped confirmation for a fan-out reading that
+ * touched multiple circuits in one turn (e.g. an IR reading dictated
+ * "for all circuits", or a set_field_for_all_circuits broadcast).
+ *
+ * Issue 10 from 2026-05-31 field test (session B95B2EE1
+ * @23:00:24): one IR utterance "for all circuits" produced four
+ * separate per-circuit speculator confirmations in 34ms — Derek
+ * heard "Circuit 4, IR L to L >299" (one random circuit, not the
+ * "all circuits" he asked for). The bundler also emitted four
+ * per-circuit confirmations 2s later; three were deduped, the fourth
+ * was a stale wrong-text playback. The right behaviour: one TTS
+ * line that says "All circuits, IR L to L >299" / "Circuits 1 to 5,
+ * IR L to L >299" / "Circuits 1, 3, 5, IR L to L >299" depending on
+ * shape.
+ *
+ * Shape rules (locked 2026-06-01):
+ *  - circuits.length === 1 → caller should fall through to
+ *    buildConfirmationText, this helper returns null.
+ *  - circuits.length === totalCircuitsInJob (where supplied + > 0)
+ *    → "All circuits, ${friendly} ${value}".
+ *  - circuits form a contiguous integer range (no gaps) of >= 3 →
+ *    "Circuits ${min} to ${max}, ${friendly} ${value}".
+ *  - otherwise → comma-separated list:
+ *      "Circuits 1, 3, 5, ${friendly} ${value}".
+ *
+ * Designations are NOT used for grouped text — speaking five circuit
+ * names would dominate the TTS line, which is why the inspector
+ * batched in the first place. Designations remain in the per-
+ * circuit path for single readings.
+ *
+ * Returns null when the field is suppressed or the value renders
+ * empty (same gating as buildConfirmationText).
+ */
+export function buildGroupedConfirmationText(field, value, circuits, totalCircuitsInJob = null) {
+  if (SUPPRESSED_TTS_FIELDS.has(field)) return null;
+  if (typeof field === 'string' && field.endsWith('_id')) return null;
+  if (!Array.isArray(circuits) || circuits.length === 0) return null;
+  const valueStr = String(value ?? '').trim();
+  if (!valueStr) return null;
+
+  // Filter to integer circuit refs > 0, dedupe, and sort ascending.
+  // Board-level (circuit 0 / null) doesn't belong in a fan-out — if
+  // a 0 sneaks in, treat the broadcast as ambiguous and bail to per-
+  // circuit handling by returning null.
+  const ints = [];
+  const seen = new Set();
+  for (const c of circuits) {
+    const n = typeof c === 'number' ? c : parseInt(c, 10);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    ints.push(n);
+  }
+  ints.sort((a, b) => a - b);
+
+  if (ints.length < 2) return null;
+
+  const friendly = CONFIRMATION_FRIENDLY_NAMES[field] ?? deriveFriendlyName(field);
+
+  // Tail uses the same special-cases as buildConfirmationText: the
+  // valueStr embeds straight after the friendly name. We do NOT
+  // replicate buildConfirmationText's polarity_confirmed / circuit_
+  // designation branches because those fields are not realistic
+  // fan-out targets — polarity is per-circuit, designation is per-
+  // circuit. If they ever DO arrive here, fall through to the plain
+  // form (caller can split if it matters).
+  let tail;
+  if (field === 'polarity_confirmed') {
+    const lc = valueStr.toLowerCase();
+    const isTrue = lc === 'true' || lc === 'y' || lc === 'ok' || lc === 'yes';
+    if (!isTrue) return null;
+    tail = 'polarity confirmed';
+  } else {
+    tail = `${friendly} ${valueStr}`;
+  }
+
+  // Head selection.
+  // "All circuits" only when totalCircuitsInJob is a positive int we
+  // can compare against. Without it, fall through to the range/list
+  // form — we don't want to say "all" when we might just be missing
+  // circuits the inspector skipped.
+  if (
+    typeof totalCircuitsInJob === 'number' &&
+    Number.isInteger(totalCircuitsInJob) &&
+    totalCircuitsInJob > 0 &&
+    ints.length === totalCircuitsInJob
+  ) {
+    return `All circuits, ${tail}`;
+  }
+  // Contiguous-range form needs at least 3 circuits so "Circuits 1
+  // and 2" doesn't sound like a labour-saving lie compared to listing
+  // them.
+  const isContiguous = ints.length >= 3 && ints[ints.length - 1] - ints[0] === ints.length - 1;
+  if (isContiguous) {
+    return `Circuits ${ints[0]} to ${ints[ints.length - 1]}, ${tail}`;
+  }
+  return `Circuits ${ints.join(', ')}, ${tail}`;
+}
+
 export function buildConfirmationText(field, value, circuit, designation = null) {
   // 2026-05-29 — deny-list policy. Speak every field with a value
   // unless explicitly suppressed (internal IDs / metadata).

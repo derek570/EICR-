@@ -623,6 +623,23 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
+    // Count of distinct circuits on the CURRENT board (board scope
+    // matters: a "for all circuits" broadcast on sub-board B should
+    // measure against B's circuit count, not A+B combined). Falls
+    // back to a board-agnostic count if no currentBoardId is set
+    // (legacy single-board jobs).
+    let totalCircuitsInJob = 0;
+    if (snapshotCircuits && typeof snapshotCircuits === 'object') {
+      const currentBoardId = session?.stateSnapshot?.currentBoardId ?? null;
+      for (const [key, circ] of Object.entries(snapshotCircuits)) {
+        if (!circ || typeof circ !== 'object') continue;
+        const refNum = Number(key);
+        if (!Number.isInteger(refNum) || refNum <= 0) continue;
+        if (currentBoardId && circ.board_id && circ.board_id !== currentBoardId) continue;
+        totalCircuitsInJob += 1;
+      }
+    }
+
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
       confirmationsEnabled: options.confirmationsEnabled === true,
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
@@ -632,6 +649,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       turnId,
       circuitDesignations,
       boardDesignations,
+      totalCircuitsInJob,
     });
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
