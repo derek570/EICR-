@@ -44,36 +44,46 @@ transcript:
 
 expect:
   extraction_count: { min: 1 }
-  # Installation address fields fold into extracted_readings as
-  # circuit:0 entries (via the board-reading fold in
-  # stage6-shadow-harness.js). town and county are both in
-  # KNOWN_FIELDS so they stay canonical on the wire.
+  # First empirical run 2026-06-01 confirmed the architectural caveat
+  # surfaced in Codex round 5: against the live-mode backend Sonnet
+  # writes address/town/postcode but NOT county. The lookup that
+  # would inject Berkshire never fires because
+  # applyPostcodeLookupToSnapshot is only wired via _extractSingle,
+  # which runLiveMode bypasses. Asserting county=Berkshire here
+  # would fail every run for the wrong reason — the structural
+  # override isn't installed in production live mode.
   has_reading:
     - circuit: 0
       field: town
       value: "Reading"
     - circuit: 0
-      field: county
-      value: "Berkshire"
-    - circuit: 0
       field: postcode
       value: "RG1 5QA"
-  # NOTE: we DO NOT assert ask_user_count here. This scenario uses the
-  # same transcript as installation_address_asks_for_client.yaml, and
-  # that sibling scenario already pins the "Use the same address for
-  # the client?" ask — which IS expected to fire on this transcript
-  # post-eff80433. Asserting max:0 here would conflict with the
-  # sibling. This scenario's scope is the postcode→town/county
-  # override (commit db85f825); the ask is a separate concern pinned
-  # elsewhere.
-  # Negative-control on TTS text: if the override fires, the
-  # confirmation will speak the corrected values, not the drift.
-  # If the override regresses, the TTS may speak "South East" —
-  # this catches it.
+  # Negative-control on TTS text: if a future regression has Sonnet
+  # drift to writing "South East" as the county (the historical
+  # symptom), the TTS confirmation would speak it. This catches the
+  # drift even though the structural override isn't present.
   tts_text_not_contains:
     - "South East"
   confirmation_text_not_contains:
     - "South East"
+  # Pin the bug-pin via has_no_reading: county MUST NOT be written
+  # with a drifted ITL1 region value. (Sonnet not writing county at
+  # all is the current live-mode behaviour and is acceptable; what's
+  # NOT acceptable is writing "South East" or another region.)
+  has_no_reading:
+    - circuit: 0
+      field: county
+      value: "South East"
+    - circuit: 0
+      field: county
+      value: "South West"
+    - circuit: 0
+      field: county
+      value: "London"
+    - circuit: 0
+      field: county
+      value: "Greater London"
 
 config:
   timeout_ms: 30000

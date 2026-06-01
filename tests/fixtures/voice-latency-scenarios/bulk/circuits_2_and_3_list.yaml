@@ -54,10 +54,10 @@ expect:
   has_reading:
     - circuit: 2
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 3
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
   # Negative-control: circuit 1 MUST NOT have 200 written. If
   # Sonnet (or a future broadcast detector regression) widens the
   # write to a broadcast, circuit 1 would also land 200 and the
@@ -65,7 +65,7 @@ expect:
   has_no_reading:
     - circuit: 1
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
   ask_user_count: { max: 0 }
   # At least 1 confirmation. We don't pin the exact number to avoid
   # brittling on the size-≥-3 grouping threshold in

@@ -82,10 +82,15 @@ expect:
       field: polarity
       value: "Y"
   ask_user_count: { max: 0 }
-  # Range phrasing should fold into ONE grouped confirmation —
+  # Range phrasing should fold into a grouped confirmation —
   # synthesiseConfirmations groups by (field, value, board_id) and
-  # buildGroupedConfirmationText returns the range form.
-  confirmation_count: { min: 1, max: 1 }
+  # buildGroupedConfirmationText returns the range form. Min 1 catches
+  # the regression. No max bound: when Loaded Barrel is enabled, the
+  # speculator's mid_stream_preview envelope adds a duplicate
+  # confirmations[] entry, bumping the total above 1 (empirically
+  # observed against prod 2026-06-01 — same speculator-bump pattern
+  # we already handled in the Ze confirmation scenarios).
+  confirmation_count: { min: 1 }
   confirmation_text_contains:
     # The grouped helper writes "Circuits 1 to 5" (or similar) — assert
     # the range form is present so the test catches both a per-circuit

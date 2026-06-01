@@ -55,7 +55,13 @@ transcript:
   - at_ms: 0
     # Deliberately omits "insulation" / "installation" / "IR" so the
     # IR dialogue trigger does NOT match and Sonnet runs instead.
-    text: "L to L for circuit 4 is 200 megohms."
+    # "greater than 200" rather than "200" because Sonnet's IR-
+    # reading interpretation is non-deterministic on the plain
+    # integer ("200" vs ">200") — empirical 2026-06-01 runs flipped
+    # between the two on identical transcripts. The ">N" form is
+    # canonical per BS 7671 IR-test convention and what parseMegaohms
+    # produces from the "greater than" phrasing.
+    text: "L to L for circuit 4 is greater than 200 megohms."
     isFinal: true
   - at_ms: 8000
     # Answers ir_live_earth_mohm (the engine's first ask).
@@ -80,7 +86,7 @@ expect:
   has_reading:
     - circuit: 4
       field: insulation_resistance_l_l
-      value: "200"
+      value: ">200"
     - circuit: 4
       field: ir_live_earth_mohm
       value: ">299"
