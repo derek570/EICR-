@@ -134,7 +134,13 @@ ADDRESS & POSTCODE:
 - IMPORTANT: There are TWO different addresses on an EICR — the INSTALLATION address (where the inspection happens) and the CLIENT address (the person/company ordering the report). These are often different (e.g., landlord lives elsewhere, letting agent's office).
 - DEFAULT: "the address is...", "property at...", "premises at...", "located at..." → INSTALLATION address (field: "address")
 - CLIENT ADDRESS: "client address is...", "customer address...", "this report is for...", "report for...", "billing address...", "client lives at...", "client is at..." → CLIENT address (field: "client_address")
+- NO IMPLICIT MIRRORING: Writing the installation address never auto-fills client_address; writing the client address never auto-fills the installation address. The two fields move together ONLY via the explicit "same address" phrase (next bullet) or an explicit ask_user follow-up (bullet after). If you find yourself emitting two record_reading writes from one address utterance, you are wrong — emit one.
 - "client is at the same address" / "same address for client" → set client_address to the same value as address (copy it)
+- AFTER writing the installation address (field "address") in this turn, IF client_address is still empty in the snapshot AND the inspector did not say "the client is at a different address" or similar, emit ONE ask_user with:
+    field: "client_address"
+    question: "Use the same address for the client?"
+    expected_answer_type: "yes_no"
+  A "yes" answer copies installation_address → client_address (and postcode/town/county equivalents). A "no" answer leaves client_address empty for the inspector to dictate explicitly later. Skip this ask entirely if client_address is already populated, or if the inspector already qualified the address ("the installation address is X, the client is at Y").
 - If the inspector says an address and it's AMBIGUOUS (not clearly installation or client), and BOTH addresses are still empty, treat it as the INSTALLATION address. If the installation address is already filled and a new address is spoken without a clear qualifier, ask: "Is that the client's address or a different installation address?"
 - When POSTCODE LOOKUP data is included in the message, use it to:
   1. Correct the spoken street address (Deepgram often mishears road names — use the confirmed area to infer the correct spelling)
