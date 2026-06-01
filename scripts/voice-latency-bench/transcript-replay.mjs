@@ -185,6 +185,11 @@ class ScenarioRunner {
     const endNs = process.hrtime.bigint();
     const result = {
       text_preview: text.slice(0, 60),
+      // 2026-06-01: store the FULL TTS-submitted text so the
+      // `tts_text_not_contains` predicate can run substring assertions
+      // without us having to retain the original confirmations[] array
+      // shape. text_preview stays for human-readable JSON output.
+      text_full: text,
       first_byte_ms: firstByteNs > 0n ? ns2ms(startNs, firstByteNs) : null,
       total_ms: ns2ms(startNs, endNs),
       bytes,
@@ -475,6 +480,31 @@ class ScenarioRunner {
       }
     }
 
+    // has_no_reading — negative-control variant of has_reading.
+    // 2026-06-01: added so multi-turn scenarios can assert that an
+    // earlier turn's correct value was NOT later silently overwritten /
+    // broadcast across other circuits. `has_reading` flattens across
+    // every extraction envelope, so it only checks "at least one
+    // envelope had this", which can mask a later regression that
+    // adds a stale or wrong write. `has_no_reading` walks the same
+    // flattened list and FAILS if ANY entry matches the predicate.
+    if (Array.isArray(expect.has_no_reading)) {
+      const allReadings = this.extractions.flatMap((e) => e.result?.readings ?? []);
+      for (const need of expect.has_no_reading) {
+        const hits = allReadings.filter(
+          (r) =>
+            String(r.circuit) === String(need.circuit) &&
+            r.field === need.field &&
+            (need.value === undefined || String(r.value) === String(need.value)),
+        );
+        if (hits.length > 0) {
+          failures.push(
+            `has_no_reading violated: circuit=${need.circuit} field=${need.field} value=${need.value ?? '*'} | found ${hits.length} matching reading(s)`,
+          );
+        }
+      }
+    }
+
     // ask_user_count
     if (expect.ask_user_count) {
       if (expect.ask_user_count.min !== undefined && this.askUsers.length < expect.ask_user_count.min) {
@@ -490,6 +520,245 @@ class ScenarioRunner {
       const seen = new Set(this.events.map((e) => e.type));
       for (const t of expect.saw_event_types) {
         if (!seen.has(t)) failures.push(`saw_event_types missing: ${t}`);
+      }
+    }
+
+    // 2026-06-01 — new predicates supporting the 14 regression scenarios.
+    // Implemented as a block here so they share one helper-free
+    // declaration of `allConfirmations` (used by confirmation_count and
+    // both confirmation_text_* predicates).
+    const allConfirmations = this.extractions.flatMap(
+      (e) => e.result?.confirmations ?? []
+    );
+
+    // confirmation_count — total confirmations[] entries across all
+    // extraction envelopes for the run.
+    if (expect.confirmation_count) {
+      const got = allConfirmations.length;
+      if (
+        expect.confirmation_count.min !== undefined &&
+        got < expect.confirmation_count.min
+      ) {
+        failures.push(
+          `confirmation_count.min=${expect.confirmation_count.min}, got ${got}`
+        );
+      }
+      if (
+        expect.confirmation_count.max !== undefined &&
+        got > expect.confirmation_count.max
+      ) {
+        failures.push(
+          `confirmation_count.max=${expect.confirmation_count.max}, got ${got}`
+        );
+      }
+    }
+
+    // confirmation_text_contains — each substring must appear in at least
+    // one confirmation entry. Tries both `text` (raw) and `expanded_text`
+    // (TTS-expanded) — buildConfirmationText / expandForTTS sometimes
+    // rephrase, so authors should be able to pin either form.
+    if (Array.isArray(expect.confirmation_text_contains)) {
+      const all = allConfirmations
+        .flatMap((c) => {
+          if (typeof c === 'string') return [c];
+          return [c?.text ?? '', c?.expanded_text ?? ''];
+        })
+        .filter(Boolean);
+      const haystack = all.join('\n');
+      for (const needle of expect.confirmation_text_contains) {
+        if (!haystack.includes(needle)) {
+          failures.push(
+            `confirmation_text_contains missing: ${JSON.stringify(needle)} | actual: ${JSON.stringify(all)}`
+          );
+        }
+      }
+    }
+
+    // confirmation_text_not_contains — negative-control: substring must
+    // NOT appear anywhere in any confirmation's text/expanded_text.
+    if (Array.isArray(expect.confirmation_text_not_contains)) {
+      const all = allConfirmations
+        .flatMap((c) => {
+          if (typeof c === 'string') return [c];
+          return [c?.text ?? '', c?.expanded_text ?? ''];
+        })
+        .filter(Boolean);
+      const haystack = all.join('\n');
+      for (const needle of expect.confirmation_text_not_contains) {
+        if (haystack.includes(needle)) {
+          failures.push(
+            `confirmation_text_not_contains hit: ${JSON.stringify(needle)} | actual: ${JSON.stringify(all)}`
+          );
+        }
+      }
+    }
+
+    // tts_fetch_count — number of POSTs the harness made to
+    // /api/proxy/elevenlabs-tts. Only meaningful when config.fetch_tts
+    // is truthy (default true); a config.fetch_tts: false run will
+    // naturally yield 0 fetches and any min>0 assertion will trip.
+    if (expect.tts_fetch_count) {
+      const got = this.ttsTimings.length;
+      if (
+        expect.tts_fetch_count.min !== undefined &&
+        got < expect.tts_fetch_count.min
+      ) {
+        failures.push(
+          `tts_fetch_count.min=${expect.tts_fetch_count.min}, got ${got}`
+        );
+      }
+      if (
+        expect.tts_fetch_count.max !== undefined &&
+        got > expect.tts_fetch_count.max
+      ) {
+        failures.push(
+          `tts_fetch_count.max=${expect.tts_fetch_count.max}, got ${got}`
+        );
+      }
+    }
+
+    // tts_text_not_contains — substring must NOT appear in any TTS
+    // proxy submission. (For negative controls on TTS-spoken text, when
+    // you want to assert e.g. "South East" never reaches the speaker.)
+    if (Array.isArray(expect.tts_text_not_contains)) {
+      const haystack = this.ttsTimings.map((t) => t.text_full ?? '').join('\n');
+      for (const needle of expect.tts_text_not_contains) {
+        if (haystack.includes(needle)) {
+          failures.push(
+            `tts_text_not_contains hit: ${JSON.stringify(needle)} | actual TTS texts: ${JSON.stringify(this.ttsTimings.map((t) => t.text_full ?? ''))}`
+          );
+        }
+      }
+    }
+
+    // ask_user — per-ask assertions. Each entry is matched against the
+    // captured ask_user_started / question payloads in `this.askUsers`.
+    // Supported keys:
+    //   - field (string): must equal the ask's field-shape — `context_field`
+    //     on Stage 6 ask_user_started, or the legacy `field` on the
+    //     pre-Stage-6 `type: "question"` envelope. Either is accepted so
+    //     the predicate works in both SONNET_TOOL_CALLS=live and =off
+    //     (legacy fallback) execution paths.
+    //   - text_matches (string): regex source compiled case-insensitively
+    //     (`/i`) and tested against the `question` property of an ask.
+    //     V8 does not honour inline `(?-i)` flag modifiers, so there is
+    //     no escape hatch for case-sensitive matching — if you need it,
+    //     extend this predicate to accept a flags string.
+    // Each entry consumes ONE matching ask, so duplicate requirements
+    // need separate entries.
+    if (Array.isArray(expect.ask_user)) {
+      const unconsumed = new Set(this.askUsers.map((_, i) => i));
+      const askField = (a) => a?.context_field ?? a?.field ?? null;
+      for (const need of expect.ask_user) {
+        let consumedIdx = null;
+        for (const i of unconsumed) {
+          const a = this.askUsers[i];
+          if (need.field !== undefined && askField(a) !== need.field) continue;
+          if (need.text_matches !== undefined) {
+            let re;
+            try {
+              re = new RegExp(need.text_matches, 'i');
+            } catch (err) {
+              failures.push(
+                `ask_user.text_matches invalid regex ${JSON.stringify(need.text_matches)}: ${err.message}`
+              );
+              break;
+            }
+            if (!re.test(a.question ?? '')) continue;
+          }
+          consumedIdx = i;
+          break;
+        }
+        if (consumedIdx === null) {
+          const summary = this.askUsers.map(
+            (a) => `{field=${askField(a) ?? 'null'}, q=${(a.question || '').slice(0, 80)}}`
+          );
+          failures.push(
+            `ask_user missing: ${JSON.stringify(need)} | actual asks: [${summary.join(', ')}]`
+          );
+        } else {
+          unconsumed.delete(consumedIdx);
+        }
+      }
+    }
+
+    // Shared compound-token classifier for event_ordering and
+    // forbid_event_tokens. Returns the same per-event token shape
+    // (extraction:bundler / extraction:speculator / plain type) so
+    // both predicates agree on what counts as a speculator emit.
+    const classifyEventTokens = () => {
+      const tokenSeq = [];
+      let extractionCursor = 0;
+      for (const ev of this.events) {
+        if (ev.type === 'extraction') {
+          const payload = this.extractions[extractionCursor];
+          extractionCursor += 1;
+          const isSpec = payload?.result?.mid_stream_preview === true;
+          const tok = isSpec ? 'extraction:speculator' : 'extraction:bundler';
+          tokenSeq.push({ at_ms: ev.at_ms, type: ev.type, token: tok });
+        } else {
+          tokenSeq.push({ at_ms: ev.at_ms, type: ev.type, token: ev.type });
+        }
+      }
+      return tokenSeq;
+    };
+
+    // event_ordering — assert the given event-type tokens appeared on
+    // the wire in this RELATIVE order (other types between them are
+    // fine). Accepts compound tokens that distinguish bundler from
+    // speculator extraction envelopes (both arrive as type=extraction):
+    //   - "extraction:bundler"    → an extraction envelope WITHOUT
+    //                               result.mid_stream_preview truthy
+    //   - "extraction:speculator" → an extraction envelope WITH
+    //                               result.mid_stream_preview === true
+    //   - any other token         → plain `msg.type` equality
+    if (Array.isArray(expect.event_ordering) && expect.event_ordering.length > 0) {
+      const tokenSeq = classifyEventTokens();
+      // Two-pointer scan through tokenSeq looking for the expected
+      // sequence. A token matches if either it equals the compound
+      // bundler/speculator form OR it equals plain "extraction" (so
+      // authors who don't care which kind can still assert ordering
+      // against generic types like "extraction" → "cost_update").
+      let want = 0;
+      for (const entry of tokenSeq) {
+        if (want >= expect.event_ordering.length) break;
+        const need = expect.event_ordering[want];
+        if (entry.token === need) {
+          want += 1;
+          continue;
+        }
+        // Fallback: a "extraction" requirement matches either bundler or
+        // speculator. (Compound requirements stay strict.)
+        if (need === 'extraction' && entry.type === 'extraction') {
+          want += 1;
+        }
+      }
+      if (want < expect.event_ordering.length) {
+        failures.push(
+          `event_ordering not satisfied: wanted [${expect.event_ordering.join(' → ')}] | actual sequence: [${tokenSeq.map((e) => e.token).join(' → ')}]`
+        );
+      }
+    }
+
+    // forbid_event_tokens — assert NONE of the listed tokens appeared.
+    // 2026-06-01: added so scripts/loaded-barrel-vs-script scenarios
+    // can verify the speculator did NOT fire on script slot writes.
+    // Uses the same compound classifier as event_ordering — "extraction"
+    // matches BOTH bundler and speculator (use the compound forms for
+    // narrow checks).
+    if (Array.isArray(expect.forbid_event_tokens) && expect.forbid_event_tokens.length > 0) {
+      const tokenSeq = classifyEventTokens();
+      for (const banned of expect.forbid_event_tokens) {
+        const hits = tokenSeq.filter((e) => {
+          if (e.token === banned) return true;
+          if (banned === 'extraction' && e.type === 'extraction') return true;
+          return false;
+        });
+        if (hits.length > 0) {
+          failures.push(
+            `forbid_event_tokens violated: ${JSON.stringify(banned)} appeared ${hits.length} time(s) | sequence: [${tokenSeq.map((e) => e.token).join(' → ')}]`
+          );
+        }
       }
     }
 

@@ -75,6 +75,55 @@ expect:
   saw_event_types:
     - extraction
     - cost_update
+  # Optional: count of confirmations[] entries across all extraction
+  # envelopes received (post-grouping by the bundler).
+  confirmation_count: { min: 1, max: 1 }
+  # Optional: each substring must appear in at least one confirmation
+  # (matched against both `text` and `expanded_text`).
+  confirmation_text_contains:
+    - "Ze"
+  # Optional: negative-control — substring must NOT appear in any
+  # confirmation's text/expanded_text.
+  confirmation_text_not_contains:
+    - "South East"
+  # Optional: count of POSTs the harness made to
+  # /api/proxy/elevenlabs-tts. Only meaningful when config.fetch_tts
+  # is true (default).
+  tts_fetch_count: { min: 1, max: 1 }
+  # Optional: negative-control on the TTS text submitted to the proxy.
+  # Substring must NOT appear in any fetch's body.
+  tts_text_not_contains:
+    - "South East"
+  # Optional: per-ask assertions. Each entry consumes one matching
+  # ask. `field` matches context_field; `text_matches` is a regex
+  # source compiled case-insensitively against the `question` text.
+  ask_user:
+    - field: client_address
+      text_matches: "Use the same address for the client"
+  # Optional: assert these tokens appeared on the wire in this
+  # relative order. Compound tokens distinguish bundler vs
+  # speculator (both arrive as type=extraction):
+  #   "extraction:bundler"    — extraction WITHOUT mid_stream_preview
+  #   "extraction:speculator" — extraction WITH mid_stream_preview=true
+  #   "extraction"            — matches either
+  #   any other token         — equals msg.type
+  event_ordering:
+    - extraction:bundler
+    - extraction:speculator
+  # Optional: assert NONE of these tokens appeared. Uses the same
+  # compound token vocabulary as event_ordering. Useful for asserting
+  # the speculator did NOT fire (e.g. on script-internal slot writes).
+  forbid_event_tokens:
+    - extraction:speculator
+  # Optional: negative-control variant of has_reading. Walks the
+  # flattened readings list (across every extraction envelope) and
+  # FAILS if any entry matches. Use this on multi-turn scenarios
+  # where a later turn must NOT broadcast a stale value back to
+  # earlier circuits.
+  has_no_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: "50"
 
 # Per-run config. Defaults shown.
 config:
@@ -161,3 +210,17 @@ Names in the LEFT column will NOT match the wire shape. If you must
 add a new mapping, see `KNOWN_FIELDS` + `FIELD_CORRECTIONS` in
 `src/extraction/sonnet-stream.js` and
 `src/extraction/field-name-corrections.js` respectively.
+
+**Board-level (circuit:0) readings follow the same rule.** Earlier
+guidance suggested board-level fields like `earth_loop_impedance_ze`
+stayed canonical on the wire — that was wrong. The shadow-harness's
+`extracted_board_readings → extracted_readings circuit:0` fold
+(stage6-shadow-harness.js:674-686) runs INSIDE `runShadowHarness`,
+and `validateAndCorrectFields` (sonnet-stream.js:3902) walks the
+merged list right after, rewriting board-level canonical names to
+legacy just like circuit-level ones. So `earth_loop_impedance_ze` →
+`ze`, `prospective_fault_current` → `pfc`. The existing
+`loaded_barrel_board_reading_ze.yaml` was a direct-runner exemplar
+(direct runner sees pre-rewrite shape) and SHOULD NOT be templated
+verbatim for WS-runner scenarios. Codex review 2026-06-01 caught
+this.
