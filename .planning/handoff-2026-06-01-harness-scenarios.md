@@ -107,13 +107,17 @@ Target: ~$0.02 per full 34-scenario warm run vs ~$1.70 on production defaults.
 - `expect.confirmation_text_contains: ["text", ...]` — assert each given substring appears in at least one confirmation's `text`.
 - `expect.tts_fetch_count: { min, max }` — count of TTS proxy fetches (only meaningful when `config.fetch_tts: true`).
 - `expect.ask_user: [{ field?: string, text_matches?: regex_string }]` — per-ask assertions (not just total count).
-- `expect.event_ordering: [ "type_a", "type_b" ]` — assert these event types appeared in this relative order (for scenario #10).
+- `expect.event_ordering: [ "type_a", "type_b" ]` — assert these event types appeared in this relative order. **Note:** bundler-emit and speculator-emit are BOTH `type: extraction` on the wire — distinguishing them requires the predicate to key on `result.mid_stream_preview` (false then true). Either implement that or mark scenario #10 as manual-inspect-the-JSON.
+- `expect.tts_text_not_contains: ["substring", ...]` AND `expect.confirmation_text_not_contains: ["substring", ...]` — negative-control assertions for scenarios like #13 that need to verify a string did NOT appear. Without these, you fall back to manual JSON inspection.
 
 If any feel out of scope, mark the corresponding scenario "manual inspection: read `events[]` in the JSON output" instead and skip the new predicate.
 
-**Scenarios D11/D12 (loaded-barrel internals)** assert against `voice_latency.loaded_barrel_*` and `turn_core_summary`. Those events are backend log lines, not WS messages — the WS harness can't see them. Two options:
-1. Run D11/D12 via `transcript-replay-direct.mjs` (in-process, has `expect.loaded_barrel`); the cheap wrapper does NOT cover this runner, so document the direct invocation in the scenario YAML's `description`.
-2. Add a `--tail-cloudwatch` mode to the WS harness that scrapes the backend's stderr for those event types. (Heavier work; do option 1 unless Derek prioritises it.)
+**Scenarios D11/D12 (loaded-barrel internals)** want to assert against `voice_latency.loaded_barrel_*` and `turn_core_summary`. Those events are backend log lines, not WS messages — the WS harness can't see them, AND `transcript-replay-direct.mjs` does NOT currently capture `turn_core_summary` either. Three options in increasing order of effort:
+1. **Rewrite the assertions in terms of observable tool-call behaviour** — e.g. D12 becomes "scenario triggers `start_dialogue_script` in round 1; the subsequent `extraction` envelope shows N≥2 rounds completed in `turn_core_summary` if it's emitted to the WS, OR the turn ultimately produces M tool calls indicating round 2 ran". This is the lowest-effort path.
+2. **Extend `transcript-replay-direct.mjs` to capture `turn_core_summary`** and add an `expect.loaded_barrel_*` matcher. Direct runner already has `expect.loaded_barrel`; the work is wiring up the new sub-shape.
+3. **Add a `--tail-cloudwatch` mode to the WS harness** that scrapes backend stderr for the relevant event types. Heaviest; only worth it if Derek wants log-assertions to be a first-class harness feature.
+
+Default to (1) unless writing the scenarios reveals it can't actually verify what we care about.
 
 ## Deliverable 1 — The 14 scenarios to write
 
@@ -175,14 +179,14 @@ These codify the bugs we fixed today. Each scenario should fail on the pre-fix c
    - Empty supply (`job_state.boards[0]` has no `ze`).
    - "Ze is 0.86."
    - Expected: `record_board_reading(earth_loop_impedance_ze="0.86")`, ONE confirmation `"Ze 0.86"`, ONE `/api/proxy/elevenlabs-tts` POST.
-   - Asserts: `saw_event_types` includes `extraction`; `tts_fetches[]` non-empty with text containing "Ze". `fetch_tts: true`.
+   - Asserts (uses Deliverable 0 predicates): `saw_event_types` includes `extraction`; `expect.tts_fetch_count: { min: 1, max: 1 }`; `expect.confirmation_text_contains: ["Ze"]`. Set `config.fetch_tts: true`.
    - **NOTE:** Once Build 392's forensic logging tells us which gate is dropping this in production, encode the expected `confirmation_tts_decision` value here too.
 
 9. **`ze_restate_existing_value.yaml`** — Pin `aed1d06`.
+   - **IMPORTANT:** `aed1d06` is an iOS-side fix (`fieldSources` + `originallyPreExistingKeys` are iOS state, not backend). The WS harness cannot observe iOS state. This scenario is therefore a BACKEND-side proxy: assert that the backend emits a `confirmation` for Ze given a `job_state` that already has `boards[0].ze = "0.86"`. iOS-side regression is a manual TestFlight check, not a harness assertion.
    - `job_state` has `boards[0].ze = "0.86"`.
    - Inspector says "Ze is 0.86" (same value).
-   - Expected: `fieldSources["supply.ze"]` flips to `.sonnet`, `originallyPreExistingKeys` loses the key, ONE TTS fires.
-   - Asserts: one TTS fetch, no `confirmation_skipped_preexisting` event.
+   - Asserts (Deliverable 0 predicates): `expect.confirmation_text_contains: ["Ze"]`, `expect.tts_fetch_count: { min: 1, max: 1 }`. If backend behaviour here changes (it currently emits a confirmation for board-level writes regardless of pre-existing state), update this scenario.
 
 10. **`board_reading_bundler_vs_speculator_order.yaml`** — Document the race.
     - Single Ze reading, single circuit job (so early-terminate fires).
@@ -203,11 +207,11 @@ These codify the bugs we fixed today. Each scenario should fail on the pre-fix c
 
 13. **`postcode_lookup_overrides_south_east_drift.yaml`** — Pin `db85f825`.
     - "Address is 12 Catherine Street Reading RG1 5QA."
-    - Assert: snapshot `town="Reading"`, `county="Berkshire"`, NOT `"South East"`.
+    - Assert via `has_reading` on circuit 0 (board-level): `town="Reading"`, `county="Berkshire"`. Negative-control on "South East" requires the `expect.tts_text_not_contains` predicate from Deliverable 0; if you didn't ship that predicate, fall back to manually grepping the JSON output for the substring (don't assert it; the snapshot-level override is what matters, not the TTS text).
 
 14. **`installation_address_asks_for_client.yaml`** — Pin `eff80433`.
     - "The address is 12 Catherine Street Reading RG1 5QA."
-    - Assert: ONE `ask_user` with question matching `/Use the same address for the client/i`, field `client_address`.
+    - Assert (Deliverable 0 predicate): `expect.ask_user: [{ field: "client_address", text_matches: "Use the same address for the client" }]`. (Case-insensitive matching is up to the implementation — be explicit in the predicate.)
 
 ### Process
 
@@ -369,14 +373,14 @@ cd /Users/derekbeckley/Developer/EICR_Automation/CertMateUnified
 
 1. **Read this whole file + `SCHEMA.md` + 2-3 existing scenarios as exemplars.** ~10 min.
 2. **Confirm `ec9ed4da` is on `origin/main`** and run ONE existing scenario via the wrapper to verify the cheap-config plumbing works end-to-end: `./scripts/voice-latency-bench/run-cheap.sh --scenario=tests/fixtures/voice-latency-scenarios/baseline/normal_zs_value.yaml`. (No `--dry-run` flag exists.)
-3. **Write the 14 scenarios in 3 batches** (A: 3 scripts, B+C: 7 broadcast+TTS, D+E: 4 arch+address). Commit each batch.
-4. **`mcp__codex-cli__review-changes` on the diff.** Apply feedback, commit.
-5. **`mcp__codex-cli__ask-codex` with the combinatorial matrix prompt above.** Sanity-check ~10 of its outputs against schema, fix any legacy-field-name slip-ups, commit in batches of 20.
-6. **Run the full new suite on Haiku via `run-cheap.sh`.** Fix any scenario authoring bugs (NOT the underlying extraction code — that's already correct as of these commits).
-7. **Final sanity: run the same suite on Sonnet 4.6.** If any scenarios fail on Sonnet but pass on Haiku, that's a Sonnet-only quirk and should be documented in the scenario's description, not "fixed".
-
-8. **If a scenario you write fails unexpectedly: assume an authoring bug FIRST.** The extraction code in this handoff's commit range is well-tested and passes 4225/4225 backend tests. But — if you've checked the YAML carefully, re-read the relevant fix commit, and the failure still points at backend behaviour, **stop and report to Derek before changing any extraction code.** A new regression guard that exposes a real miss is exactly the kind of thing this work is for — but the right response is to surface it, not silently patch around it.
-8. **Push.** Surface the final scenario count + Codex-review summary to Derek.
+3. **Ship Deliverable 0** (harness predicate extensions: `confirmation_count`, `confirmation_text_contains`, `tts_fetch_count`, `ask_user[]`, `event_ordering`). One commit.
+4. **Write all 14 scenarios uncommitted.** Validate each parses via the `js-yaml` one-liner.
+5. **Run `mcp__codex-cli__review-changes` with `uncommitted=true`** so it sees all 14 + the harness predicates together. Apply feedback.
+6. **Commit the 14 in 3 batches** (A: 3 scripts, B+C: 7 broadcast+TTS, D+E: 4 arch+address) with detailed messages.
+7. **Run the new suite on Haiku via `run-cheap.sh`.** If a scenario fails: assume authoring bug first; if evidence still points at backend after careful re-check, STOP and report to Derek before changing any extraction code. A regression guard that exposes a real miss is what this work is for — but the right response is to surface it, not silently patch around it.
+8. **`mcp__codex-cli__ask-codex` with the combinatorial matrix prompt** in Deliverable 3. Sanity-check ~10 of its outputs against schema, fix any legacy-field-name or boards/circuits-nesting slip-ups, commit in batches of ~20.
+9. **Run the full new + matrix suite on Haiku.** Then re-run on Sonnet 4.6 as a final sanity check. Sonnet-only failures are quirks to document in the scenario's `description`, not "fixes" to chase.
+10. **Push backend `main`** (CI auto-deploys). iOS doesn't need touching in this scope. Surface the final scenario count + Codex-review summary to Derek.
 
 If Derek's next field test happens during this work, pause to read the `confirmation_tts_decision` CloudWatch event for the Ze/PFC bug and fix that based on which gate it names. Don't dig into it speculatively.
 
