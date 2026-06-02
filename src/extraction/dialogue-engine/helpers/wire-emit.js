@@ -159,18 +159,30 @@ export function buildScriptInfo({ toolCallIdPrefix, sessionId, kind, text, now }
  * Build the extraction payload for one or more script-driven writes.
  * Mirrors `extracted_readings` shape so iOS sees the same structure as
  * Sonnet emits via the bundler.
+ *
+ * Audit-2026-06-02 Phase 2: writes carrying `auto_resolved: true` (the
+ * derivation-mirror entries that applyDerivations now surfaces back to
+ * the engine call sites) propagate that flag onto the resulting reading.
+ * Pre-existing iOS decoders ignore the extra key; the bundler-emitted
+ * Sonnet path has carried the same flag for over a year via the same
+ * spread pattern. Setting it conditionally (only when truthy) keeps
+ * the wire shape byte-identical for non-derivation writes.
  */
 export function buildExtractionPayload(circuit_ref, writes, source) {
   return {
     type: 'extraction',
     result: {
-      readings: writes.map((w) => ({
-        field: w.field,
-        circuit: circuit_ref,
-        value: w.value,
-        confidence: 1.0,
-        source,
-      })),
+      readings: writes.map((w) => {
+        const reading = {
+          field: w.field,
+          circuit: circuit_ref,
+          value: w.value,
+          confidence: 1.0,
+          source,
+        };
+        if (w.auto_resolved) reading.auto_resolved = true;
+        return reading;
+      }),
       observations: [],
       questions: [],
     },

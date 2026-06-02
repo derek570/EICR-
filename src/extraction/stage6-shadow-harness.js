@@ -881,7 +881,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // schema's slots — common case in non-protective-device turns.
     if (Array.isArray(result.extracted_readings) && result.extracted_readings.length > 0) {
       try {
-        tryEnterScriptFromWrites({
+        const entryResult = tryEnterScriptFromWrites({
           session,
           ws,
           schemas: ALL_DIALOGUE_SCHEMAS,
@@ -895,6 +895,43 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           fieldAliases: FIELD_CORRECTIONS,
           logger: log,
         });
+        // Audit-2026-06-02 Phase 2 — when the seed loop in
+        // tryEnterScriptFromWrites fired a derivation mirror (RCBO
+        // ocpd_bs_en ↔ rcd_bs_en, OCPD → ocpd_type='Rew', etc.), it
+        // returns the resulting writes so we can append them to
+        // result.extracted_readings BEFORE Sonnet's payload ships to
+        // iOS. We DON'T safeSend a separate envelope from inside the
+        // hook because sonnet-stream still hasn't emitted Sonnet's
+        // originating extraction at this point — a supplemental emit
+        // here would arrive on the wire before the originating writes
+        // (wrong order from iOS's perspective). Folding onto the
+        // same envelope means iOS sees both columns update on one
+        // audible confirmation, same UX as the entry-time and
+        // walk-through paths.
+        //
+        // Source tag 'rcbo_pivot_mirror' is informational only — iOS
+        // doesn't currently key on it, but optimiser reports + the
+        // shadow comparator can attribute mirrored writes back to the
+        // seed path without ambiguity.
+        if (Array.isArray(entryResult?.mirrorWrites) && entryResult.mirrorWrites.length > 0) {
+          for (const mw of entryResult.mirrorWrites) {
+            result.extracted_readings.push({
+              field: mw.field,
+              circuit: mw.circuit,
+              value: mw.value,
+              confidence: 1.0,
+              source: 'rcbo_pivot_mirror',
+              auto_resolved: true,
+            });
+          }
+          log.info('stage6.dialogue_seed_mirrors_appended', {
+            sessionId: session.sessionId,
+            schema: entryResult.schemaName,
+            circuit_ref: entryResult.circuit_ref,
+            mirror_count: entryResult.mirrorWrites.length,
+            mirror_fields: entryResult.mirrorWrites.map((m) => m.field),
+          });
+        }
       } catch (e) {
         log.warn('stage6.dialogue_enter_from_write_error', {
           sessionId: session.sessionId,

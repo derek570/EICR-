@@ -497,6 +497,13 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
       const slot = schema.slots.find((s) => s.field === w.field);
       const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now);
       writes.push(w);
+      // Audit-2026-06-02 Phase 2 — surface derivation mirrors/sets to
+      // the same extraction envelope so iOS sees both columns update
+      // on one audible confirmation. auto_resolved flags the derived
+      // writes so the optimiser comparator can distinguish them from
+      // direct inspector dictation.
+      for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
+      for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
       if (r.pivotTo) pivotTo = r.pivotTo;
     } else {
       // Circuit not yet known → queue. The active path drains
@@ -825,9 +832,15 @@ function runActivePath({
       const overwrites = [];
       for (const w of named) {
         const slot = schema.slots.find((s) => s.field === w.field);
-        applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
+        const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
         state.values[w.field] = w.value;
         overwrites.push(w);
+        // Audit-2026-06-02 Phase 2 — propagate derivation mirrors on
+        // confirmation-time amends so a corrected ocpd_bs_en still
+        // updates the rcd_bs_en column on the wire (same UX guarantee
+        // as entry-time writes).
+        for (const mw of r.mirrorWrites) overwrites.push({ ...mw, auto_resolved: true });
+        for (const sw of r.setWrites) overwrites.push({ ...sw, auto_resolved: true });
       }
       if (overwrites.length > 0) {
         safeSend(
@@ -1203,8 +1216,21 @@ function runActivePath({
   if (currentSlot && currentSlot.exclusiveWhenExpected) {
     const value = currentSlot.parser(text);
     if (value !== null && value !== undefined) {
-      applyWriteWithDerivations(session, schema, currentSlot, state.circuit_ref, value, now);
+      const r = applyWriteWithDerivations(
+        session,
+        schema,
+        currentSlot,
+        state.circuit_ref,
+        value,
+        now
+      );
       writes.push({ field: currentSlot.field, value });
+      // Audit-2026-06-02 Phase 2 — IR voltage / similar exclusive-slot
+      // parsers don't currently have mirroring derivations, but the
+      // wire shape stays consistent across paths if a future schema
+      // declares them.
+      for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
+      for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
     }
     if (writes.length > 0) {
       safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
@@ -1222,6 +1248,12 @@ function runActivePath({
     const slot = schema.slots.find((s) => s.field === w.field);
     const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
     writes.push(w);
+    // Audit-2026-06-02 Phase 2 — mid-walk-through derivation mirrors
+    // (e.g. inspector says "BS EN 61009" naming the rcd_bs_en slot;
+    // RCBO mirror also fills ocpd_bs_en) ride the same extraction
+    // envelope. Pre-Phase-2 only the named write made it to iOS.
+    for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
+    for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
     if (r.pivotTo) pivotTo = r.pivotTo;
   }
 
@@ -1282,6 +1314,11 @@ function runActivePath({
         now
       );
       writes.push({ field: currentSlot.field, value: bareValue });
+      // Audit-2026-06-02 Phase 2 — bare-value derivation mirrors (e.g.
+      // inspector answers a bare BS code while the engine has rcd_bs_en
+      // expected; RCBO mirror to ocpd_bs_en) ride the same envelope.
+      for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
+      for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
       if (r.pivotTo) pivotTo = r.pivotTo;
     }
   }
@@ -1796,7 +1833,17 @@ export function enterScriptByName({
   // it (an earlier draft did) was a Codex-flagged regression: an
   // utterance like "OCPD on circuit 4, BS EN 61009" would stay in OCPD
   // and ask the next OCPD slot instead of switching to the RCBO flow.
+  // appliedWrites tracks ONLY Sonnet's own seed writes — reported back
+  // in `seeded_writes` on the dispatcher envelope so the optimiser /
+  // tool-loop attribution stays accurate ("what did this
+  // start_dialogue_script call ask the server to seed?").
+  //
+  // wireWrites is appliedWrites + any derivation mirrors/sets, used for
+  // the wire emit so iOS sees ALL columns update on one envelope. The
+  // split keeps the dispatcher contract stable while still surfacing
+  // mirrors on the wire (Audit-2026-06-02 Phase 2).
   const appliedWrites = [];
+  const wireWrites = [];
   let pivotTo = null;
   for (const w of validWrites) {
     if (state.values[w.field] !== undefined) continue; // skip already-filled
@@ -1804,6 +1851,9 @@ export function enterScriptByName({
       const slot = schema.slots.find((s) => s.field === w.field);
       const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now);
       appliedWrites.push(w);
+      wireWrites.push(w);
+      for (const mw of r.mirrorWrites) wireWrites.push({ ...mw, auto_resolved: true });
+      for (const sw of r.setWrites) wireWrites.push({ ...sw, auto_resolved: true });
       if (r.pivotTo) pivotTo = r.pivotTo;
     } else {
       // Circuit unknown — queue. The active path drains pending_writes
@@ -1814,11 +1864,8 @@ export function enterScriptByName({
 
   // Wire-emit the applied extractions so iOS sees the values land
   // immediately. Mirrors runEntry's emit at engine.js:259.
-  if (appliedWrites.length > 0) {
-    safeSend(
-      ws,
-      buildExtractionPayload(resolvedCircuitRef, appliedWrites, schema.extractionSource)
-    );
+  if (wireWrites.length > 0) {
+    safeSend(ws, buildExtractionPayload(resolvedCircuitRef, wireWrites, schema.extractionSource));
   }
 
   // Pivot — derivation requested a schema transition (e.g. ocpd_bs_en
@@ -2345,6 +2392,21 @@ export function tryEnterScriptFromWrites({
       initScriptState(session, schema, circuitRef, now);
       const state = session.dialogueScriptState;
       const mirroredKeys = [];
+      // Audit-2026-06-02 Phase 2 — capture every mirror/set write that
+      // applyDerivations produces during seeding so the shadow-harness
+      // can fold them onto result.extracted_readings BEFORE Sonnet's
+      // payload ships to iOS. Pre-Phase-2 these mirrors landed in
+      // snapshot + state.values only — iOS never saw the column update
+      // until the next user-driven re-render.
+      //
+      // Why we don't safeSend here: the WS emit for Sonnet's
+      // originating writes is still ahead of us (sonnet-stream emits
+      // after stage6-shadow-harness returns). A supplemental safeSend
+      // here would arrive on the wire BEFORE the originating extraction
+      // — wrong order from iOS's perspective. Returning the writes lets
+      // the shadow-harness append them to result.extracted_readings, so
+      // one envelope carries both columns.
+      const seedMirrorWrites = [];
       for (const [f, v] of Object.entries(existing)) {
         if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
           state.values[f] = v;
@@ -2367,8 +2429,14 @@ export function tryEnterScriptFromWrites({
           // loop with the wrong schema.
           const slot = schema.slots.find((s) => s.field === f);
           if (slot && Array.isArray(slot.derivations)) {
-            applyDerivations({ session, schema, slot, value: v });
+            const r = applyDerivations({ session, schema, slot, value: v });
             mirroredKeys.push(f);
+            for (const mw of r.mirrorWrites) {
+              seedMirrorWrites.push({ field: mw.field, circuit: circuitRef, value: mw.value });
+            }
+            for (const sw of r.setWrites) {
+              seedMirrorWrites.push({ field: sw.field, circuit: circuitRef, value: sw.value });
+            }
           }
         }
       }
@@ -2394,14 +2462,29 @@ export function tryEnterScriptFromWrites({
       // field the engine just derived from the volunteered value.
       if (!nextAfterMirrors) {
         clearScriptState(session);
-        return { entered: true, schemaName: schema.name, circuit_ref: circuitRef, finished: true };
+        return {
+          entered: true,
+          schemaName: schema.name,
+          circuit_ref: circuitRef,
+          finished: true,
+          mirrorWrites: seedMirrorWrites,
+        };
       }
 
       askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
-      return { entered: true, schemaName: schema.name, circuit_ref: circuitRef };
+      return {
+        entered: true,
+        schemaName: schema.name,
+        circuit_ref: circuitRef,
+        mirrorWrites: seedMirrorWrites,
+      };
     }
   }
 
+  // mirrorWrites omitted on falsy returns — caller uses optional chaining
+  // (`entryResult?.mirrorWrites`) so undefined is safe, and keeping the
+  // legacy `{entered:false, reason}` shape matches the existing test
+  // expectations + the four sibling falsy-return shapes upstream.
   return { entered: false, reason: 'no_matching_schema' };
 }
 
