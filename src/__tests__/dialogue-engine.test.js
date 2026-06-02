@@ -866,6 +866,79 @@ describe('engine — IR bare-value capture at entry (session C3963EA1)', () => {
     expect(out).toEqual({ handled: false });
     expect(session.dialogueScriptState).toBeFalsy();
   });
+
+  test('named extractor bridges connector phrase: "live to live is greater than 299" (session 8782CB67)', () => {
+    // Field repro 2026-06-02, session 8782CB67-…-540F8A, circuit 3:
+    // inspector said "Downstairs sockets, insulation resistance. Live to
+    // live is greater than 299." Engine entered the IR script with
+    // volunteered_writes:[] and immediately TTS'd "What's the live-to-live?"
+    // The L-L slot value was sitting in the entry utterance but the
+    // namedExtractor's gap regex was `[^\\d∞>a-z]{0,30}?` — the a-z
+    // exclusion blocked any letter-bearing connective ("is", "is greater
+    // than", "was", "of"). Gap relaxed to `[^\\d∞]{0,30}?` so MEGAOHMS_VALUE_GROUP's
+    // `greater\s+(?:than|then)\s+\d+` branch wins at the right position
+    // and captures ">299" verbatim. Mirror change applies to L-E.
+    //
+    // Resolved-circuit path: the entry-time named-extractor write is
+    // applied directly to the circuit (extraction payload on the wire +
+    // snapshot mutation), NOT queued in pending_writes. The user-facing
+    // proof is that the next ask jumps straight to L-E.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Downstairs Sockets' } });
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText:
+        'Downstairs sockets, insulation resistance. Live to live is greater than 299.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Snapshot mutated with the harvested L-L value — canonical field
+    // name regardless of wire-emit rewrites that may happen downstream.
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('>299');
+    // Engine progresses to L-E ask — proves the L-L re-ask loop is broken.
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: "What's the live-to-earth?",
+      context_field: 'ir_live_earth_mohm',
+    });
+  });
+
+  test('named extractor bridges connector phrase on L-E: "live to earth is greater than 299"', () => {
+    // Mirror coverage for the L-E slot — same gap relaxation, same risk
+    // class. Without this test a future regression that re-tightens only
+    // one slot would slip through. Engine should skip the L-E ask (asks
+    // L-L first because that's the canonical first slot, then would jump
+    // past L-E to voltage on the next turn — but we only test the entry
+    // turn here).
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Downstairs Sockets' } });
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. Live to earth is greater than 299.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.stateSnapshot.circuits[3].ir_live_earth_mohm).toBe('>299');
+  });
+
+  test('connector form "live to live was 50" captures 50 (no unit required)', () => {
+    // Defence-in-depth for the gap relaxation: bare integer after a
+    // connector word should land in L-L verbatim, not be silently dropped.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Downstairs Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. Live to live was 50.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('50');
+  });
 });
 
 describe('engine — IR pause-on-second-miss for resume hook (session C3963EA1)', () => {

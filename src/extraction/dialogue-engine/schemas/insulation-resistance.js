@@ -31,8 +31,17 @@ const slots = [
     question: "What's the live-to-live?",
     parser: parseMegaohms,
     // "live to live", "line to line", "L to L", "L L" / "LL" / "L-L" / "L.L".
+    // Gap excludes only `\d` and `∞` (the value-group's leading chars) so
+    // natural connectives — " is ", " is greater than ", " of ", " was " —
+    // can bridge the label to the value. Aligned with ring-continuity.js
+    // (`[^\\d∞]{0,30}?`) and rcd.js trip-time (`[^∞]{0,40}?`); the previous
+    // stricter `[^\\d∞>a-z]` blocked any letter-bearing connective and silently
+    // dropped the volunteered value on entry-time utterances like "Live to
+    // live is greater than 299." (session 8782CB67-…-540F8A circuit 3,
+    // 2026-06-02). Lazy match + MEGAOHMS_VALUE_GROUP's "greater than N"
+    // branch wins at the first plausible position, so ">299" is preserved.
     namedExtractor: new RegExp(
-      `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b[^\\d∞>a-z]{0,30}?(${MEGAOHMS_VALUE_GROUP})`,
+      `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b[^\\d∞]{0,30}?(${MEGAOHMS_VALUE_GROUP})`,
       'i'
     ),
     acceptsBareValue: true,
@@ -44,7 +53,7 @@ const slots = [
     question: "What's the live-to-earth?",
     parser: parseMegaohms,
     namedExtractor: new RegExp(
-      `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b[^\\d∞>a-z]{0,30}?(${MEGAOHMS_VALUE_GROUP})`,
+      `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b[^\\d∞]{0,30}?(${MEGAOHMS_VALUE_GROUP})`,
       'i'
     ),
     acceptsBareValue: true,
