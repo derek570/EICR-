@@ -31,17 +31,46 @@ const slots = [
     question: "What's the live-to-live?",
     parser: parseMegaohms,
     // "live to live", "line to line", "L to L", "L L" / "LL" / "L-L" / "L.L".
-    // Gap excludes only `\d` and `∞` (the value-group's leading chars) so
-    // natural connectives — " is ", " is greater than ", " of ", " was " —
-    // can bridge the label to the value. Aligned with ring-continuity.js
-    // (`[^\\d∞]{0,30}?`) and rcd.js trip-time (`[^∞]{0,40}?`); the previous
-    // stricter `[^\\d∞>a-z]` blocked any letter-bearing connective and silently
-    // dropped the volunteered value on entry-time utterances like "Live to
-    // live is greater than 299." (session 8782CB67-…-540F8A circuit 3,
-    // 2026-06-02). Lazy match + MEGAOHMS_VALUE_GROUP's "greater than N"
-    // branch wins at the first plausible position, so ">299" is preserved.
+    //
+    // Label-to-value bridge has TWO branches, both restrictive:
+    //   (a) bare form: 0-3 chars of non-letter/non-digit punctuation/whitespace
+    //       only. Catches "L-L 200", "L-L: 200", "L-L, 200", "L-L=200",
+    //       "L-L >299", "L-L infinite", "L-L OL".
+    //   (b) connector form: lead-in punctuation, then an EXPLICIT connector
+    //       word ("is", "was", "of", "reads", "measures", "equals", "=",
+    //       "tested at", "came in at", "came up at"), then a TIGHT 0-3
+    //       char whitespace/comma gap before the value. Catches
+    //       "L-L is 200", "L-L is greater than 299", "L-L tested at 999",
+    //       "L-L was 50".
+    //
+    // Why the connector allowlist (vs the previous `[^\\d∞]{0,30}?` open
+    // gap): the open gap accepted arbitrary letters between label and value,
+    // which let bad utterances capture the wrong number — e.g.
+    //   "live to live for circuit 3 is greater than 299"
+    //     → gap consumed " for circuit ", value group's `\\d*\\.?\\d+` branch
+    //       matched the bare digit "3", and L-L was certified as 3 megaohms
+    //   "live to live voltage 500"
+    //     → gap consumed " v", value group's `o\\s*l` saturation sentinel
+    //       matched the "ol" inside "voltage" and L-L was certified as ">999"
+    // Both are safety-critical wrong readings on an EICR. The connector
+    // allowlist closes both holes while still supporting the natural
+    // "is greater than X" form that motivated the original relaxation
+    // (session 8782CB67-…-540F8A circuit 3, 2026-06-02 field repro).
+    //
+    // Trade-off acknowledged: utterances that link the label to the value
+    // via a connector NOT in the allowlist (e.g. "live to live around 200",
+    // "live to live IR 500") fall back to a no-match and the engine asks
+    // for the value — same surface as a Deepgram-garbled label. Extend the
+    // connector list only when field telemetry shows a real omission, not
+    // pre-emptively.
     namedExtractor: new RegExp(
-      `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b[^\\d∞]{0,30}?(${MEGAOHMS_VALUE_GROUP})`,
+      `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b` +
+        `(?:` +
+        `[^a-z\\d∞]{0,3}?` +
+        `|` +
+        `[\\s,;:.-]+(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at|=)[\\s,]{0,3}?` +
+        `)` +
+        `(${MEGAOHMS_VALUE_GROUP})`,
       'i'
     ),
     acceptsBareValue: true,
@@ -52,8 +81,17 @@ const slots = [
     label: 'live-to-earth',
     question: "What's the live-to-earth?",
     parser: parseMegaohms,
+    // Same two-branch bridge as L-L above — keep them in lockstep, or a
+    // future false-positive class will affect only one slot and fall through
+    // unnoticed. See L-L for the rationale and trade-offs.
     namedExtractor: new RegExp(
-      `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b[^\\d∞]{0,30}?(${MEGAOHMS_VALUE_GROUP})`,
+      `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b` +
+        `(?:` +
+        `[^a-z\\d∞]{0,3}?` +
+        `|` +
+        `[\\s,;:.-]+(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at|=)[\\s,]{0,3}?` +
+        `)` +
+        `(${MEGAOHMS_VALUE_GROUP})`,
       'i'
     ),
     acceptsBareValue: true,

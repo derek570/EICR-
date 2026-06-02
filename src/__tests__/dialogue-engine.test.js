@@ -939,6 +939,103 @@ describe('engine — IR bare-value capture at entry (session C3963EA1)', () => {
     });
     expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('50');
   });
+
+  // Codex-review-2026-06-02 P1 — false-positive guards for the connector
+  // allowlist. These pin the bridge so a future "let me just allow anything"
+  // relaxation can't slip past — each test below corresponds to a safety-
+  // critical wrong-reading scenario in production EICRs.
+
+  test('does NOT capture a circuit-number digit as L-L value (codex p1)', () => {
+    // Repro: "live to live for circuit 3 is greater than 299"
+    //   Pre-fix bug: gap consumed " for circuit ", value-group's bare-digit
+    //   alternative matched "3", L-L was certified as 3 megaohms (wildly
+    //   under the safe minimum) before "greater than 299" was ever reached.
+    //   Fix: connector allowlist rejects "for" — overall no-match, so the
+    //   engine falls back to asking the inspector for the L-L value.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance live to live for circuit 3 is greater than 299.',
+      now: 1000,
+    });
+    // No volunteered L-L on this entry — the engine asks for L-L.
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBeUndefined();
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: "What's the live-to-live?",
+      context_field: 'ir_live_live_mohm',
+    });
+  });
+
+  test('does NOT match `o\\s*l` saturation sentinel inside "voltage" (codex p1)', () => {
+    // Repro: "live to live voltage 500"
+    //   Pre-fix bug: gap consumed " v", value-group's `o\\s*l` saturation
+    //   sentinel matched the "ol" inside "voltage" and L-L was certified
+    //   as ">999" (max range). The inspector probably said "voltage 500"
+    //   meaning the test voltage; L-L was unstated. Fix: connector
+    //   allowlist rejects "voltage" — overall no-match.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. Live to live voltage 500.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBeUndefined();
+  });
+
+  test('does NOT bridge through "earth was" to swap labels (codex p1 corollary)', () => {
+    // Repro: "live to live earth was 50"
+    //   Pre-fix bug: gap consumed " earth was ", bare-digit branch matched
+    //   "50", L-L was certified as 50 megaohms when the inspector clearly
+    //   intended LIVE-TO-EARTH. Fix: connector allowlist rejects "earth".
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. Live to live earth was 50.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBeUndefined();
+  });
+
+  test('bare-form punctuation is still tolerated: "L-L: 200" → 200', () => {
+    // Regression guard: the connector allowlist tightening must NOT break
+    // punctuation-as-separator forms (colon, comma, equals-no-space).
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. L-L: 200.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('200');
+  });
+
+  test('saturation sentinels still parse: "Live to live infinite" → ">999"', () => {
+    // Regression guard: bare-form sentinel words ("infinite", "OL", "off
+    // scale", "out of range") must still match via the value group when
+    // they sit immediately after the label.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. Live to live infinite.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('>999');
+  });
 });
 
 describe('engine — IR pause-on-second-miss for resume hook (session C3963EA1)', () => {

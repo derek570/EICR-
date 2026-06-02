@@ -170,36 +170,62 @@ const SNAPSHOT_MARKER_ESCAPE_PATTERN = /<<<\s*(END_USER_TEXT|USER_TEXT)\s*>>>/gi
 // Bullets 1, 2, and the JSON-inline bullet are channel-agnostic
 // (the quoted-data contract is the primary defence mechanism and
 // applies uniformly); only the authority-anchor bullet differs.
-// Walk the Anthropic-shaped messages array for the most recent user-role
-// text. Used by callWithRetry's tiered model router (Haiku default →
-// Sonnet/Opus for observation turns). Defensive against the two content
-// shapes the messages array carries:
+// Walk the Anthropic-shaped messages array for the most recent inspector
+// transcript text and narrow it to JUST the dictation, stripping
+// server-added context. Used by callWithRetry's tiered model router
+// (Haiku default → Sonnet/Opus for observation turns).
+//
+// buildUserMessage wraps each turn as:
+//   "NEW utterance: <transcript>\n\n<server-added context>"
+// where the server-added context can be:
+//   - regex pre-apply notice: "Inspector's app already wrote these fields
+//     … (observations, additional readings, corrections): zs, postcode"
+//   - postcode lookup result
+//   - off-mode digest: "Observations already created (do NOT re-extract): …"
+//
+// Both the regex notice's "(observations, …)" and the off-mode "Observations
+// already created" digest contain the literal word "observations", which
+// OBSERVATION_PATTERN cheerfully matches. Without narrowing, ANY turn with
+// regex pre-fills (≈ every reading turn) or any session with prior
+// observations would falsely route to the observation-tier model, erasing
+// the cost savings of the tiered router. We isolate the inspector text
+// between "NEW utterance: " and the first "\n\n" so the classifier sees
+// what the inspector actually said.
+//
+// Defensive against multiple content shapes:
 //   - string content (legacy / keepalive): { role: 'user', content: 'text' }
 //   - block-array content (extraction / tool_result): { role: 'user',
 //     content: [{ type: 'text', text: '...', cache_control: {...} }, ...] }
-//     Tool-result messages have { type: 'tool_result', content: '...' }
-//     blocks instead of text — we walk past those to find the first text
-//     block, so a user turn that landed mid-tool-result still classifies
-//     on the inspector's actual utterance, not on the tool stub reply.
-// Returns '' on any unrecognised shape so the caller's regex test is a
-// safe no-op rather than throwing.
-function _extractLastUserText(messages) {
+//   - tool_result blocks (no .text field) — we skip past them backwards
+//     so the classifier still lands on the inspector's actual utterance,
+//     not on a tool stub reply.
+// Falls back to the whole text when no "NEW utterance:" sentinel is
+// present (keepalive, future message shapes), so the worst case is
+// no narrower than the pre-2026-06-02 implementation.
+function _extractInspectorTranscript(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return '';
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (!msg || msg.role !== 'user') continue;
     const c = msg.content;
-    if (typeof c === 'string') return c;
-    if (Array.isArray(c)) {
+    let text = '';
+    if (typeof c === 'string') {
+      text = c;
+    } else if (Array.isArray(c)) {
       for (const block of c) {
         if (block && block.type === 'text' && typeof block.text === 'string') {
-          return block.text;
+          text = block.text;
+          break;
         }
       }
     }
-    // Found a user message but no usable text — keep walking backwards
-    // in case an earlier user turn has the transcript (rare, e.g. when
-    // the most recent user message is a pure tool_result).
+    if (!text) continue; // walk back past tool_result-only messages
+    const prefix = 'NEW utterance: ';
+    const idx = text.indexOf(prefix);
+    if (idx === -1) return text; // no sentinel — return whole text
+    const tail = text.slice(idx + prefix.length);
+    const stop = tail.indexOf('\n\n');
+    return stop === -1 ? tail : tail.slice(0, stop);
   }
   return '';
 }
@@ -2338,22 +2364,31 @@ export class EICRExtractionSession {
     // set → uniform model on every turn (today's Haiku test config).
     // Both set → tiered router active.
     //
-    // The classifier runs on the LAST user message text only. tool_result
-    // continuation messages have content arrays without a top-level text
-    // string, so we walk for the first text block defensively. Cache key
-    // is per-model, so observation turns pay an extra cache-write when
-    // the observation-tier cache has gone cold (>5 min since last use);
+    // The classifier scans JUST the inspector's transcript portion (the
+    // text between "NEW utterance: " and the next "\n\n"), NOT the full
+    // wrapped user message. buildUserMessage appends server-added context
+    // — the regex pre-apply notice contains "(observations, additional
+    // readings, corrections)" and off-mode appends "Observations already
+    // created (do NOT re-extract): …" — both of which OBSERVATION_PATTERN
+    // matches against the literal word "observations". Scanning the full
+    // message would route every reading turn with regex pre-fills to the
+    // observation-tier model, erasing the cost savings the router exists
+    // to deliver. _extractInspectorTranscript handles the narrowing.
+    //
+    // Cache key is per-model, so observation turns pay an extra cache-write
+    // when the observation-tier cache has gone cold (>5 min since last use);
     // negligible at expected observation density (~10% of turns).
     const defaultModel = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
     const observationModel = (process.env.OBSERVATION_EXTRACT_MODEL || '').trim();
-    const lastUserText = _extractLastUserText(messages);
-    const isObservationTurn = observationModel.length > 0 && OBSERVATION_PATTERN.test(lastUserText);
+    const inspectorTranscript = _extractInspectorTranscript(messages);
+    const isObservationTurn =
+      observationModel.length > 0 && OBSERVATION_PATTERN.test(inspectorTranscript);
     const model = isObservationTurn ? observationModel : defaultModel;
     if (isObservationTurn) {
       logger.info(`Session ${this.sessionId} Turn ${this.turnCount} observation tier`, {
         model,
         default_model: defaultModel,
-        text_preview: lastUserText.slice(0, 80),
+        text_preview: inspectorTranscript.slice(0, 80),
       });
     }
 

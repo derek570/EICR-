@@ -913,6 +913,74 @@ describe('EICRExtractionSession', () => {
       await session.callWithRetry([{ role: 'user', content: 'Observation, broken socket. C2.' }]);
       expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
     });
+
+    // Codex-review-2026-06-02 P2 — classifier MUST scan only the inspector's
+    // transcript (the "NEW utterance: <text>\n\n…" block), NOT the wrapped
+    // user message. The wrapping appends server-added context that contains
+    // the literal word "observations" (regex pre-apply notice's
+    // "(observations, additional readings, corrections)" and off-mode's
+    // "Observations already created (do NOT re-extract): …"). Without
+    // narrowing, every turn with regex pre-fills would falsely escalate.
+
+    test('SCOPE: regex pre-apply notice mentioning "observations" does NOT escalate (codex p2)', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      // Faithful replica of what buildUserMessage emits when regexResults
+      // is non-empty (one of the most common turn shapes in production):
+      //   - "NEW utterance: <inspector text>\n\n"
+      //   - "Inspector's app already wrote these fields ... DO NOT extract
+      //     them ... Focus only on anything ELSE in the utterance
+      //     (observations, additional readings, corrections): zs, postcode"
+      // The inspector ONLY said "Z s is 0.6 for upstairs lights" — no
+      // observation intent. Must stay on Haiku.
+      const wrappedMessage =
+        'NEW utterance: Z s is 0.6 for upstairs lights.\n\n' +
+        "Inspector's app already wrote these fields from this utterance — " +
+        'DO NOT extract them or emit a record_reading / set_field tool call ' +
+        'for any of them. The next job_state_update will reflect the values. ' +
+        'Focus only on anything ELSE in the utterance (observations, ' +
+        'additional readings, corrections): zs, postcode';
+      await session.callWithRetry([{ role: 'user', content: wrappedMessage }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('SCOPE: off-mode "Observations already created" digest does NOT escalate (codex p2)', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      // Off-mode buildUserMessage appends a digest of prior observations
+      // verbatim. The digest's lead-in starts "Observations already created
+      // (do NOT re-extract):" — direct OBSERVATION_PATTERN hit. The inspector's
+      // utterance is "Z s is 0.6 for upstairs lights" — no escalation.
+      const wrappedMessage =
+        'NEW utterance: Z s is 0.6 for upstairs lights.\n\n' +
+        'Observations already created (do NOT re-extract): ' +
+        'broken socket in bedroom; exposed wiring in loft';
+      await session.callWithRetry([{ role: 'user', content: wrappedMessage }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('SCOPE: inspector utterance with "observation" still escalates inside the wrapped message', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      // Same wrapping shape but the inspector said the trigger word. Must
+      // still escalate — proves we narrowed the scan to JUST the transcript,
+      // not turned it off.
+      const wrappedMessage =
+        'NEW utterance: Observation, exposed wiring in the loft. C2.\n\n' +
+        'POSTCODE LOOKUP: "RG47PF" → Reading, Berkshire (valid)';
+      await session.callWithRetry([{ role: 'user', content: wrappedMessage }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('SCOPE: no "NEW utterance:" sentinel → falls back to whole-text scan (keepalive)', async () => {
+      // Keepalive call passes content like "[keepalive]" — no sentinel
+      // prefix, no observation word, no escalation. Verify the fallback
+      // path doesn't break and stays on the default model.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([{ role: 'user', content: '[keepalive]' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
   });
 
   describe('pause and resume', () => {
