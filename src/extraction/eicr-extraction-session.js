@@ -17,6 +17,7 @@ import {
   DEFAULT_MAIN_BOARD_ID,
 } from './stage6-multi-board-shape.js';
 import { CONTROL_CHAR_PATTERN } from './stage6-sanitise-user-text.js';
+import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
 import logger from '../logger.js';
@@ -169,6 +170,40 @@ const SNAPSHOT_MARKER_ESCAPE_PATTERN = /<<<\s*(END_USER_TEXT|USER_TEXT)\s*>>>/gi
 // Bullets 1, 2, and the JSON-inline bullet are channel-agnostic
 // (the quoted-data contract is the primary defence mechanism and
 // applies uniformly); only the authority-anchor bullet differs.
+// Walk the Anthropic-shaped messages array for the most recent user-role
+// text. Used by callWithRetry's tiered model router (Haiku default →
+// Sonnet/Opus for observation turns). Defensive against the two content
+// shapes the messages array carries:
+//   - string content (legacy / keepalive): { role: 'user', content: 'text' }
+//   - block-array content (extraction / tool_result): { role: 'user',
+//     content: [{ type: 'text', text: '...', cache_control: {...} }, ...] }
+//     Tool-result messages have { type: 'tool_result', content: '...' }
+//     blocks instead of text — we walk past those to find the first text
+//     block, so a user turn that landed mid-tool-result still classifies
+//     on the inspector's actual utterance, not on the tool stub reply.
+// Returns '' on any unrecognised shape so the caller's regex test is a
+// safe no-op rather than throwing.
+function _extractLastUserText(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== 'user') continue;
+    const c = msg.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) {
+      for (const block of c) {
+        if (block && block.type === 'text' && typeof block.text === 'string') {
+          return block.text;
+        }
+      }
+    }
+    // Found a user message but no usable text — keep walking backwards
+    // in case an earlier user turn has the transcript (rare, e.g. when
+    // the most recent user message is a pure tool_result).
+  }
+  return '';
+}
+
 function buildPreamble(authorityAnchorBullet) {
   return [
     'SNAPSHOT TRUST BOUNDARY (SAFETY INVARIANT — READ BEFORE PARSING BELOW):',
@@ -2287,14 +2322,50 @@ export class EICRExtractionSession {
     // go through this path.
     const system = systemPrompt ? systemPrompt : this.buildSystemBlocks();
 
+    // Model selector — tiered routing on observation intent.
+    //
+    // Default model comes from SONNET_EXTRACT_MODEL (or claude-sonnet-4-6
+    // if unset). When OBSERVATION_EXTRACT_MODEL is set AND this turn's
+    // user utterance matches OBSERVATION_PATTERN — the same fuzzy regex
+    // pre-llm-gate.js uses for short-circuiting dialogue scripts — the
+    // turn is routed to the observation-tier model instead. Use case:
+    // default extraction on Haiku 4.5 for fast tool routing, escalate
+    // observation classification (C1/C2/C3/FI + BPG4 reasoning + reg
+    // lookup) to Sonnet/Opus where the model needs more headroom.
+    //
+    // Both env vars unset → behaviour identical to pre-change (Sonnet
+    // everywhere). OBSERVATION_EXTRACT_MODEL unset but SONNET_EXTRACT_MODEL
+    // set → uniform model on every turn (today's Haiku test config).
+    // Both set → tiered router active.
+    //
+    // The classifier runs on the LAST user message text only. tool_result
+    // continuation messages have content arrays without a top-level text
+    // string, so we walk for the first text block defensively. Cache key
+    // is per-model, so observation turns pay an extra cache-write when
+    // the observation-tier cache has gone cold (>5 min since last use);
+    // negligible at expected observation density (~10% of turns).
+    const defaultModel = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
+    const observationModel = (process.env.OBSERVATION_EXTRACT_MODEL || '').trim();
+    const lastUserText = _extractLastUserText(messages);
+    const isObservationTurn = observationModel.length > 0 && OBSERVATION_PATTERN.test(lastUserText);
+    const model = isObservationTurn ? observationModel : defaultModel;
+    if (isObservationTurn) {
+      logger.info(`Session ${this.sessionId} Turn ${this.turnCount} observation tier`, {
+        model,
+        default_model: defaultModel,
+        text_preview: lastUserText.slice(0, 80),
+      });
+    }
+
     // Build request params. Tools + tool_choice are included only when the
     // caller opts in, so keepalive / non-extraction calls stay cheap.
     const requestParams = {
-      // SONNET_EXTRACT_MODEL must match the keepalive call site above
-      // AND stage6-shadow-harness.js SHADOW_MODEL — prompt cache is
-      // keyed by model. Default kept as the production Sonnet model so
-      // unsetting the var is a no-op rollback.
-      model: (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim(),
+      // model resolved above — defaults to SONNET_EXTRACT_MODEL, overridden
+      // for observation turns when OBSERVATION_EXTRACT_MODEL is set.
+      // Must match the keepalive call site above (which uses the same
+      // SONNET_EXTRACT_MODEL default) AND stage6-shadow-harness.js
+      // SHADOW_MODEL — prompt cache is keyed by model.
+      model,
       max_tokens: maxTokens,
       system,
       messages,

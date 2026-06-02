@@ -779,6 +779,142 @@ describe('EICRExtractionSession', () => {
     }, 10000);
   });
 
+  // Tiered model router — sends observation turns to a larger model so the
+  // BPG4 reasoning (C1/C2/C3/FI classification, regulation lookup, observation
+  // text generation) gets the headroom it needs while non-observation tool
+  // routing stays on a smaller/faster default. Gated behind two env vars so
+  // unsetting either reverts to single-model behaviour:
+  //   - SONNET_EXTRACT_MODEL — default for every turn (existing var)
+  //   - OBSERVATION_EXTRACT_MODEL — overrides default when this turn's user
+  //     utterance matches OBSERVATION_PATTERN (pre-llm-gate.js)
+  describe('callWithRetry — observation-tier model router', () => {
+    const ORIGINAL_SONNET = process.env.SONNET_EXTRACT_MODEL;
+    const ORIGINAL_OBS = process.env.OBSERVATION_EXTRACT_MODEL;
+
+    beforeEach(() => {
+      mockCreate.mockResolvedValue({ content: [{ type: 'text', text: '{}' }], usage: {} });
+    });
+
+    afterEach(() => {
+      // Restore env so other suites don't see leaked state.
+      if (ORIGINAL_SONNET === undefined) delete process.env.SONNET_EXTRACT_MODEL;
+      else process.env.SONNET_EXTRACT_MODEL = ORIGINAL_SONNET;
+      if (ORIGINAL_OBS === undefined) delete process.env.OBSERVATION_EXTRACT_MODEL;
+      else process.env.OBSERVATION_EXTRACT_MODEL = ORIGINAL_OBS;
+    });
+
+    test('no env vars → defaults to claude-sonnet-4-6 (regression guard)', async () => {
+      delete process.env.SONNET_EXTRACT_MODEL;
+      delete process.env.OBSERVATION_EXTRACT_MODEL;
+      await session.callWithRetry([{ role: 'user', content: 'Address is 1 Foo Street.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('SONNET_EXTRACT_MODEL only → uniform model on every turn', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      delete process.env.OBSERVATION_EXTRACT_MODEL;
+      await session.callWithRetry([{ role: 'user', content: 'Observation, broken socket. C3.' }]);
+      // No tiered router — observation utterance still goes to Haiku because
+      // the observation-tier env var was not set.
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('tiered: non-observation utterance stays on default (Haiku)', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([{ role: 'user', content: 'Z s is 0.6 for upstairs lights.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('tiered: observation utterance escalates to observation-tier model', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        { role: 'user', content: 'Observation, the cooker socket is broken. C2.' },
+      ]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('tiered: Deepgram garble "obvashon" still escalates (fuzzy gate)', async () => {
+      // OBSERVATION_PATTERN tolerates the documented garbles — obvashon,
+      // abservation, obvashen, observatior, obs (truncation). Critical to
+      // verify the gate fires on these, otherwise routing leaks back to the
+      // small model for the very utterances the inspector intended as an
+      // observation. Verified-matches list lives in pre-llm-gate.js:154.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        { role: 'user', content: 'obvashon, broken socket in bedroom.' },
+      ]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('tiered: "observed" / "observing" do NOT escalate (verb forms rejected)', async () => {
+      // The pattern explicitly rejects observe/observed/observing/observer
+      // so a stray "I observed the meter earlier" doesn't trigger an
+      // unnecessary Sonnet round.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([{ role: 'user', content: 'I observed the meter earlier.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('tiered: block-array content shape (Anthropic message blocks) classifies correctly', async () => {
+      // Real extraction messages carry block-array content with cache_control.
+      // Verify the classifier walks the blocks, finds the text, and matches.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'Observation. Earthing terminal missing the warning label. C3.',
+              cache_control: { type: 'ephemeral', ttl: '5m' },
+            },
+          ],
+        },
+      ]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('tiered: classifier walks past tool_result blocks to find user text', async () => {
+      // After a tool_use round, Anthropic's continuation messages can include
+      // tool_result blocks (no text field). The classifier should keep
+      // walking until it finds a real user utterance — without this the
+      // observation might escalate on the FIRST text block above it, which
+      // is the intended behaviour. Test: a tool_result message comes after
+      // an observation; the classifier walks backwards and finds the text.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'Observation, exposed wiring.' }],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', name: 'record_observation', input: {} }],
+        },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'ok' }],
+        },
+      ]);
+      // Most-recent user msg is the tool_result block (no text) — walker
+      // continues back to the observation utterance and escalates.
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('OBSERVATION_EXTRACT_MODEL with empty string → treated as unset', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = '';
+      await session.callWithRetry([{ role: 'user', content: 'Observation, broken socket. C2.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+  });
+
   describe('pause and resume', () => {
     test('should pause and resume recording', () => {
       session.start(null);
