@@ -74,6 +74,12 @@ import { runToolLoop } from './stage6-tool-loop.js';
 // speculator object around.
 import { createSpeculator } from './loaded-barrel-speculator.js';
 import { getVoiceLatencyForSession, getActiveSessionEntry } from './active-sessions.js';
+// Fix A 2026-06-02 — broadcast-intent skip for the speculator. Detection
+// happens here (same place we mint turnId + resolve entry) so the per-turn
+// broadcastIntentByTurn map is populated BEFORE runToolLoop wires the
+// speculator hooks; otherwise a fast first record_reading from Sonnet
+// could read the map before it's written.
+import { detectBroadcastIntent } from './dialogue-engine/parsers/circuit-range.js';
 // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8).
 import { emitTurnCoreSummary, startAudioFinalizer } from './voice-latency-turn-summary.js';
 import { getElevenLabsKey } from '../services/secrets.js';
@@ -302,6 +308,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
     if (cids.size > 0 && entry.fastPathCorrelationIdByTurn instanceof Map) {
       entry.fastPathCorrelationIdByTurn.set(turnId, cids);
+    }
+    // Fix A 2026-06-02 (handoff §A) — populate broadcastIntentByTurn so the
+    // speculator's preflight can skip per-circuit synth on broadcast turns.
+    // Write must happen BEFORE runToolLoop is invoked so the very first
+    // streamed record_reading hook sees the flag — Sonnet can emit tool_use
+    // blocks within tens of ms of the request, and the speculator reads the
+    // map synchronously in _speculate. Detection is a single regex pass on
+    // the transcript (BROADCAST_ALL/RANGE/LIST patterns) — same helper the
+    // engine's processDialogueTurn pre-filter uses. Map.set is idempotent
+    // on turnId; only `true` is stored (absent === false at read sites).
+    if (entry.broadcastIntentByTurn instanceof Map) {
+      if (detectBroadcastIntent(transcriptText)) {
+        entry.broadcastIntentByTurn.set(turnId, true);
+      }
     }
   }
   const vlFlags = entry?.voiceLatency?.flags ?? null;
@@ -1164,6 +1184,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     if (entry) {
       entry.pendingFastTtsSlots?.delete(turnId);
       entry.fastPathCorrelationIdByTurn?.delete(turnId);
+      // Fix A 2026-06-02 (handoff §A) — symmetric cleanup with the write at
+      // the top of runLiveMode. .delete is idempotent so this is safe even
+      // on turns where detectBroadcastIntent returned false (no entry was
+      // written) and on the error path where runToolLoop threw before any
+      // hook fired.
+      entry.broadcastIntentByTurn?.delete(turnId);
     }
     // Drop the per-turn transcript pointer so a dispatcher firing on
     // the next turn can't accidentally reuse this turn's text.

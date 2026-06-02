@@ -11,7 +11,32 @@
 // writer of `Entry.session`. Route-side consumers only read + attribute
 // side-effects onto `session.costTracker`.
 
-/** @type {Map<string, { session: any, questionGate: any, ws: any, [k: string]: any }>} */
+/**
+ * @type {Map<string, ActiveSessionEntry>}
+ *
+ * Entry fields owned by sonnet-stream.js (only writer):
+ *  - session / questionGate / ws / voiceLatency — long-lived per-session state.
+ *  - pendingFastTtsSlots: Map<turnId, Set<slotKey>> — Mode-A fast-TTS
+ *    POST acceptances. Written by the fast-TTS route before responding to
+ *    iOS so loaded-barrel-speculator._speculate's preflight can skip the
+ *    pre-synth. Cleared per-turn by runLiveMode's finally block.
+ *  - fastPathCorrelationIdByTurn: Map<turnId, Set<correlationId>> — client-
+ *    minted correlation ids the fast-TTS route saw on this turn's transcript
+ *    POSTs. startAudioFinalizer drains pre-finalizer decrements stashed by
+ *    decrementExpectedAcksByCorrelation. Cleared per-turn alongside
+ *    pendingFastTtsSlots.
+ *  - broadcastIntentByTurn: Map<turnId, true> — set by runLiveMode when
+ *    `detectBroadcastIntent(transcriptText)` returns true. Read by the
+ *    speculator's `_speculate` preflight to skip per-circuit synth on
+ *    broadcast turns (defence-in-depth with the post-detect broadcastBuckets
+ *    suppression that already exists in the speculator). Same per-turn
+ *    lifecycle: written before runToolLoop, cleared in runLiveMode's
+ *    finally block. Only `true` is ever written (absent === not a broadcast),
+ *    so a single get() call is sufficient at the read site.
+ *  - consumedAskUtterances / seenTranscriptUtterances / recentAskAnswers /
+ *    recentTranscripts — ask_user/transcript dedupe ledgers (see comments
+ *    at their respective sonnet-stream.js init sites).
+ */
 export const activeSessions = new Map();
 
 /**

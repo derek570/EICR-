@@ -339,6 +339,40 @@ export function createSpeculator({
     // a fast-path skip that doesn't touch buildConfirmationText.
     if (!shouldGenerateConfirmation({ field, confidence })) return;
 
+    // Fix A 2026-06-02 (handoff-2026-06-02-fixes.md §A) — broadcast-intent
+    // skip. When runLiveMode's pre-runToolLoop regex pass classified the
+    // inspector's transcript as a broadcast (BROADCAST_ALL/RANGE/LIST),
+    // every per-circuit speculation is dropped before opening a cost
+    // ledger. The bundler's grouped TTS ("Circuits 2, 3, IR L to E >299")
+    // still ships at round end. Defence-in-depth: if the upstream regex
+    // misses a phrasing the inspector invents, broadcastBuckets below
+    // still aborts as soon as the second circuit on the same (field,
+    // value, boardId) arrives — the user gets the same eventual outcome
+    // as today, no worse.
+    //
+    // Restricted to Number.isInteger(circuit) && circuit > 0 — board-level
+    // readings (circuit null / 0) are not subject to per-circuit broadcast
+    // and must never be skipped by this gate.
+    //
+    // Session E87F58C1 repro (09:35:26): 388 ms between loaded_barrel_fired
+    // (circuit 2's mid_stream_emit reached iOS) and loaded_barrel_broadcast_detected
+    // (post-detect bucket suppression kicked in). 388 ms is enough for
+    // iOS to have started playing the per-circuit TTS; the bundler's
+    // grouped TTS arrived 463 ms later and played on top of it.
+    if (Number.isInteger(circuit) && circuit > 0) {
+      const intentEntry = getActiveSessionEntry(sessionId);
+      if (intentEntry?.broadcastIntentByTurn?.get(turnId) === true) {
+        logger?.info?.('voice_latency.loaded_barrel_skipped_broadcast_intent', {
+          sessionId,
+          turnId,
+          field,
+          circuit,
+          boardId,
+        });
+        return;
+      }
+    }
+
     // Issue 10 multi-circuit broadcast suppression. Must run BEFORE
     // any work — once a bucket flips to suppressed, even cached
     // entries shouldn't get the wrong-circuit text. Apply only to

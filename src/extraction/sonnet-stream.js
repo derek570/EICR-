@@ -2570,6 +2570,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Map<turnId, Set<correlationId>>. Cleared by the same `finally`
       // block as pendingFastTtsSlots.
       fastPathCorrelationIdByTurn: new Map(),
+      // Fix A 2026-06-02 (handoff-2026-06-02-fixes.md §A) — broadcast-intent
+      // skip for the Loaded Barrel speculator. Map<turnId, true>. Written by
+      // runLiveMode (stage6-shadow-harness.js) when detectBroadcastIntent
+      // returns true on the inspector's transcript ("circuits 2 and 3 …",
+      // "for all circuits …"). Read by loaded-barrel-speculator._speculate's
+      // preflight so the per-circuit ElevenLabs synth is skipped before any
+      // cost ledger opens — the bundler's grouped TTS still ships at round
+      // end. Defence-in-depth with the existing broadcastBuckets post-detect
+      // suppression (which catches phrasings detectBroadcastIntent misses but
+      // only AFTER the second circuit's record_reading streams, leaving a
+      // 100-500 ms race window during which the first per-circuit synth can
+      // already have been emitted to iOS — exactly the session E87F58C1
+      // 09:35:26 bug). Cleared per-turn by the same finally block as
+      // pendingFastTtsSlots / fastPathCorrelationIdByTurn so error paths
+      // can't leak a stale broadcast flag into the next turn's speculator
+      // skip check.
+      broadcastIntentByTurn: new Map(),
       // Stage 6 Phase 5 Plan 05-02 — filled-slots shadow logger. Side-effect-
       // only adapter wrapping the Stage 5 filter; the ask-gate-wrapper invokes
       // it PRE-WRAPPER on every ask_user (before any restrained / budget /
