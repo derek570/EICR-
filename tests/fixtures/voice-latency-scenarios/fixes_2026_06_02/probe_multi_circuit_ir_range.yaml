@@ -1,0 +1,68 @@
+name: probe_multi_circuit_ir_range
+suite: fixes_2026_06_02
+description: |
+  Fix C2 PROBE — 10x baseline for Sonnet fan-out on a 4-circuit RANGE
+  ("circuits 1 through 4 is greater than 200 megohms").
+
+  PASS means Sonnet wrote ir_live_live_mohm=">200" on ALL FOUR circuits
+  (1,2,3,4). FAIL means any circuit missing the write.
+
+  Range form (vs list form in probes 1+2) — tests whether Sonnet's fan-
+  out is sensitive to the syntactic shape of the multi-circuit reference.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+    - number: 5
+      board_id: main
+      designation: Outside
+      ocpd_rating_a: 16
+
+transcript:
+  - at_ms: 0
+    text: "Insulation resistance L to L for circuits 1 through 4 is greater than 200 megohms."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: ">200"
+    - circuit: 2
+      field: insulation_resistance_l_l
+      value: ">200"
+    - circuit: 3
+      field: insulation_resistance_l_l
+      value: ">200"
+    - circuit: 4
+      field: insulation_resistance_l_l
+      value: ">200"
+  has_no_reading:
+    - circuit: 5
+      field: insulation_resistance_l_l
+      value: ">200"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 15000
+  fetch_tts: false

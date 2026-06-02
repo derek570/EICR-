@@ -1,0 +1,51 @@
+name: probe_multi_circuit_polarity
+suite: fixes_2026_06_02
+description: |
+  Fix C2 PROBE — 10x baseline for Sonnet fan-out on "polarity for
+  circuits 2 and 3 is confirmed". Different field from probe_1 (no Y/N
+  enum drift), same list-form scope.
+
+  PASS means Sonnet wrote polarity_confirmed=Y on BOTH circuits 2 and 3.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+
+transcript:
+  - at_ms: 0
+    text: "Polarity confirmed for circuits 2 and 3."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 2
+      field: polarity
+      value: "Y"
+    - circuit: 3
+      field: polarity
+      value: "Y"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 15000
+  fetch_tts: false

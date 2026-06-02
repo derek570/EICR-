@@ -100,7 +100,10 @@ import {
 import { mintCorrelationId, recordOutcome } from './voice-latency-telemetry.js';
 import { getLoadedBarrelMaxPerTurn } from './voice-latency-config.js';
 import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
-import { coerceRecordReadingValue } from './record-reading-coercion.js';
+import {
+  coerceRecordReadingValue,
+  coerceRecordBoardReadingValue,
+} from './record-reading-coercion.js';
 import { getActiveSessionEntry } from './active-sessions.js';
 
 const DEFAULT_OUTPUT_FORMAT = 'mp3_22050_32';
@@ -957,7 +960,22 @@ export function createSpeculator({
     // pre-synth text would drift from the bundler's post-coercion text
     // (e.g. "polarity confirmed true" vs "polarity confirmed Y"),
     // producing a parity_mismatch + cache MISS at iOS POST time.
-    const value = coerceRecordReadingValue(field, rawValue);
+    //
+    // Fix B 2026-06-02 (handoff §B follow-up) — the speculator's
+    // mid-stream `extraction` emit ALSO carries the value (via
+    // onSlotAudioReady's wire envelope path), so iOS's extracted_readings
+    // ends up with BOTH the speculator's pre-coercion entry AND the
+    // bundler's post-coercion entry when these diverge. Without routing
+    // board-side writes through coerceRecordBoardReadingValue, the
+    // nominal_voltage_uo="240" raw write leaked through to the wire as
+    // a doubled emission (speculator "240" + bundler "230"), surfacing
+    // as a regression-guard failure on the post-deploy probe even
+    // though the dispatcher correctly canonicalised. Both record_reading
+    // and record_board_reading branches need their matching helper.
+    const value =
+      record.name === 'record_board_reading'
+        ? coerceRecordBoardReadingValue(field, rawValue)
+        : coerceRecordReadingValue(field, rawValue);
 
     _speculate({
       field,

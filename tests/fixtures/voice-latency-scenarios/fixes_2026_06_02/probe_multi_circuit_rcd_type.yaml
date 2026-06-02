@@ -1,0 +1,54 @@
+name: probe_multi_circuit_rcd_type
+suite: fixes_2026_06_02
+description: |
+  Fix C2 PROBE — 10x baseline for Sonnet fan-out on the original
+  2026-06-02 transcript shape ("circuits 2 and 3 is A").
+
+  PASS means Sonnet wrote rcd_type=A on BOTH circuits 2 and 3.
+  FAIL means under-fanning (most often circuit 2 only).
+
+  Audit found this transcript already fans out correctly today (model
+  drift); use as the baseline reference for the other two probes.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+
+transcript:
+  - at_ms: 0
+    text: "RCD type for circuits 2 and 3 is A."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 2
+      field: rcd_type
+      value: "A"
+    - circuit: 3
+      field: rcd_type
+      value: "A"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 15000
+  fetch_tts: false
