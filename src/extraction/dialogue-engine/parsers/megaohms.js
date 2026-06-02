@@ -63,8 +63,18 @@ export function parseMegaohms(text) {
  * Mirrors the `valueGroup` constant inside the original IR script's
  * extractNamedFieldValues so the same value forms are accepted.
  */
+// `\\bo\\s*l\\b` (not bare `o\\s*l`) anchors the OL meter shorthand to
+// word boundaries so it doesn't match inside common English words —
+// "isolation", "old", "tolerance", "voltage", "follow" all contain "ol"
+// substrings that, without word boundaries, would falsely fire as the
+// saturation sentinel and certify an IR reading as ">999". Defence in
+// depth: the insulation-resistance schema's namedExtractor also uses a
+// connector allowlist to prevent the bridge into these words, but the
+// value group itself is reused in fallback paths (parseBareMegaohmsWithUnit,
+// active-script bare-value matching) and any future consumer would pick
+// up the same fix here.
 export const MEGAOHMS_VALUE_GROUP =
-  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\d*\\.?\\d+';
+  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\d*\\.?\\d+';
 
 /**
  * Match a bare megaohms value at IR script entry — a number or sentinel

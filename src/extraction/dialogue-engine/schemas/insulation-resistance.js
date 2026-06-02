@@ -33,15 +33,24 @@ const slots = [
     // "live to live", "line to line", "L to L", "L L" / "LL" / "L-L" / "L.L".
     //
     // Label-to-value bridge has TWO branches, both restrictive:
-    //   (a) bare form: 0-3 chars of non-letter/non-digit punctuation/whitespace
-    //       only. Catches "L-L 200", "L-L: 200", "L-L, 200", "L-L=200",
-    //       "L-L >299", "L-L infinite", "L-L OL".
+    //   (a) bare form: 0-6 chars of non-letter/non-digit punctuation/whitespace
+    //       only. Catches "L-L 200", "L-L: 200", "L-L,  200" (multi-space),
+    //       "L-L=200", "L-L >299", "L-L infinite", "L-L OL".
     //   (b) connector form: lead-in punctuation, then an EXPLICIT connector
-    //       word ("is", "was", "of", "reads", "measures", "equals", "=",
-    //       "tested at", "came in at", "came up at"), then a TIGHT 0-3
-    //       char whitespace/comma gap before the value. Catches
-    //       "L-L is 200", "L-L is greater than 299", "L-L tested at 999",
-    //       "L-L was 50".
+    //       word — anchored at BOTH ends — from a small allowlist (is, was,
+    //       of, reads, measures, equals, came in/out/up at, tested at, =).
+    //       Then a TIGHT 0-3 char whitespace/comma gap before the value.
+    //       Catches "L-L is 200", "L-L is greater than 299", "L-L tested
+    //       at 999", "L-L was 50".
+    //
+    // Word-boundary `\\b` at the END of each connector is load-bearing:
+    // without it, "is" would match the leading two chars of "isolation"
+    // and let the value-group's `\\bo\\s*l\\b` saturation sentinel match
+    // "ol" mid-word ("isolation" → ">999" L-L certification). Same risk
+    // class applies to "tolerance", "old", "voltage" — all matched by
+    // the value group's `o\\s*l` branch in MEGAOHMS_VALUE_GROUP before
+    // that group itself was word-anchored (defence in depth — see the
+    // companion change in parsers/megaohms.js).
     //
     // Why the connector allowlist (vs the previous `[^\\d∞]{0,30}?` open
     // gap): the open gap accepted arbitrary letters between label and value,
@@ -66,9 +75,9 @@ const slots = [
     namedExtractor: new RegExp(
       `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b` +
         `(?:` +
-        `[^a-z\\d∞]{0,3}?` +
+        `[^a-z\\d∞]{0,6}?` +
         `|` +
-        `[\\s,;:.-]+(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at|=)[\\s,]{0,3}?` +
+        `[\\s,;:.-]+(?:(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at)\\b|=)[\\s,]{0,3}?` +
         `)` +
         `(${MEGAOHMS_VALUE_GROUP})`,
       'i'
@@ -87,9 +96,9 @@ const slots = [
     namedExtractor: new RegExp(
       `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b` +
         `(?:` +
-        `[^a-z\\d∞]{0,3}?` +
+        `[^a-z\\d∞]{0,6}?` +
         `|` +
-        `[\\s,;:.-]+(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at|=)[\\s,]{0,3}?` +
+        `[\\s,;:.-]+(?:(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at)\\b|=)[\\s,]{0,3}?` +
         `)` +
         `(${MEGAOHMS_VALUE_GROUP})`,
       'i'

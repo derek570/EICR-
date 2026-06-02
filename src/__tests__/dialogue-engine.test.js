@@ -1036,6 +1036,68 @@ describe('engine — IR bare-value capture at entry (session C3963EA1)', () => {
     });
     expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('>999');
   });
+
+  // Second-pass Codex review (2026-06-02 commit a40c3664) caught two
+  // residual holes in the first P1 fix — the connector "is" wasn't
+  // anchored at its END, so it matched the first 2 chars of "isolation"
+  // and then let the value-group's `o\\s*l` saturation sentinel match
+  // "ol" mid-word. Same class for "old wiring". The bare-form 3-char cap
+  // was also too tight for inspectors who pause-and-space ("L-L:   200").
+  // Both fixes (\\b end-anchor + cap bump to 6 + value-group `\\bo\\s*l\\b`)
+  // are pinned below.
+
+  test('does NOT match `ol` inside "isolation" via partial connector match', () => {
+    // Repro: "live to live isolation 500"
+    //   First-pass fix bug: connector "is" matched the leading 2 chars of
+    //   "isolation" without a closing word boundary; value group then
+    //   matched `o\\s*l` inside "olation"; L-L certified as ">999".
+    //   Fix: \\b at end of every word connector + \\bo\\s*l\\b in the
+    //   value group itself (defence in depth).
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. Live to live isolation 500.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBeUndefined();
+  });
+
+  test('does NOT match `ol` inside "old" via bare-form bridge', () => {
+    // Repro: "live to live old wiring 500"
+    //   Same root cause class as "isolation" — value group's `o\\s*l`
+    //   sentinel matched "ol" inside the word "old". Fix: value group's
+    //   `\\bo\\s*l\\b` requires word boundaries on both sides.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. Live to live old wiring 500.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBeUndefined();
+  });
+
+  test('bare-form cap 6 tolerates multi-space padding: "L-L:   200" → 200', () => {
+    // Regression guard for the cap bump (3 → 6 chars). Three spaces after
+    // a colon is a common dictation cadence when inspectors pause before
+    // reading the number. The original cap of 3 chars would have made
+    // ":   " (4 chars) exceed it and the regex would fail.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 3. L-L:   200.',
+      now: 1000,
+    });
+    expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('200');
+  });
 });
 
 describe('engine — IR pause-on-second-miss for resume hook (session C3963EA1)', () => {
