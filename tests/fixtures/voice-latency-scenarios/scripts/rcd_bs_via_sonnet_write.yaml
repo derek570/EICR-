@@ -1,0 +1,79 @@
+name: rcd_bs_via_sonnet_write
+suite: scripts
+description: |
+  Pins commit 0632d352 (specificity ranking in
+  tryEnterScriptFromWrites). Symmetric to
+  rcbo_bs_via_sonnet_write.yaml but pins the OPPOSITE entry
+  decision — a Sonnet-written rcd_bs_en MUST enter RCD, not RCBO.
+
+  Pre-fix: tryEnterScriptFromWrites iterated ALL_DIALOGUE_SCHEMAS
+  in declared order and returned the first schema whose slot list
+  contained the written field. RCBO came first in the array and
+  declared rcd_bs_en as a (volunteeredOnly) slot, so EVERY clean
+  Sonnet write of rcd_bs_en — regardless of whether the inspector
+  meant a standalone RCD or an RCBO — landed in RCBO. The engine
+  then asked "What MCB curve? B, C, or D?", surprising the
+  inspector who said "BS EN 61008 for the cooker" (a standalone
+  RCD code).
+
+  Post-fix: schemas are scored by total relevance to the current
+  turn's writes (2 for a normal slot match, 1 for volunteeredOnly,
+  0 for missing). For a pure rcd_bs_en write:
+    - RCD: rcd_bs_en is a normal slot → score 2.
+    - RCBO: rcd_bs_en is a volunteeredOnly slot → score 1.
+  RCD wins; engine enters RCD; nextMissingSlot returns rcd_type
+  (rcd_trip_time is volunteeredOnly + empty so skipped); engine
+  asks "What RCD type? AC, A, F, or B?".
+
+  Transcript deliberately omits the literal "RCD" token so the
+  dialogue-engine REGEX trigger (`/\bRCD\b/` in rcd.js) doesn't
+  pre-empt Sonnet — this scenario exercises ONLY the
+  tryEnterScriptFromWrites recovery path, not the trigger-entry
+  path.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+
+transcript:
+  - at_ms: 0
+    text: "BS EN 61008 for circuit 3."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # rcd_bs_en is in KNOWN_FIELDS — stays canonical on the wire.
+  has_reading:
+    - circuit: 3
+      field: rcd_bs_en
+      value: "BS EN 61008"
+  # Exactly one ask — for rcd_type, not for ocpd_type. This is
+  # the regression guard: pre-fix the ask was ocpd_type (RCBO
+  # path); post-fix it's rcd_type (RCD path).
+  ask_user_count: { min: 1, max: 1 }
+  ask_user:
+    - field: rcd_type
+      text_matches: "RCD type"
+  # Negative-control: ocpd_type MUST NOT be written. If the
+  # recovery hook regresses to entering RCBO, the mirror loop +
+  # subsequent ask flow would surface ocpd_type via a follow-up
+  # turn — guarding here catches the wrong-schema entry even when
+  # the inspector doesn't reply.
+  has_no_reading:
+    - circuit: 3
+      field: ocpd_type
+    - circuit: 3
+      field: ocpd_rating_a
+    - circuit: 3
+      field: ocpd_rating
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

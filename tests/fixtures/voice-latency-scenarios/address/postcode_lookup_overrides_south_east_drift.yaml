@@ -41,17 +41,25 @@ transcript:
   - at_ms: 0
     text: "The address is 12 Catherine Street Reading RG1 5QA."
     isFinal: true
+    # iOS supplies install.postcode via TranscriptFieldMatcher; the
+    # harness forwards it so runLiveMode's postcode-lookup wiring
+    # (commit 1fae7def, 2026-06-02) fires and clamps town/county
+    # to the postcodes.io canonical values before Sonnet's tool
+    # loop runs.
+    regexResults:
+      - field: install.postcode
+        value: "RG1 5QA"
+        rawValue: "RG1 5QA"
+        canonicalValue: "RG1 5QA"
+        confidence: 0.97
 
 expect:
   extraction_count: { min: 1 }
-  # First empirical run 2026-06-01 confirmed the architectural caveat
-  # surfaced in Codex round 5: against the live-mode backend Sonnet
-  # writes address/town/postcode but NOT county. The lookup that
-  # would inject Berkshire never fires because
-  # applyPostcodeLookupToSnapshot is only wired via _extractSingle,
-  # which runLiveMode bypasses. Asserting county=Berkshire here
-  # would fail every run for the wrong reason — the structural
-  # override isn't installed in production live mode.
+  # 2026-06-02 — re-tightened after commit 1fae7def wired
+  # applyPostcodeLookupToSnapshot into runLiveMode. Codex round 5's
+  # original finding (postcode lookup unwired in live mode) is now
+  # closed, so this scenario can pin the canonical
+  # town/county the lookup injects. RG1 5QA → Reading, Berkshire.
   has_reading:
     - circuit: 0
       field: town
@@ -59,6 +67,9 @@ expect:
     - circuit: 0
       field: postcode
       value: "RG1 5QA"
+    - circuit: 0
+      field: county
+      value: "Berkshire"
   # Negative-control on TTS text: if a future regression has Sonnet
   # drift to writing "South East" as the county (the historical
   # symptom), the TTS confirmation would speak it. This catches the
