@@ -50,7 +50,8 @@
         { "name": "VOICE_LATENCY_ROUND1_MODEL",         "value": "" },
         { "name": "VOICE_LATENCY_KILL_SWITCH",          "value": "false" },
         { "name": "SNAPSHOT_FORMAT",                    "value": "split_blocks" },
-        { "name": "CIRCUIT_ORDER",                      "value": "recent_3" }
+        { "name": "CIRCUIT_ORDER",                      "value": "recent_3" },
+        { "name": "SONNET_EXTRACT_MODEL",               "value": "claude-haiku-4-5-20251001" }
       ],
       "mountPoints": [],
       "volumesFrom": [],
