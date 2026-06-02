@@ -1,0 +1,78 @@
+name: rcd_type_off_enum_rejected
+suite: fixes_2026_06_02
+description: |
+  REGRESSION GUARD — Fix B from handoff-2026-06-02-fixes.md.
+
+  Field-bug repro: session E87F58C1 turn 3 (2026-06-02 09:35:50 BST).
+  Inspector said "RCD type for circuits 2 and 3 is a." Sonnet wrote
+  `rcd_type = "AND"` on circuit 2. "AND" is not in the schema enum
+  (`["", "AC", "A", "F", "B", "S", "A-S", "B-S", "B+", "N/A"]` post
+  2026-06-02 reconcile). Pre-fix, the value persisted to iOS state +
+  would have been written to the cert PDF.
+
+  POST-FIX behaviour:
+    The dispatcher's value-enum gate (validateRecordReading +
+    CIRCUIT_FIELD_VALUE_ENUMS) rejects "AND" with `value_not_in_options`.
+    Sonnet sees the rejection in the tool_result envelope (with the
+    full valid_options[] array) and either retries with a valid value
+    ("A") or leaves the field unwritten.
+
+  Why "RCD type for circuits 2 and 3 is a" was chosen:
+    The audit's prod probe (audit-2026-06-02-harness-gaps.md Cat 1)
+    found this exact transcript reliably elicits Sonnet's canonical "A"
+    today (model drift since 2026-06-02). The 2026-06-02 production
+    "AND" output no longer reproduces deterministically. So this
+    scenario pins the *value* assertion: regardless of what Sonnet
+    chooses to write, the off-enum "AND" / lowercase "and" MUST NOT
+    appear in extracted_readings post-fix — the dispatcher would
+    reject it. The positive assertion is loose (just "any rcd_type
+    write on circuit 3") to absorb Sonnet's variance.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "RCD type for circuits 2 and 3 is A."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Negative-control — the off-enum value MUST NOT persist on either
+  # circuit. Whether Sonnet writes canonical "A" (the audit's empirical
+  # finding) or retries after rejection or leaves blank, the "AND"
+  # variant should never reach iOS.
+  has_no_reading:
+    - circuit: 2
+      field: rcd_type
+      value: "AND"
+    - circuit: 2
+      field: rcd_type
+      value: "and"
+    - circuit: 3
+      field: rcd_type
+      value: "AND"
+    - circuit: 3
+      field: rcd_type
+      value: "and"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 15000
+  fetch_tts: false

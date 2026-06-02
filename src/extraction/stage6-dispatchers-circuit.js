@@ -102,6 +102,25 @@ export async function dispatchRecordReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input;
 
+  // 2026-05-24 value canonicalisation — routes both BS-EN (ocpd_bs_en /
+  // rcd_bs_en, via parseBsCode + Levenshtein-1 fallback) AND the Y/N
+  // boolean-enum field set (polarity_confirmed, supply_polarity_confirmed,
+  // rcd_button_confirmed, afdd_button_confirmed) through a single helper.
+  // Same helper used by the Loaded Barrel speculator's streamed-tool
+  // hook (record-reading-coercion.js) so dispatcher and pre-synth agree
+  // on the post-coercion value — otherwise speculator-text would drift
+  // from bundler-text on these fields, defeating the cache HIT path.
+  //
+  // Fix B 2026-06-02 (handoff §B) — moved BEFORE validateRecordReading so
+  // the value-enum gate added below sees the COERCED value, not the raw
+  // Sonnet emission. Without this ordering, every legitimate
+  // polarity_confirmed="true" / afdd_button_confirmed=true write would
+  // get rejected as off-enum despite the coercion path mapping them to
+  // "Y" downstream. Pre-fix the coercion ran post-validate; the validator
+  // only checked circuit existence + confidence so the ordering didn't
+  // matter. With the enum gate added, ordering is load-bearing.
+  input.value = coerceRecordReadingValue(input.field, input.value);
+
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
     validateRecordReading(input, session.stateSnapshot);
@@ -119,16 +138,6 @@ export async function dispatchRecordReading(call, ctx) {
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
-
-  // 2026-05-24 value canonicalisation — routes both BS-EN (ocpd_bs_en /
-  // rcd_bs_en, via parseBsCode + Levenshtein-1 fallback) AND
-  // polarity_confirmed/supply_polarity_confirmed (enum coercion to
-  // Y/N/OK) through a single helper. Same helper used by the Loaded
-  // Barrel speculator's streamed-tool hook (record-reading-coercion.js)
-  // so dispatcher and pre-synth agree on the post-coercion value —
-  // otherwise speculator-text would drift from bundler-text on these
-  // fields, defeating the cache HIT path.
-  input.value = coerceRecordReadingValue(input.field, input.value);
 
   applyReadingFlagAware(session.stateSnapshot, {
     circuit: input.circuit,

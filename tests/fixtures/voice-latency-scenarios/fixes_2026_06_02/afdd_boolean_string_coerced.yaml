@@ -1,0 +1,66 @@
+name: afdd_boolean_string_coerced
+suite: fixes_2026_06_02
+description: |
+  REGRESSION GUARD — Fix B from handoff-2026-06-02-fixes.md.
+
+  Audit prod probe (audit-2026-06-02-harness-gaps.md Cat 1 finding 1):
+  Sonnet writes afdd_button_confirmed="true" (string) verbatim when the
+  inspector says "AFDD button confirmed on circuit 3". Pre-fix
+  coerceRecordReadingValue did not include AFDD in its Y/N field set, so
+  "true" persisted as off-enum (schema enum is
+  `["", "OK", "FAIL", "N/A", "Y", "N"]`).
+
+  POST-FIX behaviour:
+    coerceRecordReadingValue maps "true"/"yes"/"confirmed"/"works" → "Y"
+    on afdd_button_confirmed (the new YN_BOOLEAN_FIELDS set). The
+    dispatcher applies the coercion BEFORE validateRecordReading runs,
+    so the canonical "Y" reaches the snapshot and the enum gate doesn't
+    fire. Pre-fix this scenario would catch the bug because the wire
+    would carry "true"; post-fix it carries "Y".
+
+  Why a positive-only assertion (no has_no_reading):
+    Whether the wire carries "Y" or "true" is the whole point — pinning
+    has_reading with value "Y" passes only when the coercion fires.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: AFDD circuit
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "AFDD button confirmed on circuit 3."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Post-fix the value is the canonical "Y" — coerceRecordReadingValue
+  # maps the boolean-string "true" Sonnet emits to the schema enum's "Y".
+  # Pre-fix this assertion would fail because the wire carried "true".
+  has_reading:
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "Y"
+  # Negative-control — the pre-fix off-enum value MUST NOT persist.
+  has_no_reading:
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "true"
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "TRUE"
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "confirmed"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 15000
+  fetch_tts: false

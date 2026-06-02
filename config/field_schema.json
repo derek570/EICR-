@@ -161,9 +161,9 @@
     "rcd_type": {
       "label": "RCD Type",
       "type": "select",
-      "options": ["", "AC", "A", "F", "B", "S", "N/A"],
+      "options": ["", "AC", "A", "F", "B", "S", "A-S", "B-S", "B+", "N/A"],
       "description": "RCD sensitivity type",
-      "ai_guidance": "RCD type. 'A' most common (AC + pulsating DC). 'AC' for AC only. 'F' for variable speed drives. 'B' for smooth DC.",
+      "ai_guidance": "RCD type. 'A' most common (AC + pulsating DC). 'AC' for AC only. 'F' for variable speed drives. 'B' for smooth DC. 'S' selective/time-delayed for discrimination. 'A-S' = type A selective. 'B-S' = type B selective. 'B+' = enhanced type B (all waveforms incl. AC harmonics). See sonnet_extraction_system.md for spoken-form mapping.",
       "pdf_column": "Type",
       "group": "RCD"
     },

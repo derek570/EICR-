@@ -57,7 +57,8 @@ import {
   getCircuitBucket,
 } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
-import { validateBoardScope } from './stage6-dispatch-validation.js';
+import { validateBoardScope, BOARD_FIELD_VALUE_ENUMS } from './stage6-dispatch-validation.js';
+import { coerceRecordBoardReadingValue } from './record-reading-coercion.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
 // underlying enum is itself frozen-by-convention (codegenned from
@@ -158,6 +159,58 @@ export async function dispatchRecordBoardReading(call, ctx) {
       input_summary: { field: input.field ?? null },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // Fix B 2026-06-02 (handoff §B) — value coercion + per-field VALUE
+  // enum gate. Coerce first (currently nominal_voltage_u/uo "240"→"230"
+  // for the UK pre-harmonisation drift; extend coerceRecordBoardReadingValue
+  // as new board-side coercion needs surface), then check the coerced
+  // value against the per-field option set.
+  //
+  // Audit-2026-06-02 confirmed reproductions (handoff §B):
+  //   - nominal_voltage_uo = "240" (off-enum; coercion → "230" accepts)
+  //   - afdd_button_confirmed = "true" is a CIRCUIT-side bug; handled by
+  //     the parallel validateRecordReading gate. This board gate only
+  //     bites for board/supply/installation enum drift.
+  //
+  // PII discipline mirrors steps 1 + 2 above — never log input.value.
+  input.value = coerceRecordBoardReadingValue(input.field, input.value);
+  const allowed = BOARD_FIELD_VALUE_ENUMS.get(input.field);
+  if (allowed) {
+    if (typeof input.value !== 'string') {
+      const err = { code: 'invalid_type', field: 'value' };
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'record_board_reading',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: err,
+        input_summary: { field: input.field },
+      });
+      return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    }
+    if (!allowed.has(input.value)) {
+      const err = {
+        code: 'value_not_in_options',
+        field: 'value',
+        valid_options: Array.from(allowed),
+      };
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'record_board_reading',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: err,
+        input_summary: { field: input.field },
+      });
+      return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    }
   }
 
   // 3) mutate via the flag-aware wrapper. Flag-off: legacy circuits[0] write

@@ -50,8 +50,76 @@
  *   invalid_expected_answer_shape — not in ASK_USER_ANSWER_SHAPES
  */
 
+import { createRequire } from 'node:module';
 import { CONTEXT_FIELD_ENUM, BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from './stage6-tool-schemas.js';
 import { circuitExistsInSnapshot, getMainBoardId } from './stage6-multi-board-shape.js';
+
+// Fix B 2026-06-02 (handoff-2026-06-02-fixes.md §B) — per-field VALUE
+// enum lookup, loaded from config/field_schema.json. The schema is the
+// single source of truth (already consumed by stage6-tool-schemas.js's
+// CIRCUIT_FIELD_ENUM builder for the name namespace); building the
+// VALUE map here means a schema edit to `options[]` propagates to the
+// dispatcher with no code change.
+//
+// Why createRequire vs an ESM `import ... with { type: 'json' }`: the
+// codebase consistently uses createRequire for JSON loads (see
+// stage6-tool-schemas.js:38-42). Keeping the pattern uniform avoids
+// bundler-vs-node-loader behaviour drift.
+//
+// What gets a value enum: every field with `type: "select"` AND a
+// non-empty `options` array. Fields with `type: "text"` are not
+// constrained here (numeric ranges, BS-EN format checks, etc. are
+// separate concerns and not in this validator's scope today).
+//
+// CRITICAL — the empty string "" is NOT auto-allowed. Some select
+// fields list "" as an explicit option (rcd_type, polarity_confirmed)
+// to mean "no reading yet"; others (ocpd_type, wiring_type, ref_method)
+// do NOT — they don't have an "unwritten" representation. Treating ""
+// as a universal escape would leak garbage writes through on every
+// field that doesn't enumerate it. The validator checks membership
+// strictly: input.value must appear in options[] verbatim.
+const require = createRequire(import.meta.url);
+const fieldSchema = require('../../config/field_schema.json');
+
+const CIRCUIT_FIELD_VALUE_ENUMS = (() => {
+  const out = new Map();
+  const fields = fieldSchema.circuit_fields ?? {};
+  for (const [name, spec] of Object.entries(fields)) {
+    if (name.startsWith('_ui_')) continue;
+    if (spec?.type === 'select' && Array.isArray(spec.options)) {
+      out.set(name, new Set(spec.options.map(String)));
+    }
+  }
+  return out;
+})();
+
+/**
+ * BOARD-side value enum map. Same construction as CIRCUIT_FIELD_VALUE_ENUMS
+ * but spans THREE schema sections — supply_characteristics_fields,
+ * board_fields, installation_details_fields — matching the union
+ * `BOARD_FIELD_ENUM` builder uses in stage6-tool-schemas.js:130-136.
+ *
+ * Exported so the board dispatcher can apply the same enum guard pattern
+ * inline (the dispatcher's existing field-NAME check is left intact;
+ * this map adds the value-side check).
+ */
+export const BOARD_FIELD_VALUE_ENUMS = (() => {
+  const out = new Map();
+  for (const section of [
+    'supply_characteristics_fields',
+    'board_fields',
+    'installation_details_fields',
+  ]) {
+    const fields = fieldSchema[section] ?? {};
+    for (const [name, spec] of Object.entries(fields)) {
+      if (name.startsWith('_ui_')) continue;
+      if (spec?.type === 'select' && Array.isArray(spec.options)) {
+        out.set(name, new Set(spec.options.map(String)));
+      }
+    }
+  }
+  return out;
+})();
 
 // Sets for O(1) membership tests in validateAskUser's pending_write
 // cross-check. Pre-computing them here keeps the validator pure (no
@@ -82,6 +150,40 @@ export function validateRecordReading(input, snapshot) {
       input.confidence > 1
     ) {
       return { code: 'confidence_out_of_range', field: 'confidence' };
+    }
+  }
+  // Fix B 2026-06-02 (handoff §B) — per-field VALUE enum gate. Runs
+  // AFTER the dispatcher's coercion pass (ordering enforced in
+  // stage6-dispatchers-circuit.js dispatchRecordReading); fields not in
+  // CIRCUIT_FIELD_VALUE_ENUMS (numeric/text fields without a closed
+  // enum) pass through unchanged. Field NAME validity is enforced
+  // upstream by the schema's strict:true input_schema + the field-NAME
+  // namespace check that record_reading callers already see; this
+  // check is value-only.
+  //
+  // Why value_not_in_options + valid_options[] payload: mirrors the
+  // existing envelope used by set_field_for_all_circuits (the validator
+  // there already surfaces the same shape so Sonnet can self-correct
+  // on the next round). Same code → unified CloudWatch + dashboard
+  // attribution.
+  //
+  // Why no empty-string exemption: some enums list "" (rcd_type,
+  // polarity_confirmed) to mean "unwritten"; others (ocpd_type,
+  // wiring_type, ref_method) deliberately don't. Treating "" as a
+  // universal escape would silently accept blank writes on every field
+  // that doesn't list it. Strict membership wins; "clear this field"
+  // semantics belong to the clear_reading tool, not record_reading.
+  const allowed = CIRCUIT_FIELD_VALUE_ENUMS.get(input.field);
+  if (allowed) {
+    if (typeof input.value !== 'string') {
+      return { code: 'invalid_type', field: 'value' };
+    }
+    if (!allowed.has(input.value)) {
+      return {
+        code: 'value_not_in_options',
+        field: 'value',
+        valid_options: Array.from(allowed),
+      };
     }
   }
   return null;

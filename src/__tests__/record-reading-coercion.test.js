@@ -6,7 +6,10 @@
  * exists to prevent (parity_mismatch → cache MISS → audible regression).
  */
 
-import { coerceRecordReadingValue } from '../extraction/record-reading-coercion.js';
+import {
+  coerceRecordReadingValue,
+  coerceRecordBoardReadingValue,
+} from '../extraction/record-reading-coercion.js';
 
 describe('coerceRecordReadingValue — BS-EN canonicalisation', () => {
   test('canonical form passes through unchanged', () => {
@@ -111,5 +114,98 @@ describe('coerceRecordReadingValue — fields with no coercion', () => {
 
   test('unknown field passes through (closed-set contract)', () => {
     expect(coerceRecordReadingValue('not_a_field', 'true')).toBe('true');
+  });
+});
+
+// Fix B 2026-06-02 (handoff §B) — extended Y/N coercion to the
+// button-confirmed fields. afdd_button_confirmed has FAIL in its enum;
+// rcd_button_confirmed does not (its enum is ["", "OK", "Y", "N"]).
+describe('coerceRecordReadingValue — afdd_button_confirmed (with FAIL)', () => {
+  test('canonical enum values pass through', () => {
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'Y')).toBe('Y');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'N')).toBe('N');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'OK')).toBe('OK');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'FAIL')).toBe('FAIL');
+  });
+
+  test('boolean-string "true"/"false" coerced (the 2026-06-02 prod bug — verbatim "true" used to persist)', () => {
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'true')).toBe('Y');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'false')).toBe('N');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'TRUE')).toBe('Y');
+  });
+
+  test('raw JS boolean coerced (Sonnet occasionally emits real bool instead of string)', () => {
+    expect(coerceRecordReadingValue('afdd_button_confirmed', true)).toBe('Y');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', false)).toBe('N');
+  });
+
+  test('"fail"/"failed" coerced to FAIL (a tested-but-failed device button — distinct from "no")', () => {
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'fail')).toBe('FAIL');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'failed')).toBe('FAIL');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'FAILED')).toBe('FAIL');
+  });
+
+  test('inspector volunteered phrases coerced ("confirmed", "works")', () => {
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'confirmed')).toBe('Y');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'works')).toBe('Y');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'working')).toBe('Y');
+    expect(coerceRecordReadingValue('afdd_button_confirmed', 'broken')).toBe('N');
+  });
+});
+
+describe('coerceRecordReadingValue — rcd_button_confirmed (no FAIL in enum)', () => {
+  test('boolean-string coerced to Y/N', () => {
+    expect(coerceRecordReadingValue('rcd_button_confirmed', 'true')).toBe('Y');
+    expect(coerceRecordReadingValue('rcd_button_confirmed', 'false')).toBe('N');
+  });
+
+  test('"fail" stays coerced to "N" on rcd_button_confirmed (FAIL not in enum)', () => {
+    // Symmetric with polarity_confirmed: legacy semantic "RCD button fail"
+    // = "no, the button didn't work" = N. Without this branch the value
+    // would coerce to FAIL and the dispatcher's enum gate would reject.
+    expect(coerceRecordReadingValue('rcd_button_confirmed', 'fail')).toBe('N');
+    expect(coerceRecordReadingValue('rcd_button_confirmed', 'failed')).toBe('N');
+  });
+
+  test('"works" / "confirmed" coerced to "Y" (inspector volunteered phrasing)', () => {
+    expect(coerceRecordReadingValue('rcd_button_confirmed', 'works')).toBe('Y');
+    expect(coerceRecordReadingValue('rcd_button_confirmed', 'confirmed')).toBe('Y');
+  });
+});
+
+describe('coerceRecordBoardReadingValue — nominal voltage 240 → 230', () => {
+  test('nominal_voltage_u "240" coerced to UK harmonised "230"', () => {
+    expect(coerceRecordBoardReadingValue('nominal_voltage_u', '240')).toBe('230');
+  });
+
+  test('nominal_voltage_uo "240" coerced to "230" (the 2026-06-02 prod bug)', () => {
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', '240')).toBe('230');
+  });
+
+  test('whitespace around "240" trimmed before match', () => {
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', ' 240 ')).toBe('230');
+  });
+
+  test('other nominal voltage values pass through unchanged', () => {
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', '230')).toBe('230');
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', '400')).toBe('400');
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', 'N/A')).toBe('N/A');
+    // Out-of-enum value passes through so the dispatcher's enum validator
+    // can reject it explicitly (rather than silently coercing garbage).
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', '999')).toBe('999');
+  });
+
+  test('non-voltage board fields pass through unchanged', () => {
+    expect(coerceRecordBoardReadingValue('earthing_arrangement', 'TN-S')).toBe('TN-S');
+    expect(coerceRecordBoardReadingValue('main_switch_bs_en', '60947-3')).toBe('60947-3');
+    // main_switch_voltage has its own enum that DOES include "240"; we
+    // deliberately do NOT coerce that field (it's a physical rated voltage,
+    // not a UK-nominal value).
+    expect(coerceRecordBoardReadingValue('main_switch_voltage', '240')).toBe('240');
+  });
+
+  test('non-string passes through', () => {
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', null)).toBe(null);
+    expect(coerceRecordBoardReadingValue('nominal_voltage_uo', 240)).toBe(240);
   });
 });
