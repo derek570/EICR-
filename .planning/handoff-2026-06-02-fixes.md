@@ -126,8 +126,7 @@ Wire this signal into the active session entry so the speculator can read it:
 **Step 1** — extend the activeSessionEntry shape. `src/extraction/active-sessions.js` documents the entry contract in JSDoc; the actual `new Map()` initialisations live in `src/extraction/sonnet-stream.js` where `activeSessions.set(sessionId, {...})` is built (search for `pendingFastTtsSlots: new Map()` — that's the sibling line, currently around `sonnet-stream.js:2564`). Add `broadcastIntentByTurn: new Map(),` adjacent to it. Update the JSDoc shape in `active-sessions.js` to document the new map's purpose + lifecycle (per-turn keyed by turnId, cleared in the same place `pendingFastTtsSlots` is cleared).
 
 **Step 2** — `src/extraction/sonnet-stream.js handleTranscript`: import `detectBroadcastIntent` from `./dialogue-engine/parsers/circuit-range.js`. The function `handleTranscript` is the WS-message handler for `type: 'transcript'`. Search for the call chain `handleTranscript` → eventually `runShadowHarness(entry.session, transcriptText, regexResults, {...})` (this call is around `sonnet-stream.js:3793`). After the `entry = activeSessions.get(sessionId)` resolve (which precedes the `runShadowHarness` await) and AFTER `turnId` has been minted by `runLiveMode`, set `entry.broadcastIntentByTurn.set(turnId, true)` if `detectBroadcastIntent(transcriptText)` returns true. CAVEAT: turnId is minted INSIDE `runLiveMode` (`stage6-shadow-harness.js:213`), not in `handleTranscript`. Two options:
-  - Option (a): call `detectBroadcastIntent(transcriptText)` in `handleTranscript`, pass the boolean result down through `runShadowHarness` `options`. `runLiveMode` then stamps the per-turn map with the minted `turnId`. Cleanest signal flow, but requires plumbing.
-  - Option (b): do the detection AND the map write inside `runLiveMode` itself, right after `turnId` is built (around `stage6-shadow-harness.js:213`). Less code surface, tighter to the existing `entry.fastPathCorrelationIdByTurn` pattern (the actual map set is around `stage6-shadow-harness.js:280-305` — the 230-234 range earlier in the file is comment block).
+  - **Use Option (b) — strongly recommended.** Do the detection AND the map write inside `runLiveMode`, right after `turnId` is built (around `stage6-shadow-harness.js:213`) and BEFORE the speculator hooks are wired into runToolLoop (around `stage6-shadow-harness.js:291`). Less code surface than passing through options; tight to the existing `entry.fastPathCorrelationIdByTurn` map-set pattern (the actual map set is around `stage6-shadow-harness.js:280-305`). Option (a) is documented for completeness but the ordering is fragile — if handleTranscript writes to the map before runLiveMode mints turnId, the map key is stale; doing it inside runLiveMode synchronously avoids the race. Codex round 2 confirmed this ordering matters; pin via test that the map is set before `runToolLoop` is invoked.
   - Recommend (b) — mirrors the existing per-turn-map pattern. Read both files first then decide.
 
 **Step 3** — clear the map entry in the same `finally` block that already does per-turn cleanup. `runLiveMode` has a `try/finally` (search for "finally" + "session.activeTurnTranscript = null"). Add `entry?.broadcastIntentByTurn?.delete(turnId);` to that block.
@@ -208,13 +207,20 @@ const CIRCUIT_FIELD_VALUE_ENUMS = (() => {
 })();
 ```
 
-**Step 2** — extend `validateRecordReading` after the existing confidence check. CAVEATS Codex flagged in review-round-1 you MUST honour:
+**Step 2** — extend `validateRecordReading` after the existing confidence check. CAVEATS Codex flagged across rounds 1+2 you MUST honour:
 
-a) Not every select field includes `""` in its options — `ocpd_type` / `wiring_type` / `ref_method` don't. The earlier draft of this handoff assumed every select had `""` and would have leaked off-enum empty writes. Drop the empty-string exception entirely; treat `""` as just another option that's only allowed if explicitly listed. For "clear this field" semantics, the inspector path is `clear_reading` (separate tool, separate validator).
+a) Not every select field includes `""` in its options — `ocpd_type` / `wiring_type` / `ref_method` don't. The earlier draft assumed every select had `""` and would have leaked off-enum empty writes. Drop the empty-string exception entirely; treat `""` as just another option that's only allowed if explicitly listed. For "clear this field" semantics, the inspector path is `clear_reading` (separate tool, separate validator).
 
-b) Coercion order matters. The dispatcher already coerces some values (`polarity_confirmed: true` → `"Y"`, etc.) via `coerceRecordReadingValue` in `src/extraction/loaded-barrel-speculator.js`. Today `validateRecordReading` runs BEFORE the coercion. You need to either (i) move coercion ahead of validation, or (ii) duplicate the coerce step locally in the validator. Either way, validate the coerced value, not the raw `input.value` — otherwise legitimate boolean polarity writes get rejected.
+b) Coercion order matters. The dispatcher already coerces some values (`polarity_confirmed: true` → `"Y"`, etc.) via `coerceRecordReadingValue`. NOTE: that helper lives in `src/extraction/record-reading-coercion.js` (NOT `loaded-barrel-speculator.js` as a prior draft said — Codex round 2 caught this). Import from `record-reading-coercion.js` to avoid pulling the speculator graph into the validator (cycle risk). Today `validateRecordReading` runs BEFORE the coercion. You need to either (i) move coercion ahead of validation, or (ii) duplicate the coerce step locally in the validator. Either way, validate the coerced value, not the raw `input.value` — otherwise legitimate boolean polarity writes get rejected.
 
 c) Use the existing error envelope. The bulk-set-field validator already uses code `value_not_in_options` and surfaces `valid_options` in the rejection payload so Sonnet can self-correct. Grep `value_not_in_options` in `src/extraction/stage6-dispatchers-circuit.js` for the exact shape; use the same code + same field name to keep telemetry consistent.
+
+d) **CRITICAL PRE-REQUISITE — prompt/schema mismatch.** Codex round 2 caught: `config/prompts/sonnet_extraction_system.md:196` teaches Sonnet that valid `rcd_type` values include `B+`, `A-S`, `B-S` (modern RCD type designators). The schema's enum at `config/field_schema.json` (`rcd_type.options`) is only `["", "AC", "A", "F", "B", "S", "N/A"]`. If you enable enum rejection BEFORE reconciling these, the validator will reject every `B+`/`A-S`/`B-S` write the prompt actively instructs Sonnet to emit. THREE options to reconcile:
+  - Extend the schema enum to add `B+`, `A-S`, `B-S`, `F-S`, etc. (and update iOS Constants.swift dropdown). Preferred — matches BS 7671 + the prompt's intent.
+  - Trim the prompt to only teach the schema-defined values. Restricts Sonnet's vocabulary; loses BS 7671 fidelity.
+  - Ship Fix B behind a feature flag (`STAGE6_VALIDATE_VALUE_ENUMS=false` default) AND first run a CloudWatch grep to enumerate what off-enum values Sonnet actually emits in real prod traffic, so the schema can be extended to cover every legitimate case BEFORE the flag flips.
+
+Run the grep BEFORE any code change: `aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 7d | grep "Unknown field name from Sonnet\|field_corrected" | head -200` and inspect the actual value distribution. Surface to Derek if other fields have the same mismatch (likely candidates: `wiring_type` since prompt may teach modern cable codes beyond A-H+O; `ocpd_type` if it teaches non-B/C/D curves).
 
 Sketch (after applying coercion):
 
@@ -273,7 +279,7 @@ The alternative (iOS-side validation) was rejected: iOS already has the enum (in
 
 ### Test surface
 
-- `src/__tests__/stage6-dispatch-validation-enum.test.js` (new): cases for each enum field with a valid value (pass), with an empty string (pass — clear semantics), with an obviously-bad value like `"AND"` for `rcd_type` (rejected with `value_not_in_enum`).
+- `src/__tests__/stage6-dispatch-validation-enum.test.js` (new): cases for each enum field with a valid value (pass), with an obviously-bad value like `"AND"` for `rcd_type` (rejected with `value_not_in_options` + `valid_options` payload). Empty-string handling: pass IFF `""` is in the field's options (e.g. `rcd_type` has it; `ocpd_type` does NOT — Codex round 2 caught the prior "always allow empty" claim was wrong). Add specific regression cases for prod-observed enum classes once you've run the CloudWatch grep prescribed in Step 2(d): at minimum `afdd_button_confirmed="true"` (Sonnet boolean-string), `wiring_type` canonical-then-raw, and the board parallel `nominal_voltage_uo="240"`.
 - Existing dispatcher tests must still pass — anything with `validateRecordReading` in the path.
 
 ### Harness scenario to add
@@ -283,7 +289,7 @@ The alternative (iOS-side validation) was rejected: iOS already has the enum (in
 - Job state: 1 circuit (cooker, circuit 3, no RCD fields).
 - Transcript: `"RCD type for circuit 3 is a."` (exact repro phrasing — should yield Sonnet writing `"AND"` pre-fix).
 - Assertions:
-  - `has_no_reading: [{ circuit: 3, field: rcd_type, value: "AND" }]` — value MUST be rejected.
+  - `has_no_reading: [{ circuit: 3, field: rcd_type, value: "AND" }]` — value MUST be rejected (the dispatcher's new `value_not_in_options` envelope causes Sonnet to either retry with a valid value or leave the field unwritten).
   - `has_no_reading: [{ circuit: 3, field: rcd_type, value: "and" }]` — also any lowercase variant.
   - Optional positive assertion: if Sonnet retries with `"A"` after the validation error, `has_reading: [{ circuit: 3, field: rcd_type, value: "A" }]`. Verify this against your first prod run — Sonnet may or may not retry.
 
@@ -340,16 +346,16 @@ DO NOT instruct Sonnet to use `set_field_for_all_circuits` for list/range scopes
 - (b) Separately extend the `set_field_for_all_circuits` tool schema + dispatcher to accept a `circuits: number[]` scope. That's a bigger change with its own validator + harness coverage; treat as a downstream option not part of this fix.
 
 - **Pros:** turn-scoped, doesn't change baseline prompt for non-broadcast turns. More targeted than Approach 1.
-- **Cons:** requires plumbing through `runLiveMode` → `runToolLoop` → message build. Cache-key risk: the cached `system` block stays identical (the prompt isn't changed), but per-turn USER messages have always been outside the cache, so injecting more text there shouldn't invalidate cache reads. VERIFY via `voice_latency.startup_log.usage_cache_read` before/after probe runs that cache hit rate is unchanged.
+- **Cons:** requires plumbing through `runLiveMode` → `runToolLoop` → message build. Cache-key risk: the cached `system` block stays identical (the prompt isn't changed), but per-turn USER messages have always been outside the cache, so injecting more text there shouldn't invalidate cache reads. VERIFY via `stage6_live_extraction.usage_cache_read` per-turn (NOT `voice_latency.startup_log` — Codex round 2 caught: that log line doesn't carry cache fields; the usable metric is on `stage6_live_extraction` per `stage6-shadow-harness.js:1074`). Before/after probe should show cache hit rate unchanged.
 
 **Approach 3 — Round-level enforcement of complete fan-out.** Codex flagged the original sketch as broken: `dispatchRecordReading` runs per tool call and returns a tool_result immediately — it cannot know end-of-round completeness on its own. Correct insertion point is `runToolLoop` (`src/extraction/stage6-tool-loop.js`) after the round's `records` are finalized and BEFORE the `messages.push({role: 'user', content: toolResults})` step that hands control back to Sonnet for the next round.
 
-Sketch at that level:
+Sketch at that level (Codex round-2 caveat: tool_results MUST pair to assistant tool_use IDs — Anthropic's protocol rejects orphan results):
 1. After round-N's records are assembled, snapshot `session.activeTurnTranscript`.
 2. If `detectBroadcastIntent(transcript) === true` and `parseCircuitRange(transcript)` returns `scope === 'list' || 'range'`, compute the implied circuit set.
 3. Collect the set of `(field, circuit)` tuples actually written by `record_reading` in this round.
-4. For each field that got at least one write, if the written circuits ≠ the implied circuit set, synthesise a `multi_circuit_incomplete` tool_result containing the missing circuits.
-5. Push it alongside the real tool_results and let the next round see the correction.
+4. For each field that got at least one write but missing circuits, MODIFY the existing record_reading tool_result for that field — replace its `content` with a `value_not_complete_fanout` error envelope listing the missing circuits — so the (tool_use_id, tool_result) pairing remains 1:1 with what the loop already enforces (`stage6-tool-loop.js:824`). DO NOT push a synthesised standalone tool_result; that breaks the protocol.
+5. Let the next round see the modified tool_result and re-emit per-circuit writes for the missing circuits.
 
 - **Pros:** centralised; one place to enforce; explicit feedback to Sonnet for self-correction.
 - **Cons:** more code surface than Approaches 1/2; risks turn stalls if Sonnet doesn't recover after retry. Requires careful unit tests for the round-level wrapper.
@@ -402,6 +408,20 @@ For Approaches 2 + 3: unit tests for the new logic (the per-turn intercept or th
 
 - Transcript: `"Insulation resistance L to L for circuits 2 and 3 is greater than 200 megohms."`
 - Tests the IR field path (different from rcd_type which has the "AND" issue).
+
+Also add **`detectBroadcastIntent` miss-coverage scenarios** — Codex round 2 noted the regex is noun-anchored on numeric list/range forms and misses several real phrasings:
+
+`tests/fixtures/voice-latency-scenarios/fixes_2026_06_02/broadcast_intent_circuit_and_circuit.yaml` (new):
+- Transcript: `"RCD type for circuit 2 and circuit 3 is A."` (the explicit "circuit N and circuit M" form — current regex requires "circuits" plural followed by the list, so this MISSES today).
+- Either widen `BROADCAST_LIST_RE` in `circuit-range.js` to match, OR document the gap. Scenario asserts both circuits get the write.
+
+`tests/fixtures/voice-latency-scenarios/fixes_2026_06_02/broadcast_intent_both_2_and_3.yaml` (new):
+- Transcript: `"Polarity for both 2 and 3 is confirmed."` ("both N and M" form — also not caught today).
+
+`tests/fixtures/voice-latency-scenarios/fixes_2026_06_02/broadcast_intent_oxford_comma_list.yaml` (new):
+- Transcript: `"RCD type for circuits 2, 3, and 4 is A."` (Oxford comma form — verify BROADCAST_LIST_RE matches it).
+
+These will FAIL until the regex is widened. Surface to Derek as a follow-up: should `detectBroadcastIntent` widen, OR should the harness scenarios be the only place this is documented? My call: widen the regex; circuit-range patterns matching every realistic inspector phrasing is load-bearing for all three broadcast-related fixes (A, dialogue-engine bypass, C2).
 
 These scenarios will pre-fix flake at the same rate the probe showed. Post-fix they should pass ≥90% of runs (if Approach 1) or 100% (if Approach 2/3). Document the expected hit rate in each scenario's `description` so future authors don't delete a 95%-flaky test as "noise" the way the 2026-06-01 deletions did.
 
