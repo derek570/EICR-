@@ -127,7 +127,7 @@ Wire this signal into the active session entry so the speculator can read it:
 
 **Step 2** — `src/extraction/sonnet-stream.js handleTranscript`: import `detectBroadcastIntent` from `./dialogue-engine/parsers/circuit-range.js`. The function `handleTranscript` is the WS-message handler for `type: 'transcript'`. Search for the call chain `handleTranscript` → eventually `runShadowHarness(entry.session, transcriptText, regexResults, {...})` (this call is around `sonnet-stream.js:3793`). After the `entry = activeSessions.get(sessionId)` resolve (which precedes the `runShadowHarness` await) and AFTER `turnId` has been minted by `runLiveMode`, set `entry.broadcastIntentByTurn.set(turnId, true)` if `detectBroadcastIntent(transcriptText)` returns true. CAVEAT: turnId is minted INSIDE `runLiveMode` (`stage6-shadow-harness.js:213`), not in `handleTranscript`. Two options:
   - Option (a): call `detectBroadcastIntent(transcriptText)` in `handleTranscript`, pass the boolean result down through `runShadowHarness` `options`. `runLiveMode` then stamps the per-turn map with the minted `turnId`. Cleanest signal flow, but requires plumbing.
-  - Option (b): do the detection AND the map write inside `runLiveMode` itself, right after `turnId` is built (around `stage6-shadow-harness.js:213`). Less code surface, tighter to the existing `entry.fastPathCorrelationIdByTurn` pattern (`stage6-shadow-harness.js:230-234`).
+  - Option (b): do the detection AND the map write inside `runLiveMode` itself, right after `turnId` is built (around `stage6-shadow-harness.js:213`). Less code surface, tighter to the existing `entry.fastPathCorrelationIdByTurn` pattern (the actual map set is around `stage6-shadow-harness.js:280-305` — the 230-234 range earlier in the file is comment block).
   - Recommend (b) — mirrors the existing per-turn-map pattern. Read both files first then decide.
 
 **Step 3** — clear the map entry in the same `finally` block that already does per-turn cleanup. `runLiveMode` has a `try/finally` (search for "finally" + "session.activeTurnTranscript = null"). Add `entry?.broadcastIntentByTurn?.delete(turnId);` to that block.
@@ -188,9 +188,13 @@ It does NOT consult `config/field_schema.json` to check whether the field has a 
 
 ### Proposed implementation
 
-**Step 1** — `src/extraction/stage6-dispatch-validation.js`. NOTE: the existing `CIRCUIT_FIELD_ENUM` in `stage6-tool-schemas.js:143-146` is an array of field NAMES (the closed namespace of which fields exist) — NOT a map of field→allowed-values. You're building something different: a per-field value enum. At module-load time, import `fieldSchema from '../../config/field_schema.json'` (or wherever the existing import path resolves to from this file — `stage6-tool-schemas.js:130` is the reference). Then build:
+**Step 1** — `src/extraction/stage6-dispatch-validation.js`. NOTE: the existing `CIRCUIT_FIELD_ENUM` in `stage6-tool-schemas.js:143-146` is an array of field NAMES (the closed namespace of which fields exist) — NOT a map of field→allowed-values. You're building something different: a per-field value enum. Load `field_schema.json` via the same `createRequire` pattern `stage6-tool-schemas.js:38-42` already uses (Node ESM static JSON imports require `with { type: 'json' }` and the codebase consistently avoids that). Then build:
 
 ```js
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const fieldSchema = require('../../config/field_schema.json');
+
 const CIRCUIT_FIELD_VALUE_ENUMS = (() => {
   const out = new Map();
   const fields = fieldSchema.circuit_fields ?? {};
@@ -204,29 +208,57 @@ const CIRCUIT_FIELD_VALUE_ENUMS = (() => {
 })();
 ```
 
-**Step 2** — extend `validateRecordReading` after the existing confidence check:
+**Step 2** — extend `validateRecordReading` after the existing confidence check. CAVEATS Codex flagged in review-round-1 you MUST honour:
+
+a) Not every select field includes `""` in its options — `ocpd_type` / `wiring_type` / `ref_method` don't. The earlier draft of this handoff assumed every select had `""` and would have leaked off-enum empty writes. Drop the empty-string exception entirely; treat `""` as just another option that's only allowed if explicitly listed. For "clear this field" semantics, the inspector path is `clear_reading` (separate tool, separate validator).
+
+b) Coercion order matters. The dispatcher already coerces some values (`polarity_confirmed: true` → `"Y"`, etc.) via `coerceRecordReadingValue` in `src/extraction/loaded-barrel-speculator.js`. Today `validateRecordReading` runs BEFORE the coercion. You need to either (i) move coercion ahead of validation, or (ii) duplicate the coerce step locally in the validator. Either way, validate the coerced value, not the raw `input.value` — otherwise legitimate boolean polarity writes get rejected.
+
+c) Use the existing error envelope. The bulk-set-field validator already uses code `value_not_in_options` and surfaces `valid_options` in the rejection payload so Sonnet can self-correct. Grep `value_not_in_options` in `src/extraction/stage6-dispatchers-circuit.js` for the exact shape; use the same code + same field name to keep telemetry consistent.
+
+Sketch (after applying coercion):
 
 ```js
 const allowed = CIRCUIT_FIELD_VALUE_ENUMS.get(input.field);
-if (allowed && typeof input.value === 'string') {
-  // Empty string is always allowed (clear/unset semantics — matches
-  // the empty option already in every select field's enum).
-  const v = input.value;
-  if (v !== '' && !allowed.has(v)) {
-    return { code: 'value_not_in_enum', field: 'value' };
+if (allowed) {
+  const coerced = coerceRecordReadingValue(input.field, input.value);
+  if (typeof coerced !== 'string') {
+    return { code: 'invalid_type', field: 'value' };
+  }
+  if (!allowed.has(coerced)) {
+    return {
+      code: 'value_not_in_options',
+      field: 'value',
+      valid_options: Array.from(allowed),
+    };
   }
 }
 return null;
 ```
 
-EDGE CASES to handle in tests:
-- Field is `type: "select"` but value is non-string (e.g. boolean true → coerce check). Decision: reject as invalid type OR coerce per existing dispatcher coercion (look at `coerceRecordReadingValue` in `src/extraction/loaded-barrel-speculator.js` — there's a coercion for `polarity_confirmed` true → "Y"). Apply the SAME coercion BEFORE the enum check so this fix doesn't reject values the dispatcher would have coerced into the enum.
-- Field is NOT in CIRCUIT_FIELD_VALUE_ENUMS (numeric / text / no closed enum) → skip the check, return null. Default-allow.
-- `input.field` is itself off-namespace (not in CIRCUIT_FIELD_ENUM at all). That's caught by upstream field-name validation; if not, defence in depth says treat as invalid_field.
+Field NOT in CIRCUIT_FIELD_VALUE_ENUMS (numeric / text / no closed enum) → skip the check, return null. Default-allow. (`input.field` being off-namespace entirely is caught by the dispatcher-side `BOARD_FIELD_SET` / `CIRCUIT_FIELD_ENUM` check upstream.)
 
 **Step 3** — `src/extraction/stage6-dispatchers-circuit.js` (the dispatcher caller of `validateRecordReading`, around line 105): the existing `validation_error` log path will surface the new code. Verify the tool_result returned to Sonnet on rejection is structured enough that Sonnet retries with a valid value rather than panicking — look at how other validation_error codes are formatted (`circuit_not_found` is the template).
 
-**Step 4** — parallel work for `record_board_reading`. The board-side validator lives in `src/extraction/stage6-dispatchers-board.js` (search for `validateRecordBoardReading` or the per-board enum check). Same pattern: build `BOARD_FIELD_ENUMS` and reject off-enum values.
+**Step 4** — parallel work for `record_board_reading`. The board-side validator lives in `src/extraction/stage6-dispatchers-board.js` (search for `validateRecordBoardReading` or the per-board enum check). Same pattern, but the board namespace is the UNION of THREE field-schema sections, not just `board_fields`. Mirror how `BOARD_FIELD_ENUM` is built in `stage6-tool-schemas.js:130-136`:
+
+```js
+const BOARD_FIELD_VALUE_ENUMS = (() => {
+  const out = new Map();
+  for (const section of ['supply_characteristics_fields', 'board_fields', 'installation_details_fields']) {
+    const fields = fieldSchema[section] ?? {};
+    for (const [name, spec] of Object.entries(fields)) {
+      if (name.startsWith('_ui_')) continue;
+      if (spec?.type === 'select' && Array.isArray(spec.options)) {
+        out.set(name, new Set(spec.options.map(String)));
+      }
+    }
+  }
+  return out;
+})();
+```
+
+Then apply the same coerce-before-validate pattern in the board validator.
 
 ### Why this approach
 
@@ -279,7 +311,7 @@ The transcript shape that fails is the explicit-list / explicit-range form. The 
 
 ### BEFORE implementing — run a probe pass
 
-Three transcript shapes, run each 10× against prod, tally the outcomes:
+Three transcript shapes, run each 10× against prod for INITIAL TRIAGE only. If you commit to an approach, RE-PROBE the chosen approach at 20-30× to validate the post-fix hit rate. Single-digit-run claims of "deterministic" / "100%" aren't statistically defensible. Tally the outcomes:
 
 1. `"RCD type for circuits 2 and 3 is A."` — the exact repro phrasing
 2. `"Polarity confirmed for circuits 2 and 3."` — different field, same shape
@@ -294,20 +326,33 @@ This empirical baseline determines which implementation approach is safe.
 
 ### Three candidate approaches (decide based on probe results)
 
-**Approach 1 — Prompt change.** Edit `config/prompts/sonnet_extraction_system.md` to make Sonnet's BULK OPERATIONS section more explicit: "when the inspector says 'circuits N and M' or 'circuits X through Y', you MUST emit one `record_reading` per circuit in the list/range. Do not emit a single `record_reading` for only the first circuit." Test against the 3 probes; verify hit rate jumps to ≥90%.
+**Approach 1 — Prompt change.** Edit `config/prompts/sonnet_extraction_system.md` BULK OPERATIONS section.
 
-- **Pros:** smallest blast radius, no new dispatcher logic, immediately reversible.
-- **Cons:** prompt tweaks can have unrelated side effects on other turn shapes. Sonnet may still flake on edge phrasings. Hit rate may not reach 100%.
+CAVEAT Codex flagged in review-round-1: the current prompt ALREADY says "You MUST emit one `record_reading` per circuit … DO NOT collapse the list down to one circuit." The 2026-06-02 field bug happened DESPITE that wording. Approach 1 is therefore a known-weak first move — only consider it if the probe data shows that materially different wording (specific phrasing variants, worked examples added to the prompt, etc.) produces measurable improvement. Treat any prompt-only result <100% as evidence the prompt is not the right layer.
 
-**Approach 2 — Pre-LLM intercept that rewrites tool guidance.** In `sonnet-stream.js handleTranscript`, before runShadowHarness, call `detectBroadcastIntent(transcriptText)`. If true, prepend a per-turn system message (or inject into the user message) explicitly listing the circuit numbers + reminding Sonnet to emit per-circuit `record_reading`s OR use `set_field_for_all_circuits` with `scope: 'specific'`.
+- **Pros:** smallest blast radius if it works, no new dispatcher logic, immediately reversible.
+- **Cons:** the baseline rule is already in place and Sonnet still flaked. Iteration may not converge.
 
-- **Pros:** turn-scoped, doesn't change baseline prompt for non-broadcast turns. More targeted.
-- **Cons:** requires plumbing through `runLiveMode` → `runToolLoop` → message build. More code surface. Cache key behaviour with per-turn system additions needs verification (currently `system` is cached at 5m; per-turn injection could invalidate cache).
+**Approach 2 — Pre-LLM intercept that rewrites tool guidance.** In `sonnet-stream.js handleTranscript` (or `runLiveMode`), before runToolLoop, call `detectBroadcastIntent(transcriptText)`. If true AND the broadcast is a list/range form (not "all circuits" — that already works), parse the transcript via `parseCircuitRange(text)` in `circuit-range.js` to get `{scope, circuits}` (NOTE: the function is `parseCircuitRange`, not `parseCircuitList` — there is no `parseCircuitList` export). For `scope === 'list' || scope === 'range'`, inject a per-turn user-message fragment explicitly naming the circuits and instructing Sonnet to emit one `record_reading` per circuit.
 
-**Approach 3 — Post-Sonnet rejection.** Detect at the dispatcher boundary: if `detectBroadcastIntent(activeTurnTranscript) === true` AND Sonnet emitted only 1 `record_reading` for a field with multiple circuits implied, reject with a synthesised error and let runToolLoop retry. The retry sees the rejection + the original transcript and (hopefully) emits the right tool call.
+DO NOT instruct Sonnet to use `set_field_for_all_circuits` for list/range scopes — that tool's enum is `non_spare | all | rcd_protected_only` (see the schema at `stage6-tool-schemas.js`). There is no `specific` / explicit-list scope. Either:
+- (a) Recommend per-circuit `record_reading` emission only (matches today's working multi-record pattern), OR
+- (b) Separately extend the `set_field_for_all_circuits` tool schema + dispatcher to accept a `circuits: number[]` scope. That's a bigger change with its own validator + harness coverage; treat as a downstream option not part of this fix.
 
-- **Pros:** no prompt change, no per-turn message injection. Pure validator change.
-- **Cons:** could stall turns if Sonnet doesn't recover on retry. Requires knowing the implied circuit count ahead of time (parse the transcript with `parseCircuitList` from `circuit-range.js`). Higher latency on misfires.
+- **Pros:** turn-scoped, doesn't change baseline prompt for non-broadcast turns. More targeted than Approach 1.
+- **Cons:** requires plumbing through `runLiveMode` → `runToolLoop` → message build. Cache-key risk: the cached `system` block stays identical (the prompt isn't changed), but per-turn USER messages have always been outside the cache, so injecting more text there shouldn't invalidate cache reads. VERIFY via `voice_latency.startup_log.usage_cache_read` before/after probe runs that cache hit rate is unchanged.
+
+**Approach 3 — Round-level enforcement of complete fan-out.** Codex flagged the original sketch as broken: `dispatchRecordReading` runs per tool call and returns a tool_result immediately — it cannot know end-of-round completeness on its own. Correct insertion point is `runToolLoop` (`src/extraction/stage6-tool-loop.js`) after the round's `records` are finalized and BEFORE the `messages.push({role: 'user', content: toolResults})` step that hands control back to Sonnet for the next round.
+
+Sketch at that level:
+1. After round-N's records are assembled, snapshot `session.activeTurnTranscript`.
+2. If `detectBroadcastIntent(transcript) === true` and `parseCircuitRange(transcript)` returns `scope === 'list' || 'range'`, compute the implied circuit set.
+3. Collect the set of `(field, circuit)` tuples actually written by `record_reading` in this round.
+4. For each field that got at least one write, if the written circuits ≠ the implied circuit set, synthesise a `multi_circuit_incomplete` tool_result containing the missing circuits.
+5. Push it alongside the real tool_results and let the next round see the correction.
+
+- **Pros:** centralised; one place to enforce; explicit feedback to Sonnet for self-correction.
+- **Cons:** more code surface than Approaches 1/2; risks turn stalls if Sonnet doesn't recover after retry. Requires careful unit tests for the round-level wrapper.
 
 **Recommended decision tree based on probe results:**
 
@@ -319,7 +364,7 @@ This empirical baseline determines which implementation approach is safe.
 
 For Approach 1 (prompt change), search `config/prompts/sonnet_extraction_system.md` for "BULK OPERATIONS" or "multi-circuit" and reinforce the per-circuit-emit rule there. Make a one-paragraph change. Commit message must explain the probe data that drove the wording choice.
 
-For Approach 2 (pre-LLM intercept), parse the transcript via `parseCircuitList` (in `circuit-range.js`) when `detectBroadcastIntent` returns true and the pattern is list/range (not "all circuits"). Build a per-turn message fragment like:
+For Approach 2 (pre-LLM intercept), parse the transcript via `parseCircuitRange` (in `circuit-range.js`) when `detectBroadcastIntent` returns true and `scope === 'list'` or `scope === 'range'` (not "all circuits"). Build a per-turn message fragment like:
 
 ```
 The inspector mentioned circuits 2 and 3 in this utterance. Emit one
@@ -328,7 +373,7 @@ The inspector mentioned circuits 2 and 3 in this utterance. Emit one
 
 Inject into `userMessage` before `runToolLoop` (`stage6-shadow-harness.js:runLiveMode`). Verify Anthropic prompt-caching contract still holds — the cached `system` should remain identical; only the `messages[]` per-turn content changes.
 
-For Approach 3 (post-Sonnet rejection), in `stage6-dispatchers-circuit.js:dispatchRecordReading` (around line 105), after the existing `validateRecordReading` call, add a check: if `session.activeTurnTranscript` matches a list/range broadcast pattern, capture the implied circuit set; track per-turn which circuits got `record_reading` for the field; if the set is incomplete at end-of-round, reject with `multi_circuit_incomplete` so Sonnet retries.
+For Approach 3 (round-level enforcement), implement in `src/extraction/stage6-tool-loop.js` per the corrected sketch in "Three candidate approaches" above. NOT in `dispatchRecordReading` — that dispatcher returns per-call tool_result envelopes immediately and can't see round-level completeness. The intercept point is after `records` are finalised for a round and before the next-round user message containing tool_results is pushed.
 
 ### Test surface
 
@@ -405,7 +450,7 @@ If the chosen approach has <100% hit rate, also mark each scenario in `tests/fix
    - Write the 3 harness scenarios. Run each 10× to establish post-fix hit rate.
    - Document hit rates in scenario descriptions.
    - One commit (or two if prompt + scenarios are clearly separable). Push. Watch CI.
-7. **Final verification.** Run the full 87-scenario suite against prod after all fixes deploy. Should be 87/87 + the 5 new scenarios from this session = 92/92.
+7. **Final verification.** Run the full 87-scenario suite against prod after all fixes deploy. Report stable-scenario pass count SEPARATELY from any expected-flaky scenario hit rates: pre-existing 87 + the 2 new scenarios from Fix A/B = 89/89 stable expected. The 3 new Fix C2 scenarios may be flaky depending on which Approach is chosen; report each one's pass rate (e.g. "3/3 across 20 runs" if deterministic, or "18/20 ≈ 90% — flagged in KNOWN_FLAKY.md" if not). Do NOT claim 92/92 unless all five new scenarios are 100% across the 10-run sweep.
 8. **Push, surface.** Final summary to Derek with: which fixes deployed, hit rates on each, link to CloudWatch session for the probe pass, list of follow-up items (anything you found but didn't fix).
 
 ## Useful commands
