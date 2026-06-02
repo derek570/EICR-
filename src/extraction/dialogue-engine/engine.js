@@ -2258,6 +2258,61 @@ export function tryEnterScriptFromWrites({
     return alias ? [rawField, alias] : [rawField];
   };
 
+  // 2026-06-02 — specificity ranking. Codex round 5 empirical
+  // finding (matrix harness vs prod 2026-06-01): when Sonnet writes
+  // `rcd_bs_en` on a clean snapshot, this hook was entering RCBO
+  // unconditionally because RCBO comes before RCD in
+  // ALL_DIALOGUE_SCHEMAS and both schemas list `rcd_bs_en` as a slot.
+  // That mis-routes the inspector who said "BS EN 61008 for cooker"
+  // (intent: standalone RCD) — engine then asks ocpd_type curve,
+  // surprising the inspector.
+  //
+  // Fix: score each schema by total relevance to THIS TURN'S writes
+  // (sum across readings: 2 for a normal slot match, 1 for
+  // volunteeredOnly, 0 for no slot), sort schemas by score
+  // descending (stable so declared order is the tiebreaker), then
+  // use the sorted order in the existing per-reading loop. The
+  // volunteeredOnly bonus captures the device-class intent:
+  // RCBO's `rcd_bs_en` is volunteeredOnly (auxiliary harvest of a
+  // mirrored field), while RCD's `rcd_bs_en` is a primary slot.
+  // Schemas whose write set includes exclusive slots (e.g. RCD's
+  // rcd_trip_time, owned by RCD only) automatically outscore
+  // schemas that only share the broader BS-code slot.
+  //
+  // Worked examples:
+  //   - Only rcd_bs_en written:
+  //       RCD = 2 (normal); RCBO = 1 (volunteeredOnly). → RCD ✓
+  //   - rcd_trip_time + rcd_bs_en + rcd_type + rcd_operating_current_ma:
+  //       RCD = 1+2+2+2 = 7; RCBO = 0+1+2+2 = 5. → RCD ✓
+  //   - Full RCBO spec (ocpd_bs_en + ocpd_type + ocpd_rating_a +
+  //     ocpd_breaking_capacity_ka + rcd_type + rcd_operating_current_ma):
+  //       RCBO = 6*2 = 12; OCPD < 12; RCD = 4 (only some slots match).
+  //       → RCBO ✓
+  //   - Pure ocpd_bs_en alone:
+  //       RCBO = 2; OCPD = 2. → declared-order tiebreaker → RCBO.
+  //       Acceptable: an isolated BS code without a device class
+  //       indicator routes to the superset (RCBO) which captures the
+  //       same OCPD properties plus optional RCD properties.
+  const schemaScore = (schema) => {
+    const slotByField = new Map(schema.slots.map((s) => [s.field, s]));
+    let score = 0;
+    for (const r of readings) {
+      if (!r?.field) continue;
+      const candidates = resolveCandidates(r.field);
+      for (const c of candidates) {
+        const slot = slotByField.get(c);
+        if (!slot) continue;
+        score += slot.volunteeredOnly ? 1 : 2;
+        break; // count this reading once per schema
+      }
+    }
+    return score;
+  };
+  const orderedSchemas = schemas
+    .map((s, i) => ({ s, i, score: schemaScore(s) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((entry) => entry.s);
+
   for (const reading of readings) {
     const field = reading?.field;
     const circuitRef = Number(reading?.circuit);
@@ -2265,7 +2320,7 @@ export function tryEnterScriptFromWrites({
 
     const candidates = resolveCandidates(field);
 
-    for (const schema of schemas) {
+    for (const schema of orderedSchemas) {
       const slotFields = schema.slots.map((s) => s.field);
       const matchedField = candidates.find((c) => slotFields.includes(c));
       if (!matchedField) continue;
