@@ -65,6 +65,8 @@
  */
 
 import logger from '../logger.js';
+import { lookupPostcode } from '../postcode_lookup.js';
+import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
 import { runToolLoop } from './stage6-tool-loop.js';
 // Loaded Barrel Phase 2.B/2.C wire-up (plan v10 §C). Per-turn
 // speculator instantiation in runLiveMode. Cache state is module-
@@ -211,6 +213,65 @@ function estimateShadowCost(/* toolLoopOut */) {
 async function runLiveMode(session, transcriptText, regexResults, options, log) {
   const turnNum = (session.turnCount ?? 0) + 1;
   const turnId = `${session.sessionId}-turn-${turnNum}`;
+
+  // ───────────────────────────────────────────────────────────────
+  // Postcode lookup → snapshot apply. 2026-06-02 — Codex round 5
+  // empirical finding (matrix harness vs prod 2026-06-01): commit
+  // db85f825's county-drift fix was wired ONLY into
+  // `_extractSingle` (eicr-extraction-session.js:1957-2005), which
+  // is the legacy `extractFromUtterance` path. `runLiveMode` (the
+  // production SONNET_TOOL_CALLS=live path) never called it, so the
+  // structural override that should clamp town/county to the
+  // postcodes.io canonical values when iOS's regex hint carries
+  // `install.postcode` was effectively unwired in prod for every
+  // session.
+  //
+  // Empirical confirmation from harness run 2026-06-01: address
+  // transcripts in live mode wrote address/town/postcode but never
+  // county. Sessions B95B2EE1 + D68ACD24 (2026-05-31 field tests)
+  // landed county="South East" — exactly the regression
+  // applyPostcodeLookupToSnapshot was designed to prevent, but the
+  // applier never ran.
+  //
+  // Wiring identical to `_extractSingle` so the SAME policy applies
+  // in both paths (lookup wins on empty OR on Sonnet drift to a UK
+  // ITL1 region; manual edits preserved). Runs BEFORE
+  // `runToolLoop` so the snapshot Sonnet reads via the cached
+  // system prompt (`buildSystemBlocks`) reflects the canonical
+  // values — Sonnet's same-value-skip then naturally avoids
+  // re-writing town/county and the override sticks.
+  //
+  // Failure modes are absorbed: a postcodes.io 5xx / network timeout
+  // logs a warn but never throws, exactly like the legacy path.
+  // ───────────────────────────────────────────────────────────────
+  let postcodeLookupResult = null;
+  if (Array.isArray(regexResults) && regexResults.length > 0) {
+    const postcodeEntry = regexResults.find((r) => r && r.field === 'install.postcode' && r.value);
+    if (postcodeEntry) {
+      try {
+        const lookup = await lookupPostcode(postcodeEntry.value);
+        if (lookup) {
+          postcodeLookupResult = {
+            postcode: lookup.postcode,
+            town: lookup.town,
+            county: lookup.county,
+            valid: true,
+          };
+          log?.info?.(
+            `Session ${session.sessionId} Postcode lookup (live): ${postcodeEntry.value} → ${lookup.town}, ${lookup.county}`
+          );
+        } else {
+          postcodeLookupResult = { postcode: postcodeEntry.value, valid: false };
+          log?.info?.(
+            `Session ${session.sessionId} Postcode lookup (live): ${postcodeEntry.value} → not found`
+          );
+        }
+      } catch (err) {
+        log?.warn?.(`Session ${session.sessionId} Postcode lookup (live) failed: ${err.message}`);
+      }
+    }
+  }
+  applyPostcodeLookupToSnapshot(session.stateSnapshot, postcodeLookupResult, session.sessionId);
 
   // Per-turn writes accumulator. Function-local — never stored on session
   // (Pitfall #2 — cross-turn leak prevention from shadow harness).
