@@ -1,0 +1,53 @@
+name: probe_bs_en_spoken_digits
+suite: garbles
+description: |
+  REGRESSION GUARD — spoken-digit BS code (no iOS NumberNormaliser
+  preprocessing).
+
+  Inspector dictates "OCPD on circuit 3 BS EN sixty eight ninety
+  eight" — spoken-form digits. iOS NumberNormaliser converts these
+  to "60898" before send. The harness bypasses NumberNormaliser, so
+  the raw text reaches the engine.
+
+  parseBsCode's normaliseBsInput handles letter-splitting and
+  zero-word collapse but NOT word-form digit collapse. fuzzy
+  fallback also misses (no digit run in "sixty eight ninety eight").
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. Engine
+  entered OCPD via /\bOCPD\b/ but parseBsCode returned null. Engine
+  asked for BS number.
+
+  Pin: ocpd_bs_en MUST NOT receive "sixty eight ninety eight"
+  verbatim. Sonnet should not write a numeral-spelled-out string
+  if it confidently knows it means 60898.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "OCPD on circuit 3 BS EN sixty eight ninety eight."
+    isFinal: true
+
+expect:
+  ask_user_count: { min: 1 }
+  has_no_reading:
+    - circuit: 3
+      field: ocpd_bs_en
+      value: "sixty eight ninety eight"
+    - circuit: 3
+      field: ocpd_bs_en
+      value: "BS sixty eight ninety eight"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

@@ -1,0 +1,48 @@
+name: probe_earthing_arrangement_pme
+suite: enum_guards
+description: |
+  POSITIVE PIN — "PME" should resolve to canonical "TN-C-S".
+  (PME = Protective Multiple Earthing, the UK distribution-side
+  name for a TN-C-S earthing arrangement.)
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. Sonnet does
+  not appear to map "PME" → "TN-C-S" — leaves the field blank or
+  asks via ask_user.
+
+  Two interpretations:
+    a) Acceptable — Sonnet declines on ambiguous shorthand, prompts
+       inspector for canonical form.
+    b) Bug — every UK domestic installation uses PME and Sonnet
+       should know the alias. Silent skip wastes inspector time.
+
+  Pinning the "off-enum PME doesn't persist" property. If Derek
+  prefers (b), strengthen this scenario into a positive assertion
+  for has_reading[earthing_arrangement=TN-C-S].
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "Earthing arrangement is PME."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_no_reading:
+    - circuit: 0
+      field: earthing_arrangement
+      value: "PME"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

@@ -1,0 +1,52 @@
+name: probe_ocpd_bs_en_61009_enters_rcbo
+suite: schema_ambiguity
+description: |
+  REGRESSION GUARD — OCPD entry path of the same pivot-mirror gap
+  documented in probe_rcd_bs_en_61009_pivots_to_rcbo.yaml.
+
+  Inspector says "MCB on circuit 3 BS EN 61009" → engine enters
+  OCPD via /\bMCB\b/ → writes ocpd_bs_en → derivation
+  `{ value: '61009', mirrors: ['rcd_bs_en'], pivot: 'rcbo' }`
+  (ocpd.js:47) fires → mirror SHOULD write rcd_bs_en → pivot to
+  RCBO → asks for curve.
+
+  PROD OBSERVATION 2026-06-02: ocpd_bs_en lands on wire; rcd_bs_en
+  mirror does NOT. Same gap as the RCD-entry case.
+
+  This guard FAILS until applyDerivations pushes mirrors to
+  perTurnWrites.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "MCB on circuit 3 BS EN 61009."
+    isFinal: true
+  - at_ms: 5000
+    text: "Type B."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: ocpd_bs_en
+      value: "BS EN 61009"
+    # FAILS until applyDerivations pushes mirror to perTurnWrites.
+    - circuit: 3
+      field: rcd_bs_en
+      value: "BS EN 61009"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

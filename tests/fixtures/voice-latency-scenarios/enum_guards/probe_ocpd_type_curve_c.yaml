@@ -1,0 +1,51 @@
+name: probe_ocpd_type_curve_c
+suite: enum_guards
+description: |
+  POSITIVE PIN — OCPD dialogue-engine entry on "OCPD type for
+  circuit 3 is C curve" routes to engine (not Sonnet) and the
+  parser handles canonical extraction.
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. The OCPD
+  trigger `/\b(?:MCB|OCPD|breaker|protective\s+device)\b/i` fires,
+  engine enters with circuit_ref=3, asks for BS number (first ASK
+  slot before ocpd_type which uses namedExtractor).
+
+  This pins that the engine-entry path is preferred over Sonnet
+  for OCPD utterances. If a future change moves OCPD out of the
+  engine, Sonnet would write either "C CURVE" (off-enum) or "C"
+  (canonical). The ask_user check below catches the engine entry.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "OCPD type for circuit 3 is C curve."
+    isFinal: true
+
+expect:
+  # OCPD script entered → engine asks first ASK slot (ocpd_bs_en).
+  ask_user_count: { min: 1 }
+  has_no_reading:
+    - circuit: 3
+      field: ocpd_type
+      value: "C CURVE"
+    - circuit: 3
+      field: ocpd_type
+      value: "c curve"
+    - circuit: 3
+      field: ocpd_type
+      value: "curve C"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

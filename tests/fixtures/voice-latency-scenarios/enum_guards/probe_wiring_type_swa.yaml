@@ -1,0 +1,57 @@
+name: probe_wiring_type_swa
+suite: enum_guards
+description: |
+  REGRESSION GUARD — wiring_type off-enum AND wrong-canonical.
+  Inspector dictates "Circuit 3 wiring type is SWA."
+  Canonical per ai_guidance (2026-04-22 IET 9-code update): "F"
+  (PVC/SWA) or "G" (XLPE/SWA).
+
+  PROD OBSERVATION 2026-06-02 (this audit): Sonnet emits TWO writes:
+    1. wiring_type="D" — WRONG CANONICAL (D is for PVC in metallic
+       trunking, not SWA)
+    2. wiring_type="SWA" — OFF-ENUM overwrite
+  The 2026-04-22 schema update extended wiring_type to 9 codes
+  (A-H + O); Sonnet's prompt may still be teaching the pre-update
+  4-code system where SWA mapped to D as the closest fit.
+
+  This guard FAILS today on two distinct concerns:
+    a) Off-enum "SWA" persists (dispatcher gap)
+    b) Canonical "D" is wrong (prompt drift — should be "F")
+
+  Whichever Derek fixes first will resolve part of the failure; the
+  other half still surfaces.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Garage feed
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 3 wiring type is SWA."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: wiring_type
+      value: "F"  # correct canonical for PVC/SWA
+  has_no_reading:
+    - circuit: 3
+      field: wiring_type
+      value: "SWA"
+    - circuit: 3
+      field: wiring_type
+      value: "D"  # wrong canonical
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

@@ -1,0 +1,54 @@
+name: probe_reading_plus_observation_same_turn
+suite: speculator_races
+description: |
+  REGRESSION GUARD — reading + observation same turn.
+  Inspector dictates a reading AND an observation about the same
+  circuit in one breath.
+
+  PROD OBSERVATION 2026-06-02: Sonnet emits the Zs reading correctly
+  (canonical + legacy double-emit). The observation also lands
+  (visible via `confirmation_count` including the observation
+  confirmation line, although the harness's diagnostic output
+  doesn't print observation IDs).
+
+  Speculator fires for the reading (per onToolUseStreamed at
+  loaded-barrel-speculator.js:906 — `record_reading` and
+  `record_board_reading` only, NOT observations). The observation
+  confirmation is synthesised post-loop by the bundler
+  (`synthesiseObservationAndClearedConfirmations`).
+
+  Wire-shape ordering: reading confirmation arrives mid-stream;
+  observation arrives at round end. iOS-side playback queue must
+  serialise — that is Cat 7 (iOS-only gap; this harness can't observe
+  audio overlap). Backend-side check: both confirmations are
+  emitted, no silent drop.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 1 Zs is point one three. Observation, circuit 1 has a damaged outer sheath, code C3."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: zs
+      value: "0.13"
+  # Both reading and observation must produce confirmations.
+  confirmation_count: { min: 2 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

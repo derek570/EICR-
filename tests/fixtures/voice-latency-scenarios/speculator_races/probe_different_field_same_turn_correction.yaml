@@ -1,0 +1,47 @@
+name: probe_different_field_same_turn_correction
+suite: speculator_races
+description: |
+  REGRESSION GUARD — different-field correction same turn.
+  Inspector dictates polarity OK then says "actually sorry" and
+  switches topic to R1+R2.
+
+  PROD OBSERVATION 2026-06-02: Sonnet interprets as TWO independent
+  writes (NOT as a correction). polarity_confirmed=Y AND
+  r1_plus_r2=0.42 both persist. Existing
+  `loaded_barrel_clear_invalidates.yaml` covers SAME-field
+  correction; this pins cross-field behaviour.
+
+  If a future Sonnet behaviour change reads "sorry" as a signal to
+  CLEAR the polarity, polarity will be absent. The has_reading on
+  polarity catches that regression.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 1 polarity OK, actually sorry, R1 plus R2 is point four two."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: polarity
+      value: "Y"
+    - circuit: 1
+      field: r1_plus_r2
+      value: "0.42"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

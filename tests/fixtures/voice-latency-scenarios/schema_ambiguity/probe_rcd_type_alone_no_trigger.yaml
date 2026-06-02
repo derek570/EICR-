@@ -1,0 +1,54 @@
+name: probe_rcd_type_alone_no_trigger
+suite: schema_ambiguity
+description: |
+  POSITIVE PIN — Sonnet handles "Circuit 3 has a type AC residual
+  current device 30 mA" without engine entry, writing both rcd_type
+  and rcd_operating_current_ma directly via record_reading.
+
+  PROD OBSERVATION 2026-06-02:
+    rcd_type="AC" (canonical), rcd_operating_current_ma="30"
+  No OCPD fields written. Sonnet correctly classified as RCD-only
+  intent (not RCBO).
+
+  schemaScore tiebreak (RCBO=RCD=4 → declared order RCBO) doesn't
+  apply because Sonnet's tool-call path bypasses the engine. The
+  schema-ranking only matters when Sonnet's writes are seeds for
+  tryEnterScriptFromWrites — Sonnet's direct write of values
+  doesn't trigger engine entry here (it would on a longer
+  conversation that requires walking through more slots).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 3 has a type AC residual current device 30 mA."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: rcd_type
+      value: "AC"
+    - circuit: 3
+      field: rcd_operating_current_ma
+      value: "30"
+  # No OCPD writes — would indicate Sonnet routed to RCBO context.
+  has_no_reading:
+    - circuit: 3
+      field: ocpd_bs_en
+      value: "BS EN 61009"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

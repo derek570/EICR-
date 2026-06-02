@@ -1,0 +1,44 @@
+name: probe_rcd_defer_garbled_filled_in
+suite: garbles
+description: |
+  REGRESSION GUARD — RCD defer garble.
+  rcd.js:159-179 has deferTriggers regex set that includes the
+  "filled in" / "filed in" garbles for "fill it in later". Field
+  repro: session E8C6B716 (2026-05-31).
+
+  This probe pins the deferral path. Inspector says "RCD on circuit 1"
+  → engine asks BS number → inspector replies "filled in." → engine
+  recognises deferral, finishes script with deferMessage instead of
+  re-asking.
+
+  If the deferTriggers regex regresses and loses "filled in", the
+  engine re-asks the BS number question and the inspector loops.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "RCD on circuit 1."
+    isFinal: true
+  - at_ms: 5000
+    text: "filled in."
+    isFinal: true
+
+expect:
+  # Engine asks BS number once. Defer reply finishes script — no
+  # second ask should fire.
+  ask_user_count: { min: 1, max: 1 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

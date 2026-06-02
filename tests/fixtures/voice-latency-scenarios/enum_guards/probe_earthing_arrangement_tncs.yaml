@@ -1,0 +1,40 @@
+name: probe_earthing_arrangement_tncs
+suite: enum_guards
+description: |
+  PROBE PASSES TODAY — Sonnet declines to write off-enum on
+  earthing_arrangement when the inspector says "TNCS" (no hyphens).
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. Sonnet
+  recognises the value is ambiguous / off-enum and declines.
+  Either ask_user or silent skip — either is acceptable.
+
+  Pin so a future Sonnet shift that DOES write "TNCS" verbatim
+  fails immediately. Enum is TN-S, TN-C-S, TT, IT, TN-C.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "Earthing arrangement is TNCS."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_no_reading:
+    - circuit: 0
+      field: earthing_arrangement
+      value: "TNCS"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

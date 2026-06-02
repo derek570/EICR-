@@ -1,0 +1,45 @@
+name: probe_ring_garbled_wing
+suite: garbles
+description: |
+  REGRESSION GUARD — `wing` garble of `ring`.
+  ring-continuity.js:78 has `(?:ring|bring|wing)` alternation for
+  this Deepgram garble. Field repro: 2026-04-30 session 2801896A.
+
+  PROD OBSERVATION 2026-06-02: Trigger alternation works correctly
+  (engine entered). Value capture depends on iOS NumberNormaliser
+  collapsing "point four three" → "0.43"; the harness bypasses that
+  and the engine's named-extractor expects digits.
+
+  Pin engine-entry only — value capture is preprocessing-dependent.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Upstairs Sockets
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Wing continuity for circuit 1. Lives are 0.43."
+    isFinal: true
+
+expect:
+  # Engine entered → asks for neutrals next.
+  ask_user_count: { min: 1 }
+  has_reading:
+    # NOTE: SCHEMA.md says wire shape uses LEGACY name
+    # `ring_continuity_r1`. Empirically the wire carries CANONICAL
+    # `ring_r1_ohm` for dialogue-engine writes — rewrite leak gap.
+    - circuit: 1
+      field: ring_r1_ohm
+      value: "0.43"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

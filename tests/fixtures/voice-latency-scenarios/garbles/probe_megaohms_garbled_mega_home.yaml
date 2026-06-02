@@ -1,0 +1,46 @@
+name: probe_megaohms_garbled_mega_home
+suite: garbles
+description: |
+  REGRESSION GUARD — IR megaohms garble.
+  Inspector dictates "Insulation resistance for circuit 3 is
+  299 mega home" (Deepgram garble of "mega ohms").
+  parseBareMegaohmsWithUnit accepts units `m(?:ega)?\s*[- ]?\s*ohms?`,
+  `mΩ`, `milli\s*grams?`, `millies?`, `megs?`. "mega home" is NOT
+  in the unit set.
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. Engine
+  entered IR via /\binsulation\b/, named-extractor missed (no
+  L-L/L-E tag), bareEntryParser rejected "mega home", engine
+  asked for L-L.
+
+  Pin: ir_live_live_mohm MUST NOT receive "299" via the unrecognised
+  unit path. The value "299" should fall through until the inspector
+  re-dictates with a recognised unit OR replies to the L-L ask.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Insulation resistance for circuit 3 is 299 mega home."
+    isFinal: true
+
+expect:
+  ask_user_count: { min: 1 }
+  has_no_reading:
+    - circuit: 3
+      field: insulation_resistance_l_l
+      value: "299"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

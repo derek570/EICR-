@@ -1,0 +1,64 @@
+name: probe_wiring_type_twin_and_earth
+suite: enum_guards
+description: |
+  REGRESSION GUARD — wiring_type off-enum write.
+  Inspector dictates "Wiring type for circuit 3 is twin and earth."
+  Canonical: "A" (PVC/PVC T&E) per IET 9-code system since
+  2026-04-22 field_schema.json update.
+
+  PROD OBSERVATION 2026-06-02 (this audit): Sonnet emits TWO writes
+  in one turn:
+    1. wiring_type="A" (canonical — correct)
+    2. wiring_type="twin and earth" (off-enum overwrite)
+  Last-write-wins means the off-enum value persists to iOS, where
+  the picker renders blank (no matching option).
+
+  This guard FAILS today and will continue to fail until either:
+    a) validateRecordReading gains an options[] enum check (rejecting
+       the second write), OR
+    b) Sonnet's prompt stops emitting the raw-text overwrite after
+       the canonical write.
+
+  This is the BROADER STRUCTURAL CLASS of the 2026-06-02 "AND" bug.
+  Same pattern would apply to a tightened rcd_type enum, ocpd_type
+  enum, etc. Derek to decide between (a) — defence-in-depth at the
+  dispatcher — and (b) prompt tightening.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Wiring type for circuit 3 is twin and earth."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: wiring_type
+      value: "A"
+  # FAILS UNTIL FIX — Sonnet's second write is off-enum.
+  has_no_reading:
+    - circuit: 3
+      field: wiring_type
+      value: "twin and earth"
+    - circuit: 3
+      field: wiring_type
+      value: "TWIN AND EARTH"
+    - circuit: 3
+      field: wiring_type
+      value: "T&E"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

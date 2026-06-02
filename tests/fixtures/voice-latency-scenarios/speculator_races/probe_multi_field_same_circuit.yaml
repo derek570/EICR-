@@ -1,0 +1,64 @@
+name: probe_multi_field_same_circuit
+suite: speculator_races
+description: |
+  REGRESSION GUARD — multi-field same-circuit speculator behaviour.
+  Inspector dictates Zs + polarity + R1+R2 on circuit 1 in one
+  breath. Sonnet emits 3 record_reading calls in a single turn.
+
+  Speculator's broadcast suppression keys on (field, value, board_id) —
+  3 distinct fields → 3 distinct buckets → no broadcast suppression.
+  Each fires its own pre-synth via `onToolUseStreamed`. Per-turn cap
+  default = 2 (VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN), so the
+  third hits the cap and falls to live synth.
+
+  PROD OBSERVATION 2026-06-02 (this audit):
+    - 3 readings persisted (Zs=0.13, polarity=Y, R1+R2=0.42)
+    - Each emitted TWICE: canonical name + legacy name (e.g.
+      `measured_zs_ohm` and `zs`). The double-emit is the mid-stream
+      speculator envelope plus the bundler's post-loop envelope —
+      iOS dedupes via field-name alias.
+    - Sonnet correctly handles the multi-write turn without
+      collapsing or truncating.
+
+  Pin all three fields so a regression that drops one is caught
+  (the under-fanning class on multi-FIELD writes).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 1 Zs is point one three, polarity OK, R1 plus R2 point four two."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    # Legacy names per SCHEMA.md table — after validateAndCorrectFields.
+    - circuit: 1
+      field: zs
+      value: "0.13"
+    - circuit: 1
+      field: polarity
+      value: "Y"
+    - circuit: 1
+      field: r1_plus_r2
+      value: "0.42"
+  # No grouped confirmation here — three distinct (field, value) buckets,
+  # the bundler's synthesiseConfirmations group-by-(field,value,board_id)
+  # leaves them as 3 per-circuit confirmations. Loose count.
+  confirmation_count: { min: 3 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

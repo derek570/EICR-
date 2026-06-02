@@ -1,0 +1,48 @@
+name: probe_ocpd_type_b_garbled_beat
+suite: garbles
+description: |
+  REGRESSION GUARD — OCPD type garble.
+  Inspector dictates "OCPD curve for circuit 3 is type beat".
+  parseMcbType's `\b([BCD])\b` requires word boundary; "beat" has
+  "B" followed by "e" so `\bB\b` does NOT match inside it.
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. Engine
+  entered OCPD via /\bOCPD\b/, parser rejected "beat", engine
+  asked for BS number. No off-enum value persisted.
+
+  Pin: ocpd_type MUST NOT receive an off-enum garble ("beat",
+  "beep") from this transcript.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "OCPD curve for circuit 3 is type beat."
+    isFinal: true
+
+expect:
+  ask_user_count: { min: 1 }
+  has_no_reading:
+    - circuit: 3
+      field: ocpd_type
+      value: "beat"
+    - circuit: 3
+      field: ocpd_type
+      value: "BEAT"
+    - circuit: 3
+      field: ocpd_type
+      value: "beep"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false
