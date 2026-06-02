@@ -83,7 +83,15 @@ const slots = [
     label: 'type',
     question: 'What RCD type? AC, A, F, or B?',
     parser: parseRcdType,
-    namedExtractor: /\btype\s*(AC|[AFB]|S)\b|\b(AC)\b/i,
+    // Audit-2026-06-02 Phase 4 — same RCD-context tightening as
+    // rcbo.js. Keeps standalone-RCD walkthroughs symmetric with the
+    // RCBO walkthrough on rcd_type capture semantics; without it the
+    // pre-Phase-4 regex would still false-match "Type B" inside an
+    // RCD walkthrough (technically OK because the slot IS rcd_type
+    // there, but routes a curve letter to a waveform field). See the
+    // rcbo.js block for the per-group rationale.
+    namedExtractor:
+      /\b(?:RCD\s+(?:waveform\s+)?type|residual(?:\s+current)?\s+(?:device\s+)?type|waveform\s+type)\s*(AC|[AFB]|S)\b|\btype\s*(AC)\b|^\s*(AC)\s*\.?\s*$/i,
     acceptsBareValue: true,
   },
   {

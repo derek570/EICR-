@@ -97,7 +97,37 @@ const slots = [
     label: 'RCD type',
     question: 'What RCD type? AC, A, F, or B?',
     parser: parseRcdType,
-    namedExtractor: /\btype\s*(AC|[AFB]|S)\b|\b(AC)\b/i,
+    // Audit-2026-06-02 Phase 4 — tightened to require an RCD-context
+    // anchor for the bare-letter alternation. Pre-Phase-4 the regex
+    // `\btype\s*(AC|[AFB]|S)\b|\b(AC)\b` matched "Type B" inside an
+    // RCBO walk-through (when ocpd_type was the asked slot, B is the
+    // legitimate curve letter) because B is in both [AFB] (RCD waveform)
+    // AND [BCD] (OCPD curve). The engine's extractNamedFieldValues runs
+    // ALL slot namedExtractors per turn, so a "Type B" reply wrote BOTH
+    // ocpd_type AND rcd_type. Sonnet's prompt-only fix wouldn't help —
+    // the writes land server-side BEFORE Sonnet is consulted.
+    //
+    // Three alternations + three capture groups (Codex Pass 4 caught
+    // that the helper only read m[1] until Phase 4 widened it to
+    // m[1] ?? m[2] ?? m[3]):
+    //   Group 1 — bare letter (A/F/B/S/AC) preceded by an RCD/residual/
+    //             waveform context anchor. Catches "RCD type A",
+    //             "residual current device type AC", "waveform type B".
+    //   Group 2 — "type AC" form. AC is unambiguous (no OCPD value uses
+    //             AC) so we accept it without the RCD anchor.
+    //   Group 3 — standalone "AC" as the whole reply (one-word answer).
+    //             Whole-string anchored so "AC supply" / "AC mains"
+    //             don't false-match.
+    //
+    // Behaviour:
+    //   "Type B" (RCBO walkthrough, ocpd_type asked) → no match, no
+    //     rcd_type write. BUG FIXED.
+    //   "Type AC" → group 2 captures AC.
+    //   "RCD type A" → group 1 captures A.
+    //   "AC" (one-word reply) → group 3 captures AC.
+    //   "AC supply" → no match (whole-string guard).
+    namedExtractor:
+      /\b(?:RCD\s+(?:waveform\s+)?type|residual(?:\s+current)?\s+(?:device\s+)?type|waveform\s+type)\s*(AC|[AFB]|S)\b|\btype\s*(AC)\b|^\s*(AC)\s*\.?\s*$/i,
     acceptsBareValue: true,
   },
   {
