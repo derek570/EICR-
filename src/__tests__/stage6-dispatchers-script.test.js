@@ -308,12 +308,15 @@ describe('enterScriptByName — engine back door', () => {
     // Snapshot received the write.
     expect(session.stateSnapshot.circuits[4].ring_r1_ohm).toBe('0.32');
     // First wire emit: extraction payload for R1.
+    // Audit-2026-06-02 Phase 3: buildExtractionPayload applies
+    // FIELD_CORRECTIONS inline, so the wire carries the legacy
+    // `ring_continuity_r1` name. Snapshot still keyed canonical.
     expect(ws.sent[0]).toMatchObject({
       type: 'extraction',
       result: {
         readings: [
           {
-            field: 'ring_r1_ohm',
+            field: 'ring_continuity_r1',
             circuit: 4,
             value: '0.32',
             source: 'ring_script',

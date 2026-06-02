@@ -109,3 +109,44 @@ export const FIELD_CORRECTIONS = {
   supply_fuse_rating: 'spd_rated_current',
   supply_fuse_type: 'spd_bs_en',
 };
+
+/**
+ * Audit-2026-06-02 Phase 3 — canonical-name leak fix.
+ *
+ * Mutates `reading.field` in place when FIELD_CORRECTIONS has an entry
+ * for it, returns the same reading object for fluent chaining. No-op
+ * when the field name has no entry — the caller can still log a warning
+ * for "unknown field" (this helper doesn't take a position on it).
+ *
+ * Pre-Phase-3 the rewrite logic lived inline in
+ * sonnet-stream.js#validateAndCorrectFields, which runs late on
+ * `result.extracted_readings`. The dialogue-engine emit path
+ * (engine.js → buildExtractionPayload → safeSend) bypassed that
+ * function entirely, so a dialogue-driven write of `ir_live_live_mohm`
+ * shipped to iOS with the canonical name still on the wire. iOS happens
+ * to accept both today, but the ring/IR garble probes asserted the
+ * canonical name as the wire reality — pinning a leak rather than the
+ * intent.
+ *
+ * Living in field-name-corrections.js (not sonnet-stream.js) avoids
+ * the circular import that bit the path planning: sonnet-stream
+ * already imports from this module (line 26 of sonnet-stream.js),
+ * and buildExtractionPayload sits inside the dialogue engine which
+ * must NOT import sonnet-stream's WS handler graph.
+ *
+ * @param {{field?: string} & Record<string, any>} reading
+ * @param {string | null | undefined} sessionId — optional, for logging
+ * @param {{info?: (msg: string, meta?: object) => void} | null} logger
+ *   — optional. info is the only level used here (downgrade-from-warn:
+ *   a corrected field is expected behaviour, not a problem).
+ * @returns {typeof reading}
+ */
+export function applyFieldNameCorrection(reading, sessionId, logger) {
+  if (!reading?.field) return reading;
+  const corrected = FIELD_CORRECTIONS[reading.field];
+  if (corrected) {
+    logger?.info?.('Field corrected', { sessionId, from: reading.field, to: corrected });
+    reading.field = corrected;
+  }
+  return reading;
+}

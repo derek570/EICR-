@@ -32,11 +32,12 @@ expect:
   # Engine entered → asks for neutrals next.
   ask_user_count: { min: 1 }
   has_reading:
-    # NOTE: SCHEMA.md says wire shape uses LEGACY name
-    # `ring_continuity_r1`. Empirically the wire carries CANONICAL
-    # `ring_r1_ohm` for dialogue-engine writes — rewrite leak gap.
+    # Audit-2026-06-02 Phase 3 — dialogue-engine emit path now applies
+    # FIELD_CORRECTIONS inline via buildExtractionPayload, so the wire
+    # carries the LEGACY `ring_continuity_r1` name. Pre-Phase-3 the
+    # canonical `ring_r1_ohm` leaked.
     - circuit: 1
-      field: ring_r1_ohm
+      field: ring_continuity_r1
       value: "0.43"
 
 config:
