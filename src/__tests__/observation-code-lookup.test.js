@@ -162,3 +162,55 @@ describe('refineObservation — return shape', () => {
     expect(refined).toBeNull();
   });
 });
+
+// Prompt content smoke tests — pin the fixed-vs-mobile disambiguation
+// language and the "no inventing schedule sub-sections" guard. These are
+// the load-bearing pieces of guidance for the misclassification class
+// where the model previously routed "outside lighting circuit without
+// RCD" to schedule_item 5.12.2 (mobile equipment) instead of 5.12.4
+// (luminaires in domestic premises) — see session 416829B3 on 2026-05-31.
+// If a future prompt cleanup strips these strings, the model loses the
+// only direct disambiguation pointer between fixed and mobile outdoor
+// equipment.
+
+describe('refineObservation prompt — disambiguation language', () => {
+  // We don't have the prompt module exported, so verify via a single
+  // refinement invocation that the prompt SENT TO openai contains the
+  // load-bearing strings. The makeOpenAI mock captures the prompt arg.
+  function makeOpenAISpy() {
+    const create = jest.fn().mockResolvedValue({
+      choices: [{ message: { content: '{}' } }],
+      usage: { completion_tokens: 0 },
+    });
+    return { chat: { completions: { create } }, _create: create };
+  }
+
+  test('prompt contains FIXED-vs-MOBILE disambiguation guidance', async () => {
+    const openai = makeOpenAISpy();
+    await refineObservation(openai, {
+      observation_text: 'Outside lighting circuit lacks RCD protection.',
+    });
+    const promptText = openai._create.mock.calls[0][0].messages[0].content;
+    // Pin the three load-bearing pointers — the section heading, the
+    // fixed-luminaire routing (5.12.4 / 411.3.4), and the mobile-equipment
+    // restriction.
+    expect(promptText).toMatch(/FIXED-vs-MOBILE EQUIPMENT/);
+    expect(promptText).toMatch(/5\.12\.4/);
+    expect(promptText).toMatch(/411\.3\.4/);
+    expect(promptText).toMatch(/PORTABLE.*MOBILE|mobile.*portable/i);
+    // Make sure the "outdoor describes location not portability" point
+    // survives — that's the conceptual hook the model needs.
+    expect(promptText).toMatch(/location.*not\s+whether|outdoor.*location/i);
+  });
+
+  test('prompt contains schedule_item-invention guard (no 5.12.5 etc.)', async () => {
+    const openai = makeOpenAISpy();
+    await refineObservation(openai, {
+      observation_text: 'Defect requiring schedule classification.',
+    });
+    const promptText = openai._create.mock.calls[0][0].messages[0].content;
+    expect(promptText).toMatch(/schedule_item MUST.*appear.*verbatim/i);
+    expect(promptText).toMatch(/Do not invent/i);
+    expect(promptText).toMatch(/5\.12\.5/); // names the canonical non-existent ref as an example
+  });
+});

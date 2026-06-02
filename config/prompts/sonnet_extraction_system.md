@@ -388,6 +388,19 @@ BPG4 BASIS: When coding an observation, briefly note why this code applies. If t
 CODE ASSESSMENT — BPG4 LOOKUP TABLES:
 If the electrician does NOT state a code, assess severity using these BPG4 Issue 7.1 tables. If the observation matches an entry below, use that code. If no exact match, apply engineering judgement using the classification definitions above.
 
+FIXED-vs-MOBILE EQUIPMENT DISAMBIGUATION (READ BEFORE THE TABLES BELOW):
+
+A common misclassification routes "outdoor / outside / external" defects to the "mobile equipment outdoors" entries (5.12.2 / 411.3.3) when the actual defect is on FIXED installed kit. The word "outdoor" describes WHERE the equipment is, NOT whether it's portable. Use this decision rule before picking a schedule_item or regulation for any RCD-related outdoor observation:
+
+- **Fixed luminaire** (wall-mounted external light, garden light bolted to a post, soffit downlight, security light drilled to wall, bollard light, eaves light) → `schedule_item: "5.12.4"`, `regulation: "411.3.4"`. Absent RCD is normally C3 (improvement recommended) per the C3 table row "Absence of RCD for AC final circuits supplying luminaires in domestic premises"; escalate to C2 only if there's an additional risk factor (visible cable damage, water ingress, mechanical damage exposure).
+- **Fixed socket-outlet outdoors** (weatherproof external socket, garage socket on the building's final circuit) → `schedule_item: "5.12.1"`, `regulation: "411.3.3"`. Absent RCD is C2 since Amendment 2 (2022).
+- **Mobile / portable equipment expected to be used outdoors** (lawnmower, hedge trimmer, jet wash plugged into an external socket — i.e. equipment that travels) → `schedule_item: "5.12.2"`, `regulation: "411.3.3"`. C2 per the C2 mobile-equipment entry. ONLY use this category when the defect is specifically about the supply to portable kit, not the fixed wiring serving that socket.
+- **Test of intent:** ask yourself "is this equipment screwed/bolted/drilled into the building permanently?" — if yes, it is fixed (route to 5.12.1 or 5.12.4 depending on whether it's a socket or luminaire); if no, it is mobile (route to 5.12.2).
+
+Same pattern for bathrooms: a fixed bathroom luminaire without RCD is 5.12.4 / 411.3.4 (luminaires) AND may also engage Section 701; a bathroom socket without RCD is 701.512.3 and the C2 bathroom-socket entry — pick the entry that most specifically describes the defect, not the most severe-sounding one.
+
+Wider rule: when a Schedule of Inspection sub-section reads as if it could apply ("mobile equipment used outdoors" sounds applicable to ANY outdoor circuit), check the OTHER 5.12.x sub-sections first — there is almost always a more precise match. Reach for 5.12.2 only when the observation is about a portable item's supply chain.
+
 C1 — Danger Present:
 | Category | Description |
 |---|---|
@@ -408,7 +421,7 @@ C2 — Potentially Dangerous:
 | Earthing | Earthing conductor CSA doesn't satisfy adiabatic requirements (Reg 543.1.1 — Every protective conductor shall have a cross-sectional area adequate for the fault current) |
 | Bonding | Absence of effective main protective bonding of extraneous-conductive-parts entering building |
 | Bonding | Main bonding conductor less than 6mm² or evidence of thermal damage |
-| RCD | Absence of RCD for mobile equipment reasonably expected to be used outdoors |
+| RCD | Absence of RCD for PORTABLE / mobile equipment reasonably expected to be used outdoors (lawnmower, hedge trimmer, jet wash, power tools). Use 5.12.2 / 411.3.3. NOT for fixed outdoor luminaires — see C3 luminaires-in-domestic entry below. |
 | RCD | Main RCD or voltage-operated ELCB on TT system fails to operate on test |
 | Polarity | Incorrect polarity at final circuit, equipment or accessory |
 | Overcurrent | Circuits with ineffective overcurrent protection (e.g. oversized fuse wire) |
@@ -450,8 +463,8 @@ C3 — Improvement Recommended:
 | Bonding | Main bonding connected to branch pipework where continuity not assured |
 | RCD-DD | Type A or F RCD used for EVCP without RDC-DD installed |
 | RCD | Type AC RCD installed where Type A required |
-| RCD | Absence of RCD for socket-outlet unlikely to supply outdoor mobile equipment, not serving bathroom |
-| RCD | Absence of RCD for AC final circuits supplying luminaires in domestic premises |
+| RCD | Absence of RCD for socket-outlet unlikely to supply outdoor mobile equipment, not serving bathroom (i.e. an internal socket where mobile-outdoor use is implausible — e.g. a high-level utility-room socket dedicated to a fixed appliance). Use 5.12.1 / 411.3.3. |
+| RCD | Absence of RCD for AC final circuits supplying luminaires in domestic premises (411.3.4). USE THIS for any FIXED luminaire — including outdoor wall lights, garden lights drilled to walls/posts, soffit lights, security lights, downlights, indoor luminaires, bathroom-zone luminaires (in addition to Section 701 if applicable). Use 5.12.4 / 411.3.4. Escalate to C2 only if there's additional risk (visible cable damage, water ingress, mechanical risk). |
 | RCD | Absence of RCD for cables at depth less than 50mm without earthed metallic covering |
 | Overcurrent | Reliance on voltage-operated ELCB for fault protection (device operating correctly) |
 | Bathrooms | Absence of RCD for non-socket circuits in bathroom where satisfactory supplementary bonding present |
