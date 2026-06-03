@@ -1,0 +1,389 @@
+# Session Optimizer Rewrite Plan — 2026-06-03
+
+## Why this plan exists
+
+The session optimizer was built 2026-02-26 to learn from production sessions and propose iOS-side regex / keyterm / Sonnet-prompt improvements. The world has moved on substantially:
+
+| Then (Feb 2026) | Now (Jun 2026) |
+|---|---|
+| Deepgram Nova-3 | Deepgram Flux (`flux-general-en`) |
+| `:boost` suffix worked | `:boost` suffix ignored — keyterms are inclusion-priority only |
+| TranscriptFieldMatcher.swift was the primary capture path | Dialogue engine + Sonnet (Stage 6) is primary; regex is a pre-LLM gate |
+| Single Sonnet model | Tiered router (Haiku for fast turns, Sonnet for complex) |
+| iOS-only keyterm config | Per-ask Flux Configure (focused-mode) plumbed |
+| No harness probes | 100+ probe YAMLs as the regression substrate |
+| 500-token keyterm budget rules | Different budget shape on Flux's `/v2/listen` |
+
+The optimizer is unaware of all of this. Its 47 recommendations from the last 30 days are skewed toward regex_improvement in TranscriptFieldMatcher.swift and keyword_boost numbers that Flux ignores. It hasn't proposed a single dialogue-engine schema tighten — the fix class that yesterday's L-L=2 bug needed (verified by grepping the last 30 days of `optimizer-reports/*.json` for `category == "dialogue_engine_*"` — zero hits; the category does not yet exist as an enum value, per `scripts/optimizer-prompt-session.md:183`).
+
+This plan brings the optimizer in line with the current architecture across **eight items**, organised into **three clusters**.
+
+---
+
+## Cluster 1 — Stop misleading recommendations (½ day, single PR)
+
+Goal: stop the optimizer from telling Claude things that are flat-out wrong. Once landed, every new report immediately becomes more useful.
+
+### Item 1 — Filter harness sessions out of the poll
+
+**What.** Skip session keys matching `^harness_` in `session-optimizer.sh`'s poll loop. This is the primary filter and is sufficient in practice — Derek's iOS app uses UUID-shaped session IDs, so a `harness_` prefix is unambiguous evidence of harness origin.
+
+> Implementation note: an earlier draft of this item proposed a belt-and-braces second filter on `transcripts_sent < 3 AND first_transcript_to_extraction_ms == 0`. Those fields exist ONLY in `scripts/voice-latency-bench/transcript-replay.mjs` output (the benchmark runner), NOT in production session-analytics S3 payloads — so the secondary filter would have been a silent no-op (every real session matches `== 0` because the field is absent). If a stronger filter is ever needed: first run a one-line `jq` probe against a real production `manifest.json`/`cost_summary.json` to identify a field that actually exists, THEN define the second tier. Until then, rely on the `^harness_` regex plus the existing 3600s skip-after grace timeout.
+
+**Why.** The log right now is spamming `New session analytics: session-analytics/82b54893-…/harness_1780479…` every 3 seconds, then "No debug_log.jsonl — waiting" because harness sessions never upload one. The optimizer treadmills until the 3600s skip-after kicks in, burning Claude tokens (and wall-clock) on dead inputs. Yesterday's probe run alone left dozens of stuck entries in the state file.
+
+**Files.** `scripts/session-optimizer.sh` (poll loop, around the `aws s3 ls session-analytics/` block); also one-time cleanup of stuck `first_seen` entries in `~/.certmate/optimizer_state.json`.
+
+**Effort.** 30 min. Mostly a regex + a state-cleanup snippet.
+
+**Risks.** Genuine sessions starting with `harness_` (none in practice — Derek's iOS app uses UUIDs).
+
+### Item 2 — Flip Nova-3 → Flux in the prompt; drop the boost-suffix tier logic
+
+**What.** Rewrite the "KEYWORD TOKEN BUDGET" section of `scripts/optimizer-prompt-session.md` from Nova-3 facts to Flux facts:
+
+| Before | After |
+|---|---|
+| "Deepgram Nova-3 has a 500-TOKEN limit" | "Deepgram Flux accepts a `keyterms` array via the WebSocket Configure message (max 100 per Flux docs; iOS empirically caps at ~95 keyterms — URL char budget per `DeepgramService.swift:1-12`). Use 95 as the binding recommendation budget." |
+| "Tier 1 (boost >= 2.0) sent WITH boost suffix" | "Boost suffixes are stripped on Flux — boost numbers act only as inclusion priority when the URL hits its char cap." |
+| "Tier 2 (boost < 2.0) sent as PLAIN keyterm" | "All entries are sent as plain keyterms regardless of `:boost` value." |
+
+Drop the "two-tier" framing entirely. Replace with one paragraph explaining that Flux uses the keyterm list as a vocabulary hint, not an acoustic-bias multiplier, and that the right knob for per-slot vocabulary is **focused-mode Configure** (see Item 5).
+
+**Why.** Every "Bump 'test voltage' keyword boost from 1.5 to 2.5"–style recommendation from the past month is built on a false model. Claude is solving the wrong problem. This is the single biggest dishonesty in the prompt right now.
+
+**Files.**
+- `scripts/optimizer-prompt-session.md` lines 40-50 (the KEYWORD TOKEN BUDGET heading + its 7 bullets). The two-tier framing also repeats at line 58 (KeywordBoostGenerator file-list comment under "Current code reference") and line 168 (the `keyword_boost` category description) — all three locations must be rewritten in lockstep, otherwise Claude will still see "two-tier" language and act on it.
+- `scripts/session-optimizer.sh` lines 1061-1086 and 1175-1199 — the Nova-style `TOKEN_BUDGET=450` / `KEYWORD_TOKENS` computation and the JSON-vars builder that feeds `{{KEYWORD_TOKENS}}` / `{{TOKEN_BUDGET}}` / `{{TOKEN_HEADROOM}}` into the prompt. Replace with Flux-relevant values: total keyterm count, Configure cap 100, current URL char usage against `DEEPGRAM_MAX_URL_LENGTH` (~2000), and post-truncation keyterm count. Update the prompt heading at line 40 to drop the "estimated tokens" framing.
+
+**Effort.** 1 hour (re-read Flux docs + rewrite the section + update the category description for `keyword_boost` lower down).
+
+**Risks.** Prompt-length increase if we explain Flux mechanics verbosely; offset by killing the tier-1/tier-2 paragraph. Net should be neutral or slightly shorter. Also: any recommendation that bumps the total keyterm count over 95 will be rejected by iOS at Configure-send time (URL length cap) — bake the 95-limit into the prompt explicitly so Claude doesn't propose configurations the consumer will reject.
+
+### Item 3 — Add dialogue engine + new code paths to "Current code reference"
+
+**What.** Extend the file list in the prompt to include the schemas, parsers, dispatcher validators, and Flux Configure path:
+
+```
+- src/extraction/dialogue-engine/schemas/{ocpd,rcd,rcbo,ring-continuity,insulation-resistance}.js
+  — schema definitions for the active walk-through paths
+- src/extraction/dialogue-engine/parsers/{megaohms,bs-code,amps,ka,ma,rcd-type,mcb-type,voltage}.js
+  — value parsers; bare-bridge value groups live here
+- src/extraction/dialogue-engine/helpers/extraction.js
+  — named-field extractor; multi-group capture rules
+- src/extraction/loaded-barrel-speculator.js
+  — pre-fill speculator
+- src/extraction/stage6-dispatch-validation.js
+  — numeric-range / value-enum dispatcher guards
+- src/extraction/field-name-corrections.js
+  — canonical ↔ legacy field-name table
+- CertMateUnified/Sources/Services/DeepgramService.swift
+  — Flux Configure / focused-mode Configure path
+- tests/fixtures/voice-latency-scenarios/{garbles,schema_ambiguity,dispatcher_gaps}/
+  — harness probes — read these to learn the bug-class shapes already known
+```
+
+Mark each with a sentence on what to look at and when. Keep the legacy files (`TranscriptFieldMatcher.swift`, `NumberNormaliser.swift`, etc.) but reframe them as "secondary / pre-LLM-gate path".
+
+Additionally, soften the three explicit regex-first nudges in THIS PR (rather than waiting for Item 5 to land them) — otherwise the gap between Cluster 1 and Cluster 2 shipping leaves a known-misleading prompt active:
+
+- `scripts/optimizer-prompt-session.md` line 44 — `CORE PRINCIPLE: REGEX-FIRST` header → change to `CORE PRINCIPLE: EXTRACTION-PATH-AWARE`, and add a one-sentence forward reference to the decision tree Item 5 will introduce.
+- `scripts/optimizer-prompt-session.md` line 64 — priority-1 `Regex miss (MOST LIKELY)` → change to `Regex miss (for board-level / installation fields only)`.
+- `scripts/optimizer-prompt-session.md` line 168 — the `keyword_boost` category description → rewrite to drop the two-tier framing (this is the same rewrite Item 2 requires; coordinate the edit).
+
+The full decision-tree replacement lands in Item 5; this PR softens, not rewrites. Also add `CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift` to the file list alongside `DeepgramService.swift` — that's where per-slot keyterm subsets live (consumed by the Configure path; see Item 4's `flux_configure_keyterms_per_slot` category).
+
+**Why.** Yesterday's L-L=2 fix tightened `insulation-resistance.js`'s namedExtractor by splitting it into two value-group arms. The optimizer can't propose that today because it doesn't know those files exist — and Claude won't Read files outside the listed set per the prompt's instructions.
+
+**Files.** `scripts/optimizer-prompt-session.md` "Current code reference" section.
+
+**Effort.** 30 min — mostly typing the bullet list + a 1-sentence "when to read this" per entry.
+
+**Risks.** None.
+
+**Cluster 1 verification.** Run optimizer manually on the last 2-3 real sessions and confirm:
+- No `harness_*` sessions enter the queue.
+- Claude no longer mentions `:boost` tiers in recommendations.
+- At least one recommendation references a `dialogue-engine/` file.
+
+---
+
+## Cluster 2 — Architectural awareness (1–2 days)
+
+Goal: teach Claude not just *what* files exist, but *which path* a given symptom lives on, and *what shape* of recommendation to emit. Without this, even with Cluster 1 the recommendations stay shaped like "add a regex".
+
+### Item 4 — Add new categories
+
+**What.** Extend the `category` enum in `scripts/optimizer-prompt-session.md` (and the HTML report renderer in `scripts/generate-report-html.js` + the `REC_CAT` switch around line 1304 of `session-optimizer.sh`) with these new values:
+
+| New category | When to use |
+|---|---|
+| `dialogue_engine_schema_tighten` | Schema regex over-matches or under-matches; bare-bridge form needs a `MEGAOHMS_BARE_SAFE_VALUE_GROUP`-style tighten; a trigger needs a new alternation. Yesterday's L-L=2 fix would have been this. |
+| `dialogue_engine_schema_extend` | Schema needs a new slot, new derivation, or new postCompletionAsk. Distinct from `_tighten` because the shape of the change is different. |
+| `dispatcher_validator` | `stage6-dispatch-validation.js` needs a new range guard, value-enum, or invalid-field check. Audit Phase 1 numeric-range validator was this shape. |
+| `flux_configure_keyterms_per_slot` | iOS Configure message should push a different keyterm subset on entering a specific ask. Distinct from `keyword_boost` which targets the session-level default. Target file: `CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift` (per-slot keyterm subset definitions). The Configure-send path in `DeepgramService.swift` lines 94-138 is the consumer — optimizer recommendations must NOT edit it directly. |
+| `flux_eot_threshold` | Per-ask `eot_threshold` / `eot_timeout_ms` tuning via Configure. Right place to recommend faster commit on terse-reply slots. Recommendation payload MUST use the canonical Flux key names: `eot_threshold` (0.5-0.9), `eot_timeout_ms` (500-10000), `eager_eot_threshold` (0.3-0.9, optional). NOT `eot_confidence` — that was a v2 draft mistake (see DeepgramService.swift:36-44 comment block). |
+| `loaded_barrel_speculator_hint` | Speculator's `onToolUseStreamed` hook should pre-fill another field shape. |
+| `field_name_correction_add` | A canonical Sonnet name leaked to iOS unmapped — add it to `FIELD_CORRECTIONS`. |
+| `harness_probe` | The session reveals a bug class worth a new probe scenario; either alongside or instead of a code recommendation. (Pairs with Item 8.) Surfaces in the HTML report as a separate "Suggested regression probes" section, not as a badge in the main code-change list — update `scripts/generate-report-html.js` to render that section. |
+
+Update each existing category description to explicitly say "use only when the symptom can't be addressed via one of the new categories above".
+
+**Why.** Without these, every protective-device or IR bug gets shoehorned into `regex_improvement` (TranscriptFieldMatcher.swift) — which is the wrong layer.
+
+**Files.** `scripts/optimizer-prompt-session.md` (categories list + descriptions), `scripts/generate-report-html.js` (category badge colours / labels), `scripts/session-optimizer.sh` (Pushover REC_CAT short-label switch ~line 1304).
+
+**Effort.** 2-3 hours. Mostly straightforward enum extension across three files.
+
+**Risks.** Confusion between `dialogue_engine_schema_tighten` and `regex_improvement`. Mitigation: explicit "if the field is captured by a dialogue-engine schema slot, use the dialogue_engine_* category, not regex_improvement" rule.
+
+### Item 5 — Add a DIALOGUE-ENGINE-FIRST decision tree to the prompt
+
+**What.** Replace the prompt's current "CORE PRINCIPLE: REGEX-FIRST" section with a decision tree:
+
+```
+For every missed value, ask in this order:
+
+1. Was this a protective-device, ring-continuity, or IR-related field?
+   → If yes, the dialogue-engine schema owns the capture. Categories:
+     dialogue_engine_schema_tighten / _extend / dispatcher_validator.
+     Do NOT propose a TranscriptFieldMatcher regex — that path is
+     downstream and will be ignored for these field families.
+
+2. Was the value missed because Flux mis-heard a single technical word
+   (cooker → cucumber, RCD → RCT, Zs → Zen-s)?
+   → If yes, options are (in priority order):
+     a) flux_configure_keyterms_per_slot — push a slot-specific
+        keyterm at Configure time.
+     b) bug_fix in iOS NumberNormaliser to rewrite the garble.
+     c) keyword_boost (session-level default) — last resort; Flux
+        only uses it as inclusion priority.
+
+3. Was the value out-of-enum / out-of-range when it landed?
+   → dispatcher_validator (audit Phase 1 shape).
+
+4. Was the value sent to iOS with a canonical name iOS doesn't decode?
+   → field_name_correction_add.
+
+5. Was this a board-level / installation field (Ze, PFC, MCB rating
+   on the supply, etc.)?
+   → THEN check TranscriptFieldMatcher.swift + the legacy regex
+     path. regex_improvement / number_normaliser / keyword_boost
+     apply here.
+
+6. Did Sonnet not see the value at all (transcript wasn't forwarded,
+   field not in prompt)?
+   → sonnet_prompt_addition / sonnet_prompt_trim.
+
+7. None of the above?
+   → bug_fix.
+```
+
+Keep the "FORBIDDEN RECOMMENDATIONS" section (the active-circuit-expiry one) as-is; it's still valid.
+
+**Why.** Without an explicit routing rule, Claude defaults to the loudest section of the prompt — which is currently "REGEX-FIRST" pointing at TranscriptFieldMatcher.swift. Every protective-device bug then gets misrouted there.
+
+**Files.** `scripts/optimizer-prompt-session.md` (lines 78-110 — the "CORE PRINCIPLE" + "1. Scan utterance-level data" sections).
+
+**Effort.** 3-4 hours. Needs care to balance prescriptive vs flexible. Worth running by Codex review before landing.
+
+**Risks.** Over-prescription forces Claude into the wrong category when the symptom is genuinely cross-cutting. Mitigation: each step has an "if uncertain, fall through to the next" escape.
+
+### Item 6 — `analyze-session.js` extracts per-slot Flux focused-mode + dialogue-engine state
+
+**What.** Add three new sections to the analysis output:
+
+- `focused_mode_timeline`: an array of `{at_ms, tool_call_id, slot_field, keyterm_count, enter_elapsed_ms, exit_reason}` rows pulled from `focused_mode_enter` / `focused_mode_enter_result` / `focused_mode_exit` events. Each row is one entry into a focused ask.
+- `dialogue_engine_transitions`: an array of `{at_ms, schema, event, circuit_ref, slot, values_snapshot}` rows for events whose names start with the actual `logEventPrefix` values defined in `src/extraction/dialogue-engine/schemas/*.js`: `stage6.ocpd_script`, `stage6.rcd_script`, `stage6.rcbo_script`, `stage6.ring_continuity_script`, `stage6.insulation_resistance_script`. Capture all suffixes that affect routing — `_entered`, `_entered_from_sonnet_write`, `_completed`, `_cancelled`, `_topic_switch`, `_disambiguation_retry`, etc. (Grep the schema files for `logEventPrefix` to enumerate exhaustively at implementation time — the canonical list lives in the code, not the plan.) This is the engine's state machine viewed as a tape.
+- `bug_signature_hits`: a list of known bug-class signatures observed (Item 7 builds the matchers; this is the surface for them).
+
+Then pass these into the prompt as new template variables so Claude can correlate "the user mis-spoke during focused-mode for slot X, vocabulary Y" with "field X ended up empty".
+
+**Why.** Right now Claude sees a flat transcript + sonnet-IO + uncaptured values. It can't see which ask was active when a Flux mis-hear happened, or which dialogue-engine state was being processed. The L-L=2 bug class is *invisible* to the current analyzer.
+
+**Files.**
+- `scripts/analyze-session.js` — add new sections to the output structure + parsing logic for the new event names.
+- `scripts/session-optimizer.sh` around the `process_session` JSON-vars builder (lines ~1175-1199 region where existing template vars like `KEYWORD_COUNT` / `TOKEN_BUDGET` are populated via `jq --arg` and emitted into the flat vars file consumed by `render-prompt.cjs`). Add new flat keys `FOCUSED_MODE_TIMELINE`, `DIALOGUE_ENGINE_TRANSITIONS`, `BUG_SIGNATURE_HITS` populated by extracting the matching arrays from `analysis.json`. **`render-prompt.cjs` is a flat `{KEY: stringValue}` substituter — any nested JSON structure must be pre-stringified (`jq -c` or equivalent) before being passed as a template var, otherwise the placeholder renders as `[object Object]`.** No change to `render-prompt.cjs` itself is needed.
+- `scripts/optimizer-prompt-session.md` — add `{{FOCUSED_MODE_TIMELINE}}` / `{{DIALOGUE_ENGINE_TRANSITIONS}}` / `{{BUG_SIGNATURE_HITS}}` template variables in new section headers ("FOCUSED-MODE TIMELINE", "DIALOGUE ENGINE STATE", "AUTO-DETECTED BUG SIGNATURES").
+
+**Effort.** 1 day. Mostly adding event filters + shaping output. Existing unit tests in `scripts/__tests__/analyze-session.test.mjs` provide the regression bed.
+
+**Risks.** Output size growth — currently the prompt is bounded. Mitigation: cap each new section at N events (most-recent + most-relevant via uncaptured-value correlation).
+
+**Cluster 2 verification.** Re-process yesterday's session 284CBBCD and confirm:
+- At least one recommendation in the new `dialogue_engine_schema_tighten` category.
+- `focused_mode_timeline` section in the analysis output is non-empty.
+- The decision-tree-driven routing puts the L-L=2 symptom on the dialogue-engine path, not TranscriptFieldMatcher.
+
+---
+
+## Cluster 3 — Per-slot keyterms + bug-class signatures + probe generation (3–5 days)
+
+Goal: the optimizer becomes a force multiplier. It both *identifies* a bug class by signature and *generates* both the recommended code change AND a harness probe that pins the fix. This is where the real time savings appear.
+
+### Item 7 — Bug-class signature recognition
+
+**What.** Add a `KNOWN_BUG_SIGNATURES` registry to `scripts/analyze-session.js`:
+
+```js
+// NOTE: every entry carries `auto_pr: false` from day one (Decision 1).
+// Flipping a single entry to `auto_pr: true` is the manual-promotion step
+// after a watch period; the field is wired but dormant until then.
+const KNOWN_BUG_SIGNATURES = [
+  {
+    id: 'ir_bare_bridge_single_digit',
+    detect: (analysis) => {
+      // Match: IR script completed with a single-digit L-L or L-E
+      // (not a decimal, not a sentinel, not multi-digit)
+      // alongside a sentinel value (>X) for the SIBLING slot in the
+      // same completion.
+    },
+    recommend_category: 'dialogue_engine_schema_tighten',
+    recommend_shape: {
+      file: 'src/extraction/dialogue-engine/schemas/insulation-resistance.js',
+      change: 'split namedExtractor into bare-arm using BARE_SAFE_VALUE_GROUP',
+      reference_commit: '3c77b1bb',
+    },
+    probe_template: 'scripts/probe-templates/garbles/probe_ir_bare_bridge_single_digit.yaml',
+    auto_pr: false, // promote only after 5+ correct matches and zero false positives in production
+  },
+  {
+    id: 'flux_garble_single_word',
+    detect: (analysis) => {
+      // Match: transcript contains a known confusion-pair pattern
+      // (RCT/RCD, cucumber/cooker, lyve/live, etc.); the wrong word
+      // appears in an ask_user_routed_to_engine where the asked
+      // field's value vocabulary is well-defined.
+    },
+    recommend_category: 'flux_configure_keyterms_per_slot',
+    recommend_shape: {
+      file: 'CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift',
+      change: 'add slot-specific keyterm entry to the per-field keyterm map (verify exact table name when implementing)',
+    },
+    probe_template: 'scripts/probe-templates/garbles/probe_flux_garble_<word>.yaml',
+    auto_pr: false,
+  },
+  {
+    id: 'value_out_of_enum_no_validator',
+    detect: (analysis) => {
+      // Match: a record_reading wrote a value that doesn't match
+      // any option in the field's schema; no value_not_in_options
+      // rejection fired.
+    },
+    recommend_category: 'dispatcher_validator',
+    recommend_shape: {
+      file: 'src/extraction/stage6-dispatch-validation.js',
+      change: 'add entry to CIRCUIT_FIELD_VALUE_ENUMS for the offending field',
+    },
+    probe_template: 'scripts/probe-templates/dispatcher_gaps/probe_<field>_off_enum.yaml',
+    auto_pr: false,
+  },
+  {
+    id: 'canonical_name_leak_to_ios',
+    detect: (analysis) => {
+      // Match: extraction.readings includes a canonical name that
+      // (a) is not in `KNOWN_FIELDS` in src/extraction/sonnet-stream.js,
+      // (b) is not already mapped in src/extraction/field-name-corrections.js
+      //     FIELD_CORRECTIONS, AND
+      // (c) is not covered by the iOS dual-alias decoder allowlist for
+      //     IR / ring / Zs / cable fields (iOS accepts both canonical
+      //     and legacy names for these — a leak is not a bug there).
+      // Only emit the recommendation when the value is actually dropped
+      // or not decoded on iOS — otherwise it's a noise hit.
+    },
+    recommend_category: 'field_name_correction_add',
+    recommend_shape: {
+      file: 'src/extraction/field-name-corrections.js',
+      change: 'add canonical→legacy entry to FIELD_CORRECTIONS',
+    },
+    probe_template: null,
+    auto_pr: false,
+  },
+  // ... etc.
+];
+```
+
+For each signature that matches in a session, the optimizer emits one pre-canned recommendation alongside whatever Claude generates. This raises the floor: even when Claude misses the right framing, signature-matched recommendations always come through.
+
+**Why.** Every bug we ship a fix for is also a class. Yesterday's L-L=2 was a class — and there will be a next one of the same class. The optimizer should learn the class shapes incrementally so the second instance auto-detects.
+
+**Files.** `scripts/analyze-session.js` (new registry + matcher), `scripts/session-optimizer.sh` (merge signature recommendations with Claude's), `scripts/generate-report-html.js` (badge signature-matched recommendations as "auto-detected pattern").
+
+**Effort.** 2 days. The matchers are simple JS; the wiring is moderate. Initial registry of ~5-8 known signatures covers the bug classes from the last 2 months.
+
+**Risks.** False matches recommending the wrong fix. Mitigation: each signature has a confidence threshold; recommendations below it go in as "low confidence" not as auto-apply.
+
+### Item 8 — Harness probe generation alongside recommendations
+
+**What.** When a signature matches AND has a `probe_template`, the optimizer writes the probe YAML to `tests/fixtures/voice-latency-scenarios/auto-generated/<suite>/probe_<id>_<timestamp>.yaml` (the **`auto-generated/`** sibling directory locked in Decision 2 — NOT the main scenarios dir) and references the generated path in the recommendation's metadata. The default harness sweep and CI MUST NOT pick up this directory; promotion to the main regression suite is a manual `mv` after replay-verification, as per Decision 2.
+
+The recommendation body includes a one-line instruction: "After applying this fix, run `node scripts/voice-latency-bench/transcript-replay.mjs --scenario=<path>` against staging; it should flip from FAIL → PASS."
+
+Optional follow-on: a `--dry-run` flag on the optimizer that generates probes without proposing code changes — useful for filling test coverage gaps detected from production sessions.
+
+**Template format and location.** Templates live as YAML files at `scripts/probe-templates/<bug-class-id>.yaml` with `{{TRANSCRIPT}}`, `{{EXPECTED_VALUE}}`, `{{ACTUAL_VALUE}}`, `{{CIRCUIT_REF}}` placeholders. Substitution reuses `scripts/render-prompt.cjs`'s flat `{{KEY}}` semantics so we don't introduce a second templating tool. **Justification for a separate directory over inlining the templates as JS string-literals in `analyze-session.js`**: probe YAMLs are read by `scripts/voice-latency-bench/transcript-replay.mjs` as standalone files for replay, and editing a template should not require touching `analyze-session.js` (different change cadence, different reviewer audience). `tests/fixtures/voice-latency-scenarios/**/*.yaml` are immutable regression fixtures, not mutable templates — keep the two locations distinct.
+
+**Pushover batching skeleton (Decision 3 wiring).** Add `NOTIFY_MODE=per_session|batched_daily|batched_weekly` config flag in `scripts/session-optimizer.sh`, defaulting to `per_session`. Add dormant state-file columns for queued-but-unsent recommendations. Add a non-active `scripts/digest_sender.sh` (or equivalent) plus a LaunchAgent plist skeleton for the daily/weekly digest path. None of this activates by default — single config-flag flip (and LaunchAgent load for the digest path) switches modes once the multi-tester load arrives.
+
+**Why.** Right now every fix that ships needs a hand-authored harness probe to act as a regression guard. Yesterday's L-L=2 fix took maybe 20 minutes to write `probe_ir_bare_bridge_single_digit.yaml`. The optimizer has the raw materials (transcript + expected vs actual values) and a probe template — it can write the YAML in seconds.
+
+**Files.** `scripts/session-optimizer.sh` (probe-write step after recommendation generation), `scripts/analyze-session.js` (probe-template lookup), templates under `scripts/probe-templates/` (new directory).
+
+**Effort.** 1-2 days depending on template count. Start with 3-4 templates (IR bare-bridge, off-enum value, canonical-leak, garble-mishear), grow incrementally.
+
+**Risks.** Generated probes that don't actually reproduce because the optimizer mis-detected the bug class. Mitigation: probes go into `tests/fixtures/.../auto-generated/` initially with a `description` block saying "auto-generated, verify before relying on"; Derek (or me) promotes them to the main directory after a manual replay.
+
+**Cluster 3 verification.** Re-process the 16 substantive sessions from the last month and confirm:
+- Each of the ~5 known bug-class signatures finds at least one historical match.
+- At least 3 generated probe YAMLs that reproduce the symptom against the deployed backend.
+- A signature-matched recommendation produces a working code change when applied (test via Item 7's reference_commit lookup).
+
+---
+
+## Sequencing + cost
+
+| Cluster | Effort | Order | Why this order |
+|---|---|---|---|
+| 1 | ½ day | First | Quick wins — every subsequent report immediately becomes more useful. Land before anything else. |
+| 2 | 1–2 days | Second | Categories + decision tree depend on the prompt structure that Cluster 1 normalises. Doing Cluster 2 before 1 means rewriting twice. |
+| 3 | 3–5 days | Third | Signature recognition reads the analysis output that Cluster 2's Item 6 produces. Genuine dependency. |
+
+Total: **~5–7 days end-to-end**, can be broken into 3 PRs landed independently. None require backend deploy (optimizer is a Mac-local LaunchAgent). Pickup semantics for landed changes:
+
+- **Prompt template** (`scripts/optimizer-prompt-session.md`) and **per-invocation node scripts** (`scripts/analyze-session.js`, `scripts/render-prompt.cjs`, `scripts/generate-report-html.js`) are picked up on their next invocation — these are re-read on each session-processing pass.
+- **`scripts/session-optimizer.sh` itself is a long-running `while true` poll process** — edits to the shell script do NOT take effect until the running LaunchAgent process is restarted. After each PR that touches `session-optimizer.sh`, run: `launchctl kickstart -k gui/$(id -u)/com.certmate.session-optimizer` (one-line cycle, not a deploy, but it IS a required step — call it out so you don't end up wondering why a freshly-landed shell-script change isn't reflected in recommendations).
+- **LaunchAgent plist itself** still requires `launchctl unload/load`.
+
+## Out of scope (for this plan)
+
+- **Per-slot Flux Configure keyterm subset implementation** in iOS / backend. The optimizer learning to *recommend* this is in scope (Item 4 + Item 7); the actual iOS/backend Configure-message work is a separate sprint of its own. This plan is about teaching the optimizer to identify the right shape of fix, not about implementing the fixes themselves.
+
+- **Optimizer migration to a different LLM or harness mode**. Current Claude-Code-in-readonly works; out of scope to swap it for batch-API or something else.
+
+- **Multi-session aggregate reports** ("here are the 5 most common bug classes this week"). Worth doing eventually, but each cluster above lands per-session value first.
+
+## Decisions (locked 2026-06-03)
+
+### 1. Auto-PR for signature-matched recommendations — REPORT-ONLY with per-signature switch
+
+**Decision**: Stay report-only by default. Build a **per-signature** `auto_pr: true|false` flag from the start, defaulting to `false` on every entry in `KNOWN_BUG_SIGNATURES`. Once a signature proves itself on real sessions (say, 5+ correct matches with no false positives), flip that one entry to `auto_pr: true` and the optimizer opens a draft PR for that signature only. Other signatures remain report-only until they earn promotion.
+
+**Why per-signature, not a global toggle**: a global "auto-PR on" flag is all-or-nothing. Per-signature lets us promote `ir_bare_bridge_single_digit` (a tight, well-understood class) without also auto-PRing `flux_garble_single_word` (which has subtler classification edges). Also lets us *demote* a signature back to report-only if it starts misfiring without touching the rest.
+
+**Implementation note**: add the per-signature `auto_pr: false` flag to the `KNOWN_BUG_SIGNATURES` registry in Cluster 3 Item 7 so the schema is in place from day one. **Do NOT implement branch creation, source edits, push, or `gh pr create` in this plan** — the optimizer remains report-only / plan-only, in line with both the existing architecture comment ("plan-only mode" per the v4 block) and the HIL constraint that the optimizer must never touch backend or iOS source files directly. The path from "auto_pr field is true on a signature" to "an actual PR exists" needs a separate plan that re-opens both the HIL constraint and the source-editing constraint explicitly; that plan is out of scope here. Until then, even a signature with `auto_pr: true` will only surface a stronger "promoted to auto-apply candidate" badge in the report — no Git/gh actions taken.
+
+### 2. Auto-generated probes location — Option B (sibling directory)
+
+**Decision**: Auto-generated probes write to `tests/fixtures/voice-latency-scenarios/auto-generated/<suite>/probe_<id>_<timestamp>.yaml`. They are NOT picked up by the default harness sweep or by GitHub Actions. Verification step (manual `transcript-replay --scenario=...` against the proposed fix's branch) then `mv` to the main directory promotes the probe to the regression suite.
+
+**Why Option B over A**: the failure mode in Option A — a falsely-detected bug class auto-adding a probe that then masks a real regression in CI — is exactly the silent failure that's hard to debug later. Option B keeps the main probe suite as the manually-curated trustworthy regression bed, and lets the optimizer fill a "candidates" bucket Derek (or me) promotes after replay-verification.
+
+**Implementation note**: the harness CLI flag lives in `scripts/voice-latency-bench/transcript-replay.mjs` — add a `--include-auto-generated` option that expands the scenario glob to additionally match `tests/fixtures/voice-latency-scenarios/auto-generated/**/*.yaml`. Default scenario glob stays unchanged so neither the default sweep nor CI picks up auto-generated probes. Effort: ~30 min, folded into Cluster 3 Item 8.
+
+### 3. Pushover notification cadence — per-session now, batch mode behind a flag
+
+**Decision**: Per-session notifications stay as-is today (1 Pushover per session report). Build a `NOTIFY_MODE: per_session | batched_daily | batched_weekly` config flag in `session-optimizer.sh`, default `per_session`. When more testers start producing sessions, flip to `batched_daily` (digest at e.g. 18:00 local) without code changes — single config edit + LaunchAgent reload.
+
+**Why bake the batch path in now**: same logic as (1) — adding it later means changing the optimizer twice. Adding it now with the default off costs maybe 1 extra hour during Cluster 3 and is a one-line flip when the multi-tester load arrives.
+
+**Implementation note**: batched mode needs a state-file column for "queued but unsent" recommendations + a separate `digest_sender.sh` LaunchAgent on a daily cron. Skeleton lands in Cluster 3 Item 8 alongside the probe generator; activation deferred.

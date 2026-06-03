@@ -24,8 +24,6 @@ This plan brings the optimizer in line with the current architecture across **ei
 
 Goal: stop the optimizer from telling Claude things that are flat-out wrong. Once landed, every new report immediately becomes more useful.
 
-> **Two prompt surfaces, not one.** `session-optimizer.sh` invokes Claude through TWO separate prompts: `scripts/optimizer-prompt-session.md` (per-session reports — the default path) AND `scripts/optimizer-prompt-debug.md` (standalone voice-debug reports — invoked when the optimizer processes a `debug-reports/*` payload). Both prompts currently contain the same Nova-era / regex-first / stale `CertMateUnified/Resources/default_config.json` content. **Every prompt-text edit in this plan must be applied to BOTH prompt files in lockstep** — Items 2 + 3 in Cluster 1, Item 5 in Cluster 2, AND Item 4's category-enum / advisory-schema split (also Cluster 2). The debug prompt has its own output-schema example that today requires `file` / `old_code` / `new_code` on every recommendation and has no `category` field at all — Item 4's `implementation_status` + advisory rules must be added to it explicitly, otherwise debug reports cannot emit the new categories and would still be pushed toward fabricated diffs for advisory-only fixes. The two prompts have similar-but-not-identical structure — adapt wording where the prompt's existing surrounding context requires it (don't blindly copy/paste).
-
 ### Item 1 — Filter harness sessions out of the poll
 
 **What.** Skip session keys whose **basename** starts with `harness_` in `session-optimizer.sh`'s poll loop. `SESSION_PATH` is a full S3 key shaped `session-analytics/{userId}/{sessionId}` — a literal `^harness_` regex against the full path will NEVER match (the path starts with `session-analytics/`). Apply the check after basename extraction:
@@ -87,14 +85,12 @@ Drop the "two-tier" framing entirely. Replace with one paragraph explaining that
   - `{{KEYTERM_GENERATOR_SENT_COUNT}}` — after iOS-side dedupe/sort/cap-100 (matching `KeywordBoostGenerator.dedupAndCap`); approximated as `min(100, KEYTERM_RAW_COUNT)`.
   - `{{KEYTERM_URL_CHARS_ESTIMATE}}` — sum of `len(URL-encoded(kw)) + 11` per keyterm (10 chars for `&keyterms=` + 1 buffer for URL-encoding overhead from spaces / punctuation). Acknowledged as a static heuristic — Deepgram's URL-encoding is "best effort", and the optimizer can't read the actual runtime URL the iOS client builds.
   - `{{KEYTERM_URL_ESTIMATED_SENT_COUNT}}` — count of keyterms that would survive `buildFluxURL`'s truncation at `DEEPGRAM_MAX_URL_LENGTH = 2000`, walking the priority-sorted list and stopping when the estimate exceeds 2000.
-  - `{{KEYTERM_CONFIGURE_CAP_REMAINING}}` — Configure cap headroom AFTER `FocusedAnswerKeyterms.all` is prepended. `enterFocusedAnswerMode` (`DeepgramService.swift:~1058`) calls `mergeFocusedKeyterms(essential: FocusedAnswerKeyterms.all, session: sessionKeyterms, cap: 100)` — the 58 focused-essential terms (digits 1-50 + ~8 sentinels) are prepended FIRST, leaving `100 - 58 = 42` slots for session keyterms. Compute as `max(0, 100 - FOCUSED_KEYTERM_ESSENTIAL_COUNT - KEYTERM_GENERATOR_SENT_COUNT)`. Also surface `{{FOCUSED_KEYTERM_ESSENTIAL_COUNT}}` (read from `FocusedAnswerKeyterms.swift` `digits.count + sentinels.count` — currently 58 — verify at implementation time) and `{{KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT}}` (how many session keyterms get truncated by focused-mode merge after essentials). Without these the prompt would tell Claude there are 95+ Configure slots available when in practice 42 is the binding ceiling for focused-mode.
+  - `{{KEYTERM_CONFIGURE_CAP_REMAINING}}` = `100 - KEYTERM_GENERATOR_SENT_COUNT` (hard Configure cap headroom).
   - `{{KEYTERM_URL_CAP_REMAINING}}` = `95 - KEYTERM_URL_ESTIMATED_SENT_COUNT` (soft URL-char-derived headroom).
 
   Update the prompt heading at line 40 + bullets to: (a) reference the new var names; (b) warn explicitly when `KEYTERM_RAW_COUNT > KEYTERM_GENERATOR_SENT_COUNT` (terms being dropped before send); (c) instruct Claude to preserve high-priority terms before suggesting any new session-level keyterm.
 
   Also: update `scripts/optimizer-prompt-session.md` line 59 from `CertMateUnified/Resources/default_config.json` to `CertMateUnified/Sources/Resources/default_config.json`. The `CertMateUnified/Resources/default_config.json` copy is **stale** (different keyterm data + budget notes) and must not be used for optimizer recommendations.
-
-  **Downstream report-surface lockstep** (caught late; easy to miss): `session-optimizer.sh` line ~1604 in `generate_implementation_plan()` currently emits the success-criterion `- Deepgram keyword boost budget stays under 450 tokens.` for `keyword_boost` / `keyword_removal` / `config_change` recommendations — Nova-era language that contradicts the rewritten prompt. Replace with two Flux-relevant lines: `- Deepgram session-start keyterms stay under the 2000-char URL budget (DEEPGRAM_MAX_URL_LENGTH).` and `- Focused-mode Configure keyterms stay under 100 total after merging FocusedAnswerKeyterms.all essentials (~58 reserved → ~42 session-keyterm slots).` Update the stale `CertMateUnified/Resources/default_config.json` reference in the same function (and anywhere else that grep finds it in `scripts/`) to `Sources/Resources/default_config.json`. Also: `scripts/generate-report-html.js` ~line 115 labels the STT cost line as "Deepgram Nova-3" — update to "Deepgram Flux" (or a model-agnostic "Deepgram" label) so the rendered report stops mis-attributing cost to a model the optimizer hasn't used in months.
 
 **Effort.** 1 hour (re-read Flux docs + rewrite the section + update the category description for `keyword_boost` lower down).
 
@@ -127,11 +123,9 @@ Mark each with a sentence on what to look at and when. Keep the legacy files (`T
 
 Additionally, soften the three explicit regex-first nudges in THIS PR (rather than waiting for Item 5 to land them) — otherwise the gap between Cluster 1 and Cluster 2 shipping leaves a known-misleading prompt active:
 
-- `scripts/optimizer-prompt-session.md` line 78 — `### CORE PRINCIPLE: REGEX-FIRST` header → change to `### CORE PRINCIPLE: EXTRACTION-PATH-AWARE`, and add a one-sentence forward reference to the decision tree Item 5 will introduce. (Grep for the literal string `CORE PRINCIPLE: REGEX-FIRST` if the line number has drifted.)
-- `scripts/optimizer-prompt-session.md` line 98 — priority-1 `1. **Regex miss** (MOST LIKELY):` → change to `1. **Regex miss** (for board-level / installation fields only):`. (Same grep fallback if the line has drifted.)
+- `scripts/optimizer-prompt-session.md` line 44 — `CORE PRINCIPLE: REGEX-FIRST` header → change to `CORE PRINCIPLE: EXTRACTION-PATH-AWARE`, and add a one-sentence forward reference to the decision tree Item 5 will introduce.
+- `scripts/optimizer-prompt-session.md` line 64 — priority-1 `Regex miss (MOST LIKELY)` → change to `Regex miss (for board-level / installation fields only)`.
 - `scripts/optimizer-prompt-session.md` line 168 — the `keyword_boost` category description → rewrite to drop the two-tier framing (this is the same rewrite Item 2 requires; coordinate the edit).
-
-(Line numbers 78 + 98 above match Item 5's "lines 78-110" citation for the same section — they refer to the same block. An earlier draft of this Item 3 had stale numbers (44 + 64) carried over from a pre-Stage-6 version of the prompt; the current file is at 78 + 98 as of this plan's last verification.)
 
 The full decision-tree replacement lands in Item 5; this PR softens, not rewrites. Also add `CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift` to the file list alongside `DeepgramService.swift` — that's where per-slot keyterm subsets live (consumed by the Configure path; see Item 4's `flux_configure_keyterms_per_slot` category).
 
@@ -175,14 +169,13 @@ Update each existing category description to explicitly say "use only when the s
 
 - Add a new optional field `implementation_status: "implementable" | "awaiting_infrastructure" | "probe_only"` to the recommendation schema. Default `"implementable"` to preserve existing behaviour.
 - Mark `flux_configure_keyterms_per_slot` and `flux_eot_threshold` as `"awaiting_infrastructure"` and `harness_probe` as `"probe_only"`.
-- Make `old_code` / `new_code` REQUIRED only when `implementation_status == "implementable"`; FORBIDDEN otherwise. Add an explicit instruction: "For non-implementable categories, emit `metadata` (a JSON object describing the suggested shape). For `harness_probe`, `metadata` carries the probe template id, suggested scenario id, and the bug-class signature it would pin."
-- **`generated_probe_path` is OPTIONAL and populated only by the optimizer post-hoc — Claude never emits it.** When Item 8 (Cluster 3) lands and successfully writes a probe YAML, the optimizer post-processes the matching `harness_probe` recommendation and injects `generated_probe_path` pointing at the written file. If Cluster 2 ships independently before Cluster 3, the field is simply absent — the renderer must show a link only when `generated_probe_path` is present, never fabricate one. (Avoids the bug where Cluster 2 standalone would have Claude inventing probe paths that don't exist on disk.)
+- Make `old_code` / `new_code` REQUIRED only when `implementation_status == "implementable"`; FORBIDDEN otherwise. Add an explicit instruction: "For non-implementable categories, emit `metadata` (a JSON object describing the suggested shape) and `generated_probe_path` (for `harness_probe`) instead."
 - `scripts/generate-report-html.js` and the `generate_implementation_plan()` codepath must reject any `accept` action targeting an index whose recommendation has `implementation_status != "implementable"` — silently filter them out of accept-selected, render them in their own non-actionable sections, no checkboxes / no accept controls.
 
 **Why.** Without these, every protective-device or IR bug gets shoehorned into `regex_improvement` (TranscriptFieldMatcher.swift) — which is the wrong layer.
 
 **Files.**
-- `scripts/optimizer-prompt-session.md` — THREE locations in this file must be extended in lockstep, otherwise Claude emits new categories that fail downstream parser / consumer checks: (1) the categories list + descriptions at lines 165-173; (2) the JSON-output schema category enum literal at line 183 (`"category": "regex_improvement|number_normaliser|..."`); (3) the `category` note at ~line 202 currently saying "must be one of the 8 categories listed above" — rewrite to "must be one of the categories listed above" (avoids hard-coding any count and stays correct as the enum grows).
+- `scripts/optimizer-prompt-session.md` — both the categories list + descriptions at lines 165-173 AND the JSON-output schema category enum literal at line 183 (`"category": "regex_improvement|number_normaliser|..."`). Both must be extended in lockstep, otherwise Claude emits new categories that fail parser/validator allowlist checks.
 - `scripts/generate-report-html.js` — extend `CATEGORY_COLORS` (lines 72-80) with the 8 new entries. **Pre-flight fix**: the existing table is already missing `keyword_removal` (it appears in the prompt categories at line 169 AND the REC_CAT switch at line 1310, but has no badge). Add `keyword_removal` first as a baseline fix before adding the 8 new entries; otherwise the new-entry PR also lands the existing baseline bug. Additionally, split the recommendations array on render: filter by the new `implementation_status` field (see Item 4 "Schema split for advisory categories" above) — `implementable` entries go into the existing checkbox/accept/reject flow with `old_code`/`new_code` blocks; `awaiting_infrastructure` (currently `flux_configure_keyterms_per_slot`, `flux_eot_threshold`) goes into an "Advisory — awaiting infrastructure" section with no accept controls; `probe_only` (currently `harness_probe`) goes into "Suggested regression probes" with no accept controls. `acceptSelected()` MUST silently filter out any non-`implementable` indices even if submitted.
 - `scripts/session-optimizer.sh` — Pushover `REC_CAT` short-label switch at `case "$REC_CAT" in` line 1302. **Remove the `| head -c 20` truncation on line 1301** (`REC_CAT=$(echo "$rec_line" | jq -r '.category // ""' | head -c 20)`) — several new categories are longer than 20 chars (e.g. `dialogue_engine_schema_tighten` = 30, `flux_configure_keyterms_per_slot` = 32, `loaded_barrel_speculator_hint` = 29) and the truncation silently breaks the `case` match. Only truncate the rendered label/explanation if needed (`REC_EXPLAIN` already has `head -c 120` on line 1299; that's fine).
 
@@ -260,15 +253,6 @@ Keep the "FORBIDDEN RECOMMENDATIONS" section (the active-circuit-expiry one) as-
 
 ### Item 6 — `analyze-session.js` extracts per-slot Flux focused-mode + dialogue-engine state
 
-> **Prerequisite (structural — caught in R9; do not skip): backend telemetry ingestion path.** Today `session-optimizer.sh` only downloads iOS-side S3 artifacts (`debug_log.jsonl`, `field_sources.json`, `manifest.json`, `job_snapshot.json`, `cost_summary.json`). The dialogue-engine `stage6.*_script_*` events AND the `stage6_tool_call` rows that Item 6's `dialogue_engine_transitions` and `stage6_tool_calls` arrays depend on are emitted by the BACKEND logger (`src/extraction/insulation-resistance-script.js:552/650/714`, `src/extraction/stage6-dispatcher-logger.js:95` and siblings) and are NOT present in the uploaded iOS debug log. Without solving this, Item 6's two new sections will be empty for every session and Item 7's signature detectors will never match. Three options for the ingestion path — pick one explicitly before Item 6 starts:
->
-> 1. **CloudWatch Logs query** by `sessionId` during `process_session` (lowest infrastructure change, but adds AWS query latency + IAM perms to optimizer). Filter to `stage6.*` event names; download the matching rows into a `backend_events.jsonl` sidecar in the work dir.
-> 2. **Backend writes a sanitised event tape to the session's S3 prefix** at session-close (one `backend_events.jsonl` per session next to `debug_log.jsonl`). Requires a small backend change in `src/extraction/sonnet-stream.js`'s session-close path; survives CloudWatch log expiry.
-> 3. **Backend emits sanitised diagnostics back through the ServerWebSocket** to iOS, where they land in iOS's `debug_log.jsonl` alongside the local events (requires extending the existing `client_diagnostic` reverse channel from `iOS → backend` to `backend → iOS`; widest blast radius).
->
-> **Recommended path**: (2) — purpose-built sidecar, no AWS API contract change, no iOS round-trip. Backend writes are append-only during the session and one `S3 PutObject` at close. Verify the `eicr/api-keys` S3 IAM scope allows the backend role to write to `session-analytics/{userId}/{sessionId}/` before locking the choice. Effort: ~half a day backend + a small `session-optimizer.sh` change to `aws s3 cp` the new file. Item 6's `analyze-session.js` work proceeds against this sidecar; without the sidecar, Item 6 ships dead code.
-
-
 **What.** Add three new sections to the analysis output:
 
 - `focused_mode_timeline`: an array of `{at_ms, tool_call_id, slot_field, keyterm_count, enter_elapsed_ms, exit_reason}` rows pulled from `focused_mode_enter` / `focused_mode_enter_result` / `focused_mode_exit` events. Each row is one entry into a focused ask.
@@ -276,7 +260,6 @@ Keep the "FORBIDDEN RECOMMENDATIONS" section (the active-circuit-expiry one) as-
   **Decision (resolves an open implementation choice — context summary section 6 says no questions remain, so this lands as a decision not a deferral): take the iOS telemetry path.** The current iOS log for `focused_mode_enter` carries only `toolCallId` and `sessionKeytermCount`; `inflight_question_anchored` carries no `field` / `circuit` / `toolCallId`, so `slot_field` cannot be reliably populated from the existing stream. Extend `DeepgramRecordingViewModel.handleAlertTTSStarted` (around line 3186) to include `field`, `circuit`, and `toolCallId` in both: (a) the `debugLogger.info("inflight_question_anchored", ...)` call around line 3219, and (b) the `focused_mode_enter` / `focused_mode_enter_result` client diagnostics around lines 3268-3296. This is the only iOS-side edit in scope for this plan and is a **hard prerequisite** for `flux_garble_single_word` detection. Note: line numbers should be verified at implementation time — `DeepgramRecordingViewModel.swift` evolves quickly. The alternative (emit `slot_field: null` and degrade signature anchoring to unanchored substring matching) was considered and rejected because it produces a worse Item 7 outcome with negligible savings.
 - `dialogue_engine_transitions`: an array of `{at_ms, schema, event, circuit_ref, slot, values_snapshot}` rows for events whose names start with the actual `logEventPrefix` values defined in `src/extraction/dialogue-engine/schemas/*.js`: `stage6.ocpd_script`, `stage6.rcd_script`, `stage6.rcbo_script`, `stage6.ring_continuity_script`, `stage6.insulation_resistance_script`. Capture all suffixes that affect routing — `_entered`, `_entered_from_sonnet_write`, `_completed`, `_cancelled`, `_topic_switch`, `_disambiguation_retry`, etc. (Grep the schema files for `logEventPrefix` to enumerate exhaustively at implementation time — the canonical list lives in the code, not the plan.) **`values_snapshot` MUST be populated from the event's `data.values` field VERBATIM** — keep raw schema field names (e.g. `ir_live_live_mohm`, NOT a display label like "L-L"). The engine emits `values: { ...state.values }` on completion; preserving the raw shape is what makes signature detectors like Item 7's `ir_bare_bridge_single_digit` work. This is the engine's state machine viewed as a tape.
 - `bug_signature_hits`: a list of known bug-class signatures observed (Item 7 builds the matchers; this is the surface for them).
-- `unmapped_readings`: an array of `{at_ms, field, value, source}` rows aggregated from iOS-side `unmapped_field_buffered` (`DeepgramRecordingViewModel.swift:5759` — `source: "field_buffered"`) and `unmapped_readings_at_end` (line 1614 — `source: "end_of_session"`) events. Item 7's `canonical_name_leak_to_ios` detector reads from this section; without it that detector has no defined input. Source events are already in iOS `debug_log.jsonl` — no telemetry contract extension needed for this section (in contrast to the `stage6_tool_calls` section which depends on the backend sidecar prerequisite).
 
 Then pass these into the prompt as new template variables so Claude can correlate "the user mis-spoke during focused-mode for slot X, vocabulary Y" with "field X ended up empty".
 
@@ -285,14 +268,12 @@ Then pass these into the prompt as new template variables so Claude can correlat
 **Files.**
 - `scripts/analyze-session.js` — add new sections (`focused_mode_timeline`, `dialogue_engine_transitions`, `bug_signature_hits`, `stage6_tool_calls`) to the output structure + parsing logic for the new event names. The `stage6_tool_calls` array (referenced by Item 7's `value_out_of_enum_no_validator` detector) preserves `{at_ms, tool, outcome, validation_error, input_summary}` from underlying `stage6_tool_call` events; it sits alongside the existing aggregated `tool_count` / `validation_error_count` summary at line ~916.
 - `CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift` — telemetry-only iOS edit (the Decision above). Extend the payloads of `inflight_question_anchored`, `focused_mode_enter`, `focused_mode_enter_result`, AND `focused_mode_exit` to include `field`, `circuit`, and `toolCallId`. Without `focused_mode_exit` carrying the same join keys, the analyzer cannot safely match enter/exit pairs when entries overlap or focused-mode resets occur (Codex R4 catch). Treat all four event payloads as a single contract change.
-- `src/extraction/sonnet-stream.js` (BACKEND prerequisite — recommended path 2 from the prerequisite block at the top of this item) — at session-close, write `backend_events.jsonl` to `s3://eicr-session-analytics/session-analytics/{userId}/{sessionId}/backend_events.jsonl` containing the engine + dispatcher logger events the analyzer needs (`stage6.*_script_*`, `stage6_tool_call`, plus any related guard events). Sanitise payloads — drop user-uttered transcript content not already in the engine event payload. Verify the backend's IAM role can `PutObject` to that prefix before locking the choice.
-- `scripts/session-optimizer.sh` download stanza (around the existing `aws s3 cp debug_log.jsonl` block) — add a matching `aws s3 cp ... backend_events.jsonl 2>/dev/null || true` so sessions recorded BEFORE the backend PR lands still process — they'll produce empty `dialogue_engine_transitions` / `stage6_tool_calls` arrays rather than erroring. Match the existing `2>/dev/null || true` pattern already used elsewhere in this file (e.g. lines 1892-1896). **Do not invent a `--no-error-on-missing` flag — `aws s3 cp` has no such flag; suppress missing-object errors at the shell level only.**
-- `scripts/session-optimizer.sh` around the `process_session` JSON-vars builder (lines ~1175-1199 region where existing template vars like `KEYWORD_COUNT` / `TOKEN_BUDGET` are populated via `jq --arg` and emitted into the flat vars file consumed by `render-prompt.cjs`). Add new flat keys `FOCUSED_MODE_TIMELINE`, `DIALOGUE_ENGINE_TRANSITIONS`, `BUG_SIGNATURE_HITS`, `UNMAPPED_READINGS` populated by extracting the matching arrays from `analysis.json`. No change to `render-prompt.cjs` itself is needed.
+- `scripts/session-optimizer.sh` around the `process_session` JSON-vars builder (lines ~1175-1199 region where existing template vars like `KEYWORD_COUNT` / `TOKEN_BUDGET` are populated via `jq --arg` and emitted into the flat vars file consumed by `render-prompt.cjs`). Add new flat keys `FOCUSED_MODE_TIMELINE`, `DIALOGUE_ENGINE_TRANSITIONS`, `BUG_SIGNATURE_HITS` populated by extracting the matching arrays from `analysis.json`. No change to `render-prompt.cjs` itself is needed.
 
   > **NOTE — load-bearing constraint.** `render-prompt.cjs` is a flat `{KEY: stringValue}` substituter. Any nested JSON structure (the new timeline / transitions / signature-hits arrays are all nested) MUST be pre-stringified — `jq -c` or equivalent — before being passed as a template var. Pass it raw and the placeholder renders as `[object Object]`; this is a silent failure mode.
-- `scripts/optimizer-prompt-session.md` — add `{{FOCUSED_MODE_TIMELINE}}` / `{{DIALOGUE_ENGINE_TRANSITIONS}}` / `{{BUG_SIGNATURE_HITS}}` / `{{UNMAPPED_READINGS}}` template variables in new section headers ("FOCUSED-MODE TIMELINE", "DIALOGUE ENGINE STATE", "AUTO-DETECTED BUG SIGNATURES", "DROPPED iOS READINGS").
+- `scripts/optimizer-prompt-session.md` — add `{{FOCUSED_MODE_TIMELINE}}` / `{{DIALOGUE_ENGINE_TRANSITIONS}}` / `{{BUG_SIGNATURE_HITS}}` template variables in new section headers ("FOCUSED-MODE TIMELINE", "DIALOGUE ENGINE STATE", "AUTO-DETECTED BUG SIGNATURES").
 
-**Effort.** 1.5 days end-to-end — 1 day optimizer-side (analyzer extensions + template var wiring + session-optimizer.sh download stanza + the iOS telemetry payload extension) plus 0.5 day backend-side for the `backend_events.jsonl` sidecar writer in `sonnet-stream.js`. Existing unit tests in `scripts/__tests__/analyze-session.test.mjs` provide the optimizer-side regression bed; backend side needs a small test in `src/__tests__/sonnet-stream-*.test.js` covering the session-close sidecar write.
+**Effort.** 1 day. Mostly adding event filters + shaping output. Existing unit tests in `scripts/__tests__/analyze-session.test.mjs` provide the regression bed.
 
 **Risks.** Output size growth — currently the prompt is bounded. Mitigation: cap each new section at N events (most-recent + most-relevant via uncaptured-value correlation).
 
@@ -401,32 +382,12 @@ const KNOWN_BUG_SIGNATURES = [
       //     accessors must use `.get(field)` / `set.has(value)`, NOT
       //     object indexing.
       //
-      // (2) BACKEND TELEMETRY INGESTION — `stage6_tool_call` events are
-      //     emitted by the BACKEND logger and are NOT in the iOS
-      //     debug_log.jsonl. See Item 6's prerequisite block for the
-      //     three options (recommended: backend-written sidecar file).
-      //     Without that path landing, this detector cannot fire.
-      //
-      // (3) TELEMETRY CONTRACT EXTENSION — `input_summary` today only
-      //     carries `{field, circuit, reason}` (verified at
-      //     stage6-dispatchers-circuit.js:137,206,241,263,301 and
-      //     stage6-dispatcher-logger.js:78); no `value` field. The
-      //     detector below uses `input_summary.value`, so the logger
-      //     contract must be extended: add a sanitised `value` field to
-      //     accepted AND rejected `record_reading` telemetry. Update
-      //     stage6-dispatcher-logger.js's documented schema + the
-      //     dispatcher call sites that build input_summary, and add
-      //     test coverage (`src/__tests__/stage6-dispatcher-logger.test.js`)
-      //     for the new field. Alternative if the value cannot be added
-      //     safely (PII risk): correlate via per-turn write patches or
-      //     iOS field-set events instead and rewrite the detector.
-      //
-      // (4) ANALYZER OUTPUT — once (2)+(3) are in place, extend
-      //     `scripts/analyze-session.js` to emit a `stage6_tool_calls`
-      //     array alongside the existing per-tool summary at line 916.
-      //     Each entry preserves `{at_ms, tool, outcome,
-      //     validation_error, input_summary}` from the ingested backend
-      //     events. (Currently the analyzer aggregates these into
+      // (2) ANALYZER OUTPUT — extend `scripts/analyze-session.js` to
+      //     emit a `stage6_tool_calls` array alongside the existing
+      //     per-tool summary at line 916. Each entry preserves
+      //     `{at_ms, tool, outcome, validation_error, input_summary}`
+      //     from the underlying `stage6_tool_call` event's `data.*`
+      //     fields. (Currently the analyzer aggregates these into
       //     `tool_count` / `validation_error_count`; the detector
       //     needs the per-call rows.)
       //
@@ -497,29 +458,15 @@ const KNOWN_BUG_SIGNATURES = [
       //   import { FIELD_CORRECTIONS }
       //     from '../src/extraction/field-name-corrections.js';
       //
-      //   // `analysis.extraction?.readings` does NOT exist in the
-      //   // current analyzer output (verified). The real evidence of
-      //   // dropped fields is logged on iOS as
-      //   // `unmapped_field_buffered` (DeepgramRecordingViewModel.swift:5759)
-      //   // and `unmapped_readings_at_end` (line 1614) — both ARE
-      //   // present in iOS debug_log.jsonl. analyze-session.js must
-      //   // surface an `unmapped_readings` section pulling these two
-      //   // event names: `{at_ms, field, value, source}` per row.
-      //   const unmapped = analysis.unmapped_readings || [];
-      //   const leaks = unmapped.filter(r =>
-      //        !KNOWN_FIELDS.has(r.field)
-      //     && !(r.field in FIELD_CORRECTIONS)
-      //     && !IOS_DUAL_ALIAS_ALLOWLIST.has(r.field));
+      //   const leaks = (analysis.extraction?.readings || []).filter(r => {
+      //     return !KNOWN_FIELDS.has(r.field)
+      //         && !(r.field in FIELD_CORRECTIONS)
+      //         && !IOS_DUAL_ALIAS_ALLOWLIST.has(r.field);
+      //   });
       //   return leaks.length > 0;
       //
-      // Analyzer tests must cover: canonical accepted (no row in
-      // unmapped_readings), canonical corrected (in FIELD_CORRECTIONS
-      // → filtered out), canonical dropped (lands in unmapped_readings,
-      // not in any allowlist → matches).
-      //
-      // PREREQUISITE on the analyzer side (separate from the KNOWN_FIELDS
-      // module extraction): add `unmapped_readings` to Item 6's new
-      // analyzer sections so this detector has a defined input.
+      // Analyzer tests must cover: canonical accepted, canonical
+      // corrected, canonical dropped.
     },
     recommend_category: 'field_name_correction_add',
     recommend_shape: {
@@ -578,19 +525,13 @@ Optional follow-on: a `--dry-run` flag on the optimizer that generates probes wi
 | 2 | 1–2 days | Second | Categories + decision tree depend on the prompt structure that Cluster 1 normalises. Doing Cluster 2 before 1 means rewriting twice. |
 | 3 | 3–5 days | Third | Signature recognition reads the analysis output that Cluster 2's Item 6 produces. Genuine dependency. |
 
-Total: **~5–7 days end-to-end** (optimizer side) + ~1 day of backend `src/` prerequisites (see the backend-edits bullet below). The optimizer-side changes split into 3 PRs landed independently and do not themselves require a backend deploy — but Items 6 + 7 carry backend `src/` prerequisites that DO ship via separate backend PRs (see each item's prerequisite block for detail and the dedicated bullet below). Pickup semantics for landed optimizer changes:
+Total: **~5–7 days end-to-end**, can be broken into 3 PRs landed independently. None require backend deploy (optimizer is a Mac-local LaunchAgent). Pickup semantics for landed changes:
 
 - **Prompt template** (`scripts/optimizer-prompt-session.md`) and **per-invocation node scripts** (`scripts/analyze-session.js`, `scripts/render-prompt.cjs`, `scripts/generate-report-html.js`) are picked up on their next invocation — these are re-read on each session-processing pass.
 - **`scripts/session-optimizer.sh` itself is a long-running `while true` poll process** — edits to the shell script do NOT take effect until the running LaunchAgent process is restarted. After each PR that touches `session-optimizer.sh`, run: `launchctl kickstart -k gui/$(id -u)/com.certmate.session-optimizer` (one-line cycle, not a deploy, but it IS a required step — call it out so you don't end up wondering why a freshly-landed shell-script change isn't reflected in recommendations).
 - **LaunchAgent plist itself** still requires `launchctl unload/load`.
 - **Cluster 2 includes ONE iOS instrumentation PR** — `DeepgramRecordingViewModel.swift` telemetry payload extension (Item 6 prerequisite: `field` / `circuit` / `toolCallId` added to `inflight_question_anchored`, `focused_mode_enter`, `focused_mode_enter_result`, and `focused_mode_exit`). Effort: ~1-2 hours of iOS work plus a TestFlight cycle before the Cluster 2 verification step (re-processing 284CBBCD) can produce a non-null `focused_mode_timeline.slot_field`. Without this iOS PR, the `flux_garble_single_word` signature degrades to unanchored substring matching. This is the documented exception to "Out of scope: per-slot Flux Configure keyterm subset implementation" — instrumentation ≠ infrastructure, but it IS still an iOS commit-and-deploy step that shouldn't surprise the timeline reader.
-- **Cluster 2 + Cluster 3 include FOUR backend `src/` edits** — schedule during a backend-eligible window OR land as separate small backend PRs independent of the optimizer rewrite, but treat each as a hard blocker for the dependent optimizer-side item:
-  - (0) **Cluster 2 Item 6 backend prerequisite** — write `backend_events.jsonl` sidecar to S3 prefix `session-analytics/{userId}/{sessionId}/` at session-close in `src/extraction/sonnet-stream.js` (the recommended path-(2) from Item 6's prerequisite block). Sanitise event payloads (drop any user-uttered transcript text not already in the engine event payload). Must land BEFORE Cluster 2 verification can produce non-empty `dialogue_engine_transitions`.
-  - (1) **Cluster 3 Item 7 prereq** — `export const CIRCUIT_FIELD_VALUE_ENUMS = ...` at `src/extraction/stage6-dispatch-validation.js:89` (one-line).
-  - (2) **Cluster 3 Item 7 prereq** — extract `KNOWN_FIELDS` from `src/extraction/sonnet-stream.js` into a side-effect-free `src/extraction/known-fields.js` plus expose the iOS dual-alias allowlist (same or sibling module).
-  - (3) **Cluster 3 Item 7 prereq** — extend `src/extraction/stage6-dispatcher-logger.js` documented schema (line 78) AND the dispatcher call sites that build `input_summary` (`src/extraction/stage6-dispatchers-circuit.js:137/206/241/263/301`) to include a sanitised `value` field on `record_reading` accepted AND rejected telemetry. Add test coverage in `src/__tests__/stage6-dispatcher-logger.test.js`. Without this the `value_out_of_enum_no_validator` detector cannot fire.
-
-  Per CLAUDE.md the backend `src/` directory is IMMUTABLE during PWA-only work windows — confirm the work falls in a backend-eligible window before scheduling, or split into a backend-only PR train.
+- **Cluster 3 includes TWO backend `src/` edits** — Item 7 prerequisites: (1) `export` `CIRCUIT_FIELD_VALUE_ENUMS` at `src/extraction/stage6-dispatch-validation.js:89` (one-line); (2) extract `KNOWN_FIELDS` from `src/extraction/sonnet-stream.js` into a side-effect-free `src/extraction/known-fields.js` plus expose the iOS dual-alias allowlist. Per CLAUDE.md the backend `src/` directory is IMMUTABLE during PWA-only work windows — schedule these two edits during a backend-eligible window OR land them as a separate small backend PR independent of the optimizer rewrite, but treat them as Item 7 blockers either way.
 
 ## Out of scope (for this plan)
 

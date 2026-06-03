@@ -260,15 +260,6 @@ Keep the "FORBIDDEN RECOMMENDATIONS" section (the active-circuit-expiry one) as-
 
 ### Item 6 — `analyze-session.js` extracts per-slot Flux focused-mode + dialogue-engine state
 
-> **Prerequisite (structural — caught in R9; do not skip): backend telemetry ingestion path.** Today `session-optimizer.sh` only downloads iOS-side S3 artifacts (`debug_log.jsonl`, `field_sources.json`, `manifest.json`, `job_snapshot.json`, `cost_summary.json`). The dialogue-engine `stage6.*_script_*` events AND the `stage6_tool_call` rows that Item 6's `dialogue_engine_transitions` and `stage6_tool_calls` arrays depend on are emitted by the BACKEND logger (`src/extraction/insulation-resistance-script.js:552/650/714`, `src/extraction/stage6-dispatcher-logger.js:95` and siblings) and are NOT present in the uploaded iOS debug log. Without solving this, Item 6's two new sections will be empty for every session and Item 7's signature detectors will never match. Three options for the ingestion path — pick one explicitly before Item 6 starts:
->
-> 1. **CloudWatch Logs query** by `sessionId` during `process_session` (lowest infrastructure change, but adds AWS query latency + IAM perms to optimizer). Filter to `stage6.*` event names; download the matching rows into a `backend_events.jsonl` sidecar in the work dir.
-> 2. **Backend writes a sanitised event tape to the session's S3 prefix** at session-close (one `backend_events.jsonl` per session next to `debug_log.jsonl`). Requires a small backend change in `src/extraction/sonnet-stream.js`'s session-close path; survives CloudWatch log expiry.
-> 3. **Backend emits sanitised diagnostics back through the ServerWebSocket** to iOS, where they land in iOS's `debug_log.jsonl` alongside the local events (requires extending the existing `client_diagnostic` reverse channel from `iOS → backend` to `backend → iOS`; widest blast radius).
->
-> **Recommended path**: (2) — purpose-built sidecar, no AWS API contract change, no iOS round-trip. Backend writes are append-only during the session and one `S3 PutObject` at close. Verify the `eicr/api-keys` S3 IAM scope allows the backend role to write to `session-analytics/{userId}/{sessionId}/` before locking the choice. Effort: ~half a day backend + a small `session-optimizer.sh` change to `aws s3 cp` the new file. Item 6's `analyze-session.js` work proceeds against this sidecar; without the sidecar, Item 6 ships dead code.
-
-
 **What.** Add three new sections to the analysis output:
 
 - `focused_mode_timeline`: an array of `{at_ms, tool_call_id, slot_field, keyterm_count, enter_elapsed_ms, exit_reason}` rows pulled from `focused_mode_enter` / `focused_mode_enter_result` / `focused_mode_exit` events. Each row is one entry into a focused ask.
@@ -276,7 +267,6 @@ Keep the "FORBIDDEN RECOMMENDATIONS" section (the active-circuit-expiry one) as-
   **Decision (resolves an open implementation choice — context summary section 6 says no questions remain, so this lands as a decision not a deferral): take the iOS telemetry path.** The current iOS log for `focused_mode_enter` carries only `toolCallId` and `sessionKeytermCount`; `inflight_question_anchored` carries no `field` / `circuit` / `toolCallId`, so `slot_field` cannot be reliably populated from the existing stream. Extend `DeepgramRecordingViewModel.handleAlertTTSStarted` (around line 3186) to include `field`, `circuit`, and `toolCallId` in both: (a) the `debugLogger.info("inflight_question_anchored", ...)` call around line 3219, and (b) the `focused_mode_enter` / `focused_mode_enter_result` client diagnostics around lines 3268-3296. This is the only iOS-side edit in scope for this plan and is a **hard prerequisite** for `flux_garble_single_word` detection. Note: line numbers should be verified at implementation time — `DeepgramRecordingViewModel.swift` evolves quickly. The alternative (emit `slot_field: null` and degrade signature anchoring to unanchored substring matching) was considered and rejected because it produces a worse Item 7 outcome with negligible savings.
 - `dialogue_engine_transitions`: an array of `{at_ms, schema, event, circuit_ref, slot, values_snapshot}` rows for events whose names start with the actual `logEventPrefix` values defined in `src/extraction/dialogue-engine/schemas/*.js`: `stage6.ocpd_script`, `stage6.rcd_script`, `stage6.rcbo_script`, `stage6.ring_continuity_script`, `stage6.insulation_resistance_script`. Capture all suffixes that affect routing — `_entered`, `_entered_from_sonnet_write`, `_completed`, `_cancelled`, `_topic_switch`, `_disambiguation_retry`, etc. (Grep the schema files for `logEventPrefix` to enumerate exhaustively at implementation time — the canonical list lives in the code, not the plan.) **`values_snapshot` MUST be populated from the event's `data.values` field VERBATIM** — keep raw schema field names (e.g. `ir_live_live_mohm`, NOT a display label like "L-L"). The engine emits `values: { ...state.values }` on completion; preserving the raw shape is what makes signature detectors like Item 7's `ir_bare_bridge_single_digit` work. This is the engine's state machine viewed as a tape.
 - `bug_signature_hits`: a list of known bug-class signatures observed (Item 7 builds the matchers; this is the surface for them).
-- `unmapped_readings`: an array of `{at_ms, field, value, source}` rows aggregated from iOS-side `unmapped_field_buffered` (`DeepgramRecordingViewModel.swift:5759` — `source: "field_buffered"`) and `unmapped_readings_at_end` (line 1614 — `source: "end_of_session"`) events. Item 7's `canonical_name_leak_to_ios` detector reads from this section; without it that detector has no defined input. Source events are already in iOS `debug_log.jsonl` — no telemetry contract extension needed for this section (in contrast to the `stage6_tool_calls` section which depends on the backend sidecar prerequisite).
 
 Then pass these into the prompt as new template variables so Claude can correlate "the user mis-spoke during focused-mode for slot X, vocabulary Y" with "field X ended up empty".
 
@@ -285,14 +275,12 @@ Then pass these into the prompt as new template variables so Claude can correlat
 **Files.**
 - `scripts/analyze-session.js` — add new sections (`focused_mode_timeline`, `dialogue_engine_transitions`, `bug_signature_hits`, `stage6_tool_calls`) to the output structure + parsing logic for the new event names. The `stage6_tool_calls` array (referenced by Item 7's `value_out_of_enum_no_validator` detector) preserves `{at_ms, tool, outcome, validation_error, input_summary}` from underlying `stage6_tool_call` events; it sits alongside the existing aggregated `tool_count` / `validation_error_count` summary at line ~916.
 - `CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift` — telemetry-only iOS edit (the Decision above). Extend the payloads of `inflight_question_anchored`, `focused_mode_enter`, `focused_mode_enter_result`, AND `focused_mode_exit` to include `field`, `circuit`, and `toolCallId`. Without `focused_mode_exit` carrying the same join keys, the analyzer cannot safely match enter/exit pairs when entries overlap or focused-mode resets occur (Codex R4 catch). Treat all four event payloads as a single contract change.
-- `src/extraction/sonnet-stream.js` (BACKEND prerequisite — recommended path 2 from the prerequisite block at the top of this item) — at session-close, write `backend_events.jsonl` to `s3://eicr-session-analytics/session-analytics/{userId}/{sessionId}/backend_events.jsonl` containing the engine + dispatcher logger events the analyzer needs (`stage6.*_script_*`, `stage6_tool_call`, plus any related guard events). Sanitise payloads — drop user-uttered transcript content not already in the engine event payload. Verify the backend's IAM role can `PutObject` to that prefix before locking the choice.
-- `scripts/session-optimizer.sh` download stanza (around the existing `aws s3 cp debug_log.jsonl` block) — add a matching `aws s3 cp ... backend_events.jsonl 2>/dev/null || true` so sessions recorded BEFORE the backend PR lands still process — they'll produce empty `dialogue_engine_transitions` / `stage6_tool_calls` arrays rather than erroring. Match the existing `2>/dev/null || true` pattern already used elsewhere in this file (e.g. lines 1892-1896). **Do not invent a `--no-error-on-missing` flag — `aws s3 cp` has no such flag; suppress missing-object errors at the shell level only.**
-- `scripts/session-optimizer.sh` around the `process_session` JSON-vars builder (lines ~1175-1199 region where existing template vars like `KEYWORD_COUNT` / `TOKEN_BUDGET` are populated via `jq --arg` and emitted into the flat vars file consumed by `render-prompt.cjs`). Add new flat keys `FOCUSED_MODE_TIMELINE`, `DIALOGUE_ENGINE_TRANSITIONS`, `BUG_SIGNATURE_HITS`, `UNMAPPED_READINGS` populated by extracting the matching arrays from `analysis.json`. No change to `render-prompt.cjs` itself is needed.
+- `scripts/session-optimizer.sh` around the `process_session` JSON-vars builder (lines ~1175-1199 region where existing template vars like `KEYWORD_COUNT` / `TOKEN_BUDGET` are populated via `jq --arg` and emitted into the flat vars file consumed by `render-prompt.cjs`). Add new flat keys `FOCUSED_MODE_TIMELINE`, `DIALOGUE_ENGINE_TRANSITIONS`, `BUG_SIGNATURE_HITS` populated by extracting the matching arrays from `analysis.json`. No change to `render-prompt.cjs` itself is needed.
 
   > **NOTE — load-bearing constraint.** `render-prompt.cjs` is a flat `{KEY: stringValue}` substituter. Any nested JSON structure (the new timeline / transitions / signature-hits arrays are all nested) MUST be pre-stringified — `jq -c` or equivalent — before being passed as a template var. Pass it raw and the placeholder renders as `[object Object]`; this is a silent failure mode.
-- `scripts/optimizer-prompt-session.md` — add `{{FOCUSED_MODE_TIMELINE}}` / `{{DIALOGUE_ENGINE_TRANSITIONS}}` / `{{BUG_SIGNATURE_HITS}}` / `{{UNMAPPED_READINGS}}` template variables in new section headers ("FOCUSED-MODE TIMELINE", "DIALOGUE ENGINE STATE", "AUTO-DETECTED BUG SIGNATURES", "DROPPED iOS READINGS").
+- `scripts/optimizer-prompt-session.md` — add `{{FOCUSED_MODE_TIMELINE}}` / `{{DIALOGUE_ENGINE_TRANSITIONS}}` / `{{BUG_SIGNATURE_HITS}}` template variables in new section headers ("FOCUSED-MODE TIMELINE", "DIALOGUE ENGINE STATE", "AUTO-DETECTED BUG SIGNATURES").
 
-**Effort.** 1.5 days end-to-end — 1 day optimizer-side (analyzer extensions + template var wiring + session-optimizer.sh download stanza + the iOS telemetry payload extension) plus 0.5 day backend-side for the `backend_events.jsonl` sidecar writer in `sonnet-stream.js`. Existing unit tests in `scripts/__tests__/analyze-session.test.mjs` provide the optimizer-side regression bed; backend side needs a small test in `src/__tests__/sonnet-stream-*.test.js` covering the session-close sidecar write.
+**Effort.** 1 day. Mostly adding event filters + shaping output. Existing unit tests in `scripts/__tests__/analyze-session.test.mjs` provide the regression bed.
 
 **Risks.** Output size growth — currently the prompt is bounded. Mitigation: cap each new section at N events (most-recent + most-relevant via uncaptured-value correlation).
 
@@ -401,32 +389,12 @@ const KNOWN_BUG_SIGNATURES = [
       //     accessors must use `.get(field)` / `set.has(value)`, NOT
       //     object indexing.
       //
-      // (2) BACKEND TELEMETRY INGESTION — `stage6_tool_call` events are
-      //     emitted by the BACKEND logger and are NOT in the iOS
-      //     debug_log.jsonl. See Item 6's prerequisite block for the
-      //     three options (recommended: backend-written sidecar file).
-      //     Without that path landing, this detector cannot fire.
-      //
-      // (3) TELEMETRY CONTRACT EXTENSION — `input_summary` today only
-      //     carries `{field, circuit, reason}` (verified at
-      //     stage6-dispatchers-circuit.js:137,206,241,263,301 and
-      //     stage6-dispatcher-logger.js:78); no `value` field. The
-      //     detector below uses `input_summary.value`, so the logger
-      //     contract must be extended: add a sanitised `value` field to
-      //     accepted AND rejected `record_reading` telemetry. Update
-      //     stage6-dispatcher-logger.js's documented schema + the
-      //     dispatcher call sites that build input_summary, and add
-      //     test coverage (`src/__tests__/stage6-dispatcher-logger.test.js`)
-      //     for the new field. Alternative if the value cannot be added
-      //     safely (PII risk): correlate via per-turn write patches or
-      //     iOS field-set events instead and rewrite the detector.
-      //
-      // (4) ANALYZER OUTPUT — once (2)+(3) are in place, extend
-      //     `scripts/analyze-session.js` to emit a `stage6_tool_calls`
-      //     array alongside the existing per-tool summary at line 916.
-      //     Each entry preserves `{at_ms, tool, outcome,
-      //     validation_error, input_summary}` from the ingested backend
-      //     events. (Currently the analyzer aggregates these into
+      // (2) ANALYZER OUTPUT — extend `scripts/analyze-session.js` to
+      //     emit a `stage6_tool_calls` array alongside the existing
+      //     per-tool summary at line 916. Each entry preserves
+      //     `{at_ms, tool, outcome, validation_error, input_summary}`
+      //     from the underlying `stage6_tool_call` event's `data.*`
+      //     fields. (Currently the analyzer aggregates these into
       //     `tool_count` / `validation_error_count`; the detector
       //     needs the per-call rows.)
       //
@@ -497,29 +465,15 @@ const KNOWN_BUG_SIGNATURES = [
       //   import { FIELD_CORRECTIONS }
       //     from '../src/extraction/field-name-corrections.js';
       //
-      //   // `analysis.extraction?.readings` does NOT exist in the
-      //   // current analyzer output (verified). The real evidence of
-      //   // dropped fields is logged on iOS as
-      //   // `unmapped_field_buffered` (DeepgramRecordingViewModel.swift:5759)
-      //   // and `unmapped_readings_at_end` (line 1614) — both ARE
-      //   // present in iOS debug_log.jsonl. analyze-session.js must
-      //   // surface an `unmapped_readings` section pulling these two
-      //   // event names: `{at_ms, field, value, source}` per row.
-      //   const unmapped = analysis.unmapped_readings || [];
-      //   const leaks = unmapped.filter(r =>
-      //        !KNOWN_FIELDS.has(r.field)
-      //     && !(r.field in FIELD_CORRECTIONS)
-      //     && !IOS_DUAL_ALIAS_ALLOWLIST.has(r.field));
+      //   const leaks = (analysis.extraction?.readings || []).filter(r => {
+      //     return !KNOWN_FIELDS.has(r.field)
+      //         && !(r.field in FIELD_CORRECTIONS)
+      //         && !IOS_DUAL_ALIAS_ALLOWLIST.has(r.field);
+      //   });
       //   return leaks.length > 0;
       //
-      // Analyzer tests must cover: canonical accepted (no row in
-      // unmapped_readings), canonical corrected (in FIELD_CORRECTIONS
-      // → filtered out), canonical dropped (lands in unmapped_readings,
-      // not in any allowlist → matches).
-      //
-      // PREREQUISITE on the analyzer side (separate from the KNOWN_FIELDS
-      // module extraction): add `unmapped_readings` to Item 6's new
-      // analyzer sections so this detector has a defined input.
+      // Analyzer tests must cover: canonical accepted, canonical
+      // corrected, canonical dropped.
     },
     recommend_category: 'field_name_correction_add',
     recommend_shape: {
@@ -578,19 +532,13 @@ Optional follow-on: a `--dry-run` flag on the optimizer that generates probes wi
 | 2 | 1–2 days | Second | Categories + decision tree depend on the prompt structure that Cluster 1 normalises. Doing Cluster 2 before 1 means rewriting twice. |
 | 3 | 3–5 days | Third | Signature recognition reads the analysis output that Cluster 2's Item 6 produces. Genuine dependency. |
 
-Total: **~5–7 days end-to-end** (optimizer side) + ~1 day of backend `src/` prerequisites (see the backend-edits bullet below). The optimizer-side changes split into 3 PRs landed independently and do not themselves require a backend deploy — but Items 6 + 7 carry backend `src/` prerequisites that DO ship via separate backend PRs (see each item's prerequisite block for detail and the dedicated bullet below). Pickup semantics for landed optimizer changes:
+Total: **~5–7 days end-to-end**, can be broken into 3 PRs landed independently. None require backend deploy (optimizer is a Mac-local LaunchAgent). Pickup semantics for landed changes:
 
 - **Prompt template** (`scripts/optimizer-prompt-session.md`) and **per-invocation node scripts** (`scripts/analyze-session.js`, `scripts/render-prompt.cjs`, `scripts/generate-report-html.js`) are picked up on their next invocation — these are re-read on each session-processing pass.
 - **`scripts/session-optimizer.sh` itself is a long-running `while true` poll process** — edits to the shell script do NOT take effect until the running LaunchAgent process is restarted. After each PR that touches `session-optimizer.sh`, run: `launchctl kickstart -k gui/$(id -u)/com.certmate.session-optimizer` (one-line cycle, not a deploy, but it IS a required step — call it out so you don't end up wondering why a freshly-landed shell-script change isn't reflected in recommendations).
 - **LaunchAgent plist itself** still requires `launchctl unload/load`.
 - **Cluster 2 includes ONE iOS instrumentation PR** — `DeepgramRecordingViewModel.swift` telemetry payload extension (Item 6 prerequisite: `field` / `circuit` / `toolCallId` added to `inflight_question_anchored`, `focused_mode_enter`, `focused_mode_enter_result`, and `focused_mode_exit`). Effort: ~1-2 hours of iOS work plus a TestFlight cycle before the Cluster 2 verification step (re-processing 284CBBCD) can produce a non-null `focused_mode_timeline.slot_field`. Without this iOS PR, the `flux_garble_single_word` signature degrades to unanchored substring matching. This is the documented exception to "Out of scope: per-slot Flux Configure keyterm subset implementation" — instrumentation ≠ infrastructure, but it IS still an iOS commit-and-deploy step that shouldn't surprise the timeline reader.
-- **Cluster 2 + Cluster 3 include FOUR backend `src/` edits** — schedule during a backend-eligible window OR land as separate small backend PRs independent of the optimizer rewrite, but treat each as a hard blocker for the dependent optimizer-side item:
-  - (0) **Cluster 2 Item 6 backend prerequisite** — write `backend_events.jsonl` sidecar to S3 prefix `session-analytics/{userId}/{sessionId}/` at session-close in `src/extraction/sonnet-stream.js` (the recommended path-(2) from Item 6's prerequisite block). Sanitise event payloads (drop any user-uttered transcript text not already in the engine event payload). Must land BEFORE Cluster 2 verification can produce non-empty `dialogue_engine_transitions`.
-  - (1) **Cluster 3 Item 7 prereq** — `export const CIRCUIT_FIELD_VALUE_ENUMS = ...` at `src/extraction/stage6-dispatch-validation.js:89` (one-line).
-  - (2) **Cluster 3 Item 7 prereq** — extract `KNOWN_FIELDS` from `src/extraction/sonnet-stream.js` into a side-effect-free `src/extraction/known-fields.js` plus expose the iOS dual-alias allowlist (same or sibling module).
-  - (3) **Cluster 3 Item 7 prereq** — extend `src/extraction/stage6-dispatcher-logger.js` documented schema (line 78) AND the dispatcher call sites that build `input_summary` (`src/extraction/stage6-dispatchers-circuit.js:137/206/241/263/301`) to include a sanitised `value` field on `record_reading` accepted AND rejected telemetry. Add test coverage in `src/__tests__/stage6-dispatcher-logger.test.js`. Without this the `value_out_of_enum_no_validator` detector cannot fire.
-
-  Per CLAUDE.md the backend `src/` directory is IMMUTABLE during PWA-only work windows — confirm the work falls in a backend-eligible window before scheduling, or split into a backend-only PR train.
+- **Cluster 3 includes TWO backend `src/` edits** — Item 7 prerequisites: (1) `export` `CIRCUIT_FIELD_VALUE_ENUMS` at `src/extraction/stage6-dispatch-validation.js:89` (one-line); (2) extract `KNOWN_FIELDS` from `src/extraction/sonnet-stream.js` into a side-effect-free `src/extraction/known-fields.js` plus expose the iOS dual-alias allowlist. Per CLAUDE.md the backend `src/` directory is IMMUTABLE during PWA-only work windows — schedule these two edits during a backend-eligible window OR land them as a separate small backend PR independent of the optimizer rewrite, but treat them as Item 7 blockers either way.
 
 ## Out of scope (for this plan)
 
