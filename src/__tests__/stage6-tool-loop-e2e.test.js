@@ -151,10 +151,10 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
           name: 'record_observation',
           input: {
             code: 'C2',
+            suggested_regulation: '411.3.4',
             location: 'CU',
             text: 'RCD type AC',
             circuit: null,
-            suggested_regulation: null,
           },
         },
       ]),

@@ -190,13 +190,68 @@ describe('validateRenameCircuit', () => {
 });
 
 describe('validateRecordObservation', () => {
-  test('always returns null (no preconditions — strict:true handles enums at the API layer)', () => {
+  // 2026-06-03 — validator now requires `suggested_regulation` to be a
+  // non-empty string when `code` is C1/C2/C3/FI. Field-test session
+  // C112923C ("outside light not RCD protected" → C2 with null
+  // regulation → blank reg on the iOS UI) was the trigger. NC and
+  // installation-wide observations can legitimately have null reg.
+  test('coded observation with non-empty regulation → null (accept)', () => {
     expect(
       validateRecordObservation(
-        { code: 'C2', text: 'loose terminal' },
+        { code: 'C2', text: 'loose terminal', suggested_regulation: '526.1' },
         { extractedObservations: [] }
       )
     ).toBeNull();
+  });
+
+  test('coded observation with null regulation → REJECT (regulation_required_for_coded_observation)', () => {
+    const err = validateRecordObservation(
+      { code: 'C2', text: 'loose terminal', suggested_regulation: null },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({
+      code: 'regulation_required_for_coded_observation',
+      field: 'suggested_regulation',
+    });
+    expect(err.reason).toMatch(/C2.*regulation/);
+  });
+
+  test('coded observation with whitespace-only regulation → REJECT (empty-string guard)', () => {
+    const err = validateRecordObservation(
+      { code: 'C3', text: 'minor non-compliance', suggested_regulation: '   ' },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({ code: 'regulation_required_for_coded_observation' });
+  });
+
+  test('coded observation with regulation field absent entirely → REJECT', () => {
+    const err = validateRecordObservation(
+      { code: 'FI', text: 'requires investigation' },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({ code: 'regulation_required_for_coded_observation' });
+  });
+
+  test('NC observation with null regulation → accept (NC may not have a specific reg)', () => {
+    expect(
+      validateRecordObservation(
+        { code: 'NC', text: 'historic non-conformity', suggested_regulation: null },
+        { extractedObservations: [] }
+      )
+    ).toBeNull();
+  });
+
+  test('lower-case code "c2" still triggers the check (case-insensitive)', () => {
+    const err = validateRecordObservation(
+      { code: 'c2', text: 'loose terminal', suggested_regulation: null },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({ code: 'regulation_required_for_coded_observation' });
+  });
+
+  test('non-object input → null (validator never throws)', () => {
+    expect(validateRecordObservation(null, {})).toBeNull();
+    expect(validateRecordObservation(undefined, {})).toBeNull();
   });
 });
 

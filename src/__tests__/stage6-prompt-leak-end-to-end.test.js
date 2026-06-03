@@ -262,10 +262,10 @@ describe('r21-#3 real-session end-to-end — record_observation leak blocked via
           name: 'record_observation',
           input: {
             code: 'C3',
+            suggested_regulation: '411.3.4',
             text: leakText,
             location: 'Main consumer unit',
             circuit: null,
-            suggested_regulation: null,
           },
         },
       ]),
@@ -830,10 +830,10 @@ describe('r22-#2 real shadow-path state assertions via _shadowCapture', () => {
           name: 'record_observation',
           input: {
             code: 'C3',
+            suggested_regulation: '411.3.4',
             text: leakText,
             location: 'Main consumer unit',
             circuit: null,
-            suggested_regulation: null,
           },
         },
       ]),
