@@ -196,8 +196,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // than tightening" guidance. Bug 1c's tool-schema description
       // widen (in stage6-tool-schemas.js) is NOT counted — schemas live
       // in the cached prefix and are not measured here.
+      //
+      // 2026-06-03b (voice-correctness sprint Fix B): bumped to 12950
+      // to absorb the SUPPLY vs MAIN SWITCH DISAMBIGUATION block
+      // inserted between ZE / ZS DISAMBIGUATION and OBSERVATIONS. Net
+      // change combined ~+271 tokens (Fix A's drop-the-menu edit
+      // offsets ~10 tokens of the new block). Measured 12771; cap
+      // 12950 leaves ~179-token headroom. The new block teaches the
+      // model to route "main fuse" / "cutout" → spd_*, reserve
+      // main_switch_* for the customer-side isolator, and strip the
+      // leading BS prefix before writing to spd_bs_en (prevents the
+      // doubled-BS TTS phenomenon "main fuse BS EN BS 1361"). Plan
+      // reference: .planning/plan-voice-correctness-2026-06-03b-final.md
+      // Fix B "Token-cap re-measurement (load-bearing)" step.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(12500);
+      expect(estimate).toBeLessThanOrEqual(12950);
     });
   });
 
@@ -698,8 +711,20 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //   - 7500 (observation-correctness sprint 2026-06-03 re-measure):
       //     bumped per the plan's mandatory verification step. Leaves
       //     ~262-token headroom above the measured 7238 estimate.
+      //   - 7850 (voice-correctness sprint 2026-06-03b Fix B):
+      //     SUPPLY vs MAIN SWITCH DISAMBIGUATION subsection inserted
+      //     between ZE / ZS DISAMBIGUATION and OBSERVATIONS. The block
+      //     teaches Sonnet to route "main fuse" / "cutout" → spd_*,
+      //     reserve main_switch_* for the customer-side isolator, and
+      //     strip the leading BS prefix when writing to spd_bs_en
+      //     (prevents the doubled-BS TTS leak). Net +425 tokens (Fix
+      //     A's menu drop offsets ~10 tokens). Measured 7663; cap
+      //     7850 leaves ~187-token headroom for future minor edits.
+      //     Field-test repro: session F03B590C turn 9 (2026-06-03
+      //     20:04 UTC) emitted main_switch_bs_en for "Main fuse is
+      //     BS 1361" — wrong field. The new block fixes the routing.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(7500);
+      expect(estimate).toBeLessThanOrEqual(7850);
     });
   });
 
@@ -1051,6 +1076,53 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt).not.toMatch(
         /Zs.*R1.*IR.*polarity.*number of points/i
       );
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 13 — 2026-06-03b voice-correctness sprint (Fix B).
+  //
+  // The SUPPLY vs MAIN SWITCH DISAMBIGUATION block teaches Sonnet to
+  // route inspector "main fuse" / "supply fuse" / "cutout" terms to
+  // the `spd_*` field family (Supply Protective Device — DNO cutout)
+  // and reserve `main_switch_*` for the customer-side isolator. Pre-
+  // fix, session F03B590C-7BDA-41BB-AD99-5B27A9CBFF76 turn 9 emitted
+  // `record_board_reading {field:"main_switch_bs_en", value:"BS
+  // 1361"}` when the inspector said "Main fuse is BS 1361" — wrong
+  // field. The prompt now names both family vocabularies plus the
+  // value-kind mapping (BS → spd_bs_en, amps → spd_rated_current,
+  // kA → spd_short_circuit, type-alone → spd_type_supply) plus the
+  // BS-prefix strip rule that prevents TTS doubling ("main fuse BS
+  // EN BS 1361"). Pin each load-bearing instruction so a future
+  // rewrite is forced to consider the routing contract explicitly.
+  // ------------------------------------------------------------------
+  describe('Group 13 — 2026-06-03b voice-correctness sprint (Fix B)', () => {
+    test('Fix B — SUPPLY vs MAIN SWITCH DISAMBIGUATION section exists with both field families', () => {
+      const idx = prompt.search(/SUPPLY vs MAIN SWITCH DISAMBIGUATION/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next sibling block (OBSERVATIONS).
+      const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      // Inspector vocabulary for the DNO-side device + the canonical
+      // field family it routes to. Both must co-occur in the same
+      // block or the routing is incomplete.
+      expect(block).toEqual(expect.stringContaining('main fuse'));
+      expect(block).toEqual(expect.stringContaining('spd_bs_en'));
+      // Inspector vocabulary for the customer-side isolator + the
+      // canonical field family it routes to.
+      expect(block).toEqual(expect.stringContaining('main switch'));
+      expect(block).toEqual(expect.stringContaining('main_switch_bs_en'));
+      // BS-prefix strip rule prevents the doubled-BS TTS phenomenon
+      // (*"main fuse BS EN BS 1361 type 1"*). If this drifts the
+      // model may write "BS 1361" verbatim and the friendly-name
+      // template will speak the duplicated prefix.
+      expect(block).toEqual(expect.stringContaining('Strip the leading'));
+      // Other value-kind routings — names the rating / kA / type
+      // branches so the model doesn't dump everything into spd_bs_en.
+      expect(block).toEqual(expect.stringContaining('spd_rated_current'));
+      expect(block).toEqual(expect.stringContaining('spd_short_circuit'));
+      expect(block).toEqual(expect.stringContaining('spd_type_supply'));
     });
   });
 });

@@ -127,6 +127,17 @@ ZE / ZS DISAMBIGUATION (CRITICAL):
 - Bare "Zs" → ALWAYS per-circuit (`measured_zs_ohm`). NEVER silently route to `ze_at_db`. If no circuit was named, emit `ask_user` with `reason="missing_context"`, `context_field="measured_zs_ohm"`, AND attach `pending_write: {tool: "record_reading", field: "measured_zs_ohm", value: "<the value>", confidence: <c>, source_turn_id: "<id>"}`. Server resolves the answer to a circuit_ref and writes for you.
 - "Zs at the board" → semantic correction (the inspector mis-spoke); treat as `ze_at_db` and write directly. Do NOT ask.
 
+SUPPLY vs MAIN SWITCH DISAMBIGUATION:
+Inspector terms *"main fuse"* / *"supply fuse"* / *"DNO fuse"* / *"cutout"* / *"service fuse"* → `record_board_reading` against the `spd_*` field family (Supply Protective Device). These are properties of the DNO-provided supply cutout, NOT the consumer-unit isolator. Map value kinds explicitly:
+- BS / BS EN / standard number ("1361", "88-2", "88 type gG", "60898") → `spd_bs_en`. The WHOLE value belongs here, including any trailing "type N" suffix. **Strip the leading `BS` / `BS EN` prefix** before writing — TTS will speak it back from the friendly-name template. *"Main fuse is BS 1361 type 1"* → `spd_bs_en: "1361 type 1"`. *"Main fuse is BS EN 60898"* → `spd_bs_en: "60898"`. Without prefix-stripping, TTS would echo *"main fuse BS EN BS 1361 type 1"* (doubled BS).
+- rating / current / amps ("100", "63 amps") → `spd_rated_current`.
+- breaking capacity / kA ("16 kA") → `spd_short_circuit`.
+- fuse type / cartridge / HRC, WHEN spoken alone without a BS number → `spd_type_supply`. If both BS number AND type are spoken in one phrase, all of it goes to `spd_bs_en` per above.
+
+Inspector terms *"main switch"* / *"main isolator"* / *"consumer unit isolator"* → `main_switch_bs_en` / `main_switch_voltage` / `main_switch_current`. These are properties of the customer-side isolating switch.
+
+If the inspector uses *"main fuse"* and *"main switch"* in the same utterance, treat them as TWO writes, one to each set of fields.
+
 OBSERVATIONS (six rules):
 - RULE 1 — EXPLICIT (silent): explicit trigger → call `record_observation` directly. No ask. Triggers: "observation"/"obs" (plus garbles "observant", "obligation", "application"); "code this as C2" / "add a C1" / bare codes C1/C2/C3/FI; "category 1/2/3"; "danger present"/"potentially dangerous"/"improvement recommended"/"further investigation".
 - RULE 2 — NO INFERRED OBSERVATIONS: defects without Rule 1's explicit triggers do NOT produce `observation_confirmation` asks and are NOT recorded. Observation flow requires explicit trigger.

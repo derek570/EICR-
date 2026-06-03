@@ -42,6 +42,24 @@ describe('confirmation-text — constants', () => {
     expect(CONFIRMATION_FRIENDLY_NAMES.prospective_short_circuit_current).toBe('PSCC');
     expect(CONFIRMATION_FRIENDLY_NAMES.prospective_earth_fault_current).toBe('PEFC');
   });
+
+  test('2026-06-03 Fix B — CONFIRMATION_FRIENDLY_NAMES has spd_* and main_switch_bs_en entries', () => {
+    // Field-test session F03B590C turn 9 (2026-06-03 20:04 UTC) tripped
+    // the deriveFriendlyName fallback for `main_switch_bs_en` (no
+    // friendly entry) and would have fallen through to "SPD BS EN" for
+    // `spd_bs_en` — neither phrasing matches the inspector vocabulary
+    // ("main fuse" / "main switch"). Direct table assertions PROVE the
+    // new entries exist; a buildConfirmationText-only assertion would
+    // pass even without these entries because deriveFriendlyName
+    // already returns "main switch BS EN" via its acronym table.
+    expect(CONFIRMATION_FRIENDLY_NAMES.spd_bs_en).toBe('main fuse BS EN');
+    expect(CONFIRMATION_FRIENDLY_NAMES.spd_rated_current).toBe('main fuse rating');
+    expect(CONFIRMATION_FRIENDLY_NAMES.spd_short_circuit).toBe(
+      'main fuse breaking capacity'
+    );
+    expect(CONFIRMATION_FRIENDLY_NAMES.spd_type_supply).toBe('main fuse type');
+    expect(CONFIRMATION_FRIENDLY_NAMES.main_switch_bs_en).toBe('main switch BS EN');
+  });
 });
 
 describe('confirmation-text — buildConfirmationText', () => {
@@ -100,6 +118,39 @@ describe('confirmation-text — buildConfirmationText', () => {
     );
     expect(buildConfirmationText('max_disconnect_time_s', '0.4', 1)).toBe(
       'Circuit 1, disconnection time 0.4'
+    );
+  });
+
+  test('2026-06-03 Fix B — spd_bs_en speaks as "main fuse BS EN ..." (board-level, no Circuit N prefix)', () => {
+    // The whole-value contract: prompt routes "Main fuse is BS 1361
+    // type 1" to spd_bs_en with the leading BS stripped, so the value
+    // string is "1361 type 1" — TTS speaks "main fuse BS EN 1361 type
+    // 1". Board-level (circuit=null or 0) so no "Circuit N," prefix.
+    expect(buildConfirmationText('spd_bs_en', '1361 type 1', null)).toBe(
+      'main fuse BS EN 1361 type 1'
+    );
+    expect(buildConfirmationText('spd_bs_en', '60898', 0)).toBe('main fuse BS EN 60898');
+  });
+
+  test('2026-06-03 Fix B — main_switch_bs_en speaks as "main switch BS EN ..."', () => {
+    expect(buildConfirmationText('main_switch_bs_en', '60947-3', null)).toBe(
+      'main switch BS EN 60947-3'
+    );
+  });
+
+  test('2026-06-03 Fix B — other spd_* fields speak inspector vocabulary', () => {
+    // The Change-step-2 scope-expansion entries. Plan calls out an
+    // explicit revert path if any of these sound wrong to the
+    // inspector ear (table is frozen but individual entries are
+    // independent). Pin the spoken form so the revert is detectable.
+    expect(buildConfirmationText('spd_rated_current', '100', null)).toBe(
+      'main fuse rating 100'
+    );
+    expect(buildConfirmationText('spd_short_circuit', '16', null)).toBe(
+      'main fuse breaking capacity 16'
+    );
+    expect(buildConfirmationText('spd_type_supply', 'gG', null)).toBe(
+      'main fuse type gG'
     );
   });
 

@@ -80,6 +80,23 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   ocpd_bs_en: 'OCPD BS EN',
   ocpd_breaking_capacity_ka: 'OCPD breaking capacity',
   ocpd_max_zs_ohm: 'OCPD max Zs',
+  // ─── Supply protective device (DNO cutout) / main switch ────────
+  // 2026-06-03 voice-correctness Fix B: inspectors say "main fuse" /
+  // "supply fuse" / "DNO fuse" / "cutout" for the DNO-side device
+  // (canonical `spd_*` fields), and "main switch" / "main isolator"
+  // for the consumer-unit isolator (`main_switch_*`). Without these
+  // entries the deriveFriendlyName fallback speaks "SPD BS EN ..." /
+  // "main switch BS EN ..." (snake_case→spaces), which (a) doesn't
+  // echo the inspector's vocabulary and (b) for `spd_*` includes the
+  // technical-jargon abbreviation that no inspector uses on site.
+  // Inspector vocabulary verified via field-name-corrections.js —
+  // `main_fuse_*` is the canonical alias namespace. Session
+  // F03B590C turn 9 (2026-06-03 20:04 UTC).
+  spd_bs_en: 'main fuse BS EN',
+  spd_rated_current: 'main fuse rating',
+  spd_short_circuit: 'main fuse breaking capacity',
+  spd_type_supply: 'main fuse type',
+  main_switch_bs_en: 'main switch BS EN',
   rcd_operating_current_ma: 'RCD',
   rcd_time_ms: 'RCD time',
   rcd_type: 'RCD type',
