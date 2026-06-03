@@ -21,20 +21,35 @@ export function extractNamedFieldValues(text, slots) {
   for (const slot of slots) {
     if (!slot.namedExtractor) continue;
     const m = text.match(slot.namedExtractor);
-    if (m && m[1] !== undefined) {
-      const val = slot.parser(m[1]);
-      if (val === null || val === undefined) continue;
-      // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
-      // gate. Same semantics as the engine's bare-value gate — out-of-set
-      // values are dropped here (named extraction won't write the field)
-      // so the engine re-asks the slot. Without this guard a named-form
-      // mistranscription ("66 kA") would slip through the named path
-      // even when the bare-value path would catch it.
-      if (Array.isArray(slot.allowedValues) && !slot.allowedValues.includes(val)) {
-        continue;
-      }
-      out.push({ field: slot.field, value: val });
+    if (!m) continue;
+    // Audit-2026-06-02 Phase 4 — read the first non-null capture group
+    // so a slot regex can use multiple alternations with different
+    // value-capture positions without contortions. Backward-compatible:
+    // existing single-group regexes (ring r1, IR L-L, ocpd_type, etc.)
+    // still take m[1] because m[2] / m[3] are undefined for them.
+    //
+    // Why: the rcd_type slot in rcbo.js + rcd.js needs anchored
+    // alternations to stop "Type B" in an RCBO walkthrough from
+    // false-matching `rcd_type` via the bare-letter `[AFB]` set
+    // (same letter is in the OCPD curve enum). The cleanest
+    // tightening uses three alternations with the value capture in
+    // three different positions; Codex Pass 4 caught that the
+    // pre-Phase-4 helper only ever read m[1] so multi-group regexes
+    // would silently fail.
+    const captured = m[1] ?? m[2] ?? m[3];
+    if (captured === undefined) continue;
+    const val = slot.parser(captured);
+    if (val === null || val === undefined) continue;
+    // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
+    // gate. Same semantics as the engine's bare-value gate — out-of-set
+    // values are dropped here (named extraction won't write the field)
+    // so the engine re-asks the slot. Without this guard a named-form
+    // mistranscription ("66 kA") would slip through the named path
+    // even when the bare-value path would catch it.
+    if (Array.isArray(slot.allowedValues) && !slot.allowedValues.includes(val)) {
+      continue;
     }
+    out.push({ field: slot.field, value: val });
   }
   return out;
 }

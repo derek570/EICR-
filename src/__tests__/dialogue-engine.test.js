@@ -117,17 +117,27 @@ describe('engine — ring continuity', () => {
       now: 4000,
     });
     expect(out).toEqual({ handled: true, fallthrough: false });
-    // 1) extraction wire emit for R1=0.43
+    // 1) extraction wire emit for R1=0.43.
+    //    Audit-2026-06-02 Phase 3: buildExtractionPayload applies
+    //    FIELD_CORRECTIONS inline, so the wire carries the legacy
+    //    `ring_continuity_r1` name (iOS already accepted both via
+    //    dual-alias decoders; the probe now documents intent).
     expect(ws.sent[0]).toMatchObject({
       type: 'extraction',
       result: {
-        readings: [{ field: 'ring_r1_ohm', circuit: 13, value: '0.43', source: 'ring_script' }],
+        readings: [
+          { field: 'ring_continuity_r1', circuit: 13, value: '0.43', source: 'ring_script' },
+        ],
       },
     });
-    // 2) ask for neutrals
+    // 2) ask for neutrals. context_field on ask_user_started still
+    //    carries the canonical slot name (buildScriptAsk is NOT in
+    //    the Phase 3 rewrite path — context_field documents the
+    //    server-side slot identity, not the on-wire field rename).
     expect(ws.sent[1].question).toBe('What are the neutrals?');
     expect(ws.sent[1].context_field).toBe('ring_rn_ohm');
-    // Snapshot received the write
+    // Snapshot received the write under canonical key (rewrite is
+    // wire-side only — applyReadingToSnapshot uses the slot field).
     expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.43');
   });
 

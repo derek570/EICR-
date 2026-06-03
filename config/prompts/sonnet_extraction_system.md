@@ -121,6 +121,7 @@ COMMON SPEECH PATTERNS:
   "Circuit one OCPD BS 6898" → record_reading(circuit: 1, field: "ocpd_bs_en", value: "BS EN 60898")
   "Circuit four the BS-EN is 60898" → record_reading(circuit: 4, field: "ocpd_bs_en", value: "BS EN 60898")
   "MCB on circuit 4 is BS-EN 61009" → TWO record_readings: ocpd_bs_en + rcd_bs_en, both "BS EN 61009" (RCBO mirrors)
+- INSIDE AN RCBO WALK-THROUGH: when the inspector replies with a single curve letter (e.g. "Type B", "Type C", "Type D") as the value for the asked ocpd_type slot, this fills ocpd_type ONLY. Do NOT also write rcd_type from the same reply. ocpd_type (MCB curve) and rcd_type (RCD waveform) are semantically distinct fields — the inspector dictates each separately when the engine asks for it. RCD type writes require explicit RCD context ("RCD type A", "waveform type AC", "type A RCD"); a bare "type B" / "type D" curve letter is ALWAYS the MCB curve, never the waveform.
 - "2.5 and 1.5" for cable = cable_size: "2.5" AND cable_size_earth: "1.5"
 - "5 points" / "6 points on this" = number_of_points
 - Numbers alone after a field name: "Zs... 0.35" = zs: 0.35, "Ze... 0.84" = ze: 0.84 (field from recent context OK within same utterance)

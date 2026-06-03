@@ -56,10 +56,33 @@ function derivationMatches(derivation, writtenValue, slotKind) {
 }
 
 /**
- * @returns {{ pivotTo: string | null }} — caller acts on the pivot.
+ * @returns {{
+ *   pivotTo: string | null,
+ *   mirrorWrites: Array<{field: string, value: string}>,
+ *   setWrites: Array<{field: string, value: string}>
+ * }}
+ *
+ * Audit-2026-06-02 Phase 2: now ALSO returns the writes a mirror or
+ * sets derivation made to the snapshot, so callers can prepend them
+ * to `buildExtractionPayload`'s writes array and ship them to iOS in
+ * the SAME extraction envelope as the originating slot write. The
+ * snapshot/state mutations still happen here (forward-compat — any
+ * call site that doesn't yet thread mirrorWrites onto the wire still
+ * gets the server-side state convergence).
+ *
+ * Repro: probe_rcd_bs_en_61009_pivots_to_rcbo + the symmetric ocpd
+ * probe. Pre-Phase-2 the engine wrote ocpd_bs_en (or rcd_bs_en) plus
+ * mirrored the value to its sibling field in state.values + snapshot,
+ * but the wire emit only carried the originating write. iOS only saw
+ * one column update, then the inspector got the next slot's TTS ask
+ * for a field they had implicitly already provided.
+ *
+ * mirrorWrites / setWrites are ALWAYS arrays (never undefined) so
+ * destructuring at every call site is safe even when a slot has no
+ * derivations.
  */
 export function applyDerivations({ session, schema, slot, value }) {
-  const result = { pivotTo: null };
+  const result = { pivotTo: null, mirrorWrites: [], setWrites: [] };
   if (!Array.isArray(slot.derivations)) return result;
 
   for (const derivation of slot.derivations) {
@@ -77,6 +100,9 @@ export function applyDerivations({ session, schema, slot, value }) {
         // Also reflect into the live state.values so the next
         // nextMissingSlot iteration sees it filled.
         if (state) state.values[extraField] = extraValue;
+        // Surface for the wire emit so iOS column reflects the
+        // derived field on the same audible confirmation.
+        result.setWrites.push({ field: extraField, value: extraValue });
       }
     }
 
@@ -91,6 +117,7 @@ export function applyDerivations({ session, schema, slot, value }) {
           value,
         });
         if (state) state.values[mirrorField] = value;
+        result.mirrorWrites.push({ field: mirrorField, value });
       }
     }
 

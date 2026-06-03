@@ -5,6 +5,8 @@
  * byte-identical to the per-domain scripts they replace.
  */
 
+import { applyFieldNameCorrection } from '../../field-name-corrections.js';
+
 /**
  * Build an ask_user_started payload for a missing slot. Three flavours:
  *   - 'which_circuit' → entry without a circuit number; question asks
@@ -159,18 +161,49 @@ export function buildScriptInfo({ toolCallIdPrefix, sessionId, kind, text, now }
  * Build the extraction payload for one or more script-driven writes.
  * Mirrors `extracted_readings` shape so iOS sees the same structure as
  * Sonnet emits via the bundler.
+ *
+ * Audit-2026-06-02 Phase 2: writes carrying `auto_resolved: true` (the
+ * derivation-mirror entries that applyDerivations now surfaces back to
+ * the engine call sites) propagate that flag onto the resulting reading.
+ * Pre-existing iOS decoders ignore the extra key; the bundler-emitted
+ * Sonnet path has carried the same flag for over a year via the same
+ * spread pattern. Setting it conditionally (only when truthy) keeps
+ * the wire shape byte-identical for non-derivation writes.
+ *
+ * Audit-2026-06-02 Phase 3: applies the canonical → legacy field-name
+ * rewrite inline so the dialogue-engine emit path is in lockstep with
+ * the bundler path. Pre-Phase-3 a dialogue-driven write of
+ * `ir_live_live_mohm` shipped to iOS with the canonical name; iOS
+ * accepted it via the dual-alias decoder switch but the wire shape
+ * documented the leak as the reality. Helper lives in
+ * field-name-corrections.js (leaf module) to avoid circularly
+ * importing sonnet-stream's WS handler graph.
  */
 export function buildExtractionPayload(circuit_ref, writes, source) {
   return {
     type: 'extraction',
     result: {
-      readings: writes.map((w) => ({
-        field: w.field,
-        circuit: circuit_ref,
-        value: w.value,
-        confidence: 1.0,
-        source,
-      })),
+      readings: writes.map((w) => {
+        const reading = {
+          field: w.field,
+          circuit: circuit_ref,
+          value: w.value,
+          confidence: 1.0,
+          source,
+        };
+        if (w.auto_resolved) reading.auto_resolved = true;
+        // Apply field-name correction inline so a canonical Stage-6
+        // name (e.g. `ir_live_live_mohm`) shows up on the wire as the
+        // legacy iOS-facing name (`insulation_resistance_l_l`). Helper
+        // is a no-op when the field name has no entry — engine schemas
+        // that already use legacy names (rcdSchema's `rcd_trip_time`)
+        // pass through unchanged. We pass null sessionId + null logger
+        // because this hot path runs per emit; the bundler's path logs
+        // identical "Field corrected" rows from sonnet-stream.js so
+        // double-logging would just clutter CloudWatch.
+        applyFieldNameCorrection(reading, null, null);
+        return reading;
+      }),
       observations: [],
       questions: [],
     },

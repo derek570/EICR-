@@ -59,6 +59,7 @@ import {
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 import { validateBoardScope, BOARD_FIELD_VALUE_ENUMS } from './stage6-dispatch-validation.js';
 import { coerceRecordBoardReadingValue } from './record-reading-coercion.js';
+import { isWithinRange, BOARD_FIELD_NUMERIC_RANGES } from './value-enum-validator.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
 // underlying enum is itself frozen-by-convention (codegenned from
@@ -211,6 +212,36 @@ export async function dispatchRecordBoardReading(call, ctx) {
       });
       return envelope(call.tool_call_id, { ok: false, error: err }, true);
     }
+  }
+
+  // Audit-2026-06-02 Phase 1 — parallel numeric range gate to the
+  // circuit-side check. BOARD_FIELD_NUMERIC_RANGES is empty today (no
+  // board-side free-text numeric fields without a closed enum) but
+  // wiring the gate now means a future board-side range addition
+  // (e.g. supply Ze tolerances) won't need a second dispatcher edit.
+  // Same rejection-envelope shape as the circuit path so dashboards
+  // attribute consistently.
+  const rangeVerdict = isWithinRange(input.field, input.value, BOARD_FIELD_NUMERIC_RANGES);
+  if (!rangeVerdict.ok) {
+    const err = {
+      code: rangeVerdict.code,
+      field: 'value',
+      value: input.value,
+      min: rangeVerdict.min,
+      max: rangeVerdict.max,
+    };
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_board_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: err,
+      input_summary: { field: input.field },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
   // 3) mutate via the flag-aware wrapper. Flag-off: legacy circuits[0] write

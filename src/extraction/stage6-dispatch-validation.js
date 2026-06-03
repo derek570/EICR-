@@ -53,6 +53,11 @@
 import { createRequire } from 'node:module';
 import { CONTEXT_FIELD_ENUM, BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from './stage6-tool-schemas.js';
 import { circuitExistsInSnapshot, getMainBoardId } from './stage6-multi-board-shape.js';
+import {
+  isWithinRange,
+  CIRCUIT_FIELD_NUMERIC_RANGES,
+  BOARD_FIELD_NUMERIC_RANGES,
+} from './value-enum-validator.js';
 
 // Fix B 2026-06-02 (handoff-2026-06-02-fixes.md §B) — per-field VALUE
 // enum lookup, loaded from config/field_schema.json. The schema is the
@@ -185,6 +190,28 @@ export function validateRecordReading(input, snapshot) {
         valid_options: Array.from(allowed),
       };
     }
+  }
+  // Audit-2026-06-02 Phase 1 — numeric range gate for free-text numeric
+  // fields (rcd_time_ms, measured_zs_ohm, ocpd_rating_a, …) that have
+  // no closed enum in field_schema.json. Same rejection-envelope shape
+  // as `value_not_in_options` so Sonnet's tool loop self-corrects via
+  // the same path. See value-enum-validator.js for the per-field range
+  // table + helper semantics (sentinel form, blank-passes, non-numeric
+  // rejection).
+  //
+  // Empty-enum branch above doesn't catch this: rcd_time_ms is a free-
+  // text field per the schema (no `options[]`), so allowed===undefined
+  // and the closed-enum gate falls through. The range gate is the only
+  // line of defence for "Sonnet wrote 3000 ms for a 30 mA AC RCD".
+  const rangeVerdict = isWithinRange(input.field, input.value, CIRCUIT_FIELD_NUMERIC_RANGES);
+  if (!rangeVerdict.ok) {
+    return {
+      code: rangeVerdict.code,
+      field: 'value',
+      value: input.value,
+      min: rangeVerdict.min,
+      max: rangeVerdict.max,
+    };
   }
   return null;
 }

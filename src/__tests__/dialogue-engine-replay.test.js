@@ -27,6 +27,7 @@ import {
 } from '../extraction/dialogue-engine/index.js';
 import { processRingContinuityTurn as legacyRing } from '../extraction/ring-continuity-script.js';
 import { processInsulationResistanceTurn as legacyIR } from '../extraction/insulation-resistance-script.js';
+import { FIELD_CORRECTIONS } from '../extraction/field-name-corrections.js';
 
 const SESSION_ID = 'sess_replay';
 
@@ -81,9 +82,44 @@ function runScenario(processor, transcripts, initialCircuits) {
  * Snapshots are compared by `circuits` map; small spurious differences
  * in unused fields are tolerated by comparing only the snapshot keys
  * the legacy script writes.
+ *
+ * Audit-2026-06-02 Phase 3: the dialogue-engine emit path applies
+ * FIELD_CORRECTIONS inline via buildExtractionPayload — so a
+ * canonical `ring_r1_ohm` slot write reaches the wire as the legacy
+ * `ring_continuity_r1` name (matching what iOS has always accepted
+ * via dual-alias decoders). The legacy ring/IR scripts predate that
+ * normalisation and still emit canonical on the wire. The parity
+ * contract iOS actually sees is "both paths agree AFTER
+ * FIELD_CORRECTIONS is applied"; we normalise here so the test
+ * documents that contract instead of a pre-Phase-3 wire leak.
+ *
+ * Per memory note "Stage 6 only — legacy parity dropped (2026-04-27)",
+ * legacy parity isn't a runtime requirement anymore. Keeping the
+ * normalised parity assertion guards against engine-only regressions
+ * without forcing a parallel rewrite of the legacy scripts (which
+ * field-tests no longer run).
  */
+function normaliseEmits(sent) {
+  return sent.map((envelope) => {
+    if (envelope?.type !== 'extraction') return envelope;
+    const readings = envelope.result?.readings;
+    if (!Array.isArray(readings)) return envelope;
+    return {
+      ...envelope,
+      result: {
+        ...envelope.result,
+        readings: readings.map((r) => {
+          if (!r?.field) return r;
+          const corrected = FIELD_CORRECTIONS[r.field];
+          return corrected ? { ...r, field: corrected } : r;
+        }),
+      },
+    };
+  });
+}
+
 function expectIdentical(engineRun, legacyRun) {
-  expect(engineRun.sent).toEqual(legacyRun.sent);
+  expect(normaliseEmits(engineRun.sent)).toEqual(normaliseEmits(legacyRun.sent));
   expect(engineRun.snapshot.circuits).toEqual(legacyRun.snapshot.circuits);
 }
 
