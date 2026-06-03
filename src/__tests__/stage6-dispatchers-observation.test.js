@@ -67,7 +67,7 @@ describe('dispatchRecordObservation', () => {
     const call = {
       tool_call_id: 'tu_obs_1',
       name: 'record_observation',
-      input: { text: 'RCD type AC present', code: 'C3' },
+      input: { text: 'RCD type AC present', code: 'C3', suggested_regulation: '531.3.3' },
     };
 
     const result = await WRITE_DISPATCHERS.record_observation(
@@ -108,7 +108,7 @@ describe('dispatchRecordObservation', () => {
       {
         tool_call_id: 'tu_obs_2',
         name: 'record_observation',
-        input: { text: 'Ze too high', code: 'C2' },
+        input: { text: 'Ze too high', code: 'C2', suggested_regulation: '411.4.5' },
       },
       makeCtx({ session, logger, perTurnWrites })
     );
@@ -195,6 +195,7 @@ describe('dispatchRecordObservation', () => {
         input: {
           text: 'General installation note',
           code: 'C3',
+          suggested_regulation: '134.1.1',
           // schedule_item omitted entirely
         },
       },
@@ -216,7 +217,7 @@ describe('dispatchDeleteObservation', () => {
       {
         tool_call_id: 'tu_rec_1',
         name: 'record_observation',
-        input: { text: 'Socket damage', code: 'C2' },
+        input: { text: 'Socket damage', code: 'C2', suggested_regulation: '651.2' },
       },
       makeCtx({ session, logger, perTurnWrites })
     );
@@ -263,7 +264,7 @@ describe('dispatchDeleteObservation', () => {
       {
         tool_call_id: 'tu_rec_2',
         name: 'record_observation',
-        input: { text: 'Cable exposed', code: 'C1' },
+        input: { text: 'Cable exposed', code: 'C1', suggested_regulation: '526.5' },
       },
       makeCtx({ session, logger, perTurnWrites })
     );
@@ -356,7 +357,7 @@ describe('Per-turn writes isolation across turns (Group 6 — BLOCK-1 cross-turn
       {
         tool_call_id: 'tu_t1',
         name: 'record_observation',
-        input: { text: 'First observation', code: 'C3' },
+        input: { text: 'First observation', code: 'C3', suggested_regulation: '522.6.202' },
       },
       { session, logger, turnId: 'sess-test-turn-1', perTurnWrites: turn1Writes, round: 1 }
     );
@@ -367,7 +368,7 @@ describe('Per-turn writes isolation across turns (Group 6 — BLOCK-1 cross-turn
       {
         tool_call_id: 'tu_t2',
         name: 'record_observation',
-        input: { text: 'Second observation', code: 'C2' },
+        input: { text: 'Second observation', code: 'C2', suggested_regulation: '411.3.3' },
       },
       { session, logger, turnId: 'sess-test-turn-2', perTurnWrites: turn2Writes, round: 1 }
     );
@@ -395,7 +396,11 @@ describe('Logger row shape (Group 7)', () => {
       {
         tool_call_id: 'tu_shape',
         name: 'record_observation',
-        input: { text: 'Fixture text should not appear in log', code: 'C3' },
+        input: {
+          text: 'Fixture text should not appear in log',
+          code: 'C3',
+          suggested_regulation: '514.9.1',
+        },
       },
       makeCtx({ session, logger, perTurnWrites })
     );

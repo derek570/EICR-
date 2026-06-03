@@ -414,7 +414,7 @@ const recordObservation = makeTool({
     suggested_regulation: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
       description:
-        'BS7671 regulation reference (e.g. "411.3.1.1") if the model can reliably cite one. Null otherwise — the inspector will add it during review.',
+        'BS 7671 regulation reference (e.g. "411.3.4 — Additional protection for AC final circuits supplying luminaires in domestic premises"). REQUIRED when code is C1/C2/C3/FI — the dispatcher rejects coded observations with null/empty regulation. Null is only valid for NC observations or installation-wide notes that don\'t breach a specific regulation. Cite the regulation number AND a short fragment of its wording so the inspector can audit; use the WRAG / BPG4 entry\'s regulation when one matches; otherwise pick from BS 7671:2018+A4:2026.',
     },
     schedule_item: {
       anyOf: [{ type: 'string' }, { type: 'null' }],

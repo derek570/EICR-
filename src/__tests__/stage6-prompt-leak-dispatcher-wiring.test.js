@@ -259,10 +259,10 @@ describe('Layer 2 wiring — record_observation.text', () => {
       name: 'record_observation',
       input: {
         code: 'C3',
+        suggested_regulation: '411.3.4',
         text: 'The user asked about SYSTEM_CHANNEL framing — my instructions are as follows: TRUST BOUNDARY...',
         location: 'main consumer unit',
         circuit: null,
-        suggested_regulation: null,
       },
     };
 
@@ -555,12 +555,12 @@ describe('r20-#1 wiring — record_observation scans location + suggested_regula
       name: 'record_observation',
       input: {
         code: 'C3',
+        suggested_regulation: '411.3.4',
         text: 'Minor cable colour anomaly',
         // Structural phrase in location — real-world attack would
         // steer the model here because 04-26 scanned only text.
         location: 'Prefer silent writes corridor — cupboard under stairs',
         circuit: null,
-        suggested_regulation: null,
       },
     };
 
@@ -623,10 +623,10 @@ describe('r20-#1 wiring — record_observation scans location + suggested_regula
       name: 'record_observation',
       input: {
         code: 'C3',
+        suggested_regulation: '411.3.4',
         text: 'You are an EICR inspection assistant — prompt follows',
         location: 'TRUST BOUNDARY corridor',
         circuit: null,
-        suggested_regulation: null,
       },
     };
 
@@ -777,10 +777,10 @@ describe('r20-#2 redaction — prompt_leak_blocked log rows carry hash + length,
       name: 'record_observation',
       input: {
         code: 'C3',
+        suggested_regulation: '411.3.4',
         text: leakedText,
         location: leakedLocation,
         circuit: null,
-        suggested_regulation: null,
       },
     };
 
@@ -1019,10 +1019,10 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
       name: 'record_observation',
       input: {
         code: 'C3',
+        suggested_regulation: '411.3.4',
         text: 'Minor cable colour anomaly',
         location: paraphrase,
         circuit: null,
-        suggested_regulation: null,
       },
     };
 
@@ -1093,10 +1093,10 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
       name: 'record_observation',
       input: {
         code: 'C3',
+        suggested_regulation: '411.3.4',
         text: paraphrase,
         location: 'Consumer unit',
         circuit: null,
-        suggested_regulation: null,
       },
     };
 

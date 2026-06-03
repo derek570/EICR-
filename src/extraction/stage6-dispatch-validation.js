@@ -282,7 +282,35 @@ export function validateRenameCircuit(input, snapshot) {
  * before mutation.
  */
 
-export function validateRecordObservation(_input, _session) {
+export function validateRecordObservation(input, _session) {
+  // 2026-06-03 — require a concrete BS 7671 regulation citation whenever
+  // the observation carries a real Classification Code (C1 / C2 / C3 / FI).
+  // The JSON tool schema makes `suggested_regulation` a required FIELD with
+  // null allowed, because installation-wide / no-specific-reg cases legit
+  // need null. But for a CODED observation, null is the wrong answer —
+  // BPG4 7.3 and the WRAG corpus both insist every coded defect cites the
+  // breached regulation, and field-test session C112923C (2026-06-03,
+  // "outside light not RCD protected" → C2 with no regulation visible on
+  // the iOS UI) confirmed the model was silently emitting `null` here.
+  //
+  // NC and any future Obs-like codes legitimately may not have a specific
+  // regulation (they're documentation, not breaches), so the gate is on
+  // C1/C2/C3/FI only. The matching `text` (observation_text) is also
+  // required to be non-empty — emitting code+regulation without the
+  // observation text is a contract violation (would render as a blank row
+  // on the certificate).
+  if (!input || typeof input !== 'object') return null;
+  const code = typeof input.code === 'string' ? input.code.toUpperCase() : '';
+  const codedCodes = new Set(['C1', 'C2', 'C3', 'FI']);
+  if (!codedCodes.has(code)) return null;
+  const reg = input.suggested_regulation;
+  if (reg === null || reg === undefined || (typeof reg === 'string' && reg.trim() === '')) {
+    return {
+      code: 'regulation_required_for_coded_observation',
+      field: 'suggested_regulation',
+      reason: `code "${code}" requires a BS 7671 regulation citation (e.g. "411.3.4"). Null is only allowed for NC observations.`,
+    };
+  }
   return null;
 }
 

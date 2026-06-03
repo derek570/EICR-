@@ -86,17 +86,12 @@ export async function dispatchRecordObservation(call, ctx) {
     round,
   };
 
-  const err = validateRecordObservation(input, session);
-  if (err) {
-    logToolCall(logger, {
-      ...baseLogRow,
-      is_error: true,
-      outcome: 'rejected',
-      validation_error: err,
-      input_summary: { code: input.code ?? null },
-    });
-    return envelope(call.tool_call_id, { ok: false, error: err }, true);
-  }
+  // 2026-06-03: validateRecordObservation moved DOWN, after the leak filter.
+  // The validator's `regulation_required_for_coded_observation` check would
+  // otherwise preempt the leak-blocking reject — and a leak-bearing call
+  // that happened to omit regulation would report "missing regulation"
+  // rather than the more important "rejected for leak". Leak rejection is
+  // a security-class outcome and must dominate the wire log.
 
   // Plan 04-27 r20-#1 + Plan 04-28 r21-#1: scan ALL free-text
   // observation fields for system-prompt leak content, routing EACH
@@ -194,6 +189,21 @@ export async function dispatchRecordObservation(call, ctx) {
       },
       true
     );
+  }
+
+  // 2026-06-03: validator runs AFTER the leak filter (see comment above).
+  // The regulation-required check rejects coded observations (C1/C2/C3/FI)
+  // with null/empty `suggested_regulation`.
+  const err = validateRecordObservation(input, session);
+  if (err) {
+    logToolCall(logger, {
+      ...baseLogRow,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: err,
+      input_summary: { code: input.code ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
   // Atom owns UUID generation. Atom writes to session.extractedObservations.
