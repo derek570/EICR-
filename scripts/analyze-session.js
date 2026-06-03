@@ -18,6 +18,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ── Helpers ──
 
@@ -140,7 +141,211 @@ function getFieldKeywords(fieldKey) {
 
 // ── Main Analysis ──
 
-function analyzeSession(sessionDir) {
+// ── Cluster 3 Item 7 — KNOWN_BUG_SIGNATURES registry ──
+//
+// Each entry pairs a `detect()` predicate against pre-canned recommendation
+// shape. When a signature matches, the analyzer surfaces a recommendation
+// alongside whatever Claude generates — raising the floor on bug-class
+// detection so the second instance of a known shape doesn't slip through.
+//
+// Every entry carries `auto_pr: false` from day one (Decision 1 in the
+// optimizer rewrite plan). Flipping `auto_pr: true` only changes a badge
+// in the report — no Git/gh actions are taken in this plan. Auto-PR
+// execution is explicitly deferred.
+
+// Best-effort dynamic import of the canonical field-name sources. Lives at
+// module-init so the registry's detectors can read it without paying the
+// import cost per session. Lazily resolved via promise so the analyzer
+// still works when the backend modules aren't on the import path yet
+// (sessions analysed before backend-optimizer-prereqs PR #43 merges).
+const ANALYZE_SESSION_DIR = path.dirname(fileURLToPath(import.meta.url));
+const _canonicalFieldsP = (async () => {
+  try {
+    const knownFieldsMod = await import(
+      "file://" + path.join(ANALYZE_SESSION_DIR, "..", "src", "extraction", "known-fields.js")
+    );
+    const fcMod = await import(
+      "file://" + path.join(ANALYZE_SESSION_DIR, "..", "src", "extraction", "field-name-corrections.js")
+    );
+    return {
+      KNOWN_FIELDS: knownFieldsMod.KNOWN_FIELDS ?? new Set(),
+      IOS_DUAL_ALIAS_ALLOWLIST: knownFieldsMod.IOS_DUAL_ALIAS_ALLOWLIST ?? new Set(),
+      FIELD_CORRECTIONS: fcMod.FIELD_CORRECTIONS ?? {},
+      loaded: true,
+    };
+  } catch {
+    // Backend modules not extracted yet — the canonical_name_leak_to_ios
+    // detector returns no-match. Other detectors are unaffected.
+    return {
+      KNOWN_FIELDS: new Set(),
+      IOS_DUAL_ALIAS_ALLOWLIST: new Set(),
+      FIELD_CORRECTIONS: {},
+      loaded: false,
+    };
+  }
+})();
+
+const KNOWN_BUG_SIGNATURES = [
+  {
+    id: "ir_bare_bridge_single_digit",
+    description:
+      "Insulation resistance bare-bridge single-digit value reached a script_completed event alongside a sentinel sibling — the namedExtractor pattern is mis-grouping bare values into the wrong arm.",
+    // Reads from analysis.dialogue_engine_transitions; iOS-side
+    // independent. Yesterday's L-L=2 fix is the canonical example.
+    async detect(analysis) {
+      const events = analysis.dialogue_engine_transitions || [];
+      return events.some((e) => {
+        if (e.schema !== "insulation_resistance") return false;
+        if (typeof e.event !== "string" || !e.event.endsWith("completed")) return false;
+        const ll = e.values_snapshot?.ir_live_live_mohm;
+        const le = e.values_snapshot?.ir_live_earth_mohm;
+        const isBareSingle = (v) => {
+          if (v === null || v === undefined) return false;
+          const s = String(v);
+          if (s.includes(".") || s.includes(">")) return false;
+          const n = Number(s);
+          return Number.isInteger(n) && n >= 1 && n < 10;
+        };
+        const isSentinel = (v) => typeof v === "string" && v.trim().startsWith(">");
+        return (isBareSingle(ll) && isSentinel(le)) || (isBareSingle(le) && isSentinel(ll));
+      });
+    },
+    recommend_category: "dialogue_engine_schema_tighten",
+    recommend_shape: {
+      file: "src/extraction/dialogue-engine/schemas/insulation-resistance.js",
+      change:
+        "Split namedExtractor's bare-arm to use a MEGAOHMS_BARE_SAFE_VALUE_GROUP (single-digit integers without a preceding decimal/unit must NOT match unless contextualized by ' MΩ' / 'megohm' / etc.). Reference: commit 3c77b1bb.",
+      reference_commit: "3c77b1bb",
+    },
+    implementation_status: "implementable",
+    probe_template: "scripts/probe-templates/garbles/probe_ir_bare_bridge_single_digit.yaml",
+    auto_pr: false,
+  },
+  {
+    id: "flux_garble_single_word",
+    description:
+      "Flux mis-heard a single technical word — the wrong term appears in transcript alongside a focused-mode ask whose expected vocabulary is well-defined.",
+    // Reads from analysis.full_transcript + focused_mode_timeline.
+    // Detector is intentionally LOW-CONFIDENCE — it surfaces candidate
+    // confusion pairs; Claude's classification refines.
+    async detect(analysis) {
+      const transcript = (analysis.full_transcript || "").toLowerCase();
+      const CONFUSION_PAIRS = [
+        ["rct", "rcd"],
+        ["cucumber", "cooker"],
+        ["zen-s", "zs"],
+        ["arcbow", "rcbo"],
+        ["earthing", "earthing"], // self-pair = no match; kept to lock the table shape
+        ["ohm", "ohm"],
+      ];
+      const focusedModeActive = (analysis.focused_mode_timeline || []).length > 0;
+      // Match when the WRONG word appears in transcript AND focused mode
+      // was active at some point in the session. Refining to per-ask-overlap
+      // requires the iOS telemetry edit (Cluster 2 Item 6 prereq).
+      return CONFUSION_PAIRS.some(([wrong, right]) => {
+        if (wrong === right) return false;
+        return transcript.includes(wrong) && focusedModeActive;
+      });
+    },
+    recommend_category: "flux_configure_keyterms_per_slot",
+    recommend_shape: {
+      // ADVISORY ONLY — flux_configure_keyterms_per_slot is DORMANT
+      // until per-slot keyterm map infrastructure lands. Detector
+      // inherits the dormancy; metadata only, no concrete file edit.
+      metadata: {
+        suggested_keyterm_strategy:
+          "Surface a per-ask keyterm subset on the affected slot's Configure message. Map: <slot_field> → [<correct_term>, …]. Implementation gated on iOS-side FocusedAnswerKeyterms.keyterms(for: slotField) helper + a `field` parameter on enterFocusedAnswerMode.",
+      },
+    },
+    implementation_status: "awaiting_infrastructure",
+    requires_infrastructure: "per_slot_keyterm_map",
+    probe_template: "scripts/probe-templates/garbles/probe_flux_garble_generic.yaml",
+    auto_pr: false,
+  },
+  {
+    id: "value_out_of_enum_no_validator",
+    description:
+      "A record_reading wrote a closed-enum field with a value that doesn't match any option — no value_not_in_options rejection fired. (Currently DORMANT — PII guard blocks input_summary.value; fallback correlation via per-turn write patches pending.)",
+    // BLOCKED on backend telemetry contract — input_summary.value is
+    // gated by PII guard. Returning false until a fallback correlation
+    // path is implemented (correlate via per-turn field_set events or
+    // iOS field_buffered/_at_end). Stub kept so the registry shape is
+    // consistent across all 4 entries.
+    async detect() {
+      return false;
+    },
+    recommend_category: "dispatcher_validator",
+    recommend_shape: {
+      file: "src/extraction/stage6-dispatch-validation.js",
+      change: "Add entry to CIRCUIT_FIELD_VALUE_ENUMS for the offending field.",
+    },
+    implementation_status: "implementable",
+    probe_template: "scripts/probe-templates/dispatcher_gaps/probe_field_off_enum.yaml",
+    auto_pr: false,
+  },
+  {
+    id: "canonical_name_leak_to_ios",
+    description:
+      "A canonical field name landed on iOS unmapped — it's not in KNOWN_FIELDS, has no FIELD_CORRECTIONS rewrite, and isn't on the iOS dual-alias allowlist.",
+    // Reads from analysis.unmapped_readings (Cluster 2 Item 6 section).
+    // Requires the backend prereq (2) extraction (PR #43); falls back to
+    // no-match when the imports aren't resolvable.
+    async detect(analysis) {
+      const canon = await _canonicalFieldsP;
+      if (!canon.loaded) return false;
+      const unmapped = analysis.unmapped_readings || [];
+      return unmapped.some((r) => {
+        const f = r?.field;
+        if (typeof f !== "string" || !f) return false;
+        if (canon.KNOWN_FIELDS.has(f)) return false;
+        if (Object.prototype.hasOwnProperty.call(canon.FIELD_CORRECTIONS, f)) return false;
+        if (canon.IOS_DUAL_ALIAS_ALLOWLIST.has(f)) return false;
+        return true;
+      });
+    },
+    recommend_category: "field_name_correction_add",
+    recommend_shape: {
+      file: "src/extraction/field-name-corrections.js",
+      change:
+        "Add a canonical → legacy entry to FIELD_CORRECTIONS for the leaked field. Look at the unmapped_readings section above to identify the field name.",
+    },
+    implementation_status: "implementable",
+    probe_template: null,
+    auto_pr: false,
+  },
+];
+
+// Run all detectors against an analysis object; return an array of hit
+// objects (one per signature that matched). Errors inside a detector are
+// caught and surfaced as warnings — a single bad detector should not
+// crash the analyzer.
+async function runBugSignatureDetectors(analysis) {
+  const hits = [];
+  for (const sig of KNOWN_BUG_SIGNATURES) {
+    try {
+      const matched = await sig.detect(analysis);
+      if (matched) {
+        hits.push({
+          id: sig.id,
+          description: sig.description,
+          recommend_category: sig.recommend_category,
+          recommend_shape: sig.recommend_shape,
+          implementation_status: sig.implementation_status,
+          probe_template: sig.probe_template,
+          auto_pr: sig.auto_pr,
+        });
+      }
+    } catch (e) {
+      hits.push({
+        id: sig.id,
+        error: `detector_threw: ${e?.message ?? String(e)}`,
+      });
+    }
+  }
+  return hits;
+}
+
+async function analyzeSession(sessionDir) {
   const debugLogPath = path.join(sessionDir, "debug_log.jsonl");
   const fieldSourcesPath = path.join(sessionDir, "field_sources.json");
   const manifestPath = path.join(sessionDir, "manifest.json");
@@ -1584,12 +1789,23 @@ function analyzeSession(sessionDir) {
     });
   const unmappedReadings = [...unmappedBuffered, ...unmappedAtEnd];
 
-  // ── 22. Bug-class signature hits (Cluster 3 Item 7 surface — stub) ──
+  // ── 22. Bug-class signature hits (Cluster 3 Item 7) ──
   //
-  // Cluster 3 Item 7 ships the KNOWN_BUG_SIGNATURES registry + detector
-  // matchers. Emit an empty array stub here so the prompt's template var
-  // wiring is stable across Cluster 2 + Cluster 3.
-  const bugSignatureHits = [];
+  // Run all detectors in KNOWN_BUG_SIGNATURES against the analysis above
+  // and surface matches. Each hit becomes a pre-canned recommendation
+  // alongside whatever Claude generates downstream — raising the floor
+  // on bug-class detection for known shapes.
+  //
+  // Build it AFTER the rest of the analysis is constructed because the
+  // detectors read the other sections (dialogue_engine_transitions,
+  // focused_mode_timeline, unmapped_readings, full_transcript).
+  const bugSignatureHits = await runBugSignatureDetectors({
+    dialogue_engine_transitions: dialogueEngineTransitions,
+    focused_mode_timeline: focusedModeTimeline,
+    stage6_tool_calls: stage6ToolCalls,
+    unmapped_readings: unmappedReadings,
+    full_transcript: fullTranscriptOriginal,
+  });
 
   // ── Build analysis output ──
 
@@ -1704,4 +1920,7 @@ if (!fs.existsSync(sessionDir)) {
   process.exit(1);
 }
 
-analyzeSession(sessionDir);
+analyzeSession(sessionDir).catch((e) => {
+  console.error(`analyze-session failed: ${e?.stack ?? e}`);
+  process.exit(1);
+});

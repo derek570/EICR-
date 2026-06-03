@@ -54,6 +54,14 @@ const SCENARIO_DIR =
 const SUITE_FILTER = args.suite ? String(args.suite).split(',') : null;
 const OUTPUT_DIR = args.output ?? null;
 const VERBOSE = !!args.verbose;
+// Optimizer rewrite plan Decision 2: auto-generated probes live under
+// tests/fixtures/voice-latency-scenarios/auto-generated/<suite>/ and are
+// excluded from the default harness sweep + CI. Pass --include-auto-generated
+// to opt in (used during manual replay-verification before promoting an
+// auto-generated probe to the main regression suite via `mv`). The skip is
+// implemented as an explicit walker check below — NOT a glob expansion —
+// because the walker recursively visits every subdirectory by default.
+const INCLUDE_AUTO_GENERATED = !!args['include-auto-generated'];
 
 if (!TOKEN && !(USER && PASSWORD)) {
   console.error('Provide either --token=<JWT> or --user=...+ --password=...');
@@ -85,7 +93,25 @@ function loadScenarios() {
     if (!fs.existsSync(dir)) return;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(p);
+      if (entry.isDirectory()) {
+        // Optimizer rewrite plan Decision 2: skip the auto-generated/
+        // directory unless explicitly opted in. The optimizer's signature
+        // matchers write candidate probes under
+        // tests/fixtures/voice-latency-scenarios/auto-generated/<suite>/
+        // and we MUST NOT pick them up by default — a falsely-detected
+        // bug class auto-adding a probe that then silently masks a real
+        // regression in CI is the exact failure mode Option B (sibling
+        // directory) was designed to prevent.
+        //
+        // The skip is an explicit walker check here, NOT a glob expansion.
+        // Glob expansion would also re-include the directory on every
+        // future walker change; the explicit name match keeps the
+        // contract local and obvious.
+        if (!INCLUDE_AUTO_GENERATED && entry.name === 'auto-generated') {
+          continue;
+        }
+        walk(p);
+      }
       else if (entry.isFile() && (entry.name.endsWith('.yaml') || entry.name.endsWith('.yml'))) {
         try {
           const data = yaml.load(fs.readFileSync(p, 'utf8'));

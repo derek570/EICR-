@@ -32,6 +32,21 @@ POLL_INTERVAL=120
 PUSHOVER_USER="uexvmxgxpccjgvjzjk2qnqrnyrncgb"
 PUSHOVER_TOKEN="adcgd8wx7t6ct7fhz9dyeyt1ne3gcn"
 
+# Optimizer rewrite plan Decision 3 — notification cadence flag.
+# Default `per_session` ships today: one Pushover per session report.
+# When more testers start producing sessions and the per-session volume
+# becomes noisy, flip this to `batched_daily` (or `batched_weekly`); the
+# batching code path lives in scripts/digest_sender.sh (a dormant
+# companion LaunchAgent) and reads from a separate queue file at
+# ~/.certmate/digest_queue.json (intentionally separate from
+# optimizer_state.json — keeping queues in their own file avoids
+# teaching every existing state-write path about queueing).
+#
+# Currently only `per_session` is active. The batched paths are
+# skeletons + a documented file shape only.
+NOTIFY_MODE="${NOTIFY_MODE:-per_session}"
+DIGEST_QUEUE_FILE="${HOME}/.certmate/digest_queue.json"
+
 # Project paths
 CODEBASE="$HOME/Developer/EICR_Automation"
 SCRIPTS_DIR="$CODEBASE/scripts"
