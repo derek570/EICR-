@@ -55,6 +55,7 @@ import voiceLatencyBenchRouter from './routes/voice-latency-bench.js';
 import voiceLatencyFastTtsRouter from './routes/voice-latency-fast-tts.js';
 import voiceLatencyPlaybackAckRouter from './routes/voice-latency-playback-ack.js';
 import voiceLatencyReadinessRouter from './routes/voice-latency-readiness.js';
+import voiceLatencyUtteranceEndRouter from './routes/voice-latency-utterance-end.js';
 import { requireConsent } from './middleware/require-consent.js';
 
 // WebSocket recording server (re-exported for server.js)
@@ -264,6 +265,14 @@ app.use('/api', voiceLatencyFastTtsRouter);
 // AVAudioPlayer.didStartPlaying events here so the turn_audio_summary
 // finalizer knows when expected ACKs arrive vs. timing out at 8s.
 app.use('/api', voiceLatencyPlaybackAckRouter);
+// Voice-latency plan 2026-06-03 Tier 1.3 — utterance-end endpoint. iOS
+// POSTs Deepgram speech-final / utterance-end events here, paired with
+// the matching extraction's turnId via the iOS-minted utterance_id echoed
+// by sonnet-stream.js. Backend's role is correlation only; the §CloudWatch
+// dashboard subtracts utterance_end.monotonic_at_ms from
+// turn_audio_summary.ios_playback_ack_monotonic_at_ms to derive
+// perceived-latency on a single iOS monotonic clock.
+app.use('/api', voiceLatencyUtteranceEndRouter);
 // Loaded Barrel Phase 1.F (plan v10 §C + §G3) — readiness probe used
 // as the gate before flipping VOICE_LATENCY_LOADED_BARREL=true. Per-
 // route auth.requireAuth on the GET handler. Mounted EARLY alongside
