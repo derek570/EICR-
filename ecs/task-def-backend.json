@@ -52,7 +52,7 @@
         { "name": "SNAPSHOT_FORMAT",                    "value": "split_blocks" },
         { "name": "CIRCUIT_ORDER",                      "value": "recent_3" },
         { "name": "SONNET_EXTRACT_MODEL",               "value": "claude-haiku-4-5-20251001" },
-        { "name": "OBSERVATION_EXTRACT_MODEL",          "value": "" }
+        { "name": "OBSERVATION_EXTRACT_MODEL",          "value": "claude-sonnet-4-6" }
       ],
       "mountPoints": [],
       "volumesFrom": [],
