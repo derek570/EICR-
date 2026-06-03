@@ -75,12 +75,97 @@ const pendingFinalizers = new Map();
  */
 const pendingAckDecrements = new Map();
 
+/**
+ * Voice-latency plan 2026-06-03 Tier 1.3 — durable correlation index.
+ *
+ * Populated when runLiveMode arms the finalizer for a turn that has a
+ * non-empty `entry.fastPathCorrelationIdByTurn.get(turnId)` Set. The
+ * per-turn `fastPathCorrelationIdByTurn` Map is DELETED at end of
+ * runLiveMode (stage6-shadow-harness.js:1223), so any fast-path ACK
+ * arriving after that point cannot resolve via the session entry —
+ * this module-scope index outlives the per-turn cleanup with a 60s TTL.
+ *
+ * @type {Map<string, {sessionId: string, turnId: string, expires_at_ms: number}>}
+ */
+const correlationToTurn = new Map();
+
+/**
+ * Voice-latency plan 2026-06-03 Tier 1.3 — pre-finalizer fast-path ACK
+ * stash. `recordPlaybackAck` puts a fast_tts ACK here when neither
+ * `pendingFinalizers["${sessionId}::${turnId}"]` nor
+ * `correlationToTurn.get(correlation_id)` resolves (race window: ACK
+ * arrived before runLiveMode armed the finalizer). `startAudioFinalizer`
+ * drains it at arm time.
+ *
+ * @type {Map<string, {ack: Object, sessionId: string, expires_at_ms: number}>}
+ */
+const pendingFastPathAcksByCorrelation = new Map();
+
 /** Finalizer timeout in ms (PLAN_v8 §A Pivot 8). 8s = conservative buffer
  *  for iOS audio decode + AVAudioPlayer start + ACK POST round-trip. */
 const FINALIZER_TIMEOUT_MS = 8000;
 
 /** Stash expiry for pre-finalizer decrements. */
 const ACK_DECREMENT_TTL_MS = 60_000;
+
+/** Tier 1.3 durable correlation→turn index TTL — longer than the 8s
+ *  finalizer timeout so late fast-path ACKs still resolve. */
+const CORRELATION_TURN_TTL_MS = 60_000;
+
+/** Tier 1.3 pre-finalizer fast-path ACK stash TTL. */
+const FAST_PATH_ACK_STASH_TTL_MS = 30_000;
+
+/** Tier 1.3 lazy-sweep threshold — sweep expired entries when a Map gets
+ *  this big. Avoids per-set scan in the steady state. */
+const LAZY_SWEEP_THRESHOLD = 10_000;
+
+/**
+ * Lazy expiry sweep for the durable correlation index + the fast-path
+ * ACK stash. Called from set sites when the Map grows past
+ * LAZY_SWEEP_THRESHOLD. Plain code (no agent / no async) — sweep on a
+ * single pass.
+ */
+function lazyExpirySweep(map) {
+  if (map.size < LAZY_SWEEP_THRESHOLD) return;
+  const now = Date.now();
+  for (const [key, value] of map) {
+    if (value.expires_at_ms < now) map.delete(key);
+  }
+}
+
+/**
+ * Voice-latency plan 2026-06-03 Tier 1.3 — pick the earliest-by-monotonic
+ * ACK from the received_acks array, scoped to the process_uptime_id
+ * group with the most ACKs (handles the force-kill edge case where the
+ * newer process wins).
+ *
+ * The earliest ACK by iOS monotonic wins, NOT the first ACK to arrive
+ * at the server — network jitter / fast-path vs bundler timing can
+ * reorder server-side arrival relative to iOS-side actual playback.
+ * Perceived latency is "first audible playback", so we want the iOS-
+ * minimum monotonic stamp.
+ *
+ * Returns null if no ACK has a valid monotonic_at_ms.
+ */
+export function pickEarliestPlaybackAck(acks) {
+  if (!Array.isArray(acks) || acks.length === 0) return null;
+  /** @type {Map<string, Array<Object>>} */
+  const byProc = new Map();
+  for (const a of acks) {
+    if (!a || typeof a.monotonic_at_ms !== 'number' || !(a.monotonic_at_ms > 0)) continue;
+    const pid = a.process_uptime_id ?? 'unknown';
+    if (!byProc.has(pid)) byProc.set(pid, []);
+    byProc.get(pid).push(a);
+  }
+  if (byProc.size === 0) return null;
+  // Pick the process_uptime_id with the most ACKs. Edge case: app
+  // force-killed mid-turn — the newer process wins by count.
+  let bestGroup = null;
+  for (const group of byProc.values()) {
+    if (!bestGroup || group.length > bestGroup.length) bestGroup = group;
+  }
+  return bestGroup.reduce((a, b) => (a.monotonic_at_ms <= b.monotonic_at_ms ? a : b));
+}
 
 // ---------------------------------------------------------------------------
 // Phase 0 emission functions
@@ -197,6 +282,34 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
   // over a boolean field is undefined in some configurations.
   const eligible_for_validation = bundlerEmittedCount > 0 || attemptedFastTtsCount > 0;
 
+  // Voice-latency plan 2026-06-03 Tier 1.3 — populate the durable
+  // correlationToTurn index BEFORE entry.fastPathCorrelationIdByTurn is
+  // cleaned up by runLiveMode's finally block (stage6-shadow-harness.js
+  // :1223). Also collect any fast-path ACKs that arrived BEFORE this
+  // finalizer armed — they're stashed in pendingFastPathAcksByCorrelation
+  // by recordPlaybackAck and need draining into received_acks here.
+  /** @type {Array<Object>} */
+  const drained = [];
+  for (const cid of correlationIds) {
+    correlationToTurn.set(cid, {
+      sessionId,
+      turnId,
+      expires_at_ms: Date.now() + CORRELATION_TURN_TTL_MS,
+    });
+    const stashed = pendingFastPathAcksByCorrelation.get(cid);
+    if (stashed && stashed.sessionId === sessionId && stashed.expires_at_ms > Date.now()) {
+      // Stamp received_at_ms now (mirrors recordPlaybackAck below) so the
+      // arrival-order ordering on the row is consistent.
+      drained.push({ ...stashed.ack, received_at_ms: Date.now() });
+      pendingFastPathAcksByCorrelation.delete(cid);
+    } else if (stashed) {
+      // Expired or wrong-session — clean up.
+      pendingFastPathAcksByCorrelation.delete(cid);
+    }
+  }
+  lazyExpirySweep(correlationToTurn);
+  lazyExpirySweep(pendingFastPathAcksByCorrelation);
+
   const key = `${sessionId}::${turnId}`;
   // If we're somehow re-arming for the same turn, clear the prior timer.
   const existing = pendingFinalizers.get(key);
@@ -208,10 +321,15 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
   if (expected_acks === 0) {
     // Nothing to wait for. Emit the audio summary immediately so the
     // row exists in CloudWatch with the same join key.
+    // Voice-latency Tier 1.3 edge: drained may be non-empty if iOS posted
+    // a fast-path ACK that got 4xx-decremented before runLiveMode reached
+    // this point (correlationId in the per-turn set, but attemptedFastTts-
+    // Count already 0). Surface those ACKs honestly — downstream queries
+    // that filter expected_acks > 0 won't pick them up anyway.
     emitTurnAudioSummary({
       sessionId,
       turnId,
-      ios_playback_ack: [],
+      ios_playback_ack: drained,
       audio_finalizer_timeout_fired: false,
       expected_acks: 0,
       decrements_applied: decrementCount,
@@ -251,6 +369,39 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
     // ACK completion path (recordPlaybackAck) carries it onto the emit too.
     eligible_for_validation,
   });
+
+  // Voice-latency Tier 1.3 — drained ACKs that arrived before this
+  // finalizer was armed need to be pushed into received_acks AFTER
+  // pendingFinalizers.set so maybeFlushFinalizer can find the entry.
+  if (drained.length > 0) {
+    const pending = pendingFinalizers.get(key);
+    pending.received_acks.push(...drained);
+    maybeFlushFinalizer(key, pending, decrementCount);
+  }
+}
+
+/**
+ * Voice-latency plan 2026-06-03 Tier 1.3 — finalizer completion helper.
+ *
+ * Factored out of recordPlaybackAck so the drain-on-arm path in
+ * startAudioFinalizer can also fire the on-time emit (instead of waiting
+ * for the 8s timeout when the stashed ACKs already complete the count).
+ */
+function maybeFlushFinalizer(key, pending, decrementCountOverride) {
+  if (pending.received_acks.length >= pending.expected_acks) {
+    clearTimeout(pending.timer);
+    pendingFinalizers.delete(key);
+    emitTurnAudioSummary({
+      sessionId: pending.sessionId,
+      turnId: pending.turnId,
+      ios_playback_ack: pending.received_acks,
+      audio_finalizer_timeout_fired: false,
+      expected_acks: pending.expected_acks,
+      decrements_applied:
+        decrementCountOverride !== undefined ? decrementCountOverride : pending.decrements_applied,
+      eligible_for_validation: pending.eligible_for_validation,
+    });
+  }
 }
 
 /**
@@ -259,12 +410,26 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
  * Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: project
  * `expected_acks_eligible` as the integer 0|1 (NOT boolean) so CloudWatch
  * Logs Insights `max()` / `filter expected_acks_eligible = 1` works.
+ *
+ * Voice-latency plan 2026-06-03 Tier 1.3 backend plumbing #4: flatten the
+ * earliest-monotonic ACK (within the dominant process_uptime_id group) as
+ * top-level row fields named exactly `ios_playback_ack_monotonic_at_ms`,
+ * `ios_playback_ack_process_uptime_id`, and `ios_playback_ack_correlation_id`.
+ * Without this flattening, CloudWatch Logs Insights `latest()` CANNOT read
+ * inside the `ios_playback_ack[]` array — the §CloudWatch dashboard query
+ * would return null for the audible-first-byte column on every row. Fires
+ * at ALL THREE emitTurnAudioSummary call sites (zero-ack early-return,
+ * timeout, on-time completion).
  */
 function emitTurnAudioSummary(fields) {
   try {
+    const earliestAck = pickEarliestPlaybackAck(fields.ios_playback_ack);
     const enriched = {
       ...fields,
       expected_acks_eligible: fields.eligible_for_validation ? 1 : 0,
+      ios_playback_ack_monotonic_at_ms: earliestAck?.monotonic_at_ms ?? null,
+      ios_playback_ack_process_uptime_id: earliestAck?.process_uptime_id ?? null,
+      ios_playback_ack_correlation_id: earliestAck?.correlation_id ?? null,
     };
     delete enriched.eligible_for_validation; // internal-only; only top-level field ships
     logger.info('voice_latency.turn_audio_summary', enriched);
@@ -293,33 +458,81 @@ function emitTurnAudioSummary(fields) {
  * @param {Object} ack — `{slot, source, at_ms}` per /playback-ack body schema.
  */
 export function recordPlaybackAck(sessionId, turnId, ack) {
-  const key = `${sessionId}::${turnId}`;
-  const pending = pendingFinalizers.get(key);
   const received_at_ms = Date.now();
+  const isFastPathWithCorrelation =
+    ack?.source === 'fast_tts' &&
+    typeof ack?.correlation_id === 'string' &&
+    ack.correlation_id.length > 0;
+
+  // Voice-latency plan 2026-06-03 Tier 1.3 — fast-path correlation
+  // resolution. Fast-path ACKs may arrive at the backend BEFORE iOS knows
+  // the server-minted turnId for that turn (the regex-fast-tts contract
+  // returns audio before runLiveMode mints the turn). The plan resolves
+  // this via correlation_id → turnId index:
+  //   1. If turnId matches a pendingFinalizers entry, use that path
+  //      directly (same-turn correlation_id).
+  //   2. If source==fast_tts AND correlation_id is present AND the
+  //      durable correlationToTurn index has an entry → resolve to the
+  //      server-minted turnId. If the finalizer has fired already, the
+  //      ACK still resolves to a real turnId and lands on the late-ACK
+  //      row keyed by that turn.
+  //   3. If neither resolves AND we have correlation_id → stash in
+  //      pendingFastPathAcksByCorrelation; startAudioFinalizer drains on
+  //      arm.
+  let resolvedTurnId = turnId;
+  let pending = turnId ? pendingFinalizers.get(`${sessionId}::${turnId}`) : null;
+  let resolvedViaCorrelation = false;
+  if (!pending && isFastPathWithCorrelation) {
+    const indexed = correlationToTurn.get(ack.correlation_id);
+    if (indexed && indexed.sessionId === sessionId && indexed.expires_at_ms > received_at_ms) {
+      resolvedTurnId = indexed.turnId;
+      pending = pendingFinalizers.get(`${sessionId}::${resolvedTurnId}`);
+      // Even if pending is null (finalizer already fired), we resolved a
+      // real turnId — late-ACK row should use it.
+      resolvedViaCorrelation = true;
+    } else if (indexed) {
+      // Expired — clean up.
+      correlationToTurn.delete(ack.correlation_id);
+    }
+  }
 
   if (pending) {
     pending.received_acks.push({ ...ack, received_at_ms });
-    if (pending.received_acks.length >= pending.expected_acks) {
-      clearTimeout(pending.timer);
-      pendingFinalizers.delete(key);
-      emitTurnAudioSummary({
-        sessionId,
-        turnId,
-        ios_playback_ack: pending.received_acks,
-        audio_finalizer_timeout_fired: false,
-        expected_acks: pending.expected_acks,
-        decrements_applied: pending.decrements_applied,
-        eligible_for_validation: pending.eligible_for_validation,
-      });
-    }
+    maybeFlushFinalizer(`${sessionId}::${resolvedTurnId}`, pending);
     return;
   }
 
-  // Late-ACK path — separate immutable row.
+  // Voice-latency Tier 1.3 — pre-finalizer race: fast-path ACK arrived
+  // before runLiveMode armed AND we have NO durable correlationToTurn
+  // entry yet (resolvedViaCorrelation === false means we never matched).
+  // Stash by correlation_id; startAudioFinalizer drains on arm.
+  if (isFastPathWithCorrelation && !resolvedViaCorrelation) {
+    pendingFastPathAcksByCorrelation.set(ack.correlation_id, {
+      ack: { ...ack },
+      sessionId,
+      expires_at_ms: received_at_ms + FAST_PATH_ACK_STASH_TTL_MS,
+    });
+    lazyExpirySweep(pendingFastPathAcksByCorrelation);
+    return;
+  }
+
+  // Late-ACK path — finalizer already fired (resolvedViaCorrelation=true
+  // OR original turnId attached to a turn whose finalizer already
+  // emitted) OR an ACK lookup miss we can't otherwise route. Skip when
+  // we have no usable turnId at all (defensive: validateBody on the
+  // route guarantees we always have one for non-fast-path).
+  if (!resolvedTurnId && !resolvedViaCorrelation) {
+    return;
+  }
+  const turnIdForLog = resolvedViaCorrelation ? resolvedTurnId : turnId;
+  // Voice-latency plan 2026-06-03 Tier 1.3 backend plumbing #3: include
+  // the new optional fields (monotonic_at_ms, process_uptime_id,
+  // correlation_id) on the late-ACK row so dashboards joining late ACKs
+  // post-hoc can still compute perceived-latency.
   try {
     logger.info('voice_latency.late_playback_ack', {
       sessionId,
-      turnId,
+      turnId: turnIdForLog,
       slot_key: ack?.slot
         ? `${ack.slot.field}::${ack.slot.circuit}::${ack.slot.boardId ?? ''}`
         : null,
@@ -327,6 +540,9 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
       at_ms: ack?.at_ms ?? null,
       received_at_ms,
       lag_ms: typeof ack?.at_ms === 'number' ? Math.max(0, received_at_ms - ack.at_ms) : null,
+      monotonic_at_ms: ack?.monotonic_at_ms ?? null,
+      process_uptime_id: ack?.process_uptime_id ?? null,
+      correlation_id: ack?.correlation_id ?? null,
     });
   } catch (err) {
     logger.warn('voice_latency.turn_summary_emit_error', {
@@ -401,6 +617,8 @@ export function _resetForTests() {
   for (const [, p] of pendingFinalizers) clearTimeout(p.timer);
   pendingFinalizers.clear();
   pendingAckDecrements.clear();
+  correlationToTurn.clear();
+  pendingFastPathAcksByCorrelation.clear();
 }
 
 /**
@@ -410,5 +628,7 @@ export function _peekStateForTests() {
   return {
     pendingFinalizers: pendingFinalizers.size,
     pendingAckDecrements: pendingAckDecrements.size,
+    correlationToTurn: correlationToTurn.size,
+    pendingFastPathAcksByCorrelation: pendingFastPathAcksByCorrelation.size,
   };
 }
