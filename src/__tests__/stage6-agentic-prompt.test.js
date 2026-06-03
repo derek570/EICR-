@@ -1013,6 +1013,44 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toEqual(expect.stringContaining('missing_field'));
       // Worked example covers the upstairs sockets 0.6 repro.
       expect(block.toLowerCase()).toMatch(/upstairs sockets/);
+      // 2026-06-03 voice-correctness Fix A: the FIELD-AMBIGUITY ask
+      // must NOT enumerate field options. Session F03B590C turn 8
+      // showed the inspector replying "Its main earth." to a 5-field
+      // menu (Zs / R1+R2 / IR / polarity / number of points) that
+      // contained no board-level fields and only 5 of ~25 circuit
+      // fields. The inspector vocabulary is broader than any menu the
+      // prompt can list, so the canonical ask shape is now a single
+      // open question. Pin the instruction so a future rewrite cannot
+      // silently re-introduce the menu.
+      expect(block).toEqual(
+        expect.stringContaining('do NOT enumerate field options')
+      );
+      // Open-question shape — either the circuit-known form ("For
+      // circuit N,") or the bare-value form ("what was that") must be
+      // present. Loose so wording polish does not break it.
+      expect(block.toLowerCase()).toMatch(/what was that|for circuit n,/);
+    });
+
+    test('Bug 2 / voice-correctness 2026-06-03b Fix A — bad menu shape is banned prompt-wide', () => {
+      // Regex regression-lock against the known bad menu order. The
+      // 5-field menu had two canonical surface forms:
+      //   - "Zs, R1+R2, IR, polarity, or number of points"
+      //   - "Zs, R1 plus R2, IR, polarity, or number of points"
+      // The `R1.*IR` clause matches both (R1+R2 and R1 plus R2 both
+      // start with `R1`). Capitalisation is `/i` flag.
+      //
+      // SCOPE LIMIT: this regex catches the canonical comma-separated
+      // order shipped in the prompt before Fix A; it does NOT catch
+      // arbitrary re-orderings (e.g. "IR, polarity, Zs, R1+R2, number
+      // of points"). A future author who rearranges the menu should
+      // be flagged by the `do NOT enumerate field options` assertion
+      // above instead — that one names the rule, not a surface form.
+      // The regex is a strict improvement over a naive
+      // `.not.stringContaining(...)` because the literal form could
+      // silently pass on any of the surface variants.
+      expect(prompt).not.toMatch(
+        /Zs.*R1.*IR.*polarity.*number of points/i
+      );
     });
   });
 });
