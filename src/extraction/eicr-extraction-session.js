@@ -970,8 +970,27 @@ const _SCHEDULE_OF_INSPECTION_EICR = fssync.readFileSync(
   path.join(__dirname, '..', '..', 'config', 'prompts', 'schedule-of-inspection-bs7671-eicr.md'),
   'utf8'
 );
+// WRAG Q&As (Wiring Regulations Advisory Group, IET / Electrical Safety
+// First). 25 distilled coding-relevant entries plus a "no direct match"
+// reasoning fallback. Sits in the cached prefix so the 5-minute prompt
+// cache absorbs the read cost (~1500 tokens × $0.10/MTok = ~$0.00015 per
+// turn on Haiku cache-read; negligible). The WRAG-derived gap-fillers
+// close the BPG4 7.3 coverage holes that field-tested produced
+// over-coding (Codebreakers-style default-to-C2) and undercoded
+// edge cases (battery/PV bidirectional RCDs, EV PME, mixed switchgear
+// triggers). Reasoning fallback at the end of the file pins the
+// "default to C3 when in doubt, name the foreseeable event for C2"
+// discipline so the model doesn't fall back to source-less inference.
+const _WRAG_BS7671_EICR = fssync.readFileSync(
+  path.join(__dirname, '..', '..', 'config', 'prompts', 'wrag-bs7671-eicr.md'),
+  'utf8'
+);
 export const EICR_AGENTIC_SYSTEM_PROMPT =
-  _AGENTIC_BASE_PROMPT.trimEnd() + '\n\n' + _SCHEDULE_OF_INSPECTION_EICR;
+  _AGENTIC_BASE_PROMPT.trimEnd() +
+  '\n\n' +
+  _SCHEDULE_OF_INSPECTION_EICR.trimEnd() +
+  '\n\n' +
+  _WRAG_BS7671_EICR;
 
 export class EICRExtractionSession {
   constructor(apiKey, sessionId, certType = 'eicr', options = {}) {

@@ -50,6 +50,17 @@ const SCHEDULE_OF_INSPECTION = fssync.readFileSync(
   path.join(__dirname, '..', '..', 'config', 'prompts', 'schedule-of-inspection-bs7671-eicr.md'),
   'utf8'
 );
+// WRAG Q&As inlined into the refinement prompt so the post-extraction
+// web-search pass benefits from the same gap-fillers and reasoning
+// fallback as the live-extraction prompt. Without this the refinement
+// pass would web-search Stack Exchange / Electricians Forums for the
+// edge cases BPG4 doesn't cover — which is exactly the noise floor the
+// user asked us to avoid. The reasoning fallback at the end of the WRAG
+// file pins the C3-default + name-the-foreseeable-event discipline.
+const WRAG_BS7671_EICR = fssync.readFileSync(
+  path.join(__dirname, '..', '..', 'config', 'prompts', 'wrag-bs7671-eicr.md'),
+  'utf8'
+);
 
 export const VALID_CODES = new Set(['C1', 'C2', 'C3', 'FI']);
 
@@ -187,6 +198,8 @@ export async function refineObservation(openai, obs, context = {}) {
     '',
     '--- BS 7671 SCHEDULE OF INSPECTIONS (canonical list — pick schedule_item from here) ---',
     SCHEDULE_OF_INSPECTION,
+    '',
+    WRAG_BS7671_EICR,
   ]
     .filter(Boolean)
     .join('\n');

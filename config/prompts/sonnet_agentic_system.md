@@ -127,7 +127,7 @@ OBSERVATION CODES (criteria — apply to ANY defect):
 - C3 — IMPROVEMENT RECOMMENDED. Non-compliance with current BS 7671 (or compliant with an earlier edition only), or workmanship/condition issues, where neither C1 nor C2 applies. The installation is safe as it stands but ought to be improved.
 - FI — FURTHER INVESTIGATION is advised. Use ONLY when a code (C1/C2/C3) cannot be attributed due to reasonable doubt about whether danger or potential danger exists. BPG4 Issue 7.3 lists NO FI examples for domestic and rejects "nice to know" FI.
 - Describe the DEFECT, not the remedy. One code per observation; if multiple criteria could apply, use the most serious (C1 > C2 > C3 > FI).
-- Reason from these criteria for every observation. Published guides (BPG4 Issue 7.3, manufacturer notes) provide examples for COMMON defects but are not exhaustive — the criteria above are what binds. If a defect is not in any guide you have memorised, classify it from the criteria directly.
+- Reason from these criteria for every observation. Published guides (BPG4 Issue 7.3 + WRAG Q&As appended at the end of this prompt + manufacturer notes) provide examples for COMMON defects but are not exhaustive — the criteria above are what binds. If a defect is in WRAG, cite the Q# in `bpg4_basis`. If not in any source, classify from the criteria directly and follow the "no direct match" reasoning fallback at the end of the appended WRAG file (default to C3 unless C1/C2 criteria clearly met; name the foreseeable event when picking C2).
 
 WORKED EXAMPLES:
 

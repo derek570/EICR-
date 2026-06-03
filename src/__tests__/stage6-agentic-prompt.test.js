@@ -59,6 +59,14 @@ const SCHEDULE_PATH = path.join(
   'prompts',
   'schedule-of-inspection-bs7671-eicr.md'
 );
+// 2026-06-03 — WRAG (Wiring Regulations Advisory Group) Q&As are appended
+// after the Schedule of Inspections at module init. Same rationale as the
+// schedule append: the model needs the gap-fillers for cases BPG4 7.3 is
+// silent on, plus the no-direct-match reasoning fallback to prevent the
+// default-to-C2 over-coding tendency. Token-budget assertion below
+// combines all three (base + schedule + wrag) so the cap reflects what
+// the model actually sees.
+const WRAG_PATH = path.join(__dirname, '..', '..', 'config', 'prompts', 'wrag-bs7671-eicr.md');
 
 // STQ-05 VERBATIM sentence. Emdash character (U+2014), not double-hyphen.
 // If the author edits a single character of this sentence, the test
@@ -69,14 +77,16 @@ const STQ_05_VERBATIM =
 describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   let prompt;
   let schedule;
+  let wrag;
   let combinedPrompt;
 
   beforeAll(() => {
     prompt = fssync.readFileSync(PROMPT_PATH, 'utf8');
     schedule = fssync.readFileSync(SCHEDULE_PATH, 'utf8');
+    wrag = fssync.readFileSync(WRAG_PATH, 'utf8');
     // Mirror the concatenation done in eicr-extraction-session.js so the
     // budget check sees the same byte stream the model does.
-    combinedPrompt = prompt.trimEnd() + '\n\n' + schedule;
+    combinedPrompt = prompt.trimEnd() + '\n\n' + schedule.trimEnd() + '\n\n' + wrag;
   });
 
   // ------------------------------------------------------------------
@@ -152,8 +162,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // and the version anchor lets the model apply the right A4
       // regulation renumbering (414.3(d), 443.4.1 (a)&(c), 543.1.1.1).
       // ≈ +15 tokens; cap moved by +100 to keep ~85-token headroom.
+      // 2026-06-03 (WRAG corpus append): the 25 coding-relevant
+      // Wiring Regulations Advisory Group Q&As are now appended to the
+      // system prompt at module init alongside the Schedule of Inspections.
+      // The corpus fills the gaps where BPG4 7.3 is silent and pins the
+      // no-direct-match reasoning fallback (default to C3; name the
+      // foreseeable event for C2; never cite forum content). Empirical
+      // measurement: combined prompt jumps from ~8750 to ~11036 (+2286
+      // tokens) because each Q&A carries its own condition-trigger prose
+      // (regulation, code-per-condition, applicability test). Cap set to
+      // 11200 to keep ~150-token headroom. The agentic prompt is routed
+      // to Sonnet on observation turns via the tiered router, so the
+      // extra context is amortised against the 5-min prompt cache and
+      // adds ~$0.002 per observation turn on cache-read.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(8850);
+      expect(estimate).toBeLessThanOrEqual(11200);
     });
   });
 
@@ -724,6 +747,61 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt.toLowerCase()).not.toMatch(
         /topic-only\s+utterance.*no\s+tool\s+calls;\s+wait\.\s+values\s+follow/
       );
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 11 — 2026-06-03: WRAG corpus + reasoning fallback append.
+  //
+  // The Wiring Regulations Advisory Group Q&As (hosted by IET /
+  // Electrical Safety First) cover ~25 coding decisions where BPG4 7.3
+  // is silent or ambiguous (EV PME, mixed switchgear conditions, PV/V2X
+  // bidirectional RCDs, meter-tail >3m, lighting circuit no-CPC, etc.).
+  // These pins lock both the corpus presence AND the reasoning fallback
+  // that prevents the default-to-C2 over-coding tendency Derek flagged
+  // in NAPIT Codebreakers (and that we want to avoid in our own model
+  // when it falls back to first-principles reasoning).
+  // ------------------------------------------------------------------
+  describe('Group 11 — 2026-06-03 WRAG corpus + reasoning fallback', () => {
+    test('WRAG corpus is appended to the combined prompt the model sees', () => {
+      expect(combinedPrompt).toMatch(/WRAG \(Wiring Regulations Advisory Group\)/);
+    });
+
+    test('coding-relevant WRAG Q&As are pinned (Q2.47 EV PME, Q2.66 lighting no-CPC, Q2.63 bidirectional RCD)', () => {
+      // Sample three of the highest-value gap-fillers. If a future
+      // cleanup strips the corpus, these three break first.
+      expect(wrag).toMatch(/Q2\.47/);
+      expect(wrag).toMatch(/722\.411\.4\.1/); // EV PME reg
+      expect(wrag).toMatch(/Q2\.66/);
+      expect(wrag).toMatch(/411\.3\.1\.1/); // lighting CPC reg
+      expect(wrag).toMatch(/Q2\.63/);
+      expect(wrag).toMatch(/bidirectional/i);
+    });
+
+    test('reasoning fallback discipline is pinned (default to C3, name the foreseeable event)', () => {
+      // The two load-bearing anti-overcoding pointers. Without these
+      // the model regresses to whatever its training-data prior is —
+      // which on UK forum content trends toward over-coding C2.
+      expect(wrag).toMatch(/Default to C3/i);
+      expect(wrag).toMatch(/name the foreseeable event/i);
+      expect(wrag).toMatch(/NAPIT Codebreakers.*default.*C2/i);
+    });
+
+    test('source-authority hierarchy is named explicitly', () => {
+      // Authority order must be present so the model knows what
+      // it CAN cite and what it can't. Explicit forum-ban is
+      // load-bearing — without it the refinement pass's web search
+      // can land on Electricians Forums / Reddit and treat them as
+      // sources.
+      expect(wrag).toMatch(/Electricians Forums.*Reddit.*blogs|forum posts/i);
+      expect(wrag).toMatch(/authority hierarchy/i);
+    });
+
+    test('agentic prompt body points to WRAG corpus + reasoning fallback', () => {
+      // Without the pointer in the body the model might not realise
+      // the appended WRAG section is binding guidance.
+      expect(prompt).toMatch(/WRAG Q&As appended/);
+      expect(prompt).toMatch(/reasoning fallback/i);
     });
   });
 });
