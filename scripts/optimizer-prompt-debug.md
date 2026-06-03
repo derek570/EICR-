@@ -37,18 +37,26 @@ Analyze the root cause and output structured JSON recommendations.
    - `src/extract.js`, `src/api.js` — batch extraction.
 
    Any other file you identify as relevant.
-3. DO NOT edit files. Output recommendations as structured JSON.
-4. IMPORTANT: Keep eicr-extraction-session.js system prompt changes MINIMAL.
-5. You MUST Read any file you propose to change — old_code must match exactly.
-6. Flux keyterm notes: the active STT model is Deepgram Flux, not Nova-3. Keyterms are inclusion-priority vocabulary hints — the `:boost` suffix is ignored. Session-start keyterms are silently truncated by buildFluxURL at DEEPGRAM_MAX_URL_LENGTH=2000 chars (~95 keyterms practical ceiling); focused-mode Configure keyterms are hard-capped at 100 entries TOTAL with FocusedAnswerKeyterms.all (~58 essentials) prepended first. No 450-token budget — that was Nova-3 only.
-7. Output ONLY a valid JSON object as the LAST thing in your response:
+3. Route the fix via this decision tree — the right shape of recommendation depends on which path owns the field, NOT always on the regex layer:
+   a. **Protective-device / ring-continuity / IR field** (OCPD, RCD, RCBO, ring continuity, insulation resistance — L-L, L-E, R1, R2, Rn) → `dialogue_engine_schema_tighten` (capture shape) / `dialogue_engine_schema_extend` (new slot/derivation) / `dispatcher_validator` (off-enum or out-of-range value reached the bundler).
+   b. **Flux mis-hear of a single technical word** (cooker → cucumber, RCD → RCT, Zs → Zen-s) → `flux_configure_keyterms_per_slot` (ADVISORY ONLY — per-slot map infrastructure doesn't exist yet, see schema notes) → `bug_fix` in NumberNormaliser → `keyword_boost` session-level (last resort).
+   c. **Value out-of-enum / out-of-range** → `dispatcher_validator` — extend the validator in `stage6-dispatch-validation.js`.
+   d. **Canonical name leaked to iOS unmapped** (look for unmapped_field_buffered / unmapped_readings_at_end in iOS debug logs) → `field_name_correction_add` — add to `FIELD_CORRECTIONS` in `field-name-corrections.js`.
+   e. **Board-level / installation field** (Ze, PFC, supply MCB rating, address, postcode, client_*) → `regex_improvement` / `number_normaliser` / `keyword_boost` / `keyword_removal` (pre-LLM-gate path).
+   f. **Sonnet didn't see the value at all** → `sonnet_prompt_addition` (justify token cost) / `sonnet_prompt_trim` (if Sonnet is being asked for a field regex already handles).
+   g. **None of the above** → `bug_fix`.
+4. DO NOT edit files. Output recommendations as structured JSON.
+5. IMPORTANT: Keep eicr-extraction-session.js system prompt changes MINIMAL.
+6. You MUST Read any file you propose to change — old_code must match exactly.
+7. Flux keyterm notes: the active STT model is Deepgram Flux, not Nova-3. Keyterms are inclusion-priority vocabulary hints — the `:boost` suffix is ignored. Session-start keyterms are silently truncated by buildFluxURL at DEEPGRAM_MAX_URL_LENGTH=2000 chars (~95 keyterms practical ceiling); focused-mode Configure keyterms are hard-capped at 100 entries TOTAL with FocusedAnswerKeyterms.all (~58 essentials) prepended first. No 450-token budget — that was Nova-3 only.
+8. Output ONLY a valid JSON object as the LAST thing in your response:
 {
   "recommendations": [
     {
       "title": "Short description of the fix",
       "description": "Why this change is needed",
       "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user. 1-2 sentences max.",
-      "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix",
+      "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix|dialogue_engine_schema_tighten|dialogue_engine_schema_extend|dispatcher_validator|flux_configure_keyterms_per_slot|flux_eot_threshold|loaded_barrel_speculator_hint|field_name_correction_add|harness_probe",
       "implementation_status": "implementable",
       "file": "/absolute/path/to/file",
       "old_code": "exact string to find in file",

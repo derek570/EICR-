@@ -159,6 +159,15 @@ function analyzeSession(sessionDir) {
   const jobSnapshot = fs.existsSync(jobSnapshotPath) ? loadJSON(jobSnapshotPath) : null;
   const costSummary = fs.existsSync(costSummaryPath) ? loadJSON(costSummaryPath) : null;
 
+  // Cluster 2 Item 6 — backend_events.jsonl sidecar. Written at session-close
+  // by src/extraction/sonnet-stream.js (backend prereq 0). Carries the
+  // stage6.*_script_* engine events + stage6_tool_call rows that iOS's
+  // debug_log.jsonl doesn't see. Absent on sessions recorded before that
+  // backend PR ships — fall back to an empty array so dialogue_engine_transitions
+  // / stage6_tool_calls degrade gracefully rather than throwing.
+  const backendEventsPath = path.join(sessionDir, "backend_events.jsonl");
+  const backendEvents = fs.existsSync(backendEventsPath) ? parseJSONL(backendEventsPath) : [];
+
   // ── 1. Build field report ──
 
   // Group field events by key
@@ -1437,6 +1446,151 @@ function analyzeSession(sessionDir) {
         : null,
   };
 
+  // ── 18. Focused-mode timeline (Cluster 2 Item 6) ──
+  //
+  // Aggregates iOS `focused_mode_enter` / `focused_mode_enter_result` /
+  // `focused_mode_exit` events into one row per ask entry. `slot_field` is
+  // null until the iOS telemetry payload extension lands (DeepgramRecording
+  // ViewModel.swift adds `field` to these payloads); pre-extension sessions
+  // produce non-null toolCallId + keyterm_count but null slot_field, which
+  // is the correct behaviour for historical replay.
+  const focusedModeEnters = events.filter((e) => e.event === "focused_mode_enter");
+  const focusedModeEnterResults = events.filter((e) => e.event === "focused_mode_enter_result");
+  const focusedModeExits = events.filter((e) => e.event === "focused_mode_exit");
+  const focusedModeTimeline = focusedModeEnters.map((enter) => {
+    const tcid = enter.data?.toolCallId ?? null;
+    const enterTs = enter.timestamp ?? null;
+    const result = tcid
+      ? focusedModeEnterResults.find((r) => r.data?.toolCallId === tcid)
+      : null;
+    // Match exit by toolCallId AND timestamp > enter — guards against
+    // multiple enter/exit cycles for the same toolCallId in one session
+    // (focused-mode resets) selecting the wrong exit.
+    const exit = tcid && enterTs != null
+      ? focusedModeExits.find((x) => x.data?.toolCallId === tcid && (x.timestamp ?? 0) > enterTs)
+      : null;
+    return {
+      at_ms: enterTs,
+      tool_call_id: tcid,
+      slot_field: enter.data?.field ?? null,
+      slot_circuit: enter.data?.circuit ?? null,
+      keyterm_count: enter.data?.sessionKeytermCount ?? null,
+      enter_elapsed_ms:
+        result && enterTs != null && result.timestamp != null
+          ? result.timestamp - enterTs
+          : null,
+      exit_reason: exit?.data?.reason ?? null,
+    };
+  });
+
+  // ── 19. Dialogue-engine transitions (Cluster 2 Item 6) ──
+  //
+  // Pulls `stage6.{schema}_script*` rows from BACKEND events (sidecar) and
+  // any iOS-side instances. Each entry preserves data.values verbatim so
+  // Cluster 3 Item 7's ir_bare_bridge_single_digit detector can match on
+  // raw schema field names (e.g. ir_live_live_mohm, NOT display labels).
+  //
+  // The 5 prefixes match the schema files' `logEventPrefix` values:
+  //   stage6.ocpd_script             (src/extraction/dialogue-engine/schemas/ocpd.js)
+  //   stage6.rcd_script              (src/extraction/dialogue-engine/schemas/rcd.js)
+  //   stage6.rcbo_script             (src/extraction/dialogue-engine/schemas/rcbo.js)
+  //   stage6.ring_continuity_script  (src/extraction/dialogue-engine/schemas/ring-continuity.js)
+  //   stage6.insulation_resistance_script  (src/extraction/dialogue-engine/schemas/insulation-resistance.js)
+  // Any `_entered` / `_completed` / `_cancelled` / `_topic_switch` /
+  // `_disambiguation_*` / `_entered_from_sonnet_write` suffix is captured.
+  const SCHEMA_PREFIXES = [
+    { prefix: "stage6.ocpd_script", schema: "ocpd" },
+    { prefix: "stage6.rcd_script", schema: "rcd" },
+    { prefix: "stage6.rcbo_script", schema: "rcbo" },
+    { prefix: "stage6.ring_continuity_script", schema: "ring_continuity" },
+    { prefix: "stage6.insulation_resistance_script", schema: "insulation_resistance" },
+  ];
+  const dialogueEngineSourceEvents = [...events, ...backendEvents];
+  const dialogueEngineTransitions = dialogueEngineSourceEvents
+    .map((e) => {
+      if (typeof e?.event !== "string") return null;
+      const match = SCHEMA_PREFIXES.find((p) => e.event.startsWith(p.prefix + "_") || e.event === p.prefix);
+      if (!match) return null;
+      // Suffix is everything after the prefix's trailing underscore. For
+      // a bare `stage6.{schema}_script` (no suffix at all) we emit ''.
+      const rest = e.event.slice(match.prefix.length);
+      const suffix = rest.startsWith("_") ? rest.slice(1) : rest;
+      return {
+        at_ms: e.timestamp ?? null,
+        schema: match.schema,
+        event: suffix,
+        circuit_ref: e.data?.circuit_ref ?? e.data?.circuit ?? null,
+        slot: e.data?.slot ?? null,
+        values_snapshot: e.data?.values ?? null,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.at_ms ?? 0) - (b.at_ms ?? 0));
+
+  // ── 20. Stage 6 tool call rows (Cluster 2 Item 6) ──
+  //
+  // Per-call rows preserved so Cluster 3 Item 7's
+  // value_out_of_enum_no_validator detector can inspect outcome /
+  // validation_error / input_summary. The aggregated tool_call_traffic
+  // summary at section 14b stays unchanged — it's a per-tool histogram,
+  // not a per-call detail.
+  //
+  // input_summary today carries {field, circuit, reason} per the locked
+  // PII guard at stage6-dispatchers-reading.test.js:140. The optimizer
+  // plan's value_out_of_enum_no_validator detector originally wanted
+  // input_summary.value, but the PII guard blocks that — the detector
+  // uses the alternative correlation path (per-turn write patches or
+  // iOS field-set events) per the plan's fallback clause.
+  const stage6ToolCalls = dialogueEngineSourceEvents
+    .filter((e) => e?.event === "stage6_tool_call")
+    .map((e) => ({
+      at_ms: e.timestamp ?? null,
+      tool: e.data?.tool ?? null,
+      outcome: e.data?.outcome ?? null,
+      validation_error: e.data?.validation_error ?? null,
+      input_summary: e.data?.input_summary ?? {},
+    }));
+
+  // ── 21. Unmapped readings (Cluster 2 Item 6 — input for Cluster 3 Item 7) ──
+  //
+  // Aggregates two iOS-side events that signal a Sonnet-emitted field name
+  // landed on iOS unmapped:
+  //   - unmapped_field_buffered  (DeepgramRecordingViewModel.swift:5759)
+  //     — fires per field as it's received and can't be routed
+  //   - unmapped_readings_at_end (DeepgramRecordingViewModel.swift:1614)
+  //     — emitted once on session-close with the cumulative list
+  //
+  // Both come from iOS debug_log.jsonl — no backend sidecar dependency,
+  // so this section is populated on all sessions (including pre-prereq-0).
+  const unmappedBuffered = events
+    .filter((e) => e.event === "unmapped_field_buffered")
+    .map((e) => ({
+      at_ms: e.timestamp ?? null,
+      field: e.data?.field ?? null,
+      value: e.data?.value ?? null,
+      source: "field_buffered",
+    }));
+  const unmappedAtEnd = events
+    .filter((e) => e.event === "unmapped_readings_at_end")
+    .flatMap((e) => {
+      const readings = e.data?.readings ?? e.data?.unmapped ?? [];
+      if (!Array.isArray(readings)) return [];
+      return readings.map((r) => ({
+        at_ms: e.timestamp ?? null,
+        field: r?.field ?? null,
+        value: r?.value ?? null,
+        source: "end_of_session",
+      }));
+    });
+  const unmappedReadings = [...unmappedBuffered, ...unmappedAtEnd];
+
+  // ── 22. Bug-class signature hits (Cluster 3 Item 7 surface — stub) ──
+  //
+  // Cluster 3 Item 7 ships the KNOWN_BUG_SIGNATURES registry + detector
+  // matchers. Emit an empty array stub here so the prompt's template var
+  // wiring is stable across Cluster 2 + Cluster 3.
+  const bugSignatureHits = [];
+
   // ── Build analysis output ──
 
   const analysis = {
@@ -1474,6 +1628,17 @@ function analyzeSession(sessionDir) {
     tts_discarded: ttsDiscarded,
     job_snapshot: jobSnapshot,
     cost_summary: costSummary,
+    // Cluster 2 Item 6 — dialogue-engine + focused-mode telemetry sections.
+    // focused_mode_timeline + unmapped_readings come from iOS debug_log.jsonl
+    // (populated on all sessions). dialogue_engine_transitions + stage6_tool_calls
+    // depend on the backend_events.jsonl sidecar (prereq 0); they degrade to
+    // empty arrays when the sidecar is absent. bug_signature_hits is a stub
+    // populated by Cluster 3 Item 7's registry once it lands.
+    focused_mode_timeline: focusedModeTimeline,
+    dialogue_engine_transitions: dialogueEngineTransitions,
+    stage6_tool_calls: stage6ToolCalls,
+    unmapped_readings: unmappedReadings,
+    bug_signature_hits: bugSignatureHits,
   };
 
   // Write output

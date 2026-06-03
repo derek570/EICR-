@@ -69,15 +69,66 @@ function formatTokens(n) {
 
 // ── Category colors for recommendations ──
 
+// CATEGORY_COLORS is the single source of truth for category display labels.
+// Each entry's `.label` is the rendered badge text AND matches the short label
+// used by the Pushover REC_CAT switch in scripts/session-optimizer.sh
+// (~line 1302). Keep them in lockstep — a divergence between the two would
+// silently mis-label notifications vs report badges.
+//
+// Schema split (Cluster 2 Item 4): the 8 categories added in this PR include
+// three "advisory" categories that do NOT carry old_code/new_code:
+//   - flux_configure_keyterms_per_slot  → implementation_status: awaiting_infrastructure
+//   - flux_eot_threshold                → implementation_status: awaiting_infrastructure
+//   - harness_probe                     → implementation_status: probe_only
+// The renderer below filters by implementation_status so accept/reject
+// controls only appear on `implementable` recommendations.
 const CATEGORY_COLORS = {
+  // Original 8 categories (Cluster 1)
   regex_improvement: { bg: "#22c55e", label: "Regex" },
   sonnet_prompt_trim: { bg: "#a855f7", label: "Sonnet Trim" },
   sonnet_prompt_addition: { bg: "#3b82f6", label: "Sonnet Addition" },
   number_normaliser: { bg: "#eab308", label: "Number Normaliser" },
   keyword_boost: { bg: "#f97316", label: "Keyword Boost" },
+  keyword_removal: { bg: "#ea580c", label: "Keyword Removal" }, // Baseline fix: was missing.
   config_change: { bg: "#6b7280", label: "Config Change" },
   bug_fix: { bg: "#ef4444", label: "Bug Fix" },
+  // 8 new categories (Cluster 2 Item 4) — short labels (≤12 chars) chosen
+  // to fit Pushover notification column without truncation. Must match
+  // the REC_CAT switch in session-optimizer.sh exactly.
+  dialogue_engine_schema_tighten: { bg: "#0d9488", label: "DE Tighten" },
+  dialogue_engine_schema_extend: { bg: "#06b6d4", label: "DE Extend" },
+  dispatcher_validator: { bg: "#475569", label: "Validator" },
+  flux_configure_keyterms_per_slot: { bg: "#db2777", label: "Per-Slot KT" },
+  flux_eot_threshold: { bg: "#6366f1", label: "EOT Thresh" },
+  loaded_barrel_speculator_hint: { bg: "#84cc16", label: "Speculator" },
+  field_name_correction_add: { bg: "#14b8a6", label: "Field Map" },
+  harness_probe: { bg: "#d97706", label: "Probe" },
 };
+
+// Categories with `implementation_status: awaiting_infrastructure` — old_code
+// and new_code are FORBIDDEN; renderer must hide accept controls.
+const ADVISORY_AWAITING_INFRA_CATEGORIES = new Set([
+  "flux_configure_keyterms_per_slot",
+  "flux_eot_threshold",
+]);
+
+// Categories with `implementation_status: probe_only` — describes a
+// regression-test scenario, not a code change. Renders in its own section.
+const PROBE_ONLY_CATEGORIES = new Set(["harness_probe"]);
+
+// Predicate: is this recommendation a non-implementable advisory entry?
+// Centralised here so the renderer + acceptSelected() filter cannot drift.
+function isAdvisoryRecommendation(rec) {
+  if (!rec) return false;
+  if (rec.implementation_status === "awaiting_infrastructure") return true;
+  if (rec.implementation_status === "probe_only") return true;
+  // Belt-and-braces: even if implementation_status is missing, treat known
+  // advisory categories as advisory (e.g. if a future prompt edit drops the
+  // field by accident).
+  if (ADVISORY_AWAITING_INFRA_CATEGORIES.has(rec.category)) return true;
+  if (PROBE_ONLY_CATEGORIES.has(rec.category)) return true;
+  return false;
+}
 
 // ── Source colors for field attribution ──
 
@@ -441,15 +492,16 @@ function buildTokenImpactBadge(rec) {
   return `<span class="token-badge ${cls}">${sign}${val} tokens</span>`;
 }
 
-function buildRecommendationCards(recs) {
-  if (!recs.length) {
-    return `<div class="card"><p class="muted">No code changes recommended for this session.</p></div>`;
-  }
-  return recs.map((rec, i) => `
-    <div class="card rec-card" id="rec-${i}" onclick="toggleRec(event, ${i})">
+// Build a single implementable recommendation card with accept/reject controls.
+// `globalIdx` is the index into the ORIGINAL recommendations array — used as the
+// checkbox value so `acceptSelected()` can look up the right entry regardless
+// of how the recs were partitioned for rendering.
+function buildImplementableCard(rec, globalIdx) {
+  return `
+    <div class="card rec-card" id="rec-${globalIdx}" onclick="toggleRec(event, ${globalIdx})">
       <div class="card-header">
         <label class="checkbox-label" onclick="event.stopPropagation()">
-          <input type="checkbox" name="accepted" value="${i}" checked>
+          <input type="checkbox" name="accepted" value="${globalIdx}" checked>
           <span class="rec-title">${escapeHtml(rec.title)}</span>
         </label>
         ${buildCategoryBadge(rec.category)}
@@ -466,7 +518,76 @@ function buildRecommendationCards(recs) {
         </div>
       </details>
     </div>
-  `).join("\n");
+  `;
+}
+
+// Advisory cards (awaiting_infrastructure / probe_only) — no checkbox, no
+// diff view, no accept controls. The whole point is that the consumer
+// infrastructure doesn't exist yet (or this is a regression probe, not a
+// code change), so the user can't "accept" a fabricated diff.
+function buildAdvisoryCard(rec, statusLabel) {
+  const metadataPretty = rec.metadata
+    ? `<pre class="advisory-metadata">${escapeHtml(JSON.stringify(rec.metadata, null, 2))}</pre>`
+    : "";
+  const probePath = rec.generated_probe_path
+    ? `<div class="advisory-probe-path">Generated probe: <code>${escapeHtml(rec.generated_probe_path)}</code></div>`
+    : "";
+  return `
+    <div class="card rec-card rec-advisory">
+      <div class="card-header">
+        <span class="rec-title">${escapeHtml(rec.title)}</span>
+        ${buildCategoryBadge(rec.category)}
+        <span class="advisory-tag">${escapeHtml(statusLabel)}</span>
+      </div>
+      ${rec.explanation ? `<div class="rec-explanation">${escapeHtml(rec.explanation)}</div>` : ""}
+      <p class="rec-desc">${escapeHtml(rec.description)}</p>
+      ${metadataPretty}
+      ${probePath}
+    </div>
+  `;
+}
+
+function buildRecommendationCards(recs) {
+  if (!recs.length) {
+    return `<div class="card"><p class="muted">No code changes recommended for this session.</p></div>`;
+  }
+
+  // Partition by implementation_status — implementable goes through the
+  // accept/reject flow; advisory categories render in their own sections
+  // with no accept controls. Pre-flight check: even if Claude forgets the
+  // implementation_status field, known advisory categories are caught by
+  // isAdvisoryRecommendation()'s category-based fallback.
+  const implementable = [];
+  const awaitingInfra = [];
+  const probeOnly = [];
+  recs.forEach((rec, i) => {
+    if (PROBE_ONLY_CATEGORIES.has(rec.category) || rec.implementation_status === "probe_only") {
+      probeOnly.push({ rec, i });
+    } else if (
+      ADVISORY_AWAITING_INFRA_CATEGORIES.has(rec.category) ||
+      rec.implementation_status === "awaiting_infrastructure"
+    ) {
+      awaitingInfra.push({ rec, i });
+    } else {
+      implementable.push({ rec, i });
+    }
+  });
+
+  let html = "";
+  if (implementable.length) {
+    html += implementable.map(({ rec, i }) => buildImplementableCard(rec, i)).join("\n");
+  }
+  if (awaitingInfra.length) {
+    html += `<h3 class="advisory-section-header">Advisory — awaiting infrastructure</h3>\n`;
+    html += `<p class="advisory-section-blurb">These categories describe fixes whose consumer infrastructure isn't yet built (e.g. per-slot Flux Configure keyterm maps). No code change can be applied today; they're surfaced as guidance for future work.</p>\n`;
+    html += awaitingInfra.map(({ rec }) => buildAdvisoryCard(rec, "Awaiting infrastructure")).join("\n");
+  }
+  if (probeOnly.length) {
+    html += `<h3 class="advisory-section-header">Suggested regression probes</h3>\n`;
+    html += `<p class="advisory-section-blurb">Bug-class scenarios worth pinning with a harness probe. Promotion to the main regression suite (<code>tests/fixtures/voice-latency-scenarios/</code>) is manual after replay-verification.</p>\n`;
+    html += probeOnly.map(({ rec }) => buildAdvisoryCard(rec, "Probe-only")).join("\n");
+  }
+  return html;
 }
 
 // ── Section 6: VAD Sleep/Wake Analysis ──
@@ -952,6 +1073,13 @@ const html = `<!DOCTYPE html>
     .rec-card { cursor: pointer; -webkit-tap-highlight-color: rgba(46,204,113,0.2); transition: border-color 0.15s; }
     .rec-card:active { border-color: #2ecc71; }
     .rec-card.deselected { opacity: 0.5; }
+    .rec-card.rec-advisory { cursor: default; border-left: 3px solid #a16207; background: rgba(161,98,7,0.05); }
+    .rec-card.rec-advisory:active { border-color: inherit; }
+    .advisory-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #a16207; color: #fff; margin-left: 8px; }
+    .advisory-section-header { font-size: 18px; color: #d97706; margin: 24px 0 8px 0; }
+    .advisory-section-blurb { font-size: 13px; color: #aaa; margin-bottom: 12px; line-height: 1.5; }
+    .advisory-metadata { font-size: 12px; color: #d0d0d0; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 4px; margin: 8px 0; overflow-x: auto; }
+    .advisory-probe-path { font-size: 12px; color: #84cc16; margin-top: 8px; }
     .category-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; color: #fff; margin-left: 6px; white-space: nowrap; vertical-align: middle; }
     .token-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 4px; white-space: nowrap; vertical-align: middle; }
     .token-plus { background: #ef444422; border: 1px solid #ef4444; color: #ef4444; }
@@ -1161,6 +1289,15 @@ const html = `<!DOCTYPE html>
   <script>
     var REPORT_ID = "${reportId}";
     var API_BASE = "";
+    // Indices into the original recommendations array that are advisory
+    // (awaiting_infrastructure or probe_only). acceptSelected() filters
+    // these out defensively — they don't have checkboxes in the DOM so
+    // they can't be selected via the UI, but a direct fetch / URL
+    // manipulation could still submit them. Better to no-op here than
+    // ship a fabricated diff downstream.
+    var ADVISORY_INDICES = ${JSON.stringify(
+      recommendations.map((r, i) => (isAdvisoryRecommendation(r) ? i : -1)).filter((i) => i >= 0)
+    )};
 
     // ── Section collapsing ──
 
@@ -1371,6 +1508,14 @@ const html = `<!DOCTYPE html>
         var checkboxes = document.querySelectorAll('input[name="accepted"]:checked');
         var checked = [];
         for (var i = 0; i < checkboxes.length; i++) { checked.push(parseInt(checkboxes[i].value)); }
+        // Defence in depth: silently drop any advisory indices that somehow
+        // made it into the submission (advisory cards have no checkbox in
+        // the DOM, but a direct fetch / URL manipulation could still pass
+        // one through). The server-side accept handler is unaware of the
+        // advisory split; this is the only client-side gate.
+        if (ADVISORY_INDICES.length > 0) {
+          checked = checked.filter(function(idx) { return ADVISORY_INDICES.indexOf(idx) === -1; });
+        }
         if (checked.length === 0) { showResult("No recommendations selected", false); return; }
         disableButtons();
         showResult("Applying " + checked.length + " change(s)...", true);
