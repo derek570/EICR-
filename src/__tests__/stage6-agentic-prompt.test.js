@@ -452,10 +452,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(invalidBoard).toEqual([]);
 
       // Now scan every `field: "X"` outside the record_board_reading spans
-      // and require circuit-fields enum membership.
+      // and require circuit-fields enum membership. Word-boundary
+      // negative-lookbehind keeps `context_field:"none"` (the ask_user
+      // sentinel used in the FIELD-AMBIGUITY worked example) out of the
+      // record_reading audit — `none` is a legal context_field value,
+      // NOT a record_reading field, and is covered by the separate
+      // context_field enum test below.
       const isInsideBoardSpan = (idx) =>
         boardSpans.some(([start, end]) => idx >= start && idx < end);
-      const allRe = /field:\s*"([a-z_][a-z0-9_]*)"/g;
+      const allRe = /(?<![a-z_])field:\s*"([a-z_][a-z0-9_]*)"/g;
       const circuitClaims = [];
       while ((m = allRe.exec(prompt)) !== null) {
         if (!isInsideBoardSpan(m.index)) circuitClaims.push(m[1]);
@@ -680,16 +685,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     rewritten to "is advised" with anti-overuse pointer to BPG4 7.3
       //     §6, plus the Issue 7.1 → 7.3 reference change. ≈ +23 tokens;
       //     cap moved by +100 to keep ~75-token headroom.
-      //   - 7000 (observation-correctness sprint 2026-06-03: three edits
-      //     touched this file — Bug 1a ONE INTERROGATIVE PER ASK rule body
-      //     replacing the bare RULE 5 title (~80 tokens), Bug 1c ASK_USER
-      //     REASONS subsection after ORPHANED VALUES (~125 tokens), Bug 2
-      //     FIELD-AMBIGUITY RULE + worked example (~250 tokens). Total
-      //     ~455 tokens; cap moved by +600 to keep ~145-token headroom.
-      //     Bug 1a's WRAG edits live in wrag-bs7671-eicr.md and only
-      //     contribute to the Group 1 combined cap.
+      //   - 7000 (observation-correctness sprint 2026-06-03 first pass:
+      //     three edits touched this file — Bug 1a ONE INTERROGATIVE PER
+      //     ASK rule body replacing the bare RULE 5 title (~80 tokens),
+      //     Bug 1c ASK_USER REASONS subsection after ORPHANED VALUES
+      //     (~125 tokens), Bug 2 FIELD-AMBIGUITY RULE + worked example
+      //     (~250 tokens). Plan estimated ~455 tokens; measured 7238
+      //     after all four bugs (~853 tokens above the pre-sprint
+      //     baseline of 6385) because the FIELD-AMBIGUITY worked example
+      //     and the per-bullet ASK_USER REASONS lines were larger than
+      //     the per-bullet estimate captured.
+      //   - 7500 (observation-correctness sprint 2026-06-03 re-measure):
+      //     bumped per the plan's mandatory verification step. Leaves
+      //     ~262-token headroom above the measured 7238 estimate.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(7000);
+      expect(estimate).toBeLessThanOrEqual(7500);
     });
   });
 
@@ -977,7 +987,32 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toMatch(/DO NOT ASK/);
     });
 
-    // Bug 2 (FIELD-AMBIGUITY RULE) prompt-coverage lands in its own
-    // atomic commit.
+    test('Bug 2 — FIELD-AMBIGUITY RULE section exists with the no-magnitude-anchor invariant', () => {
+      // Pre-fix Haiku 4.5 happily committed `record_reading` for bare
+      // values when the field could be inferred from value range alone
+      // (session 928889F3: "upstairs sockets number 0.6" → r1_r2_ohm).
+      // The verbatim sentence below is the prompt's invariant; the
+      // dispatcher metric mirrors it. If the wording drifts the model
+      // may interpret the rule more permissively — keep both ends
+      // aligned.
+      const idx = prompt.search(/FIELD-AMBIGUITY RULE/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next sibling block (RING CONTINUITY
+      // CARRYOVER). indexOf-from-idx avoids matching the earlier
+      // CIRCUIT ROUTING cross-reference at line ~50.
+      const end = prompt.indexOf('RING CONTINUITY CARRYOVER', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      expect(block).toEqual(
+        expect.stringContaining(
+          'Do NOT treat numeric magnitude alone as a field anchor'
+        )
+      );
+      // ask_user reason cited is missing_field — the new enum value
+      // that Bug 1c widened to make legal.
+      expect(block).toEqual(expect.stringContaining('missing_field'));
+      // Worked example covers the upstairs sockets 0.6 repro.
+      expect(block.toLowerCase()).toMatch(/upstairs sockets/);
+    });
   });
 });

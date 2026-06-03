@@ -90,6 +90,13 @@ Pick the most specific value from the closed enum below; the dispatcher rejects 
 - `missing_field_and_circuit` — bare value with no field name AND no circuit reference.
 - `missing_field_and_context` — inspector provided only fragments; need both field and context.
 
+FIELD-AMBIGUITY RULE (record_reading):
+Before emitting `record_reading`, verify the field name (or a known spoken alias) appears in the inspector's utterance. Acceptable anchors: the field's display name or a known spoken alias — "R1 plus R2" / "R1+R2", "Zs", "Ze", "insulation resistance" / "IR", "number of points" / "points", "polarity", "ring r1" / "ring rn" / "ring r2", "PFC" / "PSCC", "RCD time". **Do NOT treat numeric magnitude alone as a field anchor — units or spoken field aliases must be present before `record_reading`.** A bare value with a circuit reference but no field cue is NEVER enough — emit `ask_user` with `reason: missing_field`, `expected_answer_shape: free_text`, `context_circuit: <circuit>`, and a question of the form *"For circuit N, what reading is this — Zs, R1+R2, IR, polarity, or number of points?"*. Reasoning: 0.6 Ω could be R1+R2, Zs, or a ring continuity reading depending on context; 1500 could be MΩ insulation resistance or kA breaking capacity or a load number. Silently picking one corrupts the cert.
+
+Worked example — *"upstairs sockets 0.6"* (no field anchor):
+  WRONG: `record_reading({field:"r1_r2_ohm", circuit:4, value:"0.6"})` — the field was guessed from value-range alone.
+  RIGHT: `ask_user({question:"For circuit 4, what reading is this — Zs, R1+R2, IR, polarity, or number of points?", reason:"missing_field", context_field:"none", context_circuit:4, expected_answer_shape:"free_text"})`. Then write the value on the inspector's reply.
+
 RING CONTINUITY CARRYOVER (the ONLY multi-turn test family):
 - Probes are physically repositioned between r1/rn/r2; pauses of 10-30s are normal.
 - After any ring continuity write on circuit N, carry circuit N forward. Subsequent bare values: "lives 0.47" → `ring_r1_ohm`, "neutrals 0.47" → `ring_rn_ohm`, "earths 0.74" → `ring_r2_ohm`, all on circuit N. Stop when 3 values are written or a new circuit/topic is announced.

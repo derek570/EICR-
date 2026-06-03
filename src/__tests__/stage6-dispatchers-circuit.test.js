@@ -495,3 +495,226 @@ describe('dispatchRenameCircuit', () => {
     expect(writes.circuitOps).toHaveLength(0);
   });
 });
+
+// -----------------------------------------------------------------------------
+// 2026-06-03 Bug 2 sprint — `stage6_reading_field_guessed_from_value` metric.
+//
+// Fires when dispatchRecordReading accepts a write whose `field` cannot be
+// anchored in `session.activeTurnTranscript` by either a normalised display
+// label or a known spoken alias. Warn-only on first pass — observability,
+// not rejection. Filter logger.info calls by event name (the dispatcher
+// also emits a separate `stage6_tool_call` row on every dispatch, so total
+// call-count assertions would be brittle).
+// -----------------------------------------------------------------------------
+
+function guessedRows(logger) {
+  return logger.info.mock.calls
+    .filter((c) => c[0] === 'stage6_reading_field_guessed_from_value')
+    .map((c) => c[1]);
+}
+
+describe('dispatchRecordReading — Bug 2 field-anchor metric', () => {
+  test('bare-value utterance: metric fires once with expected payload (928889F3 repro)', async () => {
+    const session = {
+      sessionId: 's-bug2',
+      stateSnapshot: { circuits: { 4: {} } },
+      extractedObservations: [],
+      activeTurnTranscript: 'upstairs sockets number 0.6',
+    };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_bug2',
+        name: 'record_reading',
+        input: {
+          field: 'r1_r2_ohm',
+          circuit: 4,
+          value: '0.6',
+          confidence: 0.85,
+          source_turn_id: 'turn-1',
+        },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    const rows = guessedRows(logger);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sessionId: 's-bug2',
+      field: 'r1_r2_ohm',
+      circuit: 4,
+      value: '0.6',
+      transcript_preview: 'upstairs sockets number 0.6',
+      phase: 6,
+    });
+    expect(typeof rows[0].emittedAt).toBe('string');
+  });
+
+  test('anchored utterance (R1 plus R2): metric does NOT fire', async () => {
+    // Same input as the bare-value test — the ONLY varying axis is the
+    // transcript. Proves the helper anchors `r1_r2_ohm` via the
+    // "r1 plus r2" alias and the metric is suppressed.
+    const session = {
+      sessionId: 's-bug2-anchored',
+      stateSnapshot: { circuits: { 4: {} } },
+      extractedObservations: [],
+      activeTurnTranscript: 'R1 plus R2 on circuit 4 is 0.6',
+    };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_bug2_ok',
+        name: 'record_reading',
+        input: {
+          field: 'r1_r2_ohm',
+          circuit: 4,
+          value: '0.6',
+          confidence: 0.85,
+          source_turn_id: 'turn-1',
+        },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(guessedRows(logger)).toHaveLength(0);
+  });
+
+  test('Zs anchor does NOT silently anchor r1_r2_ohm — metric fires (cross-field anchor)', async () => {
+    // The plan note: "Zs on circuit 4 is 0.6" with input.field=r1_r2_ohm
+    // — the helper correctly returns false on the anchor check because
+    // "Zs" anchors measured_zs_ohm, NOT r1_r2_ohm; the metric SHOULD
+    // fire because the WRITE is still unanchored against the requested
+    // field. This is the right behaviour — the dispatcher records what
+    // the model emitted; the metric flags the disagreement.
+    const session = {
+      sessionId: 's-bug2-cross',
+      stateSnapshot: { circuits: { 4: {} } },
+      extractedObservations: [],
+      activeTurnTranscript: 'Zs on circuit 4 is 0.6',
+    };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    await d(
+      {
+        tool_call_id: 'tu_bug2_cross',
+        name: 'record_reading',
+        input: {
+          field: 'r1_r2_ohm',
+          circuit: 4,
+          value: '0.6',
+          confidence: 0.85,
+          source_turn_id: 'turn-1',
+        },
+      },
+      {}
+    );
+
+    expect(guessedRows(logger)).toHaveLength(1);
+  });
+
+  test('separate Zs counter-test: transcript anchors measured_zs_ohm, no metric fire', async () => {
+    const session = {
+      sessionId: 's-bug2-zs',
+      stateSnapshot: { circuits: { 4: {} } },
+      extractedObservations: [],
+      activeTurnTranscript: 'Zs on circuit 4 is 0.6',
+    };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    await d(
+      {
+        tool_call_id: 'tu_zs_ok',
+        name: 'record_reading',
+        input: {
+          field: 'measured_zs_ohm',
+          circuit: 4,
+          value: '0.6',
+          confidence: 0.85,
+          source_turn_id: 'turn-1',
+        },
+      },
+      {}
+    );
+
+    expect(guessedRows(logger)).toHaveLength(0);
+  });
+
+  test('null transcript: metric does NOT fire (harness-driven dispatch path)', async () => {
+    // stage6-shadow-harness-broadcast-intent-wiring.test.js:102 stashes
+    // activeTurnTranscript: null. Emitting here would inflate the
+    // promotion counter with rows that never had a transcript.
+    const session = {
+      sessionId: 's-bug2-null',
+      stateSnapshot: { circuits: { 4: {} } },
+      extractedObservations: [],
+      activeTurnTranscript: null,
+    };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    await d(
+      {
+        tool_call_id: 'tu_null',
+        name: 'record_reading',
+        input: {
+          field: 'r1_r2_ohm',
+          circuit: 4,
+          value: '0.6',
+          confidence: 0.85,
+          source_turn_id: 'turn-1',
+        },
+      },
+      {}
+    );
+
+    expect(guessedRows(logger)).toHaveLength(0);
+  });
+
+  test('validation-reject: metric does NOT fire on writes the dispatcher rejected', async () => {
+    // The plan's load-bearing placement: AFTER validation passes.
+    // An out-of-range circuit fails validateRecordReading; the metric
+    // must NOT log a row for a write that never touched the cert.
+    const session = {
+      sessionId: 's-bug2-reject',
+      stateSnapshot: { circuits: { 4: {} } },
+      extractedObservations: [],
+      activeTurnTranscript: 'upstairs sockets number 0.6',
+    };
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_reject',
+        name: 'record_reading',
+        input: {
+          field: 'r1_r2_ohm',
+          // Circuit 99 is absent from snapshot — validateRecordReading
+          // rejects with circuit_not_found.
+          circuit: 99,
+          value: '0.6',
+          confidence: 0.85,
+          source_turn_id: 'turn-1',
+        },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(true);
+    expect(guessedRows(logger)).toHaveLength(0);
+  });
+});

@@ -64,6 +64,7 @@ import {
   RESTRAINED_MODE_EVENTS,
   logAskUser,
   logRestrainedMode,
+  logReadingFieldGuessedFromValue,
 } from '../extraction/stage6-dispatcher-logger.js';
 
 function mockLogger() {
@@ -441,6 +442,53 @@ describe('Phase 5 observability contract (Plan 05-05 — STO-03)', () => {
       // assume Date.parse() succeeds. Tighten the regex from the Plan
       // 05-04 case to require the trailing Z (UTC) which Date#toISOString
       // always emits.
+      expect(row.emittedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Group 5 — 2026-06-03 observation-correctness sprint Bug 2:
+  // stage6_reading_field_guessed_from_value row shape.
+  //
+  // Locks the warn-only metric row shape so the Phase 8
+  // "field-anchor-loss rate" dashboard tile (the >5%/14-day promotion
+  // gate) cannot silently break when a future caller widens or shrinks
+  // the row. Mirrors Group 1-4 discipline: emit-time field-set lock
+  // via Object.keys(row).sort().toEqual([...]).
+  // -----------------------------------------------------------------------
+  describe('Group 5 — stage6_reading_field_guessed_from_value row shape', () => {
+    test('logReadingFieldGuessedFromValue emits the full 7-field row shape required by Phase 8 Insights queries', () => {
+      const logger = mockLogger();
+      logReadingFieldGuessedFromValue(logger, {
+        sessionId: 's-grp5',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        value: '0.6',
+        transcript_preview: 'upstairs sockets number 0.6',
+      });
+
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      const [name, row] = logger.info.mock.calls[0];
+      expect(name).toBe('stage6_reading_field_guessed_from_value');
+      expect(Object.keys(row).sort()).toEqual(
+        [
+          'circuit',
+          'emittedAt',
+          'field',
+          'phase',
+          'sessionId',
+          'transcript_preview',
+          'value',
+        ].sort()
+      );
+      expect(row).toMatchObject({
+        sessionId: 's-grp5',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        value: '0.6',
+        transcript_preview: 'upstairs sockets number 0.6',
+        phase: 6,
+      });
       expect(row.emittedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     });
   });
