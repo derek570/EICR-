@@ -191,15 +191,27 @@ is missed because the circuit ref expired, that is the CORRECT behaviour — Son
 the full context window. The alternative (wrong value on wrong circuit) is far worse than a missed value.
 
 ### 7. Categorise every recommendation
-Every recommendation MUST have a "category" from this list:
-- **regex_improvement**: New or improved regex pattern in TranscriptFieldMatcher.swift
-- **number_normaliser**: Fix in NumberNormaliser.swift for spoken number conversion
-- **keyword_boost**: New session-level keyterm in CertMateUnified/Sources/Resources/default_config.json. On Flux, the boost number is inclusion priority only — the `:boost` suffix is ignored. Bounded by buildFluxURL's silent truncation at DEEPGRAM_MAX_URL_LENGTH=2000 chars (~95 keyterms practical ceiling) and KeywordBoostGenerator's dedupe+cap-100 BEFORE the URL is built. There is no 450-token budget; that was Nova-3 only. For per-ask vocabulary, prefer focused-mode Configure (see decision tree) over session-level keyterms.
+Every recommendation MUST have a "category" from this list. Each category description is followed by a one-line "use only when…" guard so categories don't drift into each other.
+
+**Original 8 (pre-Stage-6, still valid for board-level / installation / Sonnet / config / bug paths):**
+- **regex_improvement**: New or improved regex pattern in TranscriptFieldMatcher.swift. Use only when the field is board-level / installation (Ze, PFC, supply MCB rating, etc.) — for dialogue-engine-owned fields use the `dialogue_engine_*` categories below.
+- **number_normaliser**: Fix in NumberNormaliser.swift for spoken number conversion. Use only when a number-shape conversion is missing or wrong (e.g. "nought point three five" not converting to "0.35").
+- **keyword_boost**: New session-level keyterm in CertMateUnified/Sources/Resources/default_config.json. On Flux, the boost number is inclusion priority only — the `:boost` suffix is ignored. Bounded by buildFluxURL's silent truncation at DEEPGRAM_MAX_URL_LENGTH=2000 chars (~95 keyterms practical ceiling) and KeywordBoostGenerator's dedupe+cap-100 BEFORE the URL is built. There is no 450-token budget; that was Nova-3 only. For per-ask vocabulary, prefer **flux_configure_keyterms_per_slot** (advisory until infrastructure lands) over session-level keyterms.
 - **keyword_removal**: Remove a genuinely unhelpful or redundant keyterm from CertMateUnified/Sources/Resources/default_config.json. Useful for decluttering or making room when high-priority terms are being dropped by `dedupAndCap` (look at KEYTERM_RAW_COUNT vs KEYTERM_GENERATOR_SENT_COUNT in this prompt's header). Use old_code with the line to remove and new_code as empty string.
-- **sonnet_prompt_trim**: Removing redundant/verbose instructions from Sonnet prompt (saves tokens)
-- **sonnet_prompt_addition**: Adding new Sonnet prompt instructions (costs tokens — justify why regex can't do it)
-- **config_change**: Remote config or default_config.json change
-- **bug_fix**: Code bug in iOS/backend logic (field routing, model decode, etc.)
+- **sonnet_prompt_trim**: Removing redundant/verbose instructions from Sonnet prompt (saves tokens). Use only when the value can be reliably captured outside Sonnet (regex or dialogue-engine path).
+- **sonnet_prompt_addition**: Adding new Sonnet prompt instructions (costs tokens — justify why regex / dialogue-engine path can't do it).
+- **config_change**: Remote config or `Sources/Resources/default_config.json` change that isn't a keyterm.
+- **bug_fix**: Code bug in iOS/backend logic (field routing, model decode, etc.). Use only when the symptom can't be addressed via one of the more-specific categories above or below.
+
+**8 new categories (Cluster 2 Item 4 — dialogue-engine + Flux + Stage 6 architectural awareness):**
+- **dialogue_engine_schema_tighten**: A dialogue-engine schema (`src/extraction/dialogue-engine/schemas/*.js`) regex over-matches or under-matches; a bare-bridge form needs a `MEGAOHMS_BARE_SAFE_VALUE_GROUP`-style tighten; a trigger needs a new alternation. Yesterday's L-L=2 fix (commit 3c77b1bb) is the reference example. Use when an existing schema's CAPTURE shape needs constraining/loosening.
+- **dialogue_engine_schema_extend**: A dialogue-engine schema needs a new slot, new derivation, or new postCompletionAsk. Distinct from `_tighten` because the shape of the change is different — adding capability, not refining behaviour.
+- **dispatcher_validator**: `src/extraction/stage6-dispatch-validation.js` needs a new range guard, value-enum, or invalid-field check. Audit Phase 1 numeric-range validator is the reference shape. Use when an off-enum/out-of-range value reached the bundler without being rejected.
+- **flux_configure_keyterms_per_slot**: iOS Configure message should push a different keyterm subset on entering a specific ask. Distinct from `keyword_boost` which targets the session-level default. **ADVISORY ONLY** — set `"implementation_status": "awaiting_infrastructure"` and OMIT `old_code`/`new_code`. The infrastructure (`FocusedAnswerKeyterms.keyterms(for: slotField)` + a `field` parameter on `enterFocusedAnswerMode`) does NOT exist yet; today `FocusedAnswerKeyterms.all` is a single global static list. Recommendations under this category surface as advisory metadata only.
+- **flux_eot_threshold**: Per-ask `eot_threshold` / `eot_timeout_ms` tuning via Configure. Right place to recommend faster commit on terse-reply slots. Use the canonical Flux key names (`eot_threshold` 0.5-0.9, `eot_timeout_ms` 500-10000, `eager_eot_threshold` 0.3-0.9 optional) — NOT `eot_confidence` (that was a v2 draft mistake). **ADVISORY ONLY** — set `"implementation_status": "awaiting_infrastructure"` and OMIT `old_code`/`new_code`. **Rollback constraint:** the global focused-mode defaults `0.7 / 5000ms` were chosen after split-final regressions when tighter values were tried; do NOT recommend changing the global values in `enterFocusedAnswerMode`. Only recommend a *future per-slot threshold table*.
+- **loaded_barrel_speculator_hint**: `src/extraction/loaded-barrel-speculator.js`'s `onToolUseStreamed` hook should pre-fill another field shape. Use when a value showed up in Sonnet's tool call but didn't reach iOS via the speculator's pre-fill path.
+- **field_name_correction_add**: A canonical Sonnet field name leaked to iOS unmapped — add it to `src/extraction/field-name-corrections.js`'s `FIELD_CORRECTIONS` table. Use when a Sonnet-emitted field landed in `unmapped_field_buffered` or `unmapped_readings_at_end` (iOS debug log) AND isn't already in `KNOWN_FIELDS`/`FIELD_CORRECTIONS`.
+- **harness_probe**: The session reveals a bug class worth a new probe scenario; either alongside or instead of a code recommendation. **PROBE-ONLY** — set `"implementation_status": "probe_only"` and OMIT `old_code`/`new_code`. Carry a probe template id + suggested scenario id + bug-class signature in `metadata`. Probes render in a separate "Suggested regression probes" section, not as a code change.
 
 ### 8. Output format
 Output ONLY a JSON object (no markdown fences, no explanation before or after) with this format:
@@ -209,7 +221,7 @@ Output ONLY a JSON object (no markdown fences, no explanation before or after) w
       "title": "Short title of the change",
       "description": "Why this change is needed and what it fixes",
       "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user (e.g. 'Adds a pattern to recognise when you say Ze is followed by a number, so the app captures it instantly instead of waiting for AI'). 1-2 sentences max.",
-      "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix",
+      "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix|dialogue_engine_schema_tighten|dialogue_engine_schema_extend|dispatcher_validator|flux_configure_keyterms_per_slot|flux_eot_threshold|loaded_barrel_speculator_hint|field_name_correction_add|harness_probe",
       "implementation_status": "implementable",
       "token_impact": 0,
       "file": "/absolute/path/to/file.swift",

@@ -1362,16 +1362,35 @@ Do NOT repeat the same mistake."
       local REC_EXPLAIN
       REC_EXPLAIN=$(echo "$rec_line" | jq -r '.explanation // .description // .title' | head -c 120)
       local REC_CAT
-      REC_CAT=$(echo "$rec_line" | jq -r '.category // ""' | head -c 20)
+      # NOTE: do NOT add a `head -c N` truncation here. Several categories
+      # (e.g. dialogue_engine_schema_tighten = 30 chars,
+      # flux_configure_keyterms_per_slot = 32 chars,
+      # loaded_barrel_speculator_hint = 29 chars) exceed any small N and
+      # the truncation would silently mis-route them through the
+      # `*) REC_CAT="Change"` fallback below. The Pushover message length
+      # is bounded by REC_EXPLAIN's head -c 120 a few lines above; that's
+      # the right place to bound rendered text.
+      REC_CAT=$(echo "$rec_line" | jq -r '.category // ""')
       case "$REC_CAT" in
+        # Original 8 categories
         regex_improvement) REC_CAT="Regex" ;;
-        keyword_boost) REC_CAT="Keyword" ;;
-        sonnet_prompt_trim) REC_CAT="Trim" ;;
-        sonnet_prompt_addition) REC_CAT="Sonnet" ;;
-        bug_fix) REC_CAT="Fix" ;;
-        config_change) REC_CAT="Config" ;;
-        number_normaliser) REC_CAT="Numbers" ;;
-        keyword_removal) REC_CAT="Keyword" ;;
+        keyword_boost) REC_CAT="Keyword Boost" ;;
+        keyword_removal) REC_CAT="Keyword Removal" ;;
+        sonnet_prompt_trim) REC_CAT="Sonnet Trim" ;;
+        sonnet_prompt_addition) REC_CAT="Sonnet Addition" ;;
+        bug_fix) REC_CAT="Bug Fix" ;;
+        config_change) REC_CAT="Config Change" ;;
+        number_normaliser) REC_CAT="Number Normaliser" ;;
+        # 8 new categories (Cluster 2 Item 4) — labels match CATEGORY_COLORS.label
+        # in generate-report-html.js exactly (single source of truth).
+        dialogue_engine_schema_tighten) REC_CAT="DE Tighten" ;;
+        dialogue_engine_schema_extend) REC_CAT="DE Extend" ;;
+        dispatcher_validator) REC_CAT="Validator" ;;
+        flux_configure_keyterms_per_slot) REC_CAT="Per-Slot KT" ;;
+        flux_eot_threshold) REC_CAT="EOT Thresh" ;;
+        loaded_barrel_speculator_hint) REC_CAT="Speculator" ;;
+        field_name_correction_add) REC_CAT="Field Map" ;;
+        harness_probe) REC_CAT="Probe" ;;
         *) REC_CAT="Change" ;;
       esac
       PUSHOVER_MSG+="• <b>${REC_CAT}:</b> ${REC_EXPLAIN}\n"

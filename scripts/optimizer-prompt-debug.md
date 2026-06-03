@@ -48,7 +48,7 @@ Analyze the root cause and output structured JSON recommendations.
       "title": "Short description of the fix",
       "description": "Why this change is needed",
       "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user. 1-2 sentences max.",
-      "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix",
+      "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix|dialogue_engine_schema_tighten|dialogue_engine_schema_extend|dispatcher_validator|flux_configure_keyterms_per_slot|flux_eot_threshold|loaded_barrel_speculator_hint|field_name_correction_add|harness_probe",
       "implementation_status": "implementable",
       "file": "/absolute/path/to/file",
       "old_code": "exact string to find in file",
