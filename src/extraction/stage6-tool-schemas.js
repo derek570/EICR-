@@ -479,8 +479,26 @@ const askUser = makeTool({
     reason: {
       type: 'string',
       enum: enumerations.ask_user_reason,
-      description:
-        'Why the ask is being made. out_of_range_circuit: inspector referenced a circuit_ref not in the schedule. ambiguous_circuit: multiple circuits match the description. contradiction: new value conflicts with an existing reading. observation_confirmation: wording ambiguous enough to warrant a check. missing_context: a required companion value is absent.',
+      // 2026-06-03 widen: nine values, each on its own line so Sonnet
+      // picks the most specific one. The description grew by ~200
+      // tokens but schemas live in the cached prefix and are NOT
+      // measured by the ~11900-token combined prompt cap in
+      // stage6-agentic-prompt.test.js — they ship once on cache miss
+      // and amortise across the session. Future widens here are free
+      // in token budget but expensive in clarity; reuse an existing
+      // value before adding a tenth.
+      description: [
+        'Why the ask is being made. Pick the most specific value.',
+        '- out_of_range_circuit: inspector referenced a circuit_ref not in the seeded schedule.',
+        "- ambiguous_circuit: the inspector's reference matched more than one circuit.",
+        "- contradiction: the inspector's words conflict with a prior write.",
+        '- observation_confirmation: confirming details of an observation already in flight.',
+        "- missing_context: inspector's utterance lacks enough detail to choose between two materially different codings/observations.",
+        '- missing_field: inspector provided a value and circuit but no field name; CANNOT use a value-range default.',
+        '- missing_value: field known (often via pending_write), value absent — Deepgram likely truncated.',
+        '- missing_field_and_circuit: bare value with no field name AND no circuit reference.',
+        '- missing_field_and_context: inspector provided only fragments; need both field and context.',
+      ].join('\n'),
     },
     context_field: {
       // Bug-D fix (2026-04-26): see create_circuit comment.

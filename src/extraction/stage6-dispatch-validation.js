@@ -411,12 +411,27 @@ export function validateCalculateZs(input, _snapshot) {
 //   - If this pair of files ever diverges intentionally, the failure-code
 //     namespace already documents the breakpoint.
 // ---------------------------------------------------------------------------
-const ASK_USER_REASONS = [
+// Exported so src/__tests__/stage6-dispatch-validation.test.js can
+// import this list and lockstep-assert it against
+// config/stage6-enumerations.json. Without the lockstep test the pair
+// has drifted silently in the past (Sonnet 4.6 invented
+// `missing_field_and_context`; the JSON-schema enum rejected it; the
+// validator's hand-rolled copy was the runtime guard). 2026-06-03 widen
+// covers (a) `missing_field` (Bug 2 case — value + circuit known, no
+// field cue) and (b) the three legacy values already live in
+// config/prompts/sonnet_agentic_system.md (missing_value at line 79,
+// missing_field_and_circuit at line 78, missing_field_and_context as
+// Sonnet 4.6's invented compound case from session D7D01509).
+export const ASK_USER_REASONS = [
   'out_of_range_circuit',
   'ambiguous_circuit',
   'contradiction',
   'observation_confirmation',
   'missing_context',
+  'missing_field',
+  'missing_value',
+  'missing_field_and_circuit',
+  'missing_field_and_context',
 ];
 const ASK_USER_ANSWER_SHAPES = ['yes_no', 'number', 'free_text', 'circuit_ref'];
 const MAX_QUESTION_LEN = 500;

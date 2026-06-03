@@ -22,6 +22,10 @@
  *   // outcome because the post-state already satisfies the request.
  */
 
+import fssync from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import {
   validateRecordReading,
   validateClearReading,
@@ -30,7 +34,11 @@ import {
   validateRecordObservation,
   validateDeleteObservation,
   validateAskUser,
+  ASK_USER_REASONS,
 } from '../extraction/stage6-dispatch-validation.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 describe('validateRecordReading', () => {
   test('valid when circuit exists and confidence is in range', () => {
@@ -470,5 +478,26 @@ describe('validateAskUser', () => {
       const input = { ...validInput(), question: '', reason: 'because_i_said_so' };
       expect(validateAskUser(input)).toEqual({ code: 'invalid_question', field: 'question' });
     });
+  });
+});
+
+// 2026-06-03 (Bug 1c sprint) — lockstep guard. The hand-rolled
+// ASK_USER_REASONS array in stage6-dispatch-validation.js is the runtime
+// guard; the JSON enum in config/stage6-enumerations.json drives the
+// tool schema. There is no codegen — they are aligned by convention.
+// Pre-fix, Sonnet 4.6 emitted `missing_field_and_context` (a value
+// already implied by the prompt's "missing_field" / "missing_value"
+// wording on lines 78-79 of sonnet_agentic_system.md), the schema
+// rejected it before dispatch, and the validator's copy never got a
+// chance to weigh in. This test fails loudly if the pair ever drifts
+// again.
+describe('ASK_USER_REASONS ⇔ stage6-enumerations.json lockstep', () => {
+  test('validator constant deep-equals the JSON enum (order-independent)', () => {
+    const enumsPath = path.join(__dirname, '..', '..', 'config', 'stage6-enumerations.json');
+    const raw = fssync.readFileSync(enumsPath, 'utf8');
+    const enums = JSON.parse(raw);
+    const fromJson = [...enums.ask_user_reason].sort();
+    const fromValidator = [...ASK_USER_REASONS].sort();
+    expect(fromValidator).toEqual(fromJson);
   });
 });

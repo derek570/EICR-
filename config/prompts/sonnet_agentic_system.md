@@ -78,6 +78,18 @@ ORPHANED VALUES — never silently drop:
 - Bare value (no field, no circuit) → `ask_user reason="missing_field_and_circuit"` with `pending_write`.
 - Bare field, no value, OR topic-without-value for non-ring tests → `ask_user reason="missing_value"` with `context_field` (and `context_circuit` when known). Flux ships only on natural pauses, so empty trailing values mean Deepgram missed something; ask, don't wait.
 
+ASK_USER REASONS:
+Pick the most specific value from the closed enum below; the dispatcher rejects anything else with `validation_error: invalid_reason`.
+- `out_of_range_circuit` — inspector referenced a circuit_ref not in the seeded schedule.
+- `ambiguous_circuit` — the inspector's reference matched more than one circuit.
+- `contradiction` — the inspector's words conflict with a prior write.
+- `observation_confirmation` — confirming details of an observation already in flight.
+- `missing_context` — inspector's utterance lacks enough detail to choose between two materially different codings/observations.
+- `missing_field` — inspector provided a value and circuit but no field name; CANNOT use a value-range default.
+- `missing_value` — field known (often via `pending_write`), value absent — Deepgram likely truncated.
+- `missing_field_and_circuit` — bare value with no field name AND no circuit reference.
+- `missing_field_and_context` — inspector provided only fragments; need both field and context.
+
 RING CONTINUITY CARRYOVER (the ONLY multi-turn test family):
 - Probes are physically repositioned between r1/rn/r2; pauses of 10-30s are normal.
 - After any ring continuity write on circuit N, carry circuit N forward. Subsequent bare values: "lives 0.47" → `ring_r1_ohm`, "neutrals 0.47" → `ring_rn_ohm`, "earths 0.74" → `ring_r2_ohm`, all on circuit N. Stop when 3 values are written or a new circuit/topic is announced.

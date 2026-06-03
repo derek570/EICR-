@@ -175,8 +175,23 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // to Sonnet on observation turns via the tiered router, so the
       // extra context is amortised against the 5-min prompt cache and
       // adds ~$0.002 per observation turn on cache-read.
+      //
+      // 2026-06-03 (observation-correctness sprint — Bugs 1a/1c/2):
+      // bumped to 11900 to absorb four prompt edits:
+      //   - +~250 (Bug 1a Q-DERIVED.OUTDOOR-LIGHT + COMMIT-FIRST RULE
+      //     added to wrag-bs7671-eicr.md)
+      //   - +~80 (Bug 1a ONE INTERROGATIVE PER ASK rule body — replaces
+      //     bare RULE 5 title in sonnet_agentic_system.md)
+      //   - +~125 (Bug 1c ASK_USER REASONS subsection added to
+      //     sonnet_agentic_system.md after ORPHANED VALUES)
+      //   - +~250 (Bug 2 FIELD-AMBIGUITY RULE + worked example added to
+      //     sonnet_agentic_system.md)
+      // Total ~705 tokens; cap moved by +700 to keep ~195-token headroom
+      // above the historic estimate. Bug 1c's tool-schema description
+      // widen (in stage6-tool-schemas.js) is NOT counted — schemas live
+      // in the cached prefix and are not measured here.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(11200);
+      expect(estimate).toBeLessThanOrEqual(11900);
     });
   });
 
@@ -659,8 +674,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     rewritten to "is advised" with anti-overuse pointer to BPG4 7.3
       //     §6, plus the Issue 7.1 → 7.3 reference change. ≈ +23 tokens;
       //     cap moved by +100 to keep ~75-token headroom.
+      //   - 7000 (observation-correctness sprint 2026-06-03: three edits
+      //     touched this file — Bug 1a ONE INTERROGATIVE PER ASK rule body
+      //     replacing the bare RULE 5 title (~80 tokens), Bug 1c ASK_USER
+      //     REASONS subsection after ORPHANED VALUES (~125 tokens), Bug 2
+      //     FIELD-AMBIGUITY RULE + worked example (~250 tokens). Total
+      //     ~455 tokens; cap moved by +600 to keep ~145-token headroom.
+      //     Bug 1a's WRAG edits live in wrag-bs7671-eicr.md and only
+      //     contribute to the Group 1 combined cap.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(6400);
+      expect(estimate).toBeLessThanOrEqual(7000);
     });
   });
 
@@ -803,5 +826,106 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt).toMatch(/WRAG Q&As appended/);
       expect(prompt).toMatch(/reasoning fallback/i);
     });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 12 — 2026-06-03 observation-correctness sprint.
+  //
+  // Three prompt-side rules landed in this sprint. The tests below pin
+  // each rule's presence so a future prompt rewrite cannot silently
+  // drop them and regress the field-test failure modes documented in
+  // .planning/plan-observation-bugs-2026-06-03-final.md.
+  //
+  //   - Bug 1c: ASK_USER REASONS section + scoped-regex coverage
+  //     against the enum in stage6-enumerations.json. Pre-fix the
+  //     prompt named `missing_field_and_circuit` (line 78) and
+  //     `missing_value` (line 79) but the enum didn't include them —
+  //     every such ask was rejected as invalid_reason. The regex
+  //     captures BOTH the new ASK_USER REASONS block and any future
+  //     ask_user reason literal that creeps in elsewhere.
+  //   - Bug 1a: ONE INTERROGATIVE PER ASK rule body in RULE 5.
+  //   - Bug 2: FIELD-AMBIGUITY RULE + the verbatim sentence pinning
+  //     the no-magnitude-anchor invariant.
+  // ------------------------------------------------------------------
+  describe('Group 12 — 2026-06-03 observation-correctness sprint (Bugs 1a/1c/2)', () => {
+    test('Bug 1c — ASK_USER REASONS section exists with all nine enum values', () => {
+      const idx = prompt.search(/ASK_USER REASONS:/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next sibling block (RING CONTINUITY
+      // CARRYOVER). indexOf-from-idx avoids matching the earlier
+      // CIRCUIT ROUTING cross-reference ("see RING CONTINUITY
+      // CARRYOVER below") at line ~50.
+      const end = prompt.indexOf('RING CONTINUITY CARRYOVER', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      for (const reason of [
+        'out_of_range_circuit',
+        'ambiguous_circuit',
+        'contradiction',
+        'observation_confirmation',
+        'missing_context',
+        'missing_field',
+        'missing_value',
+        'missing_field_and_circuit',
+        'missing_field_and_context',
+      ]) {
+        expect(block).toEqual(expect.stringContaining(reason));
+      }
+    });
+
+    test('Bug 1c — every ask_user reason literal in the prompt is in the enum', async () => {
+      // Tool-scope-aware regexes — only fire inside ask_user contexts so
+      // sibling tools (`clear_reading reason:"user_correction"` at line
+      // 136) do not false-positively appear as orphans. Three forms cover
+      // the live prompt:
+      //   - Block form: `ask_user({...reason:"..."})` within ~400 chars.
+      //   - With-connector prose: `emit ask_user with reason=...` or
+      //     `` `ask_user` `` with `reason="..."`.
+      //   - Connectorless prose: `` `ask_user reason=...` `` — anchored
+      //     on the leading backtick so it can't span paragraph breaks.
+      // The 400-char block window is a soft limit: the longest existing
+      // ask_user worked example is ~280 chars; a wider window risks
+      // crossing into a sibling tool block. Skip extraction prompt
+      // (sonnet_extraction_system.md) — Stage 2 does NOT drive ask_user
+      // through the dispatcher; any reason-shaped strings there are
+      // unrelated observation-reasoning prose. If a future sprint extends
+      // ask_user to extraction, revisit.
+      const askBlockReason = /ask_user\s*[({][^})]{0,400}?reason\s*[:=]\s*["']?([a-z_]+)["']?/g;
+      const askProseReasonWith =
+        /(?:emit\s+ask_user\s+with\s+|`ask_user`\s+with\s+)reason\s*[:=]\s*["']?([a-z_]+)["']?/g;
+      const askProseReasonDirect = /`ask_user\s+reason\s*[:=]\s*["']?([a-z_]+)["']?[`"']?/g;
+      const captured = new Set();
+      for (const re of [askBlockReason, askProseReasonWith, askProseReasonDirect]) {
+        let m;
+        while ((m = re.exec(prompt)) !== null) {
+          captured.add(m[1]);
+        }
+      }
+      // Acceptance: all five orphan-risk values present in the live
+      // prompt are captured. The connectorless regex is essential for
+      // lines 78-79 — the very orphans that motivated Bug 1c.
+      expect(captured.has('out_of_range_circuit')).toBe(true);
+      expect(captured.has('missing_context')).toBe(true);
+      expect(captured.has('ambiguous_circuit')).toBe(true);
+      expect(captured.has('missing_field_and_circuit')).toBe(true);
+      expect(captured.has('missing_value')).toBe(true);
+      // Sibling-tool prose must NOT appear — `clear_reading reason:
+      // "user_correction"` at line 136 is a `clear_reading_reason`, NOT
+      // an `ask_user_reason`. A false-positive here would later trip the
+      // enum membership assertion below and re-conflate the two namespaces.
+      expect(captured.has('user_correction')).toBe(false);
+      // Every captured value must be in the enum — drift fails loudly.
+      const enumsPath = path.join(__dirname, '..', '..', 'config', 'stage6-enumerations.json');
+      const enums = JSON.parse(fssync.readFileSync(enumsPath, 'utf8'));
+      const legal = new Set(enums.ask_user_reason);
+      for (const reason of captured) {
+        expect(legal.has(reason)).toBe(true);
+      }
+    });
+
+    // Bug 1a (RULE 5 body) and Bug 2 (FIELD-AMBIGUITY RULE) prompt-coverage
+    // assertions land in their own atomic commits — see the sprint plan at
+    // .planning/plan-observation-bugs-2026-06-03-final.md. Group 12 below
+    // will grow as those commits add their respective rules to the prompt.
   });
 });
