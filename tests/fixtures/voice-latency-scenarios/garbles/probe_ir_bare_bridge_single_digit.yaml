@@ -1,0 +1,74 @@
+name: probe_ir_bare_bridge_single_digit
+suite: garbles
+description: |
+  REGRESSION GUARD — session 284CBBCD (2026-06-03 08:26:40) production
+  bug. Inspector finished the IR walk-through for circuit 4 cleanly,
+  then started a second walk-through for circuit 1 (Cooker). Engine
+  asked "What's the live-to-live?". The inspector's reply, after
+  Flux mishearing, reached the dialogue engine as something matching
+  "L L 2 L E greater than 299" — and the L-L slot's bare-bridge
+  named-extractor cheerfully wrote BOTH:
+    ir_live_live_mohm  = "2"     ← BUG
+    ir_live_earth_mohm = ">299"
+  certifying the cooker with a 2 MΩ L-L insulation reading the
+  inspector never dictated.
+
+  Root cause: the L-L named-extractor's bare-bridge arm
+  (`[^a-z\d∞]{0,6}? (value)`) accepted any digit string via the
+  generic `\d*\.?\d+` value-group branch, including the lone "2"
+  fragment that Flux interposed between the label and the rest of
+  the utterance.
+
+  Fix: split the value-group in two. The CONNECTOR arm
+  ("L-L is 2", "L-L equals 5") keeps the full `\d*\.?\d+` so
+  intentional single-digit readings still land. The BARE arm
+  (loose 0-6 char bridge) now uses MEGAOHMS_BARE_SAFE_VALUE_GROUP,
+  which requires sentinels, decimals, or multi-digit integers —
+  rejecting the single-digit fragment that Flux garbles produce.
+
+  Probe transcript drives the dialogue engine directly (not through
+  Sonnet) — the IR script is auto-entered from the inspector's
+  Sonnet write of ir_test_voltage_v, then the next user utterance
+  carries the garbled L-L+L-E pattern. Pin: ir_live_live_mohm MUST
+  NOT receive the bare digit "2"; ir_live_earth_mohm should still
+  pick up >299 from the same utterance.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ir_test_voltage_v: "250"
+
+transcript:
+  # Inspector volunteers + circuit, then the garble pattern in the
+  # next final. The IR walkthrough auto-resumes off the pre-existing
+  # voltage field; engine asks L-L; user reply matches the garble
+  # shape from session 284CBBCD.
+  - at_ms: 0
+    text: "Insulation resistance for circuit 1."
+    isFinal: true
+  - at_ms: 4000
+    text: "L L 2 L E greater than 299."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: insulation_resistance_l_e
+      value: ">299"
+  has_no_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: "2"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

@@ -18,6 +18,7 @@ import {
   parseMegaohms,
   parseBareMegaohmsWithUnit,
   MEGAOHMS_VALUE_GROUP,
+  MEGAOHMS_BARE_SAFE_VALUE_GROUP,
 } from '../parsers/megaohms.js';
 import { parseVoltage } from '../parsers/voltage.js';
 import { IR_FIELDS, recordIrWrite, clearIrState } from '../../insulation-resistance-timeout.js';
@@ -72,14 +73,30 @@ const slots = [
     // for the value — same surface as a Deepgram-garbled label. Extend the
     // connector list only when field telemetry shows a real omission, not
     // pre-emptively.
+    // 2026-06-03 (session 284CBBCD) — split into TWO capture groups
+    // so the BARE-bridge arm can use the restricted
+    // MEGAOHMS_BARE_SAFE_VALUE_GROUP (no single-digit bare integers)
+    // while the CONNECTOR arm keeps the full MEGAOHMS_VALUE_GROUP.
+    //
+    // Repro: a Flux-garbled utterance "L L 2 L E greater than 299"
+    // (likely a fragmented or coalesced rendering of the inspector
+    // saying just "Greater than 299" inside an active IR walk-through)
+    // pre-fix produced TWO writes: L-L=2 + L-E=>299, leaving the
+    // cooker certified with an implausibly low L-L insulation
+    // reading. Post-fix the bare-arm rejects "2" (single-digit
+    // integer via the loose bridge), only L-E is named-matched, and
+    // the engine re-asks L-L on the next turn.
+    //
+    // Phase 4 (audit-2026-06-02) widened extractNamedFieldValues to
+    // read m[1] ?? m[2] ?? m[3], so multi-group regexes work without
+    // any helper change here.
     namedExtractor: new RegExp(
       `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b` +
         `(?:` +
-        `[^a-z\\d∞]{0,6}?` +
+        `[^a-z\\d∞]{0,6}?(${MEGAOHMS_BARE_SAFE_VALUE_GROUP})` +
         `|` +
-        `[\\s,;:.-]+(?:(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at)\\b|=)[\\s,]{0,3}?` +
-        `)` +
-        `(${MEGAOHMS_VALUE_GROUP})`,
+        `[\\s,;:.-]+(?:(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at)\\b|=)[\\s,]{0,3}?(${MEGAOHMS_VALUE_GROUP})` +
+        `)`,
       'i'
     ),
     acceptsBareValue: true,
@@ -96,11 +113,10 @@ const slots = [
     namedExtractor: new RegExp(
       `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b` +
         `(?:` +
-        `[^a-z\\d∞]{0,6}?` +
+        `[^a-z\\d∞]{0,6}?(${MEGAOHMS_BARE_SAFE_VALUE_GROUP})` +
         `|` +
-        `[\\s,;:.-]+(?:(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at)\\b|=)[\\s,]{0,3}?` +
-        `)` +
-        `(${MEGAOHMS_VALUE_GROUP})`,
+        `[\\s,;:.-]+(?:(?:is|was|of|reads?|measures?|equals?|came\\s+(?:in|out)?\\s*at|came\\s+up\\s+at|test(?:ed|ing)?\\s+at)\\b|=)[\\s,]{0,3}?(${MEGAOHMS_VALUE_GROUP})` +
+        `)`,
       'i'
     ),
     acceptsBareValue: true,
