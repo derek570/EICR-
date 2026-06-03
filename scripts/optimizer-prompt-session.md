@@ -37,29 +37,50 @@ the system didn't acknowledge the value. High priority for regex improvements.
 
 {{REPEATED_VALUES_DATA}}
 
-### KEYWORD TOKEN BUDGET: {{KEYWORD_COUNT}} entries using ~{{KEYWORD_TOKENS}}/{{TOKEN_BUDGET}} estimated tokens ({{TOKEN_HEADROOM}} tokens free)
+### FLUX KEYTERM BUDGET: {{KEYTERM_RAW_COUNT}} raw / {{KEYTERM_GENERATOR_SENT_COUNT}} after iOS cap / {{KEYTERM_URL_ESTIMATED_SENT_COUNT}} estimated through URL truncation (~{{KEYTERM_URL_CHARS_ESTIMATE}} chars)
 
-Deepgram Nova-3 has a 500-TOKEN limit across all keyterms (BPE-style tokenization).
-iOS KeywordBoostGenerator uses a two-tier token-budget strategy:
-- **Tier 1 (boost >= 2.0)**: Sent WITH boost suffix (e.g. keyterm=circuit:3.0). Costs ~(words*2 + 4) tokens.
-- **Tier 2 (boost < 2.0)**: Sent as PLAIN keyterm (e.g. keyterm=MCB). Costs ~(words*2) tokens. Still activates keyterm prompting but without priority boosting.
-- Keywords with boost >= 2.0 are critical — they get Deepgram priority boosting.
-- Keywords with boost < 2.0 still improve recognition but without priority weighting.
-- New keywords at boost >= 2.0 cost ~6 tokens (text + boost suffix); at < 2.0 cost ~2 tokens (text only).
-- NEVER add case-insensitive duplicates of existing keywords.
-- keyword_removal is now LESS necessary since all keywords fit, but still useful for removing genuinely unhelpful terms.
+Deepgram Flux (the active STT model) uses keyterms as **inclusion-priority vocabulary hints**, NOT as acoustic-bias multipliers. The Nova-3 `:boost` suffix is stripped on Flux — any `boost >= 2.0` framing from older recommendations is dead. There is NO 500-token BPE budget on Flux; the binding constraints are two distinct caps on two distinct send paths:
+
+1. **Session-start keyterms (URL query params)** — `DeepgramService.buildFluxURL` (~line 1308) silently *truncates* the keyterm list at `DEEPGRAM_MAX_URL_LENGTH = 2000` chars (`DeepgramService.swift:48`, rationale 18-47). The optimizer estimates ~95 keyterms fit in the bundled config; truncation is best-effort URL-encoding-aware, not exact. There is NO "rejected at send" event — over-budget terms vanish silently. Regression guarded by `DeepgramServiceTests.testKeytermURLBudgetUnderCap`.
+2. **Focused-mode Configure keyterms (JSON array)** — `DeepgramService.mergeFocusedKeyterms` (~line 1244) hard-caps the final array at **100 entries TOTAL**. `FocusedAnswerKeyterms.all` ({{FOCUSED_KEYTERM_ESSENTIAL_COUNT}} essentials: digits 1-50 + ~8 sentinels) is PREPENDED first, leaving `{{KEYTERM_CONFIGURE_CAP_REMAINING}}` slots for session keyterms in focused mode. Currently {{KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT}} session keyterms would be dropped under this cap.
+
+**Soft URL ceiling guidance:** roughly {{KEYTERM_URL_CAP_REMAINING}} slots remain below the ~95 char-derived headroom before truncation begins. If `{{KEYTERM_RAW_COUNT}}` exceeds `{{KEYTERM_GENERATOR_SENT_COUNT}}`, terms are being dropped by `KeywordBoostGenerator.dedupAndCap` BEFORE the URL is even built — that's the first thing to surface in a recommendation.
+
+Rules for any keyterm-related recommendation:
+- Before adding a new session-level keyterm, preserve higher-priority existing terms under BOTH caps. There is no "boost" knob — only inclusion priority.
+- NEVER add case-insensitive duplicates of existing keyterms.
+- For per-ask vocabulary (e.g. "RCD type during the RCD walk-through"), the correct knob is **focused-mode Configure** — not the session-level default. See the Cluster 2 decision tree (in this prompt's INSTRUCTIONS section) for routing.
+- `keyword_removal` is still useful for removing genuinely unhelpful terms, but no longer for "headroom" reasons.
 
 ## Current code reference (fetch files yourself via Read/Glob/Grep)
 
 Instead of pre-loading every source file into this prompt, fetch only what you need. Use:
-- **Read** on these primary files when making recommendations:
-  - `CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift` — all regex patterns
-  - `CertMateUnified/Sources/Recording/NumberNormaliser.swift` — spoken-number conversion
-  - `CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift` — two-tier token budget logic
-  - `CertMateUnified/Resources/default_config.json` — keyword boosts + regex overrides (PRIMARY path — emit ONE recommendation per change using this path; optimizer is the only one allowed to change it)
-  - `src/extraction/eicr-extraction-session.js` — EICR_SYSTEM_PROMPT, the rolling extraction Sonnet prompt
-  - `src/extraction/sonnet-stream.js` — WebSocket message routing
-  - `CertMateUnified/Sources/Services/AlertManager.swift` — alert/question logic
+
+**Primary path — dialogue-engine + Flux Configure (Stage 6, current architecture):**
+- `src/extraction/dialogue-engine/schemas/{ocpd,rcd,rcbo,ring-continuity,insulation-resistance}.js` — schema definitions for the active walk-through paths. Read these to see what slots / triggers / asks / derivations the engine knows about. Note: there is NO `insulation-resistance.js` parser — insulation-resistance is exclusively a schema, with its value parsing handled by `parsers/megaohms.js`.
+- `src/extraction/dialogue-engine/parsers/{amps,bs-code,circuit-range,ka,ma,mcb-type,megaohms,ms,ohms,rcd-type,voltage}.js` — the 11 value parsers. Bare-bridge value groups (e.g. `MEGAOHMS_BARE_SAFE_VALUE_GROUP`) live here. Read these when a value was captured with the wrong shape (e.g. yesterday's L-L=2 fix tightened `insulation-resistance.js`'s namedExtractor against `megaohms.js`'s bare-bridge form).
+- `src/extraction/dialogue-engine/helpers/extraction.js` — named-field extractor; multi-group capture rules.
+- `src/extraction/loaded-barrel-speculator.js` — pre-fill speculator (`onToolUseStreamed` hook etc.).
+- `src/extraction/stage6-dispatch-validation.js` — numeric-range / value-enum dispatcher guards (Audit Phase 1 validator path).
+- `src/extraction/field-name-corrections.js` — canonical ↔ legacy field-name table (`FIELD_CORRECTIONS`).
+- `CertMateUnified/Sources/Services/DeepgramService.swift` — Flux Configure / focused-mode Configure path (the per-ask vocabulary knob).
+- `CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift` — per-ask keyterm essentials prepended by `mergeFocusedKeyterms`.
+- `tests/fixtures/voice-latency-scenarios/{garbles,schema_ambiguity,dispatcher_gaps}/` — harness probes; read these to learn the bug-class shapes already known.
+
+**Secondary / pre-LLM-gate path (board-level + installation fields):**
+- `CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift` — regex patterns. Board-level / installation fields (Ze, PFC, MCB rating on the supply, etc.) flow through this path; protective-device / ring-continuity / IR fields flow through the dialogue-engine schemas above and bypass this layer.
+- `CertMateUnified/Sources/Recording/NumberNormaliser.swift` — spoken-number conversion.
+- `CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift` — iOS-side dedupe + cap-100 before the URL is built (boost field is now inclusion-priority only on Flux, not an acoustic-bias multiplier).
+- `CertMateUnified/Sources/Resources/default_config.json` — live bundled keyterm list (PRIMARY path for session-level keyterms — emit ONE recommendation per change using this path; optimizer is the only one allowed to change it). NOTE: `CertMateUnified/Resources/default_config.json` is a STALE copy left over from an earlier layout — do not read or recommend changes to that file.
+
+**Sonnet rolling-extraction path:**
+- `src/extraction/eicr-extraction-session.js` — EICR_SYSTEM_PROMPT, the rolling extraction Sonnet prompt.
+- `src/extraction/sonnet-stream.js` — WebSocket message routing, question gate, ask-resolution.
+
+**iOS alert / question UI:**
+- `CertMateUnified/Sources/Services/AlertManager.swift` — alert/question logic.
+
+Use:
 - **Grep** to find existing patterns before writing a new one (avoid collisions)
 - **Glob** to discover related files (e.g. model definitions for a field)
 
@@ -75,12 +96,16 @@ You MUST read any file you propose to change before emitting a recommendation fo
 
 ## INSTRUCTIONS — READ CAREFULLY
 
-### CORE PRINCIPLE: REGEX-FIRST
-For every missed value, your FIRST question must be: "Can a regex pattern in TranscriptFieldMatcher.swift catch this?"
-Regex is instant, free, and deterministic. Sonnet costs tokens, has latency, and can hallucinate.
-Only recommend Sonnet prompt changes when the value GENUINELY requires AI understanding (e.g., inferring
-context, resolving ambiguity, handling complex multi-field relationships). If the user said "Ze is 0.35"
-and it was missed, that is ALWAYS a regex fix — never a Sonnet prompt change.
+### CORE PRINCIPLE: EXTRACTION-PATH-AWARE
+For every missed value, the FIRST question is "which extraction path owns this field?", not "can a regex catch this?". The system has three live paths and the right fix lives on the path that owns the field — a regex fix for a dialogue-engine field will be ignored at runtime, and a dialogue-engine fix for a board-level field is overkill.
+
+- **Dialogue-engine path** (protective devices, ring continuity, insulation resistance — OCPD / RCD / RCBO / `ring_continuity` / `insulation_resistance`): the engine's schema definitions in `src/extraction/dialogue-engine/schemas/*.js` own capture. If a value is missed, the right shape of fix is usually a schema tighten / extend or a dispatcher validator — NOT a TranscriptFieldMatcher regex (the regex path is bypassed for these fields).
+- **Pre-LLM-gate path** (board-level / installation fields — Ze, PFC, supply MCB rating, earthing system, etc.): `TranscriptFieldMatcher.swift` is the primary capture; `regex_improvement` / `number_normaliser` / `keyword_boost` / `keyword_removal` apply here.
+- **Sonnet rolling-extraction path** (cross-cutting context, ambiguity resolution, multi-field reasoning): `sonnet_prompt_addition` / `sonnet_prompt_trim` — last resort, only when the value genuinely requires AI reasoning.
+
+A more explicit decision tree lands in Cluster 2 of the optimizer rewrite. Until then, when classifying a missed value, ask "is this a dialogue-engine schema field?" BEFORE proposing a TranscriptFieldMatcher regex change.
+
+Sonnet costs tokens, has latency, and can hallucinate; regex is instant and deterministic — but only if the field lives on the regex path.
 
 ### 1. Scan utterance-level data for missed values
 The UTTERANCES WITH UNCAPTURED VALUES section above lists every utterance where a number was spoken
@@ -95,14 +120,18 @@ result in a regex_improvement recommendation.
 
 For EVERY empty field in the analysis, also check the full transcript for spoken values.
 If a value was clearly spoken but not captured, classify the root cause using this priority order:
-1. **Regex miss** (MOST LIKELY): The pattern in TranscriptFieldMatcher.swift doesn't match the phrasing.
-   Check: Does a pattern exist for this field? Does it match the exact spoken form? Does NumberNormaliser
-   convert the spoken numbers correctly? Would a Deepgram keyword boost help recognition?
+1. **Regex miss** (for board-level / installation fields only): The pattern in TranscriptFieldMatcher.swift
+   doesn't match the phrasing. Check: Does a pattern exist for this field? Does it match the exact spoken
+   form? Does NumberNormaliser convert the spoken numbers correctly? Would a Flux keyterm help
+   recognition? (The full extraction-path decision tree below — under CORE PRINCIPLE — supersedes this
+   bullet's framing for dialogue-engine fields.)
 2. **Number normalisation miss**: NumberNormaliser.swift doesn't handle the spoken form (e.g., "nought
    point three five" not converting to "0.35"). Fix in NumberNormaliser.swift.
-3. **Keyword boost miss**: Deepgram misheard a technical term (e.g., "Zed S" → "said S"). Fix by adding
-   a keyword boost in default_config.json or KeywordBoostGenerator.swift. Two-tier system: boost >= 2.0
-   gets priority boosting, boost < 2.0 still activates keyterm prompting. All config keywords are sent.
+3. **Keyterm miss**: Flux misheard a technical term (e.g., "Zed S" → "said S"). Fix by adding the term
+   to CertMateUnified/Sources/Resources/default_config.json. On Flux there is no boost-suffix multiplier
+   — the keyterm acts as an inclusion-priority vocabulary hint; the boost number only matters when the
+   URL hits its 2000-char truncation cap. For per-ask vocabulary, prefer focused-mode Configure (the
+   decision tree below covers this).
 4. **Config/mapping issue**: Field routing, model decode, or remote config problem in iOS code.
 5. **Sonnet prompt issue** (LAST RESORT): Only if the value requires genuine AI reasoning that regex
    cannot handle — e.g., inferring earthing type from context, resolving contradictory readings,
@@ -165,8 +194,8 @@ the full context window. The alternative (wrong value on wrong circuit) is far w
 Every recommendation MUST have a "category" from this list:
 - **regex_improvement**: New or improved regex pattern in TranscriptFieldMatcher.swift
 - **number_normaliser**: Fix in NumberNormaliser.swift for spoken number conversion
-- **keyword_boost**: New keyword boost in default_config.json or KeywordBoostGenerator.swift. Two-tier: boost >= 2.0 gets Deepgram priority boosting (~6 tokens); boost < 2.0 still activates prompting (~2 tokens). All keywords fit within 450-token budget. Use boost >= 2.0 for critical terms only.
-- **keyword_removal**: Remove a genuinely unhelpful or redundant keyword from default_config.json. Less critical now that all keywords fit, but still useful for decluttering. Use old_code with the line to remove and new_code as empty string.
+- **keyword_boost**: New session-level keyterm in CertMateUnified/Sources/Resources/default_config.json. On Flux, the boost number is inclusion priority only — the `:boost` suffix is ignored. Bounded by buildFluxURL's silent truncation at DEEPGRAM_MAX_URL_LENGTH=2000 chars (~95 keyterms practical ceiling) and KeywordBoostGenerator's dedupe+cap-100 BEFORE the URL is built. There is no 450-token budget; that was Nova-3 only. For per-ask vocabulary, prefer focused-mode Configure (see decision tree) over session-level keyterms.
+- **keyword_removal**: Remove a genuinely unhelpful or redundant keyterm from CertMateUnified/Sources/Resources/default_config.json. Useful for decluttering or making room when high-priority terms are being dropped by `dedupAndCap` (look at KEYTERM_RAW_COUNT vs KEYTERM_GENERATOR_SENT_COUNT in this prompt's header). Use old_code with the line to remove and new_code as empty string.
 - **sonnet_prompt_trim**: Removing redundant/verbose instructions from Sonnet prompt (saves tokens)
 - **sonnet_prompt_addition**: Adding new Sonnet prompt instructions (costs tokens — justify why regex can't do it)
 - **config_change**: Remote config or default_config.json change
@@ -181,6 +210,7 @@ Output ONLY a JSON object (no markdown fences, no explanation before or after) w
       "description": "Why this change is needed and what it fixes",
       "explanation": "Plain-English explanation of WHAT this change does and WHY, written for a non-technical user (e.g. 'Adds a pattern to recognise when you say Ze is followed by a number, so the app captures it instantly instead of waiting for AI'). 1-2 sentences max.",
       "category": "regex_improvement|number_normaliser|keyword_boost|keyword_removal|sonnet_prompt_trim|sonnet_prompt_addition|config_change|bug_fix",
+      "implementation_status": "implementable",
       "token_impact": 0,
       "file": "/absolute/path/to/file.swift",
       "old_code": "exact string to find in the file",
@@ -199,7 +229,8 @@ Output ONLY a JSON object (no markdown fences, no explanation before or after) w
 Notes on fields:
 - "explanation": REQUIRED. A user-facing plain-English summary of what this change does and why. No code, no jargon. Written as if explaining to the electrician using the app.
 - "token_impact": Estimated token delta for Sonnet prompt changes. Positive = adds tokens, negative = saves tokens. 0 for non-prompt changes (regex, config, bug fixes).
-- "category": MUST be one of the 8 categories listed above.
+- "category": MUST be one of the categories listed above.
+- "implementation_status": OPTIONAL — default `"implementable"`. Used to mark recommendations whose consumer infrastructure isn't yet built (e.g. per-slot Flux Configure keyterms — see future categories) or that describe regression-test probes rather than code fixes. Allowed values: `"implementable"` (default; `old_code`/`new_code` REQUIRED), `"awaiting_infrastructure"` (`old_code`/`new_code` FORBIDDEN — emit a `metadata` object describing the suggested shape instead), `"probe_only"` (`old_code`/`new_code` FORBIDDEN; carries a probe scenario id in `metadata`). Current Cluster 1 categories are all `"implementable"`; categories added in Cluster 2 may flip this.
 - "sonnet_prompt_audit": Always include this section, even if no trims are suggested.
 
 If no changes are needed, output:
