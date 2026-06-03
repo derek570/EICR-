@@ -112,7 +112,7 @@ function buildCostDashboard() {
     <div class="cost-grid">
       <div class="cost-item">
         <div class="cost-item-header">
-          <span class="cost-item-name">Deepgram Nova-3</span>
+          <span class="cost-item-name">Deepgram Flux</span>
           <span class="cost-item-price">&pound;${toGBP(dg.cost_usd)}</span>
         </div>
         <div class="cost-item-detail">${(dg.minutes || 0).toFixed(1)} min @ $0.0077/min</div>
