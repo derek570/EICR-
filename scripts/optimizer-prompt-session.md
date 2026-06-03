@@ -55,14 +55,32 @@ Rules for any keyterm-related recommendation:
 ## Current code reference (fetch files yourself via Read/Glob/Grep)
 
 Instead of pre-loading every source file into this prompt, fetch only what you need. Use:
-- **Read** on these primary files when making recommendations:
-  - `CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift` — all regex patterns
-  - `CertMateUnified/Sources/Recording/NumberNormaliser.swift` — spoken-number conversion
-  - `CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift` — iOS-side dedupe + cap-100 before the URL is built (boost field is now inclusion-priority only on Flux, not an acoustic-bias multiplier)
-  - `CertMateUnified/Sources/Resources/default_config.json` — live bundled keyterm list (PRIMARY path — emit ONE recommendation per change using this path; optimizer is the only one allowed to change it). NOTE: `CertMateUnified/Resources/default_config.json` is a STALE copy left over from an earlier layout — do not read or recommend changes to that file.
-  - `src/extraction/eicr-extraction-session.js` — EICR_SYSTEM_PROMPT, the rolling extraction Sonnet prompt
-  - `src/extraction/sonnet-stream.js` — WebSocket message routing
-  - `CertMateUnified/Sources/Services/AlertManager.swift` — alert/question logic
+
+**Primary path — dialogue-engine + Flux Configure (Stage 6, current architecture):**
+- `src/extraction/dialogue-engine/schemas/{ocpd,rcd,rcbo,ring-continuity,insulation-resistance}.js` — schema definitions for the active walk-through paths. Read these to see what slots / triggers / asks / derivations the engine knows about. Note: there is NO `insulation-resistance.js` parser — insulation-resistance is exclusively a schema, with its value parsing handled by `parsers/megaohms.js`.
+- `src/extraction/dialogue-engine/parsers/{amps,bs-code,circuit-range,ka,ma,mcb-type,megaohms,ms,ohms,rcd-type,voltage}.js` — the 11 value parsers. Bare-bridge value groups (e.g. `MEGAOHMS_BARE_SAFE_VALUE_GROUP`) live here. Read these when a value was captured with the wrong shape (e.g. yesterday's L-L=2 fix tightened `insulation-resistance.js`'s namedExtractor against `megaohms.js`'s bare-bridge form).
+- `src/extraction/dialogue-engine/helpers/extraction.js` — named-field extractor; multi-group capture rules.
+- `src/extraction/loaded-barrel-speculator.js` — pre-fill speculator (`onToolUseStreamed` hook etc.).
+- `src/extraction/stage6-dispatch-validation.js` — numeric-range / value-enum dispatcher guards (Audit Phase 1 validator path).
+- `src/extraction/field-name-corrections.js` — canonical ↔ legacy field-name table (`FIELD_CORRECTIONS`).
+- `CertMateUnified/Sources/Services/DeepgramService.swift` — Flux Configure / focused-mode Configure path (the per-ask vocabulary knob).
+- `CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift` — per-ask keyterm essentials prepended by `mergeFocusedKeyterms`.
+- `tests/fixtures/voice-latency-scenarios/{garbles,schema_ambiguity,dispatcher_gaps}/` — harness probes; read these to learn the bug-class shapes already known.
+
+**Secondary / pre-LLM-gate path (board-level + installation fields):**
+- `CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift` — regex patterns. Board-level / installation fields (Ze, PFC, MCB rating on the supply, etc.) flow through this path; protective-device / ring-continuity / IR fields flow through the dialogue-engine schemas above and bypass this layer.
+- `CertMateUnified/Sources/Recording/NumberNormaliser.swift` — spoken-number conversion.
+- `CertMateUnified/Sources/Recording/KeywordBoostGenerator.swift` — iOS-side dedupe + cap-100 before the URL is built (boost field is now inclusion-priority only on Flux, not an acoustic-bias multiplier).
+- `CertMateUnified/Sources/Resources/default_config.json` — live bundled keyterm list (PRIMARY path for session-level keyterms — emit ONE recommendation per change using this path; optimizer is the only one allowed to change it). NOTE: `CertMateUnified/Resources/default_config.json` is a STALE copy left over from an earlier layout — do not read or recommend changes to that file.
+
+**Sonnet rolling-extraction path:**
+- `src/extraction/eicr-extraction-session.js` — EICR_SYSTEM_PROMPT, the rolling extraction Sonnet prompt.
+- `src/extraction/sonnet-stream.js` — WebSocket message routing, question gate, ask-resolution.
+
+**iOS alert / question UI:**
+- `CertMateUnified/Sources/Services/AlertManager.swift` — alert/question logic.
+
+Use:
 - **Grep** to find existing patterns before writing a new one (avoid collisions)
 - **Glob** to discover related files (e.g. model definitions for a field)
 
@@ -78,12 +96,16 @@ You MUST read any file you propose to change before emitting a recommendation fo
 
 ## INSTRUCTIONS — READ CAREFULLY
 
-### CORE PRINCIPLE: REGEX-FIRST
-For every missed value, your FIRST question must be: "Can a regex pattern in TranscriptFieldMatcher.swift catch this?"
-Regex is instant, free, and deterministic. Sonnet costs tokens, has latency, and can hallucinate.
-Only recommend Sonnet prompt changes when the value GENUINELY requires AI understanding (e.g., inferring
-context, resolving ambiguity, handling complex multi-field relationships). If the user said "Ze is 0.35"
-and it was missed, that is ALWAYS a regex fix — never a Sonnet prompt change.
+### CORE PRINCIPLE: EXTRACTION-PATH-AWARE
+For every missed value, the FIRST question is "which extraction path owns this field?", not "can a regex catch this?". The system has three live paths and the right fix lives on the path that owns the field — a regex fix for a dialogue-engine field will be ignored at runtime, and a dialogue-engine fix for a board-level field is overkill.
+
+- **Dialogue-engine path** (protective devices, ring continuity, insulation resistance — OCPD / RCD / RCBO / `ring_continuity` / `insulation_resistance`): the engine's schema definitions in `src/extraction/dialogue-engine/schemas/*.js` own capture. If a value is missed, the right shape of fix is usually a schema tighten / extend or a dispatcher validator — NOT a TranscriptFieldMatcher regex (the regex path is bypassed for these fields).
+- **Pre-LLM-gate path** (board-level / installation fields — Ze, PFC, supply MCB rating, earthing system, etc.): `TranscriptFieldMatcher.swift` is the primary capture; `regex_improvement` / `number_normaliser` / `keyword_boost` / `keyword_removal` apply here.
+- **Sonnet rolling-extraction path** (cross-cutting context, ambiguity resolution, multi-field reasoning): `sonnet_prompt_addition` / `sonnet_prompt_trim` — last resort, only when the value genuinely requires AI reasoning.
+
+A more explicit decision tree lands in Cluster 2 of the optimizer rewrite. Until then, when classifying a missed value, ask "is this a dialogue-engine schema field?" BEFORE proposing a TranscriptFieldMatcher regex change.
+
+Sonnet costs tokens, has latency, and can hallucinate; regex is instant and deterministic — but only if the field lives on the regex path.
 
 ### 1. Scan utterance-level data for missed values
 The UTTERANCES WITH UNCAPTURED VALUES section above lists every utterance where a number was spoken

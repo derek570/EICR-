@@ -13,14 +13,30 @@ Analyze the root cause and output structured JSON recommendations.
 ## INSTRUCTIONS
 
 1. Read the bug report carefully. The user told you exactly what's wrong.
-2. Investigate the root cause in the codebase using Read/Glob/Grep. Key files to consider:
-   - `CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift` — regex patterns (board-level / installation fields path, pre-LLM-gate path)
-   - `CertMateUnified/Sources/Recording/NumberNormaliser.swift` — spoken-number conversion
-   - `src/extraction/eicr-extraction-session.js` — Sonnet system prompt + extraction
-   - `src/extraction/sonnet-stream.js` — WebSocket message routing + question gate
-   - `src/extract.js`, `src/api.js` — batch extraction
-   - `CertMateUnified/Sources/Resources/default_config.json` — live bundled Flux keyterms (NOTE: `CertMateUnified/Resources/default_config.json` is a STALE copy — do not read or recommend changes to that file)
-   - Any other file you identify as relevant
+2. Investigate the root cause in the codebase using Read/Glob/Grep. Identify which extraction path owns the affected field BEFORE proposing a fix — the wrong path will be ignored at runtime. Three live paths:
+
+   **Dialogue-engine path** (protective devices, ring continuity, insulation resistance):
+   - `src/extraction/dialogue-engine/schemas/{ocpd,rcd,rcbo,ring-continuity,insulation-resistance}.js` — schema definitions; slots / triggers / asks / derivations.
+   - `src/extraction/dialogue-engine/parsers/{amps,bs-code,circuit-range,ka,ma,mcb-type,megaohms,ms,ohms,rcd-type,voltage}.js` — value parsers (bare-bridge value groups live here). Insulation-resistance has NO parser — it uses `parsers/megaohms.js`.
+   - `src/extraction/dialogue-engine/helpers/extraction.js` — named-field extractor.
+   - `src/extraction/loaded-barrel-speculator.js` — pre-fill speculator.
+   - `src/extraction/stage6-dispatch-validation.js` — numeric-range / value-enum dispatcher guards.
+   - `src/extraction/field-name-corrections.js` — canonical ↔ legacy field-name table.
+   - `CertMateUnified/Sources/Services/DeepgramService.swift` — Flux Configure / focused-mode Configure path (per-ask vocabulary).
+   - `CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift` — per-ask keyterm essentials.
+   - `tests/fixtures/voice-latency-scenarios/{garbles,schema_ambiguity,dispatcher_gaps}/` — harness probes; read these to learn the bug-class shapes already known.
+
+   **Pre-LLM-gate path** (board-level / installation fields — Ze, PFC, supply MCB rating, etc.):
+   - `CertMateUnified/Sources/Recording/TranscriptFieldMatcher.swift` — regex patterns.
+   - `CertMateUnified/Sources/Recording/NumberNormaliser.swift` — spoken-number conversion.
+   - `CertMateUnified/Sources/Resources/default_config.json` — live bundled Flux keyterms. NOTE: `CertMateUnified/Resources/default_config.json` is a STALE copy — do not read or recommend changes to that file.
+
+   **Sonnet rolling-extraction path:**
+   - `src/extraction/eicr-extraction-session.js` — Sonnet system prompt + extraction.
+   - `src/extraction/sonnet-stream.js` — WebSocket message routing + question gate.
+   - `src/extract.js`, `src/api.js` — batch extraction.
+
+   Any other file you identify as relevant.
 3. DO NOT edit files. Output recommendations as structured JSON.
 4. IMPORTANT: Keep eicr-extraction-session.js system prompt changes MINIMAL.
 5. You MUST Read any file you propose to change — old_code must match exactly.
