@@ -67,9 +67,13 @@ import {
   validateCalculateR1PlusR2,
   validateBoardScope,
 } from './stage6-dispatch-validation.js';
-import { logToolCall } from './stage6-dispatcher-logger.js';
+import {
+  logToolCall,
+  logReadingFieldGuessedFromValue,
+} from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
+import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -137,6 +141,45 @@ export async function dispatchRecordReading(call, ctx) {
       input_summary: { field: input.field, circuit: input.circuit },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // Bug 2 (2026-06-03 observation-correctness sprint): warn-only metric
+  // for record_reading dispatches where the field cannot be anchored in
+  // the active turn's transcript by either a normalised display label
+  // or a known spoken alias. Source: session 928889F3 (2026-06-03
+  // 11:48 UTC) — Haiku 4.5 emitted `record_reading {field: r1_r2_ohm,
+  // circuit: 4, value: 0.6}` for "upstairs sockets number 0.6" (a
+  // Deepgram garble of "number of points 6"). The model chose the field
+  // by value-range alone (0.6 Ω is plausible for R1+R2). The prompt-side
+  // FIELD-AMBIGUITY RULE is the upstream prevention; this metric
+  // collects evidence so we can decide whether to promote to a hard
+  // reject. Promotion criterion (per plan): >5 % over 7 days → hard
+  // reject; close-out criterion (<0.5 % over 14 days) → prompt rule
+  // alone is sufficient.
+  //
+  // Placement is load-bearing: AFTER both validators pass (so invalid
+  // writes don't pollute the metric) and BEFORE applyReadingFlagAware
+  // (so the row reflects the input the dispatcher actually accepts).
+  // Transcript-null skip is also load-bearing: a missing
+  // activeTurnTranscript is indistinguishable from a missing anchor,
+  // and the harness-driven dispatch path explicitly stashes
+  // `activeTurnTranscript: null` in tests (e.g.
+  // stage6-shadow-harness-broadcast-intent-wiring.test.js:102) —
+  // emitting here would inflate the >5%/14-day promotion counter with
+  // rows that never had a transcript to anchor against. The only setter
+  // is stage6-shadow-harness.js:343; no `session.userTurns` fallback
+  // exists.
+  const transcript = session.activeTurnTranscript;
+  if (typeof transcript === 'string' && transcript.length > 0) {
+    if (!hasReadingFieldAnchor(input.field, transcript)) {
+      logReadingFieldGuessedFromValue(logger, {
+        sessionId: session.sessionId,
+        field: input.field,
+        circuit: input.circuit,
+        value: input.value,
+        transcript_preview: transcript.slice(0, 80),
+      });
+    }
   }
 
   applyReadingFlagAware(session.stateSnapshot, {

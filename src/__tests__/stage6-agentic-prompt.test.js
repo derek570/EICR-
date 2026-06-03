@@ -175,8 +175,29 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // to Sonnet on observation turns via the tiered router, so the
       // extra context is amortised against the 5-min prompt cache and
       // adds ~$0.002 per observation turn on cache-read.
+      //
+      // 2026-06-03 (observation-correctness sprint — Bugs 1a/1c/2):
+      // bumped to 12500 to absorb four prompt edits. The plan estimated
+      // +705 tokens total but the actual measured growth after Bug 1c
+      // + Bug 1a was ~937 tokens (Q-DERIVED entries carry more prose
+      // than the per-bullet estimate captured). Re-measured per the
+      // plan's mandatory verification step:
+      //   - Bug 1a Q-DERIVED.OUTDOOR-LIGHT + COMMIT-FIRST RULE added to
+      //     wrag-bs7671-eicr.md (~~250 tokens estimated, more in practice
+      //     due to the worked-example prose).
+      //   - Bug 1a ONE INTERROGATIVE PER ASK rule body — replaces bare
+      //     RULE 5 title in sonnet_agentic_system.md (~80 tokens).
+      //   - Bug 1c ASK_USER REASONS subsection added to
+      //     sonnet_agentic_system.md after ORPHANED VALUES (~125 tokens).
+      //   - Bug 2 FIELD-AMBIGUITY RULE + worked example added to
+      //     sonnet_agentic_system.md (~250 tokens).
+      // Cap 12500 leaves ~250-token headroom against the expected final
+      // ~12250 estimate, matching the plan's "keep the headroom rather
+      // than tightening" guidance. Bug 1c's tool-schema description
+      // widen (in stage6-tool-schemas.js) is NOT counted — schemas live
+      // in the cached prefix and are not measured here.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(11200);
+      expect(estimate).toBeLessThanOrEqual(12500);
     });
   });
 
@@ -431,10 +452,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(invalidBoard).toEqual([]);
 
       // Now scan every `field: "X"` outside the record_board_reading spans
-      // and require circuit-fields enum membership.
+      // and require circuit-fields enum membership. Word-boundary
+      // negative-lookbehind keeps `context_field:"none"` (the ask_user
+      // sentinel used in the FIELD-AMBIGUITY worked example) out of the
+      // record_reading audit — `none` is a legal context_field value,
+      // NOT a record_reading field, and is covered by the separate
+      // context_field enum test below.
       const isInsideBoardSpan = (idx) =>
         boardSpans.some(([start, end]) => idx >= start && idx < end);
-      const allRe = /field:\s*"([a-z_][a-z0-9_]*)"/g;
+      const allRe = /(?<![a-z_])field:\s*"([a-z_][a-z0-9_]*)"/g;
       const circuitClaims = [];
       while ((m = allRe.exec(prompt)) !== null) {
         if (!isInsideBoardSpan(m.index)) circuitClaims.push(m[1]);
@@ -659,8 +685,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     rewritten to "is advised" with anti-overuse pointer to BPG4 7.3
       //     §6, plus the Issue 7.1 → 7.3 reference change. ≈ +23 tokens;
       //     cap moved by +100 to keep ~75-token headroom.
+      //   - 7000 (observation-correctness sprint 2026-06-03 first pass:
+      //     three edits touched this file — Bug 1a ONE INTERROGATIVE PER
+      //     ASK rule body replacing the bare RULE 5 title (~80 tokens),
+      //     Bug 1c ASK_USER REASONS subsection after ORPHANED VALUES
+      //     (~125 tokens), Bug 2 FIELD-AMBIGUITY RULE + worked example
+      //     (~250 tokens). Plan estimated ~455 tokens; measured 7238
+      //     after all four bugs (~853 tokens above the pre-sprint
+      //     baseline of 6385) because the FIELD-AMBIGUITY worked example
+      //     and the per-bullet ASK_USER REASONS lines were larger than
+      //     the per-bullet estimate captured.
+      //   - 7500 (observation-correctness sprint 2026-06-03 re-measure):
+      //     bumped per the plan's mandatory verification step. Leaves
+      //     ~262-token headroom above the measured 7238 estimate.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(6400);
+      expect(estimate).toBeLessThanOrEqual(7500);
     });
   });
 
@@ -802,6 +841,178 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // the appended WRAG section is binding guidance.
       expect(prompt).toMatch(/WRAG Q&As appended/);
       expect(prompt).toMatch(/reasoning fallback/i);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 12 — 2026-06-03 observation-correctness sprint.
+  //
+  // Three prompt-side rules landed in this sprint. The tests below pin
+  // each rule's presence so a future prompt rewrite cannot silently
+  // drop them and regress the field-test failure modes documented in
+  // .planning/plan-observation-bugs-2026-06-03-final.md.
+  //
+  //   - Bug 1c: ASK_USER REASONS section + scoped-regex coverage
+  //     against the enum in stage6-enumerations.json. Pre-fix the
+  //     prompt named `missing_field_and_circuit` (line 78) and
+  //     `missing_value` (line 79) but the enum didn't include them —
+  //     every such ask was rejected as invalid_reason. The regex
+  //     captures BOTH the new ASK_USER REASONS block and any future
+  //     ask_user reason literal that creeps in elsewhere.
+  //   - Bug 1a: ONE INTERROGATIVE PER ASK rule body in RULE 5.
+  //   - Bug 2: FIELD-AMBIGUITY RULE + the verbatim sentence pinning
+  //     the no-magnitude-anchor invariant.
+  // ------------------------------------------------------------------
+  describe('Group 12 — 2026-06-03 observation-correctness sprint (Bugs 1a/1c/2)', () => {
+    test('Bug 1c — ASK_USER REASONS section exists with all nine enum values', () => {
+      const idx = prompt.search(/ASK_USER REASONS:/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next sibling block (RING CONTINUITY
+      // CARRYOVER). indexOf-from-idx avoids matching the earlier
+      // CIRCUIT ROUTING cross-reference ("see RING CONTINUITY
+      // CARRYOVER below") at line ~50.
+      const end = prompt.indexOf('RING CONTINUITY CARRYOVER', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      for (const reason of [
+        'out_of_range_circuit',
+        'ambiguous_circuit',
+        'contradiction',
+        'observation_confirmation',
+        'missing_context',
+        'missing_field',
+        'missing_value',
+        'missing_field_and_circuit',
+        'missing_field_and_context',
+      ]) {
+        expect(block).toEqual(expect.stringContaining(reason));
+      }
+    });
+
+    test('Bug 1c — every ask_user reason literal in the prompt is in the enum', async () => {
+      // Tool-scope-aware regexes — only fire inside ask_user contexts so
+      // sibling tools (`clear_reading reason:"user_correction"` at line
+      // 136) do not false-positively appear as orphans. Three forms cover
+      // the live prompt:
+      //   - Block form: `ask_user({...reason:"..."})` within ~400 chars.
+      //   - With-connector prose: `emit ask_user with reason=...` or
+      //     `` `ask_user` `` with `reason="..."`.
+      //   - Connectorless prose: `` `ask_user reason=...` `` — anchored
+      //     on the leading backtick so it can't span paragraph breaks.
+      // The 400-char block window is a soft limit: the longest existing
+      // ask_user worked example is ~280 chars; a wider window risks
+      // crossing into a sibling tool block. Skip extraction prompt
+      // (sonnet_extraction_system.md) — Stage 2 does NOT drive ask_user
+      // through the dispatcher; any reason-shaped strings there are
+      // unrelated observation-reasoning prose. If a future sprint extends
+      // ask_user to extraction, revisit.
+      const askBlockReason = /ask_user\s*[({][^})]{0,400}?reason\s*[:=]\s*["']?([a-z_]+)["']?/g;
+      const askProseReasonWith =
+        /(?:emit\s+ask_user\s+with\s+|`ask_user`\s+with\s+)reason\s*[:=]\s*["']?([a-z_]+)["']?/g;
+      const askProseReasonDirect = /`ask_user\s+reason\s*[:=]\s*["']?([a-z_]+)["']?[`"']?/g;
+      const captured = new Set();
+      for (const re of [askBlockReason, askProseReasonWith, askProseReasonDirect]) {
+        let m;
+        while ((m = re.exec(prompt)) !== null) {
+          captured.add(m[1]);
+        }
+      }
+      // Acceptance: all five orphan-risk values present in the live
+      // prompt are captured. The connectorless regex is essential for
+      // lines 78-79 — the very orphans that motivated Bug 1c.
+      expect(captured.has('out_of_range_circuit')).toBe(true);
+      expect(captured.has('missing_context')).toBe(true);
+      expect(captured.has('ambiguous_circuit')).toBe(true);
+      expect(captured.has('missing_field_and_circuit')).toBe(true);
+      expect(captured.has('missing_value')).toBe(true);
+      // Sibling-tool prose must NOT appear — `clear_reading reason:
+      // "user_correction"` at line 136 is a `clear_reading_reason`, NOT
+      // an `ask_user_reason`. A false-positive here would later trip the
+      // enum membership assertion below and re-conflate the two namespaces.
+      expect(captured.has('user_correction')).toBe(false);
+      // Every captured value must be in the enum — drift fails loudly.
+      const enumsPath = path.join(__dirname, '..', '..', 'config', 'stage6-enumerations.json');
+      const enums = JSON.parse(fssync.readFileSync(enumsPath, 'utf8'));
+      const legal = new Set(enums.ask_user_reason);
+      for (const reason of captured) {
+        expect(legal.has(reason)).toBe(true);
+      }
+    });
+
+    test('Bug 1a — RULE 5 has the ONE INTERROGATIVE PER ASK rule body, not a bare title', () => {
+      // RULE 5 was a bare title for months ("ONE QUESTION PER OBSERVATION
+      // PER TURN.") with no body. Sonnet 4.6 read this as "asking is fine,
+      // just not twice for the same observation" and emitted compound asks
+      // ("Is this fixed or portable? AND is there a circuit number?") that
+      // tripped the overtake classifier — session D7D01509 turn-2 lost a
+      // valid answer to user_moved_on because regex hits had no field
+      // shape to match the compound ask. The rule body below tells Sonnet
+      // exactly when one ask is too many.
+      const idx = prompt.search(/RULE 5/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const window = prompt.slice(idx, idx + 1200);
+      // Title preserved (the existing anchor) so future renumbering does
+      // not silently break this assertion.
+      expect(window).toEqual(expect.stringContaining('ONE QUESTION PER OBSERVATION PER TURN'));
+      // The new rule body — verbatim string match because the rule's
+      // power is in the phrasing the model sees.
+      expect(window).toEqual(expect.stringContaining('ONE INTERROGATIVE PER ASK'));
+      // Rule body specifics — must explain the contract, not just name it.
+      expect(window.toLowerCase()).toMatch(/exactly one interrogative/);
+      // Cite the downstream classifier so future authors know why the
+      // rule matters and don't relax it without checking.
+      expect(window).toEqual(expect.stringContaining('overtake classifier'));
+      // Allow-list example is preserved.
+      expect(window).toEqual(expect.stringContaining('Which circuit is it'));
+    });
+
+    test('Bug 1a — WRAG file contains the COMMIT-FIRST rule + Q-DERIVED.OUTDOOR-LIGHT worked example', () => {
+      // The split structure: rule in the reasoning fallback section,
+      // examples accumulate as Q-DERIVED.* entries. Both anchors must
+      // be present or the rule has no teeth.
+      expect(wrag).toEqual(expect.stringContaining('COMMIT-FIRST RULE'));
+      expect(wrag).toEqual(expect.stringContaining('Q-DERIVED.OUTDOOR-LIGHT'));
+      // The outdoor-light entry must name the C3 default + the reg
+      // (411.3.4) + the schedule item (5.12.4) so the model can commit
+      // straight from the prompt without inferring.
+      const idx = wrag.search(/Q-DERIVED\.OUTDOOR-LIGHT/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const block = wrag.slice(idx, idx + 1200);
+      expect(block).toEqual(expect.stringContaining('C3'));
+      expect(block).toEqual(expect.stringContaining('411.3.4'));
+      expect(block).toEqual(expect.stringContaining('5.12.4'));
+      // The DO NOT ASK directives are the load-bearing part of the
+      // worked example — without them the model defaults back to
+      // interrogating "fixed or portable" and "which circuit".
+      expect(block).toMatch(/DO NOT ASK/);
+    });
+
+    test('Bug 2 — FIELD-AMBIGUITY RULE section exists with the no-magnitude-anchor invariant', () => {
+      // Pre-fix Haiku 4.5 happily committed `record_reading` for bare
+      // values when the field could be inferred from value range alone
+      // (session 928889F3: "upstairs sockets number 0.6" → r1_r2_ohm).
+      // The verbatim sentence below is the prompt's invariant; the
+      // dispatcher metric mirrors it. If the wording drifts the model
+      // may interpret the rule more permissively — keep both ends
+      // aligned.
+      const idx = prompt.search(/FIELD-AMBIGUITY RULE/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next sibling block (RING CONTINUITY
+      // CARRYOVER). indexOf-from-idx avoids matching the earlier
+      // CIRCUIT ROUTING cross-reference at line ~50.
+      const end = prompt.indexOf('RING CONTINUITY CARRYOVER', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      expect(block).toEqual(
+        expect.stringContaining(
+          'Do NOT treat numeric magnitude alone as a field anchor'
+        )
+      );
+      // ask_user reason cited is missing_field — the new enum value
+      // that Bug 1c widened to make legal.
+      expect(block).toEqual(expect.stringContaining('missing_field'));
+      // Worked example covers the upstairs sockets 0.6 repro.
+      expect(block.toLowerCase()).toMatch(/upstairs sockets/);
     });
   });
 });

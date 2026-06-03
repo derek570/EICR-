@@ -497,3 +497,51 @@ export function logRestrainedMode(
     emittedAt: new Date().toISOString(),
   });
 }
+
+/**
+ * Stage 6 Bug 2 (2026-06-03 observation-correctness sprint) —
+ * `stage6_reading_field_guessed_from_value` log row.
+ *
+ * WHY a dedicated helper (instead of a direct `logger.info` from the
+ * dispatcher): the repo convention (per the file-header guidance at
+ * the top of this module) is that every stage6 log name flows through
+ * an exported helper backed by a schema-lock test, so the row shape
+ * cannot drift silently between emit-site and CloudWatch Insights
+ * consumers. Plan §Bug 2 step 3(c) makes this explicit.
+ *
+ * WHY warn-only on first pass: per the resolved-questions block of
+ * the plan, the FIELD-AMBIGUITY RULE in the agentic prompt is what
+ * actually changes Haiku/Sonnet's behaviour. This metric collects
+ * evidence so we can decide whether to promote to a hard dispatcher
+ * reject. Promotion criterion: >5 % of record_reading dispatches log
+ * this row over a 7-day window. Close-out criterion: <0.5 % over a
+ * 14-day window means the prompt rule is doing the work and no
+ * follow-up commit is needed.
+ *
+ * ROW SHAPE (locked by the Group 5 schema-lock test in
+ * stage6-dispatcher-logger-restrained.test.js):
+ *   sessionId          : string
+ *   field              : string  — the canonical record_reading field
+ *   circuit            : number  — circuit_ref the dispatcher accepted
+ *   value              : string  — post-coercion value (string per
+ *                                  STS-01)
+ *   transcript_preview : string  — first 80 chars of
+ *                                  session.activeTurnTranscript (PII
+ *                                  preview; full transcript already
+ *                                  logged by upstream auth path)
+ *   phase              : 6       — emit-time constant; matches every
+ *                                  other stage6 row
+ *   emittedAt          : ISO8601 — Date#toISOString
+ */
+export function logReadingFieldGuessedFromValue(logger, row) {
+  const { sessionId, field, circuit, value, transcript_preview } = row;
+  logger.info('stage6_reading_field_guessed_from_value', {
+    sessionId,
+    field,
+    circuit,
+    value,
+    transcript_preview,
+    phase: 6,
+    emittedAt: new Date().toISOString(),
+  });
+}

@@ -9,7 +9,11 @@
     "ambiguous_circuit",
     "contradiction",
     "observation_confirmation",
-    "missing_context"
+    "missing_context",
+    "missing_field",
+    "missing_value",
+    "missing_field_and_circuit",
+    "missing_field_and_context"
   ],
   "expected_answer_shape": ["yes_no", "number", "free_text", "circuit_ref"]
 }

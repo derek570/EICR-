@@ -652,3 +652,225 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
     expect(verdict.toolCallId).toBe('ask_cr');
   });
 });
+
+// -----------------------------------------------------------------------------
+// 2026-06-03 — Bug 1b sprint. Step 1.5 branch routes any non-empty reply to a
+// pending observation_clarify ask as the answer, UNLESS the regex hits encode
+// a genuine topic-change (real reading field + value present).
+//
+// Repro (session D7D01509 11:50:51):
+//   Q2 ask had contextField='observation_clarify', contextCircuit=null,
+//   expectedAnswerShape='free_text'. User reply "circuit 3, and it is a
+//   permanent fitting." produced regex hit {circuit: 3} with no field/value.
+//   Pre-fix: step 2's fail-safe routed to user_moved_on (no full match
+//   possible because observation_clarify is not a schema field). The
+//   ask_user_answered_unresolved warning fired the same millisecond.
+//
+// The new step 1.5 fires AFTER exact-match step 1 and BEFORE step 2's
+// fail-safe — exact (field, circuit) matches against normal pending asks
+// still win even when an observation_clarify ask is also pending.
+// -----------------------------------------------------------------------------
+
+describe('classifyOvertake — Bug 1b step 1.5 (observation_clarify)', () => {
+  test('D7D01509 repro: bare-circuit reply to observation_clarify ask routes as answer', () => {
+    // The literal session D7D01509 repro: regex hit for circuit 3 (no
+    // field, no value) MUST NOT route to user_moved_on because the
+    // reply is a continuation of the pending observation, not a fresh
+    // reading.
+    const verdict = classifyOvertake(
+      'circuit 3, and it is a permanent fitting.',
+      [{ circuit: 3 }],
+      mockPending([
+        [
+          'obs_ask',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('obs_ask');
+    expect(verdict.userText).toBe('circuit 3, and it is a permanent fitting.');
+  });
+
+  test('multi-pending-ask priority: exact-match ask STILL wins over observation_clarify', () => {
+    // Step 1 must fire FIRST. Two pending asks — one observation_clarify
+    // (older), one exact-match measured_zs_ohm,circuit:3. A reply that
+    // exactly matches the latter should route to it, not steal into the
+    // observation_clarify. Without this assertion a future refactor of
+    // step 1.5 to fire ahead of step 1 would silently re-introduce the
+    // steal-from-specific-ask failure mode.
+    const verdict = classifyOvertake(
+      'Zs on 3 is 0.18',
+      [{ field: 'measured_zs_ohm', circuit: 3, value: 0.18 }],
+      mockPending([
+        [
+          'obs_ask',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+        [
+          'zs_ask',
+          {
+            contextField: 'measured_zs_ohm',
+            contextCircuit: 3,
+            expectedAnswerShape: 'number',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('zs_ask');
+  });
+
+  test('recordable-regex topic-change: real reading + value falls through to user_moved_on', () => {
+    // Critical for the hasRecordableRegex predicate: when the regex hit
+    // has a real reading field AND a value, the reply is a genuine
+    // topic-change. Step 1.5 must NOT steal it into the observation
+    // ask; step 2's fail-safe runs and routes to user_moved_on so the
+    // user restates the reading next turn.
+    const verdict = classifyOvertake(
+      'Actually, Zs on circuit 3 is 0.18',
+      [{ field: 'measured_zs_ohm', circuit: 3, value: 0.18 }],
+      mockPending([
+        [
+          'obs_ask',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('legacy-alias topic-change: legacy field name + value still falls through to user_moved_on', () => {
+    // Critical regression lock for the legacy aliases in
+    // RECORDABLE_READING_FIELDS. If a future change drops the legacy
+    // names (zs, pfc, r1_plus_r2, rcd_trip_time) the hasRecordableRegex
+    // predicate would silently fail to recognise a topic-change in the
+    // wire shape that existing classifier + pre-LLM-gate tests use,
+    // and step 1.5 would steal the reading into the observation ask.
+    const verdict = classifyOvertake(
+      'Zs on circuit 3 is 0.18',
+      [{ field: 'zs', circuit: 3, value: 0.18 }],
+      mockPending([
+        [
+          'obs_ask',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('regex.value === null is treated as missing — bare field without value falls through to step 1.5', () => {
+    // hasRecordableRegex predicate requires r.value != null. A regex
+    // hit with a real field but no value (e.g. "Zs on circuit 3 —" mid-
+    // utterance) is NOT a topic-change; step 1.5 should still fire
+    // because the reply is compatible with continuing the observation.
+    const verdict = classifyOvertake(
+      'Zs on circuit 3',
+      [{ field: 'measured_zs_ohm', circuit: 3, value: null }],
+      mockPending([
+        [
+          'obs_ask',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('obs_ask');
+  });
+
+  test('empty reply to observation_clarify ask falls through to user_moved_on (existing default preserved)', () => {
+    // Regression: empty / whitespace-only replies must NOT be routed
+    // as answers. The trim().length > 0 guard inside step 1.5 protects
+    // the conservative default from the dispatcher's empty placeholders.
+    const verdict = classifyOvertake(
+      '',
+      [],
+      mockPending([
+        [
+          'obs_ask',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('non-observation ask types are NOT affected — yes_no still uses step 3 only', () => {
+    // Cross-check that the new branch is scoped to observation_clarify
+    // alone. A pending yes_no ask should still route through the
+    // existing yes/no vocabulary path in step 3.
+    const verdict = classifyOvertake(
+      'yes',
+      [],
+      mockPending([
+        [
+          'yn_ask',
+          {
+            contextField: null,
+            contextCircuit: null,
+            expectedAnswerShape: 'yes_no',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('yn_ask');
+  });
+
+  test('oldest observation_clarify ask wins when two are pending (rare)', () => {
+    // Documented in the source comment: rare but possible. Two
+    // observation_clarify asks pending; the bare-circuit reply routes
+    // to the oldest one (insertion order). This is the only sensible
+    // default — chronological asks are likely to be older waiting on
+    // their answer first.
+    const verdict = classifyOvertake(
+      'circuit 3',
+      [{ circuit: 3 }],
+      mockPending([
+        [
+          'obs_first',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+        [
+          'obs_second',
+          {
+            contextField: 'observation_clarify',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('answers');
+    expect(verdict.toolCallId).toBe('obs_first');
+  });
+});
