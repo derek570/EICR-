@@ -37,6 +37,56 @@ the system didn't acknowledge the value. High priority for regex improvements.
 
 {{REPEATED_VALUES_DATA}}
 
+=== FOCUSED-MODE TIMELINE ===
+One row per `focused_mode_enter` event. Each row records: `at_ms` (iOS clock), `tool_call_id`,
+`slot_field` (the field the ask is for — null on sessions recorded before the iOS telemetry
+edit lands), `slot_circuit`, `keyterm_count` (session keyterms merged into the Configure
+message), `enter_elapsed_ms` (time to receive `focused_mode_enter_result`), and `exit_reason`.
+Use this to correlate Flux mis-hears with the specific ask that was on the wire.
+
+{{FOCUSED_MODE_TIMELINE}}
+
+=== DIALOGUE-ENGINE STATE TRANSITIONS ===
+The dialogue engine's state machine viewed as a tape. Each row carries: `at_ms`, `schema`
+(ocpd / rcd / rcbo / ring_continuity / insulation_resistance), `event` suffix (`entered`,
+`completed`, `cancelled`, `topic_switch`, `disambiguation_retry`, etc.), `circuit_ref`,
+`slot`, and `values_snapshot` (the engine's `data.values` verbatim — raw schema field
+names like `ir_live_live_mohm`, NOT display labels). Use this to spot dialogue-engine
+fields that left the engine with the wrong shape.
+
+These rows come from the backend logger via the `backend_events.jsonl` sidecar. If the
+sidecar is absent (session recorded before the backend prereq landed), the section is `[]`
+— that's expected, not a problem.
+
+{{DIALOGUE_ENGINE_TRANSITIONS}}
+
+=== STAGE 6 TOOL CALLS (per-call rows) ===
+One row per `stage6_tool_call`: `at_ms`, `tool`, `outcome` (ok/noop/rejected),
+`validation_error` ({code, field?} | null), and `input_summary` ({field, circuit, reason}).
+Use this to spot off-enum / out-of-range values that reached the dispatcher without being
+rejected — those route to `dispatcher_validator`.
+
+NOTE: `input_summary.value` is NOT present (locked by the PII guard at
+stage6-dispatchers-reading.test.js:140). For `value_out_of_enum` detection, correlate via
+the per-turn write patches or iOS `field_set` events rather than tool-call input_summary.
+
+{{STAGE6_TOOL_CALLS}}
+
+=== UNMAPPED READINGS (iOS dropped fields) ===
+Sonnet-emitted field names that landed on iOS without a decoder. Each row: `at_ms`, `field`,
+`value`, `source` (`field_buffered` = per-field as received, `end_of_session` = batch dropped
+at session-close). These are the signal for `field_name_correction_add` — but check whether
+iOS already accepts the canonical name natively (dual-alias decoders) before recommending.
+
+{{UNMAPPED_READINGS}}
+
+=== AUTO-DETECTED BUG SIGNATURES ===
+Signature matches from the KNOWN_BUG_SIGNATURES registry (populated by Cluster 3 Item 7).
+Each entry pre-seeds a recommendation alongside whatever you generate; you can either
+endorse the signature's pre-canned shape, or override it with a better-tuned recommendation.
+
+{{BUG_SIGNATURE_HITS}}
+
 ### FLUX KEYTERM BUDGET: {{KEYTERM_RAW_COUNT}} raw / {{KEYTERM_GENERATOR_SENT_COUNT}} after iOS cap / {{KEYTERM_URL_ESTIMATED_SENT_COUNT}} estimated through URL truncation (~{{KEYTERM_URL_CHARS_ESTIMATE}} chars)
 
 Deepgram Flux (the active STT model) uses keyterms as **inclusion-priority vocabulary hints**, NOT as acoustic-bias multipliers. The Nova-3 `:boost` suffix is stripped on Flux — any `boost >= 2.0` framing from older recommendations is dead. There is NO 500-token BPE budget on Flux; the binding constraints are two distinct caps on two distinct send paths:

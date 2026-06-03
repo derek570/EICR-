@@ -1054,6 +1054,21 @@ process_session() {
   local ANALYSIS
   ANALYSIS=$(cat "$SESSION_DIR/analysis.json")
 
+  # Cluster 2 Item 6 — extract the new analyzer sections as compact JSON
+  # blobs for the prompt's new template vars. jq -c keeps them on one line
+  # so the substituted prompt stays readable. Falls back to '[]' when a
+  # section is absent (older analyzer output / sessions before this PR).
+  local FOCUSED_MODE_TIMELINE
+  local DIALOGUE_ENGINE_TRANSITIONS
+  local STAGE6_TOOL_CALLS
+  local UNMAPPED_READINGS
+  local BUG_SIGNATURE_HITS
+  FOCUSED_MODE_TIMELINE=$(echo "$ANALYSIS" | jq -c '.focused_mode_timeline // []' 2>/dev/null || echo "[]")
+  DIALOGUE_ENGINE_TRANSITIONS=$(echo "$ANALYSIS" | jq -c '.dialogue_engine_transitions // []' 2>/dev/null || echo "[]")
+  STAGE6_TOOL_CALLS=$(echo "$ANALYSIS" | jq -c '.stage6_tool_calls // []' 2>/dev/null || echo "[]")
+  UNMAPPED_READINGS=$(echo "$ANALYSIS" | jq -c '.unmapped_readings // []' 2>/dev/null || echo "[]")
+  BUG_SIGNATURE_HITS=$(echo "$ANALYSIS" | jq -c '.bug_signature_hits // []' 2>/dev/null || echo "[]")
+
   # Compute Flux keyterm budget metrics. Two distinct caps apply on Flux:
   #
   #   1. Session-start keyterms via DeepgramService.buildFluxURL — passed as
@@ -1236,6 +1251,11 @@ Do NOT repeat the same mistake."
     --arg KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT "$KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT" \
     --arg KEYTERM_URL_CAP_REMAINING "$KEYTERM_URL_CAP_REMAINING" \
     --arg FOCUSED_KEYTERM_ESSENTIAL_COUNT "$FOCUSED_KEYTERM_ESSENTIAL_COUNT" \
+    --arg FOCUSED_MODE_TIMELINE "$FOCUSED_MODE_TIMELINE" \
+    --arg DIALOGUE_ENGINE_TRANSITIONS "$DIALOGUE_ENGINE_TRANSITIONS" \
+    --arg STAGE6_TOOL_CALLS "$STAGE6_TOOL_CALLS" \
+    --arg UNMAPPED_READINGS "$UNMAPPED_READINGS" \
+    --arg BUG_SIGNATURE_HITS "$BUG_SIGNATURE_HITS" \
     --arg FEEDBACK_CONTEXT "${FEEDBACK_CONTEXT:-No user feedback for this session.}" \
     --arg DEBUG_CONTEXT "${DEBUG_CONTEXT:-No debug reports for this session.}" \
     --arg RERUN_BLOCK "$RERUN_BLOCK" \
@@ -1257,6 +1277,11 @@ Do NOT repeat the same mistake."
       KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT: $KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT,
       KEYTERM_URL_CAP_REMAINING: $KEYTERM_URL_CAP_REMAINING,
       FOCUSED_KEYTERM_ESSENTIAL_COUNT: $FOCUSED_KEYTERM_ESSENTIAL_COUNT,
+      FOCUSED_MODE_TIMELINE: $FOCUSED_MODE_TIMELINE,
+      DIALOGUE_ENGINE_TRANSITIONS: $DIALOGUE_ENGINE_TRANSITIONS,
+      STAGE6_TOOL_CALLS: $STAGE6_TOOL_CALLS,
+      UNMAPPED_READINGS: $UNMAPPED_READINGS,
+      BUG_SIGNATURE_HITS: $BUG_SIGNATURE_HITS,
       FEEDBACK_CONTEXT: $FEEDBACK_CONTEXT,
       DEBUG_CONTEXT: $DEBUG_CONTEXT,
       RERUN_BLOCK: $RERUN_BLOCK
@@ -1990,6 +2015,12 @@ while true; do
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/field_sources.json" "$SESSION_LOCAL/field_sources.json" --region "$AWS_REGION" 2>/dev/null || true
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/job_snapshot.json" "$SESSION_LOCAL/job_snapshot.json" --region "$AWS_REGION" 2>/dev/null || true
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/cost_summary.json" "$SESSION_LOCAL/cost_summary.json" --region "$AWS_REGION" 2>/dev/null || true
+    # Cluster 2 Item 6 — pull the backend-written event sidecar (engine state
+    # transitions + per-tool-call rows). Absent on sessions recorded before
+    # the backend prereq (0) PR ships; the analyzer degrades to empty
+    # dialogue_engine_transitions / stage6_tool_calls arrays in that case.
+    # 2>/dev/null || true matches the pattern of the other downloads.
+    aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/backend_events.jsonl" "$SESSION_LOCAL/backend_events.jsonl" --region "$AWS_REGION" 2>/dev/null || true
 
     if [ ! -f "$SESSION_LOCAL/debug_log.jsonl" ]; then
       # Staleness check: don't permanently skip — allow retries until 1 hour has passed
