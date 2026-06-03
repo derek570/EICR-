@@ -145,8 +145,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // codifies the dispatcher's `wrong_board` rejection so Sonnet
       // does not waste a turn discovering it; ≈ +30 tokens; cap moved
       // by +150 to keep ~100-token headroom.
+      // 2026-06-03 (BPG4 7.3 / BS 7671 A4 refresh): bumped to 8850 to
+      // absorb the FI "advised not required" wording change and the
+      // BPG4 Issue 7.1 → 7.3 reference update. The 7.3 framing of FI
+      // is a correctness fix (sole FI no longer auto-Unsatisfactory)
+      // and the version anchor lets the model apply the right A4
+      // regulation renumbering (414.3(d), 443.4.1 (a)&(c), 543.1.1.1).
+      // ≈ +15 tokens; cap moved by +100 to keep ~85-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(8750);
+      expect(estimate).toBeLessThanOrEqual(8850);
     });
   });
 
@@ -625,8 +632,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     Sonnet learns the rule from the prompt instead of from a tool
       //     reject. ≈ +85 tokens; cap moved by +200 mirroring Group 1's
       //     bump and keeping ~100-token headroom for future refinements).
+      //   - 6400 (BPG4 7.3 / BS 7671 A4 refresh 2026-06-03: FI definition
+      //     rewritten to "is advised" with anti-overuse pointer to BPG4 7.3
+      //     §6, plus the Issue 7.1 → 7.3 reference change. ≈ +23 tokens;
+      //     cap moved by +100 to keep ~75-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(6300);
+      expect(estimate).toBeLessThanOrEqual(6400);
     });
   });
 

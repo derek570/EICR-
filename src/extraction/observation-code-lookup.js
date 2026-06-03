@@ -1,7 +1,7 @@
 // observation-code-lookup.js
 //
 // Refines an observation in four dimensions using `gpt-5-search-api`:
-//   1. BPG4 Issue 7.1 classification code (C1/C2/C3/FI)
+//   1. BPG4 Issue 7.3 classification code (C1/C2/C3/FI)
 //   2. BS 7671 regulation citation (number + wording)
 //   3. Schedule of Inspection section (`schedule_item`) — picked verbatim
 //      from the appended BS 7671 Schedule of Inspections list
@@ -101,8 +101,8 @@ export async function refineObservation(openai, obs, context = {}) {
     currentReg ? `Current candidate regulation: ${currentReg}` : '',
     currentSchedule ? `Current candidate schedule item: ${currentSchedule}` : '',
     '',
-    'Using BS 7671:2018+A2:2022 as the binding standard, with',
-    'Electrical Safety First Best Practice Guide 4 (BPG4) Issue 7.1 as a',
+    'Using BS 7671:2018+A4:2026 as the binding standard, with',
+    'Electrical Safety First Best Practice Guide 4 (BPG4) Issue 7.3 (May 2026) as a',
     'non-exhaustive reference for common cases, do four things:',
     "  (1) PROFESSIONAL_TEXT — rewrite the inspector's dictation as a single concise",
     '      sentence in formal BS 7671 inspector language. Describe the defect (NOT',
@@ -121,9 +121,16 @@ export async function refineObservation(openai, obs, context = {}) {
     '      - C3: IMPROVEMENT RECOMMENDED. Non-compliance with current BS 7671',
     '            (or compliant with an earlier edition only), or workmanship issue,',
     '            where neither C1 nor C2 applies. Safe as it stands.',
-    '      - FI: FURTHER INVESTIGATION required to determine condition. Cannot be',
-    '            safely classified without more testing or information.',
-    '      Apply these criteria to the SPECIFIC defect described. BPG4 Issue 7.1',
+    '      - FI: FURTHER INVESTIGATION is advised. Reserve for genuine reasonable-',
+    '            doubt cases where the answer could reveal danger or potential',
+    '            danger and the doubt cannot be resolved with the testing already',
+    '            done. BPG4 Issue 7.3 gives NO examples of FI for domestic',
+    '            installations and explicitly warns against FI for "nice to know"',
+    '            findings. If a code can be attributed (C1/C2/C3), use it — FI is',
+    '            not the answer. NOTE: under BPG4 7.3 a sole-FI observation no',
+    '            longer automatically makes the report Unsatisfactory (the 7.2',
+    '            "or FI" clause was removed); only C1 / C2 do that directly.',
+    '      Apply these criteria to the SPECIFIC defect described. BPG4 Issue 7.3',
     '      is one source of pre-mapped examples, but its list is not exhaustive —',
     "      do not refuse to code a defect just because it isn't in BPG4. If the",
     '      criteria above clearly apply, use them. Use web search ONLY to confirm',

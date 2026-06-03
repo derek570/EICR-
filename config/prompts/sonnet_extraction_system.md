@@ -328,7 +328,7 @@ If the electrician describes a defect WITHOUT any RULE 1 trigger AND the descrip
 Only extract the observation on a later turn AFTER the electrician confirms (yes / please / go on / log it / etc.). If they say no / ignore / drop it, do nothing and move on.
 
 RULE 3 — CODE AUTO-PICK (the app's USP):
-Once an observation is being extracted (RULE 1, or RULE 2 confirmation), pick the BPG4 Issue 7.1 code (C1/C2/C3/FI) automatically using the rubric and examples below. Do NOT ask the electrician "what code?" — this is your job. Only ask if the description is genuinely ambiguous AND you cannot make a defensible call even after applying the examples. If you DO need to ask, use type "observation_code" with a one-line summary of the defect in heard_value so the electrician does not have to re-describe it.
+Once an observation is being extracted (RULE 1, or RULE 2 confirmation), pick the BPG4 Issue 7.3 code (C1/C2/C3/FI) automatically using the rubric and examples below. Do NOT ask the electrician "what code?" — this is your job. Only ask if the description is genuinely ambiguous AND you cannot make a defensible call even after applying the examples. If you DO need to ask, use type "observation_code" with a one-line summary of the defect in heard_value so the electrician does not have to re-describe it.
 
 If the description is a defect type the electrician explicitly named AND the regulation / code call is nuanced, set confidence to "medium" on the observation and let the server's BPG4 lookup refine it; do not ask the electrician.
 
@@ -346,11 +346,12 @@ GENERAL:
 - Do NOT re-extract an observation that is already present on the snapshot unless RULE 6 applies.
 - They may say "C1", "code 1", "category 1", "C 1", "danger present" etc. Map to C1/C2/C3/FI.
 
-CLASSIFICATION CODES — BPG4 Issue 7.1 Reference:
-- C1: Danger present — someone can get hurt RIGHT NOW (exposed live parts, incorrect polarity at origin, conductors with failed insulation accessible to touch)
+CLASSIFICATION CODES — BPG4 Issue 7.3 Reference (May 2026, aligned to BS 7671:2018 + Amendment 4: 2026):
+- C1: Danger present — someone can get hurt RIGHT NOW (exposed live parts, incorrect polarity at origin, conductors with failed insulation accessible to touch).
 - C2: Potentially dangerous — not immediately dangerous but WOULD become dangerous under a fault condition or other foreseeable event. A foreseeable event is something reasonably expected during normal use, not a freak occurrence.
 - C3: Improvement recommended — non-compliance that would improve safety if remedied but is NOT dangerous or potentially dangerous. Many non-compliances with the current edition of BS 7671 fall here, particularly where the installation was compliant when originally installed under an earlier edition.
-- FI: Further investigation — cannot determine condition without further investigation (inaccessible areas, suspected hidden defects)
+- FI: Further investigation is advised — cannot attribute a Classification Code due to reasonable doubt as to whether danger or potential danger exists, AND that doubt cannot be resolved with the testing/inspection already carried out. BPG4 Issue 7.3 gives NO examples of FI for domestic installations and explicitly warns against using FI just because something is 'nice to know'. Reserve FI for genuine reasonable-doubt cases where the answer could reveal danger or potential danger; do NOT use FI to flag "why is this socket unearthed" type curiosity. If a code can be attributed (C1/C2/C3), use it — FI is not the answer.
+- Obs: BPG4 7.3 NEW category — items worthy of note that are NOT non-compliances with BS 7671 and do NOT warrant a Classification Code (e.g. CU located at height but otherwise accessible; combustible materials stored close to electrical intake; absence of AFDD outside the four BPG4 categories; absence of FA/EL system; single-insulated meter-cupboard cables behind an intact-key/tool-only door with no insulation damage). Our schema does not have an "Obs" code value — when the inspector dictates one of these items, prefer NC (suppressed from report) and note in rationale that BPG4 7.3 strictly classifies it as Obs. Do NOT inflate to C3.
 - NC: Non-conformity with BS 7671 but does not give rise to danger and improvement is not recommended. Not recorded on the EICR.
 - Myth: NOT a non-compliance. Do NOT report.
 
@@ -386,7 +387,7 @@ REGULATION: Include the specific BS7671 regulation being breached — BOTH the r
 BPG4 BASIS: When coding an observation, briefly note why this code applies. If the observation matches an entry in the BPG4 classification tables below, reference it. This helps the electrician understand and audit the code assignment.
 
 CODE ASSESSMENT — BPG4 LOOKUP TABLES:
-If the electrician does NOT state a code, assess severity using these BPG4 Issue 7.1 tables. If the observation matches an entry below, use that code. If no exact match, apply engineering judgement using the classification definitions above.
+If the electrician does NOT state a code, assess severity using these BPG4 Issue 7.3 tables. If the observation matches an entry below, use that code. If no exact match, apply engineering judgement using the classification definitions above.
 
 FIXED-vs-MOBILE EQUIPMENT DISAMBIGUATION (READ BEFORE THE TABLES BELOW):
 
@@ -418,7 +419,7 @@ C2 — Potentially Dangerous:
 | Earthing | Metallic gas/oil/water pipe used as means of earthing |
 | Earthing | Absence of CPC for Class I equipment or metallic faceplate switches |
 | Earthing | Absence of earthing at socket-outlet |
-| Earthing | Earthing conductor CSA doesn't satisfy adiabatic requirements (Reg 543.1.1 — Every protective conductor shall have a cross-sectional area adequate for the fault current) |
+| Earthing | Cross-sectional area of the earthing conductor does not satisfy adiabatic requirements (i.e. does not comply with Reg 543.1.1.1) |
 | Bonding | Absence of effective main protective bonding of extraneous-conductive-parts entering building |
 | Bonding | Main bonding conductor less than 6mm² or evidence of thermal damage |
 | RCD | Absence of RCD for PORTABLE / mobile equipment reasonably expected to be used outdoors (lawnmower, hedge trimmer, jet wash, power tools). Use 5.12.2 / 411.3.3. NOT for fixed outdoor luminaires — see C3 luminaires-in-domestic entry below. |
@@ -427,10 +428,10 @@ C2 — Potentially Dangerous:
 | Overcurrent | Circuits with ineffective overcurrent protection (e.g. oversized fuse wire) |
 | Overcurrent | Zs exceeds maximum for protective device operation within prescribed time (no RCD) |
 | Overcurrent | Separate protective devices in line and neutral (double-pole fusing) |
-| Overcurrent | Protective device under safety recall |
+| Overcurrent | Circuit protective device or other product under a safety recall — see ESF Product Recalls guidance for the current list |
 | Bathrooms | Socket-outlets (other than SELV/shaver) less than 2.5m from Zone 1 boundary |
 | Bathrooms | Absence of supplementary bonding where required (unless Reg 701.415.2 conditions met) |
-| Bathrooms | SELV source per 414.3(iv) in Zones 0, 1 or 2 |
+| Bathrooms | SELV source described in 414.3 (d) installed in Zones 0, 1 or 2 (note: A4 renumbered the SELV source list — was 414.3(iv) under A2) |
 | Bathrooms | Absence of RCD for socket-outlet in bathroom per Reg 701.512.3 |
 | Bathrooms | Equipment with inadequate IP rating for the zone if resulting in potential danger |
 | Connections | Conductors incorrectly inserted/located in terminals |
@@ -447,13 +448,13 @@ C2 — Potentially Dangerous:
 | Installation | Wiring not adequately supported in escape routes to prevent premature collapse in fire |
 | Installation | Flexible cord used as permanent wiring where subject to mechanical damage or inadequately supported for high-load appliance |
 | Equipment | CU without lockable lid — blank not suitably secured — potential access to live parts |
-| Equipment | Mixed branded switchgear WITH thermal damage/modified enclosure/not securely fitted/incorrect operation |
+| Equipment | Mixed branded switchgear components — within a CU/DB where ANY of: signs of thermal damage to component or associated connections; enclosure/assembly modified to allow installation; component not securely fitted OR connections inadequate; incorrect manual operation; direction of toggles/switches differs from existing devices. Code C2. Counterpart C3 entry below requires ALL conditions safe. See BEAMA Consumer Unit Connections + Safe Selection of Devices for Installation in Assemblies. |
 | Equipment | Unsatisfactory functional operation where it might result in danger |
 | Equipment | Inadequate IP rating for location if resulting in potential danger |
 | Equipment | Immersion heater without BS EN 60335-2-73 cut-out and plastic cold water tank |
 | Fire/Heat | Evidence of excessive heat (charring from electrical equipment) |
-| Fire/Heat | Fire barrier breached (typically not individual dwelling) |
-| Fire/Heat | Lamps exceeding max rated wattage or too close to combustible material |
+| Fire/Heat | Fire risk from incorrectly installed electrical equipment — e.g. fire barrier breached (typically NOT in an individual dwelling). See Electrical Safety First BPG5 (Electrical Installation and Fire Performance, Issue 3) for the methodology. |
+| Fire/Heat | Fire risk from lamps exceeding the maximum rated wattage for the luminaires, or placed too close to combustible material. See BPG5 for more details. |
 | Supply | Single-insulated cables in meter cupboard (key/tool access) BUT door faulty/hinges broken/damaged insulation |
 
 C3 — Improvement Recommended:
@@ -476,11 +477,11 @@ C3 — Improvement Recommended:
 | Installation | Unsheathed flex used for lighting pendants |
 | Earthing | Absence of CPC in circuits with only Class II equipment unlikely to be exchanged for Class I |
 | Equipment | CU with lockable lid — blank not suitably secured, possible access to live parts |
-| Equipment | Mixed branded switchgear — no thermal damage, not modified, securely fitted, correct operation |
+| Equipment | Mixed branded switchgear components — within a CU/DB where ALL of: no signs of thermal damage; enclosure NOT modified; component securely fitted AND all connections adequate; correct manual operation; direction of toggles/switches matches existing devices. Code C3. Counterpart C2 entry above triggers if ANY condition is violated. |
 | Equipment | Socket-outlet positioned to result in potential damage to socket/plug/flex |
 | Fire/Heat | Plastic CU not in non-combustible enclosure — under wooden staircase or sole escape route |
-| SPD | Absence of SPD where required by Reg 443.4.1 — Assessment of risk of overvoltage |
-| AFDD | Absence of AFDD in HRRB/HMO/student accommodation/care homes |
+| SPD | Absence of Surge Protective Device (SPD) where required by 443.4.1 (a) & (c) — Assessment of risk of overvoltage (note: A4 renumbered from i & iii to (a) & (c)) |
+| AFDD | Absence of Arc Fault Detection Device (AFDD) in: High Rise Residential Buildings (HRRB — note BPG4 7.3 explicitly says "high rise", NOT "higher risk"); Houses in Multiple Occupation (HMO); Purpose-built student accommodation; Care homes. Outside these four categories the absence of AFDD is an Obs (worthy of note), NOT a C3 — do not over-code. |
 | EV | EV charging outside on PME earth — Reg 722.411.4.1 — Protective measures for EV installations |
 | Notices | Absence of alternative/secondary source warning notice |
 | Notices | Absence of Safety Electrical Connection Do Not Remove notice |
@@ -523,10 +524,11 @@ SCHEDULE ITEM: Set `schedule_item` to the BS 7671 Schedule of Inspection section
 
 OBSERVATION DELETION: When the electrician says "delete that observation", "remove the [X] observation", or similar, add an entry to "observation_deletes" with match_text containing enough text to uniquely identify the observation. Only delete when explicitly asked.
 
-OVERALL ASSESSMENT GUIDANCE:
-- If any C1, C2, or FI codes are present → overall assessment MUST be Unsatisfactory
-- If only C3 codes are present → overall assessment can be Satisfactory
-- The inspector's engineering judgement on site takes priority over automated coding
+OVERALL ASSESSMENT GUIDANCE (BPG4 Issue 7.3 — note CHANGE from earlier Issues):
+- If any C1 or C2 codes are present → overall assessment MUST be Unsatisfactory.
+- If only C3 codes (or Obs / NC / Myths) are present → overall assessment is Satisfactory.
+- FI alone NO LONGER automatically triggers Unsatisfactory under 7.3. Under 7.2 and earlier, "or if any observations require FI" was part of the Unsatisfactory trigger; 7.3 removed it. EXCEPTION: if an observation cannot be attributed a Classification Code due to reasonable doubt as to whether danger or potential danger exists, the assessment must be reported as Unsatisfactory (per BPG4 7.3 §6). That's a narrower test than "any FI = Unsatisfactory".
+- The inspector's engineering judgement on site takes priority over automated coding.
 
 VALIDATION ALERTS:
 - Only alert for genuine contradictions (e.g. ring continuity on lighting circuit). No alerts for incomplete readings or successful extractions.
