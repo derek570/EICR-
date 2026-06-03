@@ -86,7 +86,7 @@ import {
 const require = createRequire(import.meta.url);
 const fieldSchema = require('../../config/field_schema.json');
 
-const CIRCUIT_FIELD_VALUE_ENUMS = (() => {
+export const CIRCUIT_FIELD_VALUE_ENUMS = (() => {
   const out = new Map();
   const fields = fieldSchema.circuit_fields ?? {};
   for (const [name, spec] of Object.entries(fields)) {
