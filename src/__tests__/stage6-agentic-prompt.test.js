@@ -177,21 +177,27 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // adds ~$0.002 per observation turn on cache-read.
       //
       // 2026-06-03 (observation-correctness sprint — Bugs 1a/1c/2):
-      // bumped to 11900 to absorb four prompt edits:
-      //   - +~250 (Bug 1a Q-DERIVED.OUTDOOR-LIGHT + COMMIT-FIRST RULE
-      //     added to wrag-bs7671-eicr.md)
-      //   - +~80 (Bug 1a ONE INTERROGATIVE PER ASK rule body — replaces
-      //     bare RULE 5 title in sonnet_agentic_system.md)
-      //   - +~125 (Bug 1c ASK_USER REASONS subsection added to
-      //     sonnet_agentic_system.md after ORPHANED VALUES)
-      //   - +~250 (Bug 2 FIELD-AMBIGUITY RULE + worked example added to
-      //     sonnet_agentic_system.md)
-      // Total ~705 tokens; cap moved by +700 to keep ~195-token headroom
-      // above the historic estimate. Bug 1c's tool-schema description
+      // bumped to 12500 to absorb four prompt edits. The plan estimated
+      // +705 tokens total but the actual measured growth after Bug 1c
+      // + Bug 1a was ~937 tokens (Q-DERIVED entries carry more prose
+      // than the per-bullet estimate captured). Re-measured per the
+      // plan's mandatory verification step:
+      //   - Bug 1a Q-DERIVED.OUTDOOR-LIGHT + COMMIT-FIRST RULE added to
+      //     wrag-bs7671-eicr.md (~~250 tokens estimated, more in practice
+      //     due to the worked-example prose).
+      //   - Bug 1a ONE INTERROGATIVE PER ASK rule body — replaces bare
+      //     RULE 5 title in sonnet_agentic_system.md (~80 tokens).
+      //   - Bug 1c ASK_USER REASONS subsection added to
+      //     sonnet_agentic_system.md after ORPHANED VALUES (~125 tokens).
+      //   - Bug 2 FIELD-AMBIGUITY RULE + worked example added to
+      //     sonnet_agentic_system.md (~250 tokens).
+      // Cap 12500 leaves ~250-token headroom against the expected final
+      // ~12250 estimate, matching the plan's "keep the headroom rather
+      // than tightening" guidance. Bug 1c's tool-schema description
       // widen (in stage6-tool-schemas.js) is NOT counted — schemas live
       // in the cached prefix and are not measured here.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(11900);
+      expect(estimate).toBeLessThanOrEqual(12500);
     });
   });
 
@@ -923,9 +929,55 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       }
     });
 
-    // Bug 1a (RULE 5 body) and Bug 2 (FIELD-AMBIGUITY RULE) prompt-coverage
-    // assertions land in their own atomic commits — see the sprint plan at
-    // .planning/plan-observation-bugs-2026-06-03-final.md. Group 12 below
-    // will grow as those commits add their respective rules to the prompt.
+    test('Bug 1a — RULE 5 has the ONE INTERROGATIVE PER ASK rule body, not a bare title', () => {
+      // RULE 5 was a bare title for months ("ONE QUESTION PER OBSERVATION
+      // PER TURN.") with no body. Sonnet 4.6 read this as "asking is fine,
+      // just not twice for the same observation" and emitted compound asks
+      // ("Is this fixed or portable? AND is there a circuit number?") that
+      // tripped the overtake classifier — session D7D01509 turn-2 lost a
+      // valid answer to user_moved_on because regex hits had no field
+      // shape to match the compound ask. The rule body below tells Sonnet
+      // exactly when one ask is too many.
+      const idx = prompt.search(/RULE 5/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const window = prompt.slice(idx, idx + 1200);
+      // Title preserved (the existing anchor) so future renumbering does
+      // not silently break this assertion.
+      expect(window).toEqual(expect.stringContaining('ONE QUESTION PER OBSERVATION PER TURN'));
+      // The new rule body — verbatim string match because the rule's
+      // power is in the phrasing the model sees.
+      expect(window).toEqual(expect.stringContaining('ONE INTERROGATIVE PER ASK'));
+      // Rule body specifics — must explain the contract, not just name it.
+      expect(window.toLowerCase()).toMatch(/exactly one interrogative/);
+      // Cite the downstream classifier so future authors know why the
+      // rule matters and don't relax it without checking.
+      expect(window).toEqual(expect.stringContaining('overtake classifier'));
+      // Allow-list example is preserved.
+      expect(window).toEqual(expect.stringContaining('Which circuit is it'));
+    });
+
+    test('Bug 1a — WRAG file contains the COMMIT-FIRST rule + Q-DERIVED.OUTDOOR-LIGHT worked example', () => {
+      // The split structure: rule in the reasoning fallback section,
+      // examples accumulate as Q-DERIVED.* entries. Both anchors must
+      // be present or the rule has no teeth.
+      expect(wrag).toEqual(expect.stringContaining('COMMIT-FIRST RULE'));
+      expect(wrag).toEqual(expect.stringContaining('Q-DERIVED.OUTDOOR-LIGHT'));
+      // The outdoor-light entry must name the C3 default + the reg
+      // (411.3.4) + the schedule item (5.12.4) so the model can commit
+      // straight from the prompt without inferring.
+      const idx = wrag.search(/Q-DERIVED\.OUTDOOR-LIGHT/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const block = wrag.slice(idx, idx + 1200);
+      expect(block).toEqual(expect.stringContaining('C3'));
+      expect(block).toEqual(expect.stringContaining('411.3.4'));
+      expect(block).toEqual(expect.stringContaining('5.12.4'));
+      // The DO NOT ASK directives are the load-bearing part of the
+      // worked example — without them the model defaults back to
+      // interrogating "fixed or portable" and "which circuit".
+      expect(block).toMatch(/DO NOT ASK/);
+    });
+
+    // Bug 2 (FIELD-AMBIGUITY RULE) prompt-coverage lands in its own
+    // atomic commit.
   });
 });
