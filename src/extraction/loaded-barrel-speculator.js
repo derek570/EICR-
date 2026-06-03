@@ -104,6 +104,10 @@ import {
   coerceRecordReadingValue,
   coerceRecordBoardReadingValue,
 } from './record-reading-coercion.js';
+import {
+  BOARD_FIELD_VALUE_ENUMS,
+  CIRCUIT_FIELD_VALUE_ENUMS,
+} from './stage6-dispatch-validation.js';
 import { getActiveSessionEntry } from './active-sessions.js';
 
 const DEFAULT_OUTPUT_FORMAT = 'mp3_22050_32';
@@ -976,6 +980,51 @@ export function createSpeculator({
       record.name === 'record_board_reading'
         ? coerceRecordBoardReadingValue(field, rawValue)
         : coerceRecordReadingValue(field, rawValue);
+
+    // 2026-06-03b voice-correctness Fix C — skip pre-synth when the
+    // dispatcher will reject this round-1 input as value_not_in_options.
+    // Field-test session F03B590C turn 9 (2026-06-03 20:04 UTC): Sonnet
+    // streamed `record_board_reading {field:"main_switch_bs_en",
+    // value:"BS 1361"}`. The coerced value "BS 1361" is OFF-enum (the
+    // canonical option is "1361 type 1"); the dispatcher rejected at
+    // 20:04:24.366 but the speculator had already started synth and
+    // shipped TTS *"main switch BS EN BS 1361"* (the pre-coercion
+    // friendly-name fallback) at 20:04:24.812 — before the round-2
+    // canonical value landed. Bundler's round-2 emit at 20:04:27.291
+    // was correctly deduped at iOS, but dispatching it produced an
+    // audio-session disturbance that truncated TTS #1 mid-speech
+    // (`audio_finalizer_timeout_fired:true` at 20:04:35).
+    //
+    // Policy is VALUE-AWARE, not field-aware: we do NOT skip all enum
+    // fields (that would regress the speculator's latency win on the
+    // common case where Sonnet emits a valid enum value). We only skip
+    // when the coerced value is NOT in the enum. The dispatcher would
+    // reject this exact round-1 input as `value_not_in_options` anyway,
+    // so the pre-synth is wasted ElevenLabs spend AND leaks an off-
+    // enum spoken phrase to the inspector. Letting the bundler emit
+    // post-validation produces ONE correct TTS instead of TWO
+    // overlapping ones.
+    //
+    // Do NOT widen this to "skip all enum fields" — see the policy
+    // discussion in plan-voice-correctness-2026-06-03b-final.md Fix C
+    // Change step 3 and the schema-lock test that documents why
+    // `spd_bs_en` is intentionally NOT in BOARD_FIELD_VALUE_ENUMS
+    // (type:"text", no enum constraint, no round-1/round-2 split).
+    const enumMap =
+      record.name === 'record_board_reading'
+        ? BOARD_FIELD_VALUE_ENUMS
+        : CIRCUIT_FIELD_VALUE_ENUMS;
+    const allowed = enumMap.get(field);
+    if (allowed && !allowed.has(value)) {
+      logger?.info?.('voice_latency.speculator_skipped_enum_field', {
+        sessionId,
+        turnId: ctx.turnId,
+        tool: record.name,
+        field,
+        coerced_value_preview: String(value).slice(0, 40),
+      });
+      return; // skip synth; bundler emits post-validation
+    }
 
     _speculate({
       field,
