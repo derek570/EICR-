@@ -82,12 +82,17 @@ function makeMockClientFactory({ failWith = null, mp3Payload = Buffer.from([1, 2
   return { factory, synths };
 }
 
-function makeSpeculator({ factory } = {}) {
+function makeSpeculator({ factory, logger = null } = {}) {
+  // logger threads through to createSpeculator so tests can spy on
+  // voice_latency.* log rows the new 2026-06-03b Fix C gate emits.
+  // Without this, logger?.info?.(…) silently does nothing because
+  // createSpeculator defaults logger=null.
   return createSpeculator({
     sessionId: 'S',
     apiKey: 'test-key',
     costTracker: new CostTracker(),
     clientFactory: factory,
+    logger,
   });
 }
 
@@ -941,5 +946,95 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
       expect(factory).toHaveBeenCalledTimes(2);
       expect(synths).toHaveLength(2);
     });
+
+    test('voice-correctness-2026-06-03b Fix C: record_board_reading main_switch_bs_en with OFF-enum value → skip synth + log voice_latency.speculator_skipped_enum_field', async () => {
+      // F03B590C turn 9 repro. coerceRecordBoardReadingValue handles
+      // ONLY nominal_voltage_* (see record-reading-coercion.js:172-182)
+      // — it does NOT run parseBsCode on board-side BS fields, so the
+      // raw 'BS 1361' reaches the gate verbatim. Canonical
+      // main_switch_bs_en option is '1361 type 1' (verified via
+      // schema-lock test in stage6-dispatch-validation-enum.test.js).
+      // Pre-fix, the speculator's synth started before the dispatcher
+      // rejected the off-enum value and TTS *"main switch BS EN BS
+      // 1361"* leaked to iOS; round-2's correct *"main switch BS EN
+      // 1361 type 1"* was deduped by iOS but the act of dispatching it
+      // truncated TTS #1 mid-speech.
+      const { factory } = makeMockClientFactory();
+      const loggerSpy = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+      const spec = makeSpeculator({ factory, logger: loggerSpy });
+      spec.onToolUseStreamed(
+        boardStreamedEvent({ field: 'main_switch_bs_en', value: 'BS 1361' })
+      );
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(0);
+      expect(loggerSpy.info).toHaveBeenCalledWith(
+        'voice_latency.speculator_skipped_enum_field',
+        expect.objectContaining({
+          tool: 'record_board_reading',
+          field: 'main_switch_bs_en',
+          coerced_value_preview: 'BS 1361',
+        })
+      );
+    });
+
+    test('voice-correctness-2026-06-03b Fix C: record_board_reading main_switch_bs_en with ON-enum value → synth fires normally', async () => {
+      // Counter-test: legitimate enum values must NOT be skipped. The
+      // value-aware policy means the speculator's latency win is
+      // preserved on the common case. If a future widening turns this
+      // into a field-aware ("skip all enum fields") policy, this test
+      // fails loudly.
+      const { factory } = makeMockClientFactory();
+      const spec = makeSpeculator({ factory });
+      spec.onToolUseStreamed(
+        boardStreamedEvent({ field: 'main_switch_bs_en', value: '1361 type 1' })
+      );
+      await flush();
+      expect(factory).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test('voice-correctness-2026-06-03b Fix C: record_reading off-enum circuit field is also skipped', async () => {
+    // Circuit-side counterpart to the board-side gate. ocpd_bs_en is a
+    // circuit-level enum field. coerceRecordReadingValue DOES run
+    // parseBsCode in the BS_EN_FIELDS path (which is why the existing
+    // 2026-05-29 test at line 699 passes on 'BS 60898' — coerces to
+    // on-enum 'BS EN 60898'). Picking 'XYZ 99999' bypasses parseBsCode
+    // (no recognisable BS prefix) — the value passes through
+    // unmodified, lands as off-enum, and the gate fires.
+    const { factory } = makeMockClientFactory();
+    const loggerSpy = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const spec = makeSpeculator({ factory, logger: loggerSpy });
+    spec.onToolUseStreamed(
+      streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'XYZ 99999' })
+    );
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(0);
+    expect(loggerSpy.info).toHaveBeenCalledWith(
+      'voice_latency.speculator_skipped_enum_field',
+      expect.objectContaining({
+        tool: 'record_reading',
+        field: 'ocpd_bs_en',
+        coerced_value_preview: 'XYZ 99999',
+      })
+    );
+  });
+
+  test('voice-correctness-2026-06-03b Fix C: non-enum field (measured_zs_ohm) still synths — counter-test for non-enum-gated fields', async () => {
+    // measured_zs_ohm is type:"number" in the schema (no select
+    // options), so CIRCUIT_FIELD_VALUE_ENUMS.get('measured_zs_ohm')
+    // returns undefined and the gate condition `allowed && ...` is
+    // false. The speculator MUST still fire. If a future change adds
+    // numeric fields to the enum map by mistake, this test catches it.
+    // The existing happy-path test at line 670 already covers this,
+    // but pinning it explicitly with the Fix C labelling makes the
+    // intent legible.
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onToolUseStreamed(
+      streamedEvent({ field: 'measured_zs_ohm', circuit: 1, value: '0.5' })
+    );
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(synths).toHaveLength(1);
   });
 });

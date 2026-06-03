@@ -26,6 +26,7 @@
 import {
   validateRecordReading,
   BOARD_FIELD_VALUE_ENUMS,
+  CIRCUIT_FIELD_VALUE_ENUMS,
 } from '../extraction/stage6-dispatch-validation.js';
 
 const snapshotOneCircuit = { circuits: { 3: {} } };
@@ -217,5 +218,64 @@ describe('BOARD_FIELD_VALUE_ENUMS — exposed for stage6-dispatchers-board.js', 
     expect(BOARD_FIELD_VALUE_ENUMS.has('earth_loop_impedance_ze')).toBe(false);
     expect(BOARD_FIELD_VALUE_ENUMS.has('prospective_fault_current')).toBe(false);
     expect(BOARD_FIELD_VALUE_ENUMS.has('sub_main_cable_csa_mm2')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Schema-lock for the Loaded Barrel speculator's 2026-06-03b Fix C gate.
+//
+// The speculator reads BOARD_FIELD_VALUE_ENUMS + CIRCUIT_FIELD_VALUE_ENUMS
+// to decide whether to skip pre-synth on a streamed tool-use event
+// whose coerced value would be rejected as `value_not_in_options`. If
+// the BS-EN families silently drop out of those maps (schema rename,
+// section move, type-flip from select→text), the gate stops firing on
+// the F03B590C-class repro and the bug returns.
+//
+// `spd_bs_en` is intentionally type:"text" in field_schema.json — it's
+// the only `*_bs_en` field whose canonical home is the open-text supply
+// section. Pin the absence so a future engineer doesn't "fix" the gap
+// by adding it to BOARD_FIELD_VALUE_ENUMS and re-introducing the
+// round-1/round-2 TTS split for spd_bs_en writes.
+// ─────────────────────────────────────────────────────────────────────
+describe('voice-correctness-2026-06-03b Fix C — speculator gate value-enum schema-lock', () => {
+  test('CIRCUIT_FIELD_VALUE_ENUMS is exported and includes ocpd_bs_en + rcd_bs_en', () => {
+    // The two circuit-side BS-EN families. Both are type:"select"
+    // (verified via field_schema.json circuit_fields). Without these
+    // entries, the speculator gate never fires on a streamed
+    // `record_reading` with an off-enum BS-EN value, and the
+    // pre-validation TTS leak re-opens for the circuit-side path.
+    expect(CIRCUIT_FIELD_VALUE_ENUMS).toBeInstanceOf(Map);
+    expect(CIRCUIT_FIELD_VALUE_ENUMS.has('ocpd_bs_en')).toBe(true);
+    expect(CIRCUIT_FIELD_VALUE_ENUMS.has('rcd_bs_en')).toBe(true);
+    // Spot-check one canonical option per field so a schema rename
+    // (e.g. dropping the "BS EN " prefix) fails this assertion before
+    // the speculator gate stops matching.
+    expect(CIRCUIT_FIELD_VALUE_ENUMS.get('ocpd_bs_en').has('BS EN 60898')).toBe(true);
+    expect(CIRCUIT_FIELD_VALUE_ENUMS.get('rcd_bs_en').has('BS EN 61008')).toBe(true);
+  });
+
+  test('BOARD_FIELD_VALUE_ENUMS includes main_switch_bs_en (the F03B590C field)', () => {
+    // The exact field the speculator gate must guard. Canonical option
+    // is "1361 type 1"; the off-enum value "BS 1361" reaches the gate
+    // verbatim because coerceRecordBoardReadingValue does NOT run
+    // parseBsCode on board-side BS fields (see Fix C plan §"Coercion
+    // asymmetry"). If main_switch_bs_en drops out of the map, the
+    // speculator skips its skip — and the pre-validation TTS leak
+    // returns on the precise F03B590C repro.
+    expect(BOARD_FIELD_VALUE_ENUMS.has('main_switch_bs_en')).toBe(true);
+    expect(BOARD_FIELD_VALUE_ENUMS.get('main_switch_bs_en').has('1361 type 1')).toBe(true);
+    expect(BOARD_FIELD_VALUE_ENUMS.get('main_switch_bs_en').has('BS 1361')).toBe(false);
+  });
+
+  test('spd_bs_en is INTENTIONALLY absent from BOARD_FIELD_VALUE_ENUMS (type:"text")', () => {
+    // spd_bs_en is the canonical home for the DNO cutout BS number
+    // (Fix B routing). It's type:"text" in field_schema.json so the
+    // dispatcher does NOT produce a value_not_in_options reject for
+    // spd_bs_en writes — meaning there is no round-1/round-2 TTS
+    // split to skip. The speculator must continue firing pre-synth on
+    // spd_bs_en for the latency win. Document the absence so a future
+    // "fix" doesn't promote spd_bs_en to type:"select" without
+    // coordinating with the speculator gate.
+    expect(BOARD_FIELD_VALUE_ENUMS.has('spd_bs_en')).toBe(false);
   });
 });
