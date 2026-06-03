@@ -1844,6 +1844,18 @@ while true; do
 
   for SESSION_PATH in $SESSIONS; do
 
+    # Skip harness-generated sessions — basename starts with "harness_".
+    # The full S3 key is "session-analytics/{userId}/{sessionId}", so a
+    # regex against the full path would never match — extract basename first.
+    # Mark as processed and clear any first_seen entry so we don't treadmill
+    # for 3600s waiting for a debug_log.jsonl that never uploads.
+    SESSION_BASENAME="${SESSION_PATH##*/}"
+    if [[ "$SESSION_BASENAME" == harness_* ]]; then
+      jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      continue
+    fi
+
     # Skip if already processed
     if jq -e ".processed_sessions | index(\"$SESSION_PATH\")" "$STATE_FILE" > /dev/null 2>&1; then
       continue
@@ -2132,6 +2144,14 @@ while true; do
     MISSED_COUNT=0
     for AUDIT_MANIFEST in $AUDIT_SESSIONS; do
       AUDIT_PATH="${AUDIT_MANIFEST%/manifest.json}"
+
+      # Skip harness-generated sessions before re-injecting into first_seen —
+      # same basename-anchored test as the main poll loop above. Without this
+      # the audit loop would re-add harness_* paths every 24h cycle.
+      AUDIT_BASENAME="${AUDIT_PATH##*/}"
+      if [[ "$AUDIT_BASENAME" == harness_* ]]; then
+        continue
+      fi
 
       # Skip if already processed
       if jq -e ".processed_sessions | index(\"$AUDIT_PATH\")" "$STATE_FILE" > /dev/null 2>&1; then
