@@ -97,45 +97,52 @@ You MUST read any file you propose to change before emitting a recommendation fo
 ## INSTRUCTIONS — READ CAREFULLY
 
 ### CORE PRINCIPLE: EXTRACTION-PATH-AWARE
-For every missed value, the FIRST question is "which extraction path owns this field?", not "can a regex catch this?". The system has three live paths and the right fix lives on the path that owns the field — a regex fix for a dialogue-engine field will be ignored at runtime, and a dialogue-engine fix for a board-level field is overkill.
+For every missed value, ask in this order — the right fix lives on the path that owns the field, NOT always on the regex layer. A regex fix for a dialogue-engine field will be ignored at runtime; a dialogue-engine fix for a board-level field is overkill.
 
-- **Dialogue-engine path** (protective devices, ring continuity, insulation resistance — OCPD / RCD / RCBO / `ring_continuity` / `insulation_resistance`): the engine's schema definitions in `src/extraction/dialogue-engine/schemas/*.js` own capture. If a value is missed, the right shape of fix is usually a schema tighten / extend or a dispatcher validator — NOT a TranscriptFieldMatcher regex (the regex path is bypassed for these fields).
-- **Pre-LLM-gate path** (board-level / installation fields — Ze, PFC, supply MCB rating, earthing system, etc.): `TranscriptFieldMatcher.swift` is the primary capture; `regex_improvement` / `number_normaliser` / `keyword_boost` / `keyword_removal` apply here.
-- **Sonnet rolling-extraction path** (cross-cutting context, ambiguity resolution, multi-field reasoning): `sonnet_prompt_addition` / `sonnet_prompt_trim` — last resort, only when the value genuinely requires AI reasoning.
+1. **Was this a protective-device, ring-continuity, or IR-related field?** (Trigger words: OCPD, RCD, RCBO, ring continuity, insulation resistance, L-L, L-E, R1, R2, Rn.)
+   → If yes, the dialogue-engine schema owns the capture. Use categories:
+     - `dialogue_engine_schema_tighten` — schema regex over/under-matches (e.g. yesterday's L-L=2 fix in `insulation-resistance.js`'s namedExtractor, commit 3c77b1bb)
+     - `dialogue_engine_schema_extend` — schema needs a new slot, derivation, or postCompletionAsk
+     - `dispatcher_validator` — a value reached the bundler off-enum / out-of-range without being rejected at the dispatcher gate
+   Do NOT propose a TranscriptFieldMatcher regex for these — that path is downstream of the engine and the engine bypasses it.
 
-A more explicit decision tree lands in Cluster 2 of the optimizer rewrite. Until then, when classifying a missed value, ask "is this a dialogue-engine schema field?" BEFORE proposing a TranscriptFieldMatcher regex change.
+2. **Was the value missed because Flux mis-heard a single technical word?** (e.g. cooker → cucumber, RCD → RCT, Zs → Zen-s, RCBO → arcbow.)
+   → In priority order:
+     a) `flux_configure_keyterms_per_slot` — push a slot-specific keyterm at Configure time (ADVISORY ONLY today — see §7 category notes; the per-slot map infrastructure doesn't exist yet).
+     b) `bug_fix` in iOS `NumberNormaliser.swift` to rewrite the garble before it reaches downstream extractors.
+     c) `keyword_boost` (session-level default) — last resort; Flux only uses keyterms as inclusion priority, not acoustic bias.
 
-Sonnet costs tokens, has latency, and can hallucinate; regex is instant and deterministic — but only if the field lives on the regex path.
+3. **Was the value out-of-enum / out-of-range when it landed?** (e.g. `polarity_confirmed="maybe"`, `ir_test_voltage_v="2500"` outside 250-1000.)
+   → `dispatcher_validator` — extend `CIRCUIT_FIELD_VALUE_ENUMS` in `src/extraction/stage6-dispatch-validation.js` or add a numeric range to `CIRCUIT_FIELD_NUMERIC_RANGES`. Audit Phase 1 numeric-range validator is the reference shape.
+
+4. **Was the value sent to iOS with a canonical name iOS doesn't decode?** (Look for `unmapped_field_buffered` or `unmapped_readings_at_end` events in the analysis.)
+   → `field_name_correction_add` — add a canonical → legacy entry to `FIELD_CORRECTIONS` in `src/extraction/field-name-corrections.js`. Note: iOS has dual-alias decoders for IR / ring / Zs / cable fields, so a "leak" of a canonical name there isn't a bug — only emit this category when the value was actually dropped or buffered unmapped.
+
+5. **Was this a board-level / installation field?** (Ze, PFC, MCB rating on the supply, earthing system, address, postcode, client info, etc.)
+   → Pre-LLM-gate path owns capture. Check `TranscriptFieldMatcher.swift` first:
+     - `regex_improvement` — pattern missing or doesn't match the spoken form
+     - `number_normaliser` — spoken-number conversion gap
+     - `keyword_boost` / `keyword_removal` — session-level Flux keyterm tuning (see §FLUX KEYTERM BUDGET above for the URL + Configure caps that bound what actually reaches Flux)
+
+6. **Did Sonnet not see the value at all?** (Transcript wasn't forwarded, field wasn't in the prompt, or rolling context was compacted before extraction ran.)
+   → `sonnet_prompt_addition` (justify why regex / dialogue-engine can't do it — adds tokens) or `sonnet_prompt_trim` (Sonnet is being asked for a field regex already handles >90% of the time).
+
+7. **None of the above?**
+   → `bug_fix` — code bug in iOS / backend logic (field routing, model decode, ask-resolver, etc.).
+
+**Tie-breaker note**: Sonnet costs tokens, has latency, and can hallucinate; regex + dialogue-engine schemas are deterministic. When in doubt between steps 5 and 6, prefer step 5 (the regex path) — but ONLY if the field actually lives on the regex path. Steps 1-4 take precedence; do NOT fall through to step 5 just because regex is cheaper.
+
+**Special-case probes**: at any step above, if the symptom is worth a regression scenario regardless of the code fix, also emit a `harness_probe` recommendation (PROBE-ONLY — no old_code/new_code; carries scenario metadata).
 
 ### 1. Scan utterance-level data for missed values
 The UTTERANCES WITH UNCAPTURED VALUES section above lists every utterance where a number was spoken
 but NOT captured by any field_set event. For EACH uncaptured value, determine:
 - What field was the user likely providing this value for? (Use surrounding electrical terms as context.)
-- Did regex have a pattern for this field? If not, write one.
-- Did Sonnet extract it? If not, why? (Was the transcript sent? Was the field in the prompt?)
+- Which extraction path owns that field? Route via the CORE PRINCIPLE decision tree above — do not default to "is there a regex for it?".
+- If the field is dialogue-engine-owned (steps 1-4 of the tree), check the relevant schema / parser / dispatcher BEFORE looking at `TranscriptFieldMatcher.swift`.
 
 The REPEATED VALUES section lists values spoken 2+ times. These are HIGH PRIORITY — the user
-repeated themselves because the system didn't acknowledge the value. Every repeated value should
-result in a regex_improvement recommendation.
-
-For EVERY empty field in the analysis, also check the full transcript for spoken values.
-If a value was clearly spoken but not captured, classify the root cause using this priority order:
-1. **Regex miss** (for board-level / installation fields only): The pattern in TranscriptFieldMatcher.swift
-   doesn't match the phrasing. Check: Does a pattern exist for this field? Does it match the exact spoken
-   form? Does NumberNormaliser convert the spoken numbers correctly? Would a Flux keyterm help
-   recognition? (The full extraction-path decision tree below — under CORE PRINCIPLE — supersedes this
-   bullet's framing for dialogue-engine fields.)
-2. **Number normalisation miss**: NumberNormaliser.swift doesn't handle the spoken form (e.g., "nought
-   point three five" not converting to "0.35"). Fix in NumberNormaliser.swift.
-3. **Keyterm miss**: Flux misheard a technical term (e.g., "Zed S" → "said S"). Fix by adding the term
-   to CertMateUnified/Sources/Resources/default_config.json. On Flux there is no boost-suffix multiplier
-   — the keyterm acts as an inclusion-priority vocabulary hint; the boost number only matters when the
-   URL hits its 2000-char truncation cap. For per-ask vocabulary, prefer focused-mode Configure (the
-   decision tree below covers this).
-4. **Config/mapping issue**: Field routing, model decode, or remote config problem in iOS code.
-5. **Sonnet prompt issue** (LAST RESORT): Only if the value requires genuine AI reasoning that regex
-   cannot handle — e.g., inferring earthing type from context, resolving contradictory readings,
-   understanding that "the one in the kitchen" refers to circuit 3.
+repeated themselves because the system didn't acknowledge the value. Classify them via the decision tree just like any other missed value; the right category depends on which path owns the field, not on the repetition itself.
 
 ### 2. Read each debug report carefully
 The user explicitly told you what's wrong. Investigate the root cause in the codebase.
