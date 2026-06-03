@@ -119,6 +119,15 @@ function synthesiseStateChangeConfirmations(
         expanded_text: expandForTTS(text),
         field: 'circuit_op',
         circuit: ref,
+        // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: state-change
+        // confirmations are played on the iOS side via speakBriefConfirmation
+        // call sites that lack a per-confirmation turnId today (the 10
+        // no-LoadedBarrelTTSContext sites identified in the plan), so the
+        // playback-ack will never fire. Mark `expects_ios_ack: false` so the
+        // backend's audio finalizer doesn't arm waiting for an ACK that
+        // can't arrive. Threading turnId through the no-context speak sites
+        // is a Tier 1.4 follow-up.
+        expects_ios_ack: false,
       });
     }
   }
@@ -151,6 +160,9 @@ function synthesiseStateChangeConfirmations(
         expanded_text: expandForTTS(text),
         field: 'board_op',
         circuit: null,
+        // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5 — see circuit_op
+        // entry above. Same rationale for board ops.
+        expects_ios_ack: false,
       });
     }
   }
@@ -227,6 +239,11 @@ function synthesiseObservationAndClearedConfirmations(
         expanded_text: expandForTTS(text),
         field: 'observation',
         circuit: Number.isInteger(obs.circuit) ? obs.circuit : null,
+        // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: synthesised
+        // observation/cleared confirmations route through the same iOS
+        // no-LoadedBarrelTTSContext paths as state-changes; the playback-ack
+        // can't fire so the finalizer must not arm waiting for one.
+        expects_ios_ack: false,
       });
     }
   }
@@ -240,6 +257,8 @@ function synthesiseObservationAndClearedConfirmations(
         expanded_text: expandForTTS(text),
         field: 'observation_deletion',
         circuit: null,
+        // Voice-latency Tier 1.1 sub-step 5: see observation entry above.
+        expects_ios_ack: false,
       });
     }
   }
@@ -274,6 +293,10 @@ function synthesiseObservationAndClearedConfirmations(
         expanded_text: expandForTTS(text),
         field: 'field_cleared',
         circuit: circ,
+        // Voice-latency Tier 1.1 sub-step 5: see observation entry above.
+        // field_cleared confirmations also route through the no-context
+        // iOS speak path.
+        expects_ios_ack: false,
       });
     }
   }

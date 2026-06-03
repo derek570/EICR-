@@ -145,6 +145,15 @@ export function emitTurnCoreSummary(fields) {
  * @param {string} turnId
  * @param {Object} options
  * @param {number} options.bundlerEmittedCount   How many bundler confirmations were emitted.
+ *                                                **Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5:**
+ *                                                callers (i.e. `stage6-shadow-harness.js` and any
+ *                                                other `startAudioFinalizer` site) MUST pre-filter
+ *                                                this count by `expects_ios_ack !== false` so the
+ *                                                finalizer only arms for bundler confirmations whose
+ *                                                iOS speak site can actually fire a playback-ack.
+ *                                                State-change / observation / cleared confirmations
+ *                                                from the bundler set `expects_ios_ack: false` and
+ *                                                must be excluded from this count.
  * @param {number} options.attemptedFastTtsCount How many fast-TTS POSTs iOS attempted this turn.
  *                                                Typically the size of
  *                                                `entry.fastPathCorrelationIdByTurn.get(turnId)`.
@@ -179,6 +188,15 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
 
   const expected_acks = Math.max(0, bundlerEmittedCount + attemptedFastTtsCount - decrementCount);
 
+  // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: a turn is
+  // ACK-eligible if at least one bundler emit was expects_ios_ack-true OR
+  // at least one fast-TTS POST was attempted. The §CloudWatch validation
+  // query filters on this to distinguish "Tier 1.1 fix actually works" from
+  // "Apple-native fallback / no-context turns legitimately don't ACK".
+  // Emitted as integer 0|1 (NOT boolean) because Logs Insights `max()`
+  // over a boolean field is undefined in some configurations.
+  const eligible_for_validation = bundlerEmittedCount > 0 || attemptedFastTtsCount > 0;
+
   const key = `${sessionId}::${turnId}`;
   // If we're somehow re-arming for the same turn, clear the prior timer.
   const existing = pendingFinalizers.get(key);
@@ -197,6 +215,7 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
       audio_finalizer_timeout_fired: false,
       expected_acks: 0,
       decrements_applied: decrementCount,
+      eligible_for_validation,
     });
     return;
   }
@@ -212,6 +231,7 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
       audio_finalizer_timeout_fired: true,
       expected_acks: pending.expected_acks,
       decrements_applied: decrementCount,
+      eligible_for_validation: pending.eligible_for_validation,
     });
   }, FINALIZER_TIMEOUT_MS);
   if (typeof timer.unref === 'function') timer.unref();
@@ -227,15 +247,27 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
     // carry it on the emit (the timeout path captures it via closure;
     // the ACK-completion path reads it off the pending entry).
     decrements_applied: decrementCount,
+    // Voice-latency Tier 1.1 sub-step 5: persist eligibility so the on-time
+    // ACK completion path (recordPlaybackAck) carries it onto the emit too.
+    eligible_for_validation,
   });
 }
 
 /**
  * Internal: emit the `voice_latency.turn_audio_summary` row.
+ *
+ * Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: project
+ * `expected_acks_eligible` as the integer 0|1 (NOT boolean) so CloudWatch
+ * Logs Insights `max()` / `filter expected_acks_eligible = 1` works.
  */
 function emitTurnAudioSummary(fields) {
   try {
-    logger.info('voice_latency.turn_audio_summary', fields);
+    const enriched = {
+      ...fields,
+      expected_acks_eligible: fields.eligible_for_validation ? 1 : 0,
+    };
+    delete enriched.eligible_for_validation; // internal-only; only top-level field ships
+    logger.info('voice_latency.turn_audio_summary', enriched);
   } catch (err) {
     logger.warn('voice_latency.turn_summary_emit_error', {
       stage: 'audio',
@@ -277,6 +309,7 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
         audio_finalizer_timeout_fired: false,
         expected_acks: pending.expected_acks,
         decrements_applied: pending.decrements_applied,
+        eligible_for_validation: pending.eligible_for_validation,
       });
     }
     return;

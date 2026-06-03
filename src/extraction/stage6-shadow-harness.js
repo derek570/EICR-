@@ -1155,8 +1155,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // CloudWatch JOIN. Wrapped via the emitter's own try/catch so telemetry
     // failures never break extraction.
     try {
+      // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: filter by
+      // `expects_ios_ack` so the audio finalizer only arms for bundler
+      // confirmations whose iOS speak site can actually fire a playback-
+      // ack. Synthesised state-change / observation / cleared confirmations
+      // set `expects_ios_ack: false` (see stage6-event-bundler.js) because
+      // they route through iOS speakBriefConfirmation sites that lack a
+      // per-confirmation turnId today. Canonical extracted-value
+      // confirmations omit the field and default to ACK-eligible for
+      // back-compat with pre-Tier-1.1 emit code.
       const bundlerEmittedCount = Array.isArray(result.confirmations)
-        ? result.confirmations.length
+        ? result.confirmations.filter((c) => c?.expects_ios_ack !== false).length
         : 0;
       const runLiveDurationMs = Number((process.hrtime.bigint() - runLiveStartNs) / 1000000n);
       emitTurnCoreSummary({
