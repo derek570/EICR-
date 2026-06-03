@@ -24,6 +24,7 @@ import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
 import { FIELD_CORRECTIONS, applyFieldNameCorrection } from './field-name-corrections.js';
+import { KNOWN_FIELDS } from './known-fields.js';
 // Stage 5 — dialog-state filledSlots pre-flight filter. Extracted to its own
 // module so it can be unit-tested without loading storage.js. Docstring in
 // ./filled-slots-filter.js.
@@ -671,129 +672,11 @@ import {
   SNAPSHOT_FLAG_ENV_NAMES as VOICE_LATENCY_SNAPSHOT_ENV_NAMES,
 } from './voice-latency-config.js';
 
-// Known valid field names that iOS can handle
-const KNOWN_FIELDS = new Set([
-  // Supply fields
-  'ze',
-  'pfc',
-  'earthing_arrangement',
-  'main_earth_conductor_csa',
-  'main_bonding_conductor_csa',
-  'bonding_water',
-  'bonding_gas',
-  'earth_electrode_type',
-  'earth_electrode_resistance',
-  'supply_voltage',
-  'nominal_voltage',
-  'nominal_voltage_u',
-  'supply_frequency',
-  'nominal_frequency',
-  'supply_polarity_confirmed',
-  'manufacturer',
-  'zs_at_db',
-  // Main switch/fuse fields
-  'main_switch_bs_en',
-  'main_switch_current',
-  'main_switch_fuse_setting',
-  'main_switch_poles',
-  'main_switch_voltage',
-  'main_switch_location',
-  'main_switch_conductor_material',
-  'main_switch_conductor_csa',
-  // Supply-level RCD fields
-  'rcd_operating_current',
-  'rcd_time_delay',
-  'rcd_operating_time',
-  // Additional supply fields
-  'live_conductors',
-  'number_of_supplies',
-  'nominal_voltage_uo',
-  'earth_electrode_location',
-  'earthing_conductor_material',
-  'earthing_conductor_continuity',
-  'main_bonding_material',
-  'main_bonding_continuity',
-  'bonding_oil',
-  'bonding_structural_steel',
-  'bonding_lightning',
-  'bonding_other',
-  // SPD fields
-  'spd_bs_en',
-  'spd_type_supply',
-  'spd_short_circuit',
-  'spd_rated_current',
-  // Installation fields
-  'address',
-  'postcode',
-  'town',
-  'county',
-  'client_name',
-  'client_address',
-  'client_postcode',
-  'client_town',
-  'client_county',
-  'client_phone',
-  'client_email',
-  'reason_for_report',
-  'occupier_name',
-  'date_of_inspection',
-  'date_of_previous_inspection',
-  'previous_certificate_number',
-  'estimated_age_of_installation',
-  'general_condition',
-  'next_inspection_years',
-  'premises_description',
-  // Circuit fields
-  'zs',
-  'insulation_resistance_l_e',
-  'insulation_resistance_l_l',
-  'r1_plus_r2',
-  'r1_r2',
-  'r1r2',
-  'r2',
-  'earth_continuity',
-  'ring_continuity_r1',
-  'ring_continuity_rn',
-  'ring_continuity_r2',
-  'rcd_trip_time',
-  'rcd_time',
-  'rcd_rating_a',
-  'rcd_rating',
-  'polarity',
-  'cable_size',
-  'cable_size_earth',
-  'cpc_csa_mm2',
-  'cpc_csa',
-  'ocpd_type',
-  'ocpd_rating',
-  'ocpd_bs_en',
-  'rcd_bs_en',
-  'number_of_points',
-  'wiring_type',
-  'ref_method',
-  'rcd_type',
-  'rcd_operating_current_ma',
-  'max_disconnect_time',
-  'ocpd_breaking_capacity',
-  'ir_test_voltage',
-  'rcd_button_confirmed',
-  'afdd_button_confirmed',
-  'circuit_description',
-  'designation',
-  'ir_live_earth',
-  'ir_live_live',
-  'earth_fault_loop_impedance',
-  'ocpd_max_zs_ohm',
-  'max_zs',
-  'ocpd_max_zs',
-  // EIC-specific fields
-  'extent_of_installation',
-  'installation_type',
-  'departures_from_bs7671',
-  'departure_details',
-  'design_comments',
-]);
-
+// KNOWN_FIELDS lives in known-fields.js (imported at top of file).
+// Extracted 2026-06-03 so the session optimizer's analyzer-side
+// canonical_name_leak_to_ios signature detector can import it without
+// pulling in this file's WebSocket bootstrap side effects.
+//
 // FIELD_CORRECTIONS lives in field-name-corrections.js (imported at
 // top of file). Extracted 2026-05-26 so stage6-shadow-harness.js can
 // import the same map for tryEnterScriptFromWrites's alias resolution
