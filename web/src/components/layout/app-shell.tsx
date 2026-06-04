@@ -11,6 +11,7 @@ import { IconButton } from '@/components/ui/icon-button';
 import { InstallButton } from '@/components/pwa/install-button';
 import { OfflineBanner, OfflineIndicator } from '@/components/pwa/offline-indicator';
 import { AlertsBell } from '@/components/dashboard/alerts-bell';
+import { VoiceFeedbackBell } from '@/components/layout/voice-feedback-bell';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
 
 /**
@@ -136,6 +137,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
            * guided tour's final step.
            */}
           <AlertsBell dataTour="alerts-bell" />
+          {/*
+           * Phase 1.6.5 — voice-feedback bell. Sits to the right of the
+           * alerts bell so the chrome reads "identity → state
+           * (alerts) → triage (voice feedback) → install". Badge
+           * counts `status='open'` voice-feedback rows reachable to
+           * the signed-in user. Inspector access is the same as
+           * /voice-feedback itself (no admin gating on the bell —
+           * regular inspectors can submit + read their own feedback;
+           * the admin "all users" toggle is page-level).
+           */}
+          <VoiceFeedbackBell dataTour="voice-feedback-bell" />
           {/*
            * Renders only when Chrome/Edge/Android has fired
            * `beforeinstallprompt` and the deferred event is live in the
