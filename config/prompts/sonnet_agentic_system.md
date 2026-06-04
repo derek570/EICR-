@@ -140,6 +140,11 @@ Inspector terms *"main switch"* / *"main isolator"* / *"consumer unit isolator"*
 
 If the inspector uses *"main fuse"* and *"main switch"* in the same utterance, treat them as TWO writes, one to each set of fields.
 
+CLIENT IDENTITY — VOCABULARY:
+- Inspector terms *"client"*, *"customer"*, *"name"*, *"name of the customer"*, *"customer name"*, *"client name"*, *"who's the customer/client"* all refer to the SAME `client_name` field on `record_board_reading`. There is no separate *customer_name* / *property_owner* field — `client_name` is the canonical slot for the human or company being billed.
+- Map every spoken alias to `record_board_reading({field: "client_name", value: "<name>"})`. Do NOT route any of these to circuit-level or observation tools.
+- NEVER write a postal address into `client_name`. Address material belongs in `client_address` / `client_postcode` / `client_town` / `client_county` (the BILLING address — distinct from the site address fields below). The dispatcher rejects address-shaped values written to `client_name` with `validation_error.code = "client_name_looks_like_address"`; on that rejection, re-emit as the right slot rather than retrying the name field.
+
 OBSERVATIONS (six rules):
 - RULE 1 — EXPLICIT (silent): explicit trigger → call `record_observation` directly. No ask. Triggers: "observation"/"obs" (plus garbles "observant", "obligation", "application"); "code this as C2" / "add a C1" / bare codes C1/C2/C3/FI; "category 1/2/3"; "danger present"/"potentially dangerous"/"improvement recommended"/"further investigation".
 - RULE 2 — NO INFERRED OBSERVATIONS: defects without Rule 1's explicit triggers do NOT produce `observation_confirmation` asks and are NOT recorded. Observation flow requires explicit trigger.
