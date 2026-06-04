@@ -24,8 +24,21 @@
 // hardcoding text/plain.
 
 import crypto from 'crypto';
-import { uploadBytes as defaultUploadBytes } from '../storage.js';
 import logger from '../logger.js';
+
+// storage.js uses `import.meta.dirname` which is undefined under jest's
+// `--experimental-vm-modules` runner (see active-sessions.js header
+// comment for the broader context — same issue, same shape of workaround).
+// Loading lazily means tests that pass their own `uploadFn` never trigger
+// the storage.js import + path.resolve crash, while production callers
+// (no uploadFn arg) get the real S3 upload on first flush.
+let _cachedDefaultUploader = null;
+async function resolveDefaultUploader() {
+  if (_cachedDefaultUploader) return _cachedDefaultUploader;
+  const mod = await import('../storage.js');
+  _cachedDefaultUploader = mod.uploadBytes;
+  return _cachedDefaultUploader;
+}
 
 export const MAX_LINES_PER_SESSION = 20_000;
 export const FLUSH_INTERVAL_MS = 30_000;
@@ -99,7 +112,7 @@ export function shouldFlush(entry, { now = Date.now() } = {}) {
 export async function flushSession(
   sessionId,
   entry,
-  { reason = 'periodic', uploadFn = defaultUploadBytes, now = Date.now() } = {}
+  { reason = 'periodic', uploadFn = null, now = Date.now() } = {}
 ) {
   ensureRealtimeLogBuffer(entry);
   if (!sessionId || !entry || entry.realtimeLogBuffer.length === 0) return null;
@@ -115,8 +128,9 @@ export async function flushSession(
   const body = batch.join('\n') + '\n';
   const key = `session-logs/${userId}/${sessionId}/realtime/${now}-${shortUuid()}.jsonl`;
 
+  const upload = uploadFn || (await resolveDefaultUploader());
   try {
-    const ok = await uploadFn(body, key, 'application/x-ndjson');
+    const ok = await upload(body, key, 'application/x-ndjson');
     if (ok === false) throw new Error('uploadBytes returned false');
     logger.info('Client log batch flushed', {
       sessionId,
@@ -150,7 +164,7 @@ export async function flushSession(
 // racing the activeSessions map; flush volumes are small (<100 KB each).
 export async function flushAllSessions(
   activeSessions,
-  { reason = 'shutdown', uploadFn = defaultUploadBytes } = {}
+  { reason = 'shutdown', uploadFn = null } = {}
 ) {
   if (!activeSessions || typeof activeSessions.entries !== 'function') return [];
   const keys = [];
@@ -168,7 +182,7 @@ export async function flushAllSessions(
 // interval handle so the server can clear it on shutdown.
 export function startPeriodicFlusher(
   activeSessions,
-  { intervalMs = FLUSH_INTERVAL_MS, uploadFn = defaultUploadBytes } = {}
+  { intervalMs = FLUSH_INTERVAL_MS, uploadFn = null } = {}
 ) {
   if (!activeSessions || typeof activeSessions.entries !== 'function') return null;
   const interval = setInterval(async () => {
