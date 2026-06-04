@@ -618,7 +618,11 @@ describe('engine — ring continuity', () => {
       now: 3000,
     });
     expect(out).toEqual({ handled: true, fallthrough: false });
-    expect(ws.sent.at(-1).question).toBe('Ring continuity cancelled. 1 of 3 saved.');
+    // Phase 6.3 — cancel now emits a trailing `cancel_pending_tts`
+    // control frame (no `.question`), so look up the cancel TTS by
+    // type rather than positional `at(-1)`.
+    const cancelAsk = [...ws.sent].reverse().find((m) => m?.type === 'ask_user_started');
+    expect(cancelAsk?.question).toBe('Ring continuity cancelled. 1 of 3 saved.');
     expect(session.dialogueScriptState).toBeNull();
     // R1 was preserved on the snapshot (cancel preserves writes).
     expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.43');
@@ -749,7 +753,10 @@ describe('engine — insulation resistance', () => {
       now: 3000,
     });
     expect(out).toEqual({ handled: true, fallthrough: false });
-    expect(ws.sent.at(-1).question).toBe('Insulation resistance cancelled. 1 of 2 saved.');
+    // Phase 6.3 — same cancel_pending_tts trailer as the ring test
+    // above; find the cancel TTS by type, not position.
+    const cancelAsk = [...ws.sent].reverse().find((m) => m?.type === 'ask_user_started');
+    expect(cancelAsk?.question).toBe('Insulation resistance cancelled. 1 of 2 saved.');
   });
 });
 

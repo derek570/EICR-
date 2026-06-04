@@ -714,3 +714,52 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
 
   return result;
 }
+
+// PLAN-backend-final.md Phase 7.3 — backend confirmation debounce.
+//
+// Cross-turn same-field-family suppression. Inside a single turn the
+// existing synthesiseConfirmations grouping (line ~333) already folds
+// duplicate (field, value, board) tuples into one TTS line. The
+// separate concern this helper addresses is BURST turns: Sonnet's
+// extraction queue produces three sequential record_reading calls
+// across three turns inside ~800 ms (e.g. RCD trip-time fan-out where
+// each turn writes one circuit) and the inspector hears the same
+// confirmation three times. iOS slice 7.1 owns the queue serialiser
+// that prevents overlapping TTS playback; this helper drops the
+// duplicate confirmation BEFORE it enters that queue so the inspector
+// just hears the first one.
+//
+// Coalescing strategy: within the debounce window, suppress new
+// confirmations whose field matches the most-recently emitted one.
+// The first confirmation in a burst rides through (and updates the
+// state); subsequent ones in the same field family are dropped.
+// State is per-session and lives on the activeSessions entry; the
+// caller threads it in. windowMs defaults to 1500 per the plan.
+export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
+
+export function applyConfirmationDebounce(newConfirmations, debounceState, options = {}) {
+  if (!Array.isArray(newConfirmations) || newConfirmations.length === 0) {
+    return Array.isArray(newConfirmations) ? newConfirmations : [];
+  }
+  if (!debounceState) return newConfirmations;
+  const { now = Date.now(), windowMs = CONFIRMATION_DEBOUNCE_WINDOW_MS } = options;
+
+  const out = [];
+  let suppressedCount = 0;
+  for (const c of newConfirmations) {
+    const field = c?.field ?? null;
+    const elapsed = now - (debounceState.lastEmittedAt || 0);
+    const sameField = field !== null && debounceState.lastField === field;
+    if (sameField && elapsed < windowMs) {
+      suppressedCount += 1;
+      continue;
+    }
+    out.push(c);
+    debounceState.lastEmittedAt = now;
+    debounceState.lastField = field;
+  }
+  if (suppressedCount > 0) {
+    debounceState.lastSuppressedCount = (debounceState.lastSuppressedCount || 0) + suppressedCount;
+  }
+  return out;
+}

@@ -161,6 +161,16 @@ describe('record_board_reading schema', () => {
     expect(enumSet.has('town')).toBe(true);
     expect(enumSet.has('client_name')).toBe(true);
     expect(enumSet.has('date_of_inspection')).toBe(true);
+    // PLAN-backend-final.md Phase 4.0 — BILLING/CLIENT address family.
+    // Distinct from the site address fields above; added so Sonnet can
+    // emit `record_board_reading {field: "client_address"}` writes when
+    // the inspector confirms "use the site address for the client too".
+    // Without these entries the dispatcher's BOARD_FIELD_ENUM validator
+    // would reject the write and Sonnet would have no legal route.
+    expect(enumSet.has('client_address')).toBe(true);
+    expect(enumSet.has('client_postcode')).toBe(true);
+    expect(enumSet.has('client_town')).toBe(true);
+    expect(enumSet.has('client_county')).toBe(true);
   });
 
   test('field enum does NOT contain _ui_* metadata keys (filter contract)', () => {
@@ -321,6 +331,126 @@ describe('dispatchRecordBoardReading validation', () => {
     );
     expect(res.is_error).toBe(true);
     expect(JSON.parse(res.content).error.code).toBe('invalid_field');
+  });
+
+  // PLAN-backend-final.md Phase 4.5 — client_name address-shape guard.
+  // Pins the Phase 4.3 dispatcher gate that prevents the Marlborough /
+  // 71-Hexham-Road class bug where Sonnet wrote
+  // `record_board_reading {field:"client_name", value:"71 Hexham Road,
+  // Reading"}` in response to *"Should I use this address for the
+  // client too?"* / *"Y"*. The guard is scoped to client_name ONLY —
+  // identical address-shaped writes to the new client_address slot
+  // (Phase 4.0) must succeed because that's the right routing.
+
+  test('rejects address-shaped client_name with client_name_looks_like_address', async () => {
+    const session = makeSession();
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 't1', writes);
+    const res = await d(
+      {
+        tool_call_id: 'tu_addr_client_name',
+        name: 'record_board_reading',
+        input: {
+          field: 'client_name',
+          value: '71 Hexham Road, Reading',
+          confidence: 0.95,
+          source_turn_id: 't1',
+        },
+      },
+      {}
+    );
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content).error).toEqual({
+      code: 'client_name_looks_like_address',
+      field: 'value',
+    });
+    // Snapshot untouched.
+    expect(session.stateSnapshot.circuits[0]).toBeUndefined();
+    expect(writes.boardReadings.size).toBe(0);
+    // Log row carries the reject outcome with field name only (no PII value).
+    const rows = toolCallRows(logger);
+    expect(rows[0]).toMatchObject({
+      tool: 'record_board_reading',
+      outcome: 'rejected',
+      validation_error: { code: 'client_name_looks_like_address', field: 'value' },
+      input_summary: { field: 'client_name' },
+    });
+  });
+
+  test('accepts a real client_name (no leading-digit + street-suffix pattern)', async () => {
+    const session = makeSession();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
+    const res = await d(
+      {
+        tool_call_id: 'tu_real_name',
+        name: 'record_board_reading',
+        input: {
+          field: 'client_name',
+          value: 'Mrs Smith',
+          confidence: 0.95,
+          source_turn_id: 't1',
+        },
+      },
+      {}
+    );
+    expect(res.is_error).toBeFalsy();
+    expect(writes.boardReadings.size).toBe(1);
+  });
+
+  test('accepts an address-shaped value written to client_address (correct routing)', async () => {
+    // Same value class as the rejected client_name test, but the right
+    // slot. The guard is intentionally scoped to client_name only — the
+    // four client_* address slots (Phase 4.0) MUST accept address-shaped
+    // input because that's their purpose.
+    const session = makeSession();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
+    const res = await d(
+      {
+        tool_call_id: 'tu_addr_client_address',
+        name: 'record_board_reading',
+        input: {
+          field: 'client_address',
+          value: '71 Hexham Road, Reading',
+          confidence: 0.95,
+          source_turn_id: 't1',
+        },
+      },
+      {}
+    );
+    expect(res.is_error).toBeFalsy();
+    expect(writes.boardReadings.size).toBe(1);
+  });
+
+  test('does not fire on values lacking the leading-digit + street-suffix shape', async () => {
+    // "Road Smith" has no leading digit; "John Road" lacks the
+    // <digit>+<word>+<suffix> shape. Both must be accepted as legitimate
+    // names — the guard is conservative on purpose so real surnames that
+    // happen to contain a street-noun word don't get rejected.
+    const session = makeSession();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, mockLogger(), 't1', writes);
+    for (const value of ['Road Smith', 'John Road', 'Mr 4 Avenue Smith']) {
+      const res = await d(
+        {
+          tool_call_id: `tu_${value}`,
+          name: 'record_board_reading',
+          input: {
+            field: 'client_name',
+            value,
+            confidence: 0.95,
+            source_turn_id: 't1',
+          },
+        },
+        {}
+      );
+      // None of the three should hit the guard. The middle one ("John Road")
+      // would be the regression worry — leading "John" is a word, not a
+      // digit, so the regex's ^\d+ anchor saves it.
+      expect(res.is_error).toBeFalsy();
+    }
   });
 });
 

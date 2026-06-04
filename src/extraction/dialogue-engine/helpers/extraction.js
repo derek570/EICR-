@@ -70,10 +70,18 @@ export function extractNamedFieldValues(text, slots) {
  * extractNamedFieldValues but never asked for via TTS. They behave
  * like "always done" from nextMissingSlot's perspective.
  */
-export function nextMissingSlot(values, slots, skippedSet) {
+export function nextMissingSlot(values, slots, skippedSet, deferredSet) {
   for (const slot of slots) {
     if (slot.volunteeredOnly) continue;
     if (skippedSet?.has?.(slot.field)) continue;
+    // PLAN-backend-final.md Phase 6.2 — per-session deferred-slot
+    // memory survives script lifecycle (state.skipped_slots is cleared
+    // every clearScriptState). Same iteration behaviour as
+    // skippedSet — treat the slot as "done" so the script moves past
+    // it on re-entry. The volunteered-write path clears the entry so
+    // a deliberate override ("the BS code is 60898") still asks /
+    // resolves through the normal slot machinery.
+    if (deferredSet?.has?.(slot.field)) continue;
     const v = values[slot.field];
     if (v === undefined || v === null || v === '') return slot;
   }

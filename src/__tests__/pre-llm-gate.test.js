@@ -87,7 +87,13 @@ describe('PLAN_v4 — STRONG trigger forwards alone', () => {
     ['MCB tripped.', GATE_REASONS.HAS_STRONG_TRIGGER],
     ['Continuity check.', GATE_REASONS.HAS_STRONG_TRIGGER],
     ['Insulation test.', GATE_REASONS.HAS_STRONG_TRIGGER],
-    ['Delete that.', GATE_REASONS.HAS_STRONG_TRIGGER],
+    // "Delete that." moved out of this group on 2026-06-04 (PLAN-backend-
+    // final.md Phase 5.1). The new COMPLAINT_OR_NEGATION trigger runs
+    // BEFORE the strong-trigger check and matches "delete that" /
+    // "cancel that" / "fix that" as corrective complaints. Both reasons
+    // forward — the categorisation just reflects the inspector's intent
+    // (it's a complaint about something they just said). The Phase 5.1
+    // describe block lower in this file owns the positive assertion.
     ['Remove the entry.', GATE_REASONS.HAS_STRONG_TRIGGER],
     ['FCU spur.', GATE_REASONS.HAS_STRONG_TRIGGER],
     ['CPC discontinuous.', GATE_REASONS.HAS_STRONG_TRIGGER],
@@ -228,6 +234,86 @@ describe('PLAN_v4 — telemetry reason values', () => {
   });
   test('HAS_OBSERVATION_PREFIX value', () => {
     expect(GATE_REASONS.HAS_OBSERVATION_PREFIX).toBe('has_observation_prefix');
+  });
+  test('HAS_COMPLAINT_OR_NEGATION value (PLAN-backend-final Phase 5.1)', () => {
+    expect(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION).toBe('has_complaint_or_negation');
+  });
+});
+
+// PLAN-backend-final.md Phase 5.3 — COMPLAINT_OR_NEGATION trigger
+// coverage. The three captured field-test utterances (session
+// 60754E4D) MUST forward (they were silently dropped to LOW_CONTENT
+// before Phase 5.1). Synthetic complaints round out the positive
+// space; negative cases lock the bare-"no" continuation discipline
+// against "no problem" / "no signal" / "no spare" innocuous forms.
+describe('Phase 5.1 — COMPLAINT_OR_NEGATION trigger', () => {
+  describe('captured utterances from session 60754E4D (the bug fixtures)', () => {
+    test.each([
+      'Why did you ask the b s number for that one again?',
+      "No. That's not what I said.",
+      "You haven't set it to LIM.",
+    ])('forwards "%s" with HAS_COMPLAINT_OR_NEGATION', (text) => {
+      const result = shouldForwardToSonnet(text);
+      expect(result.forward).toBe(true);
+      // The captured utterance "Why did you ask the b s number..." also
+      // matches HAS_DIGIT (bs-prefix has none, but it doesn't matter —
+      // complaint check runs BEFORE digit check by design so the reason
+      // reflects intent. Lock that ordering explicitly.
+      expect(result.reason).toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
+    });
+  });
+
+  describe('synthetic positive cases', () => {
+    test.each([
+      "No, I didn't say that.",
+      "That's wrong.",
+      'Stop it.',
+      'Undo.',
+      'Cancel that.',
+      'Delete that.',
+      'Fix that.',
+      "That's not right.",
+      "I didn't say that.",
+      'Why are you doing that?',
+    ])('forwards "%s" with HAS_COMPLAINT_OR_NEGATION', (text) => {
+      const result = shouldForwardToSonnet(text);
+      expect(result.forward).toBe(true);
+      expect(result.reason).toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
+    });
+  });
+
+  describe('negative cases — innocuous bare-"no" forms must NOT trip the trigger', () => {
+    // These all start with "no" but lack a continuation pronoun /
+    // marker the regex requires. They should fall through to other
+    // checks (LOW_CONTENT for short ones, HAS_WEAK_TRIGGER for the
+    // ones with inspection vocabulary). The point of this group is
+    // to lock that the regex's "no[,.]?\s+(that|that's|i|you|...)"
+    // anchor stays in place — without it, "no problem" silently
+    // forwards and a 50-turn benign exchange floods Sonnet.
+    test.each(['no problem', 'no signal', 'no spare'])(
+      'does NOT forward "%s" via the complaint trigger',
+      (text) => {
+        const result = shouldForwardToSonnet(text);
+        // Must NOT match the complaint trigger. Some of these may still
+        // forward via other paths (e.g. "no spare" matches WEAK trigger
+        // "spare" via the inspection vocab path), but the REASON must
+        // not be HAS_COMPLAINT_OR_NEGATION.
+        expect(result.reason).not.toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
+      }
+    );
+  });
+
+  describe('complaint-forward wins over digit-forward (ordering invariant)', () => {
+    // The plan's explicit design: place the complaint check BEFORE
+    // HAS_DIGIT so a complaint that happens to contain a number
+    // ("you set it to 0.45 but I said 0.55") logs with the
+    // complaint reason, not the digit reason. The optimizer-side
+    // dashboard then attributes the call to the right intent.
+    test('"You haven\'t set it to 0.55, I said 0.32" → complaint, not digit', () => {
+      const result = shouldForwardToSonnet("You haven't set it to 0.55, I said 0.32");
+      expect(result.forward).toBe(true);
+      expect(result.reason).toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
+    });
   });
 });
 

@@ -91,6 +91,20 @@ Prevents wasted Deepgram billing when the inspector stops speaking. Three-tier s
 
 ---
 
+## Realtime iOS Log Streaming (PLAN-backend-final.md Phase 1.3)
+
+On-device `DebugLogger` JSONL output streams to the backend in near-real-time via batched `client_log_batch` envelopes over the existing Sonnet WebSocket. Replaces the multipart `/api/session/:id/analytics` upload that has been broken since Mar 2026 — that path used a one-shot end-of-session POST that lost the batch on crash and required the iPad to be plugged in for diagnosis. The streaming path:
+
+- iOS batches every ~2 s (50 entries or 32 KB cap) and sends `{type:"client_log_batch", session_id, entries:[<jsonl string>, ...]}` on the same WebSocket already carrying transcripts.
+- Backend per-entry sanitises (drop client `userId`/`sessionId`/`timestamp`, re-attach server-authoritative) → emits one CloudWatch `Client log batch entry` row per entry → appends to a per-session in-memory buffer.
+- Buffer flushes to S3 on whichever of ~30 s tick, 100 KB threshold, ws_close, session_timeout, session_stop, or `gracefulShutdown` fires first. Keys: `session-logs/{userId}/{sessionId}/realtime/{ms}-{shortUuid}.jsonl` — lexically sortable so download/replay concatenates chronologically across ECS restarts.
+- Cost-cap: 20 000 lines/session → downsampling mode (all error/warn, 1/10 info, 1/100 debug) instead of going dark — stuck sessions are precisely the ones that most need mid-session telemetry.
+- iOS-on-device `DebugLogger` file write is unaffected; the stream sink is a parallel additive consumer.
+
+Bucket / region defaults are resolved by `src/storage.js` — do NOT hardcode the production bucket name in callers. To recover a session's full log: list `s3://<production-bucket>/session-logs/{userId}/{sessionId}/realtime/` in alphabetical order and `cat` the batches.
+
+---
+
 ## Debug a CertMate Recording Session
 
 **When asked to "debug a job", "debug recording", "investigate transcription", or "debug CertMate" for a session, follow this COMPLETE process. The goal is to determine whether the problem is audio quality, transcription accuracy, or data extraction/UI population.**

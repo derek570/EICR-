@@ -54,9 +54,7 @@ describe('confirmation-text — constants', () => {
     // already returns "main switch BS EN" via its acronym table.
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_bs_en).toBe('main fuse BS EN');
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_rated_current).toBe('main fuse rating');
-    expect(CONFIRMATION_FRIENDLY_NAMES.spd_short_circuit).toBe(
-      'main fuse breaking capacity'
-    );
+    expect(CONFIRMATION_FRIENDLY_NAMES.spd_short_circuit).toBe('main fuse breaking capacity');
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_type_supply).toBe('main fuse type');
     expect(CONFIRMATION_FRIENDLY_NAMES.main_switch_bs_en).toBe('main switch BS EN');
   });
@@ -85,7 +83,12 @@ describe('confirmation-text — buildConfirmationText', () => {
     expect(buildConfirmationText('address', '1 Tilehurst Road', null)).toBe(
       'address 1 Tilehurst Road'
     );
-    expect(buildConfirmationText('client_name', 'Mr Smith', null)).toBe('client name Mr Smith');
+    // Phase 4.4 (PLAN-backend-final.md): client_name now has an
+    // explicit `customer name` entry in CONFIRMATION_FRIENDLY_NAMES
+    // (Derek's preferred vocabulary). Pre-Phase-4.4 this fell through
+    // to the snake_case→spaces derivation ("client name"); the new
+    // entry overrides that.
+    expect(buildConfirmationText('client_name', 'Mr Smith', null)).toBe('customer name Mr Smith');
     expect(buildConfirmationText('postcode', 'RG5 4RD', null)).toBe('postcode RG5 4RD');
     // Truly unknown field also speaks via snake_case fallback.
     expect(buildConfirmationText('some_made_up_field', 'value', 1)).toBe(
@@ -143,15 +146,11 @@ describe('confirmation-text — buildConfirmationText', () => {
     // explicit revert path if any of these sound wrong to the
     // inspector ear (table is frozen but individual entries are
     // independent). Pin the spoken form so the revert is detectable.
-    expect(buildConfirmationText('spd_rated_current', '100', null)).toBe(
-      'main fuse rating 100'
-    );
+    expect(buildConfirmationText('spd_rated_current', '100', null)).toBe('main fuse rating 100');
     expect(buildConfirmationText('spd_short_circuit', '16', null)).toBe(
       'main fuse breaking capacity 16'
     );
-    expect(buildConfirmationText('spd_type_supply', 'gG', null)).toBe(
-      'main fuse type gG'
-    );
+    expect(buildConfirmationText('spd_type_supply', 'gG', null)).toBe('main fuse type gG');
   });
 
   test('2026-05-29: designation prefix replaces "Circuit N" when provided', () => {

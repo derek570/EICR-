@@ -67,10 +67,7 @@ import {
   validateCalculateR1PlusR2,
   validateBoardScope,
 } from './stage6-dispatch-validation.js';
-import {
-  logToolCall,
-  logReadingFieldGuessedFromValue,
-} from './stage6-dispatcher-logger.js';
+import { logToolCall, logReadingFieldGuessedFromValue } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
 import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
@@ -1139,6 +1136,21 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
 
   const scope = input.scope ?? 'non_spare';
 
+  // PLAN-backend-final.md Phase 8.2 — exclude_circuits dedup + validate.
+  // Build a Set of valid integer refs to subtract from the apply list.
+  // Drop non-integers / non-positive / unknown values silently; the
+  // schema already constrains the type at the API layer, so an invalid
+  // entry that survives is a model quirk worth ignoring rather than
+  // rejecting the whole tool call. excluded_count below is the count of
+  // dedup'd VALIDATED requests — it reflects inspector INTENT, not the
+  // subset actually subtracted from the scoped candidates.
+  const requestedExcludes = new Set();
+  if (Array.isArray(input.exclude_circuits)) {
+    for (const v of input.exclude_circuits) {
+      if (Number.isInteger(v) && v > 0) requestedExcludes.add(v);
+    }
+  }
+
   // 2026-05-07 Phase 6.5 — board_id thread-through with `'*'` cross-board sweep.
   //
   // Resolve the iteration plan: a list of {boardId, refs[]} tuples.
@@ -1168,6 +1180,12 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     for (const ref of refs) {
       const bucket = getCircuitBucket(snapshot, ref, boardId);
       if (!bucket) continue;
+      // PLAN-backend-final.md Phase 8.2 — exclude_circuits subtractive
+      // filter. Runs BEFORE the scope check so an excluded ref doesn't
+      // also pollute `skipped[]` with a scope reason — the inspector's
+      // intent is "skip 3", not "skip 3 because spare". `excluded[]` is
+      // surfaced as its own count below.
+      if (requestedExcludes.has(ref)) continue;
       if (scope === 'non_spare') {
         // Two ways a circuit reads as "spare":
         //   (a) the designation literally contains the word "spare" — but
@@ -1248,6 +1266,15 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     }
   }
 
+  // Phase 8.2 — surface excluded_count = inspector intent (deduped
+  // validated input length), INDEPENDENT of scope. With this rule,
+  // "all circuits except 3" with scope:rcd_protected_only AND circuit
+  // 3 already out of scope (no RCD) still surfaces excluded_count:1 —
+  // the inspector asked to exclude 3, the dispatcher honoured that,
+  // the scope orthogonally dropped a different set. applied_count is
+  // the post-exclude post-scope total; skipped_count continues to
+  // count scope-rule drops only (no exclude pollution).
+  const excludedCount = requestedExcludes.size;
   logToolCall(logger, {
     sessionId: session.sessionId,
     turnId,
@@ -1262,9 +1289,14 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       scope,
       applied_count: applied.length,
       skipped_count: skipped.length,
+      excluded_count: excludedCount,
     },
   });
-  return envelope(call.tool_call_id, { ok: true, applied, skipped }, false);
+  return envelope(
+    call.tool_call_id,
+    { ok: true, applied, skipped, excluded_count: excludedCount },
+    false
+  );
 }
 
 // ---- inline validator for set_field_for_all_circuits ----------------------
