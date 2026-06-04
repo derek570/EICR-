@@ -3295,6 +3295,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       });
       return;
     }
+    // PLAN-backend-final.md Phase 5.2 — positive-side counter for the
+    // new HAS_COMPLAINT_OR_NEGATION path. Lets ops eyeball whether the
+    // signal fires in the field (session 60754E4D had 6 voiced
+    // frustrations; the optimizer should see at least that many rows
+    // per such session). Separate from gate_blocked so the existing
+    // dashboard panel doesn't have to reason about a positive reason
+    // mixed in with the blocked-reason distribution.
+    if (gateDecision.reason === GATE_REASONS.HAS_COMPLAINT_OR_NEGATION) {
+      logger.info('voice_latency.gate_forwarded_complaint', {
+        sessionId,
+        textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
+      });
+    }
 
     // Plan 03-12 r13 Codex MINOR — suppress questionGate.onNewUtterance()
     // on the drained re-entry of a deferred user_moved_on transcript.
