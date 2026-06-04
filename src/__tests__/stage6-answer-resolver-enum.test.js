@@ -56,7 +56,11 @@ const RCD_SCHEMA = {
     rcd_type: {
       label: 'RCD Type',
       type: 'select',
-      options: ['', 'AC', 'A', 'F', 'B', 'S', 'N/A'],
+      // Aligned with production config/field_schema.json:164 — includes
+      // the fuller A-S / B-S / B+ set. The word-anchored matcher's "B+"
+      // adjacency tests below verify the '+' is preserved by
+      // normaliseEnumToken so "B+" cannot collide with "B".
+      options: ['', 'AC', 'A', 'F', 'B', 'S', 'A-S', 'B-S', 'B+', 'N/A'],
     },
     measured_zs_ohm: {
       label: 'Measured Zs',
@@ -382,10 +386,7 @@ describe('resolveEnumAnswer — fall-through to no_value_context', () => {
     expect(verdict.kind).toBe('no_value_context');
   });
 
-  test('field is select but options are word-anchored (rcd_type AC|A|F|B) → no_value_context (out of current scope)', () => {
-    // resolveEnumAnswer is currently scoped to digit-anchored enums.
-    // Word-anchored enums fall through to the legacy body so Sonnet
-    // interprets. Extending to word-anchored is future work.
+  test('field is select but options are word-anchored (rcd_type AC|A|F|B|B+) → auto_resolve via word-anchored matcher', () => {
     const verdict = resolveEnumAnswer({
       userText: 'AC',
       contextField: 'rcd_type',
@@ -393,7 +394,161 @@ describe('resolveEnumAnswer — fall-through to no_value_context', () => {
       sourceTurnId: null,
       fieldSchema: RCD_SCHEMA,
     });
-    expect(verdict.kind).toBe('no_value_context');
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toEqual([
+      {
+        tool: 'record_reading',
+        field: 'rcd_type',
+        circuit: 1,
+        value: 'AC',
+        confidence: 0.9,
+        source_turn_id: null,
+      },
+    ]);
+  });
+
+  test('rcd_type "A." → auto_resolve as "A" (trailing punctuation stripped)', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A.',
+      contextField: 'rcd_type',
+      contextCircuit: 1,
+      sourceTurnId: null,
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0]).toMatchObject({ value: 'A', confidence: 0.9 });
+  });
+
+  test('rcd_type "a" → auto_resolve as "A" (case-insensitive match)', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'a',
+      contextField: 'rcd_type',
+      contextCircuit: 1,
+      sourceTurnId: null,
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0]).toMatchObject({ value: 'A', confidence: 0.9 });
+  });
+
+  test('rcd_type "B+" → auto_resolve as "B+" (+ preserved, no collision with "B")', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'B+',
+      contextField: 'rcd_type',
+      contextCircuit: 1,
+      sourceTurnId: null,
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0]).toMatchObject({ value: 'B+', confidence: 0.9 });
+  });
+
+  test('rcd_type "Z" → invalid_value with full options', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'Z',
+      contextField: 'rcd_type',
+      contextCircuit: 1,
+      sourceTurnId: null,
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('invalid_value');
+    expect(verdict.received).toBe('Z');
+    expect(verdict.valid_options).toEqual(RCD_SCHEMA.circuit_fields.rcd_type.options);
+  });
+
+  describe('wiring_type word-anchored matcher', () => {
+    const WIRING_SCHEMA = {
+      circuit_fields: {
+        wiring_type: {
+          label: 'Wiring Type',
+          type: 'select',
+          // Aligned with production config/field_schema.json:24-32 — no N/A.
+          options: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'O'],
+        },
+      },
+    };
+
+    test('"A." → auto_resolve as "A"', () => {
+      const verdict = resolveEnumAnswer({
+        userText: 'A.',
+        contextField: 'wiring_type',
+        contextCircuit: 1,
+        sourceTurnId: null,
+        fieldSchema: WIRING_SCHEMA,
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes[0]).toMatchObject({ value: 'A', confidence: 0.9 });
+    });
+
+    test('"a" → auto_resolve as "A"', () => {
+      const verdict = resolveEnumAnswer({
+        userText: 'a',
+        contextField: 'wiring_type',
+        contextCircuit: 1,
+        sourceTurnId: null,
+        fieldSchema: WIRING_SCHEMA,
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes[0]).toMatchObject({ value: 'A' });
+    });
+
+    test('"Z" → invalid_value with full wiring_type options', () => {
+      const verdict = resolveEnumAnswer({
+        userText: 'Z',
+        contextField: 'wiring_type',
+        contextCircuit: 1,
+        sourceTurnId: null,
+        fieldSchema: WIRING_SCHEMA,
+      });
+      expect(verdict.kind).toBe('invalid_value');
+      expect(verdict.valid_options).toEqual(WIRING_SCHEMA.circuit_fields.wiring_type.options);
+    });
+
+    test('"na" on wiring_type (no N/A in options) → invalid_value (NOT auto_resolve)', () => {
+      // wiring_type does NOT include N/A in its option set; the N/A
+      // short-circuit's `field.options.includes('N/A')` gate is false, so
+      // "na" falls through to the word-anchored block and gets rejected.
+      const verdict = resolveEnumAnswer({
+        userText: 'na',
+        contextField: 'wiring_type',
+        contextCircuit: 1,
+        sourceTurnId: null,
+        fieldSchema: WIRING_SCHEMA,
+      });
+      expect(verdict.kind).toBe('invalid_value');
+    });
+  });
+
+  describe('mixed digit + letter options regression guard', () => {
+    // A hypothetical option set with BOTH digit-bearing AND letter-only
+    // values. The word-anchored block's predicate is `every(o => !/\d/)`
+    // (NOT `some`) so a digit-bearing option set falls THROUGH to the
+    // existing digit-anchored path. Locking this guards against a future
+    // refactor accidentally inverting the predicate.
+    const MIXED_SCHEMA = {
+      circuit_fields: {
+        // Field name reuses ocpd_type from the WORD_ANCHORED_ENUM_FIELDS
+        // allowlist so the allowlist gate is satisfied — we're only
+        // testing the `every` predicate.
+        ocpd_type: {
+          label: 'Mixed Test',
+          type: 'select',
+          options: ['230', '400', 'Other'],
+        },
+      },
+    };
+
+    test('digit-bearing options route through digit-anchored path, NOT word-anchored', () => {
+      const verdict = resolveEnumAnswer({
+        userText: '230',
+        contextField: 'ocpd_type',
+        contextCircuit: 1,
+        sourceTurnId: 't1',
+        fieldSchema: MIXED_SCHEMA,
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes[0]).toMatchObject({ value: '230', confidence: 0.95 });
+    });
   });
 
   test('contextField is null → no_value_context', () => {
@@ -440,5 +595,140 @@ describe('resolveEnumAnswer — schema slice acceptance', () => {
       fieldSchema: RCD_SCHEMA.circuit_fields,
     });
     expect(verdict.kind).toBe('auto_resolve');
+  });
+});
+
+describe('multi-circuit enum resolve (session C0C21546 2026-06-04)', () => {
+  const WIRING_SCHEMA = {
+    circuit_fields: {
+      wiring_type: {
+        label: 'Wiring Type',
+        type: 'select',
+        options: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'O'],
+      },
+    },
+  };
+
+  test('"A." answer with contextCircuits [2,3] fans out two writes', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A.',
+      contextField: 'wiring_type',
+      contextCircuit: null,
+      contextCircuits: [2, 3],
+      sourceTurnId: 'turn-12',
+      fieldSchema: WIRING_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toHaveLength(2);
+    expect(verdict.writes.map((w) => w.circuit).sort()).toEqual([2, 3]);
+    expect(verdict.writes.every((w) => w.field === 'wiring_type')).toBe(true);
+    expect(verdict.writes.every((w) => w.value === 'A')).toBe(true);
+  });
+
+  test('falls through to single-circuit when only contextCircuit is set', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'B',
+      contextField: 'wiring_type',
+      contextCircuit: 5,
+      contextCircuits: null,
+      sourceTurnId: 'turn-x',
+      fieldSchema: WIRING_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toHaveLength(1);
+    expect(verdict.writes[0].circuit).toBe(5);
+    expect(verdict.writes[0].value).toBe('B');
+  });
+
+  test('contextCircuits empty array falls back to no_value_context if no contextCircuit', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A',
+      contextField: 'wiring_type',
+      contextCircuit: null,
+      contextCircuits: [],
+      sourceTurnId: 't',
+      fieldSchema: WIRING_SCHEMA,
+    });
+    expect(verdict.kind).toBe('no_value_context');
+  });
+
+  test('invalid value with contextCircuits escalates with did_you_mean or invalid_value', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'Z',
+      contextField: 'wiring_type',
+      contextCircuit: null,
+      contextCircuits: [2, 3],
+      sourceTurnId: 't',
+      fieldSchema: WIRING_SCHEMA,
+    });
+    expect(['did_you_mean', 'invalid_value']).toContain(verdict.kind);
+  });
+
+  test('contextCircuits length-1 with no contextCircuit → no_value_context (validator normally blocks, resolver defends)', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A',
+      contextField: 'wiring_type',
+      contextCircuit: null,
+      contextCircuits: [2],
+      sourceTurnId: 't',
+      fieldSchema: WIRING_SCHEMA,
+    });
+    expect(verdict.kind).toBe('no_value_context');
+  });
+
+  test('contextCircuits length-1 with contextCircuit set → falls back to single-circuit [contextCircuit]', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A',
+      contextField: 'wiring_type',
+      contextCircuit: 5,
+      contextCircuits: [2],
+      sourceTurnId: 't',
+      fieldSchema: WIRING_SCHEMA,
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toHaveLength(1);
+    expect(verdict.writes[0].circuit).toBe(5);
+  });
+});
+
+describe('non-circuit context-field guard (multi-circuit fan-out only)', () => {
+  // For board/supply/installation fields, multi-circuit fan-out is
+  // meaningless. Guard fires only when circuitList.length > 1 so single-
+  // circuit asks on those fields still flow through (the resolver bails
+  // for unrelated reasons later, but the guard itself doesn't block).
+  test('ze_at_db (board field) + contextCircuits:[2,3] → no_value_context', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A',
+      contextField: 'ze_at_db',
+      contextCircuit: null,
+      contextCircuits: [2, 3],
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA, // schema doesn't matter — guard fires before schema lookup
+    });
+    expect(verdict.kind).toBe('no_value_context');
+  });
+
+  test('earth_loop_impedance_ze (supply field) + contextCircuits:[2,3] → no_value_context', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A',
+      contextField: 'earth_loop_impedance_ze',
+      contextCircuit: null,
+      contextCircuits: [2, 3],
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('no_value_context');
+  });
+
+  test('client_name (installation field) + contextCircuits:[2,3] → no_value_context', () => {
+    const verdict = resolveEnumAnswer({
+      userText: 'A',
+      contextField: 'client_name',
+      contextCircuit: null,
+      contextCircuits: [2, 3],
+      sourceTurnId: 't',
+      fieldSchema: RCD_SCHEMA,
+    });
+    expect(verdict.kind).toBe('no_value_context');
   });
 });

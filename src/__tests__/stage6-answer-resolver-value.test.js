@@ -219,3 +219,96 @@ describe('resolveValueAnswer — no-context fallthrough', () => {
     expect(verdict.kind).toBe('no_value_context');
   });
 });
+
+describe('multi-circuit value resolve (session C0C21546 2026-06-04)', () => {
+  test('single numeric "0.42" with contextCircuits [5,6] fans out two writes at 0.9', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.42',
+      contextField: 'measured_zs_ohm',
+      contextCircuit: null,
+      contextCircuits: [5, 6],
+      sourceTurnId: 'turn-x',
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toHaveLength(2);
+    expect(verdict.writes.map((w) => w.circuit).sort()).toEqual([5, 6]);
+    expect(verdict.writes.every((w) => w.value === '0.42')).toBe(true);
+    expect(verdict.writes.every((w) => w.confidence === 0.9)).toBe(true);
+  });
+
+  test('discontinuous "infinity" on ring_r1_ohm with contextCircuits [3,4] fans out two ∞ writes at 0.9', () => {
+    const verdict = resolveValueAnswer({
+      userText: 'infinity',
+      contextField: 'ring_r1_ohm',
+      contextCircuit: null,
+      contextCircuits: [3, 4],
+      sourceTurnId: 'turn-x',
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toHaveLength(2);
+    expect(verdict.writes.every((w) => w.value === '∞')).toBe(true);
+    expect(verdict.writes.every((w) => w.confidence === 0.9)).toBe(true);
+  });
+
+  test('corrected reply "0.7 no 0.47" with contextCircuits [3,4] fans out two writes at 0.85', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.7 no 0.47',
+      contextField: 'measured_zs_ohm',
+      contextCircuit: null,
+      contextCircuits: [3, 4],
+      sourceTurnId: 'turn-x',
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toHaveLength(2);
+    expect(verdict.writes.every((w) => w.value === '0.47')).toBe(true);
+    expect(verdict.writes.every((w) => w.confidence === 0.85)).toBe(true);
+  });
+
+  test('contextCircuits length-1 with no contextCircuit → no_value_context (validator normally blocks, resolver defends)', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.42',
+      contextField: 'measured_zs_ohm',
+      contextCircuit: null,
+      contextCircuits: [5],
+      sourceTurnId: 't',
+    });
+    expect(verdict.kind).toBe('no_value_context');
+  });
+
+  test('contextCircuits length-1 with contextCircuit set → falls back to single-circuit [contextCircuit]', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.42',
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 7,
+      contextCircuits: [5],
+      sourceTurnId: 't',
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toHaveLength(1);
+    expect(verdict.writes[0].circuit).toBe(7);
+  });
+});
+
+describe('non-circuit context-field guard (value resolver, multi-circuit fan-out only)', () => {
+  test('ze_at_db + contextCircuits:[2,3] → no_value_context', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.42',
+      contextField: 'ze_at_db',
+      contextCircuit: null,
+      contextCircuits: [2, 3],
+      sourceTurnId: 't',
+    });
+    expect(verdict.kind).toBe('no_value_context');
+  });
+
+  test('earth_loop_impedance_ze + contextCircuits:[2,3] → no_value_context', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.42',
+      contextField: 'earth_loop_impedance_ze',
+      contextCircuit: null,
+      contextCircuits: [2, 3],
+      sourceTurnId: 't',
+    });
+    expect(verdict.kind).toBe('no_value_context');
+  });
+});

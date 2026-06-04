@@ -209,8 +209,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // doubled-BS TTS phenomenon "main fuse BS EN BS 1361"). Plan
       // reference: .planning/plan-voice-correctness-2026-06-03b-final.md
       // Fix B "Token-cap re-measurement (load-bearing)" step.
+      //
+      // 2026-06-04 (Fix 3 — session C0C21546 multi-circuit auto-resolver):
+      // bumped to 13350 to absorb three prompt additions in
+      // sonnet_agentic_system.md: (a) directive 6 (multi-circuit
+      // context_circuits + XOR), (b) Example 5b-recovery block teaching
+      // recovery from the legacy bare {answered:true, untrusted_user_text}
+      // tool_result body, (c) Example 5c worked example for multi-circuit
+      // value/enum asks with resolved_writes fan-out, plus the new
+      // orphaned-values cross-reference bullet. Measured 13282; cap
+      // 13350 leaves ~68-token headroom. Schema description updates in
+      // stage6-tool-schemas.js do NOT count (schemas live in the cached
+      // prefix and are not measured here). Plan reference:
+      // .planning/plan-session-c0c21546-rcd-tts-wiring-fixes-2026-06-04-final.md
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(12950);
+      expect(estimate).toBeLessThanOrEqual(13350);
     });
   });
 
@@ -723,8 +736,22 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     Field-test repro: session F03B590C turn 9 (2026-06-03
       //     20:04 UTC) emitted main_switch_bs_en for "Main fuse is
       //     BS 1361" — wrong field. The new block fixes the routing.
+      //   - 8250 (Fix 3 — session C0C21546 multi-circuit auto-resolver,
+      //     2026-06-04): three prompt additions — directive 6 (multi-
+      //     circuit context_circuits + XOR with context_circuit),
+      //     Example 5b-recovery (handling the legacy bare
+      //     {answered:true, untrusted_user_text} tool_result body),
+      //     Example 5c (worked multi-circuit value/enum ask with
+      //     resolved_writes fan-out), and the new cross-reference
+      //     bullet in ORPHANED VALUES. Measured 8174; cap 8250 leaves
+      //     ~76-token headroom. Field-test repro: session C0C21546
+      //     turn 12 (2026-06-04 05:41:10 UTC) asked "What is the
+      //     wiring type for circuits 2 and 3?", inspector replied "A.",
+      //     zero record_reading writes followed. The new examples
+      //     teach Sonnet the plural-ask shape AND the bare-body
+      //     recovery path.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(7850);
+      expect(estimate).toBeLessThanOrEqual(8250);
     });
   });
 
@@ -1029,9 +1056,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(end).toBeGreaterThan(idx);
       const block = prompt.slice(idx, end);
       expect(block).toEqual(
-        expect.stringContaining(
-          'Do NOT treat numeric magnitude alone as a field anchor'
-        )
+        expect.stringContaining('Do NOT treat numeric magnitude alone as a field anchor')
       );
       // ask_user reason cited is missing_field — the new enum value
       // that Bug 1c widened to make legal.
@@ -1047,9 +1072,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // prompt can list, so the canonical ask shape is now a single
       // open question. Pin the instruction so a future rewrite cannot
       // silently re-introduce the menu.
-      expect(block).toEqual(
-        expect.stringContaining('do NOT enumerate field options')
-      );
+      expect(block).toEqual(expect.stringContaining('do NOT enumerate field options'));
       // Open-question shape — either the circuit-known form ("For
       // circuit N,") or the bare-value form ("what was that") must be
       // present. Loose so wording polish does not break it.
@@ -1073,9 +1096,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // The regex is a strict improvement over a naive
       // `.not.stringContaining(...)` because the literal form could
       // silently pass on any of the surface variants.
-      expect(prompt).not.toMatch(
-        /Zs.*R1.*IR.*polarity.*number of points/i
-      );
+      expect(prompt).not.toMatch(/Zs.*R1.*IR.*polarity.*number of points/i);
     });
   });
 

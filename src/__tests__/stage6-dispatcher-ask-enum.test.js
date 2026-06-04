@@ -169,26 +169,94 @@ describe('dispatcher enum-resolve — fall-through (legacy / value-resolver stil
     expect(autoResolveWrite).toHaveBeenCalledTimes(1);
   });
 
-  test('word-anchored enum (rcd_type AC|A|F|B + "AC" reply) — falls through to legacy body', async () => {
-    // rcd_type's options aren't all 5-digit, so enum-resolver returns
-    // no_value_context. Value-resolver also returns escalate (no numeric).
-    // Result: legacy untrusted_user_text body — Sonnet decides.
+  test('word-anchored enum (rcd_type AC|A|F|B|B+ + "AC" reply) — auto-resolves via word-anchored matcher', async () => {
+    // rcd_type is in WORD_ANCHORED_ENUM_FIELDS as of session C0C21546
+    // 2026-06-04 (turn-12 fix), so "AC" auto-resolves to the canonical
+    // option at confidence 0.9 instead of falling through to the legacy
+    // body. The dispatcher-level body shape mirrors the digit-anchored
+    // enum-resolved branch (resolved_writes + match_status:"enum_resolved").
     const input = validInput({
       question: 'What RCD type? AC, A, F, or B?',
       context_field: 'rcd_type',
     });
     const { body, autoResolveWrite } = await runDispatcher({ userText: 'AC', input });
-    expect(body.match_status).toBeUndefined();
+    expect(body.match_status).toBe('enum_resolved');
     expect(body).toMatchObject({
       answered: true,
+      auto_resolved: true,
       untrusted_user_text: 'AC',
     });
-    expect(autoResolveWrite).not.toHaveBeenCalled();
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({
+        tool: 'record_reading',
+        field: 'rcd_type',
+        circuit: 1,
+        value: 'AC',
+        ok: true,
+      }),
+    ]);
+    expect(autoResolveWrite).toHaveBeenCalledTimes(1);
   });
 
   test('rcd_bs_en + "N/A" reply → enum-resolver auto-resolves to canonical "N/A"', async () => {
     const { body } = await runDispatcher({ userText: 'N/A' });
     expect(body.match_status).toBe('enum_resolved');
     expect(body.resolved_writes[0].value).toBe('N/A');
+  });
+});
+
+describe('dispatcher enum-resolve — multi-circuit fan-out (session C0C21546 2026-06-04)', () => {
+  test('wiring_type with context_circuits:[2,3] + "A." reply → 2 resolved_writes, each with ok:true', async () => {
+    const input = validInput({
+      question: 'What is the wiring type for circuits 2 and 3?',
+      context_field: 'wiring_type',
+      context_circuit: null,
+      context_circuits: [2, 3],
+    });
+    const { body, autoResolveWrite } = await runDispatcher({ userText: 'A.', input });
+    expect(body.match_status).toBe('enum_resolved');
+    expect(body).toMatchObject({
+      answered: true,
+      auto_resolved: true,
+      untrusted_user_text: 'A.',
+    });
+    expect(body.resolved_writes).toHaveLength(2);
+    expect(body.resolved_writes.map((w) => w.circuit).sort()).toEqual([2, 3]);
+    expect(body.resolved_writes.every((w) => w.field === 'wiring_type')).toBe(true);
+    expect(body.resolved_writes.every((w) => w.value === 'A')).toBe(true);
+    expect(body.resolved_writes.every((w) => w.ok === true)).toBe(true);
+    expect(autoResolveWrite).toHaveBeenCalledTimes(2);
+  });
+
+  test('malformed context_circuits:[2] (length-1) → validation_error before resolver runs', async () => {
+    // The validator rejects context_circuits with length < 2; the
+    // dispatcher never reaches buildResolvedBody so the user reply
+    // ("A.") is irrelevant. Body shape mirrors other validation_error
+    // returns.
+    const logger = noopLogger();
+    const pendingAsks = createPendingAsksRegistry();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true, body: { ok: true } });
+    const dispatcher = createAskDispatcher(buildSession(), logger, 'turn-1', pendingAsks, null, {
+      autoResolveWrite,
+    });
+    const env = await dispatcher(
+      {
+        tool_call_id: 'toolu_bad',
+        name: 'ask_user',
+        input: validInput({
+          context_field: 'wiring_type',
+          context_circuit: null,
+          context_circuits: [2],
+        }),
+      },
+      {}
+    );
+    const body = JSON.parse(env.content);
+    expect(body).toMatchObject({
+      answered: false,
+      reason: 'validation_error',
+    });
+    expect(body.code).toBe('invalid_context_circuits');
+    expect(autoResolveWrite).not.toHaveBeenCalled();
   });
 });

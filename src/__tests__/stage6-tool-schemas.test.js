@@ -410,3 +410,25 @@ describe('stage6-tool-schemas', () => {
     }
   });
 });
+
+describe('ask_user.context_circuits (session C0C21546 2026-06-04)', () => {
+  const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
+
+  test('schema declares context_circuits as anyOf([array, null])', () => {
+    const askUser = byName('ask_user');
+    const ctxCircuits = askUser.input_schema.properties.context_circuits;
+    expect(ctxCircuits).toBeDefined();
+    expect(Array.isArray(ctxCircuits.anyOf)).toBe(true);
+    expect(ctxCircuits.anyOf.some((b) => b.type === 'null')).toBe(true);
+    const arr = ctxCircuits.anyOf.find((b) => b.type === 'array');
+    expect(arr).toBeDefined();
+    expect(arr.minItems).toBe(2);
+    expect(arr.uniqueItems).toBe(true);
+    expect(arr.items).toEqual({ type: 'integer', minimum: 1 });
+  });
+
+  test('context_circuits is OPTIONAL (not in required[])', () => {
+    const askUser = byName('ask_user');
+    expect((askUser.input_schema.required ?? []).includes('context_circuits')).toBe(false);
+  });
+});

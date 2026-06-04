@@ -31,7 +31,30 @@
 // tool_result envelope. Keeping this module pure means it tests easily and
 // can be stress-tested with synthetic inputs.
 
+import { createRequire } from 'node:module';
 import { isEvasionMarker, isValidSentinel } from './value-normalise.js';
+
+// JSON-import via createRequire mirrors the canonical pattern used by
+// stage6-tool-schemas.js (lines 33-42) — under this project's ES-modules +
+// Jest setup, import-assert / import-with both cause issues, so a node:module
+// require is the safest path. field_schema.json is the source of truth.
+const require = createRequire(import.meta.url);
+const fieldSchema = require('../../config/field_schema.json');
+
+// Mirror CONTEXT_FIELD_ENUM's non-circuit source set
+// (stage6-tool-schemas.js:88-103). Computed once at module load;
+// field_schema.json is the canonical source of truth. _ui_* meta keys
+// are filtered out. Used by the multi-circuit fan-out guard in the
+// resolvers below: a board / supply / installation field is meaningless
+// to fan out across N circuits, so the resolver bails out so the legacy
+// free-text body can let Sonnet re-ask with the correct scope.
+const NON_CIRCUIT_CONTEXT_FIELDS = new Set(
+  [
+    ...Object.keys(fieldSchema.board_fields ?? {}),
+    ...Object.keys(fieldSchema.supply_characteristics_fields ?? {}),
+    ...Object.keys(fieldSchema.installation_details_fields ?? {}),
+  ].filter((k) => !k.startsWith('_ui_'))
+);
 
 // ---------------------------------------------------------------------------
 // Number-word lexicon
@@ -598,21 +621,55 @@ const DISCONTINUOUS_PHRASES = [
  * @param {object} args
  * @param {string} args.userText                  the inspector's reply
  * @param {string|null} args.contextField         circuit_fields key, or null/sentinel
- * @param {number|null} args.contextCircuit       circuit_ref, or null
+ * @param {number|null} args.contextCircuit       circuit_ref for single-circuit asks, or null when contextCircuits is set
+ * @param {number[]|null} args.contextCircuits    list of circuit_refs (length >= 2) for multi-circuit asks; resolver fans the write out across each circuit
  * @param {string|null} args.sourceTurnId         turn id for source_turn_id stamp
  */
-export function resolveValueAnswer({ userText, contextField, contextCircuit, sourceTurnId }) {
+export function resolveValueAnswer({
+  userText,
+  contextField,
+  contextCircuit,
+  contextCircuits,
+  sourceTurnId,
+}) {
   // Need both pieces to value-resolve. Sentinel field names (`none`,
   // `observation_clarify`) are not real fields — fall through.
-  if (
-    !contextField ||
-    contextField === 'none' ||
-    contextField === 'observation_clarify' ||
-    contextCircuit === null ||
-    contextCircuit === undefined
-  ) {
+  if (!contextField || contextField === 'none' || contextField === 'observation_clarify') {
     return { kind: 'no_value_context' };
   }
+  // Accept either single contextCircuit OR multi contextCircuits.
+  // Multi asks (e.g. "Zs for circuits 5 and 6") fan out the same write
+  // across each circuit. Plural branch requires length >= 2 to match the
+  // schema's minItems:2 (stage6-tool-schemas.js context_circuits).
+  // Session C0C21546 2026-06-04 turn-12 repro: pre-fix, ask with
+  // context_circuit:null + context_circuits:[2,3] hit the old guard and
+  // user's reply silently dropped (Sonnet emitted no record_reading).
+  const circuitList =
+    Array.isArray(contextCircuits) && contextCircuits.length >= 2
+      ? contextCircuits
+      : Number.isInteger(contextCircuit)
+        ? [contextCircuit]
+        : null;
+  if (!circuitList) {
+    return { kind: 'no_value_context' };
+  }
+  // Multi-circuit fan-out is meaningless for a board/supply/installation
+  // field. Bail out so the legacy free-text body can let Sonnet re-ask
+  // with the correct field semantics.
+  if (NON_CIRCUIT_CONTEXT_FIELDS.has(contextField) && circuitList.length > 1) {
+    return { kind: 'no_value_context' };
+  }
+  // Fan-out helper — preserves each call site's existing confidence
+  // value (no default). Source-turn stamp shared across all writes.
+  const buildWrites = (value, confidence) =>
+    circuitList.map((circuit) => ({
+      tool: 'record_reading',
+      field: contextField,
+      circuit,
+      value,
+      confidence,
+      source_turn_id: sourceTurnId ?? null,
+    }));
   const text = String(userText ?? '').trim();
   if (!text) {
     return { kind: 'escalate', parsed_hint: 'empty_reply' };
@@ -634,16 +691,7 @@ export function resolveValueAnswer({ userText, contextField, contextCircuit, sou
       if (continuityFields.includes(contextField)) {
         return {
           kind: 'auto_resolve',
-          writes: [
-            {
-              tool: 'record_reading',
-              field: contextField,
-              circuit: contextCircuit,
-              value: '∞',
-              confidence: 0.9,
-              source_turn_id: sourceTurnId ?? null,
-            },
-          ],
+          writes: buildWrites('∞', 0.9),
         };
       }
       return {
@@ -674,16 +722,7 @@ export function resolveValueAnswer({ userText, contextField, contextCircuit, sou
     if (correctionMarker.test(text)) {
       return {
         kind: 'auto_resolve',
-        writes: [
-          {
-            tool: 'record_reading',
-            field: contextField,
-            circuit: contextCircuit,
-            value: distinctNumerics[distinctNumerics.length - 1],
-            confidence: 0.85,
-            source_turn_id: sourceTurnId ?? null,
-          },
-        ],
+        writes: buildWrites(distinctNumerics[distinctNumerics.length - 1], 0.85),
       };
     }
     return {
@@ -695,16 +734,7 @@ export function resolveValueAnswer({ userText, contextField, contextCircuit, sou
   // Single numeric — write it.
   return {
     kind: 'auto_resolve',
-    writes: [
-      {
-        tool: 'record_reading',
-        field: contextField,
-        circuit: contextCircuit,
-        value: distinctNumerics[0],
-        confidence: 0.9,
-        source_turn_id: sourceTurnId ?? null,
-      },
-    ],
+    writes: buildWrites(distinctNumerics[0], 0.9),
   };
 }
 
@@ -1142,19 +1172,42 @@ function normaliseBsEnDigits(s) {
  *
  * @param {object} args
  * @param {string} args.userText
- * @param {string|null} args.contextField    circuit_fields key
- * @param {number|null} args.contextCircuit  circuit_ref
+ * @param {string|null} args.contextField     circuit_fields key
+ * @param {number|null} args.contextCircuit   circuit_ref for single-circuit asks, or null when contextCircuits is set
+ * @param {number[]|null} args.contextCircuits list of circuit_refs (length >= 2) for multi-circuit asks; resolver fans the write out across each circuit
  * @param {string|null} args.sourceTurnId
- * @param {object} args.fieldSchema          loaded field_schema.json (or its circuit_fields slice)
+ * @param {object} args.fieldSchema           loaded field_schema.json (or its circuit_fields slice)
  */
 export function resolveEnumAnswer({
   userText,
   contextField,
   contextCircuit,
+  contextCircuits,
   sourceTurnId,
   fieldSchema,
 }) {
-  if (!contextField || contextCircuit === null || contextCircuit === undefined) {
+  // Accept either single contextCircuit OR multi contextCircuits.
+  // Multi asks (e.g. "wiring type for circuits 2 and 3") fan out the
+  // same write across each circuit. Plural branch requires length >= 2
+  // to match the schema's minItems:2 (stage6-tool-schemas.js
+  // context_circuits). Single-element arrays fall back to single-circuit
+  // semantics only via contextCircuit. Session C0C21546 2026-06-04
+  // turn-12 repro: pre-fix, ask with context_circuit:null +
+  // context_circuits:[2,3] hit the old guard and user's "A." reply
+  // silently dropped (Sonnet emitted no record_reading).
+  const circuitList =
+    Array.isArray(contextCircuits) && contextCircuits.length >= 2
+      ? contextCircuits
+      : Number.isInteger(contextCircuit)
+        ? [contextCircuit]
+        : null;
+  if (!contextField || !circuitList) {
+    return { kind: 'no_value_context' };
+  }
+  // Multi-circuit fan-out is meaningless for a board/supply/installation
+  // field. Bail out so the legacy free-text body can let Sonnet re-ask
+  // with the correct field semantics.
+  if (NON_CIRCUIT_CONTEXT_FIELDS.has(contextField) && circuitList.length > 1) {
     return { kind: 'no_value_context' };
   }
   // Look up the field. Accept either the full schema object (with
@@ -1170,6 +1223,17 @@ export function resolveEnumAnswer({
   if (matchableOptions.length === 0) {
     return { kind: 'no_value_context' };
   }
+  // Fan-out helper — preserves each call site's existing confidence
+  // value (no default). Source-turn stamp shared across all writes.
+  const buildWrites = (value, confidence) =>
+    circuitList.map((circuit) => ({
+      tool: 'record_reading',
+      field: contextField,
+      circuit,
+      value,
+      confidence,
+      source_turn_id: sourceTurnId ?? null,
+    }));
   const text = String(userText ?? '').trim();
   if (!text) {
     return {
@@ -1187,16 +1251,53 @@ export function resolveEnumAnswer({
   if (naMatch && field.options.includes('N/A')) {
     return {
       kind: 'auto_resolve',
-      writes: [
-        {
-          tool: 'record_reading',
-          field: contextField,
-          circuit: contextCircuit,
-          value: 'N/A',
-          confidence: 0.95,
-          source_turn_id: sourceTurnId ?? null,
-        },
-      ],
+      writes: buildWrites('N/A', 0.95),
+    };
+  }
+
+  // Word-anchored enum match: select fields whose options ALL contain no
+  // digits AND that are explicitly enrolled in the word-anchored
+  // matcher. The allowlist keeps polarity_confirmed (Y/N/OK with
+  // coercion at record-reading-coercion.js) and any future implicit-
+  // coercion field OUT of this path. To enrol a new field, add it
+  // here and verify (a) the schema options are all letter-coded and
+  // (b) no coercion table maps spoken aliases to canonical values.
+  //
+  // Predicate is `every` (NOT `some`) so the branch is mutually
+  // exclusive with the existing `if (!anyDigitOption) return
+  // no_value_context` guard below.
+  //
+  // Matcher: normaliseEnumToken trims, lowercases, and strips ONLY
+  // trailing sentence punctuation (.,!?) — preserves schema-significant
+  // characters like '+' (rcd_type "B+") and internal '-' (rcd_type "A-S")
+  // so "B+" cannot collide with "B".
+  //
+  // Session C0C21546 2026-06-04 turn-12 repro: wiring_type, user said
+  // "A.", was silently dropped pre-fix.
+  const WORD_ANCHORED_ENUM_FIELDS = new Set(['wiring_type', 'rcd_type', 'ocpd_type']);
+  const allWordAnchoredOptions = matchableOptions.every((o) => !/\d/.test(String(o)));
+  if (allWordAnchoredOptions && WORD_ANCHORED_ENUM_FIELDS.has(contextField)) {
+    const normaliseEnumToken = (s) =>
+      String(s ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[.,!?]+$/g, '');
+    const normalisedReply = normaliseEnumToken(text);
+    const exact = matchableOptions.find((o) => normaliseEnumToken(o) === normalisedReply);
+    if (exact) {
+      return {
+        kind: 'auto_resolve',
+        writes: buildWrites(exact, 0.9),
+      };
+    }
+    // No match against a word-anchored option set → invalid_value with
+    // the unfiltered field.options list (N/A included) so Sonnet sees
+    // the same option-list shape it sees from the digit-anchored
+    // invalid_value path below.
+    return {
+      kind: 'invalid_value',
+      received: text,
+      valid_options: field.options,
     };
   }
 
@@ -1232,16 +1333,7 @@ export function resolveEnumAnswer({
     if (normaliseBsEnDigits(opt) === candidateDigits) {
       return {
         kind: 'auto_resolve',
-        writes: [
-          {
-            tool: 'record_reading',
-            field: contextField,
-            circuit: contextCircuit,
-            value: opt,
-            confidence: 0.95,
-            source_turn_id: sourceTurnId ?? null,
-          },
-        ],
+        writes: buildWrites(opt, 0.95),
       };
     }
   }

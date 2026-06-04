@@ -566,6 +566,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       pendingWrite: input.pending_write ?? null,
       contextField: input.context_field ?? null,
       contextCircuit: input.context_circuit ?? null,
+      contextCircuits: input.context_circuits ?? null,
       session,
       autoResolveWrite,
       logger,
@@ -596,6 +597,7 @@ async function buildResolvedBody({
   pendingWrite,
   contextField,
   contextCircuit,
+  contextCircuits,
   session,
   autoResolveWrite,
   logger,
@@ -732,6 +734,7 @@ async function buildResolvedBody({
       userText: outcome.user_text,
       contextField,
       contextCircuit,
+      contextCircuits,
       sourceTurnId: turnId,
       fieldSchema: FIELD_SCHEMA,
     });
@@ -775,6 +778,7 @@ async function buildResolvedBody({
           tool_call_id: toolCallId,
           field: contextField,
           circuit: contextCircuit,
+          circuits: contextCircuits ?? null,
           write_count: dispatched.length,
           all_ok: dispatched.every((d) => d.ok),
         });
@@ -818,6 +822,7 @@ async function buildResolvedBody({
       userText: outcome.user_text,
       contextField,
       contextCircuit,
+      contextCircuits,
       sourceTurnId: turnId,
     });
     if (valueVerdict.kind === 'auto_resolve') {
@@ -860,6 +865,7 @@ async function buildResolvedBody({
           tool_call_id: toolCallId,
           field: contextField,
           circuit: contextCircuit,
+          circuits: contextCircuits ?? null,
           write_count: dispatched.length,
           all_ok: dispatched.every((d) => d.ok),
         });

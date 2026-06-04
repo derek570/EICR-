@@ -179,8 +179,19 @@ export function deriveAskKey(input) {
   } else {
     field = fieldRaw;
   }
-  const circuit = input?.context_circuit ?? '_';
-  return `${field}:${circuit}`;
+  // Plural-aware circuit token. Single-circuit ints (including 0 — see
+  // the comment above that intentionally keeps circuit:0 as a real
+  // bucket) preserve their token unchanged. Multi-circuit asks
+  // (context_circuits, length >= 2 per schema minItems) bucket as a
+  // sorted, hyphen-joined list inside brackets so plural asks for
+  // distinct circuit sets on the same field don't collapse — e.g.
+  // wiring_type:[2-3] vs wiring_type:[4-5] stay separate budgets.
+  const circuitsArr = input?.context_circuits;
+  const circuitToken =
+    Array.isArray(circuitsArr) && circuitsArr.length >= 2
+      ? `[${[...circuitsArr].sort((a, b) => a - b).join('-')}]`
+      : (input?.context_circuit ?? '_');
+  return `${field}:${circuitToken}`;
 }
 
 /**

@@ -387,6 +387,76 @@ describe('deriveAskKey', () => {
     expect(deriveAskKey({ context_field: 'None', context_circuit: null })).toBe('_:_');
     expect(deriveAskKey({ context_field: 'nOnE', context_circuit: null })).toBe('_:_');
   });
+
+  describe('context_circuits — plural ask bucket (session C0C21546 2026-06-04)', () => {
+    test('plural [2,3] derives "wiring_type:[2-3]"', () => {
+      expect(
+        deriveAskKey({
+          context_field: 'wiring_type',
+          context_circuit: null,
+          context_circuits: [2, 3],
+        })
+      ).toBe('wiring_type:[2-3]');
+    });
+
+    test('plural sorting is order-independent: [3,2] derives same key as [2,3]', () => {
+      const a = deriveAskKey({
+        context_field: 'wiring_type',
+        context_circuit: null,
+        context_circuits: [3, 2],
+      });
+      const b = deriveAskKey({
+        context_field: 'wiring_type',
+        context_circuit: null,
+        context_circuits: [2, 3],
+      });
+      expect(a).toBe(b);
+      expect(a).toBe('wiring_type:[2-3]');
+    });
+
+    test('distinct plural sets on the same field derive distinct keys (Bug 3 dedupe-key collision regression guard)', () => {
+      const a = deriveAskKey({
+        context_field: 'wiring_type',
+        context_circuit: null,
+        context_circuits: [2, 3],
+      });
+      const b = deriveAskKey({
+        context_field: 'wiring_type',
+        context_circuit: null,
+        context_circuits: [4, 5],
+      });
+      expect(a).not.toBe(b);
+      expect(a).toBe('wiring_type:[2-3]');
+      expect(b).toBe('wiring_type:[4-5]');
+    });
+
+    test('field normalisation invariant preserved with plural: padded "none" sentinel + [2,3] → "_:[2-3]"', () => {
+      expect(
+        deriveAskKey({
+          context_field: ' none ',
+          context_circuit: null,
+          context_circuits: [2, 3],
+        })
+      ).toBe('_:[2-3]');
+    });
+
+    test('field normalisation invariant preserved with plural: upper-case "NONE" + [2,3] → "_:[2-3]"', () => {
+      expect(
+        deriveAskKey({
+          context_field: 'NONE',
+          context_circuit: null,
+          context_circuits: [2, 3],
+        })
+      ).toBe('_:[2-3]');
+    });
+
+    test('single-circuit context_circuit:0 still derives as "field:0" (board-level sentinel intact)', () => {
+      // The plural branch only fires for arrays length >= 2; a single
+      // contextCircuit of 0 (board-level sentinel per the wrapper's own
+      // comment block at line 123-130) is unchanged.
+      expect(deriveAskKey({ context_field: 'ze', context_circuit: 0 })).toBe('ze:0');
+    });
+  });
 });
 
 // =============================================================================

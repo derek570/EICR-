@@ -303,6 +303,8 @@ describe('validateDeleteObservation (BLOCK-2 contract: always-valid)', () => {
  *   invalid_reason               — not in ASK_USER_REASONS
  *   invalid_context_field        — non-null and not in CONTEXT_FIELD_ENUM
  *   invalid_context_circuit      — non-null and not an integer
+ *   invalid_context_circuits     — present but not a unique-int array of length >= 2 with all >= 1
+ *   context_circuit_conflict     — BOTH context_circuit and context_circuits set (XOR violation)
  *   invalid_expected_answer_shape — not in ASK_USER_ANSWER_SHAPES
  */
 describe('validateAskUser', () => {
@@ -469,6 +471,100 @@ describe('validateAskUser', () => {
       expect(validateAskUser(input)).toEqual({
         code: 'invalid_expected_answer_shape',
         field: 'expected_answer_shape',
+      });
+    });
+  });
+
+  describe('context_circuits (multi-circuit ask — session C0C21546 2026-06-04)', () => {
+    const pluralBase = () => ({
+      ...validInput(),
+      context_field: 'wiring_type',
+      context_circuit: null,
+      context_circuits: [2, 3],
+    });
+
+    test('happy path: well-formed [2, 3] → null', () => {
+      expect(validateAskUser(pluralBase())).toBeNull();
+    });
+
+    test('happy path: [2, 3, 7] (3+ entries) → null', () => {
+      expect(validateAskUser({ ...pluralBase(), context_circuits: [2, 3, 7] })).toBeNull();
+    });
+
+    test('happy path: explicitly null → null', () => {
+      expect(validateAskUser({ ...validInput(), context_circuits: null })).toBeNull();
+    });
+
+    test('happy path: explicitly undefined → null', () => {
+      expect(validateAskUser({ ...validInput(), context_circuits: undefined })).toBeNull();
+    });
+
+    test('invalid: string instead of array → invalid_context_circuits', () => {
+      const input = { ...pluralBase(), context_circuits: '2,3' };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuits',
+        field: 'context_circuits',
+      });
+    });
+
+    test('invalid: single-element array [2] → invalid_context_circuits', () => {
+      const input = { ...pluralBase(), context_circuits: [2] };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuits',
+        field: 'context_circuits',
+      });
+    });
+
+    test('invalid: empty array → invalid_context_circuits', () => {
+      const input = { ...pluralBase(), context_circuits: [] };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuits',
+        field: 'context_circuits',
+      });
+    });
+
+    test('invalid: duplicate values [2, 2] → invalid_context_circuits', () => {
+      const input = { ...pluralBase(), context_circuits: [2, 2] };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuits',
+        field: 'context_circuits',
+      });
+    });
+
+    test('invalid: non-integer entry ["a", 2] → invalid_context_circuits', () => {
+      const input = { ...pluralBase(), context_circuits: ['a', 2] };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuits',
+        field: 'context_circuits',
+      });
+    });
+
+    test('invalid: zero entry [0, 2] → invalid_context_circuits (board-level sentinel excluded)', () => {
+      const input = { ...pluralBase(), context_circuits: [0, 2] };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuits',
+        field: 'context_circuits',
+      });
+    });
+
+    test('invalid: negative entry [-1, 2] → invalid_context_circuits', () => {
+      const input = { ...pluralBase(), context_circuits: [-1, 2] };
+      expect(validateAskUser(input)).toEqual({
+        code: 'invalid_context_circuits',
+        field: 'context_circuits',
+      });
+    });
+
+    test('XOR violation: BOTH context_circuit:5 AND context_circuits:[2,3] set → context_circuit_conflict', () => {
+      const input = {
+        ...validInput(),
+        context_field: 'wiring_type',
+        context_circuit: 5,
+        context_circuits: [2, 3],
+      };
+      expect(validateAskUser(input)).toEqual({
+        code: 'context_circuit_conflict',
+        field: 'context_circuits',
       });
     });
   });

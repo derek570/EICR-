@@ -47,6 +47,8 @@
  *   invalid_reason                — not in ASK_USER_REASONS
  *   invalid_context_field         — non-null and not in CONTEXT_FIELD_ENUM
  *   invalid_context_circuit       — non-null and not an integer
+ *   invalid_context_circuits      — present but not a unique-int array of length >= 2 with all >= 1
+ *   context_circuit_conflict      — BOTH context_circuit and context_circuits set (XOR violation)
  *   invalid_expected_answer_shape — not in ASK_USER_ANSWER_SHAPES
  */
 
@@ -493,6 +495,28 @@ export function validateAskUser(input) {
   const ctxCircuit = input.context_circuit ?? null;
   if (ctxCircuit !== null && !Number.isInteger(ctxCircuit)) {
     return { code: 'invalid_context_circuit', field: 'context_circuit' };
+  }
+  // context_circuits — optional plural form for multi-circuit asks.
+  // Shape: array of length >= 2, all entries unique positive integers
+  // (minimum:1 keeps circuit_ref 0, a board-level sentinel per
+  // stage6-ask-gate-wrapper.js:123-130, out of the plural fan-out).
+  // XOR with context_circuit: schema description says context_circuit
+  // MUST be null when context_circuits is set. Enforce here so Sonnet
+  // can't silently ship both — without this, the resolver/ask-gate
+  // would prefer the plural with no error surfaced.
+  const ctxCircuits = input.context_circuits ?? null;
+  if (ctxCircuits !== null) {
+    if (
+      !Array.isArray(ctxCircuits) ||
+      ctxCircuits.length < 2 ||
+      !ctxCircuits.every((n) => Number.isInteger(n) && n >= 1) ||
+      new Set(ctxCircuits).size !== ctxCircuits.length
+    ) {
+      return { code: 'invalid_context_circuits', field: 'context_circuits' };
+    }
+    if (input.context_circuit !== null && input.context_circuit !== undefined) {
+      return { code: 'context_circuit_conflict', field: 'context_circuits' };
+    }
   }
   if (!ASK_USER_ANSWER_SHAPES.includes(input.expected_answer_shape)) {
     return { code: 'invalid_expected_answer_shape', field: 'expected_answer_shape' };
