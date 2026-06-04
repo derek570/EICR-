@@ -2005,6 +2005,140 @@ export async function getAttestationsForJob(userId, jobId) {
   return result.rows;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// voice_feedback — PLAN-backend-final.md Phase 1.6.3 / 1.6.4
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Index of "feedback ... end feedback" markers the inspector voices during
+// a recording session. The S3 prefix (debug-reports/{userId}/{ts}/) still
+// owns the bytes; this table is the queryable index so the new
+// /api/voice-feedback router can list, filter, paginate, and search.
+
+const VOICE_FEEDBACK_STATUSES = new Set(['open', 'reviewed', 'actioned', 'wontfix']);
+
+export async function insertVoiceFeedback({
+  userId,
+  sessionId,
+  jobId = null,
+  address = null,
+  issueText,
+  transcriptWindow = null,
+  s3Key,
+}) {
+  if (!usePostgres()) return null;
+  const pool = getPool();
+  const result = await pool.query(
+    `INSERT INTO voice_feedback
+       (user_id, session_id, job_id, address, issue_text,
+        transcript_window, s3_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, created_at`,
+    [
+      userId,
+      sessionId,
+      jobId || null,
+      address || null,
+      issueText,
+      transcriptWindow == null ? null : JSON.stringify(transcriptWindow),
+      s3Key,
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function listVoiceFeedback({
+  userId,
+  status = null,
+  jobId = null,
+  q = null,
+  limit = 50,
+  offset = 0,
+  includeAllUsers = false,
+}) {
+  if (!usePostgres()) return { items: [], total: 0 };
+  const pool = getPool();
+  const params = [];
+  const conds = [];
+  if (!includeAllUsers) {
+    params.push(userId);
+    conds.push(`user_id = $${params.length}`);
+  }
+  if (status) {
+    params.push(status);
+    conds.push(`status = $${params.length}`);
+  }
+  if (jobId) {
+    params.push(jobId);
+    conds.push(`job_id = $${params.length}`);
+  }
+  if (q) {
+    // LIKE-pattern is intentional for v1 (plan §1.6.4). PG full-text
+    // (to_tsvector + plainto_tsquery) is a later upgrade once the
+    // optimizer settles on the relevant filters.
+    params.push(`%${q}%`);
+    conds.push(`issue_text ILIKE $${params.length}`);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+
+  const countResult = await pool.query(`SELECT COUNT(*)::int AS n FROM voice_feedback ${where}`, params);
+  const total = countResult.rows[0]?.n || 0;
+
+  const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const offsetNum = Math.max(Number(offset) || 0, 0);
+  const listResult = await pool.query(
+    `SELECT id, user_id, session_id, job_id, address,
+            LEFT(issue_text, 200) AS issue_preview,
+            review_note, status, created_at, reviewed_at, s3_key
+       FROM voice_feedback
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT ${limitNum} OFFSET ${offsetNum}`,
+    params
+  );
+  return { items: listResult.rows, total };
+}
+
+export async function getVoiceFeedback(id) {
+  if (!usePostgres()) return null;
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT id, user_id, session_id, job_id, address, issue_text,
+            transcript_window, review_note, status, s3_key,
+            created_at, reviewed_at
+       FROM voice_feedback
+      WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateVoiceFeedbackStatus(id, { status, reviewNote = null }) {
+  if (!usePostgres()) return null;
+  if (status && !VOICE_FEEDBACK_STATUSES.has(status)) {
+    throw new Error(`voice_feedback.status must be one of ${Array.from(VOICE_FEEDBACK_STATUSES).join(', ')}`);
+  }
+  const pool = getPool();
+  // Only set reviewed_at when transitioning AWAY from 'open' (per plan:
+  // status open → reviewed/actioned/wontfix stamps reviewed_at; back-
+  // transition to 'open' clears it so the audit trail tells the truth).
+  const result = await pool.query(
+    `UPDATE voice_feedback
+        SET status = COALESCE($2, status),
+            review_note = COALESCE($3, review_note),
+            reviewed_at = CASE
+              WHEN $2 IN ('reviewed','actioned','wontfix') THEN NOW()
+              WHEN $2 = 'open' THEN NULL
+              ELSE reviewed_at
+            END
+      WHERE id = $1
+      RETURNING id, status, review_note, reviewed_at`,
+    [id, status, reviewNote]
+  );
+  return result.rows[0] || null;
+}
+
+export { VOICE_FEEDBACK_STATUSES };
+
 /**
  * Close the database connection pool (for graceful shutdown)
  */
