@@ -660,6 +660,22 @@ function createMessageRateLimiter(maxMessages, windowMs) {
 // WS-handler import graph into their context. See `active-sessions.js`.
 import { activeSessions } from './active-sessions.js';
 
+// Phase 1.3 (PLAN-backend-final.md) — per-session buffer + flush primitives
+// for the `client_log_batch` WS channel iOS streams over the Sonnet socket.
+// See `realtime-log-sink.js` for the buffer/flush/downsample design; the
+// `case 'client_log_batch'` arm in this file owns audit-integrity stripping
+// and per-entry CloudWatch row emission. The periodic flusher tick is armed
+// inside `initSonnetStream` (one shared interval over activeSessions).
+import {
+  MAX_LINES_PER_SESSION as REALTIME_LOG_MAX_LINES_PER_SESSION,
+  shouldKeepInDownsampling,
+  ensureRealtimeLogBuffer,
+  appendOneToBuffer,
+  shouldFlush as shouldFlushRealtimeLog,
+  flushSession as flushRealtimeLogSession,
+  startPeriodicFlusher as startRealtimeLogFlusher,
+} from './realtime-log-sink.js';
+
 // Stage 1a commit 1a.2 — voice-latency flag snapshot. Per PLAN_v3 §4.2,
 // flags are read ONCE at session_start and frozen for the session
 // lifetime; mid-session env flips affect only NEW sessions. The kill
@@ -683,6 +699,14 @@ import {
 // without a circular dep with this file.
 
 // Map cable description strings to BS 7671 wiring type letter codes
+// PLAN-backend-final.md Phase 8.4 — bulk-exclude intent hint pattern.
+// Matched after the pre-LLM gate forwards. Used to tag the turn with
+// `msg.intentHints.bulkExclude = true` so downstream extractor + iOS
+// slice 8.0 (ApplyFieldIntent return-nil-on-exclude) can coordinate
+// on routing the utterance through `set_field_for_all_circuits
+// {exclude_circuits: [N]}` rather than a per-circuit record_reading.
+const BULK_EXCLUDE_PATTERN = /\b(apart from|except|excluding|all but)\b/i;
+
 const WIRING_TYPE_DESC_TO_CODE = {
   'TWIN & EARTH': 'A',
   'TWIN AND EARTH': 'A',
@@ -785,6 +809,16 @@ function validateAndCorrectFields(result, sessionId) {
 
 export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   const wss = new WebSocketServer({ noServer: true });
+
+  // Phase 1.3 — single shared periodic flusher for the per-session
+  // realtimeLogBuffer (one tick every FLUSH_INTERVAL_MS over the whole
+  // activeSessions registry). Per-session timers would explode under
+  // many simultaneous sessions and would race the entry-teardown paths
+  // that already exist; a global tick walks the live registry instead.
+  // The interval is .unref()'d inside startPeriodicFlusher so it never
+  // blocks process exit. Held on the WSS object so a future hot-reload
+  // (or test teardown) can clear it via `wss._realtimeLogFlusher`.
+  wss._realtimeLogFlusher = startRealtimeLogFlusher(activeSessions);
 
   // Return the WSS so api.js can route upgrades to it
   wss.on('connection', (ws, req, userId) => {
@@ -986,6 +1020,111 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               userId,
               sessionId: currentSessionId,
             });
+            break;
+          }
+
+          // PLAN-backend-final.md Phase 1.3 — receive a batch of JSONL log
+          // entries iOS streams every 2 s over the reliable Sonnet socket
+          // (separate from the multipart /api/session/:id/analytics path
+          // which has been broken since Mar 2026). Each entry is a JSONL
+          // string from DebugLogger; the envelope shape is frozen as:
+          //   { type: 'client_log_batch', session_id, entries: [string,...] }
+          // entries are STRINGS, not objects — iOS sends raw JSONL so the
+          // backend doesn't have to re-serialise to write back to S3.
+          //
+          // Per Phase 1.3 acceptance:
+          //   - emit one CloudWatch row PER entry (message: 'Client log
+          //     batch entry') for live ops querying
+          //   - audit-integrity: strip client-provided userId / sessionId /
+          //     timestamp from each parsed entry BEFORE the CloudWatch row
+          //     and BEFORE the S3 buffer write; re-attach server-authoritative
+          //     userId + currentSessionId from the authenticated WS session
+          //   - the per-session realtimeLogBuffer is owned by the entry
+          //     (see realtime-log-sink.js); flush trigger is whichever of
+          //     ~30 s, 100 KB, disconnect, or graceful shutdown fires first
+          //   - Phase 1.4 cost-cap: 20 000 lines/session → downsampling
+          //     mode (all error/warn, 1/10 info, 1/100 debug) instead of
+          //     going dark; a stuck session is exactly the one that needs
+          //     mid-session visibility
+          case 'client_log_batch': {
+            if (!Array.isArray(msg.entries) || msg.entries.length === 0) break;
+            if (!currentSessionId || !activeSessions.has(currentSessionId)) break;
+            const logBatchEntry = activeSessions.get(currentSessionId);
+            ensureRealtimeLogBuffer(logBatchEntry);
+
+            for (const raw of msg.entries) {
+              if (typeof raw !== 'string') continue;
+              // iOS DebugLogger.log appends '\n' to every entry; strip one
+              // trailing newline so the body.join('\n') at flush time
+              // doesn't blank-line every entry pair.
+              const trimmed = raw.replace(/\r?\n$/, '');
+              if (!trimmed) continue;
+
+              let parsed;
+              try {
+                parsed = JSON.parse(trimmed);
+              } catch (_e) {
+                logger.warn('Client log batch entry malformed', {
+                  sessionId: currentSessionId,
+                  userId,
+                  preview: trimmed.slice(0, 160),
+                });
+                continue;
+              }
+
+              // Audit-integrity: drop any client-provided identity fields
+              // BEFORE re-serialise. Mirrors the pattern already in use for
+              // `client_diagnostic` above (sonnet-stream.js:974-988). A
+              // crafted client must not be able to spoof CloudWatch userId
+              // or pollute the S3 key namespace; server-authoritative
+              // userId + currentSessionId override anything in the payload.
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                delete parsed.userId;
+                delete parsed.sessionId;
+                delete parsed.timestamp;
+              }
+
+              // Phase 1.4 cost-cap: flip to downsampling mode at the
+              // threshold, then keep error/warn always + sample info+debug.
+              // Emit the transition diag exactly once per session (the cap
+              // flip is monotonic — never resets within a session).
+              if (
+                !logBatchEntry.realtimeLogDownsamplingActive &&
+                logBatchEntry.realtimeLogLineCount >= REALTIME_LOG_MAX_LINES_PER_SESSION
+              ) {
+                logBatchEntry.realtimeLogDownsamplingActive = true;
+                logger.info('client_log_overflow_downsampled', {
+                  sessionId: currentSessionId,
+                  userId,
+                  cap: REALTIME_LOG_MAX_LINES_PER_SESSION,
+                });
+              }
+              if (
+                logBatchEntry.realtimeLogDownsamplingActive &&
+                !shouldKeepInDownsampling(parsed)
+              ) {
+                continue;
+              }
+
+              const sanitisedLine = JSON.stringify(parsed);
+              appendOneToBuffer(logBatchEntry, sanitisedLine);
+              logger.info('Client log batch entry', {
+                sessionId: currentSessionId,
+                userId,
+                client_log: parsed,
+              });
+            }
+
+            // Catch the 100 KB / 50-line-burst case ahead of the next
+            // periodic tick. Don't await on the WS path — a slow S3 round
+            // trip would back-pressure the WebSocket. Errors are restored
+            // to the buffer head inside flushSession; the next tick or
+            // disconnect-flush retries.
+            if (shouldFlushRealtimeLog(logBatchEntry)) {
+              flushRealtimeLogSession(currentSessionId, logBatchEntry, {
+                reason: 'threshold',
+              }).catch(() => {});
+            }
             break;
           }
 
@@ -1764,6 +1903,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (currentSessionId && activeSessions.has(currentSessionId)) {
         // Clean up after 30s timeout (allow reconnection)
         const entry = activeSessions.get(currentSessionId);
+        // Phase 1.3 — flush any buffered client_log_batch entries
+        // IMMEDIATELY on socket close, not on the 5-min disconnect
+        // timeout. A reconnect would attach a fresh socket onto the same
+        // activeSessions entry (the entry's userId/sessionId don't change)
+        // so the buffer is still valid for further appends, but we don't
+        // want a clean disconnect to lose what's already been received.
+        // Fire-and-forget; errors are restored to the buffer head inside
+        // flushSession so the disconnect-timeout fire below re-flushes.
+        if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+          flushRealtimeLogSession(currentSessionId, entry, {
+            reason: 'ws_close',
+          }).catch(() => {});
+        }
         // DELIBERATE: 5-minute timeout (300s) to preserve conversation history across
         // Deepgram sleep/wake cycles. iOS disconnects the WebSocket during auto-sleep
         // (no audio for 60s) and reconnects when speech resumes. The original 30s timeout
@@ -1815,6 +1967,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // before constructing a new session, but a future code
           // path could still set entry.session=null at teardown.
           entry.session?.stop?.();
+          // Phase 1.3 — final flush for any stragglers still buffered
+          // when the 5-min reconnect window expires. ws_close flushed at
+          // close time but a subsequent retry-on-error left the batch
+          // back in the buffer; this is the last chance to land it
+          // before activeSessions.delete drops the entry.
+          if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+            flushRealtimeLogSession(currentSessionId, entry, {
+              reason: 'session_timeout',
+            }).catch(() => {});
+          }
           activeSessions.delete(currentSessionId);
         }, 300000);
       }
@@ -3141,6 +3303,40 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       });
       return;
     }
+    // PLAN-backend-final.md Phase 5.2 — positive-side counter for the
+    // new HAS_COMPLAINT_OR_NEGATION path. Lets ops eyeball whether the
+    // signal fires in the field (session 60754E4D had 6 voiced
+    // frustrations; the optimizer should see at least that many rows
+    // per such session). Separate from gate_blocked so the existing
+    // dashboard panel doesn't have to reason about a positive reason
+    // mixed in with the blocked-reason distribution.
+    if (gateDecision.reason === GATE_REASONS.HAS_COMPLAINT_OR_NEGATION) {
+      logger.info('voice_latency.gate_forwarded_complaint', {
+        sessionId,
+        textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
+      });
+    }
+
+    // PLAN-backend-final.md Phase 8.4 — bulk-exclude intent hint.
+    // When the transcript matches "apart from / except / excluding /
+    // all but", set msg.intentHints.bulkExclude = true and emit a
+    // telemetry row so iOS slice 8.0 (ApplyFieldIntent return-nil-on-
+    // exclude) + the §8.3 prompt few-shot can be measured end-to-end
+    // in CloudWatch. Per the plan: option (a) — backend-side hint,
+    // NOT a gate change, so the regex doesn't widen the forward
+    // distribution; just enriches the turn context. The hint is set
+    // on the msg object so any downstream extractor can read it
+    // without a re-parse.
+    if (typeof msg.text === 'string' && BULK_EXCLUDE_PATTERN.test(msg.text)) {
+      if (!msg.intentHints || typeof msg.intentHints !== 'object') {
+        msg.intentHints = {};
+      }
+      msg.intentHints.bulkExclude = true;
+      logger.info('voice_latency.intent_hint_bulk_exclude', {
+        sessionId,
+        textPreview: msg.text.substring(0, 80),
+      });
+    }
 
     // Plan 03-12 r13 Codex MINOR — suppress questionGate.onNewUtterance()
     // on the drained re-entry of a deferred user_moved_on transcript.
@@ -4219,6 +4415,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // flushUtteranceBuffer + S3 awaits) so a final straggler ask through
     // the wrapper still sees the cap truthfully if the timing aligns.
     entry.askBudget?.destroy();
+
+    // Phase 1.3 — final flush of any client_log_batch entries still in
+    // the per-session buffer before activeSessions.delete drops the
+    // entry. handleSessionStop is the deterministic terminator (vs the
+    // 5-min disconnect timer on ws close) so we MUST land remaining
+    // telemetry here. Awaited so the row is durable before session_ack
+    // emit at the function tail.
+    if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+      try {
+        await flushRealtimeLogSession(sessionId, entry, { reason: 'session_stop' });
+      } catch (_e) {
+        // already logged inside flushRealtimeLogSession; swallow so the
+        // session-stop teardown isn't blocked by a transient S3 hiccup.
+      }
+    }
 
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });

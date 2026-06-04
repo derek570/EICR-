@@ -85,7 +85,12 @@ describe('confirmation-text — buildConfirmationText', () => {
     expect(buildConfirmationText('address', '1 Tilehurst Road', null)).toBe(
       'address 1 Tilehurst Road'
     );
-    expect(buildConfirmationText('client_name', 'Mr Smith', null)).toBe('client name Mr Smith');
+    // Phase 4.4 (PLAN-backend-final.md): client_name now has an
+    // explicit `customer name` entry in CONFIRMATION_FRIENDLY_NAMES
+    // (Derek's preferred vocabulary). Pre-Phase-4.4 this fell through
+    // to the snake_case→spaces derivation ("client name"); the new
+    // entry overrides that.
+    expect(buildConfirmationText('client_name', 'Mr Smith', null)).toBe('customer name Mr Smith');
     expect(buildConfirmationText('postcode', 'RG5 4RD', null)).toBe('postcode RG5 4RD');
     // Truly unknown field also speaks via snake_case fallback.
     expect(buildConfirmationText('some_made_up_field', 'value', 1)).toBe(

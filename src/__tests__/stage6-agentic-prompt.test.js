@@ -222,8 +222,25 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // stage6-tool-schemas.js do NOT count (schemas live in the cached
       // prefix and are not measured here). Plan reference:
       // .planning/plan-session-c0c21546-rcd-tts-wiring-fixes-2026-06-04-final.md
+      //
+      // 2026-06-04 (PLAN-backend-final.md §2.4 + §4.2): bumped to 14000
+      // to absorb the new CLIENT IDENTITY — VOCABULARY block (Phase
+      // 2.4, ~120 tokens) AND the CLIENT BILLING ADDRESS — SITE COPY
+      // RULE block (Phase 4.2, ~250 tokens including the four-write
+      // worked example). Net combined +~580 tokens. Measured 13928;
+      // cap 14000 leaves ~72-token headroom. Closes the Marlborough /
+      // 71-Hexham-Road class of bugs (Sonnet wrote a postal address
+      // into client_name when answering "use this address for the
+      // client too" / "Y"). Companion Phase 4.0 added the four
+      // client_* slots; Phase 4.3 added the dispatcher guard.
+      //
+      // 2026-06-04 (PLAN-backend-final.md §8.3): bumped to 14150 to
+      // absorb the bulk-subtractive EDGE CASES bullet (apart from /
+      // except / excluding / all but → set_field_for_all_circuits
+      // with exclude_circuits: [N] + rcd_time_ms worked example).
+      // Measured 14071; cap 14150 leaves ~79-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(13350);
+      expect(estimate).toBeLessThanOrEqual(14150);
     });
   });
 
@@ -560,19 +577,40 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(stripped.includes('r1_plus_r2')).toBe(false);
     });
 
-    test('prompt does NOT reference `address`/`client_address` as a record_reading field or ask_user context_field', () => {
-      // Plan 04-07 decision: Circuit-0 installation-level write surface
-      // is a pre-existing design gap — `address`/`client_address` are
-      // NOT in the strict enum, so the model cannot write them via
-      // record_reading today. Remove the dead disambiguation language
-      // rather than paper-over. Deferred to follow-up plan.
+    test('prompt does NOT reference `address` as a record_reading field or ask_user context_field', () => {
+      // Plan 04-07 decision (still standing for `address`): the legacy
+      // single `address` slot is reserved for the SITE address, not
+      // freely written by the model — keep that identifier out of
+      // record_reading field / ask_user context_field positions.
       //
-      // Lock: neither identifier appears as a `field: "..."` nor
-      // `context_field: "..."` in the prompt pseudocode.
+      // Phase 4.0 / 4.2 (2026-06-04 PLAN-backend-final) added the
+      // four `client_*` BILLING address slots and the prompt guidance
+      // that explicitly writes `field: "client_address"` (alongside
+      // _postcode/_town/_county) when the inspector confirms "use
+      // site address for client too". The inverted assertion is the
+      // companion test below; this one only locks the legacy `address`
+      // identifier.
       expect(prompt).not.toMatch(/field:\s*"address"/);
-      expect(prompt).not.toMatch(/field:\s*"client_address"/);
       expect(prompt).not.toMatch(/context_field:\s*"address"/);
-      expect(prompt).not.toMatch(/context_field:\s*"client_address"/);
+    });
+
+    test('prompt DOES reference the client_* address family as record_board_reading fields (Phase 4.2)', () => {
+      // PLAN-backend-final.md §4.2 — when the inspector says "use the
+      // site address for the client too", Sonnet must emit FOUR
+      // record_board_reading writes copying site → client_*. The
+      // inverted regression lock: this test would fail if a future
+      // edit silently strips the four-field guidance from the prompt.
+      // Without it, Sonnet would have no instruction on the copy
+      // pattern even though Phase 4.0 made the slots writable, and the
+      // 71-Hexham-Road class bug would recur.
+      expect(prompt).toMatch(/field:\s*"client_address"/);
+      expect(prompt).toMatch(/field:\s*"client_postcode"/);
+      expect(prompt).toMatch(/field:\s*"client_town"/);
+      expect(prompt).toMatch(/field:\s*"client_county"/);
+      // The NEVER-write-address-into-client_name guard is also stated
+      // in prose; lock the explicit warning so it can't be deleted
+      // without re-introducing the Marlborough-class bug.
+      expect(prompt).toMatch(/NEVER.*client_name/i);
     });
   });
 
@@ -750,8 +788,33 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     zero record_reading writes followed. The new examples
       //     teach Sonnet the plural-ask shape AND the bare-body
       //     recovery path.
+      //   - 8900 (PLAN-backend-final.md §2.4 + §4.2 — field-test
+      //     fixes from sessions DC321DBC + 60754E4D, 2026-06-04):
+      //     two prompt additions to the BASE markdown — Phase 2.4
+      //     CLIENT IDENTITY — VOCABULARY block (~120 tokens; names
+      //     every spoken alias for the client_name field and forbids
+      //     address-shaped writes against it) and Phase 4.2 CLIENT
+      //     BILLING ADDRESS — SITE COPY RULE block (~250 tokens;
+      //     four record_board_reading writes for "use site address
+      //     for client too" with a worked example pointing at the
+      //     71-Hexham-Road session). Measured 8820; cap 8900 leaves
+      //     ~80-token headroom. Closes the Marlborough / Hexham
+      //     class of bugs where Sonnet wrote
+      //     `record_board_reading {field:"client_name", value:"71
+      //     Hexham Road, Reading"}`. Phase 4.0 adds the four
+      //     client_* slots in field_schema.json; Phase 4.3 adds
+      //     the dispatcher guard; Phase 4.4 adds the friendly-name
+      //     entry. Without this prompt change those backend pieces
+      //     would land with no model-side guidance.
+      //   - 9000 (PLAN-backend-final.md §8.3 — bulk-subtractive
+      //     EDGE CASES bullet): one new bullet in EDGE CASES teaching
+      //     "apart from / except / excluding / all but" → set_field_
+      //     for_all_circuits with exclude_circuits: [N]. ~50 tokens.
+      //     Measured 8963; cap 9000 leaves ~37-token headroom. Closes
+      //     the loop with Phase 8.0 iOS ApplyFieldIntent return-nil-on-
+      //     exclude so the exclude path reaches the backend.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(8250);
+      expect(estimate).toBeLessThanOrEqual(9000);
     });
   });
 

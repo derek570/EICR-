@@ -1539,10 +1539,31 @@ router.post('/session/:sessionId/confirmed-layout', auth.requireAuth, async (req
 /**
  * Upload a debug report from iOS
  * POST /api/debug-report
+ *
+ * Phase 1.6.3 of PLAN-backend-final.md (2026-06-04) extended this
+ * handler beyond the original "drop a JSON on S3" pattern. It now
+ * additionally:
+ *   - persists `lastTranscriptWindow: [{ts, text}]` (sent by iOS
+ *     §1.6.1) onto the voice_feedback table's transcript_window JSONB
+ *     column so the detail-view UI can render the pre-trigger context
+ *     alongside the voiced complaint
+ *   - emits a `Voice feedback captured` CloudWatch row so live ops
+ *     querying the realtime telemetry from Phase 1 see the inspector
+ *     marker inline (rather than having to cross-reference S3)
+ *   - inserts the indexed row into voice_feedback so the new
+ *     /api/voice-feedback router (Phase 1.6.4) can list / filter /
+ *     paginate / full-text search efficiently
+ *
+ * Consent middleware: the parent mount at src/api.js:306 wraps the
+ * whole recording router with `requireConsent` — debug-report
+ * inherits the gate (verified by listing the api.js mounts on
+ * 2026-06-04). Since the payload now includes site/customer context
+ * via `lastTranscriptWindow`, that gating is essential; do NOT
+ * remove the `requireConsent` from the parent mount without revisiting.
  */
 router.post('/debug-report', auth.requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const { sessionId, issueText, address, jobId } = req.body;
+  const { sessionId, issueText, address, jobId, lastTranscriptWindow } = req.body;
 
   if (!issueText || !sessionId) {
     return res.status(400).json({ error: 'sessionId and issueText are required' });
@@ -1569,6 +1590,11 @@ router.post('/debug-report', auth.requireAuth, async (req, res) => {
       sessionId,
       jobId: jobId || '',
       address: address || '',
+      // Persisted alongside the existing context.json so an S3-only
+      // recovery path can still see the transcript window even if the
+      // DB row is unreachable. The voice-feedback table stores the
+      // same payload in transcript_window for the UI to render.
+      lastTranscriptWindow: Array.isArray(lastTranscriptWindow) ? lastTranscriptWindow : null,
     };
 
     await Promise.all([
@@ -1576,8 +1602,49 @@ router.post('/debug-report', auth.requireAuth, async (req, res) => {
       storage.uploadJson(context, `${prefix}/context.json`),
     ]);
 
+    // Phase 1.6.3 — index the marker in voice_feedback. Best-effort:
+    // a DB hiccup MUST NOT fail the S3-side write the inspector just
+    // performed (the bytes are durable in S3 regardless), and the
+    // optimizer-side reconciler can backfill an unindexed prefix.
+    let voiceFeedbackId = null;
+    try {
+      const inserted = await db.insertVoiceFeedback({
+        userId,
+        sessionId,
+        jobId: jobId || null,
+        address: address || null,
+        issueText,
+        transcriptWindow: Array.isArray(lastTranscriptWindow) ? lastTranscriptWindow : null,
+        s3Key: `${prefix}/debug_report.json`,
+      });
+      voiceFeedbackId = inserted?.id || null;
+    } catch (dbErr) {
+      logger.warn('voice_feedback insert failed (S3 write succeeded)', {
+        userId,
+        sessionId,
+        prefix,
+        error: dbErr?.message || String(dbErr),
+      });
+    }
+
+    // Phase 1.6.3 — CloudWatch row so the new realtime telemetry
+    // stream (Phase 1.3) carries the marker inline. The preview is
+    // capped at 200 chars to match the list endpoint's column shape
+    // (LEFT(issue_text, 200) AS issue_preview in db.listVoiceFeedback).
+    logger.info('Voice feedback captured', {
+      sessionId,
+      userId,
+      jobId: jobId || null,
+      address: address || null,
+      issueLength: issueText.length,
+      issuePreview: issueText.slice(0, 200),
+      transcriptWindowLength: Array.isArray(lastTranscriptWindow) ? lastTranscriptWindow.length : 0,
+      s3Key: `${prefix}/debug_report.json`,
+      voiceFeedbackId,
+    });
+
     logger.info('Debug report uploaded from iOS', { prefix, sessionId, userId });
-    res.json({ success: true, reportId: prefix });
+    res.json({ success: true, reportId: prefix, voiceFeedbackId });
   } catch (error) {
     logger.error('Debug report upload failed', { userId, sessionId, error: error.message });
     res.status(500).json({ error: 'Debug report upload failed: ' + error.message });

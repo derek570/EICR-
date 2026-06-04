@@ -328,6 +328,14 @@ export const GATE_REASONS = Object.freeze({
   // will narrow to zero post-deploy.
   HAS_TRIGGER: 'has_trigger',
   HAS_REGEX_HINT: 'has_regex_hint',
+  // PLAN-backend-final.md Phase 5.1 (2026-06-04) — explicit forward
+  // authority for inspector complaints / negations. 3 of session
+  // 60754E4D's 6 voiced frustrations dropped to LOW_CONTENT under the
+  // old rules ("Why did you ask the b s number..." 15 words,
+  // "No. That's not what I said." 3 words, "You haven't set it to LIM."
+  // 4 words). The COMPLAINT_OR_NEGATION_PATTERN below catches all three
+  // and forces the gate to forward so Sonnet can run a corrective turn.
+  HAS_COMPLAINT_OR_NEGATION: 'has_complaint_or_negation',
   LOW_CONTENT: 'low_content',
   FALLBACK_FORWARD: 'fallback',
   // Bypass reasons (always forward)
@@ -337,6 +345,28 @@ export const GATE_REASONS = Object.freeze({
   BYPASS_DRAINED_RETRY: 'bypass_drained_retry',
   BYPASS_DISABLED: 'bypass_flag_off',
 });
+
+// PLAN-backend-final.md Phase 5.1 — complaint / negation pattern.
+// CRITICAL DESIGN POINT: the bare `no` token is NOT a top-level
+// alternation. It only matches with a continuation pronoun /marker
+// (`no, that...` / `no, I...` / `no wrong`). This is what keeps
+// innocuous *"no problem"* / *"no signal"* / *"no spare"* off the
+// forward path while catching *"No. That's not what I said."* and
+// *"No, I didn't"*. The plan's negative-cases test pins this
+// distinction explicitly.
+//
+// Other anchors:
+//   - "that's not" / "that is not" — explicit denial
+//   - "you haven't" / "you have not" — accuser frame
+//   - "why (did|haven't|are|do|don't) you" — interrogative complaint
+//   - "stop" / "stop it" — corrective imperative
+//   - bare "wrong" / "incorrect" / "that's wrong" — value rejection
+//   - "undo" / "cancel that" / "fix that" / "delete that" — corrective
+//     imperatives that already forward via other paths but are
+//     covered here too so the reason code is informative
+//   - "i didn't say" — denial-of-prior-utterance
+export const COMPLAINT_OR_NEGATION_PATTERN =
+  /\b(no[,.]?\s+(that|that's|i|you|it|we|wrong|incorrect)|that's not|that is not|you haven't|you have not|why (did|haven't|are|do|don't) you|stop( it)?|wrong|incorrect|that's wrong|undo|cancel that|fix that|delete that|that's not right|i didn't say)\b/i;
 
 /**
  * Decide whether a transcript should be forwarded to Sonnet.
@@ -398,6 +428,18 @@ export function shouldForwardToSonnet(text, opts = {}) {
   const trimmed = typeof text === 'string' ? text.trim() : '';
   if (!trimmed) {
     return { forward: false, reason: GATE_REASONS.EMPTY };
+  }
+  // PLAN-backend-final.md Phase 5.1 — complaint / negation BEFORE
+  // HAS_DIGIT (deliberately). Complaints sometimes contain digits
+  // accidentally (*"you set it to 0.45 but I said 0.55"*) and we want
+  // the complaint-forward signal to WIN over the digit-forward path so
+  // the reason field reflects the actual intent on the CloudWatch
+  // dashboard. Per the plan negative-tests pin, the regex deliberately
+  // requires a continuation pronoun after a bare "no" so innocuous
+  // utterances ("no problem", "no signal", "no spare") still block via
+  // the LOW_CONTENT path.
+  if (COMPLAINT_OR_NEGATION_PATTERN.test(trimmed)) {
+    return { forward: true, reason: GATE_REASONS.HAS_COMPLAINT_OR_NEGATION };
   }
   if (DIGIT_REGEX.test(trimmed)) {
     return { forward: true, reason: GATE_REASONS.HAS_DIGIT };

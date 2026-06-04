@@ -99,7 +99,11 @@ import { createAskDispatcher } from './stage6-dispatcher-ask.js';
 // reverts to the Phase 3/4 dispatcher shape unchanged.
 import { createAskGateWrapper, wrapAskDispatcherWithGates } from './stage6-ask-gate-wrapper.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
-import { bundleToolCallsIntoResult, BUNDLER_PHASE } from './stage6-event-bundler.js';
+import {
+  bundleToolCallsIntoResult,
+  BUNDLER_PHASE,
+  applyConfirmationDebounce,
+} from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { TOOL_SCHEMAS } from './stage6-tool-schemas.js';
 import {
@@ -1082,6 +1086,38 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         mid_stream_slot_count: midStreamEmittedSlots.size,
         reason: 'flag_off',
       });
+    }
+
+    // PLAN-backend-final.md Phase 7.3 — backend confirmation debounce.
+    // Cross-turn same-field-family suppression. Inspector hears one TTS
+    // per burst instead of three when Sonnet rapid-fires record_reading
+    // for the same field across consecutive turns. State lives on the
+    // session entry so it survives across runLiveMode invocations;
+    // initialised lazily on first use so older entries (or test
+    // harnesses with partial sessions) don't trip over a missing field.
+    // Runs AFTER the mid-stream-canonical filter so the debounce sees
+    // the final set iOS would have played, and BEFORE the
+    // bundlerEmittedCount calc lower down so the audio-finalizer arms
+    // ACK expectations for the right (debounced) confirmation count.
+    if (Array.isArray(result.confirmations) && result.confirmations.length > 0) {
+      if (!session.confirmationDebounceState) {
+        session.confirmationDebounceState = { lastEmittedAt: 0, lastField: null };
+      }
+      const before = result.confirmations.length;
+      result.confirmations = applyConfirmationDebounce(
+        result.confirmations,
+        session.confirmationDebounceState
+      );
+      const suppressed = before - result.confirmations.length;
+      if (suppressed > 0) {
+        log?.info?.('voice_latency.confirmation_debounced', {
+          sessionId: session.sessionId,
+          turnId,
+          suppressed,
+          surviving: result.confirmations.length,
+          window_ms: 1500,
+        });
+      }
     }
 
     // Increment turn count to match legacy's contract

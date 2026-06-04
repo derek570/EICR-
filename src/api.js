@@ -29,6 +29,7 @@ import keysRouter from './routes/keys.js';
 import settingsRouter from './routes/settings.js';
 import pushRouter from './routes/push.js';
 import feedbackRouter from './routes/feedback.js';
+import voiceFeedbackRouter from './routes/voice-feedback.js';
 import billingRouter from './routes/billing.js';
 import calendarRouter from './routes/calendar.js';
 import clientsRouter from './routes/clients.js';
@@ -287,6 +288,14 @@ app.use('/api', keysRouter); // /api/proxy/*, /api/config/*
 app.use('/api', settingsRouter); // /api/settings/*, /api/inspector-profiles/*, /api/schema/*, /api/regulations
 app.use('/api/push', pushRouter); // /api/push/*
 app.use('/api', feedbackRouter); // /api/feedback/*, /api/optimizer-report/*
+// PLAN-backend-final.md Phase 1.6.4 — voice-feedback markers (the
+// inspector's spoken "feedback ... end feedback" UX). Kept under its
+// own path prefix rather than merged into feedbackRouter because the
+// existing /api/feedback handlers serve the optimizer's HTML form
+// (different consumers, different schema). Gated by requireAuth +
+// requireConsent because the rows may carry homeowner/site context
+// via transcript_window.
+app.use('/api/voice-feedback', auth.requireAuth, requireConsent, voiceFeedbackRouter);
 app.use('/api/billing', billingRouter); // /api/billing/* (except webhook which stays here)
 app.use('/api/calendar', calendarRouter); // /api/calendar/*
 app.use('/api', auth.requireAuth, requireConsent, clientsRouter); // /api/clients/*, /api/properties/* — homeowner CRM

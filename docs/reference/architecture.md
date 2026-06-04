@@ -110,6 +110,24 @@ Shared value-rule semantics live in `src/extraction/value-normalise.js` (`accept
 
 Full design rationale: [ADR-008](../adr/008-schema-driven-tools-and-server-resolved-asks.md).
 
+### Pre-LLM transcript gate (`src/extraction/pre-llm-gate.js`)
+
+Every iOS transcript runs through `shouldForwardToSonnet(text, opts)` before the Sonnet round + TTS cost commits. The gate is a sequential pass with bypass and forward reasons emitted as `voice_latency.gate_blocked` (block) / `voice_latency.gate_forwarded_complaint` (positive) for ops dashboards.
+
+`GATE_REASONS` enum (full list): `EMPTY`, `HAS_DIGIT`, `HAS_OBSERVATION_PREFIX`, `HAS_STRONG_TRIGGER`, `HAS_WEAK_TRIGGER`, `HAS_TRIGGER` (legacy, retained for back-compat), `HAS_REGEX_HINT`, `HAS_COMPLAINT_OR_NEGATION`, `LOW_CONTENT`, `FALLBACK_FORWARD`, plus bypasses `BYPASS_PENDING_ASK`, `BYPASS_DIALOGUE_SCRIPT_ACTIVE`, `BYPASS_IN_RESPONSE_TO`, `BYPASS_DRAINED_RETRY`, `BYPASS_DISABLED`.
+
+`HAS_COMPLAINT_OR_NEGATION` (PLAN-backend-final.md §5.1) runs BEFORE `HAS_DIGIT` so complaints that accidentally contain digits ("you set it to 0.45 but I said 0.55") log with intent reason. The regex deliberately requires a continuation pronoun after a bare "no" so "no problem" / "no signal" / "no spare" still block via `LOW_CONTENT`.
+
+### Dialogue engine (`src/extraction/dialogue-engine/`)
+
+Schemas: `rcd`, `ocpd`, `rcbo`, `ring_continuity`, `insulation_resistance`. Each is a script-style walk-through with entry triggers, per-slot prompts + parsers, defer / skip / cancel verbs, and a `toolCallIdPrefix` (`srv-rcd-` / `srv-ocpd-` / `srv-rcbo-` / `srv-irs-` / `srv-rcs-`).
+
+Per-session state outside the transient `session.dialogueScriptState`:
+
+- **`session.dialogueScriptDeferredSlots: Map<string, Set<string>>`** (Phase 6.2) — keyed by `${schemaName}:${circuit_ref ?? 'none'}`. Survives `clearScriptState` so a script re-entry doesn't re-ask a slot the inspector deferred earlier. Volunteered writes to a deferred slot ("the BS code is 60898" / "set BS number") clear the entry via the named-field-extraction loop. Plumbed through `nextMissingSlot(values, slots, skippedSet, deferredSet)`.
+- **RCD entry guard** (Phase 6.1) — when transcript contains `\bRCD\b` AND a corrective imperative (delete/undo/cancel/fix/why/stop/remove/clear) OR a denial phrase (what are you / i didn't / that's wrong / that's not), the RCD schema's entry is skipped; the loop continues to other schemas, ultimately falling through to Sonnet. Scoped to RCD only — the other four schemas don't exhibit the re-entry loop pattern.
+- **Cancel-drain WS frame** (Phase 6.3) — on any `*_script_cancelled`, the engine emits `{type:"cancel_pending_tts", prefix:"srv-{script}-", sessionId}` so iOS's AlertManager queue (slice 7.1) can purge in-flight script TTS in the same namespace.
+
 ## CCU Photo Extraction Pipeline
 
 > ⚡ **CURRENT STATE (2026-05-08 onwards)** — `POST /api/analyze-ccu` runs a **whole-image single-shot `gpt-5.5`** call via `src/extraction/ccu-single-shot.js`. **No per-slot cropping is performed in the live pipeline.** The Stage 3 / Stage 4 per-slot Sonnet pipeline described in earlier versions of this doc is LEGACY FALLBACK, gated behind `CCU_USE_SINGLE_SHOT=false`. Production runs single-shot ON. When reasoning about CCU failures, do not consider CV crop accuracy or slot-crop boundary alignment — they are not in the live path.

@@ -67,6 +67,17 @@ import { isWithinRange, BOARD_FIELD_NUMERIC_RANGES } from './value-enum-validato
 // stage6-tool-schemas.js).
 const BOARD_FIELD_SET = new Set(BOARD_FIELD_ENUM);
 
+// PLAN-backend-final.md Phase 4.3 — anchored UK address-opener pattern
+// the dispatcher uses to reject `record_board_reading {field:"client_name",
+// value:"<digit> <word> <street-suffix>..."}` writes. Conservative on purpose:
+// the leading `^\d+\s+\w+\s+` requires a digit + word + street suffix, so a
+// real client surname like "John Road" (a person whose surname is "Road")
+// doesn't trip the gate. Exported for the Phase 4.5 test that pins the
+// shape — keeping the regex visible from the test prevents a future widen
+// from silently accepting the very value class this guard exists to reject.
+export const CLIENT_NAME_ADDRESS_SHAPE =
+  /^\d+\s+\w+\s+(road|street|avenue|lane|close|drive|way|crescent|court|terrace|grove|gardens|mews|place)/i;
+
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
 }
@@ -242,6 +253,38 @@ export async function dispatchRecordBoardReading(call, ctx) {
       input_summary: { field: input.field },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // PLAN-backend-final.md Phase 4.3 — field-level guard against the
+  // Marlborough / 71-Hexham-Road class bug where Sonnet wrote
+  // `record_board_reading {field:"client_name", value:"71 Hexham Road,
+  // Reading"}` in response to *"Should I use this address for the client
+  // too?"* + *"Y"*. The right routing is four record_board_reading
+  // writes to `client_address` / `client_postcode` / `client_town` /
+  // `client_county` (Phase 4.0 added those slots; Phase 4.2 added the
+  // prompt guidance). This guard rejects the legacy bad routing so
+  // Sonnet sees a structured error and retries with the right slot
+  // rather than the cached prefix carrying a misrouted value into the
+  // PDF. Anchored at start of value, case-insensitive, matches the
+  // common UK address openers; deliberately conservative — "John Road"
+  // (a person's actual surname) doesn't match because the leading
+  // digit-then-word pattern is required.
+  if (input.field === 'client_name' && typeof input.value === 'string') {
+    if (CLIENT_NAME_ADDRESS_SHAPE.test(input.value)) {
+      const err = { code: 'client_name_looks_like_address', field: 'value' };
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'record_board_reading',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: err,
+        input_summary: { field: input.field },
+      });
+      return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    }
   }
 
   // 3) mutate via the flag-aware wrapper. Flag-off: legacy circuits[0] write

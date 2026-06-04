@@ -88,6 +88,16 @@ export async function uploadFile(localPath, remoteKey) {
 
 /**
  * Upload bytes directly to storage.
+ *
+ * The realtime-log-sink (PLAN-backend-final.md Phase 1.3) calls this with
+ * `application/x-ndjson` for per-session JSONL batches under
+ * `session-logs/{userId}/{sessionId}/realtime/{ms}-{shortUuid}.jsonl`.
+ * S3 putObject has no append semantics and no compose primitive, so the
+ * sink writes each batch as a fresh unique-keyed object; recovery /
+ * download concatenates the batches in lexicographic key order (the
+ * `{ms}-{shortUuid}` prefix sorts chronologically across ECS restarts
+ * and the random suffix guarantees no two batches ever collide on key).
+ *
  * @param {Buffer|string} data - Data to upload
  * @param {string} remoteKey - S3 key or relative path
  * @param {string} [contentType] - MIME type for S3

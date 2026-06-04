@@ -17,9 +17,13 @@
 
 | Field | Type | Options | AI Extraction Guidance |
 |-------|------|---------|----------------------|
-| `client_name` | text | - | Name of client/property owner. Listen for "Mrs Smith", "Mr Jones", etc. |
-| `address` | text | - | Full property address. Listen for street, house number, town. |
-| `postcode` | text | - | UK postcode like "RG1 1AA" |
+| `client_name` | text | - | Name of client/property owner. Listen for "Mrs Smith", "Mr Jones", etc. Dispatcher REJECTS address-shaped values written here (`client_name_looks_like_address`) — those belong in the `client_*` family below (Phase 4.3). |
+| `client_address` | text | - | BILLING address — distinct from site address. Filled via four `record_board_reading` writes when inspector says "use site address for client too" (Phase 4.2). |
+| `client_postcode` | text | UK postcode pattern | BILLING postcode. Companion to `client_address`. |
+| `client_town` | text | - | BILLING town. Derived from postcode when omitted. |
+| `client_county` | text | - | BILLING county. Derived from postcode when omitted. |
+| `address` | text | - | Full SITE/installation address. Listen for street, house number, town. |
+| `postcode` | text | - | SITE UK postcode like "RG1 1AA" |
 | `premises_description` | select | Residential, Commercial, Industrial, Agricultural, Other | Usually "Residential" for houses |
 | `installation_records_available` | boolean | - | True if previous certificates/records available |
 | `evidence_of_additions_alterations` | boolean | - | True if unrecorded work found |
@@ -258,3 +262,21 @@ When you modify the iOS app or backend:
 4. **Change field name?**
    - Update everywhere: schema, iOS model files, backend API
    - Update the tables in this document
+
+---
+
+## Bulk write tools
+
+### `set_field_for_all_circuits` (Stage 6)
+
+Apply ONE `(field, value)` pair to every active circuit in the schedule. Inspector triggers: "all circuits are 0.32", "every circuit", "RCD time 25 ms for all".
+
+| Param | Type | Required | Notes |
+|-------|------|----------|-------|
+| `field` | string | yes | Any `circuit_fields` key from `config/field_schema.json`. |
+| `value` | string | yes | Post-normalisation value; same coercion contract as `record_reading`. |
+| `confidence` | number | yes | 0.0–1.0; dispatcher rejects out-of-range. |
+| `source_turn_id` | string | yes | Dedup + correlation. |
+| `scope` | enum | no | `non_spare` (default), `all`, `rcd_protected_only`. |
+| `board_id` | string | no | Defaults to `currentBoardId`. Pass `"*"` to apply across every board on the job. |
+| `exclude_circuits` | integer[] | no | **PLAN-backend-final §8.1.** Subtractive selector for "apart from / except / excluding / all but circuit N". Integers only (Stage 6 uses numeric refs throughout). Honored regardless of `scope`. The dispatcher's response carries `excluded_count` = inspector intent count (deduped validated input), independent of scope; `applied_count` is the post-exclude post-scope total; `skipped_count` continues to count scope-rule drops only. Example: `set_field_for_all_circuits({field:"rcd_time_ms", value:"25", scope:"non_spare", exclude_circuits:[1], ...})` for "RCD time is 25 milliseconds for all circuits apart from circuit 1." |
