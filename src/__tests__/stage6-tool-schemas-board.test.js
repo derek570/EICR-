@@ -161,6 +161,16 @@ describe('record_board_reading schema', () => {
     expect(enumSet.has('town')).toBe(true);
     expect(enumSet.has('client_name')).toBe(true);
     expect(enumSet.has('date_of_inspection')).toBe(true);
+    // PLAN-backend-final.md Phase 4.0 — BILLING/CLIENT address family.
+    // Distinct from the site address fields above; added so Sonnet can
+    // emit `record_board_reading {field: "client_address"}` writes when
+    // the inspector confirms "use the site address for the client too".
+    // Without these entries the dispatcher's BOARD_FIELD_ENUM validator
+    // would reject the write and Sonnet would have no legal route.
+    expect(enumSet.has('client_address')).toBe(true);
+    expect(enumSet.has('client_postcode')).toBe(true);
+    expect(enumSet.has('client_town')).toBe(true);
+    expect(enumSet.has('client_county')).toBe(true);
   });
 
   test('field enum does NOT contain _ui_* metadata keys (filter contract)', () => {

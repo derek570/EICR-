@@ -408,6 +408,31 @@
       "description": "Client/customer name",
       "ai_guidance": "Name of the client or property owner. Listen for 'Mrs Smith', 'Mr Jones', 'the tenant', etc."
     },
+    "client_address": {
+      "label": "Client Address",
+      "type": "text",
+      "description": "Client BILLING address (distinct from the site/installation address). Filled when the inspector confirms 'use the site address for the client too' (four separate writes to client_address / client_postcode / client_town / client_county) or names a different billing address.",
+      "ai_guidance": "Postal address of the client/billing party — NOT the site being inspected. Listen for 'the client is at...', 'invoice to...', 'use the same address' (which means: copy the site address into ALL four client_* fields)."
+    },
+    "client_postcode": {
+      "label": "Client Postcode",
+      "type": "text",
+      "pattern": "^[A-Z]{1,2}[0-9R][0-9A-Z]?\\s?[0-9][A-Z]{2}$",
+      "description": "UK postcode of the client billing address",
+      "ai_guidance": "UK postcode like 'RG1 1AA' for the client billing address. Skip if the inspector hasn't volunteered one separately."
+    },
+    "client_town": {
+      "label": "Client Town/City",
+      "type": "text",
+      "description": "Town or city of the client billing address",
+      "ai_guidance": "Town or city for the client billing address; will be derived from postcode if not spoken."
+    },
+    "client_county": {
+      "label": "Client County",
+      "type": "text",
+      "description": "County of the client billing address",
+      "ai_guidance": "County for the client billing address; will be derived from postcode if not spoken."
+    },
     "address": {
       "label": "Installation Address",
       "type": "text",
