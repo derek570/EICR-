@@ -652,3 +652,65 @@ export interface AdminQueueHealthResponse {
   health?: Record<string, unknown>;
   message?: string;
 }
+
+// ----------------------------------------------------------------
+// Voice feedback (PLAN-web-final §1.6.5 / backend slice §1.6.3-§1.6.4)
+//
+// On-device voice trigger ("feedback ... end feedback") captures a
+// short transcript window + user-spoken issue text and uploads it to
+// the backend. The web /voice-feedback list + detail pages here let
+// the developer/admin user triage those reports. Status workflow:
+//   open → reviewed (acknowledged) → actioned (fix shipped)
+//                                  → wontfix (no change planned)
+//
+// Wire contracts are frozen against the backend slice. See
+// PLAN-web-final.md §"Cross-repo wire contracts" for the source of
+// truth.
+// ----------------------------------------------------------------
+
+export type VoiceFeedbackStatus = 'open' | 'reviewed' | 'actioned' | 'wontfix';
+
+export interface VoiceFeedbackListItem {
+  id: string;
+  sessionId: string;
+  jobId: string | null;
+  /** Best-effort site address resolved by the backend at insert time. */
+  address: string | null;
+  /** First ~150 chars of `issue_text`, server-truncated. */
+  issuePreview: string;
+  createdAt: string;
+  status: VoiceFeedbackStatus;
+  /** Only populated when the list was fetched via the admin/all path. */
+  userId?: string;
+}
+
+export interface VoiceFeedbackTranscriptEntry {
+  /** Wall-clock timestamp of the transcript line (ISO-8601). */
+  ts: string;
+  text: string;
+}
+
+export interface VoiceFeedbackDetail {
+  id: string;
+  sessionId: string;
+  jobId: string | null;
+  address: string | null;
+  /** Full inspector-spoken complaint text (between "feedback" and "end feedback"). */
+  issueText: string;
+  /**
+   * Short window of transcript lines either side of the feedback marker.
+   * Backend slice pegs it at ~30 s either side. Empty array if the
+   * upload happened before the window was captured.
+   */
+  transcriptWindow: VoiceFeedbackTranscriptEntry[];
+  /** S3 key of the raw JSON payload uploaded by iOS. Used for the "open raw" link. */
+  s3Key: string;
+  createdAt: string;
+  status: VoiceFeedbackStatus;
+  reviewNote: string | null;
+}
+
+export interface VoiceFeedbackListResponse {
+  items: VoiceFeedbackListItem[];
+  total: number;
+}

@@ -22,6 +22,9 @@ import {
   type LegalTextVersionsBundle,
   type ConsentAcceptResponse,
   type CertAttestationsAcceptResponse,
+  type VoiceFeedbackDetail,
+  type VoiceFeedbackListResponse,
+  type VoiceFeedbackStatus,
 } from './types';
 import {
   AdminSuccessResponseSchema,
@@ -1121,5 +1124,67 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(args),
     });
+  },
+
+  // Voice feedback (PLAN-web-final §1.6.5).
+  // No zod schema yet — backend slice is shipping in parallel and the
+  // wire shape may evolve slightly during backend review. We type the
+  // response on the TS side and accept the cost of a runtime drift
+  // until backend lands, at which point we'll add adapters/schemas.
+  // The wire contract is frozen in PLAN-web-final.md §"Cross-repo wire
+  // contracts" — see there for the source of truth.
+
+  voiceFeedbackList(
+    params: {
+      status?: VoiceFeedbackStatus;
+      jobId?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<VoiceFeedbackListResponse> {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.jobId) qs.set('job_id', params.jobId);
+    if (params.q) qs.set('q', params.q);
+    qs.set('limit', String(params.limit ?? 50));
+    qs.set('offset', String(params.offset ?? 0));
+    return request<VoiceFeedbackListResponse>(`/api/voice-feedback?${qs.toString()}`);
+  },
+
+  voiceFeedbackGet(id: string): Promise<VoiceFeedbackDetail> {
+    return request<VoiceFeedbackDetail>(`/api/voice-feedback/${encodeURIComponent(id)}`);
+  },
+
+  voiceFeedbackPatch(
+    id: string,
+    body: { status?: VoiceFeedbackStatus; review_note?: string }
+  ): Promise<VoiceFeedbackDetail> {
+    return request<VoiceFeedbackDetail>(`/api/voice-feedback/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  // Admin-only — same list shape as voiceFeedbackList but with `userId`
+  // populated on each row. The backend slice gates this route behind
+  // `isSystemAdmin`; callers gate the UI affordance behind the same flag
+  // (see /voice-feedback page's admin toggle).
+  voiceFeedbackAdminAll(
+    params: {
+      status?: VoiceFeedbackStatus;
+      jobId?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<VoiceFeedbackListResponse> {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.jobId) qs.set('job_id', params.jobId);
+    if (params.q) qs.set('q', params.q);
+    qs.set('limit', String(params.limit ?? 50));
+    qs.set('offset', String(params.offset ?? 0));
+    return request<VoiceFeedbackListResponse>(`/api/voice-feedback/admin/all?${qs.toString()}`);
   },
 };
