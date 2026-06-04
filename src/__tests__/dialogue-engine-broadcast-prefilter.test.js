@@ -380,3 +380,42 @@ describe('pre-filter — bulkApplyPending preservation (RCD regression guard)', 
     expect(ws.sent.at(-1).question).toBe('Applied RCD to all circuits.');
   });
 });
+
+describe("Deepgram garbles of 'circuits' (session C0C21546 2026-06-04)", () => {
+  // Positive cases — each annotated with which regex it exercises so a
+  // future maintainer editing one regex doesn't accidentally orphan the
+  // other's coverage.
+  test('garbled noun "secus" in LIST shape classifies as broadcast', () => {
+    // Evidence: session C0C21546 turn-9 2026-06-04
+    // LIST regex
+    expect(detectBroadcastIntent('RCD triptan for secus 1 and 2 is 24 ms')).toBe(true);
+    // LIST regex
+    expect(detectBroadcastIntent('Zs for secus 3 and 4 is 0.42')).toBe(true);
+  });
+
+  test('garbled noun "secus" in RANGE shape classifies as broadcast', () => {
+    // RANGE regex
+    expect(detectBroadcastIntent('IR for secus 1 to 4 above 299')).toBe(true);
+  });
+
+  // Negative cases — the noun anchor MUST still reject natural value
+  // dictation AND speculative garbles we have NOT yet observed.
+  test('bare number-list without circuit-noun anchor does NOT match', () => {
+    // Bare number-list MUST NOT match (no noun anchor)
+    expect(detectBroadcastIntent('1, 3 megohms')).toBe(false);
+    expect(detectBroadcastIntent('circuit 4 is 1 to 6 megohms')).toBe(false);
+    // Singular circuit + value MUST NOT match
+    expect(detectBroadcastIntent('circuit 5 is 0.42')).toBe(false);
+  });
+
+  test('speculative garbles NOT in the evidence ledger MUST NOT match', () => {
+    // Speculative phonetic neighbours stay out until a real production
+    // occurrence justifies adding them.
+    expect(detectBroadcastIntent('circus 1 and 2 is 24 ms')).toBe(false);
+    expect(detectBroadcastIntent('sirkets 1 and 2 is 24 ms')).toBe(false);
+  });
+
+  test('regression: session C0C21546 "secus 1 and 2" must classify as broadcast', () => {
+    expect(detectBroadcastIntent('RCD triptan for secus 1 and 2 is 24 ms.')).toBe(true);
+  });
+});

@@ -151,9 +151,24 @@ function rangeFromTo(start, end) {
 const BROADCAST_ALL_RE =
   /\b(?:(?:for|across|on|to|of|in)\s+all\s+(?:circuits|the\s+circuits|of\s+(?:them|the\s+circuits))|all\s+circuits|every\s+circuit|(?:the\s+)?whole\s+board|(?:the\s+)?entire\s+board)\b/i;
 
-const BROADCAST_RANGE_RE = /\bcircuits?\s+\d{1,3}\s*(?:to|through|thru|until|-|—|–)\s*\d{1,3}\b/i;
+// Noun anchor tolerates Deepgram garbles of "circuits" observed in
+// production transcripts. ONLY add a garble here when it appears in
+// CloudWatch logs — speculative variants ("circus", "sirkets", etc.)
+// stay out to avoid false-positives on natural designations. Wholesale
+// fuzzy match also rejected — would false-positive on natural value
+// dictation ("1 to 6 megohms").
+// Evidence ledger:
+//   - secus: session C0C21546 2026-06-04 turn-9 (this fix)
+const CIRCUIT_NOUN_RE = '(?:circuits?|secus)';
+const BROADCAST_RANGE_RE = new RegExp(
+  `\\b${CIRCUIT_NOUN_RE}\\s+\\d{1,3}\\s*(?:to|through|thru|until|-|—|–)\\s*\\d{1,3}\\b`,
+  'i'
+);
 
-const BROADCAST_LIST_RE = /\bcircuits?\s+\d{1,3}(?:\s*(?:,|and)\s*\d{1,3}){1,}\b/i;
+const BROADCAST_LIST_RE = new RegExp(
+  `\\b${CIRCUIT_NOUN_RE}\\s+\\d{1,3}(?:\\s*(?:,|and)\\s*\\d{1,3}){1,}\\b`,
+  'i'
+);
 
 export function detectBroadcastIntent(text) {
   if (typeof text !== 'string' || !text) return false;
