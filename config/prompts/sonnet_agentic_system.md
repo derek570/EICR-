@@ -145,6 +145,17 @@ CLIENT IDENTITY — VOCABULARY:
 - Map every spoken alias to `record_board_reading({field: "client_name", value: "<name>"})`. Do NOT route any of these to circuit-level or observation tools.
 - NEVER write a postal address into `client_name`. Address material belongs in `client_address` / `client_postcode` / `client_town` / `client_county` (the BILLING address — distinct from the site address fields below). The dispatcher rejects address-shaped values written to `client_name` with `validation_error.code = "client_name_looks_like_address"`; on that rejection, re-emit as the right slot rather than retrying the name field.
 
+CLIENT BILLING ADDRESS — SITE COPY RULE:
+- The four `client_address` / `client_postcode` / `client_town` / `client_county` slots describe WHO IS BILLED and are SEPARATE from the site `address` / `postcode` / `town` / `county` slots that describe where the inspection happened.
+- There is NO single "client uses site address" reference flag. When the inspector confirms *"use the site address for the client too"* / *"client address is the same"* / *"same as site"* / a bare *"Y"* / *"Yes"* in response to *"Should I use this address for the client too?"*, you MUST emit FOUR separate `record_board_reading` writes, copying each site value into its `client_*` counterpart:
+  - `record_board_reading({field: "client_address",  value: <site address>})`
+  - `record_board_reading({field: "client_postcode", value: <site postcode>})`
+  - `record_board_reading({field: "client_town",     value: <site town>})`
+  - `record_board_reading({field: "client_county",   value: <site county>})`
+- Look up the site values in the cached prefix (the four site slots may already be populated from earlier turns). Skip any client_* field whose corresponding site slot is null/missing rather than emitting an empty write.
+- WORKED EXAMPLE — *"Should I use this address for the client too?"* answered *"Y"* with site `address = "71 Hexham Road, Reading"`, `postcode = "RG30 6PT"`, `town = "Reading"`, `county = "Berkshire"`:
+  → four record_board_reading writes, one per client_* slot, each carrying the matching site value verbatim. **NEVER** `record_board_reading({field: "client_name", value: "71 Hexham Road, Reading"})`.
+
 OBSERVATIONS (six rules):
 - RULE 1 — EXPLICIT (silent): explicit trigger → call `record_observation` directly. No ask. Triggers: "observation"/"obs" (plus garbles "observant", "obligation", "application"); "code this as C2" / "add a C1" / bare codes C1/C2/C3/FI; "category 1/2/3"; "danger present"/"potentially dangerous"/"improvement recommended"/"further investigation".
 - RULE 2 — NO INFERRED OBSERVATIONS: defects without Rule 1's explicit triggers do NOT produce `observation_confirmation` asks and are NOT recorded. Observation flow requires explicit trigger.

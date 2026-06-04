@@ -131,6 +131,25 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   sub_main_cable_material: 'sub-main cable material',
   sub_main_cable_csa: 'sub-main cable size',
   sub_main_cpc_csa: 'sub-main CPC size',
+  // PLAN-backend-final.md Phase 4.4 — Derek's preferred vocabulary
+  // for the client identity slot is "customer name", not the snake-
+  // case→spaces fallback ("client name"). MUST be added INSIDE this
+  // frozen literal — Object.freeze + ES-modules-always-strict means
+  // a post-declaration assignment like
+  // `CONFIRMATION_FRIENDLY_NAMES.client_name = "customer name"`
+  // throws TypeError at runtime and the Phase 4 vocabulary-parity
+  // acceptance would silently fail.
+  client_name: 'customer name',
+  // Phase 4.0 added the BILLING/CLIENT address slot family; spell out
+  // the friendly forms so TTS doesn't echo snake_case ("client address",
+  // "client postcode", "client town", "client county" are already the
+  // snake→spaces fallback shape, but listing them explicitly future-
+  // proofs against a rename that would silently re-fall to the
+  // derivation path).
+  client_address: 'customer address',
+  client_postcode: 'customer postcode',
+  client_town: 'customer town',
+  client_county: 'customer county',
 });
 
 // Confidence threshold mirrors the legacy prompt's confirmation gate
