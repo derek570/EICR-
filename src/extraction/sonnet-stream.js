@@ -699,6 +699,14 @@ import {
 // without a circular dep with this file.
 
 // Map cable description strings to BS 7671 wiring type letter codes
+// PLAN-backend-final.md Phase 8.4 — bulk-exclude intent hint pattern.
+// Matched after the pre-LLM gate forwards. Used to tag the turn with
+// `msg.intentHints.bulkExclude = true` so downstream extractor + iOS
+// slice 8.0 (ApplyFieldIntent return-nil-on-exclude) can coordinate
+// on routing the utterance through `set_field_for_all_circuits
+// {exclude_circuits: [N]}` rather than a per-circuit record_reading.
+const BULK_EXCLUDE_PATTERN = /\b(apart from|except|excluding|all but)\b/i;
+
 const WIRING_TYPE_DESC_TO_CODE = {
   'TWIN & EARTH': 'A',
   'TWIN AND EARTH': 'A',
@@ -3306,6 +3314,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       logger.info('voice_latency.gate_forwarded_complaint', {
         sessionId,
         textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
+      });
+    }
+
+    // PLAN-backend-final.md Phase 8.4 — bulk-exclude intent hint.
+    // When the transcript matches "apart from / except / excluding /
+    // all but", set msg.intentHints.bulkExclude = true and emit a
+    // telemetry row so iOS slice 8.0 (ApplyFieldIntent return-nil-on-
+    // exclude) + the §8.3 prompt few-shot can be measured end-to-end
+    // in CloudWatch. Per the plan: option (a) — backend-side hint,
+    // NOT a gate change, so the regex doesn't widen the forward
+    // distribution; just enriches the turn context. The hint is set
+    // on the msg object so any downstream extractor can read it
+    // without a re-parse.
+    if (typeof msg.text === 'string' && BULK_EXCLUDE_PATTERN.test(msg.text)) {
+      if (!msg.intentHints || typeof msg.intentHints !== 'object') {
+        msg.intentHints = {};
+      }
+      msg.intentHints.bulkExclude = true;
+      logger.info('voice_latency.intent_hint_bulk_exclude', {
+        sessionId,
+        textPreview: msg.text.substring(0, 80),
       });
     }
 

@@ -923,6 +923,22 @@ const setFieldForAllCircuits = makeTool({
       description:
         'Scope the bulk write to the named board (defaults to currentBoardId). Pass "*" to apply across every board on the job.',
     },
+    // PLAN-backend-final.md Phase 8.1 — "apart from / except / excluding /
+    // all but" subtractive selector. Circuit refs in Stage 6 are NUMERIC
+    // throughout (record_reading.circuit, calculate_zs.circuit_refs,
+    // listCircuitRefsInBoard all use integers); using `integer` items
+    // matches that contract. A future addition of alphanumeric refs like
+    // "2a" is a prerequisite migration across record_reading +
+    // calculate_zs + the dispatcher iterators, NOT a one-tool string
+    // widening here. The dispatcher honours `exclude_circuits` regardless
+    // of `scope` — see Phase 8.2 dispatcher rule for the precise
+    // applied/excluded/skipped count semantics.
+    exclude_circuits: {
+      type: 'array',
+      items: { type: 'integer' },
+      description:
+        'Circuit refs to exclude from the bulk apply. Use when the inspector says "all circuits apart from N" / "every circuit except N" / "all but circuit M". Honored regardless of scope. Integers only — circuit refs are numeric throughout Stage 6.',
+    },
   },
   required: ['field', 'value', 'confidence', 'source_turn_id'],
 });

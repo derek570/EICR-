@@ -233,8 +233,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // into client_name when answering "use this address for the
       // client too" / "Y"). Companion Phase 4.0 added the four
       // client_* slots; Phase 4.3 added the dispatcher guard.
+      //
+      // 2026-06-04 (PLAN-backend-final.md §8.3): bumped to 14150 to
+      // absorb the bulk-subtractive EDGE CASES bullet (apart from /
+      // except / excluding / all but → set_field_for_all_circuits
+      // with exclude_circuits: [N] + rcd_time_ms worked example).
+      // Measured 14071; cap 14150 leaves ~79-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14000);
+      expect(estimate).toBeLessThanOrEqual(14150);
     });
   });
 
@@ -800,8 +806,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     the dispatcher guard; Phase 4.4 adds the friendly-name
       //     entry. Without this prompt change those backend pieces
       //     would land with no model-side guidance.
+      //   - 9000 (PLAN-backend-final.md §8.3 — bulk-subtractive
+      //     EDGE CASES bullet): one new bullet in EDGE CASES teaching
+      //     "apart from / except / excluding / all but" → set_field_
+      //     for_all_circuits with exclude_circuits: [N]. ~50 tokens.
+      //     Measured 8963; cap 9000 leaves ~37-token headroom. Closes
+      //     the loop with Phase 8.0 iOS ApplyFieldIntent return-nil-on-
+      //     exclude so the exclude path reaches the backend.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(8900);
+      expect(estimate).toBeLessThanOrEqual(9000);
     });
   });
 
