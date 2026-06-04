@@ -429,10 +429,26 @@ describe('RCD walk-through', () => {
       expect(ws.sent.some((m) => m.question === "Okay, I'll come back to that later.")).toBe(false);
     });
 
-    test('re-entering RCD after defer works normally (no lingering suppression)', () => {
+    test('re-entering RCD after defer SKIPS the previously-deferred slot (Phase 6.2)', () => {
+      // PLAN-backend-final.md Phase 6.2 inverted the previous
+      // contract. Pre-Phase-6.2: deferredSlots lived inside the
+      // transient script state and cleared on re-entry, so the
+      // inspector got re-asked the same slot they had just
+      // explicitly deferred. Field repro session 60754E4D had this
+      // happen six times in two minutes for `rcd_bs_en`.
+      //
+      // Post-Phase-6.2: `session.dialogueScriptDeferredSlots` is a
+      // session-scoped Map keyed by `${schemaName}:${circuit_ref}`
+      // that survives `clearScriptState`. The re-entry's
+      // `nextMissingSlot(values, slots, skipped, deferredSet)` skips
+      // the deferred slot, so the inspector moves on to the next
+      // missing slot (`rcd_type` here) instead of re-hearing the
+      // same question. Override: a volunteered write to the slot
+      // ("the BS code is 60898") clears the deferred mark via the
+      // named-field-extraction loop.
       const ws = new FakeWS();
       const session = buildSession({ 5: {} });
-      // First entry → defer.
+      // First entry → defer on rcd_bs_en (the first missing slot).
       processProtectiveDeviceTurn({
         ws,
         session,
@@ -447,8 +463,14 @@ describe('RCD walk-through', () => {
         transcriptText: 'fill later',
         now: 2000,
       });
+      // The session-scoped deferred-slot Map MUST carry the entry.
+      expect(session.dialogueScriptDeferredSlots).toBeInstanceOf(Map);
+      const deferredSet = session.dialogueScriptDeferredSlots.get('rcd:5');
+      expect(deferredSet).toBeInstanceOf(Set);
+      expect(deferredSet.has('rcd_bs_en')).toBe(true);
 
-      // Second entry — should re-engage cleanly.
+      // Second entry — should re-engage and ask the NEXT missing
+      // slot rather than re-asking rcd_bs_en.
       processProtectiveDeviceTurn({
         ws,
         session,
@@ -458,7 +480,8 @@ describe('RCD walk-through', () => {
       });
       expect(session.dialogueScriptState).toBeTruthy();
       expect(session.dialogueScriptState.active).toBe(true);
-      expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+      const lastAsk = [...ws.sent].reverse().find((m) => m?.context_field);
+      expect(lastAsk?.context_field).not.toBe('rcd_bs_en');
     });
   });
 });

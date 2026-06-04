@@ -100,22 +100,36 @@ function runScenario(processor, transcripts, initialCircuits) {
  * field-tests no longer run).
  */
 function normaliseEmits(sent) {
-  return sent.map((envelope) => {
-    if (envelope?.type !== 'extraction') return envelope;
-    const readings = envelope.result?.readings;
-    if (!Array.isArray(readings)) return envelope;
-    return {
-      ...envelope,
-      result: {
-        ...envelope.result,
-        readings: readings.map((r) => {
-          if (!r?.field) return r;
-          const corrected = FIELD_CORRECTIONS[r.field];
-          return corrected ? { ...r, field: corrected } : r;
-        }),
-      },
-    };
-  });
+  return (
+    sent
+      // PLAN-backend-final.md Phase 6.3 adds a control-message
+      // `cancel_pending_tts` emit on every *_script_cancelled. The
+      // replay fixtures pre-date this frame and the legacy "expected"
+      // emit sequences don't include it. The frame is a control
+      // message routed to iOS AlertManager.purge — it carries no
+      // user-facing TTS and is invisible to the inspector, so it's
+      // correct to filter it out of the parity comparison rather
+      // than re-record every cancel fixture. Pin behaviour:
+      // dialogue-engine-rcd-entry-guard.test.js owns the positive
+      // assertion that the frame fires.
+      .filter((envelope) => envelope?.type !== 'cancel_pending_tts')
+      .map((envelope) => {
+        if (envelope?.type !== 'extraction') return envelope;
+        const readings = envelope.result?.readings;
+        if (!Array.isArray(readings)) return envelope;
+        return {
+          ...envelope,
+          result: {
+            ...envelope.result,
+            readings: readings.map((r) => {
+              if (!r?.field) return r;
+              const corrected = FIELD_CORRECTIONS[r.field];
+              return corrected ? { ...r, field: corrected } : r;
+            }),
+          },
+        };
+      })
+  );
 }
 
 function expectIdentical(engineRun, legacyRun) {
