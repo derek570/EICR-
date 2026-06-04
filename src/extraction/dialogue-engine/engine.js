@@ -204,11 +204,64 @@ export function processDialogueTurn(ctx) {
   for (const schema of schemas) {
     const entry = detectEntry(text, schema);
     if (!entry.matched) continue;
+
+    // PLAN-backend-final.md Phase 6.1 — RCD entry guard. Field repro:
+    // session 60754E4D had the inspector say *"please delete RCD"* and
+    // *"why haven't you deleted the RCD trip time"* six times in two
+    // minutes; the RCD schema's `\bRCD\b` trigger matched each time
+    // and the script re-asked the deferred `rcd_bs_en` slot — an
+    // unwanted re-entry loop. Sonnet already has the right tools
+    // (`clear_reading` / `delete_circuit` / `record_reading`) to
+    // handle these utterances; we just need to keep the dialogue
+    // engine out of the way.
+    //
+    // The exclusion pass fires ONLY for the RCD schema (the loop above
+    // applies the same script-entry logic to ring-continuity /
+    // insulation-resistance / OCPD / RCBO, but those have neither the
+    // re-entry pattern nor the deferred-slot loop that motivated this
+    // guard). When the imperative or denial markers appear alongside
+    // \bRCD\b, fall through to Sonnet rather than entering the script.
+    if (schema.name === 'rcd' && RCD_ENTRY_EXCLUSION_PATTERN.test(text)) {
+      logger?.info?.('rcd_entry_guard_skipped', {
+        sessionId,
+        textPreview: text.slice(0, 80),
+      });
+      // Continue the loop in case a DIFFERENT schema also matched —
+      // unlikely in practice (only RCD triggers on \bRCD\b alone) but
+      // the structural guarantee is "fall through to Sonnet", not
+      // "fall through to the next schema's trigger". Returning here
+      // would block a hypothetical future cross-schema match, so
+      // `continue` is the correct verb.
+      continue;
+    }
+
     return runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger, now });
   }
 
   return { handled: false };
 }
+
+// PLAN-backend-final.md Phase 6.1 — exclusion patterns that gate RCD
+// script entry. Two patterns rather than one alternation so a future
+// addition (e.g. a third class of phrases) can land without re-
+// untangling a long alternation chain. Both are case-insensitive.
+//
+// Pattern A — corrective imperatives ("delete RCD" / "undo RCD" / etc.).
+// Pattern B — denial / interrogative-complaint phrases ("what are you
+// doing" / "I didn't" / "that's wrong" / "that's not").
+//
+// The two are combined with an OR in the test below to keep the
+// matcher cheap (one short-circuiting test per inbound transcript).
+const RCD_ENTRY_EXCLUSION_IMPERATIVE = /\b(delete|undo|cancel|fix|why|stop|remove|clear)\b/i;
+const RCD_ENTRY_EXCLUSION_DENIAL = /\b(what are you|i didn't|that's wrong|that's not)\b/i;
+const RCD_ENTRY_EXCLUSION_PATTERN = {
+  test(text) {
+    return (
+      RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) ||
+      RCD_ENTRY_EXCLUSION_DENIAL.test(text)
+    );
+  },
+};
 
 /**
  * Test if a transcript matches a schema's entry triggers. Returns
@@ -251,6 +304,60 @@ function detectDifferentEntry(text, schema, currentCircuitRef) {
 
 function clearScriptState(session) {
   if (session) session.dialogueScriptState = null;
+}
+
+// PLAN-backend-final.md Phase 6.2 — per-session deferred-slot memory.
+// session.dialogueScriptState is cleared on defer / cancel / finish, so
+// any deferred-slot tracking attached to it does NOT survive re-entry —
+// exactly the failure mode session 60754E4D demonstrated where the RCD
+// walk-through re-asked `rcd_bs_en` on every re-entry. The Map below
+// lives OUTSIDE the transient script state on the session itself, so
+// the deferral persists across the full session lifetime.
+//
+// Key shape: `${schemaName}:${circuit_ref ?? 'none'}`. Using a string
+// key (not the schema object) means concurrent active sessions never
+// alias each other's per-circuit deferred sets, and a single
+// inspector deferring `rcd_bs_en` on circuit 1 does NOT silently
+// suppress the slot on circuit 2.
+function deferredSlotKey(schemaName, circuit_ref) {
+  return `${schemaName}:${circuit_ref ?? 'none'}`;
+}
+
+function getDeferredSlots(session, schemaName, circuit_ref) {
+  if (!session?.dialogueScriptDeferredSlots) return null;
+  return session.dialogueScriptDeferredSlots.get(deferredSlotKey(schemaName, circuit_ref));
+}
+
+function ensureDeferredSlotsMap(session) {
+  if (!session) return null;
+  if (!(session.dialogueScriptDeferredSlots instanceof Map)) {
+    session.dialogueScriptDeferredSlots = new Map();
+  }
+  return session.dialogueScriptDeferredSlots;
+}
+
+function addDeferredSlot(session, schemaName, circuit_ref, field) {
+  if (!field) return;
+  const map = ensureDeferredSlotsMap(session);
+  if (!map) return;
+  const key = deferredSlotKey(schemaName, circuit_ref);
+  let set = map.get(key);
+  if (!set) {
+    set = new Set();
+    map.set(key, set);
+  }
+  set.add(field);
+}
+
+function clearDeferredSlot(session, schemaName, circuit_ref, field) {
+  if (!field) return;
+  const map = session?.dialogueScriptDeferredSlots;
+  if (!(map instanceof Map)) return;
+  const key = deferredSlotKey(schemaName, circuit_ref);
+  const set = map.get(key);
+  if (!set) return;
+  set.delete(field);
+  if (set.size === 0) map.delete(key);
 }
 
 /**
@@ -767,6 +874,21 @@ function runActivePath({
         now,
       })
     );
+    // PLAN-backend-final.md Phase 6.3 — generalised cancel-drain.
+    // On any *_script_cancelled, tell iOS to purge any queued TTS
+    // whose toolCallId carries the `srv-{script}-` prefix (e.g.
+    // `srv-rcd-`, `srv-ocpd-`, `srv-rcbo-`, `srv-irs-`, `srv-rcs-`).
+    // iOS slice 7.1 (AlertManager queue) is the consumer; iOS slice
+    // 6.3 wires `cancel_pending_tts` to AlertManager.purge(prefix:)
+    // so the in-flight script TTS dies in the same script namespace.
+    // Repro: session 60754E4D 14:17:58 had a stale "BS number?"
+    // surfacing with queueDelayMs=18078 ms because the queued TTS
+    // outlived the cancel that should have killed it.
+    safeSend(ws, {
+      type: 'cancel_pending_tts',
+      prefix: `${schema.toolCallIdPrefix}-`,
+      sessionId,
+    });
     clearScriptState(session);
     return { handled: true, fallthrough: false };
   }
@@ -1145,7 +1267,15 @@ function runActivePath({
   }
 
   // 5. Identify the slot we're currently expecting (next missing).
-  const currentSlot = nextMissingSlot(state.values, schema.slots, state.skipped_slots);
+  // Phase 6.2 — deferredSet lookup keeps re-entered scripts from
+  // re-asking a slot the inspector already deferred in an earlier
+  // walk-through pass for this (schema, circuit) pair.
+  const currentSlot = nextMissingSlot(
+    state.values,
+    schema.slots,
+    state.skipped_slots,
+    getDeferredSlots(session, schema.name, state.circuit_ref)
+  );
 
   // 5a. Per-slot skip — schemas that opt in (PR2 OCPD/RCD/RCBO) let
   //     the inspector say "skip that" / "I don't know" to mark the
@@ -1188,6 +1318,13 @@ function runActivePath({
     matchesAny(text, schema.deferTriggers)
   ) {
     const filledAtDefer = { ...state.values };
+    // PLAN-backend-final.md Phase 6.2 — record the deferred slot on
+    // the session-scoped map BEFORE clearScriptState wipes the
+    // transient state. Next re-entry of this script for the same
+    // circuit will skip the slot via nextMissingSlot's deferredSet
+    // arg. The clear happens via clearDeferredSlot when the
+    // inspector volunteers a value for the slot.
+    addDeferredSlot(session, schema.name, state.circuit_ref, currentSlot.field);
     logger?.info?.(`${schema.logEventPrefix}_deferred`, {
       sessionId,
       circuit_ref: state.circuit_ref,
@@ -1248,6 +1385,16 @@ function runActivePath({
     const slot = schema.slots.find((s) => s.field === w.field);
     const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
     writes.push(w);
+    // PLAN-backend-final.md Phase 6.2 — volunteered-write clears the
+    // deferred mark for this slot so the engine asks normally on the
+    // NEXT re-entry. Inspector phrases the plan calls out — "come back
+    // to BS number" / "set BS number" / "the BS code is 60898" — all
+    // route through extractNamedFieldValues, so a single clear here
+    // covers every override path. Pivot writes (record_reading on the
+    // wire) reach this clear via the seed loop in
+    // tryEnterScriptFromWrites below, which also calls
+    // applyDerivations on each seeded slot.
+    clearDeferredSlot(session, schema.name, state.circuit_ref, w.field);
     // Audit-2026-06-02 Phase 2 — mid-walk-through derivation mirrors
     // (e.g. inspector says "BS EN 61009" naming the rcd_bs_en slot;
     // RCBO mirror also fills ocpd_bs_en) ride the same extraction
@@ -1406,7 +1553,12 @@ function runPivot({ ws, session, sessionId, schemas, fromSchema, toSchemaName, l
  */
 function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
   const state = session.dialogueScriptState;
-  const nextSlot = nextMissingSlot(state.values, schema.slots, state.skipped_slots);
+  const nextSlot = nextMissingSlot(
+    state.values,
+    schema.slots,
+    state.skipped_slots,
+    getDeferredSlots(session, schema.name, state.circuit_ref)
+  );
   if (!nextSlot) {
     // Post-completion bulk-apply prompt (RCD, 2026-05-21 fix B
     // slice 3). When the schema declared a `postCompletionAsk` and
@@ -1931,7 +2083,12 @@ export function enterScriptByName({
       })
     );
   } else {
-    const nextSlot = nextMissingSlot(state.values, schema.slots, state.skipped_slots);
+    const nextSlot = nextMissingSlot(
+      state.values,
+      schema.slots,
+      state.skipped_slots,
+      getDeferredSlots(session, schema.name, resolvedCircuitRef)
+    );
     if (nextSlot) {
       safeSend(
         ws,
@@ -2378,7 +2535,12 @@ export function tryEnterScriptFromWrites({
       if (!circuitExistsInSnapshot(session.stateSnapshot, circuitRef)) continue;
 
       const existing = readExistingValues(session, circuitRef, slotFields);
-      const next = nextMissingSlot(existing, schema.slots, new Set());
+      const next = nextMissingSlot(
+        existing,
+        schema.slots,
+        new Set(),
+        getDeferredSlots(session, schema.name, circuitRef)
+      );
       if (!next) {
         logger?.info?.(`${schema.logEventPrefix}_entry_from_write_skipped_all_filled`, {
           sessionId: session.sessionId,
@@ -2445,7 +2607,14 @@ export function tryEnterScriptFromWrites({
       // have filled the slot we were about to ask about, so the
       // walk-through should skip straight past it.
       const nextAfterMirrors =
-        mirroredKeys.length > 0 ? nextMissingSlot(state.values, schema.slots, new Set()) : next;
+        mirroredKeys.length > 0
+          ? nextMissingSlot(
+              state.values,
+              schema.slots,
+              new Set(),
+              getDeferredSlots(session, schema.name, circuitRef)
+            )
+          : next;
 
       logger?.info?.(`${schema.logEventPrefix}_entered_from_sonnet_write`, {
         sessionId: session.sessionId,
