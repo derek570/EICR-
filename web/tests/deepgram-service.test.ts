@@ -28,7 +28,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WS from 'jest-websocket-mock';
-import { DeepgramService } from '@/lib/recording/deepgram-service';
+import { DeepgramService, type WebSocketFactory } from '@/lib/recording/deepgram-service';
 
 // The service connects to a fixed URL + query string. `jest-websocket-mock`
 // treats the URL string as a prefix-match key, so we register the
@@ -745,6 +745,56 @@ describe('DeepgramService', () => {
       const priorCount = server.messages.length;
       await vi.advanceTimersByTimeAsync(30_000);
       expect(server.messages.length).toBe(priorCount);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // URL params parity — endpointing=400.
+  //
+  // 2026-06-04 sprint (field-test-fixes-session-60754e4d, PLAN-web-final §3.4)
+  // bumped iOS endpointing 300→400 ms to stop Deepgram declaring early
+  // finals mid-sentence. `rules/mistakes.md` mandates web and iOS Deepgram
+  // configs stay in sync (`endpointing` is one of the four named
+  // must-not-drift params). This guards against a future "I'll just lower
+  // it on web because dictation feels snappier" drift by asserting the
+  // exact value on every connect.
+  //
+  // Implementation: we spy on `WebSocket` so we can read back the URL the
+  // service constructs. mock-socket's `WebSocket` shim is still in place
+  // (jest-websocket-mock installed the server above), so calling through
+  // the spy still produces a real connect — we just capture the URL on
+  // the way.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('connect URL params', () => {
+    it('includes endpointing=400 (in sync with iOS DeepgramService)', async () => {
+      // The service exposes a `wsFactory` constructor arg specifically as
+      // a test seam — wrap it to capture the URL the URL builder produced
+      // before delegating to the real WebSocket (which is the mock-socket
+      // shim under jest-websocket-mock here).
+      const captured: string[] = [];
+      const factory: WebSocketFactory = (url, protocols) => {
+        captured.push(url);
+        return new WebSocket(url, protocols);
+      };
+
+      const service = new DeepgramService(
+        {
+          onInterimTranscript: vi.fn(),
+          onFinalTranscript: vi.fn(),
+        },
+        factory
+      );
+      service.connect('fake-api-key', 16000);
+      await server.connected;
+
+      expect(captured).toHaveLength(1);
+      const url = new URL(captured[0]);
+      expect(url.searchParams.get('endpointing')).toBe('400');
+      // Also lock the sibling utterance_end_ms value that lives next to
+      // endpointing in the URL builder — its 2026-04-26 1500→1000
+      // change is the load-bearing context for why we picked 400 ms
+      // unconditionally over a script-state-aware 250/400 split.
+      expect(url.searchParams.get('utterance_end_ms')).toBe('1000');
     });
   });
 });
