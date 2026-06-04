@@ -3,7 +3,7 @@
  *
  * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
  * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
- * en-GB / interim_results / endpointing=300 / utterance_end_ms=1000 /
+ * en-GB / interim_results / endpointing=400 / utterance_end_ms=1000 /
  * vad_events=true). Auth differs by transport: iOS sets an
  * `Authorization: Bearer <jwt>` header on the WS upgrade; browsers can't
  * set upgrade headers so we pass the same JWT as the `bearer` subprotocol
@@ -499,7 +499,16 @@ export class DeepgramService {
       channels: '1',
       language: 'en-GB',
       interim_results: 'true',
-      endpointing: '300',
+      // 2026-06-04: bumped 300→400 ms to match iOS slice §3.3 of the
+      // field-test-fixes-session-60754e4d sprint. iOS picked option 2
+      // (unconditional 400 ms) because option 1's script-state-aware
+      // 250/400 split would require a Deepgram WS reconnect on every
+      // dialogue-script entry, dropping accumulated keyterm context
+      // (per `rules/mistakes.md`). Web mirrors that choice — `rules/
+      // mistakes.md` is explicit that the web and iOS Deepgram configs
+      // must stay in sync; `endpointing` is listed among the params
+      // they specifically must not drift on.
+      endpointing: '400',
       // utterance_end_ms 1000 (NOT the legacy 2000): mirrors iOS canon
       // (DeepgramService.swift:751). Lowered from 1500→1000 on
       // 2026-04-26 (Bug-H follow-up) because the inspector's
