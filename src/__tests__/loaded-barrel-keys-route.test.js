@@ -52,12 +52,31 @@ jest.unstable_mockModule('../storage.js', () => ({
 }));
 
 // Default-no-op fetch — overridden per test for MISS path live response.
-global.fetch = jest.fn().mockResolvedValue({
-  ok: true,
-  status: 200,
-  arrayBuffer: async () => new ArrayBuffer(64),
-  text: async () => '',
-});
+// Voice-latency plan 2026-06-03 Tier 2a — keys.js now consumes the
+// ElevenLabs response via response.body.getReader() instead of
+// arrayBuffer(); mock a single-chunk reader so existing tests pass.
+function mockStreamingResponse(bytes = 64) {
+  let yielded = false;
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (yielded) return { done: true, value: undefined };
+            yielded = true;
+            return { done: false, value: new Uint8Array(bytes) };
+          },
+          releaseLock() {},
+        };
+      },
+    },
+    arrayBuffer: async () => new ArrayBuffer(bytes),
+    text: async () => '',
+  };
+}
+global.fetch = jest.fn().mockImplementation(() => Promise.resolve(mockStreamingResponse()));
 
 async function buildApp() {
   const express = (await import('express')).default;

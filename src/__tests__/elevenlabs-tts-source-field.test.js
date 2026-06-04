@@ -58,12 +58,32 @@ jest.unstable_mockModule('../storage.js', () => ({
   uploadText: jest.fn(),
 }));
 
-global.fetch = jest.fn().mockResolvedValue({
-  ok: true,
-  status: 200,
-  arrayBuffer: async () => new ArrayBuffer(128),
-  text: async () => '',
-});
+// Voice-latency plan 2026-06-03 Tier 2a — keys.js now consumes the
+// ElevenLabs response via response.body.getReader() instead of
+// arrayBuffer(), so the legacy log can capture vendor first-byte_ms.
+// Mock a single-chunk ReadableStream-like reader so existing tests pass.
+function mockStreamingResponse() {
+  let yielded = false;
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (yielded) return { done: true, value: undefined };
+            yielded = true;
+            return { done: false, value: new Uint8Array(128) };
+          },
+          releaseLock() {},
+        };
+      },
+    },
+    arrayBuffer: async () => new ArrayBuffer(128),
+    text: async () => '',
+  };
+}
+global.fetch = jest.fn().mockImplementation(() => Promise.resolve(mockStreamingResponse()));
 
 async function buildApp() {
   const express = (await import('express')).default;

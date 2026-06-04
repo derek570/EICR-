@@ -230,6 +230,11 @@ router.post('/proxy/deepgram-tts', auth.requireAuth, async (req, res) => {
 async function streamConfirmationViaElevenLabs({
   text,
   sessionId,
+  // Voice-latency plan 2026-06-03 Tier 2b: accept turnId so the
+  // ElevenLabs TTS streaming complete log row carries it. The
+  // §CloudWatch dashboard query filters `ispresent(turnId)` and will
+  // silently drop rows without it.
+  turnId,
   apiKey,
   res,
   useMultiContext,
@@ -238,7 +243,7 @@ async function streamConfirmationViaElevenLabs({
 }) {
   const { ElevenLabsStreamClient, contentTypeForFormat } =
     await import('../extraction/elevenlabs-stream-client.js');
-  const { mintCorrelationId, recordOutcome } =
+  const { mintCorrelationId, recordOutcome, recordSpan } =
     await import('../extraction/voice-latency-telemetry.js');
 
   const correlationId = mintCorrelationId(sessionId, 'confirmation');
@@ -253,6 +258,14 @@ async function streamConfirmationViaElevenLabs({
   // Billable counter — once per correlation, regardless of terminal state.
   recordStartedAttribution(sessionId, text.length, correlationId);
 
+  // Voice-latency plan 2026-06-03 Tier 2b — declare firstByteMs +
+  // synthStartNs at the outer scope so the finally block's logger.info
+  // row can read them even on the error path. Without this, the
+  // throwing path would log undefined.
+  let firstByteMs = null;
+  let timings = null;
+  const synthStartNs = process.hrtime.bigint();
+
   let terminal = 'failed';
   try {
     const opts = {
@@ -261,7 +274,12 @@ async function streamConfirmationViaElevenLabs({
       },
     };
     if (useMultiContext) opts.contextId = `conf_${correlationId}`;
-    await client.synth(text, opts);
+    timings = await client.synth(text, opts);
+    // ElevenLabsStreamClient stamps timings.firstAudioNs at the first
+    // chunk-arrival. Derive ms here so the log + span rows agree.
+    if (timings?.firstAudioNs) {
+      firstByteMs = Number((timings.firstAudioNs - synthStartNs) / 1000000n);
+    }
     terminal = 'completed';
     if (!res.writableEnded) res.end();
     recordOutcome(correlationId, 'sent_to_client', { meta: { sessionId, source: 'confirmation' } });
@@ -283,15 +301,33 @@ async function streamConfirmationViaElevenLabs({
     });
   } finally {
     recordTerminalAttribution(sessionId, correlationId, terminal, text.length);
+    // Voice-latency Tier 2b — emit vendor_first_audio span on the
+    // joint-waterfall correlationId so backend voice_latency.span rows
+    // join the iOS-span rows by correlation_id. Mirrors the call shape
+    // at voice-latency-fast-tts.js:300.
+    if (timings) {
+      try {
+        ElevenLabsStreamClient.logSynthSpans(correlationId, timings, recordSpan);
+      } catch (_spanErr) {
+        // Telemetry must not break the response path.
+      }
+    }
     logger.info('ElevenLabs TTS streaming complete', {
       correlationId,
       sessionId,
+      // Voice-latency plan 2026-06-03 Tier 2b — turnId echoed onto the
+      // row so the §CloudWatch dashboard's `ispresent(turnId)` filter
+      // includes streaming-path rows.
+      turnId: turnId || null,
       source: 'confirmation',
       terminal,
       textLength: text.length,
       textPreview: text.slice(0, 120),
       output_format: client.outputFormat,
       multi_context: useMultiContext,
+      // Tier 2b first-byte split — parallel to the legacy-path
+      // ElevenLabs TTS success row's elevenlabs_first_byte_ms field.
+      elevenlabs_first_byte_ms: firstByteMs,
     });
   }
 }
@@ -326,7 +362,15 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // intercept identical re-asks; Stage 5 (ask_user streaming) routes
     // `question` through a different vendor path. Behaviour is unchanged
     // in 1a.5 — we parse, default, and log it. Tests pin the wire shape.
-    const { text, sessionId } = req.body;
+    // Voice-latency plan 2026-06-03 Tier 2: destructure turnId at the top
+    // of the handler so it's in scope for BOTH the cache short-circuit
+    // block AND the legacy / streaming logs at the bottom. The §CloudWatch
+    // dashboard query filters `ispresent(turnId)`; without this scope fix,
+    // every legacy-path ElevenLabs TTS success row is silently filtered
+    // out. The existing redundant `const turnId = ...` redeclaration
+    // inside the cache try block (originally at :372) is removed to
+    // avoid shadowing this outer-scope binding.
+    const { text, sessionId, turnId } = req.body;
     const rawSource = req.body?.source;
     const source =
       typeof rawSource === 'string' && rawSource.length > 0 ? rawSource : 'confirmation';
@@ -369,7 +413,11 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // Hard contract: cache short-circuit must NEVER 500 the request
     // path. Any error → log + fall through. Wrapped in outer try/catch.
     try {
-      const turnId = typeof req.body?.turnId === 'string' ? req.body.turnId : null;
+      // Voice-latency plan 2026-06-03 Tier 2: turnId is destructured at
+      // the top of the handler now (~:329). The redundant local
+      // redeclaration that used to live here would have shadowed the
+      // outer-scope binding and silently failed to reach the legacy log
+      // path's `ispresent(turnId)` filter.
       if (sessionId && turnId) {
         const boardId = req.body?.boardId ?? null;
         const field = req.body?.field ?? null;
@@ -510,6 +558,9 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
           await streamConfirmationViaElevenLabs({
             text,
             sessionId,
+            // Voice-latency plan 2026-06-03 Tier 2b — turnId is in scope
+            // from the top-level destructure at :329.
+            turnId,
             apiKey: elevenLabsKey,
             res,
             useMultiContext: vl.flags.useMultiContext === true,
@@ -558,7 +609,31 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     }
 
     res.set('Content-Type', 'audio/mpeg');
-    const buffer = Buffer.from(await response.arrayBuffer());
+    // Voice-latency plan 2026-06-03 Tier 2a: replace the one-shot
+    // response.arrayBuffer() with a streaming reader so we can capture
+    // the FIRST byte's wall-clock relative to the synth-start. Without
+    // this, the existing "ElevenLabs TTS success" log fires when the
+    // FULL audio has arrived — ~400-1200ms LATER than first-byte — and
+    // misattributes the gap between server-side synth-complete and
+    // iOS-side audible-first-byte. The first-byte stamp is what the
+    // perceived-latency dashboard's vendor_first_audio component reads.
+    const synthStartMs = Date.now();
+    const reader = response.body.getReader();
+    const chunks = [];
+    let firstByteMs = null;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (firstByteMs === null) firstByteMs = Date.now() - synthStartMs;
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    // Node fetch returns Uint8Array chunks; Buffer.concat accepts them directly.
+    const buffer = Buffer.concat(chunks);
+    const totalSynthMs = Date.now() - synthStartMs;
 
     // Attribute the TTS character count to the live session's CostTracker
     // so per-session ElevenLabs cost is no longer zero (previously the
@@ -589,11 +664,22 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // (e.g. TTS after WS close) in CloudWatch.
     logger.info('ElevenLabs TTS success', {
       sessionId: sessionId || null,
+      // Voice-latency plan 2026-06-03 Tier 2a: turnId is destructured at
+      // the top of the handler now. The §CloudWatch perceived-latency
+      // dashboard joins these rows by (sessionId, turnId); without the
+      // field on the row the `ispresent(turnId)` filter drops every
+      // legacy-path entry.
+      turnId: turnId || null,
       source,
       textPreview: text.slice(0, 120),
       textLength: text.length,
       bytes: buffer.length,
       trackerRecorded,
+      // Voice-latency Tier 2a: first-byte vs full-buffer split. Together
+      // these decompose the formerly-monolithic "ElevenLabs TTS success"
+      // event-pair gap into vendor-network-first-byte + vendor-tail.
+      elevenlabs_first_byte_ms: firstByteMs,
+      elevenlabs_synth_total_ms: totalSynthMs,
     });
     res.send(buffer);
   } catch (error) {
