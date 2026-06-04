@@ -1166,6 +1166,33 @@ export const api = {
     });
   },
 
+  /**
+   * Fetch the raw S3 JSON payload for a voice-feedback row as a Blob.
+   *
+   * Modelled after `fetchPhotoBlob` (see above): browsers can't attach
+   * our Authorization header to a bare `<a href="...">`, so the detail
+   * page calls this, wraps the result in `URL.createObjectURL`, then
+   * surfaces an "Open raw JSON" link. The backend slice is expected to
+   * proxy the S3 fetch under `GET /api/voice-feedback/:id/raw` (the
+   * authenticated mirror of the s3_key the detail endpoint surfaces);
+   * the exact route name isn't pinned in PLAN-web-final.md so the
+   * detail page falls back gracefully if it 404s.
+   */
+  async voiceFeedbackFetchRawBlob(id: string): Promise<Blob> {
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const res = await fetch(`${API_BASE_URL}/api/voice-feedback/${encodeURIComponent(id)}/raw`, {
+      headers,
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const { message, body } = await parseErrorBody(res);
+      throw new ApiError(res.status, message, body);
+    }
+    return res.blob();
+  },
+
   // Admin-only — same list shape as voiceFeedbackList but with `userId`
   // populated on each row. The backend slice gates this route behind
   // `isSystemAdmin`; callers gate the UI affordance behind the same flag
