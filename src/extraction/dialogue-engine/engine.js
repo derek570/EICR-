@@ -256,10 +256,7 @@ const RCD_ENTRY_EXCLUSION_IMPERATIVE = /\b(delete|undo|cancel|fix|why|stop|remov
 const RCD_ENTRY_EXCLUSION_DENIAL = /\b(what are you|i didn't|that's wrong|that's not)\b/i;
 const RCD_ENTRY_EXCLUSION_PATTERN = {
   test(text) {
-    return (
-      RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) ||
-      RCD_ENTRY_EXCLUSION_DENIAL.test(text)
-    );
+    return RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) || RCD_ENTRY_EXCLUSION_DENIAL.test(text);
   },
 };
 

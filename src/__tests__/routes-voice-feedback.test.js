@@ -31,7 +31,9 @@ jest.unstable_mockModule('../logger.js', () => ({
     debug: jest.fn(),
     info: jest.fn(),
     warn: jest.fn(),
-    error: (...args) => { errorCalls.push(args); },
+    error: (...args) => {
+      errorCalls.push(args);
+    },
   },
 }));
 
@@ -78,7 +80,7 @@ beforeEach(() => {
 afterEach(() => {
   if (errorCalls.length) {
     // surface for diagnosis if a handler fell into its 500-catch path
-    // eslint-disable-next-line no-console
+
     console.error('logger.error during test:', JSON.stringify(errorCalls, null, 2));
   }
 });
@@ -174,7 +176,9 @@ describe('GET /api/voice-feedback/admin/all', () => {
 describe('GET /api/voice-feedback/:id (detail)', () => {
   test('owner sees their own row', async () => {
     mockGetVoiceFeedback.mockResolvedValueOnce({
-      id: 7, user_id: 'user-owner', issue_text: 'full text here',
+      id: 7,
+      user_id: 'user-owner',
+      issue_text: 'full text here',
       transcript_window: [{ ts: '2026-06-04T14:10', text: 'hello' }],
     });
     const res = await request(buildApp())
@@ -187,7 +191,9 @@ describe('GET /api/voice-feedback/:id (detail)', () => {
 
   test('admin can see any row', async () => {
     mockGetVoiceFeedback.mockResolvedValueOnce({
-      id: 7, user_id: 'user-owner', issue_text: 'x',
+      id: 7,
+      user_id: 'user-owner',
+      issue_text: 'x',
     });
     const res = await request(buildApp())
       .get('/api/voice-feedback/7')
@@ -197,7 +203,9 @@ describe('GET /api/voice-feedback/:id (detail)', () => {
 
   test('other user is rejected with 403', async () => {
     mockGetVoiceFeedback.mockResolvedValueOnce({
-      id: 7, user_id: 'user-owner', issue_text: 'x',
+      id: 7,
+      user_id: 'user-owner',
+      issue_text: 'x',
     });
     const res = await request(buildApp())
       .get('/api/voice-feedback/7')
@@ -226,7 +234,10 @@ describe('PATCH /api/voice-feedback/:id', () => {
   test('owner can update status + review_note', async () => {
     mockGetVoiceFeedback.mockResolvedValueOnce({ id: 5, user_id: 'user-owner', status: 'open' });
     mockUpdateVoiceFeedbackStatus.mockResolvedValueOnce({
-      id: 5, status: 'reviewed', review_note: 'looked at it', reviewed_at: new Date(),
+      id: 5,
+      status: 'reviewed',
+      review_note: 'looked at it',
+      reviewed_at: new Date(),
     });
     const res = await request(buildApp())
       .patch('/api/voice-feedback/5')

@@ -102,7 +102,13 @@ describe('Phase 8.2 — exclude_circuits dispatcher behaviour', () => {
         confidence: 0.95,
         source_turn_id: 't1',
       }),
-      { session: makeSession(snapshot), logger: mockLogger(), turnId: 't1', perTurnWrites: writes, round: 1 }
+      {
+        session: makeSession(snapshot),
+        logger: mockLogger(),
+        turnId: 't1',
+        perTurnWrites: writes,
+        round: 1,
+      }
     );
     const body = parseEnvelope(env);
     expect(body.ok).toBe(true);
@@ -134,7 +140,13 @@ describe('Phase 8.2 — exclude_circuits dispatcher behaviour', () => {
         confidence: 0.95,
         source_turn_id: 't1',
       }),
-      { session: makeSession(snapshot), logger: mockLogger(), turnId: 't1', perTurnWrites: writes, round: 1 }
+      {
+        session: makeSession(snapshot),
+        logger: mockLogger(),
+        turnId: 't1',
+        perTurnWrites: writes,
+        round: 1,
+      }
     );
     const body = parseEnvelope(env);
     expect(body.ok).toBe(true);

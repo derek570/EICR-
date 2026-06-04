@@ -124,7 +124,9 @@ describe('realtime-log-sink — flushSession', () => {
       now: 1_780_582_241_174,
     });
 
-    expect(key).toMatch(/^session-logs\/user_42\/sess_abc\/realtime\/1780582241174-[0-9a-f]{8}\.jsonl$/);
+    expect(key).toMatch(
+      /^session-logs\/user_42\/sess_abc\/realtime\/1780582241174-[0-9a-f]{8}\.jsonl$/
+    );
     expect(uploadFn).toHaveBeenCalledTimes(1);
     expect(uploadFn.calls[0].body).toBe('{"a":1}\n{"b":2}\n');
     expect(uploadFn.calls[0].contentType).toBe('application/x-ndjson');
@@ -159,7 +161,9 @@ describe('realtime-log-sink — flushSession', () => {
     appendOneToBuffer(entry, '{"b":2}');
     const beforeBytes = entry.realtimeLogBufferBytes;
 
-    const failingUpload = jest.fn(async () => { throw new Error('S3 503'); });
+    const failingUpload = jest.fn(async () => {
+      throw new Error('S3 503');
+    });
     const key = await flushSession('sess', entry, { uploadFn: failingUpload });
 
     expect(key).toBeNull();

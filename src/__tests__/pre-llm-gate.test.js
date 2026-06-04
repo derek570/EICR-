@@ -249,7 +249,7 @@ describe('PLAN_v4 — telemetry reason values', () => {
 describe('Phase 5.1 — COMPLAINT_OR_NEGATION trigger', () => {
   describe('captured utterances from session 60754E4D (the bug fixtures)', () => {
     test.each([
-      "Why did you ask the b s number for that one again?",
+      'Why did you ask the b s number for that one again?',
       "No. That's not what I said.",
       "You haven't set it to LIM.",
     ])('forwards "%s" with HAS_COMPLAINT_OR_NEGATION', (text) => {
@@ -267,14 +267,14 @@ describe('Phase 5.1 — COMPLAINT_OR_NEGATION trigger', () => {
     test.each([
       "No, I didn't say that.",
       "That's wrong.",
-      "Stop it.",
-      "Undo.",
-      "Cancel that.",
-      "Delete that.",
-      "Fix that.",
+      'Stop it.',
+      'Undo.',
+      'Cancel that.',
+      'Delete that.',
+      'Fix that.',
       "That's not right.",
       "I didn't say that.",
-      "Why are you doing that?",
+      'Why are you doing that?',
     ])('forwards "%s" with HAS_COMPLAINT_OR_NEGATION', (text) => {
       const result = shouldForwardToSonnet(text);
       expect(result.forward).toBe(true);
@@ -290,18 +290,17 @@ describe('Phase 5.1 — COMPLAINT_OR_NEGATION trigger', () => {
     // to lock that the regex's "no[,.]?\s+(that|that's|i|you|...)"
     // anchor stays in place — without it, "no problem" silently
     // forwards and a 50-turn benign exchange floods Sonnet.
-    test.each([
-      'no problem',
-      'no signal',
-      'no spare',
-    ])('does NOT forward "%s" via the complaint trigger', (text) => {
-      const result = shouldForwardToSonnet(text);
-      // Must NOT match the complaint trigger. Some of these may still
-      // forward via other paths (e.g. "no spare" matches WEAK trigger
-      // "spare" via the inspection vocab path), but the REASON must
-      // not be HAS_COMPLAINT_OR_NEGATION.
-      expect(result.reason).not.toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
-    });
+    test.each(['no problem', 'no signal', 'no spare'])(
+      'does NOT forward "%s" via the complaint trigger',
+      (text) => {
+        const result = shouldForwardToSonnet(text);
+        // Must NOT match the complaint trigger. Some of these may still
+        // forward via other paths (e.g. "no spare" matches WEAK trigger
+        // "spare" via the inspection vocab path), but the REASON must
+        // not be HAS_COMPLAINT_OR_NEGATION.
+        expect(result.reason).not.toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
+      }
+    );
   });
 
   describe('complaint-forward wins over digit-forward (ordering invariant)', () => {

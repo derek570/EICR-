@@ -54,9 +54,7 @@ describe('confirmation-text — constants', () => {
     // already returns "main switch BS EN" via its acronym table.
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_bs_en).toBe('main fuse BS EN');
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_rated_current).toBe('main fuse rating');
-    expect(CONFIRMATION_FRIENDLY_NAMES.spd_short_circuit).toBe(
-      'main fuse breaking capacity'
-    );
+    expect(CONFIRMATION_FRIENDLY_NAMES.spd_short_circuit).toBe('main fuse breaking capacity');
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_type_supply).toBe('main fuse type');
     expect(CONFIRMATION_FRIENDLY_NAMES.main_switch_bs_en).toBe('main switch BS EN');
   });
@@ -148,15 +146,11 @@ describe('confirmation-text — buildConfirmationText', () => {
     // explicit revert path if any of these sound wrong to the
     // inspector ear (table is frozen but individual entries are
     // independent). Pin the spoken form so the revert is detectable.
-    expect(buildConfirmationText('spd_rated_current', '100', null)).toBe(
-      'main fuse rating 100'
-    );
+    expect(buildConfirmationText('spd_rated_current', '100', null)).toBe('main fuse rating 100');
     expect(buildConfirmationText('spd_short_circuit', '16', null)).toBe(
       'main fuse breaking capacity 16'
     );
-    expect(buildConfirmationText('spd_type_supply', 'gG', null)).toBe(
-      'main fuse type gG'
-    );
+    expect(buildConfirmationText('spd_type_supply', 'gG', null)).toBe('main fuse type gG');
   });
 
   test('2026-05-29: designation prefix replaces "Circuit N" when provided', () => {

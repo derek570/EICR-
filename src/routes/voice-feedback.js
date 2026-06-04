@@ -159,7 +159,9 @@ router.patch('/:id', async (req, res) => {
       return res.status(400).json({ error: 'review_note must be a string' });
     }
     if (typeof reviewNote === 'string' && reviewNote.length > 2000) {
-      return res.status(400).json({ error: 'review_note exceeds maximum length of 2000 characters' });
+      return res
+        .status(400)
+        .json({ error: 'review_note exceeds maximum length of 2000 characters' });
     }
 
     const existing = await db.getVoiceFeedback(id);

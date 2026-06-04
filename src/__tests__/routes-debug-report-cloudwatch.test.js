@@ -44,9 +44,13 @@ jest.unstable_mockModule('../db.js', () => ({
 jest.unstable_mockModule('../logger.js', () => ({
   default: {
     debug: jest.fn(),
-    info: (...args) => { infoCalls.push(args); },
+    info: (...args) => {
+      infoCalls.push(args);
+    },
     warn: jest.fn(),
-    error: (...args) => { errorCalls.push(args); },
+    error: (...args) => {
+      errorCalls.push(args);
+    },
   },
 }));
 
@@ -100,14 +104,23 @@ jest.unstable_mockModule('../export.js', () => ({
 
 jest.unstable_mockModule('../chunk_accumulator.js', () => ({
   createAccumulator: jest.fn().mockReturnValue({
-    circuits: [], observations: [], photos: [], installation: {}, supply: {}, board: {},
+    circuits: [],
+    observations: [],
+    photos: [],
+    installation: {},
+    supply: {},
+    board: {},
     metadata: { chunksProcessed: 0, linked_photos: [] },
   }),
   addChunk: jest.fn(),
   addPhoto: jest.fn(),
   getFormData: jest.fn().mockReturnValue({
-    circuits: [], observations: [], installation_details: {}, supply_characteristics: {},
-    board_info: {}, metadata: { chunksProcessed: 0, linked_photos: [] },
+    circuits: [],
+    observations: [],
+    installation_details: {},
+    supply_characteristics: {},
+    board_info: {},
+    metadata: { chunksProcessed: 0, linked_photos: [] },
   }),
   finalize: jest.fn(),
   injectRingReading: jest.fn(),
@@ -116,11 +129,17 @@ jest.unstable_mockModule('../chunk_accumulator.js', () => ({
 
 jest.unstable_mockModule('../eicr_buffer.js', () => ({
   createEICRBuffer: jest.fn().mockReturnValue({
-    fullText: '', pendingText: '', activeCircuit: null, activeTestType: null, ringCircuit: null,
+    fullText: '',
+    pendingText: '',
+    activeCircuit: null,
+    activeTestType: null,
+    ringCircuit: null,
   }),
   addTranscript: jest.fn().mockReturnValue({ shouldExtract: false }),
   getExtractionPayload: jest.fn().mockReturnValue({
-    pendingText: '', activeCircuit: null, activeTestType: null,
+    pendingText: '',
+    activeCircuit: null,
+    activeTestType: null,
   }),
   markExtracted: jest.fn(),
   parseRingValues: jest.fn().mockReturnValue([]),
@@ -163,7 +182,6 @@ describe('POST /api/debug-report (Phase 1.6.3 extensions)', () => {
 
   afterEach(() => {
     if (errorCalls.length) {
-      // eslint-disable-next-line no-console
       console.error('logger.error during test:', JSON.stringify(errorCalls, null, 2));
     }
   });

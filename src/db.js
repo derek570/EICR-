@@ -2080,7 +2080,10 @@ export async function listVoiceFeedback({
   }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
 
-  const countResult = await pool.query(`SELECT COUNT(*)::int AS n FROM voice_feedback ${where}`, params);
+  const countResult = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM voice_feedback ${where}`,
+    params
+  );
   const total = countResult.rows[0]?.n || 0;
 
   const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
@@ -2115,7 +2118,9 @@ export async function getVoiceFeedback(id) {
 export async function updateVoiceFeedbackStatus(id, { status, reviewNote = null }) {
   if (!usePostgres()) return null;
   if (status && !VOICE_FEEDBACK_STATUSES.has(status)) {
-    throw new Error(`voice_feedback.status must be one of ${Array.from(VOICE_FEEDBACK_STATUSES).join(', ')}`);
+    throw new Error(
+      `voice_feedback.status must be one of ${Array.from(VOICE_FEEDBACK_STATUSES).join(', ')}`
+    );
   }
   const pool = getPool();
   // Only set reviewed_at when transitioning AWAY from 'open' (per plan:

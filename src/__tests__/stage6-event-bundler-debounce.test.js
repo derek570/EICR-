@@ -27,21 +27,15 @@ describe('applyConfirmationDebounce', () => {
     const state = { lastEmittedAt: 0, lastField: null };
     const t0 = 1_000_000;
 
-    const first = applyConfirmationDebounce(
-      [reading('measured_zs_ohm', '0.62', 1)],
-      state,
-      { now: t0 }
-    );
-    const second = applyConfirmationDebounce(
-      [reading('measured_zs_ohm', '0.59', 2)],
-      state,
-      { now: t0 + 250 }
-    );
-    const third = applyConfirmationDebounce(
-      [reading('measured_zs_ohm', '0.71', 3)],
-      state,
-      { now: t0 + 800 }
-    );
+    const first = applyConfirmationDebounce([reading('measured_zs_ohm', '0.62', 1)], state, {
+      now: t0,
+    });
+    const second = applyConfirmationDebounce([reading('measured_zs_ohm', '0.59', 2)], state, {
+      now: t0 + 250,
+    });
+    const third = applyConfirmationDebounce([reading('measured_zs_ohm', '0.71', 3)], state, {
+      now: t0 + 800,
+    });
 
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(0);
@@ -54,16 +48,12 @@ describe('applyConfirmationDebounce', () => {
     const state = { lastEmittedAt: 0, lastField: null };
     const t0 = 1_000_000;
 
-    const first = applyConfirmationDebounce(
-      [reading('measured_zs_ohm', '0.62', 1)],
-      state,
-      { now: t0 }
-    );
-    const second = applyConfirmationDebounce(
-      [reading('r1_r2_ohm', '0.24', 1)],
-      state,
-      { now: t0 + 300 }
-    );
+    const first = applyConfirmationDebounce([reading('measured_zs_ohm', '0.62', 1)], state, {
+      now: t0,
+    });
+    const second = applyConfirmationDebounce([reading('r1_r2_ohm', '0.24', 1)], state, {
+      now: t0 + 300,
+    });
 
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);
@@ -74,16 +64,12 @@ describe('applyConfirmationDebounce', () => {
     const state = { lastEmittedAt: 0, lastField: null };
     const t0 = 1_000_000;
 
-    const first = applyConfirmationDebounce(
-      [reading('measured_zs_ohm', '0.62', 1)],
-      state,
-      { now: t0 }
-    );
-    const second = applyConfirmationDebounce(
-      [reading('measured_zs_ohm', '0.59', 2)],
-      state,
-      { now: t0 + CONFIRMATION_DEBOUNCE_WINDOW_MS + 1 }
-    );
+    const first = applyConfirmationDebounce([reading('measured_zs_ohm', '0.62', 1)], state, {
+      now: t0,
+    });
+    const second = applyConfirmationDebounce([reading('measured_zs_ohm', '0.59', 2)], state, {
+      now: t0 + CONFIRMATION_DEBOUNCE_WINDOW_MS + 1,
+    });
 
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);

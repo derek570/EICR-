@@ -737,11 +737,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
 // caller threads it in. windowMs defaults to 1500 per the plan.
 export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
 
-export function applyConfirmationDebounce(
-  newConfirmations,
-  debounceState,
-  options = {}
-) {
+export function applyConfirmationDebounce(newConfirmations, debounceState, options = {}) {
   if (!Array.isArray(newConfirmations) || newConfirmations.length === 0) {
     return Array.isArray(newConfirmations) ? newConfirmations : [];
   }

@@ -21,10 +21,7 @@
  *   this to AlertManager.purge(prefix:).
  */
 
-import {
-  processDialogueTurn,
-  ALL_DIALOGUE_SCHEMAS,
-} from '../extraction/dialogue-engine/index.js';
+import { processDialogueTurn, ALL_DIALOGUE_SCHEMAS } from '../extraction/dialogue-engine/index.js';
 
 const SESSION_ID = 'sess_rcd_entry_guard';
 
@@ -59,7 +56,7 @@ describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
   describe('positive — imperative phrases co-occurring with RCD must NOT enter the script', () => {
     test.each([
       'please delete RCD',
-      'why haven\'t you deleted the RCD trip time',
+      "why haven't you deleted the RCD trip time",
       'undo the RCD',
       'cancel the RCD entry',
       'fix the RCD reading',
@@ -95,7 +92,7 @@ describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
 
   describe('positive — denial / complaint phrases co-occurring with RCD must NOT enter', () => {
     test.each([
-      "What are you doing with the RCD?",
+      'What are you doing with the RCD?',
       "I didn't say RCD",
       "That's wrong, the RCD reading is different",
       "That's not the RCD I meant",
@@ -213,7 +210,7 @@ describe('Phase 6.3 — cancel-drain emits cancel_pending_tts WS message', () =>
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: "forget it",
+      transcriptText: 'forget it',
       schemas: ALL_DIALOGUE_SCHEMAS,
       logger,
       now: 2000,

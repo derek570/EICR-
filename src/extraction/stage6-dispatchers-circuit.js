@@ -67,10 +67,7 @@ import {
   validateCalculateR1PlusR2,
   validateBoardScope,
 } from './stage6-dispatch-validation.js';
-import {
-  logToolCall,
-  logReadingFieldGuessedFromValue,
-} from './stage6-dispatcher-logger.js';
+import { logToolCall, logReadingFieldGuessedFromValue } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
 import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
