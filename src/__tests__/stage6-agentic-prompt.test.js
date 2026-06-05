@@ -239,8 +239,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // except / excluding / all but → set_field_for_all_circuits
       // with exclude_circuits: [N] + rcd_time_ms worked example).
       // Measured 14071; cap 14150 leaves ~79-token headroom.
+      //
+      // 2026-06-05 (PLAN voice-feedback Group I — W1.7): bumped to
+      // 14250 to absorb the combustible-CU C3 worked example added
+      // to the OBSERVATION CODES section. The example carries the
+      // BS 7671:2018+A2 §421.1.201 cite and the "C3, NOT C2" ruling
+      // so the model picks C3 even without consulting WRAG.
+      // Measured 14201; cap 14250 leaves ~49-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14150);
+      expect(estimate).toBeLessThanOrEqual(14250);
     });
   });
 
@@ -813,8 +820,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     Measured 8963; cap 9000 leaves ~37-token headroom. Closes
       //     the loop with Phase 8.0 iOS ApplyFieldIntent return-nil-on-
       //     exclude so the exclude path reaches the backend.
+      //   - 9100 (PLAN voice-feedback-2026-06-05 W1.7 — combustible
+      //     CU → C3 worked example): one new bullet at the end of
+      //     OBSERVATION CODES carrying the BS 7671:2018+A2 §421.1.201
+      //     cite and the "C3, NOT C2" ruling. ~70 tokens. Closes
+      //     voice_feedback marker #9 (session 84CE2125 at 10:43:30
+      //     wrote C2 four times for a combustible CU).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(9000);
+      expect(estimate).toBeLessThanOrEqual(9100);
     });
   });
 
@@ -1207,6 +1220,37 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toEqual(expect.stringContaining('spd_rated_current'));
       expect(block).toEqual(expect.stringContaining('spd_short_circuit'));
       expect(block).toEqual(expect.stringContaining('spd_type_supply'));
+    });
+  });
+
+  describe('Group 14 — 2026-06-05 voice-feedback Group I (combustible CU → C3, NOT C2)', () => {
+    test('OBSERVATION CODES section contains the combustible-CU worked example with explicit C3 ruling', () => {
+      // Field-test session 84CE2125 at 10:43:30 saw Sonnet write
+      // record_observation {code: "C2"} for a combustible consumer
+      // unit (4 times in 5 seconds). BS 7671:2018+A2 §421.1.201
+      // codes a non-fire-rated CU as C3 (improvement recommended)
+      // — the historical C2 classification was softened in the 2022
+      // amendment. The fix surfaces the boundary as a worked example
+      // inside the OBSERVATION CODES block so the model picks C3 even
+      // without consulting WRAG.
+      const idx = prompt.search(/OBSERVATION CODES \(criteria — apply to ANY defect\)/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next WORKED EXAMPLES heading (Example 1).
+      const end = prompt.indexOf('WORKED EXAMPLES:', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+
+      // The example must call out the combustible/non-amendment-3
+      // case AND the C3 ruling AND name BS 7671:2018+A2 §421.1.201
+      // — without any one of these the model may fall back to the
+      // pre-amendment C2 default.
+      expect(block).toEqual(expect.stringContaining('combustible'));
+      expect(block).toEqual(expect.stringContaining('consumer unit'));
+      expect(block).toEqual(expect.stringContaining('§421.1.201'));
+      // "C3, NOT C2" is the load-bearing assertion — pin the exact
+      // phrasing so a "drop the NOT C2" tidy-up that would let the
+      // model wobble back to C2 fails the test loudly.
+      expect(block).toMatch(/C3,\s*NOT\s*C2/i);
     });
   });
 });

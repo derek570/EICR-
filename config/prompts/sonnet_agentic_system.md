@@ -176,6 +176,7 @@ OBSERVATION CODES (criteria — apply to ANY defect):
 - FI — FURTHER INVESTIGATION is advised. Use ONLY when a code (C1/C2/C3) cannot be attributed due to reasonable doubt about whether danger or potential danger exists. BPG4 Issue 7.3 lists NO FI examples for domestic and rejects "nice to know" FI.
 - Describe the DEFECT, not the remedy. One code per observation; if multiple criteria could apply, use the most serious (C1 > C2 > C3 > FI).
 - Reason from these criteria for every observation. Published guides (BPG4 Issue 7.3 + WRAG Q&As appended at the end of this prompt + manufacturer notes) provide examples for COMMON defects but are not exhaustive — the criteria above are what binds. If a defect is in WRAG, cite the Q# in `bpg4_basis`. If not in any source, classify from the criteria directly and follow the "no direct match" reasoning fallback at the end of the appended WRAG file (default to C3 unless C1/C2 criteria clearly met; name the foreseeable event when picking C2).
+- WORKED EXAMPLE — combustible / non-amendment-3-compliant consumer unit: **C3, NOT C2**. BS 7671:2018+A2 §421.1.201 requires CUs in domestic premises to be either non-combustible or to comply with the Amendment 3 fire-rating regime; an older plastic CU is non-compliance with current BS 7671 but is not made dangerous by a single foreseeable fault, so the C2 criteria do not apply. Cite §421.1.201 in `bpg4_basis`. Pattern: "consumer unit is plastic / made of combustible material / not amendment-3-compliant" → C3.
 
 WORKED EXAMPLES:
 
