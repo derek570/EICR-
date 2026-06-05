@@ -3892,8 +3892,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // classifier still returns it in defensive contexts — safe to ignore.
       }
 
+      // Voice-latency plan 2026-06-05 Phase 2.1 — capture the iOS-minted
+      // utterance_id of this inbound transcript so the bundler can echo
+      // it back on the outbound {type:'extraction', result} envelope.
+      // Without this, iOS DeepgramRecordingViewModel.handleServerExtraction
+      // never matches a pendingUtteranceEnds entry and every
+      // /api/voice-latency/utterance-end POST orphans at the iOS 30 s
+      // TTL — 100 % orphan rate in CloudWatch evidence (session 84CE2125,
+      // 38/38 utterance_end rows). The dedupe check at line 3154 already
+      // reads msg.utterance_id; this captures the same field for the
+      // outbound echo. Fall back to msg.consumed_utterance_id only when
+      // utterance_id is missing (rare — ask_user_answered branches stamp
+      // consumed_utterance_id but those don't reach handleTranscript's
+      // extraction path; safe defensive default).
+      const consumedUtteranceId =
+        (typeof msg.utterance_id === 'string' && msg.utterance_id) ||
+        (typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id) ||
+        null;
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
+        // Voice-latency plan 2026-06-05 Phase 2.1 — see comment above.
+        utteranceId: consumedUtteranceId,
         // Stage 6 Phase 3 Plan 03-08: activate Plan 03-07's dispatcher
         // composition. When these are present the harness wires
         // createAskDispatcher alongside createWriteDispatcher and threads

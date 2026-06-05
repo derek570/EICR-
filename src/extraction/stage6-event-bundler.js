@@ -475,6 +475,21 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // not supplied so legacy bundler call sites (and pre-Phase-4a iOS
   // decoders) see byte-identical wire traffic.
   const _turnId = typeof options.turnId === 'string' && options.turnId ? options.turnId : null;
+  // Voice-latency plan 2026-06-05 Phase 2.1 — echo the iOS-minted
+  // utterance_id of the transcript that drove this turn back to iOS so
+  // DeepgramRecordingViewModel.handleServerExtraction can pair it with
+  // the stashed pendingUtteranceEnds entry and fire the non-orphan
+  // /api/voice-latency/utterance-end POST. Without this, every
+  // utterance_end POST orphans at iOS TTL (~30 s) and the dashboard's
+  // perceived-latency metric never lands. iOS already decodes
+  // `utterance_id` via RollingExtractionResult.utteranceId
+  // (ClaudeService.swift:376-425). Live mode receives one transcript
+  // per harness invocation so this is exactly that transcript's id;
+  // shadow/off batch paths do not thread it (out of scope per plan
+  // §2.1, no live impact). Emit `null` when caller didn't supply (back-
+  // compat with existing tests).
+  const _utteranceId =
+    typeof options.utteranceId === 'string' && options.utteranceId ? options.utteranceId : null;
   // boardReadings is optional for backwards compat with any caller that
   // builds the accumulator manually (e.g. older test fixtures that pre-date
   // the Bug C carryover). createPerTurnWrites() always seeds an empty Map.
@@ -548,6 +563,20 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     questions: Array.isArray(legacy.questions) ? [...legacy.questions] : [],
   };
   if (_turnId) result.turn_id = _turnId;
+  // Voice-latency plan 2026-06-05 Phase 2.1 — emit `utterance_id`
+  // ONLY when supplied (matches the `turn_id` emit-when-truthy
+  // pattern above so the existing iOS-parity regression test at
+  // stage6-event-bundler.test.js:28-37 still passes byte-identically
+  // for legacy callers that don't thread the field). iOS decodes
+  // `utterance_id` via decodeIfPresent (ClaudeService.swift:425)
+  // and treats missing-key and JSON-null identically — both leave
+  // RollingExtractionResult.utteranceId nil, which DeepgramRecording-
+  // ViewModel.handleServerExtraction reads as "no matching pending
+  // utterance, skip the non-orphan POST" (the desired pre-Tier-1.3
+  // behaviour). When the caller IS the live `handleTranscript` path
+  // (which always supplies a string), every production extraction
+  // envelope now carries the field and the iOS pairing fires.
+  if (_utteranceId) result.utterance_id = _utteranceId;
 
   // 4-6. New Phase 2 slots — OMITTED when empty so iOS decoders unaware of
   //      these keys see byte-identical traffic to today. Swift Codable

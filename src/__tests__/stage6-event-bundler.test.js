@@ -705,3 +705,68 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     }
   });
 });
+
+describe('bundleToolCallsIntoResult — utterance_id echo (Voice-latency plan 2026-06-05 Phase 2.1)', () => {
+  test('options.utteranceId = "abc" → result.utterance_id = "abc"', () => {
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites(),
+      { questions: [] },
+      { utteranceId: 'abc' }
+    );
+    expect(r.utterance_id).toBe('abc');
+  });
+
+  test('options.utteranceId omitted → result has no utterance_id key (backwards-compat)', () => {
+    const r = bundleToolCallsIntoResult(makePerTurnWrites(), { questions: [] }, {});
+    expect('utterance_id' in r).toBe(false);
+  });
+
+  test('options.utteranceId = null → result has no utterance_id key (defensive nil)', () => {
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites(),
+      { questions: [] },
+      { utteranceId: null }
+    );
+    expect('utterance_id' in r).toBe(false);
+  });
+
+  test('options.utteranceId = "" → result has no utterance_id key (empty-string treated as absent)', () => {
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites(),
+      { questions: [] },
+      { utteranceId: '' }
+    );
+    expect('utterance_id' in r).toBe(false);
+  });
+
+  test('utterance_id coexists with turn_id without affecting any other slot', () => {
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({
+        readings: new Map([
+          ['volts::1', { value: 230, confidence: 0.95, source_turn_id: 't1' }],
+        ]),
+      }),
+      { questions: [] },
+      { turnId: 'turn-42', utteranceId: 'utt-abc' }
+    );
+    expect(r.turn_id).toBe('turn-42');
+    expect(r.utterance_id).toBe('utt-abc');
+    expect(r.extracted_readings).toHaveLength(1);
+    expect(r.extracted_readings[0].value).toBe(230);
+  });
+
+  test('non-string utteranceId (number, object) is rejected (defensive — never coerced)', () => {
+    const r1 = bundleToolCallsIntoResult(
+      makePerTurnWrites(),
+      { questions: [] },
+      { utteranceId: 12345 }
+    );
+    expect('utterance_id' in r1).toBe(false);
+    const r2 = bundleToolCallsIntoResult(
+      makePerTurnWrites(),
+      { questions: [] },
+      { utteranceId: { foo: 'bar' } }
+    );
+    expect('utterance_id' in r2).toBe(false);
+  });
+});
