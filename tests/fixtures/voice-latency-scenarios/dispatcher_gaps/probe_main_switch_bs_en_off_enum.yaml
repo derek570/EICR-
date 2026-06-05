@@ -1,0 +1,52 @@
+name: probe_main_switch_bs_en_off_enum
+suite: dispatcher_gaps
+description: |
+  POSITIVE PIN — main_switch_bs_en canonicalisation.
+  Inspector dictates "Main switch BS EN 60947 dash 3."
+  Expected canonical: "BS EN 60947-3" (one of the supply-side
+  options).
+
+  PROD OBSERVATION 2026-06-02: Sonnet writes
+  main_switch_bs_en="BS EN 60947-3" (canonical). Twice on the wire
+  (the same canonical+legacy double-emit pattern from Cat 2).
+
+  This confirms that for board-level supply BS-EN fields, Sonnet's
+  classification is reliable. The dispatcher gap (no value-enum
+  check in validateRecordBoardReading) is still real but Sonnet's
+  prompt covers this particular field.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "Main switch BS EN 60947 dash 3."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 0
+      field: main_switch_bs_en
+      value: "BS EN 60947-3"
+  # No off-enum variant persisted.
+  has_no_reading:
+    - circuit: 0
+      field: main_switch_bs_en
+      value: "60947 dash 3"
+    - circuit: 0
+      field: main_switch_bs_en
+      value: "60947-3"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

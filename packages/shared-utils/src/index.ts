@@ -26,6 +26,11 @@ export type {
   VoiceCommandOutcome,
   VoiceCommandJob,
   VoiceCommandCircuit,
+  VoiceCommandScope,
 } from './voice-commands';
 export { matchCircuits, similarityScore, normaliseLabel } from './circuit-matcher';
 export type { CircuitMatch, MatcherNewCircuit, MatcherExistingCircuit } from './circuit-matcher';
+export { maxZsLookup, maxZsString } from './max-zs-lookup';
+export type { MaxZsLookupArgs } from './max-zs-lookup';
+export { recompute, recomputeAll, resolveZe, clampImpedance } from './circuit-derivations';
+export type { DerivationOutcome, ImpedanceField, ClampOutcome } from './circuit-derivations';

@@ -1,0 +1,856 @@
+/**
+ * Stage 6 Phase 2 Plan 02-05 — Event bundler (pure function).
+ *
+ * REQUIREMENTS: STD-09 (bundler produces legacy shape) + STI-02 (iOS sees a
+ * single `extraction` message per turn, not N granular events).
+ * RESEARCH: §Q10 "iOS Event Bundling" — the server wire protocol does NOT
+ * change in Phase 2. iOS still receives one `{type:'extraction', result:{...}}`
+ * per turn. Only the SOURCE of that result shifts: prose-JSON parse (legacy)
+ * vs. aggregated tool-call outcomes (Phase 2 shadow; Phase 7+ live).
+ * PITFALL MITIGATED: #3 "bundler fires mid-loop" — this module is intentionally
+ * side-effect-free and called ONCE post-loop by Plan 02-06's shadow harness.
+ *
+ * This module imports NOTHING and performs NO side effects (no logger, no
+ * ws.send, no session mutation). It is a pure projection of the per-turn
+ * writes accumulator (Plan 02-02) plus a passthrough of the legacy result's
+ * `questions` slot into the iOS wire shape.
+ */
+
+import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
+// Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
+// table moved into `confirmation-text.js` so loaded-barrel-speculator.js
+// can import the same buildConfirmationText without dragging the rest
+// of the bundler into its call site. No behavioural change here.
+import {
+  CONFIRMATION_FRIENDLY_NAMES,
+  CONFIRMATION_MIN_CONFIDENCE,
+  buildConfirmationText,
+  buildGroupedConfirmationText,
+  deriveFriendlyName,
+} from './confirmation-text.js';
+import {
+  buildPerCircuitDedupeKey,
+  buildMultiCircuitDedupeKey,
+  buildDegenerateDedupeKey,
+} from './ios-dedupe-key.js';
+// Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
+// canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
+// ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
+// can play either form without forking on capability. Older iOS builds
+// that don't decode expanded_text fall through to local expansion via
+// Self.expandForTTS (Sources/Recording/AlertManager.swift).
+import { expandForTTS } from './tts-text-expander.js';
+
+export const BUNDLER_PHASE = 2;
+
+/**
+ * Synthesise brief read-back confirmations from the bundled readings.
+ *
+ * The legacy prose-JSON extractor used to emit a `confirmations` array
+ * directly from the model (config/prompts/sonnet_extraction_system.md:283).
+ * The Stage 6 agentic path has no analogue — record_reading is the only
+ * write tool — so the iOS "Voice" toggle hooked to
+ * `confirmationModeEnabled` (DeepgramRecordingViewModel.swift:7334) read
+ * `result.confirmations` against an always-empty array, making the toggle
+ * appear broken. This helper rebuilds the same wire shape from the
+ * tool-call outcomes so the iOS path keeps working without a TestFlight
+ * push or a prompt revision.
+ *
+ * Confirmation text is intentionally short (legacy "under 5 words" guidance
+ * preserved at intent level; the friendly-name lookup keeps it concise).
+ *
+ * @param {Array<{field: string, circuit?: number|string, value: any, confidence: number}>} readings
+ *   Circuit-scoped readings (bundler output extracted_readings).
+ * @param {Array<{field: string, value: any, confidence: number}>} boardReadings
+ *   Board-scoped readings (bundler output extracted_board_readings).
+ * @returns {Array<{text: string, field: string, circuit: number|null}>}
+ */
+/**
+ * 2026-05-29 — synthesise TTS confirmations for state-change ops
+ * (create_circuit, rename_circuit, delete_circuit, add_board,
+ * select_board). Pre-existing synthesis only covered record_reading
+ * outcomes, so circuit creation/rename/delete and board switching
+ * were silent under the hands-free AirPods workflow. Inspector said
+ * "Circuit 1 is the cooker" → Sonnet called create_circuit only →
+ * no TTS, inspector couldn't tell whether the system heard them.
+ *
+ * Dedup: if a record_reading(circuit_designation) for the same
+ * circuit is in the same turn, skip the op confirmation — the
+ * existing designation TTS path ("Circuit N is now the Cooker")
+ * already carries the same intent.
+ *
+ * @param {Array} circuitOps perTurnWrites.circuitOps
+ * @param {Array} boardOps perTurnWrites.boardOps
+ * @param {Set<number>} skipCircuitDesignations circuits whose
+ *   designation was already covered by a record_reading
+ * @param {Map<string,string>|null} boardDesignations optional
+ *   board_id → designation map for select_board lookup
+ * @returns {Array<{text, expanded_text, field, circuit}>}
+ */
+function synthesiseStateChangeConfirmations(
+  circuitOps,
+  boardOps,
+  skipCircuitDesignations,
+  boardDesignations
+) {
+  const out = [];
+  if (Array.isArray(circuitOps)) {
+    for (const op of circuitOps) {
+      const ref = op.circuit_ref;
+      if (!Number.isInteger(ref) || ref <= 0) continue;
+      let text = null;
+      if (op.op === 'create') {
+        if (skipCircuitDesignations.has(ref)) continue; // covered by reading TTS
+        const desig = op?.meta?.designation;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `Circuit ${ref} is now the ${desig.trim()}`;
+        } else {
+          text = `Circuit ${ref} created`;
+        }
+      } else if (op.op === 'rename') {
+        if (skipCircuitDesignations.has(ref)) continue;
+        const desig = op?.meta?.designation;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `Circuit ${ref} is now the ${desig.trim()}`;
+        } else if (Number.isInteger(op.from_ref) && op.from_ref !== ref) {
+          text = `Circuit ${op.from_ref} renumbered to ${ref}`;
+        }
+      } else if (op.op === 'delete') {
+        text = `Circuit ${ref} deleted`;
+      }
+      if (!text) continue;
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'circuit_op',
+        circuit: ref,
+        // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: state-change
+        // confirmations are played on the iOS side via speakBriefConfirmation
+        // call sites that lack a per-confirmation turnId today (the 10
+        // no-LoadedBarrelTTSContext sites identified in the plan), so the
+        // playback-ack will never fire. Mark `expects_ios_ack: false` so the
+        // backend's audio finalizer doesn't arm waiting for an ACK that
+        // can't arrive. Threading turnId through the no-context speak sites
+        // is a Tier 1.4 follow-up.
+        expects_ios_ack: false,
+      });
+    }
+  }
+  if (Array.isArray(boardOps)) {
+    for (const op of boardOps) {
+      let text = null;
+      if (op.op === 'add_board') {
+        const desig = op.designation;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `${desig.trim()} board added`;
+        } else {
+          text = `Board added`;
+        }
+      } else if (op.op === 'select_board') {
+        const desig = boardDesignations instanceof Map ? boardDesignations.get(op.board_id) : null;
+        if (typeof desig === 'string' && desig.trim()) {
+          text = `Switched to the ${desig.trim()} board`;
+        } else {
+          text = `Switched board`;
+        }
+      } else if (op.op === 'mark_distribution_circuit') {
+        const ref = op.circuit_ref;
+        if (Number.isInteger(ref) && ref > 0) {
+          text = `Circuit ${ref} marked as feeding the sub-board`;
+        }
+      }
+      if (!text) continue;
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'board_op',
+        circuit: null,
+        // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5 — see circuit_op
+        // entry above. Same rationale for board ops.
+        expects_ios_ack: false,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Issue 8 from 2026-05-31 field test. Inspector wants every UI write
+ * read back via TTS so the iPad can sit in another room while they
+ * work in AirPods. record_reading + state-change ops were already
+ * spoken (synthesiseConfirmations + synthesiseStateChangeConfirm-
+ * ations). The three missing categories — observations, observation
+ * deletions, and explicit clear_reading corrections — are covered
+ * here.
+ *
+ * @param {Array} observations perTurnWrites.observations
+ * @param {Array} deletedObservations perTurnWrites.deletedObservations
+ * @param {Array} fieldCorrections perTurnWrites.fieldCorrections
+ *   (carries the previous_value + reason for clear_reading writes;
+ *   per-reading "field_corrected" is the only category we speak —
+ *   record_reading-driven corrections already go via the main
+ *   confirmation path)
+ * @param {Map<number,string>|null} designations circuit ref →
+ *   designation, used to prefix cleared circuit-level readings with
+ *   the spoken circuit name when known.
+ * @returns {Array<{text, expanded_text, field, circuit}>}
+ */
+const OBSERVATION_TTS_TEXT_MAX_CHARS = 50;
+
+function synthesiseObservationAndClearedConfirmations(
+  observations,
+  deletedObservations,
+  fieldCorrections,
+  designations = null
+) {
+  const out = [];
+  const lookupDesignation = (circuit) => {
+    if (!designations) return null;
+    if (designations instanceof Map) {
+      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
+    }
+    if (typeof designations === 'object') {
+      return designations[circuit] ?? designations[String(circuit)] ?? null;
+    }
+    return null;
+  };
+
+  if (Array.isArray(observations)) {
+    for (const obs of observations) {
+      if (!obs) continue;
+      const code = typeof obs.code === 'string' && obs.code.trim() ? obs.code.trim() : null;
+      const rawText = typeof obs.text === 'string' ? obs.text.trim() : '';
+      let text;
+      if (code && rawText) {
+        const truncated =
+          rawText.length > OBSERVATION_TTS_TEXT_MAX_CHARS
+            ? `${rawText.slice(0, OBSERVATION_TTS_TEXT_MAX_CHARS).trim()}…`
+            : rawText;
+        text = `Observation ${code} — ${truncated}`;
+      } else if (code) {
+        text = `Observation ${code} recorded`;
+      } else if (rawText) {
+        const truncated =
+          rawText.length > OBSERVATION_TTS_TEXT_MAX_CHARS
+            ? `${rawText.slice(0, OBSERVATION_TTS_TEXT_MAX_CHARS).trim()}…`
+            : rawText;
+        text = `Observation — ${truncated}`;
+      } else {
+        // Empty observation with no code or text — don't speak anything.
+        continue;
+      }
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'observation',
+        circuit: Number.isInteger(obs.circuit) ? obs.circuit : null,
+        // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: synthesised
+        // observation/cleared confirmations route through the same iOS
+        // no-LoadedBarrelTTSContext paths as state-changes; the playback-ack
+        // can't fire so the finalizer must not arm waiting for one.
+        expects_ios_ack: false,
+      });
+    }
+  }
+
+  if (Array.isArray(deletedObservations)) {
+    for (const d of deletedObservations) {
+      if (!d) continue;
+      const text = 'Observation deleted';
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'observation_deletion',
+        circuit: null,
+        // Voice-latency Tier 1.1 sub-step 5: see observation entry above.
+        expects_ios_ack: false,
+      });
+    }
+  }
+
+  if (Array.isArray(fieldCorrections)) {
+    for (const c of fieldCorrections) {
+      if (!c) continue;
+      // Only speak explicit clears; field_corrected with a non-clear
+      // reason is a side-effect of a regular record_reading that the
+      // main confirmation path already covers.
+      if (c.reason !== 'clear_reading') continue;
+      const field = c.field;
+      if (typeof field !== 'string' || field.length === 0) continue;
+      // Skip suppressed fields + *_id (mirrors buildConfirmationText
+      // gating so we don't speak internal IDs being cleared).
+      // Match by re-importing the predicate would tighten the dep
+      // graph; for now inline the same check.
+      if (typeof field === 'string' && field.endsWith('_id')) continue;
+      const friendly = CONFIRMATION_FRIENDLY_NAMES[field] ?? deriveFriendlyName(field);
+      const circ = Number.isInteger(c.circuit) ? c.circuit : null;
+      let text;
+      if (circ == null || circ === 0) {
+        text = `${friendly} cleared`;
+      } else {
+        const desig = lookupDesignation(circ);
+        const prefix =
+          typeof desig === 'string' && desig.trim() ? desig.trim().slice(0, 40) : `Circuit ${circ}`;
+        text = `${prefix}, ${friendly} cleared`;
+      }
+      out.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'field_cleared',
+        circuit: circ,
+        // Voice-latency Tier 1.1 sub-step 5: see observation entry above.
+        // field_cleared confirmations also route through the no-context
+        // iOS speak path.
+        expects_ios_ack: false,
+      });
+    }
+  }
+
+  return out;
+}
+
+function synthesiseConfirmations(
+  readings,
+  boardReadings,
+  designations = null,
+  totalCircuitsInJob = null
+) {
+  const out = [];
+  const lookupDesignation = (circuit) => {
+    if (!designations) return null;
+    if (designations instanceof Map) {
+      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
+    }
+    if (typeof designations === 'object') {
+      return designations[circuit] ?? designations[String(circuit)] ?? null;
+    }
+    return null;
+  };
+
+  // Issue 10 (2026-05-31, session B95B2EE1): a fan-out write to
+  // multiple circuits used to emit one per-circuit confirmation each;
+  // the speculator picked one random circuit and the inspector heard
+  // "Circuit 4, IR L to L >299" instead of "All circuits, IR L to L
+  // >299". Group readings up-front so each (field, board_id, value)
+  // bucket fires ONE TTS line. Per-circuit readings fall through
+  // unchanged (group size 1 → buildGroupedConfirmationText returns
+  // null and we use the existing buildConfirmationText path).
+  const groups = new Map();
+  for (let i = 0; i < readings.length; i += 1) {
+    const r = readings[i];
+    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    // Group key excludes circuit on purpose — that's the dimension we
+    // want to collapse across. Board scope still matters (the same
+    // field+value on board A vs board B is two distinct broadcasts).
+    // Normalise undefined/null board_id to '' so single-board sessions
+    // bucket together cleanly.
+    const groupKey = `${r.field}|${String(r.value ?? '')}|${r.board_id ?? ''}`;
+    let bucket = groups.get(groupKey);
+    if (!bucket) {
+      bucket = { field: r.field, value: r.value, board_id: r.board_id, items: [], indices: [] };
+      groups.set(groupKey, bucket);
+    }
+    bucket.items.push(r);
+    bucket.indices.push(i);
+  }
+
+  const consumedReadingIndices = new Set();
+
+  for (const bucket of groups.values()) {
+    if (bucket.items.length < 2) continue;
+    // Only attempt the grouped form for circuit-level readings (the
+    // helper rejects circuit:0/null entries by returning null).
+    const circuits = bucket.items.map((r) => r.circuit).filter((c) => Number.isInteger(c) && c > 0);
+    if (circuits.length < 2) continue;
+    const grouped = buildGroupedConfirmationText(
+      bucket.field,
+      bucket.value,
+      circuits,
+      totalCircuitsInJob
+    );
+    if (!grouped) continue;
+    const entry = {
+      text: grouped,
+      expanded_text: expandForTTS(grouped),
+      field: bucket.field,
+      // Grouped confirmations are circuit-bag, not single-circuit;
+      // null tells iOS this isn't tied to a specific row for the
+      // anti-stale highlight logic.
+      circuit: null,
+      // Surface the underlying circuits so iOS can mark each as
+      // confirmed in the highlight buffer (so individual cells flash
+      // green) even though the spoken text is a single roll-up.
+      circuits,
+    };
+    if (bucket.board_id != null) {
+      entry.board_id = bucket.board_id;
+    }
+    // PLAN voice-feedback-2026-06-05 W1.4 — transient `_confidence`
+    // sidecar carries the lowest confidence across the bucket so the
+    // bundler's `ios_send_attempt` telemetry can include it. Stripped
+    // BEFORE the entries reach the wire (see bundler stripTransient step).
+    // Leading underscore marks transient by convention.
+    entry._confidence = bucket.items.reduce(
+      (min, r) => (typeof r.confidence === 'number' && r.confidence < min ? r.confidence : min),
+      Number.POSITIVE_INFINITY
+    );
+    if (!Number.isFinite(entry._confidence)) entry._confidence = null;
+    out.push(entry);
+    for (const idx of bucket.indices) consumedReadingIndices.add(idx);
+  }
+
+  for (let i = 0; i < readings.length; i += 1) {
+    if (consumedReadingIndices.has(i)) continue;
+    const r = readings[i];
+    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    // 2026-05-29 — pass designation so the TTS reads "Cooker, Zs 0.62"
+    // instead of "Circuit 1, Zs 0.62". Lookup uses the same per-turn
+    // circuit_designation write so a brand-new circuit confirmed in the
+    // SAME turn (Sonnet: create_circuit + record_reading) speaks with
+    // its name immediately.
+    const designation = lookupDesignation(r.circuit);
+    const text = buildConfirmationText(r.field, r.value, r.circuit, designation);
+    if (!text) continue;
+    const entry = {
+      text,
+      // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3). Pre-
+      // compute the TTS-expanded form server-side. iOS Builds advertising
+      // `regex_fast_v2` consume `expanded_text` verbatim (skipping the
+      // local Self.expandForTTS) so client + server agree on the spoken
+      // form for every numeric reading. The expander is pure + ASCII so
+      // pre-computing it has zero cost beyond the string allocation.
+      expanded_text: expandForTTS(text),
+      field: r.field,
+      circuit: Number.isInteger(r.circuit) ? r.circuit : null,
+    };
+    // Loaded Barrel Phase 1.B — emit board_id when set so the iOS
+    // POST can include it in the cache-key tuple. Omit when null/
+    // undefined so single-board sessions stay byte-identical on the
+    // wire and pre-Phase-4a iOS clients (which don't decode board_id
+    // on ValueConfirmation yet) see no change.
+    if (r.board_id != null) {
+      entry.board_id = r.board_id;
+    }
+    // W1.4 transient confidence sidecar (per-circuit fallback path).
+    entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
+    out.push(entry);
+  }
+  for (const r of boardReadings) {
+    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    const text = buildConfirmationText(r.field, r.value, null);
+    if (!text) continue;
+    const entry = {
+      text,
+      expanded_text: expandForTTS(text),
+      field: r.field,
+      circuit: null,
+    };
+    if (r.board_id != null) {
+      entry.board_id = r.board_id;
+    }
+    // W1.4 transient confidence sidecar (board-level degenerate path).
+    entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Translate per-turn tool-call outcomes into the legacy `extraction` result
+ * shape that iOS `ServerWebSocketService` expects.
+ *
+ * @param {{readings: Map<string, {value: any, confidence: number, source_turn_id?: string, boardId?: string}>,
+ *          boardReadings: Map<string, {value: any, confidence: number, source_turn_id?: string, boardId?: string}>,
+ *          cleared: Array<{field: string, circuit: string, reason?: string}>,
+ *          observations: Array<{id: string, text: string, code: string}>,
+ *          deletedObservations: Array<{id: string, reason?: string}>,
+ *          circuitOps: Array<{op: string, circuit_ref: string, from_ref?: string, board_id?: string, meta?: any}>,
+ *          boardOps?: Array<{op: string, [key: string]: any}>}} perTurnWrites
+ *   Accumulator populated by Phase 2 dispatchers (Plans 02-03 + 02-04 +
+ *   Bug-C carryover dispatcher record_board_reading + Phase 6 board-op
+ *   dispatchers).
+ * @param {{questions?: Array<any>}|null|undefined} legacyResultShape
+ *   The legacy extractor's result object. Only `.questions` is consumed
+ *   (Phase 2 keeps legacy question-gate behaviour; tool-call ask_user is
+ *   Phase 3+). If null/undefined, treated as `{}` so the bundler still
+ *   produces a valid empty-questions shape even when the legacy path threw.
+ * @returns {{extracted_readings: Array<{field: string, circuit: string, value: any, confidence: number, source: 'tool_call', board_id?: string}>,
+ *            observations: Array<{id: string, text: string, code: string}>,
+ *            questions: Array<any>,
+ *            cleared_readings?: Array<{field: string, circuit: string, reason?: string}>,
+ *            circuit_updates?: Array<{op: string, circuit_ref: string, from_ref?: string, board_id?: string, meta?: any}>,
+ *            observation_deletions?: Array<{id: string, reason?: string}>,
+ *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call', board_id?: string}>,
+ *            board_ops?: Array<{op: string, [key: string]: any}>}}
+ */
+export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, options = {}) {
+  if (!perTurnWrites || !(perTurnWrites.readings instanceof Map)) {
+    throw new TypeError('bundleToolCallsIntoResult: perTurnWrites.readings must be a Map');
+  }
+  // Loaded Barrel Phase 1.B → Phase 4a wire contract. When the caller
+  // (runLiveMode / runShadowHarness) supplies the per-turn turnId via
+  // options.turnId, emit it as `result.turn_id` so iOS Phase 4a can
+  // round-trip it on the TTS POST body for cache lookup. Omitted when
+  // not supplied so legacy bundler call sites (and pre-Phase-4a iOS
+  // decoders) see byte-identical wire traffic.
+  const _turnId = typeof options.turnId === 'string' && options.turnId ? options.turnId : null;
+  // Voice-latency plan 2026-06-05 Phase 2.1 — echo the iOS-minted
+  // utterance_id of the transcript that drove this turn back to iOS so
+  // DeepgramRecordingViewModel.handleServerExtraction can pair it with
+  // the stashed pendingUtteranceEnds entry and fire the non-orphan
+  // /api/voice-latency/utterance-end POST. Without this, every
+  // utterance_end POST orphans at iOS TTL (~30 s) and the dashboard's
+  // perceived-latency metric never lands. iOS already decodes
+  // `utterance_id` via RollingExtractionResult.utteranceId
+  // (ClaudeService.swift:376-425). Live mode receives one transcript
+  // per harness invocation so this is exactly that transcript's id;
+  // shadow/off batch paths do not thread it (out of scope per plan
+  // §2.1, no live impact). Emit `null` when caller didn't supply (back-
+  // compat with existing tests).
+  const _utteranceId =
+    typeof options.utteranceId === 'string' && options.utteranceId ? options.utteranceId : null;
+  // boardReadings is optional for backwards compat with any caller that
+  // builds the accumulator manually (e.g. older test fixtures that pre-date
+  // the Bug C carryover). createPerTurnWrites() always seeds an empty Map.
+  const boardReadings =
+    perTurnWrites.boardReadings instanceof Map ? perTurnWrites.boardReadings : new Map();
+  const legacy = legacyResultShape ?? {};
+
+  // 1. Readings projection — Map → array. Key `${field}::${circuit}` splits
+  //    to recover (field, circuit); value carries {value, confidence, ...}.
+  //    Confidence is passed VERBATIM (dispatcher already applied ?? 1.0).
+  //    Map.entries() preserves insertion order — STT-09 same-turn correction
+  //    survives because the dispatcher overwrote the Map entry before we see it.
+  //
+  //    Codex Phase-2 review MAJOR #2 fix: the Map key is built via template
+  //    literal (`${field}::${input.circuit}`) which coerces the original
+  //    integer circuit_ref to a string. Legacy `extracted_readings[].circuit`
+  //    is typed as integer at `eicr-extraction-session.js:992` (`circuit === -1`)
+  //    and the STS-01..04 tool schemas all declare `circuit` / `circuit_ref`
+  //    as `integer` (stage6-tool-schemas.js). Emitting a string here would
+  //    make the slot comparator see a legitimate divergence whenever both
+  //    paths record the same reading, and Phase 7's wire projection would
+  //    drift from legacy. Parse the suffix back to an integer when it round-
+  //    trips cleanly; fall back to the raw string otherwise (future-proof
+  //    against a non-integer circuit_ref the schema doesn't currently allow).
+  const extracted_readings = [];
+  for (const [key, entry] of perTurnWrites.readings) {
+    // Slice 1.1c — decodeReadingKey handles BOTH the new boardId-tagged
+    // shape `${field}::${circuit}<NUL>__board__<NUL>${boardId}<NUL>` and
+    // legacy 2-part `${field}::${circuit}` keys (test fixtures or older
+    // accumulators) so this loop is shape-agnostic. boardId from the key
+    // is NOT used for emission — the value entry's boardId (set by the
+    // dispatcher in slice 1.1a) is the wire-shape SoT; the key boardId
+    // is purely a same-turn collision-key.
+    const { field, circuit: circuitStr } = decodeReadingKey(key);
+    const circuitInt = Number(circuitStr);
+    const circuit =
+      circuitStr !== '' && Number.isInteger(circuitInt) && String(circuitInt) === circuitStr
+        ? circuitInt
+        : circuitStr;
+    const reading = {
+      field,
+      circuit,
+      value: entry.value,
+      confidence: entry.confidence,
+      source: 'tool_call',
+    };
+    // P3-B (2026-04-27) — propagate the auto_resolve marker so the slot
+    // comparator can filter synthetic writes out of shadow-vs-live diffs.
+    // Set ONLY when truthy so the JSON wire shape stays byte-identical for
+    // every Sonnet-direct write (the existing iOS decoder doesn't know this
+    // field; omitting when undefined keeps the snapshot stable).
+    if (entry.auto_resolved === true) {
+      reading.auto_resolved = true;
+    }
+    // "Work on Board" hotfix slice 1.1a (2026-05-08) — emit board_id when
+    // the dispatcher recorded one on the value entry. Omit otherwise so
+    // single-board sessions stay byte-identical to pre-hotfix traffic and
+    // pre-fix iOS clients (which ignore the field via decodeIfPresent) see
+    // no change.
+    if (entry.boardId != null) {
+      reading.board_id = entry.boardId;
+    }
+    extracted_readings.push(reading);
+  }
+
+  // 2-3. Observations + questions — defensive copies so downstream mutation
+  //      cannot retroactively alter the bundled result.
+  const result = {
+    extracted_readings,
+    observations: [...perTurnWrites.observations],
+    questions: Array.isArray(legacy.questions) ? [...legacy.questions] : [],
+  };
+  if (_turnId) result.turn_id = _turnId;
+  // Voice-latency plan 2026-06-05 Phase 2.1 — emit `utterance_id`
+  // ONLY when supplied (matches the `turn_id` emit-when-truthy
+  // pattern above so the existing iOS-parity regression test at
+  // stage6-event-bundler.test.js:28-37 still passes byte-identically
+  // for legacy callers that don't thread the field). iOS decodes
+  // `utterance_id` via decodeIfPresent (ClaudeService.swift:425)
+  // and treats missing-key and JSON-null identically — both leave
+  // RollingExtractionResult.utteranceId nil, which DeepgramRecording-
+  // ViewModel.handleServerExtraction reads as "no matching pending
+  // utterance, skip the non-orphan POST" (the desired pre-Tier-1.3
+  // behaviour). When the caller IS the live `handleTranscript` path
+  // (which always supplies a string), every production extraction
+  // envelope now carries the field and the iOS pairing fires.
+  if (_utteranceId) result.utterance_id = _utteranceId;
+
+  // 4-6. New Phase 2 slots — OMITTED when empty so iOS decoders unaware of
+  //      these keys see byte-identical traffic to today. Swift Codable
+  //      ignores unknown keys, but omission keeps session logs clean.
+  if (perTurnWrites.cleared.length > 0) {
+    result.cleared_readings = [...perTurnWrites.cleared];
+  }
+  if (perTurnWrites.circuitOps.length > 0) {
+    result.circuit_updates = [...perTurnWrites.circuitOps];
+  }
+  if (perTurnWrites.deletedObservations.length > 0) {
+    result.observation_deletions = [...perTurnWrites.deletedObservations];
+  }
+  // 1a.6 — field_corrected event payloads. Carried on result so the
+  // orchestrator (sonnet-stream.js) can iterate after sending the
+  // extraction envelope and emit each as a separate WS message with the
+  // pinned wire shape from PLAN_v3 §4.5 (type/circuit/field/
+  // previous_value/reason). OMITTED when empty so back-compat decoders
+  // never see the key.
+  if (Array.isArray(perTurnWrites.fieldCorrections) && perTurnWrites.fieldCorrections.length > 0) {
+    result.field_corrections = [...perTurnWrites.fieldCorrections];
+  }
+
+  // 7. Phase 2 carryover slot — supply / installation / board-level writes
+  //    via record_board_reading. Same shape as extracted_readings (field +
+  //    value + confidence + source: 'tool_call') but WITHOUT a `circuit`
+  //    field — these readings always live at circuits[0] in the snapshot.
+  //    Emitting them in a SEPARATE slot (rather than merging into
+  //    extracted_readings with circuit:0) makes the Stage 6 wire shape
+  //    self-describing — a downstream consumer can tell tool_call board
+  //    writes apart from circuit writes without having to inspect every
+  //    entry's `circuit` field. The slot comparator (Plan 02-06) projects
+  //    legacy's circuit:0 readings into the same comparison Map so
+  //    divergence comparison still aligns the two paths.
+  //
+  //    Map.entries() preserves insertion order — same property the readings
+  //    Map relies on for STT-09 same-turn correction.
+  if (boardReadings.size > 0) {
+    const extracted_board_readings = [];
+    for (const [key, entry] of boardReadings) {
+      // Slice 1.1c — same key-decoder treatment as the readings Map. Legacy
+      // field-only keys decode to boardId=null; new boardId-tagged keys
+      // strip the tag so `field` is the bare field name on the wire.
+      const { field } = decodeBoardReadingKey(key);
+      const reading = {
+        field,
+        value: entry.value,
+        confidence: entry.confidence,
+        source: 'tool_call',
+      };
+      // P3-B — same auto_resolve propagation as extracted_readings above.
+      if (entry.auto_resolved === true) {
+        reading.auto_resolved = true;
+      }
+      // "Work on Board" hotfix slice 1.1a — emit board_id so shadow-harness's
+      // fold to extracted_readings (with circuit:0) carries the field through
+      // to iOS, where applySonnetReadings can land board-level supply on the
+      // right BoardInfo via the boardIndex(for:) helper rather than
+      // pinning to boards[0].
+      if (entry.boardId != null) {
+        reading.board_id = entry.boardId;
+      }
+      extracted_board_readings.push(reading);
+    }
+    result.extracted_board_readings = extracted_board_readings;
+  }
+
+  // 8. Phase 6.0 — multi-board board-ops wire channel (Codex deal-breaker #3).
+  //    Append-only Array of discriminated-union ops emitted by Phase 6 board
+  //    dispatchers (`add_board` / `select_board` / `mark_distribution_circuit`,
+  //    plus any future board-mutation tool). Each entry carries an `op` field
+  //    plus the payload the tool dispatcher built.
+  //
+  //    Emit verbatim (defensive shallow copy so downstream mutation can't
+  //    retro-alter the bundled result). OMITTED when empty so pre-Phase-6
+  //    traffic — every session today, since no dispatcher writes here yet —
+  //    stays byte-identical and existing iOS decoders unaware of the slot
+  //    see no change.
+  //
+  //    boardOps is optional in the input shape because callers building the
+  //    accumulator manually (older test fixtures) may pre-date the Phase 6.0
+  //    wire-in. createPerTurnWrites() always seeds an empty array.
+  if (Array.isArray(perTurnWrites.boardOps) && perTurnWrites.boardOps.length > 0) {
+    result.board_ops = perTurnWrites.boardOps.map((op) => ({ ...op }));
+  }
+
+  // 9. Stage 6 confirmation read-backs (2026-05-20).
+  //    When the client opts in via `confirmations_enabled` on the
+  //    transcript message (iOS Voice toggle → sonnet-stream.js:3707 →
+  //    runShadowHarness options → here), synthesise brief text-to-speech
+  //    read-backs from the per-turn writes. iOS already decodes
+  //    `result.confirmations` (DeepgramRecordingViewModel.swift:7334) and
+  //    applies its own dedupe/suppression layer; the backend's job is just
+  //    to emit a short well-formed array per turn so the iOS speech queue
+  //    has something to work with.
+  //
+  //    Legacy prose-JSON path: when `legacyResultShape.confirmations` is
+  //    already populated (shadow mode, prompt-JSON extractor produced
+  //    them), preserve those verbatim and skip synthesis — the legacy
+  //    output is the authoritative shape there and we don't want to
+  //    double-emit. Live mode always has `legacy === null` and synthesis
+  //    is the only source.
+  //
+  //    OMITTED from the result when empty so pre-feature traffic and
+  //    sessions where the inspector turned the toggle off stay byte-
+  //    identical on the wire.
+  if (Array.isArray(legacy.confirmations) && legacy.confirmations.length > 0) {
+    result.confirmations = legacy.confirmations.map((c) => ({ ...c }));
+  } else if (options.confirmationsEnabled === true) {
+    const boardReadings = Array.isArray(result.extracted_board_readings)
+      ? result.extracted_board_readings
+      : [];
+    // 2026-05-29 — circuit-designation lookup so TTS reads circuit names.
+    // The caller (stage6-shadow-harness.js) builds the map from
+    // session.stateSnapshot.circuits + the same-turn circuit_designation
+    // writes in perTurnWrites.readings (so a freshly-named circuit
+    // confirms with its NEW name, not "Circuit N").
+    // totalCircuitsInJob lets the helper decide whether a multi-circuit
+    // group qualifies as "all circuits" vs "circuits X to Y". Sourced
+    // from the caller (stage6-shadow-harness.js builds it from
+    // session.stateSnapshot.circuits, board-scoped if a sub-board is
+    // the current target so a fan-out on board B doesn't count board
+    // A's circuits toward the total). Null means "I don't know" → the
+    // helper falls through to range/list phrasing.
+    const confirmations = synthesiseConfirmations(
+      extracted_readings,
+      boardReadings,
+      options.circuitDesignations,
+      options.totalCircuitsInJob ?? null
+    );
+    // PLAN voice-feedback-2026-06-05 W1.4 — emit one `ios_send_attempt`
+    // row per confirmation entry the bundler is about to put on the wire.
+    // Each row carries the byte-equal-to-iOS `expected_dedupe_key` (using
+    // the canonical TTS text, NOT the dispatcher's value-proxy) plus
+    // `confidence` so an operator can correlate this row with the
+    // dispatcher's `stage6_tool_call` row and with iOS's
+    // `confirmation_tts_decision` row. The three rows in sequence are
+    // the diagnostic surface for Group A condition 2 (dedupe collisions)
+    // and condition 3 (confidence-gate dropouts).
+    //
+    // Logger + sessionId/turnId are taken from options. When the caller
+    // doesn't supply them (older test fixtures, the runShadowHarness
+    // path without confirmations enabled, etc.) the emit is silently
+    // skipped — the rest of the bundler is preserved exactly.
+    if (options.logger && typeof options.logger.info === 'function') {
+      for (const entry of confirmations) {
+        let expectedDedupeKey;
+        if (Number.isInteger(entry.circuit)) {
+          expectedDedupeKey = buildPerCircuitDedupeKey(entry.field, entry.circuit);
+        } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {
+          expectedDedupeKey = buildMultiCircuitDedupeKey(entry.field, entry.circuits, entry.text);
+        } else {
+          expectedDedupeKey = buildDegenerateDedupeKey(entry.field, entry.text, entry.board_id);
+        }
+        options.logger.info('ios_send_attempt', {
+          sessionId: options.sessionId ?? null,
+          turnId: _turnId,
+          field: entry.field ?? null,
+          circuit: Number.isInteger(entry.circuit) ? entry.circuit : null,
+          circuits: Array.isArray(entry.circuits) ? entry.circuits : null,
+          board_id: entry.board_id ?? null,
+          confidence: typeof entry._confidence === 'number' ? entry._confidence : null,
+          expected_dedupe_key: expectedDedupeKey,
+        });
+      }
+    }
+    // Strip transient `_confidence` sidecar so it never reaches the
+    // wire. iOS's Codable decoder ignores unknown keys, but the strip
+    // keeps the wire surface clean for tests that snapshot full
+    // confirmation entries (and for any future static-decode consumer).
+    for (const entry of confirmations) {
+      if ('_confidence' in entry) delete entry._confidence;
+    }
+    // 2026-05-29 — state-change confirmations (create_circuit, rename,
+    // delete, add_board, select_board, mark_distribution_circuit) so the
+    // AirPods-only inspector hears EVERY state change, not just record_
+    // reading writes. Dedup against the per-turn circuit_designation
+    // writes so we don't double-announce "Circuit 1 is now the Cooker"
+    // when Sonnet pairs create_circuit + record_reading.
+    const skipDesignations = new Set();
+    for (const r of extracted_readings) {
+      if (r.field === 'circuit_designation' && Number.isInteger(r.circuit)) {
+        skipDesignations.add(r.circuit);
+      }
+    }
+    const stateChanges = synthesiseStateChangeConfirmations(
+      perTurnWrites.circuitOps,
+      perTurnWrites.boardOps,
+      skipDesignations,
+      options.boardDesignations
+    );
+    // 2026-06-01 Issue 8 — observations, observation deletions and
+    // explicit clear_reading corrections were silent. Inspector
+    // running AirPods-only would never know whether the system had
+    // logged their dictated defect.
+    const obsAndClears = synthesiseObservationAndClearedConfirmations(
+      perTurnWrites.observations,
+      perTurnWrites.deletedObservations,
+      perTurnWrites.fieldCorrections,
+      options.circuitDesignations
+    );
+    const merged = confirmations.concat(stateChanges).concat(obsAndClears);
+    if (merged.length > 0) {
+      result.confirmations = merged;
+    }
+  }
+
+  return result;
+}
+
+// PLAN-backend-final.md Phase 7.3 — backend confirmation debounce.
+//
+// Cross-turn same-field-family suppression. Inside a single turn the
+// existing synthesiseConfirmations grouping (line ~333) already folds
+// duplicate (field, value, board) tuples into one TTS line. The
+// separate concern this helper addresses is BURST turns: Sonnet's
+// extraction queue produces three sequential record_reading calls
+// across three turns inside ~800 ms (e.g. RCD trip-time fan-out where
+// each turn writes one circuit) and the inspector hears the same
+// confirmation three times. iOS slice 7.1 owns the queue serialiser
+// that prevents overlapping TTS playback; this helper drops the
+// duplicate confirmation BEFORE it enters that queue so the inspector
+// just hears the first one.
+//
+// Coalescing strategy: within the debounce window, suppress new
+// confirmations whose field matches the most-recently emitted one.
+// The first confirmation in a burst rides through (and updates the
+// state); subsequent ones in the same field family are dropped.
+// State is per-session and lives on the activeSessions entry; the
+// caller threads it in. windowMs defaults to 1500 per the plan.
+export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
+
+export function applyConfirmationDebounce(newConfirmations, debounceState, options = {}) {
+  if (!Array.isArray(newConfirmations) || newConfirmations.length === 0) {
+    return Array.isArray(newConfirmations) ? newConfirmations : [];
+  }
+  if (!debounceState) return newConfirmations;
+  const { now = Date.now(), windowMs = CONFIRMATION_DEBOUNCE_WINDOW_MS } = options;
+
+  const out = [];
+  let suppressedCount = 0;
+  for (const c of newConfirmations) {
+    const field = c?.field ?? null;
+    const elapsed = now - (debounceState.lastEmittedAt || 0);
+    const sameField = field !== null && debounceState.lastField === field;
+    if (sameField && elapsed < windowMs) {
+      suppressedCount += 1;
+      continue;
+    }
+    out.push(c);
+    debounceState.lastEmittedAt = now;
+    debounceState.lastField = field;
+  }
+  if (suppressedCount > 0) {
+    debounceState.lastSuppressedCount = (debounceState.lastSuppressedCount || 0) + suppressedCount;
+  }
+  return out;
+}

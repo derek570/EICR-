@@ -1,0 +1,102 @@
+name: postcode_lookup_overrides_south_east_drift
+suite: address
+description: |
+  End-state pin for the postcode address flow that commit db85f825
+  was meant to fix. Codex review 2026-06-01 surfaced an important
+  architectural caveat: `applyPostcodeLookupToSnapshot` is wired
+  ONLY from `_extractSingle` in eicr-extraction-session.js. In live
+  mode (SONNET_TOOL_CALLS=live, the production setting), the
+  shadow-harness's `runLiveMode` never calls `extractFromUtterance`,
+  so the lookup never runs. The commit's fix therefore only takes
+  effect in shadow / off modes — meaning the WS harness against
+  prod-shape (live mode) cannot test the override directly.
+
+  What this scenario CAN pin: the user-visible end state of town
+  and county on a clean postcode transcript. If Sonnet drifts to
+  "South East" (the ITL1 region) instead of "Berkshire" (the admin
+  county), this fails. That's the user-facing symptom the field
+  reports flagged — even if the structural fix that closed it lives
+  in a different code path.
+
+  Documenting this caveat as a follow-up for Derek: the live-mode
+  postcode lookup wiring is missing (or my read of the code is
+  wrong). Either way, this scenario surfaces drift behavior in
+  whatever the live-mode path actually does. The negative-control
+  on TTS / confirmation text ("South East" must never appear) is
+  the tightest assertion available without backend wiring changes.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "The address is 12 Catherine Street Reading RG1 5QA."
+    isFinal: true
+    # iOS supplies install.postcode via TranscriptFieldMatcher; the
+    # harness forwards it so runLiveMode's postcode-lookup wiring
+    # (commit 1fae7def, 2026-06-02) fires and clamps town/county
+    # to the postcodes.io canonical values before Sonnet's tool
+    # loop runs.
+    regexResults:
+      - field: install.postcode
+        value: "RG1 5QA"
+        rawValue: "RG1 5QA"
+        canonicalValue: "RG1 5QA"
+        confidence: 0.97
+
+expect:
+  extraction_count: { min: 1 }
+  # 2026-06-02 — re-tightened after commit 1fae7def wired
+  # applyPostcodeLookupToSnapshot into runLiveMode. Codex round 5's
+  # original finding (postcode lookup unwired in live mode) is now
+  # closed, so this scenario can pin the canonical
+  # town/county the lookup injects. RG1 5QA → Reading, Berkshire.
+  has_reading:
+    - circuit: 0
+      field: town
+      value: "Reading"
+    - circuit: 0
+      field: postcode
+      value: "RG1 5QA"
+    - circuit: 0
+      field: county
+      value: "Berkshire"
+  # Negative-control on TTS text: if a future regression has Sonnet
+  # drift to writing "South East" as the county (the historical
+  # symptom), the TTS confirmation would speak it. This catches the
+  # drift even though the structural override isn't present.
+  tts_text_not_contains:
+    - "South East"
+  confirmation_text_not_contains:
+    - "South East"
+  # Pin the bug-pin via has_no_reading: county MUST NOT be written
+  # with a drifted ITL1 region value. (Sonnet not writing county at
+  # all is the current live-mode behaviour and is acceptable; what's
+  # NOT acceptable is writing "South East" or another region.)
+  has_no_reading:
+    - circuit: 0
+      field: county
+      value: "South East"
+    - circuit: 0
+      field: county
+      value: "South West"
+    - circuit: 0
+      field: county
+      value: "London"
+    - circuit: 0
+      field: county
+      value: "Greater London"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: true

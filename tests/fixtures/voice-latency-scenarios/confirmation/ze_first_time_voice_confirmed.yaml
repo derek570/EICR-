@@ -1,0 +1,87 @@
+name: ze_first_time_voice_confirmed
+suite: confirmation
+description: |
+  Backend-side scaffold for the OPEN Ze/PFC TTS bug (session
+  83885A65, awaiting Build 392 forensic). The bug as observed is
+  iOS-side — the backend logged `audio_finalizer_timeout_fired:true`
+  with no `loaded_barrel_hit`/`miss`, meaning iOS never POSTed
+  /api/proxy/elevenlabs-tts for these turns. Per-circuit
+  confirmations in the same job worked fine, so the gating is on the
+  client-side per-confirmation routing, not on the backend's
+  `result.confirmations` emission.
+
+  This scenario pins the BACKEND contract: when a board-level Ze
+  reading is written for the first time on an empty supply, the
+  backend MUST emit ONE confirmation in the extraction envelope and
+  the harness's TTS proxy MUST be fetched once (confirming the WS
+  payload carries a non-empty text). If the backend ever stops
+  emitting confirmations on board-level writes, the iOS bug becomes
+  a backend bug too.
+
+  Field-name note: `earth_loop_impedance_ze` is the canonical
+  field_schema name AND, per the existing loaded_barrel_board_reading_ze
+  scenario which the handoff names as the verbatim template, the
+  on-wire form. Copy verbatim — do NOT rewrite to `ze`.
+
+  Note from handoff (2026-06-01): once Build 392's forensic logging
+  surfaces which `confirmation_tts_decision` value gates the iOS
+  drop, encode the expected value here too. For now the assertion is
+  scoped to what the backend can promise.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+      # Supply explicitly unset — `ze` and `pfc` start empty so the
+      # write is a first-time fill, not a same-value restate.
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Ze is 0.86."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Board-level Ze surfaces on circuit:0 per the shadow-harness fold
+  # (extracted_board_readings → extracted_readings, circuit:0). Field
+  # name kept canonical (`earth_loop_impedance_ze`) per the existing
+  # loaded_barrel_board_reading_ze exemplar.
+  has_reading:
+    # `validateAndCorrectFields` (sonnet-stream.js:3902) rewrites
+    # `earth_loop_impedance_ze` → `ze` (legacy) before the WS send.
+    # Codex review 2026-06-01 flagged that the existing
+    # loaded_barrel_board_reading_ze.yaml asserting the canonical
+    # form is either silently failing or running against the direct
+    # runner (which sees pre-rewrite shape). The WS harness assertion
+    # MUST use the legacy form.
+    - circuit: 0
+      field: ze
+      value: "0.86"
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # At least one board-level confirmation. We do NOT cap the max
+  # here — when Loaded Barrel is enabled, the speculator emits a
+  # mid_stream_preview extraction envelope that ALSO carries one
+  # confirmations[] entry (a duplicate of the bundler's). Capping
+  # at 1 would fail any LB-on run for the wrong reason (Codex
+  # review 2026-06-01).
+  confirmation_count: { min: 1 }
+  confirmation_text_contains:
+    - "Ze"
+  # The harness must successfully fetch the TTS payload. Min 1
+  # catches "no TTS fetch" regression. No max for the same
+  # speculator-bump reason as confirmation_count above.
+  tts_fetch_count: { min: 1 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: true

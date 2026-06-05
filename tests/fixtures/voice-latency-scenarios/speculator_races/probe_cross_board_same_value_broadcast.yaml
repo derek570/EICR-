@@ -1,0 +1,64 @@
+name: probe_cross_board_same_value_broadcast
+suite: speculator_races
+description: |
+  REGRESSION GUARD — cross-board same-value broadcast.
+  Two boards (main + garage sub-main). Inspector says Zs=0.27 on
+  circuit 1 of main, switches to garage CU, then Zs=0.27 on
+  circuit 1 of sub-1. Same field, same value, different boards.
+
+  Speculator's broadcast bucket key includes board_id:
+  `${field}|${valueStr}|${boardId ?? ''}`. Different boards → different
+  buckets → no broadcast suppression. Both speculations run
+  independently.
+
+  PROD OBSERVATION 2026-06-02 (this audit): 4 reading entries
+  emitted (2 fields × canonical+legacy each board). Both board
+  scopes correctly distinct.
+
+  This is the OPPOSITE intent of broadcast suppression — Sonnet's
+  multi-board sweep is NOT a fan-out broadcast, it's two distinct
+  physical measurements that happen to share a value. Pinning the
+  current behaviour so a future change to the bucket key (e.g.
+  dropping board_id) gets caught.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+    - id: sub-1
+      designation: "Garage CU"
+      board_type: sub_main
+      parent_board_id: main
+      feed_circuit_ref: 1
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Garage feed
+      is_distribution_circuit: yes
+      feeds_board_id: sub-1
+      ocpd_rating_a: 32
+    - number: 1
+      board_id: sub-1
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 1 Zs is point two seven. Switch to garage CU. Circuit 1 Zs is point two seven."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Zs on circuit 1 must be written. Don't pin board_id on
+  # has_reading — the harness's print format doesn't differentiate
+  # and the negative control below is the regression guard.
+  has_reading:
+    - circuit: 1
+      field: zs
+      value: "0.27"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

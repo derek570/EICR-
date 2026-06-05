@@ -1,0 +1,42 @@
+name: flux_misrecognition_socket_one
+suite: baseline
+description: |
+  THE ORIGINAL BUG — session C082FCAB (2026-05-23). Inspector says
+  "circuit one", Flux STT emits BOTH "circuit 1" and "Socket 1." as
+  separate finals 1ms apart for the same audio. The 2nd treats as a
+  new utterance, triggers a second Sonnet turn, wastes ~10s.
+
+  Today's BASELINE behaviour: both transcripts forwarded to Sonnet
+  back-to-back. Pin today's behaviour so a Stage 2 regression is caught.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one. Number of points five."
+    isFinal: true
+  - at_ms: 1
+    text: "Socket 1."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 5
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

@@ -1,0 +1,37 @@
+name: create_circuit_by_designation
+suite: baseline
+description: |
+  Inspector creates a circuit by stating its designation in natural
+  language: "circuit 2 is upstairs lighting". Pins the contract that
+  Sonnet's create_circuit tool call MUST include the designation when
+  the inspector named the load — otherwise downstream readings that
+  reference the circuit by name (next scenarios) can't resolve.
+
+  Pins prod session 286D500D-… (2026-05-24 07:49 UTC) where create_circuit
+  fired with circuit_ref=2 but designation was missing, causing the
+  next-turn "Zs for upstairs lighting" to trigger an ask_user "which
+  circuit number is the upstairs lighting?" because c2 had a blank
+  designation.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits: []
+
+transcript:
+  - at_ms: 0
+    text: "Circuit two is upstairs lighting."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

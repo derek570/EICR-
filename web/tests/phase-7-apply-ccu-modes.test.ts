@@ -117,11 +117,11 @@ describe('applyCcuAnalysisToJob — names_only mode', () => {
     // Regression guard: previously the names_only branch extracted a
     // boardId from buildBoardPatch but never persisted the synthesized
     // board, leaving new circuits tagged with a board_id that didn't
-    // exist in job.board — breaking every later board-scoped flow.
+    // exist in job.boards — breaking every later board-scoped flow.
     const job = makeJob({
-      boards: [],
+      boards: [] as unknown as Record<string, unknown>[],
       circuits: [],
-    });
+    } as unknown as Partial<JobDetail>);
 
     const result = applyCcuAnalysisToJob(job, makeAnalysis(), { mode: 'names_only' });
 
@@ -231,8 +231,8 @@ describe('applyCcuAnalysisToJob — full_capture mode (default)', () => {
       targetBoardId: 'board-1',
     });
 
-    const patchedBoards = result.patch.boards as Array<Record<string, unknown>>;
-    expect(patchedBoards[0].manufacturer).toBe('Inspector Typed');
+    const boards = result.patch.boards as Array<Record<string, unknown>>;
+    expect(boards[0].manufacturer).toBe('Inspector Typed');
   });
 });
 
@@ -294,9 +294,9 @@ describe('applyCcuAnalysisToJob — hardware_update mode', () => {
       userApprovedMatches,
     });
 
-    const patchedBoards = result.patch.boards as Array<Record<string, unknown>>;
+    const boards = result.patch.boards as Array<Record<string, unknown>>;
     // Contrast with full_capture — hardware_update IS destructive on board info.
-    expect(patchedBoards[0].manufacturer).toBe('Wylex');
+    expect(boards[0].manufacturer).toBe('Wylex');
   });
 
   it('preserves readings on matched circuits and drops unmatched blanks', () => {

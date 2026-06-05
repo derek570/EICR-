@@ -1,0 +1,84 @@
+name: loaded_barrel_single_npts_hit
+suite: loaded_barrel
+description: |
+  Speculator + cache HIT integration regression. Verifies the
+  speculator's ElevenLabs synth lands in cache and the keys.js
+  short-circuit serves it correctly when the harness POST carries
+  turnId + slot tuple.
+
+  IMPORTANT — read budget in context: this scenario bypasses iOS's
+  regex_fast_v2 fast path. `number_of_points` is on the regex-
+  eligible whitelist (src/extraction/regex-fast-eligibility.js:47-55)
+  so on a real device iOS's TranscriptFieldMatcher extracts the
+  value locally and POSTs to /api/proxy/elevenlabs-tts within
+  ~500 ms — Sonnet never sees the transcript. The harness here
+  does not simulate the iOS-side regex matcher, so it forces this
+  utterance down the Sonnet path. The audible measurement below is
+  the Sonnet-path floor; what an inspector actually feels for
+  "Circuit one number of points five" is the ~500 ms regex_fast
+  number, not this one.
+
+  Measured Sonnet-path audible on prod (2026-05-29, after lever 1
+  mid-stream emit + cache-HIT harness fix): p50 ~3100 ms, best
+  2885 ms, worst 3733 ms (variance is Anthropic API queue + cache
+  HIT/MISS jitter). Floor breakdown:
+    - Sonnet 4.6 TTFT London→Anthropic: ~400 ms
+    - 110-token round-1 stream at ~60 tok/s: ~1800 ms
+    - Post-stream + iOS POST RTT + cache return: ~250 ms
+    - Best-case floor: ~2450 ms; median: ~3100 ms; tail: ~3700 ms
+
+  Mid-stream extraction emit (lever 1, db41614a) IS deployed and IS
+  firing on this scenario (voice_latency.mid_stream_emit logs
+  confirmed), but it fires ~190 ms AFTER round-1 ends — the synth
+  needs ~200 ms to complete and `content_block_stop` only fires
+  ~50 ms before round-1 ends on this short single-tool stream.
+  No window for the optimisation to apply. The lever pays out on
+  multi-tool / longer-output turns where the wrap-up window is
+  500-720 ms (production turn 11 confirmed).
+
+  Budget set to 3500 ms — the realistic Sonnet-path ceiling given
+  the model + network reality. Tightening this would mean either
+  a faster model on round-1 (Haiku — accuracy regression risk on
+  the actually-hard turns that reach Sonnet) or removing the
+  utterance from the Sonnet-path test set entirely (because real
+  iOS handles it via regex_fast). Documented honestly here so a
+  future engineer reading "loaded_barrel_single_npts_hit" doesn't
+  assume the budget is the user-perceived latency.
+
+  Pre-requisite: VOICE_LATENCY_LOADED_BARREL=true on the deployed
+  task def. When the flag is OFF the scenario falls through to the
+  baseline live-synth path and audible_latency_ms_p50 will land
+  near 4-5 s.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 5
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  audible_latency_ms_p50: { max: 3500 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

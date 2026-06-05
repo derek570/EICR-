@@ -13,6 +13,9 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
+  BarChart3,
+  ScrollText,
+  Server,
   ShieldCheck,
   SlidersHorizontal,
   UserPlus,
@@ -90,33 +93,39 @@ export default function SettingsHubPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6">
-      {/* Hero profile header — avatar + name + role pills */}
-      <section className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-6">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div
-            aria-hidden
-            className="flex h-20 w-20 items-center justify-center rounded-full text-3xl font-bold text-white"
-            style={{
-              background:
-                'linear-gradient(135deg, var(--color-brand-blue), var(--color-brand-green))',
-            }}
-          >
-            {initial}
-          </div>
-          <div className="flex flex-col gap-1">
-            <h1 className="text-[20px] font-bold text-[var(--color-text-primary)]">{user.name}</h1>
-            <p className="text-[13px] text-[var(--color-text-secondary)]">{user.email}</p>
-          </div>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            {user.role ? (
-              <RoleBadge color="blue">{user.role[0].toUpperCase() + user.role.slice(1)}</RoleBadge>
-            ) : null}
-            {user.company_role && user.company_role !== 'employee' ? (
-              <RoleBadge color="green">
-                {user.company_role[0].toUpperCase() + user.company_role.slice(1)}
-              </RoleBadge>
-            ) : null}
-          </div>
+      {/* Hero profile header — avatar + name + role pills.
+       * Mobile Safari quirk: a `<section>` flex child with
+       * `overflow-hidden` (BFC trigger) collapses to ~min-content width
+       * instead of stretching to its parent. `w-full` alone wasn't
+       * enough (see f159057 — the symptom returned). The reliable
+       * escape hatch is making the element itself a flex container, so
+       * Safari rewrites the cross-axis sizing path (the same reason
+       * SectionGroup never broke). `flex flex-col` here merges the
+       * outer wrapper with the previously-nested centring div. */}
+      <section className="flex w-full flex-col items-center gap-4 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-6 text-center">
+        <div
+          aria-hidden
+          className="flex h-20 w-20 items-center justify-center rounded-full text-3xl font-bold text-white"
+          style={{
+            background:
+              'linear-gradient(135deg, var(--color-brand-blue), var(--color-brand-green))',
+          }}
+        >
+          {initial}
+        </div>
+        <div className="flex flex-col gap-1">
+          <h1 className="text-[20px] font-bold text-[var(--color-text-primary)]">{user.name}</h1>
+          <p className="text-[13px] text-[var(--color-text-secondary)]">{user.email}</p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {user.role ? (
+            <RoleBadge color="blue">{user.role[0].toUpperCase() + user.role.slice(1)}</RoleBadge>
+          ) : null}
+          {user.company_role && user.company_role !== 'employee' ? (
+            <RoleBadge color="green">
+              {user.company_role[0].toUpperCase() + user.company_role.slice(1)}
+            </RoleBadge>
+          ) : null}
         </div>
       </section>
 
@@ -260,7 +269,9 @@ export default function SettingsHubPage() {
         </SectionGroup>
       ) : null}
 
-      {/* Administration — system admin only; landed in 6c */}
+      {/* Administration — system admin only; landed in 6c. Stats and
+          Queue added 2026-04-26 to close the iOS AdminStatsView /
+          AdminQueueView gap surfaced by the parity audit. */}
       {isSystemAdmin(user) ? (
         <SectionGroup title="ADMINISTRATION">
           <LinkCard
@@ -268,6 +279,20 @@ export default function SettingsHubPage() {
             icon={<ShieldCheck className="h-5 w-5" aria-hidden />}
             title="Manage Users"
             subtitle="Create, edit, reset passwords, unlock accounts"
+            accent="blue"
+          />
+          <LinkCard
+            href="/settings/admin/stats"
+            icon={<BarChart3 className="h-5 w-5" aria-hidden />}
+            title="System Stats"
+            subtitle="User / job / company counts, server health, memory"
+            accent="blue"
+          />
+          <LinkCard
+            href="/settings/admin/queue"
+            icon={<Server className="h-5 w-5" aria-hidden />}
+            title="Task Queue"
+            subtitle="Background job processing state"
             accent="blue"
           />
         </SectionGroup>
@@ -281,6 +306,13 @@ export default function SettingsHubPage() {
           icon={<Wrench className="h-5 w-5" aria-hidden />}
           title="Diagnostics"
           subtitle="Export state snapshot or clear local cache"
+          accent="blue"
+        />
+        <LinkCard
+          href="/settings/legal"
+          icon={<ScrollText className="h-5 w-5" aria-hidden />}
+          title="Terms & Legal"
+          subtitle="Terms, privacy policy, and licence agreement"
           accent="blue"
         />
         <LinkCard

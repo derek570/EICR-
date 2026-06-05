@@ -1,0 +1,48 @@
+name: loaded_barrel_polarity_false_skipped
+suite: loaded_barrel
+description: |
+  shouldGenerateConfirmation + buildConfirmationText return null
+  for polarity_confirmed=false (the inspector found a polarity
+  failure, which shouldn't be acoustically reinforced as if accepted).
+  Speculator should NOT fire a synth for this slot — NO cache entry
+  created, NO ElevenLabs WS opened, NO chars billed.
+
+  Pin: cost-tracker speculative ledger stays at 0 for this turn.
+  Inspector hears NO confirmation TTS for polarity=false. iOS
+  receives extraction with polarity_confirmed=false in the
+  reading — the value lands silently.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one polarity reversed."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: polarity_confirmed
+      value: false
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # No audible expected — but the harness will still measure latency
+  # to extraction event. Budget mirrors a no-TTS-fire turn.
+  audible_latency_ms_p50: { max: 6000 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

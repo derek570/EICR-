@@ -149,7 +149,33 @@ const serwist = new Serwist({
       }),
     },
 
-    // 5. PUBLIC PAGES — NetworkFirst with a 3s timeout, falls back to
+    // 5. ML MODELS — Silero VAD ONNX (~2.2MB). CacheFirst: download
+    //    once on the first recording, serve from cache forever after.
+    //    Kept out of `__SW_MANIFEST` precache so cold-install on mobile
+    //    data isn't dragged through 2.2MB when the user might never
+    //    open a recording session. The `models` cache name is shared
+    //    across build IDs (the file is content-addressed by the
+    //    onnxruntime ABI + the Silero v5 weights — both pinned to a
+    //    SHA documented in the T20 handoff). When we bump the model,
+    //    bumping the URL (e.g. `/models/silero_vad-v6.onnx`) handles
+    //    the invalidation; deploys-without-model-change reuse the
+    //    cached blob, which is what we want.
+    {
+      matcher: ({ url }) =>
+        url.origin === self.location.origin && url.pathname.startsWith('/models/'),
+      handler: new CacheFirst({
+        cacheName: 'models',
+        plugins: [
+          new ExpirationPlugin({
+            maxEntries: 8,
+            maxAgeSeconds: 365 * 24 * 60 * 60, // 1 year
+            purgeOnQuotaError: true,
+          }),
+        ],
+      }),
+    },
+
+    // 6. PUBLIC PAGES — NetworkFirst with a 3s timeout, falls back to
     //    the precached /offline shell when the network hasn't answered.
     //    Scope is strictly the denylisted public routes — auth-gated
     //    paths skip this rule and get the default handler (network).
@@ -208,7 +234,13 @@ self.addEventListener('message', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     (async () => {
-      const currentCaches = new Set([`static-${BUILD_ID}`, `pages-${BUILD_ID}`, 'fonts', 'icons']);
+      const currentCaches = new Set([
+        `static-${BUILD_ID}`,
+        `pages-${BUILD_ID}`,
+        'fonts',
+        'icons',
+        'models',
+      ]);
       const keys = await caches.keys();
       await Promise.all(
         keys

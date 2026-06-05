@@ -1,0 +1,54 @@
+name: probe_voltage_240
+suite: enum_guards
+description: |
+  REGRESSION GUARD — nominal_voltage_uo off-enum.
+  Inspector dictates "Nominal voltage is 240 volts."
+
+  Canonical per supply_characteristics_fields.nominal_voltage_uo enum:
+  "230, 400, 110, N/A, Other".
+
+  PROD OBSERVATION 2026-06-02 (this audit): Sonnet writes
+  nominal_voltage_uo="240" twice (overwrite same value). "240" is
+  the historical UK voltage (pre-1995 harmonisation to 230 ± 10%).
+  Still routinely dictated by inspectors.
+
+  Collision risk: main_switch_voltage enum DOES include 240. iOS UI
+  may show the value correctly in the main-switch field but blank in
+  the nominal-voltage field. Inspector sees inconsistent rendering
+  for "the same" value.
+
+  Acceptable fixes:
+    - Map "240" → "Other" with a separate note (loses info)
+    - Map "240" → "230" (silently rewrites — risky)
+    - Add "240" to the nominal_voltage_uo enum to match
+      main_switch_voltage (recommended — preserves info)
+    - Tell Sonnet to ask "did you mean 230?" via ask_user
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "Nominal voltage is 240 volts."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # FAILS UNTIL FIX. Off-enum value persists today.
+  has_no_reading:
+    - circuit: 0
+      field: nominal_voltage_uo
+      value: "240"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

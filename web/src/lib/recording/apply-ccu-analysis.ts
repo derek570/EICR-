@@ -42,6 +42,30 @@ import type { CircuitMatch } from '@certmate/shared-utils';
  *  normalisation behaves identically across platforms. */
 const VALID_RCD_TYPES = new Set(['AC', 'A', 'B', 'F', 'S', 'A-S', 'B-S', 'B+']);
 
+/**
+ * Filter out the standalone-RCD schedule rows that the per-slot merger
+ * emits (2-module BS EN 61008-1 devices with `circuit_number: null`
+ * and `is_rcd_device: true`). They represent a device, not a numbered
+ * circuit — the BS EN they carry is already applied at the
+ * board-SPD/main-switch level. iOS does the same in
+ * `FuseboardAnalysis.circuitsForSchedule`.
+ */
+function circuitsForSchedule(circuits: CCUAnalysisCircuit[]): CCUAnalysisCircuit[] {
+  return circuits.filter((c) => c.is_rcd_device !== true && c.circuit_number != null);
+}
+
+/**
+ * A circuit is "unscoped" if it carries no board attribution.
+ * Treat null, undefined, AND the empty string as unscoped — the empty
+ * string is what `parseCSV` (src/utils/jobs.js) writes for legacy
+ * single-board CSVs that pre-date the `board_id` column. Without the
+ * empty-string clause, legacy circuits get classified as "belongs to
+ * another board" and the per-board flows skip over them.
+ */
+function isUnscopedBoardId(id: unknown): boolean {
+  return id == null || id === '';
+}
+
 /** Test-reading fields that, if populated on a matched-but-now-missing
  *  circuit, cause the row to be preserved at the end of the list
  *  instead of being dropped. Matches the iOS checklist. */
@@ -60,7 +84,12 @@ const READING_KEYS = [
 
 /** Three client-side apply strategies — the backend returns the same
  *  superset regardless of which one is selected. */
-export type CcuApplyMode = 'names_only' | 'full_capture' | 'hardware_update';
+export type CcuApplyMode =
+  | 'names_only'
+  | 'full_capture'
+  | 'hardware_update'
+  | 'append_rail'
+  | 'add_new_board';
 
 export interface CcuApplyOptions {
   /** Which board the analysis targets. Defaults to the first board
@@ -106,9 +135,10 @@ function normaliseRcdType(raw: string | null | undefined): string | undefined {
   return cleaned;
 }
 
-/** Build the board patch — merges into an existing board row
+/** Build the boards-array patch — merges into an existing board row
  *  (matched by `boardId`) or creates one if the job has no boards
- *  yet. Never clobbers non-empty values. */
+ *  yet. Never clobbers non-empty values. Returns the updated boards
+ *  array (backend canonical `job.boards`) plus the resolved boardId. */
 function buildBoardPatch(
   job: JobDetail,
   analysis: CCUAnalysis,
@@ -150,6 +180,11 @@ function buildBoardPatch(
   // `board_model` when the user hasn't supplied a separate display name.
   writeField('board_model', analysis.board_model);
   writeField('name', analysis.board_model);
+  // `board_technology` was added to the response 2026-04-22 (per-slot
+  // pipeline). Persist on the board so PDF / Defaults / circuit
+  // editors can branch on rewireable boards (BS 3036 fuses get
+  // different OCPD defaults to BS 60898 MCBs).
+  writeField('board_technology', analysis.board_technology);
 
   // Main switch.
   const switchCurrent = analysis.main_switch_current ?? analysis.main_switch_rating;
@@ -235,15 +270,15 @@ function buildCircuitsPatchNamesOnly(
   analysis: CCUAnalysis,
   boardId: string
 ): CircuitRow[] | null {
-  const incoming = analysis.circuits ?? [];
+  const incoming = circuitsForSchedule(analysis.circuits ?? []);
   if (incoming.length === 0) return null;
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
   const boardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
   );
   const otherBoardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) !== boardId && c.board_id != null
+    (c) => (c.board_id as string | undefined) !== boardId && !isUnscopedBoardId(c.board_id)
   );
 
   const existingByRef = new Map<string, CircuitRow>();
@@ -300,15 +335,15 @@ function buildCircuitsPatchFullCapture(
   analysis: CCUAnalysis,
   boardId: string
 ): CircuitRow[] | null {
-  const incoming = analysis.circuits ?? [];
+  const incoming = circuitsForSchedule(analysis.circuits ?? []);
   if (incoming.length === 0) return null;
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
   const boardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
   );
   const otherBoardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) !== boardId && c.board_id != null
+    (c) => (c.board_id as string | undefined) !== boardId && !isUnscopedBoardId(c.board_id)
   );
 
   const existingByRef = new Map<string, CircuitRow>();
@@ -368,10 +403,10 @@ function buildCircuitsPatchHardwareUpdate(
 
   const allCircuits = (job.circuits ?? []) as CircuitRow[];
   const boardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) === boardId || c.board_id == null
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
   );
   const otherBoardCircuits = allCircuits.filter(
-    (c) => (c.board_id as string | undefined) !== boardId && c.board_id != null
+    (c) => (c.board_id as string | undefined) !== boardId && !isUnscopedBoardId(c.board_id)
   );
 
   const matchedOldIds = new Set<string>(
@@ -480,7 +515,7 @@ function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): Circuit
  *  RCD-protected circuit whose type we couldn't resolve. iOS does
  *  this in FuseboardAnalysisApplier.swift. */
 function buildMissingRcdQuestions(analysis: CCUAnalysis): string[] {
-  const missing = (analysis.circuits ?? [])
+  const missing = circuitsForSchedule(analysis.circuits ?? [])
     .filter((c) => c.rcd_protected === true && !normaliseRcdType(c.rcd_type))
     .map((c) => String(c.circuit_number));
   if (missing.length === 0) return [];
@@ -508,6 +543,26 @@ export function applyCcuAnalysisToJob(
   const mode: CcuApplyMode = options.mode ?? 'full_capture';
   const patch: Partial<JobDetail> = {};
 
+  // M8a — Append-rail mode. iOS canon `applyAppendRail`
+  // (`FuseboardAnalysisApplier.swift:287`): inspector photographs
+  // rail 2 of a double-decker board. Keep existing board, continue
+  // circuit numbering from the highest existing ref on that board,
+  // OR-merge SPD info. No new board, no board-info overwrite.
+  if (mode === 'append_rail') {
+    const targetBoardId = options.targetBoardId ?? null;
+    const result = applyAppendRailMode(job, analysis, targetBoardId);
+    return result;
+  }
+
+  // M8b — Add-new-board mode. iOS canon `applyAddNewBoard`
+  // (`FuseboardAnalysisApplier.swift:404`): inspector photographs a
+  // sub-board. Always append a new board entry with default
+  // designation `DB-{N+1}`, stamp every circuit with its id, leave
+  // sibling boards untouched.
+  if (mode === 'add_new_board') {
+    return applyAddNewBoardMode(job, analysis);
+  }
+
   // Hardware Update mode overwrites board-level fields (physically
   // different board). The other two modes are non-destructive.
   const overwriteBoard = mode === 'hardware_update';
@@ -515,13 +570,13 @@ export function applyCcuAnalysisToJob(
   // `names_only` mode intentionally skips board/supply patches — the
   // inspector is using the photo only to read circuit labels.
   if (mode !== 'names_only') {
-    const { boards: nextBoards, boardId } = buildBoardPatch(
+    const { boards, boardId } = buildBoardPatch(
       job,
       analysis,
       options.targetBoardId ?? null,
       overwriteBoard
     );
-    patch.boards = nextBoards;
+    patch.boards = boards;
 
     const supply = buildSupplyPatch(job, analysis);
     if (supply) patch.supply_characteristics = supply;
@@ -552,18 +607,18 @@ export function applyCcuAnalysisToJob(
   } else {
     // Names-only still needs the board id to scope the circuits
     // correctly, and we must persist the synthesized board when the
-    // job had none. Skipping `patch.boards` in that case would leave
+    // job had none. Skipping the boards patch in that case would leave
     // the new circuits with a `board_id` pointing at a board that
     // never got persisted, breaking every later board-scoped flow.
-    const { boards: nextBoards, boardId } = buildBoardPatch(
+    const { boards, boardId } = buildBoardPatch(
       job,
       analysis,
       options.targetBoardId ?? null,
       false
     );
-    const hadBoardsBefore = (job.boards ?? []).length > 0;
+    const hadBoardsBefore = Boolean((job.boards ?? []).length);
     if (!hadBoardsBefore) {
-      patch.boards = nextBoards;
+      patch.boards = boards;
     }
     const circuits = buildCircuitsPatchNamesOnly(job, analysis, boardId);
     if (circuits) patch.circuits = circuits;
@@ -574,5 +629,164 @@ export function applyCcuAnalysisToJob(
     ...buildMissingRcdQuestions(analysis),
   ];
 
+  return { patch, questions };
+}
+
+/**
+ * Append-rail mode. The inspector photographed a second rail of an
+ * existing double-decker board; this applier appends the new
+ * circuits with continuing numbering (so rail 2's circuit 1 becomes
+ * the schedule's circuit N+1 where N = max existing ref on that
+ * board) AND OR-merges SPD presence — only adds SPD info when rail
+ * 2 found one AND rail 1 had no SPD data.
+ *
+ * iOS canon: `FuseboardAnalysisApplier.applyAppendRail`.
+ */
+function applyAppendRailMode(
+  job: JobDetail,
+  analysis: CCUAnalysis,
+  targetBoardId: string | null
+): CcuApplyResult {
+  const patch: Partial<JobDetail> = {};
+  const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
+  if (existingBoards.length === 0) {
+    // No board to append onto — defensive fallback to a synthesised
+    // boards[0] with the analyser's manufacturer/main switch. Matches
+    // iOS where the call site enforces a non-empty `boards` array;
+    // this branch covers the edge case of a single-photo workflow
+    // where the inspector accidentally picked append_rail on a job
+    // with no boards yet.
+    const newId = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
+    existingBoards.push({ id: newId, designation: 'DB1', board_type: 'main' });
+  }
+  const idx =
+    targetBoardId == null
+      ? 0
+      : Math.max(
+          0,
+          existingBoards.findIndex((b) => (b as { id?: string }).id === targetBoardId)
+        );
+  const boardId = (existingBoards[idx] as { id?: string }).id ?? '';
+
+  // Compute baseOffset = max numeric circuit_ref on this board.
+  // Strings that don't parse as integers force a conservative
+  // fallback to the array length, matching iOS.
+  const allCircuits = ((job.circuits as CircuitRow[] | undefined) ?? []).slice();
+  const boardCircuits = allCircuits.filter(
+    (c) => (c.board_id as string | undefined) === boardId || isUnscopedBoardId(c.board_id)
+  );
+  let baseOffset = 0;
+  let nonNumericPresent = false;
+  for (const row of boardCircuits) {
+    const ref = (row.circuit_ref ?? row.number) as string | undefined;
+    if (!ref) continue;
+    const n = parseInt(ref, 10);
+    if (Number.isFinite(n) && String(n) === ref) {
+      if (n > baseOffset) baseOffset = n;
+    } else {
+      nonNumericPresent = true;
+    }
+  }
+  if (nonNumericPresent) {
+    baseOffset = Math.max(baseOffset, boardCircuits.length);
+  }
+
+  // Build the appended circuits using the same `buildNewCircuit`
+  // helper as full_capture — guarantees identical RCD/OCPD field
+  // shape.
+  const incoming = circuitsForSchedule(analysis.circuits ?? []);
+  const appended: CircuitRow[] = [];
+  for (const analysed of incoming) {
+    const baseNumber = typeof analysed.circuit_number === 'number' ? analysed.circuit_number : 0;
+    if (baseNumber <= 0) continue;
+    const offsetNumber = baseOffset + baseNumber;
+    const built = buildNewCircuit(
+      { ...analysed, circuit_number: offsetNumber } as typeof analysed,
+      boardId
+    );
+    appended.push(built);
+  }
+
+  // SPD OR-merge — only touch when rail 2 found SPD AND board has
+  // no positive SPD already.
+  const board = existingBoards[idx] as Record<string, unknown>;
+  if (analysis.spd_present === true) {
+    const railOneHasSpd =
+      board.spd_status === 'Fitted' ||
+      (typeof board.spd_type === 'string' && board.spd_type && board.spd_type !== 'N/A');
+    if (!railOneHasSpd) {
+      const nextBoard = { ...board };
+      if (hasValue(analysis.spd_type)) nextBoard.spd_type = analysis.spd_type;
+      nextBoard.spd_status = 'Fitted';
+      existingBoards[idx] = nextBoard;
+    }
+  }
+
+  patch.boards = existingBoards;
+  patch.circuits = [...allCircuits, ...appended];
+  // Persist analysis keyed per-board for the originating photo.
+  const existingAnalyses = job.ccu_analysis_by_board ?? {};
+  patch.ccu_analysis_by_board = {
+    ...existingAnalyses,
+    [boardId]: analysis as unknown as Record<string, unknown>,
+  };
+
+  const questions = [
+    ...(analysis.questionsForInspector ?? []),
+    ...buildMissingRcdQuestions(analysis),
+  ];
+  return { patch, questions };
+}
+
+/**
+ * Add-new-board mode. Append a fresh board entry with default
+ * designation "DB-{N+1}", stamp every circuit from the analysis
+ * with the new board's id, and apply the analysis to THAT board
+ * only.
+ *
+ * iOS canon: `FuseboardAnalysisApplier.applyAddNewBoard`.
+ *
+ * Note: `board_type`, `parent_board_id`, `feed_circuit_ref` are
+ * intentionally left blank — those belong to the inspector via the
+ * Board tab "Fed From" picker, not the CCU photo.
+ */
+function applyAddNewBoardMode(job: JobDetail, analysis: CCUAnalysis): CcuApplyResult {
+  const patch: Partial<JobDetail> = {};
+  const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
+  const newId = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
+  const newDesignation = `DB-${existingBoards.length + 1}`;
+  const newBoard: Record<string, unknown> = {
+    id: newId,
+    designation: newDesignation,
+  };
+  // Apply analysis to the new board — re-use the buildBoardPatch
+  // logic by synthesising a temp `job` whose only board is the new
+  // one. The overwrite flag is true because the board is brand-new
+  // and analyser data is the only source.
+  const tempJob = { ...job, boards: [newBoard] } as JobDetail;
+  const { boards: updatedBoards } = buildBoardPatch(tempJob, analysis, newId, true);
+  // Splice the analyser-patched board back onto the real board list.
+  const finalBoards = [...existingBoards, updatedBoards[0]];
+  patch.boards = finalBoards;
+
+  // Build circuits — every analysed circuit is a NEW row, stamped
+  // with the new board id.
+  const incoming = circuitsForSchedule(analysis.circuits ?? []);
+  const newCircuits = incoming.map((analysed) => buildNewCircuit(analysed, newId));
+  const allCircuits = ((job.circuits as CircuitRow[] | undefined) ?? []).slice();
+  patch.circuits = [...allCircuits, ...newCircuits];
+
+  // Persist analysis keyed per-board.
+  const existingAnalyses = job.ccu_analysis_by_board ?? {};
+  patch.ccu_analysis_by_board = {
+    ...existingAnalyses,
+    [newId]: analysis as unknown as Record<string, unknown>,
+  };
+  patch.ccu_analysis = analysis as unknown as Record<string, unknown>;
+
+  const questions = [
+    ...(analysis.questionsForInspector ?? []),
+    ...buildMissingRcdQuestions(analysis),
+  ];
   return { patch, questions };
 }

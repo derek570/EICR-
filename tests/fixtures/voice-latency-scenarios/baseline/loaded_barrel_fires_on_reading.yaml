@@ -1,0 +1,47 @@
+name: loaded_barrel_fires_on_reading
+suite: baseline
+description: |
+  Single Zs reading on a known circuit must trigger the speculator
+  to pre-synthesize a confirmation MP3 and land it in the cache in
+  the `ready` state.
+
+  Failure mode: the speculator silently skips firing (gate misread,
+  costTracker missing, confidence too low). Pre-fix this is invisible
+  — a 5s synth that doesn't fire produces no error, just absence.
+
+  This scenario asserts the speculator IS alive end-to-end and
+  produces a non-trivial MP3 (>1kB). The 11.4kB observed in
+  smoke-test is the typical size for a 30-character confirmation.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Zs for the cooker is 0.6."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: measured_zs_ohm
+      value: 0.6
+  ask_user_count: { max: 0 }
+  loaded_barrel:
+    - after_turn: 1
+      status: ready
+      expect_bytes_min: 1000
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

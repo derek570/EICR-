@@ -1,0 +1,117 @@
+name: broadcast_then_per_circuit_override
+suite: bulk
+description: |
+  Two-turn layered scenario. Turn 1: broadcast write of
+  insulation_resistance_l_l="200" to all 4 circuits via
+  set_field_for_all_circuits. Turn 2: per-circuit override on
+  circuit 3 to "50" — same field, single circuit.
+
+  Asserts:
+    - Turn 1 lands 4 readings with value "200" + ONE grouped
+      confirmation.
+    - Turn 2 overwrites circuit 3 to "50" (not collapsed back into the
+      broadcast, not silently dropped, not appended as a second
+      circuit-3 entry — the snapshot's same-turn-correction map
+      collapses to the latest write).
+    - Other circuits' values remain "200" untouched.
+    - Total ask_user_count is 0 across both turns (broadcasts bypass
+      the script walk-through; single-circuit Sonnet writes don't
+      need an ask either when the value is unambiguous).
+
+  This pins the interaction between commit 1f53da39 (broadcast bypass)
+  and commit 13fb179f (grouped confirmation) — a regression that
+  re-routes the override into the broadcast bucket would surface as
+  "all circuits 50" instead of just c3=50.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Insulation L to L for all circuits is 200 megohms."
+    isFinal: true
+  - at_ms: 12000
+    # Deliberately omits "insulation" — that word matches the IR
+    # dialogue trigger and would pre-empt Sonnet, entering the IR
+    # walk-through and asking for L-E (empirical 2026-06-01 run).
+    # We want this turn to be a clean per-circuit Sonnet override
+    # not a script entry.
+    text: "Circuit 3 L to L is actually 50."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 2 }
+  # All 4 circuits have a record_reading in turn 1; circuit 3 then
+  # gets a SECOND record_reading in turn 2 with value "50". The
+  # harness flattens readings across ALL extraction envelopes when
+  # evaluating has_reading, so both writes are visible. The positive
+  # assertions below verify each circuit ever held the expected
+  # value; the has_no_reading block below them is the actual
+  # regression guard — it FAILS if turn 2 incorrectly broadcasts
+  # "50" to circuits 1/2/4 alongside circuit 3 (the bug shape this
+  # scenario pins).
+  has_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: ">200"
+    - circuit: 2
+      field: insulation_resistance_l_l
+      value: ">200"
+    - circuit: 3
+      field: insulation_resistance_l_l
+      value: "50"
+    - circuit: 4
+      field: insulation_resistance_l_l
+      value: ">200"
+  # has_reading is positive-only (it passes if at least one envelope
+  # carried the value), so it can't tell a correct per-circuit
+  # override from a regressed broadcast. has_no_reading FAILS if any
+  # envelope ever wrote 50 to a circuit OTHER than 3. This is the
+  # specific regression Codex flagged 2026-06-01.
+  has_no_reading:
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: "50"
+    - circuit: 2
+      field: insulation_resistance_l_l
+      value: "50"
+    - circuit: 4
+      field: insulation_resistance_l_l
+      value: "50"
+  # NOTE: we DON'T assert ask_user_count.max=0 here. Empirical run
+  # 2026-06-01 showed that Sonnet's per-circuit override of
+  # ir_live_live_mohm on turn 2 triggers `tryEnterScriptFromWrites`
+  # to enter the IR script. With circuit 3 missing ir_live_earth_mohm
+  # (turn 1's broadcast only filled L-L), the engine asks for L-E.
+  # This is correct recovery-path behaviour; it's just incompatible
+  # with the "no asks" envelope. The has_no_reading invariant above
+  # is the actual regression guard for the per-circuit-override bug.
+
+config:
+  timeout_ms: 60000
+  drain_ms: 25000
+  fetch_tts: false

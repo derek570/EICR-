@@ -1,0 +1,10 @@
+{
+  "sessionId": "dual-shape-001",
+  "address": "Dual Shape Session",
+  "date": "2026-04-23",
+  "circuitCount": 1,
+  "recordingDurationMin": "3.0",
+  "deepgramStreamingMinutes": 3.0,
+  "sonnetCostUSD": "0.30",
+  "durationSeconds": 180
+}

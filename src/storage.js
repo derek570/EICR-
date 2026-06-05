@@ -3,11 +3,11 @@
  * Supports both local filesystem (development) and AWS S3 (production).
  */
 
-import fs from "node:fs/promises";
-import fssync from "node:fs";
-import path from "node:path";
-import { Readable } from "node:stream";
-import logger from "./logger.js";
+import fs from 'node:fs/promises';
+import fssync from 'node:fs';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import logger from './logger.js';
 
 // Determine storage mode from environment
 const S3_BUCKET = process.env.S3_BUCKET;
@@ -18,16 +18,16 @@ let _s3Client = null;
 
 async function getS3() {
   if (!_s3Client) {
-    const { S3Client } = await import("@aws-sdk/client-s3");
+    const { S3Client } = await import('@aws-sdk/client-s3');
     _s3Client = new S3Client({
-      region: process.env.AWS_REGION || "eu-west-2"
+      region: process.env.AWS_REGION || 'eu-west-2',
     });
   }
   return _s3Client;
 }
 
 // Local storage base path
-const LOCAL_DATA_DIR = path.resolve(import.meta.dirname, "..", "data");
+const LOCAL_DATA_DIR = path.resolve(import.meta.dirname, '..', 'data');
 
 /**
  * Ensure a local directory exists.
@@ -61,18 +61,20 @@ export function getJobPrefix(userId, jobId) {
 export async function uploadFile(localPath, remoteKey) {
   if (USE_S3) {
     try {
-      const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { PutObjectCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
       const fileContent = await fs.readFile(localPath);
 
-      await s3.send(new PutObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: remoteKey,
-        Body: fileContent
-      }));
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: remoteKey,
+          Body: fileContent,
+        })
+      );
       return true;
     } catch (e) {
-      logger.error("S3 upload error", { error: e.message });
+      logger.error('S3 upload error', { error: e.message });
       return false;
     }
   } else {
@@ -86,28 +88,40 @@ export async function uploadFile(localPath, remoteKey) {
 
 /**
  * Upload bytes directly to storage.
+ *
+ * The realtime-log-sink (PLAN-backend-final.md Phase 1.3) calls this with
+ * `application/x-ndjson` for per-session JSONL batches under
+ * `session-logs/{userId}/{sessionId}/realtime/{ms}-{shortUuid}.jsonl`.
+ * S3 putObject has no append semantics and no compose primitive, so the
+ * sink writes each batch as a fresh unique-keyed object; recovery /
+ * download concatenates the batches in lexicographic key order (the
+ * `{ms}-{shortUuid}` prefix sorts chronologically across ECS restarts
+ * and the random suffix guarantees no two batches ever collide on key).
+ *
  * @param {Buffer|string} data - Data to upload
  * @param {string} remoteKey - S3 key or relative path
  * @param {string} [contentType] - MIME type for S3
  * @returns {Promise<boolean>}
  */
-export async function uploadBytes(data, remoteKey, contentType = "application/octet-stream") {
-  const buffer = typeof data === "string" ? Buffer.from(data, "utf8") : data;
+export async function uploadBytes(data, remoteKey, contentType = 'application/octet-stream') {
+  const buffer = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
 
   if (USE_S3) {
     try {
-      const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { PutObjectCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
-      await s3.send(new PutObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: remoteKey,
-        Body: buffer,
-        ContentType: contentType
-      }));
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: remoteKey,
+          Body: buffer,
+          ContentType: contentType,
+        })
+      );
       return true;
     } catch (e) {
-      logger.error("S3 upload error", { error: e.message });
+      logger.error('S3 upload error', { error: e.message });
       return false;
     }
   } else {
@@ -122,7 +136,7 @@ export async function uploadBytes(data, remoteKey, contentType = "application/oc
  * Upload text content to storage.
  */
 export async function uploadText(text, remoteKey) {
-  return uploadBytes(text, remoteKey, "text/plain; charset=utf-8");
+  return uploadBytes(text, remoteKey, 'text/plain; charset=utf-8');
 }
 
 /**
@@ -130,7 +144,7 @@ export async function uploadText(text, remoteKey) {
  */
 export async function uploadJson(data, remoteKey) {
   const json = JSON.stringify(data, null, 2);
-  return uploadBytes(json, remoteKey, "application/json");
+  return uploadBytes(json, remoteKey, 'application/json');
 }
 
 /**
@@ -144,13 +158,15 @@ export async function downloadFile(remoteKey, localPath) {
 
   if (USE_S3) {
     try {
-      const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const { GetObjectCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
-      const response = await s3.send(new GetObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: remoteKey
-      }));
+      const response = await s3.send(
+        new GetObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: remoteKey,
+        })
+      );
 
       const chunks = [];
       for await (const chunk of response.Body) {
@@ -159,7 +175,7 @@ export async function downloadFile(remoteKey, localPath) {
       await fs.writeFile(localPath, Buffer.concat(chunks));
       return true;
     } catch (e) {
-      logger.error("S3 download error", { error: e.message });
+      logger.error('S3 download error', { error: e.message });
       return false;
     }
   } else {
@@ -180,13 +196,15 @@ export async function downloadFile(remoteKey, localPath) {
 export async function downloadBytes(remoteKey) {
   if (USE_S3) {
     try {
-      const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const { GetObjectCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
-      const response = await s3.send(new GetObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: remoteKey
-      }));
+      const response = await s3.send(
+        new GetObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: remoteKey,
+        })
+      );
 
       const chunks = [];
       for await (const chunk of response.Body) {
@@ -194,8 +212,8 @@ export async function downloadBytes(remoteKey) {
       }
       return Buffer.concat(chunks);
     } catch (e) {
-      if (e.name === "NoSuchKey") return null;
-      logger.error("S3 download error", { error: e.message });
+      if (e.name === 'NoSuchKey') return null;
+      logger.error('S3 download error', { error: e.message });
       return null;
     }
   } else {
@@ -212,7 +230,7 @@ export async function downloadBytes(remoteKey) {
  */
 export async function downloadText(remoteKey) {
   const data = await downloadBytes(remoteKey);
-  return data ? data.toString("utf8") : null;
+  return data ? data.toString('utf8') : null;
 }
 
 /**
@@ -236,12 +254,14 @@ export async function downloadJson(remoteKey) {
 export async function fileExists(remoteKey) {
   if (USE_S3) {
     try {
-      const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+      const { HeadObjectCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
-      await s3.send(new HeadObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: remoteKey
-      }));
+      await s3.send(
+        new HeadObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: remoteKey,
+        })
+      );
       return true;
     } catch {
       return false;
@@ -257,15 +277,17 @@ export async function fileExists(remoteKey) {
 export async function deleteFile(remoteKey) {
   if (USE_S3) {
     try {
-      const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+      const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
-      await s3.send(new DeleteObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: remoteKey
-      }));
+      await s3.send(
+        new DeleteObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: remoteKey,
+        })
+      );
       return true;
     } catch (e) {
-      logger.error("S3 delete error", { error: e.message });
+      logger.error('S3 delete error', { error: e.message });
       return false;
     }
   } else {
@@ -275,6 +297,51 @@ export async function deleteFile(remoteKey) {
       return true;
     }
     return false;
+  }
+}
+
+/**
+ * Copy a single object from `srcKey` to `dstKey`. Used by the account-
+ * deletion flow to archive NICEIC-retention PDFs into `archive/{userId}/`
+ * before the originating `jobs/{userId}/` prefix is wiped. Idempotent at
+ * the destination — a second copy overwrites; the source object's bytes
+ * are the source of truth.
+ *
+ * Returns true on success, false on failure (logged). Errors are swallowed
+ * so a single missing object doesn't abort a batch operation; the caller
+ * is expected to count successes against the input list.
+ */
+export async function copyObject(srcKey, dstKey) {
+  if (USE_S3) {
+    try {
+      const { CopyObjectCommand } = await import('@aws-sdk/client-s3');
+      const s3 = await getS3();
+      await s3.send(
+        new CopyObjectCommand({
+          Bucket: S3_BUCKET,
+          // The `CopySource` value must be URL-encoded; the AWS SDK does not
+          // do this for us. Encoding reserved characters matters for keys
+          // that contain `+`, `?`, `#`, or non-ASCII bytes.
+          CopySource: encodeURIComponent(`${S3_BUCKET}/${srcKey}`),
+          Key: dstKey,
+        })
+      );
+      return true;
+    } catch (e) {
+      logger.error('S3 copy error', { error: e.message, srcKey, dstKey });
+      return false;
+    }
+  } else {
+    try {
+      const srcPath = path.join(LOCAL_DATA_DIR, srcKey);
+      const dstPath = path.join(LOCAL_DATA_DIR, dstKey);
+      await fs.mkdir(path.dirname(dstPath), { recursive: true });
+      await fs.copyFile(srcPath, dstPath);
+      return true;
+    } catch (e) {
+      logger.error('Local copy error', { error: e.message, srcKey, dstKey });
+      return false;
+    }
   }
 }
 
@@ -290,26 +357,30 @@ export async function deletePrefix(prefix) {
 
   if (USE_S3) {
     try {
-      const { ListObjectsV2Command, DeleteObjectsCommand } = await import("@aws-sdk/client-s3");
+      const { ListObjectsV2Command, DeleteObjectsCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
       // List all objects under the prefix
       let continuationToken = undefined;
       do {
-        const listResponse = await s3.send(new ListObjectsV2Command({
-          Bucket: S3_BUCKET,
-          Prefix: prefix,
-          ContinuationToken: continuationToken
-        }));
+        const listResponse = await s3.send(
+          new ListObjectsV2Command({
+            Bucket: S3_BUCKET,
+            Prefix: prefix,
+            ContinuationToken: continuationToken,
+          })
+        );
 
         if (listResponse.Contents && listResponse.Contents.length > 0) {
           // Delete in batches of up to 1000 (S3 limit)
-          const objectsToDelete = listResponse.Contents.map(obj => ({ Key: obj.Key }));
+          const objectsToDelete = listResponse.Contents.map((obj) => ({ Key: obj.Key }));
 
-          await s3.send(new DeleteObjectsCommand({
-            Bucket: S3_BUCKET,
-            Delete: { Objects: objectsToDelete }
-          }));
+          await s3.send(
+            new DeleteObjectsCommand({
+              Bucket: S3_BUCKET,
+              Delete: { Objects: objectsToDelete },
+            })
+          );
 
           deleted += objectsToDelete.length;
         }
@@ -317,9 +388,9 @@ export async function deletePrefix(prefix) {
         continuationToken = listResponse.NextContinuationToken;
       } while (continuationToken);
 
-      logger.info("Deleted S3 prefix", { prefix, deleted });
+      logger.info('Deleted S3 prefix', { prefix, deleted });
     } catch (e) {
-      logger.error("S3 prefix delete error", { error: e.message, prefix });
+      logger.error('S3 prefix delete error', { error: e.message, prefix });
       errors++;
     }
   } else {
@@ -329,9 +400,9 @@ export async function deletePrefix(prefix) {
       try {
         await fs.rm(dirPath, { recursive: true, force: true });
         deleted = 1; // Count as 1 directory deletion
-        logger.info("Deleted local directory", { dirPath });
+        logger.info('Deleted local directory', { dirPath });
       } catch (e) {
-        logger.error("Local directory delete error", { error: e.message, dirPath });
+        logger.error('Local directory delete error', { error: e.message, dirPath });
         errors++;
       }
     }
@@ -348,18 +419,20 @@ export async function deletePrefix(prefix) {
 export async function listFiles(prefix) {
   if (USE_S3) {
     try {
-      const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+      const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
-      const response = await s3.send(new ListObjectsV2Command({
-        Bucket: S3_BUCKET,
-        Prefix: prefix
-      }));
+      const response = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: S3_BUCKET,
+          Prefix: prefix,
+        })
+      );
 
       if (!response.Contents) return [];
-      return response.Contents.map(obj => obj.Key);
+      return response.Contents.map((obj) => obj.Key);
     } catch (e) {
-      logger.error("S3 list error", { error: e.message });
+      logger.error('S3 list error', { error: e.message });
       return [];
     }
   } else {
@@ -394,19 +467,21 @@ export async function listFiles(prefix) {
 export async function listDirectories(prefix) {
   if (USE_S3) {
     try {
-      const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+      const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
-      const response = await s3.send(new ListObjectsV2Command({
-        Bucket: S3_BUCKET,
-        Prefix: prefix,
-        Delimiter: "/"
-      }));
+      const response = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: S3_BUCKET,
+          Prefix: prefix,
+          Delimiter: '/',
+        })
+      );
 
       const prefixes = response.CommonPrefixes || [];
-      return prefixes.map(p => p.Prefix.replace(/\/$/, "").split("/").pop());
+      return prefixes.map((p) => p.Prefix.replace(/\/$/, '').split('/').pop());
     } catch (e) {
-      logger.error("S3 list error", { error: e.message });
+      logger.error('S3 list error', { error: e.message });
       return [];
     }
   } else {
@@ -414,7 +489,7 @@ export async function listDirectories(prefix) {
     if (!fssync.existsSync(dirPath)) return [];
 
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    return entries.filter(e => e.isDirectory()).map(e => e.name);
+    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
   }
 }
 
@@ -425,34 +500,38 @@ export async function listDirectories(prefix) {
 export async function listJobFolders(prefix) {
   if (USE_S3) {
     try {
-      const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+      const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
-      const response = await s3.send(new ListObjectsV2Command({
-        Bucket: S3_BUCKET,
-        Prefix: prefix,
-        Delimiter: "/"
-      }));
+      const response = await s3.send(
+        new ListObjectsV2Command({
+          Bucket: S3_BUCKET,
+          Prefix: prefix,
+          Delimiter: '/',
+        })
+      );
 
       const prefixes = response.CommonPrefixes || [];
-      const folders = prefixes.map(p => ({
-        name: p.Prefix.replace(/\/$/, "").split("/").pop(),
-        lastModified: null
+      const folders = prefixes.map((p) => ({
+        name: p.Prefix.replace(/\/$/, '').split('/').pop(),
+        lastModified: null,
       }));
 
       // CommonPrefixes don't include LastModified — list actual objects
       // to get the most recent timestamp per folder.
       if (folders.length > 0) {
         try {
-          const objResponse = await s3.send(new ListObjectsV2Command({
-            Bucket: S3_BUCKET,
-            Prefix: prefix,
-            MaxKeys: 1000,
-          }));
+          const objResponse = await s3.send(
+            new ListObjectsV2Command({
+              Bucket: S3_BUCKET,
+              Prefix: prefix,
+              MaxKeys: 1000,
+            })
+          );
           const objects = objResponse.Contents || [];
           const folderDates = {};
           for (const obj of objects) {
-            const folderName = obj.Key.replace(prefix, "").split("/")[0];
+            const folderName = obj.Key.replace(prefix, '').split('/')[0];
             const ts = obj.LastModified ? new Date(obj.LastModified).toISOString() : null;
             if (ts && (!folderDates[folderName] || ts > folderDates[folderName])) {
               folderDates[folderName] = ts;
@@ -462,13 +541,13 @@ export async function listJobFolders(prefix) {
             f.lastModified = folderDates[f.name] || null;
           }
         } catch (e2) {
-          logger.warn("S3 listJobFolders timestamp lookup failed", { error: e2.message });
+          logger.warn('S3 listJobFolders timestamp lookup failed', { error: e2.message });
         }
       }
 
       return folders;
     } catch (e) {
-      logger.error("S3 listJobFolders error", { error: e.message });
+      logger.error('S3 listJobFolders error', { error: e.message });
       return [];
     }
   } else {
@@ -482,7 +561,7 @@ export async function listJobFolders(prefix) {
         const stat = await fs.stat(path.join(dirPath, entry.name));
         folders.push({
           name: entry.name,
-          lastModified: stat.mtime.toISOString()
+          lastModified: stat.mtime.toISOString(),
         });
       }
     }
@@ -499,18 +578,22 @@ export async function getFileUrl(remoteKey, expiresIn = 3600) {
 
   if (USE_S3) {
     try {
-      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
-      const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
+      const { GetObjectCommand } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
 
-      const url = await getSignedUrl(s3, new GetObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: remoteKey
-      }), { expiresIn });
+      const url = await getSignedUrl(
+        s3,
+        new GetObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: remoteKey,
+        }),
+        { expiresIn }
+      );
 
       return url;
     } catch (e) {
-      logger.error("S3 presign error", { error: e.message });
+      logger.error('S3 presign error', { error: e.message });
       return null;
     }
   } else {
@@ -528,9 +611,9 @@ export async function getJobFiles(userId, jobId) {
   const files = await listFiles(USE_S3 ? prefix : path.relative(LOCAL_DATA_DIR, prefix));
 
   if (USE_S3) {
-    return files.map(f => f.slice(prefix.length));
+    return files.map((f) => f.slice(prefix.length));
   } else {
-    return files.map(f => path.relative(path.relative(LOCAL_DATA_DIR, prefix), f));
+    return files.map((f) => path.relative(path.relative(LOCAL_DATA_DIR, prefix), f));
   }
 }
 
@@ -542,10 +625,10 @@ export async function uploadJobFile(userId, jobId, filename, data, contentType =
 
   if (USE_S3) {
     const key = `${prefix}${filename}`;
-    return uploadBytes(data, key, contentType || "application/octet-stream");
+    return uploadBytes(data, key, contentType || 'application/octet-stream');
   } else {
     const key = path.join(path.relative(LOCAL_DATA_DIR, prefix), filename);
-    return uploadBytes(data, key, contentType || "application/octet-stream");
+    return uploadBytes(data, key, contentType || 'application/octet-stream');
   }
 }
 

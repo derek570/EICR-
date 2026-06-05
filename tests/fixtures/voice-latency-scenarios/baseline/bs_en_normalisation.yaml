@@ -1,0 +1,47 @@
+name: bs_en_normalisation
+suite: baseline
+description: |
+  Inspector says "BS 60898" but Deepgram drops the leading 0,
+  producing "BS 6898". Pins parseBsCode Lev-1 fallback (commit
+  c36f75a, 2026-05-13) — the parser should fuzzy-match the digit run
+  against canonical BS-EN forms and resolve to BS EN 60898.
+
+  Pre-fix prod session C4467E35 looped an "What's the BS number?"
+  ask 3+ times because parseBsCode's strict \b60898\b never matched
+  the Deepgram-mangled text.
+
+  KNOWN GAP 2026-05-24: this scenario currently FAILS because Sonnet
+  doesn't attempt to record_reading(ocpd_bs_en) when the inspector
+  says "OCPD BS 6898" without explicit "BS-EN" prefix. parseBsCode
+  is wired correctly downstream, but the model isn't reaching the
+  dispatcher with this transcript shape. Re-enable as a green-bar
+  scenario once the prompt teaches "BS NNNN" → ocpd_bs_en extraction.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one OCPD BS 6898."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: ocpd_bs_en
+      value: "BS EN 60898"
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

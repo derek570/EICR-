@@ -1,0 +1,86 @@
+name: ring_continuity_sonnet-write_all-but-one_all-circuits
+suite: exhaustive
+description: >-
+  Ring continuity SONNET-WRITE all-but-one value scenario for all circuits.
+
+  The entry transcript avoids dialogue trigger words; Sonnet writes the volunteered slot values and
+  tryEnterScriptFromWrites either enters the single-circuit script or skips multi-circuit batch
+  writes.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+transcript:
+  - at_ms: 0
+    text: end-to-end lives 0.43 ohms, CPC 0.45 ohms for all circuits.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 1
+      field: ring_continuity_r1
+      value: "0.43"
+    - circuit: 1
+      field: ring_continuity_r2
+      value: "0.45"
+    - circuit: 2
+      field: ring_continuity_r1
+      value: "0.43"
+    - circuit: 2
+      field: ring_continuity_r2
+      value: "0.45"
+    - circuit: 3
+      field: ring_continuity_r1
+      value: "0.43"
+    - circuit: 3
+      field: ring_continuity_r2
+      value: "0.45"
+    - circuit: 4
+      field: ring_continuity_r1
+      value: "0.43"
+    - circuit: 4
+      field: ring_continuity_r2
+      value: "0.45"
+  has_no_reading:
+    - circuit: 1
+      field: ring_continuity_rn
+    - circuit: 2
+      field: ring_continuity_rn
+    - circuit: 3
+      field: ring_continuity_rn
+    - circuit: 4
+      field: ring_continuity_rn
+  ask_user_count:
+    min: 0
+    max: 0
+  confirmation_count:
+    min: 2
+  confirmation_text_contains:
+    - All circuits
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

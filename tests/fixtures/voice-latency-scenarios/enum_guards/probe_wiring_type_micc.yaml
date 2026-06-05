@@ -1,0 +1,51 @@
+name: probe_wiring_type_micc
+suite: enum_guards
+description: |
+  REGRESSION GUARD — wiring_type off-enum AND wrong-canonical (MICC).
+  Inspector dictates "Circuit 3 wiring type is MICC."
+  Canonical per ai_guidance (2026-04-22 update): "H" (MICC/mineral/
+  pyro).
+
+  PROD OBSERVATION 2026-06-02 (this audit): Sonnet emits:
+    1. wiring_type="D" — WRONG CANONICAL
+    2. wiring_type="MICC" — OFF-ENUM overwrite
+  Same pre-update prompt drift as the SWA case (D was the catch-all
+  for "anything non-T&E" before the 9-code expansion).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Boiler feed
+      ocpd_rating_a: 16
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 3 wiring type is MICC."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: wiring_type
+      value: "H"  # correct canonical for MICC/mineral
+  has_no_reading:
+    - circuit: 3
+      field: wiring_type
+      value: "MICC"
+    - circuit: 3
+      field: wiring_type
+      value: "MINERAL"
+    - circuit: 3
+      field: wiring_type
+      value: "D"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

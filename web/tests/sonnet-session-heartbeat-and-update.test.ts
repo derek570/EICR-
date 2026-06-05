@@ -152,9 +152,14 @@ describe('SonnetSession · observation_update dispatch (audit Phase 6 P0)', () =
 
     await Promise.resolve();
     expect(updates).toHaveLength(1);
+    // Main's decoder sets `original_text: null` for fuzzy-match fallback
+    // and `schedule_item: null` for schedule-link refinement when the
+    // server omits them (sonnet-session.ts:~1825).
     expect(updates[0]).toEqual({
       observation_id: 'obs-uuid-7',
       observation_text: 'Bonding to gas service incomplete',
+      original_text: null,
+      schedule_item: null,
       code: 'C2',
       regulation: '411.3.1.2',
       rationale: 'BPG4 5.3 update',
@@ -188,10 +193,14 @@ describe('SonnetSession · observation_update dispatch (audit Phase 6 P0)', () =
 
     await Promise.resolve();
     expect(updates).toHaveLength(1);
-    expect(updates[0].observation_id).toBeUndefined();
+    // Main's decoder normalises missing observation_id to null (rather
+    // than leaving it undefined) — see sonnet-session.ts:~1825.
+    expect(updates[0].observation_id ?? undefined).toBeUndefined();
     expect(updates[0].observation_text).toBe('No CPC at light fitting');
     expect(updates[0].code).toBe('C2');
-    expect(updates[0].regulation).toBeUndefined();
+    // Main's decoder uses `?? null` for missing optional fields; treat null
+    // and undefined as equivalent for these assertions.
+    expect(updates[0].regulation ?? undefined).toBeUndefined();
 
     session.disconnect();
   });

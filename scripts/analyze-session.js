@@ -18,22 +18,64 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ── Helpers ──
 
+/**
+ * Parse a JSONL file into an array of objects PLUS a `_warnings` array
+ * tracking lines that looked like JSON but failed to parse.
+ *
+ * Phase 8 Plan 08-01 SC #1 — soft-fail on malformed events. Pre-fix,
+ * malformed lines were silently dropped via .filter(Boolean). A truncated
+ * debug_log.jsonl (network drop / disk full mid-write) would silently
+ * lose a row; downstream consumers had no way to know. Post-fix, the
+ * analyzer surfaces these as `warnings` entries in analysis.json so the
+ * optimizer + reviewer can see something went wrong without changing
+ * the silent-drop behaviour for fully-empty / non-JSON-shaped lines
+ * (those stay invisible — they were never log rows to begin with).
+ *
+ * Two-tier classification:
+ *   - empty / pure-whitespace line → silently skip (legacy contract)
+ *   - looks like JSON (starts with `{`) but parse fails → push warning
+ *     entry of shape {type:'malformed_event', line:<n>, snippet:<60-char-prefix>}
+ *     and skip the row
+ *   - parses cleanly → include in events
+ */
 function parseJSONL(filePath) {
   const content = fs.readFileSync(filePath, "utf8");
-  return content
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
+  const lines = content.split("\n");
+  const events = [];
+  const warnings = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim().length === 0) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      // Only warn on lines that LOOK like JSON. Random non-JSON detritus
+      // (e.g. a stray printf to stdout that ended up in the log) stays
+      // silent to preserve the legacy contract.
+      if (line.trimStart().startsWith("{")) {
+        warnings.push({
+          type: "malformed_event",
+          line: i + 1, // 1-indexed for human readability
+          snippet: line.slice(0, 60),
+        });
       }
-    })
-    .filter(Boolean);
+    }
+  }
+
+  // Stash warnings on the array via a non-enumerable property so existing
+  // call sites (which iterate `events` as a plain array) see no behaviour
+  // change. analyzeSession() reads `events._warnings` to merge into the
+  // analysis.json `warnings` field.
+  Object.defineProperty(events, "_warnings", {
+    value: warnings,
+    enumerable: false,
+  });
+  return events;
 }
 
 function loadJSON(filePath) {
@@ -99,7 +141,211 @@ function getFieldKeywords(fieldKey) {
 
 // ── Main Analysis ──
 
-function analyzeSession(sessionDir) {
+// ── Cluster 3 Item 7 — KNOWN_BUG_SIGNATURES registry ──
+//
+// Each entry pairs a `detect()` predicate against pre-canned recommendation
+// shape. When a signature matches, the analyzer surfaces a recommendation
+// alongside whatever Claude generates — raising the floor on bug-class
+// detection so the second instance of a known shape doesn't slip through.
+//
+// Every entry carries `auto_pr: false` from day one (Decision 1 in the
+// optimizer rewrite plan). Flipping `auto_pr: true` only changes a badge
+// in the report — no Git/gh actions are taken in this plan. Auto-PR
+// execution is explicitly deferred.
+
+// Best-effort dynamic import of the canonical field-name sources. Lives at
+// module-init so the registry's detectors can read it without paying the
+// import cost per session. Lazily resolved via promise so the analyzer
+// still works when the backend modules aren't on the import path yet
+// (sessions analysed before backend-optimizer-prereqs PR #43 merges).
+const ANALYZE_SESSION_DIR = path.dirname(fileURLToPath(import.meta.url));
+const _canonicalFieldsP = (async () => {
+  try {
+    const knownFieldsMod = await import(
+      "file://" + path.join(ANALYZE_SESSION_DIR, "..", "src", "extraction", "known-fields.js")
+    );
+    const fcMod = await import(
+      "file://" + path.join(ANALYZE_SESSION_DIR, "..", "src", "extraction", "field-name-corrections.js")
+    );
+    return {
+      KNOWN_FIELDS: knownFieldsMod.KNOWN_FIELDS ?? new Set(),
+      IOS_DUAL_ALIAS_ALLOWLIST: knownFieldsMod.IOS_DUAL_ALIAS_ALLOWLIST ?? new Set(),
+      FIELD_CORRECTIONS: fcMod.FIELD_CORRECTIONS ?? {},
+      loaded: true,
+    };
+  } catch {
+    // Backend modules not extracted yet — the canonical_name_leak_to_ios
+    // detector returns no-match. Other detectors are unaffected.
+    return {
+      KNOWN_FIELDS: new Set(),
+      IOS_DUAL_ALIAS_ALLOWLIST: new Set(),
+      FIELD_CORRECTIONS: {},
+      loaded: false,
+    };
+  }
+})();
+
+const KNOWN_BUG_SIGNATURES = [
+  {
+    id: "ir_bare_bridge_single_digit",
+    description:
+      "Insulation resistance bare-bridge single-digit value reached a script_completed event alongside a sentinel sibling — the namedExtractor pattern is mis-grouping bare values into the wrong arm.",
+    // Reads from analysis.dialogue_engine_transitions; iOS-side
+    // independent. Yesterday's L-L=2 fix is the canonical example.
+    async detect(analysis) {
+      const events = analysis.dialogue_engine_transitions || [];
+      return events.some((e) => {
+        if (e.schema !== "insulation_resistance") return false;
+        if (typeof e.event !== "string" || !e.event.endsWith("completed")) return false;
+        const ll = e.values_snapshot?.ir_live_live_mohm;
+        const le = e.values_snapshot?.ir_live_earth_mohm;
+        const isBareSingle = (v) => {
+          if (v === null || v === undefined) return false;
+          const s = String(v);
+          if (s.includes(".") || s.includes(">")) return false;
+          const n = Number(s);
+          return Number.isInteger(n) && n >= 1 && n < 10;
+        };
+        const isSentinel = (v) => typeof v === "string" && v.trim().startsWith(">");
+        return (isBareSingle(ll) && isSentinel(le)) || (isBareSingle(le) && isSentinel(ll));
+      });
+    },
+    recommend_category: "dialogue_engine_schema_tighten",
+    recommend_shape: {
+      file: "src/extraction/dialogue-engine/schemas/insulation-resistance.js",
+      change:
+        "Split namedExtractor's bare-arm to use a MEGAOHMS_BARE_SAFE_VALUE_GROUP (single-digit integers without a preceding decimal/unit must NOT match unless contextualized by ' MΩ' / 'megohm' / etc.). Reference: commit 3c77b1bb.",
+      reference_commit: "3c77b1bb",
+    },
+    implementation_status: "implementable",
+    probe_template: "scripts/probe-templates/garbles/probe_ir_bare_bridge_single_digit.yaml",
+    auto_pr: false,
+  },
+  {
+    id: "flux_garble_single_word",
+    description:
+      "Flux mis-heard a single technical word — the wrong term appears in transcript alongside a focused-mode ask whose expected vocabulary is well-defined.",
+    // Reads from analysis.full_transcript + focused_mode_timeline.
+    // Detector is intentionally LOW-CONFIDENCE — it surfaces candidate
+    // confusion pairs; Claude's classification refines.
+    async detect(analysis) {
+      const transcript = (analysis.full_transcript || "").toLowerCase();
+      const CONFUSION_PAIRS = [
+        ["rct", "rcd"],
+        ["cucumber", "cooker"],
+        ["zen-s", "zs"],
+        ["arcbow", "rcbo"],
+        ["earthing", "earthing"], // self-pair = no match; kept to lock the table shape
+        ["ohm", "ohm"],
+      ];
+      const focusedModeActive = (analysis.focused_mode_timeline || []).length > 0;
+      // Match when the WRONG word appears in transcript AND focused mode
+      // was active at some point in the session. Refining to per-ask-overlap
+      // requires the iOS telemetry edit (Cluster 2 Item 6 prereq).
+      return CONFUSION_PAIRS.some(([wrong, right]) => {
+        if (wrong === right) return false;
+        return transcript.includes(wrong) && focusedModeActive;
+      });
+    },
+    recommend_category: "flux_configure_keyterms_per_slot",
+    recommend_shape: {
+      // ADVISORY ONLY — flux_configure_keyterms_per_slot is DORMANT
+      // until per-slot keyterm map infrastructure lands. Detector
+      // inherits the dormancy; metadata only, no concrete file edit.
+      metadata: {
+        suggested_keyterm_strategy:
+          "Surface a per-ask keyterm subset on the affected slot's Configure message. Map: <slot_field> → [<correct_term>, …]. Implementation gated on iOS-side FocusedAnswerKeyterms.keyterms(for: slotField) helper + a `field` parameter on enterFocusedAnswerMode.",
+      },
+    },
+    implementation_status: "awaiting_infrastructure",
+    requires_infrastructure: "per_slot_keyterm_map",
+    probe_template: "scripts/probe-templates/garbles/probe_flux_garble_generic.yaml",
+    auto_pr: false,
+  },
+  {
+    id: "value_out_of_enum_no_validator",
+    description:
+      "A record_reading wrote a closed-enum field with a value that doesn't match any option — no value_not_in_options rejection fired. (Currently DORMANT — PII guard blocks input_summary.value; fallback correlation via per-turn write patches pending.)",
+    // BLOCKED on backend telemetry contract — input_summary.value is
+    // gated by PII guard. Returning false until a fallback correlation
+    // path is implemented (correlate via per-turn field_set events or
+    // iOS field_buffered/_at_end). Stub kept so the registry shape is
+    // consistent across all 4 entries.
+    async detect() {
+      return false;
+    },
+    recommend_category: "dispatcher_validator",
+    recommend_shape: {
+      file: "src/extraction/stage6-dispatch-validation.js",
+      change: "Add entry to CIRCUIT_FIELD_VALUE_ENUMS for the offending field.",
+    },
+    implementation_status: "implementable",
+    probe_template: "scripts/probe-templates/dispatcher_gaps/probe_field_off_enum.yaml",
+    auto_pr: false,
+  },
+  {
+    id: "canonical_name_leak_to_ios",
+    description:
+      "A canonical field name landed on iOS unmapped — it's not in KNOWN_FIELDS, has no FIELD_CORRECTIONS rewrite, and isn't on the iOS dual-alias allowlist.",
+    // Reads from analysis.unmapped_readings (Cluster 2 Item 6 section).
+    // Requires the backend prereq (2) extraction (PR #43); falls back to
+    // no-match when the imports aren't resolvable.
+    async detect(analysis) {
+      const canon = await _canonicalFieldsP;
+      if (!canon.loaded) return false;
+      const unmapped = analysis.unmapped_readings || [];
+      return unmapped.some((r) => {
+        const f = r?.field;
+        if (typeof f !== "string" || !f) return false;
+        if (canon.KNOWN_FIELDS.has(f)) return false;
+        if (Object.prototype.hasOwnProperty.call(canon.FIELD_CORRECTIONS, f)) return false;
+        if (canon.IOS_DUAL_ALIAS_ALLOWLIST.has(f)) return false;
+        return true;
+      });
+    },
+    recommend_category: "field_name_correction_add",
+    recommend_shape: {
+      file: "src/extraction/field-name-corrections.js",
+      change:
+        "Add a canonical → legacy entry to FIELD_CORRECTIONS for the leaked field. Look at the unmapped_readings section above to identify the field name.",
+    },
+    implementation_status: "implementable",
+    probe_template: null,
+    auto_pr: false,
+  },
+];
+
+// Run all detectors against an analysis object; return an array of hit
+// objects (one per signature that matched). Errors inside a detector are
+// caught and surfaced as warnings — a single bad detector should not
+// crash the analyzer.
+async function runBugSignatureDetectors(analysis) {
+  const hits = [];
+  for (const sig of KNOWN_BUG_SIGNATURES) {
+    try {
+      const matched = await sig.detect(analysis);
+      if (matched) {
+        hits.push({
+          id: sig.id,
+          description: sig.description,
+          recommend_category: sig.recommend_category,
+          recommend_shape: sig.recommend_shape,
+          implementation_status: sig.implementation_status,
+          probe_template: sig.probe_template,
+          auto_pr: sig.auto_pr,
+        });
+      }
+    } catch (e) {
+      hits.push({
+        id: sig.id,
+        error: `detector_threw: ${e?.message ?? String(e)}`,
+      });
+    }
+  }
+  return hits;
+}
+
+async function analyzeSession(sessionDir) {
   const debugLogPath = path.join(sessionDir, "debug_log.jsonl");
   const fieldSourcesPath = path.join(sessionDir, "field_sources.json");
   const manifestPath = path.join(sessionDir, "manifest.json");
@@ -117,6 +363,15 @@ function analyzeSession(sessionDir) {
   const manifest = fs.existsSync(manifestPath) ? loadJSON(manifestPath) : {};
   const jobSnapshot = fs.existsSync(jobSnapshotPath) ? loadJSON(jobSnapshotPath) : null;
   const costSummary = fs.existsSync(costSummaryPath) ? loadJSON(costSummaryPath) : null;
+
+  // Cluster 2 Item 6 — backend_events.jsonl sidecar. Written at session-close
+  // by src/extraction/sonnet-stream.js (backend prereq 0). Carries the
+  // stage6.*_script_* engine events + stage6_tool_call rows that iOS's
+  // debug_log.jsonl doesn't see. Absent on sessions recorded before that
+  // backend PR ships — fall back to an empty array so dialogue_engine_transitions
+  // / stage6_tool_calls degrade gracefully rather than throwing.
+  const backendEventsPath = path.join(sessionDir, "backend_events.jsonl");
+  const backendEvents = fs.existsSync(backendEventsPath) ? parseJSONL(backendEventsPath) : [];
 
   // ── 1. Build field report ──
 
@@ -870,6 +1125,364 @@ function analyzeSession(sessionDir) {
     deepgram_streaming_stopped: sleepCycles.length > 0,
   };
 
+  // ── 14b. Tool-call traffic summary (Phase 8 Plan 08-01 SC #2) ──
+  //
+  // Surfaces stage6_tool_call + stage6.ask_user log rows as a per-session
+  // histogram so the optimizer report + CloudWatch dashboards have a
+  // stable view of agentic-extraction behaviour during the shadow → live
+  // transition (and forever after live cutover).
+  //
+  // Tool-call surface:
+  //   - count by `tool` (record_reading / clear_reading / create_circuit /
+  //     rename_circuit / record_observation / delete_observation / ask_user)
+  //   - median duration_ms per tool (sort durations, pick middle / mean
+  //     of two middles)
+  //   - validation_error_count per tool — rows with is_error=true
+  //
+  // ask_user surface:
+  //   - total count (all stage6.ask_user rows regardless of mode)
+  //   - histogram by `answer_outcome` covering EVERY frozen
+  //     ASK_USER_ANSWER_OUTCOMES enum member (missing outcomes default to
+  //     0 so dashboards splitting by the dimension see a stable shape).
+  //
+  // Source-of-truth for the enum: src/extraction/stage6-dispatcher-logger.js.
+  // Duplicated here verbatim because the analyzer ships independently to
+  // the optimizer mac and shouldn't have a runtime dep on backend modules.
+  // If the backend enum drifts, the analyze-session.test.mjs SC #2 test
+  // fails loudly (the test re-duplicates the list independently).
+  const ASK_USER_ANSWER_OUTCOMES = [
+    "answered",
+    "timeout",
+    "user_moved_on",
+    "restrained_mode",
+    "ask_budget_exhausted",
+    "gated",
+    "shadow_mode",
+    "validation_error",
+    "session_terminated",
+    "session_stopped",
+    "session_reconnected",
+    "duplicate_tool_call_id",
+    "transcript_already_extracted",
+    "dispatcher_error",
+    "prompt_leak_blocked",
+  ];
+
+  const toolCallEvents = events.filter((e) => e.event === "stage6_tool_call");
+  const askUserEvents = events.filter((e) => e.event === "stage6.ask_user");
+
+  // Tool histogram — group by tool name
+  const toolMap = new Map();
+  for (const evt of toolCallEvents) {
+    const data = evt.data || {};
+    const name = data.tool || "unknown";
+    if (!toolMap.has(name)) {
+      toolMap.set(name, { name, durations: [], errorCount: 0 });
+    }
+    const entry = toolMap.get(name);
+    if (typeof data.duration_ms === "number") {
+      entry.durations.push(data.duration_ms);
+    }
+    if (data.is_error === true) entry.errorCount += 1;
+  }
+
+  function median(nums) {
+    if (nums.length === 0) return 0;
+    const sorted = [...nums].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 0) {
+      return (sorted[mid - 1] + sorted[mid]) / 2;
+    }
+    return sorted[mid];
+  }
+
+  // Plan 08-04 r3-#1 (MAJOR): defence-in-depth normaliser for any
+  // log-derived value that flows into the dashboards / warnings.
+  //
+  // Codex r3-#1 surfaced that raw `answer_outcome` log values were being
+  // copied verbatim into `tool_call_traffic.ask_user.unknown_outcomes[]`
+  // and `events._warnings`. Those analysis.json surfaces are consumed by
+  // `scripts/generate-report-html.js` (which renders into the operator
+  // dashboard). The renderer escapes via `escapeHtml()` at the render
+  // sites it currently has — but `unknown_outcomes[]` and `warnings[]`
+  // are not yet rendered, and any future renderer addition that drops
+  // the escape would introduce a stored-XSS sink.
+  //
+  // Defence-in-depth: sanitise on the way IN here (analyzer), so the
+  // values entering the report surface are already safe-display-bounded:
+  //   1. Stringify non-strings via JSON.stringify (preserves type info —
+  //      0 → "0", false → "false", {} → "{}", [] → "[]"). Pairs with the
+  //      r3-#2 fix that routes non-string outcomes to the malformed
+  //      surface where this same helper stringifies them.
+  //   2. Strip control codepoints (Unicode 0x00..0x1F + 0x7F). Raw
+  //      control bytes corrupt log files / break terminals downstream
+  //      AND can carry CR/LF injection payloads in some renderers.
+  //   3. Truncate to 100 chars with a U+2026 (HORIZONTAL ELLIPSIS)
+  //      marker. Bounds report size against length-bomb payloads.
+  //
+  // Run BEFORE bucketing so the Map keys are already-safe; collapses
+  // attacker-distinct evil strings whose only difference was control
+  // chars or 100+ char prefixes (acceptable conflation — count
+  // aggregates correctly per visible shape; the operational signal is
+  // "something unknown showed up", not the exact byte contents).
+  //
+  // The renderer's `escapeHtml()` (`scripts/generate-report-html.js:28`)
+  // is the SECOND gate — it escapes HTML-significant chars (`<`, `>`,
+  // `&`, `"`) at every render site. Both gates must hold for the
+  // contract to be safe; this helper closes the analyzer side, the
+  // renderer's escape audit (Plan 08-04 Task 3-4) closes the renderer
+  // side.
+  function safeDisplayValue(raw) {
+    let s;
+    if (typeof raw === "string") {
+      s = raw;
+    } else if (raw === undefined || raw === null) {
+      // JSON.stringify(undefined) returns the JS value `undefined`
+      // (not a string), and JSON.stringify(null) returns the string
+      // "null". For consistency with r2-#2's String()-based labels
+      // (`null` → `"null"`, `undefined` → `"undefined"`), handle these
+      // two explicitly via String() before the strip+cap.
+      s = String(raw);
+    } else {
+      // JSON.stringify covers numbers (0 → "0"), booleans (false →
+      // "false"), objects ({} → "{}"), arrays ([] → "[]"), and any
+      // other JSON-serialisable value. For exotic types (Symbol,
+      // function) JSON.stringify returns undefined; fall back to
+      // String() so the call site never sees a non-string `s`.
+      const j = JSON.stringify(raw);
+      s = typeof j === "string" ? j : String(raw);
+    }
+    // Strip control chars (Unicode 0x00..0x1F + 0x7F). Some hostile
+    // log writers encode literal control bytes inside JSON strings
+    // rather than the safer `\u00XX` form; this catches both forms
+    // (parsed JSON yields the literal char in either case).
+    // eslint-disable-next-line no-control-regex
+    const stripped = s.replace(/[\x00-\x1F\x7F]/g, "");
+    if (stripped.length <= 100) return stripped;
+    // Single-char U+2026 ellipsis (NOT three dots ".") so the cap is
+    // exactly 100 JS chars / Unicode codepoints. Three-dot ASCII
+    // would be 102 chars and break the length contract.
+    return stripped.slice(0, 99) + "…";
+  }
+
+  // Plan 08-06 r5-#2 (MINOR): bucket on the RAW canonicalised value,
+  // not on the truncated display form.
+  //
+  // Codex r5-#2 raised that safeDisplayValue() was applied BEFORE
+  // bucketing — the call site set the Map key TO the truncated form.
+  // Two distinct outcomes that share their first 99 chars but diverge
+  // at char 100+ both produced the same "AAA…" key and collapsed into
+  // one entry. True drift shape (two distinct values) was hidden.
+  //
+  // canonicaliseRaw() mirrors safeDisplayValue's per-type
+  // stringification + control-char strip but does NOT length-cap.
+  // This is the BUCKET KEY — distinct underlying values stay distinct
+  // even when their rendered display form is the same.
+  //
+  // Length-cap is applied at the materialisation pass (when building
+  // the unknown_outcomes[] / malformed_outcomes[] arrays for JSON
+  // output) so the operator-facing display value still bounds report
+  // size.
+  //
+  // Why share the per-type stringification path: the bucket key MUST
+  // be a primitive (Map keys are compared by SameValueZero, so two
+  // separate `{}` objects would never bucket together). Stringifying
+  // gives a stable primitive key per per-type shape, mirroring the
+  // r3-#2 contract where `0` → `"0"`, `false` → `"false"`, `{}` →
+  // `"{}"`, etc.
+  //
+  // Why share the control-char strip: hostile log writers can encode
+  // distinct control-byte payloads that would render identically
+  // (after strip) but bucket separately if we kept the raw form.
+  // Bucketing on the stripped form aligns with the operational
+  // signal: "evil\x00value" and "evil\x01value" are the same drift
+  // event from the operator's perspective. (If we ever want to
+  // distinguish them, this is the call site to revisit.)
+  //
+  // Contract anchor: scripts/__tests__/analyze-session.test.mjs
+  // "Plan 08-06 r5-#2" block — 4 tests (1 RED→GREEN + 3 regression
+  // locks for the legacy length-bomb / control-char / sum-invariant
+  // cases) + new fixture near-collision-session/.
+  function canonicaliseRaw(raw) {
+    let s;
+    if (typeof raw === "string") {
+      s = raw;
+    } else if (raw === undefined || raw === null) {
+      s = String(raw);
+    } else {
+      const j = JSON.stringify(raw);
+      s = typeof j === "string" ? j : String(raw);
+    }
+    // eslint-disable-next-line no-control-regex
+    return s.replace(/[\x00-\x1F\x7F]/g, "");
+  }
+
+  const tools = [...toolMap.values()]
+    .map((entry) => ({
+      name: entry.name,
+      count: entry.durations.length || toolCallEvents.filter((e) => (e.data?.tool) === entry.name).length,
+      median_duration_ms: median(entry.durations),
+      validation_error_count: entry.errorCount,
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // ask_user outcomes histogram — every frozen enum key, default 0.
+  //
+  // Plan 08-02 r1-#3 (MAJOR): unknown outcomes (values NOT in the frozen
+  // ASK_USER_ANSWER_OUTCOMES enum) are surfaced via TWO side channels —
+  //   1. `unknown_outcome_count` (scalar) + `unknown_outcomes[]` (array
+  //      of `{value, count}`) within `tool_call_traffic.ask_user`.
+  //   2. `warnings[]` entry of shape
+  //      `{type: 'unknown_ask_user_outcome', value, count}` per distinct
+  //      unknown value (same surface used for SC #1 malformed_event
+  //      warnings; appended to `events._warnings` so the existing
+  //      analysis.warnings merge picks them up).
+  //
+  // The frozen-enum `outcomes` histogram itself stays exactly
+  // ASK_USER_ANSWER_OUTCOMES shape — adding `foobar`-shaped keys would
+  // break CloudWatch dashboards that split by the dimension. Unknowns
+  // go to the side channel only.
+  //
+  // Why surface them at all: the backend's `invalid_answer_outcome:`
+  // throw at the emit site (`stage6-dispatcher-logger.js`) is the FIRST
+  // gate. If a row reaches the analyzer with an unknown outcome, that's
+  // either enum drift (backend adds a new key without coordinating with
+  // the analyzer) or instrumentation failure (a row escaped the throw).
+  // Either is operationally serious. Silently dropping the row would
+  // hide the failure from the optimizer / report.
+  //
+  // Plan 08-03 r2-#1 (MAJOR): log data is UNTRUSTED. The previous shape
+  // — `const outcomes = {};` + `if (outcome in outcomes)` — walks
+  // `Object.prototype` on every membership check, so an `answer_outcome`
+  // value of "__proto__", "constructor", or "toString" passes the
+  // membership test as if it were a known frozen-enum key — silently
+  // bypassing the unknown-surface added by r1-#3. We close the
+  // prototype-pollution attack vector by:
+  //   - building the histogram via `Object.create(null)` so it has NO
+  //     prototype chain at all (own-properties only — JSON.stringify
+  //     walks own enumerable keys, which is exactly the frozen-enum
+  //     set we want);
+  //   - testing membership via `Object.hasOwn(outcomes, outcome)` so
+  //     the lookup ONLY tests own-properties.
+  // Same defence as a `Set`-backed lookup, lighter at the call site,
+  // and preserves the existing `analysis.json` shape byte-identical
+  // for known-only sessions.
+  // Plan 08-03 r2-#2 (MINOR): the previous shape — `if (!outcome) continue;`
+  // — silently dropped empty-string / null / undefined outcomes. r1-#3
+  // covered enum-drift unknowns ("value not in the frozen enum") but
+  // didn't cover MALFORMED outcomes ("no value emitted at all"). The
+  // two failure modes have distinct operational signatures:
+  //   - Unknown = enum drift; backend deploy out of sync with analyzer.
+  //   - Malformed = instrumentation failure; the row escaped the
+  //     emit-site `invalid_answer_outcome` throw with NO outcome set.
+  // Both are operationally serious; both deserve their own surface so
+  // optimizer dashboards can count them separately.
+  //
+  // Plan 08-04 r3-#2 (MINOR): r2-#2's predicate matched ONLY
+  // `outcome === "" || outcome === null || outcome === undefined`.
+  // Non-string outcomes (`0`, `false`, `42`, `{}`, `[]`) fell through
+  // to the unknown branch where `Object.hasOwn(outcomes, outcome)`
+  // coerces the key to a string for property lookup — corrupting the
+  // unknown bucket silently. Worst case: an array-typed outcome
+  // coerces to `""` for the property lookup AND collides with the
+  // r2-#2 empty-string malformed surface, depending on which branch
+  // ran first. Operationally, "outcome was the wrong type entirely"
+  // is the SAME class of instrumentation failure as "outcome was
+  // missing" — both belong on the malformed surface. We widen the
+  // predicate to `typeof outcome !== "string" || outcome === ""`,
+  // which catches: null, undefined, all numbers (incl. 0), all
+  // booleans (incl. false), all objects, all arrays, all symbols,
+  // all functions — everything except non-empty strings. The
+  // safeDisplayValue helper from r3-#1 then JSON.stringifies the
+  // non-string values into readable per-shape labels:
+  //   0 → "0",  false → "false",  42 → "42",
+  //   {} → "{}",  [] → "[]",  {a:1} → '{"a":1}',
+  //   "" → "",  null → "null",  undefined → "undefined".
+  // Routing malformed values through the unknown-outcome surface
+  // would misattribute the failure mode (an enum-drift fix is the
+  // wrong remediation for an instrumentation failure).
+  const outcomes = Object.create(null);
+  for (const o of ASK_USER_ANSWER_OUTCOMES) outcomes[o] = 0;
+  const unknownOutcomeMap = new Map();
+  const malformedOutcomeMap = new Map();
+  for (const evt of askUserEvents) {
+    const outcome = evt.data?.answer_outcome;
+    // Plan 08-04 r3-#2 (MINOR): treat ANY non-string outcome as
+    // malformed (instrumentation failure). The r2-#2 contract for
+    // `"" / null / undefined` is preserved — null/undefined satisfy
+    // the `typeof !== "string"` check, empty-string is caught by the
+    // explicit `=== ""` clause.
+    //
+    // Plan 08-06 r5-#2 (MINOR): bucket on the RAW canonicalised value
+    // (canonicaliseRaw — same per-type stringification + control-char
+    // strip as safeDisplayValue but WITHOUT the length cap). Length-
+    // cap is applied at the materialisation pass below. Distinct raw
+    // values that share a 99-char prefix now stay in distinct buckets.
+    if (typeof outcome !== "string" || outcome === "") {
+      const bucketKey = canonicaliseRaw(outcome);
+      malformedOutcomeMap.set(bucketKey, (malformedOutcomeMap.get(bucketKey) || 0) + 1);
+      continue;
+    }
+    // Plan 08-06 r5-#2 (MINOR): same restructure on the unknown branch.
+    // The frozen-enum check (`Object.hasOwn(outcomes, outcome)`) still
+    // uses the RAW string outcome — known-enum keys are pure ASCII and
+    // bounded length, so bucket-vs-known disambiguation is unaffected.
+    if (Object.hasOwn(outcomes, outcome)) {
+      outcomes[outcome] += 1;
+    } else {
+      const bucketKey = canonicaliseRaw(outcome);
+      unknownOutcomeMap.set(bucketKey, (unknownOutcomeMap.get(bucketKey) || 0) + 1);
+    }
+  }
+
+  // Plan 08-06 r5-#2: materialisation pass — apply safeDisplayValue
+  // (length-cap + control-char strip — though the strip is redundant
+  // here because canonicaliseRaw already stripped) to the bucket keys
+  // when building the output arrays. The COUNT distribution carries
+  // the operational signal (two distinct raw values past the cap show
+  // up as two entries with their own counts, even when they render to
+  // the same display string); the displayed `value` is just the
+  // operator-facing label and is bounded by the length cap.
+  const unknownOutcomes = [...unknownOutcomeMap.entries()].map(([rawKey, count]) => ({
+    value: safeDisplayValue(rawKey),
+    count,
+  }));
+  const unknownOutcomeCount = unknownOutcomes.reduce((sum, e) => sum + e.count, 0);
+
+  const malformedOutcomes = [...malformedOutcomeMap.entries()].map(([rawKey, count]) => ({
+    value: safeDisplayValue(rawKey),
+    count,
+  }));
+  const malformedOutcomeCount = malformedOutcomes.reduce((sum, e) => sum + e.count, 0);
+
+  // Append per-distinct-value warning entries onto the parser's warnings
+  // accumulator. `events._warnings` is created by parseJSONL() as a
+  // non-enumerable property so this re-use is safe — analyzeSession()
+  // merges `events._warnings` into the top-level `warnings` field at
+  // serialise time.
+  if (events._warnings && unknownOutcomes.length > 0) {
+    for (const { value, count } of unknownOutcomes) {
+      events._warnings.push({ type: "unknown_ask_user_outcome", value, count });
+    }
+  }
+  if (events._warnings && malformedOutcomes.length > 0) {
+    for (const { value, count } of malformedOutcomes) {
+      events._warnings.push({ type: "malformed_ask_user_outcome", value, count });
+    }
+  }
+
+  const toolCallTraffic = {
+    enabled: true,
+    tools,
+    ask_user: {
+      total: askUserEvents.length,
+      outcomes,
+      unknown_outcome_count: unknownOutcomeCount,
+      unknown_outcomes: unknownOutcomes,
+      malformed_outcome_count: malformedOutcomeCount,
+    },
+  };
+
   // ── 15. Voice commands ──
   // Extract voice_command_sent/response events to surface user intentions expressed via voice commands.
 
@@ -1038,6 +1651,162 @@ function analyzeSession(sessionDir) {
         : null,
   };
 
+  // ── 18. Focused-mode timeline (Cluster 2 Item 6) ──
+  //
+  // Aggregates iOS `focused_mode_enter` / `focused_mode_enter_result` /
+  // `focused_mode_exit` events into one row per ask entry. `slot_field` is
+  // null until the iOS telemetry payload extension lands (DeepgramRecording
+  // ViewModel.swift adds `field` to these payloads); pre-extension sessions
+  // produce non-null toolCallId + keyterm_count but null slot_field, which
+  // is the correct behaviour for historical replay.
+  const focusedModeEnters = events.filter((e) => e.event === "focused_mode_enter");
+  const focusedModeEnterResults = events.filter((e) => e.event === "focused_mode_enter_result");
+  const focusedModeExits = events.filter((e) => e.event === "focused_mode_exit");
+  const focusedModeTimeline = focusedModeEnters.map((enter) => {
+    const tcid = enter.data?.toolCallId ?? null;
+    const enterTs = enter.timestamp ?? null;
+    const result = tcid
+      ? focusedModeEnterResults.find((r) => r.data?.toolCallId === tcid)
+      : null;
+    // Match exit by toolCallId AND timestamp > enter — guards against
+    // multiple enter/exit cycles for the same toolCallId in one session
+    // (focused-mode resets) selecting the wrong exit.
+    const exit = tcid && enterTs != null
+      ? focusedModeExits.find((x) => x.data?.toolCallId === tcid && (x.timestamp ?? 0) > enterTs)
+      : null;
+    return {
+      at_ms: enterTs,
+      tool_call_id: tcid,
+      slot_field: enter.data?.field ?? null,
+      slot_circuit: enter.data?.circuit ?? null,
+      keyterm_count: enter.data?.sessionKeytermCount ?? null,
+      enter_elapsed_ms:
+        result && enterTs != null && result.timestamp != null
+          ? result.timestamp - enterTs
+          : null,
+      exit_reason: exit?.data?.reason ?? null,
+    };
+  });
+
+  // ── 19. Dialogue-engine transitions (Cluster 2 Item 6) ──
+  //
+  // Pulls `stage6.{schema}_script*` rows from BACKEND events (sidecar) and
+  // any iOS-side instances. Each entry preserves data.values verbatim so
+  // Cluster 3 Item 7's ir_bare_bridge_single_digit detector can match on
+  // raw schema field names (e.g. ir_live_live_mohm, NOT display labels).
+  //
+  // The 5 prefixes match the schema files' `logEventPrefix` values:
+  //   stage6.ocpd_script             (src/extraction/dialogue-engine/schemas/ocpd.js)
+  //   stage6.rcd_script              (src/extraction/dialogue-engine/schemas/rcd.js)
+  //   stage6.rcbo_script             (src/extraction/dialogue-engine/schemas/rcbo.js)
+  //   stage6.ring_continuity_script  (src/extraction/dialogue-engine/schemas/ring-continuity.js)
+  //   stage6.insulation_resistance_script  (src/extraction/dialogue-engine/schemas/insulation-resistance.js)
+  // Any `_entered` / `_completed` / `_cancelled` / `_topic_switch` /
+  // `_disambiguation_*` / `_entered_from_sonnet_write` suffix is captured.
+  const SCHEMA_PREFIXES = [
+    { prefix: "stage6.ocpd_script", schema: "ocpd" },
+    { prefix: "stage6.rcd_script", schema: "rcd" },
+    { prefix: "stage6.rcbo_script", schema: "rcbo" },
+    { prefix: "stage6.ring_continuity_script", schema: "ring_continuity" },
+    { prefix: "stage6.insulation_resistance_script", schema: "insulation_resistance" },
+  ];
+  const dialogueEngineSourceEvents = [...events, ...backendEvents];
+  const dialogueEngineTransitions = dialogueEngineSourceEvents
+    .map((e) => {
+      if (typeof e?.event !== "string") return null;
+      const match = SCHEMA_PREFIXES.find((p) => e.event.startsWith(p.prefix + "_") || e.event === p.prefix);
+      if (!match) return null;
+      // Suffix is everything after the prefix's trailing underscore. For
+      // a bare `stage6.{schema}_script` (no suffix at all) we emit ''.
+      const rest = e.event.slice(match.prefix.length);
+      const suffix = rest.startsWith("_") ? rest.slice(1) : rest;
+      return {
+        at_ms: e.timestamp ?? null,
+        schema: match.schema,
+        event: suffix,
+        circuit_ref: e.data?.circuit_ref ?? e.data?.circuit ?? null,
+        slot: e.data?.slot ?? null,
+        values_snapshot: e.data?.values ?? null,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.at_ms ?? 0) - (b.at_ms ?? 0));
+
+  // ── 20. Stage 6 tool call rows (Cluster 2 Item 6) ──
+  //
+  // Per-call rows preserved so Cluster 3 Item 7's
+  // value_out_of_enum_no_validator detector can inspect outcome /
+  // validation_error / input_summary. The aggregated tool_call_traffic
+  // summary at section 14b stays unchanged — it's a per-tool histogram,
+  // not a per-call detail.
+  //
+  // input_summary today carries {field, circuit, reason} per the locked
+  // PII guard at stage6-dispatchers-reading.test.js:140. The optimizer
+  // plan's value_out_of_enum_no_validator detector originally wanted
+  // input_summary.value, but the PII guard blocks that — the detector
+  // uses the alternative correlation path (per-turn write patches or
+  // iOS field-set events) per the plan's fallback clause.
+  const stage6ToolCalls = dialogueEngineSourceEvents
+    .filter((e) => e?.event === "stage6_tool_call")
+    .map((e) => ({
+      at_ms: e.timestamp ?? null,
+      tool: e.data?.tool ?? null,
+      outcome: e.data?.outcome ?? null,
+      validation_error: e.data?.validation_error ?? null,
+      input_summary: e.data?.input_summary ?? {},
+    }));
+
+  // ── 21. Unmapped readings (Cluster 2 Item 6 — input for Cluster 3 Item 7) ──
+  //
+  // Aggregates two iOS-side events that signal a Sonnet-emitted field name
+  // landed on iOS unmapped:
+  //   - unmapped_field_buffered  (DeepgramRecordingViewModel.swift:5759)
+  //     — fires per field as it's received and can't be routed
+  //   - unmapped_readings_at_end (DeepgramRecordingViewModel.swift:1614)
+  //     — emitted once on session-close with the cumulative list
+  //
+  // Both come from iOS debug_log.jsonl — no backend sidecar dependency,
+  // so this section is populated on all sessions (including pre-prereq-0).
+  const unmappedBuffered = events
+    .filter((e) => e.event === "unmapped_field_buffered")
+    .map((e) => ({
+      at_ms: e.timestamp ?? null,
+      field: e.data?.field ?? null,
+      value: e.data?.value ?? null,
+      source: "field_buffered",
+    }));
+  const unmappedAtEnd = events
+    .filter((e) => e.event === "unmapped_readings_at_end")
+    .flatMap((e) => {
+      const readings = e.data?.readings ?? e.data?.unmapped ?? [];
+      if (!Array.isArray(readings)) return [];
+      return readings.map((r) => ({
+        at_ms: e.timestamp ?? null,
+        field: r?.field ?? null,
+        value: r?.value ?? null,
+        source: "end_of_session",
+      }));
+    });
+  const unmappedReadings = [...unmappedBuffered, ...unmappedAtEnd];
+
+  // ── 22. Bug-class signature hits (Cluster 3 Item 7) ──
+  //
+  // Run all detectors in KNOWN_BUG_SIGNATURES against the analysis above
+  // and surface matches. Each hit becomes a pre-canned recommendation
+  // alongside whatever Claude generates downstream — raising the floor
+  // on bug-class detection for known shapes.
+  //
+  // Build it AFTER the rest of the analysis is constructed because the
+  // detectors read the other sections (dialogue_engine_transitions,
+  // focused_mode_timeline, unmapped_readings, full_transcript).
+  const bugSignatureHits = await runBugSignatureDetectors({
+    dialogue_engine_transitions: dialogueEngineTransitions,
+    focused_mode_timeline: focusedModeTimeline,
+    stage6_tool_calls: stage6ToolCalls,
+    unmapped_readings: unmappedReadings,
+    full_transcript: fullTranscriptOriginal,
+  });
+
   // ── Build analysis output ──
 
   const analysis = {
@@ -1058,12 +1827,34 @@ function analyzeSession(sessionDir) {
     repeated_values: repeatedValues,
     vad_sleep_analysis: vadSleepAnalysis,
     observation_capture_quality: observationCaptureQuality,
+    // Phase 8 Plan 08-01 SC #2 — tool-call traffic summary (post Phase 1+2+3
+    // tool-call rollout). Always emitted; .enabled=true even on legacy-shape
+    // sessions so downstream consumers can rely on the section's presence.
+    tool_call_traffic: toolCallTraffic,
+    // Phase 8 Plan 08-01 SC #1 — soft-fail breadcrumbs from parseJSONL.
+    // Always an array (empty on a clean log). Non-empty when the analyzer
+    // saw a JSON-shaped line that failed to parse (typically a truncated
+    // last record from a network drop or disk-full mid-write). Surfacing
+    // these means the optimizer + reviewer can tell "session was clean"
+    // from "session got cut off" — pre-fix both looked identical.
+    warnings: events._warnings || [],
     // Full transcript and voice commands (intent visibility)
     full_transcript: fullTranscriptOriginal,
     voice_commands: voiceCommands,
     tts_discarded: ttsDiscarded,
     job_snapshot: jobSnapshot,
     cost_summary: costSummary,
+    // Cluster 2 Item 6 — dialogue-engine + focused-mode telemetry sections.
+    // focused_mode_timeline + unmapped_readings come from iOS debug_log.jsonl
+    // (populated on all sessions). dialogue_engine_transitions + stage6_tool_calls
+    // depend on the backend_events.jsonl sidecar (prereq 0); they degrade to
+    // empty arrays when the sidecar is absent. bug_signature_hits is a stub
+    // populated by Cluster 3 Item 7's registry once it lands.
+    focused_mode_timeline: focusedModeTimeline,
+    dialogue_engine_transitions: dialogueEngineTransitions,
+    stage6_tool_calls: stage6ToolCalls,
+    unmapped_readings: unmappedReadings,
+    bug_signature_hits: bugSignatureHits,
   };
 
   // Write output
@@ -1101,6 +1892,10 @@ function analyzeSession(sessionDir) {
   console.log(`  Total stream paused: ${vadSleepAnalysis.total_stream_paused_min}min (saved $${vadSleepAnalysis.deepgram_saved_usd.toFixed(4)} Deepgram)`);
   console.log(`  Buffer replays: ${vadSleepAnalysis.buffer_replays}`);
   console.log(`  Wake failures: ${vadSleepAnalysis.post_wake_no_transcript}`);
+  console.log(`  Tool-call traffic: ${toolCallTraffic.tools.length} tools, ${toolCallTraffic.ask_user.total} ask_user calls`);
+  if (analysis.warnings.length > 0) {
+    console.log(`  ⚠ Warnings: ${analysis.warnings.length} malformed event(s) in debug_log.jsonl`);
+  }
   console.log(`  Total cost (USD): $${costBreakdown.total_usd.toFixed(4)}`);
   if (costBreakdown.doze_savings.session_duration_min > 0) {
     console.log(`  ── Doze Savings ──`);
@@ -1125,4 +1920,7 @@ if (!fs.existsSync(sessionDir)) {
   process.exit(1);
 }
 
-analyzeSession(sessionDir);
+analyzeSession(sessionDir).catch((e) => {
+  console.error(`analyze-session failed: ${e?.stack ?? e}`);
+  process.exit(1);
+});

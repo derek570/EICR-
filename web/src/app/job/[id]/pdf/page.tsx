@@ -18,6 +18,7 @@ import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { PdfPreview } from '@/components/job/pdf-preview';
+import { IssueCertificateModal } from '@/components/job/issue-certificate-modal';
 import { api } from '@/lib/api-client';
 import { ApiError } from '@/lib/types';
 import { getUser } from '@/lib/auth';
@@ -98,28 +99,62 @@ export default function PdfPage() {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const previewRef = React.useRef<HTMLDivElement | null>(null);
 
+  // Per-PDF attestation gate (pdf-issuance-attestations.md §4.1).
+  // The Generate-PDF button does NOT directly trigger the render —
+  // it opens the modal first. Only after both attestations are
+  // confirmed server-side does the render fire. Re-prompted on every
+  // tap, including unchanged re-renders.
+  const [showAttestationModal, setShowAttestationModal] = React.useState(false);
+
   const hasPdf = pdfBlob !== null;
 
   const filename = `${certificateType}_${jobId}.pdf`;
 
-  const handleGenerate = React.useCallback(async () => {
-    if (!userId || !jobId || isGenerating) return;
-    setIsGenerating(true);
-    setError(null);
-    try {
-      const blob = await api.generatePdf(userId, jobId);
-      setPdfBlob(blob);
-    } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? err.message
-          : err instanceof Error
+  // The actual render. Called only by the attestation modal's
+  // onConfirmed once the server has accepted both attestations. The
+  // attestation_ids parameter is the receipt — on a downstream render
+  // failure we leave the audit rows in place (spec §4.3 carve-out).
+  const handleGenerate = React.useCallback(
+    async (attestationIds: number[]) => {
+      if (!userId || !jobId || isGenerating) return;
+      setIsGenerating(true);
+      setError(null);
+      try {
+        const blob = await api.generatePdf(userId, jobId);
+        setPdfBlob(blob);
+        // Best-effort: stamp the PDF route reference onto the
+        // attestation rows. The shared-utils download path doesn't
+        // give us an S3 key here, so we record the backend route
+        // reference instead. The S3 sync flow upstream will update
+        // with the real key.
+        void api
+          .updateAttestationPdfKey({
+            attestation_ids: attestationIds,
+            pdf_s3_key: `route://api/job/${userId}/${jobId}/generate-pdf`,
+          })
+          .catch(() => {
+            // Non-blocking. Audit rows are already in place.
+          });
+      } catch (err) {
+        const message =
+          err instanceof ApiError
             ? err.message
-            : 'PDF generation failed';
-      setError(message);
-    } finally {
-      setIsGenerating(false);
-    }
+            : err instanceof Error
+              ? err.message
+              : 'PDF generation failed';
+        setError(message);
+      } finally {
+        setIsGenerating(false);
+      }
+    },
+    [userId, jobId, isGenerating]
+  );
+
+  // Open the attestation modal. Called by the Generate-PDF button.
+  const handleRequestGenerate = React.useCallback(() => {
+    if (!userId || !jobId || isGenerating) return;
+    setError(null);
+    setShowAttestationModal(true);
   }, [userId, jobId, isGenerating]);
 
   const handleScrollToPreview = React.useCallback(() => {
@@ -206,7 +241,7 @@ export default function PdfPage() {
           <div>
             <button
               type="button"
-              onClick={handleGenerate}
+              onClick={handleRequestGenerate}
               disabled={isGenerating}
               className={cn(
                 'inline-flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-status-failed)] px-3 py-1.5 text-[13px] font-semibold text-[var(--color-status-failed)] transition hover:bg-[var(--color-status-failed)]/10',
@@ -225,7 +260,7 @@ export default function PdfPage() {
         <SectionCard accent="board" icon={Sparkles} title="Actions">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <GenerateButton
-              onClick={handleGenerate}
+              onClick={handleRequestGenerate}
               isGenerating={isGenerating}
               label={hasPdf ? 'Regenerate PDF' : 'Generate PDF'}
             />
@@ -291,6 +326,18 @@ export default function PdfPage() {
         confirmLabel="Discard"
         confirmVariant="danger"
         onConfirm={handleConfirmDelete}
+      />
+
+      <IssueCertificateModal
+        open={showAttestationModal}
+        jobId={jobId}
+        onConfirmed={(attestationIds) => {
+          setShowAttestationModal(false);
+          // Fire-and-forget — the render happens inside handleGenerate
+          // and updates its own state.
+          void handleGenerate(attestationIds);
+        }}
+        onCancelled={() => setShowAttestationModal(false)}
       />
     </div>
   );

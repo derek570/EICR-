@@ -42,7 +42,10 @@ import { SectionCard } from '@/components/ui/section-card';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { SelectChips } from '@/components/ui/select-chips';
 import { CircuitsStickyTable } from '@/components/job/circuits-sticky-table';
+import { CircuitsScheduleDesktop } from '@/components/job/circuits-schedule-desktop';
 import { CcuModeSheet } from '@/components/job/ccu-mode-sheet';
+import { useMediaQuery, DESKTOP_BREAKPOINT } from '@/hooks/use-media-query';
+import { isSpareCircuit } from '@/lib/constants/circuit-field-options';
 
 /**
  * Circuits tab — mirrors iOS `CircuitsTab.swift` + `Circuit.swift`.
@@ -178,17 +181,25 @@ export default function CircuitsPage() {
     boards[0]?.id ?? null
   );
 
+  // Legacy rows (CSV-parsed) carry `board_id: ''` instead of null/undefined
+  // because parseCSV (src/utils/jobs.js) writes "" for missing cells. Without
+  // catching that here the Circuits tab silently empties for any job whose
+  // circuits pre-date the multi-board sprint while `boards` has one entry.
+  // See: 36 Wittenham Ave / former 34 Wittenham — recorded Feb 23 before the
+  // board_id CSV column existed, then re-saved post-multi-board with empty
+  // values for the new column.
+  const isUnscopedBoardId = (id: unknown): boolean => id == null || id === '';
   const visible = selectedBoardId
-    ? circuits.filter((c) => c.board_id === selectedBoardId || c.board_id == null)
+    ? circuits.filter((c) => c.board_id === selectedBoardId || isUnscopedBoardId(c.board_id))
     : circuits;
 
   // Bulk actions (Apply Defaults / Calculate Zs / Calculate R1+R2 /
   // Delete all) must only target circuits that are DEFINITELY on the
-  // active board. `visible` intentionally includes legacy boardless
-  // rows (board_id == null) so they stay editable from any board, but
-  // sweeping them into a bulk action is collateral — "Delete all on
-  // Board 2" must not silently wipe legacy unassigned circuits. When
-  // no board is selected, the bulk target is the whole list.
+  // active board. `visible` intentionally includes legacy unscoped rows
+  // (no board_id) so they stay editable from any board, but sweeping
+  // them into a bulk action is collateral — "Delete all on Board 2"
+  // must not silently wipe legacy unassigned circuits. When no board is
+  // selected, the bulk target is the whole list.
   const boardScoped = selectedBoardId
     ? circuits.filter((c) => c.board_id === selectedBoardId)
     : circuits;
@@ -223,6 +234,27 @@ export default function CircuitsPage() {
   // narrow alias rather than a duplicate state handler.
   const patchCircuitTable = (id: string, patch: Record<string, string>) =>
     patchCircuit(id, patch as Partial<Circuit>);
+
+  // Desktop view kicks in at ≥1280 px. On desktop the action rail moves
+  // above the schedule and the new full-width `CircuitsScheduleDesktop`
+  // replaces the compact sticky table. Mobile/tablet keep the existing
+  // cards-vs-table toggle and right-side rail.
+  const isDesktop = useMediaQuery(DESKTOP_BREAKPOINT);
+
+  /**
+   * Bulk-fill one circuit field across every visible (board-scoped)
+   * circuit. Wired from the column-header popover on the desktop
+   * schedule. The `skipSpare` flag mirrors iOS's spare-detection rule
+   * (`circuit_designation === "spare"`, case-insensitive) so inspectors
+   * can apply a default value without overwriting placeholder rows.
+   */
+  const bulkPatchCircuits = (field: string, value: string, options: { skipSpare: boolean }) => {
+    const targetIds = new Set(
+      boardScoped.filter((c) => (options.skipSpare ? !isSpareCircuit(c) : true)).map((c) => c.id)
+    );
+    if (targetIds.size === 0) return;
+    persist(circuits.map((c) => (targetIds.has(c.id) ? ({ ...c, [field]: value } as Circuit) : c)));
+  };
 
   const addCircuit = () => {
     const nextRef = String(visible.length + 1);
@@ -414,7 +446,11 @@ export default function CircuitsPage() {
         ? 'Analysing board labels…'
         : mode === 'hardware_update'
           ? 'Analysing new board hardware…'
-          : 'Analysing consumer unit…'
+          : mode === 'append_rail'
+            ? 'Analysing additional rail…'
+            : mode === 'add_new_board'
+              ? 'Analysing sub-board…'
+              : 'Analysing consumer unit…'
     );
     try {
       const analysis = await api.analyzeCCU(file);
@@ -469,16 +505,29 @@ export default function CircuitsPage() {
       });
       updateJob(patch);
       // If we just synthesised a board, surface it as the active one
-      // so the new circuits are visible under the selector.
-      const patchedBoards = (patch.boards ?? []) as Array<{ id: string }>;
+      // so the new circuits are visible under the selector. Same for
+      // add_new_board mode — the inspector just photographed a sub-
+      // board, so the active selection should jump to it (otherwise
+      // the new circuits appear to vanish under the previously
+      // selected board).
+      const patchedBoards = (patch.boards ?? []) as { id: string }[];
       if (!selectedBoardId && patchedBoards.length > 0) {
         setSelectedBoardId(patchedBoards[0].id);
+      } else if (mode === 'add_new_board' && patchedBoards.length > 0) {
+        setSelectedBoardId(patchedBoards[patchedBoards.length - 1].id);
       }
       const added = analysis.circuits?.length ?? 0;
-      const suffix = mode === 'names_only' ? ' (labels only)' : mode === 'full_capture' ? '' : '';
+      const verb =
+        mode === 'append_rail' ? 'appended' : mode === 'add_new_board' ? 'added' : 'merged';
+      const suffix =
+        mode === 'names_only'
+          ? ' (labels only)'
+          : mode === 'add_new_board'
+            ? ' to a new sub-board'
+            : '';
       setActionHint(
         added > 0
-          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} merged${suffix}.`
+          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} ${verb}${suffix}.`
           : 'CCU analysed — no circuits detected.'
       );
       setCcuQuestions(questions);
@@ -506,22 +555,33 @@ export default function CircuitsPage() {
   };
 
   const handleDocFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+    const fileList = event.target.files;
+    const files = fileList ? Array.from(fileList) : [];
     event.target.value = '';
-    if (!file) return;
+    if (files.length === 0) return;
+
+    // Backend caps at 12 photos per call — keep the UI in sync so the
+    // inspector gets a clear error instead of a 400 from multer.
+    const MAX_PHOTOS = 12;
+    if (files.length > MAX_PHOTOS) {
+      setDocError(
+        `Too many photos selected (${files.length}). Please select ${MAX_PHOTOS} or fewer per upload.`
+      );
+      return;
+    }
 
     setDocBusy(true);
     setDocError(null);
-    setActionHint('Reading document…');
+    setActionHint(files.length === 1 ? 'Reading document…' : `Reading ${files.length} pages…`);
     try {
-      const response = await api.analyzeDocument(file);
+      const response = await api.analyzeDocument(files);
       const { patch, summary } = applyDocumentExtractionToJob(job, response, {
         targetBoardId: selectedBoardId,
       });
       updateJob(patch);
       // If the extractor just synthesised a board, surface it as the
       // active one so the new circuits land under a visible selector.
-      const patchedBoards = (patch.boards ?? []) as Array<{ id: string }>;
+      const patchedBoards = (patch.boards ?? []) as { id: string }[];
       if (!selectedBoardId && patchedBoards.length > 0) {
         setSelectedBoardId(patchedBoards[0].id);
       }
@@ -532,10 +592,9 @@ export default function CircuitsPage() {
       if (summary.observations > 0) {
         bits.push(`${summary.observations} observation${summary.observations === 1 ? '' : 's'}`);
       }
+      const source = files.length === 1 ? 'Document read' : `Document read (${files.length} pages)`;
       setActionHint(
-        bits.length > 0
-          ? `Document read — ${bits.join(', ')} merged.`
-          : 'Document read — no new data.'
+        bits.length > 0 ? `${source} — ${bits.join(', ')} merged.` : `${source} — no new data.`
       );
     } catch (err) {
       const message =
@@ -554,7 +613,7 @@ export default function CircuitsPage() {
   return (
     <div
       className="mx-auto flex w-full flex-col gap-4 px-4 py-6 md:px-8 md:py-8"
-      style={{ maxWidth: '1080px' }}
+      style={{ maxWidth: isDesktop ? '100%' : '1080px' }}
     >
       {/* Board selector */}
       {boards.length > 1 ? (
@@ -577,7 +636,33 @@ export default function CircuitsPage() {
         </div>
       ) : null}
 
-      <div className="flex gap-4 md:gap-5">
+      {/* Desktop horizontal action toolbar — rendered above the schedule
+          when ≥1280 px so the rail buttons get more vertical room and
+          the schedule occupies the full viewport width. On mobile/tablet
+          this block is skipped; the existing right-side `<aside>` rail
+          below takes over. */}
+      {isDesktop ? (
+        <ActionRail
+          orientation="horizontal"
+          calcMenuRef={calcMenuRef}
+          ccuBusy={ccuBusy}
+          docBusy={docBusy}
+          boardScoped={boardScoped}
+          visible={visible}
+          calcMenuOpen={calcMenuOpen}
+          setCalcMenuOpen={setCalcMenuOpen}
+          addCircuit={addCircuit}
+          requestConfirmDeleteAll={() => setConfirmDeleteAllOpen(true)}
+          handleApplyDefaults={handleApplyDefaults}
+          reverse={reverse}
+          handleCalculateZs={handleCalculateZs}
+          handleCalculateR1R2={handleCalculateR1R2}
+          openCcuPicker={openCcuPicker}
+          openDocPicker={openDocPicker}
+        />
+      ) : null}
+
+      <div className={isDesktop ? 'flex flex-col gap-4' : 'flex gap-4 md:gap-5'}>
         {/* Circuit list column */}
         <div className="flex min-w-0 flex-1 flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
@@ -618,14 +703,17 @@ export default function CircuitsPage() {
           {/* Doc extraction picker — no `capture` hint because
               documents (prior certs, handwritten sheets) are usually
               photographed ahead of time and a library picker is more
-              ergonomic. Image only: the backend (/api/analyze-document)
-              hard-codes the image/jpeg data URL so PDFs can't be
-              rendered server-side. PDF support is a separate follow-up
-              (requires a client-side pdfjs-dist render). */}
+              ergonomic. Accepts images AND PDFs because the backend
+              detects each file's type per-magic-byte and packs both
+              kinds into the Anthropic call. `multiple` is on so the
+              inspector can pick every page of a multi-page schedule
+              of test results in one go — the backend processes up to
+              12 files per call as pages of one document. */}
           <input
             ref={docInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,application/pdf"
+            multiple
             onChange={handleDocFile}
             className="sr-only"
             aria-hidden
@@ -692,11 +780,20 @@ export default function CircuitsPage() {
               </p>
             </div>
           ) : view === 'table' ? (
-            <CircuitsStickyTable
-              circuits={visible}
-              onPatch={patchCircuitTable}
-              onRemove={requestDeleteCircuit}
-            />
+            isDesktop ? (
+              <CircuitsScheduleDesktop
+                circuits={visible}
+                onPatch={patchCircuitTable}
+                onBulkPatch={bulkPatchCircuits}
+                onRemove={requestDeleteCircuit}
+              />
+            ) : (
+              <CircuitsStickyTable
+                circuits={visible}
+                onPatch={patchCircuitTable}
+                onRemove={requestDeleteCircuit}
+              />
+            )
           ) : (
             visible.map((c) => (
               <CircuitCard
@@ -711,8 +808,10 @@ export default function CircuitsPage() {
           )}
         </div>
 
-        {/* Action rail — iOS parity */}
-        <aside className="flex w-24 flex-shrink-0 flex-col gap-2 md:w-28">
+        {/* Action rail — iOS parity. Hidden on desktop (≥1280 px); the
+            horizontal `<ActionRail>` rendered above the schedule takes
+            its place so the schedule can fill the viewport width. */}
+        <aside className="flex w-24 flex-shrink-0 flex-col gap-2 md:w-28" hidden={isDesktop}>
           <RailButton
             Icon={Plus}
             label="Add"
@@ -936,6 +1035,140 @@ function RailButton({
   );
 }
 
+/**
+ * Horizontal/vertical action rail. The button list, colours and
+ * disabled rules are identical to the original right-side aside — this
+ * helper exists so the desktop top toolbar and the mobile right rail
+ * can share one render path. Calc-menu positioning is the only branch
+ * that differs (drops DOWN under the horizontal toolbar, FLYS LEFT out
+ * of the vertical aside).
+ */
+function ActionRail({
+  orientation,
+  calcMenuRef,
+  ccuBusy,
+  docBusy,
+  boardScoped,
+  visible,
+  calcMenuOpen,
+  setCalcMenuOpen,
+  addCircuit,
+  requestConfirmDeleteAll,
+  handleApplyDefaults,
+  reverse,
+  handleCalculateZs,
+  handleCalculateR1R2,
+  openCcuPicker,
+  openDocPicker,
+}: {
+  orientation: 'horizontal' | 'vertical';
+  calcMenuRef: React.RefObject<HTMLDivElement | null>;
+  ccuBusy: boolean;
+  docBusy: boolean;
+  boardScoped: Circuit[];
+  visible: Circuit[];
+  calcMenuOpen: boolean;
+  setCalcMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  addCircuit: () => void;
+  requestConfirmDeleteAll: () => void;
+  handleApplyDefaults: () => void;
+  reverse: () => void;
+  handleCalculateZs: () => void;
+  handleCalculateR1R2: () => void;
+  openCcuPicker: () => void;
+  openDocPicker: () => void;
+}) {
+  const horizontal = orientation === 'horizontal';
+  const calcMenuClass = horizontal
+    ? 'absolute left-0 top-full z-30 mt-2 w-56 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_8px_24px_rgba(0,0,0,0.35)]'
+    : 'absolute right-full top-0 z-30 mr-2 w-56 rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_8px_24px_rgba(0,0,0,0.35)]';
+  return (
+    <div
+      className={
+        horizontal
+          ? 'flex flex-wrap items-stretch gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] px-3 py-2'
+          : 'flex flex-col gap-2'
+      }
+      role="toolbar"
+      aria-label="Circuit actions"
+    >
+      <RailButton Icon={Plus} label="Add" colour="var(--color-brand-blue)" onClick={addCircuit} />
+      <RailButton
+        Icon={Trash2}
+        label="Delete"
+        colour="var(--color-status-failed)"
+        onClick={requestConfirmDeleteAll}
+        disabled={boardScoped.length === 0}
+      />
+      <RailButton
+        Icon={SlidersHorizontal}
+        label="Defaults"
+        colour="#ff375f"
+        onClick={handleApplyDefaults}
+        disabled={boardScoped.length === 0}
+      />
+      <RailButton
+        Icon={FlipHorizontal2}
+        label="Reverse"
+        colour="#ec4899"
+        onClick={reverse}
+        disabled={visible.length < 2}
+      />
+      <div ref={calcMenuRef} className="relative">
+        <RailButton
+          Icon={Calculator}
+          label="Calculate"
+          colour="var(--color-brand-green)"
+          onClick={() => setCalcMenuOpen((v) => !v)}
+          disabled={boardScoped.length === 0}
+        />
+        {calcMenuOpen ? (
+          <div role="menu" aria-label="Calculate menu" className={calcMenuClass}>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={handleCalculateZs}
+              className="block w-full px-3 py-2 text-left text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-2)]"
+            >
+              <span className="block font-semibold">Calculate Zs</span>
+              <span className="block text-[11px] text-[var(--color-text-tertiary)]">
+                Zs = Ze + R1+R2
+              </span>
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={handleCalculateR1R2}
+              className="block w-full border-t border-[var(--color-border-subtle)] px-3 py-2 text-left text-[12px] text-[var(--color-text-primary)] hover:bg-[var(--color-surface-2)]"
+            >
+              <span className="block font-semibold">Calculate R1+R2</span>
+              <span className="block text-[11px] text-[var(--color-text-tertiary)]">
+                R1+R2 = Zs − Ze
+              </span>
+            </button>
+          </div>
+        ) : null}
+      </div>
+      <RailButton
+        Icon={ccuBusy ? Loader2 : Camera}
+        label={ccuBusy ? 'Analysing' : 'CCU'}
+        colour="#ff9f0a"
+        onClick={openCcuPicker}
+        disabled={ccuBusy}
+        spin={ccuBusy}
+      />
+      <RailButton
+        Icon={docBusy ? Loader2 : FileDown}
+        label={docBusy ? 'Reading' : 'Extract'}
+        colour="var(--color-brand-blue)"
+        onClick={openDocPicker}
+        disabled={docBusy}
+        spin={docBusy}
+      />
+    </div>
+  );
+}
+
 function CircuitCard({
   circuit,
   expanded,
@@ -1106,6 +1339,25 @@ function CircuitCard({
                 onChange={(e) => onPatch({ rcd_rating_a: e.target.value })}
               />
             </div>
+            {/* Test-button confirmation toggles — iOS canon writes the
+                literal `"✓"` sentinel (DeepgramRecordingViewModel.swift:4323,
+                VoiceCommandExecutor.swift:249, transcript-field-matcher.ts:976).
+                Previously the Cards view didn't surface these; inspectors on
+                mobile had to switch to Table view to mark a test as pressed.
+                Two pill toggles flip the value between `"✓"` and `""` so
+                the data round-trip stays byte-identical with iOS. */}
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <CircuitButtonTestToggle
+                label="RCD test button"
+                value={text('rcd_button_confirmed')}
+                onChange={(next) => onPatch({ rcd_button_confirmed: next })}
+              />
+              <CircuitButtonTestToggle
+                label="AFDD test button"
+                value={text('afdd_button_confirmed')}
+                onChange={(next) => onPatch({ afdd_button_confirmed: next })}
+              />
+            </div>
           </SectionCard>
 
           <SectionCard accent="green" title="Test readings">
@@ -1186,5 +1438,47 @@ function CircuitCard({
         </div>
       ) : null}
     </article>
+  );
+}
+
+/**
+ * Single-pill toggle for the `rcd_button_confirmed` / `afdd_button_confirmed`
+ * 2-state fields. iOS writes the literal `"✓"` glyph when an inspector
+ * confirms they pressed the test button; the field stays empty when
+ * unconfirmed (Constants.swift `normaliseBooleanValue` maps truthy →
+ * `"✓"`, falsy → echo). The PWA's `circuits-sticky-table.tsx` already
+ * surfaces these as a 2-option select (`['', '✓']`); this is the matching
+ * affordance for the Cards view. Tap toggles between `"✓"` and `""`,
+ * round-trip-safe with iOS.
+ */
+function CircuitButtonTestToggle({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const confirmed = value === '✓';
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={confirmed}
+      aria-label={label}
+      onClick={() => onChange(confirmed ? '' : '✓')}
+      className={
+        'flex h-10 items-center justify-between gap-2 rounded-[var(--radius-md)] border px-3 text-[13px] transition ' +
+        (confirmed
+          ? 'border-[var(--color-status-ok)]/40 bg-[var(--color-status-ok)]/15 text-[var(--color-status-ok)]'
+          : 'border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]')
+      }
+    >
+      <span>{label}</span>
+      <span className="font-semibold tabular-nums" aria-hidden>
+        {confirmed ? '✓' : '—'}
+      </span>
+    </button>
   );
 }

@@ -1,14 +1,17 @@
 /**
- * Phase 8 — Voice command parser + applier.
+ * Voice command applier — covers the discriminated-union cases the
+ * server-routed dispatch path produces (update_field, reorder_circuits,
+ * query_field). After the 2026-05-10 parity fix the web parser only
+ * matches Calculate + ApplyField on-device — everything else lands as a
+ * `voice_command_response` from Sonnet and is mapped onto these same
+ * `VoiceCommand` shapes by `mapServerActionToVoiceCommand`. So
+ * `applyVoiceCommand` still needs full coverage for the three legacy
+ * shapes (now arriving via the server, not the client parser).
  *
- * Ports iOS `VoiceCommandExecutor` to shared-utils. Coverage targets the
- * three MVP commands (update_field / reorder_circuits / query_field).
- * Punted commands (add_circuit, delete_circuit, calculate_impedance,
- * query_summary) are marked `partial` on the parity ledger and tracked
- * for a follow-up.
- *
- * Tests hit the pure functions directly — no React / DOM plumbing —
- * mirroring the phase-5-impedance suite.
+ * `parseVoiceCommand` is asserted to RETURN NULL for the set/move/query
+ * phrasings — iOS canon (DeepgramRecordingViewModel.swift:1755 is the
+ * only on-device branch, the rest are forwarded via
+ * `appendToTranscriptAndExtract`).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,94 +28,36 @@ function jobWithCircuits(count: number): VoiceCommandJob {
   };
 }
 
-describe('parseVoiceCommand — update_field', () => {
-  it('parses the canonical "set X to Y on circuit N" form', () => {
-    const cmd = parseVoiceCommand('set OCPD to 32A on circuit 4');
-    expect(cmd).toEqual({
-      type: 'update_field',
-      field: 'ocpd',
-      value: '32',
-      circuit: 4,
-    });
+describe('parseVoiceCommand — non-iOS-canon phrasings now defer to Sonnet', () => {
+  it('returns null for "set X to Y on circuit N" (was: update_field)', () => {
+    expect(parseVoiceCommand('set OCPD to 32A on circuit 4')).toBeNull();
   });
 
-  it('strips trailing "amps" unit from the value', () => {
-    const cmd = parseVoiceCommand('set OCPD rating to 16 amps on circuit 2');
-    expect(cmd).toMatchObject({ value: '16', circuit: 2 });
+  it('returns null for "circuit N field value" terse form', () => {
+    expect(parseVoiceCommand('circuit 5 Zs 0.44')).toBeNull();
   });
 
-  it('parses supply-level fields without a circuit suffix', () => {
-    const cmd = parseVoiceCommand('set Ze to 0.35');
-    expect(cmd).toEqual({
-      type: 'update_field',
-      field: 'ze',
-      value: '0.35',
-      circuit: undefined,
-    });
+  it('returns null for "move circuit N to M" (was: reorder_circuits)', () => {
+    expect(parseVoiceCommand('move circuit 7 to 3')).toBeNull();
+    expect(parseVoiceCommand('move circuit 2 to position 8')).toBeNull();
   });
 
-  it('maps spoken "pass" to PASS for polarity', () => {
-    const cmd = parseVoiceCommand('set polarity to pass on circuit 3');
-    expect(cmd).toMatchObject({ value: 'PASS', circuit: 3 });
+  it('returns null for "what is X" / "read me X" (was: query_field)', () => {
+    expect(parseVoiceCommand('what is Zs on circuit 3')).toBeNull();
+    expect(parseVoiceCommand('read me OCPD rating on circuit 1')).toBeNull();
+    expect(parseVoiceCommand('what is Ze')).toBeNull();
   });
 
-  it('accepts the terse "circuit N field value" form', () => {
-    const cmd = parseVoiceCommand('circuit 5 Zs 0.44');
-    expect(cmd).toEqual({
-      type: 'update_field',
-      field: 'zs',
-      value: '0.44',
-      circuit: 5,
-    });
+  it('returns null for the Deepgram garble that triggered the 2026-05-10 prod bug', () => {
+    // sess_mp09cuea_wzkf: QUERY_RE matched "what is is" with field="is"
+    // and spoke "I don't know the field 'is'.". After the fix the
+    // transcript flows to Sonnet which does the right thing.
+    expect(parseVoiceCommand('what is is')).toBeNull();
   });
 
-  it('returns null on unrecognised transcripts', () => {
+  it('returns null on chatter / empty', () => {
     expect(parseVoiceCommand('this is just chatter about the weather')).toBeNull();
     expect(parseVoiceCommand('')).toBeNull();
-  });
-});
-
-describe('parseVoiceCommand — reorder_circuits', () => {
-  it('parses "move circuit N to M"', () => {
-    expect(parseVoiceCommand('move circuit 7 to 3')).toEqual({
-      type: 'reorder_circuits',
-      from: 7,
-      to: 3,
-    });
-  });
-
-  it('accepts the "position" keyword', () => {
-    expect(parseVoiceCommand('move circuit 2 to position 8')).toEqual({
-      type: 'reorder_circuits',
-      from: 2,
-      to: 8,
-    });
-  });
-});
-
-describe('parseVoiceCommand — query_field', () => {
-  it('parses "what is X on circuit N"', () => {
-    expect(parseVoiceCommand('what is Zs on circuit 3')).toEqual({
-      type: 'query_field',
-      field: 'zs',
-      circuit: 3,
-    });
-  });
-
-  it('parses "read me X circuit N"', () => {
-    expect(parseVoiceCommand('read me OCPD rating on circuit 1')).toMatchObject({
-      type: 'query_field',
-      field: 'ocpd rating',
-      circuit: 1,
-    });
-  });
-
-  it('omits circuit when not stated', () => {
-    expect(parseVoiceCommand('what is Ze')).toEqual({
-      type: 'query_field',
-      field: 'ze',
-      circuit: undefined,
-    });
   });
 });
 

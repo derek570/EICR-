@@ -1,0 +1,60 @@
+name: loaded_barrel_clear_invalidates
+suite: loaded_barrel
+description: |
+  Negative-path: speculator caches a confirmation for circuit 1
+  number_of_points=5, then the inspector says "actually, no — I mean
+  six". Sonnet emits clear_reading + record_reading in the SAME turn.
+  The cache invalidation drops the first cached MP3 BEFORE iOS can
+  POST for it; the speculator's second synth caches the new "6"
+  confirmation; iOS POSTs and HITs the new entry.
+
+  Pin: bundler must NOT speak the stale "five" confirmation. iOS
+  receives extraction with value=6 only. No double-audio.
+
+  Plan v10 §B: pending → aborted on invalidate (markSuperseded CAS).
+  Audio buffer thrown away even if synth completes after the abort.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five."
+    isFinal: true
+  - at_ms: 1500
+    text: "No, sorry. Circuit one number of points six."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 2 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 6
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # 2026-05-29 honest pass: second turn is a multi-tool turn
+  # (clear_reading + record_reading) which adds round-2 wall (early-
+  # terminate predicate excludes multi-tool by design), so the audible
+  # floor here is materially higher than the single-write scenarios.
+  # Measured prod: ~3371 ms p50. Budget reflects the multi-tool +
+  # invalidation reality. Cutting this further would need mid-stream
+  # emit to fire on multi-tool turns where it pays out — covered by
+  # lever 1 (db41614a) but only when content_block_stop on the FIRST
+  # tool fires far before round-1 end. Validates here for safety.
+  audible_latency_ms_p50: { max: 4500 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

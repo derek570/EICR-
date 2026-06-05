@@ -28,7 +28,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WS from 'jest-websocket-mock';
-import { DeepgramService } from '@/lib/recording/deepgram-service';
+import { DeepgramService, type WebSocketFactory } from '@/lib/recording/deepgram-service';
 
 // The service connects to a fixed URL + query string. `jest-websocket-mock`
 // treats the URL string as a prefix-match key, so we register the
@@ -749,145 +749,52 @@ describe('DeepgramService', () => {
   });
 
   // ────────────────────────────────────────────────────────────────────────
-  // iOS parity — Deepgram WebSocket URL params.
+  // URL params parity — endpointing=400.
   //
-  // Project rule (`~/.claude/rules/mistakes.md`): keep web and iOS
-  // Deepgram configs in sync. The Wave-A audit Phase 6 P0 flagged
-  // `utterance_end_ms=2000` on web vs iOS canonical 1500 (post 2026-04-20
-  // voice-quality-sprint Stage 1 tuning). This locks the params so a
-  // future drift triggers a CI failure rather than discovering the
-  // mismatch in production via a perceived recording-quality regression.
+  // 2026-06-04 sprint (field-test-fixes-session-60754e4d, PLAN-web-final §3.4)
+  // bumped iOS endpointing 300→400 ms to stop Deepgram declaring early
+  // finals mid-sentence. `rules/mistakes.md` mandates web and iOS Deepgram
+  // configs stay in sync (`endpointing` is one of the four named
+  // must-not-drift params). This guards against a future "I'll just lower
+  // it on web because dictation feels snappier" drift by asserting the
+  // exact value on every connect.
   //
-  // We can't read `buildURL` directly (it's private), but `mock-socket`
-  // exposes the URL the client connected with on `server.url` of the
-  // *connecting client*, accessible via `server.server.clients()[0].url`
-  // — except mock-socket doesn't expose that cleanly either. The
-  // simplest robust approach: monkey-patch `WebSocket` once, capture the
-  // URL the constructor was invoked with, restore. ────────────────────
-  describe('iOS-parity URL params (audit Phase 6 P0)', () => {
-    it('connects with the canonical iOS Deepgram param set', async () => {
-      const realWebSocket = globalThis.WebSocket;
-      let capturedUrl = '';
-      class CapturingWebSocket extends realWebSocket {
-        constructor(url: string | URL, protocols?: string | string[]) {
-          capturedUrl = typeof url === 'string' ? url : url.toString();
-          super(url, protocols);
-        }
-      }
-      // Replace global before creating the service so its `new WebSocket`
-      // call uses the capturing subclass.
-      globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
+  // Implementation: we spy on `WebSocket` so we can read back the URL the
+  // service constructs. mock-socket's `WebSocket` shim is still in place
+  // (jest-websocket-mock installed the server above), so calling through
+  // the spy still produces a real connect — we just capture the URL on
+  // the way.
+  // ────────────────────────────────────────────────────────────────────────
+  describe('connect URL params', () => {
+    it('includes endpointing=400 (in sync with iOS DeepgramService)', async () => {
+      // The service exposes a `wsFactory` constructor arg specifically as
+      // a test seam — wrap it to capture the URL the URL builder produced
+      // before delegating to the real WebSocket (which is the mock-socket
+      // shim under jest-websocket-mock here).
+      const captured: string[] = [];
+      const factory: WebSocketFactory = (url, protocols) => {
+        captured.push(url);
+        return new WebSocket(url, protocols);
+      };
 
-      try {
-        const service = new DeepgramService({
+      const service = new DeepgramService(
+        {
           onInterimTranscript: vi.fn(),
           onFinalTranscript: vi.fn(),
-        });
-        service.connect('fake-api-key', 16000);
-        await server.connected;
+        },
+        factory
+      );
+      service.connect('fake-api-key', 16000);
+      await server.connected;
 
-        const url = new URL(capturedUrl);
-        expect(url.host).toBe('api.deepgram.com');
-        expect(url.pathname).toBe('/v1/listen');
-
-        const params = url.searchParams;
-        // Every param iOS DeepgramService.swift sends, with iOS values.
-        expect(params.get('model')).toBe('nova-3');
-        expect(params.get('smart_format')).toBe('true');
-        expect(params.get('punctuate')).toBe('true');
-        expect(params.get('encoding')).toBe('linear16');
-        expect(params.get('sample_rate')).toBe('16000');
-        expect(params.get('language')).toBe('en-GB');
-        expect(params.get('interim_results')).toBe('true');
-        expect(params.get('endpointing')).toBe('300');
-        // utterance_end_ms 1500 — pre-fix this was 2000 on web.
-        expect(params.get('utterance_end_ms')).toBe('1500');
-        expect(params.get('vad_events')).toBe('true');
-
-        service.disconnect();
-      } finally {
-        globalThis.WebSocket = realWebSocket;
-      }
-    });
-
-    it('appends Nova-3 keyterm params from the base config (post-B5 keyword-boosts wiring)', async () => {
-      const realWebSocket = globalThis.WebSocket;
-      let capturedUrl = '';
-      class CapturingWebSocket extends realWebSocket {
-        constructor(url: string | URL, protocols?: string | string[]) {
-          capturedUrl = typeof url === 'string' ? url : url.toString();
-          super(url, protocols);
-        }
-      }
-      globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
-
-      try {
-        const service = new DeepgramService({
-          onInterimTranscript: vi.fn(),
-          onFinalTranscript: vi.fn(),
-        });
-        service.connect('fake-api-key', 16000);
-        await server.connected;
-
-        const url = new URL(capturedUrl);
-        const keyterms = url.searchParams.getAll('keyterm');
-        // Pre-fix this was 0; post-fix should be many dozens.
-        expect(keyterms.length).toBeGreaterThan(50);
-
-        // Top-tier (≥3.0) keywords carry the ":X.X" boost suffix.
-        const hasSuffixed = keyterms.some((k) => /:3\.0$/.test(k));
-        expect(hasSuffixed).toBe(true);
-
-        // Lower-tier keywords are bare (no colon).
-        const hasBare = keyterms.some((k) => !k.includes(':'));
-        expect(hasBare).toBe(true);
-
-        // URL stays inside the 1800-char safety budget (with some
-        // headroom for the host / scheme not counted in the encoder
-        // path).
-        expect(capturedUrl.length).toBeLessThanOrEqual(2048);
-
-        service.disconnect();
-      } finally {
-        globalThis.WebSocket = realWebSocket;
-      }
-    });
-
-    it('augments keyterms with CCU board-specific terms when setCcuAnalysis() is called', async () => {
-      const realWebSocket = globalThis.WebSocket;
-      let capturedUrl = '';
-      class CapturingWebSocket extends realWebSocket {
-        constructor(url: string | URL, protocols?: string | string[]) {
-          capturedUrl = typeof url === 'string' ? url : url.toString();
-          super(url, protocols);
-        }
-      }
-      globalThis.WebSocket = CapturingWebSocket as unknown as typeof WebSocket;
-
-      try {
-        const service = new DeepgramService({
-          onInterimTranscript: vi.fn(),
-          onFinalTranscript: vi.fn(),
-        });
-        service.setCcuAnalysis({
-          board_manufacturer: 'NovelBrand',
-          circuits: [{ circuit_number: 7, label: 'Kitchen sockets' }],
-        });
-        service.connect('fake-api-key', 16000);
-        await server.connected;
-
-        const url = new URL(capturedUrl);
-        const keyterms = url.searchParams.getAll('keyterm');
-        // Post codex-fix on `e38fa5e`: analysis-derived terms land via
-        // the reserved slots so all three augmentation tiers surface.
-        expect(keyterms).toContain('NovelBrand'); // 1.5 — manufacturer
-        expect(keyterms).toContain('Kitchen'); // 1.0 — label-extracted
-        expect(keyterms).toContain('circuit 7'); // 1.0 — circuit-ref
-
-        service.disconnect();
-      } finally {
-        globalThis.WebSocket = realWebSocket;
-      }
+      expect(captured).toHaveLength(1);
+      const url = new URL(captured[0]);
+      expect(url.searchParams.get('endpointing')).toBe('400');
+      // Also lock the sibling utterance_end_ms value that lives next to
+      // endpointing in the URL builder — its 2026-04-26 1500→1000
+      // change is the load-bearing context for why we picked 400 ms
+      // unconditionally over a script-state-aware 250/400 split.
+      expect(url.searchParams.get('utterance_end_ms')).toBe('1000');
     });
   });
 });

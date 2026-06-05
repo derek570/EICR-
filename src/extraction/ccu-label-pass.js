@@ -153,14 +153,8 @@ export async function cropSlotLabelZone(imageBuffer, slotIndex, geom) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('cropSlotLabelZone: imageBuffer must be a Buffer');
   }
-  const {
-    slotCentersX,
-    slotPitchPx,
-    panelTopNorm,
-    panelBottomNorm,
-    imageWidth,
-    imageHeight,
-  } = geom || {};
+  const { slotCentersX, slotPitchPx, panelTopNorm, panelBottomNorm, imageWidth, imageHeight } =
+    geom || {};
   if (!Array.isArray(slotCentersX) || slotCentersX.length === 0) {
     throw new Error('cropSlotLabelZone: geom.slotCentersX must be a non-empty array');
   }
@@ -330,86 +324,92 @@ export async function readSlotLabels(slotCrops, opts = {}) {
   const resultsBySlotIndex = new Map();
   const usage = { inputTokens: 0, outputTokens: 0 };
 
-  for (const batch of batches) {
-    const slotIndices = batch.map((b) => b.slotIndex);
-    const base64s = batch.map((b) => b.buffer.toString('base64'));
+  // Batches run in PARALLEL via Promise.all. Each batch covers a disjoint
+  // slice of slotIndices, so concurrent Map.set calls never collide. usage
+  // += is a synchronous read-modify-write with no await between read and
+  // write, so JS single-threaded execution makes it atomic for free.
+  await Promise.all(
+    batches.map(async (batch) => {
+      const slotIndices = batch.map((b) => b.slotIndex);
+      const base64s = batch.map((b) => b.buffer.toString('base64'));
 
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), CCU_LABEL_TIMEOUT_MS);
-    let response;
-    try {
-      response = await anthropic.messages.create(
-        {
-          model,
-          max_tokens: CCU_LABEL_MAX_TOKENS,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                ...base64s.map((data) => ({
-                  type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data },
-                })),
-                { type: 'text', text: LABEL_READ_PROMPT(slotIndices) },
-              ],
-            },
-          ],
-        },
-        { signal: abortController.signal }
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const text = (response.content || [])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
-    let arr;
-    try {
-      let jsonStr = text.trim();
-      const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
-      if (fence) jsonStr = fence[1].trim();
-      const firstBracket = jsonStr.indexOf('[');
-      const lastBracket = jsonStr.lastIndexOf(']');
-      if (firstBracket !== -1 && lastBracket > firstBracket) {
-        jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), CCU_LABEL_TIMEOUT_MS);
+      let response;
+      try {
+        response = await anthropic.messages.create(
+          {
+            model,
+            max_tokens: CCU_LABEL_MAX_TOKENS,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  ...base64s.map((data) => ({
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/jpeg', data },
+                  })),
+                  { type: 'text', text: LABEL_READ_PROMPT(slotIndices) },
+                ],
+              },
+            ],
+          },
+          { signal: abortController.signal }
+        );
+      } finally {
+        clearTimeout(timeoutId);
       }
-      arr = JSON.parse(jsonStr);
-      if (!Array.isArray(arr)) throw new Error('not an array');
-    } catch (err) {
-      throw new Error(`readSlotLabels: failed to parse VLM array response: ${err.message}`);
-    }
 
-    const u = response.usage || {};
-    usage.inputTokens += u.input_tokens || 0;
-    usage.outputTokens += u.output_tokens || 0;
+      const text = (response.content || [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
 
-    for (let i = 0; i < batch.length; i++) {
-      const crop = batch[i];
-      const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+      let arr;
+      try {
+        let jsonStr = text.trim();
+        const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
+        if (fence) jsonStr = fence[1].trim();
+        const firstBracket = jsonStr.indexOf('[');
+        const lastBracket = jsonStr.lastIndexOf(']');
+        if (firstBracket !== -1 && lastBracket > firstBracket) {
+          jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
+        }
+        arr = JSON.parse(jsonStr);
+        if (!Array.isArray(arr)) throw new Error('not an array');
+      } catch (err) {
+        throw new Error(`readSlotLabels: failed to parse VLM array response: ${err.message}`);
+      }
 
-      const rawLabel =
-        typeof vlmItem.label === 'string' && vlmItem.label.trim().length > 0
-          ? vlmItem.label.trim()
-          : null;
-      const confidence = typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0;
-      // Apply confidence gate: null out the label when confidence is below
-      // the threshold so low-confidence guesses don't propagate as hallucinations.
-      // rawLabel is kept intact so debug/review tooling can still inspect what
-      // the VLM thought it saw.
-      const normalisedLabel = normaliseLabel(rawLabel);
-      const label = confidence >= threshold ? normalisedLabel : null;
+      const u = response.usage || {};
+      usage.inputTokens += u.input_tokens || 0;
+      usage.outputTokens += u.output_tokens || 0;
 
-      resultsBySlotIndex.set(crop.slotIndex, {
-        slotIndex: crop.slotIndex,
-        label,
-        rawLabel,
-        confidence,
-      });
-    }
-  }
+      for (let i = 0; i < batch.length; i++) {
+        const crop = batch[i];
+        const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+
+        const rawLabel =
+          typeof vlmItem.label === 'string' && vlmItem.label.trim().length > 0
+            ? vlmItem.label.trim()
+            : null;
+        const confidence = typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0;
+        // Apply confidence gate: null out the label when confidence is below
+        // the threshold so low-confidence guesses don't propagate as hallucinations.
+        // rawLabel is kept intact so debug/review tooling can still inspect what
+        // the VLM thought it saw.
+        const normalisedLabel = normaliseLabel(rawLabel);
+        const label = confidence >= threshold ? normalisedLabel : null;
+
+        resultsBySlotIndex.set(crop.slotIndex, {
+          slotIndex: crop.slotIndex,
+          label,
+          rawLabel,
+          confidence,
+        });
+      }
+    })
+  );
 
   const labels = slotCrops.map(
     (c) =>

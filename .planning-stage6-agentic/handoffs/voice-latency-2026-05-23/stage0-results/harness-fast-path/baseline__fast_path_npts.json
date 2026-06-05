@@ -1,0 +1,45 @@
+{
+  "name": "fast_path_npts",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 337,
+    "first_transcript_to_extraction_ms": null,
+    "first_transcript_to_audible_ms": null,
+    "transcripts_sent": 1,
+    "extractions_received": 0,
+    "confirmations_total": 0,
+    "tts_fetches": [],
+    "fast_path": [
+      {
+        "text": "Circuit one number of points five.",
+        "firstByteMs": 799,
+        "totalMs": 822,
+        "bytes": 86412
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 299,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779573340183_fz91ss\"}"
+    },
+    {
+      "at_ms": 337,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"a01ecffa-2cd9-4e49-8104-15e46ffada4a\"}"
+    },
+    {
+      "at_ms": 337,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 1174,
+      "type": "fast_path_complete",
+      "summary": "{\"firstByteMs\":799,\"totalMs\":822,\"bytes\":86412}"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import { IconButton } from '@/components/ui/icon-button';
 import { InstallButton } from '@/components/pwa/install-button';
 import { OfflineBanner, OfflineIndicator } from '@/components/pwa/offline-indicator';
 import { AlertsBell } from '@/components/dashboard/alerts-bell';
+import { VoiceFeedbackBell } from '@/components/layout/voice-feedback-bell';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
 import { hasAcceptedCurrentTerms } from '@/app/terms/legal-texts-gate';
 
@@ -84,6 +85,37 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const u = getUser();
     if (u) setUserName(u.name || u.email);
   }, []);
+
+  /*
+   * BTA consent gate. The JWT middleware (`src/middleware.ts`) verifies
+   * auth; this in-shell gate verifies consent because the JWT doesn't
+   * carry consent state. Fetches /api/auth/me once on mount; if the
+   * server says consent_pending, hard-redirects to /onboarding/consent.
+   * The redirect is a one-shot at AppShell-mount time — the per-API
+   * `require-consent` middleware on protected routes is the real
+   * safety net (every gated route 403s on consent_required), so this
+   * client-side hop is just the UX shortcut to skip a flash of
+   * dashboard chrome followed by a wall of 403s. Spec:
+   * .planning/compliance/in-app-consent-screen.md.
+   */
+  React.useEffect(() => {
+    let cancelled = false;
+    api
+      .me()
+      .then((me) => {
+        if (cancelled) return;
+        if (me.consent_pending) {
+          router.replace('/onboarding/consent');
+        }
+      })
+      .catch(() => {
+        // Auth/network failure here is handled by individual API
+        // calls' 401-redirect paths; don't compound from here.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   /*
    * Phase 7c — drain the offline mutation outbox on mount, on `online`,
@@ -173,6 +205,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
            * guided tour's final step.
            */}
           <AlertsBell dataTour="alerts-bell" />
+          {/*
+           * Phase 1.6.5 — voice-feedback bell. Sits to the right of the
+           * alerts bell so the chrome reads "identity → state
+           * (alerts) → triage (voice feedback) → install". Badge
+           * counts `status='open'` voice-feedback rows reachable to
+           * the signed-in user. Inspector access is the same as
+           * /voice-feedback itself (no admin gating on the bell —
+           * regular inspectors can submit + read their own feedback;
+           * the admin "all users" toggle is page-level).
+           */}
+          <VoiceFeedbackBell dataTour="voice-feedback-bell" />
           {/*
            * Renders only when Chrome/Edge/Android has fired
            * `beforeinstallprompt` and the deferred event is live in the

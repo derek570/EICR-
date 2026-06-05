@@ -1,0 +1,46 @@
+name: probe_bs_en_unrecognised
+suite: dispatcher_gaps
+description: |
+  POSITIVE PIN — Sonnet declines to write hallucinated BS codes.
+  Inspector dictates "Circuit 1 protective device standard BS
+  99999" — not a real BS reference.
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. Sonnet
+  recognises BS 99999 isn't a valid standard and declines to
+  write. iOS picker stays blank rather than receiving garbage.
+
+  Pin: ocpd_bs_en MUST NOT receive a non-canonical BS code.
+  If a future Sonnet behaviour shifts to writing through, this
+  guard fails. Also catches the dispatcher gap — if a future
+  enum-value validator is added, this scenario would pass
+  unconditionally (Sonnet's value rejected at the dispatcher).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 1 protective device standard BS 99999."
+    isFinal: true
+
+expect:
+  has_no_reading:
+    - circuit: 1
+      field: ocpd_bs_en
+      value: "BS 99999"
+    - circuit: 1
+      field: ocpd_bs_en
+      value: "99999"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

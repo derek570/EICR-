@@ -1,0 +1,103 @@
+{
+  "_doc": "STQ-02 category (1) — routine single-reading capture. Inspector says 'Circuit three Zs nought point three five.' Both paths converge on circuits[3].measured_zs_ohm = '0.35'. The legacy fixture ships as a single record_extraction tool_use whose input matches the pre-Phase-4 extractFromUtterance result shape; the tool-call fixture ships as a single record_reading tool_use followed by end_turn. After normaliseExtractionResult both reduce to the same {readings:[{circuit:3,field:'measured_zs_ohm',value:'0.35'}]} canonical shape — 0% divergence. Field name uses the canonical enum from config/field_schema.json circuit_fields (Plan 04-07 r1 audit fix — strict:true tool schemas reject `zs` aliases).",
+  "_requirement": "STT-11 golden-session subset entry. Phase 4 SC #6 gate — ≤10% divergence on the 5-fixture deterministic baseline.",
+  "_fixture_shape": "dual-SSE (sse_events_legacy + sse_events_tool_call + sse_events_tool_call_round2)",
+  "pre_turn_state": {
+    "_doc": "Circuit 3 is pre-registered on the board — required because validateRecordReading rejects record_reading on an unknown circuit_ref (see stage6-dispatch-validation.js validateRecordReading).",
+    "snapshot": {
+      "circuits": {
+        "3": {
+          "circuit_ref": 3,
+          "circuit_designation": "Lighting (downstairs)"
+        }
+      },
+      "pending_readings": [],
+      "observations": [],
+      "validation_alerts": []
+    },
+    "askedQuestions": [],
+    "extractedObservations": []
+  },
+  "transcript": "Circuit three, Zs nought point three five.",
+  "sse_events_legacy": [
+    {
+      "_comment": "Single-shot record_extraction tool_use — pre-Phase-4 legacy result shape. Input is the full {extracted_readings, questions_for_user, ...} JSON object that extractFromUtterance would have returned.",
+      "type": "message_start",
+      "message": { "id": "msg_s01_legacy", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s01_legacy",
+        "name": "record_extraction",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"measured_zs_ohm\",\"value\":\"0.35\",\"confidence\":0.95}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call": [
+    {
+      "_comment": "Round 1 — model emits a single record_reading tool_use matching the transcript.",
+      "type": "message_start",
+      "message": { "id": "msg_s01_tc_r1", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s01_tc_zs",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":3,\"value\":\"0.35\",\"confidence\":0.95,\"source_turn_id\":\"t1\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call_round2": [
+    {
+      "_comment": "Round 2 — end_turn after the tool_result for round 1 is appended.",
+      "type": "message_start",
+      "message": { "id": "msg_s01_tc_r2", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": { "type": "text", "text": "" }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": { "type": "text_delta", "text": "Recorded Zs for circuit 3." }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "end_turn" } },
+    { "type": "message_stop" }
+  ],
+  "expected_slot_writes": {
+    "circuits": {
+      "3": { "measured_zs_ohm": "0.35" }
+    }
+  }
+}

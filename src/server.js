@@ -10,6 +10,8 @@ import * as auth from './auth.js';
 import { startWorker } from './queue.js';
 import { initSocketIO } from './realtime.js';
 import { initSonnetStream } from './extraction/sonnet-stream.js';
+import { activeSessions } from './extraction/active-sessions.js';
+import { flushAllSessions as flushAllRealtimeLogs } from './extraction/realtime-log-sink.js';
 import { closeTransporter } from './services/email.js';
 import { closePool } from './db.js';
 
@@ -99,6 +101,16 @@ startWorker().catch((err) => {
   logger.warn('Could not start queue worker', { error: err.message });
 });
 
+// Self-test the RCD-type lookup table at boot. Logs pass/fail; never
+// throws — a malformed table degrades gracefully to no-op, which is safer
+// than crashing the API at boot. CloudWatch alarms can target the
+// "RCD type lookup self-test FAILED" error log if a deploy ever ships a
+// broken JSON edit.
+{
+  const { selfTest: rcdLookupSelfTest } = await import('./extraction/rcd-type-lookup.js');
+  rcdLookupSelfTest(logger);
+}
+
 // Start listening
 httpServer.listen(PORT, '0.0.0.0', () => {
   logger.info(`EICR Backend API server running`, {
@@ -139,6 +151,21 @@ async function gracefulShutdown(signal) {
 
   // 3. Stop session cleanup interval
   stopSessionCleanup();
+
+  // 3a. Phase 1.3 (PLAN-backend-final.md) — drain any pending
+  // client_log_batch buffers BEFORE the DB pool / transporter / queue
+  // close so a SIGTERM during ECS deploy doesn't silently lose the
+  // last 30 s of buffered telemetry. Awaited (best-effort): a slow S3
+  // round trip will be backstopped by the gracefulShutdown forceTimer
+  // above (10 s ceiling); individual flush failures are logged inside
+  // flushSession and the batch is left on the entry for the next
+  // process restart to NOT pick up — there's no cross-process buffer
+  // recovery, so we accept the rare lost-on-S3-error case.
+  try {
+    await flushAllRealtimeLogs(activeSessions, { reason: 'graceful_shutdown' });
+  } catch (e) {
+    logger.error('flushAllRealtimeLogs during shutdown failed', { error: e?.message });
+  }
 
   // 4. Close job queue
   try {

@@ -7,6 +7,8 @@ import { JobHeader } from '@/components/job/job-header';
 import { JobTabNav } from '@/components/job/job-tab-nav';
 import { FloatingActionBar } from '@/components/job/floating-action-bar';
 import { RecordingChrome } from '@/components/recording/recording-chrome';
+import { ChitchatPauseBanner } from '@/components/recording/chitchat-pause-banner';
+import { JobTourMount } from '@/components/tour/job-tour-mount';
 import { TranscriptBar } from '@/components/recording/transcript-bar';
 import { JobProvider } from '@/lib/job-context';
 import { RecordingProvider } from '@/lib/recording-context';
@@ -142,6 +144,15 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
               <div className="flex-1 overflow-y-auto pb-28">{children}</div>
               <FloatingActionBar />
               <RecordingChrome />
+              {/* Chitchat-pause banner — only renders when the backend
+                  has paused Sonnet forwarding (10 zero-engagement turns).
+                  iOS canon: JobDetailView.swift:847-861 mounts the
+                  equivalent SwiftUI overlay at top of the view. */}
+              <ChitchatPauseBanner />
+              {/* Phase D — Job-detail guided tour. Auto-starts on
+                  first run; replays via JobHeader menu's "Guided
+                  Tour" item. iOS canon: TourManager.jobSteps. */}
+              <JobTourMount />
             </div>
           </RecordingProvider>
         </JobProvider>

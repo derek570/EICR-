@@ -1,0 +1,131 @@
+name: rcbo_sonnet-write_all-but-one_all-circuits
+suite: exhaustive
+description: >-
+  RCBO SONNET-WRITE all-but-one value scenario for all circuits.
+
+  The entry transcript avoids dialogue trigger words; Sonnet writes the volunteered slot values and
+  tryEnterScriptFromWrites either enters the single-circuit script or skips multi-circuit batch
+  writes.
+
+  RCBO BS mirroring is state-only here: rcd_bs_en must not appear as an extracted reading unless
+  Sonnet explicitly writes it.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+    - number: 3
+      board_id: main
+      designation: Cooker
+    - number: 4
+      board_id: main
+      designation: Shower
+transcript:
+  - at_ms: 0
+    text: >-
+      overcurrent standard BS EN 61009, curve B, 32 amps, residual type A, residual current 30 mA
+      for all circuits.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 1
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 1
+      field: ocpd_type
+      value: B
+    - circuit: 1
+      field: ocpd_rating
+      value: "32"
+    - circuit: 1
+      field: rcd_type
+      value: A
+    - circuit: 1
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 2
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 2
+      field: ocpd_type
+      value: B
+    - circuit: 2
+      field: ocpd_rating
+      value: "32"
+    - circuit: 2
+      field: rcd_type
+      value: A
+    - circuit: 2
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 3
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 3
+      field: ocpd_type
+      value: B
+    - circuit: 3
+      field: ocpd_rating
+      value: "32"
+    - circuit: 3
+      field: rcd_type
+      value: A
+    - circuit: 3
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 4
+      field: ocpd_bs_en
+      value: BS EN 61009
+    - circuit: 4
+      field: ocpd_type
+      value: B
+    - circuit: 4
+      field: ocpd_rating
+      value: "32"
+    - circuit: 4
+      field: rcd_type
+      value: A
+    - circuit: 4
+      field: rcd_operating_current_ma
+      value: "30"
+  has_no_reading:
+    - circuit: 1
+      field: ocpd_breaking_capacity
+    - circuit: 2
+      field: ocpd_breaking_capacity
+    - circuit: 3
+      field: ocpd_breaking_capacity
+    - circuit: 4
+      field: ocpd_breaking_capacity
+    - circuit: 1
+      field: rcd_bs_en
+      value: BS EN 61009
+    - circuit: 2
+      field: rcd_bs_en
+      value: BS EN 61009
+    - circuit: 3
+      field: rcd_bs_en
+      value: BS EN 61009
+    - circuit: 4
+      field: rcd_bs_en
+      value: BS EN 61009
+  ask_user_count:
+    min: 0
+    max: 0
+  confirmation_count:
+    min: 5
+  confirmation_text_contains:
+    - All circuits
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

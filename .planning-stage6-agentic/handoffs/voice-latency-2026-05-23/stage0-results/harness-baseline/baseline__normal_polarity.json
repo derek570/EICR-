@@ -1,0 +1,59 @@
+{
+  "name": "normal_polarity",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 303,
+    "first_transcript_to_extraction_ms": 4490,
+    "first_transcript_to_audible_ms": 4846,
+    "transcripts_sent": 1,
+    "extractions_received": 1,
+    "confirmations_total": 1,
+    "tts_fetches": [
+      {
+        "text_preview": "Circuit 12, polarity confirmed",
+        "first_byte_ms": 356,
+        "total_ms": 356,
+        "bytes": 33898
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 163,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779566274026_1ubb9i\"}"
+    },
+    {
+      "at_ms": 215,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Circuit twelve polarity confirmed.\"}"
+    },
+    {
+      "at_ms": 303,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"e265b39b-8a46-45a0-ab0d-8a9af22324ef\"}"
+    },
+    {
+      "at_ms": 303,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 4705,
+      "type": "extraction",
+      "summary": "readings=1 confirmations=1"
+    },
+    {
+      "at_ms": 4705,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 21278,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":1,\"cacheReads\":41096"
+    }
+  ]
+}

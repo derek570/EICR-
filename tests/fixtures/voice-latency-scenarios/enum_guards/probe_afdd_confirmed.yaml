@@ -1,0 +1,61 @@
+name: probe_afdd_confirmed
+suite: enum_guards
+description: |
+  REGRESSION GUARD — afdd_button_confirmed off-enum.
+  Inspector dictates "AFDD button confirmed on circuit 3."
+  Canonical per schema enum: "OK" or "Y" (both pass-meaning).
+
+  PROD OBSERVATION 2026-06-02 (this audit): Sonnet writes
+  afdd_button_confirmed="true" (off-enum; valid values are
+  "", OK, FAIL, N/A, Y, N).
+
+  coerceRecordReadingValue (src/extraction/record-reading-coercion.js)
+  has ONLY polarity_confirmed and supply_polarity_confirmed in the
+  POLARITY_FIELDS set. afdd_button_confirmed and rcd_button_confirmed
+  are NOT coerced, so Sonnet's "true" passes through to iOS where
+  the picker renders blank (no matching option).
+
+  This is the SAME bug class as polarity_confirmed pre-coercion
+  (sessions before the coercion table was extended). Extending
+  POLARITY_FIELDS to include the two button fields would close it.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "AFDD button confirmed on circuit 3."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "Y"  # canonical after coercion
+  has_no_reading:
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "true"
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "TRUE"
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "confirmed"
+    - circuit: 3
+      field: afdd_button_confirmed
+      value: "CONFIRMED"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

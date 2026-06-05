@@ -1,0 +1,48 @@
+name: value_correction
+suite: baseline
+description: |
+  Inspector pre-recorded R1+R2=0.32 for circuit 2, then verbally
+  corrects to 0.42. The second write must overwrite the first — last
+  write wins, no ambiguity ask, no "but you already said 0.32".
+
+  Covers the common real-world flow where an inspector mis-dictates,
+  notices, and re-dictates the corrected value. Sonnet's prompt
+  guidance is to treat the more-recent value as authoritative when
+  the inspector explicitly says "actually" / "I meant" / "sorry".
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+    - number: 2
+      board_id: main
+      designation: Upstairs Sockets
+      # Pre-existing value the correction must overwrite.
+      r1_plus_r2: "0.32"
+
+transcript:
+  - at_ms: 0
+    text: "Actually R1 plus R2 for upstairs sockets is 0.42."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    # Legacy wire-format name (`r1_plus_r2`). Sonnet emits canonical
+    # `r1_r2_ohm`; validateAndCorrectFields rewrites it before WS send.
+    # See SCHEMA.md "Field names" table.
+    - circuit: 2
+      field: r1_plus_r2
+      value: "0.42"
+  # No ambiguity question — the designation match is unique.
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

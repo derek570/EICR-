@@ -14,7 +14,7 @@ import {
 import { api } from '@/lib/api-client';
 import { useCurrentUser } from '@/lib/use-current-user';
 import { isSystemAdmin } from '@/lib/roles';
-import { ApiError } from '@/lib/types';
+import { ApiError, type CompanyLite } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { IconButton } from '@/components/ui/icon-button';
@@ -30,10 +30,15 @@ import { SectionCard } from '@/components/ui/section-card';
  * 6b invite flow — there's no email sending. Passwords ≥ 8 chars; we
  * check client-side so a bad password doesn't round-trip as a 400.
  *
- * `company_id` is intentionally a free-form UUID field with a small
- * hint — the handoff explicitly defers a company picker to a later
- * phase, so it's "advanced-only" here. Leaving it blank is the normal
- * path.
+ * `company_id` is rendered as a Company picker populated by
+ * `api.adminListCompanies()` — same wire path iOS
+ * `AdminCreateUserView.swift` uses via `APIClient.adminListCompanies()`.
+ * Pre-2026-05-11 this was a free-form UUID input with a hint that "a
+ * picker will land in a later phase"; closing the parity row now that
+ * the backend (`GET /api/admin/users/companies/list`) is in place. If
+ * the list-fetch fails (e.g. transient 5xx), we fall back to the free-
+ * form input so an admin isn't blocked from creating a user during an
+ * outage.
  */
 export default function AdminCreateUserPage() {
   const router = useRouter();
@@ -50,6 +55,26 @@ export default function AdminCreateUserPage() {
   );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [companies, setCompanies] = React.useState<CompanyLite[] | null>(null);
+  const [companiesLoadFailed, setCompaniesLoadFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    api
+      .adminListCompanies()
+      .then((rows) => {
+        if (cancelled) return;
+        setCompanies(rows);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Fall back to the free-form UUID input — see docstring rationale.
+        setCompaniesLoadFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Role gate (middleware handles the main path; this is belt-and-braces).
   if (user && !isSystemAdmin(user)) {
@@ -178,15 +203,31 @@ export default function AdminCreateUserPage() {
             onChange={(e) => setCompanyName(e.target.value)}
             hint="Displayed on the user's certificates."
           />
-          <FloatingLabelInput
-            label="Company ID"
-            value={companyId}
-            onChange={(e) => setCompanyId(e.target.value)}
-            placeholder="UUID (advanced)"
-            autoCapitalize="none"
-            autoCorrect="off"
-            hint="Leave blank unless you know the company UUID. A picker will land in a later phase."
-          />
+          {companies !== null && !companiesLoadFailed ? (
+            <LabelledSelect
+              label="Company"
+              value={companyId}
+              onChange={(v) => setCompanyId(v)}
+              options={[
+                { value: '', label: '— None —' },
+                ...companies.map((c) => ({ value: c.id, label: c.name })),
+              ]}
+            />
+          ) : (
+            <FloatingLabelInput
+              label="Company ID"
+              value={companyId}
+              onChange={(e) => setCompanyId(e.target.value)}
+              placeholder="UUID (advanced)"
+              autoCapitalize="none"
+              autoCorrect="off"
+              hint={
+                companiesLoadFailed
+                  ? "Couldn't load companies — paste the UUID directly."
+                  : 'Loading companies…'
+              }
+            />
+          )}
         </SectionCard>
 
         {error ? (

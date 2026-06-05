@@ -134,10 +134,10 @@ Also report whether one of the slots at the LEFT or RIGHT edge of the panel is o
 - "right-edge" = the RIGHTMOST position is the main switch, not a fuse carrier.
 
 Return the TOTAL number of positions (carriers + any main switch at the edge) as carrier_count. A 6-way board with main switch at the right edge has carrier_count = 7 and main_switch_offset = "right-edge". A 6-way board with a separate main switch below or to the side of the carrier bank has carrier_count = 6 and main_switch_offset = "none".${
-    retryContext
-      ? `\n\nIMPORTANT RECOUNT: we previously estimated this board has ${retryContext.previousCount} positions, but that value is outside the expected range given the panel width. From the panel geometry we measured the expected number of slots is between ${retryContext.expectedMin} and ${retryContext.expectedMax} (based on a typical rewireable carrier pitch of 30–90 px on a ${retryContext.panelWidthPx}-px-wide panel). Please recount carefully — walk left-to-right across the panel band and count every distinct carrier or main-switch slot separated by a visible gap or join between mouldings. Do NOT just echo the previous count; look again at the image.`
-      : ''
-  }
+  retryContext
+    ? `\n\nIMPORTANT RECOUNT: we previously estimated this board has ${retryContext.previousCount} positions, but that value is outside the expected range given the panel width. From the panel geometry we measured the expected number of slots is between ${retryContext.expectedMin} and ${retryContext.expectedMax} (based on a typical rewireable carrier pitch of 30–90 px on a ${retryContext.panelWidthPx}-px-wide panel). Please recount carefully — walk left-to-right across the panel band and count every distinct carrier or main-switch slot separated by a visible gap or join between mouldings. Do NOT just echo the previous count; look again at the image.`
+    : ''
+}
 
 Respond with JSON only:
 {"carrier_count": <int>, "main_switch_offset": "none"|"left-edge"|"right-edge"}`;
@@ -337,9 +337,7 @@ export async function getPanelGeometry(imageBuffer) {
       typeof panel_left !== 'number' ||
       typeof panel_right !== 'number'
     ) {
-      throw new Error(
-        'getPanelGeometry: VLM response missing required panel_* numeric fields'
-      );
+      throw new Error('getPanelGeometry: VLM response missing required panel_* numeric fields');
     }
     const side =
       main_switch_side === 'left' || main_switch_side === 'right' || main_switch_side === 'none'
@@ -468,18 +466,12 @@ export async function getCarrierCount(imageBuffer, medianPanel, imageDims) {
     typeof medianPanel.panel_left !== 'number' ||
     typeof medianPanel.panel_right !== 'number'
   ) {
-    throw new Error(
-      'getCarrierCount: medianPanel must include numeric panel_left and panel_right'
-    );
+    throw new Error('getCarrierCount: medianPanel must include numeric panel_left and panel_right');
   }
   if (medianPanel.panel_right <= medianPanel.panel_left) {
     throw new Error('getCarrierCount: panel_right must be greater than panel_left');
   }
-  if (
-    !imageDims ||
-    !Number.isFinite(imageDims.imageWidth) ||
-    imageDims.imageWidth <= 0
-  ) {
+  if (!imageDims || !Number.isFinite(imageDims.imageWidth) || imageDims.imageWidth <= 0) {
     throw new Error('getCarrierCount: imageDims.imageWidth must be a positive number');
   }
 
@@ -611,14 +603,8 @@ export async function cropCarrierSlot(imageBuffer, slotIndex, geom) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('cropCarrierSlot: imageBuffer must be a Buffer');
   }
-  const {
-    slotCentersX,
-    carrierPitchPx,
-    panelTopNorm,
-    panelBottomNorm,
-    imageWidth,
-    imageHeight,
-  } = geom || {};
+  const { slotCentersX, carrierPitchPx, panelTopNorm, panelBottomNorm, imageWidth, imageHeight } =
+    geom || {};
   if (!Array.isArray(slotCentersX) || slotCentersX.length === 0) {
     throw new Error('cropCarrierSlot: geom.slotCentersX must be a non-empty array');
   }
@@ -712,103 +698,108 @@ export async function classifyCarriers(_imageBuffer, slotCrops, opts = {}) {
   const resultsBySlotIndex = new Map();
   const usage = { inputTokens: 0, outputTokens: 0 };
 
-  for (const batch of batches) {
-    const slotIndices = batch.map((b) => b.slotIndex);
-    const base64s = batch.map((b) => b.buffer.toString('base64'));
+  // Batches run in PARALLEL via Promise.all. Disjoint slotIndex ranges
+  // per batch so Map.set never collides; usage += is single-statement
+  // synchronous so atomic in JS's single-threaded execution.
+  await Promise.all(
+    batches.map(async (batch) => {
+      const slotIndices = batch.map((b) => b.slotIndex);
+      const base64s = batch.map((b) => b.buffer.toString('base64'));
 
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), CCU_REWIREABLE_TIMEOUT_MS);
-    let response;
-    try {
-      response = await anthropic.messages.create(
-        {
-          model,
-          max_tokens: CCU_REWIREABLE_STAGE3_MAX_TOKENS,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                ...base64s.map((data) => ({
-                  type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data },
-                })),
-                { type: 'text', text: CARRIER_CLASSIFY_PROMPT(slotIndices) },
-              ],
-            },
-          ],
-        },
-        { signal: abortController.signal }
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const text = (response.content || [])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
-    let arr;
-    try {
-      let jsonStr = text.trim();
-      const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
-      if (fence) jsonStr = fence[1].trim();
-      const firstBracket = jsonStr.indexOf('[');
-      const lastBracket = jsonStr.lastIndexOf(']');
-      if (firstBracket !== -1 && lastBracket > firstBracket) {
-        jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
-      }
-      arr = JSON.parse(jsonStr);
-      if (!Array.isArray(arr)) throw new Error('not an array');
-    } catch (err) {
-      throw new Error(`classifyCarriers: failed to parse VLM array response: ${err.message}`);
-    }
-
-    const u = response.usage || {};
-    usage.inputTokens += u.input_tokens || 0;
-    usage.outputTokens += u.output_tokens || 0;
-
-    for (let i = 0; i < batch.length; i++) {
-      const crop = batch[i];
-      const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
-
-      const rawBodyColour =
-        typeof vlmItem.bodyColour === 'string' ? vlmItem.bodyColour.toLowerCase() : null;
-      const bodyColour =
-        rawBodyColour && Object.prototype.hasOwnProperty.call(BODY_COLOUR_TO_AMPS, rawBodyColour)
-          ? rawBodyColour
-          : rawBodyColour === 'unknown'
-            ? 'unknown'
-            : rawBodyColour
-              ? rawBodyColour
-              : null;
-
-      // If VLM returned a recognised body colour but no rating, derive rating from the
-      // BS 3036 colour code. VLM-returned ratings win (the VLM may have read a printed
-      // number on a cartridge face and we must not overwrite that with colour).
-      let ratingAmps =
-        typeof vlmItem.ratingAmps === 'number'
-          ? vlmItem.ratingAmps
-          : (vlmItem.ratingAmps ?? null);
-      if (ratingAmps == null && bodyColour && BODY_COLOUR_TO_AMPS[bodyColour] != null) {
-        ratingAmps = BODY_COLOUR_TO_AMPS[bodyColour];
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), CCU_REWIREABLE_TIMEOUT_MS);
+      let response;
+      try {
+        response = await anthropic.messages.create(
+          {
+            model,
+            max_tokens: CCU_REWIREABLE_STAGE3_MAX_TOKENS,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  ...base64s.map((data) => ({
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/jpeg', data },
+                  })),
+                  { type: 'text', text: CARRIER_CLASSIFY_PROMPT(slotIndices) },
+                ],
+              },
+            ],
+          },
+          { signal: abortController.signal }
+        );
+      } finally {
+        clearTimeout(timeoutId);
       }
 
-      resultsBySlotIndex.set(crop.slotIndex, {
-        slotIndex: crop.slotIndex,
-        bbox: crop.bbox,
-        classification: vlmItem.classification || 'unknown',
-        bodyColour,
-        ratingAmps,
-        bsEn: vlmItem.bsEn ?? null,
-        confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
-        crop: {
+      const text = (response.content || [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+
+      let arr;
+      try {
+        let jsonStr = text.trim();
+        const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
+        if (fence) jsonStr = fence[1].trim();
+        const firstBracket = jsonStr.indexOf('[');
+        const lastBracket = jsonStr.lastIndexOf(']');
+        if (firstBracket !== -1 && lastBracket > firstBracket) {
+          jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
+        }
+        arr = JSON.parse(jsonStr);
+        if (!Array.isArray(arr)) throw new Error('not an array');
+      } catch (err) {
+        throw new Error(`classifyCarriers: failed to parse VLM array response: ${err.message}`);
+      }
+
+      const u = response.usage || {};
+      usage.inputTokens += u.input_tokens || 0;
+      usage.outputTokens += u.output_tokens || 0;
+
+      for (let i = 0; i < batch.length; i++) {
+        const crop = batch[i];
+        const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+
+        const rawBodyColour =
+          typeof vlmItem.bodyColour === 'string' ? vlmItem.bodyColour.toLowerCase() : null;
+        const bodyColour =
+          rawBodyColour && Object.prototype.hasOwnProperty.call(BODY_COLOUR_TO_AMPS, rawBodyColour)
+            ? rawBodyColour
+            : rawBodyColour === 'unknown'
+              ? 'unknown'
+              : rawBodyColour
+                ? rawBodyColour
+                : null;
+
+        // If VLM returned a recognised body colour but no rating, derive rating from the
+        // BS 3036 colour code. VLM-returned ratings win (the VLM may have read a printed
+        // number on a cartridge face and we must not overwrite that with colour).
+        let ratingAmps =
+          typeof vlmItem.ratingAmps === 'number'
+            ? vlmItem.ratingAmps
+            : (vlmItem.ratingAmps ?? null);
+        if (ratingAmps == null && bodyColour && BODY_COLOUR_TO_AMPS[bodyColour] != null) {
+          ratingAmps = BODY_COLOUR_TO_AMPS[bodyColour];
+        }
+
+        resultsBySlotIndex.set(crop.slotIndex, {
+          slotIndex: crop.slotIndex,
           bbox: crop.bbox,
-          base64: crop.buffer.toString('base64'),
-        },
-      });
-    }
-  }
+          classification: vlmItem.classification || 'unknown',
+          bodyColour,
+          ratingAmps,
+          bsEn: vlmItem.bsEn ?? null,
+          confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
+          crop: {
+            bbox: crop.bbox,
+            base64: crop.buffer.toString('base64'),
+          },
+        });
+      }
+    })
+  );
 
   // Preserve input order.
   const slots = slotCrops.map(
@@ -999,9 +990,7 @@ export async function classifyRewireableSlots(imageBuffer, preparedGeom) {
   // Stage 1's SD flag is combined by the wrapper / caller.
   const stage3LowConf =
     Array.isArray(slots) &&
-    slots.some(
-      (s) => typeof s.confidence === 'number' && s.confidence < STAGE3_LOW_CONF_THRESHOLD
-    );
+    slots.some((s) => typeof s.confidence === 'number' && s.confidence < STAGE3_LOW_CONF_THRESHOLD);
 
   return {
     slots,
@@ -1053,8 +1042,7 @@ export async function extractCcuRewireable(imageBuffer) {
 
   // Overall lowConfidence: stage1 SD-triggered OR any classified slot below
   // the stage3 confidence floor (delivered by classifyRewireableSlots).
-  const lowConfidence =
-    prepared.stageOutputs.stage1.lowConfidence || classified.lowConfidence;
+  const lowConfidence = prepared.stageOutputs.stage1.lowConfidence || classified.lowConfidence;
 
   return {
     schemaVersion: 'ccu-rewireable-v1',

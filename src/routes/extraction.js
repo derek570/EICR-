@@ -13,16 +13,26 @@ import { sonnetExtractFromAudio } from '../sonnet_extract.js';
 import { getActiveSession } from '../state/recording-sessions.js';
 import logger from '../logger.js';
 import sharp from 'sharp';
-import { createFileFilter, IMAGE_MIMES, handleUploadError } from '../utils/upload.js';
 import {
-  prepareModernGeometry,
-  classifyModernSlots,
-} from '../extraction/ccu-geometric.js';
+  createFileFilter,
+  IMAGE_MIMES,
+  DOCUMENT_MIMES,
+  handleUploadError,
+} from '../utils/upload.js';
+import { prepareModernGeometry, classifyModernSlots } from '../extraction/ccu-geometric.js';
+import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
+import { tightenAndChunkQuad } from '../extraction/ccu-rail-quad.js';
+import { inferTechnologyFromModel } from '../extraction/board-model-registry.js';
 import {
   prepareRewireableGeometry,
   classifyRewireableSlots,
 } from '../extraction/ccu-geometric-rewireable.js';
 import { extractSlotLabels } from '../extraction/ccu-label-pass.js';
+import { resolveMainSwitchSide } from '../extraction/main-switch-resolver.js';
+import { applyRcdTypeLookup, lookupRcdType } from '../extraction/rcd-type-lookup.js';
+import { writeRcdPendingEntry } from '../extraction/rcd-pending-writer.js';
+import { evaluateQualityGate } from '../extraction/ccu-quality-gate.js';
+import { withIdempotency } from '../middleware/idempotency.js';
 
 const router = Router();
 
@@ -37,6 +47,135 @@ logger.info('CCU extraction config', {
   maxUploadMB: CCU_MAX_UPLOAD_BYTES / (1024 * 1024),
 });
 
+/**
+ * Convert the box-tightener output (`tightenAndChunk`) into the same shape
+ * `prepareModernGeometry` returns, so downstream Stage 3/4/merger code is
+ * unchanged. Coordinates are 0-1000 normalised over the source image.
+ */
+export function adaptTightenerToPrepared(t) {
+  const { imageWidth, imageHeight, railFace, moduleCount, pitchPx, slotCentersPx, quadrilateral } =
+    t;
+  const xToNorm = (x) => (x / imageWidth) * 1000;
+  const yToNorm = (y) => (y / imageHeight) * 1000;
+  // railQuad is the 4 detected rail corners in apiBytes-pixel coords —
+  // preserved here (not on the axis-aligned railFace, which throws away
+  // the rotation/keystone). The CCU rail-region dewarp consumes this to
+  // rectify the rail before single-shot, fixing label-zone bleed on
+  // tilted or off-axis photos. Null on the legacy box-tightener path
+  // (only the quad-v1 path emits corners).
+  const railQuad =
+    quadrilateral && quadrilateral.tl && quadrilateral.tr && quadrilateral.bl && quadrilateral.br
+      ? {
+          tl: { x: quadrilateral.tl.x, y: quadrilateral.tl.y },
+          tr: { x: quadrilateral.tr.x, y: quadrilateral.tr.y },
+          bl: { x: quadrilateral.bl.x, y: quadrilateral.bl.y },
+          br: { x: quadrilateral.br.x, y: quadrilateral.br.y },
+        }
+      : null;
+  return {
+    medianRails: {
+      rail_top: yToNorm(railFace.top),
+      rail_bottom: yToNorm(railFace.bottom),
+      rail_left: xToNorm(railFace.left),
+      rail_right: xToNorm(railFace.right),
+    },
+    railQuad,
+    moduleCount,
+    vlmCount: moduleCount,
+    disagreement: 0,
+    truncatedFromDisagreement: false,
+    lowConfidence: !t.refinement.accepted,
+    stage1Source: 'roi-hint',
+    // Top-level usage + timings — assembleGeometricResult reads these directly
+    // (prepared.usage.inputTokens, prepared.timings.stage1Ms). The box-tightener
+    // is pure CV so usage is zero; tightener wall-clock isn't currently surfaced
+    // here, so stage1/stage2Ms are zero. The Anthropic-call timing log fired
+    // by the route handler captures the real wall-clock cost of the pipeline.
+    usage: { inputTokens: 0, outputTokens: 0 },
+    timings: { stage1Ms: 0, stage2Ms: 0 },
+    railBbox: {
+      left: xToNorm(railFace.left),
+      right: xToNorm(railFace.right),
+      top: yToNorm(railFace.top),
+      bottom: yToNorm(railFace.bottom),
+    },
+    railBboxSource: 'box-tightener',
+    pitchSource: 'box-tightener',
+    cvPitchDiag: {
+      pitchPx,
+      moduleCountFromCv: moduleCount,
+      railWidthPx: railFace.right - railFace.left,
+      reason: t.refinement.accepted ? null : 'no-multi-anchor-refinement',
+    },
+    pitchCrossCheck: null,
+    chunkingDiag: {
+      imageWidth,
+      imageHeight,
+      railWidthPx: railFace.right - railFace.left,
+      railHeightPx: railFace.bottom - railFace.top,
+      pitchSource: 'box-tightener',
+      moduleCountRaw: (railFace.right - railFace.left) / Math.max(1, t.initialPitchPx),
+      moduleCount,
+      moduleWidthPxUsed: pitchPx,
+      initialPitchPx: t.initialPitchPx,
+      refinement: t.refinement,
+    },
+    slotCentersX: slotCentersPx.map(xToNorm),
+    moduleWidth: (pitchPx / imageWidth) * 1000,
+    mainSwitchWidth: null,
+    mainSwitchCenterX: null,
+    mainSwitchSide: null,
+    imageWidth,
+    imageHeight,
+    panelBounds: null,
+    stageOutputs: {
+      // Box-tightener doesn't produce stage1/2 raw outputs, but the
+      // route handler reads `stageOutputs.stage1.medianRails` for label-
+      // pass crops. Synthesize a minimal shape pointing back at our
+      // medianRails so downstream code doesn't NPE.
+      stage1: {
+        medianRails: {
+          rail_top: yToNorm(railFace.top),
+          rail_bottom: yToNorm(railFace.bottom),
+          rail_left: xToNorm(railFace.left),
+          rail_right: xToNorm(railFace.right),
+        },
+        panelBounds: null,
+        boardManufacturer: null,
+        boardModel: null,
+        mainSwitchPosition: null,
+        mainSwitchRating: null,
+        spdPresent: null,
+        boardTechnology: null,
+        confidence: t.refinement.accepted ? 0.85 : 0.6,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        lowConfidence: !t.refinement.accepted,
+        source: 'box-tightener',
+      },
+      stage2: {
+        geometricCount: moduleCount,
+        vlmCount: moduleCount,
+        disagreement: 0,
+        slotCentersX: slotCentersPx.map(xToNorm),
+        moduleWidth: (pitchPx / imageWidth) * 1000,
+        mainSwitchWidth: null,
+        mainSwitchCenterX: null,
+        mainSwitchSide: null,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        railBbox: {
+          left: xToNorm(railFace.left),
+          right: xToNorm(railFace.right),
+          top: yToNorm(railFace.top),
+          bottom: yToNorm(railFace.bottom),
+        },
+        railBboxSource: 'box-tightener',
+        pitchSource: 'box-tightener',
+        cvPitchDiag: { pitchPx, moduleCountFromCv: moduleCount },
+      },
+    },
+  };
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: os.tmpdir(),
@@ -47,6 +186,23 @@ const upload = multer({
   }),
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: createFileFilter(IMAGE_MIMES),
+});
+
+// Doc-extract takes either an image (camera-shot of a printed cert) or a
+// PDF (typed cert export). PDFs go straight to Anthropic's native document
+// block — no client-side rendering or downscaling — so we accept the PDF
+// MIME alongside images on this route only. CCU + observation routes
+// remain image-only.
+const documentUpload = multer({
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname) || '.bin';
+      cb(null, `${file.fieldname}-${Date.now()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: createFileFilter([...IMAGE_MIMES, ...DOCUMENT_MIMES]),
 });
 
 // Debug audio keyword patterns
@@ -61,26 +217,24 @@ const sonnetChunkLimits = new Map();
  * train an on-device YOLO detector, not for high-resolution recall. This
  * keeps S3 cost negligible even as TestFlight volume scales.
  */
-async function compressForTrainingLog(buffer, targetBytes = 500 * 1024) {
-  let out = await sharp(buffer)
-    .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 75 })
-    .toBuffer();
-  if (out.length <= targetBytes) return out;
-  out = await sharp(buffer)
-    .resize(1280, 1280, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 65 })
-    .toBuffer();
-  return out;
-}
-
 /**
  * Fire-and-forget S3 logging of every CCU extraction — source of the
- * auto-labelled training corpus for the Phase B→E geometric pipeline.
- * Writes a small compressed JPEG + the VLM result JSON to:
+ * auto-labelled training corpus for the geometric pipeline AND the
+ * primary artefact for debugging mis-extractions after the fact.
+ *
+ * Writes the FULL-RES original JPEG (as uploaded by the client, no
+ * resize, no re-encode) + the VLM result JSON to:
  *   s3://$S3_BUCKET/ccu-extractions/{userId}/{sessionId|no-session}/{extractionId}/
- * Each upload is keyed by a unique extractionId so repeat shots within the
- * same recording session never overwrite earlier samples.
+ *
+ * 2026-05-21: switched from compressed (1600px / q75, ~180 KB) to full
+ * original. The compressed version destroyed label-strip pixel detail
+ * on UK CCUs (printed pictograms are tiny relative to the rail), making
+ * it impossible to re-run the VLM against the same image to debug
+ * mis-attributed labels. Storage delta is ~$15/yr at 5k certs/yr —
+ * negligible at any realistic scale.
+ *
+ * Each upload is keyed by a unique extractionId so repeat shots within
+ * the same recording session never overwrite earlier samples.
  */
 async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, meta }) {
   const extractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -90,10 +244,9 @@ async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, me
   const sessionSegment = String(sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'no-session';
   const prefix = `ccu-extractions/${userId}/${sessionSegment}/${extractionId}`;
 
-  const compressed = await compressForTrainingLog(imageBuffer);
   // storage.uploadBytes / uploadJson swallow S3 errors and return false. Check each
   // return value so silent S3 outages don't quietly discard training samples.
-  const jpegOk = await storage.uploadBytes(compressed, `${prefix}/original.jpg`, 'image/jpeg');
+  const jpegOk = await storage.uploadBytes(imageBuffer, `${prefix}/original.jpg`, 'image/jpeg');
   if (!jpegOk) {
     throw new Error(`storage.uploadBytes returned false for ${prefix}/original.jpg`);
   }
@@ -109,27 +262,32 @@ async function logCcuTrainingData({ userId, sessionId, imageBuffer, analysis, me
     userId,
     sessionId: sessionId || null,
     extractionId,
-    compressedBytes: compressed.length,
+    originalBytes: imageBuffer.length,
     circuitCount: analysis?.circuits?.length || 0,
   });
 }
 
 /**
- * BS/EN standard number lookup by device type
+ * BS/EN standard number lookup by device type. Canonicals match
+ * `config/field_schema.json` `ocpd_bs_en` / `rcd_bs_en` options and
+ * iOS `Constants.swift` picker options — written form is the prefixed
+ * form ("BS EN 60898", not bare-digit "60898-1") so the iOS picker,
+ * the printed PDF, the resolver enum check, and what inspectors say
+ * aloud all agree.
  */
 const BS_EN_LOOKUP = {
-  MCB: '60898-1',
-  B: '60898-1',
-  C: '60898-1',
-  D: '60898-1',
-  RCBO: '61009',
-  RCD: '61008',
-  RCCB: '61008',
-  MCCB: '60947-2',
-  SWITCH: '60947-3',
-  ISOLATOR: '60947-3',
-  gG: '60269-2',
-  HRC: '60269-2',
+  MCB: 'BS EN 60898',
+  B: 'BS EN 60898',
+  C: 'BS EN 60898',
+  D: 'BS EN 60898',
+  RCBO: 'BS EN 61009',
+  RCD: 'BS EN 61008',
+  RCCB: 'BS EN 61008',
+  MCCB: 'BS EN 60947-2',
+  SWITCH: 'BS EN 60947-3',
+  ISOLATOR: 'BS EN 60947-3',
+  gG: 'BS EN 60269-2',
+  HRC: 'BS EN 60269-2',
   REW: 'BS 3036',
   REWIREABLE: 'BS 3036',
   CARTRIDGE: 'BS 1361',
@@ -140,7 +298,7 @@ const BS_EN_LOOKUP = {
  * Acts as a safety net after Claude Vision — catches common UK abbreviations
  * and shorthand that the model may return verbatim instead of normalising.
  */
-function normaliseCircuitLabels(analysis) {
+export function normaliseCircuitLabels(analysis) {
   if (!analysis?.circuits) return analysis;
 
   // Map of patterns (lowercase) to normalised label.
@@ -240,7 +398,7 @@ function normaliseCircuitLabels(analysis) {
 /**
  * Apply fallback BS/EN numbers to circuits based on device type
  */
-function applyBsEnFallback(analysis) {
+export function applyBsEnFallback(analysis) {
   if (!analysis?.circuits) return analysis;
 
   for (const circuit of analysis.circuits) {
@@ -297,23 +455,45 @@ function applyBsEnFallback(analysis) {
   return analysis;
 }
 
+// Confidence threshold used by detectRcdWaveformOutliers (in this file)
+// for filtering eligible slots when looking for same-manufacturer
+// waveform disagreements. NOT used by lookupMissingRcdTypes — that
+// path no longer overrides existing waveform reads (the prior
+// "uniform low confidence" override was pulled 2026-05-21 after
+// Ciaran's Crabtree field test had visually-correct AC reads
+// clobbered to A by a generic Crabtree-RCBO web-search hit).
+export const RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD = 0.85;
+
 /**
- * Web search pass for missing RCD types.
- * For circuits where GPT Vision couldn't determine the RCD type from the
- * waveform symbol or its training data, use gpt-5-search-api to look up
- * the manufacturer datasheet and determine the correct type.
- * Only fires when there are circuits with null rcd_type but known model info.
+ * Web search pass to FILL missing RCD types only (no overrides).
+ *
+ * Single trigger: at least one RCD-protected circuit has rcd_type=null
+ * (the VLM couldn't read the waveform glyph). The search fills nulls;
+ * existing AC/A/F/B reads from the VLM are preserved untouched.
+ *
+ * Gating (2026-05-21 — Derek's rule "only override when EXACT model
+ * found, not similar or best guess"):
+ *   - manufacturer must be non-empty
+ *   - board_model must be non-empty
+ * Manufacturer alone returns generic catalogue hits (every "Crabtree"
+ * RCBO from any product line) — those guesses were worse than nulls.
+ * Requiring model means the search is keyed on a specific datasheet.
+ *
+ * Removed 2026-05-21:
+ *   - `uniform_low_conf` trigger that overrode existing waveform reads
+ *     based on a manufacturer-only web search. Reproduced wrong-answer
+ *     overrides on every Crabtree Starbreaker in the field-test corpus.
+ *   - `summariseRcdWaveformReads` helper (only used by the above).
  */
-async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
+export async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
   const circuits = analysis.circuits || [];
+  const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
   const manufacturer = analysis.board_manufacturer;
+  const boardModel = analysis.board_model;
 
-  // Collect circuits needing RCD type lookup — must have a model/manufacturer
-  // and be RCD-protected (RCBO or behind an RCD) but missing the type
-  const needsLookup = circuits.filter((c) => c.rcd_protected && !c.rcd_type && manufacturer);
-
-  if (needsLookup.length === 0) {
-    logger.info('RCD type lookup skipped — all RCD-protected circuits already have types', {
+  // Manufacturer required to key the search.
+  if (!manufacturer) {
+    logger.info('RCD type lookup skipped — no manufacturer', {
       userId,
       totalCircuits: circuits.length,
       rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
@@ -321,31 +501,81 @@ async function lookupMissingRcdTypes(analysis, openai, logger, userId) {
     return analysis;
   }
 
+  // Model required to make the search specific to one product. Without
+  // a model, a "Crabtree" search returns hits from any Crabtree consumer
+  // unit — that generic match was the source of the AC→A overrides on
+  // Ciaran's Starbreaker.
+  if (!boardModel || (typeof boardModel === 'string' && boardModel.trim() === '')) {
+    logger.info('RCD type lookup skipped — no board model (manufacturer alone is too generic)', {
+      userId,
+      manufacturer,
+      totalCircuits: circuits.length,
+      rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
+    });
+    return analysis;
+  }
+
+  // Trigger: any RCD-protected circuit with null rcd_type.
+  const missingType = circuits.filter((c) => c.rcd_protected && !c.rcd_type);
+  if (missingType.length === 0) {
+    logger.info('RCD type lookup skipped — all RCD-protected circuits already have types', {
+      userId,
+      manufacturer,
+      boardModel,
+      totalCircuits: circuits.length,
+      rcdProtectedCount: circuits.filter((c) => c.rcd_protected).length,
+    });
+    return analysis;
+  }
+  const trigger = 'missing';
+  const needsLookup = missingType;
+
   // Gather any device info GPT extracted — RCBO model markings, ratings, etc.
-  const boardModel = analysis.board_model || '';
+  // Including per-device part codes (slot.model) when the VLM read them off
+  // the device face — these are the most precise identifier we have (e.g.
+  // Crabtree "61/RB16/30AC" pins exactly one datasheet entry; "Crabtree
+  // Starbreaker" alone could be any of several product generations).
+  const slotByIndex = new Map(slots.map((s) => [s.slotIndex, s]));
   const deviceDescriptions = [];
+  const deviceCodes = new Set();
   for (const c of needsLookup) {
     const parts = [`Circuit ${c.circuit_number}`];
     if (c.is_rcbo) parts.push('RCBO');
     if (c.ocpd_rating_a) parts.push(`${c.ocpd_rating_a}A`);
     if (c.rcd_rating_ma) parts.push(`${c.rcd_rating_ma}mA`);
+    const code = slotByIndex.get(c.slot_index)?.model;
+    if (typeof code === 'string' && code.trim() !== '') {
+      const trimmed = code.trim();
+      parts.push(`part code "${trimmed}"`);
+      deviceCodes.add(trimmed);
+    }
     deviceDescriptions.push(parts.join(' '));
   }
 
   // Also check if there's a standalone RCD protecting these circuits
   const hasStandaloneRcd = needsLookup.some((c) => !c.is_rcbo && c.rcd_protected);
 
+  // If we have device codes, include a focused sub-clause asking the search
+  // to look up by part number too — the board model alone can resolve to
+  // multiple generations of RCBO supply, but the part code on each device
+  // face uniquely identifies a single datasheet.
+  const deviceCodesClause =
+    deviceCodes.size > 0
+      ? `\n\nThe following EXACT part codes are printed on the device faces: ${[...deviceCodes].map((c) => `"${c}"`).join(', ')}. Prefer these — if a datasheet for one of these exact part codes is locatable, use ITS rcd_type rather than the board-level catalogue.`
+      : '';
+
   const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
 It contains ${needsLookup.length} RCD-protected circuits where I need to determine the RCD type.
 ${hasStandaloneRcd ? 'Some circuits are protected by a standalone RCD/RCCB in the board.' : 'The circuits use RCBOs (combined MCB+RCD).'}
 
-Circuits needing RCD type: ${deviceDescriptions.join(', ')}.
+Circuits needing RCD type: ${deviceDescriptions.join(', ')}.${deviceCodesClause}
 
-Search for the ${manufacturer} ${boardModel} consumer unit datasheet or technical specifications.
-What RCD type do the RCDs/RCBOs in this board provide? Type AC, Type A, Type B, Type F, or Type S?
+Search for the EXACT consumer unit "${manufacturer} ${boardModel}" AND/OR the EXACT device part codes listed above. ONLY answer if you find a datasheet for the EXACT model or part code — do NOT generalise from a similar product, do NOT guess based on the manufacturer's other consumer units, do NOT extrapolate from a different RCBO range from the same manufacturer. If neither the exact board model nor any exact part code can be located, reply with rcd_type:null.
 
-Reply ONLY with valid JSON: {"rcd_type": "AC" or "A" or "B" or "F" or "S", "source": "brief description of where you found this"}
-If you cannot determine the type, reply: {"rcd_type": null, "source": "not found"}`;
+What RCD type do the RCDs/RCBOs provide? Type AC, Type A, Type B, Type F, or Type S?
+
+Reply ONLY with valid JSON: {"rcd_type": "AC" or "A" or "B" or "F" or "S" or null, "source": "URL or citation of the datasheet for the EXACT model or part code", "match_kind": "board_model" or "device_code" or "not_found"}
+If you cannot determine the type from the EXACT model or part code, reply: {"rcd_type": null, "source": "exact match not found", "match_kind": "not_found"}`;
 
   try {
     logger.info('RCD type web search lookup starting', {
@@ -353,6 +583,7 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
       manufacturer,
       boardModel,
       circuitsNeedingLookup: needsLookup.length,
+      trigger,
       deviceDescriptions,
     });
 
@@ -379,34 +610,63 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
 
     const searchResult = JSON.parse(searchJson);
     const validTypes = ['AC', 'A', 'B', 'F', 'S'];
+    const validMatchKinds = ['board_model', 'device_code'];
     const rcdType = searchResult.rcd_type?.toUpperCase()?.trim();
+    const matchKind = typeof searchResult.match_kind === 'string' ? searchResult.match_kind : null;
 
-    if (rcdType && validTypes.includes(rcdType)) {
-      // Apply the looked-up type to all circuits that need it
+    // Belt-and-braces: even if the search returned a valid rcd_type, refuse
+    // to apply it unless match_kind confirms the answer came from an exact
+    // board-model OR device-code datasheet hit. Older prompt versions in
+    // production caching may not return match_kind; for backward compat we
+    // treat null match_kind as acceptable BUT we log it for audit. A
+    // self-declared "not_found" / unknown match_kind never applies.
+    const matchKindOk =
+      matchKind == null || validMatchKinds.includes(matchKind) || matchKind === '';
+
+    if (rcdType && validTypes.includes(rcdType) && matchKindOk) {
+      // Fill nulls only. Existing AC/A/F/B/S reads from the VLM are NEVER
+      // overridden — the 2026-05-21 audit confirmed VLM waveform reads
+      // outperform manufacturer-only web-search results, and ground-truth
+      // verification of a model-specific spec is the inspector's job at
+      // the live grid, not a probabilistic search.
+      let filled = 0;
       for (const c of needsLookup) {
         if (!c.rcd_type) {
           c.rcd_type = rcdType;
+          filled += 1;
         }
       }
       logger.info('RCD type web search found type', {
         userId,
         rcdType,
         source: searchResult.source || 'unknown',
+        matchKind: matchKind || 'unspecified',
+        trigger,
+        filled,
+      });
+    } else {
+      logger.info('RCD type web search returned no type', {
+        userId,
+        source: searchResult.source || 'not found',
+        matchKind: matchKind || 'unspecified',
+        rcdType: rcdType ?? null,
+        rejected: !matchKindOk,
+        trigger,
       });
     }
 
-    // Count how many we filled
-    const filled = needsLookup.filter((c) => c.rcd_type).length;
+    const totalWithType = needsLookup.filter((c) => c.rcd_type).length;
     logger.info('RCD type web search applied', {
       userId,
-      filled,
+      trigger,
+      filled: totalWithType,
       total: needsLookup.length,
     });
 
     // Prune stale questionsForInspector — GPT adds RCD type questions BEFORE
     // this web search pass runs. If we resolved those types, the questions are
     // now stale and would cause unnecessary TTS interruptions on the iOS app.
-    if (filled > 0 && Array.isArray(analysis.questionsForInspector)) {
+    if (totalWithType > 0 && Array.isArray(analysis.questionsForInspector)) {
       const before = analysis.questionsForInspector.length;
       const stillMissing = circuits.filter((c) => c.rcd_protected && !c.rcd_type);
       if (stillMissing.length === 0) {
@@ -426,11 +686,310 @@ If you cannot determine the type, reply: {"rcd_type": null, "source": "not found
       }
     }
   } catch (err) {
-    // Non-fatal — log and continue with null rcd_types
+    // Non-fatal — log and continue with whatever rcd_types Stage 3 produced
     logger.warn('RCD type web search failed (non-fatal)', {
       userId,
+      trigger,
       error: err.message,
     });
+  }
+
+  return analysis;
+}
+
+// Cluster-floor for the outlier detector. Five same-manufacturer, same-
+// type confident reads is the smallest cluster where "this slot
+// disagrees with the rest of the board" is a statistically meaningful
+// signal. A 4-vs-1 split on a tiny board could just as easily be a real
+// mixed schedule (older device retained mid-bank, which the user has
+// flagged as common in UK domestic re-wires). Lowering this would catch
+// more false positives; raising it would miss real outliers on smaller
+// boards. Keeping it at 5 leaves small boards untouched.
+export const RCD_OUTLIER_CLUSTER_FLOOR = 5;
+
+/**
+ * Detect RCD waveform-type outliers within a same-manufacturer cluster.
+ *
+ * The Stage 3 per-slot VLM occasionally mis-reads the BS EN 61008/61009
+ * waveform glyph on ONE device face on an otherwise-uniform board (the
+ * symbol is sub-millimetre and even confident reads can flip A↔AC). The
+ * existing `uniform_low_conf` lookup gate misses this case because the
+ * cluster's reads all came back at high confidence.
+ *
+ * This detector finds slots whose `rcdWaveformType` disagrees with the
+ * rest of the board WHEN the rest of the board is a same-manufacturer
+ * confident cluster. It does NOT auto-correct — the caller's job is to
+ * flag the outlier circuit `low_confidence:true` and surface a question
+ * for the inspector to verify on-device.
+ *
+ * Manufacturer-clustering is the load-bearing assumption: a genuinely
+ * older AC-type RCBO retrofitted into an A-type board nearly always
+ * comes from a DIFFERENT manufacturer (the inspector grabbed whatever
+ * was in the van), so it lands in its own size-1 cluster and never
+ * crosses the cluster floor. Same-manufacturer disagreement, on the
+ * other hand, almost always means one slot was misread.
+ *
+ * Returns an array of outlier descriptors. Empty if no eligible
+ * cluster + outlier was found.
+ */
+export function detectRcdWaveformOutliers(slots, opts = {}) {
+  const minClusterSize = opts.minClusterSize ?? RCD_OUTLIER_CLUSTER_FLOOR;
+  const minConfidence = opts.minConfidence ?? RCD_WAVEFORM_VERIFY_CONFIDENCE_THRESHOLD;
+
+  if (!Array.isArray(slots)) return [];
+
+  const eligible = slots.filter(
+    (s) =>
+      s &&
+      (s.classification === 'rcbo' || s.classification === 'rcd') &&
+      typeof s.rcdWaveformType === 'string' &&
+      s.rcdWaveformType.length > 0 &&
+      typeof s.manufacturer === 'string' &&
+      s.manufacturer.trim().length > 0 &&
+      (s.confidence ?? 0) >= minConfidence
+  );
+
+  if (eligible.length < minClusterSize + 1) return [];
+
+  const groups = new Map();
+  for (const s of eligible) {
+    const key = s.manufacturer.trim().toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(s);
+  }
+
+  const outliers = [];
+  for (const group of groups.values()) {
+    if (group.length < minClusterSize + 1) continue;
+
+    const counts = new Map();
+    for (const s of group) {
+      counts.set(s.rcdWaveformType, (counts.get(s.rcdWaveformType) ?? 0) + 1);
+    }
+    if (counts.size < 2) continue;
+
+    let majorityValue = null;
+    let majorityCount = 0;
+    for (const [v, c] of counts) {
+      if (c > majorityCount) {
+        majorityValue = v;
+        majorityCount = c;
+      }
+    }
+    if (majorityCount < minClusterSize) continue;
+
+    for (const s of group) {
+      if (s.rcdWaveformType !== majorityValue) {
+        outliers.push({
+          slot: s,
+          slotIndex: s.slotIndex ?? null,
+          slotValue: s.rcdWaveformType,
+          slotConfidence: s.confidence ?? null,
+          slotRatingText: s.ratingText ?? null,
+          slotLabel: s.label ?? null,
+          majorityValue,
+          majorityCount,
+          manufacturer: s.manufacturer.trim(),
+        });
+      }
+    }
+  }
+
+  return outliers;
+}
+
+/**
+ * Verify RCD waveform-type outliers against the manufacturer's spec sheet
+ * and flag the affected circuits for inspector review. NEVER auto-corrects
+ * the outlier value — the inspector decides.
+ *
+ * Pipeline:
+ *   1. detectRcdWaveformOutliers identifies any same-manufacturer outlier
+ *      (caller-injected slots[] is already populated).
+ *   2. For each manufacturer-group with outliers, fire ONE web-search
+ *      lookup against gpt-5-search-api with a per-slot prompt: "10 slots
+ *      read X, this one read Y — what does the datasheet say?" The
+ *      response indicates which value the datasheet supports for the
+ *      outlier device (`applies_to: outlier|all|unknown`).
+ *   3. Whatever the lookup returns, flag the matching circuit:
+ *        - circuit.low_confidence = true
+ *        - circuit.rcd_type_outlier = true
+ *        - circuit.rcd_type_majority_value = <the majority value>
+ *        - circuit.rcd_type_datasheet = <lookup answer or null>
+ *      Append a question to questionsForInspector so the iOS review screen
+ *      surfaces it. Leave circuit.rcd_type UNCHANGED — manual confirmation
+ *      only.
+ *
+ * Skipped silently when OPENAI_API_KEY is unset (dev/sandbox) or the
+ * detector returns no outliers — same lifecycle as lookupMissingRcdTypes.
+ */
+export async function flagRcdWaveformOutliers(analysis, openai, logger, userId) {
+  const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
+  const circuits = Array.isArray(analysis.circuits) ? analysis.circuits : [];
+
+  const rawOutliers = detectRcdWaveformOutliers(slots);
+  if (rawOutliers.length === 0) return analysis;
+
+  // Suppress outliers already resolved by the upstream RCD-type lookup.
+  // applyRcdTypeLookup runs BEFORE this pass and stamps circuit.rcd_type
+  // from the manufacturer/model datasheet (high-confidence override on a
+  // model hit, manufacturer-default fallback otherwise). When the lookup
+  // has already pulled an outlier slot's circuit onto the majority value,
+  // the per-slot Stage 3 disagreement is moot — flagging it generates a
+  // pointless inspector question (verbatim production repro 2026-05-05
+  // 15:05 on a 13-RCBO Elucian board: 5 outlier reads of "AC" all got
+  // stamped to "A" by the lookup, but the outlier flagger then asked the
+  // inspector to verify all 5 anyway, producing 5 TTS prompts even after
+  // the inspector had set the value via the UI).
+  const outliers = rawOutliers.filter((o) => {
+    const circuit = circuits.find(
+      (c) => c.slot_index != null && c.slot_index === o.slotIndex && !c.is_rcd_device
+    );
+    if (!circuit) return true;
+    const postLookupType = typeof circuit.rcd_type === 'string' ? circuit.rcd_type : null;
+    if (postLookupType && postLookupType === o.majorityValue) return false;
+    return true;
+  });
+  if (outliers.length < rawOutliers.length && logger) {
+    logger.info('RCD waveform outliers suppressed by upstream lookup', {
+      userId,
+      raw: rawOutliers.length,
+      remaining: outliers.length,
+      suppressed: rawOutliers.length - outliers.length,
+    });
+  }
+  if (outliers.length === 0) return analysis;
+
+  // Group outliers by manufacturer so we can batch the lookup — usually
+  // 1 outlier per board, but if a board ever had two slots disagreeing
+  // with the same majority cluster, batching saves a search call.
+  const byManufacturer = new Map();
+  for (const o of outliers) {
+    const key = o.manufacturer.toLowerCase();
+    if (!byManufacturer.has(key)) byManufacturer.set(key, []);
+    byManufacturer.get(key).push(o);
+  }
+
+  const boardModel = analysis.board_model || '';
+
+  for (const [, group] of byManufacturer) {
+    const first = group[0];
+    const manufacturer = first.manufacturer;
+    const majorityValue = first.majorityValue;
+    const majorityCount = first.majorityCount;
+    const outlierLines = group
+      .map((o) => {
+        const labelPart = o.slotLabel ? ` labelled "${o.slotLabel}"` : '';
+        const ratingPart = o.slotRatingText ? `, ${o.slotRatingText}` : '';
+        return `  - ${manufacturer} RCBO${ratingPart}${labelPart}: read as Type ${o.slotValue}`;
+      })
+      .join('\n');
+
+    const searchPrompt = `I have a UK consumer unit: ${manufacturer} ${boardModel}.
+Most of the RCBOs on this board (${majorityCount} devices) were read by a vision model as RCD Type ${majorityValue}. ${group.length === 1 ? 'One device disagreed' : `${group.length} devices disagreed`}:
+${outlierLines}
+
+This is most likely a mis-read of the BS EN 61008/61009 waveform glyph on the disagreeing device's face — the symbol is sub-millimetre and easy to confuse. Please search the ${manufacturer} ${boardModel} consumer unit datasheet to verify the published RCD Type for the disagreeing device. If the datasheet covers the whole board uniformly, return that single Type with applies_to="all". If the datasheet shows the disagreeing device as a different Type from the majority (which can happen if it's an older spec retained in stock), return that Type with applies_to="outlier".
+
+Reply ONLY with valid JSON:
+{"type": "AC"|"A"|"B"|"F"|"S"|null, "applies_to": "all"|"outlier"|"unknown", "source": "brief description"}`;
+
+    let datasheetType = null;
+    let appliesTo = 'unknown';
+    let sourceText = null;
+
+    try {
+      logger.info('RCD waveform outlier lookup starting', {
+        userId,
+        manufacturer,
+        boardModel,
+        majorityValue,
+        majorityCount,
+        outlierCount: group.length,
+        outlierValues: group.map((o) => o.slotValue),
+      });
+
+      const searchResponse = await openai.chat.completions.create({
+        model: 'gpt-5-search-api',
+        web_search_options: {},
+        messages: [{ role: 'user', content: searchPrompt }],
+      });
+
+      const searchContent = searchResponse.choices?.[0]?.message?.content || '';
+      const searchTokens = searchResponse.usage?.completion_tokens || 0;
+      const jsonMatch = searchContent.match(/\{[\s\S]*?\}/);
+      const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      const validTypes = ['AC', 'A', 'B', 'F', 'S'];
+      const candidate = parsed.type?.toUpperCase()?.trim();
+      datasheetType = candidate && validTypes.includes(candidate) ? candidate : null;
+      appliesTo = ['all', 'outlier', 'unknown'].includes(parsed.applies_to)
+        ? parsed.applies_to
+        : 'unknown';
+      sourceText = typeof parsed.source === 'string' ? parsed.source : null;
+
+      logger.info('RCD waveform outlier lookup complete', {
+        userId,
+        manufacturer,
+        datasheetType,
+        appliesTo,
+        source: sourceText,
+        searchTokens,
+      });
+    } catch (err) {
+      // Non-fatal — flagging proceeds without datasheet steer.
+      logger.warn('RCD waveform outlier lookup failed (non-fatal)', {
+        userId,
+        manufacturer,
+        error: err.message,
+      });
+    }
+
+    // Apply flags to each outlier's circuit. Mapping is by slot_index —
+    // both the slot and the circuit carry it after the merger pass.
+    for (const o of group) {
+      const circuit = circuits.find(
+        (c) => c.slot_index != null && c.slot_index === o.slotIndex && !c.is_rcd_device
+      );
+      if (!circuit) {
+        logger.warn('RCD outlier flag: matching circuit not found', {
+          userId,
+          slotIndex: o.slotIndex,
+          slotValue: o.slotValue,
+        });
+        continue;
+      }
+
+      circuit.low_confidence = true;
+      circuit.rcd_type_outlier = true;
+      circuit.rcd_type_majority_value = o.majorityValue;
+      circuit.rcd_type_datasheet = datasheetType;
+      // rcd_type intentionally untouched — never auto-correct.
+
+      let questionText;
+      if (datasheetType && appliesTo === 'all') {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue}, but the other ${o.majorityCount} ${manufacturer} RCBOs on this board read as Type ${o.majorityValue} and the ${manufacturer} ${boardModel || ''} datasheet confirms Type ${datasheetType}. Please verify the waveform symbol on the device face.`;
+      } else if (datasheetType && appliesTo === 'outlier') {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue} (the other ${o.majorityCount} ${manufacturer} RCBOs read as Type ${o.majorityValue}). The ${manufacturer} datasheet shows Type ${datasheetType} for this rating, so the read may be correct — please verify on the device face.`;
+      } else {
+        questionText = `${circuit.label || `Circuit ${circuit.circuit_number}`}: this device was read as RCD Type ${o.slotValue}, but the other ${o.majorityCount} ${manufacturer} RCBOs on this board read as Type ${o.majorityValue}. Please double-check the waveform symbol on the device face.`;
+      }
+
+      if (!Array.isArray(analysis.questionsForInspector)) {
+        analysis.questionsForInspector = [];
+      }
+      analysis.questionsForInspector.push(questionText);
+
+      logger.info('RCD waveform outlier flagged', {
+        userId,
+        slotIndex: o.slotIndex,
+        circuitNumber: circuit.circuit_number,
+        label: circuit.label,
+        slotValue: o.slotValue,
+        majorityValue: o.majorityValue,
+        datasheetType,
+        appliesTo,
+      });
+    }
   }
 
   return analysis;
@@ -734,8 +1293,7 @@ export function assembleGeometricResult(perSlotState) {
 
   if (isRewireablePipeline) {
     // Overall lowConfidence combines Stage 1 SD + any Stage 3 per-slot floor hit.
-    const lowConfidence =
-      prepared.stageOutputs.stage1.lowConfidence || !!cls.lowConfidence;
+    const lowConfidence = prepared.stageOutputs.stage1.lowConfidence || !!cls.lowConfidence;
 
     return {
       schemaVersion: 'ccu-rewireable-v1',
@@ -753,6 +1311,14 @@ export function assembleGeometricResult(perSlotState) {
       imageHeight: prepared.imageHeight,
       timings,
       usage: totalUsage,
+      // Forward the single-shot label-matcher diagnostic + raw VLM positions.
+      // These are added in extractViaSingleShot's return shape so the route
+      // handler can surface them as analysis.vlm_* fields for offline replay.
+      // Null fallback covers the legacy sliding-window + soft-fail paths
+      // which never set these.
+      labelArrayRaw: cls.labelArrayRaw ?? null,
+      entriesRaw: cls.entriesRaw ?? null,
+      labelMatcherDiag: cls.labelMatcherDiag ?? null,
       stageOutputs: {
         stage1: prepared.stageOutputs.stage1,
         stage2: prepared.stageOutputs.stage2,
@@ -773,12 +1339,23 @@ export function assembleGeometricResult(perSlotState) {
     mainSwitchWidth: prepared.mainSwitchWidth,
     lowConfidence: prepared.lowConfidence,
     disagreement: prepared.disagreement,
+    railBbox: prepared.railBbox ?? null,
+    pitchSource: prepared.pitchSource ?? null,
+    cvPitchDiag: prepared.cvPitchDiag ?? null,
+    pitchCrossCheck: prepared.pitchCrossCheck ?? null,
+    chunkingDiag: prepared.chunkingDiag ?? null,
     imageWidth: prepared.imageWidth,
     imageHeight: prepared.imageHeight,
     slots: cls.slots,
     stage3Error: cls.stage3Error,
     timings,
     usage: totalUsage,
+    // See rewireable branch above for why these are forwarded — same fields
+    // populated by extractViaSingleShot, consumed by the route handler to
+    // attach analysis.vlm_labels_raw / vlm_entries_raw / vlm_label_matcher_diag.
+    labelArrayRaw: cls.labelArrayRaw ?? null,
+    entriesRaw: cls.entriesRaw ?? null,
+    labelMatcherDiag: cls.labelMatcherDiag ?? null,
     stageOutputs: {
       stage1: prepared.stageOutputs.stage1,
       stage2: prepared.stageOutputs.stage2,
@@ -788,25 +1365,36 @@ export function assembleGeometricResult(perSlotState) {
 }
 
 /**
- * Small, fast VLM call that returns only board_technology + main_switch_position.
+ * Small, fast VLM call that returns board-level metadata (no per-circuit data).
  *
- * Purpose: route the subsequent per-slot geometric pipeline (modern vs rewireable).
- * Running this in parallel to the big single-shot prompt keeps total latency flat
- * — the classifier returns in ~3s and lets us kick off the correct geometric
- * extractor while single-shot is still running. Single-shot is the authoritative
- * source of board_technology in the final response; this cheap call is ONLY used
- * for geometric pipeline routing and is discarded afterwards.
+ * Returns: board_technology (routes the per-slot pipeline modern vs rewireable),
+ * main_switch_position (drives BS-7671 circuit numbering), board_manufacturer +
+ * board_model (used for RCD-type lookup against the manufacturer datasheet),
+ * main_switch_rating (cert field), spd_present (cert field; cross-checked against
+ * Stage 3 slot classifications which can also flag an SPD by its module shape).
+ *
+ * Single-shot Sonnet was retired 2026-04-29 — it ran a 130-line full-board prompt
+ * for ~46s every extraction to produce these same five fields plus a circuits[]
+ * that the per-slot merger immediately overwrote anyway. Folding board metadata
+ * into this small fast classifier (~5s) drops wall-clock from ~47s → ~21s and
+ * cost from ~$0.10 → ~$0.04 per extraction.
  *
  * @param {string} base64 — base64-encoded JPEG
  * @param {object} anthropic — Anthropic client
  * @param {string} model — model id (e.g. claude-sonnet-4-6)
- * @returns {Promise<{boardTechnology:string, mainSwitchPosition:string, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
+ * @returns {Promise<{boardTechnology:string, technologyOverride:(null|{appliedBy:string,fromVlm:string,toTechnology:string,series:string,matchedPattern:string}), mainSwitchPosition:string, boardManufacturer:(string|null), boardModel:(string|null), mainSwitchRating:(string|null), spdPresent:boolean, confidence:number, usage:{inputTokens:number,outputTokens:number}}>}
+ *
+ * If `boardTechnology` was forced from a VLM-issued `rewireable_fuse |
+ * cartridge_fuse | mixed` to `modern` because the `boardModel` matched a
+ * known DIN-rail consumer-unit series (see board-model-registry.js),
+ * `technologyOverride` is populated with provenance for diagnostic logging.
+ * Otherwise it is null.
  */
 export async function classifyBoardTechnology(base64, anthropic, model) {
-  const prompt = `Look at this UK fuseboard photo. Return ONLY a JSON object:
-{"board_technology": "modern" | "rewireable_fuse" | "cartridge_fuse" | "mixed", "main_switch_position": "left" | "right" | "none", "confidence": 0.0-1.0}
+  const prompt = `Look at this UK fuseboard photo and extract board-level metadata. Return ONLY a JSON object:
+{"board_technology": "modern" | "rewireable_fuse" | "cartridge_fuse" | "mixed", "main_switch_position": "left" | "right" | "none", "board_manufacturer": string|null, "board_model": string|null, "main_switch_rating": string|null, "spd_present": boolean, "confidence": 0.0-1.0}
 
-Definitions:
+board_technology:
 - "modern" — MCBs/RCBOs on DIN rail with toggle levers. ANY board with at least one toggle-style MCB showing a trip-curve letter (B/C/D) IS modern.
 - "rewireable_fuse" — pull-out fuse carriers with semi-enclosed fuse wire (BS 3036). Wylex/MEM/Crabtree/Bill/Ashley. Carrier BODIES are colour-coded (white/blue/yellow/red/green) — the red "push to remove" tab at the top of every Wylex carrier is NOT a rating indicator. No toggles, no curve letters, no test buttons on circuit devices.
 - "cartridge_fuse" — pull-out carriers that contain a cylindrical ceramic HBC cartridge (BS 1361 / BS 88). No rewireable fuse wire visible; cartridge face usually stamped with amp rating.
@@ -814,11 +1402,21 @@ Definitions:
 
 main_switch_position: which side of the circuit devices the main isolator / pull-out switch-fuse sits — "left", "right", or "none" (if inline with the circuit row with no clear handedness).
 
+board_manufacturer: brand printed on the cover or main switch (e.g. "Wylex", "Hager", "MK", "Crabtree", "Schneider", "BG", "Eaton", "Contactum", "Chint", "Lewden"). Null if not legible.
+
+board_model: model code printed on the cover or label (e.g. "NHRS12SL", "VML112", "LN5512", "CUCRB12W"). Null if not legible.
+
+main_switch_rating: amp rating of the main switch / isolator as a number-only string (e.g. "100", "80", "63"). Read from the device face — "100A AC22A", "WS100", etc. Null if unreadable.
+
+spd_present: true if a Surge Protection Device module is visible on the rail (status indicator window, no toggle, typically 2-3 modules wide, often labelled "SPD" or with a green/red status indicator). False otherwise. Rewireable-fuse boards almost never have an SPD.
+
+confidence: your overall confidence in the metadata you extracted, 0.0-1.0.
+
 Return ONLY the JSON object.`;
 
   const response = await anthropic.messages.create({
     model,
-    max_tokens: 200,
+    max_tokens: 400,
     messages: [
       {
         role: 'user',
@@ -846,9 +1444,59 @@ Return ONLY the JSON object.`;
   }
 
   const parsed = JSON.parse(raw);
+  // Normalise main_switch_rating to a numeric string ("100A" → "100", "80 amp" → "80").
+  // EICR cert field expects amps as a bare number; the prompt asks for a number-only
+  // string but VLMs sometimes append units. Strip non-digits, drop empties.
+  const rawRating =
+    typeof parsed.main_switch_rating === 'string' ? parsed.main_switch_rating.trim() : null;
+  let mainSwitchRating = null;
+  if (rawRating) {
+    const digits = rawRating.match(/\d+/);
+    if (digits) mainSwitchRating = digits[0];
+  }
+
+  const boardManufacturer =
+    typeof parsed.board_manufacturer === 'string' && parsed.board_manufacturer.trim()
+      ? parsed.board_manufacturer.trim()
+      : null;
+  const boardModel =
+    typeof parsed.board_model === 'string' && parsed.board_model.trim()
+      ? parsed.board_model.trim()
+      : null;
+
+  // Model-prefix override: the same VLM call returns both a fuzzy
+  // `board_technology` label and a precise `board_model` string. When they
+  // disagree (2026-05-01: Wylex NHRS12SL labelled "mixed" with conf 0.92,
+  // routing into the rewireable pipeline and producing zero RCD-protected
+  // circuits on a high-integrity board) we trust the model identification.
+  // The override only ever forces "modern" — it cannot downgrade a
+  // VLM-issued "modern" or upgrade an unmatched model. See
+  // src/extraction/board-model-registry.js for the supported series.
+  const vlmTechnology = parsed.board_technology || 'modern';
+  let boardTechnology = vlmTechnology;
+  let technologyOverride = null;
+  if (vlmTechnology !== 'modern') {
+    const inferred = inferTechnologyFromModel({ boardModel, boardManufacturer });
+    if (inferred && inferred.technology === 'modern') {
+      boardTechnology = 'modern';
+      technologyOverride = {
+        appliedBy: 'model-prefix-match',
+        fromVlm: vlmTechnology,
+        toTechnology: 'modern',
+        series: inferred.series,
+        matchedPattern: inferred.matchedPattern,
+      };
+    }
+  }
+
   return {
-    boardTechnology: parsed.board_technology || 'modern',
+    boardTechnology,
+    technologyOverride,
     mainSwitchPosition: parsed.main_switch_position || 'none',
+    boardManufacturer,
+    boardModel,
+    mainSwitchRating,
+    spdPresent: parsed.spd_present === true,
     confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
     usage: {
       inputTokens: response.usage?.input_tokens || 0,
@@ -857,31 +1505,58 @@ Return ONLY the JSON object.`;
   };
 }
 
+// ---------------------------------------------------------------------------
+// 2026-05-07: removed 305 lines of patch functions that fixed symptoms of
+// the position-clustered sliding-window pipeline:
+//   - scoreMainSwitchPlausibility / trimSpuriousMainSwitchClusterRuns —
+//     fixed Stage 3 over-tagging adjacent slots as main_switch when the
+//     2-mod isolator's lever bleed crossed slot boundaries. The new
+//     ordered-list prompt asks the VLM to return a 2-pole isolator as
+//     exactly two adjacent main_switch entries — over-tagging cannot
+//     produce a longer run than reality.
+//   - promoteLabelMatchedMainSwitch / promoteLabelMatchedRcd — patched
+//     Stage 4 labels onto Stage 3 mis-classifications. With the new
+//     pipeline labels arrive on the per-window read and Stage 3
+//     mis-classifications are vote-resolved across windows during
+//     alignment.
+// References in extraction.js, ccu-route-merger.test.js, and
+// promote-label-main-switch.test.js are removed in the same change.
+// ---------------------------------------------------------------------------
+
 /**
  * Build an EICR-schema `circuits[]` array from per-slot VLM classifications.
  *
  * Per-slot is the sole source of truth for circuit-level data:
  *   - Device fields (ocpd_*, rcd_*, is_rcbo) come from Stage 3 classification.
- *   - Labels come from Stage 4 (`slot.label`) — a separate per-crop label-
- *     reading pass that looks at a wider-Y crop around each slot. Stage 4
- *     uses the crop-and-classify principle instead of forcing the single-
- *     shot LLM to reason about the whole board at once, which is inherently
- *     unreliable (confirmed 2026-04-22 on a Wylex rewireable — single-shot
- *     mislabeled the Shower carrier even after count was right).
- *   - Single-shot is NOT consulted here. Its output remains the source of
- *     board-level metadata (main switch, SPD, board manufacturer, overall
- *     confidence, questionsForInspector) only — anything that genuinely
- *     requires whole-board context.
- *
- * Low-confidence or "unknown" slots are emitted with the slot's best-effort
- * reading and a `low_confidence: true` marker. UI consumers surface that as
- * "confirm this row" rather than silently overwriting with an equally-
- * unreliable whole-board guess. The paired `slots[]` entry on the response
- * carries the numeric confidence score for fine-grained reliability UI.
+ *   - Labels come from Stage 4 (`slot.label`) — a per-crop label-reading
+ *     pass that looks at a wider-Y crop around each slot.
+ *   - Low-confidence or "unknown" slots emit the slot's best-effort reading
+ *     with `low_confidence: true`. UI surfaces this for inspector verification.
  *
  * Circuit numbering follows BS 7671: circuit 1 is the device nearest the
  * main switch, numbering OUTWARD. When `mainSwitchSide === 'right'` we
  * iterate the physical-order slot array in reverse.
+ *
+ * RCD protection — Derek's 2026-05-05 two-phase rule:
+ *   - Walking outward from the main switch, MCBs start unprotected (phase 1).
+ *   - First non-MCB-non-RCBO device on the outward walk (a blank with an RCD
+ *     present anywhere on the board, OR an RCD itself) flips state to phase 2.
+ *   - Phase-2 MCBs are RCD-protected, with type/sensitivity copied from the
+ *     most-recently-seen RCD's face read. Each new RCD overrides the
+ *     reference (dual-RCD split-load).
+ *   - RCBOs are always self-protected from THIS device's face read.
+ *   - Spares (blank classification) ALWAYS emit rcd_protected=false,
+ *     regardless of phase.
+ *   - RCDs are NOT emitted as schedule rows — they exist only as the
+ *     reference source for phase-2 MCBs. Their type/sensitivity propagates
+ *     onto every protected circuit row.
+ *   - main_switch / spd slots are not emitted.
+ *
+ * Replaces the previous physical-L→R cascade pre-pass which mis-fired on
+ * the 2026-05-05 Wylex NHRS12SL extraction (the cascade walked left-to-right
+ * regardless of which side the main switch was on, so right-handed boards
+ * got cascade computed in the wrong direction relative to the inspector's
+ * "outward from main switch" mental model).
  *
  * @returns {Array|null} circuits array, or null if slots is empty/invalid.
  */
@@ -889,60 +1564,105 @@ export function slotsToCircuits({
   slots,
   mainSwitchSide,
   minSlotConfidence = 0.7,
+  mainSwitchRating = null,
+  mainSwitchPoles = null,
 }) {
   if (!Array.isArray(slots) || slots.length === 0) return null;
 
+  // Schedule scan order: BS 7671 numbers circuits outward from the main
+  // switch. For boards with the main switch on the right, walk the slots
+  // right-to-left so circuit 1 is the device adjacent to the main switch.
   const scanOrder = mainSwitchSide === 'right' ? [...slots].reverse() : [...slots];
+
+  // Main pass: emit schedule rows in scan order. Rule (Derek 2026-05-21):
+  //   - rcd_protected = is_rcbo (self-protected from its own face read) OR
+  //     an RCD slot has been seen EARLIER in scan order.
+  //   - The reference is the MOST RECENT RCD seen — split-load boards
+  //     update the reference each time a new RCD is encountered, so MCBs
+  //     after RCD bank 2 are protected by bank 2, MCBs after bank 1 (but
+  //     before bank 2) by bank 1.
+  //   - Adjacent rcd slots are the same physical 2-module device — the
+  //     pair gap-fills into one upstream reference (preferring whichever
+  //     module's face read came back non-null).
+  //   - RCDs / main_switch / spd are NOT emitted as schedule rows.
+  //   - Blanks emit "Spare" with rcd_protected=false regardless of where
+  //     they sit (Derek's "spares stay unprotected" rule).
+  //
+  // Earlier versions had a "blank-as-phase-boundary" heuristic that flipped
+  // subsequent MCBs into phase 2 if the board contained any RCD anywhere,
+  // even before any RCD had been seen in scan order. That heuristic was
+  // pulled 2026-05-21 because it mis-attributed sub-feed MCBs sitting
+  // BETWEEN the main switch and the first RCD (Crabtree Starbreaker
+  // topology — 50A B-curve MCB before the RCDs, NOT downstream of them)
+  // as RCD-protected. New rule: scan-order only, no look-ahead.
+  //
+  // Tradeoff acknowledged: the rare 38 Dickens Close topology (RCD at the
+  // FAR end of the board, MCBs+blanks between it and the main switch)
+  // now emits those MCBs as rcd_protected=false. The inspector corrects
+  // on the live grid — false negatives at the merger are recoverable;
+  // false positives (50A sub-feed marked as RCD-protected) silently
+  // wrong-record a cert.
   const circuits = [];
   let circuitNumber = 1;
   let upstreamRcd = null;
+  let prevWasRcdForGapFill = false;
 
-  for (const slot of scanOrder) {
+  for (let i = 0; i < scanOrder.length; i++) {
+    const slot = scanOrder[i];
     const cls = (slot.classification || '').toLowerCase();
     const content = typeof slot.content === 'string' ? slot.content : 'device';
     const extendsSide = typeof slot.extends === 'string' ? slot.extends : 'none';
 
-    if (cls === 'main_switch' || cls === 'spd') continue;
+    // 1. main_switch / spd: not emitted, do not affect upstream reference.
+    if (cls === 'main_switch' || cls === 'spd') {
+      prevWasRcdForGapFill = false;
+      continue;
+    }
 
-    // Neighbour reconciliation for partial-crop RCD slots.
-    //
-    // Original intent: catch slots where a 2-module RCD's second half is
-    // classified as content="partial" with extends pointing at the
-    // already-emitted row, drop it silently instead of emitting a phantom
-    // low-confidence duplicate.
-    //
-    // Codex review 2026-04-23 flagged two correctness traps in my earlier
-    // version of this guard:
-    //   1. Scan direction: `circuits[circuits.length - 1]` is the physical-
-    //      left neighbour only when scanOrder is left-to-right. On right-
-    //      handed boards scanOrder is reversed, so extends="left" (physical
-    //      left) points at the NEXT slot not the previous one.
-    //   2. "Previous row's family" couldn't be reliably derived from the
-    //      emitted circuit's fields (ocpd_type stores trip curve, not
-    //      device family), so the match check was unsafe for non-RCD rows.
-    //
-    // Both concerns are satisfied by restricting to cls="rcd": the existing
-    // RCD-pair dedupe below (via _rcdPairOpen) already merges the second
-    // 'rcd' slot into the first by MERGING readings (better than dropping),
-    // regardless of scan direction. So anything we'd have dropped here
-    // would be cleanly handled one branch down, and non-rcd cases never
-    // needed this guard in the first place (MCBs / RCBOs are 1-module in
-    // UK domestic; main_switch / spd are skipped above; empty / blank are
-    // handled elsewhere). No standalone partial-dedupe needed.
-    //
-    // Keeping content + extendsSide in scope so the downstream "low
-    // confidence / partial" branch can still flag partial slots for the
-    // inspector's UI.
+    // 2. RCD: not emitted; updates upstreamRcd. Adjacent rcd slots are
+    //    the same physical 2-module device — gap-fill into the same
+    //    reference so the second module's face read can finish the first
+    //    module's null fields.
+    if (cls === 'rcd') {
+      if (prevWasRcdForGapFill && upstreamRcd) {
+        // Pair with the immediately-previous RCD slot — fill null fields
+        // from this module's face read if the previous one missed them.
+        if (!upstreamRcd.type && slot.rcdWaveformType) upstreamRcd.type = slot.rcdWaveformType;
+        if (!upstreamRcd.sensitivity && slot.sensitivity != null && slot.sensitivity !== '') {
+          upstreamRcd.sensitivity = String(slot.sensitivity);
+        }
+      } else {
+        // New physical RCD device — start a fresh reference. Split-load
+        // boards reach this branch on the second RCD bank, overriding
+        // the first bank's reference for all subsequent MCBs.
+        upstreamRcd = {
+          type: slot.rcdWaveformType || null,
+          sensitivity:
+            slot.sensitivity != null && slot.sensitivity !== '' ? String(slot.sensitivity) : null,
+        };
+      }
+      prevWasRcdForGapFill = true;
+      continue;
+    }
+    prevWasRcdForGapFill = false;
 
-    // Exposed DIN rail (no device, no blanking plate). This is a safety
-    // defect — live parts potentially accessible, IP4X violation. Emit as
-    // a Spare row labelled "Exposed rail" with low_confidence=true so the
-    // inspector's iOS editor flags it for a C2/C3 observation. Schema
-    // added 2026-04-23 with the new content discriminator.
+    // 3. Empty-content slot — should not occur with the ordered-list pipeline
+    // (the prompt rules forbid the VLM from reporting bare rail; window
+    // overshoot prevents end-of-rail unowned slots; alignment guarantees no
+    // interior gaps). Kept as a defensive low-confidence emission for any
+    // legacy fixture or future code path that synthesises an empty slot.
+    // Critically NOT emitted as `is_exposed_rail` — the production pipeline
+    // never had a positive VLM read for exposed rail; every "Exposed rail"
+    // row historically emitted was a fabricated artefact of the old
+    // position-clustered placement step (extractions 1778086091005-v9sst9
+    // and 1778103470875-488yba are the named regressions). Real exposed
+    // rail (an IP4X defect) requires a positive identification by the
+    // inspector — the model does not have a category for it.
     if (content === 'empty' || cls === 'empty') {
       circuits.push({
         circuit_number: circuitNumber,
-        label: 'Exposed rail (no device, no blank)',
+        slot_index: slot.slotIndex ?? null,
+        label: slot.label ?? null,
         ocpd_type: null,
         ocpd_rating_a: null,
         ocpd_bs_en: null,
@@ -953,102 +1673,25 @@ export function slotsToCircuits({
         rcd_rating_ma: null,
         rcd_bs_en: null,
         low_confidence: true,
-        is_exposed_rail: true,
       });
       circuitNumber++;
       continue;
     }
 
-    if (cls === 'rcd') {
-      // Standalone RCD — two roles:
-      //   1. Cascade its type/sensitivity to the circuits it protects
-      //      (all subsequent non-RCBO circuits until the next RCD).
-      //   2. Emit an own-row in the schedule so TradeCert's Schedule of Test
-      //      Results shows the RCD's BS EN + rating/sensitivity alongside the
-      //      MCBs it protects. `is_rcd_device: true` flags this row; it has
-      //      no circuit_number. iOS decoders treat rows where is_rcd_device
-      //      is truthy as a non-circuit schedule entry.
-      //
-      // DEDUPE: an RCD is ALWAYS 2 modules wide on UK boards (BS EN 61008-1),
-      // so Stage 3 classifies two consecutive slots as "rcd" for the same
-      // physical device. Only the FIRST slot of the pair emits a schedule
-      // row; subsequent adjacent 'rcd' slots refresh the cascade (in case
-      // the device face was only readable on the second slot) but do not
-      // produce duplicate rows. If a non-rcd slot sits between two rcd
-      // slots we treat them as two genuinely separate RCDs and emit two
-      // rows — rare in practice but matches what the inspector sees.
-      const nextUpstreamRcd = {
-        type: slot.rcdWaveformType || null,
-        sensitivity:
-          slot.sensitivity != null && slot.sensitivity !== ''
-            ? String(slot.sensitivity)
-            : null,
-      };
-
-      const lastPushed = circuits[circuits.length - 1];
-      const lastWasThisRcdPair =
-        lastPushed?.is_rcd_device && lastPushed?._rcdPairOpen === true;
-
-      if (lastWasThisRcdPair) {
-        // Second slot of the same physical RCD — gap-fill any field the
-        // first slot's VLM read couldn't recover (face-skew can leave one
-        // module's reading stronger than the other) and close the pair.
-        if (!lastPushed.ocpd_rating_a && slot.ratingAmps != null) {
-          lastPushed.ocpd_rating_a = String(slot.ratingAmps);
-        }
-        if (!lastPushed.rcd_type && nextUpstreamRcd.type) {
-          lastPushed.rcd_type = nextUpstreamRcd.type;
-        }
-        if (!lastPushed.rcd_rating_ma && nextUpstreamRcd.sensitivity) {
-          lastPushed.rcd_rating_ma = nextUpstreamRcd.sensitivity;
-        }
-        delete lastPushed._rcdPairOpen;
-        // Refresh cascade with the merged best-available values.
-        upstreamRcd = {
-          type: lastPushed.rcd_type || null,
-          sensitivity: lastPushed.rcd_rating_ma || null,
-        };
-      } else {
-        upstreamRcd = nextUpstreamRcd;
-        // The RCD's schedule row ALWAYS carries the label "RCD". Stage 4's
-        // label-pass reads the handwritten strip above/below each slot,
-        // which reliably picks up bleed-in labels from neighbouring MCBs
-        // (the RCD strip section itself has no handwriting — the strip
-        // header already labels it as "RCD protected"). Defaulting to
-        // slot.label would leak "Sockets" / "Kitchen Sockets" etc. into
-        // the RCD row on every real-world board.
-        circuits.push({
-          circuit_number: null,
-          label: 'RCD',
-          is_rcd_device: true,
-          ocpd_type: null,
-          ocpd_rating_a:
-            slot.ratingAmps != null && slot.ratingAmps !== '' ? String(slot.ratingAmps) : null,
-          ocpd_bs_en: slot.bsEn || 'BS EN 61008-1',
-          ocpd_breaking_capacity_ka: null,
-          is_rcbo: false,
-          rcd_protected: false,
-          rcd_type: upstreamRcd.type,
-          rcd_rating_ma: upstreamRcd.sensitivity,
-          rcd_bs_en: slot.bsEn || 'BS EN 61008-1',
-          // Internal marker stripped below; used only to merge the immediate
-          // next 'rcd' slot into this row.
-          _rcdPairOpen: true,
-        });
-      }
-      continue;
-    }
+    // 4. mcb / rcbo / unknown / partial / rewireable / cartridge / blank.
+    //    rcd_protected iff is_rcbo OR an RCD has been seen earlier in
+    //    scan order (i.e. upstreamRcd is non-null). No look-ahead — the
+    //    earlier blank-flip+look-ahead heuristic was pulled 2026-05-21
+    //    because it mis-attributed sub-feed MCBs sitting BETWEEN the
+    //    main switch and the first RCD as RCD-protected.
+    const slotUpstreamRcd = upstreamRcd;
 
     // Partial crops (VLM saw only part of a wider device) are hallucination
     // hazards — the model can pattern-match a half-RCD to "B32 MCB" with
-    // confidence. Force low_confidence on any content="partial" slot so the
-    // inspector verifies, and tag `is_partial_crop` for UI awareness (iOS
-    // can surface a specific "this crop was clipped" message). The merger
-    // still emits the slot's best reading — we don't drop it, because if
-    // the neighbour wasn't classified we'd lose the circuit entirely.
+    // confidence. Force low_confidence on any content="partial" slot so
+    // the inspector verifies, and tag is_partial_crop for UI awareness.
     const isPartial = content === 'partial';
-    const confident =
-      !isPartial && (slot.confidence ?? 0) >= minSlotConfidence;
+    const confident = !isPartial && (slot.confidence ?? 0) >= minSlotConfidence;
     const slotLabel =
       slot.label != null && String(slot.label).trim().length > 0 ? slot.label : null;
 
@@ -1069,11 +1712,10 @@ export function slotsToCircuits({
       };
     } else if (cls === 'unknown' || !confident) {
       // Low-confidence / unknown / partial slot: emit the slot's best
-      // reading and mark low_confidence. DO NOT fall back to single-shot —
-      // we moved away from that because single-shot is the unreliable
-      // whole-board reasoner we're replacing. UI surfaces low_confidence
-      // so the inspector verifies.
-      circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
+      // reading and mark low_confidence. NO fallback to single-shot or
+      // board-majority guessing — Derek's 2026-05-05 rule: blank > guessed
+      // wrong, because UK boards mix C/B-curve and AC/A waveforms.
+      circuit = buildCircuitFromSlot(slot, circuitNumber, slotUpstreamRcd);
       circuit.label = slotLabel;
       circuit.low_confidence = true;
       if (isPartial) {
@@ -1081,7 +1723,7 @@ export function slotsToCircuits({
         circuit.extends_side = extendsSide;
       }
     } else {
-      circuit = buildCircuitFromSlot(slot, circuitNumber, upstreamRcd);
+      circuit = buildCircuitFromSlot(slot, circuitNumber, slotUpstreamRcd);
       circuit.label = slotLabel;
     }
 
@@ -1092,15 +1734,14 @@ export function slotsToCircuits({
       circuit.rating_hallucination_detected = true;
     }
 
+    // Traceability: keep the slot's physical position on the rail. Used
+    // by post-merge passes (e.g. flagRcdWaveformOutliers) to map circuits
+    // back to their source slot without re-deriving the mainSwitchSide-
+    // aware reverse mapping. Optional on iOS — additive decode.
+    circuit.slot_index = slot.slotIndex ?? null;
+
     circuits.push(circuit);
     circuitNumber++;
-  }
-
-  // Strip any lingering `_rcdPairOpen` flag (the RCD was the last slot, so
-  // the pair was never closed by a matching second module — still a valid
-  // row, just internal book-keeping we don't want to leak to iOS).
-  for (const c of circuits) {
-    if (c._rcdPairOpen !== undefined) delete c._rcdPairOpen;
   }
 
   return circuits;
@@ -1121,7 +1762,7 @@ export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
 
   if (cls === 'mcb' || cls === 'rcbo') {
     ocpd_type = slot.tripCurve || null;
-    if (!ocpd_bs_en) ocpd_bs_en = cls === 'rcbo' ? '61009-1' : '60898-1';
+    if (!ocpd_bs_en) ocpd_bs_en = cls === 'rcbo' ? 'BS EN 61009' : 'BS EN 60898';
     ocpd_breaking_capacity_ka = '6';
   } else if (cls === 'rewireable') {
     ocpd_type = 'Rew';
@@ -1140,7 +1781,7 @@ export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
       ? String(slot.sensitivity)
       : null
     : upstreamRcd?.sensitivity || null;
-  const rcd_bs_en = is_rcbo ? '61009' : upstreamRcd ? '61008' : null;
+  const rcd_bs_en = is_rcbo ? 'BS EN 61009' : upstreamRcd ? 'BS EN 61008' : null;
 
   return {
     circuit_number,
@@ -1161,343 +1802,346 @@ export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
  * Analyze a consumer unit (fuseboard) photo using GPT Vision
  * POST /api/analyze-ccu
  */
-router.post('/analyze-ccu', auth.requireAuth, upload.single('photo'), async (req, res) => {
-  const tempPath = req.file?.path;
-  const endpointStartMs = Date.now();
+router.post(
+  '/analyze-ccu',
+  auth.requireAuth,
+  upload.single('photo'),
+  withIdempotency('ccu'),
+  async (req, res) => {
+    const tempPath = req.file?.path;
+    const endpointStartMs = Date.now();
 
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No photo uploaded' });
-    }
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No photo uploaded' });
+      }
 
-    if (req.file.size > CCU_MAX_UPLOAD_BYTES) {
-      return res.status(413).json({
-        error: 'payload_too_large',
-        message: `Image exceeds ${Math.round(CCU_MAX_UPLOAD_BYTES / (1024 * 1024))}MB limit`,
-        retryable: false,
-      });
-    }
-
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    if (!anthropicKey) {
-      return res.status(500).json({ error: 'Anthropic API key not configured' });
-    }
-
-    const model = (process.env.CCU_MODEL || 'claude-sonnet-4-6').trim();
-
-    // Parse the optional rail_roi hint from iOS. Shipped with the 2026-04-23
-    // camera-overlay feature: iOS shows a framing rectangle on the capture
-    // view, the inspector fits the MCB row into it, and sends the rectangle
-    // coords as normalised (0-1) image-space ROI. Backend uses it as the
-    // Stage 1 rail bbox directly — skipping the 3-sample VLM rail-detection
-    // pass saves ~$0.03 and ~17s per extraction.
-    //
-    // Parse defensively: multipart fields are always strings; bad JSON or a
-    // non-object must NOT fail the whole request (older iOS builds don't
-    // send this field, and any malformed value should silently fall back
-    // to the VLM rail-detection path).
-    let railRoiHint = null;
-    if (typeof req.body?.rail_roi === 'string' && req.body.rail_roi.trim().length > 0) {
-      try {
-        const parsed = JSON.parse(req.body.rail_roi);
-        if (parsed && typeof parsed === 'object') {
-          railRoiHint = parsed;
-          logger.info('CCU rail_roi hint received', {
-            userId: req.user.id,
-            roi: railRoiHint,
-          });
-        }
-      } catch (err) {
-        logger.warn('CCU rail_roi hint invalid JSON (ignored)', {
-          userId: req.user.id,
-          err: err.message,
-          raw: String(req.body.rail_roi).slice(0, 200),
+      if (req.file.size > CCU_MAX_UPLOAD_BYTES) {
+        return res.status(413).json({
+          error: 'payload_too_large',
+          message: `Image exceeds ${Math.round(CCU_MAX_UPLOAD_BYTES / (1024 * 1024))}MB limit`,
+          retryable: false,
         });
       }
-    }
 
-    logger.info('CCU photo analysis requested', {
-      userId: req.user.id,
-      fileSize: req.file.size,
-      model,
-      railRoiHint: !!railRoiHint,
-    });
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (!anthropicKey) {
+        return res.status(500).json({ error: 'Anthropic API key not configured' });
+      }
 
-    // Resize image if base64 would exceed Anthropic's 5MB limit (~3.75MB raw)
-    const MAX_BASE64_BYTES = 5 * 1024 * 1024;
-    const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
-    let imageBytes = await fs.readFile(tempPath);
+      const model = (process.env.CCU_MODEL || 'claude-sonnet-4-6').trim();
 
-    if (imageBytes.length > MAX_RAW_BYTES) {
-      logger.info('CCU image too large for API, resizing with sharp', {
-        originalBytes: imageBytes.length,
-        maxBytes: MAX_RAW_BYTES,
-      });
-      imageBytes = await sharp(imageBytes)
-        .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 80 })
-        .toBuffer();
-      logger.info('CCU image resized', { newBytes: imageBytes.length });
-    }
+      // Parse the optional rail_roi hint from iOS. Shipped with the 2026-04-23
+      // camera-overlay feature: iOS shows a framing rectangle on the capture
+      // view, the inspector fits the MCB row into it, and sends the rectangle
+      // coords as normalised (0-1) image-space ROI. Backend uses it as the
+      // Stage 1 rail bbox directly — skipping the 3-sample VLM rail-detection
+      // pass saves ~$0.03 and ~17s per extraction.
+      //
+      // Parse defensively: multipart fields are always strings; bad JSON or a
+      // non-object must NOT fail the whole request (older iOS builds don't
+      // send this field, and any malformed value should silently fall back
+      // to the VLM rail-detection path).
+      let railRoiHint = null;
+      if (typeof req.body?.rail_roi === 'string' && req.body.rail_roi.trim().length > 0) {
+        try {
+          const parsed = JSON.parse(req.body.rail_roi);
+          if (parsed && typeof parsed === 'object') {
+            railRoiHint = parsed;
+            logger.info('CCU rail_roi hint received', {
+              userId: req.user.id,
+              roi: railRoiHint,
+            });
+          }
+        } catch (err) {
+          logger.warn('CCU rail_roi hint invalid JSON (ignored)', {
+            userId: req.user.id,
+            err: err.message,
+            raw: String(req.body.rail_roi).slice(0, 200),
+          });
+        }
+      }
 
-    const base64 = Buffer.from(imageBytes).toString('base64');
+      // Phase 4 of the multi-board sprint: optional board attribution. iOS
+      // attaches `board_id` (and optionally `board_index`) when uploading
+      // a sub-board CCU photo so the server can echo it back in the
+      // response, log under the right board, and key training-data S3
+      // paths by board. Both fields are optional; older iOS builds that
+      // omit them stay on the legacy implicit-main-board path.
+      const attributionBoardId =
+        typeof req.body?.board_id === 'string' && req.body.board_id.trim().length > 0
+          ? req.body.board_id.trim()
+          : null;
+      const rawBoardIndex = req.body?.board_index;
+      let attributionBoardIndex = null;
+      if (rawBoardIndex !== undefined && rawBoardIndex !== null && rawBoardIndex !== '') {
+        const parsed = Number(rawBoardIndex);
+        if (Number.isInteger(parsed) && parsed >= 0) {
+          attributionBoardIndex = parsed;
+        }
+      }
 
-    // Per-slot primary pipeline (sprint 2026-04-22 + Codex P2 fix 2026-04-22):
-    //   1. Build the Anthropic client ONCE up front.
-    //   2. Kick off the single-shot VLM promise IMMEDIATELY so it runs in
-    //      parallel with everything else (Codex P2: previously single-shot
-    //      couldn't start until after `await classifyBoardTechnology` resolved
-    //      — wasted ~3s of serial wait on every request). Single-shot is the
-    //      authoritative source for board-level metadata (main switch, SPD,
-    //      board manufacturer/model, confidence message, questionsForInspector);
-    //      its circuits[] is OVERWRITTEN by the merger when per-slot classifications
-    //      are available.
-    //   3. Run the cheap board_technology classifier (returns in ~3s) to pick
-    //      the geometric pipeline.
-    //   4. Kick off the matching PREPARE pipeline (Stage 1 + 2 only) —
-    //      modern -> prepareModernGeometry, rewireable/cartridge/mixed ->
-    //      prepareRewireableGeometry. "mixed" uses the rewireable path because
-    //      that module also handles retrofitted RCD main switches.
-    //   5. After geometry is prepared, dispatch Stage 3 (classifyXXXSlots) and
-    //      Stage 4 (extractSlotLabels) IN PARALLEL via Promise.all — saves
-    //      ~10-15s on wide boards vs. running them sequentially as before.
-    //
-    // Kill switch: CCU_GEOMETRIC_V1=false in the task-def disables the whole
-    // per-slot path and falls back to pure single-shot, preserving the pre-sprint
-    // behaviour. Default (env unset or "true") is per-slot ON.
-    const perSlotEnabled = process.env.CCU_GEOMETRIC_V1 !== 'false';
-
-    // Build the Anthropic SDK client ONCE; reuse for classifier + single-shot.
-    const Anthropic = (await import('@anthropic-ai/sdk')).default;
-    const anthropic = new Anthropic({ apiKey: anthropicKey });
-
-    const prompt = `You are an expert UK electrician extracting devices from a consumer unit photo for an EICR certificate. Follow these 4 steps IN ORDER. Return ONLY valid JSON.
-
-## STEP 1: FIND MAIN SWITCH AND CLASSIFY BOARD
-
-### 1a. Main switch
-Look for the device labelled "MAIN SWITCH" on the board (printed text on the board cover, or on the device itself). It is typically the largest device, often 2 modules wide.
-CRITICAL — Confirm it is NOT an RCD/RCCB: the main switch has NO test button, NO "30mA" or sensitivity marking, and NO "RCD"/"RCCB" text on it. Do NOT identify the main switch by toggle colour — RCDs also have red/orange toggles and WILL be misidentified if you rely on colour alone.
-Record: rating (amps), type (Isolator/Switch Disconnector/Switch-Fuse/Rotary Isolator/RCD/RCCB), poles (DP/TP/TPN/4P), BS/EN number, voltage if visible. Note its position on the board (left/right).
-Identify board manufacturer and model if visible (e.g. "Hager", "MK", "Wylex").
-
-On older rewireable-fuse boards the main switch is often a **pull-out switch-fuse** (Wylex-style, integrated with neutral bar) or a **rotary isolator** (MEM). Rating typically 60A/80A/100A. BS/EN is often BS 5419 (legacy) or BS EN 60947-3; set null if not printed. Use main_switch_type "Switch-Fuse" or "Rotary Isolator" accordingly.
-
-### 1b. Board technology
-Classify the board's overcurrent-protection technology. Set board_technology to exactly one of:
-- **"modern"** — toggle-style MCBs / RCBOs on DIN rail, ~18mm modules each. Any board with even one MCB/RCBO is NOT rewireable.
-- **"rewireable_fuse"** — every protective device is a **pull-out fuse carrier** (no toggles). Carriers are typically colour-coded on the body or the fuse-shield tab. Commonly Wylex (bakelite or plastic), MEM, Crabtree, Bill, Ashley. Devices to the protection standard BS 3036 (semi-enclosed rewireable fuse wire).
-- **"cartridge_fuse"** — pull-out carriers that contain a cylindrical HBC cartridge (not rewireable fuse wire). Standard BS 1361 or BS 88-2/88-3.
-- **"mixed"** — combination (e.g. rewireable carriers plus a retrofitted 30mA RCD main switch, or a board where some ways are MCBs and some are fuse carriers).
-
-If unsure between rewireable and cartridge, look at the carrier contents: visible twisted fuse wire = rewireable (BS 3036), cylindrical ceramic/metal cartridge = BS 1361/88-2. If a carrier is closed and you cannot tell, prefer rewireable_fuse for classic domestic Wylex/MEM boards and add a question for the inspector.
-
-### 1c. SPD
-Also check for an SPD module (status indicator window, no toggle, 2-3 modules wide). If present: set spd_present=true and extract type/rating/BS EN/short circuit kA. If absent: spd_present=false. Do NOT copy main switch data into SPD fields — they are completely different components. Rewireable-fuse boards almost never have an SPD.
-
-## STEP 2: SEQUENTIAL DEVICE SCAN
-
-Starting from the device immediately next to the main switch, scan outward one device at a time. For split boards (main switch in middle), scan non-RCD side first, then RCD side. Number circuits sequentially — circuit 1 is nearest the main switch, incrementing outward. Skip standalone RCDs when numbering — they are NOT circuits. Ignore printed circuit numbers on the board (often wrong).
-
-Use the classification rules that match the board_technology from Step 1b.
-
-### 2a. MODERN BOARDS (board_technology = "modern")
-For each position, classify as exactly ONE of:
-- **MCB**: Single-width (18mm), has toggle lever, NO test button. Record type curve (B/C/D) and amp rating from device face.
-- **RCBO**: Double-width (36mm), has BOTH toggle lever AND test button, plus RCD waveform symbol. Record curve, rating, RCD type (count waveform lines: 1=AC, 2=A, 3=B; S or F if letter-marked), and sensitivity (mA). Set is_rcbo=true, rcd_protected=true.
-- **RCD/RCCB**: Double-width, has test button, has sensitivity marking (e.g. 30mA), but NO type curve letter (B/C/D). This is NOT a circuit — do NOT number it. Store its RCD type + sensitivity; apply them to ALL subsequent circuits until the next RCD is encountered.
-- **Blank/Spare**: Flat cover plate, no toggle lever, no device behind it. Record as label:"Spare", ocpd_type:null, ocpd_rating_a:null. NEVER fabricate device data for empty slots.
-- **Spare MCB**: Real MCB with toggle + rating but no label. Record with label:"Spare" and real ocpd_type/rating from the device face.
-
-### 2b. REWIREABLE / CARTRIDGE FUSE BOARDS (board_technology = "rewireable_fuse" | "cartridge_fuse")
-There are NO toggles, NO curve letters, and NO test buttons on the circuit devices. Each way is a pull-out fuse carrier. Classify each position as exactly ONE of:
-- **Fuse carrier (rewireable, BS 3036)** — body or shield tab is COLOUR-CODED. This is the primary signal for the amp rating:
-  - **White = 5A** (typical: lighting)
-  - **Blue = 15A** (typical: immersion heater, old radial)
-  - **Yellow = 20A** (typical: radial)
-  - **Red = 30A** (typical: ring final, legacy cooker)
-  - **Green = 45A** (typical: cooker, shower)
-  If a rating is also printed on the carrier face or carrier tab, it must match the colour. If they disagree, set ocpd_rating_a=null and raise a question for the inspector. Set ocpd_type="Rew", ocpd_bs_en="BS 3036", ocpd_breaking_capacity_ka=null (rewireable fuses have no kA rating).
-- **Fuse carrier (HBC cartridge, BS 1361 / BS 88-2)** — carrier holds a cylindrical ceramic cartridge; face usually stamped with the rating (e.g. 30A, 45A) and often a BS 1361 or BS 88 mark. Set ocpd_type="HRC", ocpd_bs_en="BS 1361" (domestic) or "BS 88-2" (commercial) as appropriate, ocpd_breaking_capacity_ka from device face or null.
-- **Blank/Spare way** — empty carrier socket with no carrier fitted, or blank cover. Record as label:"Spare", ocpd_type:null, ocpd_rating_a:null, ocpd_bs_en:null.
-- **Spare fuse** — fitted carrier with a valid colour/rating but no circuit label. Record with label:"Spare" and real ocpd_type/ocpd_rating_a.
-
-For every circuit on a rewireable or cartridge board, set is_rcbo=false. Set rcd_protected=false and rcd_type=null UNLESS an upstream RCD is clearly visible (e.g. a retrofitted 30mA RCD main switch or an RCD banked ahead of a group of ways); in that case apply the upstream RCD's type and sensitivity to the circuits it protects, same as the modern-board rule.
-
-Do NOT assign a curve letter (B/C/D) to any rewireable or cartridge fuse — ocpd_type is "Rew" or "HRC", never B/C/D.
-
-### 2c. MIXED BOARDS (board_technology = "mixed")
-Apply 2a rules to positions that are MCBs/RCBOs and 2b rules to positions that are fuse carriers. Classify each position on its own merits.
-
-### B6 vs B16 WARNING
-On many MCBs (especially Legrand) the gap between "B" and "6" mimics "B16". Count digits: single "6"=B6 (6A, typical for lighting/smoke), two digits "16"=B16 (16A, typical for sockets). If you read B16 on a lighting or smoke alarm circuit, it is almost certainly B6 — re-examine.
-
-### Amp ratings
-ALWAYS read from the device face. Never assume from circuit name ("Shower" ≠ 40A, "Cooker" ≠ 32A). If not legible, set to null.
-
-### RCD type determination
-1. Read waveform symbol on device: 1 line=AC, 2 lines=A, 3 lines=B, letter S=S, letter F=F. If any hint of a second line below the sine wave, it is Type A not AC.
-2. If symbol not visible, look up by manufacturer+model prefix (Hager ADA=A, ADN=AC; MK H79xx=AC, H68xx=A; BG CURB=AC, CUCRB=A; Wylex WRS=AC, WRSA=A).
-3. If both fail, set rcd_type=null. Never return "RCD" or "RCBO" as rcd_type — only AC, A, B, F, S, or null.
-
-### BS/EN numbers
-Read from device. If not visible, look up: MCB=60898-1, RCBO=61009-1, RCD=61008. Only null if device is unidentifiable.
-
-## STEP 3: LABEL PASS
-
-After all hardware is locked in, scan for labels above/below each device: strip labels, handwritten text, stickers, and circuit details cards (secondary source only — often outdated).
-Match labels to devices by physical proximity. Ignore printed circuit numbers (often wrong). If a label is faded or unclear, set to null — never guess or copy from adjacent positions.
-
-Normalise labels to EICR standard terms (title case):
-Imm/Immersion→Water Heater, Smokes/Smoke/S/D/S/Det→Smoke Alarm, Lts/Ltg→Lights, Skt/Skts→Sockets (keep prefix e.g. "Kitchen Sockets"), CKR→Cooker, Shwr→Shower, Blr→Boiler, FF/F/F→Fridge Freezer, CH→Central Heating, UFH→Underfloor Heating, W/M→Washing Machine, T/D→Tumble Dryer, EV/EVCP→Electric Vehicle.
-A circuit with a visible MCB/RCBO and a readable label is NOT "Spare".
-
-## STEP 4: OUTPUT
-
-Return ONLY valid JSON matching this exact schema:
-{
-  "board_manufacturer": "string or null",
-  "board_model": "string or null",
-  "board_technology": "modern|rewireable_fuse|cartridge_fuse|mixed",
-  "main_switch_rating": "string — amps",
-  "main_switch_position": "left or right",
-  "main_switch_bs_en": "string or null",
-  "main_switch_type": "Isolator|Switch Disconnector|Switch-Fuse|Rotary Isolator|RCD|RCCB or null",
-  "main_switch_poles": "DP|TP|TPN|4P",
-  "main_switch_current": "string — amps",
-  "main_switch_voltage": "string or null",
-  "spd_present": false,
-  "spd_bs_en": "string or null",
-  "spd_type": "string or null",
-  "spd_rated_current_a": "string or null",
-  "spd_short_circuit_ka": "string or null",
-  "confidence": {
-    "overall": 0.85,
-    "image_quality": "clear|partially_readable|poor",
-    "uncertain_fields": ["circuits[2].ocpd_bs_en"],
-    "message": "Brief note about any reading difficulties or looked-up values"
-  },
-  "questionsForInspector": ["Question 1?", "Question 2?"],
-  "circuits": [
-    {
-      "circuit_number": 1,
-      "label": "Kitchen Sockets or null",
-      "ocpd_type": "B|C|D|Rew|HRC or null (null ONLY for blank positions with no physical device)",
-      "ocpd_rating_a": "32 or null",
-      "ocpd_bs_en": "60898-1|61009-1|BS 3036|BS 1361|BS 88-2 or null",
-      "ocpd_breaking_capacity_ka": "6 or null (null for rewireable fuses — they have no kA rating)",
-      "is_rcbo": false,
-      "rcd_protected": true,
-      "rcd_type": "AC|A|B|F|S or null",
-      "rcd_rating_ma": "30 or null",
-      "rcd_bs_en": "61008 or null"
-    }
-  ]
-}
-
-Device type mapping: RCBO→is_rcbo:true, rcd_protected:true, rcd_type from device waveform; MCB behind standalone RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; plain MCB (no RCD upstream)→is_rcbo:false, rcd_protected:false, rcd_type:null; rewireable/cartridge fuse (no upstream RCD)→is_rcbo:false, rcd_protected:false, rcd_type:null, ocpd_type "Rew" or "HRC"; rewireable/cartridge fuse behind retrofitted RCD→is_rcbo:false, rcd_protected:true, rcd_type/sensitivity from upstream RCD; blank→all ocpd fields null.
-
-Confidence: overall 0.0-1.0, image_quality clear/partially_readable/poor, uncertain_fields lists guessed/looked-up field paths, message notes reading difficulties and lookups.
-
-questionsForInspector: return EMPTY array [] unless RCD type could not be determined for a circuit. Questions are read aloud via TTS — keep extremely short and conversational. Never ask about BS/EN, ratings, board info, SPD, or labels you already extracted.`;
-
-    // --- Single-shot kickoff (Codex P2 fix 2026-04-22) ---
-    // Start the single-shot VLM call BEFORE awaiting the classifier. Today the
-    // classifier takes ~3s and the single-shot takes ~25-30s; running them in
-    // parallel means single-shot often finishes while Stage 3 is still running,
-    // instead of starting ~3s late on every request. The AbortController timeout
-    // still applies — AbortError bubbles out of the same try/catch below.
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), CCU_EXTRACTION_TIMEOUT_MS);
-    const anthropicStartMs = Date.now();
-    const singleShotPromise = anthropic.messages.create(
-      {
+      logger.info('CCU photo analysis requested', {
+        userId: req.user.id,
+        fileSize: req.file.size,
         model,
-        max_tokens: 4096,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
-              },
-              { type: 'text', text: prompt },
-            ],
-          },
-        ],
-      },
-      { signal: abortController.signal }
-    );
+        railRoiHint: !!railRoiHint,
+        attributionBoardId,
+        attributionBoardIndex,
+      });
 
-    // --- Classifier + per-slot geometric pipeline (kicked off in parallel) ---
-    // Concurrently with single-shot:
-    //   - Run the board_technology classifier (~3s).
-    //   - Once it returns, kick off the matching prepareXXXGeometry (Stages 1+2).
-    //   - Once geometry is ready, dispatch Stage 3 (classifyXXXSlots) and
-    //     Stage 4 (extractSlotLabels) in parallel via Promise.all.
-    //
-    // Wrapped in an async IIFE so single-shot continues running unobstructed
-    // regardless of how the per-slot side goes. All failures inside this block
-    // are logged non-fatal and resolve to a null result — the response still
-    // ships with single-shot circuits[] as a safety net.
-    let boardClassification = null;
-    const perSlotPromise = (async () => {
-      if (!perSlotEnabled) return null;
+      // Two buffers, one role each:
+      //
+      //   apiBytes      — downsized for whole-image VLM calls (board
+      //                   classifier). Anthropic's request body cap forces a
+      //                   resize, AND the model auto-downsamples >1568×1568
+      //                   internally before vision processing, so sending
+      //                   the full 12 MP iPhone capture buys nothing on
+      //                   whole-image calls.
+      //
+      //   originalBytes — full quality, used for per-window crops in
+      //                   extractViaSlidingWindow. Each window is ~5
+      //                   modules wide; cropping a sharp 4032-wide source
+      //                   yields ~876-px windows that resize cleanly to
+      //                   1536 for the per-window VLM call. Cropping the
+      //                   downsized 2048-wide source yields ~445-px
+      //                   windows that have to be 3.4×-upscaled to 1536,
+      //                   destroying small-text legibility on the labels.
+      //                   Field test 2026-05-07: same Wylex NHRS12SL board
+      //                   gave 16 perfect slots in the morning at 97 px /
+      //                   module and 25 duplicated slots in the afternoon
+      //                   at 89 px / module — the difference came entirely
+      //                   from manual-fit framing variance after the
+      //                   downsize had already capped the headroom.
+      //                   Sourcing crops from the original buffer takes
+      //                   the rail back to ~175 px / module on a typical
+      //                   16-way board, well above Sonnet's flip threshold.
+      //
+      // Image-token billing is bucketed by effective resolution, not source
+      // pixels, so the per-window calls cost the same regardless of source
+      // size. The classifier still sees the downsized image so its tokens
+      // and request size are unchanged from before.
+      const MAX_BASE64_BYTES = 5 * 1024 * 1024;
+      const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
+      const originalBytes = await fs.readFile(tempPath);
+      const originalMeta = await sharp(originalBytes).metadata();
+      const originalImageWidth = originalMeta.width || 0;
+      const originalImageHeight = originalMeta.height || 0;
+      let apiBytes = originalBytes;
 
+      if (apiBytes.length > MAX_RAW_BYTES) {
+        logger.info('CCU image too large for API, resizing with sharp', {
+          originalBytes: apiBytes.length,
+          maxBytes: MAX_RAW_BYTES,
+        });
+        apiBytes = await sharp(originalBytes)
+          .resize(2048, 2048, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 80 })
+          .toBuffer();
+        logger.info('CCU image resized', { newBytes: apiBytes.length });
+      }
+      // Alias so the rest of the route handler — board classifier base64,
+      // CV stages (Stage 1/2), per-slot fallback path — keeps reading the
+      // downsized buffer it always read. extractViaSlidingWindow alone is
+      // switched over to originalBytes below.
+      const imageBytes = apiBytes;
+
+      const base64 = Buffer.from(imageBytes).toString('base64');
+
+      // Per-slot pipeline (sprint 2026-04-22, single-shot retired 2026-04-29):
+      //   1. Build the Anthropic client ONCE up front.
+      //   2. Run the board classifier — extended on 2026-04-29 to return
+      //      board_manufacturer, board_model, main_switch_rating and
+      //      spd_present alongside its original board_technology +
+      //      main_switch_position. Single-shot's only unique outputs were
+      //      these fields (everything else duplicated per-slot work) and
+      //      single-shot was the wall-clock long pole at ~46s; extending
+      //      this fast call to ~5s replaced it without a new round-trip.
+      //   3. Kick off the matching PREPARE pipeline (Stage 1 + 2 only) —
+      //      modern -> prepareModernGeometry, rewireable/cartridge/mixed ->
+      //      prepareRewireableGeometry. "mixed" uses the rewireable path
+      //      because that module also handles retrofitted RCD main switches.
+      //   4. After geometry is prepared, dispatch Stage 3 (classifyXXXSlots)
+      //      and Stage 4 (extractSlotLabels) IN PARALLEL via Promise.all.
+      //   5. Build the `analysis` object from classifier output + slots[]
+      //      via slotsToCircuits, then run the BS-EN / label normalisation
+      //      / RCD-type-lookup enrichers as before.
+      //
+      // Failure mode: per-slot is now the ONLY path, so prepare/classify
+      // failures bubble up as 502s. There's no single-shot safety net any
+      // more — better to fail loudly than ship circuit data we don't trust.
+      // Wall-clock target ~21s (Stage 4 long pole), cost ~$0.04/extraction.
+
+      // Build the Anthropic SDK client ONCE; reuse for classifier + per-slot.
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const anthropic = new Anthropic({ apiKey: anthropicKey });
+
+      // --- Stage 1: classifier (board metadata) ---
+      // Extended 2026-04-29 to also produce board_manufacturer, board_model,
+      // main_switch_rating and spd_present (previously only single-shot
+      // produced those). ~5s, ~$0.01.
+      const anthropicStartMs = Date.now();
+      let boardClassification;
+      let classifierUsage = { inputTokens: 0, outputTokens: 0 };
       try {
         boardClassification = await classifyBoardTechnology(base64, anthropic, model);
+        classifierUsage = boardClassification.usage || classifierUsage;
         logger.info('CCU board_technology classifier', {
           userId: req.user.id,
           boardTechnology: boardClassification.boardTechnology,
+          technologyOverride: boardClassification.technologyOverride,
           mainSwitchPosition: boardClassification.mainSwitchPosition,
+          boardManufacturer: boardClassification.boardManufacturer,
+          boardModel: boardClassification.boardModel,
+          mainSwitchRating: boardClassification.mainSwitchRating,
+          spdPresent: boardClassification.spdPresent,
           confidence: boardClassification.confidence,
         });
       } catch (err) {
-        logger.warn('CCU board_technology classifier failed — defaulting to modern path', {
+        logger.error('CCU board classifier failed — no per-slot path possible', {
           userId: req.user.id,
           error: err.message,
         });
-        boardClassification = null;
+        return res.status(502).json({
+          error: `Board classification failed: ${err.message}. Try a clearer photo or retry.`,
+        });
       }
 
-      const chooseRewireable =
-        boardClassification?.boardTechnology === 'rewireable_fuse' ||
-        boardClassification?.boardTechnology === 'cartridge_fuse' ||
-        boardClassification?.boardTechnology === 'mixed';
+      // --- Registry lookup (RCD waveform type only — NOT module count) ---
+      // The classifier identifies a board model; the registry knows the
+      // RCD waveform type (AC/A/B), BS EN, and other manufacturer-series
+      // facts that aren't visible in the photo. We call lookupRcdType
+      // here so `applyRcdTypeLookup` downstream can reuse the result
+      // without a second filesystem read (it's mtime-cached, but the
+      // log line documents *which* match fired).
+      //
+      // Module count is NOT taken from the registry. The "ways" field
+      // in datasheets is ambiguous — it can mean "free outgoing ways",
+      // "total module positions", or "RCD-protected ways" depending on
+      // who entered the row. On a Wylex NHRS12SL the registry says 12
+      // but the physical rail carries 16 modules (12-way bank + main
+      // switch + side MCB + 2-mod isolator). Forcing 12 slots into a
+      // 16-module bbox produces 4 unowned slots that downstream code
+      // asserts as "Exposed rail (no device, no blank)" — a fabricated
+      // IP4X safety defect. CV-only count is the correct stance because
+      // ccu-rail-quad already handles keystone (perspective-rectified
+      // autocorrelation in mm-uniform space, slot centres projected
+      // back through the quad), which was the failure mode the override
+      // existed to side-step.
+      const upfrontLookup = lookupRcdType({
+        manufacturer: boardClassification.boardManufacturer,
+        model: boardClassification.boardModel,
+      });
+      if (upfrontLookup.source !== 'miss') {
+        logger.info('RCD type lookup pre-geometry', {
+          userId: req.user.id,
+          source: upfrontLookup.source,
+          matchedKey: upfrontLookup.matched_key,
+          matchedVia: upfrontLookup.matched_via,
+          readAs: upfrontLookup.read_as ?? null,
+        });
+      }
 
+      // --- Stage 2: prepare geometry (Stage 1 of geometric pipeline + bbox) ---
+      const chooseRewireable =
+        boardClassification.boardTechnology === 'rewireable_fuse' ||
+        boardClassification.boardTechnology === 'cartridge_fuse' ||
+        boardClassification.boardTechnology === 'mixed';
+
+      // Feature flag: CCU_BOX_TIGHTEN switches the modern-board geometry
+      // path to one of two CV implementations (ccu-rail-quad.js or
+      // ccu-box-tighten.js). Default ON. Tries the perspective-aware
+      // quadrilateral path first, falls back to the legacy axis-aligned
+      // box-tightener on quad error, then to the VLM prepareModernGeometry
+      // on box-tightener error. Two layers of fallback because an
+      // algorithm regression must NEVER block an extraction in production.
+      //
+      // CCU_QUAD_GEOMETRY (default true) gates the quadrilateral path.
+      // Set to "false" to skip directly to the legacy box-tightener — the
+      // kill-switch for any future quad regression.
+      const boxTightenEnabled = (process.env.CCU_BOX_TIGHTEN ?? 'true').toLowerCase() === 'true';
+      const quadEnabled = (process.env.CCU_QUAD_GEOMETRY ?? 'true').toLowerCase() === 'true';
       let prepared;
+      let preparedSource = 'modern-vlm';
       try {
-        prepared = chooseRewireable
-          ? await prepareRewireableGeometry(imageBytes)
-          : await prepareModernGeometry(imageBytes, { railRoiHint });
+        if (chooseRewireable) {
+          prepared = await prepareRewireableGeometry(imageBytes);
+          preparedSource = 'rewireable';
+        } else if (boxTightenEnabled && railRoiHint) {
+          const tightenerOpts = {};
+          let tightened = null;
+          let tightenedFrom = null;
+
+          if (quadEnabled) {
+            try {
+              tightened = await tightenAndChunkQuad(imageBytes, railRoiHint, tightenerOpts);
+              tightenedFrom = 'quad';
+            } catch (quadErr) {
+              logger.warn('CCU quad geometry failed; falling back to legacy box-tightener', {
+                userId: req.user.id,
+                error: quadErr.message,
+              });
+            }
+          }
+
+          if (!tightened) {
+            try {
+              tightened = await tightenAndChunk(imageBytes, railRoiHint, tightenerOpts);
+              tightenedFrom = 'legacy';
+            } catch (tightenErr) {
+              logger.warn('CCU box-tightener failed; falling back to modern VLM', {
+                userId: req.user.id,
+                error: tightenErr.message,
+              });
+              prepared = await prepareModernGeometry(imageBytes, { railRoiHint });
+              preparedSource = 'modern-vlm-fallback';
+            }
+          }
+
+          if (tightened) {
+            prepared = adaptTightenerToPrepared(tightened);
+            preparedSource = tightenedFrom === 'quad' ? 'rail-quad' : 'box-tightener';
+            logger.info('CCU box-tightener used', {
+              userId: req.user.id,
+              source: tightenedFrom,
+              moduleCount: tightened.moduleCount,
+              pitchPx: Math.round(tightened.pitchPx * 10) / 10,
+              initialPitchPx: tightened.initialPitchPx,
+              quadrilateral: tightened.quadrilateral ?? null,
+              rectNormCorr: tightened.refinement?.quadDiag?.rectNormCorr ?? null,
+              refinementAccepted: tightened.refinement.accepted,
+              pairCount: tightened.refinement.pairCount,
+            });
+          }
+        } else {
+          prepared = await prepareModernGeometry(imageBytes, { railRoiHint });
+        }
       } catch (err) {
-        logger.warn('CCU geometric prepare failed (non-fatal)', {
+        logger.error('CCU geometric prepare failed', {
           userId: req.user.id,
           path: chooseRewireable ? 'rewireable' : 'modern',
           error: err.message,
         });
-        return null;
+        return res.status(502).json({
+          error: `Could not detect device row in photo: ${err.message}. Frame the consumer unit so all MCBs are visible and retry.`,
+        });
       }
 
-      // --- Stage 3 || Stage 4 in parallel (PR latency saver) ---
-      // Stage 4 used to be gated on Stage 3's output (it used slot classifications
-      // as a skip hint for main_switch/spd/blank). Dropping the skip is cheaper
-      // than a ~10-15s serial cost on wide boards — labeling an extra 1-2 slots
-      // per request is fine because the merger skips main_switch/spd classifications
-      // by design, so the extra labels never surface in circuits[].
-      const panelTopNorm =
-        prepared.panelBounds?.top ?? prepared.medianRails?.rail_top ?? null;
+      // --- Stage 3 || Stage 4 in parallel ---
+      // Stage 4 used to be gated on Stage 3 output (skip hint for
+      // main_switch/spd/blank); dropping the skip costs ~1-2 extra label
+      // crops vs. saving ~10-15s of serial wait, so we run both in parallel.
+      // The merger filters main_switch/spd by classification anyway so extra
+      // labels never surface in circuits[].
+      const panelTopNorm = prepared.panelBounds?.top ?? prepared.medianRails?.rail_top ?? null;
       const panelBottomNorm =
         prepared.panelBounds?.bottom ?? prepared.medianRails?.rail_bottom ?? null;
 
-      // Coordinate-space detection (Codex P1 commit f2e304d): modern pipeline's
-      // slotCentersX/moduleWidth are 0-1000 normalised, rewireable's are PIXELS.
-      // extractSlotLabels requires PIXELS. Convert for modern, pass-through for
-      // rewireable. Detection via `carrierPitchPx` (rewireable) vs `moduleWidth`
-      // (modern) — same heuristic as the post-label merge site (pipeline result
-      // detects via `carrierPitch` there; here we use `carrierPitchPx` on the
-      // prepared object which is the pre-wrapper name).
+      // Coordinate-space detection (Codex P1 commit f2e304d): modern
+      // pipeline's slotCentersX/moduleWidth are 0-1000 normalised,
+      // rewireable's are PIXELS. extractSlotLabels requires PIXELS. Convert
+      // for modern, pass-through for rewireable. Detection via
+      // carrierPitchPx (rewireable) vs moduleWidth (modern).
       const isRewireablePipeline = typeof prepared.carrierPitchPx === 'number';
       const imageWidthForConvert = prepared.imageWidth || 0;
       const convertNormToPx = (v) =>
@@ -1516,11 +2160,6 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         panelBottomNorm,
         imageWidth: prepared.imageWidth,
         imageHeight: prepared.imageHeight,
-        // SKIP HINT DROPPED: In the parallel flow we don't have Stage 3 output
-        // when Stage 4 starts. Running label-read on all slots (including
-        // main_switch / spd / blank) is ~1-2 extra VLM slots per board —
-        // cheaper than the 10-15s serial stage3→stage4 we save. The merger
-        // filters main_switch/spd out anyway so the extra labels never surface.
         slotsForSkipHint: null,
       };
 
@@ -1529,33 +2168,189 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         Number.isFinite(labelGeom.panelTopNorm) &&
         Number.isFinite(labelGeom.panelBottomNorm);
 
-      const classifyFn = isRewireablePipeline
-        ? classifyRewireableSlots
-        : classifyModernSlots;
-      const classifyPromise = classifyFn(imageBytes, prepared).catch((err) => {
-        logger.warn('CCU per-slot classify failed (non-fatal)', {
-          userId: req.user.id,
-          path: isRewireablePipeline ? 'rewireable' : 'modern',
-          error: err.message,
+      // Feature flag for the sliding-window cut-over (2026-05-05).
+      // Enable by setting CCU_SLIDING_WINDOW=true on the task definition.
+      // Default OFF: an explicit env-var flip turns on the new path
+      // without a code rollback if anything goes wrong in the field.
+      // Sliding-window REPLACES Stage 3 + Stage 4 + the per-slot batch
+      // loops; everything downstream (assembleGeometricResult,
+      // slotsToCircuits, applyRcdTypeLookup, applyBsEnFallback,
+      // normaliseCircuitLabels, lookupMissingRcdTypes,
+      // flagRcdWaveformOutliers) keeps working unchanged because the
+      // sliding-window result is reshaped into the same {slots, labels,
+      // usage, timings} contract the per-slot pipeline produces.
+      const slidingWindowEnabled =
+        (process.env.CCU_SLIDING_WINDOW || 'false').toLowerCase() === 'true';
+
+      // Single-shot mode (CCU_USE_SINGLE_SHOT=true): one VLM call sees the
+      // entire rail and returns all slots in one go. Field-tested with
+      // GPT-5.5 on 2026-05-07: produced exact CV-count match (16/16)
+      // where sliding-window Sonnet over-counted to 25 and sliding-window
+      // GPT-5.5 over-counted to 18. The board classifier upstream and
+      // all enrichment downstream are unchanged.
+      const useSingleShot = (process.env.CCU_USE_SINGLE_SHOT || 'false').toLowerCase() === 'true';
+
+      let classified, labelPassResult;
+      if (slidingWindowEnabled || useSingleShot) {
+        const { extractViaSlidingWindow } = await import('../extraction/ccu-sliding-window.js');
+        const { extractViaSingleShot } = await import('../extraction/ccu-single-shot.js');
+        // Route the per-slot VLM call(s) to whichever model
+        // CCU_SLIDING_WINDOW_MODEL names. Single env var name covers both
+        // pipelines because both share the same VLM-routing decision.
+        // Defaults to CCU_MODEL so existing deployments don't change
+        // behaviour unless explicitly opted in. When the chosen model
+        // name starts with "gpt-", wrap an OpenAI client in an
+        // Anthropic-shaped adapter; otherwise keep the existing Anthropic
+        // client. The classifier and any other whole-image VLM calls
+        // upstream stay on Sonnet.
+        const slidingWindowModel = (process.env.CCU_SLIDING_WINDOW_MODEL || model).trim();
+        const { isOpenAIModel, createOpenAIAnthropicAdapter } =
+          await import('../extraction/openai-vision-adapter.js');
+        const swUseOpenAI = isOpenAIModel(slidingWindowModel);
+        let swClient = anthropic;
+        if (swUseOpenAI) {
+          const openaiKey = process.env.OPENAI_API_KEY;
+          if (!openaiKey) {
+            logger.warn(
+              'CCU_SLIDING_WINDOW_MODEL is OpenAI but OPENAI_API_KEY missing — falling back to Anthropic',
+              {
+                userId: req.user.id,
+                slidingWindowModel,
+              }
+            );
+          } else {
+            swClient = createOpenAIAnthropicAdapter({ apiKey: openaiKey });
+            logger.info(
+              useSingleShot ? 'CCU single-shot using OpenAI' : 'CCU sliding-window using OpenAI',
+              {
+                userId: req.user.id,
+                slidingWindowModel,
+              }
+            );
+          }
+        }
+        try {
+          // Scale the prepared geometry from CV-space (apiBytes dimensions)
+          // into source-space (originalBytes dimensions) so that
+          // extractViaSlidingWindow crops windows in original-pixel coords.
+          //
+          // railBbox, medianRails, slotCentersX, panelBounds are all in
+          // per-1000 normalised space and resolve correctly under any
+          // imgW/imgH via norm2px(). Only the absolute-pixel-space fields
+          // (cvPitchDiag.pitchPx and cvPitchDiag.railWidthPx) need explicit
+          // multiplication. If originalBytes was identical to apiBytes
+          // (small upload, no resize), the scale is 1.0 and the prepared
+          // geometry passes through unchanged.
+          const sourceImgW = originalImageWidth || prepared.imageWidth;
+          const sourceImgH = originalImageHeight || prepared.imageHeight;
+          const sourceScale = prepared.imageWidth > 0 ? sourceImgW / prepared.imageWidth : 1;
+          const preparedForSlidingWindow =
+            sourceScale === 1
+              ? prepared
+              : {
+                  ...prepared,
+                  imageWidth: sourceImgW,
+                  imageHeight: sourceImgH,
+                  cvPitchDiag: prepared.cvPitchDiag
+                    ? {
+                        ...prepared.cvPitchDiag,
+                        pitchPx:
+                          prepared.cvPitchDiag.pitchPx != null
+                            ? prepared.cvPitchDiag.pitchPx * sourceScale
+                            : null,
+                        railWidthPx:
+                          prepared.cvPitchDiag.railWidthPx != null
+                            ? prepared.cvPitchDiag.railWidthPx * sourceScale
+                            : null,
+                      }
+                    : prepared.cvPitchDiag,
+                  railQuad: prepared.railQuad
+                    ? {
+                        tl: {
+                          x: prepared.railQuad.tl.x * sourceScale,
+                          y: prepared.railQuad.tl.y * sourceScale,
+                        },
+                        tr: {
+                          x: prepared.railQuad.tr.x * sourceScale,
+                          y: prepared.railQuad.tr.y * sourceScale,
+                        },
+                        bl: {
+                          x: prepared.railQuad.bl.x * sourceScale,
+                          y: prepared.railQuad.bl.y * sourceScale,
+                        },
+                        br: {
+                          x: prepared.railQuad.br.x * sourceScale,
+                          y: prepared.railQuad.br.y * sourceScale,
+                        },
+                      }
+                    : null,
+                };
+          const extractFn = useSingleShot ? extractViaSingleShot : extractViaSlidingWindow;
+          const swResult = await extractFn({
+            imageBuffer: originalBytes,
+            prepared: preparedForSlidingWindow,
+            isRewireable: isRewireablePipeline,
+            anthropic: swClient,
+            model: swUseOpenAI && process.env.OPENAI_API_KEY ? slidingWindowModel : model,
+            imgW: sourceImgW,
+            imgH: sourceImgH,
+            boardManufacturer: boardClassification.boardManufacturer,
+            logger,
+            userId: req.user.id,
+          });
+          classified = {
+            slots: swResult.slots,
+            usage: swResult.usage,
+            timings: swResult.timings,
+            lowConfidence: swResult.lowConfidence,
+            stage3Error: swResult.stage3Error,
+            stageOutputs: swResult.stageOutputs,
+          };
+          // Synthesise a Stage-4-shaped label-pass result so the
+          // downstream merger sees the labels via labelPassResult.labels
+          // exactly the way it did with extractSlotLabels.
+          labelPassResult = {
+            labels: swResult.labels,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            timings: { vlmMs: 0 },
+            skippedSlotIndices: swResult.skippedSlotIndices,
+          };
+        } catch (err) {
+          logger.warn('CCU sliding-window extraction failed (falling back to per-slot)', {
+            userId: req.user.id,
+            error: err.message,
+          });
+          // Fall back to the per-slot path on any sliding-window error
+          // so a transient VLM/network failure doesn't take the whole
+          // endpoint down — the per-slot path is still tested and known.
+          classified = null;
+          labelPassResult = null;
+        }
+      }
+
+      if (!classified) {
+        const classifyFn = isRewireablePipeline ? classifyRewireableSlots : classifyModernSlots;
+        const classifyPromise = classifyFn(imageBytes, prepared).catch((err) => {
+          logger.warn('CCU per-slot classify failed (non-fatal)', {
+            userId: req.user.id,
+            path: isRewireablePipeline ? 'rewireable' : 'modern',
+            error: err.message,
+          });
+          return null;
         });
-        return null;
-      });
-      const labelPromise = labelGeomValid
-        ? extractSlotLabels(imageBytes, labelGeom).catch((err) => {
-            logger.warn('CCU stage4 label pass failed (non-fatal)', {
-              userId: req.user.id,
-              error: err.message,
-            });
-            return { __error: err.message };
-          })
-        : Promise.resolve(null);
+        const labelPromise = labelGeomValid
+          ? extractSlotLabels(imageBytes, labelGeom).catch((err) => {
+              logger.warn('CCU stage4 label pass failed (non-fatal)', {
+                userId: req.user.id,
+                error: err.message,
+              });
+              return { __error: err.message };
+            })
+          : Promise.resolve(null);
+        [classified, labelPassResult] = await Promise.all([classifyPromise, labelPromise]);
+      }
 
-      const [classified, labelPassResult] = await Promise.all([
-        classifyPromise,
-        labelPromise,
-      ]);
-
-      return {
+      const perSlotState = {
         prepared,
         classified,
         labelPassResult,
@@ -1563,792 +2358,1296 @@ questionsForInspector: return EMPTY array [] unless RCD type could not be determ
         isRewireablePipeline,
         labelGeomValid,
       };
-    })();
 
-    let response;
-    try {
-      response = await singleShotPromise;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-    const anthropicElapsedMs = Date.now() - anthropicStartMs;
-    logger.info('CCU Anthropic API call timing', {
-      userId: req.user.id,
-      model,
-      elapsedMs: anthropicElapsedMs,
-      elapsedSec: (anthropicElapsedMs / 1000).toFixed(1),
-    });
-
-    // Extract text content (skip thinking blocks)
-    const textBlocks = (response.content || []).filter((b) => b.type === 'text');
-    const content = textBlocks.map((b) => b.text).join('') || '';
-    const promptTokens = response.usage?.input_tokens || 0;
-    const completionTokens = response.usage?.output_tokens || 0;
-    const stopReason = response.stop_reason || 'unknown';
-
-    logger.info('CCU analysis complete', {
-      userId: req.user.id,
-      model,
-      promptTokens,
-      completionTokens,
-      responseLength: content.length,
-      stopReason,
-      rawContentPreview: content.slice(0, 500),
-    });
-
-    if (stopReason === 'max_tokens') {
-      logger.error('CCU analysis truncated by token limit', {
+      const anthropicElapsedMs = Date.now() - anthropicStartMs;
+      logger.info('CCU Anthropic API call timing', {
         userId: req.user.id,
         model,
-        completionTokens,
-        responseLength: content.length,
+        elapsedMs: anthropicElapsedMs,
+        elapsedSec: (anthropicElapsedMs / 1000).toFixed(1),
       });
-      return res.status(502).json({
-        error: `Response truncated (${completionTokens} tokens). The model hit its output limit. Try a clearer photo or retry.`,
-      });
-    }
 
-    // Extract JSON from response — Claude may include reasoning text before the JSON
-    let jsonStr = content;
-    // Try to find a JSON code block first (in case model still wraps in code block)
-    const jsonBlockMatch = jsonStr.match(/```json\s*([\s\S]*?)```/);
-    if (jsonBlockMatch) {
-      jsonStr = jsonBlockMatch[1].trim();
-    } else {
-      // Find the first { and last } to extract the JSON object
-      const firstBrace = jsonStr.indexOf('{');
-      const lastBrace = jsonStr.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace > firstBrace) {
-        jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
-      }
-    }
-    jsonStr = jsonStr.trim();
-
-    let analysis = JSON.parse(jsonStr);
-
-    analysis = applyBsEnFallback(analysis);
-    analysis = normaliseCircuitLabels(analysis);
-
-    // Pass 2: Web search for missing RCD types — Opus may still miss some.
-    // Use gpt-5-search-api to look up the actual RCD type from datasheets.
-    // We still need an OpenAI client for this web search step.
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (openaiKey) {
-      const rcdStartMs = Date.now();
-      const OpenAI = (await import('openai')).default;
-      const openai = new OpenAI({ apiKey: openaiKey });
-      analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
-      const rcdElapsedMs = Date.now() - rcdStartMs;
-      logger.info('CCU RCD type lookup timing', {
-        userId: req.user.id,
-        elapsedMs: rcdElapsedMs,
-        elapsedSec: (rcdElapsedMs / 1000).toFixed(1),
-      });
-    }
-
-    if (!analysis.main_switch_current && analysis.main_switch_rating) {
-      analysis.main_switch_current = analysis.main_switch_rating;
-    }
-    if (!analysis.main_switch_bs_en) {
-      analysis.main_switch_bs_en = '60947-3';
-    }
-    if (!analysis.main_switch_poles) {
-      analysis.main_switch_poles = 'DP';
-    }
-    if (!analysis.main_switch_voltage) {
-      analysis.main_switch_voltage = '230';
-    }
-
-    // Populate Supply Protective Device fields from main switch data as fallback.
-    // In most domestic installations the CU main switch rating is the relevant value
-    // for the "Supply Protective Device" section on the EICR form. These fields use
-    // the supply_characteristics schema keys (spd_rated_current, spd_bs_en, etc.)
-    // which are distinct from the CU surge-protector fields (spd_rated_current_a, etc.).
-    if (!analysis.spd_rated_current && analysis.main_switch_current) {
-      analysis.spd_rated_current = analysis.main_switch_current;
-    }
-    if (!analysis.spd_bs_en && analysis.main_switch_bs_en) {
-      analysis.spd_bs_en = analysis.main_switch_bs_en;
-    }
-    if (!analysis.spd_type_supply && analysis.main_switch_type) {
-      analysis.spd_type_supply = analysis.main_switch_type;
-    }
-
-    // Sonnet 4.6 pricing: $3/1M input, $15/1M output
-    const inputCost = (promptTokens * 0.003) / 1000;
-    const outputCost = (completionTokens * 0.015) / 1000;
-    analysis.gptVisionCost = {
-      cost_usd: parseFloat((inputCost + outputCost).toFixed(6)),
-      input_tokens: promptTokens,
-      output_tokens: completionTokens,
-      image_count: 1,
-    };
-
-    const labelledCircuits = (analysis.circuits || []).filter(
-      (c) => c.label && c.label !== 'null'
-    ).length;
-    const totalCircuits = analysis.circuits?.length || 0;
-
-    logger.info('CCU analysis parsed', {
-      userId: req.user.id,
-      model,
-      boardManufacturer: analysis.board_manufacturer,
-      boardModel: analysis.board_model,
-      circuitCount: totalCircuits,
-      labelledCircuits,
-      labelCoverage: totalCircuits > 0 ? `${labelledCircuits}/${totalCircuits}` : '0/0',
-      circuitLabels: (analysis.circuits || []).map((c) => c.label || null),
-      circuitRcdTypes: (analysis.circuits || []).map((c) => c.rcd_type || null),
-      mainSwitchCurrent: analysis.main_switch_current,
-      spdPresent: analysis.spd_present,
-      confidenceOverall: analysis.confidence?.overall,
-      confidenceQuality: analysis.confidence?.image_quality,
-      uncertainFieldCount: analysis.confidence?.uncertain_fields?.length || 0,
-      confidenceMessage: analysis.confidence?.message,
-      costUsd: analysis.gptVisionCost.cost_usd,
-    });
-
-    // Sprint 2026-04-22 + PR: the per-slot pipeline (classifier + prepare +
-    // Stage3 || Stage4) has been running in parallel with single-shot since
-    // the top of the handler. Await whatever's still outstanding, assemble
-    // the `geometricResult` shape the rest of this block expects (identical
-    // to the old `extractCcuGeometric` / `extractCcuRewireable` return), and
-    // merge slot classifications + Stage 4 labels into analysis.circuits[].
-    const perSlotState = await perSlotPromise;
-    let extractionSource = 'single-shot';
-
-    // Reassemble `geometricResult` from prepared + classified halves so the
-    // rest of the request path (sidecar upload, circuit merge, logging) sees
-    // the same object it did before the prepare/classify split.
-    const geometricResult = perSlotState
-      ? assembleGeometricResult(perSlotState)
-      : null;
-
-    if (geometricResult) {
-      // Attach geometry — shape varies slightly by pipeline.
-      // The modern pipeline returns medianRails (DIN rail); the rewireable
-      // pipeline returns panelBounds (carrier-bank rectangle). Both populate
-      // slotCentersX so iOS overlay code can render regardless of source.
-      analysis.geometric = {
-        schemaVersion: geometricResult.schemaVersion,
-        moduleCount: geometricResult.moduleCount ?? geometricResult.carrierCount ?? null,
-        vlmCount: geometricResult.vlmCount ?? null,
-        disagreement: geometricResult.disagreement ?? null,
-        lowConfidence: geometricResult.lowConfidence,
-        medianRails: geometricResult.medianRails ?? null,
-        panelBounds: geometricResult.panelBounds ?? null,
-        slotCentersX: geometricResult.slotCentersX,
-        moduleWidth: geometricResult.moduleWidth ?? geometricResult.carrierPitch ?? null,
-        mainSwitchWidth: geometricResult.mainSwitchWidth ?? null,
-        mainSwitchCenterX: geometricResult.mainSwitchCenterX ?? null,
-        mainSwitchSide: geometricResult.mainSwitchSide ?? null,
-        imageWidth: geometricResult.imageWidth,
-        imageHeight: geometricResult.imageHeight,
+      // --- Build analysis from classifier + per-slot output ---
+      // The single-shot Sonnet call (retired 2026-04-29) used to populate
+      // this object directly from a 4096-token JSON response. Now we
+      // assemble it from Stage 1 board metadata + Stage 3/4 (which fill
+      // analysis.circuits via slotsToCircuits below). Field names match
+      // the legacy single-shot contract — iOS, web, and downstream
+      // enrichers (applyBsEnFallback, normaliseCircuitLabels,
+      // lookupMissingRcdTypes) all expect the same keys.
+      let analysis = {
+        board_manufacturer: boardClassification.boardManufacturer,
+        board_model: boardClassification.boardModel,
+        board_technology: boardClassification.boardTechnology,
+        main_switch_position: boardClassification.mainSwitchPosition,
+        main_switch_rating: boardClassification.mainSwitchRating,
+        main_switch_current: boardClassification.mainSwitchRating,
+        main_switch_bs_en: null,
+        main_switch_type: null,
+        main_switch_poles: null,
+        main_switch_voltage: null,
+        spd_present: boardClassification.spdPresent,
+        spd_bs_en: null,
+        spd_type: null,
+        spd_rated_current_a: null,
+        spd_short_circuit_ka: null,
+        confidence: {
+          overall: boardClassification.confidence,
+          image_quality: 'partially_readable',
+          uncertain_fields: [],
+          message: null,
+        },
+        questionsForInspector: [],
+        circuits: [],
       };
 
-      // Expose per-slot classifications to iOS (LiveFillState.slotCrops).
-      if (Array.isArray(geometricResult.slots) && geometricResult.slots.length > 0) {
-        analysis.slots = geometricResult.slots;
+      // Per-slot is the only source now (single-shot retired 2026-04-29).
+      // Assemble geometricResult from the prepared + classified halves
+      // already gathered above so the sidecar / merger / logging paths see
+      // the same shape they did before the prepare/classify split.
+      let extractionSource = 'classifier-only';
+      const geometricResult = perSlotState ? assembleGeometricResult(perSlotState) : null;
 
-        // Stage 4 label-pass result was fetched in parallel with Stage 3 inside
-        // perSlotPromise (see top of handler). It's either:
-        //   - an object with .labels[] (success)
-        //   - { __error: msg } (VLM threw; we logged it up there)
-        //   - null (labelGeom was invalid; we warned up there)
-        const labelPassResult = perSlotState.labelPassResult;
-        if (labelPassResult && !labelPassResult.__error && Array.isArray(labelPassResult.labels)) {
-          // Attach labels onto the slots[] array by slotIndex so iOS and
-          // slotsToCircuits both see them.
-          const labelBySlotIndex = new Map(
-            labelPassResult.labels.map((l) => [l.slotIndex, l])
-          );
-          analysis.slots = geometricResult.slots.map((slot) => {
-            const lab = labelBySlotIndex.get(slot.slotIndex);
-            return lab
-              ? {
-                  ...slot,
-                  label: lab.label ?? null,
-                  labelRaw: lab.rawLabel ?? null,
-                  labelConfidence: lab.confidence,
-                }
-              : slot;
+      if (geometricResult) {
+        // Attach geometry — shape varies slightly by pipeline.
+        // The modern pipeline returns medianRails (DIN rail); the rewireable
+        // pipeline returns panelBounds (carrier-bank rectangle). Both populate
+        // slotCentersX so iOS overlay code can render regardless of source.
+        analysis.geometric = {
+          schemaVersion: geometricResult.schemaVersion,
+          moduleCount: geometricResult.moduleCount ?? geometricResult.carrierCount ?? null,
+          vlmCount: geometricResult.vlmCount ?? null,
+          disagreement: geometricResult.disagreement ?? null,
+          lowConfidence: geometricResult.lowConfidence,
+          medianRails: geometricResult.medianRails ?? null,
+          panelBounds: geometricResult.panelBounds ?? null,
+          slotCentersX: geometricResult.slotCentersX,
+          moduleWidth: geometricResult.moduleWidth ?? geometricResult.carrierPitch ?? null,
+          mainSwitchWidth: geometricResult.mainSwitchWidth ?? null,
+          mainSwitchCenterX: geometricResult.mainSwitchCenterX ?? null,
+          mainSwitchSide: geometricResult.mainSwitchSide ?? null,
+          imageWidth: geometricResult.imageWidth,
+          imageHeight: geometricResult.imageHeight,
+          pitchSource: geometricResult.pitchSource ?? null,
+          cvPitchDiag: geometricResult.cvPitchDiag ?? null,
+        };
+
+        // Expose per-slot classifications to iOS (LiveFillState.slotCrops).
+        if (Array.isArray(geometricResult.slots) && geometricResult.slots.length > 0) {
+          analysis.slots = geometricResult.slots;
+
+          // Raw VLM positions exposed for offline diagnostic replay of the
+          // label-shift bug observed 2026-05-21 (handoff
+          // .planning-stage6-agentic/handoffs/ccu-label-shift-2026-05-21/).
+          // These are only populated by the single-shot pipeline — legacy
+          // sliding-window leaves them undefined, which is fine: the bug
+          // surface is single-shot's label matcher, and the legacy path
+          // doesn't run in production.
+          if (Array.isArray(geometricResult.labelArrayRaw)) {
+            analysis.vlm_labels_raw = geometricResult.labelArrayRaw;
+          }
+          if (Array.isArray(geometricResult.entriesRaw)) {
+            analysis.vlm_entries_raw = geometricResult.entriesRaw;
+          }
+          if (geometricResult.labelMatcherDiag) {
+            analysis.vlm_label_matcher_diag = geometricResult.labelMatcherDiag;
+          }
+
+          // Stage 4 label-pass result was fetched in parallel with Stage 3
+          // via Promise.all earlier in the handler. Three possible shapes:
+          //   - { labels: [...], usage: {...}, timings: {...} } — success
+          //   - { __error: msg } — VLM threw; we already logged it
+          //   - null — labelGeom was invalid; we already warned
+          const labelPassResult = perSlotState.labelPassResult;
+          if (
+            labelPassResult &&
+            !labelPassResult.__error &&
+            Array.isArray(labelPassResult.labels)
+          ) {
+            // Attach labels onto the slots[] array by slotIndex so iOS and
+            // slotsToCircuits both see them.
+            const labelBySlotIndex = new Map(labelPassResult.labels.map((l) => [l.slotIndex, l]));
+            analysis.slots = geometricResult.slots.map((slot) => {
+              const lab = labelBySlotIndex.get(slot.slotIndex);
+              return lab
+                ? {
+                    ...slot,
+                    label: lab.label ?? null,
+                    labelRaw: lab.rawLabel ?? null,
+                    labelConfidence: lab.confidence,
+                  }
+                : slot;
+            });
+            logger.info('CCU stage4 label pass complete', {
+              userId: req.user.id,
+              labelCount: labelPassResult.labels.length,
+              labelsRead: labelPassResult.labels.filter((l) => l.label != null).length,
+              skippedSlots: labelPassResult.skippedSlotIndices?.length ?? 0,
+              vlmMs: labelPassResult.timings?.vlmMs,
+              tokensIn: labelPassResult.usage?.inputTokens,
+              tokensOut: labelPassResult.usage?.outputTokens,
+            });
+
+            // 2026-05-07: removed promoteLabelMatchedMainSwitch /
+            // promoteLabelMatchedRcd post-passes. With the ordered-list
+            // sliding-window pipeline the per-window VLM call returns
+            // both classification and label together, vote-merged across
+            // overlapping windows. A Stage 3 mis-classification on one
+            // window is corrected by the sibling reads from the two
+            // other windows that cover the same slot — no need for a
+            // post-merge label-rescue.
+          } else if (labelPassResult && labelPassResult.__error) {
+            analysis.label_pass_error = labelPassResult.__error;
+          }
+
+          // Merger: slot classifications + Stage 4 labels → circuits[].
+          //
+          // mainSwitchSide drives BS 7671 circuit numbering (circuit 1 =
+          // nearest the main switch). Three independent sources, in
+          // priority order:
+          //
+          //   1. Stage 3 found a `main_switch` slot — slot index gives the
+          //      side directly (modern boards always tag the device row
+          //      this way; rewireable inline-mains boards do too).
+          //   2. Stage 2 mainSwitchOffset (rewireable pipeline only —
+          //      identifies which carrier-row edge the integrated
+          //      switch-fuse occupies on inline-mains boards).
+          //   3. Stage 1 classifier's mainSwitchPosition.
+          //
+          // Stage 2's mainSwitchSide is no longer in the chain (the
+          // groups-mode prompt no longer asks for main_switch_center_x as
+          // of 2026-04-29).
+          // Main-switch side resolution — see src/extraction/main-switch-resolver.js
+          // for the full rule book + per-rule unit tests. The resolver handles
+          // the false-positive cluster case that bit us on the 2026-05-08
+          // Protek board (gpt-5.5 tagged a leftmost RCD as `main_switch`,
+          // shadowing the real labelled one in the middle of the rail) by
+          // grouping adjacent main_switch slots into clusters and preferring
+          // the cluster whose Stage-4 label says "Main Switch" / "Isolator".
+          const {
+            mainSwitchSide,
+            mainSwitchSideSource,
+            diagnostic: mainSwitchDiagnostic,
+          } = resolveMainSwitchSide({
+            slots: analysis.slots || [],
+            slotCount: (analysis.slots || []).length,
+            stage1Position: boardClassification?.mainSwitchPosition || null,
+            stage1Confidence:
+              typeof boardClassification?.confidence === 'number'
+                ? boardClassification.confidence
+                : null,
+            stage2Offset: geometricResult.mainSwitchOffset || null,
           });
-          logger.info('CCU stage4 label pass complete', {
+          logger.info('CCU mainSwitchSide resolved', {
             userId: req.user.id,
-            labelCount: labelPassResult.labels.length,
-            labelsRead: labelPassResult.labels.filter((l) => l.label != null).length,
-            skippedSlots: labelPassResult.skippedSlotIndices?.length ?? 0,
-            vlmMs: labelPassResult.timings?.vlmMs,
-            tokensIn: labelPassResult.usage?.inputTokens,
-            tokensOut: labelPassResult.usage?.outputTokens,
+            mainSwitchSide,
+            mainSwitchSideSource,
+            slotCount: (analysis.slots || []).length,
+            stage1Confidence: boardClassification?.confidence ?? null,
+            ...mainSwitchDiagnostic,
           });
-        } else if (labelPassResult && labelPassResult.__error) {
-          analysis.label_pass_error = labelPassResult.__error;
+
+          const mergedCircuits = slotsToCircuits({
+            slots: analysis.slots,
+            mainSwitchSide,
+            mainSwitchRating: boardClassification?.mainSwitchRating ?? null,
+            // mainSwitchPoles is null-by-design here — the classifier doesn't
+            // currently return a pole count. Plumbed through for future use;
+            // until then the trim pre-pass falls back to modal poles across
+            // the run, then to the UK domestic default of 2.
+            mainSwitchPoles: null,
+          });
+
+          if (mergedCircuits && mergedCircuits.length > 0) {
+            analysis.circuits = mergedCircuits;
+            extractionSource = 'geometric-merged';
+
+            // Cheap local enrichers — same lookup tables single-shot
+            // used to rely on, now feeding Stage 3 output instead.
+            // lookupMissingRcdTypes runs separately below (post-merge,
+            // post-defaults).
+            analysis = applyBsEnFallback(analysis);
+            analysis = normaliseCircuitLabels(analysis);
+          }
+
+          // SPD presence: Stage 3 is the authority. If any slot was
+          // classified as 'spd', override the classifier's hint to true.
+          // Conversely if Stage 3 found NO spd slot, trust Stage 3 over
+          // the classifier (Stage 3 examined every slot crop individually
+          // — the classifier did a single board-level look). Only fall
+          // back to the classifier value when Stage 3 produced no slots
+          // at all.
+          if (Array.isArray(analysis.slots) && analysis.slots.length > 0) {
+            const stage3FoundSpd = analysis.slots.some((s) => s?.classification === 'spd');
+            analysis.spd_present = stage3FoundSpd;
+          }
         }
 
-        // Merger: slot classifications + Stage 4 labels → circuits[].
-        // Single-shot is NOT consulted — its circuits[] stay in analysis only
-        // as historical context until the merger overwrites them here, at
-        // which point the primary-source swap is complete.
-        //
-        // NUMBERING NOTE (Codex P1 2026-04-22): when a rewireable board has
-        // the main switch INLINE with the carrier row (Stage 1's
-        // `mainSwitchSide === 'none'`), the classifier / single-shot's
-        // `main_switch_position` also report 'none'. But Stage 2 independently
-        // identifies whether the inline main switch occupies the LEFT or
-        // RIGHT edge slot via `mainSwitchOffset` ('left-edge' | 'right-edge').
-        // Use that as the first fallback so BS 7671 main-switch-outward
-        // numbering still works on inline boards.
-        const offsetSide =
-          geometricResult.mainSwitchOffset === 'right-edge'
-            ? 'right'
-            : geometricResult.mainSwitchOffset === 'left-edge'
-              ? 'left'
-              : null;
-        const mainSwitchSide =
-          (geometricResult.mainSwitchSide !== 'none' && geometricResult.mainSwitchSide) ||
-          offsetSide ||
-          boardClassification?.mainSwitchPosition ||
-          analysis.main_switch_position ||
-          'none';
-
-        const mergedCircuits = slotsToCircuits({
-          slots: analysis.slots,
-          mainSwitchSide,
+        // Stage outputs surfaced for production diagnostics: railBbox is
+        // the rectangle the VLM returned (or the user's iOS ROI when
+        // trustInputRails was set). pitchCrossCheck flags CV-vs-bbox
+        // count drift. chunkingDiag exposes the raw inputs so a missed
+        // count can be traced to bbox size, image dims, or pitch source.
+        logger.info('CCU geometric extraction attached', {
+          userId: req.user.id,
+          moduleOrCarrierCount: analysis.geometric.moduleCount,
+          slotCount: geometricResult.slots?.length ?? 0,
+          lowConfidence: geometricResult.lowConfidence,
+          stage3Error: geometricResult.stage3Error ?? null,
+          extractionSource,
+          railBbox: geometricResult.railBbox ?? null,
+          pitchSource: geometricResult.pitchSource ?? null,
+          cvPitchDiag: geometricResult.cvPitchDiag ?? null,
+          pitchCrossCheck: geometricResult.pitchCrossCheck ?? null,
+          chunkingDiag: geometricResult.chunkingDiag ?? null,
         });
-
-        if (mergedCircuits && mergedCircuits.length > 0) {
-          analysis.circuits = mergedCircuits;
-          extractionSource = 'geometric-merged';
-
-          // POST-MERGE ENRICHMENT (Codex P2 2026-04-22): applyBsEnFallback,
-          // normaliseCircuitLabels and (conditionally) lookupMissingRcdTypes
-          // ran upstream against the single-shot circuits[] that we've just
-          // replaced. Re-apply the cheap local enrichers so any gaps the
-          // Stage 3 classifier left are filled by the same lookup tables
-          // that single-shot relied on. We DO NOT re-invoke
-          // lookupMissingRcdTypes here — Stage 3's per-slot classifier is
-          // the authority for rcd_type via direct waveform reading; running
-          // the web-search lookup again would burn VLM spend on top of
-          // already-classified slots.
-          analysis = applyBsEnFallback(analysis);
-          analysis = normaliseCircuitLabels(analysis);
-        }
       }
 
-      logger.info('CCU geometric extraction attached', {
+      // --- Post-merge enrichment + defaults ---
+      // RCD type lookup table (config/rcd-type-lookup.json) — runs FIRST so
+      // that a high-confidence (manufacturer, model) hit overrides the
+      // per-slot waveform-glyph read, which is unreliable on the sub-mm
+      // BS-EN 61009 symbol. Confidence policy:
+      //   - high   → override every RCD-protected circuit's rcd_type
+      //   - medium → set as default; per-slot read at >=0.95 confidence wins
+      //   - low    → fill nulls only
+      // Anything the table doesn't cover falls through to the existing
+      // gpt-5-search-api passes below.
+      const lookupSummary = applyRcdTypeLookup(analysis, {
+        logger,
         userId: req.user.id,
-        moduleOrCarrierCount: analysis.geometric.moduleCount,
-        slotCount: geometricResult.slots?.length ?? 0,
-        lowConfidence: geometricResult.lowConfidence,
-        stage3Error: geometricResult.stage3Error ?? null,
+      });
+
+      // Auto-grow: log unknown (manufacturer, model) pairs to S3 so the
+      // promote CLI can review them. `model` hits skip; defaults and
+      // misses get a sighting. Inference signals piggyback on whatever
+      // the per-slot pipeline already computed for this extraction so a
+      // pending entry has enough context for an informed promotion.
+      if (lookupSummary.outcome !== 'hit') {
+        const slots = Array.isArray(analysis.slots) ? analysis.slots : [];
+        const rcdSlots = slots.filter(
+          (s) =>
+            s &&
+            (s.classification === 'rcbo' || s.classification === 'rcd') &&
+            typeof s.rcdWaveformType === 'string'
+        );
+        const typeCounts = new Map();
+        for (const s of rcdSlots) {
+          typeCounts.set(s.rcdWaveformType, (typeCounts.get(s.rcdWaveformType) ?? 0) + 1);
+        }
+        let perSlotMajority = null;
+        let perSlotMajorityCount = 0;
+        for (const [v, c] of typeCounts) {
+          if (c > perSlotMajorityCount) {
+            perSlotMajority = v;
+            perSlotMajorityCount = c;
+          }
+        }
+        const perSlotAvgConfidence =
+          rcdSlots.length > 0
+            ? rcdSlots.reduce(
+                (a, s) => a + (typeof s.confidence === 'number' ? s.confidence : 0),
+                0
+              ) / rcdSlots.length
+            : null;
+        const inferenceSource =
+          rcdSlots.length === 0
+            ? 'classifier_only'
+            : typeCounts.size === 1
+              ? 'per_slot_uniform'
+              : 'per_slot_majority';
+        // fire-and-forget — non-fatal if S3 write fails.
+        writeRcdPendingEntry({
+          manufacturer: analysis.board_manufacturer,
+          model: analysis.board_model,
+          outcome: lookupSummary.outcome === 'miss' ? 'miss' : 'default',
+          inferredType: lookupSummary.rcd_type ?? perSlotMajority,
+          inferredWays: analysis.geometric?.moduleCount ?? null,
+          classifierConfidence: analysis.confidence?.overall ?? null,
+          perSlotAvgConfidence,
+          inferenceSource,
+          // No extractionId is in scope at this point — the geometric
+          // sidecar generates its own further down. The pending writer
+          // accepts null; the userId + last_seen timestamp are sufficient
+          // to correlate sightings against CloudWatch logs.
+          extractionId: null,
+          userId: req.user.id,
+          notes: lookupSummary.ways_warning,
+        }).catch((err) => {
+          logger.warn('RCD pending entry promise rejected (non-fatal)', {
+            userId: req.user.id,
+            error: err?.message,
+          });
+        });
+      }
+
+      // RCD type lookup (gpt-5-search-api): fills rcd_type for circuits where
+      // Stage 3 couldn't read the waveform symbol AND the table didn't have
+      // a hit. Skipped if OPENAI_API_KEY is unset (dev / sandbox).
+      const openaiKey = process.env.OPENAI_API_KEY;
+      if (openaiKey) {
+        const rcdStartMs = Date.now();
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: openaiKey });
+        analysis = await lookupMissingRcdTypes(analysis, openai, logger, req.user.id);
+        // Outlier detection runs AFTER the missing/uniform-low-conf passes
+        // — those existing triggers can fill nulls or correct fleet-wide
+        // mis-reads first, leaving this final pass to handle the residual
+        // case where one slot disagrees with an otherwise-uniform same-
+        // manufacturer cluster. Flags only; never auto-corrects.
+        analysis = await flagRcdWaveformOutliers(analysis, openai, logger, req.user.id);
+        const rcdElapsedMs = Date.now() - rcdStartMs;
+        logger.info('CCU RCD type lookup timing', {
+          userId: req.user.id,
+          elapsedMs: rcdElapsedMs,
+          elapsedSec: (rcdElapsedMs / 1000).toFixed(1),
+        });
+      }
+
+      // Main-switch field defaults — only fields the classifier doesn't
+      // attempt (BS-EN, poles, voltage). UK domestic CUs are 99% DP @ 230V
+      // with the modern BS-EN 60947-3 isolator standard, so these defaults
+      // are correct for the overwhelming majority of jobs.
+      if (!analysis.main_switch_current && analysis.main_switch_rating) {
+        analysis.main_switch_current = analysis.main_switch_rating;
+      }
+      if (!analysis.main_switch_bs_en) {
+        analysis.main_switch_bs_en = '60947-3';
+      }
+      if (!analysis.main_switch_poles) {
+        analysis.main_switch_poles = 'DP';
+      }
+      if (!analysis.main_switch_voltage) {
+        analysis.main_switch_voltage = '230';
+      }
+
+      // Supply Protective Device fallback: in most domestic installations the
+      // CU main switch rating is the relevant value for the EICR form's
+      // "Supply Protective Device" section. These keys (spd_rated_current,
+      // spd_bs_en, spd_type_supply) are the supply_characteristics schema —
+      // distinct from the CU surge-protector fields (spd_rated_current_a etc.)
+      // that the classifier writes via spd_present.
+      if (!analysis.spd_rated_current && analysis.main_switch_current) {
+        analysis.spd_rated_current = analysis.main_switch_current;
+      }
+      if (!analysis.spd_bs_en && analysis.main_switch_bs_en) {
+        analysis.spd_bs_en = analysis.main_switch_bs_en;
+      }
+      if (!analysis.spd_type_supply && analysis.main_switch_type) {
+        analysis.spd_type_supply = analysis.main_switch_type;
+      }
+
+      // Cost: classifier (Stage 1) + Stage 3 + Stage 4 token usage.
+      // Sonnet 4.6 pricing: $3/1M input, $15/1M output.
+      const stage3Usage = geometricResult?.usage || { inputTokens: 0, outputTokens: 0 };
+      const stage4Usage = perSlotState?.labelPassResult?.usage || {
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+      const totalInputTokens =
+        (classifierUsage.inputTokens || 0) +
+        (stage3Usage.inputTokens || 0) +
+        (stage4Usage.inputTokens || 0);
+      const totalOutputTokens =
+        (classifierUsage.outputTokens || 0) +
+        (stage3Usage.outputTokens || 0) +
+        (stage4Usage.outputTokens || 0);
+      const inputCost = (totalInputTokens * 0.003) / 1000;
+      const outputCost = (totalOutputTokens * 0.015) / 1000;
+      analysis.gptVisionCost = {
+        cost_usd: parseFloat((inputCost + outputCost).toFixed(6)),
+        input_tokens: totalInputTokens,
+        output_tokens: totalOutputTokens,
+        image_count: 1,
+      };
+
+      const labelledCircuitCount = (analysis.circuits || []).filter(
+        (c) => c.label && c.label !== 'null'
+      ).length;
+      const totalCircuitCount = analysis.circuits?.length || 0;
+
+      logger.info('CCU analysis parsed', {
+        userId: req.user.id,
+        model,
+        boardManufacturer: analysis.board_manufacturer,
+        boardModel: analysis.board_model,
+        circuitCount: totalCircuitCount,
+        labelledCircuits: labelledCircuitCount,
+        labelCoverage:
+          totalCircuitCount > 0 ? `${labelledCircuitCount}/${totalCircuitCount}` : '0/0',
+        circuitLabels: (analysis.circuits || []).map((c) => c.label || null),
+        circuitRcdTypes: (analysis.circuits || []).map((c) => c.rcd_type || null),
+        mainSwitchCurrent: analysis.main_switch_current,
+        spdPresent: analysis.spd_present,
+        confidenceOverall: analysis.confidence?.overall,
+        confidenceQuality: analysis.confidence?.image_quality,
+        costUsd: analysis.gptVisionCost.cost_usd,
         extractionSource,
       });
-    }
 
-    analysis.extraction_source = extractionSource;
-    analysis.board_classification = boardClassification
-      ? {
-          board_technology: boardClassification.boardTechnology,
-          main_switch_position: boardClassification.mainSwitchPosition,
-          confidence: boardClassification.confidence,
-        }
-      : null;
+      analysis.extraction_source = extractionSource;
+      analysis.board_classification = boardClassification
+        ? {
+            board_technology: boardClassification.boardTechnology,
+            main_switch_position: boardClassification.mainSwitchPosition,
+            confidence: boardClassification.confidence,
+          }
+        : null;
 
-    const totalElapsedMs = Date.now() - endpointStartMs;
-    logger.info('CCU extraction total timing', {
-      userId: req.user.id,
-      totalElapsedMs,
-      totalElapsedSec: (totalElapsedMs / 1000).toFixed(1),
-      perSlotEnabled,
-      geometricSuccess: Boolean(geometricResult),
-      extractionSource,
-    });
-
-    res.json(analysis);
-
-    // Phase A (plan 2026-04-16 §7): fire-and-forget training-data log.
-    // Orthogonal to extraction — every TestFlight session becomes an
-    // auto-labelled sample for the future on-device YOLO detector.
-    // MUST run after res.json so latency is unaffected; failure is
-    // non-fatal and is logged as a warning only.
-    logCcuTrainingData({
-      userId: req.user.id,
-      sessionId: req.body?.sessionId || null,
-      imageBuffer: imageBytes,
-      analysis,
-      meta: {
-        model,
-        totalElapsedMs,
-        anthropicElapsedMs,
-        promptTokens,
-        completionTokens,
-        timestamp: new Date().toISOString(),
-      },
-    }).catch((err) => {
-      logger.warn('CCU training log failed (non-fatal)', {
-        userId: req.user.id,
-        error: err.message,
-      });
-    });
-
-    // Phase B: log the geometric stage outputs to S3 as a separate JSON
-    // so we can compare geometricCount vs vlmCount vs the final extracted
-    // circuit count across real sessions. Fire-and-forget; never fails
-    // the request. Written to a sibling key under the same extraction
-    // prefix convention so Phase C analysis can join by sessionId.
-    if (geometricResult) {
-      const geoExtractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const sessionSegment =
-        String(req.body?.sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'no-session';
-      const geoKey = `ccu-geometric/${req.user.id}/${sessionSegment}/${geoExtractionId}/stage-outputs.json`;
-
-      // Phase C: strip base64 crop data from Stage 3 before writing to S3.
-      // The bbox coordinates and classification are small and useful for offline
-      // analysis; the base64 crops would balloon the sidecar by ~100KB per slot
-      // and are already recoverable by re-cropping the original CCU photo.
-      const sanitizeSlotsForSidecar = (slots) => {
-        if (!Array.isArray(slots)) return slots;
-        return slots.map((s) => ({
-          slotIndex: s.slotIndex,
-          classification: s.classification,
-          manufacturer: s.manufacturer,
-          model: s.model,
-          ratingAmps: s.ratingAmps,
-          poles: s.poles,
-          // Stage 3 device-level attributes — required for training-data
-          // analysis, otherwise RCD/RCBO waveform + curve info is lost.
-          tripCurve: s.tripCurve ?? null,
-          sensitivity: s.sensitivity ?? null,
-          rcdWaveformType: s.rcdWaveformType ?? null,
-          bsEn: s.bsEn ?? null,
-          confidence: s.confidence,
-          // bbox only — never base64 — in the sidecar.
-          bbox: s?.crop?.bbox ?? null,
-        }));
+      // Echo the board attribution sent on the upload (Phase 4 multi-board).
+      // Always present (even when both inputs were null) so iOS can use a
+      // single decoder path instead of branching on `attribution === undefined`.
+      analysis.attribution = {
+        board_id: attributionBoardId,
+        board_index: attributionBoardIndex,
       };
 
-      const sanitizedStageOutputs = geometricResult.stageOutputs
-        ? {
-            ...geometricResult.stageOutputs,
-            stage3: geometricResult.stageOutputs.stage3
-              ? {
-                  ...geometricResult.stageOutputs.stage3,
-                  slots: sanitizeSlotsForSidecar(geometricResult.stageOutputs.stage3.slots),
-                }
-              : undefined,
-          }
-        : geometricResult.stageOutputs;
+      const totalElapsedMs = Date.now() - endpointStartMs;
+      logger.info('CCU extraction total timing', {
+        userId: req.user.id,
+        totalElapsedMs,
+        totalElapsedSec: (totalElapsedMs / 1000).toFixed(1),
+        geometricSuccess: Boolean(geometricResult),
+        extractionSource,
+      });
 
-      // Fire-and-forget but surface real failures. storage.uploadJson swallows
-      // S3 errors and returns false — .catch() never fires — so we need an
-      // explicit boolean check inside an async IIFE to avoid silently dropping
-      // the geometric sidecar on S3 outage. Kept off the request path.
-      (async () => {
-        try {
-          const ok = await storage.uploadJson(
-            {
-              extractionId: geoExtractionId,
-              userId: req.user.id,
-              sessionId: req.body?.sessionId || null,
-              timestamp: new Date().toISOString(),
-              vlmCircuitCount: (analysis.circuits || []).length,
-              geometric: {
-                schemaVersion: geometricResult.schemaVersion,
-                moduleCount: geometricResult.moduleCount,
-                vlmCount: geometricResult.vlmCount,
-                disagreement: geometricResult.disagreement,
-                lowConfidence: geometricResult.lowConfidence,
-                medianRails: geometricResult.medianRails,
-                slotCentersX: geometricResult.slotCentersX,
-                moduleWidth: geometricResult.moduleWidth,
-                mainSwitchWidth: geometricResult.mainSwitchWidth,
-                mainSwitchCenterX: geometricResult.mainSwitchCenterX,
-                imageWidth: geometricResult.imageWidth,
-                imageHeight: geometricResult.imageHeight,
-                slots: sanitizeSlotsForSidecar(geometricResult.slots),
-                stage3Error: geometricResult.stage3Error || null,
-                timings: geometricResult.timings,
-                usage: geometricResult.usage,
-                stageOutputs: sanitizedStageOutputs,
-              },
-            },
-            geoKey
-          );
-          if (!ok) {
-            logger.warn('CCU geometric log failed (non-fatal): uploadJson returned false', {
-              userId: req.user.id,
-              geoKey,
-            });
-          }
-        } catch (err) {
-          logger.warn('CCU geometric log failed (non-fatal)', {
+      // --- Quality gate ---
+      // Surface a "retake required" response when the pipeline produced
+      // output we can't trust. Design intent: never return wrong data
+      // silently. The gate is intentionally conservative — it fires only
+      // on hard signals (low Stage 1 confidence, severely keystoned quad,
+      // mostly-null device ratings). VLM↔CV count agreement was dropped
+      // 2026-05-14 because CV's autocorrelation count is unreliable on
+      // non-standard rails (ADRBs, SPDs, multi-pole devices) and was
+      // producing false positives on clean photos — see ccu-quality-gate.js
+      // header comment.
+      const gate = evaluateQualityGate({
+        classifierConfidence: boardClassification?.confidence ?? null,
+        rectNormCorr: geometricResult?.chunkingDiag?.refinement?.quadDiag?.rectNormCorr ?? null,
+        circuits: analysis.circuits ?? [],
+      });
+      logger.info('CCU quality gate evaluated', {
+        userId: req.user.id,
+        pass: gate.pass,
+        reason: gate.reason,
+        diagnostic: gate.diagnostic,
+      });
+      if (!gate.pass) {
+        // Fire-and-forget training log: bad photos are arguably more
+        // valuable training data than good ones — they're the cases the
+        // pipeline currently fails on. Tag with retake reason so future
+        // tuning runs can filter.
+        logCcuTrainingData({
+          userId: req.user.id,
+          sessionId: req.body?.sessionId || null,
+          imageBuffer: imageBytes,
+          analysis: { ...analysis, retake_reason: gate.reason },
+          meta: {
+            model,
+            totalElapsedMs,
+            anthropicElapsedMs,
+            promptTokens: totalInputTokens,
+            completionTokens: totalOutputTokens,
+            timestamp: new Date().toISOString(),
+            retakeRejection: true,
+          },
+        }).catch((err) => {
+          logger.warn('CCU training log (retake) failed (non-fatal)', {
             userId: req.user.id,
             error: err.message,
           });
+        });
+        return res.status(422).json({
+          status: 'retake_required',
+          reason: gate.reason,
+          message: gate.message,
+          diagnostic: gate.diagnostic,
+        });
+      }
+
+      res.json(analysis);
+
+      // Phase A (plan 2026-04-16 §7): fire-and-forget training-data log.
+      // Orthogonal to extraction — every TestFlight session becomes an
+      // auto-labelled sample for the future on-device YOLO detector.
+      // MUST run after res.json so latency is unaffected; failure is
+      // non-fatal and is logged as a warning only.
+      logCcuTrainingData({
+        userId: req.user.id,
+        sessionId: req.body?.sessionId || null,
+        imageBuffer: imageBytes,
+        analysis,
+        meta: {
+          model,
+          totalElapsedMs,
+          anthropicElapsedMs,
+          promptTokens: totalInputTokens,
+          completionTokens: totalOutputTokens,
+          timestamp: new Date().toISOString(),
+        },
+      }).catch((err) => {
+        logger.warn('CCU training log failed (non-fatal)', {
+          userId: req.user.id,
+          error: err.message,
+        });
+      });
+
+      // Phase B: log the geometric stage outputs to S3 as a separate JSON
+      // so we can compare geometricCount vs vlmCount vs the final extracted
+      // circuit count across real sessions. Fire-and-forget; never fails
+      // the request. Written to a sibling key under the same extraction
+      // prefix convention so Phase C analysis can join by sessionId.
+      if (geometricResult) {
+        const geoExtractionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const sessionSegment =
+          String(req.body?.sessionId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'no-session';
+        const geoKey = `ccu-geometric/${req.user.id}/${sessionSegment}/${geoExtractionId}/stage-outputs.json`;
+
+        // Phase C: strip base64 crop data from Stage 3 before writing to S3.
+        // The bbox coordinates and classification are small and useful for offline
+        // analysis; the base64 crops would balloon the sidecar by ~100KB per slot
+        // and are already recoverable by re-cropping the original CCU photo.
+        const sanitizeSlotsForSidecar = (slots) => {
+          if (!Array.isArray(slots)) return slots;
+          return slots.map((s) => ({
+            slotIndex: s.slotIndex,
+            classification: s.classification,
+            manufacturer: s.manufacturer,
+            model: s.model,
+            ratingAmps: s.ratingAmps,
+            poles: s.poles,
+            // Stage 3 device-level attributes — required for training-data
+            // analysis, otherwise RCD/RCBO waveform + curve info is lost.
+            tripCurve: s.tripCurve ?? null,
+            sensitivity: s.sensitivity ?? null,
+            rcdWaveformType: s.rcdWaveformType ?? null,
+            bsEn: s.bsEn ?? null,
+            confidence: s.confidence,
+            // bbox only — never base64 — in the sidecar.
+            bbox: s?.crop?.bbox ?? null,
+          }));
+        };
+
+        const sanitizedStageOutputs = geometricResult.stageOutputs
+          ? {
+              ...geometricResult.stageOutputs,
+              stage3: geometricResult.stageOutputs.stage3
+                ? {
+                    ...geometricResult.stageOutputs.stage3,
+                    slots: sanitizeSlotsForSidecar(geometricResult.stageOutputs.stage3.slots),
+                  }
+                : undefined,
+            }
+          : geometricResult.stageOutputs;
+
+        // Fire-and-forget but surface real failures. storage.uploadJson swallows
+        // S3 errors and returns false — .catch() never fires — so we need an
+        // explicit boolean check inside an async IIFE to avoid silently dropping
+        // the geometric sidecar on S3 outage. Kept off the request path.
+        (async () => {
+          try {
+            const ok = await storage.uploadJson(
+              {
+                extractionId: geoExtractionId,
+                userId: req.user.id,
+                sessionId: req.body?.sessionId || null,
+                timestamp: new Date().toISOString(),
+                vlmCircuitCount: (analysis.circuits || []).length,
+                geometric: {
+                  schemaVersion: geometricResult.schemaVersion,
+                  moduleCount: geometricResult.moduleCount,
+                  vlmCount: geometricResult.vlmCount,
+                  disagreement: geometricResult.disagreement,
+                  lowConfidence: geometricResult.lowConfidence,
+                  medianRails: geometricResult.medianRails,
+                  slotCentersX: geometricResult.slotCentersX,
+                  moduleWidth: geometricResult.moduleWidth,
+                  mainSwitchWidth: geometricResult.mainSwitchWidth,
+                  mainSwitchCenterX: geometricResult.mainSwitchCenterX,
+                  imageWidth: geometricResult.imageWidth,
+                  imageHeight: geometricResult.imageHeight,
+                  slots: sanitizeSlotsForSidecar(geometricResult.slots),
+                  stage3Error: geometricResult.stage3Error || null,
+                  timings: geometricResult.timings,
+                  usage: geometricResult.usage,
+                  stageOutputs: sanitizedStageOutputs,
+                },
+              },
+              geoKey
+            );
+            if (!ok) {
+              logger.warn('CCU geometric log failed (non-fatal): uploadJson returned false', {
+                userId: req.user.id,
+                geoKey,
+              });
+            }
+          } catch (err) {
+            logger.warn('CCU geometric log failed (non-fatal)', {
+              userId: req.user.id,
+              error: err.message,
+            });
+          }
+        })();
+      }
+    } catch (error) {
+      // Timeout — AbortController fired or SDK timeout
+      if (
+        error.name === 'AbortError' ||
+        error.name === 'APIConnectionTimeoutError' ||
+        error.message?.includes('aborted') ||
+        error.message?.includes('timed out')
+      ) {
+        logger.error('CCU analysis timed out', {
+          userId: req.user.id,
+          timeoutMs: CCU_EXTRACTION_TIMEOUT_MS,
+          error: error.message,
+        });
+        return res.status(504).json({
+          error: 'extraction_timeout',
+          message: 'Processing took too long',
+          retryable: true,
+        });
+      }
+
+      // JSON parse failure — bad model output
+      if (error instanceof SyntaxError) {
+        logger.error('CCU analysis response parse failed', {
+          userId: req.user.id,
+          error: error.message,
+        });
+        return res.status(502).json({
+          error: 'extraction_parse_error',
+          message: 'Failed to parse analysis response',
+          retryable: true,
+        });
+      }
+
+      // API rate limiting
+      const statusCode = error.status || error.statusCode;
+      if (statusCode === 429) {
+        logger.warn('CCU analysis rate limited', {
+          userId: req.user.id,
+        });
+        return res.status(429).json({
+          error: 'rate_limited',
+          message: 'API rate limit exceeded, please retry shortly',
+          retryable: true,
+        });
+      }
+
+      // All other errors
+      logger.error('CCU analysis failed', {
+        userId: req.user.id,
+        error: error.message,
+        statusCode,
+      });
+      res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
+        error: error.message,
+        retryable: statusCode >= 500 || !statusCode,
+      });
+    } finally {
+      if (tempPath) {
+        try {
+          await fs.unlink(tempPath);
+        } catch {
+          /* ignore cleanup errors */
         }
-      })();
-    }
-  } catch (error) {
-    // Timeout — AbortController fired or SDK timeout
-    if (
-      error.name === 'AbortError' ||
-      error.name === 'APIConnectionTimeoutError' ||
-      error.message?.includes('aborted') ||
-      error.message?.includes('timed out')
-    ) {
-      logger.error('CCU analysis timed out', {
-        userId: req.user.id,
-        timeoutMs: CCU_EXTRACTION_TIMEOUT_MS,
-        error: error.message,
-      });
-      return res.status(504).json({
-        error: 'extraction_timeout',
-        message: 'Processing took too long',
-        retryable: true,
-      });
-    }
-
-    // JSON parse failure — bad model output
-    if (error instanceof SyntaxError) {
-      logger.error('CCU analysis response parse failed', {
-        userId: req.user.id,
-        error: error.message,
-      });
-      return res.status(502).json({
-        error: 'extraction_parse_error',
-        message: 'Failed to parse analysis response',
-        retryable: true,
-      });
-    }
-
-    // API rate limiting
-    const statusCode = error.status || error.statusCode;
-    if (statusCode === 429) {
-      logger.warn('CCU analysis rate limited', {
-        userId: req.user.id,
-      });
-      return res.status(429).json({
-        error: 'rate_limited',
-        message: 'API rate limit exceeded, please retry shortly',
-        retryable: true,
-      });
-    }
-
-    // All other errors
-    logger.error('CCU analysis failed', {
-      userId: req.user.id,
-      error: error.message,
-      statusCode,
-    });
-    res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
-      error: error.message,
-      retryable: statusCode >= 500 || !statusCode,
-    });
-  } finally {
-    if (tempPath) {
-      try {
-        await fs.unlink(tempPath);
-      } catch {
-        /* ignore cleanup errors */
       }
     }
   }
-});
+);
 
 /**
  * Extract certificate data from a photo of a previous certificate, handwritten notes, etc.
  * Returns the same { success, formData } shape as /api/recording/extract-transcript
  * so the iOS app can merge results via CertificateMerger.
  *
+ * Uses Claude Sonnet vision via the Anthropic SDK. We previously tried
+ * `gpt-5.2` here and it returned ~50 completion tokens on a 1.9MB EICR
+ * photo (finish_reason "stop", not truncation) — the model just shrugged
+ * at the task. Sonnet handles the dense schema reliably; the CCU pipeline
+ * already uses it for vision and we share the same JSON-extraction
+ * helpers and resize logic. Field names below match the iOS
+ * CertificateMerger 1:1 so the inspector sees every legible value
+ * dropped onto the right tab.
+ *
  * POST /api/analyze-document
  */
-router.post('/analyze-document', auth.requireAuth, upload.single('photo'), async (req, res) => {
-  const tempPath = req.file?.path;
+// Multi-photo upload caps. Anthropic's vision API accepts up to 100
+// images per request; we cap at 12 here because (a) it covers the
+// realistic worst case of a 4-page EICR + a couple of handwritten
+// supplement sheets, and (b) it bounds per-request cost so a runaway
+// upload can't bill $5+ in one call. The legacy `photo` field stays
+// alongside `photos[]` so older iOS clients (TestFlight builds shipped
+// before this change) keep working without a forced re-deploy.
+const DOCUMENT_MAX_PHOTOS = 12;
 
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No photo uploaded' });
-    }
+router.post(
+  '/analyze-document',
+  auth.requireAuth,
+  documentUpload.fields([
+    { name: 'photos', maxCount: DOCUMENT_MAX_PHOTOS },
+    { name: 'photo', maxCount: 1 },
+  ]),
+  async (req, res) => {
+    // Gather every uploaded file (both new `photos[]` and legacy
+    // singular `photo`) into one ordered array so the rest of the
+    // handler doesn't care which field name the client used.
+    const photosField = Array.isArray(req.files?.photos) ? req.files.photos : [];
+    const photoField = Array.isArray(req.files?.photo) ? req.files.photo : [];
+    const allFiles = [...photosField, ...photoField];
+    const tempPaths = allFiles.map((f) => f.path);
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: 'OpenAI API key not configured' });
-    }
+    try {
+      if (allFiles.length === 0) {
+        return res.status(400).json({ error: 'No photo uploaded' });
+      }
+      // Total-count guard. Multer's `.fields([{photos:12},{photo:1}])`
+      // enforces per-field caps independently, so a client that posts
+      // 12 files in `photos[]` AND 1 in `photo` would otherwise sneak
+      // 13 files past the cap. Belt-and-braces with the per-field
+      // limits so cost ceiling holds regardless of field-name shape.
+      if (allFiles.length > DOCUMENT_MAX_PHOTOS) {
+        return res.status(413).json({
+          error: `Too many files (${allFiles.length}). Maximum is ${DOCUMENT_MAX_PHOTOS} per upload.`,
+        });
+      }
 
-    const model = (process.env.DOC_EXTRACT_MODEL || process.env.CCU_MODEL || 'gpt-5.2').trim();
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      if (!anthropicKey) {
+        return res.status(500).json({ error: 'Anthropic API key not configured' });
+      }
 
-    logger.info('Document extraction requested', {
-      userId: req.user.id,
-      fileSize: req.file.size,
-      model,
-    });
+      const model = (process.env.DOC_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
 
-    const imageBytes = await fs.readFile(tempPath);
-    const base64 = Buffer.from(imageBytes).toString('base64');
+      // Per-file branch: detect PDF vs image with a magic-byte backstop
+      // (some HTTP clients, including iOS Alamofire multipart, can
+      // mislabel the mimetype). Build one Anthropic content block per
+      // file. The model treats N image blocks as pages of a single
+      // document, which is exactly what we want for a multi-page
+      // schedule of test results photographed one page at a time.
+      const MAX_BASE64_BYTES = 5 * 1024 * 1024;
+      const MAX_RAW_BYTES = Math.floor(MAX_BASE64_BYTES * 0.74); // ~3.7MB raw → <5MB base64
+      const MAX_PDF_BYTES = 32 * 1024 * 1024;
 
-    const prompt = `You are an expert UK electrician extracting data from a document for an EICR (Electrical Installation Condition Report) or EIC (Electrical Installation Certificate).
+      const contentBlocks = [];
+      let pdfCount = 0;
+      let imageCount = 0;
+      let totalBytesUploaded = 0;
 
-## TASK
+      for (let i = 0; i < allFiles.length; i++) {
+        const file = allFiles[i];
+        totalBytesUploaded += file.size;
+        let fileBytes = await fs.readFile(file.path);
+        const looksLikePdf =
+          fileBytes.length >= 4 &&
+          fileBytes[0] === 0x25 &&
+          fileBytes[1] === 0x50 &&
+          fileBytes[2] === 0x44 &&
+          fileBytes[3] === 0x46;
+        const isPdf = file.mimetype === 'application/pdf' || looksLikePdf;
 
-The user has uploaded a photo of one of the following:
-- A previous EICR or EIC certificate
-- Handwritten inspection notes
-- A printed or typed test results sheet
+        if (isPdf) {
+          if (fileBytes.length > MAX_PDF_BYTES) {
+            return res.status(413).json({
+              error: `PDF #${i + 1} exceeds Anthropic's 32MB limit (${(fileBytes.length / 1024 / 1024).toFixed(1)}MB). Try a smaller or split file.`,
+            });
+          }
+          pdfCount += 1;
+        } else {
+          // ALWAYS transcode non-PDF input through sharp's JPEG encoder.
+          // The web picker accepts `image/*` (PNG screenshots, HEIC from
+          // iPhone library, WebP, GIF) but the Anthropic content block
+          // hard-codes `media_type: 'image/jpeg'` below. Without the
+          // forced transcode we'd send PNG bytes with a JPEG MIME label,
+          // which Anthropic may reject or misinterpret. Sharp normalises
+          // any common input format to JPEG, AND simultaneously bounds
+          // the output to <= MAX_RAW_BYTES (Anthropic's vision base64
+          // cap) via the resize step. PDFs do NOT need this — Anthropic
+          // accepts them up to 32MB / 100 pages natively.
+          const originalBytes = fileBytes.length;
+          fileBytes = await sharp(fileBytes)
+            .rotate() // honour EXIF orientation so portrait photos stay portrait
+            .resize(2400, 2400, { fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+          if (fileBytes.length > MAX_RAW_BYTES) {
+            // Second pass at lower quality if a very-detail-rich photo
+            // still exceeds the Anthropic base64 cap after resize+q85.
+            // Cheaper than re-uploading from the inspector's side.
+            logger.info('Document image still over cap after q=85, re-encoding at q=70', {
+              fileIndex: i,
+              afterFirstPassBytes: fileBytes.length,
+            });
+            fileBytes = await sharp(fileBytes).jpeg({ quality: 70 }).toBuffer();
+          }
+          if (originalBytes !== fileBytes.length) {
+            logger.info('Document image transcoded/resized', {
+              fileIndex: i,
+              originalBytes,
+              newBytes: fileBytes.length,
+              originalMime: file.mimetype,
+            });
+          }
+          imageCount += 1;
+        }
+
+        const base64 = fileBytes.toString('base64');
+        contentBlocks.push(
+          isPdf
+            ? {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+              }
+            : {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/jpeg', data: base64 },
+              }
+        );
+      }
+
+      logger.info('Document extraction requested', {
+        userId: req.user.id,
+        fileCount: allFiles.length,
+        imageCount,
+        pdfCount,
+        totalBytesUploaded,
+        model,
+      });
+
+      // Tell the model the file count up front. With N images the
+      // model treats them as N pages of one document; the cover-page
+      // rules in MULTI-PAGE CONTEXT then apply across all of them.
+      const docCountSentence =
+        allFiles.length === 1
+          ? 'The attached document is ONE file.'
+          : `The attached document is ${allFiles.length} files — treat them as pages of ONE multi-page document, in the order attached.`;
+
+      const prompt = `You are an expert UK electrician extracting structured data from photographed or scanned electrical documents for the CertMate EICR/EIC certificate workflow.
+
+## INPUT
+${docCountSentence}
+
+The document(s) can be any of:
+- A multi-page typed PDF EICR (Electrical Installation Condition Report) — periodic inspection
+- A multi-page typed PDF EIC (Electrical Installation Certificate) — new installation
+- One or more photographs of a printed certificate or test results sheet (each photo is usually one page)
+- One or more photographs of HANDWRITTEN inspector notes, scribbled test sheets, or hand-completed cert pages
+- A mix of typed and handwritten pages
 - Any document containing electrical installation data
 
-Extract ALL readable data and return structured JSON. Be thorough — extract every field you can read.
+If the input is a PDF, READ EVERY PAGE. EICR PDFs commonly have 3–6 pages: cover / installation details / supply / observations / schedule of test results (often spanning multiple pages with 8–12 circuits per page). The schedule on later pages is just as important as the cover page — DO NOT stop at page 1.
 
-## WHAT TO EXTRACT
+## TASK
+Extract EVERY legible value into the JSON schema below. The schema field names match the certificate database keys exactly — emit them verbatim so the values land on the correct tab in the iOS app. The inspector is importing a previous certificate to seed a new job, so be thorough: every value you skip is one they have to retype.
 
-### Installation Details
-- Client name, address (including postcode, town, county)
-- Description of premises (e.g., "3 bed semi-detached house")
-- Reason for report (e.g., "Periodic inspection", "Change of tenancy")
-- Occupier name
-- Date of previous inspection
-- Previous certificate number
-- Estimated age of installation (years)
-- General condition of installation
-- Next inspection recommended interval (years)
-- Installation records available (yes/no)
-- Evidence of additions/alterations (yes/no)
+## CRITICAL RULES
+1. ONLY emit values you can actually read in the image. Never guess, infer, or fabricate. If a field is illegible, scrubbed, or absent, OMIT the key entirely (do not write null, do not write ""). It is far better to omit a key than to invent a plausible-sounding value.
+2. Use the exact JSON keys shown in the schema. Do not invent new keys, rename, or reorder nested objects.
+3. All numeric values are returned as STRINGS (e.g. "32" not 32, "0.35" not 0.35). The only Int field is "next_inspection_years".
+4. For "≥200", "> 200", ">200 MΩ" etc on insulation resistance, normalise to ">200".
+5. For per-circuit confirmation fields (\`polarity_confirmed\`, \`rcd_button_confirmed\`, \`afdd_button_confirmed\`), emit ONLY one of these exact strings: "OK" (pass), "Y" (pass), "N" (fail), or omit the key if blank. Do NOT use tick / cross / "✓" / "✗" Unicode glyphs — the downstream UI is a 3-option picker that does not recognise them.
+6. For boolean Yes/No fields (\`installation_records_available\`, \`evidence_of_additions_alterations\`, \`supply_polarity_confirmed\`, \`means_earthing_distributor\`, \`means_earthing_electrode\`, \`bonding_other_na\`), emit the strings "Yes" or "No" verbatim.
+7. If the image shows multiple boards or multiple pages of circuits, include ALL circuits.
+8. Return ONLY the JSON object. No markdown fences, no commentary, no leading/trailing text.
 
-### Supply Characteristics
-- Earthing arrangement (TN-C-S, TN-S, TT, IT)
-- Nominal voltage (e.g., "230")
-- Nominal frequency (e.g., "50")
-- Prospective fault current in kA (e.g., "0.88")
-- External earth loop impedance Ze in ohms (e.g., "0.35")
+## HANDWRITING & MESSY IMAGES — READ CAREFULLY
+Inspectors photograph handwritten test sheets that are often messy, sun-faded, gloved-fingerprinted, or shot at an angle. Apply these rules:
 
-### Board Info
-- Manufacturer and model
-- Main switch rating (amps), BS/EN, poles, voltage
-- SPD status (fitted/not fitted), type, rating
+- **Digit confusables**: handwritten 1 vs 7, 4 vs 9, 0 vs 6, 3 vs 8, 2 vs Z are the common pairs. If a digit could read either way and there is no surrounding context (cable size 2.5/4.0/6.0/10.0, OCPD rating 6/10/16/20/32/40/45, Zs <2.0, etc.) to disambiguate, OMIT the key. Do not pick the more "common" value as a guess.
+- **Decimal points**: handwritten decimals are often a tiny dot easily missed. A reading written "088" in the Ze column is almost certainly "0.88", not "88". A reading written "32" in a Zs column where every other circuit is around "0.4-1.5" is almost certainly mis-transcribed — omit unless the decimal is clear.
+- **Crossed-out values**: when a value has been struck through and a replacement written above/beside it, ALWAYS use the replacement, never the crossed-out original.
+- **Multiple writing layers**: certs often have a printed background table with handwritten readings on top. Read the HANDWRITTEN value into the corresponding field key — the printed example values in the form template are not real readings.
+- **Units written sloppily**: "kohms" / "MΩ" / "M" are common on IR columns. Normalise to a bare numeric string. "1k" in an Ipf column means "1.0" kA; "100" in an Ipf column is more likely "100 A" (an OCPD rating mis-filed), so omit if unsure.
+- **Ditto marks** ("'' or " or ditto): if a row leaves a column blank but the row above has a value AND a ditto mark is visible, propagate the value above. If no ditto mark is visible, omit.
+- **Sun-faded / smudged**: if a row is partially illegible, populate the cells you CAN read and omit the ones you can't. Don't drop the whole circuit just because two columns are unreadable.
+- **Tick variants**: "✓", "Y", "OK", "P", "yes", "✔" all mean confirmed → emit "✓". "✗", "X", "N", "fail", "no", "F" all mean not confirmed → emit "✗". A circle or "L" usually means limitation — emit "LIM" where the schema accepts it.
 
-### Circuits (test results)
-For each circuit found, extract:
-- Circuit reference number and designation/description
-- Cable sizes (live and CPC in mm²)
-- Wiring type and reference method
-- Number of points
-- OCPD: type (B/C/D), rating (A), BS/EN, breaking capacity (kA)
-- RCD: type (AC/A/B/F/S), operating current (mA), BS/EN
-- Ring continuity: R1, Rn, R2 (ohms)
-- r1+r2 and r2 values (ohms)
-- Insulation resistance: live-live and live-earth (MΩ) — prefix with > if greater than
-- Earth fault loop impedance Zs (ohms)
-- Polarity confirmed (true/false)
-- RCD trip time (ms)
-- RCD button test confirmed (true/false)
+## MULTI-PAGE / MULTI-PHOTO CONTEXT
+When more than one image is attached (or a PDF has multiple pages), treat them as ONE document:
 
-### Observations
-For each observation/defect noted:
-- Classification code: C1 (danger present), C2 (potentially dangerous), C3 (improvement recommended), FI (further investigation)
-- Observation text (the defect description)
-- Item/location
-- Schedule item reference
-- Regulation reference
+- **Cover page is global**: \`installation_details\` (client name, address, postcode), \`supply_characteristics\` (earthing arrangement, Ze, Ipf), \`board_info\` (manufacturer, location) usually appear on page 1 only. Apply them to the whole job — DO NOT duplicate them per circuit.
+- **Schedule continues across pages**: a circuit numbered "13" on page 2 of a test schedule is the same circuit numbering as "1-12" on page 1 — preserve the original numbering, do not restart at 1. Two boards on separate pages each have their own 1-N numbering — keep them separate (see boards rule below).
+- **DEDUPE circuits that appear twice**: if the same circuit (same ref + designation + readings) appears in two photos because the inspector overlapped two shots, emit it ONCE. If two photos show the same circuit ref but different readings (e.g. one photo is the original cert and another is the handwritten amendment), prefer the photo whose readings look NEWER / clearly inked, and emit ONE entry — never duplicate.
+- **Observations span pages**: observations are usually on their own page. Collect every legible C1/C2/C3/FI from every page into the single \`observations[]\` array.
+- **Schedule of Inspections vs Schedule of Test Results**: these are TWO different tables. The Schedule of Test Results is the multi-column table with circuit numbers down the left and readings (Zs, R1+R2, IR, etc.) across — extract its rows into \`circuits[]\`. The Schedule of Inspections is a checklist of BS 7671 items with tick/N-A/C1-3 outcomes — extract relevant defects from it into \`observations[]\` (each non-tick outcome is an observation), and IGNORE the tick rows.
 
-## RULES
-- Only extract data you can actually read — do NOT guess or fabricate values
-- For illegible fields, omit them (do not set to null)
-- For insulation resistance values shown as ">200" or "≥200", return ">200"
-- Circuit numbers should be integers
-- Amp ratings should be strings (e.g., "32" not 32)
-- Ohm values should be strings (e.g., "0.35")
-- If multiple boards are shown, extract all circuits
+## CIRCUIT COVERAGE — READ CAREFULLY
+The schedule of test results is the most important part of the document. It is laid out as a TABLE with one ROW per circuit. Every legible row is a separate \`circuits[]\` entry — there is NO upper limit and NO need to keep the output short.
 
-## OUTPUT FORMAT
+- If the table has 16 rows of circuits, \`circuits\` MUST contain 16 objects.
+- The schema below shows ONE example circuit ONLY — that is a format demo, not a quota. Do not stop after one or two circuits.
+- Walk the table TOP TO BOTTOM. For each row, emit one object — even if some test reading cells in that row are blank or hard to read (just omit those specific keys, not the whole circuit).
+- Any row with a circuit number, a designation, or any visible reading (Zs, R1+R2, IR, RCD time, etc.) gets its own circuits[] entry.
+- A blank cell ≠ skip the circuit. A blank cell = omit that one key.
+- If two boards are shown (e.g. a main DB plus a sub-main board), include circuits from both — preserve their original numbering AND tag the distribution circuit on the upstream board via \`is_distribution_circuit: "yes"\`. Do NOT invent board IDs; the app reconciles which board each circuit belongs to via \`board_info.feed_circuit_ref\`.
 
-Return ONLY valid JSON matching this exact schema:
+## CLIENT vs PROPERTY ADDRESS — DO NOT CONFLATE
+EICRs typically show two distinct things: the client/owner being billed, and the property address being inspected. Often they are the same person and the same address; sometimes they are different (landlord client / tenant property). Map them like this:
+
+- \`client_name\` is ONLY a PERSON or COMPANY NAME. Examples: "Mr J Smith", "Acme Property Lettings Ltd". NEVER put a postal address in this field.
+- \`address\` is ONLY the STREET LINE of the installation premises. Examples: "12 Acacia Avenue", "Flat 4, Brunswick House". NEVER include the postcode, town, or county here — they each have their own keys.
+- \`postcode\` is the UK postcode alone, e.g. "SL6 4QH".
+- \`town\` and \`county\` are bare locality names, e.g. "Maidenhead", "Berkshire".
+- \`occupier_name\` is only filled when the cert explicitly names a different occupier from the client.
+
+If the cert has a single combined address block like "Mr J Smith, 12 Acacia Avenue, Maidenhead, Berkshire, SL6 4QH", split it across the five keys above — do NOT dump the whole thing into \`client_name\` or into \`address\`.
+
+## ENUM REFERENCE (use these exact strings)
+- earthing_arrangement: "TN-C-S" | "TN-S" | "TT" | "TN-C" | "IT"
+- live_conductors: "AC - 1-phase (2 wire)" | "AC - 1-phase (3 wire)" | "AC - 3-phase (3 wire)" | "AC - 3-phase (4 wire)" | "DC - 2 pole" | "DC - 3 pole"
+- ocpd_type: "B" | "C" | "D" | "gG" | "gM" | "aM" | "HRC" | "Rew" | "N/A" (Rew = BS 3036 rewireable, HRC = BS 1361 cartridge)
+- ocpd_bs_en: "BS EN 60898" | "BS EN 61009" | "BS EN 60947-2" | "BS EN 60947-3" | "BS EN 60269-2" | "BS 3036" | "BS 1361" | "N/A"
+- rcd_type: "AC" | "A" | "F" | "B" | "S" | "N/A"
+- rcd_bs_en: "BS EN 61008" | "BS EN 61009" | "BS EN 62423" | "N/A"
+- wiring_type (IET 9-code key): "A" PVC/PVC T&E | "B" PVC in metallic conduit | "C" PVC in non-metallic conduit | "D" PVC in metallic trunking | "E" PVC in non-metallic trunking | "F" PVC/SWA | "G" XLPE/SWA | "H" MICC/mineral/pyro | "O" Other (FP200, flex, SY/YY/CY)
+- ref_method: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "100" | "101" | "102" | "103"
+- polarity_confirmed / rcd_button_confirmed / afdd_button_confirmed: "OK" | "Y" | "N" (or omit)
+- spd_status: "Fitted" | "Not Fitted" | "Not Required"
+- spd_type: "Type 1" | "Type 2" | "Type 3" | "Type 1+2" | "Type 2+3"
+- premises_description: "Residential" | "Commercial" | "Industrial" | "Agricultural" | "Other"
+- observation code: "C1" (danger present) | "C2" (potentially dangerous) | "C3" (improvement recommended) | "FI" (further investigation required)
+- next_inspection_years: integer 1, 2, 3, 4, 5, or 10
+- nominal_voltage_u / nominal_voltage_uo: usually "230" (single phase domestic), "400" (three-phase)
+- nominal_frequency: usually "50"
+- earth_electrode_type: "Rod" | "Plate" | "Tape" | "Mat" | "Foundation" | "Other" | "N/A"
+- earthing_conductor_material / bonding_conductor_material / main_switch_conductor_material / sub_main_cable_material: "Copper" | "Aluminium" | "Steel" | "N/A"
+- bonding_water / bonding_gas / bonding_oil / bonding_structural_steel / bonding_lightning / earthing_conductor_continuity / bonding_conductor_continuity: "PASS" | "FAIL" | "LIM" | "N/A"
+- main_switch_bs_en: "60947-3" | "61008 RCD" | "60947-2 MCCB" | "3036 (S-E)" | "1361 type 1" | "4293 RCD" | "88 type gG" | "N/A"
+- board_type: "main" | "sub_distribution" | "sub_main" (omit for legacy single-board jobs)
+- installation_type (EIC only): "new_installation" | "addition" | "alteration"
+
+## DATE FORMATS
+All date fields use UK format DD/MM/YYYY as a string (e.g. "15/03/2024").
+
+## SCHEMA
+Return ONLY this JSON. Omit any key whose value is not legibly present in the image. Every key below is optional — present the keys you can read, omit the rest.
+
 {
   "installation_details": {
-    "client_name": "string or omit",
-    "address": "string or omit",
-    "postcode": "string or omit",
-    "town": "string or omit",
-    "county": "string or omit",
-    "premises_description": "string or omit",
-    "reason_for_report": "string or omit",
-    "occupier_name": "string or omit",
-    "date_of_previous_inspection": "string or omit",
-    "previous_certificate_number": "string or omit",
-    "estimated_age_of_installation": "string or omit",
-    "general_condition_of_installation": "string or omit",
+    "client_name": "Householder or company name — PERSON/COMPANY ONLY, never an address",
+    "address": "Street line of the installation premises — no postcode/town/county here",
+    "postcode": "UK postcode, e.g. 'SL6 4QH'",
+    "town": "Post town",
+    "county": "County",
+    "premises_description": "Residential | Commercial | Industrial | Agricultural | Other",
+    "occupier_name": "Only if explicitly named separately from client",
+    "client_phone": "Phone number digits only",
+    "client_email": "Email address",
+    "reason_for_report": "e.g. 'Periodic inspection', 'Change of tenancy', 'Insurance request', 'Pre-purchase'",
+    "extent": "Extent of installation covered by the inspection",
+    "agreed_limitations": "Any agreed limitations to the inspection",
+    "agreed_with": "Person agreed-with for limitations",
+    "operational_limitations": "Operational limitations encountered during inspection",
+    "estimated_age_of_installation": "Years as a string e.g. '15'",
+    "general_condition_of_installation": "Free-text condition summary as written on the cert",
+    "date_of_inspection": "DD/MM/YYYY of THIS inspection (use the inspection date, not the report-issue date if different)",
+    "date_of_previous_inspection": "DD/MM/YYYY of the previous inspection if recorded",
+    "previous_certificate_number": "Cert number string",
     "next_inspection_years": 5,
-    "installation_records_available": "Yes or No or omit",
-    "evidence_of_additions_alterations": "Yes or No or omit"
+    "installation_records_available": "Yes",
+    "evidence_of_additions_alterations": "No"
   },
   "supply_characteristics": {
-    "earthing_arrangement": "TN-C-S or TN-S or TT or IT",
+    "earthing_arrangement": "TN-C-S",
+    "live_conductors": "AC - 1-phase (2 wire)",
+    "number_of_supplies": "1",
     "nominal_voltage_u": "230",
+    "nominal_voltage_uo": "230",
     "nominal_frequency": "50",
-    "prospective_fault_current": "string kA",
-    "earth_loop_impedance_ze": "string ohms"
+    "prospective_fault_current": "0.88",
+    "earth_loop_impedance_ze": "0.35",
+    "supply_polarity_confirmed": "Yes",
+    "means_earthing_distributor": "Yes",
+    "means_earthing_electrode": "No",
+    "earth_electrode_type": "Rod",
+    "earth_electrode_resistance": "12.5",
+    "earth_electrode_location": "Where the electrode is — e.g. 'Front garden'",
+    "spd_bs_en": "Standard for DNO supply cutout fuse",
+    "spd_type_supply": "DNO cutout fuse type, e.g. 'gG'",
+    "spd_short_circuit": "DNO cutout breaking capacity in kA",
+    "spd_rated_current": "DNO cutout rating in amps",
+    "main_switch_bs_en": "60947-3",
+    "main_switch_poles": "2",
+    "main_switch_voltage": "230",
+    "main_switch_current": "100",
+    "main_switch_fuse_setting": "Adjustable fuse setting if shown",
+    "main_switch_location": "e.g. 'Integral to CU'",
+    "main_switch_conductor_material": "Copper",
+    "main_switch_conductor_csa": "25",
+    "rcd_operating_current": "Main RCD IΔn in mA if present, e.g. '100'",
+    "rcd_time_delay": "S-type time delay if applicable",
+    "rcd_operating_time": "Measured trip time of main RCD in ms",
+    "earthing_conductor_material": "Copper",
+    "earthing_conductor_csa": "16",
+    "earthing_conductor_continuity": "PASS",
+    "bonding_conductor_material": "Copper",
+    "bonding_conductor_csa": "10",
+    "bonding_conductor_continuity": "PASS",
+    "bonding_water": "PASS",
+    "bonding_gas": "PASS",
+    "bonding_oil": "N/A",
+    "bonding_structural_steel": "N/A",
+    "bonding_lightning": "N/A",
+    "bonding_other": "Other items bonded, free text"
   },
   "board_info": {
-    "manufacturer": "string or omit",
-    "name": "string — board model or omit",
-    "rated_current": "string amps or omit",
-    "main_switch_bs_en": "string or omit",
-    "spd_status": "Fitted or Not Fitted or omit"
+    "manufacturer": "e.g. 'Wylex', 'Hager', 'MK', 'Crabtree', 'Schneider', 'BG', 'Eaton'",
+    "name": "Board model code e.g. 'NHRS12SL', 'VML112'",
+    "location": "Where the board is located e.g. 'Hallway under stairs'",
+    "phases": "1",
+    "earthing_arrangement": "Repeat from supply characteristics if shown on board section",
+    "ze": "External earth loop impedance in ohms",
+    "ze_at_db": "Ze measured at the distribution board if shown — string",
+    "ipf_at_db": "Prospective fault current at the DB in kA — string",
+    "rated_current": "Main switch rating in amps as a string e.g. '100'",
+    "main_switch_bs_en": "BS/EN of main switch e.g. '60947-3'",
+    "voltage_rating": "Main switch voltage rating string",
+    "ipf_rating": "Main switch breaking capacity in kA string",
+    "rcd_rating_ma": "Main RCD rating in mA string if board has a main RCD",
+    "rcd_trip_time": "Main RCD trip time in ms string",
+    "spd_status": "Fitted",
+    "spd_type": "Type 2",
+    "board_type": "main",
+    "feed_circuit_ref": "ONLY for sub-boards — circuit number on the parent board that feeds this one (the app resolves the parent board id from this and board_type)",
+    "sub_main_cable_material": "Copper",
+    "sub_main_cable_csa": "16",
+    "sub_main_cpc_csa": "6"
   },
   "circuits": [
     {
       "circuit_ref": "1",
-      "circuit_designation": "Ring Main",
+      "circuit_designation": "Ring Main Sockets — Ground Floor",
+      "wiring_type": "A",
+      "ref_method": "C",
+      "number_of_points": "8",
       "live_csa_mm2": "2.5",
       "cpc_csa_mm2": "1.5",
-      "wiring_type": "string or omit",
-      "ref_method": "string or omit",
-      "number_of_points": "string or omit",
+      "max_disconnect_time_s": "0.4",
+      "ocpd_bs_en": "BS EN 60898",
       "ocpd_type": "B",
       "ocpd_rating_a": "32",
-      "ocpd_bs_en": "60898-1",
       "ocpd_breaking_capacity_ka": "6",
+      "ocpd_max_zs_ohm": "1.37",
+      "rcd_bs_en": "BS EN 61009",
       "rcd_type": "A",
       "rcd_operating_current_ma": "30",
-      "rcd_bs_en": "61009",
+      "rcd_rating_a": "32",
       "ring_r1_ohm": "0.88",
       "ring_rn_ohm": "0.91",
       "ring_r2_ohm": "1.11",
       "r1_r2_ohm": "0.89",
       "r2_ohm": "0.45",
+      "ir_test_voltage_v": "500",
       "ir_live_live_mohm": ">200",
       "ir_live_earth_mohm": ">200",
+      "polarity_confirmed": "OK",
       "measured_zs_ohm": "0.45",
-      "polarity_confirmed": "true",
       "rcd_time_ms": "18",
-      "rcd_button_confirmed": "true"
+      "rcd_button_confirmed": "OK",
+      "afdd_button_confirmed": "OK",
+      "is_distribution_circuit": "no"
     }
   ],
   "observations": [
     {
       "code": "C2",
-      "observation_text": "Description of defect",
-      "item_location": "Distribution board",
-      "schedule_item": "4.2",
-      "regulation": "Reg 421.1.201"
+      "observation_text": "Verbatim description of the defect as written on the cert",
+      "item_location": "Where the defect is — e.g. 'Distribution board', 'Bathroom', 'Outdoor socket'",
+      "schedule_item": "Schedule of inspections item reference if shown — e.g. '4.2'",
+      "regulation": "BS 7671 regulation reference e.g. 'Reg 421.1.201'"
     }
   ]
 }`;
 
-    const OpenAI = (await import('openai')).default;
-    const openai = new OpenAI({ apiKey });
+      // Build the Anthropic SDK client. Reuses the same import pattern as
+      // CCU classifyBoardTechnology — kept inline so this route's failure
+      // surface is independent of the CCU pipeline.
+      const Anthropic = (await import('@anthropic-ai/sdk')).default;
+      const anthropic = new Anthropic({ apiKey: anthropicKey });
 
-    const dataUrl = `data:image/jpeg;base64,${base64}`;
+      // `contentBlocks` was built per-file above. PDFs ship as a
+      // `document` content block (Anthropic processes every page
+      // natively at full fidelity — right for typed cert exports);
+      // images ship as `image` blocks. With multiple images, Anthropic
+      // sees them as a multi-page document in the order attached, which
+      // is exactly what the MULTI-PAGE CONTEXT section of the prompt
+      // tells the model to do.
+      //
+      // Scale max_tokens with file count so a 4-photo schedule (~30-40
+      // circuits) doesn't get truncated. 8000 was sized for a
+      // 12-circuit single-page cert; we add 2000 per extra image up to
+      // a 16000 ceiling (Sonnet 4.6's practical headroom on a single
+      // assistant turn).
+      const maxTokens = Math.min(16000, 8000 + Math.max(0, allFiles.length - 1) * 2000);
 
-    const response = await openai.chat.completions.create({
-      model,
-      max_completion_tokens: 16384,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
-            { type: 'text', text: prompt },
-          ],
-        },
-      ],
-    });
+      const startMs = Date.now();
+      const response = await anthropic.messages.create({
+        model,
+        max_tokens: maxTokens,
+        messages: [
+          {
+            role: 'user',
+            content: [...contentBlocks, { type: 'text', text: prompt }],
+          },
+        ],
+      });
 
-    const content = response.choices?.[0]?.message?.content || '';
-    const promptTokens = response.usage?.prompt_tokens || 0;
-    const completionTokens = response.usage?.completion_tokens || 0;
-    const finishReason = response.choices?.[0]?.finish_reason || 'unknown';
+      const textBlocks = (response.content || []).filter((b) => b.type === 'text');
+      const rawContent = textBlocks
+        .map((b) => b.text)
+        .join('')
+        .trim();
 
-    logger.info('Document extraction complete', {
-      userId: req.user.id,
-      model,
-      promptTokens,
-      completionTokens,
-      responseLength: content.length,
-      finishReason,
-    });
+      const inputTokens = response.usage?.input_tokens || 0;
+      const outputTokens = response.usage?.output_tokens || 0;
+      const stopReason = response.stop_reason || 'unknown';
+      const elapsedMs = Date.now() - startMs;
 
-    if (finishReason === 'length') {
-      logger.error('Document extraction truncated by token limit', {
+      logger.info('Document extraction complete', {
         userId: req.user.id,
         model,
-        completionTokens,
+        fileCount: allFiles.length,
+        imageCount,
+        pdfCount,
+        maxTokens,
+        inputTokens,
+        outputTokens,
+        responseLength: rawContent.length,
+        stopReason,
+        elapsedMs,
       });
-      return res.status(502).json({
-        error: `Response truncated (${completionTokens} tokens). Try a clearer photo or retry.`,
-      });
-    }
 
-    let jsonStr = content;
-    if (jsonStr.startsWith('```json')) {
-      jsonStr = jsonStr.slice(7);
-    } else if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.slice(3);
-    }
-    if (jsonStr.endsWith('```')) {
-      jsonStr = jsonStr.slice(0, -3);
-    }
-    jsonStr = jsonStr.trim();
+      if (stopReason === 'max_tokens') {
+        logger.error('Document extraction truncated by token limit', {
+          userId: req.user.id,
+          model,
+          outputTokens,
+        });
+        return res.status(502).json({
+          error: `Response truncated at ${outputTokens} tokens. Try splitting the document or re-shooting the photo.`,
+        });
+      }
 
-    const extracted = JSON.parse(jsonStr);
-
-    // Convert circuits: ensure polarity_confirmed and rcd_button_confirmed are strings
-    if (extracted.circuits) {
-      for (const c of extracted.circuits) {
-        if (typeof c.polarity_confirmed === 'boolean') {
-          c.polarity_confirmed = c.polarity_confirmed ? '✓' : '';
-        }
-        if (typeof c.rcd_button_confirmed === 'boolean') {
-          c.rcd_button_confirmed = c.rcd_button_confirmed ? '✓' : '';
-        }
-        // Ensure circuit_ref is a string
-        if (typeof c.circuit_ref === 'number') {
-          c.circuit_ref = String(c.circuit_ref);
+      // Strip optional ```json fence; otherwise slice between first { and last }.
+      let jsonStr = rawContent;
+      const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) {
+        jsonStr = fenceMatch[1].trim();
+      } else {
+        const first = jsonStr.indexOf('{');
+        const last = jsonStr.lastIndexOf('}');
+        if (first !== -1 && last > first) {
+          jsonStr = jsonStr.slice(first, last + 1);
         }
       }
-    }
 
-    // Wrap in { success, formData } envelope to match TranscriptExtractionResponse
-    const formData = {
-      circuits: extracted.circuits || [],
-      observations: extracted.observations || [],
-      installation_details: extracted.installation_details || {},
-      supply_characteristics: extracted.supply_characteristics || {},
-      board_info: extracted.board_info || {},
-    };
-
-    const inputCost = (promptTokens * 0.002) / 1000;
-    const outputCost = (completionTokens * 0.012) / 1000;
-
-    logger.info('Document extraction parsed', {
-      userId: req.user.id,
-      model,
-      circuitCount: formData.circuits.length,
-      observationCount: formData.observations.length,
-      hasInstallation: Object.keys(formData.installation_details).length > 0,
-      hasSupply: Object.keys(formData.supply_characteristics).length > 0,
-      hasBoard: Object.keys(formData.board_info).length > 0,
-      costUsd: parseFloat((inputCost + outputCost).toFixed(6)),
-    });
-
-    res.json({ success: true, formData });
-  } catch (error) {
-    logger.error('Document extraction failed', {
-      userId: req.user.id,
-      error: error.message,
-    });
-    res.status(500).json({ error: error.message });
-  } finally {
-    if (tempPath) {
+      let extracted;
       try {
-        await fs.unlink(tempPath);
+        extracted = JSON.parse(jsonStr);
+      } catch (parseErr) {
+        logger.error('Document extraction JSON parse failed', {
+          userId: req.user.id,
+          model,
+          rawPreview: rawContent.slice(0, 500),
+          parseError: parseErr.message,
+        });
+        return res.status(502).json({
+          error: 'Could not parse extraction response. Try a clearer photo.',
+        });
+      }
+
+      // Coerce a few field types that vision models commonly return in the
+      // wrong shape. iOS decoders are permissive (decodeStringOrNumber) but
+      // booleans-as-tick-marks and number circuit refs are the two we've
+      // seen most often, so fix them up here defensively.
+      if (Array.isArray(extracted.circuits)) {
+        for (const c of extracted.circuits) {
+          if (typeof c.polarity_confirmed === 'boolean') {
+            c.polarity_confirmed = c.polarity_confirmed ? '✓' : '';
+          }
+          if (typeof c.rcd_button_confirmed === 'boolean') {
+            c.rcd_button_confirmed = c.rcd_button_confirmed ? '✓' : '';
+          }
+          if (typeof c.afdd_button_confirmed === 'boolean') {
+            c.afdd_button_confirmed = c.afdd_button_confirmed ? '✓' : '';
+          }
+          if (typeof c.circuit_ref === 'number') {
+            c.circuit_ref = String(c.circuit_ref);
+          }
+        }
+      }
+
+      // Wrap in { success, formData } envelope to match TranscriptExtractionResponse
+      const formData = {
+        circuits: extracted.circuits || [],
+        observations: extracted.observations || [],
+        installation_details: extracted.installation_details || {},
+        supply_characteristics: extracted.supply_characteristics || {},
+        board_info: extracted.board_info || {},
+      };
+
+      // Sonnet 4.6 vision pricing (eu-west-2): $3/MTok input, $15/MTok output.
+      const inputCost = (inputTokens * 3) / 1_000_000;
+      const outputCost = (outputTokens * 15) / 1_000_000;
+
+      logger.info('Document extraction parsed', {
+        userId: req.user.id,
+        model,
+        circuitCount: formData.circuits.length,
+        observationCount: formData.observations.length,
+        hasInstallation: Object.keys(formData.installation_details).length > 0,
+        hasSupply: Object.keys(formData.supply_characteristics).length > 0,
+        hasBoard: Object.keys(formData.board_info).length > 0,
+        costUsd: parseFloat((inputCost + outputCost).toFixed(6)),
+      });
+
+      // Diagnostic dump — captures the parsed JSON so we can audit prompt
+      // accuracy from CloudWatch without round-tripping through the user.
+      // Truncated to keep CloudWatch event size sane (~16KB events). Drops
+      // the per-circuit detail if the response is enormous, but always keeps
+      // installation_details / supply / board / circuit_refs / observations
+      // shape so misrouted-field bugs are visible.
+      try {
+        const refsPreview = (formData.circuits || []).map((c) => ({
+          ref: c?.circuit_ref,
+          designation: c?.circuit_designation,
+        }));
+        logger.info('Document extraction dump', {
+          userId: req.user.id,
+          installation_details: formData.installation_details,
+          supply_characteristics: formData.supply_characteristics,
+          board_info: formData.board_info,
+          circuit_refs_designations: refsPreview,
+          observations: formData.observations,
+          first_circuit_full: formData.circuits?.[0] || null,
+        });
       } catch {
-        /* ignore cleanup errors */
+        /* logging failure must never affect the response */
+      }
+
+      res.json({ success: true, formData });
+    } catch (error) {
+      logger.error('Document extraction failed', {
+        userId: req.user.id,
+        error: error.message,
+        stack: error.stack,
+      });
+      res.status(500).json({ error: error.message });
+    } finally {
+      // Multer wrote each uploaded part to a temp file in os.tmpdir().
+      // Clean them all up so /tmp doesn't fill on the ECS task — N
+      // photos = N temp files, not just one.
+      for (const p of tempPaths) {
+        try {
+          await fs.unlink(p);
+        } catch {
+          /* ignore cleanup errors */
+        }
       }
     }
   }
-});
+);
 
 /**
  * Enhance an observation using GPT

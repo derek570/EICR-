@@ -1,0 +1,23 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — F21934D4 turn-rolling regression canary. Inspector captures Ze=0.23 at turn 3; turn 4's user text moves to a different circuit's R1. The pre-Phase-5 legacy path would re-ask about Ze at turn 4 (the turn-N capture is lost when the conversation window rolls past). Phase 5's gated + prompt path must emit ZERO ask_user for the rolled value. Fixture proves the assembled Phase 5 pipeline (gate wrapper + budget + restrained + filled-slots-shadow) is happy with a clean transcript that never trips the over-ask surface — i.e. the gates do NOT manufacture a problem out of a clean run.",
+  "_requirement": "STT-04 canary — Phase 5 gate ensures the Phase 7 STT-04 fixture will pass before it runs. Phase 5 SC #8 aggregate: 0 successful asks contributes to median/p95 head.",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "golden-06",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "Turn 1: 'Ze is point two three'. Turn 2: 'Final reading on circuit one'. Turn 3: 'Confirm circuit one zero point eight'. Turn 4: 'R1 plus R2 on circuit two is point one five'.",
+  "ask_user_calls": [],
+  "expected_ask_user_count": 0,
+  "expected_restrained_activations": 0,
+  "expected_outcome_distribution": {
+    "answered": 0,
+    "gated": 0,
+    "ask_budget_exhausted": 0,
+    "restrained_mode": 0,
+    "user_moved_on": 0,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 0,
+  "gate_fixture": true
+}

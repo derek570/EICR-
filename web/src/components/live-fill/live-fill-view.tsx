@@ -49,6 +49,7 @@ export function LiveFillView() {
     // in a row we still re-fire the scroll.
   }, [lastUpdatedSection, lastUpdatedAt]);
 
+  // Read from canonical backend bucket keys (see src/routes/jobs.js:575-592).
   const installation = (job.installation_details ?? {}) as Record<string, unknown>;
   const supply = (job.supply_characteristics ?? {}) as Record<string, unknown>;
   const board = (job.board_info ?? {}) as Record<string, unknown>;

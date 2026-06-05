@@ -178,7 +178,7 @@ export async function listUsers() {
   try {
     const result = await pool.query(
       `SELECT u.id, u.email, u.name, u.company_name, u.role,
-              u.is_active::boolean as is_active,
+              u.is_active,
               u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
               u.company_id, u.company_role, c.name as company_display_name
        FROM users u
@@ -204,7 +204,7 @@ export async function listUsersPaginated(limit, offset) {
       pool.query('SELECT COUNT(*) FROM users'),
       pool.query(
         `SELECT u.id, u.email, u.name, u.company_name, u.role,
-                u.is_active::boolean as is_active,
+                u.is_active,
                 u.last_login, u.created_at, u.failed_login_attempts, u.locked_until,
                 u.company_id, u.company_role, c.name as company_display_name
          FROM users u
@@ -296,6 +296,97 @@ export async function updateUser(userId, data) {
   } catch (error) {
     logger.error('updateUser failed', { error: error.message });
     throw error;
+  }
+}
+
+/**
+ * Hard-delete a user and every owned row across the RDS schema in a single
+ * transaction. The S3 wipe is the caller's responsibility (see
+ * `src/routes/auth.js` DELETE /account); this function ONLY handles RDS.
+ *
+ * Required by Apple App Store Guideline 5.1.1(v) ("If your app supports
+ * account creation, you must also offer account deletion within the app")
+ * and by UK GDPR Article 17 (right to erasure). The pre-existing soft-
+ * delete via `users.is_active = false` did not satisfy either — Apple
+ * rejects soft-delete-only flows, and an inactive row still holds
+ * personal data.
+ *
+ * Deletion order is structural, not arbitrary. Tables WITHOUT a FK to
+ * `users(id)` must be wiped manually with `WHERE user_id = $1`; tables
+ * WITH `ON DELETE CASCADE` are cleared automatically when the `users`
+ * row drops at the end. Foreign-key configuration audited against
+ * `migrations/001_baseline.cjs` + `migrations/006_indexes_and_constraints.cjs`
+ * on 2026-05-11:
+ *
+ *   CASCADE (auto-cleared by the final users DELETE):
+ *     push_subscriptions       (FK in 001 baseline)
+ *     subscriptions            (FK added in 006)
+ *     calendar_tokens          (FK added in 006)
+ *
+ *   No FK — must be deleted manually here:
+ *     job_versions             (text user_id, no FK)
+ *     jobs                     (text user_id, no FK)
+ *     properties               (text user_id, no FK; client_id has
+ *                               SET NULL to clients which is irrelevant
+ *                               once both go in this transaction)
+ *     clients                  (text user_id, no FK)
+ *
+ *   Deliberately NOT deleted:
+ *     audit_log                (UK GDPR Art. 17(3)(b) carve-out for
+ *                               legal-obligation retention; the log of
+ *                               this very deletion lives here)
+ *     companies                (multi-user resource; never cascaded
+ *                               from a single user's deletion)
+ *
+ * Returns a per-table count of rows deleted; the caller writes these to
+ * the audit log as the erasure receipt.
+ *
+ * If anything inside the transaction fails the whole operation rolls
+ * back and re-throws — partial deletion is forbidden; the user row must
+ * remain whole until the erasure can complete atomically.
+ */
+export async function hardDeleteUserAccount(userId) {
+  if (!usePostgres()) {
+    // Local dev / no-DB mode — nothing to delete server-side. Return a
+    // zero-row receipt so the route can still respond 204 in dev.
+    return {
+      job_versions: 0,
+      jobs: 0,
+      properties: 0,
+      clients: 0,
+      users: 0,
+    };
+  }
+
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const jv = await client.query('DELETE FROM job_versions WHERE user_id = $1', [userId]);
+    const jb = await client.query('DELETE FROM jobs WHERE user_id = $1', [userId]);
+    const pr = await client.query('DELETE FROM properties WHERE user_id = $1', [userId]);
+    const cl = await client.query('DELETE FROM clients WHERE user_id = $1', [userId]);
+    // Final blow: cascading FKs in push_subscriptions / subscriptions /
+    // calendar_tokens fire here. Capture the rowcount so we can detect
+    // "user didn't exist" (0) and distinguish it from "successfully erased".
+    const us = await client.query('DELETE FROM users WHERE id = $1', [userId]);
+
+    await client.query('COMMIT');
+
+    return {
+      job_versions: jv.rowCount ?? 0,
+      jobs: jb.rowCount ?? 0,
+      properties: pr.rowCount ?? 0,
+      clients: cl.rowCount ?? 0,
+      users: us.rowCount ?? 0,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error('hardDeleteUserAccount failed', { error: error.message, userId });
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -1281,7 +1372,7 @@ export async function getUsersByCompany(companyId) {
   try {
     const result = await pool.query(
       `SELECT id, email, name, company_name, role, company_role,
-              is_active::boolean as is_active,
+              is_active,
               last_login, created_at, failed_login_attempts, locked_until
        FROM users WHERE company_id = $1 ORDER BY created_at DESC`,
       [companyId]
@@ -1746,6 +1837,312 @@ export async function query(text, params) {
   const pool = getPool();
   return pool.query(text, params);
 }
+
+// =============================================================================
+// account_consents — UK GDPR Art. 28 clickwrap evidence
+// See .planning/compliance/in-app-consent-screen.md and migration 010.
+// =============================================================================
+
+/**
+ * Has the user accepted the named version of the agreement?
+ * Returns the row or null. Null means "needs to accept".
+ */
+export async function getMostRecentAcceptedConsent(userId, agreementKind, agreementVersion) {
+  if (!usePostgres()) return null;
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT id, accepted_at, recorded_at, platform, platform_version
+       FROM account_consents
+      WHERE user_id = $1 AND agreement_kind = $2 AND agreement_version = $3
+      ORDER BY recorded_at DESC
+      LIMIT 1`,
+    [userId, agreementKind, agreementVersion]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * Record an acceptance. Idempotent via ON CONFLICT — a duplicate
+ * acceptance from a parallel device-launch flow is silently coalesced
+ * into the existing row. The RETURNING clause works on both insert and
+ * existing-row paths so callers get the same shape back either way.
+ */
+export async function recordAccountConsent({
+  userId,
+  agreementKind,
+  agreementVersion,
+  acceptedAt,
+  platform,
+  platformVersion,
+  ipAddress,
+  userAgent,
+}) {
+  if (!usePostgres()) {
+    throw new Error('Database not configured');
+  }
+  const pool = getPool();
+  const result = await pool.query(
+    `INSERT INTO account_consents
+       (user_id, agreement_kind, agreement_version, accepted_at,
+        platform, platform_version, ip_address, user_agent)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (user_id, agreement_kind, agreement_version)
+     DO UPDATE SET recorded_at = account_consents.recorded_at
+     RETURNING id, accepted_at, recorded_at`,
+    [
+      userId,
+      agreementKind,
+      agreementVersion,
+      acceptedAt,
+      platform,
+      platformVersion || null,
+      ipAddress || null,
+      userAgent || null,
+    ]
+  );
+  return result.rows[0];
+}
+
+// =============================================================================
+// cert_attestations — per-PDF readings + observations audit trail
+// See .planning/compliance/pdf-issuance-attestations.md and migration 011.
+// =============================================================================
+
+/**
+ * Write both attestations for a single PDF issuance atomically. The
+ * pair must succeed or fail together so we never leave a half-written
+ * audit trail. Returns the inserted rows in submission order.
+ *
+ * Caller must have already verified job ownership.
+ */
+export async function recordCertAttestations({
+  userId,
+  jobId,
+  pdfS3Key,
+  attestations,
+  ipAddress,
+  userAgent,
+}) {
+  if (!usePostgres()) {
+    throw new Error('Database not configured');
+  }
+  if (!Array.isArray(attestations) || attestations.length !== 2) {
+    throw new Error('recordCertAttestations requires exactly 2 attestations');
+  }
+  const kinds = new Set(attestations.map((a) => a.kind));
+  if (!(kinds.has('readings') && kinds.has('observations') && kinds.size === 2)) {
+    throw new Error("recordCertAttestations requires kinds={'readings','observations'}");
+  }
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const rows = [];
+    for (const att of attestations) {
+      const result = await client.query(
+        `INSERT INTO cert_attestations
+           (user_id, job_id, pdf_s3_key, attestation_kind,
+            attestation_text_version, attested_at,
+            platform, platform_version, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, attestation_kind, attested_at, recorded_at`,
+        [
+          userId,
+          jobId,
+          pdfS3Key || null,
+          att.kind,
+          att.textVersion,
+          att.attestedAt,
+          att.platform,
+          att.platformVersion || null,
+          ipAddress || null,
+          userAgent || null,
+        ]
+      );
+      rows.push(result.rows[0]);
+    }
+    await client.query('COMMIT');
+    return rows;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Stamp the PDF S3 key onto attestations whose render has just
+ * completed. Returns the number of rows updated.
+ */
+export async function updateAttestationPdfKey(attestationIds, pdfS3Key) {
+  if (!usePostgres()) return 0;
+  if (!Array.isArray(attestationIds) || attestationIds.length === 0) return 0;
+  const pool = getPool();
+  const result = await pool.query(
+    `UPDATE cert_attestations SET pdf_s3_key = $1 WHERE id = ANY($2::int[])`,
+    [pdfS3Key, attestationIds]
+  );
+  return result.rowCount;
+}
+
+/**
+ * Fetch all attestations for a job (most-recent-first). Used by the
+ * Settings → Issued certificates list and by audit pulls.
+ */
+export async function getAttestationsForJob(userId, jobId) {
+  if (!usePostgres()) return [];
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT id, attestation_kind, attestation_text_version,
+            attested_at, recorded_at, platform, platform_version,
+            pdf_s3_key
+       FROM cert_attestations
+      WHERE user_id = $1 AND job_id = $2
+      ORDER BY recorded_at DESC`,
+    [userId, jobId]
+  );
+  return result.rows;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// voice_feedback — PLAN-backend-final.md Phase 1.6.3 / 1.6.4
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Index of "feedback ... end feedback" markers the inspector voices during
+// a recording session. The S3 prefix (debug-reports/{userId}/{ts}/) still
+// owns the bytes; this table is the queryable index so the new
+// /api/voice-feedback router can list, filter, paginate, and search.
+
+const VOICE_FEEDBACK_STATUSES = new Set(['open', 'reviewed', 'actioned', 'wontfix']);
+
+export async function insertVoiceFeedback({
+  userId,
+  sessionId,
+  jobId = null,
+  address = null,
+  issueText,
+  transcriptWindow = null,
+  s3Key,
+}) {
+  if (!usePostgres()) return null;
+  const pool = getPool();
+  const result = await pool.query(
+    `INSERT INTO voice_feedback
+       (user_id, session_id, job_id, address, issue_text,
+        transcript_window, s3_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id, created_at`,
+    [
+      userId,
+      sessionId,
+      jobId || null,
+      address || null,
+      issueText,
+      transcriptWindow == null ? null : JSON.stringify(transcriptWindow),
+      s3Key,
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function listVoiceFeedback({
+  userId,
+  status = null,
+  jobId = null,
+  q = null,
+  limit = 50,
+  offset = 0,
+  includeAllUsers = false,
+}) {
+  if (!usePostgres()) return { items: [], total: 0 };
+  const pool = getPool();
+  const params = [];
+  const conds = [];
+  if (!includeAllUsers) {
+    params.push(userId);
+    conds.push(`user_id = $${params.length}`);
+  }
+  if (status) {
+    params.push(status);
+    conds.push(`status = $${params.length}`);
+  }
+  if (jobId) {
+    params.push(jobId);
+    conds.push(`job_id = $${params.length}`);
+  }
+  if (q) {
+    // LIKE-pattern is intentional for v1 (plan §1.6.4). PG full-text
+    // (to_tsvector + plainto_tsquery) is a later upgrade once the
+    // optimizer settles on the relevant filters.
+    params.push(`%${q}%`);
+    conds.push(`issue_text ILIKE $${params.length}`);
+  }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+
+  const countResult = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM voice_feedback ${where}`,
+    params
+  );
+  const total = countResult.rows[0]?.n || 0;
+
+  const limitNum = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const offsetNum = Math.max(Number(offset) || 0, 0);
+  const listResult = await pool.query(
+    `SELECT id, user_id, session_id, job_id, address,
+            LEFT(issue_text, 200) AS issue_preview,
+            review_note, status, created_at, reviewed_at, s3_key
+       FROM voice_feedback
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT ${limitNum} OFFSET ${offsetNum}`,
+    params
+  );
+  return { items: listResult.rows, total };
+}
+
+export async function getVoiceFeedback(id) {
+  if (!usePostgres()) return null;
+  const pool = getPool();
+  const result = await pool.query(
+    `SELECT id, user_id, session_id, job_id, address, issue_text,
+            transcript_window, review_note, status, s3_key,
+            created_at, reviewed_at
+       FROM voice_feedback
+      WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateVoiceFeedbackStatus(id, { status, reviewNote = null }) {
+  if (!usePostgres()) return null;
+  if (status && !VOICE_FEEDBACK_STATUSES.has(status)) {
+    throw new Error(
+      `voice_feedback.status must be one of ${Array.from(VOICE_FEEDBACK_STATUSES).join(', ')}`
+    );
+  }
+  const pool = getPool();
+  // Only set reviewed_at when transitioning AWAY from 'open' (per plan:
+  // status open → reviewed/actioned/wontfix stamps reviewed_at; back-
+  // transition to 'open' clears it so the audit trail tells the truth).
+  const result = await pool.query(
+    `UPDATE voice_feedback
+        SET status = COALESCE($2, status),
+            review_note = COALESCE($3, review_note),
+            reviewed_at = CASE
+              WHEN $2 IN ('reviewed','actioned','wontfix') THEN NOW()
+              WHEN $2 = 'open' THEN NULL
+              ELSE reviewed_at
+            END
+      WHERE id = $1
+      RETURNING id, status, review_note, reviewed_at`,
+    [id, status, reviewNote]
+  );
+  return result.rows[0] || null;
+}
+
+export { VOICE_FEEDBACK_STATUSES };
 
 /**
  * Close the database connection pool (for graceful shutdown)

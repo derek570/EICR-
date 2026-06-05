@@ -1,0 +1,43 @@
+name: designation_after_rename
+suite: baseline
+description: |
+  Inspector creates circuit 1 as "Cooker", then renames it to circuit
+  2 (rekey). Later dictates "Zs for the cooker is 0.6". Sonnet must
+  resolve "cooker" → circuit 2, not circuit 1.
+
+  Pins the rename_circuit dispatcher's recency push fix (commit
+  7f0cf4d, 2026-05-24) — renaming should move the new circuit_ref
+  into recentCircuitOrder AND drop the old one, so subsequent
+  designation lookup hits the live key in the compact snapshot.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits: []
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one is the cooker."
+    isFinal: true
+  - at_ms: 5000
+    text: "Actually move that cooker to circuit two."
+    isFinal: true
+  - at_ms: 10000
+    text: "Zs for the cooker is 0.6."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 3 }
+  has_reading:
+    - circuit: 2
+      field: measured_zs_ohm
+      value: 0.6
+  ask_user_count: { max: 0 }
+  forbid_tools: []
+
+config:
+  timeout_ms: 60000
+  drain_ms: 20000
+  fetch_tts: false

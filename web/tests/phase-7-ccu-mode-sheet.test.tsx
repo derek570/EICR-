@@ -1,14 +1,22 @@
 /**
  * Phase 7 — CCU mode sheet render + interaction tests.
  *
- * Pins the three-mode contract at the UI layer:
- *   - all three modes render when the sheet is open,
- *   - picking a mode fires `onSelect` with the correct value,
+ * Pins the five-mode contract at the UI layer (M8 UX closure on
+ * 2026-05-13 — append_rail + add_new_board tiles added to the
+ * picker; helpers had been shipped in `ead645b` but were dead
+ * weight until the UI exposed them):
+ *   - all five modes render when the sheet is open AND the active
+ *     board has existing circuits,
+ *   - `append_rail` is HIDDEN when `existingCircuitCount === 0`
+ *     (iOS parity — there's nothing to append onto, see
+ *     `CCUExtractionModeSheet.swift:16-22` `visibleModes`),
+ *   - picking each mode fires `onSelect` with the correct value,
  *   - picking a mode closes the sheet,
- *   - last-used mode persists to localStorage (`cm-ccu-last-mode`),
+ *   - last-used mode persists to localStorage (`cm-ccu-last-mode`)
+ *     for all five modes,
  *   - the "hardware_update" tile's hint copy reflects the existing
- *     circuit count on the active board (helps first-time users pick
- *     the right mode).
+ *     circuit count on the active board (helps first-time users
+ *     pick the right mode).
  *
  * We mount with `createRoot` directly (not `@testing-library/react`)
  * and stub Radix `<Dialog>` + `lucide-react` at module boundary to
@@ -37,6 +45,8 @@ vi.mock('lucide-react', () => {
     ChevronRight: makeIcon('ChevronRight'),
     ListChecks: makeIcon('ListChecks'),
     RefreshCw: makeIcon('RefreshCw'),
+    Layers: makeIcon('Layers'),
+    Columns2: makeIcon('Columns2'),
     X: makeIcon('X'),
   };
 });
@@ -94,17 +104,31 @@ afterEach(() => {
 });
 
 describe('CcuModeSheet', () => {
-  it('renders all three mode tiles when open', () => {
+  it('renders four mode tiles when the active board has no circuits (append_rail hidden)', () => {
     const onSelect = vi.fn();
     mounted = mount(
       <CcuModeSheet open onOpenChange={() => {}} onSelect={onSelect} existingCircuitCount={0} />
     );
     const tiles = mounted.container.querySelectorAll('[role="listitem"]');
-    expect(tiles).toHaveLength(3);
+    expect(tiles).toHaveLength(4);
     const titles = Array.from(tiles).map((t) => t.textContent);
     expect(titles.some((t) => t?.includes('Circuit Names Only'))).toBe(true);
     expect(titles.some((t) => t?.includes('Update Hardware'))).toBe(true);
     expect(titles.some((t) => t?.includes('Full New Consumer Unit'))).toBe(true);
+    expect(titles.some((t) => t?.includes('Add Sub-Board'))).toBe(true);
+    // append_rail tile hidden — no rail-1 schedule to append onto.
+    expect(titles.some((t) => t?.includes('Add Another Rail'))).toBe(false);
+  });
+
+  it('renders all five mode tiles when the active board has existing circuits', () => {
+    mounted = mount(
+      <CcuModeSheet open onOpenChange={() => {}} onSelect={() => {}} existingCircuitCount={6} />
+    );
+    const tiles = mounted.container.querySelectorAll('[role="listitem"]');
+    expect(tiles).toHaveLength(5);
+    const titles = Array.from(tiles).map((t) => t.textContent);
+    expect(titles.some((t) => t?.includes('Add Another Rail'))).toBe(true);
+    expect(titles.some((t) => t?.includes('Add Sub-Board'))).toBe(true);
   });
 
   it('does not render anything when closed', () => {
@@ -164,5 +188,45 @@ describe('CcuModeSheet', () => {
       t.textContent?.includes('Update Hardware')
     )!;
     expect(hwTile.textContent).toContain('No existing circuits');
+  });
+
+  it('fires onSelect with "append_rail" when the Add Another Rail tile is clicked', async () => {
+    const onSelect = vi.fn();
+    const onOpenChange = vi.fn();
+    mounted = mount(
+      <CcuModeSheet open onOpenChange={onOpenChange} onSelect={onSelect} existingCircuitCount={3} />
+    );
+    const tile = Array.from(mounted.container.querySelectorAll('[role="listitem"]')).find((t) =>
+      t.textContent?.includes('Add Another Rail')
+    )!;
+
+    await act(async () => {
+      (tile as HTMLElement).click();
+    });
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onSelect).toHaveBeenCalledWith('append_rail' satisfies CcuApplyMode);
+    expect(window.localStorage.getItem('cm-ccu-last-mode')).toBe('append_rail');
+  });
+
+  it('fires onSelect with "add_new_board" when the Add Sub-Board tile is clicked', async () => {
+    const onSelect = vi.fn();
+    const onOpenChange = vi.fn();
+    mounted = mount(
+      <CcuModeSheet open onOpenChange={onOpenChange} onSelect={onSelect} existingCircuitCount={0} />
+    );
+    const tile = Array.from(mounted.container.querySelectorAll('[role="listitem"]')).find((t) =>
+      t.textContent?.includes('Add Sub-Board')
+    )!;
+
+    await act(async () => {
+      (tile as HTMLElement).click();
+    });
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onSelect).toHaveBeenCalledWith('add_new_board' satisfies CcuApplyMode);
+    expect(window.localStorage.getItem('cm-ccu-last-mode')).toBe('add_new_board');
   });
 });

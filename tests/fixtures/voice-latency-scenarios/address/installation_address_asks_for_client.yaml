@@ -1,0 +1,68 @@
+name: installation_address_asks_for_client
+suite: address
+description: |
+  Pins commit eff80433 — prompt change: ambiguous address goes to
+  the INSTALLATION fields and the model should NEVER silently fill
+  client_address from an installation-address utterance. Pre-fix
+  surfaced as "I never told the system the client lived at the same
+  place" — the inspector had to delete the unintended client_address.
+
+  First empirical run 2026-06-01 (against prod backend Sonnet 4.6)
+  showed the model writes installation address (address, town,
+  postcode) and STOPS — it does NOT always emit a follow-up ask_user
+  for client_address. The original draft of this scenario pinned the
+  ask emission as the bug-pin; that was wrong. The actual fix's
+  user-visible guarantee is that client_address is NOT auto-filled.
+  Whether the model explicitly asks is downstream optionality the
+  prompt didn't lock in.
+
+  This scenario therefore pins the inversion of the original bug:
+  client_address MUST NOT appear in extracted_readings without an
+  explicit user reply confirming "yes, same address." Combined with
+  the installation field assertions, this is the tight regression
+  guard.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "The address is 12 Catherine Street Reading RG1 5QA."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Installation address fields land at circuit:0.
+  has_reading:
+    - circuit: 0
+      field: postcode
+      value: "RG1 5QA"
+    - circuit: 0
+      field: town
+      value: "Reading"
+  # The actual bug pin: client_address MUST NOT be written. Pre-fix
+  # the model silently copied the installation address; post-fix it
+  # stays empty unless the inspector explicitly answers an ask.
+  # has_no_reading with `value` omitted matches ANY value for the
+  # (circuit, field) pair — so any silent copy fails this assertion.
+  has_no_reading:
+    - circuit: 0
+      field: client_address
+    - circuit: 0
+      field: client_postcode
+    - circuit: 0
+      field: client_town
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

@@ -1,0 +1,109 @@
+name: rcd_sonnet-write_all_batch-of-2
+suite: exhaustive
+description: >-
+  RCD SONNET-WRITE all value scenario for circuits 2 and 3.
+
+  The entry transcript avoids dialogue trigger words; Sonnet writes the volunteered slot values and
+  tryEnterScriptFromWrites either enters the single-circuit script or skips multi-circuit batch
+  writes.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+    - number: 3
+      board_id: main
+      designation: Cooker
+    - number: 4
+      board_id: main
+      designation: Shower
+    - number: 5
+      board_id: main
+      designation: Outside Lights
+transcript:
+  - at_ms: 0
+    text: trip time 25 ms, BS EN 61008, type AC, residual current 30 mA for circuits 2 and 3.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 2
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 2
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 2
+      field: rcd_type
+      value: AC
+    - circuit: 2
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 3
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 3
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 3
+      field: rcd_type
+      value: AC
+    - circuit: 3
+      field: rcd_operating_current_ma
+      value: "30"
+  has_no_reading:
+    - circuit: 1
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 1
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 1
+      field: rcd_type
+      value: AC
+    - circuit: 1
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 4
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 4
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 4
+      field: rcd_type
+      value: AC
+    - circuit: 4
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 5
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 5
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 5
+      field: rcd_type
+      value: AC
+    - circuit: 5
+      field: rcd_operating_current_ma
+      value: "30"
+  ask_user_count:
+    min: 0
+    max: 0
+  confirmation_count:
+    min: 4
+  confirmation_text_contains:
+    - Circuits 2, 3
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

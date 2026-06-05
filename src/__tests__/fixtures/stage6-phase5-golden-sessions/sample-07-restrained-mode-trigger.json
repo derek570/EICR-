@@ -1,0 +1,89 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — restrained-mode activation canary. Simulates a chatty over-ask Sonnet emitting 3 ambiguous-circuit ask_user calls within a rolling 5-turn window (turns 1, 2, 3). The 3rd ask MUST activate restrained mode (STA-05 'any rolling 5-turn window'). The 4th ask at turn 4 MUST short-circuit with answer_outcome='restrained_mode' and NOT consume budget (Pitfall 4). Per Plan 05-06 design: this fixture is SMOKE-ONLY (gate_fixture:false) — including it in the aggregate threshold gate would break restrained_rate ≤ 2% with N=12 (1/12 = 8.3%). Smoke mode asserts the activation, the short-circuit, and the outcome distribution.",
+  "_requirement": "STA-05 + STT-08 — locks the rolling-window state machine end-to-end through the gate wrapper. STB-04 — budget NOT incremented on the restrained-mode short-circuit (Pitfall 4 carry-over).",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "golden-07",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "7-turn over-ask scenario where Sonnet asks 'which circuit?' three times across turns 1-3, then attempts a 4th ask at turn 4 which must be short-circuited.",
+  "ask_user_calls": [
+    {
+      "turnId": "golden-07-turn-1",
+      "synthetic_time_ms": 0,
+      "call": {
+        "id": "toolu_07_a",
+        "name": "ask_user",
+        "input": {
+          "question": "Which circuit was Ze for?",
+          "reason": "ambiguous_circuit",
+          "context_field": "none",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "circuit one" }
+    },
+    {
+      "turnId": "golden-07-turn-2",
+      "synthetic_time_ms": 100,
+      "call": {
+        "id": "toolu_07_b",
+        "name": "ask_user",
+        "input": {
+          "question": "Which circuit was that R1+R2 for?",
+          "reason": "ambiguous_circuit",
+          "context_field": "r1_r2_ohm",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "circuit two" }
+    },
+    {
+      "turnId": "golden-07-turn-3",
+      "synthetic_time_ms": 200,
+      "call": {
+        "id": "toolu_07_c",
+        "name": "ask_user",
+        "input": {
+          "question": "Which circuit was Zs for?",
+          "reason": "ambiguous_circuit",
+          "context_field": "measured_zs_ohm",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "circuit three" }
+    },
+    {
+      "turnId": "golden-07-turn-4",
+      "synthetic_time_ms": 300,
+      "call": {
+        "id": "toolu_07_d",
+        "name": "ask_user",
+        "input": {
+          "question": "Which circuit was insulation resistance for?",
+          "reason": "ambiguous_circuit",
+          "context_field": "ir_live_earth_mohm",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "circuit four" },
+      "expected_short_circuit_reason": "restrained_mode"
+    }
+  ],
+  "expected_ask_user_count": 3,
+  "expected_restrained_activations": 1,
+  "expected_outcome_distribution": {
+    "answered": 3,
+    "gated": 0,
+    "ask_budget_exhausted": 0,
+    "restrained_mode": 1,
+    "user_moved_on": 0,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 0,
+  "gate_fixture": false
+}

@@ -1,0 +1,103 @@
+name: circuits_1_through_5_range
+suite: bulk
+description: |
+  Contiguous-range broadcast. 6 non-spare circuits exist; inspector
+  says "polarity confirmed for circuits 1 through 5." Sonnet should
+  emit 5 record_reading calls (one per circuit in the range) — not 6,
+  and not 1 collapsed.
+
+  Range phrasings ("1 through 5", "1 to 5", "from 1 to 5") are
+  semantically distinct from "all circuits" because they exclude
+  circuit 6. The dialogue-engine broadcast detector treats these as
+  multi-circuit lists, not script-walk-throughs.
+
+  Grouped-confirmation pin (commit 13fb179f): bundler must collapse
+  the 5 per-circuit confirmations into ONE TTS line. Pre-fix the
+  speculator picked one random circuit and read "Circuit 3, polarity
+  confirmed" while the other 4 were silent.
+
+  Field-name note: polarity_confirmed canonical → polarity legacy
+  (per FIELD_CORRECTIONS). The WS harness sees post-rewrite legacy.
+  Value "Y" is the prompt-canonical for "polarity confirmed" (pinned
+  by the existing normal_polarity scenario).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Upstairs sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Downstairs sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 6
+      board_id: main
+      designation: Outside lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Polarity confirmed for circuits 1 through 5."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: polarity
+      value: "Y"
+    - circuit: 2
+      field: polarity
+      value: "Y"
+    - circuit: 3
+      field: polarity
+      value: "Y"
+    - circuit: 4
+      field: polarity
+      value: "Y"
+    - circuit: 5
+      field: polarity
+      value: "Y"
+  ask_user_count: { max: 0 }
+  # Range phrasing should fold into a grouped confirmation —
+  # synthesiseConfirmations groups by (field, value, board_id) and
+  # buildGroupedConfirmationText returns the range form. Min 1 catches
+  # the regression. No max bound: when Loaded Barrel is enabled, the
+  # speculator's mid_stream_preview envelope adds a duplicate
+  # confirmations[] entry, bumping the total above 1 (empirically
+  # observed against prod 2026-06-01 — same speculator-bump pattern
+  # we already handled in the Ze confirmation scenarios).
+  confirmation_count: { min: 1 }
+  confirmation_text_contains:
+    # The grouped helper writes "Circuits 1 to 5" (or similar) — assert
+    # the range form is present so the test catches both a per-circuit
+    # regression AND a phrasing regression.
+    - "1 to 5"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

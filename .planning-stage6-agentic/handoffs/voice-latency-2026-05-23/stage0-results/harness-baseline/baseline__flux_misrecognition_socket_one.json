@@ -1,0 +1,74 @@
+{
+  "name": "flux_misrecognition_socket_one",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 264,
+    "first_transcript_to_extraction_ms": 4299,
+    "first_transcript_to_audible_ms": 4855,
+    "transcripts_sent": 2,
+    "extractions_received": 2,
+    "confirmations_total": 1,
+    "tts_fetches": [
+      {
+        "text_preview": "Circuit 1, points 5",
+        "first_byte_ms": 556,
+        "total_ms": 557,
+        "bytes": 30137
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 232,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779566231177_6uor09\"}"
+    },
+    {
+      "at_ms": 264,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"657eb633-3548-4f31-b8fd-6a5095b0ae13\"}"
+    },
+    {
+      "at_ms": 264,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 283,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Circuit one. Number of points five.\"}"
+    },
+    {
+      "at_ms": 284,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Socket 1.\"}"
+    },
+    {
+      "at_ms": 4582,
+      "type": "extraction",
+      "summary": "readings=1 confirmations=1"
+    },
+    {
+      "at_ms": 4582,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 8323,
+      "type": "extraction",
+      "summary": "readings=1 confirmations=0"
+    },
+    {
+      "at_ms": 8324,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 21510,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":2,\"cacheReads\":81551"
+    }
+  ]
+}

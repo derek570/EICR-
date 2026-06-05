@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { ChevronRight, Camera, ListChecks, RefreshCw } from 'lucide-react';
+import { ChevronRight, Camera, ListChecks, RefreshCw, Layers, Columns2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import type { CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
 
@@ -14,21 +14,32 @@ import type { CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
  * The backend `/api/analyze-ccu` returns the same superset in every
  * case — the mode only changes which client-side merge runs.
  *
- * Three modes (iOS parity — same ordering, same copy, same icons
+ * Five modes (iOS parity — same ordering, same copy, same icons
  * approximated from SF Symbols):
  *
  *   1. Circuit Names Only — read labels only. Skips OCPD / RCD /
  *      cable / test data on existing circuits. Useful for quick
  *      label-only scans where the inspector plans to dictate the
  *      rest by voice.
- *   2. Full Capture — the legacy behaviour. Replaces hardware and
- *      board info from the photo, preserves inspector-typed values
- *      via the 3-tier priority ladder. Default when no circuits yet.
- *   3. Hardware Update — for jobs that already have circuits with
+ *   2. Hardware Update — for jobs that already have circuits with
  *      test readings. Fuzzy-matches analysed circuits to existing
  *      ones, opens a review screen so the inspector can confirm
  *      pairings, then applies hardware on top while preserving
  *      readings. The most complex mode.
+ *   3. Full Capture — the legacy behaviour. Replaces hardware and
+ *      board info from the photo, preserves inspector-typed values
+ *      via the 3-tier priority ladder. Default when no circuits yet.
+ *   4. Add Another Rail — appends a second-rail photo's circuits to
+ *      an existing board, continuing the numbering from the highest
+ *      existing ref. Board-level fields are NOT overwritten (a
+ *      second rail is typically busbar-fed and has no main switch).
+ *      SPD is OR-merged. Hidden when the active board has no
+ *      existing circuits — there's nothing to append to.
+ *   5. Add Sub-Board — photograph a separate consumer unit (sub-
+ *      distribution / sub-main). Appends a fresh BoardInfo to
+ *      `job.boards`, stamps every extracted circuit with the new
+ *      board id, leaves `parent_board_id` / `feed_circuit_ref`
+ *      unset for the inspector to fill via the Board tab.
  *
  * UX shape:
  *   - Tall mode tiles (title + subtitle + coloured icon + chevron).
@@ -52,11 +63,13 @@ export interface CcuModeSheetProps {
   onOpenChange: (open: boolean) => void;
   onSelect: (mode: CcuApplyMode) => void;
   /**
-   * Pre-existing circuit count on the active board. Used only for the
-   * subtitle copy on Hardware Update ("4 circuits on the board" vs
-   * "no existing circuits to match against"). iOS doesn't vary the
-   * copy, but the web layout has more room and the extra hint helps
-   * a first-time user pick the right mode.
+   * Pre-existing circuit count on the active board. Two effects:
+   *   - varies Hardware Update subtitle copy ("4 circuits on the
+   *     board" vs "no existing circuits to match against") — iOS
+   *     doesn't, but the web layout has room and the hint helps a
+   *     first-time user pick the right mode;
+   *   - hides the "Add Another Rail" tile when zero (iOS parity —
+   *     there's no rail-1 schedule to append onto).
    */
   existingCircuitCount?: number;
 }
@@ -67,7 +80,14 @@ function readLastMode(): CcuApplyMode | null {
   if (typeof window === 'undefined') return null;
   try {
     const v = window.localStorage.getItem(LAST_MODE_KEY);
-    if (v === 'names_only' || v === 'full_capture' || v === 'hardware_update') return v;
+    if (
+      v === 'names_only' ||
+      v === 'full_capture' ||
+      v === 'hardware_update' ||
+      v === 'append_rail' ||
+      v === 'add_new_board'
+    )
+      return v;
   } catch {
     /* ignore */
   }
@@ -97,6 +117,13 @@ interface ModeSpec {
   icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
   /** Accent colour for the icon — approximates iOS semantic colours. */
   colour: string;
+  /**
+   * If set, the tile is hidden when this predicate returns true. iOS
+   * canon: `.appendRail` is filtered out by `visibleModes` in
+   * `CCUExtractionModeSheet.swift:16-22` when the target board has
+   * zero circuits — there's nothing to append a rail onto.
+   */
+  hideWhen?: (ctx: { existingCircuitCount: number }) => boolean;
 }
 
 const MODES: ModeSpec[] = [
@@ -120,6 +147,21 @@ const MODES: ModeSpec[] = [
     subtitle: 'Replace everything',
     icon: Camera,
     colour: 'var(--color-brand-green)',
+  },
+  {
+    value: 'append_rail',
+    title: 'Add Another Rail',
+    subtitle: 'Append circuits (e.g. double-decker boards)',
+    icon: Layers,
+    colour: 'var(--color-brand-blue)',
+    hideWhen: ({ existingCircuitCount }) => existingCircuitCount === 0,
+  },
+  {
+    value: 'add_new_board',
+    title: 'Add Sub-Board',
+    subtitle: 'Photograph a sub-distribution / sub-main board',
+    icon: Columns2,
+    colour: 'var(--color-brand-blue)',
   },
 ];
 
@@ -148,7 +190,9 @@ export function CcuModeSheet({
         <DialogDescription>How would you like to capture the board?</DialogDescription>
 
         <div className="mt-4 flex flex-col gap-2" role="list" aria-label="CCU extraction modes">
-          {MODES.map((m) => (
+          {MODES.filter(
+            (m) => !m.hideWhen || !m.hideWhen({ existingCircuitCount: existingCircuitCount ?? 0 })
+          ).map((m) => (
             <ModeTile
               key={m.value}
               spec={m}

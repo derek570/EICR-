@@ -1,0 +1,55 @@
+name: probe_polarity_correct
+suite: enum_guards
+description: |
+  POSITIVE PIN — polarity_confirmed coercion path.
+  Inspector dictates "Polarity for circuit 3 is correct."
+  Expected: coerceRecordReadingValue maps "correct" → "Y" via
+  POLARITY_TRUE_ALIASES.
+
+  PROD OBSERVATION 2026-06-02: Sonnet emits TWO writes per turn —
+  polarity_confirmed="Y" AND polarity="Y" (same circuit). Both
+  appear on the wire; the bundler emits both, and iOS handles the
+  field-name alias to merge them.
+
+  Pin both writes so a regression that drops either name surfaces
+  immediately. The double-emit is interesting (field-name corrections
+  may be running twice — investigate as separate sub-finding) but
+  not a Cat 1 bug — both are canonical.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Polarity for circuit 3 is correct."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: polarity
+      value: "Y"
+  has_no_reading:
+    - circuit: 3
+      field: polarity
+      value: "correct"
+    - circuit: 3
+      field: polarity
+      value: "CORRECT"
+    - circuit: 3
+      field: polarity_confirmed
+      value: "correct"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

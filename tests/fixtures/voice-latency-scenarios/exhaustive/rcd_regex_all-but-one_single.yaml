@@ -1,0 +1,115 @@
+name: rcd_regex_all-but-one_single
+suite: exhaustive
+description: >-
+  RCD REGEX all-but-one value walk-through for circuit 3.
+
+  Dialogue-engine trigger pre-empts Sonnet, harvests entry values with the schema named extractors,
+  and asks only for remaining script slots.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+    - number: 3
+      board_id: main
+      designation: Cooker
+    - number: 4
+      board_id: main
+      designation: Shower
+    - number: 5
+      board_id: main
+      designation: Outside Lights
+transcript:
+  - at_ms: 0
+    text: RCD on circuit 3, trip time 25 ms, BS EN 61008, type AC.
+    isFinal: true
+  - at_ms: 7000
+    text: "30."
+    isFinal: true
+  - at_ms: 13000
+    text: No.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 3
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 3
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 3
+      field: rcd_type
+      value: AC
+    - circuit: 3
+      field: rcd_operating_current_ma
+      value: "30"
+  has_no_reading:
+    - circuit: 1
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 1
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 1
+      field: rcd_type
+      value: AC
+    - circuit: 1
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 2
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 2
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 2
+      field: rcd_type
+      value: AC
+    - circuit: 2
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 4
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 4
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 4
+      field: rcd_type
+      value: AC
+    - circuit: 4
+      field: rcd_operating_current_ma
+      value: "30"
+    - circuit: 5
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 5
+      field: rcd_bs_en
+      value: BS EN 61008
+    - circuit: 5
+      field: rcd_type
+      value: AC
+    - circuit: 5
+      field: rcd_operating_current_ma
+      value: "30"
+  ask_user_count:
+    min: 2
+    max: 2
+  ask_user:
+    - field: rcd_operating_current_ma
+      text_matches: operating current
+    - field: null
+      text_matches: Apply these RCD details
+config:
+  timeout_ms: 70000
+  drain_ms: 25000
+  fetch_tts: false

@@ -52,18 +52,23 @@ import type { Job, JobDetail } from '@/lib/types';
  *                  whole `certmate-cache` database — adding a second DB
  *                  would double the SSR guards, the block handling, and
  *                  the schema drift surface area for zero benefit.
+ *   v3:            added `app-settings` store (keyPath `key`) for tour
+ *                  state + future settings rows.
+ *   v4 (L2 obs-photo sprint 2026-05-13): added
+ *                  `pending-observation-photo` store (keyPath `jobId`)
+ *                  for the recording-time photo auto-link state. The
+ *                  pending tuple needs to survive a Safari reload mid-
+ *                  recording (iOS doesn't need this — the view model is
+ *                  process-lived — but PWA loses React state on page
+ *                  reload). See sprint plan §0.4.
  */
 export const DB_NAME = 'certmate-cache';
-// v3: add `app-settings` store (tour state + future settings rows).
-// See tour/state.ts — the store is shared so we have ONE authoritative
-// upgrade path rather than consumers sneak-upgrading through db.close()
-// + manual reopen (that would invalidate this module's cached handle
-// and break outbox / job cache for the rest of the tab).
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 const STORE_JOBS_LIST = 'jobs-list';
 const STORE_JOB_DETAIL = 'job-detail';
 export const STORE_OUTBOX = 'outbox';
 export const STORE_APP_SETTINGS = 'app-settings';
+export const STORE_PENDING_PHOTO = 'pending-observation-photo';
 export const OUTBOX_INDEX_BY_USER = 'by-user';
 
 interface CachedJobsList {
@@ -130,6 +135,16 @@ export function openDB(): Promise<IDBDatabase> {
       // rows (tour state, theme, etc.) without another schema bump.
       if (!db.objectStoreNames.contains(STORE_APP_SETTINGS)) {
         db.createObjectStore(STORE_APP_SETTINGS, { keyPath: 'key' });
+      }
+      // v4 — pending-observation-photo. `jobId`-keyed so there is at
+      // most one pending tuple per job (matches iOS's single
+      // `pendingObservationPhoto` slot — see
+      // DeepgramRecordingViewModel.swift:497, and the "replace, not
+      // queue" decision in sprint PLAN §0.2). The store survives a
+      // Safari reload mid-recording so the auto-link window can be
+      // honoured by the next page load — see PLAN §0.4 + Risks §4.
+      if (!db.objectStoreNames.contains(STORE_PENDING_PHOTO)) {
+        db.createObjectStore(STORE_PENDING_PHOTO, { keyPath: 'jobId' });
       }
       // Silence the unused-parameter lint without weakening the type:
       // the event object is often useful for debugging upgrade paths.
@@ -380,6 +395,81 @@ export async function getCachedJobWithOverlay(
   return merged;
 }
 
+// ---------- Pending observation photo (Phase 1 of L2 obs-photo sprint) ----------
+
+/**
+ * One pending-observation-photo record per job. Captured at photo-snap
+ * time, drained when an arriving Sonnet observation claims it (the
+ * forward-link path in `applyObservations`) OR replaced when a second
+ * photo is snapped (the iOS "replace, not queue" semantic at
+ * DeepgramRecordingViewModel.swift:1553 — see sprint PLAN §0.2) OR
+ * upgraded to `job.unassigned_photos[]` when the 60 s window expires
+ * (PLAN §0.7).
+ *
+ * `blobId` is a client-generated UUID assigned at resize-completion so
+ * the forward-link can write a stable placeholder onto
+ * `ObservationRow.photos[]` even before the server upload settles
+ * (PLAN §Risks §1 — upload-during-resize race). Once the upload
+ * resolves, callers patch the same record with the server `filename`
+ * and a second pass rewrites every placeholder to the canonical name.
+ *
+ * `status` is `'uploading'` while the upload promise is in flight,
+ * `'pending'` once the server filename is known. A reload that
+ * interrupts an in-flight upload leaves the record at `'uploading'`
+ * with no `filename` — the resume path in Phase 2/4 will retry the
+ * upload using the blob from sessionStorage / IDB or, if the blob is
+ * gone, drop the record on next read.
+ */
+export interface PendingObservationPhotoRecord {
+  jobId: string;
+  blobId: string;
+  timestamp: number;
+  status: 'uploading' | 'pending';
+  filename?: string;
+}
+
+export async function readPendingPhoto(
+  jobId: string
+): Promise<PendingObservationPhotoRecord | null> {
+  if (!isSupported()) return null;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_PENDING_PHOTO, 'readonly');
+    const store = tx.objectStore(STORE_PENDING_PHOTO);
+    const record = (await wrapRequest(store.get(jobId))) as PendingObservationPhotoRecord | null;
+    return record ?? null;
+  } catch (err) {
+    console.warn('[job-cache] readPendingPhoto failed', err);
+    return null;
+  }
+}
+
+export async function writePendingPhoto(record: PendingObservationPhotoRecord): Promise<void> {
+  if (!isSupported()) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_PENDING_PHOTO, 'readwrite');
+    const store = tx.objectStore(STORE_PENDING_PHOTO);
+    store.put(record);
+    await wrapTransaction(tx);
+  } catch (err) {
+    console.warn('[job-cache] writePendingPhoto failed', err);
+  }
+}
+
+export async function clearPendingPhoto(jobId: string): Promise<void> {
+  if (!isSupported()) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_PENDING_PHOTO, 'readwrite');
+    const store = tx.objectStore(STORE_PENDING_PHOTO);
+    store.delete(jobId);
+    await wrapTransaction(tx);
+  } catch (err) {
+    console.warn('[job-cache] clearPendingPhoto failed', err);
+  }
+}
+
 // ---------- Eviction ----------
 
 /**
@@ -404,10 +494,21 @@ export async function clearJobCache(): Promise<void> {
   if (!isSupported()) return;
   try {
     const db = await openDB();
-    const tx = db.transaction([STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX], 'readwrite');
+    // STORE_APP_SETTINGS deliberately omitted — the tour state is not
+    // per-user-private and re-running the tour on every sign-in is
+    // annoying. STORE_PENDING_PHOTO IS included because a pending tuple
+    // captured under user A must not auto-link to an observation in
+    // user B's session on a shared device. Mirrors the
+    // STORE_JOBS_LIST / STORE_JOB_DETAIL / STORE_OUTBOX shared-device
+    // safety contract documented above.
+    const tx = db.transaction(
+      [STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX, STORE_PENDING_PHOTO],
+      'readwrite'
+    );
     tx.objectStore(STORE_JOBS_LIST).clear();
     tx.objectStore(STORE_JOB_DETAIL).clear();
     tx.objectStore(STORE_OUTBOX).clear();
+    tx.objectStore(STORE_PENDING_PHOTO).clear();
     await wrapTransaction(tx);
   } catch (err) {
     console.warn('[job-cache] clearJobCache failed', err);

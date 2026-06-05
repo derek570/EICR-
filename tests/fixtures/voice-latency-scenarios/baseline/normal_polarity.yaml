@@ -1,0 +1,44 @@
+name: normal_polarity
+suite: baseline
+description: |
+  Polarity confirmed for a single circuit. Sonnet should extract
+  polarity_confirmed=true on circuit 12.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 12
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit twelve polarity confirmed."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    # Schema enum is ["", "OK", "Y", "N"]. Prompt teaches "Y" as the
+    # canonical for "polarity confirmed" — pinned here so a future
+    # prompt regression that re-emits boolean true / "correct" / etc.
+    # fails this scenario rather than silently corrupting the cert.
+    - circuit: 12
+      field: polarity_confirmed
+      value: "Y"
+  audible_latency_ms_p50: { max: 6000 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

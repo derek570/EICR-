@@ -1,0 +1,87 @@
+name: probe_rcd_type_letter_a
+suite: enum_guards
+description: |
+  REGRESSION GUARD for the original 2026-06-02 session E87F58C1
+  "AND" bug. Inspector said "RCD type for circuits 2 and 3 is a".
+  The bug was Sonnet emitting record_reading(rcd_type="AND") on
+  circuit 2 (off-enum; valid values AC/A/F/B/S/N/A).
+
+  2026-06-02 audit probe (this scenario) found Sonnet now writes
+  canonical "A" to BOTH circuits 2 and 3 — bug does NOT reproduce on
+  this exact transcript. Possible model drift between 2026-06-02 prod
+  session and current Sonnet 4.6. Pinning the regression guard so a
+  future model shift back to "AND" fails immediately.
+
+  Also pins the multi-circuit FAN-OUT (Cat 3): asserts circuit 3 IS
+  written. Same transcript with under-fanning regression would write
+  only circuit 2. The "AND" check + the "circuit 3 has rcd_type"
+  check together catch both 2026-06-02 bug shapes.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  # Reproduces the exact field-test phrasing. `detectBroadcastIntent`
+  # in src/extraction/dialogue-engine/parsers/circuit-range.js:158
+  # matches `BROADCAST_LIST_RE` on "circuits 2 and 3" → engine bypasses
+  # RCD script entry → utterance routes to Sonnet. Sonnet's prompt
+  # surface doesn't enforce the rcd_type enum, so it emits "AND" as
+  # the parsed word.
+  - at_ms: 0
+    text: "RCD type for circuits 2 and 3 is a."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Positive: circuit 2 + circuit 3 both receive rcd_type=A. This is
+  # the 2026-06-02 fan-out fix surface — if Sonnet regresses to writing
+  # only circuit 2 (under-fanning), the circuit 3 entry will be absent.
+  has_reading:
+    - circuit: 2
+      field: rcd_type
+      value: "A"
+    - circuit: 3
+      field: rcd_type
+      value: "A"
+  # Regression-guard for the original "AND" bug. Will fail the moment
+  # Sonnet (or the dispatcher) ever lets an off-enum value persist.
+  # NOTE 2026-06-02: this guard PASSES today because Sonnet writes
+  # canonical "A". Pinning so a future model shift back to "AND" or
+  # any variant ("AAND", "a", "and") fails immediately.
+  has_no_reading:
+    - circuit: 2
+      field: rcd_type
+      value: "AND"
+    - circuit: 3
+      field: rcd_type
+      value: "AND"
+    - circuit: 2
+      field: rcd_type
+      value: "and"
+    - circuit: 3
+      field: rcd_type
+      value: "and"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

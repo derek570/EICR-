@@ -22,11 +22,33 @@ coverage/
 *.key
 docker-compose*.yml
 
-# Reduce build context size
+# Reduce build context size.
+#
+# `scripts/*` (not `scripts/`) excludes every direct child of scripts/ —
+# files and subdirectory ENTRIES — but leaves the parent directory itself
+# present, so a negation rule below can re-include a single file. Excluding
+# `scripts/` outright would mean buildkit could not re-include
+# `scripts/migrate-from-secrets.js` (per Docker .dockerignore semantics:
+# "not possible to re-include a file if a parent directory is excluded").
+# Subdirectory contents are skipped transitively because their parent
+# directory entry is excluded.
+#
+# `migrations/` (48 KB) is needed in full by docker/backend.Dockerfile:70
+# and is removed from the exclude list entirely — the size cost is
+# negligible and there are no future scenarios where we'd add an
+# image-irrelevant file under that path.
+#
+# Without these adjustments the buildx step fails with
+# "failed to calculate checksum ... not found" because the COPYs at
+# backend.Dockerfile:70-71 reference paths the daemon never received.
+# Regressed silently from commit b50a37fb (2026-05-29) which added the
+# two COPYs without updating .dockerignore; blocked every push to main
+# from 2026-05-29 through 2026-05-31.
 docs/
-scripts/
-migrations/
+scripts/*
 ecs/
 certs/
 .claude/
 .github/
+
+!scripts/migrate-from-secrets.js

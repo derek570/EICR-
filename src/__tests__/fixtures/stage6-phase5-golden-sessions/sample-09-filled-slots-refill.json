@@ -1,0 +1,43 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — filled-slots SHADOW-log canary. Inspector fills measured_zs_ohm on circuit 3 in turn 1 (pre-ask state via the test harness's pre_seeded_circuits). On turn 2 the model emits ask_user(reason='out_of_range_circuit', context_field='measured_zs_ohm', context_circuit=3) — i.e. it would be asking about a slot that's already filled. Phase 5's filled-slots-shadow adapter MUST emit ONE 'stage6.filled_slots_would_suppress' log row but the ask MUST STILL FIRE (Plan 05-02: shadow ≠ suppress). The wrapper proceeds normally; the inner dispatcher returns answered:true; the budget increments. Per Plan 05-06 design: gate_fixture:true — 1 successful ask is benign for aggregate metrics.",
+  "_requirement": "STB-03 — filled-slots filter runs in shadow mode on the tool-call path: logs when it would have suppressed but does NOT suppress. Pitfall 6 carry-over: shadow logger emits would-suppress regardless of whether the legacy filter would actually have done so.",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "golden-09",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "Turn 1 fills Zs on circuit 3 (state pre-seeded). Turn 2 the model emits a refill-style ask_user for the same (field, circuit). Shadow log fires; ask still proceeds.",
+  "pre_seeded_circuits": {
+    "3": { "measured_zs_ohm": "0.35" }
+  },
+  "ask_user_calls": [
+    {
+      "turnId": "golden-09-turn-2",
+      "synthetic_time_ms": 0,
+      "call": {
+        "id": "toolu_09_a",
+        "name": "ask_user",
+        "input": {
+          "question": "Was that Zs reading for circuit three?",
+          "reason": "out_of_range_circuit",
+          "context_field": "measured_zs_ohm",
+          "context_circuit": 3,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "yes circuit three" }
+    }
+  ],
+  "expected_ask_user_count": 1,
+  "expected_restrained_activations": 0,
+  "expected_outcome_distribution": {
+    "answered": 1,
+    "gated": 0,
+    "ask_budget_exhausted": 0,
+    "restrained_mode": 0,
+    "user_moved_on": 0,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 1,
+  "gate_fixture": true
+}

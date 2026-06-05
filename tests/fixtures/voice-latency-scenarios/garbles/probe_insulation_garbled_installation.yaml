@@ -1,0 +1,58 @@
+name: probe_insulation_garbled_installation
+suite: garbles
+description: |
+  REGRESSION GUARD — `installation` garble of `insulation`.
+  insulation-resistance.js:73 has `(?:insulation|installation)`
+  alternation for this Deepgram garble.
+
+  PROD OBSERVATION 2026-06-02: IR script entered correctly via the
+  alternation. Value "200" did NOT get captured by named-extractor
+  because the regex pattern
+  `\b(?:l\s+to\s+l)\b[^\d∞>a-z]{0,30}?(\d+)` rejects intervening
+  "is " (the `a-z` class excludes letters between the field tag
+  and value). The harness bypasses iOS NumberNormaliser, so the
+  raw transcript reaches the engine. This guard pins the trigger
+  + engine-entry behaviour, not the value capture — value-capture
+  is iOS-preprocessing-dependent.
+
+  Pin: the trigger alternation MUST recognise "installation" as
+  a garble. If a future regex rewrite drops `installation`, the
+  IR script entirely fails on this transcript and the inspector
+  experiences silent skipping.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Installation resistance for circuit 1. L to L 200."
+    isFinal: true
+
+expect:
+  # Trigger + entry must succeed: engine asks for L-E next.
+  ask_user_count: { min: 1 }
+  # L-L was written — the simpler "L to L 200" form (no "is")
+  # matches the named-extractor.
+  has_reading:
+    # Audit-2026-06-02 Phase 3 — dialogue-engine emit path now applies
+    # FIELD_CORRECTIONS inline via buildExtractionPayload, so the wire
+    # carries the LEGACY `insulation_resistance_l_l` name the same way
+    # the bundler path does. Pre-Phase-3 the canonical
+    # `ir_live_live_mohm` leaked; iOS happened to accept both via dual
+    # aliases, but the probe documents intent now.
+    - circuit: 1
+      field: insulation_resistance_l_l
+      value: "200"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

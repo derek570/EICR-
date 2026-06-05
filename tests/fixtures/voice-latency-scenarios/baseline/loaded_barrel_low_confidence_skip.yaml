@@ -1,0 +1,39 @@
+name: loaded_barrel_low_confidence_skip
+suite: baseline
+description: |
+  When Sonnet extracts a reading with confidence < 0.8 (the
+  CONFIRMATION_MIN_CONFIDENCE gate in confirmation-text.js:67), the
+  speculator must NOT fire. Saves ElevenLabs cost on shaky values
+  that the inspector is more likely to correct.
+
+  We coerce low confidence by giving the model an ambiguous
+  utterance — multiple sound-alike numbers it must pick between.
+  Expected: speculator stays absent. If this scenario shows a
+  speculator firing, the model is over-confident on ambiguous input
+  OR the confidence gate has been removed.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one Zs is, um, point six, no, point eight, maybe point seven."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  loaded_barrel:
+    - after_turn: 1
+      status: absent
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

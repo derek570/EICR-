@@ -145,11 +145,40 @@ vi.mock('@/lib/job-context', () => ({
   }),
 }));
 
-// api-client mock — the only method the page calls is generatePdf.
+// api-client mock — the page calls generatePdf (after the attestation
+// modal accepts) and updateAttestationPdfKey (fire-and-forget,
+// post-render). legalTextVersions + acceptCertAttestations live inside
+// the modal which we stub out below, so they're not strictly needed
+// here, but include them to keep the mock complete.
 const generatePdfMock = vi.fn<(userId: string, jobId: string) => Promise<Blob>>();
+const updateAttestationPdfKeyMock = vi.fn(async () => ({ ok: true, updated: 2 }));
 vi.mock('@/lib/api-client', () => ({
   api: {
     generatePdf: (userId: string, jobId: string) => generatePdfMock(userId, jobId),
+    updateAttestationPdfKey: (args: { attestation_ids: number[]; pdf_s3_key: string }) =>
+      updateAttestationPdfKeyMock(),
+  },
+}));
+
+// Stub the attestation modal — these tests pin the *page's* PDF
+// generation behaviour, not the modal's UX. When the page passes
+// open=true the stub auto-confirms with mock attestation_ids so the
+// flow reaches handleGenerate. Real modal UX is exercised in
+// issue-certificate-modal.test.tsx (host of its own coverage).
+vi.mock('@/components/job/issue-certificate-modal', () => ({
+  IssueCertificateModal: ({
+    open,
+    onConfirmed,
+  }: {
+    open: boolean;
+    onConfirmed: (ids: number[]) => void;
+  }) => {
+    React.useEffect(() => {
+      if (open) {
+        onConfirmed([101, 102]);
+      }
+    }, [open, onConfirmed]);
+    return null;
   },
 }));
 

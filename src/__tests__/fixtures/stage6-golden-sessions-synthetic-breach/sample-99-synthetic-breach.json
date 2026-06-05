@@ -1,0 +1,104 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — synthetic-breach test fixture used ONLY by the smoke test to verify the exit gate's BREACH path returns exit_code=1. Lives in a SEPARATE directory (stage6-golden-sessions-synthetic-breach) so the production exit-gate run, the Phase 7 shadow harness, and the Phase 4 divergence harness NEVER replay it. Single fixture with 10 ask_user emissions on the same key — blows past p95 ≤ 4 and restrained_rate ≤ 2%. Used only via --fixtures-dir override.",
+  "_requirement": "Plan 05-06 verification — confirms exit code 1 path on threshold breach.",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "synthetic-breach",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "Synthetic chatty model emits 10 ask_user calls in 10 consecutive turns — restrained mode activates at the 3rd, budget exhausts at the 3rd-of-key. Designed to breach all three gate metrics in a single fixture.",
+  "ask_user_calls": [
+    {
+      "turnId": "synthetic-breach-turn-1",
+      "synthetic_time_ms": 0,
+      "call": {
+        "id": "toolu_99_a",
+        "name": "ask_user",
+        "input": {
+          "question": "Q1",
+          "reason": "ambiguous_circuit",
+          "context_field": "none",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "1" }
+    },
+    {
+      "turnId": "synthetic-breach-turn-2",
+      "synthetic_time_ms": 50,
+      "call": {
+        "id": "toolu_99_b",
+        "name": "ask_user",
+        "input": {
+          "question": "Q2",
+          "reason": "ambiguous_circuit",
+          "context_field": "measured_zs_ohm",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "2" }
+    },
+    {
+      "turnId": "synthetic-breach-turn-3",
+      "synthetic_time_ms": 100,
+      "call": {
+        "id": "toolu_99_c",
+        "name": "ask_user",
+        "input": {
+          "question": "Q3",
+          "reason": "ambiguous_circuit",
+          "context_field": "r1_r2_ohm",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "3" }
+    },
+    {
+      "turnId": "synthetic-breach-turn-4",
+      "synthetic_time_ms": 150,
+      "call": {
+        "id": "toolu_99_d",
+        "name": "ask_user",
+        "input": {
+          "question": "Q4",
+          "reason": "ambiguous_circuit",
+          "context_field": "ir_live_earth_mohm",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "4" }
+    },
+    {
+      "turnId": "synthetic-breach-turn-5",
+      "synthetic_time_ms": 200,
+      "call": {
+        "id": "toolu_99_e",
+        "name": "ask_user",
+        "input": {
+          "question": "Q5",
+          "reason": "ambiguous_circuit",
+          "context_field": "polarity_confirmed",
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "5" }
+    }
+  ],
+  "expected_ask_user_count": 3,
+  "expected_restrained_activations": 1,
+  "expected_outcome_distribution": {
+    "answered": 3,
+    "gated": 0,
+    "ask_budget_exhausted": 0,
+    "restrained_mode": 2,
+    "user_moved_on": 0,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 0,
+  "gate_fixture": true
+}

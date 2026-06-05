@@ -30,6 +30,12 @@ export interface JobDetail extends Job {
   // EIC-specific
   extent_and_type?: ExtentAndType;
   design_construction?: DesignConstruction;
+  // Pool of observation-photo filenames whose recording-time auto-link window
+  // expired without claiming an observation. Surfaces in the EditObservationSheet
+  // "From Job" picker on both iOS and PWA so the inspector can recover the
+  // photo against any observation on the job. See iOS Job.swift:104 and PWA
+  // observation-photo-autolink sprint 2026-05-13.
+  unassigned_photos?: string[];
 }
 
 export interface SaveJobData {
@@ -43,6 +49,7 @@ export interface SaveJobData {
   inspector_id?: string;
   extent_and_type?: ExtentAndType;
   design_construction?: DesignConstruction;
+  unassigned_photos?: string[];
 }
 
 export interface InstallationDetails {

@@ -26,52 +26,52 @@ const TABLE = [
   {
     manufacturerPattern: /^hager$/,
     modelPrefix: 'ada',
-    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
   {
     manufacturerPattern: /^hager$/,
     modelPrefix: 'adb',
-    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
   {
     manufacturerPattern: /^hager$/,
     modelPrefix: 'adc',
-    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
   // Hager — CDA MCBs (BS EN 60898)
   {
     manufacturerPattern: /^hager$/,
     modelPrefix: 'cda',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   // Hager — NB/NC MCB ranges
   {
     manufacturerPattern: /^hager$/,
     modelPrefix: 'nb',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   {
     manufacturerPattern: /^hager$/,
     modelPrefix: 'nc',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
 
   // MK Sentry — LN5xxx / LN7xxx MCBs (Type AC older)
   {
     manufacturerPattern: /^mk(\s+sentry)?$/,
     modelPrefix: 'ln5',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   {
     manufacturerPattern: /^mk(\s+sentry)?$/,
     modelPrefix: 'ln7',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   // MK Sentry RCBOs — LN8xxx (Type AC pre-2018)
   {
     manufacturerPattern: /^mk(\s+sentry)?$/,
     modelPrefix: 'ln8',
-    spec: { rcdWaveformType: 'AC', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'AC', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
 
   // Wylex — NH series MCBs. Curve letter is encoded AT THE END of the NHX
@@ -81,29 +81,29 @@ const TABLE = [
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nhxb',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'B', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', tripCurve: 'B', defaults: { poles: 1 } },
   },
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nhxc',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'C', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', tripCurve: 'C', defaults: { poles: 1 } },
   },
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nhxd',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'D', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', tripCurve: 'D', defaults: { poles: 1 } },
   },
   // Wylex — NSB/NSC series (N-series, Single-pole, curve letter in third
   // position). NSB06/NSB16/NSB32 = B-curve 6/16/32A; NSC* = C-curve.
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nsb',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'B', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', tripCurve: 'B', defaults: { poles: 1 } },
   },
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nsc',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'C', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', tripCurve: 'C', defaults: { poles: 1 } },
   },
   // Wylex — PSB / PSC older P-series. Curve letter is sometimes at the
   // END with a hyphen (PSB32-C = C-curve) rather than built into the
@@ -113,105 +113,105 @@ const TABLE = [
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'psb',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'psc',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', tripCurve: 'C', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', tripCurve: 'C', defaults: { poles: 1 } },
   },
   // Wylex — NHXS RCBOs (Type A from 2019). `nhxs` is longer than `nh`
   // so it wins even if someone reads the model as just "NHXS".
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nhxs',
-    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
   // Wylex — generic NH MCB fallback (old standalone-curve-unknown models).
   // Keep at the end so longer prefixes win.
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'nh',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   // Wylex — WRS RCDs
   {
     manufacturerPattern: /^wylex$/,
     modelPrefix: 'wrs',
-    spec: { rcdWaveformType: 'AC', bsEn: 'BS EN 61008-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'AC', bsEn: 'BS EN 61008', defaults: { poles: 2 } },
   },
 
   // MEM Memera 2000 — MCBs
   {
     manufacturerPattern: /^mem(\s+memera)?$/,
     modelPrefix: 'memera',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
 
   // Crabtree Starbreaker — 61/series MCBs
   {
     manufacturerPattern: /^crabtree(\s+starbreaker)?$/,
     modelPrefix: '61',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
 
   // Eaton (incl. MEM/Memshield 3) — MCBs
   {
     manufacturerPattern: /^eaton$/,
     modelPrefix: 'mbh',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   // Eaton RCBOs
   {
     manufacturerPattern: /^eaton$/,
     modelPrefix: 'mrb',
-    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
 
   // Schneider Electric — Easy9 MCBs
   {
     manufacturerPattern: /^schneider(\s+electric)?$/,
     modelPrefix: 'ez9',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   // Schneider Electric — Acti9 iC60 MCBs
   {
     manufacturerPattern: /^schneider(\s+electric)?$/,
     modelPrefix: 'ic60',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
 
   // BG — CUM MCBs
   {
     manufacturerPattern: /^bg$/,
     modelPrefix: 'cum',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   // BG — CUR RCBOs (Type A)
   {
     manufacturerPattern: /^bg$/,
     modelPrefix: 'cur',
-    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
 
   // Fusebox — MT MCBs
   {
     manufacturerPattern: /^fusebox$/,
     modelPrefix: 'mt',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
   // Fusebox — RCBO (Type A)
   {
     manufacturerPattern: /^fusebox$/,
     modelPrefix: 'rcbo',
-    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009-1', defaults: { poles: 2 } },
+    spec: { rcdWaveformType: 'A', bsEn: 'BS EN 61009', defaults: { poles: 2 } },
   },
 
   // Contactum — Defender MCBs
   {
     manufacturerPattern: /^contactum$/,
     modelPrefix: 'def',
-    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898-1', defaults: { poles: 1 } },
+    spec: { rcdWaveformType: null, bsEn: 'BS EN 60898', defaults: { poles: 1 } },
   },
 ];
 

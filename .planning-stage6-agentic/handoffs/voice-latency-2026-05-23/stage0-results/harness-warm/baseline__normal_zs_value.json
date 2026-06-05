@@ -1,0 +1,59 @@
+{
+  "name": "normal_zs_value",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 201,
+    "first_transcript_to_extraction_ms": 4220,
+    "first_transcript_to_audible_ms": 4613,
+    "transcripts_sent": 1,
+    "extractions_received": 1,
+    "confirmations_total": 1,
+    "tts_fetches": [
+      {
+        "text_preview": "Circuit 2, Zs 0.38",
+        "first_byte_ms": 393,
+        "total_ms": 457,
+        "bytes": 113700
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 146,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779570415183_gt25j2\"}"
+    },
+    {
+      "at_ms": 197,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Circuit two Zs nought point thirty eight ohms.\"}"
+    },
+    {
+      "at_ms": 201,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"726db671-1dd0-4cf9-8da4-dfbcbc810ce6\"}"
+    },
+    {
+      "at_ms": 202,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 4417,
+      "type": "extraction",
+      "summary": "readings=1 confirmations=1"
+    },
+    {
+      "at_ms": 4417,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 21245,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":1,\"cacheReads\":39808"
+    }
+  ]
+}

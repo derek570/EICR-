@@ -1,0 +1,59 @@
+{
+  "name": "normal_polarity",
+  "suite": "baseline",
+  "pass": true,
+  "failures": [],
+  "timings": {
+    "session_start_to_ack_ms": 210,
+    "first_transcript_to_extraction_ms": 4162,
+    "first_transcript_to_audible_ms": 4557,
+    "transcripts_sent": 1,
+    "extractions_received": 1,
+    "confirmations_total": 1,
+    "tts_fetches": [
+      {
+        "text_preview": "Circuit 12, polarity confirmed",
+        "first_byte_ms": 395,
+        "total_ms": 454,
+        "bytes": 80348
+      }
+    ]
+  },
+  "events": [
+    {
+      "at_ms": 164,
+      "type": "session_start_sent",
+      "summary": "{\"sessionId\":\"harness_1779570393821_ohhpjw\"}"
+    },
+    {
+      "at_ms": 210,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"started\",\"sessionId\":\"8b022d83-3f20-4c11-8679-a270e49182c8\"}"
+    },
+    {
+      "at_ms": 210,
+      "type": "current_board_changed",
+      "summary": "{\"type\":\"current_board_changed\",\"board_id\":\"main\",\"designation\":\"DB-1\",\"source\":\"session_start\"}"
+    },
+    {
+      "at_ms": 216,
+      "type": "transcript_sent",
+      "summary": "{\"text\":\"Circuit twelve polarity confirmed.\"}"
+    },
+    {
+      "at_ms": 4378,
+      "type": "extraction",
+      "summary": "readings=1 confirmations=1"
+    },
+    {
+      "at_ms": 4378,
+      "type": "cost_update",
+      "summary": "running=$?"
+    },
+    {
+      "at_ms": 21361,
+      "type": "session_ack",
+      "summary": "{\"type\":\"session_ack\",\"status\":\"stopped\",\"sessionStats\":{\"type\":\"session_summary\",\"sonnet\":{\"turns\":1,\"cacheReads\":39810"
+    }
+  ]
+}

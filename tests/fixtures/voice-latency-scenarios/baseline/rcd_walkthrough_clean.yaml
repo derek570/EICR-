@@ -1,0 +1,67 @@
+name: rcd_walkthrough_clean
+suite: baseline
+description: |
+  Clean RCD entry — "RCD trip time for the cooker is 25 ms" with no
+  Deepgram garble. Expected flow:
+    1. Entry trigger /\bRCD\b/ matches AND the named-extractor
+       harvests rcd_trip_time=25 from the same utterance.
+    2. Engine writes rcd_trip_time=25 via the script-side write path.
+    3. Engine asks the next missing slot — rcd_bs_en — via
+       "What's the BS number? Or do you want to fill that in later?"
+    4. Inspector answers each remaining slot (BS, type, mA) and the
+       script finishes with three writes total.
+
+  Symmetric to the existing ocpd_full_spec; this is the happy path
+  RCD walk-through baseline. The garbled variant
+  (rcd_garbled_trigger.yaml) pins the same flow when "trip time"
+  → "triptan" mis-recognition forces the new handover-to-Sonnet
+  bail.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 2
+      board_id: main
+      designation: Upstairs Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "RCD trip time for upstairs lighting is 25 ms."
+    isFinal: true
+  - at_ms: 6000
+    text: "BS EN 61008."
+    isFinal: true
+  - at_ms: 11000
+    text: "AC."
+    isFinal: true
+  - at_ms: 15000
+    text: "30."
+    isFinal: true
+
+expect:
+  has_reading:
+    - circuit: 2
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 2
+      field: rcd_bs_en
+      value: "BS EN 61008"
+    - circuit: 2
+      field: rcd_type
+      value: "AC"
+    - circuit: 2
+      field: rcd_operating_current_ma
+      value: "30"
+  # Three asks: BS, type, mA. Trip time is volunteeredOnly so never
+  # asked.
+  ask_user_count: { min: 3, max: 3 }
+
+config:
+  timeout_ms: 60000
+  drain_ms: 25000
+  fetch_tts: false

@@ -35,9 +35,15 @@
  */
 
 /** Minimal shape for the "analysed" (new) circuit.
- *  Matches the subset of `CCUAnalysisCircuit` that the matcher reads. */
+ *  Matches the subset of `CCUAnalysisCircuit` that the matcher reads.
+ *
+ *  `circuit_number` is wire-nullable: the per-slot pipeline emits
+ *  standalone-RCD schedule rows with `circuit_number: null` (filtered
+ *  out by `circuitsForSchedule` in the apply helper before reaching
+ *  the matcher). The matcher itself only reads `label` for scoring,
+ *  so the looser type stays safe. */
 export interface MatcherNewCircuit {
-  circuit_number: number;
+  circuit_number?: number | null;
   label?: string | null;
 }
 

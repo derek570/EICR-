@@ -24,20 +24,20 @@
     "wiring_type": {
       "label": "Wiring Type",
       "type": "select",
-      "options": ["A", "B", "C", "D"],
+      "options": ["A", "B", "C", "D", "E", "F", "G", "H", "O"],
       "default": "A",
-      "description": "Type of wiring installation",
-      "ai_guidance": "Usually 'A' for domestic (enclosed in conduit in thermally insulating wall). Only use B/C/D if specifically mentioned.",
+      "description": "Type of wiring installation per IET model EICR Schedule of Test Results",
+      "ai_guidance": "IET model-form key (9 codes). A = PVC/PVC T&E (incl. XLPE T&E). B = PVC in metallic conduit. C = PVC in non-metallic conduit. D = PVC in metallic trunking. E = PVC in non-metallic trunking. F = PVC/SWA. G = XLPE/SWA. H = MICC / mineral / pyro. O = Other (FP200 fire-rated LSF, flex, SY/YY/CY). Default 'A' for domestic T&E. Map spoken descriptions: 'mineral'/'MICC'/'pyro'→H; 'SWA'→F (G if XLPE); 'FP200'→O.",
       "pdf_column": "Type of wiring",
       "group": "Circuit Details"
     },
     "ref_method": {
       "label": "Reference Method",
       "type": "select",
-      "options": ["A", "B", "C", "D"],
+      "options": ["A", "B", "C", "D", "E", "F", "G", "100", "101", "102", "103"],
       "default": "A",
-      "description": "Cable sizing reference method per BS7671",
-      "ai_guidance": "Reference method for cable current-carrying capacity. Usually 'A' or 'C' for domestic.",
+      "description": "Cable sizing reference method per BS 7671 Appendix 4",
+      "ai_guidance": "BS 7671 reference method. A–G are in-air methods; 100–103 are buried-cable methods (garden feeds, outbuildings, EV-charger trenches). Usually 'A' or 'C' for domestic interior, '100' range for buried runs.",
       "pdf_column": "Ref method",
       "group": "Circuit Details"
     },
@@ -90,9 +90,20 @@
     },
     "ocpd_bs_en": {
       "label": "OCPD BS/EN",
-      "type": "text",
+      "type": "select",
+      "options": [
+        "",
+        "BS EN 60898",
+        "BS EN 61009",
+        "BS EN 60947-2",
+        "BS EN 60947-3",
+        "BS EN 60269-2",
+        "BS 3036",
+        "BS 1361",
+        "N/A"
+      ],
       "description": "OCPD British/European Standard reference",
-      "ai_guidance": "Standard number. Common: 60898 (MCB), 61009 (RCBO), 88-2 (rewireable fuse), 1361 (cartridge fuse)",
+      "ai_guidance": "Inspectors usually dictate digits only ('sixty zero eight nine eight'). The CCU pipeline writes canonical forms via BS_EN_LOOKUP at src/routes/extraction.js:257; the dialogue-engine parseBsCode parser writes the same canonical from dictation. Common: BS EN 60898 (MCB), BS EN 61009 (RCBO), BS EN 60947-2 (MCCB), BS EN 60947-3 (switch/isolator), BS EN 60269-2 (HRC fuse — historically 'BS 88-2'/'BS 88-3'), BS 3036 (rewireable fuse), BS 1361 (cartridge fuse).",
       "pdf_column": "BS(EN)",
       "group": "OCPD"
     },
@@ -140,18 +151,19 @@
     },
     "rcd_bs_en": {
       "label": "RCD BS/EN",
-      "type": "text",
+      "type": "select",
+      "options": ["", "BS EN 61008", "BS EN 61009", "BS EN 62423", "N/A"],
       "description": "RCD British/European Standard reference",
-      "ai_guidance": "Standard number. Common: 61008 (RCCB), 61009 (RCBO), 62423 (Type F RCD)",
+      "ai_guidance": "Inspectors usually dictate digits only ('sixty-one zero zero eight'). Server normalises and validates against the option list. Common: BS EN 61008 (RCCB), BS EN 61009 (RCBO), BS EN 62423 (Type F RCD).",
       "pdf_column": "BS(EN)",
       "group": "RCD"
     },
     "rcd_type": {
       "label": "RCD Type",
       "type": "select",
-      "options": ["", "AC", "A", "F", "B", "S", "N/A"],
+      "options": ["", "AC", "A", "F", "B", "S", "A-S", "B-S", "B+", "N/A"],
       "description": "RCD sensitivity type",
-      "ai_guidance": "RCD type. 'A' most common (AC + pulsating DC). 'AC' for AC only. 'F' for variable speed drives. 'B' for smooth DC.",
+      "ai_guidance": "RCD type. 'A' most common (AC + pulsating DC). 'AC' for AC only. 'F' for variable speed drives. 'B' for smooth DC. 'S' selective/time-delayed for discrimination. 'A-S' = type A selective. 'B-S' = type B selective. 'B+' = enhanced type B (all waveforms incl. AC harmonics). See sonnet_extraction_system.md for spoken-form mapping.",
       "pdf_column": "Type",
       "group": "RCD"
     },
@@ -266,11 +278,26 @@
     "afdd_button_confirmed": {
       "label": "AFDD Test Button",
       "type": "select",
-      "options": ["", "OK", "Y", "N"],
+      "options": ["", "OK", "FAIL", "N/A", "Y", "N"],
       "description": "AFDD test button operation confirmed",
-      "ai_guidance": "AFDD test button checked and working (if AFDD fitted). 'OK' or 'Y' for pass. Leave blank if no AFDD.",
+      "ai_guidance": "AFDD test button checked and working (if AFDD fitted). 'OK' or 'Y' for pass, 'FAIL' or 'N' for fail. Blank / 'N/A' if no AFDD is fitted on this circuit — iOS renders blank as 'N/A' retroactively, so leaving blank is the same as N/A.",
       "pdf_column": "AFDD btn",
       "group": "Test Results"
+    },
+    "is_distribution_circuit": {
+      "label": "Distribution Circuit",
+      "type": "select",
+      "options": ["", "yes", "no"],
+      "description": "Whether this circuit feeds another distribution board (sub-main / sub-distribution)",
+      "ai_guidance": "'yes' if the circuit supplies a downstream board (e.g. a garage CU, an outbuilding board, a kitchen sub-CU). Pair with feeds_board_id to identify which board. Leave blank/'no' for a final circuit (sockets, lights, cooker, shower, etc.).",
+      "group": "Hierarchy"
+    },
+    "feeds_board_id": {
+      "label": "Feeds Board ID",
+      "type": "text",
+      "description": "ID of the downstream board this distribution circuit supplies",
+      "ai_guidance": "Set in tandem with is_distribution_circuit='yes'. Holds the id of the board (boards[].id) that this circuit feeds — for example the sub-main board's id 'sub-1'. The UI / Stage 6 will resolve this to a designation for display.",
+      "group": "Hierarchy"
     }
   },
 
@@ -313,17 +340,62 @@
       "description": "External earth fault loop impedance",
       "ai_guidance": "Ze reading at origin. TN-C-S typically <0.35 ohm. TN-S typically <0.8 ohm. TT can be much higher."
     },
-    "zs_at_db": {
-      "label": "Zs at DB (ohm)",
+    "ze_at_db": {
+      "label": "Ze at DB (ohm)",
       "type": "text",
-      "description": "Zs measured at distribution board",
-      "ai_guidance": "Loop impedance at the board. Should be Ze + R1+R2 of main circuit."
+      "description": "External earth fault loop impedance measured at the distribution board (consumer side)",
+      "ai_guidance": "Board-level Ze reading. Use ONLY when the inspector explicitly says 'at the board' or 'at the DB' — bare 'Ze' goes to supply.earth_loop_impedance_ze instead. If the inspector says bare 'Zs' that is a per-circuit measurement (measured_zs_ohm), not a board-level value — emit ask_user to identify the circuit, never silently route to ze_at_db.",
+      "alias_for": ["zs_at_db"]
     },
     "ipf_at_db": {
       "label": "Ipf at DB (kA)",
       "type": "text",
       "description": "Prospective fault current at DB",
       "ai_guidance": "PFC/PSCC reading. Domestic typically 1-6kA. Must not exceed OCPD breaking capacity."
+    },
+    "board_type": {
+      "label": "Board Type",
+      "type": "select",
+      "options": ["", "main", "sub_distribution", "sub_main"],
+      "description": "Role of this board in the multi-board hierarchy",
+      "ai_guidance": "'main' for the origin/intake board (one per job). 'sub_main' for a board fed via its own dedicated sub-main cable from the main board (e.g. garage / outbuilding feed). 'sub_distribution' for a board hanging off a distribution circuit. Blank counts as 'main' for legacy single-board jobs."
+    },
+    "parent_board_id": {
+      "label": "Parent Board ID",
+      "type": "text",
+      "description": "ID of the board this one is fed from (boards[].id of parent)",
+      "ai_guidance": "Set on sub_main / sub_distribution boards only. Holds the id of the upstream board, e.g. 'main'. Combined with feed_circuit_ref to resolve the supplied_from display string."
+    },
+    "feed_circuit_ref": {
+      "label": "Feed Circuit Ref",
+      "type": "text",
+      "description": "Circuit reference on the parent board that supplies this board",
+      "ai_guidance": "The 'way' / circuit number on the parent board's schedule that this sub-board is fed from — e.g. '4'. Validated server-side to point at a circuit on parent_board_id."
+    },
+    "sort_order": {
+      "label": "Sort Order",
+      "type": "number",
+      "description": "Display ordering of boards in the UI",
+      "ai_guidance": "Inspector-controlled order; not extracted from speech. Lower numbers appear first. Leave blank for new boards — UI assigns by append order."
+    },
+    "sub_main_cable_material": {
+      "label": "Sub-Main Cable Material",
+      "type": "select",
+      "options": ["", "Copper", "Aluminium", "Steel", "N/A"],
+      "description": "Conductor material of the sub-main cable feeding this board",
+      "ai_guidance": "Material of the cable from parent_board_id to this board. 'Copper' is the typical UK domestic default. Set only on sub_main / sub_distribution boards. Mirrors iOS Constants.conductorMaterials so canonical values match the UI picker."
+    },
+    "sub_main_cable_csa": {
+      "label": "Sub-Main Cable Live CSA (mm2)",
+      "type": "text",
+      "description": "Live conductor cross-sectional area of the sub-main cable",
+      "ai_guidance": "Cross-sectional area in mm2. Sub-main cables are typically 16-95 mm2 depending on load and cable run length. Free-form text — iOS UI uses a unit text field, not a picker."
+    },
+    "sub_main_cpc_csa": {
+      "label": "Sub-Main CPC CSA (mm2)",
+      "type": "text",
+      "description": "CPC (earth) conductor cross-sectional area of the sub-main cable",
+      "ai_guidance": "CPC size in mm2. Often smaller than the live conductor (e.g. 6 mm2 CPC alongside 16 mm2 lives). Free-form text — iOS UI uses a unit text field."
     }
   },
 
@@ -335,6 +407,31 @@
       "type": "text",
       "description": "Client/customer name",
       "ai_guidance": "Name of the client or property owner. Listen for 'Mrs Smith', 'Mr Jones', 'the tenant', etc."
+    },
+    "client_address": {
+      "label": "Client Address",
+      "type": "text",
+      "description": "Client BILLING address (distinct from the site/installation address). Filled when the inspector confirms 'use the site address for the client too' (four separate writes to client_address / client_postcode / client_town / client_county) or names a different billing address.",
+      "ai_guidance": "Postal address of the client/billing party — NOT the site being inspected. Listen for 'the client is at...', 'invoice to...', 'use the same address' (which means: copy the site address into ALL four client_* fields)."
+    },
+    "client_postcode": {
+      "label": "Client Postcode",
+      "type": "text",
+      "pattern": "^[A-Z]{1,2}[0-9R][0-9A-Z]?\\s?[0-9][A-Z]{2}$",
+      "description": "UK postcode of the client billing address",
+      "ai_guidance": "UK postcode like 'RG1 1AA' for the client billing address. Skip if the inspector hasn't volunteered one separately."
+    },
+    "client_town": {
+      "label": "Client Town/City",
+      "type": "text",
+      "description": "Town or city of the client billing address",
+      "ai_guidance": "Town or city for the client billing address; will be derived from postcode if not spoken."
+    },
+    "client_county": {
+      "label": "Client County",
+      "type": "text",
+      "description": "County of the client billing address",
+      "ai_guidance": "County for the client billing address; will be derived from postcode if not spoken."
     },
     "address": {
       "label": "Installation Address",
@@ -425,6 +522,12 @@
       "type": "text",
       "description": "Operational limitations encountered during inspection",
       "ai_guidance": "Technical limitations during testing. Examples: 'Could not isolate supply', 'Circuits could not be isolated', 'Freezer could not be turned off'."
+    },
+    "general_condition": {
+      "label": "General Condition of the Installation",
+      "type": "text",
+      "description": "Inspector's narrative summary of the overall installation condition",
+      "ai_guidance": "Single-sentence narrative. Listen for 'general condition is...', 'overall the installation is...', 'condition is good/poor/satisfactory'. Treat the whole sentence as the value, not just trailing adjectives."
     }
   },
 
@@ -502,7 +605,7 @@
       "label": "Supply Protective Device BS/EN",
       "type": "text",
       "description": "Standard number for supply protective device",
-      "ai_guidance": "Standard for DNO supply cutout fuse (NOT the consumer's main switch). Common: 88-2.2 (BS fuse), 1361 (cartridge fuse). Only populate if a separate supply fuse/cutout is identified."
+      "ai_guidance": "Standard for DNO supply cutout fuse (NOT the consumer's main switch). Common: 88-2.2 (BS fuse), 1361 (cartridge fuse). Only populate if a separate supply fuse/cutout is identified. Kept as text (not select) because spd_bs_en is a supply-level field — the ask_user enum resolver only fires for circuit fields, so the schema-flip would only affect the iOS picker UI and risk breaking historical data."
     },
     "spd_type_supply": {
       "label": "Supply Protective Device Type",
@@ -826,7 +929,7 @@
       "C3": "Improvement recommended",
       "LIM": "Limitation - unable to inspect"
     },
-    "_ai_guidance": "The inspection schedule is a checklist of BS7671 items. Each item gets an outcome. Link observations to specific schedule items using the schedule_item field. Common items to flag: 3.6 (bonding size), 4.4 (fire-rated CU), 4.9 (circuit labelling), 5.12.1 (RCD protection for sockets)."
+    "_ai_guidance": "The inspection schedule is a checklist of BS 7671 items. Each item gets an outcome. Link observations to the schedule item whose description most precisely matches the defect via the schedule_item field; refer to the BS 7671 Schedule of Inspections list rather than memorised mappings."
   },
 
   "observation_fields": {

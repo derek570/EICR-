@@ -1,0 +1,169 @@
+{
+  "summary": {
+    "iterations": 15,
+    "successes": 15,
+    "failures": 0,
+    "output_format": "pcm_22050",
+    "model_id": "eleven_flash_v2_5",
+    "bos_to_first_audio_p50_ms": 206,
+    "bos_to_first_audio_p95_ms": 1336,
+    "bos_to_first_audio_p99_ms": 1336,
+    "bos_to_first_audio_min_ms": 191,
+    "bos_to_first_audio_max_ms": 1336,
+    "ws_open_p50_ms": 133,
+    "total_p50_ms": 435,
+    "pass_bos_to_first_audio_p50_le_250ms": true
+  },
+  "results": [
+    {
+      "iter": 1,
+      "wsOpenMs": 190,
+      "bosToFirstAudioMs": 1336,
+      "textToFirstAudioMs": 1336,
+      "firstAudioToFinalMs": 83,
+      "totalMs": 1611,
+      "bytes": 104448,
+      "audioChunks": 3
+    },
+    {
+      "iter": 2,
+      "wsOpenMs": 154,
+      "bosToFirstAudioMs": 206,
+      "textToFirstAudioMs": 206,
+      "firstAudioToFinalMs": 159,
+      "totalMs": 520,
+      "bytes": 102400,
+      "audioChunks": 3
+    },
+    {
+      "iter": 3,
+      "wsOpenMs": 136,
+      "bosToFirstAudioMs": 206,
+      "textToFirstAudioMs": 206,
+      "firstAudioToFinalMs": 76,
+      "totalMs": 419,
+      "bytes": 96256,
+      "audioChunks": 3
+    },
+    {
+      "iter": 4,
+      "wsOpenMs": 156,
+      "bosToFirstAudioMs": 207,
+      "textToFirstAudioMs": 207,
+      "firstAudioToFinalMs": 63,
+      "totalMs": 428,
+      "bytes": 104448,
+      "audioChunks": 3
+    },
+    {
+      "iter": 5,
+      "wsOpenMs": 131,
+      "bosToFirstAudioMs": 204,
+      "textToFirstAudioMs": 204,
+      "firstAudioToFinalMs": 67,
+      "totalMs": 404,
+      "bytes": 102400,
+      "audioChunks": 3
+    },
+    {
+      "iter": 6,
+      "wsOpenMs": 127,
+      "bosToFirstAudioMs": 206,
+      "textToFirstAudioMs": 206,
+      "firstAudioToFinalMs": 111,
+      "totalMs": 445,
+      "bytes": 96256,
+      "audioChunks": 3
+    },
+    {
+      "iter": 7,
+      "wsOpenMs": 126,
+      "bosToFirstAudioMs": 191,
+      "textToFirstAudioMs": 191,
+      "firstAudioToFinalMs": 76,
+      "totalMs": 394,
+      "bytes": 98304,
+      "audioChunks": 3
+    },
+    {
+      "iter": 8,
+      "wsOpenMs": 133,
+      "bosToFirstAudioMs": 193,
+      "textToFirstAudioMs": 193,
+      "firstAudioToFinalMs": 78,
+      "totalMs": 405,
+      "bytes": 98304,
+      "audioChunks": 3
+    },
+    {
+      "iter": 9,
+      "wsOpenMs": 150,
+      "bosToFirstAudioMs": 302,
+      "textToFirstAudioMs": 302,
+      "firstAudioToFinalMs": 166,
+      "totalMs": 619,
+      "bytes": 102400,
+      "audioChunks": 3
+    },
+    {
+      "iter": 10,
+      "wsOpenMs": 167,
+      "bosToFirstAudioMs": 201,
+      "textToFirstAudioMs": 201,
+      "firstAudioToFinalMs": 70,
+      "totalMs": 439,
+      "bytes": 100352,
+      "audioChunks": 3
+    },
+    {
+      "iter": 11,
+      "wsOpenMs": 130,
+      "bosToFirstAudioMs": 204,
+      "textToFirstAudioMs": 204,
+      "firstAudioToFinalMs": 77,
+      "totalMs": 411,
+      "bytes": 102400,
+      "audioChunks": 3
+    },
+    {
+      "iter": 12,
+      "wsOpenMs": 125,
+      "bosToFirstAudioMs": 219,
+      "textToFirstAudioMs": 219,
+      "firstAudioToFinalMs": 68,
+      "totalMs": 414,
+      "bytes": 98304,
+      "audioChunks": 3
+    },
+    {
+      "iter": 13,
+      "wsOpenMs": 124,
+      "bosToFirstAudioMs": 206,
+      "textToFirstAudioMs": 206,
+      "firstAudioToFinalMs": 117,
+      "totalMs": 450,
+      "bytes": 102400,
+      "audioChunks": 3
+    },
+    {
+      "iter": 14,
+      "wsOpenMs": 118,
+      "bosToFirstAudioMs": 195,
+      "textToFirstAudioMs": 195,
+      "firstAudioToFinalMs": 121,
+      "totalMs": 435,
+      "bytes": 112640,
+      "audioChunks": 3
+    },
+    {
+      "iter": 15,
+      "wsOpenMs": 208,
+      "bosToFirstAudioMs": 198,
+      "textToFirstAudioMs": 198,
+      "firstAudioToFinalMs": 78,
+      "totalMs": 486,
+      "bytes": 100352,
+      "audioChunks": 3
+    }
+  ]
+}

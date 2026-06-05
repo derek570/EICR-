@@ -1,0 +1,75 @@
+name: loaded_barrel_board_reading_ze
+suite: loaded_barrel
+description: |
+  Verifies the 2026-05-28 widening of (a) the early-terminate predicate
+  to include record_board_reading and (b) Loaded Barrel's
+  onToolUseStreamed hook to fire on record_board_reading.
+
+  Pre-widening:
+    - Single clean record_board_reading turns paid ~1.4-2.5 s of Sonnet
+      round-2 wall (predicate excluded record_board_reading).
+    - Speculator's ElevenLabs pre-synth ran via onSnapshotPatch (post-
+      dispatch) instead of via onToolUseStreamed (content_block_stop),
+      losing the ~500-1000 ms streamed lead time.
+
+  Post-widening:
+    - Early-terminate fires after round 1 (terminal_reason='early_terminated').
+    - Speculator opens ElevenLabs synth on content_block_stop with
+      circuit=null + boardId='main' slot shape.
+
+  Budget reasoning (2026-05-29 honest pass): unlike the npts utterance,
+  Ze / earth_loop_impedance_ze is NOT on the regex_fast_v2 eligibility
+  whitelist (src/extraction/regex-fast-eligibility.js:47-55), so real
+  iOS actually reaches Sonnet for this utterance. The measured prod
+  audible (3206 ms cache HIT) IS the user-perceived latency floor for
+  this turn shape. Same model+protocol constraint as the npts scenario
+  applies: ~400 ms TTFT + ~110 token round-1 stream + ~250 ms post-
+  stream RTT = ~2450 ms best case, 3000-3500 ms median. Mid-stream
+  emit (lever 1) is shipped but can't fire before round-1 end on a
+  short single-tool stream — content_block_stop fires too late.
+
+  Budget set to 3500 ms — the realistic Sonnet-path ceiling. Real
+  reduction below this would require either round-1 model change
+  (regression risk) or removing schema/protocol overhead from the
+  tool_use output (source_turn_id, confidence — each ~5-10 tokens,
+  cumulative ~200 ms savings).
+
+  Pre-requisite: VOICE_LATENCY_LOADED_BARREL=true +
+  VOICE_LATENCY_ROUND1_EARLY_TERMINATE=true on the task def. Iff the
+  HIT path is not engaging the audible budget falls back to baseline
+  (~5 s) and this scenario will fail loudly.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Ze nought point two five."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Board-level Ze writes to the board's earth_loop_impedance_ze field;
+  # the bundler emits it as a reading on circuit 0 (board-row).
+  has_reading:
+    - circuit: 0
+      field: earth_loop_impedance_ze
+      value: "0.25"
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  audible_latency_ms_p50: { max: 3500 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

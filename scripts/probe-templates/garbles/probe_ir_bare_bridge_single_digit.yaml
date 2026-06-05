@@ -1,0 +1,73 @@
+# Probe template for the ir_bare_bridge_single_digit signature.
+#
+# Consumed by Cluster 3 Item 8's probe writer: when the signature matches
+# in a session, the optimizer writes a populated copy to
+# tests/fixtures/voice-latency-scenarios/auto-generated/garbles/probe_ir_bare_bridge_single_digit_<timestamp>.yaml.
+#
+# Placeholder syntax matches scripts/render-prompt.cjs's {{KEY}} flat
+# substitution. Values come from the matched signature's hit data plus
+# the session's transcript/values:
+#   {{CIRCUIT_REF}}  — the circuit number the IR script was active on
+#   {{LL_VALUE}}     — the bare-single-digit value that landed on
+#                       ir_live_live_mohm (or "" if the sentinel was on LL)
+#   {{LE_VALUE}}     — the sentinel value (">200", ">299" etc.) that landed
+#                       on ir_live_earth_mohm (or "" if reversed)
+#   {{TRANSCRIPT}}   — verbatim user utterance from the session that
+#                       produced the bare-bridge match
+#   {{SESSION_ID}}   — UUID of the source session (for traceability)
+#   {{TIMESTAMP_ISO}} — when the probe was generated
+#
+# After replay-verification + `mv` to the main scenarios directory, this
+# probe joins the regression suite the harness sweeps on every run.
+
+name: auto_probe_ir_bare_bridge_single_digit_{{SESSION_ID}}
+suite: garbles
+description: |
+  AUTO-GENERATED REGRESSION PROBE — sourced from session {{SESSION_ID}}
+  generated {{TIMESTAMP_ISO}}.
+
+  The session's dialogue-engine transitions included an
+  insulation_resistance script_completed event whose values had a
+  single-digit bare integer on one IR slot alongside a sentinel value
+  on the sibling slot:
+    ir_live_live_mohm  = "{{LL_VALUE}}"
+    ir_live_earth_mohm = "{{LE_VALUE}}"
+
+  This is the bug shape commit 3c77b1bb fixed; this probe asserts that
+  the same garble pattern from a fresh session no longer reproduces.
+
+  MANUAL VERIFICATION REQUIRED before promoting to the main suite:
+  run `node scripts/voice-latency-bench/transcript-replay.mjs
+  --scenario=<this path> --include-auto-generated` against staging,
+  confirm FAIL → PASS after the fix is applied, then `mv` to
+  tests/fixtures/voice-latency-scenarios/garbles/.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: {{CIRCUIT_REF}}
+      board_id: main
+      ir_test_voltage_v: "250"
+
+transcript:
+  - at_ms: 0
+    text: "Insulation resistance for circuit {{CIRCUIT_REF}}."
+    isFinal: true
+  - at_ms: 4000
+    text: "{{TRANSCRIPT}}"
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_no_reading:
+    - circuit: {{CIRCUIT_REF}}
+      field: insulation_resistance_l_l
+      value: "{{LL_VALUE}}"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

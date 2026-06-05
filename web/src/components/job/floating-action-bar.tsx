@@ -47,6 +47,7 @@ function MicButton({ onClick, recording }: { onClick: () => void; recording: boo
       onClick={onClick}
       aria-label={recording ? 'Open recording overlay' : 'Start recording'}
       aria-pressed={recording}
+      data-tour="ccu-button"
       className={cn(
         'ml-1 flex h-14 w-14 flex-col items-center justify-center rounded-full transition active:scale-95 focus-visible:outline-2 focus-visible:outline-white',
         recording

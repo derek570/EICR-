@@ -1,0 +1,59 @@
+name: nominal_voltage_240_coerced
+suite: fixes_2026_06_02
+description: |
+  REGRESSION GUARD — Fix B from handoff-2026-06-02-fixes.md.
+
+  Audit prod probe (audit-2026-06-02-harness-gaps.md Cat 1 finding 2):
+  Sonnet writes nominal_voltage_uo="240" verbatim when the inspector
+  says "Nominal voltage is 240 volts." Pre-fix the value persisted as
+  off-enum (schema enum is `["230", "400", "110", "N/A", "Other"]`).
+  240V is the UK pre-harmonisation nominal (replaced by 230V in BS
+  7671:2008) and real inspectors still dictate it.
+
+  POST-FIX behaviour:
+    coerceRecordBoardReadingValue maps "240" → "230" on
+    nominal_voltage_u / nominal_voltage_uo (UK nominal canonical-
+    collapse). Other voltage fields (main_switch_voltage) keep "240"
+    because they're physical rated voltages, not nominals. The
+    dispatcher applies the coercion BEFORE the value-enum gate runs.
+
+  Why a board-level scenario:
+    nominal_voltage_uo lives on circuits[0] / boards[].supply. The
+    transcript needs no per-circuit context; Sonnet writes via
+    record_board_reading with field="nominal_voltage_uo".
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+
+transcript:
+  - at_ms: 0
+    text: "Nominal voltage is 240 volts."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Board-level readings fold into extracted_readings as circuit:0
+  # (stage6-shadow-harness.js:674-686 + the iOS-side legacy contract).
+  # Post-coercion the wire carries "230".
+  has_reading:
+    - circuit: 0
+      field: nominal_voltage_uo
+      value: "230"
+  # Negative-control — the pre-coercion "240" MUST NOT reach the wire.
+  has_no_reading:
+    - circuit: 0
+      field: nominal_voltage_uo
+      value: "240"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 15000
+  fetch_tts: false

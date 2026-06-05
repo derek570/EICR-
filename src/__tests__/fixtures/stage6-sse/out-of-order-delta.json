@@ -1,0 +1,63 @@
+[
+  {
+    "type": "message_start",
+    "message": {
+      "id": "msg_01orphan",
+      "role": "assistant",
+      "content": [],
+      "model": "claude-sonnet-4-6",
+      "stop_reason": null
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 5,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "{\"stray\":\"orphan\"}"
+    }
+  },
+  {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+      "type": "tool_use",
+      "id": "toolu_01orphan_valid",
+      "name": "record_reading",
+      "input": {}
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":4,"
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "\"value\":\"0.55\",\"confidence\":0.9,\"source_turn_id\":\"t-o\"}"
+    }
+  },
+  {
+    "type": "content_block_stop",
+    "index": 0
+  },
+  {
+    "type": "message_delta",
+    "delta": {
+      "stop_reason": "tool_use",
+      "stop_sequence": null
+    },
+    "usage": {
+      "output_tokens": 35
+    }
+  },
+  {
+    "type": "message_stop"
+  }
+]

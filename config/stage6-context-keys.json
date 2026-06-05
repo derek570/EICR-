@@ -1,0 +1,4 @@
+{
+  "sentinels": ["observation_clarify", "none"],
+  "rationale": "Non-circuit context keys for ask_user.context_field. 'observation_clarify' covers asks about a pending observation's text/code. 'none' covers asks with no field scope (restrained-mode diagnostics, general clarification). Phase 5 ask-budget analytics bucket by this key + context_circuit, so the set must stay closed."
+}

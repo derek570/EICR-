@@ -3,6 +3,8 @@
 import { useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Logo } from '@/components/brand/logo';
+import { record as recordLifecycle } from '@/lib/diagnostics/lifecycle-log';
+import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 
 /**
  * Root error boundary.
@@ -45,6 +47,29 @@ export default function RootError({
       error.message.includes('Failed to find Server Action') ||
       (typeof error.digest === 'string' && error.digest.includes('NEXT_SERVER_ACTION'));
 
+    // Always record the boundary fire, even when we won't reload — the
+    // ratio of fires-with-reload to fires-suppressed is itself a signal
+    // for "something is broken beyond a stale action hash".
+    recordLifecycle('error-boundary', {
+      messagePreview: error.message.slice(0, 200),
+      digest: error.digest ?? null,
+      stale_server_action: isServerActionStale,
+      url: typeof window !== 'undefined' ? window.location.pathname : null,
+    });
+    // Also pipe through the recording-pipeline log so a boundary fire
+    // during a recording session is co-timestamped with the ws/extraction
+    // events that preceded the crash. The pipeline-log tail persists to
+    // localStorage, so even a hard reload (triggered below) doesn't
+    // destroy the trail that led up to the boundary.
+    pipelineLog('error_boundary', {
+      messageLength: error.message.length,
+      messagePreview: error.message.slice(0, 200),
+      digest: error.digest ?? null,
+      stale_server_action: isServerActionStale,
+      url: typeof window !== 'undefined' ? window.location.pathname : null,
+      stackPreview: typeof error.stack === 'string' ? error.stack.slice(0, 400) : null,
+    });
+
     if (!isServerActionStale || typeof window === 'undefined') return;
 
     // Guard against a reload loop: if we reloaded within the last 30 s
@@ -55,9 +80,15 @@ export default function RootError({
     const now = Date.now();
     const raw = window.sessionStorage.getItem(key);
     const last = raw ? Number(raw) : 0;
-    if (last && now - last < 30_000) return;
+    if (last && now - last < 30_000) {
+      recordLifecycle('error-boundary-reload-suppressed', {
+        sinceLastReloadMs: now - last,
+      });
+      return;
+    }
 
     window.sessionStorage.setItem(key, String(now));
+    recordLifecycle('error-boundary-reload', { digest: error.digest ?? null });
     window.location.reload();
   }, [error]);
 

@@ -93,32 +93,65 @@ Current models used by the backend processing pipeline:
 
 **Note:** For recording, iOS fetches API keys from `GET /api/keys` and connects directly to Deepgram. Sonnet extraction runs server-side via WebSocket. For batch processing and CCU photo analysis, the backend calls AI APIs directly.
 
+## Stage 6 Agentic Extraction (live recording path)
+
+Live recording flows through the Stage 6 agentic extraction pipeline. `config/field_schema.json` is the single source of truth for every extractable field; the tool schemas (`src/extraction/stage6-tool-schemas.js`) generate `record_reading.field` / `record_board_reading.field` enums from it at module load.
+
+Sonnet's `ask_user` tool carries an OPTIONAL `pending_write` property. When the inspector says a value without enough context (e.g. "Number of points is 4" with no circuit), Sonnet attaches the buffered write to its ask. The server then:
+
+1. Holds the user's reply.
+2. Runs the deterministic answer resolver (`src/extraction/stage6-answer-resolver.js`) against the pending write + available circuits.
+3. **High-confidence match** → server auto-emits the write through the normal write path (`createAutoResolveWriteHook` in `src/extraction/stage6-dispatchers.js`). Tool result body: `match_status: "auto_resolved", resolved_writes: [...]`. Sonnet doesn't write again.
+4. **Low-confidence / ambiguous** → tool result echoes back `pending_write` + `available_circuits` + `parsed_hint`. Sonnet writes itself in the next turn.
+
+iOS apply parity is enforced by `scripts/check-ios-field-parity.mjs`, which walks `field_schema.json` and asserts every entry has a matching `case` in `applySonnetReadings`. CI exit-1 on drift.
+
+Shared value-rule semantics live in `src/extraction/value-normalise.js` (`acceptsAsWrite`, `isValidSentinel`, `isEvasionMarker`). iOS mirrors the gate; tests pin equivalence so "N/A" is treated identically on both sides.
+
+Full design rationale: [ADR-008](../adr/008-schema-driven-tools-and-server-resolved-asks.md).
+
+### Pre-LLM transcript gate (`src/extraction/pre-llm-gate.js`)
+
+Every iOS transcript runs through `shouldForwardToSonnet(text, opts)` before the Sonnet round + TTS cost commits. The gate is a sequential pass with bypass and forward reasons emitted as `voice_latency.gate_blocked` (block) / `voice_latency.gate_forwarded_complaint` (positive) for ops dashboards.
+
+`GATE_REASONS` enum (full list): `EMPTY`, `HAS_DIGIT`, `HAS_OBSERVATION_PREFIX`, `HAS_STRONG_TRIGGER`, `HAS_WEAK_TRIGGER`, `HAS_TRIGGER` (legacy, retained for back-compat), `HAS_REGEX_HINT`, `HAS_COMPLAINT_OR_NEGATION`, `LOW_CONTENT`, `FALLBACK_FORWARD`, plus bypasses `BYPASS_PENDING_ASK`, `BYPASS_DIALOGUE_SCRIPT_ACTIVE`, `BYPASS_IN_RESPONSE_TO`, `BYPASS_DRAINED_RETRY`, `BYPASS_DISABLED`.
+
+`HAS_COMPLAINT_OR_NEGATION` (PLAN-backend-final.md §5.1) runs BEFORE `HAS_DIGIT` so complaints that accidentally contain digits ("you set it to 0.45 but I said 0.55") log with intent reason. The regex deliberately requires a continuation pronoun after a bare "no" so "no problem" / "no signal" / "no spare" still block via `LOW_CONTENT`.
+
+### Dialogue engine (`src/extraction/dialogue-engine/`)
+
+Schemas: `rcd`, `ocpd`, `rcbo`, `ring_continuity`, `insulation_resistance`. Each is a script-style walk-through with entry triggers, per-slot prompts + parsers, defer / skip / cancel verbs, and a `toolCallIdPrefix` (`srv-rcd-` / `srv-ocpd-` / `srv-rcbo-` / `srv-irs-` / `srv-rcs-`).
+
+Per-session state outside the transient `session.dialogueScriptState`:
+
+- **`session.dialogueScriptDeferredSlots: Map<string, Set<string>>`** (Phase 6.2) — keyed by `${schemaName}:${circuit_ref ?? 'none'}`. Survives `clearScriptState` so a script re-entry doesn't re-ask a slot the inspector deferred earlier. Volunteered writes to a deferred slot ("the BS code is 60898" / "set BS number") clear the entry via the named-field-extraction loop. Plumbed through `nextMissingSlot(values, slots, skippedSet, deferredSet)`.
+- **RCD entry guard** (Phase 6.1) — when transcript contains `\bRCD\b` AND a corrective imperative (delete/undo/cancel/fix/why/stop/remove/clear) OR a denial phrase (what are you / i didn't / that's wrong / that's not), the RCD schema's entry is skipped; the loop continues to other schemas, ultimately falling through to Sonnet. Scoped to RCD only — the other four schemas don't exhibit the re-entry loop pattern.
+- **Cancel-drain WS frame** (Phase 6.3) — on any `*_script_cancelled`, the engine emits `{type:"cancel_pending_tts", prefix:"srv-{script}-", sessionId}` so iOS's AlertManager queue (slice 7.1) can purge in-flight script TTS in the same namespace.
+
 ## CCU Photo Extraction Pipeline
 
-`POST /api/analyze-ccu` (route: `src/routes/extraction.js`) runs a per-slot crop-and-classify VLM pipeline as the primary source of `circuits[]`, with the single-shot VLM prompt running in parallel as the authoritative source for labels and board-level metadata.
+> ⚡ **CURRENT STATE (2026-05-08 onwards)** — `POST /api/analyze-ccu` runs a **whole-image single-shot `gpt-5.5`** call via `src/extraction/ccu-single-shot.js`. **No per-slot cropping is performed in the live pipeline.** The Stage 3 / Stage 4 per-slot Sonnet pipeline described in earlier versions of this doc is LEGACY FALLBACK, gated behind `CCU_USE_SINGLE_SHOT=false`. Production runs single-shot ON. When reasoning about CCU failures, do not consider CV crop accuracy or slot-crop boundary alignment — they are not in the live path.
 
-Sequence:
+Sequence (current pipeline):
 
-1. **Board-technology classifier** — one small VLM call (`claude-sonnet-4-6`, ~200 max tokens, ~3 s). Returns `{board_technology, main_switch_position}`. Routes the rest of the pipeline. Cost: ~$0.01. Source: `classifyBoardTechnology` in `src/routes/extraction.js`.
-2. **Geometric pipeline** — three-stage per-slot extraction, dispatched based on classifier result:
-   - **Modern** (MCB/RCBO boards): `src/extraction/ccu-geometric.js` — Stage 1 finds DIN-rail bbox (3 parallel VLM samples, median); Stage 2 derives module count from main-switch pitch; Stage 3 crops each slot and classifies (`mcb|rcbo|rcd|main_switch|spd|blank|unknown`) in batches of 4 crops per VLM call.
-   - **Rewireable fuse** (BS 3036): `src/extraction/ccu-geometric-rewireable.js` — Stage 1 finds the carrier-bank panel bbox (no DIN rail); Stage 2 counts the carrier slots within that bank; Stage 3 classifies each crop as `rewireable|cartridge|blank`, reads the carrier body colour, and applies the BS 3036 colour code (white=5A, blue=15A, yellow=20A, red=30A, green=45A).
-   - **Cartridge fuse / mixed** — routed to the rewireable pipeline; Stage 3 tags BS 1361 / BS 88-2 carriers as `cartridge` and reads the printed rating directly.
-3. **Single-shot prompt** — the pre-existing ~11k-char 4-step-methodology prompt runs in parallel with Step 2. It is the authoritative source for circuit **labels**, main switch, SPD, board manufacturer/model, confidence message, and `questionsForInspector`.
-4. **Merge** — `slotsToCircuits` in `extraction.js` builds `circuits[]` from the Stage 3 slot classifications: circuit 1 is nearest the main switch (BS 7671), labels are pasted in from single-shot by circuit number, and any slot with confidence < 0.7 (or `classification: "unknown"`) falls back to the single-shot value at that position.
-5. **Post-processing** — `applyBsEnFallback`, `normaliseCircuitLabels`, `lookupMissingRcdTypes` (web-search for RCD waveform type via `gpt-5-search-api` when Stage 3 missed it and the board manufacturer is known), main-switch default fills.
-6. **Response shape** includes `circuits[]` (primary), `slots[]` (per-slot classifications + base64 crops for iOS tap-to-correct UI), `geometric` (panel/rail geometry), `extraction_source: "geometric-merged" | "single-shot"`, plus the pre-existing fields.
+1. **Board classifier (board-level metadata)** — one Sonnet VLM call (`claude-sonnet-4-6`, ~400 max tokens, ~5 s). Returns `{board_technology, main_switch_position, board_manufacturer, board_model, main_switch_rating, spd_present, confidence}`. Cost: ~$0.01. Source: `classifyBoardTechnology` in `src/routes/extraction.js`. Drives technology dispatch (modern vs rewireable prompt) and seeds the response with board-level fields the single-shot doesn't return directly.
+2. **Geometric prep** — `prepareGeometry` finds the rail bbox + CV pitch (Sobel-X + autocorrelation; `src/extraction/ccu-cv-pitch.js`). The rail bbox crops the image down before single-shot sees it; the CV pitch + module count is kept for post-hoc cross-checks against the single-shot's slot count (logged on disagreement). The image is dewarped to a flat strip if `CCU_DEWARP_MAX_WIDTH` is set.
+3. **Single-shot enumeration** — one OpenAI VLM call (`gpt-5.5` via `src/extraction/openai-vision-adapter.js`, ~4096 max tokens, ~15-20 s). Prompt: `MODERN_PROMPT` (DIN-rail boards) or `REWIREABLE_PROMPT` (BS 3036) in `src/extraction/ccu-single-shot.js`. The model receives the whole cropped rail image plus the prompt, and returns one entry per visible module slot in strict left-to-right order: `{device_kind, ocpd_rating_a, ocpd_curve, ocpd_bs_en, rcd_type, rcd_rating_ma, label}`. A 2-pole device returns two identical entries. Blanks return `device_kind:"blank"`. Labels are read from the strip channels directly above/below each device (the prompt enforces same-vertical-column alignment, and returns null on label-ambiguous boundaries — see [the LABELS block of MODERN_PROMPT](https://github.com/derek570/EICR-/blob/main/src/extraction/ccu-single-shot.js) for the exact wording).
+4. **Merge** — `slotsToCircuits` in `extraction.js` builds `circuits[]` from the single-shot entries: filters out `main_switch` / `spd` / `blank` so labels read on those positions never surface, and walks the slot order to attribute RCD-upstream relationships. Circuit 1 is nearest the main switch (BS 7671); side comes from (1) the single-shot's `main_switch` entry index, (2) rewireable `mainSwitchOffset`, (3) classifier's `main_switch_position`. SPD presence is derived from single-shot entries (any `device_kind:"spd"`); the classifier's `spd_present` is a pre-merger fallback only.
+5. **Post-merge enrichment** — `applyBsEnFallback`, `normaliseCircuitLabels`, `lookupMissingRcdTypes` (web-search for RCD waveform type via `gpt-5-search-api` when single-shot left it null AND the board manufacturer is known; secondary `uniform_low_conf` trigger fires when all RCDs returned the same value with avg confidence < 0.85, which currently over-fires — tracked as todo); main-switch BS-EN/poles/voltage defaults; SPD-from-main-switch fallback for the supply-characteristics block.
+6. **Response shape** — `circuits[]` (primary), `slots[]` (per-slot single-shot output reshaped for iOS LiveFillState consumption — crop bboxes are empty `{x:0,y:0,w:0,h:0}` and base64 is `""` because no per-slot crops exist), `geometric` (rail geometry + CV pitch diagnostics), `board_classification` (mirror of classifier output), `extraction_source: "geometric-merged"` (`"classifier-only"` only when single-shot produced no entries), plus the pre-existing top-level fields.
 
-| Pipeline Step | Model | Cost |
-|---|---|---|
-| Classifier | `claude-sonnet-4-6` | ~$0.01 |
-| Geometric Stage 1 (rails/panel) | `claude-sonnet-4-6` ×3 | ~$0.02 |
-| Geometric Stage 2 (count) | `claude-sonnet-4-6` | ~$0.01 |
-| Geometric Stage 3 (classify N slots) | `claude-sonnet-4-6` ×ceil(N/4) | ~$0.02-0.03 |
-| Single-shot prompt | `claude-sonnet-4-6` | ~$0.03 |
-| **Total per extraction** | | **~$0.08–0.09** |
+| Pipeline Step | Model | Wall-clock | Cost |
+|---|---|---|---|
+| Board classifier | `claude-sonnet-4-6` | ~5 s | ~$0.01 |
+| Geometric prep (rail bbox + CV pitch) | local CV + 1 Sonnet call | ~3 s | ~$0.01 |
+| Single-shot enumeration | `gpt-5.5` | ~15-20 s | ~$0.03-0.04 |
+| Post-merge enrichment (RCD lookup, BS-EN, etc.) | `gpt-5-search-api` (conditional) | ~4 s when fired | ~$0.005 |
+| **Total per extraction** | | **~25-30 s** | **~$0.05-0.06** |
 
-**Kill switch**: `CCU_GEOMETRIC_V1=false` on the task-def disables the per-slot path entirely — single-shot runs alone (pre-sprint behaviour). Default (env var unset or set to anything other than `false`) is **ON**. Flip the flag at the task-def to roll back without redeploying.
+**Failure mode**: classifier or `prepareGeometry` failure returns 502. Single-shot failure (timeout, JSON parse, validation) falls back to `extraction_source: "classifier-only"` with empty `circuits[]` plus the board metadata.
+
+**Legacy per-slot pipeline (LEGACY FALLBACK ONLY)**: `src/extraction/ccu-geometric.js`, `src/extraction/ccu-geometric-rewireable.js`, `src/extraction/ccu-label-pass.js` still exist and can be activated by setting `CCU_USE_SINGLE_SHOT=false`. They run a 4-stage Sonnet pipeline (rail bbox → CV pitch → per-slot crop+classify in batches of 4 → wider per-slot label-zone crop). Pre-2026-05-08 the live pipeline; retained for emergency rollback if single-shot regresses. **Do not reason about its behaviour as a current failure mode unless the env override is confirmed set.**
 
 ## AWS Configuration
 

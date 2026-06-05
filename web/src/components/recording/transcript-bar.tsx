@@ -46,6 +46,7 @@ export function TranscriptBar() {
       role="status"
       aria-live="polite"
       aria-label="Live transcript"
+      data-tour="transcript-bar"
       className="sticky top-[56px] z-20 flex w-full items-center gap-3 border-b border-[var(--color-border-default)] bg-[var(--color-surface-1)]/95 px-4 py-2 backdrop-blur-md"
     >
       <span

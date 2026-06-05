@@ -25,9 +25,28 @@ jest.unstable_mockModule('../storage.js', () => ({
   uploadJson: jest.fn().mockResolvedValue(true),
   uploadFile: jest.fn().mockResolvedValue(true),
   uploadBytes: jest.fn().mockResolvedValue(true),
+  uploadText: jest.fn().mockResolvedValue(true),
+  downloadText: jest.fn().mockResolvedValue(''),
+  isUsingS3: jest.fn().mockReturnValue(false),
   getSignedUrl: jest.fn().mockResolvedValue('https://example.com/signed'),
   getJsonObject: jest.fn().mockResolvedValue(null),
   listObjects: jest.fn().mockResolvedValue([]),
+}));
+
+// Mock queue.js so the new idempotency middleware (wired into /analyze-ccu)
+// doesn't pull in BullMQ + IORedis + their transitive deps during these
+// route-merger tests. Returning isRedisAvailable=false makes the middleware
+// a no-op, which is what we want here — these tests cover Stage 3/4 + merger
+// behaviour, not idempotency.
+jest.unstable_mockModule('../queue.js', () => ({
+  getConnection: jest.fn().mockReturnValue({
+    set: jest.fn().mockResolvedValue('OK'),
+    get: jest.fn().mockResolvedValue(null),
+    del: jest.fn().mockResolvedValue(1),
+  }),
+  isRedisAvailable: jest.fn().mockReturnValue(false),
+  enqueueJob: jest.fn().mockResolvedValue(undefined),
+  startWorker: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.unstable_mockModule('../logger.js', () => ({
@@ -145,6 +164,7 @@ let classifyBoardTechnology;
 let slotsToCircuits;
 let buildCircuitFromSlot;
 let assembleGeometricResult;
+let adaptTightenerToPrepared;
 let classifyModernSlotsMock;
 let prepareModernGeometryMock;
 
@@ -154,6 +174,7 @@ beforeAll(async () => {
   slotsToCircuits = mod.slotsToCircuits;
   buildCircuitFromSlot = mod.buildCircuitFromSlot;
   assembleGeometricResult = mod.assembleGeometricResult;
+  adaptTightenerToPrepared = mod.adaptTightenerToPrepared;
 
   // Grab references to the mocked prepare/classify functions so the
   // parallel-dispatch test can override their implementations per-test.
@@ -190,7 +211,7 @@ function makeSSCircuit(circuit_number, overrides = {}) {
     label: `Circuit ${circuit_number}`,
     ocpd_type: 'B',
     ocpd_rating_a: '32',
-    ocpd_bs_en: '60898-1',
+    ocpd_bs_en: 'BS EN 60898',
     ocpd_breaking_capacity_ka: '6',
     is_rcbo: false,
     rcd_protected: false,
@@ -207,18 +228,29 @@ function makeSSCircuit(circuit_number, overrides = {}) {
 
 describe('slotsToCircuits', () => {
   test('1. returns null for empty slots array', () => {
-    expect(slotsToCircuits({ slots: [], mainSwitchSide: 'left', singleShotCircuits: [] })).toBeNull();
+    expect(
+      slotsToCircuits({ slots: [], mainSwitchSide: 'left', singleShotCircuits: [] })
+    ).toBeNull();
   });
 
   test('1b. returns null for undefined slots', () => {
-    expect(slotsToCircuits({ slots: undefined, mainSwitchSide: 'left', singleShotCircuits: [] })).toBeNull();
+    expect(
+      slotsToCircuits({ slots: undefined, mainSwitchSide: 'left', singleShotCircuits: [] })
+    ).toBeNull();
   });
 
   test('2. modern board, main switch LEFT — 4 slots in physical order', () => {
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
       makeSlot({ classification: 'mcb', tripCurve: 'C', ratingAmps: 16, confidence: 0.9 }),
-      makeSlot({ classification: 'rcbo', tripCurve: 'B', ratingAmps: 32, sensitivity: 30, rcdWaveformType: 'A', confidence: 0.9 }),
+      makeSlot({
+        classification: 'rcbo',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        sensitivity: 30,
+        rcdWaveformType: 'A',
+        confidence: 0.9,
+      }),
       makeSlot({ classification: 'blank', confidence: 0.95 }),
     ];
 
@@ -232,7 +264,7 @@ describe('slotsToCircuits', () => {
 
     // RCBO at slot index 2 → circuit 3
     expect(circuits[2].is_rcbo).toBe(true);
-    expect(circuits[2].ocpd_bs_en).toBe('61009-1');
+    expect(circuits[2].ocpd_bs_en).toBe('BS EN 61009');
 
     // Blank at slot index 3 → circuit 4 "Spare"
     expect(circuits[3].label).toBe('Spare');
@@ -262,7 +294,13 @@ describe('slotsToCircuits', () => {
     expect(circuits[3].ocpd_rating_a).toBe('100');
   });
 
-  test('4. standalone RCD emits an own-row AND cascades rcd_* fields to subsequent MCBs', () => {
+  test('4. standalone RCD propagates rcd_* fields to phase-2 MCBs (RCD itself NOT in schedule)', () => {
+    // Derek's 2026-05-05 spec: RCDs are not emitted as schedule rows.
+    // Walking outward from the LEFT main switch:
+    //   slot 0 (MCB B32) — phase 1 → unprotected.
+    //   slot 1 (RCD)     — flips phase to 2, sets reference. NOT emitted.
+    //   slot 2 (MCB B16) — phase 2 → protected with AC/30.
+    //   slot 3 (MCB B6)  — phase 2 → protected with AC/30.
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
       makeSlot({
@@ -270,7 +308,7 @@ describe('slotsToCircuits', () => {
         rcdWaveformType: 'AC',
         sensitivity: 30,
         ratingAmps: 80,
-        bsEn: 'BS EN 61008-1',
+        bsEn: 'BS EN 61008',
         confidence: 0.9,
       }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 16, confidence: 0.9 }),
@@ -279,58 +317,55 @@ describe('slotsToCircuits', () => {
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
 
-    // 3 MCB rows + 1 RCD own-row = 4 entries total
-    expect(circuits).toHaveLength(4);
+    // 3 MCB rows total — RCD does NOT emit a schedule row.
+    expect(circuits).toHaveLength(3);
 
-    // MCB before the RCD (circuit 1) — NOT rcd_protected
+    // No row should carry is_rcd_device (it's a deprecated marker now).
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+
+    // MCB before the RCD (circuit 1) — NOT rcd_protected.
     expect(circuits[0].circuit_number).toBe(1);
     expect(circuits[0].rcd_protected).toBe(false);
     expect(circuits[0].rcd_bs_en).toBeNull();
-    expect(circuits[0].is_rcd_device).toBeUndefined();
+    expect(circuits[0].rcd_type).toBeNull();
 
-    // RCD own-row — no circuit_number, BS EN 61008-1, 80A 30mA AC
-    expect(circuits[1].is_rcd_device).toBe(true);
-    expect(circuits[1].circuit_number).toBeNull();
-    expect(circuits[1].ocpd_rating_a).toBe('80');
+    // MCBs after the RCD (circuits 2 and 3) — protected with the RCD's
+    // own face read.
+    expect(circuits[1].circuit_number).toBe(2);
+    expect(circuits[1].rcd_protected).toBe(true);
     expect(circuits[1].rcd_type).toBe('AC');
     expect(circuits[1].rcd_rating_ma).toBe('30');
-    expect(circuits[1].rcd_bs_en).toBe('BS EN 61008-1');
+    expect(circuits[1].rcd_bs_en).toBe('BS EN 61008');
 
-    // MCBs after the RCD (circuits 2 and 3) — ARE rcd_protected
-    expect(circuits[2].circuit_number).toBe(2);
+    expect(circuits[2].circuit_number).toBe(3);
     expect(circuits[2].rcd_protected).toBe(true);
     expect(circuits[2].rcd_type).toBe('AC');
     expect(circuits[2].rcd_rating_ma).toBe('30');
-    expect(circuits[2].rcd_bs_en).toBe('61008');
-
-    expect(circuits[3].circuit_number).toBe(3);
-    expect(circuits[3].rcd_protected).toBe(true);
-    expect(circuits[3].rcd_type).toBe('AC');
-    expect(circuits[3].rcd_rating_ma).toBe('30');
-    expect(circuits[3].rcd_bs_en).toBe('61008');
+    expect(circuits[2].rcd_bs_en).toBe('BS EN 61008');
   });
 
-  test('4b. two adjacent rcd slots (one 2-module physical device) collapse to ONE row', () => {
+  test('4b. two adjacent rcd slots are one physical device; gap-fill applies to phase-2 reference', () => {
     // An RCD is always 2 modules wide on UK boards — Stage 3 classifies both
-    // module-halves as "rcd". The merger must emit a single schedule row for
-    // the pair, not two.
+    // module-halves as "rcd". With Derek's 2026-05-05 rule the device is no
+    // longer emitted as a schedule row, but the pair's face reads are
+    // gap-filled into a single phase-2 reference so a downstream MCB still
+    // inherits the BEST available type/sensitivity values.
     const slots = [
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
-      // First rcd slot — strong face read (rating, bsEn).
+      // First rcd slot — strong face read.
       makeSlot({
         classification: 'rcd',
         rcdWaveformType: 'AC',
         sensitivity: 30,
         ratingAmps: 80,
-        bsEn: 'BS EN 61008-1',
+        bsEn: 'BS EN 61008',
         confidence: 0.9,
       }),
-      // Second rcd slot — weaker read, BUT carries rcdWaveformType which the
-      // first slot missed. Gap-fill from here should win over the first
-      // slot's null.
+      // Second rcd slot — weaker read with all fields null. Gap-fill must
+      // NOT overwrite the first slot's populated values.
       makeSlot({
         classification: 'rcd',
-        rcdWaveformType: null, // still null here
+        rcdWaveformType: null,
         sensitivity: null,
         ratingAmps: null,
         confidence: 0.8,
@@ -340,24 +375,23 @@ describe('slotsToCircuits', () => {
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
-    // 2 MCBs + 1 collapsed RCD row = 3 entries
-    expect(circuits).toHaveLength(3);
-    // _rcdPairOpen must not leak to callers.
-    expect(circuits[1]._rcdPairOpen).toBeUndefined();
-    // Circuit numbers don't jump — RCD row is unnumbered.
+    // 2 MCBs only — the 2-module RCD does NOT emit a schedule row.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    // Circuit numbering walks past the RCD without a gap.
     expect(circuits[0].circuit_number).toBe(1);
-    expect(circuits[1].is_rcd_device).toBe(true);
-    expect(circuits[1].circuit_number).toBeNull();
-    expect(circuits[2].circuit_number).toBe(2);
-    // The downstream MCB still gets the cascaded RCD protection.
-    expect(circuits[2].rcd_protected).toBe(true);
-    expect(circuits[2].rcd_type).toBe('AC');
+    expect(circuits[1].circuit_number).toBe(2);
+    // Downstream MCB inherits AC/30 from the gap-filled pair reference.
+    expect(circuits[1].rcd_protected).toBe(true);
+    expect(circuits[1].rcd_type).toBe('AC');
+    expect(circuits[1].rcd_rating_ma).toBe('30');
   });
 
-  test('4c. two rcd slots separated by a non-rcd slot emit TWO rcd rows', () => {
-    // Paranoia case: two genuinely separate physical RCDs with an MCB between
-    // them. Must NOT collapse — even though both are "rcd", they are
-    // different devices.
+  test('4c. dual-RCD split-load — each new RCD overrides the phase-2 reference', () => {
+    // Two genuinely separate physical RCDs with an MCB between them. Per
+    // Derek's 2026-05-05 spec, neither RCD emits a schedule row; each one
+    // updates the upstream reference, so each downstream MCB inherits its
+    // OWN RCD's type/sensitivity.
     const slots = [
       makeSlot({
         classification: 'rcd',
@@ -374,7 +408,7 @@ describe('slotsToCircuits', () => {
         confidence: 0.9,
       }),
       makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
-      // A genuinely second RCD after an MCB — not part of the first pair.
+      // A genuinely second RCD after the MCB.
       makeSlot({
         classification: 'rcd',
         rcdWaveformType: 'A',
@@ -394,16 +428,148 @@ describe('slotsToCircuits', () => {
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
 
-    // 2 RCDs + 2 MCBs = 4 rows (each RCD is a 2-module dedupe → 1 row each).
-    expect(circuits).toHaveLength(4);
-    expect(circuits[0].is_rcd_device).toBe(true);
+    // Just the 2 MCBs — neither RCD pair emits a row.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    // First MCB — inherits the FIRST RCD's reading (AC).
+    expect(circuits[0].circuit_number).toBe(1);
+    expect(circuits[0].rcd_protected).toBe(true);
     expect(circuits[0].rcd_type).toBe('AC');
-    expect(circuits[1].circuit_number).toBe(1);
-    expect(circuits[1].rcd_type).toBe('AC');
-    expect(circuits[2].is_rcd_device).toBe(true);
-    expect(circuits[2].rcd_type).toBe('A'); // different RCD, different waveform
-    expect(circuits[3].circuit_number).toBe(2);
-    expect(circuits[3].rcd_type).toBe('A');
+    // Second MCB — phase 2 reference updated to the second RCD (A).
+    expect(circuits[1].circuit_number).toBe(2);
+    expect(circuits[1].rcd_protected).toBe(true);
+    expect(circuits[1].rcd_type).toBe('A');
+  });
+
+  test('4d. 38 Dickens Close — no look-ahead: pre-RCD MCBs stay unprotected (Derek 2026-05-21 rule)', () => {
+    // 38 Dickens Close topology: main switch on the RIGHT, then 2 MCBs,
+    // then 3 blanks, then 2 MCBs, then an RCD pair at the FAR LEFT.
+    // Walking outward (right → left), no RCD has been seen until the final
+    // two slots — under the new scan-order-only rule, NONE of the MCBs
+    // get rcd_protected because the RCD is downstream of them in scan
+    // order. The inspector corrects the two real-world-protected MCBs at
+    // the live grid; false negatives at the merger are recoverable
+    // whereas false positives silently wrong-record certs.
+    //
+    // Earlier behaviour (look-ahead enabled): the blanks flipped the
+    // walk into "phase 2" and the 32A MCBs got back-filled with AC/30
+    // from the upcoming RCD. That behaviour was pulled because the same
+    // heuristic mis-attributed sub-feed MCBs sitting BEFORE an RCD on
+    // Crabtree Starbreaker boards (Ciaran field-test 2026-05-19).
+    const slots = [
+      // First module of 2-module RCD
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 80,
+        confidence: 0.9,
+      }),
+      // Second module of same RCD (gap-fill into the same upstream ref)
+      makeSlot({ classification: 'rcd', confidence: 0.85 }),
+      // 2 MCBs at the FAR LEFT — in the physical-world they're protected
+      // by the RCD to their left, but they come BEFORE the RCD in the
+      // outward scan order. New rule: unprotected.
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      // 3 spares — unprotected.
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      // 2 MCBs on the RIGHT-hand side — also unprotected (no RCD between
+      // them and the main switch).
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
+    ];
+
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'right' });
+    expect(circuits).toHaveLength(7); // 4 MCBs + 3 Spares (RCD doesn't emit)
+
+    // ALL MCBs are unprotected under the new rule — none of them has an
+    // RCD slot earlier in scan order.
+    const mcbs = circuits.filter((c) => c.label !== 'Spare' && c.ocpd_type != null);
+    expect(mcbs).toHaveLength(4);
+    for (const c of mcbs) {
+      expect(c.rcd_protected).toBe(false);
+      expect(c.rcd_type).toBeNull();
+      expect(c.rcd_rating_ma).toBeNull();
+    }
+  });
+
+  test('4d-new. Crabtree Starbreaker regression — sub-feed MCB BEFORE RCD stays unprotected (Ciaran 2026-05-19 repro)', () => {
+    // Field-test repro: Crabtree Starbreaker board has 50A B-curve MCB at
+    // slot 3 (a sub-feed MCB BETWEEN the main switch and the first RCD).
+    // Earlier behaviour: blanks at slots 2 flipped phase, slot 3's MCB
+    // looked ahead to the RCD at slot 4 and got marked rcd_protected.
+    // New behaviour: slot 3 is unprotected because no RCD has been seen
+    // in scan order yet. The RCDs at slots 4-5 only protect slots 6+.
+    const slots = [
+      makeSlot({ classification: 'main_switch', confidence: 0.9 }),
+      makeSlot({ classification: 'blank', content: 'blank', confidence: 0.95 }),
+      // The 50A sub-feed MCB — Derek's photo of Ciaran's CCU. Should NOT
+      // be rcd_protected because the RCD is downstream in scan order.
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 50, confidence: 0.9 }),
+      // RCD pair (slots 4-5)
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'AC',
+        sensitivity: 30,
+        ratingAmps: 63,
+        confidence: 0.9,
+      }),
+      makeSlot({ classification: 'rcd', confidence: 0.85 }),
+      // MCBs after the RCD — should be rcd_protected
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 6, confidence: 0.9 }),
+    ];
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+
+    // 4 emitted circuits (1 blank + 1 50A MCB + 2 MCBs after RCD; main switch and 2 RCD slots don't emit)
+    expect(circuits).toHaveLength(4);
+    const subFeed = circuits.find((c) => c.ocpd_rating_a === '50');
+    expect(subFeed).toBeTruthy();
+    expect(subFeed.rcd_protected).toBe(false);
+    expect(subFeed.rcd_type).toBeNull();
+
+    const downstream = circuits.filter((c) => ['32', '6'].includes(c.ocpd_rating_a));
+    expect(downstream).toHaveLength(2);
+    for (const c of downstream) {
+      expect(c.rcd_protected).toBe(true);
+      expect(c.rcd_type).toBe('AC');
+      expect(c.rcd_rating_ma).toBe('30');
+    }
+  });
+
+  test('4e. main_switch slot mid-row does NOT break phase 2 (Derek 2026-05-05 spec)', () => {
+    // Edge case: a main_switch slot appearing mid-rail. The new two-phase
+    // rule treats main_switch as silent — skipped from emission, no phase
+    // change. Once phase 2 is reached (via an RCD seen earlier on the
+    // outward walk), every subsequent MCB stays protected even across a
+    // main_switch slot. This is the deliberate behaviour change vs. the
+    // pre-2026-05-05 cascade pre-pass which broke at main_switch.
+    const slots = [
+      makeSlot({
+        classification: 'rcd',
+        rcdWaveformType: 'A',
+        sensitivity: 30,
+        confidence: 0.9,
+      }),
+      makeSlot({ classification: 'rcd', confidence: 0.85 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'C', ratingAmps: 16, confidence: 0.9 }),
+      makeSlot({ classification: 'main_switch', poles: 2, confidence: 0.9 }),
+      makeSlot({ classification: 'mcb', tripCurve: 'C', ratingAmps: 32, confidence: 0.9 }),
+    ];
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+    // 2 MCBs only — RCD pair + main_switch are all skipped from emission.
+    expect(circuits).toHaveLength(2);
+    expect(circuits.some((c) => c.is_rcd_device)).toBe(false);
+    const c16 = circuits.find((c) => c.ocpd_rating_a === '16');
+    const c32 = circuits.find((c) => c.ocpd_rating_a === '32');
+    expect(c16.rcd_protected).toBe(true);
+    expect(c16.rcd_type).toBe('A');
+    // Both MCBs are in phase 2 — main_switch did not break the protection.
+    expect(c32.rcd_protected).toBe(true);
+    expect(c32.rcd_type).toBe('A');
   });
 
   test('5. main_switch slot is skipped entirely', () => {
@@ -418,6 +584,261 @@ describe('slotsToCircuits', () => {
     expect(circuits).toHaveLength(2);
     expect(circuits[0].circuit_number).toBe(1);
     expect(circuits[0].ocpd_type).toBe('B');
+  });
+
+  test('5a. two-slot main_switch run with classifier rating match — both skipped (no false trim)', () => {
+    // Genuine 2-pole main switch: 2-slot run, rating matches the classifier,
+    // BS EN family matches. Cluster size matches expected (2). Don't trim.
+    const slots = [
+      makeSlot({ classification: 'mcb', tripCurve: 'B', ratingAmps: 32, confidence: 0.9 }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: 'Mains Switch',
+        labelConfidence: 0.9,
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 2,
+        ratingAmps: 100,
+        ratingText: '100A',
+        bsEn: 'BS EN 60947-3',
+        label: null,
+        labelConfidence: 0.4,
+        confidence: 0.65,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+    });
+
+    // Just the MCB — both main_switch slots stayed skipped.
+    expect(circuits).toHaveLength(1);
+    expect(circuits[0].circuit_number).toBe(1);
+    expect(circuits[0].ocpd_type).toBe('B');
+    // No demotion took place.
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
+  });
+
+  test('5h. partial-extends-right slot adjacent to main_switch emits null device fields with low_confidence + is_partial_crop tags (2026-05-05 Elucian CU1SPD275 prod repro)', () => {
+    // Mirrors extraction 1777981112580-xewcrp (2026-05-05 11:37) where Ovens
+    // at slot 11 came back with EVERY device field null because Stage 3 saw
+    // bleed-through from the 2-pole main switch starting at slot 12. Stage 4
+    // still read "Ovens" from the silkscreen.
+    //
+    // Earlier in the day a fix attempted to recover device fields from
+    // board-majority. User feedback (2026-05-05 ~15:30): NO assumption-
+    // based filling — UK boards regularly mix C-curve with B-curve for
+    // motors / hot tubs / water heaters and Type AC with Type A on
+    // legacy circuits. Blank is preferred over a wrong guess. The row
+    // emits with the slot's best (null) reading + low_confidence +
+    // is_partial_crop + extends_side. iOS surfaces this as a row that
+    // needs manual fill.
+    const cleanRcbo = (slotIndex, label, ratingAmps) =>
+      makeSlot({
+        slotIndex,
+        classification: 'rcbo',
+        content: 'device',
+        extends: 'none',
+        tripCurve: 'B',
+        ratingAmps,
+        poles: 1,
+        sensitivity: 30,
+        rcdWaveformType: 'A',
+        bsEn: 'BS EN 61009',
+        confidence: 0.92,
+        label,
+      });
+
+    const slots = [
+      cleanRcbo(0, 'Loft Socket', 20),
+      cleanRcbo(1, 'Lounge Tv Socket', 20),
+      cleanRcbo(2, 'Rear Bed Sockets', 20),
+      cleanRcbo(3, 'Bathroom Underfloor Heating', 20),
+      cleanRcbo(4, 'Front Left Bed Sockets', 20),
+      cleanRcbo(5, 'Front Rhs Bed Sockets', 20),
+      cleanRcbo(6, 'Kitchen Sockets', 32),
+      cleanRcbo(7, 'Garage Sockets', 20),
+      cleanRcbo(8, 'Master Bed Sockets', 20),
+      cleanRcbo(9, 'Utility Sockets', 32),
+      cleanRcbo(10, 'Hob', 32),
+      // Slot 11: the bug. Stage 3 saw the main switch's body protruding
+      // into the right edge of the 2.2× crop, mis-classified the centred
+      // Ovens RCBO as a partial 2-pole device, returned all device fields
+      // null (anti-hallucination rule) but kept Stage 4's label.
+      makeSlot({
+        slotIndex: 11,
+        classification: 'unknown',
+        content: 'partial',
+        extends: 'right',
+        tripCurve: null,
+        ratingAmps: null,
+        poles: 2,
+        sensitivity: null,
+        rcdWaveformType: null,
+        bsEn: null,
+        confidence: 0.65,
+        label: 'Ovens',
+      }),
+      // Slots 12-13: 2-pole main switch (the source of the bleed).
+      makeSlot({
+        slotIndex: 12,
+        classification: 'main_switch',
+        content: 'partial',
+        extends: 'right',
+        poles: 2,
+        ratingAmps: 100,
+        bsEn: 'BS EN 60947-3',
+        confidence: 0.65,
+        label: 'Mains Switch',
+      }),
+      makeSlot({
+        slotIndex: 13,
+        classification: 'main_switch',
+        content: 'partial',
+        extends: 'both',
+        poles: 2,
+        ratingAmps: 100,
+        bsEn: 'BS EN 60947-3',
+        confidence: 0.6,
+      }),
+      // Slot 14: SPD (skipped by merger).
+      makeSlot({
+        slotIndex: 14,
+        classification: 'spd',
+        content: 'device',
+        extends: 'none',
+        poles: 1,
+        ratingAmps: null,
+        bsEn: 'BS EN61643-11',
+        confidence: 0.92,
+      }),
+    ];
+
+    const circuits = slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+      mainSwitchPoles: 2,
+    });
+
+    expect(circuits).toHaveLength(12);
+
+    // Right-handed scan: circuit 1 is the slot nearest the main switch,
+    // i.e. slot 11 (Ovens). It's the partial slot — emit with null device
+    // fields, NOT board-majority guesses.
+    const ovens = circuits[0];
+    expect(ovens.circuit_number).toBe(1);
+    expect(ovens.label).toBe('Ovens');
+    expect(ovens.is_partial_crop).toBe(true);
+    expect(ovens.extends_side).toBe('right');
+    expect(ovens.low_confidence).toBe(true);
+    expect(ovens.partial_neighbour_recovery).toBeUndefined();
+
+    // ALL device fields null — no guessing from board-majority pattern.
+    expect(ovens.ocpd_type).toBeNull();
+    expect(ovens.ocpd_rating_a).toBeNull();
+    expect(ovens.ocpd_bs_en).toBeNull();
+    expect(ovens.ocpd_breaking_capacity_ka).toBeNull();
+    expect(ovens.is_rcbo).toBe(false);
+    expect(ovens.rcd_protected).toBe(false);
+    expect(ovens.rcd_type).toBeNull();
+    expect(ovens.rcd_rating_ma).toBeNull();
+    expect(ovens.rcd_bs_en).toBeNull();
+
+    // Sanity: clean slots emit unchanged.
+    const hob = circuits[1];
+    expect(hob.label).toBe('Hob');
+    expect(hob.ocpd_rating_a).toBe('32');
+    expect(hob.partial_neighbour_recovery).toBeUndefined();
+  });
+
+  test('5i. partial-extends without a multi-module neighbour does NOT trigger fallback', () => {
+    // Defensive: a slot can be content="partial" for reasons other than
+    // bleed from a 2-module device (out-of-frame, glare, edge-of-image
+    // clipping). The fallback must only fire when the extends-direction
+    // neighbour is a confirmed main_switch or rcd. Here the right
+    // neighbour is another MCB — we keep the existing low_confidence
+    // behaviour (slot's own reading + low_confidence flag).
+    const slots = [
+      makeSlot({
+        slotIndex: 0,
+        classification: 'mcb',
+        content: 'partial',
+        extends: 'right',
+        tripCurve: 'B',
+        ratingAmps: 32,
+        confidence: 0.6,
+        label: 'Lights',
+      }),
+      makeSlot({
+        slotIndex: 1,
+        classification: 'mcb',
+        content: 'device',
+        extends: 'none',
+        tripCurve: 'C',
+        ratingAmps: 16,
+        confidence: 0.9,
+        label: 'Sockets',
+      }),
+    ];
+
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left' });
+
+    expect(circuits).toHaveLength(2);
+    expect(circuits[0].partial_neighbour_recovery).toBeUndefined();
+    expect(circuits[0].is_partial_crop).toBe(true);
+    // Slot's own reading is preserved (not overwritten by fallback).
+    expect(circuits[0].ocpd_type).toBe('B');
+    expect(circuits[0].ocpd_rating_a).toBe('32');
+    expect(circuits[0].low_confidence).toBe(true);
+  });
+
+  test('5e. explicit mainSwitchPoles=3 lets a 3-slot run pass untrimmed', () => {
+    // Future-proofing: if the classifier ever supplies a 3-pole isolator,
+    // a 3-slot run is correct and must not be trimmed.
+    const slots = [
+      makeSlot({
+        classification: 'main_switch',
+        poles: 3,
+        ratingAmps: 100,
+        ratingText: '100A',
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 3,
+        ratingAmps: 100,
+        ratingText: '100A',
+        confidence: 0.65,
+      }),
+      makeSlot({
+        classification: 'main_switch',
+        poles: 3,
+        ratingAmps: 100,
+        ratingText: '100A',
+        confidence: 0.65,
+      }),
+    ];
+
+    slotsToCircuits({
+      slots,
+      mainSwitchSide: 'right',
+      mainSwitchRating: '100',
+      mainSwitchPoles: 3,
+    });
+
+    expect(slots[0]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[1]._demotedFromMainSwitch).toBeUndefined();
+    expect(slots[2]._demotedFromMainSwitch).toBeUndefined();
   });
 
   test('6. spd slot is skipped entirely', () => {
@@ -436,7 +857,13 @@ describe('slotsToCircuits', () => {
 
   test('7. rewireable slot → ocpd_type="Rew", ocpd_bs_en="BS 3036", ocpd_breaking_capacity_ka=null', () => {
     const slots = [
-      makeSlot({ classification: 'rewireable', tripCurve: null, ratingAmps: 30, bsEn: null, confidence: 0.9 }),
+      makeSlot({
+        classification: 'rewireable',
+        tripCurve: null,
+        ratingAmps: 30,
+        bsEn: null,
+        confidence: 0.9,
+      }),
     ];
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
@@ -450,7 +877,13 @@ describe('slotsToCircuits', () => {
 
   test('8. cartridge slot → ocpd_type="HRC", ocpd_bs_en="BS 1361"', () => {
     const slots = [
-      makeSlot({ classification: 'cartridge', tripCurve: null, ratingAmps: 30, bsEn: null, confidence: 0.9 }),
+      makeSlot({
+        classification: 'cartridge',
+        tripCurve: null,
+        ratingAmps: 30,
+        bsEn: null,
+        confidence: 0.9,
+      }),
     ];
 
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
@@ -603,7 +1036,7 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.circuit_number).toBe(1);
     expect(circuit.ocpd_type).toBe('B');
     expect(circuit.ocpd_rating_a).toBe('32');
-    expect(circuit.ocpd_bs_en).toBe('60898-1');
+    expect(circuit.ocpd_bs_en).toBe('BS EN 60898');
     expect(circuit.ocpd_breaking_capacity_ka).toBe('6');
     expect(circuit.is_rcbo).toBe(false);
     expect(circuit.rcd_protected).toBe(false);
@@ -627,11 +1060,11 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.rcd_protected).toBe(true);
     expect(circuit.rcd_type).toBe('A');
     expect(circuit.rcd_rating_ma).toBe('30');
-    expect(circuit.rcd_bs_en).toBe('61009');
+    expect(circuit.rcd_bs_en).toBe('BS EN 61009');
     // ocpd fields
     expect(circuit.ocpd_type).toBe('C');
     expect(circuit.ocpd_rating_a).toBe('16');
-    expect(circuit.ocpd_bs_en).toBe('61009-1');
+    expect(circuit.ocpd_bs_en).toBe('BS EN 61009');
     expect(circuit.ocpd_breaking_capacity_ka).toBe('6');
   });
 
@@ -644,7 +1077,7 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.rcd_protected).toBe(true);
     expect(circuit.rcd_type).toBe('AC');
     expect(circuit.rcd_rating_ma).toBe('30');
-    expect(circuit.rcd_bs_en).toBe('61008');
+    expect(circuit.rcd_bs_en).toBe('BS EN 61008');
   });
 
   test('16. Rewireable slot 30A → Rew fields, null kA', () => {
@@ -664,6 +1097,10 @@ describe('buildCircuitFromSlot', () => {
     expect(circuit.rcd_protected).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// promoteLabelMatchedRcd
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // classifyBoardTechnology
@@ -698,7 +1135,11 @@ describe('classifyBoardTechnology', () => {
     };
 
     const fakeAnthropic = makeFakeAnthropic(fakeResponse);
-    const result = await classifyBoardTechnology('base64data==', fakeAnthropic, 'claude-sonnet-4-6');
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
 
     expect(result.boardTechnology).toBe('modern');
     expect(result.mainSwitchPosition).toBe('left');
@@ -731,6 +1172,238 @@ describe('classifyBoardTechnology', () => {
     expect(result.confidence).toBe(0.85);
     expect(result.usage.inputTokens).toBe(150);
     expect(result.usage.outputTokens).toBe(30);
+  });
+
+  test('19. extracts board_manufacturer + board_model from classifier response', async () => {
+    // 2026-04-29: classifier extended to take over single-shot's role for
+    // board metadata. Verify it parses + returns the new fields.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'right',
+            board_manufacturer: 'Wylex',
+            board_model: 'NHRS12SL',
+            main_switch_rating: '100',
+            spd_present: false,
+            confidence: 0.9,
+          }),
+        },
+      ],
+      usage: { input_tokens: 130, output_tokens: 50 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardManufacturer).toBe('Wylex');
+    expect(result.boardModel).toBe('NHRS12SL');
+    expect(result.mainSwitchRating).toBe('100');
+    expect(result.spdPresent).toBe(false);
+  });
+
+  test('20. normalises main_switch_rating to digits ("100A" → "100", "80 amp" → "80")', async () => {
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: 'Hager',
+            board_model: 'VML112',
+            main_switch_rating: '100A AC22A', // VLMs often append units / category
+            spd_present: true,
+            confidence: 0.85,
+          }),
+        },
+      ],
+      usage: { input_tokens: 120, output_tokens: 40 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.mainSwitchRating).toBe('100');
+    expect(result.spdPresent).toBe(true);
+  });
+
+  test('21. handles missing/null board metadata gracefully (returns nulls, not undefined)', async () => {
+    // VLM may legitimately not see manufacturer/model on a covered or
+    // damaged board. Classifier must return null (not omit the fields)
+    // so downstream code uses analysis.board_manufacturer === null
+    // checks rather than === undefined.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: null,
+            board_model: null,
+            main_switch_rating: null,
+            spd_present: false,
+            confidence: 0.7,
+          }),
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 30 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardManufacturer).toBeNull();
+    expect(result.boardModel).toBeNull();
+    expect(result.mainSwitchRating).toBeNull();
+    expect(result.spdPresent).toBe(false);
+  });
+
+  test('22a. board-model override: Wylex NHRS12SL labelled "mixed" is forced to modern (2026-05-01 prod repro)', async () => {
+    // Reproduces the 2026-05-01 prod incident: VLM returned the precise
+    // model code AND a wrong technology bucket.  The route handler must
+    // trust the model identification.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'mixed',
+            main_switch_position: 'right',
+            board_manufacturer: 'Wylex',
+            board_model: 'NHRS12SL',
+            main_switch_rating: '100',
+            spd_present: false,
+            confidence: 0.92,
+          }),
+        },
+      ],
+      usage: { input_tokens: 130, output_tokens: 50 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardTechnology).toBe('modern');
+    expect(result.technologyOverride).not.toBeNull();
+    expect(result.technologyOverride.fromVlm).toBe('mixed');
+    expect(result.technologyOverride.toTechnology).toBe('modern');
+    expect(result.technologyOverride.appliedBy).toBe('model-prefix-match');
+    expect(result.technologyOverride.series).toMatch(/Wylex NH/);
+  });
+
+  test('22b. board-model override: VLM-issued "modern" passes through unchanged (no override)', async () => {
+    // The override is one-way — a correctly-labelled modern board must
+    // not have technologyOverride populated; downstream telemetry uses
+    // null to mean "VLM agreed with itself".
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            board_manufacturer: 'Hager',
+            board_model: 'VML112',
+            main_switch_rating: '100',
+            spd_present: false,
+            confidence: 0.9,
+          }),
+        },
+      ],
+      usage: { input_tokens: 120, output_tokens: 40 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardTechnology).toBe('modern');
+    expect(result.technologyOverride).toBeNull();
+  });
+
+  test('22c. board-model override: genuine rewireable model is NOT forced to modern', async () => {
+    // Conservative-by-design: the registry should never override a real
+    // rewireable board.  An unknown / non-modern model leaves the VLM's
+    // technology label intact.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'rewireable_fuse',
+            main_switch_position: 'right',
+            board_manufacturer: 'Wylex',
+            board_model: 'S5', // genuine pull-out fuse carrier board
+            main_switch_rating: '60',
+            spd_present: false,
+            confidence: 0.88,
+          }),
+        },
+      ],
+      usage: { input_tokens: 110, output_tokens: 40 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.boardTechnology).toBe('rewireable_fuse');
+    expect(result.technologyOverride).toBeNull();
+  });
+
+  test('22. spd_present coerces non-boolean truthy to false (only `true` boolean counts)', async () => {
+    // Strict boolean coercion — protects against the VLM returning the
+    // string "false" or 0/1, which would silently pass through as a
+    // truthy value in JS without the === true check.
+    const fakeResponse = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_technology: 'modern',
+            main_switch_position: 'left',
+            spd_present: 'false', // string, not boolean
+            confidence: 0.8,
+          }),
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 30 },
+    };
+
+    const fakeAnthropic = makeFakeAnthropic(fakeResponse);
+    const result = await classifyBoardTechnology(
+      'base64data==',
+      fakeAnthropic,
+      'claude-sonnet-4-6'
+    );
+
+    expect(result.spdPresent).toBe(false);
   });
 });
 
@@ -893,6 +1566,57 @@ describe('assembleGeometricResult', () => {
     expect(result.slots).toBeNull();
     expect(result.stage3Error).toMatch(/null/);
   });
+
+  // Regression: every prod CCU request was 500ing with
+  // `Cannot read properties of undefined (reading 'inputTokens')` because
+  // adaptTightenerToPrepared() returned a shape missing top-level `usage`
+  // and `timings` — which assembleGeometricResult reads at
+  // `prepared.usage.inputTokens` and `prepared.timings.stage1Ms`. Both real
+  // prepare functions (prepareModernGeometry, prepareRewireableGeometry)
+  // include them; the box-tightener adapter forgot. Lock the contract by
+  // driving the adapter -> assembler chain with a realistic tightener output.
+  test('box-tightener path: adapter output has the fields assembleGeometricResult reads', () => {
+    const tightenerOutput = {
+      imageWidth: 2000,
+      imageHeight: 1500,
+      railFace: { top: 600, bottom: 800, left: 200, right: 1800 },
+      moduleCount: 16,
+      pitchPx: 100,
+      initialPitchPx: 100,
+      slotCentersPx: Array.from({ length: 16 }, (_, i) => 250 + i * 100),
+      refinement: { accepted: true, pairCount: 4 },
+    };
+    const prepared = adaptTightenerToPrepared(tightenerOutput);
+
+    // Top-level usage + timings must exist for assembleGeometricResult to not
+    // NPE — these are the exact field paths it reads.
+    expect(prepared.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(prepared.timings).toEqual({ stage1Ms: 0, stage2Ms: 0 });
+
+    const classified = {
+      slots: [{ slotIndex: 0, classification: 'mcb' }],
+      stage3Error: null,
+      timings: { stage3Ms: 12000 },
+      usage: { inputTokens: 1500, outputTokens: 200 },
+      stageOutputs: { stage3: { slots: [], error: null } },
+    };
+
+    // The bug repro: this throws on main with
+    // "Cannot read properties of undefined (reading 'inputTokens')".
+    const result = assembleGeometricResult({
+      prepared,
+      classified,
+      isRewireablePipeline: false,
+    });
+
+    expect(result.schemaVersion).toBe('ccu-geometric-v1');
+    expect(result.usage.inputTokens).toBe(1500);
+    expect(result.usage.outputTokens).toBe(200);
+    expect(result.timings.stage1Ms).toBe(0);
+    expect(result.timings.stage2Ms).toBe(0);
+    expect(result.timings.stage3Ms).toBe(12000);
+    expect(result.timings.totalMs).toBe(12000);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1029,7 +1753,11 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
               main_switch_voltage: '230',
               spd_present: false,
               circuits: [],
-              confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
+              // Numeric, top-level, per the classifier prompt's contract — see
+              // classifyBoardTechnology in src/routes/extraction.js. The final
+              // analysis.confidence.{overall, image_quality} is built from this
+              // numeric value downstream; the test doesn't need to provide both.
+              confidence: 0.95,
               questionsForInspector: [],
             }),
           },
@@ -1075,75 +1803,129 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
     expect(labelStartIdx).toBeLessThan(labelResolveIdx);
   });
 
-  test('single-shot is kicked off BEFORE awaiting the classifier (Codex P2)', async () => {
-    // Stage 3 + Stage 4 resolve immediately — we only care about single-shot
-    // overlap with the classifier here.
+  // Removed 2026-04-29: single-shot was retired. The "Codex P2 invariant"
+  // (single-shot started in parallel with the classifier) no longer applies
+  // because there is no single-shot to overlap with. The classifier is now
+  // awaited up front before Stage 2/3/4 dispatch — see analyze-ccu route
+  // handler in src/routes/extraction.js.
+
+  // Phase 4 of the multi-board sprint
+  // (.planning-stage6-agentic/handoffs/multi-board-support-2026-05-07/PLAN.md):
+  // /api/analyze-ccu accepts an optional `board_id` (and optionally
+  // `board_index`) on the multipart upload, and echoes both back in the
+  // analysis response under `attribution`. Older iOS builds that omit
+  // these fields still get a 200 with `attribution: { board_id: null,
+  // board_index: null }` so the iOS decoder is single-path.
+  test('echoes board_id + board_index attribution on the response', async () => {
     classifyModernSlotsMock.mockResolvedValue({
-      slots: [{ slotIndex: 0, classification: 'mcb', ratingAmps: 32, confidence: 0.9 }],
-      stage3Error: null,
-      timings: { stage3Ms: 0 },
-      usage: { inputTokens: 0, outputTokens: 0 },
-      stageOutputs: { stage3: { slots: [], error: null, batchCount: 0, batchSize: 4 } },
+      slots: [],
+      stageOutputs: {},
+      usage: { inputTokens: 100, outputTokens: 50 },
+      timings: { stage3Ms: 10 },
+      lowConfidence: false,
     });
     mockExtractSlotLabels.mockResolvedValue({
       labels: [],
-      usage: { inputTokens: 0, outputTokens: 0 },
+      usage: { inputTokens: 100, outputTokens: 50 },
       batchCount: 0,
       skippedSlotIndices: [],
       timings: { cropMs: 0, vlmMs: 0, totalMs: 0 },
     });
+    mockAnthropicMessagesCreate.mockImplementation(async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_manufacturer: 'Hager',
+            board_model: null,
+            board_technology: 'modern',
+            main_switch_rating: '100',
+            main_switch_position: 'left',
+            main_switch_bs_en: null,
+            main_switch_type: 'Isolator',
+            main_switch_poles: 'DP',
+            main_switch_current: '100',
+            main_switch_voltage: '230',
+            spd_present: false,
+            circuits: [],
+            // Numeric, top-level, per the classifier prompt's contract — see
+            // classifyBoardTechnology in src/routes/extraction.js. The final
+            // analysis.confidence.{overall, image_quality} is built from this
+            // numeric value downstream; the test doesn't need to provide both.
+            confidence: 0.95,
+            questionsForInspector: [],
+          }),
+        },
+      ],
+      usage: { input_tokens: 1000, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    }));
 
-    const callOrder = [];
-
-    // Both classifier and single-shot wait 50ms. If single-shot only starts
-    // after awaiting the classifier, its 'start' would appear AFTER the
-    // classifier's 'resolve' — we assert the opposite: single-shot starts
-    // before classifier resolves.
-    mockAnthropicMessagesCreate.mockImplementation(async (args) => {
-      const userText = args.messages?.[0]?.content?.find((b) => b.type === 'text')?.text || '';
-      // Classifier prompt is short (~1KB), single-shot is ~5KB.
-      const isClassifier = userText.length < 2000;
-      const kind = isClassifier ? 'classifier' : 'single-shot';
-
-      callOrder.push({ name: `${kind}-start`, t: Date.now() });
-      await new Promise((r) => setTimeout(r, 50));
-      callOrder.push({ name: `${kind}-resolve`, t: Date.now() });
-
-      if (isClassifier) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: '{"board_technology":"modern","main_switch_position":"left","confidence":0.9}',
-            },
-          ],
-          usage: { input_tokens: 100, output_tokens: 30 },
-          stop_reason: 'end_turn',
-        };
-      }
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              board_manufacturer: null,
-              board_model: null,
-              board_technology: 'modern',
-              main_switch_rating: '100',
-              main_switch_position: 'left',
-              main_switch_type: 'Isolator',
-              main_switch_poles: 'DP',
-              spd_present: false,
-              circuits: [],
-              confidence: { overall: 0.9, image_quality: 'clear', uncertain_fields: [] },
-              questionsForInspector: [],
-            }),
-          },
-        ],
-        usage: { input_tokens: 2000, output_tokens: 500 },
-        stop_reason: 'end_turn',
-      };
+    const token = jwt.sign({ userId: 'user-1', email: 'u@x' }, process.env.JWT_SECRET, {
+      expiresIn: '24h',
     });
+    const sharp = (await import('sharp')).default;
+    const fakeJpeg = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: { r: 200, g: 200, b: 200 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const res = await supertest(app)
+      .post('/api/analyze-ccu')
+      .set('Authorization', `Bearer ${token}`)
+      .field('board_id', 'sub-1')
+      .field('board_index', '1')
+      .attach('photo', fakeJpeg, 'test.jpg');
+
+    expect(res.status).toBe(200);
+    expect(res.body.attribution).toEqual({ board_id: 'sub-1', board_index: 1 });
+  });
+
+  test('attribution carries nulls when no board_id / board_index supplied', async () => {
+    classifyModernSlotsMock.mockResolvedValue({
+      slots: [],
+      stageOutputs: {},
+      usage: { inputTokens: 100, outputTokens: 50 },
+      timings: { stage3Ms: 10 },
+      lowConfidence: false,
+    });
+    mockExtractSlotLabels.mockResolvedValue({
+      labels: [],
+      usage: { inputTokens: 100, outputTokens: 50 },
+      batchCount: 0,
+      skippedSlotIndices: [],
+      timings: { cropMs: 0, vlmMs: 0, totalMs: 0 },
+    });
+    mockAnthropicMessagesCreate.mockImplementation(async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_manufacturer: 'Hager',
+            board_model: null,
+            board_technology: 'modern',
+            main_switch_rating: '100',
+            main_switch_position: 'left',
+            main_switch_bs_en: null,
+            main_switch_type: 'Isolator',
+            main_switch_poles: 'DP',
+            main_switch_current: '100',
+            main_switch_voltage: '230',
+            spd_present: false,
+            circuits: [],
+            // Numeric, top-level, per the classifier prompt's contract — see
+            // classifyBoardTechnology in src/routes/extraction.js. The final
+            // analysis.confidence.{overall, image_quality} is built from this
+            // numeric value downstream; the test doesn't need to provide both.
+            confidence: 0.95,
+            questionsForInspector: [],
+          }),
+        },
+      ],
+      usage: { input_tokens: 1000, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    }));
 
     const token = jwt.sign({ userId: 'user-1', email: 'u@x' }, process.env.JWT_SECRET, {
       expiresIn: '24h',
@@ -1161,17 +1943,73 @@ describe('analyze-ccu route — Stage 3 || Stage 4 parallel dispatch', () => {
       .attach('photo', fakeJpeg, 'test.jpg');
 
     expect(res.status).toBe(200);
+    expect(res.body.attribution).toEqual({ board_id: null, board_index: null });
+  });
 
-    // Verify the critical Codex P2 invariant: single-shot started BEFORE
-    // the classifier resolved. If single-shot was awaiting classifier
-    // completion, the order would be classifier-start → classifier-resolve
-    // → single-shot-start.
-    const classifierResolveIdx = callOrder.findIndex(
-      (c) => c.name === 'classifier-resolve'
-    );
-    const singleShotStartIdx = callOrder.findIndex((c) => c.name === 'single-shot-start');
-    expect(classifierResolveIdx).toBeGreaterThanOrEqual(0);
-    expect(singleShotStartIdx).toBeGreaterThanOrEqual(0);
-    expect(singleShotStartIdx).toBeLessThan(classifierResolveIdx);
+  test('attribution silently drops a malformed board_index (non-numeric)', async () => {
+    classifyModernSlotsMock.mockResolvedValue({
+      slots: [],
+      stageOutputs: {},
+      usage: { inputTokens: 100, outputTokens: 50 },
+      timings: { stage3Ms: 10 },
+      lowConfidence: false,
+    });
+    mockExtractSlotLabels.mockResolvedValue({
+      labels: [],
+      usage: { inputTokens: 100, outputTokens: 50 },
+      batchCount: 0,
+      skippedSlotIndices: [],
+      timings: { cropMs: 0, vlmMs: 0, totalMs: 0 },
+    });
+    mockAnthropicMessagesCreate.mockImplementation(async () => ({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            board_manufacturer: 'Hager',
+            board_model: null,
+            board_technology: 'modern',
+            main_switch_rating: '100',
+            main_switch_position: 'left',
+            main_switch_bs_en: null,
+            main_switch_type: 'Isolator',
+            main_switch_poles: 'DP',
+            main_switch_current: '100',
+            main_switch_voltage: '230',
+            spd_present: false,
+            circuits: [],
+            // Numeric, top-level, per the classifier prompt's contract — see
+            // classifyBoardTechnology in src/routes/extraction.js. The final
+            // analysis.confidence.{overall, image_quality} is built from this
+            // numeric value downstream; the test doesn't need to provide both.
+            confidence: 0.95,
+            questionsForInspector: [],
+          }),
+        },
+      ],
+      usage: { input_tokens: 1000, output_tokens: 200 },
+      stop_reason: 'end_turn',
+    }));
+
+    const token = jwt.sign({ userId: 'user-1', email: 'u@x' }, process.env.JWT_SECRET, {
+      expiresIn: '24h',
+    });
+    const sharp = (await import('sharp')).default;
+    const fakeJpeg = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: { r: 200, g: 200, b: 200 } },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const res = await supertest(app)
+      .post('/api/analyze-ccu')
+      .set('Authorization', `Bearer ${token}`)
+      .field('board_id', 'sub-1')
+      .field('board_index', 'not-a-number')
+      .attach('photo', fakeJpeg, 'test.jpg');
+
+    expect(res.status).toBe(200);
+    // board_id still present, board_index gracefully nulled.
+    expect(res.body.attribution).toEqual({ board_id: 'sub-1', board_index: null });
   });
 });

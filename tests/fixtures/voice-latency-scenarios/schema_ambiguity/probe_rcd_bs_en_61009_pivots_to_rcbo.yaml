@@ -1,0 +1,67 @@
+name: probe_rcd_bs_en_61009_pivots_to_rcbo
+suite: schema_ambiguity
+description: |
+  REGRESSION GUARD — RCD schema declares derivation on rcd_bs_en
+  slot: `{ value: '61009', mirrors: ['ocpd_bs_en'], pivot: 'rcbo' }`
+  (rcd.js:78). Inspector enters via RCD trigger, parser writes
+  rcd_bs_en="BS EN 61009", derivation fires → mirror writes
+  ocpd_bs_en → pivot 'rcbo' switches the active schema to RCBO
+  mid-session.
+
+  PROD OBSERVATION 2026-06-02 (this audit): The pivot DOES fire
+  (engine asks for curve next, which is RCBO's nextMissingSlot).
+  But the mirror to ocpd_bs_en does NOT appear on the wire.
+  Result: rcd_bs_en="BS EN 61009" landed but ocpd_bs_en is absent
+  from extracted_readings.
+
+  Root cause: applyDerivations
+  (src/extraction/dialogue-engine/helpers/derivations.js:61-104)
+  writes mirrors via applyReadingToSnapshot which mutates the
+  server-side snapshot but does NOT push to perTurnWrites.readings.
+  The bundler emits perTurnWrites.readings only — the mirror is
+  invisible on the wire.
+
+  iOS impact: the snapshot at session-end is correct (both fields
+  populated), but the live UI does not visually update the mirrored
+  field until next session sync. Inspector dictates a single value,
+  sees one column update, dictates again because they think the
+  system missed the other column.
+
+  This guard FAILS today. Will pass after applyDerivations is
+  updated to also push the mirror into perTurnWrites — proposed
+  in the backend-fix list at the bottom of the audit doc.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "RCD on circuit 3 BS EN 61009."
+    isFinal: true
+  - at_ms: 5000
+    text: "Type B."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 3
+      field: rcd_bs_en
+      value: "BS EN 61009"
+    # FAILS until applyDerivations pushes mirror to perTurnWrites.
+    - circuit: 3
+      field: ocpd_bs_en
+      value: "BS EN 61009"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

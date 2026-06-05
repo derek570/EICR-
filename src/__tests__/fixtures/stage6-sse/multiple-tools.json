@@ -1,0 +1,111 @@
+[
+  {
+    "type": "message_start",
+    "message": {
+      "id": "msg_01multi",
+      "role": "assistant",
+      "content": [],
+      "model": "claude-sonnet-4-6",
+      "stop_reason": null
+    }
+  },
+  {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+      "type": "text",
+      "text": ""
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+      "type": "text_delta",
+      "text": "Recording all three readings."
+    }
+  },
+  {
+    "type": "content_block_stop",
+    "index": 0
+  },
+  {
+    "type": "content_block_start",
+    "index": 1,
+    "content_block": {
+      "type": "tool_use",
+      "id": "toolu_01multi_a",
+      "name": "record_reading",
+      "input": {}
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 1,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":1,\"value\":\"0.43\",\"confidence\":0.95,\"source_turn_id\":\"t-m\"}"
+    }
+  },
+  {
+    "type": "content_block_stop",
+    "index": 1
+  },
+  {
+    "type": "content_block_start",
+    "index": 2,
+    "content_block": {
+      "type": "tool_use",
+      "id": "toolu_01multi_b",
+      "name": "record_reading",
+      "input": {}
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 2,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":2,\"value\":\"0.61\",\"confidence\":0.92,\"source_turn_id\":\"t-m\"}"
+    }
+  },
+  {
+    "type": "content_block_stop",
+    "index": 2
+  },
+  {
+    "type": "content_block_start",
+    "index": 3,
+    "content_block": {
+      "type": "tool_use",
+      "id": "toolu_01multi_c",
+      "name": "record_reading",
+      "input": {}
+    }
+  },
+  {
+    "type": "content_block_delta",
+    "index": 3,
+    "delta": {
+      "type": "input_json_delta",
+      "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":3,\"value\":\"0.78\",\"confidence\":0.9,\"source_turn_id\":\"t-m\"}"
+    }
+  },
+  {
+    "type": "content_block_stop",
+    "index": 3
+  },
+  {
+    "type": "message_delta",
+    "delta": {
+      "stop_reason": "tool_use",
+      "stop_sequence": null
+    },
+    "usage": {
+      "output_tokens": 140
+    }
+  },
+  {
+    "type": "message_stop"
+  }
+]

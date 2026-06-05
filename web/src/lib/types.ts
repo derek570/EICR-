@@ -44,6 +44,69 @@ export interface User {
   company_id?: string;
   /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
   company_role?: 'owner' | 'admin' | 'employee';
+  /**
+   * True when the user has NOT yet accepted the current Beta Tester
+   * Agreement version. Drives the dashboard's consent-gate redirect to
+   * `/onboarding/consent`. See `.planning/compliance/in-app-consent-screen.md`.
+   * Backend canonical at `/api/auth/me`; optional + undefined-tolerant
+   * so older /me responses still decode.
+   */
+  consent_pending?: boolean;
+  /** The current BTA version the user is being asked to accept. */
+  current_agreement_version?: string;
+}
+
+// =============================================================================
+// Legal text + consent / per-PDF attestations
+// Specs: .planning/compliance/in-app-consent-screen.md +
+//        .planning/compliance/pdf-issuance-attestations.md
+// =============================================================================
+
+export interface BTAConsentCopy {
+  heading: string;
+  summary: string;
+  bulletsHeading: string;
+  bullets: string[];
+  buttons: {
+    primary: string;
+    readFull: string;
+    cancel: string;
+  };
+  footer: string;
+  links: {
+    betaTesterAgreement: string;
+    privacyPolicy: string;
+    subProcessors: string;
+    doorScript: string;
+  };
+}
+
+export interface AttestationCopy {
+  heading: string;
+  body: string;
+}
+
+export interface KindBundle<Copy> {
+  version: string;
+  copy: Copy;
+}
+
+export interface LegalTextVersionsBundle {
+  beta_tester_agreement: KindBundle<BTAConsentCopy>;
+  cert_attestation_readings: KindBundle<AttestationCopy>;
+  cert_attestation_observations: KindBundle<AttestationCopy>;
+}
+
+export interface ConsentAcceptResponse {
+  ok: boolean;
+  consent_id: number;
+  accepted_at: string;
+  recorded_at: string;
+}
+
+export interface CertAttestationsAcceptResponse {
+  ok: boolean;
+  attestation_ids: number[];
 }
 
 /**
@@ -234,8 +297,9 @@ export interface JobDetail extends Job {
   // `Record<string, unknown>` for now — per-field typing lives in
   // `@certmate/shared-types` and will be tightened one tab at a time.
   // All nullable buckets match backend GET shape (src/routes/jobs.js:
-  // 585-591): `null` when unpopulated, object/array when populated.
-  // Consumers must handle `null` the same as `undefined` on read.
+  // 585-591 — verified 2026-06-05): `null` when unpopulated,
+  // object/array when populated. Consumers must handle `null` the same
+  // as `undefined` on read.
   installation_details?: Record<string, unknown> | null;
   supply_characteristics?: Record<string, unknown> | null;
   /** Primary / single-board summary. Always present on the wire ({}  if empty). */
@@ -284,24 +348,21 @@ export interface CircuitRow {
 
 export interface ObservationRow {
   id: string;
-  /**
-   * Server-assigned stable UUID from Sonnet's initial extraction.
-   * Stored so a follow-up `observation_update` (BPG4 / BS 7671 lookup
-   * refinement) can patch the right row even when Sonnet rewords the
-   * description between extraction and refinement. Null on rows that
-   * pre-date this field on the wire (legacy sessions).
-   */
-  observation_id?: string;
+  /** Server-assigned UUID for the observation, captured from Sonnet's
+   *  initial extraction (`observation_id` on the wire). Lets a follow-up
+   *  `observation_update` patch the exact row even after the visible text
+   *  has been rewritten by BPG4 refinement. Mirrors iOS
+   *  `JobObservation.serverId`. Nil for rows created outside a recording
+   *  (CCU analysis, manual entry). */
+  server_id?: string;
   code?: 'C1' | 'C2' | 'C3' | 'FI';
   description?: string;
   location?: string;
   remedial?: string;
-  /**
-   * BS 7671 / BPG4 regulation reference attached on `observation_update`
-   * refinement. Optional because the initial extraction may not carry
-   * one — the server populates this only after the BS 7671 web-search
-   * lookup resolves.
-   */
+  /** BS 7671 regulation citation (e.g. "411.3.2"). Populated by the
+   *  server's regulation refiner — sent on the initial extraction's
+   *  observations[] AND on observation_update payloads. iOS
+   *  counterpart: `Observation.regulation`. */
   regulation?: string;
   /** Free-text rationale from the refinement lookup. */
   rationale?: string;
@@ -329,6 +390,16 @@ export interface ObservationRow {
    * referenced schedule item is later renumbered in a BS 7671 update.
    */
   schedule_description?: string;
+  /**
+   * Multi-board attribution — which board this observation belongs
+   * to. iOS `JobObservation.boardId` (`Observation.swift:46`) and
+   * `JobDetail.observations(for boardId:)` use this to render
+   * observations per-board in PDF output + filter the Observations
+   * tab for the active board. Pre-2026-05-12 this round-tripped
+   * iOS-set observations into the PWA, got stripped from the typed
+   * shape, and was silently dropped on the next save.
+   */
+  board_id?: string;
 }
 
 export interface InspectorInfo {
@@ -351,7 +422,9 @@ export interface InspectorInfo {
  * about, so unknown additions are inert until wired up.
  */
 export interface CCUAnalysisCircuit {
-  circuit_number: number;
+  /** Optional — the per-slot pipeline emits standalone-RCD schedule
+   *  rows with `circuit_number: null` and `is_rcd_device: true`. */
+  circuit_number?: number | null;
   label?: string | null;
   ocpd_type?: 'B' | 'C' | 'D' | null;
   ocpd_rating_a?: string | null;
@@ -362,11 +435,64 @@ export interface CCUAnalysisCircuit {
   rcd_type?: 'AC' | 'A' | 'B' | 'F' | 'S' | null;
   rcd_rating_ma?: string | null;
   rcd_bs_en?: string | null;
+  /** Set on standalone-RCD schedule rows so consumers can skip them. */
+  is_rcd_device?: boolean;
+}
+
+/** Slot bbox in original-photo pixel coordinates. */
+export interface CCUSlotBBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Per-slot classification from the Stage 3 crop-and-classify pipeline
+ * (backend `src/extraction/ccu-geometric*.js`). Populated when the
+ * per-slot primary path succeeds. The Stage 4 label-pass adds
+ * `label`/`labelRaw`/`labelConfidence` when it succeeds.
+ */
+export interface CCUSlot {
+  slotIndex: number;
+  /** mcb | rcbo | rcd | rewireable | cartridge | blank | empty | unknown | main_switch | spd */
+  classification?: string | null;
+  manufacturer?: string | null;
+  model?: string | null;
+  ratingAmps?: number | null;
+  poles?: number | null;
+  tripCurve?: string | null;
+  sensitivity?: number | null;
+  rcdWaveformType?: string | null;
+  bsEn?: string | null;
+  /** Rewireable/cartridge only — BS 3036 colour code. */
+  bodyColour?: string | null;
+  confidence?: number | null;
+  bbox?: CCUSlotBBox | null;
+  crop?: { bbox?: CCUSlotBBox | null; base64?: string | null } | null;
+  /** Stage 4 label-pass output. */
+  label?: string | null;
+  labelRaw?: string | null;
+  labelConfidence?: number | null;
 }
 
 export interface CCUAnalysis {
   board_manufacturer?: string | null;
   board_model?: string | null;
+  /** Overcurrent-protection technology classifier — drives downstream
+   *  defaults (rewireable boards have no kA breaking capacity, no RCD
+   *  protection unless explicitly fitted, BS EN 3036 instead of 60898). */
+  board_technology?: 'modern' | 'rewireable_fuse' | 'cartridge_fuse' | 'mixed' | null;
+  /** Set when the board-model classifier overrides a VLM-issued
+   *  rewireable / cartridge classification because the model string
+   *  matches a known modern series. Telemetry only. */
+  technology_override?: {
+    appliedBy?: string;
+    fromVlm?: string;
+    toTechnology?: string;
+    series?: string;
+    matchedPattern?: string;
+  } | null;
   main_switch_rating?: string | null;
   main_switch_bs_en?: string | null;
   main_switch_type?: string | null;
@@ -383,6 +509,10 @@ export interface CCUAnalysis {
   spd_rated_current?: string | null;
   spd_type_supply?: string | null;
   circuits?: CCUAnalysisCircuit[];
+  /** Per-slot classifications from the Stage 3 pipeline. */
+  slots?: CCUSlot[] | null;
+  /** "geometric-merged" | "single-shot" | "classifier-only". */
+  extraction_source?: string | null;
   questionsForInspector?: string[];
   confidence?: {
     overall?: number;
@@ -494,4 +624,116 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+// ----------------------------------------------------------------
+// Admin — system stats / health / queue (mirrors iOS AdminModels.swift,
+// matched against backend src/admin_api.js handler shapes).
+// ----------------------------------------------------------------
+
+export interface AdminCompanyBreakdownEntry {
+  id: string;
+  name: string;
+  is_active?: boolean;
+  user_count?: number | string;
+  job_count?: number | string;
+}
+
+export interface AdminStatsResponse {
+  status: string;
+  timestamp?: string;
+  jobs?: { total: number | string };
+  users?: { total: number | string };
+  companies?: { total: number | string; breakdown?: AdminCompanyBreakdownEntry[] };
+  uptime?: number;
+  storage?: string;
+}
+
+export interface AdminHealthResponse {
+  status: string;
+  service?: string;
+  timestamp?: string;
+  uptime?: number;
+  memory?: {
+    rss?: number;
+    heapUsed?: number;
+    heapTotal?: number;
+  };
+  database?: string;
+  storage?: string;
+  nodeVersion?: string;
+}
+
+export interface AdminQueueStatusResponse {
+  status: string;
+  queue?: Record<string, unknown>;
+  message?: string;
+}
+
+export interface AdminQueueHealthResponse {
+  status: string;
+  health?: Record<string, unknown>;
+  message?: string;
+}
+
+// ----------------------------------------------------------------
+// Voice feedback (PLAN-web-final §1.6.5 / backend slice §1.6.3-§1.6.4)
+//
+// On-device voice trigger ("feedback ... end feedback") captures a
+// short transcript window + user-spoken issue text and uploads it to
+// the backend. The web /voice-feedback list + detail pages here let
+// the developer/admin user triage those reports. Status workflow:
+//   open → reviewed (acknowledged) → actioned (fix shipped)
+//                                  → wontfix (no change planned)
+//
+// Wire contracts are frozen against the backend slice. See
+// PLAN-web-final.md §"Cross-repo wire contracts" for the source of
+// truth.
+// ----------------------------------------------------------------
+
+export type VoiceFeedbackStatus = 'open' | 'reviewed' | 'actioned' | 'wontfix';
+
+export interface VoiceFeedbackListItem {
+  id: string;
+  sessionId: string;
+  jobId: string | null;
+  /** Best-effort site address resolved by the backend at insert time. */
+  address: string | null;
+  /** First ~150 chars of `issue_text`, server-truncated. */
+  issuePreview: string;
+  createdAt: string;
+  status: VoiceFeedbackStatus;
+  /** Only populated when the list was fetched via the admin/all path. */
+  userId?: string;
+}
+
+export interface VoiceFeedbackTranscriptEntry {
+  /** Wall-clock timestamp of the transcript line (ISO-8601). */
+  ts: string;
+  text: string;
+}
+
+export interface VoiceFeedbackDetail {
+  id: string;
+  sessionId: string;
+  jobId: string | null;
+  address: string | null;
+  /** Full inspector-spoken complaint text (between "feedback" and "end feedback"). */
+  issueText: string;
+  /**
+   * Short window of transcript lines either side of the feedback marker.
+   * Backend slice pegs it at ~30 s either side. Empty array if the
+   * upload happened before the window was captured.
+   */
+  transcriptWindow: VoiceFeedbackTranscriptEntry[];
+  /** S3 key of the raw JSON payload uploaded by iOS. Used for the "open raw" link. */
+  s3Key: string;
+  createdAt: string;
+  status: VoiceFeedbackStatus;
+  reviewNote: string | null;
+}
+
+export interface VoiceFeedbackListResponse {
+  items: VoiceFeedbackListItem[];
+  total: number;
 }

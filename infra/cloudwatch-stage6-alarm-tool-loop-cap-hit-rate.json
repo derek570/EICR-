@@ -1,0 +1,14 @@
+{
+  "AlarmName": "stage6-tool-loop-cap-hit-rate-high",
+  "AlarmDescription": "Stage 6 tool-loop-cap-hit rate exceeded 0.5% — Sonnet is hitting the 8-round loop cap; review for runaway tool dispatch loops or schema invariant violations causing repeated retries.",
+  "ActionsEnabled": true,
+  "MetricName": "stage6.tool_loop_cap_hit_rate",
+  "Namespace": "EICR/Stage6",
+  "Statistic": "Average",
+  "Period": 300,
+  "EvaluationPeriods": 3,
+  "DatapointsToAlarm": 3,
+  "Threshold": 0.005,
+  "ComparisonOperator": "GreaterThanThreshold",
+  "TreatMissingData": "notBreaching"
+}

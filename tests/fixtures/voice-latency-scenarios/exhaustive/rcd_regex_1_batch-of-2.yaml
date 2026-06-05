@@ -1,0 +1,75 @@
+name: rcd_regex_1_batch-of-2
+suite: exhaustive
+description: >-
+  RCD REGEX broadcast guard scenario for circuits 2 and 3.
+
+  The trigger words are present, but detectBroadcastIntent must bail before script entry so Sonnet
+  performs the batch write and no script ask fires.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+    - number: 2
+      board_id: main
+      designation: Kitchen Sockets
+    - number: 3
+      board_id: main
+      designation: Cooker
+    - number: 4
+      board_id: main
+      designation: Shower
+    - number: 5
+      board_id: main
+      designation: Outside Lights
+transcript:
+  - at_ms: 0
+    text: RCD trip time 25 ms for circuits 2 and 3.
+    isFinal: true
+expect:
+  extraction_count:
+    min: 1
+  has_reading:
+    - circuit: 2
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 3
+      field: rcd_trip_time
+      value: "25"
+  has_no_reading:
+    - circuit: 1
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 4
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 5
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 2
+      field: rcd_bs_en
+    - circuit: 3
+      field: rcd_bs_en
+    - circuit: 2
+      field: rcd_type
+    - circuit: 3
+      field: rcd_type
+    - circuit: 2
+      field: rcd_operating_current_ma
+    - circuit: 3
+      field: rcd_operating_current_ma
+  ask_user_count:
+    min: 0
+    max: 0
+  confirmation_count:
+    min: 1
+  confirmation_text_contains:
+    - Circuits 2, 3
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

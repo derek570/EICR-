@@ -329,9 +329,7 @@ describe('getPanelGeometry', () => {
 
   test('throws when VLM omits required panel_* fields', async () => {
     const buf = await makeFakeJpeg();
-    mockCreate.mockResolvedValueOnce(
-      fakeVlmResponse({ panel_top: 300, panel_bottom: 600 })
-    );
+    mockCreate.mockResolvedValueOnce(fakeVlmResponse({ panel_top: 300, panel_bottom: 600 }));
     // 4 additional successful responses — Stage 1 awaits Promise.all(5), so even
     // if one sample throws, the other 4 resolvers still need mock responses
     // available or they hang / throw a different error. Keep the failure mode
@@ -417,9 +415,7 @@ describe('getCarrierCount', () => {
     mockCreate.mockResolvedValueOnce(
       fakeVlmResponse({ carrier_count: 0, main_switch_offset: 'none' })
     );
-    await expect(getCarrierCount(buf, medianPanel, imageDims)).rejects.toThrow(
-      /carrier_count/
-    );
+    await expect(getCarrierCount(buf, medianPanel, imageDims)).rejects.toThrow(/carrier_count/);
   });
 
   test('throws when panel_right <= panel_left', async () => {
@@ -451,7 +447,6 @@ describe('getCarrierCount', () => {
     // focused on assertions.
     let logSpy;
     beforeEach(() => {
-      // eslint-disable-next-line no-console
       logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     });
     afterEach(() => {
@@ -476,13 +471,9 @@ describe('getCarrierCount', () => {
       const buf = await makeFakeJpeg();
       // imageWidth=500, panelWidthPx=400 → range [4, 14]. 2 is BELOW the min.
       mockCreate
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 2, main_switch_offset: 'none' })
-        )
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 2, main_switch_offset: 'none' }))
         // Retry: a more plausible answer within the expected range.
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 6, main_switch_offset: 'none' })
-        );
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 6, main_switch_offset: 'none' }));
 
       const result = await getCarrierCount(buf, medianPanel, imageDims);
 
@@ -499,9 +490,7 @@ describe('getCarrierCount', () => {
         secondInRange: true,
       });
       // Branch decision logged.
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/retry fired.*first=2.*second=6/)
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/retry fired.*first=2.*second=6/));
       // Usage summed across both calls (2 × 100 input, 2 × 40 output from fakeVlmResponse defaults).
       expect(result.usage.inputTokens).toBe(200);
       expect(result.usage.outputTokens).toBe(80);
@@ -511,12 +500,8 @@ describe('getCarrierCount', () => {
       const buf = await makeFakeJpeg();
       // 30 is ABOVE expectedMax (14).
       mockCreate
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 30, main_switch_offset: 'none' })
-        )
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 10, main_switch_offset: 'none' })
-        );
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 30, main_switch_offset: 'none' }))
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 10, main_switch_offset: 'none' }));
 
       const result = await getCarrierCount(buf, medianPanel, imageDims);
 
@@ -534,12 +519,8 @@ describe('getCarrierCount', () => {
       // had the benefit of the strengthened recount prompt; secondInRange
       // marks the result as still suspect so callers can escalate.
       mockCreate
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 30, main_switch_offset: 'none' })
-        )
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 2, main_switch_offset: 'none' })
-        );
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 30, main_switch_offset: 'none' }))
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 2, main_switch_offset: 'none' }));
 
       const result = await getCarrierCount(buf, medianPanel, imageDims);
 
@@ -556,12 +537,8 @@ describe('getCarrierCount', () => {
     test('retry call receives a strengthened prompt mentioning the first count + expected range', async () => {
       const buf = await makeFakeJpeg();
       mockCreate
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 25, main_switch_offset: 'none' })
-        )
-        .mockResolvedValueOnce(
-          fakeVlmResponse({ carrier_count: 8, main_switch_offset: 'none' })
-        );
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 25, main_switch_offset: 'none' }))
+        .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 8, main_switch_offset: 'none' }));
 
       await getCarrierCount(buf, medianPanel, imageDims);
 
@@ -588,9 +565,7 @@ describe('getCarrierCount', () => {
 
       await getCarrierCount(buf, medianPanel, imageDims);
 
-      expect(logSpy).toHaveBeenCalledWith(
-        expect.stringMatching(/single-pass.*count=7.*\[4,14\]/)
-      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/single-pass.*count=7.*\[4,14\]/));
     });
   });
 });
@@ -649,12 +624,12 @@ describe('cropCarrierSlot', () => {
 
   test('throws on missing or invalid geometry fields', async () => {
     const buf = await makeFakeJpeg();
-    await expect(
-      cropCarrierSlot(buf, 0, { ...baseGeom, slotCentersX: [] })
-    ).rejects.toThrow(/non-empty/);
-    await expect(
-      cropCarrierSlot(buf, 0, { ...baseGeom, carrierPitchPx: 0 })
-    ).rejects.toThrow(/carrierPitchPx/);
+    await expect(cropCarrierSlot(buf, 0, { ...baseGeom, slotCentersX: [] })).rejects.toThrow(
+      /non-empty/
+    );
+    await expect(cropCarrierSlot(buf, 0, { ...baseGeom, carrierPitchPx: 0 })).rejects.toThrow(
+      /carrierPitchPx/
+    );
     await expect(
       cropCarrierSlot(buf, 0, { ...baseGeom, panelTopNorm: 600, panelBottomNorm: 300 })
     ).rejects.toThrow(/panelTopNorm|panelBottomNorm/);
@@ -1011,9 +986,7 @@ describe('extractCcuRewireable', () => {
         })
       )
       // Stage 2 — carrier count (in range, no retry)
-      .mockResolvedValueOnce(
-        fakeVlmResponse({ carrier_count: 4, main_switch_offset: 'none' })
-      )
+      .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 4, main_switch_offset: 'none' }))
       // Stage 3 — 1 batch of 4
       .mockResolvedValueOnce(stage3Response([0, 1, 2, 3]));
 
@@ -1152,9 +1125,7 @@ describe('extractCcuRewireable', () => {
       );
     }
     mockCreate
-      .mockResolvedValueOnce(
-        fakeVlmResponse({ carrier_count: 3, main_switch_offset: 'none' })
-      )
+      .mockResolvedValueOnce(fakeVlmResponse({ carrier_count: 3, main_switch_offset: 'none' }))
       // One slot has confidence 0.4 — should trigger lowConfidence
       .mockResolvedValueOnce(
         fakeVlmResponse([

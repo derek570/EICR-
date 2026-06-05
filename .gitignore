@@ -120,3 +120,6 @@ ehthumbs.db
 *.tfvars
 .terraform/
 .terraform.lock.hcl
+.planning-stage6-agentic/handoffs/voice-latency-2026-05-23/stage0-results/voice-ab-samples/
+
+voice-regression-report.md

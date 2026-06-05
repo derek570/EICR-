@@ -32,6 +32,21 @@ POLL_INTERVAL=120
 PUSHOVER_USER="uexvmxgxpccjgvjzjk2qnqrnyrncgb"
 PUSHOVER_TOKEN="adcgd8wx7t6ct7fhz9dyeyt1ne3gcn"
 
+# Optimizer rewrite plan Decision 3 — notification cadence flag.
+# Default `per_session` ships today: one Pushover per session report.
+# When more testers start producing sessions and the per-session volume
+# becomes noisy, flip this to `batched_daily` (or `batched_weekly`); the
+# batching code path lives in scripts/digest_sender.sh (a dormant
+# companion LaunchAgent) and reads from a separate queue file at
+# ~/.certmate/digest_queue.json (intentionally separate from
+# optimizer_state.json — keeping queues in their own file avoids
+# teaching every existing state-write path about queueing).
+#
+# Currently only `per_session` is active. The batched paths are
+# skeletons + a documented file shape only.
+NOTIFY_MODE="${NOTIFY_MODE:-per_session}"
+DIGEST_QUEUE_FILE="${HOME}/.certmate/digest_queue.json"
+
 # Project paths
 CODEBASE="$HOME/Developer/EICR_Automation"
 SCRIPTS_DIR="$CODEBASE/scripts"
@@ -1054,36 +1069,107 @@ process_session() {
   local ANALYSIS
   ANALYSIS=$(cat "$SESSION_DIR/analysis.json")
 
-  # Compute current keyword count and estimated token usage for budget constraint.
-  # We no longer pre-load full source files into the prompt — Claude fetches them
-  # via Read/Glob/Grep. But the keyword budget numbers are dynamic and cheap, so
-  # we still compute them here and inject them as placeholders.
-  local KEYWORD_COUNT=0
-  local KEYWORD_TOKENS=0
-  local KEYWORD_BOOSTS_JSON=""
-  if [ -f "$IOS_DIR/Resources/default_config.json" ]; then
-    KEYWORD_BOOSTS_JSON=$(cat "$IOS_DIR/Resources/default_config.json" 2>/dev/null || echo "{}")
+  # Cluster 2 Item 6 — extract the new analyzer sections as compact JSON
+  # blobs for the prompt's new template vars. jq -c keeps them on one line
+  # so the substituted prompt stays readable. Falls back to '[]' when a
+  # section is absent (older analyzer output / sessions before this PR).
+  local FOCUSED_MODE_TIMELINE
+  local DIALOGUE_ENGINE_TRANSITIONS
+  local STAGE6_TOOL_CALLS
+  local UNMAPPED_READINGS
+  local BUG_SIGNATURE_HITS
+  FOCUSED_MODE_TIMELINE=$(echo "$ANALYSIS" | jq -c '.focused_mode_timeline // []' 2>/dev/null || echo "[]")
+  DIALOGUE_ENGINE_TRANSITIONS=$(echo "$ANALYSIS" | jq -c '.dialogue_engine_transitions // []' 2>/dev/null || echo "[]")
+  STAGE6_TOOL_CALLS=$(echo "$ANALYSIS" | jq -c '.stage6_tool_calls // []' 2>/dev/null || echo "[]")
+  UNMAPPED_READINGS=$(echo "$ANALYSIS" | jq -c '.unmapped_readings // []' 2>/dev/null || echo "[]")
+  BUG_SIGNATURE_HITS=$(echo "$ANALYSIS" | jq -c '.bug_signature_hits // []' 2>/dev/null || echo "[]")
+
+  # Compute Flux keyterm budget metrics. Two distinct caps apply on Flux:
+  #
+  #   1. Session-start keyterms via DeepgramService.buildFluxURL — passed as
+  #      URL query params at WebSocket open and SILENTLY TRUNCATED at
+  #      DEEPGRAM_MAX_URL_LENGTH = 2000 chars (DeepgramService.swift:48).
+  #      We surface a static URL-char estimate so the prompt can warn when
+  #      raw keyterms exceed what will actually be sent.
+  #
+  #   2. Focused-mode Configure keyterms via DeepgramService.mergeFocusedKeyterms
+  #      — hard-capped at 100 entries TOTAL. FocusedAnswerKeyterms.all
+  #      (50 digits + 8 sentinels = 58 essentials) is PREPENDED first, leaving
+  #      ~42 slots for session keyterms in focused mode.
+  #
+  # The Nova-era ":boost" suffix is stripped on Flux — keyterm boost numbers
+  # act only as inclusion priority when the URL hits its char cap, not as
+  # acoustic-bias multipliers. The legacy TOKEN_BUDGET=450 was Nova-3's BPE
+  # token cap and does not apply to Flux at all — dropped.
+  #
+  # KeywordBoostGenerator.dedupAndCap on iOS caps the merged keyterm set at
+  # 100 BEFORE buildFluxURL is even called, so the upstream "raw" count is
+  # what the optimizer can influence; the URL truncation is a downstream
+  # binding constraint.
+  local KEYTERM_RAW_COUNT=0
+  local KEYTERM_GENERATOR_SENT_COUNT=0
+  local KEYTERM_URL_CHARS_ESTIMATE=0
+  local KEYTERM_URL_ESTIMATED_SENT_COUNT=0
+  local KEYTERM_CONFIGURE_CAP_REMAINING=0
+  local KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT=0
+  local KEYTERM_URL_CAP_REMAINING=0
+  # FocusedAnswerKeyterms.all currently = 50 digits + 8 sentinels — verify at
+  # CertMateUnified/Sources/Recording/FocusedAnswerKeyterms.swift if it drifts.
+  local FOCUSED_KEYTERM_ESSENTIAL_COUNT=58
+  # Soft URL-budget heuristic: assume the 2000-char URL leaves ~95 keyterms
+  # worth of room once "&keyterms=" + URL-encoding overhead is accounted for.
+  # Real iOS-side encoding is "best effort" — the optimizer cannot read the
+  # exact runtime URL, so this is a static guidance number, not an exact gate.
+  local KEYTERM_URL_SOFT_CEILING=95
+  local KEYTERM_BOOSTS_JSON=""
+  if [ -f "$IOS_DIR/Sources/Resources/default_config.json" ]; then
+    KEYTERM_BOOSTS_JSON=$(cat "$IOS_DIR/Sources/Resources/default_config.json" 2>/dev/null || echo "{}")
   fi
-  if command -v python3 &>/dev/null && [ -n "$KEYWORD_BOOSTS_JSON" ]; then
-    read KEYWORD_COUNT KEYWORD_TOKENS < <(echo "$KEYWORD_BOOSTS_JSON" | python3 -c "
+  if command -v python3 &>/dev/null && [ -n "$KEYTERM_BOOSTS_JSON" ]; then
+    read KEYTERM_RAW_COUNT KEYTERM_URL_CHARS_ESTIMATE KEYTERM_URL_ESTIMATED_SENT_COUNT < <(echo "$KEYTERM_BOOSTS_JSON" | python3 -c "
 import json,sys
+from urllib.parse import quote
 d=json.load(sys.stdin)
 kb=d.get('keyword_boosts',{})
 base=kb.get('base_electrical',{})
 board=kb.get('board_types',{})
-count=0; tokens=0
-for kw,boost in list(base.items())+list(board.items()):
-    if kw.startswith('_'): continue
-    count+=1
-    words=len(kw.split())
-    text_tok=max(words*2,1)
-    boost_tok=4 if boost>=2.0 else 0
-    tokens+=text_tok+boost_tok
-print(count,tokens)
-" 2>/dev/null || echo "0 0")
+# Priority order: higher boost first; tie-break by insertion order.
+items=[(kw,boost) for kw,boost in list(base.items())+list(board.items()) if not kw.startswith('_')]
+items.sort(key=lambda kv: -float(kv[1] or 0))
+raw_count=len(items)
+# Static URL-char estimate: len(URL-encoded(kw)) + 11 per term (10 chars
+# for '&keyterms=' + 1 buffer for encoding overhead from spaces/punctuation).
+# Walk priority-sorted; stop counting at 2000 to mirror buildFluxURL's
+# silent truncation (DEEPGRAM_MAX_URL_LENGTH=2000).
+chars_total=0
+url_estimated_sent=0
+for kw,_ in items:
+    cost=len(quote(kw, safe=''))+11
+    chars_total+=cost
+    if chars_total <= 2000:
+        url_estimated_sent+=1
+print(raw_count, chars_total, url_estimated_sent)
+" 2>/dev/null || echo "0 0 0")
   fi
-  local TOKEN_BUDGET=450
-  local TOKEN_HEADROOM=$((TOKEN_BUDGET - KEYWORD_TOKENS))
+  # KeywordBoostGenerator.dedupAndCap on iOS caps the merged set at 100
+  # entries BEFORE the URL is built. Approximate it here.
+  if [ "$KEYTERM_RAW_COUNT" -gt 100 ]; then
+    KEYTERM_GENERATOR_SENT_COUNT=100
+  else
+    KEYTERM_GENERATOR_SENT_COUNT=$KEYTERM_RAW_COUNT
+  fi
+  # Configure-cap headroom AFTER FocusedAnswerKeyterms.all is prepended:
+  # max(0, 100 - 58 - GENERATOR_SENT_COUNT).
+  KEYTERM_CONFIGURE_CAP_REMAINING=$((100 - FOCUSED_KEYTERM_ESSENTIAL_COUNT - KEYTERM_GENERATOR_SENT_COUNT))
+  if [ "$KEYTERM_CONFIGURE_CAP_REMAINING" -lt 0 ]; then
+    KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT=$((-KEYTERM_CONFIGURE_CAP_REMAINING))
+    KEYTERM_CONFIGURE_CAP_REMAINING=0
+  fi
+  # Soft URL ceiling headroom: how many slots below the ~95 static guidance.
+  KEYTERM_URL_CAP_REMAINING=$((KEYTERM_URL_SOFT_CEILING - KEYTERM_URL_ESTIMATED_SENT_COUNT))
+  if [ "$KEYTERM_URL_CAP_REMAINING" -lt 0 ]; then
+    KEYTERM_URL_CAP_REMAINING=0
+  fi
 
   # Collect debug reports context
   local DEBUG_CONTEXT=""
@@ -1172,10 +1258,19 @@ Do NOT repeat the same mistake."
     --arg FIELD_SOURCES_DATA "$FIELD_SOURCES_DATA" \
     --arg UTTERANCE_DATA "$UTTERANCE_DATA" \
     --arg REPEATED_VALUES_DATA "$REPEATED_VALUES_DATA" \
-    --arg KEYWORD_COUNT "$KEYWORD_COUNT" \
-    --arg KEYWORD_TOKENS "$KEYWORD_TOKENS" \
-    --arg TOKEN_BUDGET "$TOKEN_BUDGET" \
-    --arg TOKEN_HEADROOM "$TOKEN_HEADROOM" \
+    --arg KEYTERM_RAW_COUNT "$KEYTERM_RAW_COUNT" \
+    --arg KEYTERM_GENERATOR_SENT_COUNT "$KEYTERM_GENERATOR_SENT_COUNT" \
+    --arg KEYTERM_URL_CHARS_ESTIMATE "$KEYTERM_URL_CHARS_ESTIMATE" \
+    --arg KEYTERM_URL_ESTIMATED_SENT_COUNT "$KEYTERM_URL_ESTIMATED_SENT_COUNT" \
+    --arg KEYTERM_CONFIGURE_CAP_REMAINING "$KEYTERM_CONFIGURE_CAP_REMAINING" \
+    --arg KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT "$KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT" \
+    --arg KEYTERM_URL_CAP_REMAINING "$KEYTERM_URL_CAP_REMAINING" \
+    --arg FOCUSED_KEYTERM_ESSENTIAL_COUNT "$FOCUSED_KEYTERM_ESSENTIAL_COUNT" \
+    --arg FOCUSED_MODE_TIMELINE "$FOCUSED_MODE_TIMELINE" \
+    --arg DIALOGUE_ENGINE_TRANSITIONS "$DIALOGUE_ENGINE_TRANSITIONS" \
+    --arg STAGE6_TOOL_CALLS "$STAGE6_TOOL_CALLS" \
+    --arg UNMAPPED_READINGS "$UNMAPPED_READINGS" \
+    --arg BUG_SIGNATURE_HITS "$BUG_SIGNATURE_HITS" \
     --arg FEEDBACK_CONTEXT "${FEEDBACK_CONTEXT:-No user feedback for this session.}" \
     --arg DEBUG_CONTEXT "${DEBUG_CONTEXT:-No debug reports for this session.}" \
     --arg RERUN_BLOCK "$RERUN_BLOCK" \
@@ -1189,10 +1284,19 @@ Do NOT repeat the same mistake."
       FIELD_SOURCES_DATA: $FIELD_SOURCES_DATA,
       UTTERANCE_DATA: $UTTERANCE_DATA,
       REPEATED_VALUES_DATA: $REPEATED_VALUES_DATA,
-      KEYWORD_COUNT: $KEYWORD_COUNT,
-      KEYWORD_TOKENS: $KEYWORD_TOKENS,
-      TOKEN_BUDGET: $TOKEN_BUDGET,
-      TOKEN_HEADROOM: $TOKEN_HEADROOM,
+      KEYTERM_RAW_COUNT: $KEYTERM_RAW_COUNT,
+      KEYTERM_GENERATOR_SENT_COUNT: $KEYTERM_GENERATOR_SENT_COUNT,
+      KEYTERM_URL_CHARS_ESTIMATE: $KEYTERM_URL_CHARS_ESTIMATE,
+      KEYTERM_URL_ESTIMATED_SENT_COUNT: $KEYTERM_URL_ESTIMATED_SENT_COUNT,
+      KEYTERM_CONFIGURE_CAP_REMAINING: $KEYTERM_CONFIGURE_CAP_REMAINING,
+      KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT: $KEYTERM_CONFIGURE_SESSION_DROPPED_COUNT,
+      KEYTERM_URL_CAP_REMAINING: $KEYTERM_URL_CAP_REMAINING,
+      FOCUSED_KEYTERM_ESSENTIAL_COUNT: $FOCUSED_KEYTERM_ESSENTIAL_COUNT,
+      FOCUSED_MODE_TIMELINE: $FOCUSED_MODE_TIMELINE,
+      DIALOGUE_ENGINE_TRANSITIONS: $DIALOGUE_ENGINE_TRANSITIONS,
+      STAGE6_TOOL_CALLS: $STAGE6_TOOL_CALLS,
+      UNMAPPED_READINGS: $UNMAPPED_READINGS,
+      BUG_SIGNATURE_HITS: $BUG_SIGNATURE_HITS,
       FEEDBACK_CONTEXT: $FEEDBACK_CONTEXT,
       DEBUG_CONTEXT: $DEBUG_CONTEXT,
       RERUN_BLOCK: $RERUN_BLOCK
@@ -1298,16 +1402,35 @@ Do NOT repeat the same mistake."
       local REC_EXPLAIN
       REC_EXPLAIN=$(echo "$rec_line" | jq -r '.explanation // .description // .title' | head -c 120)
       local REC_CAT
-      REC_CAT=$(echo "$rec_line" | jq -r '.category // ""' | head -c 20)
+      # NOTE: do NOT add a `head -c N` truncation here. Several categories
+      # (e.g. dialogue_engine_schema_tighten = 30 chars,
+      # flux_configure_keyterms_per_slot = 32 chars,
+      # loaded_barrel_speculator_hint = 29 chars) exceed any small N and
+      # the truncation would silently mis-route them through the
+      # `*) REC_CAT="Change"` fallback below. The Pushover message length
+      # is bounded by REC_EXPLAIN's head -c 120 a few lines above; that's
+      # the right place to bound rendered text.
+      REC_CAT=$(echo "$rec_line" | jq -r '.category // ""')
       case "$REC_CAT" in
+        # Original 8 categories
         regex_improvement) REC_CAT="Regex" ;;
-        keyword_boost) REC_CAT="Keyword" ;;
-        sonnet_prompt_trim) REC_CAT="Trim" ;;
-        sonnet_prompt_addition) REC_CAT="Sonnet" ;;
-        bug_fix) REC_CAT="Fix" ;;
-        config_change) REC_CAT="Config" ;;
-        number_normaliser) REC_CAT="Numbers" ;;
-        keyword_removal) REC_CAT="Keyword" ;;
+        keyword_boost) REC_CAT="Keyword Boost" ;;
+        keyword_removal) REC_CAT="Keyword Removal" ;;
+        sonnet_prompt_trim) REC_CAT="Sonnet Trim" ;;
+        sonnet_prompt_addition) REC_CAT="Sonnet Addition" ;;
+        bug_fix) REC_CAT="Bug Fix" ;;
+        config_change) REC_CAT="Config Change" ;;
+        number_normaliser) REC_CAT="Number Normaliser" ;;
+        # 8 new categories (Cluster 2 Item 4) — labels match CATEGORY_COLORS.label
+        # in generate-report-html.js exactly (single source of truth).
+        dialogue_engine_schema_tighten) REC_CAT="DE Tighten" ;;
+        dialogue_engine_schema_extend) REC_CAT="DE Extend" ;;
+        dispatcher_validator) REC_CAT="Validator" ;;
+        flux_configure_keyterms_per_slot) REC_CAT="Per-Slot KT" ;;
+        flux_eot_threshold) REC_CAT="EOT Thresh" ;;
+        loaded_barrel_speculator_hint) REC_CAT="Speculator" ;;
+        field_name_correction_add) REC_CAT="Field Map" ;;
+        harness_probe) REC_CAT="Probe" ;;
         *) REC_CAT="Change" ;;
       esac
       PUSHOVER_MSG+="• <b>${REC_CAT}:</b> ${REC_EXPLAIN}\n"
@@ -1600,8 +1723,9 @@ generate_implementation_plan() {
         lines.push('- \`npm test\` passes (TranscriptFieldMatcher / NumberNormaliser tests).');
         lines.push('- Re-run \`node scripts/analyze-session.js <session-dir>\` - \`uncaptured_values\` drops.');
       } else if (rec.category === 'keyword_boost' || rec.category === 'keyword_removal' || rec.category === 'config_change') {
-        lines.push('- JSON remains valid (both Sources/Resources and Resources copies if applicable).');
-        lines.push('- Deepgram keyword boost budget stays under 450 tokens.');
+        lines.push('- JSON remains valid in CertMateUnified/Sources/Resources/default_config.json (the live bundled config).');
+        lines.push('- Deepgram session-start keyterms stay under the 2000-char URL budget (DEEPGRAM_MAX_URL_LENGTH in DeepgramService.swift); buildFluxURL silently truncates anything past it.');
+        lines.push('- Focused-mode Configure keyterms stay under 100 total after merging FocusedAnswerKeyterms.all essentials (~58 reserved → ~42 session-keyterm slots).');
       } else if (rec.category === 'sonnet_prompt_trim' || rec.category === 'sonnet_prompt_addition') {
         lines.push('- Backend tests pass (\`npm test\` in repo root).');
         lines.push('- Token count of EICR_SYSTEM_PROMPT does not increase (measure before/after).');
@@ -1844,6 +1968,18 @@ while true; do
 
   for SESSION_PATH in $SESSIONS; do
 
+    # Skip harness-generated sessions — basename starts with "harness_".
+    # The full S3 key is "session-analytics/{userId}/{sessionId}", so a
+    # regex against the full path would never match — extract basename first.
+    # Mark as processed and clear any first_seen entry so we don't treadmill
+    # for 3600s waiting for a debug_log.jsonl that never uploads.
+    SESSION_BASENAME="${SESSION_PATH##*/}"
+    if [[ "$SESSION_BASENAME" == harness_* ]]; then
+      jq ".processed_sessions += [\"${SESSION_PATH}\"] | del(.first_seen.\"${SESSION_PATH}\")" "$STATE_FILE" > "${STATE_FILE}.tmp" \
+        && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      continue
+    fi
+
     # Skip if already processed
     if jq -e ".processed_sessions | index(\"$SESSION_PATH\")" "$STATE_FILE" > /dev/null 2>&1; then
       continue
@@ -1894,6 +2030,12 @@ while true; do
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/field_sources.json" "$SESSION_LOCAL/field_sources.json" --region "$AWS_REGION" 2>/dev/null || true
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/job_snapshot.json" "$SESSION_LOCAL/job_snapshot.json" --region "$AWS_REGION" 2>/dev/null || true
     aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/cost_summary.json" "$SESSION_LOCAL/cost_summary.json" --region "$AWS_REGION" 2>/dev/null || true
+    # Cluster 2 Item 6 — pull the backend-written event sidecar (engine state
+    # transitions + per-tool-call rows). Absent on sessions recorded before
+    # the backend prereq (0) PR ships; the analyzer degrades to empty
+    # dialogue_engine_transitions / stage6_tool_calls arrays in that case.
+    # 2>/dev/null || true matches the pattern of the other downloads.
+    aws s3 cp "s3://${BUCKET}/${SESSION_PATH}/backend_events.jsonl" "$SESSION_LOCAL/backend_events.jsonl" --region "$AWS_REGION" 2>/dev/null || true
 
     if [ ! -f "$SESSION_LOCAL/debug_log.jsonl" ]; then
       # Staleness check: don't permanently skip — allow retries until 1 hour has passed
@@ -2132,6 +2274,14 @@ while true; do
     MISSED_COUNT=0
     for AUDIT_MANIFEST in $AUDIT_SESSIONS; do
       AUDIT_PATH="${AUDIT_MANIFEST%/manifest.json}"
+
+      # Skip harness-generated sessions before re-injecting into first_seen —
+      # same basename-anchored test as the main poll loop above. Without this
+      # the audit loop would re-add harness_* paths every 24h cycle.
+      AUDIT_BASENAME="${AUDIT_PATH##*/}"
+      if [[ "$AUDIT_BASENAME" == harness_* ]]; then
+        continue
+      fi
 
       # Skip if already processed
       if jq -e ".processed_sessions | index(\"$AUDIT_PATH\")" "$STATE_FILE" > /dev/null 2>&1; then

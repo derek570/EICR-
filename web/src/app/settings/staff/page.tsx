@@ -170,7 +170,12 @@ function HeroHeader({
 }) {
   return (
     <section
-      className="relative overflow-hidden rounded-[var(--radius-lg)] p-5 text-white"
+      // Mobile Safari quirk: a `<section>` flex child with
+      // `overflow-hidden` (BFC trigger) collapses to ~min-content
+      // width. `w-full` alone wasn't enough (see f159057). Making the
+      // element itself a flex container is the reliable fix — same
+      // shape as the main settings hero.
+      className="relative flex w-full flex-col overflow-hidden rounded-[var(--radius-lg)] p-5 text-white"
       style={{
         background:
           'linear-gradient(135deg, var(--color-brand-blue), color-mix(in oklab, var(--color-brand-green) 70%, var(--color-brand-blue)))',

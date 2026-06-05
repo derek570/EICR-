@@ -1,0 +1,62 @@
+name: loaded_barrel_multi_write_per_turn_cap
+suite: loaded_barrel
+description: |
+  Per-turn cap = 2 (VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN, plan
+  v10 §C). Inspector reads several values in one breath; Sonnet
+  emits 3 record_reading calls in a single turn. The speculator
+  speculates on the first 2 only — the 3rd hits the cap and emits
+  `loaded_barrel_cap_skipped`. iOS POSTs for all 3 — the first 2
+  HIT the cache, the 3rd MISSES + falls through to the live path.
+
+  Pin: NO speculator-WS-open exceeds the cap. Cost-tracker
+  speculative.charsStarted reflects exactly 2 entries × char-count
+  this turn. Inspector still hears all 3 confirmations — the 3rd
+  just incurs the live-synth latency.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one Zs point one nine, circuit two Zs point two seven, circuit three Zs point three two."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: measured_zs_ohm
+    - circuit: 2
+      field: measured_zs_ohm
+    - circuit: 3
+      field: measured_zs_ohm
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # 3 confirmations: 2 HIT (~420ms each), 1 MISS (~6000ms baseline)
+  # blended over the turn. P50 lands around the median.
+  audible_latency_ms_p50: { max: 6000 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 25000
+  fetch_tts: true

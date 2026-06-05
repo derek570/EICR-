@@ -1,5 +1,9 @@
 import { type ZodTypeAny } from 'zod';
 import {
+  type AdminHealthResponse,
+  type AdminQueueHealthResponse,
+  type AdminQueueStatusResponse,
+  type AdminStatsResponse,
   type AdminUser,
   ApiError,
   type CCUAnalysis,
@@ -15,6 +19,12 @@ import {
   type LoginResponse,
   type Paginated,
   type User,
+  type LegalTextVersionsBundle,
+  type ConsentAcceptResponse,
+  type CertAttestationsAcceptResponse,
+  type VoiceFeedbackDetail,
+  type VoiceFeedbackListResponse,
+  type VoiceFeedbackStatus,
 } from './types';
 import {
   AdminSuccessResponseSchema,
@@ -288,6 +298,83 @@ export const api = {
   },
 
   /**
+   * Recording session lifecycle — iOS canon
+   * (CertMateUnified/Sources/ViewModels/DeepgramRecordingViewModel.swift).
+   * iOS opens a backend session at mic-on, posts CCU photos against it
+   * for debug-report capture, and closes the session on End. The PWA
+   * adopted the same lifecycle in Phase E (2026-05-03) so:
+   *
+   *   - both clients produce identical session rows in RDS
+   *   - debug-report (`GET /api/job/{userId}/{jobId}/debug`) works for
+   *     web-recorded jobs the same way as iOS-recorded jobs
+   *   - CCU photos captured during a recording are tied to the
+   *     session for forensic replay
+   *
+   * The PWA does NOT post audio chunks via the session — Deepgram +
+   * Sonnet WebSockets remain the data channel. The session endpoints
+   * are pure lifecycle markers.
+   */
+
+  /**
+   * Open a backend recording session. Returns a `sessionId` the
+   * client uses for subsequent /photo and /finish calls.
+   * `POST /api/recording/start` body: `{address?, jobId?}`.
+   */
+  recordingStart(payload: {
+    jobId?: string;
+    address?: string;
+  }): Promise<{ sessionId: string; jobId: string | null; message?: string }> {
+    return request<{ sessionId: string; jobId: string | null; message?: string }>(
+      '/api/recording/start',
+      { method: 'POST', body: JSON.stringify(payload) }
+    );
+  },
+
+  /**
+   * Attach a photo to the current recording session for the
+   * debug-report audit trail. Mirrors iOS DeepgramRecordingViewModel
+   * `submitPhoto`. Multipart field name "photo"; `audioSeconds` is
+   * the elapsed recording time in seconds when the photo was taken
+   * (drives the timeline marker in the debug viewer).
+   */
+  recordingPhoto(
+    sessionId: string,
+    photo: Blob,
+    audioSeconds: number
+  ): Promise<{ success: boolean }> {
+    const fd = new FormData();
+    fd.append('photo', photo);
+    fd.append('audioSeconds', String(audioSeconds));
+    return request<{ success: boolean }>(`/api/recording/${encodeURIComponent(sessionId)}/photo`, {
+      method: 'POST',
+      body: fd,
+    });
+  },
+
+  /**
+   * Close a backend recording session. iOS sends accumulated jobData
+   * here so the server can persist a Whisper-driven extraction; the
+   * PWA delivers extractions through the Sonnet WebSocket already, so
+   * the body is minimal — just the certificate type + address marker
+   * for the session row.
+   */
+  recordingFinish(
+    sessionId: string,
+    payload: {
+      address?: string;
+      certificateType?: string;
+    }
+  ): Promise<{ success: boolean; jobId?: string }> {
+    return request<{ success: boolean; jobId?: string }>(
+      `/api/recording/${encodeURIComponent(sessionId)}/finish`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+
+  /**
    * Analyse a consumer-unit photo via GPT Vision + optional RCD-type
    * web-search pass. Backend returns board metadata, main-switch +
    * SPD fields, a circuits array, and `questionsForInspector`. Single
@@ -309,21 +396,30 @@ export const api = {
   },
 
   /**
-   * Extract EICR/EIC form data from a photo of a prior certificate,
-   * handwritten test sheet, or typed record. Backend uses GPT Vision
-   * and returns the full formData envelope (installation, supply,
-   * board, circuits, observations). Image only — PDFs not supported
-   * because the backend hard-codes the `image/jpeg` data URL
-   * (`src/routes/extraction.js:1425`).
+   * Extract EICR/EIC form data from ONE OR MORE photos of a prior
+   * certificate, handwritten test sheet, or typed record. The backend
+   * accepts up to 12 files and treats N images as pages of a single
+   * document — handy for photographing a multi-page schedule of test
+   * results page-by-page. Both images and PDFs are accepted; the
+   * backend detects each per-file by magic bytes.
    *
-   * Same multipart shape as `analyzeCCU` — single file under the
-   * field name "photo". Merge helper
-   * (`apply-document-extraction.ts`) handles the 3-tier priority
-   * guard and section routing.
+   * Multipart shape: each file appended under field name "photos".
+   * The backend ALSO accepts the legacy singular "photo" field for
+   * any TestFlight iOS builds that pre-date this change.
+   *
+   * Returns the same {success, formData} envelope as the single-photo
+   * path. Merge helper (`apply-document-extraction.ts`) handles the
+   * 3-tier priority guard and section routing.
    */
-  analyzeDocument(photo: Blob | File): Promise<DocumentExtractionResponse> {
+  analyzeDocument(photos: Blob | File | Array<Blob | File>): Promise<DocumentExtractionResponse> {
+    const list = Array.isArray(photos) ? photos : [photos];
+    if (list.length === 0) {
+      return Promise.reject(new Error('No photos provided'));
+    }
     const form = new FormData();
-    form.append('photo', photo);
+    for (const p of list) {
+      form.append('photos', p);
+    }
     return request<DocumentExtractionResponse>(
       '/api/analyze-document',
       { method: 'POST', body: form },
@@ -820,6 +916,34 @@ export const api = {
   },
 
   // ----------------------------------------------------------------
+  // Admin — system stats, health, queue (mirrors iOS AdminStatsView /
+  // AdminQueueView). These endpoints are mounted at /api/admin/* and
+  // gated by `requireAuth` only — the routes are reachable to any
+  // authenticated user, so the page itself is the role gate. The iOS
+  // AdminQueueView additionally calls `/api/tasks` for team-lead +
+  // background tasks; that endpoint does not exist on the backend
+  // (verified 2026-04-26), so the web Queue page sticks to the
+  // working `/api/admin/queue/*` shape rather than reproducing the
+  // iOS bug.
+  // ----------------------------------------------------------------
+
+  adminGetStats(): Promise<AdminStatsResponse> {
+    return request<AdminStatsResponse>('/api/admin/stats');
+  },
+
+  adminGetHealth(): Promise<AdminHealthResponse> {
+    return request<AdminHealthResponse>('/api/admin/health');
+  },
+
+  adminGetQueueStatus(): Promise<AdminQueueStatusResponse> {
+    return request<AdminQueueStatusResponse>('/api/admin/queue/status');
+  },
+
+  adminGetQueueHealth(): Promise<AdminQueueHealthResponse> {
+    return request<AdminQueueHealthResponse>('/api/admin/queue/health');
+  },
+
+  // ----------------------------------------------------------------
   // PDF generation (Phase 2 parity)
   // ----------------------------------------------------------------
 
@@ -881,28 +1005,47 @@ export const api = {
   // ----------------------------------------------------------------
 
   /**
-   * Fetch user-scoped circuit-field defaults.
-   * `GET /api/settings/:userId/defaults` returns `{}` when nothing has
-   * been saved yet (backend returns the empty object rather than 404 so
-   * the page can render without a special-case branch). Values are the
-   * raw JSON the PUT wrote — no server-side merge with the schema, so
-   * the caller is responsible for combining with
-   * `packages/shared-utils/src/circuit-defaults-schema.ts` defaults if
-   * it wants the full effective map.
+   * Fetch the user defaults blob.
+   *
+   * Wire shape (extended for Phase B — Defaults full port 2026-05-03):
+   * ```
+   * {
+   *   // Phase 5 — flat circuit-field defaults applied via "Apply
+   *   // Defaults" on the Circuits tab. Top-level keys remain string
+   *   // values for backward compatibility with the existing reader.
+   *   ocpd_type: "B", ocpd_rating_a: "32", …
+   *
+   *   // Phase B — full preset library (mirrors iOS
+   *   // CertificateDefault[] persisted in GRDB) and cable-size table
+   *   // (CableDefault[]). Co-locating with the flat defaults keeps the
+   *   // S3 blob count to one per user.
+   *   presets: CertificateDefaultPreset[],
+   *   cable_defaults: CableDefault[],
+   * }
+   * ```
+   *
+   * Returns `{}` when nothing has been saved yet (backend returns the
+   * empty object rather than 404). The caller decides which keys to
+   * read; `Record<string, unknown>` keeps both the flat-defaults and
+   * the namespaced sub-objects type-safe at the call site.
    */
-  userDefaults(userId: string): Promise<Record<string, string>> {
-    return request<Record<string, string>>(`/api/settings/${encodeURIComponent(userId)}/defaults`);
+  userDefaults(userId: string): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>(`/api/settings/${encodeURIComponent(userId)}/defaults`);
   },
 
   /**
-   * Replace user-scoped circuit-field defaults. Full-blob PUT (no
-   * server-side merge). Mirrors `updateInspectorProfiles` — the caller
-   * owns the merge, we just persist. Empty values are preserved so the
+   * Replace the user defaults blob. Full-blob PUT (no server-side
+   * merge). Mirrors `updateInspectorProfiles` — the caller owns the
+   * merge, we just persist. Empty values are preserved so the
    * inspector can deliberately clear a default by blanking the input.
+   *
+   * Phase B: signature relaxed to `Record<string, unknown>` so the
+   * Defaults manager can persist the namespaced `presets` /
+   * `cable_defaults` arrays alongside the flat field defaults.
    */
   saveUserDefaults(
     userId: string,
-    defaults: Record<string, string>
+    defaults: Record<string, unknown>
   ): Promise<{ success: boolean }> {
     return request(
       `/api/settings/${encodeURIComponent(userId)}/defaults`,
@@ -933,5 +1076,142 @@ export const api = {
       }
       throw err;
     }
+  },
+
+  // Legal text + consent / per-PDF attestations.
+  // Specs: .planning/compliance/in-app-consent-screen.md +
+  // .planning/compliance/pdf-issuance-attestations.md.
+
+  legalTextVersions(): Promise<LegalTextVersionsBundle> {
+    return request<LegalTextVersionsBundle>('/api/legal/text-versions');
+  },
+
+  acceptConsent(args: {
+    agreement_kind: string;
+    agreement_version: string;
+    accepted_at: string;
+    platform: 'web';
+    platform_version?: string;
+  }): Promise<ConsentAcceptResponse> {
+    return request<ConsentAcceptResponse>('/api/account/consent/accept', {
+      method: 'POST',
+      body: JSON.stringify(args),
+    });
+  },
+
+  acceptCertAttestations(args: {
+    job_id: string;
+    pdf_s3_key?: string;
+    attestations: Array<{
+      kind: 'readings' | 'observations';
+      text_version: string;
+      attested_at: string;
+      platform: 'web';
+      platform_version?: string;
+    }>;
+  }): Promise<CertAttestationsAcceptResponse> {
+    return request<CertAttestationsAcceptResponse>('/api/cert-attestations/accept', {
+      method: 'POST',
+      body: JSON.stringify(args),
+    });
+  },
+
+  updateAttestationPdfKey(args: {
+    attestation_ids: number[];
+    pdf_s3_key: string;
+  }): Promise<{ ok: boolean; updated: number }> {
+    return request<{ ok: boolean; updated: number }>('/api/cert-attestations/pdf-key', {
+      method: 'PATCH',
+      body: JSON.stringify(args),
+    });
+  },
+
+  // Voice feedback (PLAN-web-final §1.6.5).
+  // No zod schema yet — backend slice is shipping in parallel and the
+  // wire shape may evolve slightly during backend review. We type the
+  // response on the TS side and accept the cost of a runtime drift
+  // until backend lands, at which point we'll add adapters/schemas.
+  // The wire contract is frozen in PLAN-web-final.md §"Cross-repo wire
+  // contracts" — see there for the source of truth.
+
+  voiceFeedbackList(
+    params: {
+      status?: VoiceFeedbackStatus;
+      jobId?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<VoiceFeedbackListResponse> {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.jobId) qs.set('job_id', params.jobId);
+    if (params.q) qs.set('q', params.q);
+    qs.set('limit', String(params.limit ?? 50));
+    qs.set('offset', String(params.offset ?? 0));
+    return request<VoiceFeedbackListResponse>(`/api/voice-feedback?${qs.toString()}`);
+  },
+
+  voiceFeedbackGet(id: string): Promise<VoiceFeedbackDetail> {
+    return request<VoiceFeedbackDetail>(`/api/voice-feedback/${encodeURIComponent(id)}`);
+  },
+
+  voiceFeedbackPatch(
+    id: string,
+    body: { status?: VoiceFeedbackStatus; review_note?: string }
+  ): Promise<VoiceFeedbackDetail> {
+    return request<VoiceFeedbackDetail>(`/api/voice-feedback/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
+   * Fetch the raw S3 JSON payload for a voice-feedback row as a Blob.
+   *
+   * Modelled after `fetchPhotoBlob` (see above): browsers can't attach
+   * our Authorization header to a bare `<a href="...">`, so the detail
+   * page calls this, wraps the result in `URL.createObjectURL`, then
+   * surfaces an "Open raw JSON" link. The backend slice is expected to
+   * proxy the S3 fetch under `GET /api/voice-feedback/:id/raw` (the
+   * authenticated mirror of the s3_key the detail endpoint surfaces);
+   * the exact route name isn't pinned in PLAN-web-final.md so the
+   * detail page falls back gracefully if it 404s.
+   */
+  async voiceFeedbackFetchRawBlob(id: string): Promise<Blob> {
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const res = await fetch(`${API_BASE_URL}/api/voice-feedback/${encodeURIComponent(id)}/raw`, {
+      headers,
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const { message, body } = await parseErrorBody(res);
+      throw new ApiError(res.status, message, body);
+    }
+    return res.blob();
+  },
+
+  // Admin-only — same list shape as voiceFeedbackList but with `userId`
+  // populated on each row. The backend slice gates this route behind
+  // `isSystemAdmin`; callers gate the UI affordance behind the same flag
+  // (see /voice-feedback page's admin toggle).
+  voiceFeedbackAdminAll(
+    params: {
+      status?: VoiceFeedbackStatus;
+      jobId?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): Promise<VoiceFeedbackListResponse> {
+    const qs = new URLSearchParams();
+    if (params.status) qs.set('status', params.status);
+    if (params.jobId) qs.set('job_id', params.jobId);
+    if (params.q) qs.set('q', params.q);
+    qs.set('limit', String(params.limit ?? 50));
+    qs.set('offset', String(params.offset ?? 0));
+    return request<VoiceFeedbackListResponse>(`/api/voice-feedback/admin/all?${qs.toString()}`);
   },
 };

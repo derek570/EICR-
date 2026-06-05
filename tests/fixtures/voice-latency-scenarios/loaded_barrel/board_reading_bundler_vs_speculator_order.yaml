@@ -1,0 +1,68 @@
+name: board_reading_bundler_vs_speculator_order
+suite: loaded_barrel
+description: |
+  Documents the bundler-vs-speculator emit ordering for a single
+  board-level reading. The speculator (Loaded Barrel) opens a
+  pre-synth on `onToolUseStreamed` (content_block_stop) and emits an
+  `extraction` envelope with `result.mid_stream_preview: true`. The
+  bundler emits its `extraction` envelope on round-1 completion
+  (early-terminate path for board readings, post-2026-05-28 widening).
+
+  Pin: the BUNDLER envelope arrives BEFORE the speculator envelope
+  on the wire. If a future regression flips the order (speculator
+  fires first, bundler second), iOS would see a confirmation that
+  pre-dates the actual reading — which would race with the value
+  rendering and cause a "green flash before the value lands"
+  UI artefact.
+
+  Implementation: the new `expect.event_ordering` predicate keys on
+  `extraction:bundler` (no `mid_stream_preview` flag set) vs
+  `extraction:speculator` (mid_stream_preview === true). Both arrive
+  as `type: extraction` on the wire, so a plain saw_event_types check
+  wouldn't distinguish them.
+
+  Pre-requisite: VOICE_LATENCY_LOADED_BARREL=true on the task def
+  (the speculator must actually fire). If the speculator is disabled,
+  only the bundler envelope arrives — the ordering assertion would
+  then fail, surfacing the missing speculator as a misconfig.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Ze nought point eight six."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    # Legacy `ze` after validateAndCorrectFields rewrite — see
+    # sibling ze_first_time_voice_confirmed.yaml for the rationale.
+    - circuit: 0
+      field: ze
+      value: "0.86"
+  ask_user_count: { max: 0 }
+  # Bundler MUST arrive before speculator. Predicate matches in
+  # relative order — additional events between them are fine.
+  event_ordering:
+    - extraction:bundler
+    - extraction:speculator
+  # The first TTS fetch should serve the bundler's confirmation. We
+  # don't strictly cap fetch count since the speculator may also
+  # trigger one (cache MISS path). Min 1 is the only safety net.
+  tts_fetch_count: { min: 1 }
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: true

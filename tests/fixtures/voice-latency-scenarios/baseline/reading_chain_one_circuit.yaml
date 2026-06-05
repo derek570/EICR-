@@ -1,0 +1,64 @@
+name: reading_chain_one_circuit
+suite: baseline
+description: |
+  Inspector dictates four readings on circuit 1 in sequence: Zs,
+  R1+R2, IR-live-earth, polarity. Tests the most common per-circuit
+  cadence and exercises the Loaded Barrel speculator across multiple
+  turns on the same circuit.
+
+  Wall-clock signal: each turn should fire one record_reading; the
+  speculator should pre-synth the confirmation for each. p95 turn
+  time is the latency to watch.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one Zs zero point six."
+    isFinal: true
+  - at_ms: 4000
+    text: "R1 plus R2 for circuit one is 0.23."
+    isFinal: true
+  - at_ms: 8000
+    text: "Circuit one insulation live earth 200 megohms."
+    isFinal: true
+  - at_ms: 12000
+    text: "Polarity on circuit one confirmed."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 4 }
+  has_reading:
+    - circuit: 1
+      field: measured_zs_ohm
+      value: 0.6
+    - circuit: 1
+      field: r1_r2_ohm
+      value: 0.23
+    # Schema enum is ["", "OK", "Y", "N"]. Sonnet sometimes emits
+    # boolean true / "true" / "correct" for "polarity confirmed"; the
+    # dispatcher canonicalises those to "Y" (2026-05-24 voice-regression
+    # Item 4 fix). Asserting the canonical here pins the coercion.
+    - circuit: 1
+      field: polarity_confirmed
+      value: "Y"
+  ask_user_count: { max: 0 }
+  loaded_barrel:
+    - after_turn: 1
+      status: ready
+    - after_turn: 2
+      status: ready
+
+config:
+  timeout_ms: 60000
+  drain_ms: 25000
+  fetch_tts: false

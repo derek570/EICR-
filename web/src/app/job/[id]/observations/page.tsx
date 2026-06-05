@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { AlertTriangle, ClipboardList, ImageIcon, MapPin, Plus, Trash2 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import type { ObservationRow } from '@/lib/types';
+import type { ScheduleOutcome } from '@/lib/constants/inspection-schedule';
 import { getUser } from '@/lib/auth';
 import { SectionCard } from '@/components/ui/section-card';
 import { HeroHeader } from '@/components/ui/hero-header';
@@ -79,14 +80,85 @@ export default function ObservationsPage() {
     setDraftNew(null);
   };
 
+  /** Build a `(patch)` shape that mirrors iOS `ObservationScheduleLinker`
+   *  for either an edit (`before` set) or a delete (`after` null +
+   *  `before` set). Returns null when no schedule-side mutation is
+   *  needed.
+   *
+   *  Rules (M5 + M6 of the 2026-05-12 parity audit):
+   *    - Delete with schedule_item: items[ref] = '✓' (restore tick).
+   *    - Edit changing schedule_item: items[oldRef] = '✓' AND, if
+   *      new ref + code present, items[newRef] = code.
+   *    - Edit keeping schedule_item, changing code: items[ref] = new
+   *      code (or '✓' when code cleared).
+   *
+   *  iOS canon: `ObservationScheduleLinker.observationEdited` /
+   *  `observationDeleted` (Sources/Services/ObservationScheduleLinker.swift). */
+  const buildScheduleSync = (
+    before: ObservationRow | null,
+    after: ObservationRow | null
+  ): Record<string, ScheduleOutcome> | null => {
+    const oldRef =
+      before && typeof before.schedule_item === 'string' && before.schedule_item
+        ? before.schedule_item
+        : null;
+    const newRef =
+      after && typeof after.schedule_item === 'string' && after.schedule_item
+        ? after.schedule_item
+        : null;
+    if (!oldRef && !newRef) return null;
+    const inspection = (job.inspection_schedule ?? {}) as {
+      items?: Record<string, ScheduleOutcome | undefined>;
+    };
+    const items: Record<string, ScheduleOutcome> = {};
+    for (const [k, v] of Object.entries(inspection.items ?? {})) {
+      if (v != null) items[k] = v;
+    }
+    let touched = false;
+    if (oldRef && oldRef !== newRef) {
+      items[oldRef] = 'tick';
+      touched = true;
+    }
+    if (newRef && after) {
+      const newCode = after.code;
+      // ScheduleOutcome covers C1/C2/C3/tick/N/A/LIM; FI is an observation
+      // code without a matching schedule outcome, so we map it to a tick on
+      // the schedule row (still flagged, but not as a coded danger).
+      if (newCode === 'C1' || newCode === 'C2' || newCode === 'C3') {
+        if (items[newRef] !== newCode) {
+          items[newRef] = newCode;
+          touched = true;
+        }
+      } else if (oldRef === newRef) {
+        // Edit cleared the code but kept the schedule_item. Restore
+        // the tick so the row doesn't read as still-flagged.
+        if (items[newRef] !== 'tick') {
+          items[newRef] = 'tick';
+          touched = true;
+        }
+      }
+    }
+    return touched ? items : null;
+  };
+
   const handleSave = (next: ObservationRow) => {
     const existingIdx = observations.findIndex((o) => o.id === next.id);
+    const before = existingIdx >= 0 ? observations[existingIdx] : null;
+    const nextList = observations.slice();
     if (existingIdx >= 0) {
-      const nextList = observations.slice();
       nextList[existingIdx] = next;
-      updateJob({ observations: nextList });
     } else {
-      updateJob({ observations: [...observations, next] });
+      nextList.push(next);
+    }
+    const scheduleItems = buildScheduleSync(before, next);
+    if (scheduleItems) {
+      const inspection = (job.inspection_schedule ?? {}) as Record<string, unknown>;
+      updateJob({
+        observations: nextList,
+        inspection_schedule: { ...inspection, items: scheduleItems },
+      });
+    } else {
+      updateJob({ observations: nextList });
     }
     closeSheet();
   };
@@ -97,22 +169,31 @@ export default function ObservationsPage() {
    * defect and any uploaded photos. Mirrors iOS context-menu delete at
    * ObservationsTab.swift:L22-L45 which has a native confirmation.
    *
-   * Additionally clears any Inspection schedule item back-reference
-   * via the schedule_item column on the observation. iOS does this in
-   * `ObservationScheduleLinker.observationDeleted`
-   * (ObservationsTab.swift:L173-L178) — the reference is one-way
-   * (observation → schedule ref), so on the web side the observation
-   * being gone is enough to clear the Inspection tab's inline preview,
-   * which reads through `observations.find(o => o.schedule_item === ref)`.
-   * No extra cross-tab wiring needed.
+   * M5 of the parity audit — when the deleted observation carries a
+   * `schedule_item`, restore that row in `inspection_schedule.items`
+   * to `'✓'` (tick) so the Inspection tab doesn't render a C1/C2/C3
+   * outcome with no underlying observation. iOS does this via
+   * `ObservationScheduleLinker.observationDeleted`. The pre-fix
+   * comment that claimed "no extra cross-tab wiring needed" was
+   * wrong — the reverse-link IS required for parity.
    */
   const [pendingDeleteId, setPendingDeleteId] = React.useState<string | null>(null);
   const pendingDelete = pendingDeleteId
     ? (observations.find((o) => o.id === pendingDeleteId) ?? null)
     : null;
   const confirmDelete = () => {
-    if (!pendingDeleteId) return;
-    updateJob({ observations: observations.filter((o) => o.id !== pendingDeleteId) });
+    if (!pendingDeleteId || !pendingDelete) return;
+    const remaining = observations.filter((o) => o.id !== pendingDeleteId);
+    const scheduleItems = buildScheduleSync(pendingDelete, null);
+    if (scheduleItems) {
+      const inspection = (job.inspection_schedule ?? {}) as Record<string, unknown>;
+      updateJob({
+        observations: remaining,
+        inspection_schedule: { ...inspection, items: scheduleItems },
+      });
+    } else {
+      updateJob({ observations: remaining });
+    }
     setPendingDeleteId(null);
   };
 

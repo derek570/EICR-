@@ -1,0 +1,32 @@
+name: chitchat_no_engagement
+suite: baseline
+description: |
+  Irrelevant chatter — no field values, no questions. Sonnet should
+  return zero readings. Verifies the backend doesn't hallucinate
+  readings from noise.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Right, let me grab a coffee before we carry on."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 0 }
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 25000
+  drain_ms: 8000
+  fetch_tts: false

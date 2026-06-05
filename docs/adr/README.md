@@ -15,6 +15,7 @@ ADRs document significant architectural decisions made during development, inclu
 | [ADR-005](005-monorepo-npm-workspaces.md) | Monorepo with npm Workspaces | Accepted | 2026-01-20 |
 | [ADR-006](006-ios-first-wkwebview-pdf.md) | iOS-First with WKWebView PDF | Accepted | 2026-02-14 |
 | [ADR-007](007-deepgram-auto-sleep.md) | Deepgram Auto-Sleep Power Management | Accepted | 2026-02-19 |
+| [ADR-008](008-schema-driven-tools-and-server-resolved-asks.md) | Schema-Driven Tools, Server-Resolved Asks, Shared Value Rules | Accepted | 2026-04-27 |
 
 ## Format
 

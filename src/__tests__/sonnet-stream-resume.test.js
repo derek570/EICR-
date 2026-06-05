@@ -38,6 +38,20 @@ class FakeEICRExtractionSession {
     this.updateJobState = jest.fn();
     this.pause = jest.fn();
     this.resume = jest.fn();
+    // Plan 06-08 r7-#1 — sonnet-stream.js's reconnect/resume paths
+    // call `session.applyModeChange(...)` (the SOLE write surface
+    // for mid-session mode flips). The fake mirrors a no-op
+    // implementation here because this test file's surface
+    // (resume rehydrate happy-path) doesn't assert mode behaviour;
+    // the real method's contract is covered in
+    // `eicr-extraction-session-apply-mode-change.test.js` and the
+    // integration-through-sonnet-stream surface in Group H of
+    // `sonnet-stream-protocol-version-handshake.test.js`.
+    this.toolCallsMode = 'off';
+    this.applyModeChange = jest.fn((newMode) => {
+      const valid = newMode === 'off' || newMode === 'shadow' || newMode === 'live';
+      this.toolCallsMode = valid ? newMode : 'off';
+    });
     mockSessionInstances.push(this);
   }
 }

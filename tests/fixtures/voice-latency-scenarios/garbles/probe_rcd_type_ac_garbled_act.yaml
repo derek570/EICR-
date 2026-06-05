@@ -1,0 +1,53 @@
+name: probe_rcd_type_ac_garbled_act
+suite: garbles
+description: |
+  REGRESSION GUARD — RCD type garble.
+  Inspector dictates "RCD type for circuit 3 is act" (Deepgram
+  garble of "AC"). parseRcdType's `\bAC\b` requires word boundary;
+  "act" has a trailing "t" so `\bAC\b` does NOT match inside it.
+  Other parser patterns don't match either.
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted. Engine
+  entered RCD script via /\bRCD\b/, named-extractor missed,
+  bareValue parse failed, engine asked for BS number (the first
+  asked slot). No off-enum value persisted.
+
+  Pin: rcd_type MUST NOT receive an off-enum garble value
+  ("act", "ACT", etc.) from this transcript. Engine entered and
+  asked correctly.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+
+transcript:
+  - at_ms: 0
+    text: "RCD type for circuit 3 is act."
+    isFinal: true
+
+expect:
+  # Engine entered RCD script. Inspector didn't reply → engine
+  # asks once but no further activity.
+  ask_user_count: { min: 1 }
+  has_no_reading:
+    - circuit: 3
+      field: rcd_type
+      value: "act"
+    - circuit: 3
+      field: rcd_type
+      value: "ACT"
+    - circuit: 3
+      field: rcd_type
+      value: "AND"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

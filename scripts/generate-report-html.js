@@ -25,6 +25,25 @@ const summary = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
 
 const USD_TO_GBP = 0.79;
 
+// Plan 08-04 r3-#1 (MAJOR): every render site that interpolates a
+// user-derived string into HTML output MUST flow through this helper.
+// The contract is locked by `scripts/__tests__/generate-report-html.test.mjs`
+// which spawns the renderer with adversarial payloads in every
+// user-data slot and asserts no live `<script>` element survives.
+//
+// Defence-in-depth pair: scripts/analyze-session.js's safeDisplayValue()
+// is the analyzer-side gate (sanitises log values BEFORE they enter
+// analysis.json); this escapeHtml() is the renderer-side gate
+// (escapes HTML-significant chars at every render site). Both gates
+// must hold for the contract to be safe.
+//
+// `String(str || "")` coerces falsy values (0, false, "", null,
+// undefined) to the empty string — acceptable because the goal is
+// "safe render", and empty IS safe. Out of scope for r3: a deliberately-
+// poisoned numeric 0 field would render as empty rather than "0", but
+// no current renderer slot accepts numeric values that ought to render
+// as visible text (numbers are coerced via `.toFixed`/`formatTokens`
+// before reaching template literals).
 function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -50,15 +69,66 @@ function formatTokens(n) {
 
 // ── Category colors for recommendations ──
 
+// CATEGORY_COLORS is the single source of truth for category display labels.
+// Each entry's `.label` is the rendered badge text AND matches the short label
+// used by the Pushover REC_CAT switch in scripts/session-optimizer.sh
+// (~line 1302). Keep them in lockstep — a divergence between the two would
+// silently mis-label notifications vs report badges.
+//
+// Schema split (Cluster 2 Item 4): the 8 categories added in this PR include
+// three "advisory" categories that do NOT carry old_code/new_code:
+//   - flux_configure_keyterms_per_slot  → implementation_status: awaiting_infrastructure
+//   - flux_eot_threshold                → implementation_status: awaiting_infrastructure
+//   - harness_probe                     → implementation_status: probe_only
+// The renderer below filters by implementation_status so accept/reject
+// controls only appear on `implementable` recommendations.
 const CATEGORY_COLORS = {
+  // Original 8 categories (Cluster 1)
   regex_improvement: { bg: "#22c55e", label: "Regex" },
   sonnet_prompt_trim: { bg: "#a855f7", label: "Sonnet Trim" },
   sonnet_prompt_addition: { bg: "#3b82f6", label: "Sonnet Addition" },
   number_normaliser: { bg: "#eab308", label: "Number Normaliser" },
   keyword_boost: { bg: "#f97316", label: "Keyword Boost" },
+  keyword_removal: { bg: "#ea580c", label: "Keyword Removal" }, // Baseline fix: was missing.
   config_change: { bg: "#6b7280", label: "Config Change" },
   bug_fix: { bg: "#ef4444", label: "Bug Fix" },
+  // 8 new categories (Cluster 2 Item 4) — short labels (≤12 chars) chosen
+  // to fit Pushover notification column without truncation. Must match
+  // the REC_CAT switch in session-optimizer.sh exactly.
+  dialogue_engine_schema_tighten: { bg: "#0d9488", label: "DE Tighten" },
+  dialogue_engine_schema_extend: { bg: "#06b6d4", label: "DE Extend" },
+  dispatcher_validator: { bg: "#475569", label: "Validator" },
+  flux_configure_keyterms_per_slot: { bg: "#db2777", label: "Per-Slot KT" },
+  flux_eot_threshold: { bg: "#6366f1", label: "EOT Thresh" },
+  loaded_barrel_speculator_hint: { bg: "#84cc16", label: "Speculator" },
+  field_name_correction_add: { bg: "#14b8a6", label: "Field Map" },
+  harness_probe: { bg: "#d97706", label: "Probe" },
 };
+
+// Categories with `implementation_status: awaiting_infrastructure` — old_code
+// and new_code are FORBIDDEN; renderer must hide accept controls.
+const ADVISORY_AWAITING_INFRA_CATEGORIES = new Set([
+  "flux_configure_keyterms_per_slot",
+  "flux_eot_threshold",
+]);
+
+// Categories with `implementation_status: probe_only` — describes a
+// regression-test scenario, not a code change. Renders in its own section.
+const PROBE_ONLY_CATEGORIES = new Set(["harness_probe"]);
+
+// Predicate: is this recommendation a non-implementable advisory entry?
+// Centralised here so the renderer + acceptSelected() filter cannot drift.
+function isAdvisoryRecommendation(rec) {
+  if (!rec) return false;
+  if (rec.implementation_status === "awaiting_infrastructure") return true;
+  if (rec.implementation_status === "probe_only") return true;
+  // Belt-and-braces: even if implementation_status is missing, treat known
+  // advisory categories as advisory (e.g. if a future prompt edit drops the
+  // field by accident).
+  if (ADVISORY_AWAITING_INFRA_CATEGORIES.has(rec.category)) return true;
+  if (PROBE_ONLY_CATEGORIES.has(rec.category)) return true;
+  return false;
+}
 
 // ── Source colors for field attribution ──
 
@@ -93,7 +163,7 @@ function buildCostDashboard() {
     <div class="cost-grid">
       <div class="cost-item">
         <div class="cost-item-header">
-          <span class="cost-item-name">Deepgram Nova-3</span>
+          <span class="cost-item-name">Deepgram Flux</span>
           <span class="cost-item-price">&pound;${toGBP(dg.cost_usd)}</span>
         </div>
         <div class="cost-item-detail">${(dg.minutes || 0).toFixed(1)} min @ $0.0077/min</div>
@@ -382,10 +452,22 @@ function buildMissedValues() {
       }
     }
 
+    // Plan 08-04 r3-#1 (MAJOR): both `${ef.reason}` (class attribute)
+    // and `${reason}` (text content via `reasonLabels[ef.reason] ||
+    // ef.reason || "Unknown"`) carry user-derived strings. Pre-fix
+    // they were interpolated raw — an adversarial `ef.reason` of
+    // `<script>alert(1)</script>` would render as a live script tag
+    // here. Both slots now flow through escapeHtml(); the analyzer
+    // side (safeDisplayValue, commit 44b95f1) is the first gate, this
+    // is the second. `transcriptRef` is a literal `&mdash;` or a
+    // generated `<a href="#" onclick="scrollToUtterance(${i})">${time}</a>`
+    // where `${i}` is the loop index (number) and `${time}` is a
+    // formatted en-GB time string from `toLocaleTimeString` — both
+    // safe by construction.
     html += `
       <div class="missed-row">
         <span class="missed-col-field">${escapeHtml(ef.key)}</span>
-        <span class="missed-col-reason missed-reason-${ef.reason || 'unknown'}">${reason}</span>
+        <span class="missed-col-reason missed-reason-${escapeHtml(ef.reason || 'unknown')}">${escapeHtml(reason)}</span>
         <span class="missed-col-ref">${transcriptRef}</span>
       </div>`;
   }
@@ -410,15 +492,16 @@ function buildTokenImpactBadge(rec) {
   return `<span class="token-badge ${cls}">${sign}${val} tokens</span>`;
 }
 
-function buildRecommendationCards(recs) {
-  if (!recs.length) {
-    return `<div class="card"><p class="muted">No code changes recommended for this session.</p></div>`;
-  }
-  return recs.map((rec, i) => `
-    <div class="card rec-card" id="rec-${i}" onclick="toggleRec(event, ${i})">
+// Build a single implementable recommendation card with accept/reject controls.
+// `globalIdx` is the index into the ORIGINAL recommendations array — used as the
+// checkbox value so `acceptSelected()` can look up the right entry regardless
+// of how the recs were partitioned for rendering.
+function buildImplementableCard(rec, globalIdx) {
+  return `
+    <div class="card rec-card" id="rec-${globalIdx}" onclick="toggleRec(event, ${globalIdx})">
       <div class="card-header">
         <label class="checkbox-label" onclick="event.stopPropagation()">
-          <input type="checkbox" name="accepted" value="${i}" checked>
+          <input type="checkbox" name="accepted" value="${globalIdx}" checked>
           <span class="rec-title">${escapeHtml(rec.title)}</span>
         </label>
         ${buildCategoryBadge(rec.category)}
@@ -435,7 +518,76 @@ function buildRecommendationCards(recs) {
         </div>
       </details>
     </div>
-  `).join("\n");
+  `;
+}
+
+// Advisory cards (awaiting_infrastructure / probe_only) — no checkbox, no
+// diff view, no accept controls. The whole point is that the consumer
+// infrastructure doesn't exist yet (or this is a regression probe, not a
+// code change), so the user can't "accept" a fabricated diff.
+function buildAdvisoryCard(rec, statusLabel) {
+  const metadataPretty = rec.metadata
+    ? `<pre class="advisory-metadata">${escapeHtml(JSON.stringify(rec.metadata, null, 2))}</pre>`
+    : "";
+  const probePath = rec.generated_probe_path
+    ? `<div class="advisory-probe-path">Generated probe: <code>${escapeHtml(rec.generated_probe_path)}</code></div>`
+    : "";
+  return `
+    <div class="card rec-card rec-advisory">
+      <div class="card-header">
+        <span class="rec-title">${escapeHtml(rec.title)}</span>
+        ${buildCategoryBadge(rec.category)}
+        <span class="advisory-tag">${escapeHtml(statusLabel)}</span>
+      </div>
+      ${rec.explanation ? `<div class="rec-explanation">${escapeHtml(rec.explanation)}</div>` : ""}
+      <p class="rec-desc">${escapeHtml(rec.description)}</p>
+      ${metadataPretty}
+      ${probePath}
+    </div>
+  `;
+}
+
+function buildRecommendationCards(recs) {
+  if (!recs.length) {
+    return `<div class="card"><p class="muted">No code changes recommended for this session.</p></div>`;
+  }
+
+  // Partition by implementation_status — implementable goes through the
+  // accept/reject flow; advisory categories render in their own sections
+  // with no accept controls. Pre-flight check: even if Claude forgets the
+  // implementation_status field, known advisory categories are caught by
+  // isAdvisoryRecommendation()'s category-based fallback.
+  const implementable = [];
+  const awaitingInfra = [];
+  const probeOnly = [];
+  recs.forEach((rec, i) => {
+    if (PROBE_ONLY_CATEGORIES.has(rec.category) || rec.implementation_status === "probe_only") {
+      probeOnly.push({ rec, i });
+    } else if (
+      ADVISORY_AWAITING_INFRA_CATEGORIES.has(rec.category) ||
+      rec.implementation_status === "awaiting_infrastructure"
+    ) {
+      awaitingInfra.push({ rec, i });
+    } else {
+      implementable.push({ rec, i });
+    }
+  });
+
+  let html = "";
+  if (implementable.length) {
+    html += implementable.map(({ rec, i }) => buildImplementableCard(rec, i)).join("\n");
+  }
+  if (awaitingInfra.length) {
+    html += `<h3 class="advisory-section-header">Advisory — awaiting infrastructure</h3>\n`;
+    html += `<p class="advisory-section-blurb">These categories describe fixes whose consumer infrastructure isn't yet built (e.g. per-slot Flux Configure keyterm maps). No code change can be applied today; they're surfaced as guidance for future work.</p>\n`;
+    html += awaitingInfra.map(({ rec }) => buildAdvisoryCard(rec, "Awaiting infrastructure")).join("\n");
+  }
+  if (probeOnly.length) {
+    html += `<h3 class="advisory-section-header">Suggested regression probes</h3>\n`;
+    html += `<p class="advisory-section-blurb">Bug-class scenarios worth pinning with a harness probe. Promotion to the main regression suite (<code>tests/fixtures/voice-latency-scenarios/</code>) is manual after replay-verification.</p>\n`;
+    html += probeOnly.map(({ rec }) => buildAdvisoryCard(rec, "Probe-only")).join("\n");
+  }
+  return html;
 }
 
 // ── Section 6: VAD Sleep/Wake Analysis ──
@@ -498,6 +650,220 @@ function buildVadAnalysis() {
   }
 
   return html;
+}
+
+// ── Section 6b: Tool-Call Traffic (Phase 8 Plan 08-01 SC #2) ──
+//
+// Renders the tool_call_traffic section produced by analyze-session.js.
+// Two surfaces:
+//   - Tool histogram: per-tool count + median duration_ms + validation
+//     error count. Sorted by count descending.
+//   - ask_user outcomes: bar chart over the 15 frozen
+//     ASK_USER_ANSWER_OUTCOMES enum values. Outcomes with count 0 still
+//     render (as zero-height bars) so the dashboard shape is stable
+//     across sessions and the reviewer can visually scan for "did
+//     anything new appear?".
+//
+// Renders an empty-state card when the session has no tool-call rows
+// (legacy / pre-Phase-7 sessions). The empty state still confirms the
+// section exists so the operator knows the analyzer parsed the section
+// (vs. analysis.json missing the field).
+function buildToolCallTraffic() {
+  const tct = summary.tool_call_traffic;
+  if (!tct || !tct.enabled) {
+    return `<div class="card"><p class="muted">No tool-call traffic in this session (legacy shape only).</p></div>`;
+  }
+
+  const tools = Array.isArray(tct.tools) ? tct.tools : [];
+  const askUser = tct.ask_user || { total: 0, outcomes: {} };
+  const outcomes = askUser.outcomes || {};
+
+  const hasAny = tools.length > 0 || askUser.total > 0;
+  if (!hasAny) {
+    return `<div class="card"><p class="muted">Session was tool-call enabled but no tool-call rows logged.</p></div>`;
+  }
+
+  // Tool histogram table
+  const toolRows = tools
+    .map((t) => `
+      <tr>
+        <td>${escapeHtml(t.name)}</td>
+        <td style="text-align:right;">${t.count}</td>
+        <td style="text-align:right;">${t.median_duration_ms} ms</td>
+        <td style="text-align:right;color:${t.validation_error_count > 0 ? "#ef4444" : "#9ca3af"};">${t.validation_error_count}</td>
+      </tr>`)
+    .join("");
+
+  const toolTable = tools.length === 0
+    ? `<p class="muted">No tool calls in this session.</p>`
+    : `
+      <table style="width:100%;border-collapse:collapse;font-size:13px;color:#ccc;">
+        <thead>
+          <tr style="border-bottom:1px solid #2a2a4a;color:#aaa;">
+            <th style="text-align:left;padding:6px 4px;">Tool</th>
+            <th style="text-align:right;padding:6px 4px;">Count</th>
+            <th style="text-align:right;padding:6px 4px;">Median</th>
+            <th style="text-align:right;padding:6px 4px;">Errors</th>
+          </tr>
+        </thead>
+        <tbody>${toolRows}</tbody>
+      </table>`;
+
+  // ask_user outcomes histogram — render as horizontal bars
+  // Find max for normalising bar widths (1 if all zero so divisor is safe)
+  const maxOutcome = Math.max(1, ...Object.values(outcomes));
+  const outcomeKeys = Object.keys(outcomes).sort();
+  const outcomeBars = outcomeKeys
+    .map((key) => {
+      const count = outcomes[key] || 0;
+      const widthPct = (count / maxOutcome) * 100;
+      const isZero = count === 0;
+      // Outcome category colouring — answered=green, gated/restrained=amber,
+      // dispatcher_error=red, everything else=neutral. Visual cue lets the
+      // reviewer spot a regression at a glance.
+      const colour = key === "answered" ? "#22c55e"
+        : key === "gated" || key === "restrained_mode" || key === "ask_budget_exhausted" ? "#eab308"
+        : key === "dispatcher_error" || key === "validation_error" || key === "prompt_leak_blocked" ? "#ef4444"
+        : "#6b7280";
+      return `
+        <div style="display:flex;align-items:center;gap:8px;margin:4px 0;font-size:12px;">
+          <span style="width:200px;color:${isZero ? "#666" : "#ccc"};font-family:'SF Mono',monospace;">${escapeHtml(key)}</span>
+          <div style="flex:1;background:#1a1a2e;border-radius:3px;height:14px;position:relative;">
+            <div style="width:${widthPct}%;background:${colour};height:100%;border-radius:3px;${isZero ? "opacity:0.2;" : ""}"></div>
+          </div>
+          <span style="width:32px;text-align:right;color:${isZero ? "#666" : "#fff"};">${count}</span>
+        </div>`;
+    })
+    .join("");
+
+  const askUserBlock = askUser.total === 0
+    ? `<p class="muted" style="margin-top:14px;">No ask_user calls in this session.</p>`
+    : `
+      <div style="margin-top:14px;">
+        <div style="font-size:13px;font-weight:700;color:#a855f7;margin-bottom:8px;">
+          ask_user outcomes (${askUser.total} total)
+        </div>
+        ${outcomeBars}
+      </div>`;
+
+  // ── Plan 08-05 r4-#1 (MAJOR) — outcome drift warning block ──
+  //
+  // The analyzer surfaces three classes of ask_user outcome:
+  //   1. KNOWN (frozen-enum histogram in `outcomes`).
+  //   2. UNKNOWN — value not in the frozen ASK_USER_ANSWER_OUTCOMES
+  //      enum (analyzer surfaces via `unknown_outcomes[]` per r1-#3,
+  //      sanitised by `safeDisplayValue` per r3-#1).
+  //   3. MALFORMED — non-string outcome (`""`, `null`, `undefined`,
+  //      numbers, booleans, objects, arrays) per r2-#2 + r3-#2.
+  //      Analyzer surfaces these via `analysis.warnings[]` entries
+  //      of shape `{type:"malformed_ask_user_outcome", value, count}`.
+  //
+  // Codex r4-#1 (MAJOR) flagged that this renderer used to display
+  // ONLY the frozen-enum histogram. Drift was invisible to the
+  // operator until the optimizer cycled. The whole point of the
+  // analyzer surface added through r1-#3 + r2-#2 + r3-#2 was operator
+  // visibility — the renderer skip negated that work.
+  //
+  // Defence-in-depth: every value is run through `escapeHtml()` here
+  // even though the analyzer-side `safeDisplayValue` already strips
+  // control chars + caps length. The two layers solve different
+  // problems — analyzer-side is dashboard-safe display strings,
+  // renderer-side is HTML safety. The Plan 08-04 r3-#1 (renderer)
+  // contract anchored the principle at the analyzer→renderer edge;
+  // this block honours it on the new surface.
+  //
+  // The block renders ONLY when at least one of the three signals is
+  // non-empty. Clean sessions are byte-identical to pre-r4-#1 output.
+  const unknownOutcomes = Array.isArray(askUser.unknown_outcomes)
+    ? askUser.unknown_outcomes
+    : [];
+  // Plan 08-06 r5-#1 (MAJOR): never trust `summary.json` shape on the
+  // count fields. The legacy `|| 0` fallback only catches FALSY values
+  // (0, NaN, "", null, undefined); a poisoned summary.json providing
+  // `unknown_outcome_count: "<script>alert(1)</script>"` (string,
+  // truthy) bypassed the fallback AND bypassed the per-entry
+  // escapeHtml() we apply to value slots — the hostile string flowed
+  // into the header template literal raw.
+  //
+  // Number.isFinite() returns true ONLY for genuine finite numbers
+  // (not NaN, not Infinity, not non-numbers); everything else falls
+  // back to 0. Pairs with the escapeHtml(String(...)) wrap on the
+  // interpolation site below — the contract from Plan 08-04 r3-#1
+  // (renderer) is "every interpolated user-data slot flows through
+  // escapeHtml", and counts honour the same contract even though
+  // post-coercion they cannot logically carry markup. Closes future-
+  // regression risk: a contributor who changes the upstream type
+  // doesn't accidentally re-open the XSS sink.
+  //
+  // Contract anchor: scripts/__tests__/generate-report-html.test.mjs
+  // "Plan 08-06 r5-#1" block — 3 tests cover string-typed counts +
+  // NaN + the malformed path with an <svg onload=> payload.
+  const rawUnknownCount = askUser.unknown_outcome_count;
+  const unknownOutcomeCount = Number.isFinite(rawUnknownCount)
+    ? rawUnknownCount
+    : 0;
+  const rawMalformedCount = askUser.malformed_outcome_count;
+  const malformedOutcomeCount = Number.isFinite(rawMalformedCount)
+    ? rawMalformedCount
+    : 0;
+  const malformedWarnings = Array.isArray(summary.warnings)
+    ? summary.warnings.filter((w) => w && w.type === "malformed_ask_user_outcome")
+    : [];
+
+  const driftWarningBlock =
+    unknownOutcomeCount === 0 && malformedOutcomeCount === 0
+      ? ""
+      : (() => {
+          const unknownItems = unknownOutcomes
+            .map((entry) => {
+              const value = entry && typeof entry.value !== "undefined" ? entry.value : "";
+              const count = entry && typeof entry.count === "number" ? entry.count : 0;
+              return `<li><strong>Unknown</strong> · "${escapeHtml(String(value))}" × ${count}</li>`;
+            })
+            .join("");
+          const malformedItems = malformedWarnings
+            .map((entry) => {
+              const value = entry && typeof entry.value !== "undefined" ? entry.value : "";
+              const count = entry && typeof entry.count === "number" ? entry.count : 0;
+              return `<li><strong>Malformed</strong> · "${escapeHtml(String(value))}" × ${count}</li>`;
+            })
+            .join("");
+          // Header summary numbers — keep both counts visible so the
+          // operator can split enum-drift (unknown) from instrumentation
+          // -failure (malformed) at a glance. Both are operationally
+          // serious; misattributing one for the other leads to the
+          // wrong remediation.
+          //
+          // Plan 08-06 r5-#1 (MAJOR): wrap interpolated counts in
+          // escapeHtml(String(...)) for defence-in-depth. After the
+          // Number.isFinite() coercion above, both values are genuine
+          // finite numbers and `String()` produces a digit-only string
+          // that escapeHtml() passes through byte-identical — but the
+          // contract anchored at Plan 08-04 r3-#1 (renderer) is "every
+          // interpolated user-data slot flows through escapeHtml". A
+          // future contributor who relaxes the upstream coercion
+          // doesn't accidentally reopen the XSS sink.
+          const header = `${escapeHtml(String(unknownOutcomeCount))} unknown, ${escapeHtml(String(malformedOutcomeCount))} malformed`;
+          return `
+            <div class="ask-user-drift-warning" style="margin-top:14px;background:#3b2a0a;border:1px solid #f59e0b;border-radius:6px;padding:10px 14px;">
+              <div style="font-size:13px;font-weight:700;color:#fbbf24;margin-bottom:6px;">
+                ⚠ ask_user outcome drift detected — ${header}
+              </div>
+              <ul style="margin:6px 0 0 18px;padding:0;font-size:12px;color:#fde68a;font-family:'SF Mono',monospace;">
+                ${unknownItems}${malformedItems}
+              </ul>
+              <div style="font-size:11px;color:#fbbf24;margin-top:6px;opacity:0.85;">
+                Unknown = enum drift (backend deploy out of sync). Malformed = instrumentation failure (row escaped the emit-site validator).
+              </div>
+            </div>`;
+        })();
+
+  return `
+    <div class="card">
+      ${toolTable}
+      ${askUserBlock}
+      ${driftWarningBlock}
+    </div>`;
 }
 
 // ── Section 7: Sonnet Prompt Audit ──
@@ -707,6 +1073,13 @@ const html = `<!DOCTYPE html>
     .rec-card { cursor: pointer; -webkit-tap-highlight-color: rgba(46,204,113,0.2); transition: border-color 0.15s; }
     .rec-card:active { border-color: #2ecc71; }
     .rec-card.deselected { opacity: 0.5; }
+    .rec-card.rec-advisory { cursor: default; border-left: 3px solid #a16207; background: rgba(161,98,7,0.05); }
+    .rec-card.rec-advisory:active { border-color: inherit; }
+    .advisory-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #a16207; color: #fff; margin-left: 8px; }
+    .advisory-section-header { font-size: 18px; color: #d97706; margin: 24px 0 8px 0; }
+    .advisory-section-blurb { font-size: 13px; color: #aaa; margin-bottom: 12px; line-height: 1.5; }
+    .advisory-metadata { font-size: 12px; color: #d0d0d0; background: rgba(0,0,0,0.25); padding: 8px 12px; border-radius: 4px; margin: 8px 0; overflow-x: auto; }
+    .advisory-probe-path { font-size: 12px; color: #84cc16; margin-top: 8px; }
     .category-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; color: #fff; margin-left: 6px; white-space: nowrap; vertical-align: middle; }
     .token-badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-left: 4px; white-space: nowrap; vertical-align: middle; }
     .token-plus { background: #ef444422; border: 1px solid #ef4444; color: #ef4444; }
@@ -771,6 +1144,7 @@ const html = `<!DOCTYPE html>
     <a href="#section-missed" onclick="scrollToSection('section-missed')">Missed</a>
     <a href="#section-recs" onclick="scrollToSection('section-recs')">Recs</a>
     <a href="#section-vad" onclick="scrollToSection('section-vad')">Sleep</a>
+    <a href="#section-tools" onclick="scrollToSection('section-tools')">Tools</a>
     <a href="#section-audit" onclick="scrollToSection('section-audit')">Audit</a>
   </nav>
 
@@ -881,6 +1255,17 @@ const html = `<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Section 6b: Tool-Call Traffic (Phase 8 SC #2) -->
+    <div class="section" id="section-tools">
+      <div class="section-title" onclick="toggleSection('tools')">
+        <span>Tool-Call Traffic</span>
+        <span class="collapse-icon" id="icon-tools">&#9660;</span>
+      </div>
+      <div class="section-body" id="body-tools">
+        ${buildToolCallTraffic()}
+      </div>
+    </div>
+
     <!-- Section 7: Sonnet Prompt Audit -->
     <div class="section" id="section-audit">
       <div class="section-title" onclick="toggleSection('audit')">
@@ -904,6 +1289,15 @@ const html = `<!DOCTYPE html>
   <script>
     var REPORT_ID = "${reportId}";
     var API_BASE = "";
+    // Indices into the original recommendations array that are advisory
+    // (awaiting_infrastructure or probe_only). acceptSelected() filters
+    // these out defensively — they don't have checkboxes in the DOM so
+    // they can't be selected via the UI, but a direct fetch / URL
+    // manipulation could still submit them. Better to no-op here than
+    // ship a fabricated diff downstream.
+    var ADVISORY_INDICES = ${JSON.stringify(
+      recommendations.map((r, i) => (isAdvisoryRecommendation(r) ? i : -1)).filter((i) => i >= 0)
+    )};
 
     // ── Section collapsing ──
 
@@ -944,7 +1338,7 @@ const html = `<!DOCTYPE html>
     }
 
     // Update nav on scroll
-    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-vad", "section-audit"];
+    var navSections = ["section-cost", "section-fields", "section-transcript", "section-missed", "section-recs", "section-vad", "section-tools", "section-audit"];
     window.addEventListener("scroll", function() {
       var scrollPos = window.scrollY + 60;
       for (var i = navSections.length - 1; i >= 0; i--) {
@@ -1114,6 +1508,14 @@ const html = `<!DOCTYPE html>
         var checkboxes = document.querySelectorAll('input[name="accepted"]:checked');
         var checked = [];
         for (var i = 0; i < checkboxes.length; i++) { checked.push(parseInt(checkboxes[i].value)); }
+        // Defence in depth: silently drop any advisory indices that somehow
+        // made it into the submission (advisory cards have no checkbox in
+        // the DOM, but a direct fetch / URL manipulation could still pass
+        // one through). The server-side accept handler is unaware of the
+        // advisory split; this is the only client-side gate.
+        if (ADVISORY_INDICES.length > 0) {
+          checked = checked.filter(function(idx) { return ADVISORY_INDICES.indexOf(idx) === -1; });
+        }
         if (checked.length === 0) { showResult("No recommendations selected", false); return; }
         disableButtons();
         showResult("Applying " + checked.length + " change(s)...", true);

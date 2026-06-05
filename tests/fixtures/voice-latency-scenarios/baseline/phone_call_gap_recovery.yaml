@@ -1,0 +1,48 @@
+name: phone_call_gap_recovery
+suite: baseline
+description: |
+  Inspector dictates one reading, then a 60-second gap occurs
+  (phone call / interruption), then dictates another reading on the
+  same circuit. Both readings must land on circuit 1.
+
+  Real-world session 6C475A3F (2026-03-09) lost the second-half of
+  an inspection after a phone call. The audio-session interruption
+  recovery is iOS-side, but the SERVER-side state must survive the
+  gap — the rolling state snapshot should still contain c1's
+  designation when the second utterance arrives.
+
+  This scenario does NOT simulate Deepgram disconnect / WS
+  reconnect — that's an integration concern. It validates that
+  the extraction pipeline doesn't lose context across a transcript
+  gap.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits: []
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one is the cooker, Zs zero point six."
+    isFinal: true
+  - at_ms: 60000
+    text: "R1 plus R2 for the cooker is 0.23."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 2 }
+  has_reading:
+    - circuit: 1
+      field: measured_zs_ohm
+      value: 0.6
+    - circuit: 1
+      field: r1_r2_ohm
+      value: 0.23
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 90000
+  drain_ms: 25000
+  fetch_tts: false

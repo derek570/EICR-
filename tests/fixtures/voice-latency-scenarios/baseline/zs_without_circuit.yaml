@@ -1,0 +1,60 @@
+name: zs_without_circuit
+suite: baseline
+description: |
+  Inspector dictates a Zs value with no circuit reference. Sonnet must
+  emit a single ask_user ("Which circuit is the Zs of 0.6 for?") and
+  wait for the answer. The next utterance ("for the cooker") resolves
+  the ask via the server-side answer-resolver (designation lookup →
+  circuit 1) and Sonnet writes the buffered value through pending_write.
+
+  Pinned by session 065BDA7F (2026-05-26 16:15:55): Sonnet asked the
+  ambiguity question correctly here — the user-visible bug that day
+  was iOS not PLAYING the ask audio (tracked separately as the
+  silent-ask AlertManager queue stall). This scenario covers the
+  backend behaviour only; the iOS silent-ask defect is reproducible
+  from the iOS-side instrumentation, not from a backend replay.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Upstairs Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Zs is 0.6."
+    isFinal: true
+  # Inspector replies once the ask plays. 8 s pause approximates
+  # ask-TTS playback + user think-time.
+  - at_ms: 8000
+    text: "For the cooker."
+    isFinal: true
+
+expect:
+  # Exactly one ask_user (for the ambiguous circuit). NOT more — a
+  # second ask after the value lands is the symptom we want to catch.
+  ask_user_count: { min: 1, max: 1 }
+  has_reading:
+    # Use the LEGACY wire-format name (`zs`). Sonnet's record_reading
+    # emits canonical `measured_zs_ohm`, but validateAndCorrectFields in
+    # sonnet-stream.js rewrites it to `zs` before the extraction
+    # message hits the WS. See SCHEMA.md "Field names" table.
+    - circuit: 1
+      field: zs
+      value: "0.6"
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

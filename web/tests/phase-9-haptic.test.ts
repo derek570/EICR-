@@ -74,10 +74,10 @@ describe('haptic() — SSR safety', () => {
     const original = globalThis.navigator;
     // Simulate the server-side render environment where the helper
     // could be imported (via a "use client" file transitively loaded
-    // during static generation). The wrapper must stay silent.
-    // The cast widens `globalThis.navigator` to optional so `delete`
-    // type-checks cleanly without a directive (TS would otherwise
-    // reject deleting a required property).
+    // during static generation). The wrapper must stay silent. The
+    // optional-navigator cast on the same line is what makes the
+    // delete legal under strict mode (earlier this needed a TS
+    // suppression directive, but the cast was tightened).
     delete (globalThis as { navigator?: Navigator }).navigator;
     try {
       expect(haptic('light')).toBe(false);

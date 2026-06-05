@@ -27,7 +27,7 @@ describe('CostTracker', () => {
       expect(tracker.SONNET_RATES.cacheWrite).toBe(3.75);
       expect(tracker.SONNET_RATES.input).toBe(3.0);
       expect(tracker.SONNET_RATES.output).toBe(15.0);
-      expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.00003);
+      expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.00005);
     });
   });
 
@@ -150,13 +150,114 @@ describe('CostTracker', () => {
     });
   });
 
+  describe('Per-model rates', () => {
+    test('exposes Haiku 4.5 rates ($1 / $5 / $1.25 / $0.10)', () => {
+      expect(tracker.HAIKU_RATES.cacheRead).toBe(0.1);
+      expect(tracker.HAIKU_RATES.cacheWrite).toBe(1.25);
+      expect(tracker.HAIKU_RATES.input).toBe(1.0);
+      expect(tracker.HAIKU_RATES.output).toBe(5.0);
+    });
+
+    test('exposes Opus rates ($15 / $75 / $18.75 / $1.50)', () => {
+      expect(tracker.OPUS_RATES.cacheRead).toBe(1.5);
+      expect(tracker.OPUS_RATES.cacheWrite).toBe(18.75);
+      expect(tracker.OPUS_RATES.input).toBe(15.0);
+      expect(tracker.OPUS_RATES.output).toBe(75.0);
+    });
+
+    test('Haiku model id is billed at Haiku rates (1/3 the Sonnet cost)', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000, // $0.10 @ haiku, $0.30 @ sonnet
+          cache_creation_input_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        'claude-haiku-4-5-20251001'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.1, 4);
+    });
+
+    test('Sonnet model id is billed at Sonnet rates (back-compat)', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        'claude-sonnet-4-6'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.3, 4);
+    });
+
+    test('omitting model id defaults to Sonnet rates (back-compat with legacy callers)', () => {
+      tracker.addSonnetUsage({
+        cache_read_input_tokens: 1_000_000,
+        cache_creation_input_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      expect(tracker.sonnetCost).toBeCloseTo(0.3, 4);
+    });
+
+    test('mixed-model session sums per-family rates correctly', () => {
+      // Haiku extraction turn: 1M input @ $1 = $1.00
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+        },
+        'claude-haiku-4-5-20251001'
+      );
+      // Sonnet observation turn: 1M input @ $3 = $3.00
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+        },
+        'claude-sonnet-4-6'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(4.0, 4);
+      // Aggregate is preserved for toCostUpdate() back-compat
+      expect(tracker.sonnet.turns).toBe(2);
+      expect(tracker.sonnet.inputTokens).toBe(2_000_000);
+    });
+
+    test('compaction usage on Haiku also bills at Haiku rates', () => {
+      tracker.addCompactionUsage(
+        { input_tokens: 1_000_000, output_tokens: 0 },
+        'claude-haiku-4-5-20251001'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(1.0, 4);
+      expect(tracker.sonnet.compactions).toBe(1);
+    });
+
+    test('unknown model id falls back to Sonnet rates (safe default)', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        'claude-something-new-9-9'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.3, 4);
+    });
+  });
+
   describe('ElevenLabs cost tracking', () => {
     test('should track character usage', () => {
       tracker.addElevenLabsUsage(100);
       tracker.addElevenLabsUsage(200);
 
       expect(tracker.elevenLabsCharacters).toBe(300);
-      expect(tracker.elevenLabsCost).toBeCloseTo(300 * 0.00003, 6);
+      expect(tracker.elevenLabsCost).toBeCloseTo(300 * 0.00005, 6);
     });
   });
 
@@ -292,7 +393,7 @@ describe('recordElevenLabsUsageForSession', () => {
 
     expect(result).toBe(true);
     expect(costTracker.elevenLabsCharacters).toBe(120);
-    expect(costTracker.elevenLabsCost).toBeCloseTo(120 * 0.00003, 6);
+    expect(costTracker.elevenLabsCost).toBeCloseTo(120 * 0.00005, 6);
   });
 
   test('accumulates across multiple TTS proxy calls within the same session', () => {
@@ -331,5 +432,142 @@ describe('recordElevenLabsUsageForSession', () => {
     // a late TTS response still arrives at the proxy.
     activeSessions.set('sess-half-torn-down', { session: {} });
     expect(recordFn('sess-half-torn-down', 100)).toBe(false);
+  });
+});
+
+describe('CostTracker — Loaded Barrel speculative sub-ledger (Phase 1.D extra)', () => {
+  test('recordElevenLabsSpeculativeStarted increments chars + dedupes per correlationId', () => {
+    const t = new CostTracker();
+    expect(t.recordElevenLabsSpeculativeStarted(50, 'corr-A')).toBe(true);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(50);
+    // Mirrored into legacy aggregate so cost wire shape stays accurate.
+    expect(t.elevenLabsCharacters).toBe(50);
+
+    // Duplicate correlation ID is a no-op.
+    expect(t.recordElevenLabsSpeculativeStarted(50, 'corr-A')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(50);
+    expect(t.elevenLabsCharacters).toBe(50);
+
+    // Different correlation ID accumulates.
+    expect(t.recordElevenLabsSpeculativeStarted(30, 'corr-B')).toBe(true);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(80);
+  });
+
+  test('recordElevenLabsSpeculativeStarted rejects missing id / invalid chars', () => {
+    const t = new CostTracker();
+    expect(t.recordElevenLabsSpeculativeStarted(50, null)).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(50, '')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(0, 'corr-A')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(-1, 'corr-A')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeStarted(NaN, 'corr-A')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(0);
+  });
+
+  test('recordElevenLabsSpeculativeTerminal credits the right bucket + dedupes', () => {
+    const t = new CostTracker();
+    t.recordElevenLabsSpeculativeStarted(50, 'corr-completed');
+    t.recordElevenLabsSpeculativeStarted(30, 'corr-cancelled');
+    t.recordElevenLabsSpeculativeStarted(20, 'corr-failed');
+
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-completed', 'completed')).toBe(true);
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-cancelled', 'cancelled')).toBe(true);
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-failed', 'failed')).toBe(true);
+
+    expect(t.elevenLabsSpeculative.charsCompleted).toBe(50);
+    expect(t.elevenLabsSpeculative.charsCancelled).toBe(30);
+    expect(t.elevenLabsSpeculative.charsFailed).toBe(20);
+
+    // Duplicate terminal is no-op.
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-completed', 'completed')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsCompleted).toBe(50);
+  });
+
+  test('recordElevenLabsSpeculativeTerminal rejects invalid reason / missing id', () => {
+    const t = new CostTracker();
+    t.recordElevenLabsSpeculativeStarted(50, 'corr-A');
+    expect(t.recordElevenLabsSpeculativeTerminal('corr-A', 'invalid')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeTerminal(null, 'completed')).toBe(false);
+    expect(t.recordElevenLabsSpeculativeTerminal('', 'completed')).toBe(false);
+  });
+
+  // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.1).
+  // The Terminal API accepts an optional opts object — the structural
+  // cost-integrity fix is upstream (Pivot 11.4 moved Started after the
+  // text-sent boundary). opts.reason and opts.cancelledBeforeTextSent
+  // are vestigial post-v6 diagnostic markers that the speculator passes
+  // through. Cost accounting MUST NOT depend on them.
+  test('recordElevenLabsSpeculativeTerminal accepts opts and behaves identically to no-opts call', () => {
+    const tA = new CostTracker();
+    const tB = new CostTracker();
+    tA.recordElevenLabsSpeculativeStarted(50, 'corr-A');
+    tB.recordElevenLabsSpeculativeStarted(50, 'corr-A');
+
+    // Call with opts.
+    expect(
+      tA.recordElevenLabsSpeculativeTerminal('corr-A', 'cancelled', {
+        reason: 'cancelled_by_fast_tts_hint',
+        cancelledBeforeTextSent: false,
+      })
+    ).toBe(true);
+    // Call without opts (legacy shape).
+    expect(tB.recordElevenLabsSpeculativeTerminal('corr-A', 'cancelled')).toBe(true);
+
+    // Cost accounting must be byte-identical regardless of opts.
+    expect(tA.elevenLabsSpeculative.charsCancelled).toBe(tB.elevenLabsSpeculative.charsCancelled);
+    expect(tA.elevenLabsSpeculative.charsStarted).toBe(tB.elevenLabsSpeculative.charsStarted);
+    expect(tA.elevenLabsSpeculative.charsCompleted).toBe(tB.elevenLabsSpeculative.charsCompleted);
+    expect(tA.elevenLabsSpeculative.charsFailed).toBe(tB.elevenLabsSpeculative.charsFailed);
+  });
+
+  test('promoteSpeculativeToCanonical credits charsServed + dedupes', () => {
+    const t = new CostTracker();
+    t.recordElevenLabsSpeculativeStarted(50, 'corr-hit');
+    t.recordElevenLabsSpeculativeTerminal('corr-hit', 'completed');
+
+    expect(t.promoteSpeculativeToCanonical('corr-hit')).toBe(true);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(50);
+
+    // Duplicate promote is no-op.
+    expect(t.promoteSpeculativeToCanonical('corr-hit')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(50);
+  });
+
+  test('promoteSpeculativeToCanonical fails when correlationId was never Started', () => {
+    const t = new CostTracker();
+    expect(t.promoteSpeculativeToCanonical('corr-unknown')).toBe(false);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(0);
+  });
+
+  test('elevenLabsSpeculativeWastedChars = started - served (rollback criterion)', () => {
+    const t = new CostTracker();
+    // Three speculations, one HIT, two WASTED.
+    t.recordElevenLabsSpeculativeStarted(50, 'hit-1');
+    t.recordElevenLabsSpeculativeStarted(30, 'wasted-1');
+    t.recordElevenLabsSpeculativeStarted(20, 'wasted-2');
+    t.recordElevenLabsSpeculativeTerminal('hit-1', 'completed');
+    t.recordElevenLabsSpeculativeTerminal('wasted-1', 'cancelled');
+    t.recordElevenLabsSpeculativeTerminal('wasted-2', 'completed');
+    t.promoteSpeculativeToCanonical('hit-1');
+
+    expect(t.elevenLabsSpeculative.charsStarted).toBe(100);
+    expect(t.elevenLabsSpeculative.charsServed).toBe(50);
+    expect(t.elevenLabsSpeculativeWastedChars).toBe(50); // 100 - 50
+  });
+
+  test('audit invariant: every Started has exactly one Terminal at session-end', () => {
+    // Plan v10 §B asserted invariant. This test is a unit smoke; the
+    // full 10k-seed fuzz lands in Phase 5.
+    const t = new CostTracker();
+    for (let i = 0; i < 20; i++) {
+      const id = `corr-${i}`;
+      t.recordElevenLabsSpeculativeStarted(10 + i, id);
+      const reason = i % 3 === 0 ? 'completed' : i % 3 === 1 ? 'cancelled' : 'failed';
+      t.recordElevenLabsSpeculativeTerminal(id, reason);
+    }
+    expect(t.elevenLabsSpeculative._seenCorrelationIds.size).toBe(20);
+    expect(t.elevenLabsSpeculative._terminalCorrelationIds.size).toBe(20);
+    // Invariant: charsCompleted + charsCancelled + charsFailed = charsStarted.
+    const spec = t.elevenLabsSpeculative;
+    expect(spec.charsCompleted + spec.charsCancelled + spec.charsFailed).toBe(spec.charsStarted);
   });
 });

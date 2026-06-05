@@ -15,14 +15,115 @@ import { WebSocketServer } from 'ws';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
-import { needsRefinement, refineObservation } from './observation-code-lookup.js';
+import {
+  needsRefinement,
+  refineObservation,
+  VALID_CODES as VALID_OBS_CODES,
+} from './observation-code-lookup.js';
 import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
+import { FIELD_CORRECTIONS, applyFieldNameCorrection } from './field-name-corrections.js';
+import { KNOWN_FIELDS } from './known-fields.js';
 // Stage 5 — dialog-state filledSlots pre-flight filter. Extracted to its own
 // module so it can be unit-tested without loading storage.js. Docstring in
 // ./filled-slots-filter.js.
 import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
+// Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
+// drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
+import { runShadowHarness } from './stage6-shadow-harness.js';
+// 2026-04-28 — server-side ring continuity timeout detector. See
+// `src/extraction/ring-continuity-timeout.js` for the full design rationale
+// and `.planning-stage6-agentic/handoffs/silent-drop-fix-2026-04-28/README.md`
+// for the handoff that drove this wiring.
+import { findExpiredPartial } from './ring-continuity-timeout.js';
+import { findExpiredPartial as findExpiredIrPartial } from './insulation-resistance-timeout.js';
+// Slice 1 of the chitchat-pause feature (2026-05-06). State machine that
+// stops forwarding transcript turns to Sonnet after 10 consecutive turns
+// of zero engagement (no readings, no observations, no questions).
+// Wakes via wake-word regex on incoming transcripts, manual
+// `chitchat_resume` WS message, or the existing `session_resume` (so a
+// Deepgram-reconnect-from-doze also wakes Sonnet — Derek's fourth
+// trigger). Slice 2 will add the replay buffer + iOS regex hint reset;
+// slice 3 the cache keep-alive ping.
+import {
+  ensureChitchatState,
+  recordTurn as recordChitchatTurn,
+  exitChitchatPause,
+  isWakeWordTranscript,
+  bufferTranscript,
+  drainReplayBuffer,
+  shouldLogSuppression,
+  noteMissingContextAsk,
+} from './chitchat-pause.js';
+// Pre-LLM transcript gate (2026-05-26). Blocks single-word filler and
+// background-chatter transcripts before they cost a Sonnet round + TTS.
+// Session 33E6613D-49A7-4B42-A73B-1E2C6A82174D burnt ~£0.30 on 14 such
+// transcripts; the gate is conservative (only blocks empty / digit-free /
+// trigger-free / ≤2-content-word text) and bypasses pending asks,
+// in_response_to replies, and drained-retry replays. Telemetry:
+// voice_latency.gate_blocked. Kill-switch: VOICE_PRE_LLM_GATE=false.
+import { shouldForwardToSonnet, GATE_REASONS, OBSERVATION_PATTERN } from './pre-llm-gate.js';
+
+const PRE_LLM_GATE_ENABLED = process.env.VOICE_PRE_LLM_GATE !== 'false';
+// 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
+// duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
+// loss surfaced by session B107472D (06:23, 2026-04-29) where "Neutrals are."
+// → "0.43." landed in two separate turns and Sonnet routed the bare value
+// to a generic missing-field ask. Sits BEFORE the 60s timeout check below
+// so the script's per-circuit state is the source of truth while active.
+// Dialogue script engine — replaces the per-domain ring + IR scripts
+// with a single slot-filling engine driven by per-domain schemas. The
+// drop-in wrappers preserve the call-site contract; the schemas live
+// in src/extraction/dialogue-engine/schemas/. PR1 ports ring + IR;
+// PR2 will add OCPD / RCD / RCBO. The legacy *-script.js files stay
+// alongside this PR until a follow-up commit deletes them.
+import {
+  processRingContinuityTurn,
+  processInsulationResistanceTurn,
+  processProtectiveDeviceTurn,
+} from './dialogue-engine/index.js';
+// Stage 6 Phase 3 — per-session blocking-ask plumbing. Plan 03-08 threads the
+// per-session PendingAsksRegistry through every call-site of runShadowHarness
+// (via `options.pendingAsks` + `options.ws`) and routes inbound iOS
+// `ask_user_answered` replies to registry.resolve. The overtake classifier
+// fires in handleTranscript BEFORE shadow-harness dispatch so an unrelated
+// utterance drains stale asks (rejectAll 'user_moved_on') rather than
+// poisoning the slot map.
+import { createPendingAsksRegistry } from './stage6-pending-asks-registry.js';
+import { classifyOvertake } from './stage6-overtake-classifier.js';
+// Plan 03-10 Task 2 — bound + scrub user_text before it touches CloudWatch
+// logs OR the Anthropic tool_result body. Pure function; throws on abusive
+// sizes (>8192 chars) so the caller can send an error envelope back to iOS
+// instead of smuggling the abuse downstream.
+import { sanitiseUserText } from './stage6-sanitise-user-text.js';
+// Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter. The
+// activeSessions entry owns one askBudget per session; the wrapper layer
+// (Plan 05-01) calls isExhausted(key) BEFORE invoking the inner ask
+// dispatcher and increment(key) AFTER each non-short-circuited ask.
+// Reconnect deliberately PRESERVES the budget so a hang-up + reconnect
+// cannot reset the 2-ask cap (STA-06 + 05-03 Open Question #2).
+import { createAskBudget } from './stage6-ask-budget.js';
+// Stage 6 Phase 5 Plan 05-02 — filled-slots-shadow adapter. Side-effect-only
+// wrapper around the unmodified Stage 5 filterQuestionsAgainstFilledSlots
+// that the ask-gate-wrapper invokes PRE-WRAPPER on every ask_user. Logs
+// `stage6.filled_slots_would_suppress` rows that Phase 7 retirement
+// analytics joins with stage6.ask_user rows on (sessionId, tool_call_id)
+// to decide whether the legacy filter has any residual signal. The
+// activeSessions entry owns one shadow-logger per session; sessionGetter
+// reads the live entry lazily so per-turn writes to stateSnapshot are
+// always reflected. Wiring deferred from Plan 05-02 to Plan 05-05 because
+// 05-02 was scoped to the adapter module + tests; the sonnet-stream.js
+// composition step landed here (the executor's note in 05-02-SUMMARY).
+import { createFilledSlotsShadowLogger } from './stage6-filled-slots-shadow.js';
+// 2026-05-08 multi-board sprint Phase C — client-initiated select_board.
+// iOS detects "work on [board]" / "switch to [board]" on-device, resolves
+// to a board id, and sends `{type: 'select_board', board_id}`. The handler
+// below mutates `session.stateSnapshot.currentBoardId` directly, mirroring
+// the chitchat_resume precedent (no Sonnet round-trip). ensureMultiBoardShape
+// stamps board_id on legacy snapshots so the lookup works on jobs that
+// pre-date the multi-board sprint.
+import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -41,6 +142,184 @@ async function getOpenAIClient() {
     });
     return null;
   }
+}
+
+/**
+ * Stage 6 Phase 4 Plan 04-03 — STQ-04 / STB-03.
+ *
+ * Returns true when the legacy `questions_for_user` consumption path should
+ * run for this session. On the tool-call branch (`shadow` / `live`) Sonnet
+ * emits questions via the `ask_user` tool call and the JSON
+ * `questions_for_user` field is not supposed to be generated at all (Plan
+ * 04-01's new prompt omits the field). This helper is the server-side
+ * defence-in-depth: even if a faulty prompt version caused Sonnet to emit
+ * `questions_for_user` in non-off mode, sonnet-stream.js refuses to forward
+ * it. Every read site (logger preview, filterQuestionsAgainstFilledSlots,
+ * questionGate.enqueue, reviewForOrphanedValues branch) is wrapped in this
+ * guard.
+ */
+function consumeLegacyQuestionsForUser(entry) {
+  return entry?.session?.toolCallsMode === 'off';
+}
+
+/**
+ * 2026-05-08 multi-board sprint Phase E — unified `current_board_changed`
+ * broadcast for the Sonnet-initiated path.
+ *
+ * `dispatchSelectBoard` (stage6-dispatchers-board.js) pushes
+ * `{op: 'select_board', board_id}` onto `perTurnWrites.boardOps`, which the
+ * bundler emits as `result.board_ops`. After the extraction envelope is
+ * sent to iOS, this helper scans those ops for `select_board` entries and
+ * emits one top-level `current_board_changed` envelope per match — the
+ * same wire shape the iOS-initiated `case 'select_board'` handler uses on
+ * direct success. Result: a single iOS code path drives `JobViewModel.
+ * currentBoardId` regardless of who initiated the switch.
+ *
+ * Called from both `onBatchResult` and the synchronous `handleTranscript`
+ * extraction send so batched + live tool-loop turns both broadcast. No-op
+ * when `boardOps` is missing/empty.
+ */
+function emitCurrentBoardChangedFromBoardOps(ws, snapshot, boardOps) {
+  if (!ws || ws.readyState !== ws.OPEN) return;
+  if (!Array.isArray(boardOps) || boardOps.length === 0) return;
+  for (const op of boardOps) {
+    if (!op || typeof op.board_id !== 'string') continue;
+    // Hotfix slice 2.1 — widen the discriminator to include `add_board`.
+    // Phase 6.1's add_board dispatcher flips snapshot.currentBoardId AND
+    // pushes a boardOps op with board_id + designation, but the helper
+    // previously only matched select_board. Result: every Sonnet-driven
+    // add_board flowed past iOS's banner + JobViewModel without firing
+    // a current_board_changed broadcast — banner stayed on the previous
+    // board until the inspector said something that triggered a
+    // select_board.
+    //
+    // `source` carries a sub-discriminator so logs / future analytics can
+    // tell add-board flips apart from select-board flips.
+    const isAddBoard = op.op === 'add_board';
+    const isSelectBoard = op.op === 'select_board';
+    if (!isAddBoard && !isSelectBoard) continue;
+    // Designation is looked up from the snapshot at send time so the wire
+    // signal carries the human-readable name iOS can drop straight into
+    // the Phase D red banner / TTS confirmation. Falls back to null when
+    // the snapshot doesn't carry a designation (legacy jobs that pre-date
+    // the multi-board sprint).
+    const target = (snapshot?.boards ?? []).find((b) => b && b.id === op.board_id);
+    ws.send(
+      JSON.stringify({
+        type: 'current_board_changed',
+        board_id: op.board_id,
+        designation: target?.designation ?? null,
+        source: isAddBoard ? 'sonnet_add' : 'sonnet',
+      })
+    );
+  }
+}
+
+/**
+ * Plan 06-07 r6-#1 (BLOCK) — re-resolve SONNET_TOOL_CALLS at reconnect/
+ * resume time so the freshly-bound entry's session tracks the latest env
+ * mode for runtime path selection.
+ *
+ * EICRExtractionSession._resolveToolCallsMode does the same allow-list
+ * sanitisation but it's an instance method that logs a warn keyed by
+ * `this.sessionId`. The two callers here (handleSessionStart reconnect,
+ * handleSessionResumeRehydrate) want a free function — they're updating
+ * an existing session's mode flag, not constructing a new one — and
+ * warning on every reconnect for an invalid env value would be log spam
+ * (the original construction already warned once at session_start).
+ * Duplicating the three-line allow-list is cheaper than refactoring
+ * `_resolveToolCallsMode` to be a static helper just for this surface.
+ *
+ * Why this matters (r6 root cause): the runtime dispatch path-selection
+ * happens in two places:
+ *   1. `runShadowHarness` (stage6-shadow-harness.js:188) reads
+ *      `session.toolCallsMode ?? 'off'` and routes to the legacy fast
+ *      path / Phase-6 throw / shadow harness.
+ *   2. `consumeLegacyQuestionsForUser` (above, line 109) reads
+ *      `entry?.session?.toolCallsMode === 'off'` to gate ingestion of
+ *      the legacy `questions_for_user` JSON field per STR-01.
+ *
+ * `entry.session.toolCallsMode` is set ONCE at session-construction
+ * time by EICRExtractionSession from process.env.SONNET_TOOL_CALLS.
+ * After r5 wrote `entry.protocolVersion` + `entry.fallbackToLegacy` on
+ * reconnect/resume, the entry's session.toolCallsMode stayed at the
+ * construction-time value forever — so an operator flipping
+ * SONNET_TOOL_CALLS=off→shadow (or shadow→off STR-01 rollback) mid-
+ * session left the runtime routing on the OLD path even though r5
+ * wrote the new handshake state. r6's fix calls this helper and writes
+ * the result onto `existing.session.toolCallsMode` (or
+ * `entry.session.toolCallsMode`) before rebinding `ws`.
+ *
+ * @returns {'off' | 'shadow' | 'live'} The effective toolCallsMode
+ *   given the current value of process.env.SONNET_TOOL_CALLS. Defaults
+ *   'live' when unset or invalid (was 'off' until 2026-05-02 — see the
+ *   matching change in EICRExtractionSession._resolveToolCallsMode for
+ *   the rationale).
+ */
+function resolveEffectiveToolCallsMode() {
+  const raw = process.env.SONNET_TOOL_CALLS ?? 'live';
+  if (raw === 'off' || raw === 'shadow' || raw === 'live') return raw;
+  return 'live';
+}
+
+/**
+ * One-shot per-session bypass log — fires exactly the first time a
+ * non-empty `questions_for_user` payload is seen on the tool-call branch.
+ * Subsequent turns for the same session are silent so a prompt regression
+ * does not flood CloudWatch with per-turn duplicates; a single row is
+ * enough to diagnose the leak and the deploy that introduced it.
+ */
+function logBypassOnce(entry, sessionId, pathLabel) {
+  if (!entry || entry.loggedQuestionsForUserBypass) return;
+  entry.loggedQuestionsForUserBypass = true;
+  logger.info('questions_for_user bypassed (tool-call path)', {
+    sessionId,
+    path: pathLabel,
+    toolCallsMode: entry.session?.toolCallsMode,
+  });
+}
+
+/**
+ * Stage 6 Phase 7 STR-05 / Plan 07-02 Task 1 — retirement-window warn log.
+ *
+ * One-shot per-session warn fired the FIRST time the legacy off-mode
+ * `filterQuestionsAgainstFilledSlots` path is invoked in a given
+ * session. Subsequent invocations within the same session are silent
+ * so a session that re-enters the legacy filter once per turn (not
+ * unusual under the off-mode batched-flush cadence) does not flood
+ * CloudWatch with hundreds of warn rows over a 5-min recording. The
+ * retirement signal we need at T+4w is "did any session at all touch
+ * this code in 14 days", not "how many times" — one row per session is
+ * exactly the resolution.
+ *
+ * Pattern mirrors `logBypassOnce` (above). Different log level (warn
+ * vs info) because this is the retirement-gate signal: a single row
+ * during the T+2w..T+4w pre-delete window aborts the deletion. info
+ * level on the bypass is sufficient because that one is diagnostic
+ * for prompt regressions, not a deletion gate.
+ *
+ * Three call sites (the three legacy filter invocations):
+ *   1. onBatchResult — `callSite: 'onBatchResult'`
+ *   2. handleTranscript sync path — `callSite: 'handleTranscript'`
+ *   3. periodic orphan review — `callSite: 'reviewForOrphanedValues'`
+ *
+ * Stamped on the `activeSessions` entry (not on the session itself)
+ * so reconnect/resume rebinds carry the flag across the session-swap
+ * surface — the entry persists across reconnects within the 300s
+ * session-reconnect window, so a session that already warned does
+ * not re-warn after a reconnect.
+ *
+ * Refs: REQUIREMENTS.md STR-05, STO-05, STB-03; ROLLBACK_RUNBOOK.md
+ *       "Retirement timeline" + "helper queries" sections.
+ */
+function logLegacyPathInvokedOnce(entry, sessionId, callSite) {
+  if (!entry || entry.loggedLegacyPathInvoked) return;
+  entry.loggedLegacyPathInvoked = true;
+  logger.warn('legacy_path_invoked', {
+    sessionId,
+    callSite,
+    toolCallsMode: entry.session?.toolCallsMode,
+  });
 }
 
 /**
@@ -133,6 +412,13 @@ async function refineObservationsAsync(entry, sessionId, observations) {
         });
         continue;
       }
+      // observation_text on the update is the AUTHORITATIVE text iOS will
+      // render. When the refiner returned a professional rewrite, send that;
+      // otherwise fall back to the inspector's original dictation so iOS still
+      // has a non-empty fuzzy-match key. iOS's handleObservationUpdate replaces
+      // the row's observationText with this value (see Sources/Recording/
+      // DeepgramRecordingViewModel.swift handleObservationUpdate).
+      const updateText = refined.professional_text || obs.observation_text || obs.description || '';
       currentWs.send(
         JSON.stringify({
           type: 'observation_update',
@@ -140,9 +426,15 @@ async function refineObservationsAsync(entry, sessionId, observations) {
           // the exact row even if Sonnet has since re-worded the observation
           // text (fuzzy match becomes fallback only).
           observation_id: obs.observation_id || null,
-          observation_text: obs.observation_text || obs.description || '',
+          observation_text: updateText,
+          // 2026-05-01 — original_text carries the inspector's pre-rewrite
+          // dictation so iOS's fuzzy-match fallback can still pair the
+          // update to the row even after the visible text has changed.
+          // iOS ignores unknown keys, so this is forward-compatible.
+          original_text: obs.observation_text || obs.description || '',
           code: refined.code,
           regulation: refined.regulation,
+          schedule_item: refined.schedule_item,
           rationale: refined.rationale,
           source: refined.source,
         })
@@ -157,7 +449,9 @@ async function refineObservationsAsync(entry, sessionId, observations) {
         sessionId,
         observationId: (obs.observation_id || '').slice(0, 8),
         code: refined.code,
-        textPreview: (obs.observation_text || '').slice(0, 60),
+        scheduleItem: refined.schedule_item || null,
+        rewroteText: refined.professional_text !== null,
+        textPreview: updateText.slice(0, 60),
       });
     } catch (err) {
       logger.warn('Observation refinement iteration failed', {
@@ -195,13 +489,17 @@ async function replayPendingRefinements(entry, sessionId) {
       // Cached result from a mid-refine socket drop — send directly.
       if (!entry.ws || entry.ws.readyState !== entry.ws.OPEN) return;
       try {
+        const replayText =
+          refined.professional_text || obs.observation_text || obs.description || '';
         entry.ws.send(
           JSON.stringify({
             type: 'observation_update',
             observation_id: obs.observation_id || null,
-            observation_text: obs.observation_text || obs.description || '',
+            observation_text: replayText,
+            original_text: obs.observation_text || obs.description || '',
             code: refined.code,
             regulation: refined.regulation,
+            schedule_item: refined.schedule_item,
             rationale: refined.rationale,
             source: refined.source,
           })
@@ -280,6 +578,61 @@ const WS_RATE_LIMIT = {
   windowMs: 60_000, // 1-minute window
 };
 
+// Plan 03-10 Task 1 — FIFO cap on the per-session consumedAskUtterances set.
+// Picked one order of magnitude above the peak utterance count observed in a
+// full 120-minute EICR inspection (~100 utterances) so normal sessions NEVER
+// trigger eviction; abusive / long-running sessions still bound memory.
+// Exported for test overrides.
+export const CONSUMED_UTTERANCE_CAP = 256;
+
+// r16 MAJOR#1 + #2 remediation — content-matched fallback dedupe.
+//
+// consumedAskUtterances is the fast path: utterance_id on both the ask
+// answer AND the transcript. It fails in two cases Codex flagged:
+//   MAJOR#1 — legacy clients omit consumed_utterance_id on the ANSWER
+//             side, so no anchor is registered.
+//   MAJOR#2 — clients that stamp consumed_utterance_id on the answer but
+//             OMIT utterance_id on the paired transcript frame cannot
+//             match the Set lookup (which is keyed on transcript's
+//             utterance_id).
+//
+// Shared mitigation: every RESOLVED ask_user_answered also pushes a
+// content anchor — the sanitised answer text + an expiry — to
+// entry.recentAskAnswers. handleTranscript consults the list AFTER the
+// fast-path Set miss; if any non-expired entry's normalised text equals
+// the normalised transcript text, suppress + remove that entry (one-shot
+// per answer). STA-01 (one in-flight turn) and the short TTL bound list
+// size; CAP provides hard belt-and-braces limit.
+//
+// Match rule is normalised equality, NOT substring/overlap. "move to
+// three" would substring-match an ask answer of "three" but is clearly
+// a DIFFERENT utterance — suppressing it would lose genuine speech.
+// Normalisation: lowercase + strip non-alphanumerics + collapse
+// whitespace. This tolerates trailing punctuation and casing without
+// admitting unrelated utterances.
+//
+// TTL 1500 ms — above observed iOS→server routing skew (<400 ms p99)
+// but short enough that a fresh post-ask utterance that happens to
+// repeat the answer text is not falsely suppressed. CAP 8 — more than
+// one active content anchor at a time implies a burst of anchorless
+// answers, which shouldn't happen under STA-01.
+export const RECENT_ASK_ANSWER_TTL_MS = 1500;
+export const RECENT_ASK_ANSWER_CAP = 8;
+
+/**
+ * Normalise a freeform utterance for equality-based dedupe.
+ * Lowercase, strip non-alphanumerics, collapse internal whitespace,
+ * trim. Pure — no allocations beyond the returned string.
+ */
+export function normaliseForAskMatch(text) {
+  if (typeof text !== 'string') return '';
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /**
  * Sliding-window rate limiter. Returns an object with a check() method
  * that returns true if the message is allowed, false if rate-limited.
@@ -307,177 +660,53 @@ function createMessageRateLimiter(maxMessages, windowMs) {
 // WS-handler import graph into their context. See `active-sessions.js`.
 import { activeSessions } from './active-sessions.js';
 
-// Known valid field names that iOS can handle
-const KNOWN_FIELDS = new Set([
-  // Supply fields
-  'ze',
-  'pfc',
-  'earthing_arrangement',
-  'main_earth_conductor_csa',
-  'main_bonding_conductor_csa',
-  'bonding_water',
-  'bonding_gas',
-  'earth_electrode_type',
-  'earth_electrode_resistance',
-  'supply_voltage',
-  'nominal_voltage',
-  'nominal_voltage_u',
-  'supply_frequency',
-  'nominal_frequency',
-  'supply_polarity_confirmed',
-  'manufacturer',
-  'zs_at_db',
-  // Main switch/fuse fields
-  'main_switch_bs_en',
-  'main_switch_current',
-  'main_switch_fuse_setting',
-  'main_switch_poles',
-  'main_switch_voltage',
-  'main_switch_location',
-  'main_switch_conductor_material',
-  'main_switch_conductor_csa',
-  // Supply-level RCD fields
-  'rcd_operating_current',
-  'rcd_time_delay',
-  'rcd_operating_time',
-  // Additional supply fields
-  'live_conductors',
-  'number_of_supplies',
-  'nominal_voltage_uo',
-  'earth_electrode_location',
-  'earthing_conductor_material',
-  'earthing_conductor_continuity',
-  'main_bonding_material',
-  'main_bonding_continuity',
-  'bonding_oil',
-  'bonding_structural_steel',
-  'bonding_lightning',
-  'bonding_other',
-  // SPD fields
-  'spd_bs_en',
-  'spd_type_supply',
-  'spd_short_circuit',
-  'spd_rated_current',
-  // Installation fields
-  'address',
-  'postcode',
-  'town',
-  'county',
-  'client_name',
-  'client_address',
-  'client_postcode',
-  'client_town',
-  'client_county',
-  'client_phone',
-  'client_email',
-  'reason_for_report',
-  'occupier_name',
-  'date_of_inspection',
-  'date_of_previous_inspection',
-  'previous_certificate_number',
-  'estimated_age_of_installation',
-  'general_condition',
-  'next_inspection_years',
-  'premises_description',
-  // Circuit fields
-  'zs',
-  'insulation_resistance_l_e',
-  'insulation_resistance_l_l',
-  'r1_plus_r2',
-  'r1_r2',
-  'r1r2',
-  'r2',
-  'earth_continuity',
-  'ring_continuity_r1',
-  'ring_continuity_rn',
-  'ring_continuity_r2',
-  'rcd_trip_time',
-  'rcd_time',
-  'rcd_rating_a',
-  'rcd_rating',
-  'polarity',
-  'cable_size',
-  'cable_size_earth',
-  'cpc_csa_mm2',
-  'cpc_csa',
-  'ocpd_type',
-  'ocpd_rating',
-  'ocpd_bs_en',
-  'rcd_bs_en',
-  'number_of_points',
-  'wiring_type',
-  'ref_method',
-  'rcd_type',
-  'rcd_operating_current_ma',
-  'max_disconnect_time',
-  'ocpd_breaking_capacity',
-  'ir_test_voltage',
-  'rcd_button_confirmed',
-  'afdd_button_confirmed',
-  'circuit_description',
-  'designation',
-  'ir_live_earth',
-  'ir_live_live',
-  'earth_fault_loop_impedance',
-  'ocpd_max_zs_ohm',
-  'max_zs',
-  'ocpd_max_zs',
-  // EIC-specific fields
-  'extent_of_installation',
-  'installation_type',
-  'departures_from_bs7671',
-  'departure_details',
-  'design_comments',
-]);
+// Phase 1.3 (PLAN-backend-final.md) — per-session buffer + flush primitives
+// for the `client_log_batch` WS channel iOS streams over the Sonnet socket.
+// See `realtime-log-sink.js` for the buffer/flush/downsample design; the
+// `case 'client_log_batch'` arm in this file owns audit-integrity stripping
+// and per-entry CloudWatch row emission. The periodic flusher tick is armed
+// inside `initSonnetStream` (one shared interval over activeSessions).
+import {
+  MAX_LINES_PER_SESSION as REALTIME_LOG_MAX_LINES_PER_SESSION,
+  shouldKeepInDownsampling,
+  ensureRealtimeLogBuffer,
+  appendOneToBuffer,
+  shouldFlush as shouldFlushRealtimeLog,
+  flushSession as flushRealtimeLogSession,
+  startPeriodicFlusher as startRealtimeLogFlusher,
+} from './realtime-log-sink.js';
 
-// Common misspellings / variants → correct field name
-const FIELD_CORRECTIONS = {
-  insulation_resistance_le: 'insulation_resistance_l_e',
-  insulation_resistance_ll: 'insulation_resistance_l_l',
-  earth_loop_impedance_ze: 'ze',
-  prospective_fault_current: 'pfc',
-  // r1_plus_r2 is in KNOWN_FIELDS (iOS handles both r1_plus_r2 and r1_r2)
-  rcd_trip_time_ms: 'rcd_trip_time',
-  rcd_rating_ma: 'rcd_rating_a',
-  cable_size_live: 'cable_size',
-  cable_size_cpc: 'cable_size_earth',
-  cpc_size: 'cable_size_earth',
-  ir_l_e: 'insulation_resistance_l_e',
-  ir_l_l: 'insulation_resistance_l_l',
-  ir_le: 'insulation_resistance_l_e',
-  ir_ll: 'insulation_resistance_l_l',
-  loop_impedance: 'zs',
-  earth_loop_impedance: 'zs',
-  ring_r1: 'ring_continuity_r1',
-  ring_rn: 'ring_continuity_rn',
-  ring_r2: 'ring_continuity_r2',
-  max_zs: 'ocpd_max_zs_ohm',
-  ocpd_max_zs: 'ocpd_max_zs_ohm',
-  max_zs_ohm: 'ocpd_max_zs_ohm',
-  mcb_type: 'ocpd_type',
-  mcb_rating: 'ocpd_rating',
-  breaker_type: 'ocpd_type',
-  breaker_rating: 'ocpd_rating',
-  bs_en: 'ocpd_bs_en',
-  ocpd_standard: 'ocpd_bs_en',
-  rcd_standard: 'rcd_bs_en',
-  main_switch_rating: 'main_switch_current',
-  main_switch_type: 'main_switch_bs_en',
-  // Date field variants
-  inspection_date: 'date_of_inspection',
-  test_date: 'date_of_inspection',
-  previous_inspection_date: 'date_of_previous_inspection',
-  last_inspection_date: 'date_of_previous_inspection',
-  // "Main fuse" / "supply fuse" = Supply Protective Device (DNO cutout), NOT the CU main switch
-  main_fuse_rating: 'spd_rated_current',
-  main_fuse_current: 'spd_rated_current',
-  main_fuse_bs_en: 'spd_bs_en',
-  main_fuse_type: 'spd_type_supply',
-  supply_fuse_rating: 'spd_rated_current',
-  supply_fuse_type: 'spd_bs_en',
-};
+// Stage 1a commit 1a.2 — voice-latency flag snapshot. Per PLAN_v3 §4.2,
+// flags are read ONCE at session_start and frozen for the session
+// lifetime; mid-session env flips affect only NEW sessions. The kill
+// switch is the exception (live override) and is queried on demand.
+// Stage 1a commit 1a.3 adds parseVoiceLatencyCapabilities for the
+// session_start handshake (PLAN_v3 §4.3).
+import {
+  snapshotFlagsForSession as snapshotVoiceLatencyFlags,
+  parseVoiceLatencyCapabilities,
+  SNAPSHOT_FLAG_ENV_NAMES as VOICE_LATENCY_SNAPSHOT_ENV_NAMES,
+} from './voice-latency-config.js';
+
+// KNOWN_FIELDS lives in known-fields.js (imported at top of file).
+// Extracted 2026-06-03 so the session optimizer's analyzer-side
+// canonical_name_leak_to_ios signature detector can import it without
+// pulling in this file's WebSocket bootstrap side effects.
+//
+// FIELD_CORRECTIONS lives in field-name-corrections.js (imported at
+// top of file). Extracted 2026-05-26 so stage6-shadow-harness.js can
+// import the same map for tryEnterScriptFromWrites's alias resolution
+// without a circular dep with this file.
 
 // Map cable description strings to BS 7671 wiring type letter codes
+// PLAN-backend-final.md Phase 8.4 — bulk-exclude intent hint pattern.
+// Matched after the pre-LLM gate forwards. Used to tag the turn with
+// `msg.intentHints.bulkExclude = true` so downstream extractor + iOS
+// slice 8.0 (ApplyFieldIntent return-nil-on-exclude) can coordinate
+// on routing the utterance through `set_field_for_all_circuits
+// {exclude_circuits: [N]}` rather than a per-circuit record_reading.
+const BULK_EXCLUDE_PATTERN = /\b(apart from|except|excluding|all but)\b/i;
+
 const WIRING_TYPE_DESC_TO_CODE = {
   'TWIN & EARTH': 'A',
   'TWIN AND EARTH': 'A',
@@ -514,12 +743,18 @@ function validateAndCorrectFields(result, sessionId) {
   for (const reading of result.extracted_readings) {
     if (!reading.field) continue;
     if (KNOWN_FIELDS.has(reading.field)) continue;
-
-    const corrected = FIELD_CORRECTIONS[reading.field];
-    if (corrected) {
-      logger.info('Field corrected', { sessionId, from: reading.field, to: corrected });
-      reading.field = corrected;
-    } else {
+    // Audit-2026-06-02 Phase 3 — delegate the canonical → legacy rewrite
+    // to the leaf helper (field-name-corrections.js) so the
+    // dialogue-engine emit path can apply the same logic via
+    // buildExtractionPayload without circularly importing sonnet-stream's
+    // WS handler graph. The helper is a no-op when no entry exists, so
+    // we can still inspect FIELD_CORRECTIONS to decide whether the
+    // unknown-field warn fires (the warn-branch only applies on the
+    // Sonnet emission path; dialogue engine emits names it itself
+    // produced and so doesn't need the same telemetry).
+    const hadCorrection = FIELD_CORRECTIONS[reading.field] !== undefined;
+    applyFieldNameCorrection(reading, sessionId, logger);
+    if (!hadCorrection) {
       logger.warn('Unknown field name from Sonnet', {
         sessionId,
         field: reading.field,
@@ -538,11 +773,52 @@ function validateAndCorrectFields(result, sessionId) {
       }
     }
   }
+  // 2026-04-22 (Issue #3): coerce invalid observation codes to a safe default
+  // BEFORE the extraction result is sent to iOS. Previously Sonnet sometimes
+  // emitted "NC" (Not Compliant — non-BPG4), iOS silently dropped the row
+  // via ObservationCode(rawValue:) guard, and the inspector never saw the
+  // observation. refineObservationsAsync would have corrected the code ~2s
+  // later via `observation_update`, but by then iOS had no row to patch.
+  //
+  // We default to C3 (improvement recommendation — least severe, won't
+  // cause a misleading "immediate danger" or "potentially dangerous" flag
+  // if the refinement later disagrees). The async refinement still runs and
+  // upgrades the code to the correct value via observation_update, which
+  // iOS now also handles on id-miss (see DeepgramRecordingViewModel fix
+  // 78e72ca). Net effect: the observation is always visible, code is
+  // always valid, and the right classification arrives shortly after.
+  if (Array.isArray(result.observations)) {
+    for (const obs of result.observations) {
+      if (!obs || typeof obs !== 'object') continue;
+      const raw = (obs.code || '').toString().toUpperCase().trim();
+      if (raw && VALID_OBS_CODES.has(raw)) {
+        obs.code = raw;
+        continue;
+      }
+      logger.warn('Observation code coerced', {
+        sessionId,
+        from: obs.code || '(empty)',
+        to: 'C3',
+        textPreview: (obs.observation_text || obs.description || '').slice(0, 80),
+      });
+      obs.code = 'C3';
+    }
+  }
   return result;
 }
 
 export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   const wss = new WebSocketServer({ noServer: true });
+
+  // Phase 1.3 — single shared periodic flusher for the per-session
+  // realtimeLogBuffer (one tick every FLUSH_INTERVAL_MS over the whole
+  // activeSessions registry). Per-session timers would explode under
+  // many simultaneous sessions and would race the entry-teardown paths
+  // that already exist; a global tick walks the live registry instead.
+  // The interval is .unref()'d inside startPeriodicFlusher so it never
+  // blocks process exit. Held on the WSS object so a future hot-reload
+  // (or test teardown) can clear it via `wss._realtimeLogFlusher`.
+  wss._realtimeLogFlusher = startRealtimeLogFlusher(activeSessions);
 
   // Return the WSS so api.js can route upgrades to it
   wss.on('connection', (ws, req, userId) => {
@@ -603,6 +879,91 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               ws.close(1008, 'Rate limit exceeded');
               return;
             }
+            // Chitchat pause gate (slices 1 + 2). When the session is
+            // paused we suppress forwarding to Sonnet until a wake
+            // trigger fires:
+            //   - wake-word regex match on transcript text → wake +
+            //     forward (so Sonnet sees the resume context)
+            //   - non-empty `regexResults` array → wake + forward
+            //     (iOS regex caught a real value; that's a stronger
+            //     engagement signal than chitchat would generate)
+            //   - otherwise → append to replayBuffer + drop (Deepgram
+            //     and iOS regex still running, only the Sonnet API leg
+            //     is gated)
+            // On wake from any source, the buffered text is drained
+            // and prepended to the wake utterance so a value spoken
+            // right at the pause/wake boundary isn't lost.
+            if (currentSessionId && activeSessions.has(currentSessionId)) {
+              const ccEntry = activeSessions.get(currentSessionId);
+              const ccState = ensureChitchatState(ccEntry);
+              if (ccState?.paused) {
+                const wakeWord = isWakeWordTranscript(msg.text);
+                const regexHit = Array.isArray(msg.regexResults) && msg.regexResults.length > 0;
+                // 2026-05-29 PLAN_v4 chitchat wake widening — explicit
+                // observation utterances (matched by OBSERVATION_PATTERN,
+                // including Deepgram garbles like 'obvashon', 'abservation')
+                // wake a paused session. Without this, the gate forwards
+                // 'Observation: socket cracked' but chitchat-pause then
+                // silently swallows it. See pre-llm-gate.js OBSERVATION_PATTERN
+                // for the matched-word inventory.
+                const observationHit = OBSERVATION_PATTERN.test(
+                  typeof msg.text === 'string' ? msg.text : ''
+                );
+                if (wakeWord || regexHit || observationHit) {
+                  const replay = drainReplayBuffer(ccState);
+                  if (replay) {
+                    msg = {
+                      ...msg,
+                      text:
+                        typeof msg.text === 'string' && msg.text ? `${replay} ${msg.text}` : replay,
+                    };
+                    logger.info('chitchat.replay_prepended', {
+                      sessionId: currentSessionId,
+                      replay_chars: replay.length,
+                      wake_reason: wakeWord
+                        ? 'wake_word'
+                        : regexHit
+                          ? 'regex_hint'
+                          : 'observation_prefix',
+                    });
+                  }
+                  exitChitchatPause({
+                    state: ccState,
+                    sendEnvelope: (env) => ws.send(JSON.stringify(env)),
+                    logger,
+                    sessionId: currentSessionId,
+                    reason: wakeWord ? 'wake_word' : regexHit ? 'regex_hint' : 'observation_prefix',
+                  });
+                  // fall through to handleTranscript with the
+                  // (possibly replay-prefixed) wake utterance
+                } else {
+                  bufferTranscript(ccState, msg.text);
+                  if (shouldLogSuppression(ccState)) {
+                    logger.info('chitchat.transcript_suppressed', {
+                      sessionId: currentSessionId,
+                      text_preview: typeof msg.text === 'string' ? msg.text.slice(0, 80) : null,
+                      buffer_depth: ccState.replayBuffer.length,
+                    });
+                  }
+                  break;
+                }
+              } else if (Array.isArray(msg.regexResults) && msg.regexResults.length > 0) {
+                // Slice 2: not paused yet, but iOS regex caught a value
+                // on this transcript. Reset the counter immediately
+                // (don't wait for Sonnet's result) so a session where
+                // regex extracts everything keeps Sonnet warm rather
+                // than drifting into pause. Mitigates Derek's "if regex
+                // extracts well, Sonnet would go offline" concern.
+                if (ccState.turnsSinceExtraction !== 0) {
+                  logger.info('chitchat.counter_reset_regex', {
+                    sessionId: currentSessionId,
+                    prev_count: ccState.turnsSinceExtraction,
+                    regex_hint_count: msg.regexResults.length,
+                  });
+                  ccState.turnsSinceExtraction = 0;
+                }
+              }
+            }
             await handleTranscript(ws, currentSessionId, msg, preSessionBuffer);
             break;
 
@@ -662,6 +1023,111 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
           }
 
+          // PLAN-backend-final.md Phase 1.3 — receive a batch of JSONL log
+          // entries iOS streams every 2 s over the reliable Sonnet socket
+          // (separate from the multipart /api/session/:id/analytics path
+          // which has been broken since Mar 2026). Each entry is a JSONL
+          // string from DebugLogger; the envelope shape is frozen as:
+          //   { type: 'client_log_batch', session_id, entries: [string,...] }
+          // entries are STRINGS, not objects — iOS sends raw JSONL so the
+          // backend doesn't have to re-serialise to write back to S3.
+          //
+          // Per Phase 1.3 acceptance:
+          //   - emit one CloudWatch row PER entry (message: 'Client log
+          //     batch entry') for live ops querying
+          //   - audit-integrity: strip client-provided userId / sessionId /
+          //     timestamp from each parsed entry BEFORE the CloudWatch row
+          //     and BEFORE the S3 buffer write; re-attach server-authoritative
+          //     userId + currentSessionId from the authenticated WS session
+          //   - the per-session realtimeLogBuffer is owned by the entry
+          //     (see realtime-log-sink.js); flush trigger is whichever of
+          //     ~30 s, 100 KB, disconnect, or graceful shutdown fires first
+          //   - Phase 1.4 cost-cap: 20 000 lines/session → downsampling
+          //     mode (all error/warn, 1/10 info, 1/100 debug) instead of
+          //     going dark; a stuck session is exactly the one that needs
+          //     mid-session visibility
+          case 'client_log_batch': {
+            if (!Array.isArray(msg.entries) || msg.entries.length === 0) break;
+            if (!currentSessionId || !activeSessions.has(currentSessionId)) break;
+            const logBatchEntry = activeSessions.get(currentSessionId);
+            ensureRealtimeLogBuffer(logBatchEntry);
+
+            for (const raw of msg.entries) {
+              if (typeof raw !== 'string') continue;
+              // iOS DebugLogger.log appends '\n' to every entry; strip one
+              // trailing newline so the body.join('\n') at flush time
+              // doesn't blank-line every entry pair.
+              const trimmed = raw.replace(/\r?\n$/, '');
+              if (!trimmed) continue;
+
+              let parsed;
+              try {
+                parsed = JSON.parse(trimmed);
+              } catch (_e) {
+                logger.warn('Client log batch entry malformed', {
+                  sessionId: currentSessionId,
+                  userId,
+                  preview: trimmed.slice(0, 160),
+                });
+                continue;
+              }
+
+              // Audit-integrity: drop any client-provided identity fields
+              // BEFORE re-serialise. Mirrors the pattern already in use for
+              // `client_diagnostic` above (sonnet-stream.js:974-988). A
+              // crafted client must not be able to spoof CloudWatch userId
+              // or pollute the S3 key namespace; server-authoritative
+              // userId + currentSessionId override anything in the payload.
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                delete parsed.userId;
+                delete parsed.sessionId;
+                delete parsed.timestamp;
+              }
+
+              // Phase 1.4 cost-cap: flip to downsampling mode at the
+              // threshold, then keep error/warn always + sample info+debug.
+              // Emit the transition diag exactly once per session (the cap
+              // flip is monotonic — never resets within a session).
+              if (
+                !logBatchEntry.realtimeLogDownsamplingActive &&
+                logBatchEntry.realtimeLogLineCount >= REALTIME_LOG_MAX_LINES_PER_SESSION
+              ) {
+                logBatchEntry.realtimeLogDownsamplingActive = true;
+                logger.info('client_log_overflow_downsampled', {
+                  sessionId: currentSessionId,
+                  userId,
+                  cap: REALTIME_LOG_MAX_LINES_PER_SESSION,
+                });
+              }
+              if (
+                logBatchEntry.realtimeLogDownsamplingActive &&
+                !shouldKeepInDownsampling(parsed)
+              ) {
+                continue;
+              }
+
+              const sanitisedLine = JSON.stringify(parsed);
+              appendOneToBuffer(logBatchEntry, sanitisedLine);
+              logger.info('Client log batch entry', {
+                sessionId: currentSessionId,
+                userId,
+                client_log: parsed,
+              });
+            }
+
+            // Catch the 100 KB / 50-line-burst case ahead of the next
+            // periodic tick. Don't await on the WS path — a slow S3 round
+            // trip would back-pressure the WebSocket. Errors are restored
+            // to the buffer head inside flushSession; the next tick or
+            // disconnect-flush retries.
+            if (shouldFlushRealtimeLog(logBatchEntry)) {
+              flushRealtimeLogSession(currentSessionId, logBatchEntry, {
+                reason: 'threshold',
+              }).catch(() => {});
+            }
+            break;
+          }
+
           case 'correction':
             await handleCorrection(ws, currentSessionId, msg);
             break;
@@ -693,13 +1159,50 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // behind the one frame name preserves backward compatibility with
             // the iOS client during the rollout window.
             if (msg.sessionId) {
+              // Plan 06-06 r5-#1 — thread msg.protocol_version through so
+              // handleSessionResumeRehydrate can apply the same live/shadow
+              // policy that handleSessionStart applies. Without this, a
+              // resume frame can sneak past the STI-06 hard-rejection
+              // contract via a valid token alone.
               const {
                 sessionId: newSessionId,
                 ack,
                 activeEntryKey,
-              } = handleSessionResumeRehydrate(ws, userId, msg.sessionId);
+              } = handleSessionResumeRehydrate(
+                ws,
+                userId,
+                msg.sessionId,
+                msg.protocol_version || null
+              );
               currentSessionId = activeEntryKey;
-              ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+              // r5-#1 — suppress session_ack when the rehydrate rejected the
+              // resume (live-mode mismatch). The ws is already closed (1002)
+              // and a post-close send would log noise.
+              if (ack.status !== 'rejected') {
+                ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+
+                // Hotfix slice 2.3 — emit initial current_board_changed
+                // AFTER the rehydrate ack so iOS's WS dispatch is in steady
+                // state. Token-rehydrate path preserves the on-snapshot
+                // currentBoardId; broadcasting here closes the same gap
+                // as the started + reconnected branches.
+                if (ws.readyState === ws.OPEN && activeEntryKey) {
+                  const rehydratedEntry = activeSessions.get(activeEntryKey);
+                  const snapshot = rehydratedEntry?.session?.stateSnapshot;
+                  const currentId = snapshot?.currentBoardId;
+                  if (typeof currentId === 'string' && currentId.length > 0) {
+                    const target = (snapshot.boards ?? []).find((b) => b && b.id === currentId);
+                    ws.send(
+                      JSON.stringify({
+                        type: 'current_board_changed',
+                        board_id: currentId,
+                        designation: target?.designation ?? null,
+                        source: 'session_resume',
+                      })
+                    );
+                  }
+                }
+              }
             } else if (currentSessionId && activeSessions.has(currentSessionId)) {
               const resumeEntry = activeSessions.get(currentSessionId);
               resumeEntry.session.resume();
@@ -714,6 +1217,139 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 turns: resumeEntry.session.turnCount,
               });
               ws.send(JSON.stringify({ type: 'session_ack', status: 'resumed' }));
+              // Deliberately NOT exiting chitchat-pause here. `session_resume`
+              // without a sessionId is Deepgram doze recovery — it fires every
+              // time speech resumes after a brief silence, which in a
+              // pocket / family-chat scenario happens repeatedly. Resetting
+              // the chitchat counter on every doze-recovery defeats the
+              // protection (observed prod session D8E51F51 2026-05-09: pause
+              // fired correctly at turn 8, then immediately undone by
+              // session_resume 215s later, counter restarted from 0). Chitchat
+              // wake remains semantic: WAKE_REGEX, iOS regex hit, or manual
+              // Resume button — handled in the `transcript` and
+              // `chitchat_resume` arms.
+            }
+            break;
+
+          // 2026-05-08 multi-board sprint Phase C — client-initiated
+          // select_board. iOS detects "work on [board]" on-device via
+          // WorkOnBoardIntent.parse, resolves the spoken designation to a
+          // board id (substring-contains, longest match), and sends
+          // `{type: 'select_board', board_id}`. We mutate
+          // `session.stateSnapshot.currentBoardId` directly here — no
+          // Sonnet round-trip — so a subsequent `record_reading` lands at
+          // the correct composite-key bucket (Phase A) and Phase B's
+          // `wrong_board` gate doesn't kick in. The chitchat_resume case
+          // above is the precedent: a small WS handler that mutates session
+          // state directly without going through Sonnet's tool-call loop.
+          //
+          // Why not call dispatchSelectBoard? That path expects a Sonnet
+          // `tool_use` envelope with `perTurnWrites` for the boardOps wire
+          // emission. Phase E adds the proper `current_board_changed`
+          // broadcast on the boardOps channel; until then the iOS client
+          // already knows the new id (it sent it) and only needs an ack.
+          //
+          // Errors:
+          //   - no_active_session  : session not started or already stopped
+          //   - invalid_board_id   : missing / non-string board_id
+          //   - board_not_found    : id doesn't reference a board on the
+          //                          snapshot (sub-board not added yet, or
+          //                          stale id from a re-loaded job)
+          case 'select_board': {
+            if (!currentSessionId || !activeSessions.has(currentSessionId)) {
+              ws.send(
+                JSON.stringify({
+                  type: 'select_board_ack',
+                  ok: false,
+                  error: 'no_active_session',
+                })
+              );
+              break;
+            }
+            const sbBoardId = msg.board_id;
+            if (typeof sbBoardId !== 'string' || sbBoardId.trim() === '') {
+              ws.send(
+                JSON.stringify({
+                  type: 'select_board_ack',
+                  ok: false,
+                  error: 'invalid_board_id',
+                })
+              );
+              break;
+            }
+            const sbEntry = activeSessions.get(currentSessionId);
+            const sbSnapshot = sbEntry.session.stateSnapshot;
+            // Stamp board_id on legacy snapshots so the lookup below works
+            // on jobs that pre-date the multi-board sprint. Idempotent.
+            ensureMultiBoardShape(sbSnapshot);
+            const sbTarget = (sbSnapshot.boards ?? []).find((b) => b && b.id === sbBoardId);
+            if (!sbTarget) {
+              ws.send(
+                JSON.stringify({
+                  type: 'select_board_ack',
+                  ok: false,
+                  error: 'board_not_found',
+                  board_id: sbBoardId,
+                })
+              );
+              logger.warn('select_board (iOS) board_not_found', {
+                sessionId: currentSessionId,
+                board_id: sbBoardId,
+                known_ids: (sbSnapshot.boards ?? []).map((b) => b?.id ?? null),
+              });
+              break;
+            }
+            const sbPreviousBoardId = sbSnapshot.currentBoardId ?? null;
+            sbSnapshot.currentBoardId = sbTarget.id;
+            logger.info('select_board (iOS voice command)', {
+              sessionId: currentSessionId,
+              board_id: sbTarget.id,
+              designation: sbTarget.designation ?? null,
+              previous_board_id: sbPreviousBoardId,
+            });
+            ws.send(
+              JSON.stringify({
+                type: 'select_board_ack',
+                ok: true,
+                board_id: sbTarget.id,
+                designation: sbTarget.designation ?? null,
+              })
+            );
+            // 2026-05-08 multi-board sprint Phase E — unified `current_board_changed`
+            // broadcast. Same wire shape regardless of switch source (iOS voice
+            // command here; Sonnet `dispatchSelectBoard` tool emits via
+            // `result.board_ops` on the extraction send path). iOS decodes once,
+            // updates `JobViewModel.currentBoardId`, Phase D's red banner
+            // reactively flips. The select_board_ack envelope above is now
+            // redundant for UI reactivity but kept for the request/response
+            // contract (carries error codes on failure paths).
+            ws.send(
+              JSON.stringify({
+                type: 'current_board_changed',
+                board_id: sbTarget.id,
+                designation: sbTarget.designation ?? null,
+                source: 'ios',
+              })
+            );
+            break;
+          }
+
+          // Manual chitchat-pause wake. iOS sends this when the inspector
+          // taps the Resume button on the chitchat banner. Idempotent —
+          // exits the paused state if currently paused, no-op otherwise.
+          case 'chitchat_resume':
+            if (currentSessionId && activeSessions.has(currentSessionId)) {
+              const ccrEntry = activeSessions.get(currentSessionId);
+              const ccrState = ensureChitchatState(ccrEntry);
+              if (ccrState?.paused) {
+                exitChitchatPause({
+                  state: ccrState,
+                  sendEnvelope: (env) => ws.send(JSON.stringify(env)),
+                  logger,
+                  sessionId: currentSessionId,
+                  reason: 'manual',
+                });
+              }
             }
             break;
 
@@ -760,6 +1396,493 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           case 'heartbeat':
             break;
 
+          // Stage 6 Phase 3 Plan 03-08 — iOS reply to a blocking ask_user.
+          //
+          // Two question sources land on this case, distinguished by the
+          // tool_call_id prefix. iOS treats them identically (any in-flight
+          // Stage 6 question gets its answer routed here), but the server
+          // dispatches them to different handlers — fresh-eyes guide:
+          //
+          //   `toolu_…` — Sonnet-emitted via the `ask_user` tool. Routed to
+          //     the per-session PendingAsksRegistry created in
+          //     handleSessionStart. The registry (stage6-pending-asks-
+          //     registry.js) enforces Codex STG #3 strict ordering inside
+          //     resolve():
+          //       clearTimeout(timer) → Map.delete(id) → user resolve({...})
+          //     so a same-millisecond timeout cannot double-resolve. An
+          //     unknown id silently returns resolved:false — this is the
+          //     reconnect / replay race (iOS answers twice after a dropped
+          //     socket). Emitting an error envelope would break legitimate
+          //     at-least-once clients; we only error on MALFORMED payloads.
+          //
+          //   `srv-…` — server-emitted by the dialogue engine
+          //     (src/extraction/dialogue-engine/, e.g. ring_continuity's
+          //     "Which circuit is the ring continuity for?"). The engine
+          //     never registers in pendingAsks because it processes the
+          //     answer through the *transcript* path on the next turn
+          //     (sonnet-stream.js:~2645 → processRingContinuityTurn →
+          //     findCircuitByDesignation). Routing this id to pendingAsks
+          //     would always log `unresolved` even though the engine does
+          //     handle the answer correctly — confusing for fresh eyes
+          //     debugging a CloudWatch trace. Field repro 2026-05-01
+          //     session DFA7FDBF: every server-asked "Which circuit?"
+          //     produced a misleading warn alongside a working engine
+          //     resolution. Bus-level prefix routing logs an explicit
+          //     `routed_to_engine` info row so the answer's true handler
+          //     is visible in the log without grepping the source.
+          case 'ask_user_answered': {
+            if (!currentSessionId || !activeSessions.has(currentSessionId)) {
+              // No session = no registry to answer against. Silent drop is
+              // correct here — the registry for this session either never
+              // existed (mis-sequenced client) or was swept by a termination
+              // path that already rejected the ask.
+              break;
+            }
+            const entry = activeSessions.get(currentSessionId);
+            if (typeof msg.tool_call_id !== 'string' || typeof msg.user_text !== 'string') {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  message: 'ask_user_answered requires tool_call_id + user_text',
+                })
+              );
+              break;
+            }
+
+            // Bus-level prefix routing (2026-05-01, fresh-eyes fix).
+            // Server-emitted dialogue-engine asks use the `srv-…` tool_call_id
+            // prefix (set per-schema in src/extraction/dialogue-engine/schemas/*
+            // — `srv-rcs` ring continuity, `srv-irs` insulation resistance,
+            // `srv-ocpd` / `srv-rcd` / `srv-rcbo` protective device family).
+            // These NEVER register in pendingAsks; the engine reads the
+            // answer from the next transcript via processDialogueTurn.
+            // Falling through to pendingAsks.resolve() would log a
+            // misleading `unresolved` warn on every engine ask — the
+            // CloudWatch trace would tell a fresh debugger "the answer
+            // was lost" when in fact the engine handled it on the
+            // transcript channel a few ms later. Log an explicit
+            // `routed_to_engine` info row instead so the bus decision is
+            // visible in the same log file as the engine's subsequent
+            // designation_match / circuit_resolved rows.
+            if (msg.tool_call_id.startsWith('srv-')) {
+              logger.info('stage6.ask_user_answered_routed_to_engine', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                utterance_id: msg.consumed_utterance_id || null,
+                user_text_preview: String(msg.user_text).slice(0, 60),
+                reason: 'engine_emitted_ask_processed_via_transcript',
+              });
+              break;
+            }
+
+            // Plan 03-12 r11 BLOCK remediation — late-stop race guard for
+            // ask_user_answered, mirroring the handleTranscript guard at
+            // STT-10a (~line 1484). handleSessionStop sets
+            // `entry.isStopping=true` BEFORE its first rejectAll pass and
+            // then awaits flushUtteranceBuffer + S3 uploads + session_ack
+            // before finally deleting the activeSessions entry. During
+            // that window an ask_user_answered frame (iOS sent its reply
+            // right as the inspector tapped Stop) can still find the
+            // session present and call pendingAsks.resolve() — unblocking
+            // the tool loop AFTER stop began. The blocked tool loop then
+            // kicks off a fresh Sonnet turn / registers fresh tool_use
+            // blocks past teardown, exactly the class of race that
+            // STT-10a closed on the transcript channel.
+            //
+            // Fix: early-return if isStopping. No error envelope — the
+            // client already requested stop, and the pending ask will be
+            // (or was) resolved as session_stopped by the rejectAll
+            // sweep. Silent drop is the intended semantics, matching
+            // the transcript-drop behaviour at STT-10a.
+            if (entry.isStopping) {
+              logger.info('stage6.ask_user_answered_dropped_during_stop', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+              });
+              break;
+            }
+
+            // Plan 03-12 r8 MAJOR remediation — detect the REVERSE race
+            // BEFORE sanitisation. r6 added the reverse-race guard but ran
+            // it AFTER sanitiseUserText. If the duplicate answer frame
+            // carried oversized (>8192 chars) or otherwise malformed text,
+            // sanitisation threw, the server sent a hard error envelope,
+            // and the ask was left pending until timeout — even though
+            // the transcript half had already been extracted by the shadow
+            // harness. The inspector perceives "TTS re-asks the question
+            // I already answered" because the tool loop doesn't unblock
+            // until the 60s timeout fires.
+            //
+            // Fix: compute alreadySeenAsTranscript FIRST. If already seen,
+            // resolve with {answered:false, reason:'transcript_already_extracted'}
+            // immediately — skip sanitisation entirely because the text is
+            // NOT going to be forwarded to Sonnet (the reason-only payload
+            // omits user_text). Bypassing sanitisation is safe here: the
+            // text never leaves this function, and the already-extracted
+            // transcript half went through its own (different) pipeline.
+            //
+            // If not seen, run sanitisation as before. A throw aborts with
+            // the hard-error envelope — the caller's contract violation
+            // must surface, and the ask remains pending until genuine
+            // answer or timeout (acceptable: no prior extraction has
+            // happened, so the question is still live).
+            const anchoredAsTranscript =
+              typeof msg.consumed_utterance_id === 'string' &&
+              entry.seenTranscriptUtterances &&
+              entry.seenTranscriptUtterances.has(msg.consumed_utterance_id);
+
+            // r18 MAJOR#2 — content-anchor reverse-race check. When the
+            // answer omits consumed_utterance_id (legacy clients) or
+            // sends a malformed value, the fast-path Set lookup above
+            // cannot fire. A separate content ledger
+            // (entry.recentTranscripts) stamps the normalised text of
+            // every extracted transcript with a short TTL; if the
+            // sanitisable user_text matches (normalised equality), the
+            // same utterance was already extracted through the
+            // transcript channel and must NOT be re-exposed to Sonnet
+            // via this ask's tool_result. Evict expired entries first
+            // so stale ledger rows can't produce false positives after
+            // a long pause. Match rule is equality on the normaliser
+            // output (lowercase / strip non-alphanumerics / collapse
+            // whitespace), NOT substring — mirrors the r16 design
+            // rationale (short "three" vs "move to three").
+            let alreadySeenByContent = false;
+            let matchedContentEntry = null;
+            if (!anchoredAsTranscript && typeof msg.user_text === 'string') {
+              if (Array.isArray(entry.recentTranscripts) && entry.recentTranscripts.length > 0) {
+                const nowTs = Date.now();
+                entry.recentTranscripts = entry.recentTranscripts.filter(
+                  (t) => t.expiresAt > nowTs
+                );
+                if (entry.recentTranscripts.length > 0) {
+                  const normalisedAnswer = normaliseForAskMatch(msg.user_text);
+                  if (normalisedAnswer.length > 0) {
+                    const matchIdx = entry.recentTranscripts.findIndex(
+                      (t) => t.normalisedText === normalisedAnswer
+                    );
+                    if (matchIdx >= 0) {
+                      matchedContentEntry = entry.recentTranscripts.splice(matchIdx, 1)[0];
+                      alreadySeenByContent = true;
+                    }
+                  }
+                }
+              }
+            }
+            const alreadySeenAsTranscript = anchoredAsTranscript || alreadySeenByContent;
+
+            let resolvePayload;
+            let sanitised = null;
+
+            if (alreadySeenAsTranscript) {
+              resolvePayload = {
+                answered: false,
+                reason: 'transcript_already_extracted',
+              };
+              logger.warn('stage6.ask_user_answered_after_transcript', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                utterance_id: msg.consumed_utterance_id || null,
+                match_source: anchoredAsTranscript ? 'utterance_id' : 'content_anchor',
+                matched_utterance_id: matchedContentEntry ? matchedContentEntry.utteranceId : null,
+                reason: 'transcript_already_extracted',
+              });
+            } else {
+              // Plan 03-10 Task 2 (STG MAJOR remediation) — sanitise
+              // user_text before resolve/mark-consumed. Only runs in the
+              // not-seen branch; see r8 block comment above for rationale.
+              try {
+                sanitised = sanitiseUserText(msg.user_text);
+              } catch (sanErr) {
+                logger.warn('stage6.user_text_rejected', {
+                  sessionId: currentSessionId,
+                  tool_call_id: msg.tool_call_id,
+                  code: sanErr.code || 'sanitisation_error',
+                  message: sanErr.message,
+                });
+                ws.send(
+                  JSON.stringify({
+                    type: 'error',
+                    message: `ask_user_answered rejected: ${sanErr.message}`,
+                  })
+                );
+                break;
+              }
+
+              // Bug C remediation (session DC946608, 2026-05-06) — substantive
+              // gate on the ask_user_answered channel. iOS routes a transcript
+              // directly as an answer when its local heuristic decides "this
+              // looks like the answer", but that heuristic mis-fires for
+              // utterances that are clearly new commands ("can you set the RCD
+              // test button to pass for all circuits" against an open BS-EN
+              // ask). The transcript channel has classifyOvertake for this;
+              // this channel had no gate at all, so the new command was burned
+              // as the answer and the user's intent was lost.
+              //
+              // Two-stage gate (refined per code review):
+              //
+              // STAGE 1 — shape-aware short-circuit. For yes_no / circuit_ref
+              // asks, defer to classifyOvertake (single-entry registry). It
+              // accepts replies that match the expected shape — including
+              // imperative-prefixed circuit refs like "Add to circuit 5" —
+              // so the imperative check below doesn't block legit answers.
+              //
+              // STAGE 2 — imperative / bulk-scope check. Only runs when stage
+              // 1 didn't accept. Rejects new-command shapes by their lexical
+              // markers (imperative verb prefix at >=4 words, OR "for all
+              // circuits" scope hint). On rejection: resolve the ask with
+              // user_moved_on so the tool loop unblocks immediately, then
+              // re-inject the text through handleTranscript so the new command
+              // gets processed instead of silently lost. This is what the
+              // transcript-channel user_moved_on path already does — we
+              // mirror it here for the iOS-routed path.
+              //
+              // Find the matching ask entry so we can inspect its
+              // expectedAnswerShape. Iterate pendingAsks.entries() — the
+              // registry has no peek-by-id getter (would be a one-liner add
+              // but iteration is O(n) on a registry that holds at most
+              // single-digit pending entries, so the cost is negligible).
+              let askEntry = null;
+              for (const [id, e] of entry.pendingAsks.entries()) {
+                if (id === msg.tool_call_id) {
+                  askEntry = e;
+                  break;
+                }
+              }
+              if (askEntry) {
+                const singleAskRegistry = {
+                  size: 1,
+                  entries: function* iter() {
+                    yield [msg.tool_call_id, askEntry];
+                  },
+                };
+                const shapeVerdict = classifyOvertake(sanitised.text, [], singleAskRegistry);
+                if (shapeVerdict.kind === 'answers') {
+                  // Shape match — fall through to the resolve path below
+                  // without running the imperative gate. The matched answer
+                  // (yes/no for yes_no asks; extractCircuitRef-parsed integer
+                  // for circuit_ref asks) is what the inspector intended,
+                  // imperative-prefix or not.
+                  resolvePayload = {
+                    answered: true,
+                    user_text: sanitised.text,
+                  };
+                  if (sanitised.truncated || sanitised.stripped) {
+                    resolvePayload.sanitisation = {
+                      truncated: sanitised.truncated,
+                      stripped: sanitised.stripped,
+                    };
+                  }
+                  // Skip directly to the resolve call by NOT taking the gate
+                  // branch below. We can't goto, so structure the logic so
+                  // the gate only runs when shapeVerdict didn't accept.
+                }
+              }
+
+              // STAGE 2 — only runs if stage 1 didn't already build resolvePayload.
+              if (!resolvePayload) {
+                const NEW_COMMAND_PREFIX_RE =
+                  /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
+                const BULK_SCOPE_RE = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
+                const wordCount = sanitised.text.split(/\s+/).filter(Boolean).length;
+                const matchedImperative =
+                  wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(sanitised.text);
+                const matchedBulkScope = BULK_SCOPE_RE.test(sanitised.text);
+                if (matchedImperative || matchedBulkScope) {
+                  logger.warn('stage6.ask_user_answered_rejected_new_command', {
+                    sessionId: currentSessionId,
+                    tool_call_id: msg.tool_call_id,
+                    user_text_preview: sanitised.text.slice(0, 80),
+                    matched_imperative: matchedImperative,
+                    matched_bulk_scope: matchedBulkScope,
+                    word_count: wordCount,
+                    ask_shape: askEntry?.expectedAnswerShape ?? null,
+                  });
+
+                  // Unblock the tool loop with user_moved_on so the dispatcher's
+                  // awaited Promise resolves immediately. Mirrors the transcript
+                  // channel's `verdict.kind === 'user_moved_on'` path. Sonnet
+                  // sees `{answered: false, reason: 'user_moved_on'}` in the
+                  // tool_result and moves on (or re-asks).
+                  entry.pendingAsks.resolve(msg.tool_call_id, {
+                    answered: false,
+                    reason: 'user_moved_on',
+                  });
+
+                  // Re-inject the text as a transcript so the new command flows
+                  // through normal extraction. handleTranscript has its own
+                  // isExtracting / pendingTranscripts queue so calling it here
+                  // is safe — if a turn is in flight (it isn't anymore, we
+                  // just resolved the ask), it queues; otherwise it runs the
+                  // shadow harness. utterance_id passed through so the dedupe
+                  // path (seenTranscriptUtterances) sees the same anchor.
+                  // Fire-and-forget — errors are logged, not propagated, so
+                  // the ws.on('message') return path stays clean.
+                  const syntheticTranscript = {
+                    type: 'transcript',
+                    text: sanitised.text,
+                    utterance_id: msg.consumed_utterance_id ?? null,
+                    confidence: 1.0,
+                  };
+                  handleTranscript(ws, currentSessionId, syntheticTranscript).catch((reErr) => {
+                    logger.error('stage6.ask_user_answered_reinjection_failed', {
+                      sessionId: currentSessionId,
+                      tool_call_id: msg.tool_call_id,
+                      error: reErr?.message || String(reErr),
+                    });
+                  });
+                  break;
+                }
+              }
+
+              // Thread sanitisation flags through the resolve payload so the
+              // dispatcher's logAskUser row carries them. Only emit the
+              // sanitisation sub-object when at least one flag is true —
+              // the common clean-path case (100% of current inspector speech)
+              // keeps the log row noise-free.
+              //
+              // Guarded on `!resolvePayload` so the shape-aware short-circuit
+              // above (which sets resolvePayload when classifyOvertake's
+              // single-ask shape branch matches) doesn't get overwritten.
+              if (!resolvePayload) {
+                resolvePayload = {
+                  answered: true,
+                  user_text: sanitised.text,
+                };
+                if (sanitised.truncated || sanitised.stripped) {
+                  resolvePayload.sanitisation = {
+                    truncated: sanitised.truncated,
+                    stripped: sanitised.stripped,
+                  };
+                }
+              }
+            }
+
+            const resolved = entry.pendingAsks.resolve(msg.tool_call_id, resolvePayload);
+
+            // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
+            // dedupe. iOS MUST stamp the inbound ask_user_answered with the
+            // Deepgram utterance id (or other stable transcript anchor) that
+            // produced the answer. We remember that id in a per-session FIFO
+            // set so handleTranscript can suppress the same utterance if it
+            // ALSO arrives through the normal transcript channel (which
+            // happens routinely — iOS's Deepgram interim/final ordering +
+            // server routing are not strictly synchronised; both frames can
+            // cross the socket within milliseconds of each other).
+            //
+            // The add() is gated on resolved===true AND !alreadySeenAsTranscript.
+            // Gating on resolved: an unknown / stale / duplicate tool_call_id
+            // returns resolved=false; stamping would silently suppress a later
+            // legitimate transcript carrying the same id. Gating on
+            // !alreadySeenAsTranscript: in that branch the seenTranscriptUtterances
+            // stamp already owns the id, and a redundant stamp would waste a
+            // FIFO slot and read like a clean "iOS routed as answer first" case
+            // in the audit log.
+            //
+            // Cap at CONSUMED_UTTERANCE_CAP via FIFO eviction. 256 is an
+            // order of magnitude above the peak observed in a 120-minute
+            // inspection session (~100 utterances).
+            //
+            // Legacy compat: if iOS omits consumed_utterance_id (pre-Plan
+            // 03-10 clients), the ask still resolves — we just emit a
+            // warning log row. Unresolved + id present (stale frame) logs
+            // a distinct row so client-side bugs surface in CloudWatch
+            // without polluting the dedupe Set.
+            // r17 MAJOR remediation — narrow the dedupe-path trichotomy:
+            //   (a) consumed_utterance_id is a non-empty string → anchored
+            //       path (fast-path Set registration).
+            //   (b) consumed_utterance_id is ABSENT (undefined) → legacy
+            //       path (error log + content-anchor fallback).
+            //   (c) consumed_utterance_id is PRESENT but not a non-empty
+            //       string (number, object, null, empty string) → PROTOCOL
+            //       ERROR. Warn loudly and fall through to the legacy path
+            //       rather than silently treating as "untracked" (which
+            //       hides shape bugs in the client).
+            const hasAnchor =
+              typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id.length > 0;
+            const hasMalformedAnchor = !hasAnchor && msg.consumed_utterance_id !== undefined;
+            if (hasMalformedAnchor) {
+              logger.warn('stage6.ask_user_answered_malformed_anchor', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                consumed_utterance_id_type: typeof msg.consumed_utterance_id,
+                reason: 'consumed_utterance_id_present_but_not_nonempty_string',
+              });
+            }
+            if (hasAnchor) {
+              if (resolved && !alreadySeenAsTranscript) {
+                entry.consumedAskUtterances.add(msg.consumed_utterance_id);
+                if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
+                  // Set preserves insertion order — first key is the oldest.
+                  const oldest = entry.consumedAskUtterances.values().next().value;
+                  entry.consumedAskUtterances.delete(oldest);
+                }
+              } else if (!resolved) {
+                logger.warn('stage6.ask_user_answered_unresolved', {
+                  sessionId: currentSessionId,
+                  tool_call_id: msg.tool_call_id,
+                  utterance_id: msg.consumed_utterance_id,
+                  reason: 'unknown_or_stale_tool_call_id',
+                });
+              }
+            } else {
+              // r15 MAJOR#2 → r16 MAJOR#1 remediation — legacy compat
+              // clients that omit consumed_utterance_id cannot register
+              // a fast-path anchor. Error-level log (distinct event
+              // name) surfaces the regression in CloudWatch. Content
+              // anchor pushed below covers the dedupe itself.
+              logger.error('stage6.ask_user_answered_legacy_no_anchor', {
+                sessionId: currentSessionId,
+                tool_call_id: msg.tool_call_id,
+                resolved,
+                reason: 'missing_consumed_utterance_id',
+                content_anchor_ttl_ms: resolved ? RECENT_ASK_ANSWER_TTL_MS : 0,
+              });
+            }
+
+            // r16 MAJOR#1 + #2 remediation — content-anchor push. Every
+            // resolved ask_user_answered (anchored OR legacy) pushes
+            // the sanitised answer text into entry.recentAskAnswers.
+            // handleTranscript consults this list AFTER the fast-path
+            // Set miss; normalised-equality match suppresses + removes
+            // the entry (one-shot). This catches:
+            //   - legacy clients (no consumed_utterance_id at all)
+            //   - mixed-mode clients where the ask stamps an id but
+            //     the paired transcript frame omits utterance_id
+            // Skip when alreadySeenAsTranscript — the transcript was
+            // already extracted, no race left to defend against.
+            if (resolved && !alreadySeenAsTranscript) {
+              const anchorText = sanitised ? sanitised.text : resolvePayload.user_text;
+              const normalised = normaliseForAskMatch(anchorText);
+              if (normalised.length > 0) {
+                if (!entry.recentAskAnswers) entry.recentAskAnswers = [];
+                entry.recentAskAnswers.push({
+                  normalisedText: normalised,
+                  expiresAt: Date.now() + RECENT_ASK_ANSWER_TTL_MS,
+                  toolCallId: msg.tool_call_id,
+                });
+                // FIFO cap (hard ceiling under pathological bursts).
+                while (entry.recentAskAnswers.length > RECENT_ASK_ANSWER_CAP) {
+                  entry.recentAskAnswers.shift();
+                }
+              }
+            }
+
+            logger.info('ask_user_answered received', {
+              sessionId: currentSessionId,
+              tool_call_id: msg.tool_call_id,
+              resolved,
+              // r8: sanitised is null on the reverse-race (already-seen)
+              // branch because we skip sanitisation there. Absent flags on
+              // that row are correct — there was no sanitisation pass to
+              // record. Collapse to false on the seen branch rather than
+              // null so the CloudWatch schema stays boolean-typed.
+              sanitised_truncated: sanitised ? sanitised.truncated : false,
+              sanitised_stripped: sanitised ? sanitised.stripped : false,
+              already_seen_as_transcript: alreadySeenAsTranscript || false,
+            });
+            break;
+          }
+
           default:
             ws.send(
               JSON.stringify({ type: 'error', message: `Unknown message type: ${msg.type}` })
@@ -780,6 +1903,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (currentSessionId && activeSessions.has(currentSessionId)) {
         // Clean up after 30s timeout (allow reconnection)
         const entry = activeSessions.get(currentSessionId);
+        // Phase 1.3 — flush any buffered client_log_batch entries
+        // IMMEDIATELY on socket close, not on the 5-min disconnect
+        // timeout. A reconnect would attach a fresh socket onto the same
+        // activeSessions entry (the entry's userId/sessionId don't change)
+        // so the buffer is still valid for further appends, but we don't
+        // want a clean disconnect to lose what's already been received.
+        // Fire-and-forget; errors are restored to the buffer head inside
+        // flushSession so the disconnect-timeout fire below re-flushes.
+        if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+          flushRealtimeLogSession(currentSessionId, entry, {
+            reason: 'ws_close',
+          }).catch(() => {});
+        }
         // DELIBERATE: 5-minute timeout (300s) to preserve conversation history across
         // Deepgram sleep/wake cycles. iOS disconnects the WebSocket during auto-sleep
         // (no audio for 60s) and reconnects when speech resumes. The original 30s timeout
@@ -789,7 +1925,58 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // memory from abandoned sessions.
         entry.disconnectTimer = setTimeout(() => {
           logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
+          // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release any in-flight
+          // blocking ask_user Promises BEFORE the registry becomes unreachable
+          // via activeSessions.delete. A post-delete ask resolution would be
+          // a leak — the awaiting dispatcher would hang for the tool-loop's
+          // full timeout (20s per STA-03) even though the session is gone.
+          // rejectAll('session_terminated') wakes every pending ask with
+          // {answered:false, reason:'session_terminated', wait_duration_ms}
+          // so Sonnet can still terminate the turn gracefully.
+          entry.pendingAsks.rejectAll('session_terminated');
+          // Plan 05-04 — cancel the rolling-window release timer + clear
+          // the askTurns array so the activeSessions entry is fully
+          // garbage-collectible after the .delete() below. Optional-
+          // chained because handleSessionStart's reconnect path may
+          // run BEFORE this timer fires (Open Question #2: reconnect
+          // PRESERVES restrained-mode state by not destroying it here).
+          entry.restrainedMode?.destroy();
+          // Plan 05-03 — release per-key ask counter on disconnect-delete.
+          // Idempotent (Map.clear on empty is a no-op); same lifecycle as
+          // restrainedMode above. Reconnect within the 30s grace window
+          // does NOT reach this path (handleSessionStart clears the
+          // disconnectTimer first), so the budget survives the reconnect
+          // and the 2-ask cap is preserved across hang-up + reconnect.
+          entry.askBudget?.destroy();
           entry.questionGate.destroy();
+          // Stop the EICRExtractionSession so its cache-keepalive +
+          // pause-keepalive timers cancel and `isActive` flips to false.
+          // Without this, the keepalive `setTimeout` chain
+          // (eicr-extraction-session.js:1373) keeps firing every
+          // CACHE_KEEPALIVE_MS forever — the timer holds a closure-strong
+          // reference to `this`, so even after activeSessions.delete()
+          // drops the entry, GC can't reclaim the session. CloudWatch
+          // proof: sess_moxffh2j_82f8 (2026-05-08 21:28 UTC) showed
+          // cleanup at 21:34:06 followed by "Cache keepalive sent"
+          // logs at 21:36:12 / 21:40:13 / 21:44:15 — three orphaned
+          // refreshes after the session was supposedly torn down,
+          // each costing one Anthropic round-trip and pinning the
+          // session's full prompt + state-snapshot in memory until
+          // the process restarts. Optional-chained for safety —
+          // handleSessionStart's reconnect path destroys the entry
+          // before constructing a new session, but a future code
+          // path could still set entry.session=null at teardown.
+          entry.session?.stop?.();
+          // Phase 1.3 — final flush for any stragglers still buffered
+          // when the 5-min reconnect window expires. ws_close flushed at
+          // close time but a subsequent retry-on-error left the batch
+          // back in the buffer; this is the last chance to land it
+          // before activeSessions.delete drops the entry.
+          if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+            flushRealtimeLogSession(currentSessionId, entry, {
+              reason: 'session_timeout',
+            }).catch(() => {});
+          }
           activeSessions.delete(currentSessionId);
         }, 300000);
       }
@@ -800,13 +1987,228 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     const { sessionId, jobId, jobState } = msg;
     if (!sessionId) throw new Error('sessionId required');
 
+    // Stage 6 STI-06 — protocol_version handshake.
+    //
+    // iOS clients on Stage 6 firmware advertise `protocol_version: "stage6"`
+    // (see ServerWebSocketService.sendSessionStart). Backend behaviour
+    // depends on SONNET_TOOL_CALLS mode:
+    //   - off (default through Phase 6): IGNORE protocol_version entirely.
+    //     Functional-equivalence rollback contract per REQUIREMENTS.md
+    //     STR-01 amendment of 2026-04-26.
+    //   - shadow (Phase 7 cutover, Plan 07-NN): mismatched clients fall
+    //     back to legacy emission only — log warn, set _fallbackToLegacy
+    //     flag the downstream tool-call branches consume.
+    //   - live (Phase 7+2w): mismatched clients hard-rejected with WS
+    //     close code 1002 (protocol error) so old iOS builds get a clean
+    //     "please update" failure instead of silently degrading.
+    //
+    // The protocolVersion field is also stamped onto the session entry
+    // (see activeSessions.set below) so downstream emitters can reference
+    // it without re-reading msg.
+    //
+    // ── Plan 06-09 r8-#1 (MAJOR) — snapshot SONNET_TOOL_CALLS exactly
+    // ONCE per request via resolveEffectiveToolCallsMode. Pre-r8 this
+    // function read the env via two different paths: a bare
+    // `process.env.SONNET_TOOL_CALLS || 'off'` here for the policy
+    // block, AND a separate `resolveEffectiveToolCallsMode()` re-read
+    // before applyModeChange in the reconnect branch. An env flip
+    // between the two reads (production hot-reload, test harness
+    // mutation, future dotenv-reload pattern) produced a split-brain
+    // entry: policy under one mode, applyModeChange under the other.
+    // Worse, the bare `|| 'off'` and resolveEffectiveToolCallsMode
+    // applied DIFFERENT fallback policies (no allow-list vs
+    // allow-list), so even WITHOUT a mid-request env flip an invalid
+    // env value (e.g. typo) yielded different effective modes
+    // between the two reads.
+    //
+    // Post-r8: ONE call to resolveEffectiveToolCallsMode at function
+    // entry. The same `toolCallsMode` local drives the live-reject
+    // policy, the shadow-fallback policy, the reconnect-branch
+    // policy, AND is passed through to applyModeChange — single
+    // source of truth, race-proof, allow-list-applied centrally.
+    // The variable name is preserved (`toolCallsMode`) for the
+    // readability of every existing comment block; only the RHS
+    // changes from the bare env read to the resolver call.
+    const toolCallsMode = resolveEffectiveToolCallsMode();
+    const protocolVersion = msg.protocol_version || null;
+    // 2026-04-26 (Bug-B pivot): the original live-mode handshake rejected
+    // iOS clients without `protocol_version: 'stage6'` to enforce the Phase 6
+    // protocol contract. That guard was correct under the dual-path shadow
+    // design where iOS needed to decode mid-loop tool-call events before
+    // live cutover. Under the Bug-B live-only design, iOS only needs to
+    // decode the END-OF-TURN bundled `extraction` message (legacy shape) —
+    // mid-loop tool-call events get suppressed via `fallbackToLegacy=true`
+    // on the ask dispatcher (ws.send for ask_user_started is no-oped) and
+    // the bundled extraction renders correctly on iOS Build 282 without an
+    // iOS update. So we treat live + non-stage6 the same as shadow + non-
+    // stage6: connect, set fallbackToLegacy, run the tool loop normally.
+    let fallbackToLegacy = false;
+    if (toolCallsMode === 'live' && protocolVersion !== 'stage6') {
+      logger.info('stage6.protocol_version_mismatch_live_fallback', {
+        sessionId,
+        protocolVersion,
+        mode: toolCallsMode,
+        note: 'live mode accepts pre-stage6 clients; per-tool-call ws events suppressed',
+      });
+      fallbackToLegacy = true;
+    }
+    if (toolCallsMode === 'shadow' && protocolVersion !== 'stage6') {
+      logger.warn('stage6.protocol_version_mismatch_shadow_fallback', {
+        sessionId,
+        protocolVersion,
+      });
+      fallbackToLegacy = true;
+      // Plan 06-02 r1-#1 — `entry.fallbackToLegacy` is now consumed by
+      // `stage6-dispatcher-ask.js` (via `runShadowHarness` opts threading at
+      // line ~2557 below) to skip `ws.send('ask_user_started')` for this
+      // session. Sonnet's tool loop still REGISTERS the ask (so the
+      // dispatcher can resolve via `pendingAsks.resolve` when iOS replies
+      // through the legacy `in_response_to` path), but the iOS-bound Stage
+      // 6 wire emit is suppressed. Without that gating the BLOCK r1-#1
+      // finding stood: a stale iOS client in shadow would receive a wire
+      // shape it cannot decode, defeating STI-06's degradation contract.
+    }
+    // off mode: protocolVersion ignored. No log noise — by-design no-op.
+
     // Reuse existing session if reconnecting (within 30s timeout or old ws still open)
     if (activeSessions.has(sessionId)) {
       const existing = activeSessions.get(sessionId);
+      // ── Plan 06-06 r5-#2 (MAJOR) — write the freshly-computed
+      // protocolVersion + fallbackToLegacy values (computed at the top
+      // block above, lines ~1319-1378) back onto the existing entry.
+      // Without this, the entry's stamped values stayed at their original
+      // session_start value for the entry's lifetime — two real-world
+      // surfaces broke:
+      //   (a) Operator flipping SONNET_TOOL_CALLS=off → shadow mid-session
+      //       would not re-stamp fallbackToLegacy on reconnect, so even
+      //       mismatched clients would leak Stage 6 wire shapes after the
+      //       flip.
+      //   (b) iOS firmware upgrade mid-session that now advertises
+      //       protocol_version='stage6' on reconnect would still see
+      //       fallbackToLegacy=true, suppressing every Stage 6 emit on
+      //       the upgraded client.
+      //
+      // The LIVE-mismatch policy is already enforced by the top block at
+      // lines 1321-1345, which RETURNs before this reconnect branch is
+      // ever reached. So we don't need a duplicate live-reject path
+      // here — the top block handles it BEFORE we touch `existing`. We
+      // only need to handle (shadow + match), (shadow + mismatch), (live
+      // + match — top block did NOT reject because it matched), and
+      // (off + anything).
+      //
+      // The write-back happens BEFORE clearTimeout(disconnectTimer) and
+      // BEFORE existing.ws = ws (later in this branch) — keeping the
+      // policy decision adjacent to the policy inputs.
+      if (
+        (toolCallsMode === 'shadow' || toolCallsMode === 'live') &&
+        protocolVersion !== 'stage6'
+      ) {
+        // 2026-04-26 (Bug-B pivot): live + mismatch on reconnect now ALSO
+        // sets fallbackToLegacy. The top block no longer hard-rejects in
+        // live mode (see line ~1448), so this branch must handle live +
+        // mismatch the same way as shadow + mismatch.
+        existing.fallbackToLegacy = true;
+        existing.protocolVersion = protocolVersion; // null when missing
+      } else if (toolCallsMode === 'shadow' || toolCallsMode === 'live') {
+        // shadow + match OR live + match — write through.
+        existing.fallbackToLegacy = false;
+        existing.protocolVersion = 'stage6';
+      } else {
+        // ── Plan 06-09 r8-#3 (MINOR) — STR-01 rollback contract on
+        // shadow → off transition. Pre-r8 the off branch wrote ONLY
+        // protocolVersion; existing.fallbackToLegacy from a prior
+        // shadow + mismatch handshake stayed true, leaving the entry
+        // in a non-pristine state for the rest of its lifetime.
+        // fallbackToLegacy is a shadow-mode artifact (see the shadow
+        // branch above and Plan 06-02 r1-#1's dispatcher gate); off
+        // mode has no notion of it. Cleared here so a future code
+        // path that reads entry.fallbackToLegacy WITHOUT first
+        // checking entry.session.toolCallsMode === 'shadow' won't
+        // suppress emission incorrectly. The protocolVersion write
+        // retains its original "record latest from client" semantics
+        // (no policy enforcement in off mode); only the
+        // fallbackToLegacy reset is new in r8-#3.
+        existing.fallbackToLegacy = false;
+        existing.protocolVersion = protocolVersion;
+      }
+      // ── Plan 06-07 r6-#1 (BLOCK) + Plan 06-08 r7-#1 (MAJOR) —
+      // write the freshly-resolved toolCallsMode onto the existing
+      // session AT REBIND TIME. r5-#2 (block immediately above) wrote
+      // `fallbackToLegacy` + `protocolVersion` onto the entry. r6
+      // completed the trio so the runtime dispatch (`runShadowHarness`
+      // route + the `consumeLegacyQuestionsForUser` legacy-question
+      // gate) tracks the latest env mode at every WS-rebind surface.
+      //
+      // Without this write, the entry.session's toolCallsMode stays at
+      // its construction-time value for the entry's lifetime — so an
+      // operator flipping SONNET_TOOL_CALLS=off → shadow (or
+      // shadow → off STR-01 rollback) mid-session leaves the runtime
+      // routing on the OLD path even though r5 wrote the new
+      // handshake state.
+      //
+      // r7-#1 added the systemPrompt restamp: r6 only wrote the flag,
+      // but `EICRExtractionSession.systemPrompt` is also derived from
+      // toolCallsMode at construction time (eicr-extraction-session.js
+      // line 697-702) and consumed by `buildSystemBlocks()` every
+      // turn. After an off → shadow flip the harness pushed a legacy
+      // prompt + agentic snapshot hybrid. Calling
+      // `session.applyModeChange(...)` (the SOLE write surface for
+      // mid-session mode flips) restamps both `toolCallsMode` AND
+      // `systemPrompt` together so the cached prefix always matches
+      // the active mode.
+      //
+      // The live + mismatch policy is enforced by the top block at
+      // lines ~1336-1359 which RETURNs before this reconnect branch is
+      // ever reached. So a rejected reconnect's session.toolCallsMode
+      // is never touched here — `existing.session` stays bound to the
+      // ORIGINAL ws's state and its disconnectTimer reaps normally.
+      //
+      // Placed BEFORE clearTimeout + BEFORE existing.ws = ws (later in
+      // this branch) so the three handshake-state writes
+      // (toolCallsMode, protocolVersion, fallbackToLegacy) are
+      // co-located adjacent to the inputs that drove the (mode × match)
+      // decision.
+      //
+      // ── Plan 06-09 r8-#1 (MAJOR) — pass the function-entry snapshot
+      // (`toolCallsMode`, set at the top of this function via
+      // resolveEffectiveToolCallsMode) instead of re-reading env via
+      // a fresh resolveEffectiveToolCallsMode() call here. That
+      // re-read was the SECOND env access per request and the source
+      // of the split-brain race; the snapshot at function entry is
+      // the single source of truth for this request.
+      if (existing.session) {
+        existing.session.applyModeChange(toolCallsMode);
+      }
       if (existing.disconnectTimer) {
         clearTimeout(existing.disconnectTimer);
         existing.disconnectTimer = null;
       }
+      // Stage 6 Phase 3 Plan 03-08: release stale asks BEFORE re-binding the
+      // socket. Any ask registered against the OLD ws would have its reply
+      // routed through that (now orphaned) socket's inbound handler — which
+      // has already fired `close`. Resolving with reason:'session_reconnected'
+      // lets the awaiting dispatcher return a clean "user reconnected without
+      // answering" outcome so Sonnet re-asks (or abandons) on the next turn.
+      existing.pendingAsks.rejectAll('session_reconnected');
+      // Plan 03-10 Task 1 — reconnect resets the consumedAskUtterances set.
+      // Any utterance routed through the OLD ws is irrelevant to dedupe on
+      // the NEW ws (the iOS client may retransmit unfinished state or start
+      // fresh). Keeping stale ids would falsely suppress legitimate new
+      // transcripts whose ids happen to collide.
+      if (existing.consumedAskUtterances) existing.consumedAskUtterances.clear();
+      else existing.consumedAskUtterances = new Set();
+      // Plan 03-11 Task 1 — reset the reverse-race ledger too. Same rationale
+      // as consumedAskUtterances: stale ids from the old ws should not bleed
+      // into dedupe decisions on the new ws.
+      if (existing.seenTranscriptUtterances) existing.seenTranscriptUtterances.clear();
+      else existing.seenTranscriptUtterances = new Set();
+      // r16 MAJOR#1 + #2 — clear the content-anchor list on reconnect.
+      // Stale anchors could falsely suppress the first legitimate
+      // transcript on the new ws.
+      existing.recentAskAnswers = [];
+      // r18 MAJOR#2 — clear reverse content ledger on reconnect for
+      // the same reason.
+      existing.recentTranscripts = [];
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -836,6 +2238,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           sessionId: existing.rehydrateSessionId || null,
         })
       );
+
+      // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
+      // session_ack so iOS's WS dispatch is in steady state when the
+      // broadcast arrives. Reconnect preserves currentBoardId on the
+      // server-side stateSnapshot, but iOS's `jobVM.currentBoardId` may
+      // have been re-seeded from persistence on a fresh app launch + WS
+      // reconnect (e.g. force-quit + relaunch with the same job open).
+      // The `source: 'session_resume'` discriminator lets iOS suppress
+      // the Phase D banner-flip animation on resumes — no UX surface for
+      // "you're back on the same board you were on".
+      if (ws.readyState === ws.OPEN) {
+        const snapshot = existing.session?.stateSnapshot;
+        const currentId = snapshot?.currentBoardId;
+        if (typeof currentId === 'string' && currentId.length > 0) {
+          const target = (snapshot.boards ?? []).find((b) => b && b.id === currentId);
+          ws.send(
+            JSON.stringify({
+              type: 'current_board_changed',
+              board_id: currentId,
+              designation: target?.designation ?? null,
+              source: 'session_resume',
+            })
+          );
+        }
+      }
+
       // Flush any extraction results that were buffered while the socket was disconnected
       flushPendingExtractions(ws, existing, sessionId);
       logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
@@ -878,6 +2306,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+
+          // Phase E: emit `current_board_changed` for any select_board op
+          // Sonnet emitted this turn. iOS uses the unified envelope to drive
+          // `JobViewModel.currentBoardId` regardless of switch source — see
+          // helper docstring above.
+          emitCurrentBoardChangedFromBoardOps(currentWs, session.stateSnapshot, result.board_ops);
 
           // Phase A: RULE 6 correction edits (same or similar text, new code)
           // arrive classified by EICRExtractionSession into observationUpdates.
@@ -924,11 +2358,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // batched extraction was the "Turn N cost" line, which doesn't carry
         // question/reading counts — making triage of gate-resolution bugs
         // (like the 14 Chichester postcode double-ask) much harder.
+        //
+        // Plan 04-03 STQ-04: questions count + preview only populated on the
+        // legacy off branch. On the tool-call branch Sonnet emits questions
+        // via ask_user tool calls, not questions_for_user, so counting them
+        // here would give a misleading 0 and a log-reader hunting a
+        // gate-resolution bug would waste time on the wrong signal.
+        const bypassOnBatch =
+          !consumeLegacyQuestionsForUser(entryRef) &&
+          Array.isArray(result.questions_for_user) &&
+          result.questions_for_user.length > 0;
         logger.info('Extraction result', {
           sessionId,
           path: 'onBatchResult',
           readings: (result.extracted_readings || []).length,
-          questions: (result.questions_for_user || []).length,
+          questions: consumeLegacyQuestionsForUser(entryRef)
+            ? (result.questions_for_user || []).length
+            : 0,
           observations: Array.isArray(result.observations) ? result.observations.length : 0,
           // Include a preview of up to the first two questions so we can trace
           // Sonnet's wording in CloudWatch without needing the iOS debug-log
@@ -936,16 +2382,39 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // the QuestionGate "Flushing questions to iOS" log + the keys.js
           // "ElevenLabs TTS success" log, this reconstructs the full
           // Sonnet-question -> TTS-text chain per session.
-          questionsPreview: Array.isArray(result.questions_for_user)
-            ? result.questions_for_user.slice(0, 2).map((q) => ({
-                type: q.type || null,
-                field: q.field || null,
-                circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-                questionPreview:
-                  typeof q.question === 'string' ? q.question.slice(0, 120) : null,
-              }))
-            : [],
+          questionsPreview:
+            consumeLegacyQuestionsForUser(entryRef) && Array.isArray(result.questions_for_user)
+              ? result.questions_for_user.slice(0, 2).map((q) => ({
+                  type: q.type || null,
+                  field: q.field || null,
+                  circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+                  questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+                }))
+              : [],
         });
+        if (bypassOnBatch) logBypassOnce(entryRef, sessionId, 'onBatchResult');
+        // Chitchat-pause counter (slice 1). Increment if this turn
+        // produced no engagement signal; reset otherwise. Threshold
+        // crossing fires the chitchat_paused envelope so iOS can show
+        // the wake banner. The targeted entry is `entryRef` (the
+        // batch-flush captured the active entry); the WS to send on is
+        // the live `currentWs` if open, otherwise queue is unnecessary
+        // here — pause envelopes are control-plane and don't need to
+        // survive a disconnect.
+        if (entryRef) {
+          const ccBatchState = ensureChitchatState(entryRef);
+          recordChitchatTurn({
+            state: ccBatchState,
+            result,
+            sendEnvelope: (env) => {
+              if (currentWs && currentWs.readyState === currentWs.OPEN) {
+                currentWs.send(JSON.stringify(env));
+              }
+            },
+            logger,
+            sessionId,
+          });
+        }
         // Order matters: resolve BEFORE enqueue.
         //
         // resolveByFields clears any PRIOR-turn pending questions whose field
@@ -972,10 +2441,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         if (resolvedFieldsBatch.size > 0) {
           questionGate.resolveByFields(resolvedFieldsBatch);
         }
-        if (result.questions_for_user && result.questions_for_user.length > 0) {
+        // Plan 04-03 STQ-04: mode-gated legacy ingestion. On the tool-call
+        // branch (shadow/live) Sonnet emits questions via ask_user tool calls,
+        // not this JSON field; even if a prompt regression caused it to slip
+        // through, the server refuses to filter/enqueue/forward it. The
+        // one-shot bypass log inside logBypassOnce surfaces any such leak in
+        // CloudWatch exactly once per session.
+        if (
+          consumeLegacyQuestionsForUser(entryRef) &&
+          result.questions_for_user &&
+          result.questions_for_user.length > 0
+        ) {
           // Stage 5: drop questions whose slot is already filled in the
           // session's stateSnapshot (see filterQuestionsAgainstFilledSlots
           // docstring for the F21934D4 reproducer and same-turn protection).
+          //
+          // Phase 7 STR-05 (Plan 07-02 Task 1): one-shot retirement-gate
+          // warn fires here on first invocation per session. Stamped
+          // BEFORE the filter call so a downstream throw inside the
+          // filter still leaves the warn visible in CloudWatch — the
+          // retirement signal we need is "did any session at all reach
+          // this code", regardless of whether the filter itself errored.
+          logLegacyPathInvokedOnce(entryRef, sessionId, 'onBatchResult');
           const filteredBatch = filterQuestionsAgainstFilledSlots(
             result.questions_for_user,
             session.stateSnapshot,
@@ -985,6 +2472,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           if (filteredBatch.length > 0) {
             questionGate.enqueue(filteredBatch);
           }
+        } else if (
+          !consumeLegacyQuestionsForUser(entryRef) &&
+          Array.isArray(result.questions_for_user) &&
+          result.questions_for_user.length > 0
+        ) {
+          logBypassOnce(entryRef, sessionId, 'onBatchResult');
         }
         // Drop pending observation_* / field-less unclear questions when Sonnet
         // has just extracted an observation — resolveByFields can't do this
@@ -1029,6 +2522,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       jobId,
       jobAddress,
       certType,
+      // Stage 6 STI-06 — handshake artefacts. Both fields are forward-
+      // looking metadata for Phase 7 (cutover) — Phase 6 only logs them.
+      // protocolVersion captures what iOS advertised; fallbackToLegacy
+      // is true when shadow-mode policy forces this session onto the
+      // legacy emission path despite global SONNET_TOOL_CALLS=shadow.
+      protocolVersion,
+      fallbackToLegacy,
       lastRegexResults: [],
       isExtracting: false,
       pendingTranscripts: [],
@@ -1043,11 +2543,229 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // these, and refineObservationsAsync checks it before each search call.
       recentlyRefinedIds: new Map(),
       rehydrateSessionId,
+      // Stage 6 Phase 3 Plan 03-08 — per-session blocking-ask registry.
+      // Lifetime === activeSessions entry lifetime; NOT recreated per turn.
+      // Owned exclusively by the dispatcher (creates/registers) + the
+      // classifier/inbound-router (resolves) + the termination paths
+      // (rejectAll). stage6-pending-asks-registry.js enforces Codex STG #3
+      // strict ordering inside every resolution path.
+      pendingAsks: createPendingAsksRegistry(),
+      // Stage 6 Phase 5 Plan 05-04 — restrained-mode (rolling 3-asks-in-5-turns,
+      // 60s lockout) is stubbed to always-inactive. It was a hangover from the
+      // pre-Stage-6 streaming path where Sonnet could spam clarifying questions
+      // mid-extraction; the current server-driven ask path is well-behaved
+      // enough that the cap caused more harm than benefit. Concrete trigger:
+      // session 2D391936 (47 Ashcroft Road, 2026-04-28) — two consecutive
+      // R1+R2 readings were silently dropped after the cap activated on benign
+      // warm-up disambiguations (out-of-range circuit + missing-context Zs).
+      //
+      // Why a stub rather than removing the wiring: stage6-ask-gate-wrapper.js
+      // composes its gate stack only when BOTH `askBudget` and `restrainedMode`
+      // are truthy (see header comment, ~L478). A stub keeps debounce +
+      // per-key askBudget cap (cap=2 same field/circuit) live; deleting the
+      // key would silently bypass those too.
+      //
+      // To re-enable: restore the createRestrainedMode({ windowTurns,
+      // triggerCount, releaseMs, onActivate, onRelease }) call (see
+      // stage6-restrained-mode.js for the contract) and re-import
+      // createRestrainedMode + logRestrainedMode at the top of this file.
+      restrainedMode: { isActive: () => false, recordAsk: () => {}, destroy: () => {} },
+      // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter
+      // (STA-06). The wrapper (Plan 05-01) calls
+      // askBudget.isExhausted(deriveAskKey(call.input)) BEFORE invoking
+      // the inner ask dispatcher and askBudget.increment(key) AFTER each
+      // non-short-circuited ask. With the default cap=2, the 1st and 2nd
+      // asks for a given key fire (counts 0→1, 1→2) and the 3rd
+      // short-circuits with answer_outcome='ask_budget_exhausted'.
+      // Reconnect deliberately PRESERVES the budget (handleSessionStart's
+      // reconnect path at ~L1255 is untouched here, mirroring restrainedMode
+      // above). Destroyed on the same termination paths that destroy
+      // restrainedMode/pendingAsks (the disconnectTimer fire at ~L1263
+      // and the handleSessionStop bottom at ~L2788).
+      askBudget: createAskBudget(),
+      // Stage 1a 1a.2 — voice-latency snapshot. Sealed at session_start so a
+      // mid-session env flip can't mutate this session's behaviour.
+      // Stages 2-5 emitters read entry.voiceLatency.flags.<flag> on every
+      // gate check; the live kill switch is queried separately via
+      // isKillSwitchActive() at the gate (NOT snapshotted here — see
+      // voice-latency-config.js header).
+      voiceLatency: {
+        flags: snapshotVoiceLatencyFlags(),
+        // 1a.3 — parsed from msg.capabilities at session_start. Older iOS
+        // builds that don't send `capabilities` get version=0 / supports=[]
+        // (Codex v2 I4 defensive default) so every emitter branch falls
+        // through to the legacy path.
+        capabilities: parseVoiceLatencyCapabilities(msg.capabilities),
+        // audioSeq counters live here so Stage 3 reservation records +
+        // Stage 4 fast-path race resolution can attribute audio to the
+        // owning logical slot. Per PLAN_v4 §A.4: iOS-owned counter,
+        // server merely records what arrives.
+        lastAudioSeqByCorrelation: new Map(),
+      },
+      // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 9, 12.2).
+      // When the fast-TTS route accepts an iOS POST for a (turnId, slot)
+      // pair, the route INSERTS the slotKey here before responding so
+      // that loaded-barrel-speculator's shared _speculate() preflight
+      // can short-circuit the pre-synth before charging anything to the
+      // cost ledger. Map<turnId, Set<slotKey>>. slotKey shape:
+      //   `${field}::${circuit}::${boardId ?? ''}`
+      // Cleared per-turn by the `try { ... } finally { ... }` block in
+      // runLiveMode (Pivot 12.2) — without that, error paths leak the
+      // per-turn entry into the next turn's pre-flight.
+      pendingFastTtsSlots: new Map(),
+      // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4).
+      // Lookup from server-minted turnId to the SET of client-minted
+      // correlation ids the iOS fast-TTS route saw on transcript posts
+      // for this turn. startAudioFinalizer reads this Set to drain
+      // pre-finalizer decrements stashed by `decrementExpectedAcksByCorrelation`.
+      // Map<turnId, Set<correlationId>>. Cleared by the same `finally`
+      // block as pendingFastTtsSlots.
+      fastPathCorrelationIdByTurn: new Map(),
+      // Fix A 2026-06-02 (handoff-2026-06-02-fixes.md §A) — broadcast-intent
+      // skip for the Loaded Barrel speculator. Map<turnId, true>. Written by
+      // runLiveMode (stage6-shadow-harness.js) when detectBroadcastIntent
+      // returns true on the inspector's transcript ("circuits 2 and 3 …",
+      // "for all circuits …"). Read by loaded-barrel-speculator._speculate's
+      // preflight so the per-circuit ElevenLabs synth is skipped before any
+      // cost ledger opens — the bundler's grouped TTS still ships at round
+      // end. Defence-in-depth with the existing broadcastBuckets post-detect
+      // suppression (which catches phrasings detectBroadcastIntent misses but
+      // only AFTER the second circuit's record_reading streams, leaving a
+      // 100-500 ms race window during which the first per-circuit synth can
+      // already have been emitted to iOS — exactly the session E87F58C1
+      // 09:35:26 bug). Cleared per-turn by the same finally block as
+      // pendingFastTtsSlots / fastPathCorrelationIdByTurn so error paths
+      // can't leak a stale broadcast flag into the next turn's speculator
+      // skip check.
+      broadcastIntentByTurn: new Map(),
+      // Stage 6 Phase 5 Plan 05-02 — filled-slots shadow logger. Side-effect-
+      // only adapter wrapping the Stage 5 filter; the ask-gate-wrapper invokes
+      // it PRE-WRAPPER on every ask_user (before any restrained / budget /
+      // debounce short-circuit) and emits `stage6.filled_slots_would_suppress`
+      // rows when the legacy filter would have suppressed. The wrapper IGNORES
+      // the return value — Phase 7 retirement analytics joins on (sessionId,
+      // tool_call_id). sessionGetter reads activeSessions lazily so the live
+      // stateSnapshot is always current; eviction races collapse to a logged
+      // warn + safe no-op return (see stage6-filled-slots-shadow.js Group 4).
+      // Wired here (Plan 05-05) because 05-02 was scoped to module + tests.
+      filledSlotsShadow: createFilledSlotsShadowLogger({
+        sessionGetter: () => activeSessions.get(sessionId),
+        logger,
+      }),
+      // Plan 03-10 Task 1 — FIFO set of Deepgram utterance ids that iOS has
+      // already routed as ask_user_answered payloads. handleTranscript checks
+      // this BEFORE invoking runShadowHarness so the same utterance doesn't
+      // get extracted twice (once via ask tool_result, once via normal
+      // extraction). Bounded at CONSUMED_UTTERANCE_CAP; oldest entries evict
+      // FIFO so a long-running session doesn't leak the set.
+      consumedAskUtterances: new Set(),
+      // Plan 03-11 Task 1 (STG r3 BLOCK) — companion FIFO set for the REVERSE
+      // race. The 03-10 dedupe is one-sided: it only catches the "answer
+      // first, then transcript" order. If the transcript arrives FIRST (e.g.
+      // iOS buffers the ask_user_answered behind the transcript, or the
+      // network reorders frames during a reconnect), the speech gets fully
+      // extracted as a normal turn — and then ask_user_answered arrives with
+      // no dedupe signal left to flip. This set records every transcript
+      // utterance_id the server has already processed, so the
+      // ask_user_answered handler can detect the race and emit a
+      // `stage6.ask_user_answered_after_transcript` warn log for ops.
+      // Same FIFO cap as consumedAskUtterances — the two ledgers are
+      // symmetric.
+      seenTranscriptUtterances: new Set(),
+      // r16 MAJOR#1 + #2 — content-match fallback dedupe. FIFO list of
+      // {normalisedText, expiresAt, toolCallId} pushed on every
+      // resolved ask_user_answered. handleTranscript evicts expired
+      // and removes any entry whose normalised text equals the
+      // transcript's (one-shot per answer). Covers the fast-path Set's
+      // blind spots: legacy clients (no consumed_utterance_id) and
+      // mixed-mode clients (answer-id set, transcript-id omitted).
+      recentAskAnswers: [],
+      // r18 MAJOR#2 — mirror of recentAskAnswers for the REVERSE
+      // direction. Every stamped transcript (stampSeenTranscript) also
+      // pushes its normalised text into this FIFO list. The
+      // ask_user_answered handler consults it whenever the answer
+      // arrives WITHOUT a consumed_utterance_id anchor (legacy or
+      // malformed clients); a content-equality hit means the same
+      // speech was already extracted through the transcript channel,
+      // so the ask must resolve with {answered:false,
+      // reason:'transcript_already_extracted'} rather than re-exposing
+      // it to Sonnet as a tool_result. Same TTL + CAP as the forward
+      // direction for symmetry.
+      recentTranscripts: [],
     });
+
+    // Stage 1a commit 1a.4 — startup log of voice-latency effective config.
+    // One line per session_start (the natural per-session granularity)
+    // captures (a) snapshotted flags, (b) parsed iOS capabilities, (c)
+    // resolved multi-context decision. Lets ops eyeball CloudWatch and
+    // confirm a session is running on the path they expect after a
+    // task-def env flip OR an iOS TestFlight bump, without needing to
+    // grep the env at runtime. Includes the bench-derived facts (cf.
+    // STAGE0_RESULTS_TUNING.md) so the log is self-describing.
+    {
+      const _vlEntry = activeSessions.get(sessionId);
+      const _vl = _vlEntry?.voiceLatency;
+      const _caps = _vl?.capabilities;
+      const _flags = _vl?.flags;
+      const _multiContextEffective =
+        _flags?.useMultiContext === true && _flags?.streamConfirmations === true;
+      logger.info('voice_latency.startup_log', {
+        sessionId,
+        protocol_version: protocolVersion,
+        flags_snapshot: _flags,
+        kill_switch_live:
+          !!process.env.VOICE_LATENCY_KILL_SWITCH &&
+          ['true', '1', 'yes', 'on'].includes(
+            String(process.env.VOICE_LATENCY_KILL_SWITCH).trim().toLowerCase()
+          ),
+        capabilities: _caps
+          ? {
+              version: _caps.version,
+              supports: [..._caps.supports],
+              has_streaming_http_audio: _caps.hasStreamingHttpAudio,
+              has_source_field_in_tts_post: _caps.hasSourceFieldInTtsPost,
+              has_voice_latency_ack: _caps.hasVoiceLatencyAck,
+              has_regex_fast_tts: _caps.hasRegexFastTts,
+              has_kill_switch_drop_queue: _caps.hasKillSwitchDropQueue,
+            }
+          : null,
+        multi_context_effective: _multiContextEffective,
+      });
+    }
 
     ws.send(
       JSON.stringify({ type: 'session_ack', status: 'started', sessionId: rehydrateSessionId })
     );
+
+    // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
+    // session_started ack so iOS's WS dispatch is in steady state when the
+    // broadcast arrives. _seedStateFromJobState (called inside the
+    // EICRExtractionSession constructor / explicit seed call) resets
+    // `currentBoardId` to the main board id (Q0.1 lock — always main on
+    // fresh session). Without this initial broadcast, iOS jobVM.currentBoardId
+    // stays at whatever value persistence rehydrated and the apply-path
+    // priority chain may target the wrong board until Sonnet emits the
+    // first select_board.
+    //
+    // Source = 'session_start' so iOS can decide whether to suppress the
+    // banner flip animation (no UX value flashing the banner on a fresh
+    // session for "you're on the main board" — every session starts there).
+    if (ws.readyState === ws.OPEN) {
+      const snapshot = session.stateSnapshot;
+      const currentId = snapshot?.currentBoardId;
+      if (typeof currentId === 'string' && currentId.length > 0) {
+        const target = (snapshot.boards ?? []).find((b) => b && b.id === currentId);
+        ws.send(
+          JSON.stringify({
+            type: 'current_board_changed',
+            board_id: currentId,
+            designation: target?.designation ?? null,
+            source: 'session_start',
+          })
+        );
+      }
+    }
+
     logger.info('Session started', {
       sessionId,
       rehydrateSessionId,
@@ -1072,25 +2790,61 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
    * to the new socket, the same shape as `handleSessionStart`'s reconnection
    * branch does, so extraction callbacks target the live socket.
    */
-  function handleSessionResumeRehydrate(ws, userId, requestedSessionId) {
-    const stored = sonnetSessionStore.resume(requestedSessionId, userId);
+  function handleSessionResumeRehydrate(
+    ws,
+    userId,
+    requestedSessionId,
+    requestedProtocolVersion = null
+  ) {
+    // ── Plan 06-08 r7-#2 (MAJOR) — peek before resume.
+    //
+    // Pre-r7 this function called `sonnetSessionStore.resume(...)` BEFORE
+    // validating the inbound `protocol_version`. resume() is non-consuming
+    // TODAY for the happy path (LRU bump only) but the contract is
+    // fragile against the Wave 4c.5 brief's explicit anticipation of
+    // evolving to a Redis-backed consuming-on-read store. A future
+    // change there would silently break: the live-mismatch reject path
+    // (~line 2038) returns AFTER resume's side-effects fire, so the
+    // token would be gone and the iOS client couldn't retry with a
+    // corrected protocol_version field.
+    //
+    // Fix: read via the new non-mutating peek() to extract
+    // `clientSessionId`, validate the protocol_version policy, and ONLY
+    // on a passing policy commit the rebind via resume(). The
+    // peek/resume split makes the call site self-documenting:
+    // "I'm reading to validate" vs "I'm committing the rebind".
+    const peeked = sonnetSessionStore.peek(requestedSessionId, userId);
 
     // Miss → mint a fresh rehydration token with no underlying entry. The
     // client will treat this as a brand-new session and follow up with
     // `session_start` on its next transcript. We don't pre-create the
     // runtime state here because we don't yet know the jobId / jobState
     // the client will want bound — those arrive with session_start.
-    if (!stored) {
+    if (!peeked) {
       logger.info('session_resume miss — returning fresh session_ack', {
         userId,
         requestedSessionId,
       });
+      // ── Plan 06-08 r7-#2 (MAJOR) — preserve the Wave 4c.5
+      // wrong-user-probe defence. peek() returns null for missing,
+      // TTL-expired, AND user-mismatch — the three cases share the
+      // same "no payload to return" outcome. The pre-r7 `resume()`
+      // call site at this position deleted the token on
+      // user-mismatch (security: an attempted abuse blows the
+      // token). peek() does NOT delete (it's a validate-only
+      // primitive), so the rehydrate caller MUST do the delete
+      // here to preserve the defence. `remove()` is idempotent on
+      // missing/already-deleted entries, so blanket-removing on
+      // every !peeked branch is safe and covers the user-mismatch
+      // case without leaking peek's null-disambiguation to the
+      // store boundary.
+      sonnetSessionStore.remove(requestedSessionId);
       // No entry minted yet; return status=new with no sessionId so the
       // client knows rehydration failed and must send session_start.
       return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
     }
 
-    const { clientSessionId } = stored;
+    const { clientSessionId } = peeked;
     const entry = activeSessions.get(clientSessionId);
 
     // TTL-valid store hit but the runtime entry is gone (e.g. the 5-min
@@ -1103,8 +2857,142 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         requestedSessionId,
         clientSessionId,
       });
+      // The peeked entry has no runtime to rebind to — DO consume it
+      // here (remove explicitly) because there's nothing to retry
+      // against. peek() doesn't delete; we delete on this terminal
+      // miss path so the dead token doesn't hang around.
       sonnetSessionStore.remove(requestedSessionId);
       return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
+    }
+
+    // ── Plan 06-06 r5-#1 (MAJOR) — apply the SAME protocol_version policy
+    // on the rehydrate path that handleSessionStart applies on the
+    // fresh-connect path. Without this, a stale iOS client holding a valid
+    // resume token can re-bind an entry into live mode without advertising
+    // stage6 capability — defeating the STI-06 rejection contract.
+    //
+    // Policy table (mirrors handleSessionStart lines ~1319-1362):
+    //   - live + mismatch  → ws.close(1002) + error envelope, NO rebind.
+    //   - shadow + mismatch → warn + entry.fallbackToLegacy=true (write
+    //                        through to the existing entry, not the
+    //                        original session_start value).
+    //   - shadow + match   → entry.fallbackToLegacy=false, protocolVersion='stage6'.
+    //   - live + match     → entry.fallbackToLegacy=false, protocolVersion='stage6'.
+    //   - off + anything   → record latest protocolVersion, no policy
+    //                        enforcement (STR-01 functional equivalence).
+    //
+    // The write-back of protocolVersion + fallbackToLegacy MUST happen
+    // before `entry.ws = ws` (the live-reject path bails early so the new
+    // ws never replaces the original entry's ws).
+    //
+    // r5-#2 covers the equivalent write-back on handleSessionStart's
+    // reconnect branch — the two surfaces are symmetric.
+    //
+    // ── Plan 06-09 r8-#2 (MAJOR) — snapshot SONNET_TOOL_CALLS exactly
+    // ONCE per request via resolveEffectiveToolCallsMode. Pre-r8 this
+    // function read the env via two paths: a bare
+    // `process.env.SONNET_TOOL_CALLS || 'off'` here for the policy
+    // block, AND a separate `resolveEffectiveToolCallsMode()` re-read
+    // before applyModeChange below (~line 2198). An env flip between
+    // the two reads produced a split-brain entry — same root cause
+    // as r8-#1 in handleSessionStart. Single resolved value, single
+    // source of truth, race-proof. The variable name is preserved
+    // (`toolCallsMode`) for the readability of every existing comment
+    // block; only the RHS changes from the bare env read to the
+    // resolver call.
+    const toolCallsMode = resolveEffectiveToolCallsMode();
+    // 2026-04-26 (Bug-B pivot): live-mode resume now ALSO accepts pre-stage6
+    // clients (matching the fresh-connect handshake change at line ~1448).
+    // The previous hard-reject path was removed entirely. Both shadow +
+    // mismatch and live + mismatch are handled by the metadata-stamping
+    // block below — same downstream effect: entry.fallbackToLegacy=true
+    // suppresses mid-loop tool-call ws events; the end-of-turn bundled
+    // `extraction` message renders correctly on iOS Build 282.
+
+    // ── Plan 06-08 r7-#2 (MAJOR) — policy passed. Commit the rebind by
+    // calling resume(), which (today) bumps the entry to the LRU tail.
+    // The Wave 4c.5 contract for the in-memory store doesn't actually
+    // CONSUME the token here, but a future Redis-backed implementation
+    // will (GETDEL semantics) and this is where the consumption belongs:
+    // AFTER the protocol_version policy has signed off.
+    //
+    // Defensive null-check: peek() succeeded a few µs ago, but
+    // resume() could in principle return null if the TTL boundary
+    // crossed between the two reads. Treat as miss (same shape as the
+    // !peeked path above).
+    const stored = sonnetSessionStore.resume(requestedSessionId, userId);
+    if (!stored) {
+      logger.info('session_resume token expired between peek and resume', {
+        userId,
+        requestedSessionId,
+        clientSessionId,
+      });
+      return { sessionId: null, ack: { status: 'new' }, activeEntryKey: null };
+    }
+    if (
+      (toolCallsMode === 'shadow' || toolCallsMode === 'live') &&
+      requestedProtocolVersion !== 'stage6'
+    ) {
+      // 2026-04-26 (Bug-B pivot): live + mismatch ALSO sets fallbackToLegacy
+      // (was a hard reject pre-pivot). Both shadow + mismatch and
+      // live + mismatch share the same downstream effect — Stage 6 ws events
+      // suppressed; final bundled extraction message still flows to iOS.
+      const logKey =
+        toolCallsMode === 'shadow'
+          ? 'stage6.protocol_version_mismatch_shadow_fallback_resume'
+          : 'stage6.protocol_version_mismatch_live_fallback_resume';
+      logger[toolCallsMode === 'shadow' ? 'warn' : 'info'](logKey, {
+        sessionId: clientSessionId,
+        requestedSessionId,
+        protocolVersion: requestedProtocolVersion,
+        mode: toolCallsMode,
+      });
+      entry.fallbackToLegacy = true;
+      entry.protocolVersion = requestedProtocolVersion; // null when missing
+    } else if (toolCallsMode === 'shadow' || toolCallsMode === 'live') {
+      // shadow + match OR live + match — write through.
+      entry.fallbackToLegacy = false;
+      entry.protocolVersion = 'stage6';
+    } else {
+      // ── Plan 06-09 r8-#3 (MINOR) — STR-01 rollback contract on
+      // shadow → off transition. Mirrors handleSessionStart's
+      // reconnect off-branch (see r8-#3 comment there for the full
+      // rationale). entry.fallbackToLegacy from a prior shadow +
+      // mismatch handshake is cleared here so an off-mode entry has
+      // pristine Stage 6 emission state — defends future code paths
+      // that might read entry.fallbackToLegacy without first
+      // gating on entry.session.toolCallsMode === 'shadow'.
+      entry.fallbackToLegacy = false;
+      entry.protocolVersion = requestedProtocolVersion;
+    }
+    // ── Plan 06-07 r6-#1 (BLOCK) + Plan 06-08 r7-#1 (MAJOR) —
+    // symmetric write of the freshly-resolved toolCallsMode onto the
+    // existing session, mirroring the handleSessionStart reconnect
+    // branch. The rehydrate path is the OTHER WS-rebind surface; both
+    // must propagate the env mode so the runtime dispatch
+    // (`runShadowHarness` routing + `consumeLegacyQuestionsForUser`
+    // gate) follows it.
+    //
+    // r7-#1: the call goes through `session.applyModeChange(...)` (the
+    // SOLE write surface for mid-session mode flips) so `systemPrompt`
+    // is restamped alongside `toolCallsMode`. r6 only wrote the flag,
+    // missing the constructor-cached `systemPrompt` derivation
+    // (eicr-extraction-session.js:697-702) — `buildSystemBlocks()` then
+    // shipped a legacy + agentic hybrid after off → shadow flips.
+    //
+    // The live + mismatch reject path above (line ~2031) RETURNs before
+    // reaching this write, so a rejected resume's session is never
+    // touched. Placed BEFORE entry.ws = ws (later in this function) so
+    // the three handshake-state writes are co-located.
+    //
+    // ── Plan 06-09 r8-#2 (MAJOR) — pass the function-entry snapshot
+    // (`toolCallsMode`, set above via resolveEffectiveToolCallsMode)
+    // instead of re-reading env via a fresh resolveEffectiveToolCallsMode()
+    // call here. That re-read was the SECOND env access per request
+    // and the source of the split-brain race; the snapshot at function
+    // entry is the single source of truth for this request.
+    if (entry.session) {
+      entry.session.applyModeChange(toolCallsMode);
     }
 
     // Cancel any pending disconnect timer — we're live again.
@@ -1112,6 +3000,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       clearTimeout(entry.disconnectTimer);
       entry.disconnectTimer = null;
     }
+
+    // Stage 6 Phase 3 Plan 03-08 (Rule-3 extension): Wave 4c.5 rehydrate is
+    // structurally the same as handleSessionStart's reconnect branch — a new
+    // ws replaces an old one on an existing activeSessions entry. Applying
+    // the same rejectAll('session_reconnected') here keeps the invariant
+    // "any ws-rebind drains stale asks" universal across the TWO reconnect
+    // surfaces (plan only enumerates handleSessionStart's; this path was
+    // introduced after the plan's Research phase). Deferring to Plan 03-08's
+    // decision log as a deviation (Rule 3 — keeps the Promise-lifecycle
+    // invariant tight).
+    entry.pendingAsks.rejectAll('session_reconnected');
+    // Plan 03-10 Task 1 — mirror the handleSessionStart reconnect branch:
+    // drop any stale consumed-utterance ids on socket swap.
+    if (entry.consumedAskUtterances) entry.consumedAskUtterances.clear();
+    else entry.consumedAskUtterances = new Set();
+    // Plan 03-11 Task 1 — mirror for the reverse-race ledger.
+    if (entry.seenTranscriptUtterances) entry.seenTranscriptUtterances.clear();
+    else entry.seenTranscriptUtterances = new Set();
+    // r16 MAJOR#1 + #2 — clear the content-anchor list on session_resume.
+    entry.recentAskAnswers = [];
+    // r18 MAJOR#2 — clear reverse content ledger on session_resume.
+    entry.recentTranscripts = [];
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -1158,6 +3068,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          // Hotfix slice 2.2 — replay any select_board / add_board boardOps
+          // through the same broadcast scan the live tool-loop turn would
+          // have used. Reconnect-during-board-switch was a silent banner
+          // miss pre-hotfix: the buffered extraction reaches iOS but the
+          // current_board_changed envelope was never re-emitted, so iOS
+          // jobVM.currentBoardId stayed stale until the next live op.
+          // The snapshot is the post-flip state at flush time, so
+          // designations resolve correctly inside the helper.
+          emitCurrentBoardChangedFromBoardOps(ws, entry.session?.stateSnapshot, result.board_ops);
           // Phase A: if the buffered extraction carried RULE 6 correction edits,
           // replay them on the restored socket so iOS doesn't miss the patch.
           dispatchObservationUpdates(ws, sessionId, observationUpdates);
@@ -1202,11 +3121,252 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     const entry = activeSessions.get(sessionId);
-    entry.questionGate.onNewUtterance();
 
-    // If already extracting, queue this transcript individually
+    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — late-stop race guard.
+    // handleSessionStop sets entry.isStopping=true before its first rejectAll
+    // pass, then awaits flushUtteranceBuffer + S3 uploads + session_ack emit
+    // before finally deleting the activeSessions entry. During that window,
+    // transcript frames that slip through the pipe can still find the session
+    // present (activeSessions.has === true), run the shadow harness, and
+    // register fresh ask_user tool calls via the dispatcher — orphaning the
+    // ask past session teardown. Early-returning here prevents that class of
+    // race. We don't emit an error envelope: the iOS client has already
+    // asked to stop, and a "No active session" notice would just confuse
+    // the UX. Silent drop is the intended semantics.
+    if (entry.isStopping) {
+      logger.info('stage6.transcript_dropped_during_stop', {
+        sessionId,
+        hasText: typeof msg.text === 'string' && msg.text.trim().length > 0,
+      });
+      return;
+    }
+
+    // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
+    // dedupe. If this transcript carries a utterance_id that iOS already
+    // routed as an ask_user_answered payload, drop it silently. Sonnet
+    // already received the answer through the ask tool_result body; running
+    // extraction over the same speech would produce duplicate readings /
+    // observations and double-charge the Anthropic turn. Guard placed BEFORE
+    // questionGate.onNewUtterance() + isExtracting gating because those
+    // side-effects (rate counter + queue slot) must not fire for a
+    // suppressed utterance either.
+    if (
+      typeof msg.utterance_id === 'string' &&
+      entry.consumedAskUtterances &&
+      entry.consumedAskUtterances.has(msg.utterance_id)
+    ) {
+      logger.info('stage6.transcript_suppressed', {
+        sessionId,
+        utterance_id: msg.utterance_id,
+        reason: 'answered_ask',
+      });
+      return;
+    }
+
+    // r16 MAJOR#1 + #2 remediation — content-anchor fallback dedupe.
+    // Catches two cases the fast-path consumedAskUtterances Set cannot:
+    //   MAJOR#1 — legacy client with no consumed_utterance_id on the
+    //             answer side means no Set entry to match against.
+    //   MAJOR#2 — mixed-mode client stamps consumed_utterance_id on the
+    //             answer but omits utterance_id on the paired
+    //             transcript, so the Set lookup (keyed on transcript's
+    //             id) fails.
+    // Both collapse into: is there a recent ASK ANSWER whose normalised
+    // text equals this transcript's normalised text? If yes, this
+    // transcript IS the answering utterance → suppress and remove the
+    // matched anchor (one-shot). Expired anchors are evicted first.
+    // Normalised equality (not substring/overlap) avoids false-positive
+    // suppression of unrelated speech that happens to contain the
+    // answer text as a substring (e.g. "move to three" vs ask-answer
+    // "three").
+    if (Array.isArray(entry.recentAskAnswers) && entry.recentAskAnswers.length > 0) {
+      const nowTs = Date.now();
+      // Evict expired in-place.
+      entry.recentAskAnswers = entry.recentAskAnswers.filter((a) => a.expiresAt > nowTs);
+      if (entry.recentAskAnswers.length > 0) {
+        const normalisedMsg = normaliseForAskMatch(msg.text);
+        if (normalisedMsg.length > 0) {
+          const matchIdx = entry.recentAskAnswers.findIndex(
+            (a) => a.normalisedText === normalisedMsg
+          );
+          if (matchIdx >= 0) {
+            const matched = entry.recentAskAnswers.splice(matchIdx, 1)[0];
+            logger.warn('stage6.transcript_suppressed_content_anchor', {
+              sessionId,
+              utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              matched_tool_call_id: matched.toolCallId,
+              ttl_remaining_ms: matched.expiresAt - nowTs,
+              reason: 'content_anchor_match',
+            });
+            return;
+          }
+        }
+      }
+    }
+
+    // Plan 03-11 Task 1 (STG r3 BLOCK) / Plan 03-12 r13 Codex MAJOR —
+    // stamping of seenTranscriptUtterances happens at the point where this
+    // transcript is ACTUALLY committed to extraction (or ask-resolution),
+    // not at top-of-handler. Placing the stamp earlier meant deferred
+    // paths (user_moved_on defer at ~L1848, the isExtracting queue at
+    // ~L1562) would falsely tell the ask_user_answered handler
+    // "transcript already extracted" for an utterance that was only
+    // QUEUED. The helper below is invoked from the two commit points:
+    //   (a) answers-verdict success — after registry.resolve(), before
+    //       the early-return at ~L1797. The ask channel carried the
+    //       transcript's text to Sonnet as tool_result; any later
+    //       ask_user_answered for this utterance_id MUST downgrade.
+    //   (b) the fall-through path, immediately before the runShadowHarness
+    //       `await` at ~L1854. That stamp lives before the single yield
+    //       point in this function, so a synchronous ask_user_answered
+    //       frame interleaving across the yield still sees the stamp.
+    // Bounded by CONSUMED_UTTERANCE_CAP / FIFO for the same reasons as
+    // consumedAskUtterances.
+    const stampSeenTranscript = () => {
+      // Fast-path Set (anchored on utterance_id).
+      if (typeof msg.utterance_id === 'string') {
+        if (!entry.seenTranscriptUtterances) entry.seenTranscriptUtterances = new Set();
+        entry.seenTranscriptUtterances.add(msg.utterance_id);
+        if (entry.seenTranscriptUtterances.size > CONSUMED_UTTERANCE_CAP) {
+          const oldest = entry.seenTranscriptUtterances.values().next().value;
+          entry.seenTranscriptUtterances.delete(oldest);
+        }
+      }
+
+      // r18 MAJOR#2 — content-anchor push. Every transcript committed to
+      // extraction (answers-verdict success OR fall-through to shadow
+      // harness) pushes its normalised text into entry.recentTranscripts
+      // so a LEGACY ask_user_answered (no consumed_utterance_id) arriving
+      // AFTER the transcript has already been extracted can detect the
+      // reverse race by content equality and resolve with
+      // {answered:false, reason:'transcript_already_extracted'} instead
+      // of double-exposing the same speech to Sonnet. Always push —
+      // unlike the Set, we don't need a valid utterance_id; the whole
+      // point of this ledger is to cover utterance_id-less clients on
+      // BOTH sides. TTL + CAP bound memory under STA-01.
+      if (typeof msg.text === 'string') {
+        const normalised = normaliseForAskMatch(msg.text);
+        if (normalised.length > 0) {
+          if (!Array.isArray(entry.recentTranscripts)) entry.recentTranscripts = [];
+          entry.recentTranscripts.push({
+            normalisedText: normalised,
+            expiresAt: Date.now() + RECENT_ASK_ANSWER_TTL_MS,
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          while (entry.recentTranscripts.length > RECENT_ASK_ANSWER_CAP) {
+            entry.recentTranscripts.shift();
+          }
+        }
+      }
+    };
+
+    // 2026-05-26 — pre-LLM transcript gate. Conservative rule (no digit,
+    // no trigger word, no regex hit, ≤2 distinct content words) drops
+    // single-word filler and background chatter before it costs a
+    // Sonnet round + TTS. Bypassed when there's a pending ask (the
+    // utterance might be the answer), when iOS tagged `in_response_to`,
+    // on the drained-retry path, and on chitchat-paused state (handled
+    // upstream — paused transcripts never reach handleTranscript).
+    //
+    // Block experience is silence: no canned TTS, no audio cue. If the
+    // inspector said something real the gate didn't recognise, they
+    // repeat; otherwise the agent stays quiet rather than re-asking.
+    // Skipping the gate-tick AND the extractor avoids the panic-burst
+    // pattern documented in session 33E6613D (2026-05-26).
+    // 2026-05-31 — surface dialogueScriptState.active to the gate so
+    // server-side script asks (RCD / OCPD / RCBO / IR / ring-continuity)
+    // get reply forwarding. These asks DO NOT register in pendingAsks
+    // (the registry tracks Sonnet `ask_user` calls; engine asks use the
+    // `srv-*` toolCallIdPrefix and bypass it on purpose — see
+    // sonnet-stream.js:~1429), so without this flag the gate had no
+    // signal that a script was awaiting an answer. Field repro: inspector
+    // replies bare "later" to "What's the BS number? Or do you want to
+    // fill that in later?", gate blocks LOW_CONTENT (1 content word, no
+    // weak trigger), engine never sees the reply, RCD focus persists.
+    const hasActiveDialogueScript = entry.session?.dialogueScriptState?.active === true;
+    const gateDecision = shouldForwardToSonnet(msg.text, {
+      regexResults: Array.isArray(msg.regexResults) ? msg.regexResults : null,
+      hasPendingAsk: entry.pendingAsks && entry.pendingAsks.size > 0,
+      hasActiveDialogueScript,
+      inResponseTo: !!(msg.in_response_to && typeof msg.in_response_to === 'object'),
+      drainedRetry: !!msg._drainedRetry,
+      gateEnabled: PRE_LLM_GATE_ENABLED,
+    });
+    if (!gateDecision.forward) {
+      logger.info('voice_latency.gate_blocked', {
+        sessionId,
+        reason: gateDecision.reason,
+        textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
+        distinct_content_words: gateDecision.distinctContentWords ?? null,
+        had_pending_ask: entry.pendingAsks && entry.pendingAsks.size > 0,
+        had_active_dialogue_script: hasActiveDialogueScript,
+      });
+      return;
+    }
+    // PLAN-backend-final.md Phase 5.2 — positive-side counter for the
+    // new HAS_COMPLAINT_OR_NEGATION path. Lets ops eyeball whether the
+    // signal fires in the field (session 60754E4D had 6 voiced
+    // frustrations; the optimizer should see at least that many rows
+    // per such session). Separate from gate_blocked so the existing
+    // dashboard panel doesn't have to reason about a positive reason
+    // mixed in with the blocked-reason distribution.
+    if (gateDecision.reason === GATE_REASONS.HAS_COMPLAINT_OR_NEGATION) {
+      logger.info('voice_latency.gate_forwarded_complaint', {
+        sessionId,
+        textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
+      });
+    }
+
+    // PLAN-backend-final.md Phase 8.4 — bulk-exclude intent hint.
+    // When the transcript matches "apart from / except / excluding /
+    // all but", set msg.intentHints.bulkExclude = true and emit a
+    // telemetry row so iOS slice 8.0 (ApplyFieldIntent return-nil-on-
+    // exclude) + the §8.3 prompt few-shot can be measured end-to-end
+    // in CloudWatch. Per the plan: option (a) — backend-side hint,
+    // NOT a gate change, so the regex doesn't widen the forward
+    // distribution; just enriches the turn context. The hint is set
+    // on the msg object so any downstream extractor can read it
+    // without a re-parse.
+    if (typeof msg.text === 'string' && BULK_EXCLUDE_PATTERN.test(msg.text)) {
+      if (!msg.intentHints || typeof msg.intentHints !== 'object') {
+        msg.intentHints = {};
+      }
+      msg.intentHints.bulkExclude = true;
+      logger.info('voice_latency.intent_hint_bulk_exclude', {
+        sessionId,
+        textPreview: msg.text.substring(0, 80),
+      });
+    }
+
+    // Plan 03-12 r13 Codex MINOR — suppress questionGate.onNewUtterance()
+    // on the drained re-entry of a deferred user_moved_on transcript.
+    // Without this, the same utterance ticks the gate twice (once on
+    // first entry before the defer, once on drain re-entry), which
+    // inflates the gate's rolling-window counters and can erroneously
+    // trip rate limits. The drain sets msg._drainedRetry=true on the
+    // queued payload; first-entry callers never set it.
+    if (!msg._drainedRetry) {
+      entry.questionGate.onNewUtterance();
+    }
+
+    // If already extracting, queue this transcript individually.
+    //
+    // r17 BLOCK remediation — preserve the full original message shape
+    // (utterance_id, in_response_to, confirmations_enabled, regex
+    // results) on the queued payload. The previous shape dropped
+    // everything except text+regexResults, which meant:
+    //   * drain re-entry couldn't consult consumedAskUtterances or
+    //     seenTranscriptUtterances (utterance_id gone)
+    //   * r16 content-anchor path still worked (uses msg.text) but
+    //     the fast-path Set lookup silently missed on replay
+    //   * in_response_to TTS-question context was lost on replay, so
+    //     Sonnet re-interpreted "yes"/"code 2" style replies without
+    //     the preceding prompt
+    // Spread the full msg so the replay re-runs handleTranscript with
+    // the original metadata; the regexResults || lastRegexResults
+    // fallback is re-applied inside that re-entry.
     if (entry.isExtracting) {
-      entry.pendingTranscripts.push({ text: msg.text, regexResults: msg.regexResults });
+      entry.pendingTranscripts.push({ ...msg });
       return;
     }
 
@@ -1242,6 +3402,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // can't smuggle e.g. `type: "x\nIGNORE PREVIOUS INSTRUCTIONS"` into the
         // Sonnet user turn. Keep the set in sync with QuestionGate and Sonnet
         // prompt's allowed `question.type` values.
+        //
+        // `stage6_ask_user` (added 2026-05-01): the `type` iOS stamps on
+        // any in-flight question card driven by the Stage 6 ask_user tool
+        // or the dialogue engine — see TranscriptDisplayView /
+        // DeepgramRecordingViewModel `inFlightQuestion.type`. Without it
+        // in the allow-list, `qType` was dropped before the wrap and
+        // `qTypeDropped` rows piled up in CloudWatch on every Stage 6
+        // reply, making it harder to grep for the genuine prompt-injection
+        // attempts the allow-list defends against. Behaviourally harmless
+        // pre-fix (the question text still reached Sonnet); the fix is for
+        // log fidelity + fresh-eyes traceability.
         const ALLOWED_QUESTION_TYPES = new Set([
           'observation_confirmation',
           'observation_code',
@@ -1252,6 +3423,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           'orphaned',
           'tt_confirmation',
           'voice_command',
+          'stage6_ask_user',
         ]);
         const rawType = typeof msg.in_response_to.type === 'string' ? msg.in_response_to.type : '';
         const safeType = ALLOWED_QUESTION_TYPES.has(rawType) ? rawType : null;
@@ -1265,38 +3437,640 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         });
       }
 
+      // Ring continuity script — 2026-04-29. Server-driven micro-
+      // conversation that captures R1/Rn/R2 deterministically when the
+      // inspector says "ring continuity for circuit N". Sits BEFORE the
+      // 60s timeout check below because the script's `last_turn_at`
+      // timestamp is what `findExpiredPartial` would otherwise interpret
+      // as a stale partial fill. While the script is active, Sonnet is
+      // bypassed entirely — same wire output to iOS, no LLM round-trip.
+      // See `src/extraction/ring-continuity-script.js` for design.
+      //
+      // Three return shapes:
+      //   1. handled=false                       → script not active and
+      //                                             no entry trigger; fall
+      //                                             through to the rest of
+      //                                             this turn (Sonnet flow).
+      //   2. handled=true, fallthrough=false     → script consumed the
+      //                                             turn; skip Sonnet,
+      //                                             clear the watchdog,
+      //                                             and `return`.
+      //   3. handled=true, fallthrough=true      → script exited via topic
+      //                                             switch / unresolvable
+      //                                             circuit answer; pass
+      //                                             the (possibly cleaned)
+      //                                             transcript on to Sonnet.
+      const ringScriptOutcome = processRingContinuityTurn({
+        ws,
+        session: entry.session,
+        sessionId,
+        transcriptText,
+        logger,
+      });
+      if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
+        // Script handled the turn end-to-end. Return — the finally block
+        // at line ~3290 clears the watchdog, flips isExtracting, and
+        // drains pendingTranscripts against the LIVE entry.ws (handling
+        // the reconnect-mid-turn case the r19 MAJOR remediation fixed).
+        // No Sonnet call, no shadow harness, no question-gate pass on
+        // this turn. The script already emitted the wire events iOS
+        // needs (`extraction` + `ask_user_started`).
+        return;
+      }
+      if (ringScriptOutcome.handled && ringScriptOutcome.fallthrough) {
+        // Topic switch or unresolvable circuit-answer. Use the script's
+        // returned transcript (currently identical to input — kept in
+        // the contract so future cleanup doesn't churn callers) and
+        // continue to the normal Sonnet path.
+        if (typeof ringScriptOutcome.transcriptText === 'string') {
+          transcriptText = ringScriptOutcome.transcriptText;
+        }
+      }
+
+      // Insulation resistance script — 2026-04-29. Same shape as the ring
+      // continuity script: server-driven micro-conversation that captures
+      // L-L and L-E readings (and the test voltage if not already set)
+      // deterministically when the inspector says "insulation resistance
+      // for circuit N". Sits AFTER the ring script call so the entry
+      // patterns are mutually exclusive — ring's "ring continuity" trigger
+      // beats IR's "insulation resistance" trigger when both somehow
+      // appear (they shouldn't), and IR's topic-switch list includes ring
+      // patterns so an inspector mid-ring can't accidentally re-enter IR.
+      // See `src/extraction/insulation-resistance-script.js` for design.
+      const irScriptOutcome = processInsulationResistanceTurn({
+        ws,
+        session: entry.session,
+        sessionId,
+        transcriptText,
+        logger,
+      });
+      if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
+        return;
+      }
+      if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
+        if (typeof irScriptOutcome.transcriptText === 'string') {
+          transcriptText = irScriptOutcome.transcriptText;
+        }
+      }
+
+      // Protective-device script (PR2) — RCBO / OCPD / RCD as a
+      // single dialogue family. Same wire-shape contract as ring +
+      // IR; entry triggers are mutually exclusive via topic-switch
+      // lists and `\bRCBO\b` / `\bRCD\b` word boundaries. RCBO is
+      // checked first so direct-RCBO entry wins over OCPD's broader
+      // trigger; OCPD and RCD pivot to RCBO via the BS-EN 61009
+      // derivation on their bs_en slots.
+      const pdScriptOutcome = processProtectiveDeviceTurn({
+        ws,
+        session: entry.session,
+        sessionId,
+        transcriptText,
+        logger,
+      });
+      if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
+        return;
+      }
+      if (pdScriptOutcome.handled && pdScriptOutcome.fallthrough) {
+        if (typeof pdScriptOutcome.transcriptText === 'string') {
+          transcriptText = pdScriptOutcome.transcriptText;
+        }
+      }
+
+      // Ring continuity timeout — 2026-04-28. The agentic prompt's
+      // RING CONTINUITY CARRYOVER section delegates the 60-second
+      // timeout to the server (Sonnet can't reliably track elapsed
+      // time across turns). On every user turn, before invoking
+      // Sonnet, check whether any circuit has a partial r1/rn/r2 fill
+      // that's older than 60s. If yes, prepend a server-issued
+      // directive to the transcript so Sonnet emits `ask_user` with
+      // the right `context_field` + `context_circuit`. The user's
+      // reply value-resolves through the existing answer-resolver
+      // path (resolveValueAnswer in stage6-answer-resolver.js).
+      //
+      // Note shape mirrors the in_response_to bracket convention so
+      // Sonnet treats it as data, not as a prompt injection. The note
+      // is server-controlled — no user-supplied content lands inside
+      // the brackets, so escape/whitelist gating isn't needed (cf.
+      // the JSON.stringify treatment of `msg.in_response_to.question`
+      // above for user-controlled question text).
+      const ringExpired = findExpiredPartial(entry.session);
+      if (ringExpired) {
+        const ringNote =
+          `[Server note: circuit ${ringExpired.circuit_ref} ring continuity is incomplete; ` +
+          `${ringExpired.missing_field} has not been recorded and 60s have elapsed since the last ` +
+          `ring write. Please ask the user for this value via ask_user with ` +
+          `context_field="${ringExpired.missing_field}", context_circuit=${ringExpired.circuit_ref}, ` +
+          `expected_answer_shape="value", reason="missing_value".] `;
+        transcriptText = `${ringNote}${transcriptText}`;
+        logger.info('stage6.ring_continuity_timeout_detected', {
+          sessionId,
+          circuit_ref: ringExpired.circuit_ref,
+          missing_field: ringExpired.missing_field,
+          last_write_ms: ringExpired.last_write_ms,
+        });
+      }
+
+      // Insulation resistance partial-fill timeout — same shape as the
+      // ring detector above. Fires when a circuit has 1 of the 2 IR
+      // readings filled and >60s have elapsed since the last write,
+      // covering cases the IR script doesn't (cancel mid-flow, topic
+      // switch before completion, hard-timeout exit). Only one Sonnet-
+      // facing note is prepended per turn; if both ring and IR are
+      // expired, the ring note runs first (above) and IR fires on a
+      // later turn — overlap is rare in practice.
+      const irExpired = findExpiredIrPartial(entry.session);
+      if (irExpired) {
+        const irNote =
+          `[Server note: circuit ${irExpired.circuit_ref} insulation resistance is incomplete; ` +
+          `${irExpired.missing_field} has not been recorded and 60s have elapsed since the last ` +
+          `IR write. Please ask the user for this value via ask_user with ` +
+          `context_field="${irExpired.missing_field}", context_circuit=${irExpired.circuit_ref}, ` +
+          `expected_answer_shape="value", reason="missing_value".] `;
+        transcriptText = `${irNote}${transcriptText}`;
+        logger.info('stage6.insulation_resistance_timeout_detected', {
+          sessionId,
+          circuit_ref: irExpired.circuit_ref,
+          missing_field: irExpired.missing_field,
+          last_write_ms: irExpired.last_write_ms,
+        });
+      }
+
       logger.info('Extracting from transcript', {
         sessionId,
         textPreview: transcriptText.substring(0, 80),
       });
-      const regexResults = msg.regexResults || entry.lastRegexResults || [];
-      const result = await entry.session.extractFromUtterance(transcriptText, regexResults, {
+      // r20 MAJOR remediation — normalise/validate regexResults ONCE at
+      // ingress so both classifyOvertake() and runShadowHarness() see
+      // the SAME sanitised array. The classifier previously guarded
+      // itself with `Array.isArray(x) ? x : []` but the extractor
+      // received `msg.regexResults` verbatim; a malformed client
+      // payload (null, object, string, number) would make the two
+      // paths reason over DIFFERENT data for the same utterance,
+      // breaking the ask-vs-overtake verdict's ability to predict
+      // what the extractor will see.
+      //
+      // Rule: accept arrays only; otherwise coerce to [] and warn.
+      // The `|| entry.lastRegexResults || []` fallback stays for the
+      // post-defer drain case where iOS doesn't resend regex hits on
+      // the drained retry — but `lastRegexResults` is server-owned
+      // and already array-typed.
+      let regexResults;
+      if (Array.isArray(msg.regexResults)) {
+        regexResults = msg.regexResults;
+      } else if (msg.regexResults !== undefined && msg.regexResults !== null) {
+        logger.warn('stage6.transcript_regex_results_invalid', {
+          sessionId,
+          received_type: typeof msg.regexResults,
+          reason: 'regexResults_must_be_array_or_absent',
+        });
+        regexResults = Array.isArray(entry.lastRegexResults) ? entry.lastRegexResults : [];
+      } else {
+        regexResults = Array.isArray(entry.lastRegexResults) ? entry.lastRegexResults : [];
+      }
+
+      // Stage 6 Phase 3 Plan 03-08 — overtake detection BEFORE shadow-harness
+      // dispatch. When there ARE pending blocking asks, classifyOvertake
+      // (stage6-overtake-classifier.js, STA-04) reads the utterance's regex
+      // hits against the registry and returns one of three verdicts:
+      //
+      //   'answers'       → the utterance contains a (field, circuit) that
+      //                     matches a pending ask's context. We resolve that
+      //                     specific ask with the new transcript as its
+      //                     user_text. Plan 03-11 Task 3 (STG r4 BLOCK):
+      //                     we then RETURN — skip the shadow harness —
+      //                     because the tool_result flowing through the
+      //                     ask dispatcher already carries the speech to
+      //                     Sonnet. Running runShadowHarness on the same
+      //                     utterance would double-expose: Sonnet would
+      //                     see the reply once as tool_result and once as
+      //                     a fresh user turn, producing duplicate writes
+      //                     or spurious follow-up asks.
+      //   'user_moved_on' → the utterance carries regex hits that do NOT
+      //                     match any pending ask, OR has no regex hits at
+      //                     all (Open Question #4 fail-safe). We rejectAll
+      //                     to drain stale asks so the dispatcher returns
+      //                     `{answered:false, reason:'user_moved_on'}` and
+      //                     Sonnet decides whether to re-ask next turn.
+      //                     We FALL THROUGH here — the new utterance IS a
+      //                     fresh user message (user changed topic), so
+      //                     the shadow harness should process it.
+      //   'no_pending_asks' → empty registry; no-op.
+      //
+      // We short-circuit the classifier call when the registry is empty so
+      // the hot path (most turns) pays zero cost. The classifier itself is
+      // pure — safe to call every turn — but the guard keeps the CloudWatch
+      // noise floor clean.
+      //
+      // Plan 03-11 Task 3 — MAJOR remediation: classify against the RAW
+      // `msg.text`, NOT the `[In response to TTS question]`-annotated
+      // `transcriptText`. The annotation is only for Sonnet's turn context;
+      // the classifier's shape-aware no-regex branch compares against a
+      // yes/no vocabulary (STA-04c) and against "non-empty trimmed text"
+      // for free_text asks. Prefixing "[In response to ...]" would turn a
+      // plain "yes" into a multi-word string that fails the yes/no match
+      // and turn an empty free_text answer into a non-empty one. Using
+      // raw msg.text keeps the classifier's shape branch doing what it's
+      // tested to do.
+      if (entry.pendingAsks.size > 0) {
+        const verdict = classifyOvertake(msg.text, regexResults, entry.pendingAsks);
+        if (verdict.kind === 'answers') {
+          // Plan 03-11 Task 3 — MAJOR remediation: sanitise verdict.userText
+          // before resolve(). Without this, a transcript-routed ask answer
+          // bypasses the cap + C0/DEL strip that the ask_user_answered
+          // handler applies (sonnet-stream.js:815), and the unsanitised
+          // text flows verbatim into both the `stage6.ask_user` log row
+          // AND the dispatcher's tool_result body — defeating the hygiene
+          // guarantee Plan 03-10 Task 2 added for the explicit-answer
+          // channel. Mirror that handler's structure: try → on throw log
+          // `stage6.user_text_rejected` + resolve with `{answered:false,
+          // reason:'validation_error'}` so the awaiting dispatcher returns
+          // a normal error envelope to Sonnet.
+          let sanitised = null;
+          let sanitisationFailed = false;
+          try {
+            sanitised = sanitiseUserText(verdict.userText);
+          } catch (sanErr) {
+            sanitisationFailed = true;
+            logger.warn('stage6.user_text_rejected', {
+              sessionId,
+              tool_call_id: verdict.toolCallId,
+              source: 'transcript_overtake',
+              code: sanErr.code || 'sanitisation_error',
+              message: sanErr.message,
+            });
+            const resolvedValidationError = entry.pendingAsks.resolve(verdict.toolCallId, {
+              answered: false,
+              reason: 'validation_error',
+            });
+            if (!resolvedValidationError) {
+              // Plan 03-12 r7 MAJOR remediation — resolve() returns false
+              // when the tool_call_id is unknown (already resolved by
+              // timeout, by an earlier ask_user_answered, or never
+              // registered). The verdict.toolCallId came from classifier
+              // iteration over the CURRENT pendingAsks snapshot, so the
+              // common cause here is an interleaved timeout/answer landing
+              // in the same event-loop tick. Falling through lets the
+              // utterance reach runShadowHarness as a normal user turn —
+              // strictly safer than silently dropping speech on a race
+              // we didn't actually win. Log for the audit trail.
+              //
+              // NOTE: sanitisation still failed for this text, so even on
+              // fall-through runShadowHarness will process the raw
+              // transcriptText (which is a different code path — the
+              // harness's downstream Sonnet call sanitises/normalises via
+              // its own pipeline). The validation_error resolve above
+              // was a no-op (tool_call_id already gone), so no channel
+              // received the bad text as an ask answer.
+              logger.warn('stage6.transcript_overtake_stale_resolve', {
+                sessionId,
+                tool_call_id: verdict.toolCallId,
+                source: 'transcript_overtake_validation_error',
+                reason: 'tool_call_id_already_resolved',
+              });
+              // Deliberately NOT clearing entry.lastRegexResults here —
+              // runShadowHarness may want the regex context on this turn,
+              // and the normal post-harness reset downstream handles it.
+            } else {
+              // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
+              // lastRegexResults here too. The normal-path reset at line
+              // 1686 is skipped on early-return; without this line, any
+              // non-empty entry.lastRegexResults (future populator, test
+              // seed, manual debug) would leak into the next transcript's
+              // `msg.regexResults ?? entry.lastRegexResults` fallback.
+              entry.lastRegexResults = [];
+              // Outer try/finally (line ~1783) handles clearTimeout +
+              // isExtracting=false on return — no explicit cleanup needed.
+              return;
+            }
+          }
+
+          if (!sanitisationFailed) {
+            const resolvePayload = {
+              answered: true,
+              user_text: sanitised.text,
+            };
+            if (sanitised.truncated || sanitised.stripped) {
+              resolvePayload.sanitisation = {
+                truncated: sanitised.truncated,
+                stripped: sanitised.stripped,
+              };
+            }
+            const resolvedAnswer = entry.pendingAsks.resolve(verdict.toolCallId, resolvePayload);
+
+            if (!resolvedAnswer) {
+              // Plan 03-12 r7 MAJOR remediation — stale resolve on the
+              // answers path. Same rationale as the validation_error
+              // branch above: verdict.toolCallId was live at classifier
+              // call-site but got resolved by a concurrent timeout /
+              // ask_user_answered in the same event-loop tick. The
+              // original r3 code unconditionally early-returned here,
+              // which meant the transcript was dropped into a void —
+              // no dispatcher tool_result body was sent (resolve() noop'd),
+              // and runShadowHarness was skipped. Net: speech silently
+              // disappeared on a race the server didn't win.
+              //
+              // Fix: log the race, fall through to runShadowHarness. The
+              // utterance then reaches Sonnet as a normal user turn, which
+              // is the strictly-safe attribution (Open Question #4: wrong
+              // attribution is costlier than a second re-ask). Do NOT
+              // reset lastRegexResults here — the harness is about to
+              // use it; the normal post-harness reset handles cleanup.
+              logger.warn('stage6.transcript_overtake_stale_resolve', {
+                sessionId,
+                tool_call_id: verdict.toolCallId,
+                source: 'transcript_overtake_answer',
+                reason: 'tool_call_id_already_resolved',
+              });
+            } else {
+              // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
+              // lastRegexResults on the answers early-return too. Same
+              // rationale as the validation_error branch above: the normal
+              // reset at line 1686 sits AFTER runShadowHarness, which this
+              // return skips. Defensive against any future populator of
+              // entry.lastRegexResults that would otherwise bleed stale
+              // hits into the next transcript's fallback.
+              entry.lastRegexResults = [];
+
+              // Plan 03-12 r13 Codex MAJOR — stamp seenTranscriptUtterances
+              // HERE, now that we've committed the transcript text to the
+              // ask channel via registry.resolve(). Any subsequent
+              // ask_user_answered for this utterance_id must downgrade to
+              // transcript_already_extracted (handled by the dedupe guard
+              // in the ask_user_answered switch case at ~L859).
+              stampSeenTranscript();
+
+              // Plan 03-11 Task 3 — BLOCK remediation: return early. The
+              // dispatcher's tool_result is the sole Sonnet-visible channel
+              // for this utterance; do NOT also feed it into runShadowHarness.
+              // The `finally` at the outer try/finally handles watchdog cleanup
+              // + isExtracting reset on return, so no cleanup needed here
+              // beyond early return.
+              return;
+            }
+          }
+        } else if (verdict.kind === 'user_moved_on') {
+          // Plan 03-12 r12 BLOCK remediation — serialise against the prior
+          // turn.
+          //
+          // rejectAll('user_moved_on') wakes any dispatcher Promise(s)
+          // suspended on pendingAsks.register with
+          // {answered:false, reason:'user_moved_on'}. Falling straight
+          // through to runShadowHarness here would kick off a SECOND
+          // concurrent turn on `entry.session` while the prior turn's
+          // tool loop was still unwinding the ask_user tool_result + any
+          // remaining writes. STA-01 requires one in-flight turn per
+          // session, and Anthropic's messages-create will reject
+          // interleaved tool_use/tool_result blocks across concurrent
+          // streams against the same conversation — best case the server
+          // 400s the second request; worst case they race on
+          // entry.session.messages and poison the transcript.
+          //
+          // The isExtracting gate at the top of handleTranscript would
+          // normally serialise these, BUT it only holds if the prior
+          // turn is still mid-await. Two paths can sneak a resolvable
+          // ask into pendingAsks past isExtracting=false:
+          //   (a) the 30s watchdog force-reset at line 1570 flipped
+          //       isExtracting=false while the prior runToolLoop was
+          //       still mid-await on its ask Promise, and
+          //   (b) a reconnect/termination path left an orphan entry in
+          //       pendingAsks that rejectAll must still drain.
+          // In (a) the old tool loop resumes when we reject, and in (b)
+          // there is no resumer but we still want strict serialisation
+          // for consistency with (a) and so the analyzer sees exactly
+          // one turn per transcript.
+          //
+          // Fix: queue the transcript and early-return. The outer
+          // finally clears isExtracting=false and then drains
+          // pendingTranscripts (drain sits INSIDE finally so every
+          // early-return path feeds it — see the comment on the
+          // finally block near L2028). Re-entry happens with this
+          // transcript on the next tick, by which point any awakened
+          // dispatcher has fully emitted its user_moved_on tool_result
+          // and the prior turn has completed. `lastRegexResults` is
+          // deliberately NOT cleared — the queued re-entry will use
+          // the same regex hits that led to this user_moved_on verdict.
+          entry.pendingAsks.rejectAll('user_moved_on');
+          // Plan 03-12 r13 Codex MAJOR#2 — push the RESOLVED `regexResults`
+          // (not raw `msg.regexResults`), so the drained retry uses the
+          // exact parse context the verdict was based on. Relying on the
+          // `msg.regexResults || entry.lastRegexResults || []` fallback at
+          // re-entry would drift if another code path mutated
+          // entry.lastRegexResults between defer and drain.
+          //
+          // Plan 03-12 r13 Codex MAJOR#1 — carry `utterance_id` so the
+          // pre-harness stamp on the drained retry still fires; without
+          // this, a late ask_user_answered targeting the re-entered
+          // transcript's utterance would NOT be downgraded to
+          // transcript_already_extracted even though we did run the
+          // harness on it.
+          //
+          // Plan 03-12 r13 Codex MINOR — mark `_drainedRetry=true` so the
+          // re-entry skips questionGate.onNewUtterance() (otherwise the
+          // same utterance would tick the gate twice).
+          //
+          // r18 MAJOR#1 remediation — spread the full original `msg` so
+          // the drained retry replays handleTranscript with its original
+          // shape: `in_response_to`, `confirmations_enabled`, and any
+          // other metadata the server added at ingress. The prior shape
+          // only carried `{text, regexResults, utterance_id}`; on replay
+          // the retry lost TTS-question context so Sonnet re-interpreted
+          // short replies ("yes", "code 2") without the preceding prompt.
+          // Mirrors the r17 BLOCK fix applied to the `isExtracting` queue
+          // at line ~1758.
+          entry.pendingTranscripts.push({
+            ...msg,
+            regexResults,
+            _drainedRetry: true,
+          });
+          logger.info('stage6.transcript_deferred_after_user_moved_on', {
+            sessionId,
+            pending_transcripts_depth: entry.pendingTranscripts.length,
+          });
+          return;
+        }
+        // 'no_pending_asks' can't happen here (guarded by size>0) but the
+        // classifier still returns it in defensive contexts — safe to ignore.
+      }
+
+      // Voice-latency plan 2026-06-05 Phase 2.1 — capture the iOS-minted
+      // utterance_id of this inbound transcript so the bundler can echo
+      // it back on the outbound {type:'extraction', result} envelope.
+      // Without this, iOS DeepgramRecordingViewModel.handleServerExtraction
+      // never matches a pendingUtteranceEnds entry and every
+      // /api/voice-latency/utterance-end POST orphans at the iOS 30 s
+      // TTL — 100 % orphan rate in CloudWatch evidence (session 84CE2125,
+      // 38/38 utterance_end rows). The dedupe check at line 3154 already
+      // reads msg.utterance_id; this captures the same field for the
+      // outbound echo. Fall back to msg.consumed_utterance_id only when
+      // utterance_id is missing (rare — ask_user_answered branches stamp
+      // consumed_utterance_id but those don't reach handleTranscript's
+      // extraction path; safe defensive default).
+      const consumedUtteranceId =
+        (typeof msg.utterance_id === 'string' && msg.utterance_id) ||
+        (typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id) ||
+        null;
+      const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
+        // Voice-latency plan 2026-06-05 Phase 2.1 — see comment above.
+        utteranceId: consumedUtteranceId,
+        // Stage 6 Phase 3 Plan 03-08: activate Plan 03-07's dispatcher
+        // composition. When these are present the harness wires
+        // createAskDispatcher alongside createWriteDispatcher and threads
+        // createSortRecordsAsksLast() into runToolLoop so STA-02 ("writes
+        // before asks") ordering fires at the dispatcher boundary.
+        // Identity preservation is load-bearing: the dispatcher registers
+        // into the SAME registry this routing layer resolves against.
+        pendingAsks: entry.pendingAsks,
+        // Stage 6 Phase 5 Plan 05-04 — pass the restrained-mode state
+        // machine through to the wrapper layer (Plan 05-01) which will
+        // call restrainedMode.recordAsk(turnId) AFTER each non-short-
+        // circuited ask, AND short-circuit asks at the boundary when
+        // restrainedMode.isActive() returns true. Optional-chained read
+        // here so a future activeSessions entry without the field
+        // (e.g. legacy resume path) still constructs valid options
+        // (the wrapper's composition guard is the truth source for
+        // when the state machine fires).
+        restrainedMode: entry.restrainedMode,
+        // Stage 6 Phase 5 Plan 05-03 — pass the per-(field, circuit) ask
+        // counter through to the wrapper layer (Plan 05-01) so the gate's
+        // STA-06 short-circuit fires at the dispatcher boundary. The
+        // wrapper checks askBudget.isExhausted(deriveAskKey(call.input))
+        // BEFORE invoking the inner dispatcher and increment(key) AFTER
+        // each non-short-circuited ask. Optional-chained read here so a
+        // future activeSessions entry without the field still constructs
+        // valid options — the wrapper's `if (options.askBudget &&
+        // options.restrainedMode)` guard in stage6-shadow-harness.js
+        // is the truth source for when the gates fire.
+        askBudget: entry.askBudget,
+        // Stage 6 Phase 5 Plan 05-02 — pass the filled-slots shadow logger
+        // through to the wrapper. The wrapper invokes it PRE-WRAPPER on
+        // every ask_user (before any short-circuit) and emits one
+        // `stage6.filled_slots_would_suppress` row per attempted ask whose
+        // legacy filter return is empty. Phase 7 retirement analytics joins
+        // these rows with stage6.ask_user on (sessionId, tool_call_id) to
+        // decide whether the legacy filter is still pulling its weight.
+        // Optional — when omitted (legacy callers), shadow-harness installs
+        // a no-op default (stage6-shadow-harness.js:306).
+        filledSlotsShadow: entry.filledSlotsShadow,
+        // Plan 06-02 r1-#1 — thread the protocol_version handshake outcome
+        // through to the harness so the ask dispatcher can suppress
+        // `ask_user_started` ws.send when the iOS client did NOT advertise
+        // stage6 capability (entry.fallbackToLegacy was set to true by
+        // handleSessionStart for shadow + missing-protocol_version clients).
+        // Without this, mismatched clients in shadow mode would still see
+        // Stage 6 wire events, defeating STI-06's graceful-degradation
+        // contract.
+        fallbackToLegacy: entry.fallbackToLegacy === true,
+        ws,
+        // 2026-05-26 — chitchat-pause panic-ask streak notifier. Threaded
+        // down to createAskDispatcher via the harness so each emitted
+        // ask_user updates the per-session streak counter. The dispatcher
+        // doesn't know about activeSessions, so the closure here is the
+        // bridge that lets it touch entry.chitchatState. ws is the live
+        // socket at runShadowHarness time; the notifier emits the
+        // chitchat_paused envelope on it if the streak trips.
+        chitchatNotifier: (askReason) => {
+          const ccState = ensureChitchatState(entry);
+          noteMissingContextAsk({
+            state: ccState,
+            askReason,
+            sendEnvelope: (env) => {
+              if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(env));
+            },
+            logger,
+            sessionId,
+          });
+        },
+        // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4).
+        // iOS attaches `regex_fast_correlation_id` to the transcript
+        // message when it has POSTed at least one fast-TTS request for
+        // this utterance. May be a single id (legacy mid-sprint shape)
+        // or an array (one per slot in a multi-write utterance). The
+        // harness normalises both into a Set on
+        // `session.fastPathCorrelationIdByTurn` keyed by the server-
+        // minted turnId so the audio finalizer can drain pre-finalizer
+        // expected-ACK decrements stashed by the fast-TTS route's 4xx
+        // rejection path. Undefined / null / non-string-or-array values
+        // resolve to no correlation ids for this turn.
+        regexFastCorrelationId: msg.regex_fast_correlation_id,
       });
+
+      // Plan 03-12 r14 Codex MAJOR — stamp seenTranscriptUtterances ONLY
+      // AFTER runShadowHarness resolves successfully. The earlier r13
+      // placement was immediately BEFORE the await, which meant a harness
+      // failure (Sonnet 5xx, network drop, tool-loop timeout, any thrown
+      // exception inside runShadowHarness) would leave the utterance_id
+      // stamped even though extraction never completed. A later
+      // ask_user_answered carrying `consumed_utterance_id = <that id>`
+      // would then be downgraded to transcript_already_extracted by the
+      // dedupe guard at ~L859 — the user's answer would be silently lost
+      // even though no transcript was ever processed.
+      //
+      // The original r13 rationale ("stamp before await to cover
+      // synchronous races during the yield") was incorrect: any
+      // ask_user_answered arriving during the yield is for a tool_use in
+      // the CURRENT tool loop that runShadowHarness is awaiting, which
+      // resolves through the dispatcher's ask Promise (not through the
+      // seenTranscriptUtterances dedupe path). The dedupe path only
+      // fires for ASYNC-ARRIVING frames that reference a prior utterance
+      // by consumed_utterance_id — a LATER arrival, not a concurrent
+      // one — so post-success placement is the correct semantic.
+      stampSeenTranscript();
+
       entry.lastRegexResults = [];
 
       // Validate and auto-correct field names before sending to iOS
       validateAndCorrectFields(result, sessionId);
 
+      // Plan 04-03 STQ-04: same mode gate as the onBatchResult log above.
+      // Non-off modes receive questions via ask_user tool calls — counting
+      // the legacy JSON field here would misrepresent the actual ask count
+      // at the ElevenLabs TTS boundary and send a prompt-regression diagnosis
+      // down the wrong path.
+      const bypassOnSync =
+        !consumeLegacyQuestionsForUser(entry) &&
+        Array.isArray(result.questions_for_user) &&
+        result.questions_for_user.length > 0;
       logger.info('Extraction result', {
         sessionId,
         readings: result.extracted_readings.length,
-        questions: (result.questions_for_user || []).length,
+        questions: consumeLegacyQuestionsForUser(entry)
+          ? (result.questions_for_user || []).length
+          : 0,
         confirmations: (result.confirmations || []).length,
         // Sync-path parity with the onBatchResult log above: emit a preview of
         // up to the first two questions so we can see Sonnet's exact wording
         // in CloudWatch. Same rationale — iOS debug-log upload is broken, so
         // server-side logs are the only reliable forensic trail today.
-        questionsPreview: Array.isArray(result.questions_for_user)
-          ? result.questions_for_user.slice(0, 2).map((q) => ({
-              type: q.type || null,
-              field: q.field || null,
-              circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-              questionPreview:
-                typeof q.question === 'string' ? q.question.slice(0, 120) : null,
-            }))
-          : [],
+        questionsPreview:
+          consumeLegacyQuestionsForUser(entry) && Array.isArray(result.questions_for_user)
+            ? result.questions_for_user.slice(0, 2).map((q) => ({
+                type: q.type || null,
+                field: q.field || null,
+                circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+                questionPreview: typeof q.question === 'string' ? q.question.slice(0, 120) : null,
+              }))
+            : [],
       });
+      if (bypassOnSync) logBypassOnce(entry, sessionId, 'handleTranscript');
+
+      // Chitchat-pause counter (slice 1) — sync path. See the matching
+      // hook in the onBatchResult callback above for the full rationale.
+      // Both extraction-completion paths must increment/reset the
+      // counter or sessions that flow through one path more than the
+      // other would have inconsistent pause behaviour.
+      if (entry) {
+        const ccSyncState = ensureChitchatState(entry);
+        recordChitchatTurn({
+          state: ccSyncState,
+          result,
+          sendEnvelope: (env) => {
+            if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(env));
+          },
+          logger,
+          sessionId,
+        });
+      }
 
       // Send extraction result (strip questions_for_user — they go through QuestionGate)
       // Rename extracted_readings → readings to match the web client interface
@@ -1313,11 +4087,39 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const resultWithoutQuestions = { readings: extracted_readings, ...rest };
         ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
 
+        // Phase E: emit `current_board_changed` for any select_board op
+        // Sonnet emitted this turn. iOS uses the unified envelope to drive
+        // `JobViewModel.currentBoardId` regardless of switch source — see
+        // helper docstring above.
+        emitCurrentBoardChangedFromBoardOps(ws, entry.session.stateSnapshot, result.board_ops);
+
         // Phase A: dispatch RULE 6 correction edits (observation_id reused).
         // These must fire before the BPG4 refinement path so iOS patches the
         // code change before any web-search-based refinement considers the
         // observation.
         dispatchObservationUpdates(ws, sessionId, observationUpdates);
+
+        // Stage 1a 1a.6 — emit each `field_corrected` WS event after the
+        // extraction envelope. iOS handler at Stage6Messages.swift:138-165
+        // decodes the snake_case wire shape and patches local state.
+        // Stage 3 will consume these events to invalidate matching
+        // suppression entries; in 1a.6 the emission is informational
+        // (iOS handler exists but does nothing user-facing until Stage 1b
+        // ships a UI hook).
+        if (Array.isArray(result.field_corrections) && result.field_corrections.length > 0) {
+          for (const evt of result.field_corrections) {
+            try {
+              ws.send(JSON.stringify(evt));
+            } catch (err) {
+              logger.warn('field_corrected emit failed', {
+                sessionId,
+                circuit: evt?.circuit,
+                field: evt?.field,
+                error: err?.message,
+              });
+            }
+          }
+        }
 
         // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
         // AFTER extraction is sent so the inspector sees the observation
@@ -1379,7 +4181,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       }
 
       // Handle questions (gated) — Stage 5 pre-flight filter drops refills.
-      if (result.questions_for_user && result.questions_for_user.length > 0) {
+      // Plan 04-03 STQ-04: only on the legacy off branch. The tool-call
+      // branch's ask_user tool call is the canonical ask channel; the JSON
+      // field should not exist on non-off modes and, if it somehow does, it
+      // must not reach QuestionGate or ElevenLabs TTS.
+      if (
+        consumeLegacyQuestionsForUser(entry) &&
+        result.questions_for_user &&
+        result.questions_for_user.length > 0
+      ) {
+        // Phase 7 STR-05 retirement-gate warn — see logLegacyPathInvokedOnce
+        // docstring + the symmetric stamp in the onBatchResult path above.
+        logLegacyPathInvokedOnce(entry, sessionId, 'handleTranscript');
         const filteredSync = filterQuestionsAgainstFilledSlots(
           result.questions_for_user,
           entry.session.stateSnapshot,
@@ -1389,6 +4202,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         if (filteredSync.length > 0) {
           entry.questionGate.enqueue(filteredSync);
         }
+      } else if (
+        !consumeLegacyQuestionsForUser(entry) &&
+        Array.isArray(result.questions_for_user) &&
+        result.questions_for_user.length > 0
+      ) {
+        logBypassOnce(entry, sessionId, 'handleTranscript');
       }
 
       // Resolve observation-only questions when Sonnet extracted an observation.
@@ -1400,7 +4219,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       }
 
       // Periodic orphaned value review — every 10 extraction turns
-      if (entry.session.turnCount > 0 && entry.session.turnCount % 10 === 0) {
+      //
+      // Plan 04-03 STQ-04: orphan review only runs the legacy enqueue path
+      // on off mode. reviewForOrphanedValues itself is a Sonnet call — cheap
+      // to skip on the tool-call branch entirely (no questions_for_user to
+      // consume means nothing to review FOR), so we short-circuit before the
+      // network call. If a future plan wires orphan review into the tool-call
+      // pipeline it will need its own ask_user-shaped path and this guard
+      // gets revisited.
+      if (
+        consumeLegacyQuestionsForUser(entry) &&
+        entry.session.turnCount > 0 &&
+        entry.session.turnCount % 10 === 0
+      ) {
         try {
           const reviewResult = await entry.session.reviewForOrphanedValues();
           if (reviewResult?.questions_for_user?.length > 0) {
@@ -1408,6 +4239,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               sessionId,
               count: reviewResult.questions_for_user.length,
             });
+            // Phase 7 STR-05 retirement-gate warn — see logLegacyPathInvokedOnce
+            // docstring + symmetric stamps in onBatchResult / handleTranscript
+            // paths above. Orphan review is the third (and final) legacy
+            // entry into filterQuestionsAgainstFilledSlots — covering it here
+            // ensures the deletion-gate signal cannot miss a code path.
+            logLegacyPathInvokedOnce(entry, sessionId, 'reviewForOrphanedValues');
             // Stage 5: orphan review runs on accumulated state — no this-turn
             // readings, so pass an empty resolvedFields set. Any question
             // targeting a slot that's already filled in stateSnapshot is dropped.
@@ -1439,13 +4276,45 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     } finally {
       clearTimeout(extractionWatchdog);
       entry.isExtracting = false;
-    }
 
-    // Process next queued transcript (one at a time)
-    if (entry.pendingTranscripts.length > 0) {
-      const next = entry.pendingTranscripts.shift();
-      if (next && next.text && next.text.trim()) {
-        await handleTranscript(ws, sessionId, next);
+      // Plan 03-12 r12 BLOCK remediation — drain MUST sit inside finally.
+      //
+      // Earlier code placed the drain AFTER the try/catch/finally, which
+      // meant every early-return from inside the try (answers-path at
+      // ~L1797, validation-error early-return at ~L1740, user_moved_on
+      // deferral at ~L1848) bypassed the drain: the return triggered
+      // finally (isExtracting=false) and then exited the function, never
+      // reaching the post-finally drain block. The user_moved_on branch
+      // relies on the drain re-entering with the just-queued transcript
+      // — without it, rejectAll fires, the transcript sits in
+      // pendingTranscripts forever, and runShadowHarness is never invoked
+      // for that utterance (silent speech loss).
+      //
+      // Moving the drain inside finally ensures the same post-turn
+      // behaviour on every exit path: the outer turn ends, isExtracting
+      // flips false, then any queued transcript re-enters. This also
+      // retroactively fixes the answers-path leak (any transcript queued
+      // while the prior turn was isExtracting would previously be
+      // orphaned on an answers verdict since that path also early-returns).
+      if (entry.pendingTranscripts.length > 0) {
+        const next = entry.pendingTranscripts.shift();
+        if (next && next.text && next.text.trim()) {
+          // r19 MAJOR remediation — refetch the CURRENT ws from
+          // activeSessions rather than replaying with the outer `ws`
+          // parameter captured when this turn started. If the client
+          // reconnected (or session_resume rebind happened) while the
+          // turn was extracting, `ws` points to the now-dead socket
+          // but `entry.ws` has been rebound to the live socket.
+          // Replaying against the dead socket would send follow-up
+          // ask_user_started / error frames into a closed connection;
+          // the ask would register but never reach the iOS client.
+          // Prefer the live entry reference; fall back to captured
+          // `ws` only if the entry disappeared between the isExtracting
+          // flip and the drain (session stopped / timed out mid-turn).
+          const liveEntry = activeSessions.get(sessionId);
+          const targetWs = liveEntry && liveEntry.ws ? liveEntry.ws : ws;
+          await handleTranscript(targetWs, sessionId, next);
+        }
       }
     }
   }
@@ -1460,6 +4329,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
   async function handleSessionStop(ws, sessionId) {
     if (!sessionId || !activeSessions.has(sessionId)) return;
     const entry = activeSessions.get(sessionId);
+
+    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — flip the isStopping
+    // flag BEFORE any rejectAll / flush / S3 awaits. Combined with the
+    // handleTranscript guard at its entry, this ensures any subsequent
+    // transcript arriving during teardown is silently dropped (no harness,
+    // no dispatcher, no register). Set synchronously so the very next
+    // event-loop tick sees it — before any `await` below yields.
+    entry.isStopping = true;
+
+    // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release blocking asks BEFORE
+    // the existing stop-path cleanup. Placed here (not near the
+    // activeSessions.delete at the end of this function) so ANY intermediate
+    // await below — flushUtteranceBuffer, storage.uploadJson, the cost_summary
+    // S3 upload — runs with the asks already rejected. Otherwise a pending
+    // ask could outlive an S3 network hiccup by several seconds, and a
+    // now-orphaned dispatcher would keep the tool-loop alive past session_ack.
+    entry.pendingAsks.rejectAll('session_stopped');
 
     // Flush any buffered utterances before stopping so no readings are lost
     const flushResult = await entry.session.flushUtteranceBuffer();
@@ -1518,6 +4404,52 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     if (entry.rehydrateSessionId) {
       sonnetSessionStore.remove(entry.rehydrateSessionId);
     }
+
+    // Plan 03-12 STT-10b (STG r5 BLOCK remediation) — belt-and-suspenders
+    // final rejectAll pass. The entry-point rejectAll at line 1880 drains
+    // every ask known at the moment stop began; the isStopping guard on
+    // handleTranscript prevents NEW harness runs from registering fresh
+    // asks during teardown. But a transcript handler that started BEFORE
+    // stop began and is already past the isStopping check (e.g. paused
+    // awaiting Anthropic API) can still resume and register into the
+    // registry during the awaits above. Sweeping a second time here
+    // guarantees any such late-registered ask resolves as session_stopped
+    // rather than hanging as an orphan. Cheap (O(pendingAsks.size)), runs
+    // while the entry is still in activeSessions — callers awaiting the
+    // ask Promise receive the rejection before session_ack emit.
+    entry.pendingAsks.rejectAll('session_stopped');
+    // Plan 05-04 — destroy the restrained-mode state machine BEFORE
+    // activeSessions.delete so the pending 60s release timer can't fire
+    // after the entry is unreachable (which would log a phantom
+    // event:'released' row for a session that no longer exists). Optional-
+    // chained for forward-compat with reconnect/resume paths that may
+    // re-create the entry without a restrainedMode key. NOT placed at the
+    // entry-point rejectAll (L2695) because we want the rolling window to
+    // stay live during the flushUtteranceBuffer + S3 awaits above — if a
+    // straggler ask arrives via a paused transcript handler, the wrapper
+    // should still see isActive() truthfully.
+    entry.restrainedMode?.destroy();
+    // Plan 05-03 — release per-key ask counter on session_stopped.
+    // Same placement as restrainedMode above (deliberately AFTER
+    // flushUtteranceBuffer + S3 awaits) so a final straggler ask through
+    // the wrapper still sees the cap truthfully if the timing aligns.
+    entry.askBudget?.destroy();
+
+    // Phase 1.3 — final flush of any client_log_batch entries still in
+    // the per-session buffer before activeSessions.delete drops the
+    // entry. handleSessionStop is the deterministic terminator (vs the
+    // 5-min disconnect timer on ws close) so we MUST land remaining
+    // telemetry here. Awaited so the row is durable before session_ack
+    // emit at the function tail.
+    if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+      try {
+        await flushRealtimeLogSession(sessionId, entry, { reason: 'session_stop' });
+      } catch (_e) {
+        // already logged inside flushRealtimeLogSession; swallow so the
+        // session-stop teardown isn't blocked by a transient S3 hiccup.
+      }
+    }
+
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });
   }

@@ -217,6 +217,122 @@ router.post('/proxy/deepgram-tts', auth.requireAuth, async (req, res) => {
 });
 
 /**
+ * Stage 2 commit 2.5 — stream an ElevenLabs confirmation synth into the
+ * caller's chunked HTTP response. Pipes vendor PCM/MP3 frames straight
+ * out as they arrive (Strategy C — iOS plays as bytes land, not after
+ * full buffer). Cost-tracker called on synthesising-transition per
+ * PLAN_v4 §A.10; terminal counter incremented on completion.
+ *
+ * Mints a correlation ID (vl_confirmation_*) and echoes it on the
+ * response header so the iOS-side ack (Stage 1b commit 1b.5) can pair
+ * up.
+ */
+async function streamConfirmationViaElevenLabs({
+  text,
+  sessionId,
+  // Voice-latency plan 2026-06-03 Tier 2b: accept turnId so the
+  // ElevenLabs TTS streaming complete log row carries it. The
+  // §CloudWatch dashboard query filters `ispresent(turnId)` and will
+  // silently drop rows without it.
+  turnId,
+  apiKey,
+  res,
+  useMultiContext,
+  recordStartedAttribution,
+  recordTerminalAttribution,
+}) {
+  const { ElevenLabsStreamClient, contentTypeForFormat } =
+    await import('../extraction/elevenlabs-stream-client.js');
+  const { mintCorrelationId, recordOutcome, recordSpan } =
+    await import('../extraction/voice-latency-telemetry.js');
+
+  const correlationId = mintCorrelationId(sessionId, 'confirmation');
+  const client = new ElevenLabsStreamClient({ apiKey, multiContext: useMultiContext });
+
+  res.set('Content-Type', contentTypeForFormat(client.outputFormat));
+  res.set('Transfer-Encoding', 'chunked');
+  res.set('Cache-Control', 'no-store');
+  res.set('X-Voice-Latency-Correlation-Id', correlationId);
+  res.set('X-Voice-Latency-Source', 'confirmation');
+
+  // Billable counter — once per correlation, regardless of terminal state.
+  recordStartedAttribution(sessionId, text.length, correlationId);
+
+  // Voice-latency plan 2026-06-03 Tier 2b — declare firstByteMs +
+  // synthStartNs at the outer scope so the finally block's logger.info
+  // row can read them even on the error path. Without this, the
+  // throwing path would log undefined.
+  let firstByteMs = null;
+  let timings = null;
+  const synthStartNs = process.hrtime.bigint();
+
+  let terminal = 'failed';
+  try {
+    const opts = {
+      onAudio: (buf) => {
+        if (!res.writableEnded) res.write(buf);
+      },
+    };
+    if (useMultiContext) opts.contextId = `conf_${correlationId}`;
+    timings = await client.synth(text, opts);
+    // ElevenLabsStreamClient stamps timings.firstAudioNs at the first
+    // chunk-arrival. Derive ms here so the log + span rows agree.
+    if (timings?.firstAudioNs) {
+      firstByteMs = Number((timings.firstAudioNs - synthStartNs) / 1000000n);
+    }
+    terminal = 'completed';
+    if (!res.writableEnded) res.end();
+    recordOutcome(correlationId, 'sent_to_client', { meta: { sessionId, source: 'confirmation' } });
+  } catch (err) {
+    terminal = String(err?.message || '').includes('aborted') ? 'cancelled' : 'failed';
+    recordOutcome(correlationId, terminal === 'cancelled' ? 'cancelled' : 'synth_failed', {
+      meta: { sessionId, source: 'confirmation', error: err?.message },
+    });
+    if (!res.headersSent) {
+      res.status(502).json({ error: err?.message || 'stream_failed' });
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+    logger.warn('voice_latency.stream_synth_failed', {
+      correlationId,
+      sessionId,
+      source: 'confirmation',
+      error: err?.message,
+    });
+  } finally {
+    recordTerminalAttribution(sessionId, correlationId, terminal, text.length);
+    // Voice-latency Tier 2b — emit vendor_first_audio span on the
+    // joint-waterfall correlationId so backend voice_latency.span rows
+    // join the iOS-span rows by correlation_id. Mirrors the call shape
+    // at voice-latency-fast-tts.js:300.
+    if (timings) {
+      try {
+        ElevenLabsStreamClient.logSynthSpans(correlationId, timings, recordSpan);
+      } catch (_spanErr) {
+        // Telemetry must not break the response path.
+      }
+    }
+    logger.info('ElevenLabs TTS streaming complete', {
+      correlationId,
+      sessionId,
+      // Voice-latency plan 2026-06-03 Tier 2b — turnId echoed onto the
+      // row so the §CloudWatch dashboard's `ispresent(turnId)` filter
+      // includes streaming-path rows.
+      turnId: turnId || null,
+      source: 'confirmation',
+      terminal,
+      textLength: text.length,
+      textPreview: text.slice(0, 120),
+      output_format: client.outputFormat,
+      multi_context: useMultiContext,
+      // Tier 2b first-byte split — parallel to the legacy-path
+      // ElevenLabs TTS success row's elevenlabs_first_byte_ms field.
+      elevenlabs_first_byte_ms: firstByteMs,
+    });
+  }
+}
+
+/**
  * Proxy ElevenLabs TTS calls from the web app
  * POST /api/proxy/elevenlabs-tts
  */
@@ -232,9 +348,235 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // only send `{text}` keep working. When iOS includes it (Build 75+) we
     // use it in the success log + the Commit 2 cost-tracker wiring so a
     // single CloudWatch query per session reconstructs the full TTS stream.
-    const { text, sessionId } = req.body;
+    //
+    // Stage 1a commit 1a.5 — `source` field. Older iOS builds that don't
+    // send it default to 'confirmation' (the only existing flow). When
+    // Stage 1b ships, iOS will tag every TTS call with one of:
+    //   confirmation  — readback after a successful extraction
+    //   correction    — overriding/fixing a prior reading
+    //   question      — ask_user TTS
+    //   notification  — speakCriticalNotification path (suppression-exempt)
+    //   tour          — bundled tour audio (rarely TTS'd via this proxy)
+    //   alert         — non-critical alerts (suppression-exempt)
+    // Stage 3 (suppression) gates on `source` to decide whether to
+    // intercept identical re-asks; Stage 5 (ask_user streaming) routes
+    // `question` through a different vendor path. Behaviour is unchanged
+    // in 1a.5 — we parse, default, and log it. Tests pin the wire shape.
+    // Voice-latency plan 2026-06-03 Tier 2: destructure turnId at the top
+    // of the handler so it's in scope for BOTH the cache short-circuit
+    // block AND the legacy / streaming logs at the bottom. The §CloudWatch
+    // dashboard query filters `ispresent(turnId)`; without this scope fix,
+    // every legacy-path ElevenLabs TTS success row is silently filtered
+    // out. The existing redundant `const turnId = ...` redeclaration
+    // inside the cache try block (originally at :372) is removed to
+    // avoid shadowing this outer-scope binding.
+    const { text, sessionId, turnId } = req.body;
+    const rawSource = req.body?.source;
+    const source =
+      typeof rawSource === 'string' && rawSource.length > 0 ? rawSource : 'confirmation';
     if (!text) {
       return res.status(400).json({ error: 'text field required' });
+    }
+
+    // Loaded Barrel Phase 1.F readiness tracking (plan v10 §C + §G3).
+    // Records the iOS Phase 4a adoption signal — whether this POST
+    // body includes `turnId` + the `x-expand-version` header — so the
+    // GET /api/voice-latency/loaded-barrel-readiness probe can answer
+    // "is iOS adoption ≥80% yet?" before the operator flips
+    // VOICE_LATENCY_LOADED_BARREL=true. Fire-and-forget; never blocks
+    // the TTS POST. userId is the authenticated user id from req.user.
+    try {
+      const { recordPost } = await import('../extraction/loaded-barrel-readiness.js');
+      const userId = req.user?.id || req.user?.user_id || req.user?.email || null;
+      const hasTurnId = typeof req.body?.turnId === 'string' && req.body.turnId.length > 0;
+      const hasExpanderVersion =
+        typeof req.headers?.['x-expand-version'] === 'string' &&
+        req.headers['x-expand-version'].length > 0;
+      recordPost({ userId, hasTurnId, hasExpanderVersion });
+    } catch (_err) {
+      // Telemetry must never break the request path. Silently drop.
+    }
+
+    // Loaded Barrel Phase 3 (plan v10 §A) — cache short-circuit. If the
+    // iOS POST carries a `turnId`, look up the speculator's pre-synth
+    // by composite slot key. On HIT serve the MP3 immediately (~30ms).
+    // On PENDING race the in-flight synth's promise vs a 200ms timer
+    // with re-peek inside the timer callback (covers the case where
+    // markReady fires between timer-arm and timer-fire on the same
+    // macrotask cycle — plan §A determinism note). On MISS / TIMEOUT
+    // fall through to the existing streaming-gate / batch path unchanged.
+    //
+    // Cache lookup runs BEFORE the streaming-confirmation gate so a
+    // HIT skips both the live streaming synth AND the batch fallback.
+    // This is the path that delivers the ~470ms latency win.
+    //
+    // Hard contract: cache short-circuit must NEVER 500 the request
+    // path. Any error → log + fall through. Wrapped in outer try/catch.
+    try {
+      // Voice-latency plan 2026-06-03 Tier 2: turnId is destructured at
+      // the top of the handler now (~:329). The redundant local
+      // redeclaration that used to live here would have shadowed the
+      // outer-scope binding and silently failed to reach the legacy log
+      // path's `ispresent(turnId)` filter.
+      if (sessionId && turnId) {
+        const boardId = req.body?.boardId ?? null;
+        const field = req.body?.field ?? null;
+        const circuit = req.body?.circuit ?? null;
+        const cacheMod = await import('../extraction/loaded-barrel-cache.js');
+        const sessionsMod = await import('../extraction/active-sessions.js');
+        const { recordOutcome } = await import('../extraction/voice-latency-telemetry.js');
+        const cacheKey = cacheMod.buildCacheKey({
+          sessionId,
+          turnId,
+          boardId,
+          field,
+          circuit,
+          expandedText: text,
+        });
+        const cached = cacheMod.peek(cacheKey);
+
+        if (cached && cached.state === 'ready') {
+          if (cacheMod.claim(cacheKey)) {
+            res.set('Content-Type', 'audio/mpeg');
+            res.set('Cache-Control', 'no-store');
+            res.set('X-Voice-Latency-Source', 'loaded_barrel_hit');
+            res.set('X-Voice-Latency-Correlation-Id', cached.correlationId);
+            res.write(cached.mp3Buffer);
+            res.end();
+            recordOutcome(cached.correlationId, 'loaded_barrel_hit', {
+              meta: { sessionId, bytes: cached.mp3Buffer.length },
+            });
+            sessionsMod.promoteSpeculativeToCanonicalForSession(sessionId, cached.correlationId);
+            return;
+          }
+          // Claim race lost — another consumer grabbed it. Fall through.
+        }
+
+        if (cached && cached.state === 'pending') {
+          // Race the in-flight synth's promise vs a 200ms timer. The
+          // timer-fire callback re-peeks so we catch a synth completion
+          // that lands between the promise.then registration and the
+          // timer firing on the same macrotask cycle.
+          const winner = await new Promise((resolve) => {
+            let settled = false;
+            const settle = (v) => {
+              if (!settled) {
+                settled = true;
+                resolve(v);
+              }
+            };
+            cached.promise.then((buf) => {
+              if (buf) settle({ type: 'spec', buf });
+              else settle({ type: 'timeout' });
+            });
+            setTimeout(() => {
+              const recheck = cacheMod.peek(cacheKey);
+              if (recheck && recheck.state === 'ready') {
+                settle({ type: 'spec_late', buf: recheck.mp3Buffer });
+              } else {
+                settle({ type: 'timeout' });
+              }
+            }, 200);
+          });
+
+          if ((winner.type === 'spec' || winner.type === 'spec_late') && winner.buf) {
+            if (cacheMod.claim(cacheKey)) {
+              const source =
+                winner.type === 'spec' ? 'loaded_barrel_hit_pending' : 'loaded_barrel_hit_late';
+              res.set('Content-Type', 'audio/mpeg');
+              res.set('Cache-Control', 'no-store');
+              res.set('X-Voice-Latency-Source', source);
+              res.set('X-Voice-Latency-Correlation-Id', cached.correlationId);
+              res.write(winner.buf);
+              res.end();
+              recordOutcome(cached.correlationId, source, {
+                meta: { sessionId, bytes: winner.buf.length },
+              });
+              sessionsMod.promoteSpeculativeToCanonicalForSession(sessionId, cached.correlationId);
+              return;
+            }
+          }
+          // Timer fired without ready / claim lost. Supersede the
+          // pending entry so the speculator's eventual completion
+          // doesn't pointlessly keep it alive.
+          cacheMod.markSuperseded(cacheKey, 'ios_post_timeout');
+          if (cached.correlationId) {
+            recordOutcome(cached.correlationId, 'loaded_barrel_miss', {
+              meta: { sessionId, reason: 'pending_timeout' },
+            });
+          }
+        }
+
+        if (!cached) {
+          // No entry — MISS. Recorded against a throwaway correlationId
+          // so the telemetry analyser can compute MISS rate per session.
+          // The speculator's correlationId is unknown here (it was
+          // never minted for this slot+text).
+          // Use a session-scoped synthetic correlationId so multiple
+          // misses don't collide on the same recordOutcome dedupe.
+          recordOutcome(`vl_loaded_barrel_miss_${sessionId}_${Date.now()}`, 'loaded_barrel_miss', {
+            meta: { sessionId, turnId, field, circuit, boardId },
+          });
+        }
+      }
+    } catch (cacheErr) {
+      logger.warn('voice_latency.loaded_barrel.shortcircuit_error', {
+        sessionId,
+        error: cacheErr?.message,
+      });
+      // Fall through to existing path.
+    }
+
+    if (res.headersSent || res.writableEnded) return; // safety after short-circuit
+
+    // Stage 2 commit 2.5 — streaming-confirmations branch.
+    // Gate is AND of:
+    //   1. source === 'confirmation' — Stage 5 will route 'question'
+    //      through ask_user-streaming instead; corrections + notifications
+    //      stay on the batch path for now.
+    //   2. session has VOICE_LATENCY_STREAM_CONFIRMATIONS=true (per-session
+    //      snapshot from 1a.2). A mid-session env flip doesn't change
+    //      a session already running.
+    //   3. iOS client advertised `streaming_http_audio` capability (1a.3).
+    //      Older iOS builds without StreamingAudioPlayer fall through to
+    //      the legacy batch path so their AVAudioPlayer keeps working.
+    //   4. Kill switch is not active (1a.2 live override).
+    if (source === 'confirmation' && sessionId) {
+      try {
+        const {
+          getVoiceLatencyForSession,
+          recordElevenLabsStreamingStartedForSession,
+          recordElevenLabsStreamingTerminalForSession,
+        } = await import('../extraction/active-sessions.js');
+        const { isKillSwitchActive } = await import('../extraction/voice-latency-config.js');
+        const vl = getVoiceLatencyForSession(sessionId);
+        const eligible =
+          vl?.flags?.streamConfirmations === true &&
+          vl?.capabilities?.hasStreamingHttpAudio === true &&
+          !isKillSwitchActive();
+        if (eligible) {
+          await streamConfirmationViaElevenLabs({
+            text,
+            sessionId,
+            // Voice-latency plan 2026-06-03 Tier 2b — turnId is in scope
+            // from the top-level destructure at :329.
+            turnId,
+            apiKey: elevenLabsKey,
+            res,
+            useMultiContext: vl.flags.useMultiContext === true,
+            recordStartedAttribution: recordElevenLabsStreamingStartedForSession,
+            recordTerminalAttribution: recordElevenLabsStreamingTerminalForSession,
+          });
+          return;
+        }
+      } catch (err) {
+        // Fall through to legacy path on any setup error — never let the
+        // streaming gate break the existing flow.
+        logger.warn('voice_latency.stream_gate_failed_falling_back', {
+          sessionId,
+          error: err.message,
+        });
+      }
     }
 
     const voiceId = 'Fahco4VZzobUeiPqni1S'; // Archer Conversational
@@ -267,7 +609,31 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     }
 
     res.set('Content-Type', 'audio/mpeg');
-    const buffer = Buffer.from(await response.arrayBuffer());
+    // Voice-latency plan 2026-06-03 Tier 2a: replace the one-shot
+    // response.arrayBuffer() with a streaming reader so we can capture
+    // the FIRST byte's wall-clock relative to the synth-start. Without
+    // this, the existing "ElevenLabs TTS success" log fires when the
+    // FULL audio has arrived — ~400-1200ms LATER than first-byte — and
+    // misattributes the gap between server-side synth-complete and
+    // iOS-side audible-first-byte. The first-byte stamp is what the
+    // perceived-latency dashboard's vendor_first_audio component reads.
+    const synthStartMs = Date.now();
+    const reader = response.body.getReader();
+    const chunks = [];
+    let firstByteMs = null;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (firstByteMs === null) firstByteMs = Date.now() - synthStartMs;
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    // Node fetch returns Uint8Array chunks; Buffer.concat accepts them directly.
+    const buffer = Buffer.concat(chunks);
+    const totalSynthMs = Date.now() - synthStartMs;
 
     // Attribute the TTS character count to the live session's CostTracker
     // so per-session ElevenLabs cost is no longer zero (previously the
@@ -279,9 +645,8 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     let trackerRecorded = false;
     if (sessionId) {
       try {
-        const { recordElevenLabsUsageForSession } = await import(
-          '../extraction/active-sessions.js'
-        );
+        const { recordElevenLabsUsageForSession } =
+          await import('../extraction/active-sessions.js');
         trackerRecorded = recordElevenLabsUsageForSession(sessionId, text.length);
       } catch (err) {
         logger.warn('ElevenLabs cost attribution failed', {
@@ -299,10 +664,22 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // (e.g. TTS after WS close) in CloudWatch.
     logger.info('ElevenLabs TTS success', {
       sessionId: sessionId || null,
+      // Voice-latency plan 2026-06-03 Tier 2a: turnId is destructured at
+      // the top of the handler now. The §CloudWatch perceived-latency
+      // dashboard joins these rows by (sessionId, turnId); without the
+      // field on the row the `ispresent(turnId)` filter drops every
+      // legacy-path entry.
+      turnId: turnId || null,
+      source,
       textPreview: text.slice(0, 120),
       textLength: text.length,
       bytes: buffer.length,
       trackerRecorded,
+      // Voice-latency Tier 2a: first-byte vs full-buffer split. Together
+      // these decompose the formerly-monolithic "ElevenLabs TTS success"
+      // event-pair gap into vendor-network-first-byte + vendor-tail.
+      elevenlabs_first_byte_ms: firstByteMs,
+      elevenlabs_synth_total_ms: totalSynthMs,
     });
     res.send(buffer);
   } catch (error) {

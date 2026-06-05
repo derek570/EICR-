@@ -104,6 +104,98 @@ describe('EICRExtractionSession', () => {
     });
   });
 
+  describe('_seedStateFromJobState — "Work on Board" Phase A.3 dual-shape routing', () => {
+    // Single-board jobs (no boards array OR boards = [main only]) seed every
+    // circuit at the legacy bare-numeric key. Multi-board jobs route per
+    // circuit's `board_id`: main → legacy, sub-boards → composite key.
+    test('single-board job: all circuits land at legacy bare-numeric keys', () => {
+      session.start({
+        circuits: [
+          { ref: '1', designation: 'Lights' },
+          { ref: '2', designation: 'Sockets' },
+        ],
+      });
+      expect(session.stateSnapshot.circuits[1]).toEqual({ circuit_designation: 'Lights' });
+      expect(session.stateSnapshot.circuits[2]).toEqual({ circuit_designation: 'Sockets' });
+      // No composite keys leaked.
+      expect(Object.keys(session.stateSnapshot.circuits).every((k) => /^\d+$/.test(k))).toBe(true);
+      // currentBoardId resolves to the synth main board.
+      expect(session.stateSnapshot.currentBoardId).toBe('main');
+    });
+
+    test('multi-board job: hydrates boards[] from jobState; routes circuits per dual-shape', () => {
+      session.start({
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-1',
+            designation: 'DB-2',
+            board_type: 'sub-distribution',
+            parent_board_id: 'main',
+            feed_circuit_ref: '4',
+          },
+        ],
+        circuits: [
+          { ref: '1', designation: 'Lights', board_id: 'main' },
+          { ref: '4', designation: 'Sub-board feed', board_id: 'main' },
+          // Sub-1 owns its own circuit 1 — must NOT collide with main's circuit 1.
+          { ref: '1', designation: 'Garage lights', board_id: 'sub-1' },
+        ],
+      });
+
+      // Main circuits at legacy keys.
+      expect(session.stateSnapshot.circuits[1]).toEqual({ circuit_designation: 'Lights' });
+      expect(session.stateSnapshot.circuits[4]).toEqual({ circuit_designation: 'Sub-board feed' });
+
+      // Sub-1's circuit 1 at composite key — does NOT clobber main::1.
+      expect(session.stateSnapshot.circuits['sub-1::1']).toEqual({
+        circuit: 1,
+        board_id: 'sub-1',
+        circuit_designation: 'Garage lights',
+      });
+
+      // boards[] reflects the iOS-supplied multi-board structure.
+      expect(session.stateSnapshot.boards).toHaveLength(2);
+      expect(session.stateSnapshot.boards[0].id).toBe('main');
+      expect(session.stateSnapshot.boards[1].id).toBe('sub-1');
+
+      // Q0.1 — currentBoardId on session start is ALWAYS the main board id.
+      expect(session.stateSnapshot.currentBoardId).toBe('main');
+    });
+
+    test("circuit's board_id pointing at unknown board falls back to legacy bucket (defensive)", () => {
+      // jobState declares only main but a circuit claims `board_id: 'orphan'`.
+      // The seeder falls back to legacy rather than synthesising a phantom
+      // composite-key bucket whose board_id has no entry in boards[].
+      session.start({
+        boards: [{ id: 'main', designation: 'DB-1', board_type: 'main' }],
+        circuits: [{ ref: '5', designation: 'Misattributed', board_id: 'orphan' }],
+      });
+      expect(session.stateSnapshot.circuits[5]).toEqual({ circuit_designation: 'Misattributed' });
+      expect(session.stateSnapshot.circuits['orphan::5']).toBeUndefined();
+    });
+
+    test('camelCase boardId from iOS payload also routes correctly', () => {
+      // iOS encodes its `boardId` Codable property as `board_id` snake_case
+      // (Circuit.swift:46), but defensive parity with the camelCase variants
+      // already accepted by the seeder (`measuredZsOhm`, `polarityConfirmed`,
+      // …) means we tolerate `boardId` too.
+      session.start({
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          { id: 'sub-1', designation: 'DB-2', board_type: 'sub-distribution' },
+        ],
+        circuits: [{ ref: '7', designation: 'Cooker', boardId: 'sub-1' }],
+      });
+      expect(session.stateSnapshot.circuits['sub-1::7']).toEqual({
+        circuit: 7,
+        board_id: 'sub-1',
+        circuit_designation: 'Cooker',
+      });
+      expect(session.stateSnapshot.circuits[7]).toBeUndefined();
+    });
+  });
+
   describe('stop', () => {
     test('should set isActive to false and return summary', () => {
       session.start(null);
@@ -124,36 +216,64 @@ describe('EICRExtractionSession', () => {
 
     test('should include regex results when provided', () => {
       const msg = session.buildUserMessage('Zs 0.35', [{ field: 'zs', value: '0.35' }]);
-      expect(msg).toContain('Regex pre-filled fields');
+      // 2026-05-26 — buildUserMessage phrasing swap (VOICE_REGEX_PRE_APPLY).
+      // Field name still appears; the wrapping prose is now imperative
+      // ("DO NOT extract") rather than "confirm or correct". Phrasing-mode
+      // coverage lives in eicr-extraction-session.snapshot-refactor.test.js.
       expect(msg).toContain('zs');
+      expect(msg).toMatch(/DO NOT extract|Regex pre-filled fields/);
     });
 
-    test('should include circuit schedule on first call', () => {
-      session.circuitSchedule = 'Circuit 1: Lights';
-      const msg = session.buildUserMessage('test');
+    // The next four tests assert the OFF-mode buildUserMessage shape —
+    // schedule + already-asked-questions + already-created-observations
+    // are inlined in each user message. In shadow/live (the production
+    // default since 2026-05-02) those rides happen via the cached prefix
+    // (buildSystemBlocks / buildStateSnapshotMessage), so the user
+    // message stays minimal. Keeping these tests pinned to off-mode
+    // locks the rollback path's wire shape — they convert into deletion
+    // candidates only when the off-mode infrastructure itself is
+    // removed.
+    test('should include circuit schedule on first call (off-mode)', () => {
+      const offSession = new EICRExtractionSession('test-api-key', 'test-off-schedule', 'eicr', {
+        toolCallsMode: 'off',
+      });
+      offSession.circuitSchedule = 'Circuit 1: Lights';
+      const msg = offSession.buildUserMessage('test');
       expect(msg).toContain('CIRCUIT SCHEDULE');
       expect(msg).toContain('Circuit 1: Lights');
     });
 
-    test('should not include circuit schedule on second call', () => {
-      session.circuitSchedule = 'Circuit 1: Lights';
-      session.buildUserMessage('first');
-      const msg = session.buildUserMessage('second');
+    test('should not include circuit schedule on second call (off-mode)', () => {
+      const offSession = new EICRExtractionSession(
+        'test-api-key',
+        'test-off-schedule-second',
+        'eicr',
+        { toolCallsMode: 'off' }
+      );
+      offSession.circuitSchedule = 'Circuit 1: Lights';
+      offSession.buildUserMessage('first');
+      const msg = offSession.buildUserMessage('second');
       expect(msg).not.toContain('CIRCUIT SCHEDULE');
     });
 
-    test('should include already-asked questions', () => {
-      session.askedQuestions = ['zs:1', 'r1_plus_r2:2'];
-      const msg = session.buildUserMessage('test');
+    test('should include already-asked questions (off-mode)', () => {
+      const offSession = new EICRExtractionSession('test-api-key', 'test-off-asked', 'eicr', {
+        toolCallsMode: 'off',
+      });
+      offSession.askedQuestions = ['zs:1', 'r1_plus_r2:2'];
+      const msg = offSession.buildUserMessage('test');
       expect(msg).toContain('Already asked (skip)');
       expect(msg).toContain('zs:1');
     });
 
-    test('should include already-created observations', () => {
-      session.extractedObservations = [
+    test('should include already-created observations (off-mode)', () => {
+      const offSession = new EICRExtractionSession('test-api-key', 'test-off-obs', 'eicr', {
+        toolCallsMode: 'off',
+      });
+      offSession.extractedObservations = [
         { id: 'test-id', text: 'missing earth bond at kitchen', code: 'C2' },
       ];
-      const msg = session.buildUserMessage('test');
+      const msg = offSession.buildUserMessage('test');
       expect(msg).toContain('Observations already created');
       expect(msg).toContain('missing earth bond');
     });
@@ -168,7 +288,7 @@ describe('EICRExtractionSession', () => {
       expect(session.buildCircuitSchedule({})).toBe('');
     });
 
-    test('should format circuit with all fields', () => {
+    test('should format circuit with facts (post-Phase-1 strip — readings live in EXTRACTED snapshot block)', () => {
       const schedule = session.buildCircuitSchedule({
         circuits: [
           {
@@ -178,17 +298,20 @@ describe('EICRExtractionSession', () => {
             ocpd_rating: 32,
             cable_size: '2.5',
             cable_size_earth: '1.5',
-            zs: '0.35',
-            r1_plus_r2: '0.47',
+            zs: '0.35', // reading — stripped post Phase 1
+            r1_plus_r2: '0.47', // reading — stripped post Phase 1
           },
         ],
       });
 
+      // Facts retained
       expect(schedule).toContain('Circuit 1: Ring Final');
       expect(schedule).toContain('ocpd=B/32A');
       expect(schedule).toContain('cable=2.5/1.5mm');
-      expect(schedule).toContain('zs=0.35');
-      expect(schedule).toContain('r1r2=0.47');
+      // Readings stripped (snapshot-restructure sprint 2026-05-27 §2.5).
+      // They reach Sonnet via the EXTRACTED block now, not the schedule.
+      expect(schedule).not.toContain('zs=');
+      expect(schedule).not.toContain('r1r2=');
     });
 
     test('should derive circuit type from designation', () => {
@@ -203,20 +326,25 @@ describe('EICRExtractionSession', () => {
       expect(schedule).toContain('Lighting');
     });
 
-    test('should include supply section', () => {
+    test('should include supply section with facts (post-Phase-1 strip — PFC/Ze readings live in EXTRACTED snapshot block)', () => {
       const schedule = session.buildCircuitSchedule({
         circuits: [],
         supply: {
           earthingArrangement: 'TN-C-S',
-          pfc: '1.2',
-          ze: '0.35',
+          pfc: '1.2', // reading — stripped post Phase 1
+          ze: '0.35', // reading — stripped post Phase 1
+          supplyVoltage: '230',
         },
       });
 
       expect(schedule).toContain('Supply:');
       expect(schedule).toContain('earthing=TN-C-S');
-      expect(schedule).toContain('PFC=1.2kA');
-      expect(schedule).toContain('Ze=0.35ohms');
+      expect(schedule).toContain('voltage=230V');
+      // PFC and Ze are readings — they reach Sonnet via the EXTRACTED
+      // block of the state snapshot, not the schedule (snapshot-
+      // restructure sprint 2026-05-27 §2.5).
+      expect(schedule).not.toContain('PFC=');
+      expect(schedule).not.toContain('Ze=');
     });
   });
 
@@ -649,6 +777,210 @@ describe('EICRExtractionSession', () => {
       );
       expect(mockCreate).toHaveBeenCalledTimes(2);
     }, 10000);
+  });
+
+  // Tiered model router — sends observation turns to a larger model so the
+  // BPG4 reasoning (C1/C2/C3/FI classification, regulation lookup, observation
+  // text generation) gets the headroom it needs while non-observation tool
+  // routing stays on a smaller/faster default. Gated behind two env vars so
+  // unsetting either reverts to single-model behaviour:
+  //   - SONNET_EXTRACT_MODEL — default for every turn (existing var)
+  //   - OBSERVATION_EXTRACT_MODEL — overrides default when this turn's user
+  //     utterance matches OBSERVATION_PATTERN (pre-llm-gate.js)
+  describe('callWithRetry — observation-tier model router', () => {
+    const ORIGINAL_SONNET = process.env.SONNET_EXTRACT_MODEL;
+    const ORIGINAL_OBS = process.env.OBSERVATION_EXTRACT_MODEL;
+
+    beforeEach(() => {
+      mockCreate.mockResolvedValue({ content: [{ type: 'text', text: '{}' }], usage: {} });
+    });
+
+    afterEach(() => {
+      // Restore env so other suites don't see leaked state.
+      if (ORIGINAL_SONNET === undefined) delete process.env.SONNET_EXTRACT_MODEL;
+      else process.env.SONNET_EXTRACT_MODEL = ORIGINAL_SONNET;
+      if (ORIGINAL_OBS === undefined) delete process.env.OBSERVATION_EXTRACT_MODEL;
+      else process.env.OBSERVATION_EXTRACT_MODEL = ORIGINAL_OBS;
+    });
+
+    test('no env vars → defaults to claude-sonnet-4-6 (regression guard)', async () => {
+      delete process.env.SONNET_EXTRACT_MODEL;
+      delete process.env.OBSERVATION_EXTRACT_MODEL;
+      await session.callWithRetry([{ role: 'user', content: 'Address is 1 Foo Street.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('SONNET_EXTRACT_MODEL only → uniform model on every turn', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      delete process.env.OBSERVATION_EXTRACT_MODEL;
+      await session.callWithRetry([{ role: 'user', content: 'Observation, broken socket. C3.' }]);
+      // No tiered router — observation utterance still goes to Haiku because
+      // the observation-tier env var was not set.
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('tiered: non-observation utterance stays on default (Haiku)', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([{ role: 'user', content: 'Z s is 0.6 for upstairs lights.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('tiered: observation utterance escalates to observation-tier model', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        { role: 'user', content: 'Observation, the cooker socket is broken. C2.' },
+      ]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('tiered: Deepgram garble "obvashon" still escalates (fuzzy gate)', async () => {
+      // OBSERVATION_PATTERN tolerates the documented garbles — obvashon,
+      // abservation, obvashen, observatior, obs (truncation). Critical to
+      // verify the gate fires on these, otherwise routing leaks back to the
+      // small model for the very utterances the inspector intended as an
+      // observation. Verified-matches list lives in pre-llm-gate.js:154.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        { role: 'user', content: 'obvashon, broken socket in bedroom.' },
+      ]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('tiered: "observed" / "observing" do NOT escalate (verb forms rejected)', async () => {
+      // The pattern explicitly rejects observe/observed/observing/observer
+      // so a stray "I observed the meter earlier" doesn't trigger an
+      // unnecessary Sonnet round.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([{ role: 'user', content: 'I observed the meter earlier.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('tiered: block-array content shape (Anthropic message blocks) classifies correctly', async () => {
+      // Real extraction messages carry block-array content with cache_control.
+      // Verify the classifier walks the blocks, finds the text, and matches.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'Observation. Earthing terminal missing the warning label. C3.',
+              cache_control: { type: 'ephemeral', ttl: '5m' },
+            },
+          ],
+        },
+      ]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('tiered: classifier walks past tool_result blocks to find user text', async () => {
+      // After a tool_use round, Anthropic's continuation messages can include
+      // tool_result blocks (no text field). The classifier should keep
+      // walking until it finds a real user utterance — without this the
+      // observation might escalate on the FIRST text block above it, which
+      // is the intended behaviour. Test: a tool_result message comes after
+      // an observation; the classifier walks backwards and finds the text.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'Observation, exposed wiring.' }],
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', name: 'record_observation', input: {} }],
+        },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'ok' }],
+        },
+      ]);
+      // Most-recent user msg is the tool_result block (no text) — walker
+      // continues back to the observation utterance and escalates.
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('OBSERVATION_EXTRACT_MODEL with empty string → treated as unset', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = '';
+      await session.callWithRetry([{ role: 'user', content: 'Observation, broken socket. C2.' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    // Codex-review-2026-06-02 P2 — classifier MUST scan only the inspector's
+    // transcript (the "NEW utterance: <text>\n\n…" block), NOT the wrapped
+    // user message. The wrapping appends server-added context that contains
+    // the literal word "observations" (regex pre-apply notice's
+    // "(observations, additional readings, corrections)" and off-mode's
+    // "Observations already created (do NOT re-extract): …"). Without
+    // narrowing, every turn with regex pre-fills would falsely escalate.
+
+    test('SCOPE: regex pre-apply notice mentioning "observations" does NOT escalate (codex p2)', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      // Faithful replica of what buildUserMessage emits when regexResults
+      // is non-empty (one of the most common turn shapes in production):
+      //   - "NEW utterance: <inspector text>\n\n"
+      //   - "Inspector's app already wrote these fields ... DO NOT extract
+      //     them ... Focus only on anything ELSE in the utterance
+      //     (observations, additional readings, corrections): zs, postcode"
+      // The inspector ONLY said "Z s is 0.6 for upstairs lights" — no
+      // observation intent. Must stay on Haiku.
+      const wrappedMessage =
+        'NEW utterance: Z s is 0.6 for upstairs lights.\n\n' +
+        "Inspector's app already wrote these fields from this utterance — " +
+        'DO NOT extract them or emit a record_reading / set_field tool call ' +
+        'for any of them. The next job_state_update will reflect the values. ' +
+        'Focus only on anything ELSE in the utterance (observations, ' +
+        'additional readings, corrections): zs, postcode';
+      await session.callWithRetry([{ role: 'user', content: wrappedMessage }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('SCOPE: off-mode "Observations already created" digest does NOT escalate (codex p2)', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      // Off-mode buildUserMessage appends a digest of prior observations
+      // verbatim. The digest's lead-in starts "Observations already created
+      // (do NOT re-extract):" — direct OBSERVATION_PATTERN hit. The inspector's
+      // utterance is "Z s is 0.6 for upstairs lights" — no escalation.
+      const wrappedMessage =
+        'NEW utterance: Z s is 0.6 for upstairs lights.\n\n' +
+        'Observations already created (do NOT re-extract): ' +
+        'broken socket in bedroom; exposed wiring in loft';
+      await session.callWithRetry([{ role: 'user', content: wrappedMessage }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
+
+    test('SCOPE: inspector utterance with "observation" still escalates inside the wrapped message', async () => {
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      // Same wrapping shape but the inspector said the trigger word. Must
+      // still escalate — proves we narrowed the scan to JUST the transcript,
+      // not turned it off.
+      const wrappedMessage =
+        'NEW utterance: Observation, exposed wiring in the loft. C2.\n\n' +
+        'POSTCODE LOOKUP: "RG47PF" → Reading, Berkshire (valid)';
+      await session.callWithRetry([{ role: 'user', content: wrappedMessage }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-sonnet-4-6');
+    });
+
+    test('SCOPE: no "NEW utterance:" sentinel → falls back to whole-text scan (keepalive)', async () => {
+      // Keepalive call passes content like "[keepalive]" — no sentinel
+      // prefix, no observation word, no escalation. Verify the fallback
+      // path doesn't break and stays on the default model.
+      process.env.SONNET_EXTRACT_MODEL = 'claude-haiku-4-5-20251001';
+      process.env.OBSERVATION_EXTRACT_MODEL = 'claude-sonnet-4-6';
+      await session.callWithRetry([{ role: 'user', content: '[keepalive]' }]);
+      expect(mockCreate.mock.calls[0][0].model).toBe('claude-haiku-4-5-20251001');
+    });
   });
 
   describe('pause and resume', () => {

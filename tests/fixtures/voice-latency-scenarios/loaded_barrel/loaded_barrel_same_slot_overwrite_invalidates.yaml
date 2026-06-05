@@ -1,0 +1,58 @@
+name: loaded_barrel_same_slot_overwrite_invalidates
+suite: loaded_barrel
+description: |
+  Same-turn correction. Inspector says "Circuit one points five, no
+  six". Sonnet may emit two record_reading tool_use calls in a single
+  round with the same (field=number_of_points, circuit=1, boardId=null)
+  slot. Per plan §B, the second write triggers patch.readings.overwritten
+  for the same key — the speculator invalidates the first cached
+  entry and starts a new speculation for value=6.
+
+  Pin: only ONE audible confirmation for this slot ("Circuit 1,
+  number of points six"). The cached "five" buffer is discarded.
+
+  Difference vs clear_invalidates: same-turn (no second utterance,
+  no second extraction). Tests the read.readings.overwritten path
+  specifically.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one number of points five, no, six."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: number_of_points
+      value: 6
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+  # 2026-05-29 honest pass: like loaded_barrel_single_npts_hit, this
+  # utterance exercises number_of_points (regex_fast_v2 eligible).
+  # On a real device iOS catches "five, no six" as two number_of_points
+  # candidates and the regex_fast_v2 route arbitrates locally — Sonnet
+  # never sees the second value. The harness bypasses iOS regex so
+  # this measures the Sonnet floor, not user-perceived latency.
+  # 3500 ms ceiling reflects the same model+protocol floor as
+  # loaded_barrel_single_npts_hit plus the speculator's invalidation
+  # cycle (~50 ms additional overhead).
+  audible_latency_ms_p50: { max: 3500 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: true

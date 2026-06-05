@@ -1,0 +1,124 @@
+name: rcd_garbled_trigger
+suite: baseline
+description: |
+  Pins backend commits b6075e59 (entry-handover bail) + 9590cea2
+  (FIELD_CORRECTIONS alias resolution in tryEnterScriptFromWrites).
+
+  Repro: session 87856B72 (2026-05-26 06:06). Deepgram garbled "trip
+  time" → "triptan" on the inspector's natural-sentence RCD entry
+  ("RCD trip time for upstairs lighting is 25 ms"). Before b6075e59
+  the dialogue-engine entered the RCD script on the /\bRCD\b/ trigger
+  but the named-extractor /\btrip\s*time\b/ missed, so the engine
+  asked "What's the BS number?" with 25 ms lost. The user had to
+  re-dictate the trip time after walking BS/type/mA.
+
+  After b6075e59 + 9590cea2:
+    1. runEntry detects the bail condition (no harvest, no existing
+       slots, no designation ambiguity, hasNumericValueWithUnit("25
+       ms") true) → emits `stage6.rcd_script_entry_handover_to_sonnet`
+       log and returns {handled: false}.
+    2. Sonnet processes the utterance and emits record_reading with
+       the Stage 6 canonical field `rcd_time_ms` for circuit 2 (or
+       the legacy `rcd_trip_time` — both are accepted by the alias).
+    3. validateAndCorrectFields rewrites `rcd_time_ms` → `rcd_trip_time`
+       on the WS extraction message.
+    4. tryEnterScriptFromWrites scans Sonnet's writes via
+       resolveCandidates, finds rcd_trip_time in rcdSchema.slots,
+       initialises script state, seeds values from the snapshot
+       (which now carries 25 from step 3), and emits the next ask
+       (rcd_bs_en — "What's the BS number? Or do you want to fill
+       that in later?"). Logs `stage6.rcd_script_entered_from_sonnet_write`.
+    5. Inspector walks the remaining slots BS / type / mA same as the
+       clean variant (rcd_walkthrough_clean.yaml).
+    6. After all three RCD device slots fill, the schema's
+       postCompletionAsk fires: "Apply these RCD details to any other
+       circuits?". Inspector says "no" → script finishes.
+
+  Both the clean variant and this garbled variant must terminate with
+  the same 4 readings and walk through the same downstream ask path.
+  Failure of this scenario indicates the entry-handover bail OR the
+  alias-resolution step has regressed.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 2
+      board_id: main
+      designation: Upstairs Lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  # 1. Garbled trigger. /\bRCD\b/ fires, designation lookup resolves
+  #    "upstairs lighting" → circuit 2, but the trip-time named
+  #    extractor misses "triptan". hasNumericValueWithUnit("25 ms")
+  #    returns true → bail.
+  - at_ms: 0
+    text: "RCD triptan for upstairs lighting is 25 ms."
+    isFinal: true
+  # 2. Reply to engine's rcd_bs_en ask (emitted by
+  #    tryEnterScriptFromWrites → askNextOrFinish after step 4 above).
+  - at_ms: 8000
+    text: "BS EN 61008."
+    isFinal: true
+  # 3. Reply to engine's rcd_type ask.
+  - at_ms: 14000
+    text: "AC."
+    isFinal: true
+  # 4. Reply to engine's rcd_operating_current_ma ask.
+  - at_ms: 19000
+    text: "30."
+    isFinal: true
+  # 5. Reply to the postCompletionAsk bulk-apply prompt — decline so
+  #    the script terminates without writing the RCD details across
+  #    other circuits.
+  - at_ms: 24000
+    text: "No."
+    isFinal: true
+
+expect:
+  # Sonnet's extraction for utterance 1 carries the trip time. Engine
+  # writes the remaining three values. Final readings on circuit 2:
+  has_reading:
+    # Legacy wire-format names (post validateAndCorrectFields). See
+    # SCHEMA.md "Field names" table. rcd_trip_time / rcd_bs_en /
+    # rcd_type / rcd_operating_current_ma are all in KNOWN_FIELDS so
+    # they pass through unchanged. rcd_time_ms (if Sonnet picks the
+    # canonical name) is rewritten to rcd_trip_time on the wire.
+    - circuit: 2
+      field: rcd_trip_time
+      value: "25"
+    - circuit: 2
+      field: rcd_bs_en
+      value: "BS EN 61008"
+    - circuit: 2
+      field: rcd_type
+      value: "AC"
+    - circuit: 2
+      field: rcd_operating_current_ma
+      value: "30"
+  # Asks the engine MUST emit (info-shape finish/cancel messages are
+  # filtered by the harness):
+  #   1. rcd_bs_en   — slot ask after entry from Sonnet write
+  #   2. rcd_type    — next slot
+  #   3. rcd_operating_current_ma — next slot
+  #   4. bulk-apply prompt (postCompletionAsk)
+  # The trip-time-handover-to-Sonnet step does NOT emit an ask (Sonnet
+  # extracts silently), so the engine's BS-number question is the
+  # first ask the inspector hears.
+  ask_user_count: { min: 4, max: 4 }
+  saw_event_types:
+    - extraction
+    - ask_user_started
+
+config:
+  timeout_ms: 75000
+  # Generous drain to let the postCompletionAsk reply round-trip and
+  # let the engine emit its finish info message before assertion time.
+  drain_ms: 30000
+  # No TTS fetch — this scenario pins the dialogue-engine recovery
+  # path, not audible latency. Save the ~$0.10 of ElevenLabs cost.
+  fetch_tts: false

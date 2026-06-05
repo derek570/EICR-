@@ -1,0 +1,102 @@
+name: speculator_broadcast_race_suppressed
+suite: fixes_2026_06_02
+description: |
+  REGRESSION GUARD — Fix A from handoff-2026-06-02-fixes.md.
+
+  Field-bug repro: session E87F58C1-D2A4-404B-8846-C75CCE98E3F1,
+  2026-06-02 09:35:22 BST. Exact transcript verbatim.
+
+  PRE-FIX bug:
+    Sonnet emits 2 record_reading calls (c2, c3) in the same turn. The
+    Loaded Barrel speculator fires on the FIRST one (c2 only), pre-synths
+    "Circuit 2, IR L to E >299", and ships the audio to iOS ~388 ms
+    before the bundler's broadcast-detector sees the second
+    record_reading and aborts the bucket. The bundler then emits the
+    grouped "Circuits 2, 3, IR L to E >299". Two TTS payloads with
+    different text play on top of each other on the inspector's device.
+
+  POST-FIX behaviour (Fix A):
+    runLiveMode runs `detectBroadcastIntent(transcript)` before
+    runToolLoop. The "circuits 2 and 3" phrasing matches
+    BROADCAST_LIST_RE, so `entry.broadcastIntentByTurn.set(turnId, true)`.
+    The speculator's _speculate preflight reads that flag and returns
+    early (no synth, no cost ledger) on every per-circuit record_reading
+    in this turn. The bundler still emits the grouped TTS at round end.
+
+  Why this scenario must STAY pinned:
+    The 2026-06-01 matrix-run audit deleted 13 scenarios as "Sonnet
+    sampling noise." One of those was a multi-circuit speculator race
+    pin that would have caught this exact bug 24 hours before it shipped.
+    `forbid_event_tokens: [extraction:speculator]` is the load-bearing
+    assertion here. Do NOT delete it without reading the handoff first.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB Main"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+      ocpd_rating_a: 6
+    - number: 2
+      board_id: main
+      designation: Sockets
+      ocpd_rating_a: 32
+    - number: 3
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+    - number: 4
+      board_id: main
+      designation: Shower
+      ocpd_rating_a: 40
+
+transcript:
+  - at_ms: 0
+    text: "Live to earth insulation resistance on circuits 2 and 3 is greater than 299 megohms."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  # Positive — both target circuits must receive the write.
+  has_reading:
+    - circuit: 2
+      field: insulation_resistance_l_e
+      value: ">299"
+    - circuit: 3
+      field: insulation_resistance_l_e
+      value: ">299"
+  # Negative-control — the broadcast must NOT leak to non-target circuits.
+  has_no_reading:
+    - circuit: 1
+      field: insulation_resistance_l_e
+      value: ">299"
+    - circuit: 4
+      field: insulation_resistance_l_e
+      value: ">299"
+  # The fix's core promise: exactly ONE confirmation TTS lands on iOS.
+  # Pre-fix this was 2 (speculator's per-circuit + bundler's grouped).
+  # Post-fix the speculator is skipped on the broadcast turn and only
+  # the bundler's grouped confirmation fires.
+  confirmation_count: { min: 1, max: 1 }
+  # buildGroupedConfirmationText emits "Circuits 2, 3, IR L to E >299"
+  # for a 2-circuit list (contiguous-range form needs >=3 circuits per
+  # confirmation-text.js:269).
+  confirmation_text_contains:
+    - "Circuits 2, 3"
+    - "IR L to E"
+  # LOAD-BEARING — Fix A's whole point is that the speculator MUST NOT
+  # fire on a broadcast turn. extraction:speculator is the compound
+  # token emitted when extraction WITH mid_stream_preview=true reaches
+  # iOS — that's the bug we're guarding against. Deleting this
+  # assertion silently re-enables the 2026-06-02 TTS overlap.
+  forbid_event_tokens:
+    - extraction:speculator
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 15000
+  fetch_tts: true

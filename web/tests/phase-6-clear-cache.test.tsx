@@ -16,7 +16,7 @@
 import * as React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -212,7 +212,8 @@ describe('Phase 6 · clear cache flow', () => {
     expect(clearAuthMock).toHaveBeenCalledTimes(1);
     expect(locationHrefCalls).toContain('/login');
     expect(
-      (navigator.serviceWorker as unknown as { getRegistrations: Mock }).getRegistrations
+      (navigator.serviceWorker as unknown as { getRegistrations: ReturnType<typeof vi.fn> })
+        .getRegistrations
     ).toHaveBeenCalled();
   });
 });

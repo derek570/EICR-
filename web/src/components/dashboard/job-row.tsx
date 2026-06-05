@@ -67,12 +67,28 @@ export function JobRow({
 }) {
   const cert = job.certificate_type ?? 'EICR';
   const accent = cert === 'EIC' ? 'var(--color-brand-green)' : 'var(--color-brand-blue)';
+  const createdAt = new Date(job.created_at);
   const date = new Date(job.updated_at ?? job.created_at);
   const dateStr = date.toLocaleDateString(undefined, {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
   });
+  // iOS canon (IMG_6294 reference 2026-05-02): when a job has no
+  // address yet, title reads "Job - <created date>, <HH:MM>" rather
+  // than the previous "Untitled job" placeholder. Inspectors create
+  // jobs the moment they arrive on site and the address fills in
+  // later via dictation, so most fresh rows take this branch.
+  const fallbackTitle = `Job - ${createdAt.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  })}, ${createdAt.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })}`;
+  const title = job.address?.trim() || fallbackTitle;
   const pill = STATUS_PILL[job.status];
 
   // --- Swipe / delete state ---------------------------------------
@@ -222,13 +238,15 @@ export function JobRow({
 
         <div className="min-w-0 flex-1">
           <p className="truncate text-[15px] font-semibold text-[var(--color-text-primary)]">
-            {job.address || 'Untitled job'}
+            {title}
           </p>
           <p className="mt-0.5 flex items-center gap-2 text-xs">
             <span className="font-semibold" style={{ color: accent }}>
               {cert}
             </span>
-            <span className="text-[var(--color-text-tertiary)]">{dateStr}</span>
+            <span className="truncate text-[var(--color-text-tertiary)]">
+              {job.address?.trim() ? `${dateStr} · ${job.address}` : dateStr}
+            </span>
           </p>
         </div>
 

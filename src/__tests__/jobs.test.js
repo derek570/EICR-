@@ -226,6 +226,253 @@ describe('Job routes (supertest)', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
     });
+
+    test('preserves multi-board fields in extracted_data.json on PUT', async () => {
+      // Phase 2.2 regression test (multi-board sprint
+      // .planning-stage6-agentic/handoffs/multi-board-support-2026-05-07/PLAN.md).
+      // Pins that boards[].parent_board_id, .feed_circuit_ref, .board_type,
+      // and the sub-main cable fields survive the PUT round-trip into the
+      // extracted_data.json blob — the JSON pass-through is what makes the
+      // current cloud sync work for multi-board jobs, so any future refactor
+      // that strips boards through a typed shape must keep this test green.
+      // Phase 1's deletion of sub_main_cable_length is also pinned here.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockUpdateJob.mockResolvedValue(undefined);
+
+      let uploadedExtractedDataJson = null;
+      mockUploadText.mockImplementation(async (content, key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          uploadedExtractedDataJson = content;
+        }
+      });
+
+      const payload = {
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-1',
+            designation: 'DB-2',
+            board_type: 'sub_main',
+            parent_board_id: 'main',
+            feed_circuit_ref: '4',
+            sub_main_cable_material: 'Cu',
+            sub_main_cable_csa: '16',
+            sub_main_cpc_csa: '6',
+          },
+        ],
+        circuits: [
+          {
+            circuit: '4',
+            board_id: 'main',
+            is_distribution_circuit: 'yes',
+            feeds_board_id: 'sub-1',
+          },
+          { circuit: '1', board_id: 'sub-1', designation: 'Kitchen' },
+        ],
+      };
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send(payload);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      expect(uploadedExtractedDataJson).not.toBeNull();
+      const written = JSON.parse(uploadedExtractedDataJson);
+      expect(written.boards).toHaveLength(2);
+      expect(written.boards[0]).toMatchObject({ id: 'main', board_type: 'main' });
+      expect(written.boards[1]).toMatchObject({
+        id: 'sub-1',
+        parent_board_id: 'main',
+        feed_circuit_ref: '4',
+        board_type: 'sub_main',
+        sub_main_cable_material: 'Cu',
+        sub_main_cable_csa: '16',
+        sub_main_cpc_csa: '6',
+      });
+      // Phase 1: sub_main_cable_length must NOT survive — iOS dropped it,
+      // so any payload still carrying it is upstream noise. We don't strip
+      // it server-side (the iOS Codable encoder no longer emits it), but
+      // this test pins that we don't accidentally synthesise it either.
+      expect(written.boards[1].sub_main_cable_length).toBeUndefined();
+    });
+
+    test('returns multi-board fields from extracted_data.json on GET', async () => {
+      // Read-side complement to the PUT round-trip pin above. Confirms the
+      // GET handler at src/routes/jobs.js:474 surfaces boards[] verbatim
+      // from the stored JSON, so iOS / web clients receive the hierarchy
+      // fields they wrote.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+
+      const stored = {
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-1',
+            designation: 'DB-2',
+            board_type: 'sub_main',
+            parent_board_id: 'main',
+            feed_circuit_ref: '4',
+            sub_main_cable_csa: '16',
+            sub_main_cpc_csa: '6',
+          },
+        ],
+      };
+      mockDownloadText.mockImplementation(async (key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          return JSON.stringify(stored);
+        }
+        return null;
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .get('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.boards).toHaveLength(2);
+      expect(res.body.boards[1].parent_board_id).toBe('main');
+      expect(res.body.boards[1].feed_circuit_ref).toBe('4');
+      expect(res.body.boards[1].board_type).toBe('sub_main');
+      expect(res.body.boards[1].sub_main_cable_csa).toBe('16');
+      expect(res.body.boards[1].sub_main_cable_length).toBeUndefined();
+    });
+
+    test('preserves unassigned_photos in extracted_data.json on PUT', async () => {
+      // L2 observation-photo auto-link sprint 2026-05-13. Before this fix,
+      // the route destructure at jobs.js:654 omitted unassigned_photos so
+      // iOS's pool (Job.swift:104 + JobViewModel.swift:518-525) silently
+      // dropped on every save — the field never reached extracted_data.json.
+      // Pin the round-trip so a future destructure rewrite can't regress it.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockUpdateJob.mockResolvedValue(undefined);
+
+      let uploadedExtractedDataJson = null;
+      mockUploadText.mockImplementation(async (content, key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          uploadedExtractedDataJson = content;
+        }
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          unassigned_photos: ['photo-a.jpg', 'photo-b.jpg'],
+        });
+
+      expect(res.status).toBe(200);
+      expect(uploadedExtractedDataJson).not.toBeNull();
+      const written = JSON.parse(uploadedExtractedDataJson);
+      expect(written.unassigned_photos).toEqual(['photo-a.jpg', 'photo-b.jpg']);
+    });
+
+    test('PUT with empty unassigned_photos array clears the pool', async () => {
+      // Mirror iOS removePhotosFromUnassigned which sets the property to nil
+      // when the pool empties. An explicit [] from a client must replace any
+      // prior pool — not be skipped as falsy.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockUpdateJob.mockResolvedValue(undefined);
+      mockDownloadText.mockImplementation(async (key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          return JSON.stringify({ unassigned_photos: ['old.jpg'] });
+        }
+        return null;
+      });
+
+      let uploadedExtractedDataJson = null;
+      mockUploadText.mockImplementation(async (content, key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          uploadedExtractedDataJson = content;
+        }
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ unassigned_photos: [] });
+
+      expect(res.status).toBe(200);
+      const written = JSON.parse(uploadedExtractedDataJson);
+      expect(written.unassigned_photos).toEqual([]);
+    });
+
+    test('returns unassigned_photos from extracted_data.json on GET', async () => {
+      // Read-side complement. Before this fix, the GET response builder at
+      // jobs.js:576-593 enumerated a fixed field list that omitted
+      // unassigned_photos — so even if the field landed in S3 it never
+      // surfaced to the client.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockDownloadText.mockImplementation(async (key) => {
+        if (typeof key === 'string' && key.endsWith('extracted_data.json')) {
+          return JSON.stringify({ unassigned_photos: ['photo-a.jpg', 'photo-b.jpg'] });
+        }
+        return null;
+      });
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .get('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.unassigned_photos).toEqual(['photo-a.jpg', 'photo-b.jpg']);
+    });
+
+    test('GET defaults unassigned_photos to null when absent', async () => {
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1', address: '42 Test St' });
+      mockDownloadText.mockResolvedValue(null);
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .get('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.unassigned_photos).toBeNull();
+    });
+
+    test('rejects PUT with invalid board hierarchy (400)', async () => {
+      // Phase 2.3 — wire-level proof that the validator runs before S3 writes.
+      // Payload has a sub_main board pointing at a parent_board_id that does
+      // not exist in boards[], which is the cleanest single-error case.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1' });
+      mockUploadText.mockClear();
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          boards: [
+            { id: 'main', board_type: 'main' },
+            { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'does-not-exist' },
+          ],
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_board_hierarchy');
+      expect(res.body.details).toContainEqual({
+        code: 'parent_not_found',
+        board_id: 'sub-1',
+        parent: 'does-not-exist',
+      });
+      // No S3 write should have happened — the validator rejected before
+      // the try block that builds extracted_data.json.
+      expect(mockUploadText).not.toHaveBeenCalled();
+    });
+
+    // Phase 2a closed the CSV-header round-trip gap (src/export.js
+    // CIRCUIT_FIELD_ORDER appended board_id, is_distribution_circuit,
+    // feeds_board_id). The actual round-trip is exercised in
+    // src/__tests__/export.test.js where circuitsToCSV is NOT mocked;
+    // this `jobs.test.js` mocks `circuitsToCSV` to return '' so a route-
+    // level round-trip here would only re-test the mock, not the real
+    // serializer. The cross-reference is intentional — see export.test.js.
   });
 
   describe('DELETE /api/job/:userId/:jobId', () => {

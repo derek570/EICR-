@@ -3,7 +3,7 @@
  *
  * Mirrors the iOS `DeepgramService.swift` protocol so the two clients
  * behave identically — same URL parameters (nova-3 / linear16 / 16kHz /
- * en-GB / interim_results / endpointing=300 / utterance_end_ms=1500 /
+ * en-GB / interim_results / endpointing=400 / utterance_end_ms=1000 /
  * vad_events=true). Auth differs by transport: iOS sets an
  * `Authorization: Bearer <jwt>` header on the WS upgrade; browsers can't
  * set upgrade headers so we pass the same JWT as the `bearer` subprotocol
@@ -21,6 +21,7 @@
  */
 
 import { appendKeytermsToUrl, generateKeyterms, type CcuAnalysisLite } from './keyword-boosts';
+import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 
 export type DeepgramConnectionState =
   | 'disconnected'
@@ -278,6 +279,10 @@ export class DeepgramService {
 
     ws.onopen = () => {
       const wasReconnect = this.hasEverOpened;
+      pipelineLog('deepgram_ws_open', {
+        wasReconnect,
+        reconnectAttempt: this.reconnectAttempt,
+      });
       this.setState('connected');
       this.reconnectAttempt = 0; // success resets backoff
       this.hasEverOpened = true;
@@ -295,6 +300,9 @@ export class DeepgramService {
     };
 
     ws.onerror = () => {
+      pipelineLog('deepgram_ws_error', {
+        willDeferToClose: this.shouldReconnect,
+      });
       // In fetcher mode, defer to onclose — it will schedule a
       // reconnect. Surfacing an error event here would double-fire
       // through the `errorEmitted` guard and, worse, flash an error
@@ -308,6 +316,14 @@ export class DeepgramService {
       this.stopKeepAlive();
       this.ws = null;
       const reconnectable = event.code !== 1000 && event.code !== 1005;
+      pipelineLog('deepgram_ws_close', {
+        code: event.code,
+        reason: event.reason ?? '',
+        wasClean: event.wasClean,
+        reconnectable,
+        shouldReconnect: this.shouldReconnect,
+        reconnectAttempt: this.reconnectAttempt,
+      });
       // Log close code + reason on every close so backend/ops can
       // correlate flaky-link incidents with browser-side reconnect
       // behaviour. 1000 (normal) + 1005 (no status) are expected
@@ -492,18 +508,39 @@ export class DeepgramService {
       channels: '1',
       language: 'en-GB',
       interim_results: 'true',
-      endpointing: '300',
-      // utterance_end_ms 1500 — match iOS DeepgramService.swift after the
-      // 2026-04-20 voice-quality-sprint Stage 1 tuning. iOS history (per
-      // its inline comment): 2000 → 1200 shortened TTS latency (8-12s →
-      // ~3s); 1200 → 1500 trades 300ms for fewer mid-utterance
-      // truncations when the inspector pauses mid-reading ("R1 plus R2
-      // is ... zero point six four"). speech_final remains the primary
-      // turn-end signal; UtteranceEnd is the silence-timeout fallback.
-      // Project rule (`~/.claude/rules/mistakes.md`): keep web and iOS
-      // Deepgram configs in sync. Audit Phase 6 P0 flagged this drift.
-      utterance_end_ms: '1500',
+      // 2026-06-04: bumped 300→400 ms to match iOS slice §3.3 of the
+      // field-test-fixes-session-60754e4d sprint. iOS picked option 2
+      // (unconditional 400 ms) because option 1's script-state-aware
+      // 250/400 split would require a Deepgram WS reconnect on every
+      // dialogue-script entry, dropping accumulated keyterm context
+      // (per `rules/mistakes.md`). Web mirrors that choice — `rules/
+      // mistakes.md` is explicit that the web and iOS Deepgram configs
+      // must stay in sync; `endpointing` is listed among the params
+      // they specifically must not drift on.
+      endpointing: '400',
+      // utterance_end_ms 1000 (NOT the legacy 2000): mirrors iOS canon
+      // (DeepgramService.swift:751). Lowered from 1500→1000 on
+      // 2026-04-26 (Bug-H follow-up) because the inspector's
+      // transcript bar would otherwise sit grey for the full
+      // utterance_end_ms window in noisy rooms — speech_final
+      // sometimes fails to fire and Deepgram falls back to this
+      // silence timer. 1000ms is the production value live in iOS;
+      // the rules/mistakes.md note "Keep web and iOS Deepgram
+      // configs in sync" (utterance_end_ms is explicitly listed
+      // there) is the load-bearing reason this constant lives in
+      // both clients with the SAME value.
+      utterance_end_ms: '1000',
       vad_events: 'true',
+      // Opt out of Deepgram's Model Improvement Partnership Program (MIP).
+      // Without this flag the default account allows Deepgram to retain
+      // audio for model training, which would be a UK GDPR breach on every
+      // session: incidental third-party voices captured during inspector
+      // dictation would end up in an external training corpus with no
+      // lawful basis. Set on every connection rather than account-wide so
+      // it cannot be regressed by an account-config change. Mirrors iOS
+      // (DeepgramService.swift); the rules/mistakes.md "keep configs in
+      // sync" note applies here. Tracked in DPIA mitigation M2.1.
+      mip_opt_out: 'true',
     });
 
     // Nova-3 keyterm prompting — port of iOS `KeywordBoostGenerator`.
@@ -633,20 +670,36 @@ export class DeepgramService {
         }
 
         if (isFinal) {
+          pipelineLog('deepgram_final', {
+            textLength: transcript.length,
+            textPreview: transcript.slice(0, 40),
+            confidence: Math.round(confidence * 1000) / 1000,
+            wordCount: words.length,
+          });
           this.callbacks.onFinalTranscript(transcript, confidence, words);
         } else {
+          pipelineLog('deepgram_interim', {
+            textLength: transcript.length,
+            confidence: Math.round(confidence * 1000) / 1000,
+          });
           this.callbacks.onInterimTranscript(transcript, confidence);
         }
         break;
       }
       case 'SpeechStarted':
+        pipelineLog('deepgram_speech_started', {});
         this.callbacks.onSpeechStarted?.();
         break;
       case 'UtteranceEnd':
+        pipelineLog('deepgram_utterance_end', {});
         this.callbacks.onUtteranceEnd?.();
         break;
       case 'Error': {
         const msg = (json.message as string | undefined) ?? 'Unknown Deepgram error';
+        pipelineLog('deepgram_dg_error', {
+          messageLength: msg.length,
+          messagePreview: msg.slice(0, 80),
+        });
         this.callbacks.onError?.(new Error(msg));
         break;
       }

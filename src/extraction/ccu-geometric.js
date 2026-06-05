@@ -16,12 +16,23 @@
 
 import sharp from 'sharp';
 import { applyDeviceLookup } from './device-lookup-table.js';
+import { detectModulePitchCv } from './ccu-cv-pitch.js';
 
 const CCU_GEOMETRIC_MODEL = (process.env.CCU_GEOMETRIC_MODEL || 'claude-sonnet-4-6').trim();
 const CCU_GEOMETRIC_MAX_TOKENS = 1024;
 // Stage 3 needs a bigger response envelope — batched classifications each return a JSON object.
 const CCU_STAGE3_MAX_TOKENS = 2048;
 const CCU_GEOMETRIC_TIMEOUT_MS = Number(process.env.CCU_GEOMETRIC_TIMEOUT_MS || 60_000);
+
+// CV-based module-pitch detection (Sobel-X + autocorrelation) replaces the
+// 44.5mm height-anchor calibration with direct edge analysis of the photo.
+// Default ON since 2026-04-29 (Derek field-test confidence). Set
+// CCU_CV_PITCH=false on the task-def to roll back without redeploy. When
+// CV detection has low confidence (small board, low contrast), the
+// height-anchor path runs as fallback.
+function isCcuCvPitchEnabled() {
+  return (process.env.CCU_CV_PITCH || 'true').trim().toLowerCase() === 'true';
+}
 // Batch size for Stage 3 classification. 4 crops/message gave the best accuracy/cost trade-off
 // on the 3 fixture photos: fewer round-trips vs. VLM attention dilution on tiny crops. Going
 // to 6 made the VLM skip or mis-number slots on photo-1 (the MEM Memera 2000 board). Keep at 4.
@@ -55,31 +66,61 @@ Normalise to 0-1000 (top-left origin). Output strictly:
 {"rail_top": <int>, "rail_bottom": <int>, "rail_left": <int>, "rail_right": <int>}`,
 ];
 
-const MODULE_COUNT_PROMPT = (
+// Stage 2 tighten-and-chunk prompt. The VLM has ONE job: return the
+// rectangle that tightly encloses every device on the DIN rail (RCD,
+// MCBs, RCBOs, blanks, main switch — everything mounted on the rail).
+// No counting, no grouping, no per-device list, no module pitch
+// derivation, no main-switch geometry. Backend chunks the bbox
+// geometrically:
+//   - CV pitch detection (Sobel-X + length-normalised autocorrelation,
+//     ccu-cv-pitch.js) finds module pitch directly from the periodic
+//     structure in the photo — primary source.
+//   - Height-anchor fallback (MCB visible-face height = 44.5mm DIN 43880
+//     front-zone, module pitch = 17.5mm) when CV peak is low confidence.
+// Stage 3 classifies each tiled slot, so split-load gaps appear as
+// `blank` classifications, the main switch as `main_switch`, etc. — all
+// handled downstream by slotsToCircuits.
+//
+// History:
+//   * Replaced an earlier groups-with-counts schema (which asked the VLM
+//     for an array of per-group bboxes + per-group counts — inconsistent
+//     responses, sometimes split into 2 groups, sometimes merged into 1).
+//   * Replaced a populated_area_start_x / end_x prompt that asked the VLM
+//     to count modules directly (counting is the VLM's least reliable
+//     behaviour, and rail_right overshoot compounded into cropping
+//     errors at the last MCB). Deleted 2026-04-29.
+//   * 2026-04-29: also dropped main_switch_center_x and main_switch_width
+//     from the response — VLM's main-switch-width was the noisier signal
+//     than CV pitch in the cross-check (prod: VLM 50px vs CV 87px on a
+//     Wylex NHRS12SL where 87 was correct). Side derivation moved to
+//     (1) Stage 3's main_switch slot index, (2) Stage 1 classifier's
+//     mainSwitchPosition.
+const MODULE_COUNT_PROMPT_GROUPS = (
   rails
-) => `This is a UK consumer unit. The DIN rail bounding box on a 0-1000 scale is:
+) => `This image is a USER-CROPPED region of a UK consumer unit, framed roughly around the device row by an inspector on an iOS device. The crop may include extra empty space at the edges (left/right of the devices, above/below for label clearance). The DIN rail bounding box on a 0-1000 scale (within this cropped image) is approximately:
 - rail_top: ${rails.rail_top}
 - rail_bottom: ${rails.rail_bottom}
 - rail_left: ${rails.rail_left}
 - rail_right: ${rails.rail_right}
 
-Find the MAIN SWITCH on this board. It is typically the largest device on the rail — two modules wide (~36mm in reality). It has no test button and no sensitivity marking ("30mA" etc.). It is NOT an RCD.
+Your task: TIGHTEN this user crop to a single rectangle that encloses EVERY device mounted on the DIN rail and NOTHING ELSE. Tight on all four sides.
 
-Also identify the horizontal bounds of the POPULATED AREA on the rail. "Populated" includes:
-- devices (MCBs, RCBOs, RCDs, main switches)
-- blanking plates (1-module plastic covers that fill unused slots)
-- empty slots in the middle of the rail that have devices or blanks further left/right — do NOT stop at middle gaps, split-load RCD boards and RCBO boards with removed circuits are common
-Only stop at the true ends of the populated area: the far-left edge of the leftmost element, and the far-right edge of the rightmost element. Exclude any exposed DIN rail past the last element at either end.
+Devices to include in the bbox: MCBs, RCBOs, RCDs, blanking plates, and the MAIN SWITCH. Treat the main switch as PART of the device row — it sits on the same rail as the MCBs and the bbox extends to its outer edge.
 
-Report:
-1. The x-coordinate of the main switch's CENTRE on the 0-1000 scale (main_switch_center_x).
-2. The TOTAL width of the main switch on the 0-1000 scale (main_switch_width).
-3. A direct count of how many module positions fit on the rail between rail_left and rail_right (module_count_direct). A module is an 18mm-wide slot — a single MCB is 1 module, an RCBO or RCD or main switch is 2 modules, blanks count as 1 module each.
-4. The x-coordinate of the far-LEFT edge of the populated area on the 0-1000 scale (populated_area_start_x). Leftmost device or blanking plate.
-5. The x-coordinate of the far-RIGHT edge of the populated area on the 0-1000 scale (populated_area_end_x). Rightmost device or blanking plate. Skip middle gaps — if there's a gap in the middle with more devices or blanks further right, continue past the gap to the true end.
+Edges to pin to:
+- LEFT edge: the LEFT face of the leftmost device (whichever device sits furthest left — could be the main switch on a left-handed board, an RCD, an MCB, or a blanking plate). NOT the left edge of empty rail past the last device. NOT the user-crop edge.
+- RIGHT edge: the RIGHT face of the rightmost device. NOT empty rail past the last device.
+- TOP edge: the TOP of the device bodies (where the MCB toggle housing meets its top face). NOT the printed label strip above the row, NOT the inside of the consumer unit cover above the rail.
+- BOTTOM edge: the BOTTOM of the device bodies (where the MCB body meets its bottom face). NOT the printed label strip below, NOT the cable entry / wiring area below the rail.
+
+The bbox top-to-bottom MUST span the FULL VISIBLE FACE of the MCB — top of the toggle housing down to the bottom of the rating-label face printed on the same molded body. The face is what protrudes through the cover plate; ~44.5mm per DIN 43880. INCLUDE the printed label face on the device — it's part of the molded body and the bottom edge of the face. EXCLUDE only the printed paper labels on the consumer-unit casing above/below the device row (those sit on the cover plate, not on the MCB).
+
+Empty rail past the last device on either end MUST be excluded — only enclose the populated section.
+
+Output 0-1000 normalised coordinates as integers.
 
 Respond with JSON only:
-{"main_switch_center_x": <int>, "main_switch_width": <int>, "module_count_direct": <int>, "populated_area_start_x": <int>, "populated_area_end_x": <int>}`;
+{"rail_bbox": {"left": <int>, "right": <int>, "top": <int>, "bottom": <int>}}`;
 
 // Stage 3 — classify the device in each crop. Each message contains N crops
 // (CCU_STAGE3_BATCH_SIZE); the VLM must return exactly N objects in the same order.
@@ -115,9 +156,9 @@ For EACH crop, report THREE things:
    - "both"   — body extends past BOTH edges (very wide device, we see only its middle)
 
 3. CLASSIFICATION (device type):
-   - "mcb"          — single MCB (BS EN 60898-1), trip curve letter + amp rating (e.g. "B32")
-   - "rcbo"         — combined RCD + MCB (BS EN 61009-1), test button + trip curve + amp rating
-   - "rcd"          — RCD (BS EN 61008-1), test button + mA rating, NO trip curve
+   - "mcb"          — single MCB (BS EN 60898), trip curve letter + amp rating (e.g. "B32")
+   - "rcbo"         — combined RCD + MCB (BS EN 61009), test button + trip curve + amp rating
+   - "rcd"          — RCD (BS EN 61008), test button + mA rating, NO trip curve
    - "main_switch"  — 2-module isolator, no test button, no trip curve, no mA rating, typically "100A" or "Main Switch"
    - "spd"          — Surge Protection Device (cartridges / status windows)
    - "blank"        — blanking plate (use when content="blank")
@@ -128,6 +169,33 @@ For EACH crop, report THREE things:
      — test button visible but rating label cut → "rcd" or "rcbo" (best guess)
      — toggle + curve letter visible but rest cut → "mcb"
      — too ambiguous → "unknown"
+
+   DISAMBIGUATION — RCD vs RCBO when only test button + toggle are visible:
+     A 2-pole RCD spans TWO module slots and prints all its rating /
+     branding on ONE half (usually the left, with the test button). The
+     OTHER half shows just a toggle, a coloured stripe and the
+     manufacturer's wordmark — NO rating number, NO trip-curve letter,
+     NO mA value on the device face itself.
+       • If a crop has a test button AND/OR a toggle, BUT NO numbers or
+         curve-letter on the device face, AND any silkscreen or label
+         strip BELOW the rail reads "RCD" / "RCD Protected" /
+         "rated current" / similar, classify it as "rcd" (NOT "rcbo").
+         RCBOs always print their rating + curve on every visible face;
+         a missing rating + RCD silkscreen is a strong RCD signal.
+       • If you see numbers + curve letter (e.g. "B40", "C32 6kA") on
+         the device face itself, that's an RCBO — RCBOs combine RCD +
+         MCB and DO show their amp rating on the body.
+
+   DISAMBIGUATION — mostly-empty crops with edge bleed:
+     When ≥ 60 % of the crop is a blanking plate or featureless plastic
+     filler in an unused slot, and any device fragments visible at the
+     crop edges have NO readable rating number, NO trip-curve letter
+     and NO manufacturer text, classify content as "blank" — confidently.
+     The edge bleed alone is not enough to call something an "mcb" — a
+     real MCB classification requires the centred device to contribute
+     readable identifying marks. Only return "empty" when there is
+     genuinely exposed DIN rail with no plate visible at all (very rare
+     and a safety defect).
 
 For MCBs and RCBOs:
 - manufacturer      — brand stamped on the face ("Hager", "MK", "Wylex", "MEM", "Crabtree", "Eaton", "Schneider", "BG", "Fusebox", "Contactum"). null if illegible.
@@ -144,7 +212,7 @@ For RCDs and RCBOs additionally:
 - rcdWaveformType   — "AC", "A", "F", or "B". null if the waveform symbol is not visible or unclear.
 
 For all devices:
-- bsEn              — BS EN standard number printed on the face ("BS EN 60898-1", "BS EN 61009-1", "BS EN 61008-1"). null if not visible.
+- bsEn              — BS EN standard number printed on the face ("BS EN 60898", "BS EN 61009", "BS EN 61008"). null if not visible.
 
 For blanks, SPDs, empties, and main switches: manufacturer / model / ratingAmps / tripCurve / sensitivity / rcdWaveformType / bsEn may all be null. Still return poles (1 for blank/SPD if single-module, 2 for main_switch — null if unsure) and confidence.
 
@@ -163,17 +231,89 @@ function extractJson(text) {
     throw new Error('VLM returned empty response');
   }
   let jsonStr = text.trim();
-  const fenceMatch = jsonStr.match(/```json\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    jsonStr = fenceMatch[1].trim();
-  } else {
-    const firstBrace = jsonStr.indexOf('{');
-    const lastBrace = jsonStr.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+
+  // Prefer a fenced block. Accept either ```json ... ``` (preferred) or a
+  // bare ``` ... ``` fence — the model sometimes drops the language tag.
+  const labelledFence = jsonStr.match(/```json\s*([\s\S]*?)```/i);
+  const bareFence = jsonStr.match(/```\s*([\s\S]*?)```/);
+  if (labelledFence) {
+    jsonStr = labelledFence[1].trim();
+  } else if (bareFence) {
+    jsonStr = bareFence[1].trim();
+  }
+
+  // Locate the first JSON value (object or array) and walk forward
+  // tracking string state + brace/bracket depth, so we stop exactly at
+  // the matching close. The previous heuristic (firstBrace..lastBrace)
+  // greedily included anything after the JSON — newlines, prose, even a
+  // second concatenated object — and tripped V8's "Unexpected non-
+  // whitespace character after JSON" once the model emitted anything
+  // past its primary response. Walking the structure means we don't care
+  // what follows.
+  const firstObj = jsonStr.indexOf('{');
+  const firstArr = jsonStr.indexOf('[');
+  let start;
+  if (firstObj === -1) start = firstArr;
+  else if (firstArr === -1) start = firstObj;
+  else start = Math.min(firstObj, firstArr);
+
+  if (start === -1) {
+    throw new Error(`VLM response contained no JSON value (got: ${truncateForLog(text)})`);
+  }
+
+  const open = jsonStr[start];
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let end = -1;
+  for (let i = start; i < jsonStr.length; i++) {
+    const ch = jsonStr[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{' || ch === '[') {
+      depth++;
+    } else if (ch === '}' || ch === ']') {
+      depth--;
+      if (depth === 0) {
+        if (ch !== close) {
+          throw new Error(
+            `VLM response had mismatched brackets at position ${i} (got: ${truncateForLog(text)})`
+          );
+        }
+        end = i;
+        break;
+      }
     }
   }
-  return JSON.parse(jsonStr);
+
+  if (end === -1) {
+    throw new Error(`VLM response had unterminated JSON value (got: ${truncateForLog(text)})`);
+  }
+
+  const candidate = jsonStr.slice(start, end + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch (err) {
+    throw new Error(
+      `VLM response was not valid JSON: ${err.message} (candidate: ${truncateForLog(candidate)}; raw: ${truncateForLog(text)})`
+    );
+  }
+}
+
+function truncateForLog(s) {
+  if (typeof s !== 'string') return String(s);
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 240 ? `${oneLine.slice(0, 240)}…` : oneLine;
 }
 
 function median(values) {
@@ -420,19 +560,30 @@ export async function getRailGeometry(imageBuffer) {
 // ---------------------------------------------------------------------------
 
 /**
- * Stage 2: Derive module count from main switch pitch + directly from VLM.
+ * Stage 2: Derive module count via tighten-and-chunk.
  *
- * The main switch is always 2 modules wide on UK CCUs, so:
- *   module_width = main_switch_width / 2
- *   module_count = round(rail_width / module_width)
- * We also ask the VLM directly for a count, and flag disagreement if |geo - vlm| >= 1.
+ * VLM returns ONE rectangle that tightly encloses every device on the
+ * DIN rail; backend chunks the bbox geometrically using CV-detected
+ * pitch (Sobel-X + autocorrelation, primary) or the 44.5mm DIN-43880
+ * face-height anchor (fallback when CV peak is low confidence). Stage 3
+ * classifies each tiled slot — main switch, blanks, and SPDs all
+ * surface as classifications and are filtered by slotsToCircuits.
  *
- * @param {Buffer} imageBuffer
+ * @param {Buffer} imageBuffer — full original image bytes
  * @param {{rail_top:number, rail_bottom:number, rail_left:number, rail_right:number}} medianRails
- * @returns {Promise<{geometricCount:number, vlmCount:number, slotCentersX:number[], disagreement:boolean, mainSwitchCenterX:number, mainSwitchWidth:number, usage:object}>}
- * @throws if ANTHROPIC_API_KEY missing or VLM call fails.
+ *   — rail bbox in 0-1000 normalised coords. From Stage 1's median of
+ *   3 VLM rail-bbox samples, OR from iOS railRoiHint when supplied.
+ * @param {{imageWidth:number, imageHeight:number}} imageDimensions
+ * @param {{trustInputRails?:boolean}} [options]
+ *   — when true, skip VLM rail-bbox tightening and use medianRails as
+ *   the authoritative rail bbox. iOS sets this when railRoiHint is
+ *   present (the user's framing rectangle is more reliable than a
+ *   re-tightened VLM bbox on this signal).
+ * @returns {Promise<object>} module count + slot positions + diagnostics
+ * @throws if ANTHROPIC_API_KEY missing, VLM call fails, or rail_bbox
+ *   is invalid.
  */
-export async function getModuleCount(imageBuffer, medianRails, imageDimensions = {}) {
+export async function getModuleCount(imageBuffer, medianRails, imageDimensions = {}, options = {}) {
   if (!Buffer.isBuffer(imageBuffer)) {
     throw new Error('getModuleCount: imageBuffer must be a Buffer');
   }
@@ -447,272 +598,241 @@ export async function getModuleCount(imageBuffer, medianRails, imageDimensions =
   const anthropic = await getAnthropicClient();
   const base64 = imageBuffer.toString('base64');
 
-  const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT(medianRails));
-  const {
-    main_switch_center_x,
-    main_switch_width,
-    module_count_direct,
-    populated_area_start_x,
-    populated_area_end_x,
-  } = sample.parsed;
+  const sample = await callVlm(anthropic, base64, MODULE_COUNT_PROMPT_GROUPS(medianRails));
+  const { rail_bbox: vlmRailBbox } = sample.parsed;
 
-  if (typeof main_switch_width !== 'number' || main_switch_width <= 0) {
-    throw new Error('getModuleCount: VLM returned invalid main_switch_width');
-  }
-  if (typeof module_count_direct !== 'number') {
-    throw new Error('getModuleCount: VLM returned invalid module_count_direct');
-  }
-
-  const rawRailWidth = medianRails.rail_right - medianRails.rail_left;
-  if (rawRailWidth <= 0) {
-    throw new Error('getModuleCount: rail_right must be greater than rail_left');
-  }
-
-  // Pitch estimate #1: main-switch width ÷ 2. By BS 7671 convention every UK
-  // domestic main switch is a 2-module double-pole isolator (~36mm), so this
-  // gives pitch directly. Will be refined from the bank/count quotient once
-  // the rail span is clamped and count is locked in.
-  let moduleWidth = main_switch_width / 2;
-  const moduleWidthFromMainSwitch = moduleWidth;
-
-  // Pitch estimate #2 (diagnostic): MCB body height. UK domestic MCB bodies
-  // converge at ~82.5mm across Hager / Crabtree / Wylex / Schneider / MK /
-  // Chint (±5%), and module pitch is a hard DIN standard at 17.5mm. So
-  // (17.5 / 82.5) × rail-height-in-pixels → pitch in pixels. This is
-  // independent of main_switch_width and lets us flag when the two
-  // estimates disagree — usually a sign the inspector framed rails outside
-  // the MCB body edges, or the board uses non-standard gear. Not a hard
-  // gate this session; logged as pitchCrossCheck in the return value.
-  const { imageWidth, imageHeight } = imageDimensions || {};
-  let pitchCrossCheck = null;
-  if (Number.isFinite(imageWidth) && imageWidth > 0 &&
-      Number.isFinite(imageHeight) && imageHeight > 0 &&
-      typeof medianRails.rail_top === 'number' &&
-      typeof medianRails.rail_bottom === 'number' &&
-      medianRails.rail_bottom > medianRails.rail_top) {
-    const railHeightPx = ((medianRails.rail_bottom - medianRails.rail_top) / 1000) * imageHeight;
-    const moduleWidthPxFromMs = (moduleWidthFromMainSwitch / 1000) * imageWidth;
-    const moduleWidthPxFromHeight = 17.5 * (railHeightPx / 82.5);
-    const denom = Math.max(moduleWidthPxFromMs, moduleWidthPxFromHeight, 1);
-    const disagreementPct = Math.round(
-      (Math.abs(moduleWidthPxFromMs - moduleWidthPxFromHeight) / denom) * 100
-    );
-    pitchCrossCheck = {
-      fromMainSwitchPx: Math.round(moduleWidthPxFromMs),
-      fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
-      disagreementPct,
-    };
-  }
-
-  // --- Clamp rail span to the populated area -------------------------------
-  // When iOS sends a railRoiHint, the inspector may leave horizontal slack
-  // on the left/right of the MCB row (the rails overlay only constrains the
-  // VERTICAL axis — top/bottom of MCBs to the two bars). Without clamping,
-  // effectiveRailLeft/Right would still reflect the ROI edges and the
-  // refined-pitch step below would compute an artificially wide pitch,
-  // inflating every slot crop. Use the VLM's populated_area bounds (which
-  // correctly skip middle gaps for split-load / RCBO-removed boards) to
-  // tighten the rail span before the main-switch clamp applies. Both bounds
-  // are optional — fall back to medianRails verbatim if the VLM omits or
-  // returns nonsense values.
-  let effectiveRailLeft = medianRails.rail_left;
-  let effectiveRailRight = medianRails.rail_right;
-  let populatedLeftTightened = false;
-  let populatedRightTightened = false;
-  if (
-    typeof populated_area_start_x === 'number' &&
-    Number.isFinite(populated_area_start_x) &&
-    populated_area_start_x > medianRails.rail_left &&
-    populated_area_start_x < medianRails.rail_right
-  ) {
-    effectiveRailLeft = populated_area_start_x;
-    populatedLeftTightened = true;
-  }
-  if (
-    typeof populated_area_end_x === 'number' &&
-    Number.isFinite(populated_area_end_x) &&
-    populated_area_end_x < medianRails.rail_right &&
-    populated_area_end_x > effectiveRailLeft
-  ) {
-    effectiveRailRight = populated_area_end_x;
-    populatedRightTightened = true;
-  }
-
-  // --- Clamp rail span to exclude the main switch bbox ---------------------
-  // Stage 1's VLM often returns `rail_right` at the physical end of the DIN
-  // rail, which includes the main-switch region on right-handed boards (or
-  // `rail_left` at the start of the rail including the main switch on left-
-  // handed boards). Without this clamp, Stage 2 tiles the main-switch zone
-  // into phantom module slots — on a Wylex NHRS12SL that meant 18 slots for
-  // a ~12-module board, which then passed through Stage 3 as 2-4 "unknown"
-  // / "blank" phantoms sitting inside the isolator.
-  //
-  // Skip the clamp when mainSwitchCenterX is null (inline-mains rewireable
-  // boards — the Codex P1 fix handles those via mainSwitchOffset upstream),
-  // or when the main switch already sits outside the populated bounds.
-  //
-  // effectiveRailLeft / effectiveRailRight were initialised above with
-  // medianRails.rail_left / rail_right and already narrowed by the
-  // populated-area clamp. The main-switch clamp narrows them further on the
-  // side the main switch sits on.
-  let mainSwitchSide = null;
-  // Only clamp when the main-switch centre is physically INSIDE the current
-  // effective rail bounds. If the VLM places it outside (e.g. separate rail
-  // segment, Stage 1 already excluded the main-switch zone, or the
-  // populated-area clamp narrowed past it), trust that and leave the span
-  // alone.
-  const msCentreInsideRail =
-    typeof main_switch_center_x === 'number' &&
-    Number.isFinite(main_switch_center_x) &&
-    main_switch_center_x >= effectiveRailLeft &&
-    main_switch_center_x <= effectiveRailRight;
-
-  if (msCentreInsideRail) {
-    const msHalf = main_switch_width / 2;
-    const msLeft = main_switch_center_x - msHalf;
-    const msRight = main_switch_center_x + msHalf;
-    const railMid = (effectiveRailLeft + effectiveRailRight) / 2;
-    if (main_switch_center_x > railMid) {
-      mainSwitchSide = 'right';
-      if (msLeft > effectiveRailLeft) {
-        effectiveRailRight = msLeft;
-      }
-    } else {
-      mainSwitchSide = 'left';
-      if (msRight < effectiveRailRight) {
-        effectiveRailLeft = msRight;
-      }
-    }
-  }
-
-  const railWidth = effectiveRailRight - effectiveRailLeft;
-  if (railWidth <= 0) {
-    throw new Error('getModuleCount: effective rail width collapsed to zero after main-switch clamp');
-  }
-  // Use Math.floor so every generated slot's bbox (centre ± moduleWidth/2)
-  // sits fully inside the effective rail. Math.round could push the last
-  // slot's right edge past effectiveRailRight when railWidth > N·moduleWidth
-  // + moduleWidth/2 (≈40% of the time in practice), which then causes Stage 3
-  // to hallucinate a main_switch on the phantom slot because its crop
-  // extends 2.2× moduleWidth beyond the centre and reaches the real main
-  // switch face. Observed on Wylex NHRS12SL 2026-04-23 harness run 3: Stage
-  // 2 returned 16 slots but the last two (810, 860) had crops reaching into
-  // the main-switch bbox; Stage 3 tagged 14 as main_switch and 15 as blank,
-  // merger pushed "Spare" phantom onto the schedule as circuit 1.
-  let geometricCount = Math.floor(railWidth / moduleWidth);
-
-  const vlmCount = Math.round(module_count_direct);
-
-  // --- Disagreement gate ---------------------------------------------------
-  // After the clamp, if geometric and VLM counts still differ by >= 2, the
-  // rail edges are still fuzzy (typically the far-from-main-switch end —
-  // that's the only remaining unclamped edge). Truncate to the VLM count by
-  // dropping modules from the end NEAREST the main switch, which is the
-  // fuzziest region even post-clamp (main_switch_width is a VLM estimate,
-  // not a measurement). A 1-module drift is ignored — that can be genuine
-  // fence-post rounding.
-  let truncatedFromDisagreement = false;
-  if (vlmCount > 0 && geometricCount - vlmCount >= 2) {
-    geometricCount = vlmCount;
-    truncatedFromDisagreement = true;
-  }
-
-  // --- Refine pitch from bank-width / count --------------------------------
-  // Previously moduleWidth stayed at main_switch_width/2 for slot tiling,
-  // which meant slot positions were extrapolated from ONE anchor (the
-  // main-switch side) and the far slot could drift by up to half a module
-  // relative to the real bank edge. Derek, 2026-04-23: "if the main-switch
-  // measurement is half a millimetre off, 15 MCBs later we're 7.5mm out".
-  //
-  // Fix: once count is locked in, recompute moduleWidth from the clamped
-  // bank width. This pins slot 0 at half a pitch from the left edge AND
-  // the last slot at half a pitch from the right edge — a two-anchor
-  // calibration whose error doesn't compound. The original
-  // main_switch_width/2 value is still returned as moduleWidthFromMainSwitch
-  // for cross-check / diagnostic purposes.
-  //
-  // Gating (Codex 2026-04-23 P1):
-  //
-  //   Refinement is ONLY safe when BOTH ends of the bank are trustworthy.
-  //   The main-switch clamp tightens the main-switch-side edge; we also
-  //   need the OPPOSITE edge to be tight. Two sources of tightness on that
-  //   side:
-  //     - populated_area_start_x / populated_area_end_x from the VLM (the
-  //       end opposite the main switch): tightened iff the relevant
-  //       populated bound was provided AND inside the raw rail bbox.
-  //     - For boards where the main switch is absent or mainSwitchCenterX
-  //       is null (inline mains, rewireable): fall back to requiring
-  //       BOTH populated bounds to have tightened.
-  //
-  //   If the opposite end is still at the raw rail_left / rail_right
-  //   (typical when iOS ROI has horizontal slack and the VLM didn't
-  //   provide populated_area bounds), the refined pitch would stretch
-  //   across that slack and shift far-end slots — reintroducing the same
-  //   phantom slots the sprint is trying to eliminate. Keep main-switch
-  //   pitch in that case.
-  //
-  //   Also never refine when truncation fired — that explicitly distrusts
-  //   the non-main-switch-side edge.
-  const oppositeEndTightened =
-    mainSwitchSide === 'right'
-      ? populatedLeftTightened
-      : mainSwitchSide === 'left'
-        ? populatedRightTightened
-        : populatedLeftTightened && populatedRightTightened;
-  if (
-    geometricCount > 0 &&
-    !truncatedFromDisagreement &&
-    mainSwitchSide !== null &&
-    oppositeEndTightened
-  ) {
-    moduleWidth = railWidth / geometricCount;
-  } else if (geometricCount > 0 && !truncatedFromDisagreement && mainSwitchSide === null && populatedLeftTightened && populatedRightTightened) {
-    // Inline / mains-less fallback: if both populated bounds were provided
-    // AND main switch wasn't localised, both ends are VLM-tightened and
-    // refinement is safe.
-    moduleWidth = railWidth / geometricCount;
-  }
-
-  const slotCentersX = [];
-  if (mainSwitchSide === 'right' || mainSwitchSide === null) {
-    // Tile from the far-from-main-switch end (left), so if we ever truncate
-    // further we lose the modules nearest the main switch (fuzziest region).
-    for (let i = 0; i < geometricCount; i++) {
-      slotCentersX.push(effectiveRailLeft + moduleWidth * (i + 0.5));
-    }
+  // --- Choose rail bbox source --------------------------------------------
+  // 2026-04-29 (Derek field test, Wylex NHRS12SL): the VLM was reliably
+  // mis-tightening the rail bbox vertically — typically clipping it to the
+  // dark toggle housing only and discarding the white rating-label face,
+  // halving rail-height-px. Combined with the (then-current) MCB_BODY_HEIGHT
+  // constant of 82.5mm (full body, most of which sits behind the cover
+  // plate), pixels-per-mm came out at 1/4 of reality and moduleCount came
+  // out 2× too high (29 vs ~15 actual). Fix: when iOS sent a railRoiHint,
+  // skip the VLM tightening entirely — the user's box from the custom
+  // camera already brackets the visible MCB row tightly. When NO ROI hint
+  // was provided (e.g. legacy uploads), we still trust the VLM tightening
+  // as the only signal we have.
+  const trustInputRails = options.trustInputRails === true;
+  let left;
+  let right;
+  let top;
+  let bottom;
+  if (trustInputRails) {
+    left = medianRails.rail_left;
+    right = medianRails.rail_right;
+    top = medianRails.rail_top;
+    bottom = medianRails.rail_bottom;
   } else {
-    // mainSwitchSide === 'left' — tile from the right edge backwards so the
-    // nearest-to-main-switch modules are the last to be generated.
-    for (let i = 0; i < geometricCount; i++) {
-      slotCentersX.push(effectiveRailRight - moduleWidth * (i + 0.5));
+    if (!vlmRailBbox || typeof vlmRailBbox !== 'object') {
+      throw new Error('getModuleCount: VLM returned missing rail_bbox');
     }
-    slotCentersX.reverse(); // keep physical left-to-right ordering for callers
+    left = Number(vlmRailBbox.left);
+    right = Number(vlmRailBbox.right);
+    top = Number(vlmRailBbox.top);
+    bottom = Number(vlmRailBbox.bottom);
+    if (
+      !Number.isFinite(left) ||
+      !Number.isFinite(right) ||
+      !Number.isFinite(top) ||
+      !Number.isFinite(bottom)
+    ) {
+      throw new Error('getModuleCount: rail_bbox edges must all be finite numbers');
+    }
+    if (right <= left) {
+      throw new Error(`getModuleCount: rail_bbox right (${right}) must be > left (${left})`);
+    }
+    if (bottom <= top) {
+      throw new Error(`getModuleCount: rail_bbox bottom (${bottom}) must be > top (${top})`);
+    }
   }
 
-  const disagreement = Math.abs(geometricCount - vlmCount) >= 1;
+  const railBboxNorm = { left, right, top, bottom };
+  const railBboxSource = trustInputRails ? 'user-roi' : 'vlm-tightened';
+
+  // --- Calibrate pixels-per-mm from MCB face height ------------------------
+  // The bbox top/bottom spans the visible MCB FACE — the part that
+  // protrudes through the consumer-unit cover plate. DIN 43880 caps the
+  // front-zone protrusion at 45 mm and every UK domestic MCB range
+  // (Wylex NSB / Hager MCN/MTN / Crabtree / Schneider iC60 / MK Sentry /
+  // Chint / Contactum / Eaton Memshield) lands at 44–45 mm measured. We
+  // use 44.5 mm. DIN module pitch is the hard 17.5 mm standard.
+  //
+  // Earlier versions of this calibration used 82.5 mm — that's the FULL
+  // body height (cover-plate-cutout edge to terminal block), almost half
+  // of which sits behind the cover and is invisible in the photo. Using
+  // 82.5 mm with bbox-height-of-the-visible-face produced moduleCount
+  // ~2× reality. Field-confirmed 2026-04-29 against a measured spares
+  // box.
+  const { imageWidth, imageHeight } = imageDimensions || {};
+  if (
+    !Number.isFinite(imageWidth) ||
+    imageWidth <= 0 ||
+    !Number.isFinite(imageHeight) ||
+    imageHeight <= 0
+  ) {
+    throw new Error(
+      'getModuleCount: imageDimensions must include positive imageWidth and imageHeight'
+    );
+  }
+
+  const MCB_FACE_HEIGHT_MM = 44.5;
+  const MODULE_PITCH_MM = 17.5;
+  const railHeightPx = ((bottom - top) / 1000) * imageHeight;
+  const railWidthPx = ((right - left) / 1000) * imageWidth;
+
+  // --- Pitch detection: CV first, height-anchor fallback ------------------
+  // 2026-04-29 (Derek field-test): the height-anchor path (44.5mm DIN
+  // 43880 face) is sensitive to the user's box being 100% accurate
+  // vertically. A 6%-too-short box on the Wylex Nano photo gave count=17
+  // for an actual 16-module board. Direct CV pitch detection (Sobel-X +
+  // length-normalised autocorrelation) finds the actual periodicity in
+  // the photo and is independent of user framing accuracy.
+  //
+  // CV-first when CCU_CV_PITCH=true (default ON). Fall back to the
+  // height anchor when CV returns null (low confidence, small board, or
+  // disabled by env). Both paths surface as `pitchSource` for telemetry.
+  let moduleWidthPxFromHeight = MODULE_PITCH_MM * (railHeightPx / MCB_FACE_HEIGHT_MM);
+  let moduleWidthPx = moduleWidthPxFromHeight;
+  let pitchSource = 'height-anchor';
+  let cvPitchDiag = null;
+  if (isCcuCvPitchEnabled() && Buffer.isBuffer(imageBuffer)) {
+    const railBboxPx = {
+      left: (left / 1000) * imageWidth,
+      right: (right / 1000) * imageWidth,
+      top: (top / 1000) * imageHeight,
+      bottom: (bottom / 1000) * imageHeight,
+    };
+    try {
+      const cv = await detectModulePitchCv(imageBuffer, railBboxPx);
+      cvPitchDiag = {
+        pitchPx: cv?.pitchPx ?? null,
+        normCorr: cv?.normCorr ?? 0,
+        moduleCountFromCv: cv?.moduleCount ?? null,
+        railWidthPx: cv?.railWidthPx ?? null,
+        reason: cv?.reason ?? null,
+      };
+      if (cv && cv.pitchPx > 0 && cv.moduleCount != null) {
+        moduleWidthPx = cv.pitchPx;
+        pitchSource = 'cv-autocorr';
+      }
+    } catch (err) {
+      cvPitchDiag = { error: String(err?.message || err) };
+    }
+  }
+
+  if (moduleWidthPx <= 0) {
+    throw new Error('getModuleCount: could not derive a positive module width');
+  }
+
+  // --- Compute module count by chunking the bbox width ---------------------
+  // Round to nearest integer — half-modules don't physically exist in UK
+  // CUs (every device is 1 or 2 modules wide on a 17.5mm pitch). When
+  // pitchSource='cv-autocorr', the rounding error is bounded by ±0.5
+  // pixels at the autocorrelation lag resolution (1.2% on typical 80px
+  // pitch → 0.2 module margin on a 16-module board → robust). When
+  // pitchSource='height-anchor', the cross-check against
+  // main_switch_width below catches >10% disagreement.
+  const moduleCountRaw = railWidthPx / moduleWidthPx;
+  const moduleCount = Math.max(1, Math.round(moduleCountRaw));
+
+  // --- Tile slots across the bbox ------------------------------------------
+  // Use the COMPUTED module width (railWidthPx / moduleCount) for tiling
+  // rather than the raw pitch source, so slot 0 sits at half-a-pitch from
+  // the left edge AND slot N-1 sits at half-a-pitch from the right edge.
+  // This is two-anchor calibration — the only slot positioning that
+  // doesn't accumulate error from one end.
+  const tilePitchPx = railWidthPx / moduleCount;
+  const moduleWidth = (tilePitchPx / imageWidth) * 1000; // back to 0-1000 scale
+  const slotCentersX = [];
+  for (let i = 0; i < moduleCount; i++) {
+    slotCentersX.push(left + moduleWidth * (i + 0.5));
+  }
+
+  // --- Cross-check vs CV's independent count (drift detector) --------------
+  // 2026-04-29: replaced the main_switch_width / 2 cross-check now that
+  // Stage 2's prompt no longer asks for main switch geometry. Two
+  // independent module-count signals available here:
+  //   1. moduleCount = round(railWidthPx / pitch)  — bbox + pitch chunking
+  //   2. cvPitchDiag.moduleCountFromCv             — CV's own count
+  //                                                  (railWidthPx / cv.pitchPx)
+  // These derive the SAME way when CV pitch is the source of truth, so on
+  // the cv-autocorr path they agree exactly and this gate doesn't fire. On
+  // the height-anchor fallback path they diverge meaningfully if the user
+  // box was vertically off — that's the case worth flagging. lowConfidence
+  // also surfaces when Stage 3's downstream classification disagrees with
+  // moduleCount (handled at merger level — count of non-blank slots vs
+  // moduleCount), but that gate lives in the route handler since Stage 3
+  // hasn't run yet at this point in the pipeline.
+  let pitchCrossCheck = null;
+  let lowConfidence = false;
+  if (cvPitchDiag && Number.isFinite(cvPitchDiag.moduleCountFromCv)) {
+    const cvCount = cvPitchDiag.moduleCountFromCv;
+    const drift = Math.abs(cvCount - moduleCount);
+    pitchCrossCheck = {
+      fromActualPitchPx: Math.round(moduleWidthPx),
+      fromMcbHeightPx: Math.round(moduleWidthPxFromHeight),
+      moduleCountFromBbox: moduleCount,
+      moduleCountFromCv: cvCount,
+      countDrift: drift,
+    };
+    // Drift of 1 module is within rounding tolerance; >1 means the bbox
+    // and CV are seeing different things — usually a too-wide bbox.
+    if (drift > 1) {
+      lowConfidence = true;
+    }
+  }
+
+  // mainSwitchSide is now derived downstream by the route handler from
+  // (1) Stage 3's main_switch slot index, (2) Stage 1 classifier's
+  // mainSwitchPosition. Stage 2 no longer reports it because the VLM was
+  // unreliable on main_switch_center_x — under-sized the device,
+  // misplaced the centre, or both. Returning null preserves the existing
+  // shape; the fallback chain at extraction.js handles it.
+  const mainSwitchSide = null;
+
+  // Diagnostic block — surfaces the raw inputs to the geometric chunking
+  // calculation so CloudWatch shows us exactly what dimensions / pixel
+  // counts produced this slot count. Added 2026-04-28 after the first
+  // tighten-and-chunk field test (38 Dickens Close, 15:38 BST) reported
+  // moduleCount=29 against an actual 16-module board with the pitch
+  // cross-check showing 0% disagreement — meaning the math was internally
+  // consistent but the inputs were wrong. Without these values in the log
+  // we can't tell whether it's the bbox too wide, the image dimensions
+  // wrong, or both calibrations broken in the same way.
+  const chunkingDiag = {
+    imageWidth: Math.round(imageWidth),
+    imageHeight: Math.round(imageHeight),
+    railWidthPx: Math.round(railWidthPx),
+    railHeightPx: Math.round(railHeightPx),
+    pixelsPerMmFromHeight: Number((railHeightPx / MCB_FACE_HEIGHT_MM).toFixed(2)),
+    moduleWidthPxFromHeight: Math.round(moduleWidthPxFromHeight),
+    moduleWidthPxUsed: Math.round(moduleWidthPx),
+    pitchSource,
+    moduleCountRaw: Number(moduleCountRaw.toFixed(2)),
+    moduleCount,
+  };
 
   return {
-    geometricCount,
-    vlmCount,
+    geometricCount: moduleCount,
+    vlmCount: moduleCount, // no separate VLM count in tighten-and-chunk
     slotCentersX,
-    disagreement,
-    truncatedFromDisagreement,
+    disagreement: false,
+    truncatedFromDisagreement: false,
     mainSwitchSide,
-    mainSwitchCenterX: typeof main_switch_center_x === 'number' ? main_switch_center_x : null,
-    mainSwitchWidth: main_switch_width,
+    mainSwitchCenterX: null,
+    mainSwitchWidth: null,
     moduleWidth,
-    moduleWidthFromMainSwitch,
-    effectiveRailLeft,
-    effectiveRailRight,
-    populatedAreaStartX:
-      typeof populated_area_start_x === 'number' && Number.isFinite(populated_area_start_x)
-        ? populated_area_start_x
-        : null,
-    populatedAreaEndX:
-      typeof populated_area_end_x === 'number' && Number.isFinite(populated_area_end_x)
-        ? populated_area_end_x
-        : null,
+    moduleWidthFromMainSwitch: moduleWidth,
+    effectiveRailLeft: left,
+    effectiveRailRight: right,
+    railBbox: railBboxNorm,
+    railBboxSource, // 'user-roi' (no VLM tightening) | 'vlm-tightened'
+    pitchSource, // 'cv-autocorr' | 'height-anchor' (44.5mm DIN face fallback)
+    cvPitchDiag, // CV detection internals (pitch, normCorr, fallback reason)
     pitchCrossCheck,
+    chunkingDiag, // raw chunking inputs for prod diagnostics
+    lowConfidence,
     usage: {
       inputTokens: sample.inputTokens,
       outputTokens: sample.outputTokens,
@@ -866,139 +986,145 @@ export async function classifySlots(_imageBuffer, slotCrops, opts = {}) {
   const resultsBySlotIndex = new Map();
   const usage = { inputTokens: 0, outputTokens: 0 };
 
-  for (const batch of batches) {
-    const slotIndices = batch.map((b) => b.slotIndex);
-    const base64s = batch.map((b) => b.buffer.toString('base64'));
+  // Batches run in PARALLEL via Promise.all. Each batch's VLM call is
+  // independent — the slotIndex range a batch covers doesn't overlap any
+  // other batch — so concurrent dispatch is safe. Within each async fn,
+  // resultsBySlotIndex.set and usage += are synchronous statements with no
+  // await between read and write, so JS's single-threaded execution gives
+  // us atomicity for free (no Map.set racing with another Map.set, and no
+  // torn += reads). Failure mode: if any batch rejects, Promise.all
+  // rejects with the first error; in-flight peers complete but their
+  // results are discarded — same observable behaviour as the previous
+  // sequential loop, just with marginally more wasted cost on failure.
+  await Promise.all(
+    batches.map(async (batch) => {
+      const slotIndices = batch.map((b) => b.slotIndex);
+      const base64s = batch.map((b) => b.buffer.toString('base64'));
 
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), CCU_GEOMETRIC_TIMEOUT_MS);
-    let response;
-    try {
-      response = await anthropic.messages.create(
-        {
-          model,
-          max_tokens: CCU_STAGE3_MAX_TOKENS,
-          messages: [
-            {
-              role: 'user',
-              content: [
-                ...base64s.map((data) => ({
-                  type: 'image',
-                  source: { type: 'base64', media_type: 'image/jpeg', data },
-                })),
-                { type: 'text', text: SLOT_CLASSIFY_PROMPT(slotIndices) },
-              ],
-            },
-          ],
-        },
-        { signal: abortController.signal }
-      );
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    const text = (response.content || [])
-      .filter((b) => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
-    // Parse array response. Strip fences and find the outer [...] block.
-    let arr;
-    try {
-      let jsonStr = text.trim();
-      const fence = jsonStr.match(/```json\s*([\s\S]*?)```/);
-      if (fence) jsonStr = fence[1].trim();
-      const firstBracket = jsonStr.indexOf('[');
-      const lastBracket = jsonStr.lastIndexOf(']');
-      if (firstBracket !== -1 && lastBracket > firstBracket) {
-        jsonStr = jsonStr.slice(firstBracket, lastBracket + 1);
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), CCU_GEOMETRIC_TIMEOUT_MS);
+      let response;
+      try {
+        response = await anthropic.messages.create(
+          {
+            model,
+            max_tokens: CCU_STAGE3_MAX_TOKENS,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  ...base64s.map((data) => ({
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/jpeg', data },
+                  })),
+                  { type: 'text', text: SLOT_CLASSIFY_PROMPT(slotIndices) },
+                ],
+              },
+            ],
+          },
+          { signal: abortController.signal }
+        );
+      } finally {
+        clearTimeout(timeoutId);
       }
-      arr = JSON.parse(jsonStr);
-      if (!Array.isArray(arr)) throw new Error('not an array');
-    } catch (err) {
-      throw new Error(`classifySlots: failed to parse VLM array response: ${err.message}`);
-    }
 
-    const u = response.usage || {};
-    usage.inputTokens += u.input_tokens || 0;
-    usage.outputTokens += u.output_tokens || 0;
+      const text = (response.content || [])
+        .filter((b) => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
 
-    // Match by echoed slot_index if present, else fall back to positional order.
-    for (let i = 0; i < batch.length; i++) {
-      const crop = batch[i];
-      const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
-      // Validate the new content/extends fields (2026-04-23 schema). Older
-      // VLM responses (or responses where the model ignored the new fields)
-      // won't include them — fall back to defaults that preserve the old
-      // behaviour: content inferred from classification, extends="none".
-      const rawContent = typeof vlmItem.content === 'string' ? vlmItem.content : null;
-      const content = ['device', 'blank', 'empty', 'partial'].includes(rawContent)
-        ? rawContent
-        : vlmItem.classification === 'blank'
-          ? 'blank'
-          : vlmItem.classification === 'empty'
-            ? 'empty'
-            : 'device';
-      const rawExtends = typeof vlmItem.extends === 'string' ? vlmItem.extends : null;
-      const extendsSide = ['none', 'left', 'right', 'both'].includes(rawExtends)
-        ? rawExtends
-        : 'none';
+      // Parse array response. Reuse the balanced-walk extractor so trailing
+      // prose / extra blocks / unfenced multi-object responses don't trip
+      // the parser the way a naive firstBracket..lastBracket slice did.
+      let arr;
+      try {
+        arr = extractJson(text);
+        if (!Array.isArray(arr)) throw new Error('not an array');
+      } catch (err) {
+        throw new Error(`classifySlots: failed to parse VLM array response: ${err.message}`);
+      }
 
-      // OCR cross-check on ratings. Hallucinated ratings have no textual
-      // evidence in the pixels — a half-RCD crop confidently "reading"
-      // B32 won't have "32" anywhere in the transcribed rating_text.
-      // When disagreement is detected, null out the rating rather than
-      // silently accepting a fabricated number. Only applies when BOTH
-      // rating_text and ratingAmps are provided and the text is a string;
-      // older VLM responses without rating_text pass through unaffected.
-      //
-      // Strict check: does rating_text contain the digit sequence of
-      // ratingAmps? Tolerant to whitespace and adjacent characters
-      // (rating_text="B32" contains "32"; rating_text="C 40" contains
-      // "40"; rating_text="32 A" contains "32"). Handles the Wylex
-      // suffix-curve convention ("NSB32-C", "PSB32-C") which the prompt
-      // explicitly supports.
-      let ratingAmps =
-        typeof vlmItem.ratingAmps === 'number'
-          ? vlmItem.ratingAmps
-          : (vlmItem.ratingAmps ?? null);
-      let ratingHallucinationDetected = false;
-      if (ratingAmps != null && typeof vlmItem.rating_text === 'string') {
-        const textDigits = vlmItem.rating_text.replace(/\D+/g, ' ');
-        const ratingDigits = String(ratingAmps);
-        const tokens = textDigits.split(/\s+/).filter(Boolean);
-        const anyTokenMatches = tokens.some((tok) => tok === ratingDigits);
-        if (!anyTokenMatches) {
-          // Rating text doesn't contain the claimed rating — this is the
-          // classic half-RCD-as-B32 hallucination. Reject the rating.
-          ratingAmps = null;
-          ratingHallucinationDetected = true;
+      const u = response.usage || {};
+      usage.inputTokens += u.input_tokens || 0;
+      usage.outputTokens += u.output_tokens || 0;
+
+      // Match by echoed slot_index if present, else fall back to positional order.
+      for (let i = 0; i < batch.length; i++) {
+        const crop = batch[i];
+        const vlmItem = arr.find((x) => x && x.slot_index === crop.slotIndex) || arr[i] || {};
+        // Validate the new content/extends fields (2026-04-23 schema). Older
+        // VLM responses (or responses where the model ignored the new fields)
+        // won't include them — fall back to defaults that preserve the old
+        // behaviour: content inferred from classification, extends="none".
+        const rawContent = typeof vlmItem.content === 'string' ? vlmItem.content : null;
+        const content = ['device', 'blank', 'empty', 'partial'].includes(rawContent)
+          ? rawContent
+          : vlmItem.classification === 'blank'
+            ? 'blank'
+            : vlmItem.classification === 'empty'
+              ? 'empty'
+              : 'device';
+        const rawExtends = typeof vlmItem.extends === 'string' ? vlmItem.extends : null;
+        const extendsSide = ['none', 'left', 'right', 'both'].includes(rawExtends)
+          ? rawExtends
+          : 'none';
+
+        // OCR cross-check on ratings. Hallucinated ratings have no textual
+        // evidence in the pixels — a half-RCD crop confidently "reading"
+        // B32 won't have "32" anywhere in the transcribed rating_text.
+        // When disagreement is detected, null out the rating rather than
+        // silently accepting a fabricated number. Only applies when BOTH
+        // rating_text and ratingAmps are provided and the text is a string;
+        // older VLM responses without rating_text pass through unaffected.
+        //
+        // Strict check: does rating_text contain the digit sequence of
+        // ratingAmps? Tolerant to whitespace and adjacent characters
+        // (rating_text="B32" contains "32"; rating_text="C 40" contains
+        // "40"; rating_text="32 A" contains "32"). Handles the Wylex
+        // suffix-curve convention ("NSB32-C", "PSB32-C") which the prompt
+        // explicitly supports.
+        let ratingAmps =
+          typeof vlmItem.ratingAmps === 'number'
+            ? vlmItem.ratingAmps
+            : (vlmItem.ratingAmps ?? null);
+        let ratingHallucinationDetected = false;
+        if (ratingAmps != null && typeof vlmItem.rating_text === 'string') {
+          const textDigits = vlmItem.rating_text.replace(/\D+/g, ' ');
+          const ratingDigits = String(ratingAmps);
+          const tokens = textDigits.split(/\s+/).filter(Boolean);
+          const anyTokenMatches = tokens.some((tok) => tok === ratingDigits);
+          if (!anyTokenMatches) {
+            // Rating text doesn't contain the claimed rating — this is the
+            // classic half-RCD-as-B32 hallucination. Reject the rating.
+            ratingAmps = null;
+            ratingHallucinationDetected = true;
+          }
         }
-      }
 
-      resultsBySlotIndex.set(crop.slotIndex, {
-        slotIndex: crop.slotIndex,
-        content,
-        extends: extendsSide,
-        classification: vlmItem.classification || (content === 'empty' ? 'empty' : 'unknown'),
-        manufacturer: vlmItem.manufacturer ?? null,
-        model: vlmItem.model ?? null,
-        ratingAmps,
-        ratingText: typeof vlmItem.rating_text === 'string' ? vlmItem.rating_text : null,
-        ratingHallucinationDetected,
-        poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : null,
-        tripCurve: vlmItem.tripCurve ?? null,
-        sensitivity: typeof vlmItem.sensitivity === 'number' ? vlmItem.sensitivity : null,
-        rcdWaveformType: vlmItem.rcdWaveformType ?? null,
-        bsEn: vlmItem.bsEn ?? null,
-        confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
-        crop: {
-          bbox: crop.bbox,
-          base64: crop.buffer.toString('base64'),
-        },
-      });
-    }
-  }
+        resultsBySlotIndex.set(crop.slotIndex, {
+          slotIndex: crop.slotIndex,
+          content,
+          extends: extendsSide,
+          classification: vlmItem.classification || (content === 'empty' ? 'empty' : 'unknown'),
+          manufacturer: vlmItem.manufacturer ?? null,
+          model: vlmItem.model ?? null,
+          ratingAmps,
+          ratingText: typeof vlmItem.rating_text === 'string' ? vlmItem.rating_text : null,
+          ratingHallucinationDetected,
+          poles: typeof vlmItem.poles === 'number' ? vlmItem.poles : null,
+          tripCurve: vlmItem.tripCurve ?? null,
+          sensitivity: typeof vlmItem.sensitivity === 'number' ? vlmItem.sensitivity : null,
+          rcdWaveformType: vlmItem.rcdWaveformType ?? null,
+          bsEn: vlmItem.bsEn ?? null,
+          confidence: typeof vlmItem.confidence === 'number' ? vlmItem.confidence : 0,
+          crop: {
+            bbox: crop.bbox,
+            base64: crop.buffer.toString('base64'),
+          },
+        });
+      }
+    })
+  );
 
   // Preserve input order. Fallback defaults mirror the 2026-04-23 schema —
   // content/extends/ratingText included so downstream merger never
@@ -1132,10 +1258,19 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
   }
 
   const t1 = Date.now();
-  const stage2 = await getModuleCount(stage2Image, stage2Rails, {
-    imageWidth: stage2Width,
-    imageHeight: stage2Height,
-  });
+  const stage2 = await getModuleCount(
+    stage2Image,
+    stage2Rails,
+    { imageWidth: stage2Width, imageHeight: stage2Height },
+    // 2026-04-29: when iOS sent a railRoiHint, the user has already drawn a
+    // tight box around the visible MCB row. Skip the VLM rail-bbox
+    // tightening step in groups-mode — the VLM has been mis-tightening
+    // vertically (clipping the white rating-label face off the device,
+    // halving rail height, doubling moduleCount). We still call the VLM
+    // because we need main_switch_center_x / main_switch_width; we just
+    // ignore its rail_bbox and use the user's box directly.
+    { trustInputRails: !!options.railRoiHint }
+  );
   const stage2Ms = Date.now() - t1;
 
   // --- Translate Stage 2 X-axis outputs back to original image coords ----
@@ -1157,12 +1292,9 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
       typeof c === 'number' && Number.isFinite(c)
         ? ((cropX0 + (c / 1000) * cropW) / origWidth) * 1000
         : c;
-    const scaleWidth = (w) =>
-      typeof w === 'number' && Number.isFinite(w) ? w * scale : w;
+    const scaleWidth = (w) => (typeof w === 'number' && Number.isFinite(w) ? w * scale : w);
 
     stage2.mainSwitchCenterX = translateX(stage2.mainSwitchCenterX);
-    stage2.populatedAreaStartX = translateX(stage2.populatedAreaStartX);
-    stage2.populatedAreaEndX = translateX(stage2.populatedAreaEndX);
     stage2.effectiveRailLeft = translateX(stage2.effectiveRailLeft);
     stage2.effectiveRailRight = translateX(stage2.effectiveRailRight);
     stage2.mainSwitchWidth = scaleWidth(stage2.mainSwitchWidth);
@@ -1171,6 +1303,18 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     if (Array.isArray(stage2.slotCentersX)) {
       stage2.slotCentersX = stage2.slotCentersX.map(translateX);
     }
+    // Translate railBbox X-axis only. Y-axis stays in crop scale because
+    // downstream Stage 3 reads stage1.medianRails for vertical crop bounds
+    // (original-image scale), and the height calibration was computed
+    // against the crop-scale top/bottom values.
+    if (stage2.railBbox && typeof stage2.railBbox === 'object') {
+      stage2.railBbox = {
+        left: translateX(stage2.railBbox.left),
+        right: translateX(stage2.railBbox.right),
+        top: stage2.railBbox.top,
+        bottom: stage2.railBbox.bottom,
+      };
+    }
   }
 
   const usage = {
@@ -1178,19 +1322,11 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     outputTokens: stage1.usage.outputTokens + stage2.usage.outputTokens,
   };
 
-  // Roll the Stage 2 truncation signal into top-level lowConfidence so the
-  // route handler can surface it (and iOS can render the existing lowConf
-  // banner / amber state) without needing a second flag.
-  // lowConfidence fires when: Stage 1 samples diverged (SD threshold),
-  // Stage 2 truncated geometric → VLM (big overcount that we fixed), OR
-  // geometric/VLM disagreed by 2+ modules with VLM higher (we floor-counted
-  // and undercount is suspected). The last case used to be silent — only
-  // truncation lit lowConfidence — but a 2-module delta in either direction
-  // means rail geometry is shaky and the inspector should double-check.
-  const lowConfidence =
-    stage1.lowConfidence ||
-    !!stage2.truncatedFromDisagreement ||
-    Math.abs(stage2.geometricCount - stage2.vlmCount) >= 2;
+  // lowConfidence fires when EITHER Stage 1 SD threshold tripped (rail
+  // bbox samples diverged) OR Stage 2's CV-vs-bbox count cross-check
+  // tripped (CV's own moduleCount disagreed with the bbox-derived count
+  // by >1 module — usually indicates a too-wide rail bbox).
+  const lowConfidence = stage1.lowConfidence || !!stage2.lowConfidence;
 
   return {
     medianRails: stage1.medianRails,
@@ -1200,6 +1336,12 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
     truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
     lowConfidence,
     stage1Source, // 'vlm' | 'roi-hint' — lets caller log the skip
+    railBbox: stage2.railBbox ?? null,
+    railBboxSource: stage2.railBboxSource ?? null, // 'user-roi' | 'vlm-tightened'
+    pitchSource: stage2.pitchSource ?? null, // 'cv-autocorr' | 'height-anchor'
+    cvPitchDiag: stage2.cvPitchDiag ?? null,
+    pitchCrossCheck: stage2.pitchCrossCheck ?? null,
+    chunkingDiag: stage2.chunkingDiag ?? null,
     slotCentersX: stage2.slotCentersX,
     moduleWidth: stage2.moduleWidth,
     mainSwitchWidth: stage2.mainSwitchWidth,
@@ -1226,9 +1368,13 @@ export async function prepareModernGeometry(imageBuffer, options = {}) {
         moduleWidthFromMainSwitch: stage2.moduleWidthFromMainSwitch,
         effectiveRailLeft: stage2.effectiveRailLeft,
         effectiveRailRight: stage2.effectiveRailRight,
-        populatedAreaStartX: stage2.populatedAreaStartX,
-        populatedAreaEndX: stage2.populatedAreaEndX,
+        railBbox: stage2.railBbox ?? null,
+        railBboxSource: stage2.railBboxSource ?? null,
+        pitchSource: stage2.pitchSource ?? null,
+        cvPitchDiag: stage2.cvPitchDiag ?? null,
         pitchCrossCheck: stage2.pitchCrossCheck,
+        chunkingDiag: stage2.chunkingDiag ?? null,
+        lowConfidence: !!stage2.lowConfidence,
         disagreement: stage2.disagreement,
         truncatedFromDisagreement: !!stage2.truncatedFromDisagreement,
         usage: stage2.usage,

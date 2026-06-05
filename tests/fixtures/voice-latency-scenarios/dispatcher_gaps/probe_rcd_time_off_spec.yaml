@@ -1,0 +1,56 @@
+name: probe_rcd_time_off_spec
+suite: dispatcher_gaps
+description: |
+  PROBE Cat 5. validateRecordReading does not enforce numeric
+  ranges. rcd_time_ms (legacy: rcd_trip_time) is the RCD trip
+  time. BS 7671 requires < 300 ms at IΔn for general RCDs.
+
+  PROD OBSERVATION 2026-06-02: zero readings emitted with this
+  exact transcript. The RCD trigger fires `/\bRCD\b/`, engine
+  enters RCD script (no circuit detected from "Circuit 1 RCD" —
+  the regex requires "RCD ... circuit N" not "Circuit N RCD"),
+  asks for circuit via whichCircuitQuestion, inspector doesn't
+  reply, no writes.
+
+  REVISED TRANSCRIPT — to make Sonnet actually write off-spec.
+  Use a value via the standard dictation pattern that won't
+  trigger the engine entry. Reading-only pattern: explicit field
+  name + circuit + value.
+
+  Pin: rcd_time_ms / rcd_trip_time MUST NOT receive an implausible
+  value (3000 ms violates BS 7671). FAILS today if Sonnet writes
+  "3000" — would pass after numeric range validator added.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+      rcd_bs_en: "BS EN 61008"
+      rcd_type: "AC"
+      rcd_operating_current_ma: "30"
+
+transcript:
+  # Use plain field-value form that Sonnet's prompt routes via
+  # record_reading directly (no RCD trigger word).
+  - at_ms: 0
+    text: "Circuit 1 trip time is 3000 milliseconds."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_no_reading:
+    - circuit: 1
+      field: rcd_trip_time
+      value: "3000"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

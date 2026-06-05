@@ -38,9 +38,9 @@ import type {
 import { hasValue, parseObservationCode } from './apply-extraction';
 
 /** Whitelist of installation keys we let the extractor populate.
- *  Must stay aligned with `InstallationShape` in
- *  `web/src/app/job/[id]/installation/page.tsx:42-76` and the backend
- *  prompt schema at `src/routes/extraction.js:1351-1367`. */
+ *  Aligned with `InstallationShape` in
+ *  `web/src/app/job/[id]/installation/page.tsx` and the backend
+ *  prompt schema at `src/routes/extraction.js`. */
 const INSTALLATION_STRING_KEYS = [
   'client_name',
   'address',
@@ -50,6 +50,13 @@ const INSTALLATION_STRING_KEYS = [
   'premises_description',
   'reason_for_report',
   'occupier_name',
+  'client_phone',
+  'client_email',
+  'extent',
+  'agreed_limitations',
+  'agreed_with',
+  'operational_limitations',
+  'date_of_inspection',
   'date_of_previous_inspection',
   'previous_certificate_number',
   'estimated_age_of_installation',
@@ -63,24 +70,87 @@ const INSTALLATION_YESNO_KEYS = [
   'evidence_of_additions_alterations',
 ] as const;
 
-/** Whitelist of supply keys. From backend prompt
- *  `src/routes/extraction.js:1368-1374`. */
+/** Whitelist of supply-characteristics keys the extractor may populate.
+ *  Expanded alongside the prompt rewrite that adds main-switch, bonding,
+ *  electrode, and DNO-cutout fields. Mirrors `config/field_schema.json`
+ *  `supply_characteristics_fields`. */
 const SUPPLY_KEYS = [
   'earthing_arrangement',
+  'live_conductors',
+  'number_of_supplies',
   'nominal_voltage_u',
+  'nominal_voltage_uo',
   'nominal_frequency',
   'prospective_fault_current',
   'earth_loop_impedance_ze',
+  'spd_bs_en',
+  'spd_type_supply',
+  'spd_short_circuit',
+  'spd_rated_current',
+  'earth_electrode_type',
+  'earth_electrode_resistance',
+  'earth_electrode_location',
+  'main_switch_bs_en',
+  'main_switch_poles',
+  'main_switch_voltage',
+  'main_switch_current',
+  'main_switch_fuse_setting',
+  'main_switch_location',
+  'main_switch_conductor_material',
+  'main_switch_conductor_csa',
+  'rcd_operating_current',
+  'rcd_time_delay',
+  'rcd_operating_time',
+  'earthing_conductor_material',
+  'earthing_conductor_csa',
+  'earthing_conductor_continuity',
+  'bonding_conductor_material',
+  'bonding_conductor_csa',
+  'bonding_conductor_continuity',
+  'bonding_water',
+  'bonding_gas',
+  'bonding_oil',
+  'bonding_structural_steel',
+  'bonding_lightning',
+  'bonding_other',
 ] as const;
 
-/** Board row keys the document extractor populates. Subset of the
- *  iOS board schema; the web board UI uses these exact keys. */
+/** Supply-characteristics boolean fields. The prompt emits "Yes"/"No"
+ *  for these (see rule #6 in the prompt); we coerce to booleans to
+ *  match the web installation form's storage shape. */
+const SUPPLY_YESNO_KEYS = [
+  'supply_polarity_confirmed',
+  'means_earthing_distributor',
+  'means_earthing_electrode',
+  'bonding_other_na',
+] as const;
+
+/** Board row keys the document extractor populates. Covers full board
+ *  metadata + multi-board hierarchy fields now present in the prompt
+ *  SCHEMA section. */
 const BOARD_KEYS = [
   'manufacturer',
   'name',
+  'location',
+  'phases',
+  'earthing_arrangement',
+  'ze',
+  'ze_at_db',
+  'ipf_at_db',
   'rated_current',
   'main_switch_bs_en',
+  'voltage_rating',
+  'ipf_rating',
+  'rcd_rating_ma',
+  'rcd_trip_time',
   'spd_status',
+  'spd_type',
+  'board_type',
+  'parent_board_id',
+  'feed_circuit_ref',
+  'sub_main_cable_material',
+  'sub_main_cable_csa',
+  'sub_main_cpc_csa',
 ] as const;
 
 export interface DocumentApplyResult {
@@ -160,6 +230,16 @@ function mergeSupply(
     changed = true;
   }
 
+  // Boolean Yes/No fields — coerce the same way installation does, so
+  // the model can emit "Yes"/"No" strings and they land as booleans.
+  for (const key of SUPPLY_YESNO_KEYS) {
+    if (existing[key] !== undefined) continue;
+    const coerced = yesNoToBool(incoming[key]);
+    if (coerced === undefined) continue;
+    next[key] = coerced;
+    changed = true;
+  }
+
   return changed ? next : null;
 }
 
@@ -227,10 +307,24 @@ function mergeCircuits(
   if (incoming.length === 0) return null;
 
   const existing = ((job.circuits as CircuitRow[] | undefined) ?? []).slice();
+  // Match circuits by (board_id, circuit_ref) — circuit_ref alone is
+  // not unique across boards. A main DB and a sub-board can both have
+  // a "circuit 1" with completely different test readings; matching by
+  // ref-only collapses the sub-board row into the main-board row and
+  // loses real data. The target board for unmatched/new rows is the
+  // current document-extraction board (`boardId`), so dedupe against
+  // that board's existing rows. Rows on other boards are intentionally
+  // ignored — they're not candidates for merge from this extraction.
   const byRef = new Map<string, number>();
+  const dedupeBoardId = boardId ?? '';
   existing.forEach((row, idx) => {
     const ref = (row.circuit_ref ?? row.number) as string | undefined;
-    if (typeof ref === 'string' && ref) byRef.set(ref.toLowerCase(), idx);
+    if (typeof ref !== 'string' || !ref) return;
+    const rowBoardId = (row.board_id as string | undefined) ?? '';
+    // Only index rows that belong to the merge-target board (or both
+    // sides have no board_id, the legacy single-board shape).
+    if (rowBoardId !== dedupeBoardId) return;
+    byRef.set(ref.toLowerCase(), idx);
   });
 
   let affected = 0;
@@ -405,7 +499,7 @@ export function applyDocumentExtractionToJob(
       // Fall back to the first existing board if we didn't synth one —
       // keeps new circuits attached to a real board when the extractor
       // didn't populate board fields.
-      const boards = (job.boards ?? []) as Array<{ id?: string }>;
+      const boards = (job.boards as { id: string }[] | undefined) ?? [];
       return boards[0]?.id ?? null;
     })();
 

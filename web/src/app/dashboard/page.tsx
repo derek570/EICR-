@@ -201,7 +201,10 @@ export default function DashboardPage() {
   // Phase 3 — guided tour controller. Auto-starts on first visit, and
   // the "Start tour" tile below hands off to `tour.start()` so the
   // same state machine runs whether the tour is auto or manual.
-  const tour = useTour({ autoStartOnFirstRun: true });
+  // Phase D — narrate=true enables Web Speech API narration on each
+  // step plus auto-advance once the speech ends. iOS canon: the
+  // dashboard tour is fully narrated (TourManager.dashboardSteps).
+  const tour = useTour({ autoStartOnFirstRun: true, narrate: true });
 
   return (
     <main
@@ -327,6 +330,15 @@ export default function DashboardPage() {
           Setup &amp; Tools
         </h2>
         <div className="grid gap-2 sm:grid-cols-2">
+          {/*
+           * iOS canon ordering (DashboardView.swift L593-630):
+           *   Defaults | Company / Staff | Settings / Tour | Log Out
+           * Defaults tile was hidden during the Phase 6 partial port;
+           * Phase B (2026-05-03) restores it now that the Defaults
+           * manager is fully wired (presets + cable sizes editor + apply
+           * flow at /settings/defaults).
+           */}
+          <SetupTile icon={SlidersHorizontal} label="Defaults" href="/settings/defaults" />
           <SetupTile icon={Building2} label="Company" href="/settings/company" />
           <SetupTile icon={UserCheck} label="Staff" href="/settings/staff" />
           <SetupTile icon={Settings} label="Settings" href="/settings" />

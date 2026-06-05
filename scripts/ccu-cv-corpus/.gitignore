@@ -1,0 +1,7 @@
+# Test corpus is pulled from S3 by build-manifest.mjs — too large to commit.
+# Re-fetch with:
+#   aws s3 cp --recursive s3://eicr-files-production/ccu-extractions/<userId>/no-session/ scripts/ccu-cv-corpus/raw/ \
+#     --region eu-west-2 --exclude "*" --include "*/original.jpg" --include "*/result.json"
+raw/
+debug/
+manifest.json

@@ -16,8 +16,12 @@ import { BoardSelectorBar } from '@/components/job/board-selector-bar';
  *
  * iOS supports multiple boards per job (main + sub-distribution); the web
  * stores the list in `job.boards` (backend wire key — see
- * `src/routes/jobs.js:575-592`). We default to a single synthesized main
- * board if the array is empty so inspectors can start filling straight away.
+ * `src/routes/jobs.js:575-592` + `packages/shared-types/src/job.ts`
+ * `JobDetail.boards`). We default to a single synthesized main board if the
+ * array is empty so inspectors can start filling straight away. Adding /
+ * removing boards is a Phase 3a feature — the full parent / sub-main
+ * hierarchy editing lands with Phase 3b (Circuits) because that's when the
+ * feed-circuit reference actually matters.
  *
  * Phase 4 additions (iOS parity):
  *   - Move Left / Move Right reorder actions on the selector toolbar.
@@ -79,13 +83,18 @@ function newBoard(designation = 'DB1'): BoardRecord {
 
 export default function BoardPage() {
   const { job, certificateType, updateJob } = useJobContext();
-  // `job.boards` is the canonical top-level array (backend wire key — see
-  // `src/routes/jobs.js:575-592`). The backend emits `boards: null` for
-  // single-board jobs while keeping the real data in `board_info`, so we
+  // `job.boards` is the canonical top-level array (backend wire key —
+  // see `src/routes/jobs.js:575-592` + `packages/shared-types/src/job.ts`
+  // `JobDetail.boards`). The backend emits `boards: null` for single-
+  // board jobs while keeping the real data in `board_info`, so we
   // synthesize a single row from `board_info` when `boards` is empty.
   // Without this fallback, single-board jobs lose their board data on
   // first edit (the synth blank DB1 would overwrite the populated
-  // board_info silently).
+  // board_info silently — Wave B P0 fix).
+  //
+  // Memo-wrap so `boards` has a stable identity unless the underlying
+  // job state actually changed — needed by the selected-id guard effect
+  // below, and keeps downstream filters from re-running.
   const existingBoards = (job.boards ?? []) as BoardRecord[];
   const boardInfo = (job.board_info ?? {}) as Record<string, unknown>;
   const boards: BoardRecord[] = React.useMemo(() => {
@@ -120,13 +129,13 @@ export default function BoardPage() {
   }, [boards, activeId]);
 
   const persistBoards = (next: BoardRecord[]) => {
-    // When there's exactly one board, keep `board_info` in sync as a
-    // single-board summary — matches the backend's dual-field pattern
-    // (boards null / board_info populated for single-board jobs) and
-    // keeps any consumer reading `board_info` (e.g. the Overview hero
-    // strip) from going stale after a Board-tab edit. For multi-board
-    // jobs, board_info is best-effort primary-board summary; we mirror
-    // the first (main) board so it stays meaningful.
+    // Keep `board_info` in sync as a single-board summary — matches the
+    // backend's dual-field pattern (boards null / board_info populated
+    // for single-board jobs) and keeps any consumer reading `board_info`
+    // (e.g. the Overview hero strip) from going stale after a Board-tab
+    // edit. For multi-board jobs, board_info is best-effort primary-
+    // board summary; we mirror the first (main) board so it stays
+    // meaningful.
     const primary = next[0];
     const boardInfoSummary = primary ? { ...primary } : {};
     // Drop the synthetic `id` + `board_type` fields before writing to

@@ -1,0 +1,45 @@
+{
+  "_doc": "Phase 5 Plan 05-06 — observation_confirmation pass-through canary (Pitfall 6 anchor). Inspector pre-fills several circuit slots; the model emits ask_user(reason='observation_confirmation', context_field=null, context_circuit=null). The Stage 5 legacy filter's REFILL_QUESTION_TYPES whitelist deliberately EXCLUDES 'observation_confirmation' (filled-slots-filter.js:42-46) so the filter passes confirmation asks through regardless of filled state. The Plan 05-02 ASK_REASON_TO_LEGACY_TYPE mapping translates observation_confirmation→'observation_confirmation' (NOT 'unclear'), preserving the same semantic on the tool-call path. Therefore the filled-slots-shadow logger MUST NOT emit 'stage6.filled_slots_would_suppress' for this fixture — even though slots are filled. The ask itself fires normally (1 answered).",
+  "_requirement": "STB-03 + STB-05 + Pitfall 6 lock — observation_confirmation must NEVER be classified as a refill ask in shadow logging; the Stage 5 codex-round-2 fix (commit 1cc6eba) is preserved on the tool-call path.",
+  "_fixture_shape": "phase5-over-ask",
+  "session": {
+    "jobId": "golden-10",
+    "certificateType": "EICR"
+  },
+  "transcript_summary": "Multiple slots already filled on circuits 1-3. Model emits ask_user('did you also see X?') with reason='observation_confirmation'. Shadow logger does NOT emit would-suppress (Pitfall 6). Ask fires.",
+  "pre_seeded_circuits": {
+    "1": { "measured_zs_ohm": "0.35", "r1_r2_ohm": "0.24" },
+    "2": { "measured_zs_ohm": "0.41" },
+    "3": { "measured_zs_ohm": "0.30" }
+  },
+  "ask_user_calls": [
+    {
+      "turnId": "golden-10-turn-2",
+      "synthetic_time_ms": 0,
+      "call": {
+        "id": "toolu_10_a",
+        "name": "ask_user",
+        "input": {
+          "question": "Did you also see signs of overheating on the upstairs lighting?",
+          "reason": "observation_confirmation",
+          "context_field": null,
+          "context_circuit": null,
+          "expected_answer_shape": "free_text"
+        }
+      },
+      "inner_outcome": { "answered": true, "user_text": "yes a bit of discolouration" }
+    }
+  ],
+  "expected_ask_user_count": 1,
+  "expected_restrained_activations": 0,
+  "expected_outcome_distribution": {
+    "answered": 1,
+    "gated": 0,
+    "ask_budget_exhausted": 0,
+    "restrained_mode": 0,
+    "user_moved_on": 0,
+    "timeout": 0
+  },
+  "expected_filled_slots_shadow_logs": 0,
+  "gate_fixture": true
+}

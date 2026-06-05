@@ -1,0 +1,51 @@
+name: multi_circuit_dictation
+suite: baseline
+description: |
+  Inspector dictates three Zs values in one breath across three
+  circuits. Sonnet must extract THREE record_reading calls, one per
+  circuit, each with the correct value.
+
+  Common real-world cadence: inspectors often batch readings to save
+  breath. The legacy "All circuits Zs is X" pattern is covered
+  separately by bulk_polarity_confirm; this is the verbatim-multiple
+  pattern.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Lighting
+    - number: 2
+      board_id: main
+      designation: Sockets
+    - number: 3
+      board_id: main
+      designation: Shower
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one Zs nought point three, circuit two Zs nought point four, circuit three Zs nought point five."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_reading:
+    - circuit: 1
+      field: measured_zs_ohm
+      value: 0.3
+    - circuit: 2
+      field: measured_zs_ohm
+      value: 0.4
+    - circuit: 3
+      field: measured_zs_ohm
+      value: 0.5
+  ask_user_count: { max: 0 }
+
+config:
+  timeout_ms: 45000
+  drain_ms: 20000
+  fetch_tts: false

@@ -1,0 +1,44 @@
+name: probe_zs_implausible
+suite: dispatcher_gaps
+description: |
+  PROBE Cat 5 — companion to probe_rcd_time_off_spec. After Phase 1
+  (audit-2026-06-02-fixes) the numeric range validator caps
+  measured_zs_ohm at 100 Ω — an orders-of-magnitude check, not a
+  BS 7671 compliance gate. BS 7671 tabulated Zs maxima cap at ~10 Ω
+  for typical OCPDs; 100 Ω catches single-decimal-place transcription
+  errors ("five hundred" instead of "five" / "0.5") without rejecting
+  legitimate high-impedance circuits.
+
+  Pin: measured_zs_ohm / zs MUST NOT receive an implausible value.
+  Sonnet writing "500" should be rejected at the dispatcher and
+  the legacy `zs` field on circuit 1 must remain unset on the
+  resulting state snapshot.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit 1 Zs is 500 ohms."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  has_no_reading:
+    - circuit: 1
+      field: zs
+      value: "500"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

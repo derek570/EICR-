@@ -1,0 +1,108 @@
+{
+  "_doc": "STQ-02 refill-guard variant (different field-combo from Plan 04-04's F21934D4 to avoid duplicate coverage). Inspector moves on: 'Move on to circuit three, Zs nought point two five.' — supply-level Ze (circuit 1, 0.32) is already on the snapshot from an earlier turn, and neither path should re-emit / re-ask it. Legacy emits record_extraction with only the new circuit 3 measured_zs_ohm reading; tool-call emits only record_reading(3,measured_zs_ohm,'0.25'). Both converge on circuits[3].measured_zs_ohm='0.25' while circuit 1's ze remains untouched. Because the normaliser only looks at the EXTRACTION RESULT (not the final snapshot), 'circuit 1 ze unchanged' is visible as the absence of a (1,ze) reading in either output — NOT as a positive slot equal to '0.32'. Field name uses canonical enum (Plan 04-07 r1 audit fix).",
+  "_why_distinct_from_F21934D4": "F21934D4 locks the r1_r2-on-circuit-2 pre-fill scenario (STA-02 / STQ-05 — the specific pair that triggered the production re-ask). sample-05 here locks Ze-on-circuit-1 as a supply-level-value pre-fill. Different field, different circuit, same RESTRAINT principle. Covering both shapes proves the guard is not field-specific.",
+  "_requirement": "STT-11 + STQ-05 (restraint — do not re-emit filled slots). STT-11 golden-session subset entry.",
+  "_fixture_shape": "dual-SSE",
+  "pre_turn_state": {
+    "snapshot": {
+      "circuits": {
+        "1": {
+          "circuit_ref": 1,
+          "circuit_designation": "Ring final (downstairs sockets)",
+          "ze": "0.32"
+        },
+        "3": {
+          "circuit_ref": 3,
+          "circuit_designation": "Lighting (downstairs)"
+        }
+      },
+      "pending_readings": [],
+      "observations": [],
+      "validation_alerts": []
+    },
+    "askedQuestions": [],
+    "extractedObservations": []
+  },
+  "transcript": "Move on to circuit three, Zs nought point two five.",
+  "sse_events_legacy": [
+    {
+      "_comment": "Legacy under post-Phase-4 prompt — note the empty questions_for_user (Plan 04-03 deletion) and the ABSENCE of any re-emission for circuit 1 ze. Only the new reading for circuit 3 zs appears.",
+      "type": "message_start",
+      "message": { "id": "msg_s05_legacy", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s05_legacy",
+        "name": "record_extraction",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"measured_zs_ohm\",\"value\":\"0.25\",\"confidence\":0.95}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call": [
+    {
+      "_comment": "Round 1 — one record_reading tool_use for the new reading. No ask_user, no additional writes to circuit 1, no clear_reading on the pre-filled ze.",
+      "type": "message_start",
+      "message": { "id": "msg_s05_tc_r1", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+        "type": "tool_use",
+        "id": "toolu_s05_tc_zs",
+        "name": "record_reading",
+        "input": {}
+      }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+        "type": "input_json_delta",
+        "partial_json": "{\"field\":\"measured_zs_ohm\",\"circuit\":3,\"value\":\"0.25\",\"confidence\":0.95,\"source_turn_id\":\"t5\"}"
+      }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "tool_use" } },
+    { "type": "message_stop" }
+  ],
+  "sse_events_tool_call_round2": [
+    {
+      "type": "message_start",
+      "message": { "id": "msg_s05_tc_r2", "role": "assistant", "content": [] }
+    },
+    {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": { "type": "text", "text": "" }
+    },
+    {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": { "type": "text_delta", "text": "Recorded Zs for circuit 3." }
+    },
+    { "type": "content_block_stop", "index": 0 },
+    { "type": "message_delta", "delta": { "stop_reason": "end_turn" } },
+    { "type": "message_stop" }
+  ],
+  "expected_slot_writes": {
+    "_doc": "Circuit 1 ze is UNCHANGED — expected_slot_writes describes only what the turn wrote, not the full post-turn snapshot. The RESTRAINT signal is the ABSENCE of (1,ze) in both paths' extracted_readings.",
+    "circuits": {
+      "3": { "measured_zs_ohm": "0.25" }
+    }
+  }
+}

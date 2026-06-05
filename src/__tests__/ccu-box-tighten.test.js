@@ -1,0 +1,154 @@
+/**
+ * Unit tests for ccu-box-tighten — drives the per-edge fine-tune + multi-
+ * anchor pitch refinement against the 3 annotated corpus boards.
+ *
+ * These tests pin the V1 algorithm (CCU_PROBE_V2='false') so the existing
+ * count assertions (Wylex 16, Hager 16, Protek 20) remain deterministic.
+ * V1 stays in the prod codebase as a kill-switch fallback; the prod
+ * runtime defaults to V2 (every-gap probing + tall-thin + linear pitch).
+ * Add a separate describe-block here for V2-specific assertions when
+ * needed — V2 may produce a different module count on Hager-style mixed-
+ * blank boards (verified during 2026-05-02 corpus audit).
+ */
+import { describe, test, expect, beforeAll, afterAll } from '@jest/globals';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { tightenAndChunk } from '../extraction/ccu-box-tighten.js';
+
+const PRIOR_PROBE_V2 = process.env.CCU_PROBE_V2;
+beforeAll(() => {
+  process.env.CCU_PROBE_V2 = 'false';
+});
+afterAll(() => {
+  if (PRIOR_PROBE_V2 === undefined) delete process.env.CCU_PROBE_V2;
+  else process.env.CCU_PROBE_V2 = PRIOR_PROBE_V2;
+});
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CORPUS = path.resolve(__dirname, '../../scripts/ccu-cv-corpus');
+
+// The corpus is ~211 MB of S3-fetched photos + manifest, intentionally
+// gitignored (see scripts/ccu-cv-corpus/.gitignore). Local devs pull it
+// via build-manifest.mjs; CI runs in a fresh checkout where it doesn't
+// exist. Skip the corpus-driven cases when the manifest is missing
+// rather than failing CI — the registry-style edge-case tests below
+// still run, and the algorithm has unit coverage via prepareModernGeometry
+// in ccu-geometric.test.js.
+const CORPUS_AVAILABLE = fs.existsSync(path.join(CORPUS, 'manifest.json'));
+const describeIfCorpus = CORPUS_AVAILABLE ? describe : describe.skip;
+
+function loadCorpusBoard(extractionId) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(CORPUS, 'manifest.json'), 'utf8'));
+  const entry = manifest.entries.find((e) => e.extractionId === extractionId);
+  if (!entry) throw new Error(`no manifest entry for ${extractionId}`);
+  const photo = fs.readFileSync(path.join(CORPUS, entry.photo));
+  return { entry, photo };
+}
+
+describeIfCorpus('ccu-box-tighten — corpus integration', () => {
+  // The annotated corpus has Wylex (16 modules, GT) and Hager (16 modules, GT).
+  // Protek 20-module ground truth lives in the harness corpus too — verify
+  // that the algorithm produces consistent counts across all three.
+  test.each([
+    ['1777441303200-92evuu', 'Wylex', 16],
+    ['1777454064331-nxw2u3', 'Hager', 16],
+    ['1777540559865-3boowk', 'Protek', 20],
+  ])(
+    '%s (%s) — produces correct module count',
+    async (id, name, expected) => {
+      const { entry, photo } = loadCorpusBoard(id);
+      const result = await tightenAndChunk(photo, entry.userBox);
+      expect(result.moduleCount).toBe(expected);
+      // Slot centres are monotonic and live within the rail face.
+      expect(result.slotCentersPx.length).toBe(expected);
+      for (let i = 1; i < result.slotCentersPx.length; i++) {
+        expect(result.slotCentersPx[i]).toBeGreaterThan(result.slotCentersPx[i - 1]);
+      }
+      expect(result.slotCentersPx[0]).toBeGreaterThan(result.railFace.left);
+      expect(result.slotCentersPx[result.slotCentersPx.length - 1]).toBeLessThan(
+        result.railFace.right
+      );
+      // Rail face dimensions are positive and within the source image.
+      expect(result.railFace.right - result.railFace.left).toBeGreaterThan(0);
+      expect(result.railFace.bottom - result.railFace.top).toBeGreaterThan(0);
+      expect(result.railFace.right).toBeLessThanOrEqual(result.imageWidth);
+      expect(result.railFace.bottom).toBeLessThanOrEqual(result.imageHeight);
+    },
+    30_000
+  );
+
+  test('returns multi-anchor refinement diagnostics', async () => {
+    const { entry, photo } = loadCorpusBoard('1777540559865-3boowk');
+    const result = await tightenAndChunk(photo, entry.userBox);
+    expect(result.refinement).toMatchObject({
+      accepted: expect.any(Boolean),
+      pairCount: expect.any(Number),
+      probes: expect.any(Array),
+    });
+    expect(result.refinement.probes.length).toBe(8);
+    for (const probe of result.refinement.probes) {
+      expect(probe).toMatchObject({
+        idx: expect.any(Number),
+        predicted: expect.any(Number),
+        refined: expect.any(Number),
+        snr: expect.any(Number),
+        sharpness: expect.any(Number),
+        confident: expect.any(Boolean),
+      });
+    }
+  }, 30_000);
+});
+
+describe('ccu-box-tighten — edge cases', () => {
+  test('throws on empty buffer', async () => {
+    await expect(tightenAndChunk(Buffer.alloc(0), { x: 0, y: 0, w: 1, h: 1 })).rejects.toThrow();
+  });
+});
+
+describeIfCorpus('ccu-box-tighten — waysOverride', () => {
+  // The Wylex corpus board's ground-truth count is 16 modules. Forcing
+  // waysOverride: 18 should produce 18 slot centres — verifying the
+  // override truly bypasses the height-anchor formula and the
+  // refinement-driven count adjustment.
+  test('forces moduleCount and lays down N slot centres', async () => {
+    const { entry, photo } = loadCorpusBoard('1777441303200-92evuu');
+    const result = await tightenAndChunk(photo, entry.userBox, { waysOverride: 18 });
+    expect(result.waysOverrideApplied).toBe(true);
+    expect(result.moduleCount).toBe(18);
+    expect(result.slotCentersPx).toHaveLength(18);
+    // Pitch should be faceWidth / 18 — same as the formula path's tile pitch.
+    const faceWidth = result.railFace.right - result.railFace.left;
+    expect(result.pitchPx).toBeCloseTo(faceWidth / 18, 0);
+    // Slot centres are monotonically increasing and within the rail.
+    for (let i = 1; i < result.slotCentersPx.length; i++) {
+      expect(result.slotCentersPx[i]).toBeGreaterThan(result.slotCentersPx[i - 1]);
+    }
+  }, 30_000);
+
+  test('refinement does NOT alter moduleCount when override active', async () => {
+    const { entry, photo } = loadCorpusBoard('1777441303200-92evuu');
+    // Without override, the formula yields 16 on this board. With the
+    // override forcing 17 and refinement still running, count must stay
+    // at 17 even if refinement's pitch suggests otherwise.
+    const result = await tightenAndChunk(photo, entry.userBox, { waysOverride: 17 });
+    expect(result.moduleCount).toBe(17);
+    expect(result.waysOverrideApplied).toBe(true);
+  }, 30_000);
+
+  test('omitted / null waysOverride preserves formula behaviour', async () => {
+    const { entry, photo } = loadCorpusBoard('1777441303200-92evuu');
+    const a = await tightenAndChunk(photo, entry.userBox);
+    const b = await tightenAndChunk(photo, entry.userBox, {});
+    const c = await tightenAndChunk(photo, entry.userBox, { waysOverride: null });
+    const d = await tightenAndChunk(photo, entry.userBox, { waysOverride: 0 });
+    expect(a.moduleCount).toBe(16);
+    expect(b.moduleCount).toBe(16);
+    expect(c.moduleCount).toBe(16);
+    expect(d.moduleCount).toBe(16);
+    expect(a.waysOverrideApplied).toBe(false);
+    expect(b.waysOverrideApplied).toBe(false);
+    expect(c.waysOverrideApplied).toBe(false);
+    expect(d.waysOverrideApplied).toBe(false);
+  }, 30_000);
+});

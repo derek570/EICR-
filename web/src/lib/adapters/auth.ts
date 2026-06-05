@@ -21,6 +21,11 @@ export const UserSchema = z.object({
   // company — see `CLAUDE.md > RBAC` and P0-5/D4 in the fix plan.
   company_id: z.string().optional(),
   company_role: COMPANY_ROLE.optional(),
+  // Consent-gate fields surfaced by /api/auth/me's extension on
+  // 2026-05-12. Optional so older /me responses still validate.
+  // See .planning/compliance/in-app-consent-screen.md.
+  consent_pending: z.boolean().optional(),
+  current_agreement_version: z.string().optional(),
 });
 
 export const LoginResponseSchema = z.object({

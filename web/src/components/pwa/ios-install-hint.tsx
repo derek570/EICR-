@@ -102,7 +102,15 @@ export function IOSInstallHint() {
     <aside
       role="region"
       aria-label="Install CertMate on your iPhone"
-      className="relative overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-brand-blue)]/30 bg-[color-mix(in_srgb,var(--color-brand-blue)_10%,var(--color-surface-2))] p-5"
+      // Mobile Safari quirk: an `<aside>` flex child with
+      // `overflow-hidden` (BFC trigger) collapses to ~min-content width
+      // and renders as a narrow vertical strip. `w-full` alone wasn't
+      // enough (see f159057 — symptom returned). Making the element
+      // itself a flex container rewrites the cross-axis sizing path,
+      // which is what SectionGroup and the dashboard hero do
+      // implicitly. `block` on the inner div restores the original
+      // single-block layout inside the new flex aside. Do not remove.
+      className="relative flex w-full flex-col overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-brand-blue)]/30 bg-[color-mix(in_srgb,var(--color-brand-blue)_10%,var(--color-surface-2))] p-5"
     >
       {/* D8: 44×44 (was 32×32 — h-8 w-8). Positioning via className; the
        * IconButton variant covers hover/focus/bg. */}

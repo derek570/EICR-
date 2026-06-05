@@ -1,0 +1,53 @@
+name: new_circuit_then_readings
+suite: baseline
+description: |
+  Direct replay of prod session 286D500D-… (2026-05-24 07:49 UTC). The
+  inspector creates a circuit by designation, then dictates two
+  readings against it by designation. Sonnet must NOT re-ask "which
+  circuit is upstairs lighting" — both readings must resolve to
+  circuit 2 from the designation persisted on the create call.
+
+  In prod this failed: c2 was created with no designation, then the
+  Zs utterance triggered ask_user "Which circuit number is the
+  upstairs lighting?" and the R1+R2 utterance triggered ask_user "I
+  don't have an upstairs lighting circuit on the schedule yet…".
+  Inspector gave up at $0.14.
+
+  Assertions encode the desired behaviour, not the prod behaviour:
+  ask_user_count must be 0, and both readings must land on c2.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits: []
+
+transcript:
+  - at_ms: 0
+    text: "Circuit two is upstairs lighting."
+    isFinal: true
+  - at_ms: 5000
+    text: "Zs for upstairs lighting is 0.33."
+    isFinal: true
+  - at_ms: 10000
+    text: "R1 plus R2 for upstairs lighting is 0.64."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 3 }
+  has_reading:
+    - circuit: 2
+      field: measured_zs_ohm
+      value: 0.33
+    - circuit: 2
+      field: r1_r2_ohm
+      value: 0.64
+  ask_user_count: { max: 0 }
+  saw_event_types:
+    - extraction
+
+config:
+  timeout_ms: 60000
+  drain_ms: 25000
+  fetch_tts: false

@@ -8,6 +8,24 @@ WORKDIR /app
 
 ARG APP_DIR
 ARG NEXT_PUBLIC_API_URL=https://api.certmate.uk
+# NEXT_PUBLIC_* vars are inlined at `next build` time from process.env, so
+# every flag the client reads has to be declared as ARG + ENV here. Build-args
+# passed without an ENV bridge are silently dropped — see 2026-05-15 incident
+# where NEXT_PUBLIC_REGEX_HINTS_ENABLED was passed in deploy.yml but never
+# reached the bundle, and NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED missed the
+# same way, leaving the Sonnet WS auto-reconnect machinery dormant in prod.
+ARG NEXT_PUBLIC_REGEX_HINTS_ENABLED
+ARG NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED
+# Emergency kill switch for the Silero VAD model (~30MB ONNX WASM heap).
+# Set to '0' to revert wake-from-doze to the SleepManager's RMS gate
+# fallback. Field-test 2026-05-17 (sess_mpa3zvkn_1bfc / sess_mpa419j6_9yac)
+# showed iPad Safari WebContent process reap at ~40s — the Silero heap is
+# the single largest memory consumer the PWA carries and is the first
+# thing to drop when chasing per-tab memory budget. RMS fallback at
+# `SleepManager.processAudioLevel` produces functionally equivalent wake
+# behaviour (iOS canon uses Deepgram VAD as its de facto fallback in
+# the same way).
+ARG NEXT_PUBLIC_SILERO_VAD
 
 # Copy workspace root package files for workspace resolution
 COPY package.json package-lock.json ./
@@ -25,6 +43,9 @@ RUN npm ci --ignore-scripts
 WORKDIR /app/${APP_DIR}
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_REGEX_HINTS_ENABLED=$NEXT_PUBLIC_REGEX_HINTS_ENABLED
+ENV NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED=$NEXT_PUBLIC_RECORDING_RECONNECT_ENABLED
+ENV NEXT_PUBLIC_SILERO_VAD=$NEXT_PUBLIC_SILERO_VAD
 
 # Remove any local env files that might override
 RUN rm -f .env.local .env
