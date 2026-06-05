@@ -740,6 +740,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // lookup. Omitted when undefined; legacy decoders ignore unknown
       // keys via Swift Codable's tolerant decode.
       turnId,
+      // Voice-latency plan 2026-06-05 Phase 2.1 — thread iOS-minted
+      // utterance_id of the inbound transcript so the bundler emits
+      // result.utterance_id. iOS pairs it with pendingUtteranceEnds
+      // (DeepgramRecordingViewModel.swift:8607-8628) to fire the
+      // non-orphan voice-latency utterance-end POST. Live mode is a
+      // single transcript per harness call so this is exactly the
+      // consumedUtteranceId from the handleTranscript call site
+      // (sonnet-stream.js threads it through options).
+      utteranceId: options.utteranceId,
       circuitDesignations,
       boardDesignations,
       totalCircuitsInJob,

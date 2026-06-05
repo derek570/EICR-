@@ -46,6 +46,7 @@ import { Router } from 'express';
 import * as auth from '../auth.js';
 import logger from '../logger.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
+import { recordUtteranceEnd } from '../extraction/voice-latency-perceived-latency.js';
 
 const router = Router();
 
@@ -118,6 +119,21 @@ router.post('/voice-latency/utterance-end', auth.requireAuth, async (req, res) =
       utterance_end_monotonic_at_ms: req.body.monotonic_at_ms ?? null,
       utterance_end_process_uptime_id: req.body.process_uptime_id,
     });
+    // Voice-latency plan 2026-06-05 Phase 2.3 — feed the
+    // perceived-latency store. Wrapped in its own try/catch internally;
+    // ordered AFTER the canonical logger.info so a store throw cannot
+    // suppress the CloudWatch row. Skips orphans + missing turnId
+    // internally.
+    try {
+      recordUtteranceEnd(req.body);
+    } catch (storeErr) {
+      logger.warn('voice_latency.perceived_latency_emit_error', {
+        stage: 'utterance_end_route',
+        sessionId: req.body?.sessionId,
+        turnId: req.body?.turnId,
+        error: storeErr?.message || String(storeErr),
+      });
+    }
   } catch (errInner) {
     logger.warn('voice_latency.utterance_end_emit_error', {
       sessionId: req.body?.sessionId,

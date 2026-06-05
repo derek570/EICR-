@@ -41,6 +41,19 @@
 
 import logger from '../logger.js';
 import { getActiveSessionEntry } from './active-sessions.js';
+// Voice-latency plan 2026-06-05 Phase 2.3 — pair `voice_latency.turn_audio_summary`
+// with `voice_latency.utterance_end` into a single
+// `voice_latency.turn_perceived_latency_ms` row. Hooks called AFTER the
+// canonical logger.info emits below so a store throw cannot suppress
+// the existing CloudWatch rows. NO import back from this module —
+// `voice-latency-perceived-latency.js` is leaf-only by design (avoids
+// ESM circular dep). All field derivation (earliestAck pick, source
+// flattening) happens here in this module; the hooks receive already-
+// derived fields.
+import {
+  recordTurnAudioSummary,
+  recordLatePlaybackAck,
+} from './voice-latency-perceived-latency.js';
 
 // ---------------------------------------------------------------------------
 // In-memory state
@@ -422,8 +435,10 @@ function maybeFlushFinalizer(key, pending, decrementCountOverride) {
  * timeout, on-time completion).
  */
 function emitTurnAudioSummary(fields) {
+  let enrichedForStore = null;
+  let earliestAck = null;
   try {
-    const earliestAck = pickEarliestPlaybackAck(fields.ios_playback_ack);
+    earliestAck = pickEarliestPlaybackAck(fields.ios_playback_ack);
     const enriched = {
       ...fields,
       expected_acks_eligible: fields.eligible_for_validation ? 1 : 0,
@@ -433,10 +448,42 @@ function emitTurnAudioSummary(fields) {
     };
     delete enriched.eligible_for_validation; // internal-only; only top-level field ships
     logger.info('voice_latency.turn_audio_summary', enriched);
+    enrichedForStore = enriched;
   } catch (err) {
     logger.warn('voice_latency.turn_summary_emit_error', {
       stage: 'audio',
       error: err?.message || String(err),
+    });
+    // Canonical row failed — do NOT feed the perceived-latency store
+    // with half-baked fields. Returning early below keeps the store
+    // free of zombie entries from the failure mode.
+    return;
+  }
+
+  // Voice-latency plan 2026-06-05 Phase 2.3 — invoke the
+  // perceived-latency store AFTER the canonical row has landed. Wrapped
+  // in its own try/catch so a store throw cannot disturb the canonical
+  // emit path (already returned 204 / already logged). All field
+  // derivation happens here in this module; the hook receives derived
+  // fields directly (no import back into voice-latency-turn-summary.js
+  // from the leaf module — avoids ESM circular dep).
+  try {
+    recordTurnAudioSummary({
+      sessionId: enrichedForStore.sessionId,
+      turnId: enrichedForStore.turnId,
+      expected_acks: enrichedForStore.expected_acks,
+      expected_acks_eligible: enrichedForStore.expected_acks_eligible,
+      audio_finalizer_timeout_fired: enrichedForStore.audio_finalizer_timeout_fired,
+      ack_source: earliestAck?.source ?? null,
+      ios_playback_ack_at_ms: earliestAck?.at_ms ?? null,
+      ios_playback_ack_monotonic_at_ms: enrichedForStore.ios_playback_ack_monotonic_at_ms,
+      ios_playback_ack_process_uptime_id: enrichedForStore.ios_playback_ack_process_uptime_id,
+      ios_playback_ack_correlation_id: enrichedForStore.ios_playback_ack_correlation_id,
+    });
+  } catch (storeErr) {
+    logger.warn('voice_latency.perceived_latency_emit_error', {
+      stage: 'audio_summary_hook',
+      error: storeErr?.message || String(storeErr),
     });
   }
 }
@@ -548,6 +595,30 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
     logger.warn('voice_latency.turn_summary_emit_error', {
       stage: 'late_ack',
       error: err?.message || String(err),
+    });
+    return; // canonical row failed — skip the store hook (keeps the
+            // store free of zombie partial merges).
+  }
+
+  // Voice-latency plan 2026-06-05 Phase 2.3 — feed the late ack into
+  // the perceived-latency store. Wrapped in its own try/catch so a
+  // store throw cannot disturb the canonical late_playback_ack row
+  // (already logged). Resolved turnId is the merge key — guaranteed
+  // non-null here by the early-return at line 524-526.
+  try {
+    recordLatePlaybackAck({
+      sessionId,
+      turnId: turnIdForLog,
+      ack_source: ack?.source ?? null,
+      ios_playback_ack_at_ms: ack?.at_ms ?? null,
+      ios_playback_ack_monotonic_at_ms: ack?.monotonic_at_ms ?? null,
+      ios_playback_ack_process_uptime_id: ack?.process_uptime_id ?? null,
+      ios_playback_ack_correlation_id: ack?.correlation_id ?? null,
+    });
+  } catch (storeErr) {
+    logger.warn('voice_latency.perceived_latency_emit_error', {
+      stage: 'late_ack_hook',
+      error: storeErr?.message || String(storeErr),
     });
   }
 }
