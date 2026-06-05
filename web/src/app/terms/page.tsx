@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AppWindow,
@@ -83,7 +84,24 @@ const DOCUMENT_ICONS: Record<LegalDocumentId, React.ComponentType<{ className?: 
   eula: AppWindow,
 };
 
+/**
+ * Page entry. `useSearchParams` opts the consumer out of static
+ * rendering and Next.js 16's `next build` refuses to ship an
+ * unbounded hook in the page tree. Wrap the body in Suspense so the
+ * search-params bail is confined to the inner component; the page
+ * shell still pre-renders. Fallback is null because the inner body
+ * is the entire UI — a chrome-only placeholder would only flash on
+ * a near-instant resolve.
+ */
 export default function TermsPage() {
+  return (
+    <Suspense fallback={null}>
+      <TermsPageInner />
+    </Suspense>
+  );
+}
+
+function TermsPageInner() {
   const router = useRouter();
   const search = useSearchParams();
   // Sanitise the `next` query param — without this, a crafted

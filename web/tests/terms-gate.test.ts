@@ -76,7 +76,8 @@ describe('T&Cs gate helpers', () => {
 
     it('returns false when localStorage.getItem throws (privacy mode)', () => {
       const realGet = window.localStorage.getItem;
-      // @ts-expect-error overriding for the test
+      // localStorage.getItem is a writable own property in jsdom; the
+      // assignment type-checks cleanly without a directive.
       window.localStorage.getItem = () => {
         throw new Error('SecurityError: localStorage disabled');
       };
@@ -112,7 +113,8 @@ describe('T&Cs gate helpers', () => {
 
     it('silently no-ops if localStorage.setItem throws', () => {
       const realSet = window.localStorage.setItem;
-      // @ts-expect-error overriding for the test
+      // Same pattern as the getter override above — writable own
+      // property in jsdom; no @ts-expect-error needed.
       window.localStorage.setItem = () => {
         throw new Error('QuotaExceededError');
       };

@@ -258,7 +258,7 @@ describe('Dashboard · JobRow swipe-delete + context-menu', () => {
   it('confirming the dialog calls api.deleteJob then onDeleted', async () => {
     deleteJobMock.mockResolvedValueOnce({ success: true });
     harness = mount();
-    const wrapper = harness.container.firstChild as HTMLElement;
+    const wrapper = harness!.container.firstChild as HTMLElement;
     const fire = (type: 'pointerdown' | 'pointermove' | 'pointerup', x: number, y: number) => {
       const evt = new Event(type, { bubbles: true, cancelable: true });
       Object.assign(evt, { pointerType: 'touch', clientX: x, clientY: y });
@@ -269,7 +269,7 @@ describe('Dashboard · JobRow swipe-delete + context-menu', () => {
     fire('pointerdown', 200, 100);
     fire('pointermove', 130, 102);
     fire('pointerup', 130, 102);
-    const deleteBtn = harness.container.querySelector(
+    const deleteBtn = harness!.container.querySelector(
       'button[aria-label*="Delete job for"]'
     ) as HTMLButtonElement;
     await act(async () => {
@@ -277,7 +277,7 @@ describe('Dashboard · JobRow swipe-delete + context-menu', () => {
     });
 
     // Click "Delete" inside the dialog stub.
-    const confirm = harness.container.querySelector('[data-testid="confirm"]') as HTMLElement;
+    const confirm = harness!.container.querySelector('[data-testid="confirm"]') as HTMLElement;
     const confirmBtn = Array.from(confirm.querySelectorAll('button')).find(
       (b) => b.textContent === 'Delete'
     ) as HTMLButtonElement;
@@ -289,7 +289,7 @@ describe('Dashboard · JobRow swipe-delete + context-menu', () => {
 
     expect(deleteJobMock).toHaveBeenCalledTimes(1);
     expect(deleteJobMock).toHaveBeenCalledWith('user-7', 'job-42');
-    expect(harness.onDeleted).toHaveBeenCalledTimes(1);
-    expect(harness.onDeleted).toHaveBeenCalledWith('job-42');
+    expect(harness!.onDeleted).toHaveBeenCalledTimes(1);
+    expect(harness!.onDeleted).toHaveBeenCalledWith('job-42');
   });
 });

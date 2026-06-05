@@ -75,7 +75,9 @@ describe('haptic() — SSR safety', () => {
     // Simulate the server-side render environment where the helper
     // could be imported (via a "use client" file transitively loaded
     // during static generation). The wrapper must stay silent.
-    // @ts-expect-error — intentional undefined for the SSR path
+    // The cast widens `globalThis.navigator` to optional so `delete`
+    // type-checks cleanly without a directive (TS would otherwise
+    // reject deleting a required property).
     delete (globalThis as { navigator?: Navigator }).navigator;
     try {
       expect(haptic('light')).toBe(false);
