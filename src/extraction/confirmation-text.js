@@ -131,6 +131,28 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   sub_main_cable_material: 'sub-main cable material',
   sub_main_cable_csa: 'sub-main cable size',
   sub_main_cpc_csa: 'sub-main CPC size',
+  // PLAN voice-feedback-2026-06-05 Group E (Derek decision 1, 2026-06-05) —
+  // the consumer-tails CSA slot rendered TTS "main switch conductor CSA"
+  // via the snake-case→spaces fallback. Inspector field-test feedback at
+  // 10:38:16 (session 84CE2125…) recalled it as "submain cable size".
+  // Locking the friendly name to "tails CSA" — the on-site vocabulary
+  // inspectors use for the consumer-side conductor between the cutout
+  // and the main switch. On multi-board jobs the same slot lives on
+  // sub-boards too where "sub-main" is the more familiar wording;
+  // acceptable trade-off — the vast majority of jobs are single-board,
+  // and on a sub-board "tails CSA" still resolves the value unambiguously.
+  main_switch_conductor_csa: 'tails CSA',
+  // PLAN voice-feedback-2026-06-05 Group F — `earthing_conductor_csa` is
+  // the canonical board enum slot (config/field_schema.json:759). Inspector
+  // marker #5 at 10:39:24 ("I said main earth is 16 mil") reported hearing
+  // a bare "16" in TTS confirmation with no field context. Without an
+  // explicit friendly-name the snake_case→spaces fallback renders
+  // "earthing conductor CSA" — not what the inspector dictated and not
+  // what they expected back. "main earth" matches the inspector's spoken
+  // vocabulary verbatim. Defensive legacy alias on the next line covers
+  // the iOS apply path where `main_earth_conductor_csa` may still flow.
+  earthing_conductor_csa: 'main earth',
+  main_earth_conductor_csa: 'main earth',
   // PLAN-backend-final.md Phase 4.4 — Derek's preferred vocabulary
   // for the client identity slot is "customer name", not the snake-
   // case→spaces fallback ("client name"). MUST be added INSIDE this

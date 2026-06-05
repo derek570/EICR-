@@ -54,9 +54,7 @@ describe('confirmation-text — constants', () => {
     // already returns "main switch BS EN" via its acronym table.
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_bs_en).toBe('main fuse BS EN');
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_rated_current).toBe('main fuse rating');
-    expect(CONFIRMATION_FRIENDLY_NAMES.spd_short_circuit).toBe(
-      'main fuse breaking capacity'
-    );
+    expect(CONFIRMATION_FRIENDLY_NAMES.spd_short_circuit).toBe('main fuse breaking capacity');
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_type_supply).toBe('main fuse type');
     expect(CONFIRMATION_FRIENDLY_NAMES.main_switch_bs_en).toBe('main switch BS EN');
   });
@@ -104,6 +102,25 @@ describe('confirmation-text — buildConfirmationText', () => {
     expect(buildConfirmationText('signature_file', '/tmp/sig.png', null)).toBeNull();
   });
 
+  test('2026-06-05 voice-feedback Group E + F — tails CSA and main earth get explicit friendly names', () => {
+    // Group E (Derek decision 1): main_switch_conductor_csa → "tails CSA".
+    // Pre-fix this rendered as "main switch conductor CSA" via the
+    // snake_case→spaces fallback, which the inspector recalled as
+    // "submain cable size" in voice_feedback #4 at 10:38:16.
+    expect(buildConfirmationText('main_switch_conductor_csa', '25', null)).toBe('tails CSA 25');
+
+    // Group F: earthing_conductor_csa is the canonical board enum slot
+    // (config/field_schema.json:759). Pre-fix the snake_case fallback
+    // rendered "earthing conductor CSA"; the inspector dictating
+    // "main earth is 16" got back something they could not associate
+    // with the slot. "main earth" mirrors the on-site vocabulary.
+    expect(buildConfirmationText('earthing_conductor_csa', '16', null)).toBe('main earth 16');
+
+    // Defensive legacy alias — the iOS apply path may still emit
+    // `main_earth_conductor_csa`. Keep both rendering "main earth".
+    expect(buildConfirmationText('main_earth_conductor_csa', '16', null)).toBe('main earth 16');
+  });
+
   test('2026-05-29: circuit_designation speaks "Circuit N is now the {value}"', () => {
     expect(buildConfirmationText('circuit_designation', 'Cooker', 1)).toBe(
       'Circuit 1 is now the Cooker'
@@ -148,15 +165,11 @@ describe('confirmation-text — buildConfirmationText', () => {
     // explicit revert path if any of these sound wrong to the
     // inspector ear (table is frozen but individual entries are
     // independent). Pin the spoken form so the revert is detectable.
-    expect(buildConfirmationText('spd_rated_current', '100', null)).toBe(
-      'main fuse rating 100'
-    );
+    expect(buildConfirmationText('spd_rated_current', '100', null)).toBe('main fuse rating 100');
     expect(buildConfirmationText('spd_short_circuit', '16', null)).toBe(
       'main fuse breaking capacity 16'
     );
-    expect(buildConfirmationText('spd_type_supply', 'gG', null)).toBe(
-      'main fuse type gG'
-    );
+    expect(buildConfirmationText('spd_type_supply', 'gG', null)).toBe('main fuse type gG');
   });
 
   test('2026-05-29: designation prefix replaces "Circuit N" when provided', () => {
