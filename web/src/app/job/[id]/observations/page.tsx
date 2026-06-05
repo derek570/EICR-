@@ -116,12 +116,15 @@ export default function ObservationsPage() {
     }
     let touched = false;
     if (oldRef && oldRef !== newRef) {
-      items[oldRef] = '✓';
+      items[oldRef] = 'tick';
       touched = true;
     }
     if (newRef && after) {
       const newCode = after.code;
-      if (newCode === 'C1' || newCode === 'C2' || newCode === 'C3' || newCode === 'FI') {
+      // ScheduleOutcome covers C1/C2/C3/tick/N/A/LIM; FI is an observation
+      // code without a matching schedule outcome, so we map it to a tick on
+      // the schedule row (still flagged, but not as a coded danger).
+      if (newCode === 'C1' || newCode === 'C2' || newCode === 'C3') {
         if (items[newRef] !== newCode) {
           items[newRef] = newCode;
           touched = true;
@@ -129,8 +132,8 @@ export default function ObservationsPage() {
       } else if (oldRef === newRef) {
         // Edit cleared the code but kept the schedule_item. Restore
         // the tick so the row doesn't read as still-flagged.
-        if (items[newRef] !== '✓') {
-          items[newRef] = '✓';
+        if (items[newRef] !== 'tick') {
+          items[newRef] = 'tick';
           touched = true;
         }
       }

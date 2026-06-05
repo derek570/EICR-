@@ -254,7 +254,9 @@ function handleTtlExpiry(entry) {
   const hasUE = entry.utteranceEnd !== null;
   const hasAS = entry.audioSummary !== null;
   const asAckPresent =
-    hasAS && typeof entry.audioSummary?.ack_source === 'string' && entry.audioSummary.ack_source.length > 0;
+    hasAS &&
+    typeof entry.audioSummary?.ack_source === 'string' &&
+    entry.audioSummary.ack_source.length > 0;
 
   if (hasUE && hasAS) {
     // Both halves present but pairing held until TTL. Two reasons it
@@ -390,8 +392,7 @@ export function recordUtteranceEnd(payload) {
     const entry = getOrCreateEntry(payload.sessionId, payload.turnId);
     entry.utteranceEnd = {
       utterance_id: typeof payload.utterance_id === 'string' ? payload.utterance_id : null,
-      monotonic_at_ms:
-        typeof payload.monotonic_at_ms === 'number' ? payload.monotonic_at_ms : null,
+      monotonic_at_ms: typeof payload.monotonic_at_ms === 'number' ? payload.monotonic_at_ms : null,
       at_ms: typeof payload.at_ms === 'number' ? payload.at_ms : null,
       process_uptime_id:
         typeof payload.process_uptime_id === 'string' ? payload.process_uptime_id : null,
@@ -433,9 +434,7 @@ export function recordTurnAudioSummary(payload) {
       audio_finalizer_timeout_fired: payload.audio_finalizer_timeout_fired === true,
       ack_source: typeof payload.ack_source === 'string' ? payload.ack_source : null,
       ios_playback_ack_at_ms:
-        typeof payload.ios_playback_ack_at_ms === 'number'
-          ? payload.ios_playback_ack_at_ms
-          : null,
+        typeof payload.ios_playback_ack_at_ms === 'number' ? payload.ios_playback_ack_at_ms : null,
       ios_playback_ack_monotonic_at_ms:
         typeof payload.ios_playback_ack_monotonic_at_ms === 'number'
           ? payload.ios_playback_ack_monotonic_at_ms
@@ -506,7 +505,9 @@ export function recordLatePlaybackAck(payload) {
     // and timestamps", but doesn't change what the bundler/finalizer
     // expected.
     existing.audioSummary.ack_source =
-      typeof payload.ack_source === 'string' ? payload.ack_source : existing.audioSummary.ack_source;
+      typeof payload.ack_source === 'string'
+        ? payload.ack_source
+        : existing.audioSummary.ack_source;
     existing.audioSummary.ios_playback_ack_at_ms =
       typeof payload.ios_playback_ack_at_ms === 'number'
         ? payload.ios_playback_ack_at_ms

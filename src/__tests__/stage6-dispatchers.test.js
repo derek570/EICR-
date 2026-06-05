@@ -91,7 +91,12 @@ describe('createToolDispatcher composition', () => {
     const asks = makeAskSpy();
     const dispatch = createToolDispatcher(writes, asks);
 
-    const call = { tool_call_id: 'toolu_ask', id: 'toolu_ask', name: 'ask_user', input: { question: 'q' } };
+    const call = {
+      tool_call_id: 'toolu_ask',
+      id: 'toolu_ask',
+      name: 'ask_user',
+      input: { question: 'q' },
+    };
     const ctx = { sessionId: 's', turnId: 't' };
     const res = await dispatch(call, ctx);
 
@@ -110,7 +115,7 @@ describe('createToolDispatcher composition', () => {
 
     const res = await dispatch(
       { tool_call_id: 'toolu_x', id: 'toolu_x', name: 'mystery_tool', input: {} },
-      { sessionId: 's', turnId: 't' },
+      { sessionId: 's', turnId: 't' }
     );
 
     expect(writes).not.toHaveBeenCalled();
@@ -143,7 +148,7 @@ describe('createToolDispatcher composition', () => {
 
     const res = await dispatch(
       { tool_call_id: 'toolu_verbatim', name: 'record_reading', input: {} },
-      {},
+      {}
     );
     expect(res).toEqual({
       tool_use_id: 'echoed_from_dispatcher',
@@ -167,7 +172,11 @@ describe('createSortRecordsAsksLast sorter', () => {
 
   test('all writes, no asks → order unchanged (same member identity)', () => {
     const sort = createSortRecordsAsksLast();
-    const input = [mkWrite('record_reading', 0), mkWrite('record_observation', 1), mkWrite('create_circuit', 2)];
+    const input = [
+      mkWrite('record_reading', 0),
+      mkWrite('record_observation', 1),
+      mkWrite('create_circuit', 2),
+    ];
     const out = sort(input);
     expect(out).toHaveLength(3);
     expect(out.map((r) => r.id)).toEqual(['toolu_w0', 'toolu_w1', 'toolu_w2']);
@@ -201,7 +210,14 @@ describe('createSortRecordsAsksLast sorter', () => {
     const sort = createSortRecordsAsksLast();
     // Input: a1, w1, a2, w2, a3, w3 (alternating). Writes emitted at indices
     // 1, 3, 5 must come out in that order; asks 0, 2, 4 ditto.
-    const input = [mkAsk(0), mkWrite('record_reading', 1), mkAsk(2), mkWrite('record_observation', 3), mkAsk(4), mkWrite('create_circuit', 5)];
+    const input = [
+      mkAsk(0),
+      mkWrite('record_reading', 1),
+      mkAsk(2),
+      mkWrite('record_observation', 3),
+      mkAsk(4),
+      mkWrite('create_circuit', 5),
+    ];
     const out = sort(input);
     expect(out.map((r) => r.id)).toEqual([
       'toolu_w1',
@@ -253,7 +269,14 @@ describe('createSortRecordsAsksLast sorter', () => {
 
   test('multiple ask_user in same round → all moved to end, internal order preserved', () => {
     const sort = createSortRecordsAsksLast();
-    const input = [mkAsk(0), mkWrite('record_reading', 1), mkAsk(2), mkAsk(3), mkWrite('record_observation', 4), mkAsk(5)];
+    const input = [
+      mkAsk(0),
+      mkWrite('record_reading', 1),
+      mkAsk(2),
+      mkAsk(3),
+      mkWrite('record_observation', 4),
+      mkAsk(5),
+    ];
     const out = sort(input);
     // Writes first in emission order (w1, w4), then all asks in emission order (a0, a2, a3, a5).
     expect(out.map((r) => r.id)).toEqual([

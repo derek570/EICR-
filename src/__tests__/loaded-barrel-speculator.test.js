@@ -962,9 +962,7 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
       const { factory } = makeMockClientFactory();
       const loggerSpy = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
       const spec = makeSpeculator({ factory, logger: loggerSpy });
-      spec.onToolUseStreamed(
-        boardStreamedEvent({ field: 'main_switch_bs_en', value: 'BS 1361' })
-      );
+      spec.onToolUseStreamed(boardStreamedEvent({ field: 'main_switch_bs_en', value: 'BS 1361' }));
       await flush();
       expect(factory).toHaveBeenCalledTimes(0);
       expect(loggerSpy.info).toHaveBeenCalledWith(
@@ -1004,9 +1002,7 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
     const { factory } = makeMockClientFactory();
     const loggerSpy = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
     const spec = makeSpeculator({ factory, logger: loggerSpy });
-    spec.onToolUseStreamed(
-      streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'XYZ 99999' })
-    );
+    spec.onToolUseStreamed(streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'XYZ 99999' }));
     await flush();
     expect(factory).toHaveBeenCalledTimes(0);
     expect(loggerSpy.info).toHaveBeenCalledWith(
@@ -1030,9 +1026,7 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
     // intent legible.
     const { factory, synths } = makeMockClientFactory();
     const spec = makeSpeculator({ factory });
-    spec.onToolUseStreamed(
-      streamedEvent({ field: 'measured_zs_ohm', circuit: 1, value: '0.5' })
-    );
+    spec.onToolUseStreamed(streamedEvent({ field: 'measured_zs_ohm', circuit: 1, value: '0.5' }));
     await flush();
     expect(factory).toHaveBeenCalledTimes(1);
     expect(synths).toHaveLength(1);

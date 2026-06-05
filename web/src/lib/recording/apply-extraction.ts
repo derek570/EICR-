@@ -869,6 +869,11 @@ function applyObservations(job: JobDetail, observations: Observation[]): Observa
     const id = globalThis.crypto?.randomUUID?.() ?? `obs-${Date.now()}-${existing.length + 1}`;
     const row: ObservationRow = {
       id,
+      // Persist the server-assigned `observation_id` so follow-up
+      // `observation_update` frames can patch this row by stable id
+      // even when Sonnet rewords the description between extraction
+      // and BPG4-resolved refinement.
+      ...(obs.observation_id ? { observation_id: obs.observation_id } : {}),
       code,
       description: text,
       location: obs.item_location ?? undefined,
@@ -1198,6 +1203,11 @@ function markScheduleItemsFromObservations(
     if (typeof ref !== 'string' || ref.length === 0) continue;
     const code = parseObservationCode(obs.code);
     if (!code) continue;
+    // FI ("Further Investigation") is a valid observation code but not a
+    // ScheduleOutcome (the schedule enum is tick / N/A / C1 / C2 / C3 /
+    // LIM). Skip — the observation still lands on the row; just no
+    // schedule auto-mark.
+    if (code === 'FI') continue;
     // 3-tier priority — never clobber a user-set outcome. Empty /
     // missing / undefined are open for Sonnet to fill.
     if (hasValue(existingItems[ref])) {
@@ -1237,6 +1247,21 @@ const SCALAR_SECTIONS: Section[] = [
   'design_construction',
 ];
 
+/** LiveFillView uses short-form section prefixes on its `fieldKey`
+ *  props (e.g. `installation.client_name`). The wire-shape Section type
+ *  uses the backend-canonical long-form (`installation_details`), so the
+ *  diff must emit the short form to keep the "just changed" flash
+ *  firing on real-time Sonnet updates. Map here at the emission boundary
+ *  rather than renaming all 31 fieldKey props — the short form is a
+ *  pure-client identifier with no wire-shape implication. */
+const SECTION_LIVE_FILL_PREFIX: Record<Section, string> = {
+  installation_details: 'installation',
+  supply_characteristics: 'supply',
+  board_info: 'board',
+  extent_and_type: 'extent',
+  design_construction: 'design',
+};
+
 /** Diff two section records and emit dot-path keys for any value that
  *  changed. Only reports keys whose new value passes `hasValue` — zero
  *  / empty strings / nulls get suppressed so the flash doesn't fire on
@@ -1249,9 +1274,10 @@ function diffSectionKeys(
   if (!after) return [];
   const prev = before ?? {};
   const keys: string[] = [];
+  const prefix = SECTION_LIVE_FILL_PREFIX[section];
   for (const field of Object.keys(after)) {
     if (prev[field] !== after[field] && hasValue(after[field])) {
-      keys.push(`${section}.${field}`);
+      keys.push(`${prefix}.${field}`);
     }
   }
   return keys;

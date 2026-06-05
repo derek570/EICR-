@@ -86,8 +86,7 @@ export const SHADOW_CANNED_EVENTS = Object.freeze([
     index: 0,
     delta: {
       type: 'input_json_delta',
-      partial_json:
-        '"circuit":1,"value":"0.43","confidence":0.95,"source_turn_id":"shadow-t1"}',
+      partial_json: '"circuit":1,"value":"0.43","confidence":0.95,"source_turn_id":"shadow-t1"}',
     },
   },
   {
@@ -95,8 +94,7 @@ export const SHADOW_CANNED_EVENTS = Object.freeze([
     index: 1,
     delta: {
       type: 'input_json_delta',
-      partial_json:
-        '"circuit":2,"value":"0.51","confidence":0.92,"source_turn_id":"shadow-t1"}',
+      partial_json: '"circuit":2,"value":"0.51","confidence":0.92,"source_turn_id":"shadow-t1"}',
     },
   },
   { type: 'content_block_stop', index: 0 },

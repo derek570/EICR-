@@ -66,12 +66,10 @@ router.post('/consent/accept', auth.requireAuth, async (req, res) => {
     } = req.body || {};
 
     if (!agreementKind || !agreementVersion || !acceptedAtRaw || !platform) {
-      return res
-        .status(400)
-        .json({
-          code: 'invalid_body',
-          error: 'agreement_kind, agreement_version, accepted_at, platform are required',
-        });
+      return res.status(400).json({
+        code: 'invalid_body',
+        error: 'agreement_kind, agreement_version, accepted_at, platform are required',
+      });
     }
 
     if (!VALID_KINDS.includes(agreementKind)) {

@@ -31,26 +31,16 @@ describe('hasReadingFieldAnchor — behaviour', () => {
 
   test('bare-value utterance does NOT anchor any reading field (Bug 2 repro)', () => {
     // The D7D01509 repro shape. No field cue in the words at all.
-    expect(hasReadingFieldAnchor('r1_r2_ohm', 'upstairs sockets number 0.6')).toBe(
-      false
-    );
-    expect(hasReadingFieldAnchor('measured_zs_ohm', 'upstairs sockets number 0.6')).toBe(
-      false
-    );
+    expect(hasReadingFieldAnchor('r1_r2_ohm', 'upstairs sockets number 0.6')).toBe(false);
+    expect(hasReadingFieldAnchor('measured_zs_ohm', 'upstairs sockets number 0.6')).toBe(false);
   });
 
   test('spoken alias anchors the canonical field', () => {
-    expect(hasReadingFieldAnchor('r1_r2_ohm', 'R1 plus R2 on circuit 4 is 0.6')).toBe(
-      true
-    );
-    expect(hasReadingFieldAnchor('measured_zs_ohm', 'Zs on circuit 4 is 0.6')).toBe(
-      true
-    );
+    expect(hasReadingFieldAnchor('r1_r2_ohm', 'R1 plus R2 on circuit 4 is 0.6')).toBe(true);
+    expect(hasReadingFieldAnchor('measured_zs_ohm', 'Zs on circuit 4 is 0.6')).toBe(true);
     expect(hasReadingFieldAnchor('ze', 'Ze is 0.18')).toBe(true);
     expect(hasReadingFieldAnchor('polarity_confirmed', 'polarity correct')).toBe(true);
-    expect(hasReadingFieldAnchor('number_of_points', 'number of points is 4')).toBe(
-      true
-    );
+    expect(hasReadingFieldAnchor('number_of_points', 'number of points is 4')).toBe(true);
   });
 
   test('normalised label anchors the field (when alias would not)', () => {

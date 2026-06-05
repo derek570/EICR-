@@ -289,25 +289,29 @@ export interface Paginated<T> {
 export interface JobDetail extends Job {
   // Section buckets — names and nesting match the backend wire shape
   // emitted by `GET /api/job/:userId/:jobId` (see `src/routes/jobs.js:575-592`
-  // and `packages/shared-types/src/job.ts` `JobDetail`). iOS uses the
-  // same shape by construction; PWA pre-Wave-B used drifted single-word
-  // aliases (`installation`, `supply`, `board`, …) which zod silently
-  // stripped, leaving every tab reading an empty bucket. Inner field
-  // shapes are kept as `Record<string, unknown>` for now — the per-field
-  // typing lives in `@certmate/shared-types` and will be tightened one
-  // tab at a time as part of the shared-tab content audit.
-  installation_details?: Record<string, unknown>;
-  supply_characteristics?: Record<string, unknown>;
-  /** Primary / single-board summary. Always present on the wire. */
+  // and `packages/shared-types/src/job.ts` `JobDetail`). iOS is aligned
+  // with the backend by construction; PWA pre-Wave-B used drifted
+  // single-word aliases (`installation`, `supply`, `board`, …) which
+  // zod silently stripped, so every tab was reading an empty bucket
+  // even though the server returned real data. Inner field shapes stay
+  // `Record<string, unknown>` for now — per-field typing lives in
+  // `@certmate/shared-types` and will be tightened one tab at a time.
+  // All nullable buckets match backend GET shape (src/routes/jobs.js:
+  // 585-591 — verified 2026-06-05): `null` when unpopulated,
+  // object/array when populated. Consumers must handle `null` the same
+  // as `undefined` on read.
+  installation_details?: Record<string, unknown> | null;
+  supply_characteristics?: Record<string, unknown> | null;
+  /** Primary / single-board summary. Always present on the wire ({}  if empty). */
   board_info?: Record<string, unknown>;
   /** Optional multi-board array; each entry nests its own `board_info`. */
-  boards?: Record<string, unknown>[];
+  boards?: Record<string, unknown>[] | null;
   circuits?: CircuitRow[];
   observations?: ObservationRow[];
-  inspection_schedule?: Record<string, unknown>;
-  extent_and_type?: Record<string, unknown>;
-  design_construction?: Record<string, unknown>;
-  inspector_id?: string;
+  inspection_schedule?: Record<string, unknown> | null;
+  extent_and_type?: Record<string, unknown> | null;
+  design_construction?: Record<string, unknown> | null;
+  inspector_id?: string | null;
   // CCU analysis output — populated once a consumer-unit photo is uploaded.
   // `ccu_analysis` is the most-recent flat copy (kept for legacy debug
   // panels and single-board jobs); `ccu_analysis_by_board` is the per-
@@ -320,10 +324,25 @@ export interface JobDetail extends Job {
   last_session_id?: string;
 }
 
+/**
+ * One row of a circuits table. Wire shape (`packages/shared-types/src/
+ * circuit.ts Circuit`) uses `circuit_ref` + `circuit_designation`;
+ * web pre-Wave-B-#13 was typed with `number` + `description`, which
+ * never matched what the backend or iOS emit and forced every
+ * consumer into a `circuit.circuit_ref ?? circuit.number` fallback
+ * pattern that masked the drift. Wave-B closed audit Phase 3 #16/#18
+ * by aligning the type to the wire shape.
+ *
+ * Legacy `number` / `description` are still tolerated by readers via
+ * the `[key: string]: unknown` index signature — no production data
+ * should carry them (backend has always used the canonical names),
+ * but the fallback is cheap insurance for any pre-Wave-B job blob
+ * that somehow survived the audit-flagged drift.
+ */
 export interface CircuitRow {
   id: string;
-  number?: string;
-  description?: string;
+  circuit_ref?: string;
+  circuit_designation?: string;
   [key: string]: unknown;
 }
 
@@ -345,6 +364,10 @@ export interface ObservationRow {
    *  observations[] AND on observation_update payloads. iOS
    *  counterpart: `Observation.regulation`. */
   regulation?: string;
+  /** Free-text rationale from the refinement lookup. */
+  rationale?: string;
+  /** Refinement source identifier (e.g. "BPG4"). */
+  source?: string;
   /**
    * Filenames of photos attached to this observation. The backend stores
    * bytes in S3 under `jobs/{userId}/{folderName}/photos/{filename}` and

@@ -222,12 +222,10 @@ router.patch('/pdf-key', auth.requireAuth, async (req, res) => {
     );
     for (const r of ownership.rows) {
       if (r.user_id !== req.user.id) {
-        return res
-          .status(403)
-          .json({
-            code: 'not_your_attestation',
-            error: `attestation ${r.id} does not belong to user`,
-          });
+        return res.status(403).json({
+          code: 'not_your_attestation',
+          error: `attestation ${r.id} does not belong to user`,
+        });
       }
     }
     const updated = await db.updateAttestationPdfKey(attestationIds, pdfS3Key);

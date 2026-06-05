@@ -107,10 +107,7 @@ describe('createPendingAsksRegistry — resolve happy path', () => {
     const reg = createPendingAsksRegistry();
     const userResolve = jest.fn();
     const askStartedAt = Date.now() - 123; // 123ms ago
-    reg.register(
-      'call_1',
-      makeEntry({ resolve: userResolve, askStartedAt }),
-    );
+    reg.register('call_1', makeEntry({ resolve: userResolve, askStartedAt }));
 
     reg.resolve('call_1', { answered: true, user_text: 'ok' });
 

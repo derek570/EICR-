@@ -81,7 +81,7 @@ describe('Codex STG #3 — Promise-lifecycle hazards (Plan 03-09)', () => {
     expect(firstResolveRet).toBe(true);
     expect(entry.resolve).toHaveBeenCalledTimes(1);
     expect(entry.resolve).toHaveBeenCalledWith(
-      expect.objectContaining({ answered: true, user_text: 'Circuit 5' }),
+      expect.objectContaining({ answered: true, user_text: 'Circuit 5' })
     );
 
     // T+20.1s — advance past the would-be timeout. If clearTimeout ran inside
@@ -171,7 +171,7 @@ describe('Codex STG #3 — Promise-lifecycle hazards (Plan 03-09)', () => {
           answered: false,
           reason: 'session_terminated',
           wait_duration_ms: expect.any(Number),
-        }),
+        })
       );
     }
   });
@@ -206,7 +206,7 @@ describe('Codex STG #3 — Promise-lifecycle hazards (Plan 03-09)', () => {
         resolve: secondEntry.resolve,
         timer: secondEntry.timer,
         askStartedAt: secondEntry.askStartedAt,
-      }),
+      })
     ).toThrow(/duplicate_tool_call_id:toolu_haz4/);
 
     // First entry untouched — size still 1, first resolve not invoked.
@@ -302,7 +302,7 @@ describe('Codex STG #3 — Promise-lifecycle hazards (Plan 03-09)', () => {
         answered: false,
         reason: 'session_terminated',
         wait_duration_ms: expect.any(Number),
-      }),
+      })
     );
   });
 });

@@ -44,11 +44,15 @@ function makeResult(over: Partial<ExtractionResult> = {}): ExtractionResult {
 }
 
 describe('apply-extraction observation → inspection schedule auto-marking', () => {
+  // ScheduleOutcome enum (tick / N/A / C1 / C2 / C3 / LIM) excludes FI.
+  // Code 'FI' is a valid observation classification but doesn't have a
+  // matching schedule outcome — the schedule mirror skips it (see
+  // apply-extraction.ts markScheduleItemsFromObservations). Tested as
+  // a negative case below.
   it.each([
     ['C1', 'C1'],
     ['C2', 'C2'],
     ['C3', 'C3'],
-    ['FI', 'FI'],
   ])('marks schedule item %s when observation has code %s + schedule_item', (code, expected) => {
     const result = makeResult({
       observations: [

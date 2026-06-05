@@ -46,7 +46,10 @@ export class FieldSourceTracker {
   /** Walk a JobDetail and record every populated field as `'preExisting'`.
    *  Call once at session start before any regex/Sonnet writes can land. */
   seedFromJob(job: JobDetail): void {
-    const seedSection = (prefix: string, section: Record<string, unknown> | undefined): void => {
+    const seedSection = (
+      prefix: string,
+      section: Record<string, unknown> | null | undefined
+    ): void => {
       if (!section) return;
       for (const [key, value] of Object.entries(section)) {
         if (hasValue(value)) {

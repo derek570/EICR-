@@ -597,7 +597,7 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
       error: err?.message || String(err),
     });
     return; // canonical row failed — skip the store hook (keeps the
-            // store free of zombie partial merges).
+    // store free of zombie partial merges).
   }
 
   // Voice-latency plan 2026-06-05 Phase 2.3 — feed the late ack into

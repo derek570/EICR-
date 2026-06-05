@@ -1011,9 +1011,7 @@ export function createSpeculator({
     // `spd_bs_en` is intentionally NOT in BOARD_FIELD_VALUE_ENUMS
     // (type:"text", no enum constraint, no round-1/round-2 split).
     const enumMap =
-      record.name === 'record_board_reading'
-        ? BOARD_FIELD_VALUE_ENUMS
-        : CIRCUIT_FIELD_VALUE_ENUMS;
+      record.name === 'record_board_reading' ? BOARD_FIELD_VALUE_ENUMS : CIRCUIT_FIELD_VALUE_ENUMS;
     const allowed = enumMap.get(field);
     if (allowed && !allowed.has(value)) {
       logger?.info?.('voice_latency.speculator_skipped_enum_field', {

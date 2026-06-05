@@ -56,9 +56,7 @@ export function sanitiseUserText(raw) {
   }
 
   if (raw.length > HARD_REJECT_USER_TEXT_LEN) {
-    const err = new Error(
-      `user_text_too_long:${raw.length}:${HARD_REJECT_USER_TEXT_LEN}`,
-    );
+    const err = new Error(`user_text_too_long:${raw.length}:${HARD_REJECT_USER_TEXT_LEN}`);
     err.code = 'USER_TEXT_TOO_LONG';
     throw err;
   }

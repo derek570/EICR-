@@ -841,9 +841,7 @@ describe('bundleToolCallsIntoResult — utterance_id echo (Voice-latency plan 20
   test('utterance_id coexists with turn_id without affecting any other slot', () => {
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({
-        readings: new Map([
-          ['volts::1', { value: 230, confidence: 0.95, source_turn_id: 't1' }],
-        ]),
+        readings: new Map([['volts::1', { value: 230, confidence: 0.95, source_turn_id: 't1' }]]),
       }),
       { questions: [] },
       { turnId: 'turn-42', utteranceId: 'utt-abc' }

@@ -1,8 +1,9 @@
 'use client';
 
 import * as React from 'react';
+import { Suspense } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Logo } from '@/components/brand/logo';
 import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
@@ -13,6 +14,62 @@ import { OfflineBanner, OfflineIndicator } from '@/components/pwa/offline-indica
 import { AlertsBell } from '@/components/dashboard/alerts-bell';
 import { VoiceFeedbackBell } from '@/components/layout/voice-feedback-bell';
 import { useOutboxReplay } from '@/lib/pwa/outbox-replay';
+import { hasAcceptedCurrentTerms } from '@/app/terms/legal-texts-gate';
+
+/**
+ * Client-side T&Cs gate. Middleware can't read localStorage, so the
+ * cross-platform terms-accepted state must be checked once the
+ * AppShell mounts. Inspectors who haven't accepted (or whose accepted
+ * version is stale) are bounced to `/terms?next=<currentPath>` so we
+ * can return them to where they were going on success.
+ *
+ * The `next` value preserves both the pathname AND the original search
+ * string. Routes like `/job/[id]/circuits/match-review?nonce=...` rely
+ * on query state to resume the right flow; an earlier version of this
+ * gate stored only `pathname` and silently dropped the query, sending
+ * the inspector to the wrong screen post-accept (codex review finding
+ * on `06caaf9`).
+ *
+ * Auth-gated routes are exempt from re-running this redirect (they
+ * have their own AppShell mount), but `/terms` itself and any future
+ * `/login`-style unauthenticated routes are not under AppShell.
+ * `/offline` is a similar exception — we want PWA users on a flaky
+ * network to see the offline page even if they haven't accepted yet.
+ *
+ * EXTRACTED FROM AppShell (Next.js 16 build-time fix): `useSearchParams`
+ * opts the host component out of static rendering. Mounting it directly
+ * in AppShell would force every authenticated page (/dashboard,
+ * /settings/*, /job/[id]/*) to bail to dynamic rendering — and even
+ * with the bail flag, `next build` refuses to ship when an unbounded
+ * `useSearchParams` hangs above the page tree without a Suspense
+ * boundary. Splitting the gate into its own component + wrapping in
+ * Suspense inside AppShell pins the bail to this null-rendering leaf
+ * only, lets the rest of the shell pre-render normally, and keeps the
+ * gate effect bit-identical to the prior implementation (same imports,
+ * same dependency array, same redirect rule). The companion test
+ * `tests/app-shell-terms-gate.test.tsx` uses a `GateShim` that
+ * deliberately mirrors this effect body verbatim — update both if the
+ * gate logic ever changes.
+ */
+function TermsRedirect(): null {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  React.useEffect(() => {
+    if (pathname === '/terms') return;
+    if (hasAcceptedCurrentTerms()) return;
+    const params = new URLSearchParams();
+    if (pathname && pathname !== '/dashboard') {
+      const search = searchParams ? searchParams.toString() : '';
+      params.set('next', search ? `${pathname}?${search}` : pathname);
+    }
+    const qs = params.toString();
+    router.replace(qs ? `/terms?${qs}` : '/terms');
+  }, [pathname, router, searchParams]);
+
+  return null;
+}
 
 /**
  * Top-nav + page frame for all authenticated screens.
@@ -84,6 +141,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative flex min-h-dvh flex-col">
+      {/*
+       * The gate is wrapped in Suspense so its `useSearchParams` hook
+       * does not force the entire AppShell out of static rendering.
+       * `fallback={null}` is intentional — the gate itself renders
+       * null, so there is nothing to show while the search params
+       * resolve. See the `TermsRedirect` JSDoc above for the
+       * Next.js 16 build-time rationale.
+       */}
+      <Suspense fallback={null}>
+        <TermsRedirect />
+      </Suspense>
       <header
         className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)]/80 px-4 backdrop-blur"
         role="banner"
