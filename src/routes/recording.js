@@ -1568,6 +1568,17 @@ router.post('/debug-report', auth.requireAuth, async (req, res) => {
   if (!issueText || !sessionId) {
     return res.status(400).json({ error: 'sessionId and issueText are required' });
   }
+  // PLAN voice-feedback-2026-06-05 Group G — guard against empty/trivial
+  // markers (voice_feedback id 7 at 10:41:40 fired with body "."). The
+  // iOS trigger fires on any utterance by design; the server-side
+  // rejection is the right layer to drop noise. Kept distinct from the
+  // existing `!issueText` check so telemetry can tell "no body" apart
+  // from "trivial body" if we ever look at the bounce rate.
+  if (issueText.trim().length < 3) {
+    return res.status(400).json({
+      error: 'issueText must contain at least 3 non-whitespace characters',
+    });
+  }
   if (issueText.length > 5000) {
     return res.status(400).json({ error: 'issueText exceeds maximum length of 5000 characters' });
   }
