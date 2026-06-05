@@ -6,14 +6,33 @@ export class CostTracker {
     // Deepgram Nova-3 streaming rate
     this.DEEPGRAM_RATE_PER_MIN = 0.0077;
 
-    // Claude Sonnet 4.6 rates (per million tokens)
-    // Cache write = 1.25x base input ($3.00) for 5-minute ephemeral TTL = $3.75
-    // Cache read = 0.1x base input = $0.30
+    // Claude per-million-token rates by model family.
+    // Cache write = 1.25× base input (5-minute ephemeral TTL).
+    // Cache read  = 0.1×  base input.
+    // SONNET_RATES preserved as the historical alias used by tests +
+    // legacy callers; MODEL_RATES is the source of truth at compute time.
     this.SONNET_RATES = {
       cacheRead: 0.3,
       cacheWrite: 3.75,
       input: 3.0,
       output: 15.0,
+    };
+    this.HAIKU_RATES = {
+      cacheRead: 0.1,
+      cacheWrite: 1.25,
+      input: 1.0,
+      output: 5.0,
+    };
+    this.OPUS_RATES = {
+      cacheRead: 1.5,
+      cacheWrite: 18.75,
+      input: 15.0,
+      output: 75.0,
+    };
+    this.MODEL_RATES = {
+      sonnet: this.SONNET_RATES,
+      haiku: this.HAIKU_RATES,
+      opus: this.OPUS_RATES,
     };
 
     // ElevenLabs pricing: $0.050 per 1,000 characters (current Scale tier
@@ -46,6 +65,14 @@ export class CostTracker {
       inputTokens: 0,
       outputTokens: 0,
     };
+
+    // Per-model token accounting. Buckets are created lazily on first
+    // use. Cost is computed by summing each bucket × its model's rates,
+    // so a mid-session model switch (e.g. extraction on Haiku +
+    // observations on Sonnet) bills each call at the right rate.
+    // `this.sonnet` is preserved as the cross-model aggregate so the
+    // toCostUpdate() wire shape + existing consumers don't break.
+    this.modelUsage = new Map();
 
     this.elevenLabsCharacters = 0;
     // Stage 2 commit 2.6 — split streaming accounting per PLAN_v4 §A.10.
@@ -132,8 +159,49 @@ export class CostTracker {
     this.deepgram.isPaused = false;
   }
 
-  // Sonnet usage (from Anthropic API response.usage)
-  addSonnetUsage(usage) {
+  // Resolve a model id (anthropic id, e.g. 'claude-haiku-4-5-20251001') to
+  // a rates family. Callers SHOULD pass the actual response.model so
+  // mixed-model sessions (e.g. Haiku extraction + Sonnet observations)
+  // bill correctly. Omitting the id defaults to 'sonnet' so behaviour
+  // is identical to the pre-multi-model tracker — keeps tests
+  // deterministic, but any unmodified production call site will silently
+  // over-bill if it's actually running on Haiku. Audit grep:
+  //   `grep -n addSonnetUsage src/` — every hit should pass a 2nd arg.
+  _modelFamily(modelId) {
+    if (!modelId) return 'sonnet';
+    const id = String(modelId).toLowerCase();
+    if (id.includes('haiku')) return 'haiku';
+    if (id.includes('opus')) return 'opus';
+    return 'sonnet';
+  }
+
+  _bucketFor(family) {
+    let b = this.modelUsage.get(family);
+    if (!b) {
+      b = {
+        turns: 0,
+        compactions: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+      this.modelUsage.set(family, b);
+    }
+    return b;
+  }
+
+  // Sonnet/Haiku/Opus usage (from Anthropic API response.usage).
+  // `modelId` should be the actual model used (e.g. response.model);
+  // when omitted, falls back to the env-configured extraction model.
+  addSonnetUsage(usage, modelId) {
+    const b = this._bucketFor(this._modelFamily(modelId));
+    b.turns++;
+    b.cacheReadTokens += usage.cache_read_input_tokens || 0;
+    b.cacheWriteTokens += usage.cache_creation_input_tokens || 0;
+    b.inputTokens += usage.input_tokens || 0;
+    b.outputTokens += usage.output_tokens || 0;
+    // Cross-model aggregate for back-compat with toCostUpdate() consumers.
     this.sonnet.turns++;
     this.sonnet.cacheReadTokens += usage.cache_read_input_tokens || 0;
     this.sonnet.cacheWriteTokens += usage.cache_creation_input_tokens || 0;
@@ -141,15 +209,22 @@ export class CostTracker {
     this.sonnet.outputTokens += usage.output_tokens || 0;
   }
 
-  addCompactionUsage(usage) {
-    this.sonnet.compactions++;
+  addCompactionUsage(usage, modelId) {
+    const b = this._bucketFor(this._modelFamily(modelId));
+    b.compactions++;
     // Compaction calls don't use caching -- full price
+    b.inputTokens += usage.input_tokens || 0;
+    b.outputTokens += usage.output_tokens || 0;
+    this.sonnet.compactions++;
     this.sonnet.inputTokens += usage.input_tokens || 0;
     this.sonnet.outputTokens += usage.output_tokens || 0;
   }
 
   // Voice command usage — single-turn calls outside the extraction conversation
-  addVoiceCommandCost(usage) {
+  addVoiceCommandCost(usage, modelId) {
+    const b = this._bucketFor(this._modelFamily(modelId));
+    b.inputTokens += usage.input_tokens || 0;
+    b.outputTokens += usage.output_tokens || 0;
     this.sonnet.inputTokens += usage.input_tokens || 0;
     this.sonnet.outputTokens += usage.output_tokens || 0;
   }
@@ -338,13 +413,29 @@ export class CostTracker {
   }
 
   get sonnetCost() {
-    const { cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens } = this.sonnet;
-    return (
-      (cacheReadTokens * this.SONNET_RATES.cacheRead) / 1_000_000 +
-      (cacheWriteTokens * this.SONNET_RATES.cacheWrite) / 1_000_000 +
-      (inputTokens * this.SONNET_RATES.input) / 1_000_000 +
-      (outputTokens * this.SONNET_RATES.output) / 1_000_000
-    );
+    // Pre-migration / no-modelId callers: fall back to applying sonnet rates
+    // to the legacy aggregate so any caller that hasn't been updated still
+    // produces a numerically defined cost (worst case: 3× over-bill, which
+    // is what the old code did unconditionally).
+    if (this.modelUsage.size === 0) {
+      const { cacheReadTokens, cacheWriteTokens, inputTokens, outputTokens } = this.sonnet;
+      return (
+        (cacheReadTokens * this.SONNET_RATES.cacheRead) / 1_000_000 +
+        (cacheWriteTokens * this.SONNET_RATES.cacheWrite) / 1_000_000 +
+        (inputTokens * this.SONNET_RATES.input) / 1_000_000 +
+        (outputTokens * this.SONNET_RATES.output) / 1_000_000
+      );
+    }
+    let cost = 0;
+    for (const [family, b] of this.modelUsage) {
+      const rates = this.MODEL_RATES[family] || this.SONNET_RATES;
+      cost +=
+        (b.cacheReadTokens * rates.cacheRead) / 1_000_000 +
+        (b.cacheWriteTokens * rates.cacheWrite) / 1_000_000 +
+        (b.inputTokens * rates.input) / 1_000_000 +
+        (b.outputTokens * rates.output) / 1_000_000;
+    }
+    return cost;
   }
 
   get totalCost() {

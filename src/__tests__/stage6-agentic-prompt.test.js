@@ -239,8 +239,22 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // except / excluding / all but → set_field_for_all_circuits
       // with exclude_circuits: [N] + rcd_time_ms worked example).
       // Measured 14071; cap 14150 leaves ~79-token headroom.
+      //
+      // 2026-06-05 (PLAN voice-feedback Group I — W1.7): bumped to
+      // 14250 to absorb the combustible-CU C3 worked example added
+      // to the OBSERVATION CODES section. The example carries the
+      // BS 7671:2018+A2 §421.1.201 cite and the "C3, NOT C2" ruling
+      // so the model picks C3 even without consulting WRAG.
+      // Measured 14201; cap 14250 leaves ~49-token headroom.
+      //
+      // 2026-06-05 (PLAN voice-feedback Group H — W1.6): bumped to
+      // 15000 to absorb the CLIENT BILLING ADDRESS — SITE COPY RULE
+      // rewrite (one-shot ask per job with ambiguous-slot default,
+      // four-write copy pattern, two worked examples). ~+250 tokens
+      // over the prior block, plus the symmetric direction text.
+      // Measured 14926; cap 15000 leaves ~74-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14150);
+      expect(estimate).toBeLessThanOrEqual(15000);
     });
   });
 
@@ -577,11 +591,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(stripped.includes('r1_plus_r2')).toBe(false);
     });
 
-    test('prompt does NOT reference `address` as a record_reading field or ask_user context_field', () => {
+    test('prompt does NOT reference `address` as a circuit-scoped `record_reading` field or as an `ask_user` context_field (board-level `record_board_reading` MAY use it for ambiguous site-address writes)', () => {
       // Plan 04-07 decision (still standing for `address`): the legacy
       // single `address` slot is reserved for the SITE address, not
-      // freely written by the model — keep that identifier out of
-      // record_reading field / ask_user context_field positions.
+      // freely written by the circuit-scoped record_reading tool —
+      // keep that identifier out of record_reading field / ask_user
+      // context_field positions.
       //
       // Phase 4.0 / 4.2 (2026-06-04 PLAN-backend-final) added the
       // four `client_*` BILLING address slots and the prompt guidance
@@ -590,8 +605,18 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // site address for client too". The inverted assertion is the
       // companion test below; this one only locks the legacy `address`
       // identifier.
-      expect(prompt).not.toMatch(/field:\s*"address"/);
-      expect(prompt).not.toMatch(/context_field:\s*"address"/);
+      //
+      // PLAN voice-feedback-2026-06-05 W1.6 / Group H — the rewritten
+      // AMBIGUOUS-SLOT DEFAULT rule introduced
+      // `record_board_reading({field: "address", ...})` worked
+      // examples to teach Sonnet that ambiguous addresses default to
+      // the SITE slot family. That tool is BOARD-scoped, distinct from
+      // the circuit-scoped `record_reading`; the negative below scopes
+      // to `record_reading\(` only. The legacy ask_user negative also
+      // tightens to reject `ask_user({context_field: "address"})` while
+      // permitting the new `context_field: "address_mirror_ask"` etc.
+      expect(prompt).not.toMatch(/record_reading\([^)]*field:\s*"address"/);
+      expect(prompt).not.toMatch(/ask_user\([^)]*context_field:\s*"address"\s*[,}]/);
     });
 
     test('prompt DOES reference the client_* address family as record_board_reading fields (Phase 4.2)', () => {
@@ -813,8 +838,23 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     Measured 8963; cap 9000 leaves ~37-token headroom. Closes
       //     the loop with Phase 8.0 iOS ApplyFieldIntent return-nil-on-
       //     exclude so the exclude path reaches the backend.
+      //   - 9100 (PLAN voice-feedback-2026-06-05 W1.7 — combustible
+      //     CU → C3 worked example): one new bullet at the end of
+      //     OBSERVATION CODES carrying the BS 7671:2018+A2 §421.1.201
+      //     cite and the "C3, NOT C2" ruling. ~70 tokens. Closes
+      //     voice_feedback marker #9 (session 84CE2125 at 10:43:30
+      //     wrote C2 four times for a combustible CU).
+      //   - 9900 (PLAN voice-feedback-2026-06-05 W1.6 — address
+      //     mirror one-shot ask per job): CLIENT BILLING ADDRESS —
+      //     SITE COPY RULE rewrite (replacing the silent mirror with
+      //     a one-shot per-job ask + ambiguous-slot default + two
+      //     worked examples covering yes/no answers + symmetric
+      //     site↔customer copy direction). ~+650 tokens. Measured
+      //     9818; cap 9900 leaves ~82-token headroom. Closes voice_
+      //     feedback marker #8 (session 84CE2125 at 10:42:09 reported
+      //     silent mirror from client to installation address).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(9000);
+      expect(estimate).toBeLessThanOrEqual(9900);
     });
   });
 
@@ -1207,6 +1247,91 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toEqual(expect.stringContaining('spd_rated_current'));
       expect(block).toEqual(expect.stringContaining('spd_short_circuit'));
       expect(block).toEqual(expect.stringContaining('spd_type_supply'));
+    });
+  });
+
+  describe('Group 15 — 2026-06-05 voice-feedback Group H (address mirror one-shot ask per job)', () => {
+    test('CLIENT BILLING ADDRESS — SITE COPY RULE section retains its header and the one-shot ask semantics', () => {
+      // Voice_feedback marker #8 (session 84CE2125 at 10:42:09): inspector
+      // dictated the client address; the system silently mirrored it onto
+      // the site. Derek's locked decision is one-shot ask per job with
+      // ambiguous default to SITE and a durable "no" answer.
+      const idx = prompt.search(/CLIENT BILLING ADDRESS — SITE COPY RULE/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+
+      // Header advertises one-shot semantics so the next contributor knows
+      // the file's per-job gating is intentional, not an accident.
+      expect(block).toEqual(expect.stringContaining('one-shot ask per job'));
+
+      // AMBIGUOUS-SLOT DEFAULT rule (Derek decision: ambiguous → SITE).
+      expect(block).toEqual(expect.stringContaining('AMBIGUOUS-SLOT DEFAULT'));
+      expect(block).toMatch(/default the write to the SITE slot family/i);
+
+      // Per-job gating is bound to the jobs.address_mirror_asked column
+      // so the iOS reconnect-then-re-fire bug class can't recur.
+      expect(block).toEqual(expect.stringContaining('jobs.address_mirror_asked'));
+
+      // Durable "no" — the answer outlives the ask.
+      expect(block).toMatch(/DURABLE/);
+      expect(block).toMatch(/"no" answer is DURABLE|the ask is NEVER re-fired/i);
+    });
+
+    test('CLIENT BILLING ADDRESS block contains both directions (site→customer AND customer→site) of the mirror copy', () => {
+      const idx = prompt.search(/CLIENT BILLING ADDRESS — SITE COPY RULE/);
+      const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+      const block = prompt.slice(idx, end);
+
+      // Two worked examples — yes-answer (site→customer copy) and
+      // no-answer (customer first, durable "no"). Without both, Sonnet
+      // gets imbalanced training signal and may favour one direction
+      // even when the inspector dictated the other slot first.
+      expect(block).toMatch(/site address dictated first/i);
+      expect(block).toMatch(/customer address dictated first/i);
+      // Symmetric copy direction is stated explicitly so the model
+      // knows the customer→site copy is the same four-write pattern.
+      expect(block).toMatch(/Customer→site direction is symmetric/i);
+    });
+
+    test('jobs.address_mirror_asked is named ONLY inside the address rule block (no orphan references elsewhere)', () => {
+      // The flag should be a load-bearing concept INSIDE the address
+      // rule and nowhere else. An orphan reference elsewhere would
+      // indicate a half-applied refactor.
+      const matches = prompt.match(/address_mirror_asked/g) ?? [];
+      expect(matches.length).toBe(1);
+    });
+  });
+
+  describe('Group 14 — 2026-06-05 voice-feedback Group I (combustible CU → C3, NOT C2)', () => {
+    test('OBSERVATION CODES section contains the combustible-CU worked example with explicit C3 ruling', () => {
+      // Field-test session 84CE2125 at 10:43:30 saw Sonnet write
+      // record_observation {code: "C2"} for a combustible consumer
+      // unit (4 times in 5 seconds). BS 7671:2018+A2 §421.1.201
+      // codes a non-fire-rated CU as C3 (improvement recommended)
+      // — the historical C2 classification was softened in the 2022
+      // amendment. The fix surfaces the boundary as a worked example
+      // inside the OBSERVATION CODES block so the model picks C3 even
+      // without consulting WRAG.
+      const idx = prompt.search(/OBSERVATION CODES \(criteria — apply to ANY defect\)/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next WORKED EXAMPLES heading (Example 1).
+      const end = prompt.indexOf('WORKED EXAMPLES:', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+
+      // The example must call out the combustible/non-amendment-3
+      // case AND the C3 ruling AND name BS 7671:2018+A2 §421.1.201
+      // — without any one of these the model may fall back to the
+      // pre-amendment C2 default.
+      expect(block).toEqual(expect.stringContaining('combustible'));
+      expect(block).toEqual(expect.stringContaining('consumer unit'));
+      expect(block).toEqual(expect.stringContaining('§421.1.201'));
+      // "C3, NOT C2" is the load-bearing assertion — pin the exact
+      // phrasing so a "drop the NOT C2" tidy-up that would let the
+      // model wobble back to C2 fails the test loudly.
+      expect(block).toMatch(/C3,\s*NOT\s*C2/i);
     });
   });
 });

@@ -542,6 +542,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                     circuit: slot.circuit,
                     boardId: slot.boardId,
                     correlationId: slot.correlationId,
+                    expanded_text: slot.expandedText,
                   });
                 } catch (sendErr) {
                   log?.warn?.('voice_latency.mid_stream_emit_error', {
@@ -742,6 +743,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       circuitDesignations,
       boardDesignations,
       totalCircuitsInJob,
+      // PLAN voice-feedback-2026-06-05 W1.4 — thread the session logger
+      // through so the bundler can emit one `ios_send_attempt` row per
+      // confirmation entry (with byte-equal-to-iOS expected_dedupe_key
+      // + confidence). Omitted when the bundler is invoked outside the
+      // harness (test fixtures); the emit is silently skipped there.
+      logger: log,
+      sessionId: session.sessionId,
     });
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
@@ -1151,7 +1159,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         toolLoopOut.usage.cache_read_input_tokens > 0 ||
         toolLoopOut.usage.cache_creation_input_tokens > 0)
     ) {
-      session.costTracker.addSonnetUsage(toolLoopOut.usage);
+      session.costTracker.addSonnetUsage(toolLoopOut.usage, toolLoopOut.model);
     }
 
     // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
@@ -1684,7 +1692,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       toolLoopOut.usage.cache_read_input_tokens > 0 ||
       toolLoopOut.usage.cache_creation_input_tokens > 0)
   ) {
-    session.costTracker.addSonnetUsage(toolLoopOut.usage);
+    session.costTracker.addSonnetUsage(toolLoopOut.usage, toolLoopOut.model);
   }
 
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).

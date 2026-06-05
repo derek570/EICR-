@@ -150,6 +150,107 @@ describe('CostTracker', () => {
     });
   });
 
+  describe('Per-model rates', () => {
+    test('exposes Haiku 4.5 rates ($1 / $5 / $1.25 / $0.10)', () => {
+      expect(tracker.HAIKU_RATES.cacheRead).toBe(0.1);
+      expect(tracker.HAIKU_RATES.cacheWrite).toBe(1.25);
+      expect(tracker.HAIKU_RATES.input).toBe(1.0);
+      expect(tracker.HAIKU_RATES.output).toBe(5.0);
+    });
+
+    test('exposes Opus rates ($15 / $75 / $18.75 / $1.50)', () => {
+      expect(tracker.OPUS_RATES.cacheRead).toBe(1.5);
+      expect(tracker.OPUS_RATES.cacheWrite).toBe(18.75);
+      expect(tracker.OPUS_RATES.input).toBe(15.0);
+      expect(tracker.OPUS_RATES.output).toBe(75.0);
+    });
+
+    test('Haiku model id is billed at Haiku rates (1/3 the Sonnet cost)', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000, // $0.10 @ haiku, $0.30 @ sonnet
+          cache_creation_input_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        'claude-haiku-4-5-20251001'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.1, 4);
+    });
+
+    test('Sonnet model id is billed at Sonnet rates (back-compat)', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        'claude-sonnet-4-6'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.3, 4);
+    });
+
+    test('omitting model id defaults to Sonnet rates (back-compat with legacy callers)', () => {
+      tracker.addSonnetUsage({
+        cache_read_input_tokens: 1_000_000,
+        cache_creation_input_tokens: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+      });
+      expect(tracker.sonnetCost).toBeCloseTo(0.3, 4);
+    });
+
+    test('mixed-model session sums per-family rates correctly', () => {
+      // Haiku extraction turn: 1M input @ $1 = $1.00
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+        },
+        'claude-haiku-4-5-20251001'
+      );
+      // Sonnet observation turn: 1M input @ $3 = $3.00
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+        },
+        'claude-sonnet-4-6'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(4.0, 4);
+      // Aggregate is preserved for toCostUpdate() back-compat
+      expect(tracker.sonnet.turns).toBe(2);
+      expect(tracker.sonnet.inputTokens).toBe(2_000_000);
+    });
+
+    test('compaction usage on Haiku also bills at Haiku rates', () => {
+      tracker.addCompactionUsage(
+        { input_tokens: 1_000_000, output_tokens: 0 },
+        'claude-haiku-4-5-20251001'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(1.0, 4);
+      expect(tracker.sonnet.compactions).toBe(1);
+    });
+
+    test('unknown model id falls back to Sonnet rates (safe default)', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        'claude-something-new-9-9'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.3, 4);
+    });
+  });
+
   describe('ElevenLabs cost tracking', () => {
     test('should track character usage', () => {
       tracker.addElevenLabsUsage(100);

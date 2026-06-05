@@ -338,6 +338,33 @@ describe('Recording routes (supertest)', () => {
       expect(res.status).toBe(400);
     });
 
+    test('PLAN voice-feedback-2026-06-05 Group G — should return 400 for trivial markers (< 3 non-whitespace chars)', async () => {
+      // Field-test session 84CE2125 at 10:41:40 fired a marker with body
+      // "." — iOS trigger by design fires on any utterance, server-side
+      // rejection is the right layer to drop noise. Test all variants:
+      // single char ".", whitespace-only "   ", under-3 "ab", and
+      // leading/trailing whitespace trimmed to < 3.
+      const token = makeToken('user-1');
+      const cases = ['.', '   ', 'ab', '  a  '];
+      for (const issueText of cases) {
+        const res = await supertest(app)
+          .post('/api/debug-report')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ sessionId: 'rec_123', issueText });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/at least 3 non-whitespace characters/);
+      }
+    });
+
+    test('PLAN voice-feedback-2026-06-05 Group G — should accept markers with exactly 3 non-whitespace chars (boundary)', async () => {
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .post('/api/debug-report')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ sessionId: 'rec_123', issueText: 'bug' });
+      expect(res.status).toBe(200);
+    });
+
     test('should accept valid debug report', async () => {
       const token = makeToken('user-1');
       const res = await supertest(app)
