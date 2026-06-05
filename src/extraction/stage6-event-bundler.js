@@ -28,6 +28,11 @@ import {
   buildGroupedConfirmationText,
   deriveFriendlyName,
 } from './confirmation-text.js';
+import {
+  buildPerCircuitDedupeKey,
+  buildMultiCircuitDedupeKey,
+  buildDegenerateDedupeKey,
+} from './ios-dedupe-key.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
 // ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
@@ -380,6 +385,16 @@ function synthesiseConfirmations(
     if (bucket.board_id != null) {
       entry.board_id = bucket.board_id;
     }
+    // PLAN voice-feedback-2026-06-05 W1.4 — transient `_confidence`
+    // sidecar carries the lowest confidence across the bucket so the
+    // bundler's `ios_send_attempt` telemetry can include it. Stripped
+    // BEFORE the entries reach the wire (see bundler stripTransient step).
+    // Leading underscore marks transient by convention.
+    entry._confidence = bucket.items.reduce(
+      (min, r) => (typeof r.confidence === 'number' && r.confidence < min ? r.confidence : min),
+      Number.POSITIVE_INFINITY
+    );
+    if (!Number.isFinite(entry._confidence)) entry._confidence = null;
     out.push(entry);
     for (const idx of bucket.indices) consumedReadingIndices.add(idx);
   }
@@ -416,6 +431,8 @@ function synthesiseConfirmations(
     if (r.board_id != null) {
       entry.board_id = r.board_id;
     }
+    // W1.4 transient confidence sidecar (per-circuit fallback path).
+    entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
     out.push(entry);
   }
   for (const r of boardReadings) {
@@ -431,6 +448,8 @@ function synthesiseConfirmations(
     if (r.board_id != null) {
       entry.board_id = r.board_id;
     }
+    // W1.4 transient confidence sidecar (board-level degenerate path).
+    entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
     out.push(entry);
   }
   return out;
@@ -678,6 +697,49 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       options.circuitDesignations,
       options.totalCircuitsInJob ?? null
     );
+    // PLAN voice-feedback-2026-06-05 W1.4 — emit one `ios_send_attempt`
+    // row per confirmation entry the bundler is about to put on the wire.
+    // Each row carries the byte-equal-to-iOS `expected_dedupe_key` (using
+    // the canonical TTS text, NOT the dispatcher's value-proxy) plus
+    // `confidence` so an operator can correlate this row with the
+    // dispatcher's `stage6_tool_call` row and with iOS's
+    // `confirmation_tts_decision` row. The three rows in sequence are
+    // the diagnostic surface for Group A condition 2 (dedupe collisions)
+    // and condition 3 (confidence-gate dropouts).
+    //
+    // Logger + sessionId/turnId are taken from options. When the caller
+    // doesn't supply them (older test fixtures, the runShadowHarness
+    // path without confirmations enabled, etc.) the emit is silently
+    // skipped — the rest of the bundler is preserved exactly.
+    if (options.logger && typeof options.logger.info === 'function') {
+      for (const entry of confirmations) {
+        let expectedDedupeKey;
+        if (Number.isInteger(entry.circuit)) {
+          expectedDedupeKey = buildPerCircuitDedupeKey(entry.field, entry.circuit);
+        } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {
+          expectedDedupeKey = buildMultiCircuitDedupeKey(entry.field, entry.circuits, entry.text);
+        } else {
+          expectedDedupeKey = buildDegenerateDedupeKey(entry.field, entry.text, entry.board_id);
+        }
+        options.logger.info('ios_send_attempt', {
+          sessionId: options.sessionId ?? null,
+          turnId: _turnId,
+          field: entry.field ?? null,
+          circuit: Number.isInteger(entry.circuit) ? entry.circuit : null,
+          circuits: Array.isArray(entry.circuits) ? entry.circuits : null,
+          board_id: entry.board_id ?? null,
+          confidence: typeof entry._confidence === 'number' ? entry._confidence : null,
+          expected_dedupe_key: expectedDedupeKey,
+        });
+      }
+    }
+    // Strip transient `_confidence` sidecar so it never reaches the
+    // wire. iOS's Codable decoder ignores unknown keys, but the strip
+    // keeps the wire surface clean for tests that snapshot full
+    // confirmation entries (and for any future static-decode consumer).
+    for (const entry of confirmations) {
+      if ('_confidence' in entry) delete entry._confidence;
+    }
     // 2026-05-29 — state-change confirmations (create_circuit, rename,
     // delete, add_board, select_board, mark_distribution_circuit) so the
     // AirPods-only inspector hears EVERY state change, not just record_
@@ -737,11 +799,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
 // caller threads it in. windowMs defaults to 1500 per the plan.
 export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
 
-export function applyConfirmationDebounce(
-  newConfirmations,
-  debounceState,
-  options = {}
-) {
+export function applyConfirmationDebounce(newConfirmations, debounceState, options = {}) {
   if (!Array.isArray(newConfirmations) || newConfirmations.length === 0) {
     return Array.isArray(newConfirmations) ? newConfirmations : [];
   }

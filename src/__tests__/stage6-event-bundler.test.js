@@ -704,4 +704,103 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       expect(c.expanded_text.length).toBeGreaterThan(0);
     }
   });
+
+  test('PLAN voice-feedback-2026-06-05 W1.4 — ios_send_attempt emits one row per confirmation, with byte-equal-to-iOS expected_dedupe_key + confidence + circuit/board metadata', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 0.92, source_turn_id: 't1' },
+      ],
+      [
+        encodeReadingKey('ir_live_live_mohm', 1),
+        { value: '299', confidence: 0.9, source_turn_id: 't1' },
+      ],
+      [
+        encodeReadingKey('ir_live_live_mohm', 2),
+        { value: '299', confidence: 0.88, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('spd_bs_en'),
+        { value: '1361', confidence: 0.95, source_turn_id: 't1' },
+      ],
+    ]);
+    const infoCalls = [];
+    const logger = {
+      info: (name, payload) => {
+        infoCalls.push([name, payload]);
+      },
+    };
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      {
+        confirmationsEnabled: true,
+        turnId: 'sess-X-turn-1',
+        sessionId: 'sess-X',
+        logger,
+      }
+    );
+
+    // Confirmations land on the wire (no _confidence sidecar leaked).
+    expect(r.confirmations.length).toBeGreaterThan(0);
+    for (const c of r.confirmations) {
+      expect(c).not.toHaveProperty('_confidence');
+    }
+
+    // One ios_send_attempt row per confirmation entry.
+    const attempts = infoCalls.filter((c) => c[0] === 'ios_send_attempt');
+    expect(attempts.length).toBe(r.confirmations.length);
+
+    // Per-circuit branch — measured_zs_ohm on circuit 1: key shape "<field>_<circuit>".
+    const zsRow = attempts.find((c) => c[1].field === 'measured_zs_ohm');
+    expect(zsRow).toBeDefined();
+    expect(zsRow[1].expected_dedupe_key).toBe('measured_zs_ohm_1');
+    expect(zsRow[1].confidence).toBe(0.92);
+    expect(zsRow[1].circuit).toBe(1);
+    expect(zsRow[1].turnId).toBe('sess-X-turn-1');
+    expect(zsRow[1].sessionId).toBe('sess-X');
+
+    // Multi-circuit broadcast branch — IR L to L bucket [1,2] same value
+    // grouped into ONE confirmation; key shape "<field>_<sortedCircuits>_<djb2(text)>".
+    const irRow = attempts.find(
+      (c) => c[1].field === 'ir_live_live_mohm' && Array.isArray(c[1].circuits)
+    );
+    expect(irRow).toBeDefined();
+    expect(irRow[1].circuits).toEqual([1, 2]);
+    expect(irRow[1].circuit).toBeNull();
+    expect(irRow[1].expected_dedupe_key).toMatch(/^ir_live_live_mohm_1-2_\d+$/);
+    // Bucket confidence is the MIN across the bucket (lowest source).
+    expect(irRow[1].confidence).toBe(0.88);
+
+    // Degenerate / board-level branch — spd_bs_en (board, no circuit info);
+    // key shape "<field>_<djb2(text+boardId)>".
+    const spdRow = attempts.find((c) => c[1].field === 'spd_bs_en');
+    expect(spdRow).toBeDefined();
+    expect(spdRow[1].circuit).toBeNull();
+    expect(spdRow[1].circuits).toBeNull();
+    expect(spdRow[1].expected_dedupe_key).toMatch(/^spd_bs_en_\d+$/);
+    expect(spdRow[1].confidence).toBe(0.95);
+  });
+
+  test('PLAN voice-feedback-2026-06-05 W1.4 — bundler is silent when options.logger is absent (back-compat with test fixtures)', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    // No logger in options — bundler must not throw, and confirmation
+    // wire shape stays unchanged.
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'sess-Y-turn-1' }
+    );
+    expect(r.confirmations).toHaveLength(1);
+    expect(r.confirmations[0]).not.toHaveProperty('_confidence');
+  });
 });

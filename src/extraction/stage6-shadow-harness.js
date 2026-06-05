@@ -743,6 +743,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       circuitDesignations,
       boardDesignations,
       totalCircuitsInJob,
+      // PLAN voice-feedback-2026-06-05 W1.4 — thread the session logger
+      // through so the bundler can emit one `ios_send_attempt` row per
+      // confirmation entry (with byte-equal-to-iOS expected_dedupe_key
+      // + confidence). Omitted when the bundler is invoked outside the
+      // harness (test fixtures); the emit is silently skipped there.
+      logger: log,
+      sessionId: session.sessionId,
     });
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
