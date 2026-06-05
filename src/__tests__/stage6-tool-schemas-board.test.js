@@ -579,10 +579,20 @@ describe('dispatchRecordBoardReading state mutation', () => {
     expect(session.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.91');
   });
 
-  test('PII guard: log input_summary contains field name only, never value', async () => {
+  test('PII guard: log input_summary contains field name + telemetry sidecars only, never raw value or source_turn_id', async () => {
     // Board fields can carry PII (address / postcode / client_name etc.).
     // The dispatcher must NEVER put `value` into input_summary regardless
     // of what field is being written.
+    //
+    // PLAN voice-feedback-2026-06-05 W1.2 (b) added three telemetry sidecars
+    // alongside `field`:
+    //   - confidence: numeric, not PII
+    //   - board_id: structural id, not PII
+    //   - expected_dedupe_key: "<field>_<djb2(value+boardId)>" — the djb2
+    //     hash is one-way, so the raw PII text is NOT recoverable from
+    //     the key. The PII discipline is preserved by hashing.
+    // The test still locks the absence of raw `value` and `source_turn_id`,
+    // which is the PII contract.
     const session = makeSession();
     const logger = mockLogger();
     const d = createWriteDispatcher(session, logger, 't1', createPerTurnWrites());
@@ -600,9 +610,19 @@ describe('dispatchRecordBoardReading state mutation', () => {
       {}
     );
     const rows = toolCallRows(logger);
-    expect(rows[0].input_summary).toEqual({ field: 'address' });
-    expect(rows[0].input_summary).not.toHaveProperty('value');
-    expect(rows[0].input_summary).not.toHaveProperty('source_turn_id');
+    const summary = rows[0].input_summary;
+    expect(summary.field).toBe('address');
+    expect(summary.confidence).toBe(0.95);
+    expect(summary).toHaveProperty('board_id');
+    expect(summary).toHaveProperty('expected_dedupe_key');
+    expect(typeof summary.expected_dedupe_key).toBe('string');
+    // Raw PII MUST NOT appear in the key — only the djb2 hash trailing
+    // after "address_".
+    expect(summary.expected_dedupe_key).not.toContain('12 Acacia Avenue');
+    expect(summary.expected_dedupe_key).not.toContain('Acacia');
+    expect(summary.expected_dedupe_key).toMatch(/^address_\d+$/);
+    expect(summary).not.toHaveProperty('value');
+    expect(summary).not.toHaveProperty('source_turn_id');
   });
 
   test('applyBoardReadingToSnapshot pure atom: writes to circuits[0] and auto-creates the bucket', () => {

@@ -542,6 +542,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                     circuit: slot.circuit,
                     boardId: slot.boardId,
                     correlationId: slot.correlationId,
+                    expanded_text: slot.expandedText,
                   });
                 } catch (sendErr) {
                   log?.warn?.('voice_latency.mid_stream_emit_error', {

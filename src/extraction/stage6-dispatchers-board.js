@@ -51,6 +51,7 @@ import { applyBoardReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { encodeBoardReadingKey } from './stage6-per-turn-writes.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM } from './stage6-tool-schemas.js';
+import { buildDegenerateDedupeKey } from './ios-dedupe-key.js';
 import {
   DEFAULT_MAIN_BOARD_ID,
   ensureMultiBoardShape,
@@ -330,6 +331,18 @@ export async function dispatchRecordBoardReading(call, ctx) {
   });
 
   // 5) log success.
+  // PLAN voice-feedback-2026-06-05 W1.2 (b): extend input_summary with
+  // `confidence` (numeric — Sonnet's self-reported confidence) and a
+  // projected `expected_dedupe_key` so CloudWatch operators can correlate
+  // the dispatcher row with the eventual bundler `ios_send_attempt` row +
+  // the iOS-side dedupe Set decision. The key here uses `input.value` as
+  // a TEXT proxy (final TTS text isn't built until the bundler synthesise
+  // step); the bundler row replaces the proxy with the canonical TTS
+  // text. Both rows share the same field + boardId so an operator can
+  // join them. Mirrors iOS algorithm at DeepgramRecordingViewModel.swift:649
+  // — see ios-dedupe-key.js for the cross-platform contract.
+  // PII discipline (re-asserted): value is NEVER logged as raw text —
+  // only its djb2 hash is exposed, which is a one-way scalar.
   logToolCall(logger, {
     sessionId: session.sessionId,
     turnId,
@@ -339,10 +352,16 @@ export async function dispatchRecordBoardReading(call, ctx) {
     is_error: false,
     outcome: 'ok',
     validation_error: null,
-    // PII: field name only. NEVER log the value here — the value might be the
-    // installation address, postcode, client name, etc. Mirrors the PII
-    // discipline in observation dispatchers.
-    input_summary: { field: input.field },
+    input_summary: {
+      field: input.field,
+      confidence: input.confidence,
+      board_id: input.board_id ?? null,
+      expected_dedupe_key: buildDegenerateDedupeKey(
+        input.field,
+        input.value == null ? '' : String(input.value),
+        input.board_id ?? null
+      ),
+    },
   });
   return envelope(call.tool_call_id, { ok: true }, false);
 }
