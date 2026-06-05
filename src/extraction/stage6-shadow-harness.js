@@ -1151,7 +1151,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         toolLoopOut.usage.cache_read_input_tokens > 0 ||
         toolLoopOut.usage.cache_creation_input_tokens > 0)
     ) {
-      session.costTracker.addSonnetUsage(toolLoopOut.usage);
+      session.costTracker.addSonnetUsage(toolLoopOut.usage, toolLoopOut.model);
     }
 
     // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
@@ -1684,7 +1684,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       toolLoopOut.usage.cache_read_input_tokens > 0 ||
       toolLoopOut.usage.cache_creation_input_tokens > 0)
   ) {
-    session.costTracker.addSonnetUsage(toolLoopOut.usage);
+    session.costTracker.addSonnetUsage(toolLoopOut.usage, toolLoopOut.model);
   }
 
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).

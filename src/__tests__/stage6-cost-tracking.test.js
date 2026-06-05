@@ -318,12 +318,17 @@ describe('runShadowHarness live mode — costTracker wiring', () => {
     await runShadowHarness(session, 'hello', [], { logger: makeLogger() });
 
     expect(addSpy).toHaveBeenCalledTimes(1);
-    expect(addSpy).toHaveBeenCalledWith({
-      input_tokens: 2000,
-      output_tokens: 120,
-      cache_creation_input_tokens: 500,
-      cache_read_input_tokens: 0,
-    });
+    // Second arg is the model id (response.model → toolLoopOut.model),
+    // threaded through so per-model rates apply in the cost tracker.
+    expect(addSpy).toHaveBeenCalledWith(
+      {
+        input_tokens: 2000,
+        output_tokens: 120,
+        cache_creation_input_tokens: 500,
+        cache_read_input_tokens: 0,
+      },
+      expect.stringMatching(/^claude-/)
+    );
 
     // Confirm the cost tracker actually accepted the usage and flipped its
     // counters — this is what cost_summary.json reads via toSessionSummary.

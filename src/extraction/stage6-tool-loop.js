@@ -970,6 +970,14 @@ export async function runToolLoop({
     aborted,
     messages_final: messages,
     usage,
+    // The base model the loop ran on. Surfaced so callers can pipe it
+    // into costTracker.addSonnetUsage(usage, model) for per-model
+    // pricing. NOTE: when VOICE_LATENCY_ROUND1_MODEL is set, round-1
+    // tokens are charged at the base-model rate here even though they
+    // physically ran on the override model. Round 1 is typically a small
+    // single-tool emission, so the mispricing is bounded; revisit if
+    // the override model differs in price by an order of magnitude.
+    model,
     // Phase 0 + Phase 2 (single-round latency sprint) — additive return fields.
     // Legacy callers ignore unknown keys, so the back-compat is preserved.
     terminal_reason: terminalReason,
