@@ -239,8 +239,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // except / excluding / all but → set_field_for_all_circuits
       // with exclude_circuits: [N] + rcd_time_ms worked example).
       // Measured 14071; cap 14150 leaves ~79-token headroom.
+      //
+      // 2026-06-09 (voice-feedback-cleanup-2026-06-09/PLAN-final.md
+      // §Cluster D): bumped to 14300 to absorb the RULE 1 negation-guard
+      // sentence (~60 tokens) AND the RULE 2 active-enforcement clause
+      // (~90 tokens) — together ~150 tokens. Measured 14240; cap 14300
+      // leaves ~60-token headroom. Closes inspector markers 9 + 10 (the
+      // "consumer unit is not a C2" recorded-anyway bug + the "limitation"
+      // / "smoke alarm" no-trigger observations).
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14150);
+      expect(estimate).toBeLessThanOrEqual(14300);
     });
   });
 
@@ -813,8 +821,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     Measured 8963; cap 9000 leaves ~37-token headroom. Closes
       //     the loop with Phase 8.0 iOS ApplyFieldIntent return-nil-on-
       //     exclude so the exclude path reaches the backend.
+      //   - 9200 (voice-feedback-cleanup-2026-06-09/PLAN-final.md
+      //     §Cluster D): RULE 1 negation-guard sentence (~60 tokens) +
+      //     RULE 2 active-enforcement clause (~90 tokens) = ~150 tokens.
+      //     Measured 9132; cap 9200 leaves ~68-token headroom. Closes
+      //     inspector markers 9 + 10 (negated bare codes were recorded
+      //     anyway, and no-trigger defects implicitly created observations).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(9000);
+      expect(estimate).toBeLessThanOrEqual(9200);
     });
   });
 
@@ -1207,6 +1221,69 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toEqual(expect.stringContaining('spd_rated_current'));
       expect(block).toEqual(expect.stringContaining('spd_short_circuit'));
       expect(block).toEqual(expect.stringContaining('spd_type_supply'));
+    });
+  });
+
+  describe('Group 14 — 2026-06-09 voice-feedback Cluster D (bare-trigger guards + RULE 2 enforcement)', () => {
+    // Source: voice-feedback-cleanup-2026-06-09/PLAN-final.md §Cluster D.
+    // Markers 9 + 10 — "the consumer unit is not a C2" was recorded as a C2,
+    // and "limitation note" / "smoke alarm" no-trigger utterances created
+    // observations anyway. The fix is two-fold:
+    //   (D1) RULE 1 must deny bare-code triggers preceded by negation.
+    //   (D2) RULE 2 must actively route un-triggered defect detections to
+    //        `ask_user`, not implicitly to "do nothing".
+    test('D1 — RULE 1 has a negation guard for bare codes (3-token window, named operators)', () => {
+      const idx = prompt.search(/RULE 1 — EXPLICIT/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // RULE 1 ends at the next sibling rule (RULE 2 — NO INFERRED OBSERVATIONS).
+      const end = prompt.indexOf('RULE 2 — NO INFERRED OBSERVATIONS', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      // Verbatim phrase + window size + named operators. If any single
+      // operator gets dropped from the list, the inspector's "is not a C2"
+      // would slip through and we'd be back where we started.
+      expect(block).toEqual(expect.stringContaining('Bare-code triggers'));
+      expect(block).toEqual(expect.stringContaining('preceded within 3 tokens by negation'));
+      for (const op of ['"not"', '"isn\'t"', '"wasn\'t"', '"no"', '"never"', '"except"']) {
+        expect(block).toEqual(expect.stringContaining(op));
+      }
+      // Fall-through path is named so the model knows what to do when the
+      // guard fires — without this the model would just go silent on every
+      // negated bare-code utterance and miss legitimate detections.
+      expect(block.toLowerCase()).toMatch(/fall through to rule 2/);
+    });
+
+    test('D2 — RULE 2 has an active enforcement clause routing un-triggered defects to ask_user', () => {
+      const idx = prompt.search(/RULE 2 — NO INFERRED OBSERVATIONS/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // RULE 2 ends at the next sibling rule (RULE 3 — CODE AUTO-PICK).
+      const end = prompt.indexOf('RULE 3 — CODE AUTO-PICK', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      // Active enforcement clause — names the ask_user envelope verbatim
+      // (reason + context_field + expected_answer_shape) so the model's
+      // ask is dispatchable by the existing validator without rejection.
+      expect(block).toEqual(expect.stringContaining('your ONLY allowed action is `ask_user'));
+      expect(block).toEqual(expect.stringContaining('reason: "observation_confirmation"'));
+      expect(block).toEqual(expect.stringContaining('context_field: "observation_clarify"'));
+      expect(block).toEqual(expect.stringContaining('expected_answer_shape: "yes_no"'));
+      // Prohibition is explicit — the original "are NOT recorded" was a
+      // passive prohibition that Sonnet sometimes routed around by emitting
+      // record_observation anyway when it inferred a defect.
+      expect(block).toEqual(expect.stringContaining('forbidden'));
+    });
+
+    test('D1+D2 — observation_confirmation + observation_clarify remain in their respective enums', () => {
+      // The active enforcement clause names two enum values. If either
+      // is dropped from its enum, the dispatcher would reject every
+      // generated ask_user and the fix would break in production despite
+      // the prompt-content tests passing. Lock both.
+      const enumsPath = path.join(__dirname, '..', '..', 'config', 'stage6-enumerations.json');
+      const enums = JSON.parse(fssync.readFileSync(enumsPath, 'utf8'));
+      expect(enums.ask_user_reason).toEqual(expect.arrayContaining(['observation_confirmation']));
+      // observation_clarify is a CONTEXT_FIELD_ENUM sentinel — imported
+      // at module top.
+      expect(CONTEXT_FIELD_ENUM).toEqual(expect.arrayContaining(['observation_clarify']));
     });
   });
 });
