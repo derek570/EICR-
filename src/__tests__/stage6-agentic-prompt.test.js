@@ -247,8 +247,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // leaves ~60-token headroom. Closes inspector markers 9 + 10 (the
       // "consumer unit is not a C2" recorded-anyway bug + the "limitation"
       // / "smoke alarm" no-trigger observations).
+      //
+      // 2026-06-09 (voice-feedback-cleanup-2026-06-09/PLAN-final.md
+      // §Cluster E): bumped to 14490 to absorb the ADDRESS DIRECTION
+      // RULE paragraph (~180 tokens) — names both direction prohibitions
+      // (client→site AND site→client) plus the explicit-equivalence
+      // escape phrases ("client uses the site address" / "same as site"
+      // / "they live here"). Measured 14420; cap 14490 leaves
+      // ~70-token headroom. Closes inspector marker 8.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14300);
+      expect(estimate).toBeLessThanOrEqual(14490);
     });
   });
 
@@ -827,8 +835,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     Measured 9132; cap 9200 leaves ~68-token headroom. Closes
       //     inspector markers 9 + 10 (negated bare codes were recorded
       //     anyway, and no-trigger defects implicitly created observations).
+      //   - 9380 (voice-feedback-cleanup-2026-06-09/PLAN-final.md
+      //     §Cluster E): ADDRESS DIRECTION RULE paragraph (~180 tokens)
+      //     forbidding bidirectional address auto-population without
+      //     explicit equivalence. Measured 9312; cap 9380 leaves
+      //     ~68-token headroom. Closes inspector marker 8.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(9200);
+      expect(estimate).toBeLessThanOrEqual(9380);
     });
   });
 
