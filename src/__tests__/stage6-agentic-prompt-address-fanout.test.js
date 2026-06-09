@@ -41,7 +41,7 @@ describe('Cluster E — ADDRESS DIRECTION RULE (sonnet_agentic_system.md)', () =
   test('ADDRESS DIRECTION RULE header exists between the SITE COPY RULE and OBSERVATIONS', () => {
     const copyIdx = prompt.search(/CLIENT BILLING ADDRESS — SITE COPY RULE/);
     const directionIdx = prompt.search(/ADDRESS DIRECTION RULE/);
-    const obsIdx = prompt.search(/OBSERVATIONS \(six rules\)/);
+    const obsIdx = prompt.search(/OBSERVATIONS \((six|seven) rules\)/);
     expect(copyIdx).toBeGreaterThanOrEqual(0);
     expect(directionIdx).toBeGreaterThanOrEqual(0);
     expect(obsIdx).toBeGreaterThanOrEqual(0);
@@ -57,7 +57,7 @@ describe('Cluster E — ADDRESS DIRECTION RULE (sonnet_agentic_system.md)', () =
     expect(idx).toBeGreaterThanOrEqual(0);
     // Block runs to OBSERVATIONS — bound there so a later prose drift in
     // the OBSERVATIONS block doesn't bleed into this assertion.
-    const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+    const end = prompt.search(/OBSERVATIONS \((six|seven) rules\)/);
     expect(end).toBeGreaterThan(idx);
     const block = prompt.slice(idx, end);
     // Both directions must be named. If either is dropped the bug
@@ -69,7 +69,7 @@ describe('Cluster E — ADDRESS DIRECTION RULE (sonnet_agentic_system.md)', () =
 
   test('ADDRESS DIRECTION RULE names the explicit-equivalence escape phrases', () => {
     const idx = prompt.search(/ADDRESS DIRECTION RULE/);
-    const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+    const end = prompt.search(/OBSERVATIONS \((six|seven) rules\)/);
     const block = prompt.slice(idx, end);
     // The legitimate "client uses the site address" / "same as site"
     // path stays open — verify the escape phrases are named. Without
@@ -82,7 +82,7 @@ describe('Cluster E — ADDRESS DIRECTION RULE (sonnet_agentic_system.md)', () =
 
   test('ADDRESS DIRECTION RULE preserves the four-slot client_* family naming', () => {
     const idx = prompt.search(/ADDRESS DIRECTION RULE/);
-    const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+    const end = prompt.search(/OBSERVATIONS \((six|seven) rules\)/);
     const block = prompt.slice(idx, end);
     // The rule lists the four client_* slots that get written when the
     // inspector dictates a client-only address. Naming them defends

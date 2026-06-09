@@ -155,6 +155,7 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
             location: 'CU',
             text: 'RCD type AC',
             circuit: null,
+            schedule_item: '4.1',
           },
         },
       ]),

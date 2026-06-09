@@ -414,12 +414,12 @@ const recordObservation = makeTool({
     suggested_regulation: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
       description:
-        'BS 7671 regulation reference (e.g. "411.3.4 — Additional protection for AC final circuits supplying luminaires in domestic premises"). REQUIRED when code is C1/C2/C3/FI — the dispatcher rejects coded observations with null/empty regulation. Null is only valid for NC observations or installation-wide notes that don\'t breach a specific regulation. Cite the regulation number AND a short fragment of its wording so the inspector can audit; use the WRAG / BPG4 entry\'s regulation when one matches; otherwise pick from BS 7671:2018+A4:2026.',
+        'BS 7671 regulation reference. REQUIRED when code is C1/C2/C3/FI — the dispatcher rejects coded observations with null/empty regulation. Format as a CONCISE reg ref UNDER 60 CHARACTERS: a regulation number like "411.3.4" or "Reg N.N.N" / "BS 7671 N.N.N" prefix. Do NOT include narrative English, defect descriptions, or remedy text — those belong in `text`. The dispatcher\'s prompt-leak filter rejects descriptions over 60 chars or non-regulation shape with error code `prompt_leak_in_observation`. Null is only valid for NC observations or installation-wide notes that don\'t breach a specific regulation. Use the WRAG / BPG4 entry\'s regulation when one matches; otherwise pick from BS 7671:2018+A4:2026.',
     },
     schedule_item: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
       description:
-        'BS 7671 Schedule of Inspection section number this observation maps to. The COMPLETE Schedule of Inspections is appended to the system prompt — read it and pick the section whose description most precisely matches this defect. Value MUST be a section ref taken verbatim from that list. Null when no schedule section cleanly applies.',
+        'BS 7671 Schedule of Inspection section number this observation maps to. REQUIRED when code is C1/C2/C3/FI — the dispatcher rejects coded observations with null/empty schedule_item with error code `schedule_item_required_for_coded_observation`. The COMPLETE Schedule of Inspections is appended to the system prompt — read it and pick the section whose description most precisely matches this defect. Value MUST be a section ref taken verbatim from that list. Do not invent refs. Null is allowed ONLY for NC observations and installation-wide notes that do not map to a specific schedule row.',
     },
   },
   // STS-05 lists all 6 fields in the strict tool shape. Under strict:true,

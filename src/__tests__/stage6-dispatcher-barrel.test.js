@@ -111,7 +111,7 @@ describe('barrel re-exports', () => {
       clear_reading: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
       create_circuit: { circuit_ref: 99 },
       rename_circuit: { from_ref: 3, circuit_ref: 3 }, // rename-to-self = noop-ok
-      record_observation: { code: 'C2', text: 'x', location: 'y', suggested_regulation: '411.3.4' },
+      record_observation: { code: 'C2', text: 'x', location: 'y', suggested_regulation: '411.3.4', schedule_item: '4.1' },
       delete_observation: {
         observation_id: '00000000-0000-4000-8000-000000000000',
         reason: 'user_correction',

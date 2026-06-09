@@ -255,8 +255,22 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // escape phrases ("client uses the site address" / "same as site"
       // / "they live here"). Measured 14420; cap 14490 leaves
       // ~70-token headroom. Closes inspector marker 8.
+      //
+      // 2026-06-09 (voice-feedback-cleanup-2026-06-09/PLAN-final.md
+      // §Cluster A1 + §Cluster A2b): bumped to 15470 to absorb the
+      // dominant observation-fix bundle: (a) RULE 1 TRIGGER-WITHOUT-BODY
+      // clause (~120 tokens), (b) new RULE 7 PER-TURN DEDUP body
+      // (~110 tokens), (c) SCHEDULE OF INSPECTION block rewrite making
+      // schedule_item REQUIRED for coded observations with ask_user
+      // escape (~120 tokens), (d) OBSERVATIONS TOOL ERROR HANDLING block
+      // with three recovery contracts: prompt_leak_in_observation +
+      // schedule_item_required_for_coded_observation (~370 tokens),
+      // (e) Example 10 bare-trigger ASK→record worked example
+      // (~140 tokens). Net combined ~+880 tokens. Measured 15377; cap
+      // 15470 leaves ~93-token headroom. Closes inspector markers
+      // 12/13/15/16/17/18 (the dominant Cluster A six-marker class).
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14490);
+      expect(estimate).toBeLessThanOrEqual(15470);
     });
   });
 
@@ -840,8 +854,17 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     forbidding bidirectional address auto-population without
       //     explicit equivalence. Measured 9312; cap 9380 leaves
       //     ~68-token headroom. Closes inspector marker 8.
+      //   - 10350 (voice-feedback-cleanup-2026-06-09/PLAN-final.md
+      //     §Cluster A1 + §Cluster A2b): the dominant observation-fix
+      //     bundle (~880 tokens — TRIGGER-WITHOUT-BODY clause + RULE 7
+      //     dedup body + SCHEDULE OF INSPECTION rewrite + three-entry
+      //     OBSERVATIONS TOOL ERROR HANDLING block + Example 10 bare-
+      //     trigger ASK→record worked example). Measured 10269; cap
+      //     10350 leaves ~81-token headroom. Closes inspector markers
+      //     12/13/15/16/17/18 (Cluster A — the largest cluster in the
+      //     2026-06-05 → 2026-06-08 voice-feedback audit).
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(9380);
+      expect(estimate).toBeLessThanOrEqual(10350);
     });
   });
 
@@ -1211,9 +1234,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     test('Fix B — SUPPLY vs MAIN SWITCH DISAMBIGUATION section exists with both field families', () => {
       const idx = prompt.search(/SUPPLY vs MAIN SWITCH DISAMBIGUATION/);
       expect(idx).toBeGreaterThanOrEqual(0);
-      // Section ends at the next sibling block (OBSERVATIONS).
-      const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
-      expect(end).toBeGreaterThan(idx);
+      // Section ends at the next sibling block (OBSERVATIONS). The header
+      // count moved from "six rules" to "seven rules" in 2026-06-09
+      // (voice-feedback Cluster A1 added RULE 7 PER-TURN DEDUP); use a
+      // permissive regex so a future bump (or revert) does not falsely
+      // unanchor this test.
+      const sliced = prompt.slice(idx);
+      const relativeEnd = sliced.search(/OBSERVATIONS \((six|seven|eight) rules\)/);
+      expect(relativeEnd).toBeGreaterThan(0);
+      const end = idx + relativeEnd;
       const block = prompt.slice(idx, end);
       // Inspector vocabulary for the DNO-side device + the canonical
       // field family it routes to. Both must co-occur in the same

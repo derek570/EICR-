@@ -306,6 +306,7 @@ describe('Layer 2 wiring — record_observation.text', () => {
         location: 'garage',
         circuit: 3,
         suggested_regulation: '411.3.3',
+        schedule_item: '4.1',
       },
     };
 
@@ -504,6 +505,7 @@ describe('Layer 2 wiring — non-leak values on scanned observation fields pass'
         location: 'Kitchen under-sink consumer unit',
         circuit: 3,
         suggested_regulation: '411.3.3',
+        schedule_item: '4.1',
       },
     };
 
@@ -661,6 +663,7 @@ describe('r20-#1 wiring — record_observation scans location + suggested_regula
         location: 'Garage consumer unit',
         circuit: 3,
         suggested_regulation: '411.3.3',
+        schedule_item: '4.1',
       },
     };
 
@@ -1097,6 +1100,7 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
         text: paraphrase,
         location: 'Consumer unit',
         circuit: null,
+        schedule_item: '5.1',
       },
     };
 
@@ -1121,6 +1125,7 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
         location: 'Kitchen sockets consumer unit',
         circuit: 4,
         suggested_regulation: 'Regulation 522.6.201',
+        schedule_item: '5.1',
       },
     };
 

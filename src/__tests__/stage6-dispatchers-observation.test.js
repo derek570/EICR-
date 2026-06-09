@@ -67,7 +67,7 @@ describe('dispatchRecordObservation', () => {
     const call = {
       tool_call_id: 'tu_obs_1',
       name: 'record_observation',
-      input: { text: 'RCD type AC present', code: 'C3', suggested_regulation: '531.3.3' },
+      input: { text: 'RCD type AC present', code: 'C3', suggested_regulation: '531.3.3', schedule_item: '5.12.1' },
     };
 
     const result = await WRITE_DISPATCHERS.record_observation(
@@ -108,7 +108,7 @@ describe('dispatchRecordObservation', () => {
       {
         tool_call_id: 'tu_obs_2',
         name: 'record_observation',
-        input: { text: 'Ze too high', code: 'C2', suggested_regulation: '411.4.5' },
+        input: { text: 'Ze too high', code: 'C2', suggested_regulation: '411.4.5', schedule_item: '4.1' },
       },
       makeCtx({ session, logger, perTurnWrites })
     );
@@ -131,6 +131,7 @@ describe('dispatchRecordObservation', () => {
         location: 'hall cupboard',
         circuit: 1,
         suggested_regulation: '411.3.1.1',
+        schedule_item: '4.1',
       },
     };
 
@@ -184,7 +185,17 @@ describe('dispatchRecordObservation', () => {
     expect(Object.keys(row.input_summary).sort()).toEqual(['code', 'observation_id']);
   });
 
-  test('schedule_item null/undefined → stored as null (no section applies)', async () => {
+  test('schedule_item null/undefined → stored as null on NC observations (installation-wide note)', async () => {
+    // 2026-06-09 — voice-feedback-cleanup §A2b made schedule_item REQUIRED
+    // for CODED observations (C1/C2/C3/FI); the validator now rejects null
+    // there with `schedule_item_required_for_coded_observation`. NC
+    // observations are documentation, not breaches — they legitimately may
+    // not map to a Schedule of Inspection row, so null remains allowed.
+    // The previous incarnation of this test used code: 'C3' to assert null
+    // acceptance; that path is now closed by design (the iOS schedule
+    // linker depends on the field being non-null for coded observations to
+    // auto-tick the matching schedule row). Coverage of the now-rejected
+    // null-coded path lives in stage6-dispatch-validation.test.js.
     const session = makeSession();
     const logger = makeLogger();
     const perTurnWrites = createPerTurnWrites();
@@ -193,10 +204,10 @@ describe('dispatchRecordObservation', () => {
         tool_call_id: 'tu_obs_no_sched',
         name: 'record_observation',
         input: {
-          text: 'General installation note',
-          code: 'C3',
-          suggested_regulation: '134.1.1',
-          // schedule_item omitted entirely
+          text: 'Historic non-conformity (lighting circuit pre-dates 18th edition)',
+          code: 'NC',
+          suggested_regulation: null,
+          // schedule_item omitted entirely — NC has no breach to map.
         },
       },
       makeCtx({ session, logger, perTurnWrites })
@@ -217,7 +228,7 @@ describe('dispatchDeleteObservation', () => {
       {
         tool_call_id: 'tu_rec_1',
         name: 'record_observation',
-        input: { text: 'Socket damage', code: 'C2', suggested_regulation: '651.2' },
+        input: { text: 'Socket damage', code: 'C2', suggested_regulation: '651.2', schedule_item: '6.5' },
       },
       makeCtx({ session, logger, perTurnWrites })
     );
@@ -264,7 +275,7 @@ describe('dispatchDeleteObservation', () => {
       {
         tool_call_id: 'tu_rec_2',
         name: 'record_observation',
-        input: { text: 'Cable exposed', code: 'C1', suggested_regulation: '526.5' },
+        input: { text: 'Cable exposed', code: 'C1', suggested_regulation: '526.5', schedule_item: '1.1' },
       },
       makeCtx({ session, logger, perTurnWrites })
     );
@@ -333,6 +344,7 @@ describe('PII guard (Group 5)', () => {
           code: 'C2',
           location: 'kitchen under sink',
           suggested_regulation: 'BS 7671 Table 41.1',
+          schedule_item: '4.1',
         },
       },
       makeCtx({ session, logger, perTurnWrites })
@@ -357,7 +369,7 @@ describe('Per-turn writes isolation across turns (Group 6 — BLOCK-1 cross-turn
       {
         tool_call_id: 'tu_t1',
         name: 'record_observation',
-        input: { text: 'First observation', code: 'C3', suggested_regulation: '522.6.202' },
+        input: { text: 'First observation', code: 'C3', suggested_regulation: '522.6.202', schedule_item: '5.1' },
       },
       { session, logger, turnId: 'sess-test-turn-1', perTurnWrites: turn1Writes, round: 1 }
     );
@@ -368,7 +380,7 @@ describe('Per-turn writes isolation across turns (Group 6 — BLOCK-1 cross-turn
       {
         tool_call_id: 'tu_t2',
         name: 'record_observation',
-        input: { text: 'Second observation', code: 'C2', suggested_regulation: '411.3.3' },
+        input: { text: 'Second observation', code: 'C2', suggested_regulation: '411.3.3', schedule_item: '4.1' },
       },
       { session, logger, turnId: 'sess-test-turn-2', perTurnWrites: turn2Writes, round: 1 }
     );
@@ -400,6 +412,7 @@ describe('Logger row shape (Group 7)', () => {
           text: 'Fixture text should not appear in log',
           code: 'C3',
           suggested_regulation: '514.9.1',
+          schedule_item: '5.1',
         },
       },
       makeCtx({ session, logger, perTurnWrites })

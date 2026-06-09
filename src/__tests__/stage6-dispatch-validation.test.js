@@ -203,10 +203,20 @@ describe('validateRecordObservation', () => {
   // C112923C ("outside light not RCD protected" → C2 with null
   // regulation → blank reg on the iOS UI) was the trigger. NC and
   // installation-wide observations can legitimately have null reg.
-  test('coded observation with non-empty regulation → null (accept)', () => {
+  test('coded observation with non-empty regulation AND schedule_item → null (accept)', () => {
+    // 2026-06-09 — schedule_item added to the happy path because the
+    // A2b dispatcher gate (voice-feedback-cleanup-2026-06-09 §A2b)
+    // now also rejects coded observations with null schedule_item.
+    // Without schedule_item: '1.1' here the test would fall into the
+    // new gate and report a false negative for the regulation check.
     expect(
       validateRecordObservation(
-        { code: 'C2', text: 'loose terminal', suggested_regulation: '526.1' },
+        {
+          code: 'C2',
+          text: 'loose terminal',
+          suggested_regulation: '526.1',
+          schedule_item: '1.1',
+        },
         { extractedObservations: [] }
       )
     ).toBeNull();
@@ -260,6 +270,91 @@ describe('validateRecordObservation', () => {
   test('non-object input → null (validator never throws)', () => {
     expect(validateRecordObservation(null, {})).toBeNull();
     expect(validateRecordObservation(undefined, {})).toBeNull();
+  });
+
+  // ------------------------------------------------------------------
+  // 2026-06-09 — schedule_item gate for coded observations
+  // (voice-feedback-cleanup-2026-06-09 §A2b). Markers 13/15/16:
+  // observations were being recorded with null schedule_item, leaving
+  // iOS ObservationScheduleLinker unable to auto-tick the matching
+  // Schedule of Inspection row. iOS-side fix in §A3+A4; this gate is
+  // the dispatcher-side belt-and-braces.
+  // ------------------------------------------------------------------
+  test('A2b — coded observation with null schedule_item → REJECT (schedule_item_required_for_coded_observation)', () => {
+    const err = validateRecordObservation(
+      {
+        code: 'C2',
+        text: 'loose terminal',
+        suggested_regulation: '526.1',
+        schedule_item: null,
+      },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({
+      code: 'schedule_item_required_for_coded_observation',
+      field: 'schedule_item',
+    });
+    expect(err.reason).toMatch(/C2.*Schedule of Inspection/);
+  });
+
+  test('A2b — coded observation with whitespace-only schedule_item → REJECT (empty-string guard)', () => {
+    const err = validateRecordObservation(
+      {
+        code: 'C3',
+        text: 'minor non-compliance',
+        suggested_regulation: '522.6.201',
+        schedule_item: '   ',
+      },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({ code: 'schedule_item_required_for_coded_observation' });
+  });
+
+  test('A2b — coded observation with schedule_item field absent entirely → REJECT', () => {
+    const err = validateRecordObservation(
+      { code: 'FI', text: 'requires investigation', suggested_regulation: 'BS 7671 543.1.1' },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({ code: 'schedule_item_required_for_coded_observation' });
+  });
+
+  test('A2b — NC observation with null schedule_item → accept (NC documentation, no schedule mapping required)', () => {
+    expect(
+      validateRecordObservation(
+        {
+          code: 'NC',
+          text: 'historic non-conformity',
+          suggested_regulation: null,
+          schedule_item: null,
+        },
+        { extractedObservations: [] }
+      )
+    ).toBeNull();
+  });
+
+  test('A2b — regulation gate fires BEFORE schedule_item gate (priority order locked)', () => {
+    // Both fields missing on a coded observation — the validator must
+    // report the regulation error FIRST. Reordering the two checks
+    // would silently flip which error code the model sees first and
+    // change the recovery contract in production. Order matters for
+    // the prompt's OBSERVATIONS TOOL ERROR HANDLING recovery rules:
+    // each error code has a different retry/ask path.
+    const err = validateRecordObservation(
+      { code: 'C1', text: 'live conductor exposed', suggested_regulation: null, schedule_item: null },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({
+      code: 'regulation_required_for_coded_observation',
+      field: 'suggested_regulation',
+    });
+  });
+
+  test('A2b — lower-case code "c1" still triggers the schedule_item check (case-insensitive)', () => {
+    const err = validateRecordObservation(
+      { code: 'c1', text: 'live conductor exposed', suggested_regulation: '411.3.4', schedule_item: null },
+      { extractedObservations: [] }
+    );
+    expect(err).toMatchObject({ code: 'schedule_item_required_for_coded_observation' });
   });
 });
 

@@ -313,6 +313,39 @@ export function validateRecordObservation(input, _session) {
       reason: `code "${code}" requires a BS 7671 regulation citation (e.g. "411.3.4"). Null is only allowed for NC observations.`,
     };
   }
+  // 2026-06-09 — voice-feedback markers 13/15/16 (deleted observation
+  // didn't reset schedule + Observations-tab UI gaps) all depend on
+  // every coded observation carrying a non-null schedule_item. iOS
+  // ObservationScheduleLinker uses it to auto-tick the matching Schedule
+  // of Inspection row; absent schedule_item → orphaned observation that
+  // never links to its schedule entry. The companion prompt edit
+  // (sonnet_agentic_system.md SCHEDULE OF INSPECTION block) tells Sonnet
+  // schedule_item is REQUIRED for coded observations and supplies an
+  // ask_user escape when it cannot pick. This dispatcher gate is the
+  // belt-and-braces guarantee — same shape as the regulation-required
+  // gate immediately above. NC and any future Obs-like codes still
+  // legitimately allow null, because the gate predicates on the coded
+  // set only.
+  //
+  // The prompt-leak filter (stage6-dispatchers-observation.js:138-192)
+  // runs BEFORE this validator, so a leaky payload still rejects with
+  // its own error first — schedule_item enforcement only fires for
+  // semantically-valid payloads. The recovery contract in the prompt's
+  // OBSERVATIONS TOOL ERROR HANDLING block instructs Sonnet to retry
+  // with a schedule_item from the appended list OR fall back to
+  // ask_user(reason="missing_context", context_field="observation_clarify").
+  //
+  // PII guard: the error envelope intentionally does NOT include the
+  // observation text, location, or regulation — these are not logged
+  // at stage6-dispatchers-observation.js:237 either.
+  const sched = input.schedule_item;
+  if (sched === null || sched === undefined || (typeof sched === 'string' && sched.trim() === '')) {
+    return {
+      code: 'schedule_item_required_for_coded_observation',
+      field: 'schedule_item',
+      reason: `code "${code}" requires a BS 7671 Schedule of Inspection section ref (e.g. "1.1", "4.1"). Null is only allowed for NC observations. Pick the closest section from the appended Schedule of Inspections list rather than null.`,
+    };
+  }
   return null;
 }
 
