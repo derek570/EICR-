@@ -97,6 +97,19 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   spd_short_circuit: 'main fuse breaking capacity',
   spd_type_supply: 'main fuse type',
   main_switch_bs_en: 'main switch BS EN',
+  // 2026-06-09 voice-feedback Cluster B + Cluster C1: inspectors say
+  // "tails" for the main_switch_conductor_csa field (the consumer-side
+  // tails from the cutout to the main switch). Without an explicit
+  // friendly name the deriveFriendlyName fallback speaks "main switch
+  // conductor CSA" which session 2026-06-08 marker 4 reported as being
+  // heard/parsed as "submain cable size" — same syllable structure,
+  // easy mishearing. Likewise the earthing_conductor_csa field maps to
+  // "main earth CSA" so marker 5's "main earth 16 mil → TTS says only
+  // 16" closes (the field WAS missing — deriveFriendlyName would have
+  // emitted "earthing conductor CSA" which Sonnet may have suppressed
+  // as too jargon-y; explicit friendly name pins the contract).
+  earthing_conductor_csa: 'main earth CSA',
+  main_switch_conductor_csa: 'tails CSA',
   rcd_operating_current_ma: 'RCD',
   rcd_time_ms: 'RCD time',
   rcd_type: 'RCD type',

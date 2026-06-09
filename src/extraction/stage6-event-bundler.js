@@ -351,11 +351,109 @@ function synthesiseConfirmations(
 
   const consumedReadingIndices = new Set();
 
+  // 2026-06-09 voice-feedback Cluster C3 — IR triplet aggregator.
+  // The canonical IR readings in the current schema are three sibling
+  // fields: ir_test_voltage_v (voltage), ir_live_live_mohm (L-to-L
+  // resistance), ir_live_earth_mohm (L-to-E resistance). When the
+  // inspector dictates an IR set for ONE circuit, all three land in
+  // the same turn with the same circuit number. Without aggregation
+  // the bundler emits three independent confirmation entries that the
+  // iOS TTS FIFO plays back-to-back — inspector marker 3 reported them
+  // as "running into each other" because the queue has no inter-item
+  // pause and the three short utterances blur together.
+  // Note: there is NO `ir_neutral_earth_mohm` field in the schema. This
+  // aggregator deliberately never emits an "N to E" label and never
+  // matches against an N→E reading — adding one would create dead code
+  // that would need to be ripped out the next time someone audits.
+  // The aggregator runs BEFORE the grouped (multi-circuit) loop so its
+  // consumed indices are honoured by both downstream paths.
+  const IR_FIELDS = new Set(['ir_test_voltage_v', 'ir_live_live_mohm', 'ir_live_earth_mohm']);
+  const irPerCircuit = new Map(); // key `${circuit}|${board_id ?? ''}` → bucket
+  for (let i = 0; i < readings.length; i += 1) {
+    const r = readings[i];
+    if (!IR_FIELDS.has(r.field)) continue;
+    if (!Number.isInteger(r.circuit) || r.circuit <= 0) continue;
+    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    const irKey = `${r.circuit}|${r.board_id ?? ''}`;
+    let entry = irPerCircuit.get(irKey);
+    if (!entry) {
+      entry = {
+        circuit: r.circuit,
+        board_id: r.board_id,
+        voltage: null,
+        ll: null,
+        le: null,
+        indices: [],
+      };
+      irPerCircuit.set(irKey, entry);
+    }
+    const valStr = String(r.value ?? '').trim();
+    if (!valStr) continue;
+    if (r.field === 'ir_test_voltage_v') entry.voltage = valStr;
+    if (r.field === 'ir_live_live_mohm') entry.ll = valStr;
+    if (r.field === 'ir_live_earth_mohm') entry.le = valStr;
+    entry.indices.push(i);
+  }
+  for (const ir of irPerCircuit.values()) {
+    // Only aggregate when at least 2 of the IR fields actually land for
+    // this circuit/board. A single IR field flows through the existing
+    // per-reading path — there's no acoustic pile-up to fix in that case.
+    const presentCount = (ir.voltage ? 1 : 0) + (ir.ll ? 1 : 0) + (ir.le ? 1 : 0);
+    if (presentCount < 2) continue;
+    // Build composite. The phrasing puts the test voltage up front (so
+    // the inspector can verify which IR pass this is) followed by the
+    // measurements comma-separated. Examples:
+    //   "Circuit 4, 500 volt IR L to L 199 megohms, L to E 200 megohms"
+    //   "Circuit 4, IR L to L 199 megohms, L to E 200 megohms" (voltage absent)
+    //   "Circuit 4, 500 volt IR L to L 199 megohms" (only L-to-L present)
+    // Designation prefix matches buildConfirmationText's shape so the
+    // inspector hears the same cadence ("Cooker, circuit 4, ...").
+    const designation = lookupDesignation(ir.circuit);
+    const desigStr =
+      typeof designation === 'string' && designation.trim()
+        ? designation.trim().slice(0, 40)
+        : null;
+    const circuitPrefix = desigStr
+      ? `${desigStr}, circuit ${ir.circuit}`
+      : `Circuit ${ir.circuit}`;
+    const head = ir.voltage ? `${ir.voltage} volt IR` : 'IR';
+    const tailParts = [];
+    if (ir.ll) tailParts.push(`L to L ${ir.ll}`);
+    if (ir.le) tailParts.push(`L to E ${ir.le}`);
+    const tail = tailParts.join(', ');
+    const composite = `${circuitPrefix}, ${head} ${tail}`;
+    const entry = {
+      text: composite,
+      expanded_text: expandForTTS(composite),
+      // Synthetic field — iOS uses it to recognise this as an aggregate
+      // (no single-field highlight target). Matches the bundler's
+      // existing convention of `field: null` / synthetic markers for
+      // multi-source rows.
+      field: 'ir_aggregate',
+      circuit: ir.circuit,
+    };
+    if (ir.board_id != null) entry.board_id = ir.board_id;
+    out.push(entry);
+    for (const idx of ir.indices) consumedReadingIndices.add(idx);
+  }
+
   for (const bucket of groups.values()) {
-    if (bucket.items.length < 2) continue;
+    // Items consumed by the IR aggregator above are dropped from the
+    // grouped bucket; if the bucket falls below 2 remaining items the
+    // grouped path no longer fires for it. This prevents the rare case
+    // where the same turn writes the IR triplet on circuit A AND a
+    // multi-circuit fanout of one IR field across other circuits — the
+    // aggregator wins for circuit A, the grouped fanout wins for the
+    // remaining circuits, and neither double-emits.
+    const remainingItems = bucket.items.filter(
+      (_, idx) => !consumedReadingIndices.has(bucket.indices[idx])
+    );
+    if (remainingItems.length < 2) continue;
     // Only attempt the grouped form for circuit-level readings (the
     // helper rejects circuit:0/null entries by returning null).
-    const circuits = bucket.items.map((r) => r.circuit).filter((c) => Number.isInteger(c) && c > 0);
+    const circuits = remainingItems
+      .map((r) => r.circuit)
+      .filter((c) => Number.isInteger(c) && c > 0);
     if (circuits.length < 2) continue;
     const grouped = buildGroupedConfirmationText(
       bucket.field,
@@ -381,7 +479,14 @@ function synthesiseConfirmations(
       entry.board_id = bucket.board_id;
     }
     out.push(entry);
-    for (const idx of bucket.indices) consumedReadingIndices.add(idx);
+    // Only mark indices that are still in the remaining set (others were
+    // already consumed by the IR aggregator above; double-marking is a
+    // no-op for Set but the explicit filter documents intent).
+    for (let idx = 0; idx < bucket.items.length; idx += 1) {
+      if (!consumedReadingIndices.has(bucket.indices[idx])) {
+        consumedReadingIndices.add(bucket.indices[idx]);
+      }
+    }
   }
 
   for (let i = 0; i < readings.length; i += 1) {
