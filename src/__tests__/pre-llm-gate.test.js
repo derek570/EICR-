@@ -521,3 +521,43 @@ describe('shouldForwardToSonnet — distinct-content-word count', () => {
     expect(r.distinctContentWords).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-06-12 — cert-identity dictation markers (session 15B88D6B,
+// voiceFeedbackId 20). "Customer is Michael Johnson" must forward (weak
+// trigger 'customer' + 3 content words) and the lowered identity threshold
+// must let the 2-content-word short form "Customer is Michael" through,
+// while chitchat shapes keep blocking.
+// ---------------------------------------------------------------------------
+describe('shouldForwardToSonnet — cert-identity dictation markers (2026-06-12)', () => {
+  test('"Customer is Michael Johnson." forwards via weak trigger', () => {
+    const r = shouldForwardToSonnet('Customer is Michael Johnson.');
+    expect(r.forward).toBe(true);
+    expect(r.reason).toBe(GATE_REASONS.HAS_WEAK_TRIGGER);
+  });
+
+  test('"Customer is Michael." (2 content words) forwards via identity threshold', () => {
+    const r = shouldForwardToSonnet('Customer is Michael.');
+    expect(r.forward).toBe(true);
+    expect(r.reason).toBe(GATE_REASONS.HAS_WEAK_TRIGGER);
+  });
+
+  test('"Client address is Vicarage Road." forwards', () => {
+    expect(shouldForwardToSonnet('Client address is Vicarage Road.').forward).toBe(true);
+  });
+
+  test('bare "Customer?" still blocks (1 content word)', () => {
+    const r = shouldForwardToSonnet('Customer?');
+    expect(r.forward).toBe(false);
+    expect(r.reason).toBe(GATE_REASONS.LOW_CONTENT);
+  });
+
+  test('"Hello my name is Michael McGinley" still blocks (2026-05-29 chitchat case)', () => {
+    const r = shouldForwardToSonnet('Hello my name is Michael McGinley');
+    expect(r.forward).toBe(false);
+  });
+
+  test('"Can I use the toilet, please?" still blocks', () => {
+    expect(shouldForwardToSonnet('Can I use the toilet, please?').forward).toBe(false);
+  });
+});

@@ -167,14 +167,13 @@ export const OBSERVATION_PATTERN =
   /\b(?:obs|[oa]?b[a-z]{0,5}v[a-z]{0,4}(?:tion|sion|shun|shen|shan|shon|nce|tor|tior|ation))s?\b/i;
 
 // =============================================================================
-// WEAK_TRIGGER_WORDS — 75 words, require digit/strong/observation to forward
+// WEAK_TRIGGER_WORDS — 82 words; forward when paired with the distinct-
+// content-word threshold (3, or 2 for the cert-identity markers)
 // =============================================================================
-// Remaining words from the original 94. Demoted because the bare word is too
-// common in everyday speech to justify forward-authority on its own, or because
-// the inspector workflow always pairs them with a digit (circuit ref) or
-// strong trigger.
-//
-// These still feed the distinct-content-word count for FALLBACK_FORWARD.
+// Originally the demoted remainder of the 94-word list (no forward authority
+// alone). Since 2026-05-29 a weak-trigger hit + the content threshold IS the
+// forward path (HAS_WEAK_TRIGGER); 2026-06-12 added 7 cert-identity dictation
+// markers with a lowered threshold of 2 (see CERT_IDENTITY_TRIGGER_REGEX).
 const WEAK_TRIGGER_WORDS = new Set(
   [
     // Circuit and board nouns
@@ -316,6 +315,19 @@ const WEAK_TRIGGER_REGEX = new RegExp(
 
 const DIGIT_REGEX = /\d/;
 const WORD_REGEX = /[A-Za-z']+/g;
+
+// 2026-06-12 (session 15B88D6B, voiceFeedbackId 20) — cert-identity
+// markers get a LOWER content threshold (2 instead of 3). "Customer is
+// Michael" / "Client is Smith" carries exactly two content words
+// (customer + michael — "is" is a stopword), so the standard threshold
+// still silently blocked single-token name corrections even after the
+// markers joined WEAK_TRIGGER_WORDS. The marker word itself counts as
+// one of the two, so the floor is effectively "marker + one substantive
+// token" — bare "Customer?" chitchat still blocks. Mirrored in the iOS
+// TranscriptGate (DeepgramRecordingViewModel.swift).
+const CERT_IDENTITY_TRIGGER_REGEX =
+  /\b(?:customer|client|landlord|tenant|occupier|address|postcode)\b/i;
+const MIN_DISTINCT_CONTENT_WORDS_IDENTITY = 2;
 
 // Common-English stopwords. Deliberately small — the goal is to filter
 // scaffolding words ("the", "is") so that the distinct-content-word
@@ -487,7 +499,10 @@ export function shouldForwardToSonnet(text, opts = {}) {
     }
   }
   const hasWeak = WEAK_TRIGGER_REGEX.test(trimmed);
-  if (hasWeak && distinctContent.size >= MIN_DISTINCT_CONTENT_WORDS) {
+  const minContent = CERT_IDENTITY_TRIGGER_REGEX.test(trimmed)
+    ? MIN_DISTINCT_CONTENT_WORDS_IDENTITY
+    : MIN_DISTINCT_CONTENT_WORDS;
+  if (hasWeak && distinctContent.size >= minContent) {
     return {
       forward: true,
       reason: GATE_REASONS.HAS_WEAK_TRIGGER,
