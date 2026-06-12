@@ -253,8 +253,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // four-write copy pattern, two worked examples). ~+250 tokens
       // over the prior block, plus the symmetric direction text.
       // Measured 14926; cap 15000 leaves ~74-token headroom.
+      //
+      // 2026-06-12 (field session 15B88D6B voice-feedback fixes): bumped
+      // to 15301 to absorb (a) the MAIN PROTECTIVE BONDING section
+      // (PASS/FAIL/LIM/N-A check-field values + per-service PASS writes,
+      // voiceFeedbackId 21) and (b) the MERGED / STUTTERED NAMING rule
+      // (restart-glued "Circuit 1 is circuit 2 is X" must not become
+      // rename_circuit(1->2), voiceFeedbackId 22), on top of the merged
+      // 2026-06-05 W1.6/W1.7 additions. Measured 15201; cap 15301 leaves ~100-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(15000);
+      expect(estimate).toBeLessThanOrEqual(15301);
     });
   });
 
@@ -853,8 +861,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     9818; cap 9900 leaves ~82-token headroom. Closes voice_
       //     feedback marker #8 (session 84CE2125 at 10:42:09 reported
       //     silent mirror from client to installation address).
+      //   - 10193 (2026-06-12 field session 15B88D6B voice-feedback
+      //     fixes): MAIN PROTECTIVE BONDING section (check fields take
+      //     PASS/FAIL/LIM/N-A, per-service PASS writes, csa routing —
+      //     voiceFeedbackId 21) + MERGED / STUTTERED NAMING rule
+      //     (voiceFeedbackId 22), on top of the merged 2026-06-05
+      //     W1.6/W1.7 additions. Measured 10093; cap 10193 leaves ~100-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(9900);
+      expect(estimate).toBeLessThanOrEqual(10193);
     });
   });
 
