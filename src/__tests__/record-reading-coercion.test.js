@@ -228,7 +228,6 @@ describe('coerceRecordBoardReadingValue — PASS-check fields (bonding family)',
     'bonding_oil',
     'bonding_structural_steel',
     'bonding_lightning',
-    'bonding_other',
   ];
 
   test.each(FIELDS)('%s: truthy synonyms coerce to PASS', (field) => {
@@ -281,5 +280,9 @@ describe('coerceRecordBoardReadingValue — PASS-check fields (bonding family)',
   test('non-check fields are untouched by the PASS aliases', () => {
     expect(coerceRecordBoardReadingValue('bonding_conductor_csa', 'yes')).toBe('yes');
     expect(coerceRecordBoardReadingValue('earthing_arrangement', 'confirmed')).toBe('confirmed');
+    // bonding_other is free TEXT (the bonded item's name) — its dictated
+    // content must never be rewritten by the PASS/N-A aliases.
+    expect(coerceRecordBoardReadingValue('bonding_other', 'none')).toBe('none');
+    expect(coerceRecordBoardReadingValue('bonding_other', 'confirmed')).toBe('confirmed');
   });
 });

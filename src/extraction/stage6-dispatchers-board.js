@@ -364,6 +364,13 @@ export async function dispatchRecordBoardReading(call, ctx) {
         // mirrors in stage6-shadow-harness.js). The bundler still emits it
         // to iOS with the flag attached.
         auto_resolved: true,
+        // `derived` lets shouldEarlyTerminate subtract this entry from its
+        // streamed-call-vs-boardReadings.size parity check — without it a
+        // clean single-write bonding turn would show size=2 vs count=1 and
+        // lose the round-1 early-terminate latency win. Distinct from
+        // auto_resolved because '::auto::' ask-resolver entries carry that
+        // flag for the shadow comparator with different parity semantics.
+        derived: true,
         boardId: input.board_id ?? undefined,
       });
       logger.info('stage6.bonding_continuity_derived', {
@@ -412,14 +419,15 @@ export async function dispatchRecordBoardReading(call, ctx) {
 
 // Bonding service checks whose PASS implies main bonding conductor
 // continuity (see 4b above). bonding_conductor_continuity itself is
-// deliberately absent — it is the derivation TARGET.
+// deliberately absent — it is the derivation TARGET. bonding_other is
+// also absent: it is a free-TEXT field (the bonded item's name), so its
+// value is never legitimately 'PASS'.
 const BONDING_SERVICE_FIELDS = new Set([
   'bonding_water',
   'bonding_gas',
   'bonding_oil',
   'bonding_structural_steel',
   'bonding_lightning',
-  'bonding_other',
 ]);
 
 /**

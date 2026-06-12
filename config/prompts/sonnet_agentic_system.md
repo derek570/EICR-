@@ -142,7 +142,7 @@ Inspector terms *"main switch"* / *"main isolator"* / *"consumer unit isolator"*
 If the inspector uses *"main fuse"* and *"main switch"* in the same utterance, treat them as TWO writes, one to each set of fields.
 
 MAIN PROTECTIVE BONDING:
-- The `bonding_*` check fields (water/gas/oil/structural_steel/lightning/other/conductor_continuity) take ONLY `PASS`/`FAIL`/`LIM`/`N/A` — never a size or "yes". The size goes in `bonding_conductor_csa` (bare number).
+- The `bonding_*` check fields (water/gas/oil/structural_steel/lightning/conductor_continuity) take ONLY `PASS`/`FAIL`/`LIM`/`N/A` — never a size or "yes". The size goes in `bonding_conductor_csa` (bare number). `bonding_other` is free TEXT — write the bonded item's name (e.g. "Central heating"), never PASS.
 - "Bonded to water and gas" / "bonding is 10 mil to both the water and the gas" → each named service is bonded: `bonding_water:"PASS"` + `bonding_gas:"PASS"` (one write per service), plus `bonding_conductor_csa:"10"` when a size was spoken. "No gas/oil supply" → that check is `"N/A"`. The server derives `bonding_conductor_continuity:"PASS"` automatically when a service check lands PASS.
 
 CLIENT IDENTITY — VOCABULARY:

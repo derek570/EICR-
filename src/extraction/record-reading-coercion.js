@@ -123,6 +123,11 @@ const NOMINAL_VOLTAGE_FIELDS = new Set(['nominal_voltage_u', 'nominal_voltage_uo
 // disambiguates). Numeric values (e.g. the 10 mm² CSA misrouted into the
 // check field) stay rejected too — coercing a size into PASS would fake
 // a verification that wasn't dictated.
+//
+// bonding_other is deliberately ABSENT: it is a free-TEXT field in
+// field_schema.json ("Other extraneous conductive parts bonded", e.g.
+// "Central heating") with a separate bonding_other_na boolean — coercing
+// its values would destroy dictated content.
 const PASS_CHECK_FIELDS = new Set([
   'bonding_conductor_continuity',
   'bonding_water',
@@ -130,7 +135,6 @@ const PASS_CHECK_FIELDS = new Set([
   'bonding_oil',
   'bonding_structural_steel',
   'bonding_lightning',
-  'bonding_other',
 ]);
 
 const PASS_ALIASES = new Set([
