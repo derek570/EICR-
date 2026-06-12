@@ -292,7 +292,12 @@ describe('dispatchRenameCircuit', () => {
 
     expect(result.is_error).toBe(true);
     const body = JSON.parse(result.content);
-    expect(body.error).toEqual({ code: 'source_not_found', field: 'from_ref' });
+    // 2026-06-12 (session 15B88D6B, voiceFeedbackId 22): the rejection now
+    // carries existing_refs + a create_circuit/ask_user recovery hint so
+    // the model self-corrects instead of silently dropping the dictation.
+    expect(body.error).toMatchObject({ code: 'source_not_found', field: 'from_ref' });
+    expect(body.error.existing_refs).toEqual([]);
+    expect(body.error.hint).toMatch(/create_circuit/);
     expect(session.stateSnapshot.circuits).toEqual({});
     expect(writes.circuitOps).toHaveLength(0);
 

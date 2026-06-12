@@ -54,7 +54,11 @@
 
 import { createRequire } from 'node:module';
 import { CONTEXT_FIELD_ENUM, BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from './stage6-tool-schemas.js';
-import { circuitExistsInSnapshot, getMainBoardId } from './stage6-multi-board-shape.js';
+import {
+  circuitExistsInSnapshot,
+  getMainBoardId,
+  listCircuitRefsInBoard,
+} from './stage6-multi-board-shape.js';
 import {
   isWithinRange,
   CIRCUIT_FIELD_NUMERIC_RANGES,
@@ -261,7 +265,20 @@ export function validateRenameCircuit(input, snapshot) {
     return { code: 'invalid_from_ref', field: 'from_ref' };
   }
   if (!circuitExistsInSnapshot(snapshot, input.from_ref, input.board_id)) {
-    return { code: 'source_not_found', field: 'from_ref' };
+    // 2026-06-12 field report (session 15B88D6B, voiceFeedbackId 22):
+    // "Circuit 1 is— circuit 2 is a upstairs lighting circuit" (merged
+    // stutter) made Sonnet call rename_circuit(1→2) on an EMPTY board; the
+    // bare {code, field} rejection gave the model nothing to recover with
+    // and it ended the turn silently — the dictated circuit name was lost
+    // with no question asked. Surface the existing refs plus an explicit
+    // recovery hint so the tool loop self-corrects to create_circuit (or
+    // asks) instead of dropping the inspector's dictation on the floor.
+    return {
+      code: 'source_not_found',
+      field: 'from_ref',
+      existing_refs: listCircuitRefsInBoard(snapshot, input.board_id),
+      hint: 'No circuit with this ref exists yet. If the inspector is naming a circuit that does not exist, use create_circuit instead. If their intent is unclear, use ask_user — never discard the dictated designation.',
+    };
   }
   if (
     input.from_ref !== input.circuit_ref &&

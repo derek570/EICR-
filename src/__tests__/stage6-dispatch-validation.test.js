@@ -152,13 +152,18 @@ describe('validateRenameCircuit', () => {
       validateRenameCircuit({ from_ref: 3, circuit_ref: 7 }, { circuits: { 3: {} } })
     ).toBeNull();
   });
-  test('rejects source_not_found when from_ref is absent', () => {
-    expect(
-      validateRenameCircuit({ from_ref: 99, circuit_ref: 7 }, { circuits: { 3: {} } })
-    ).toEqual({
-      code: 'source_not_found',
-      field: 'from_ref',
-    });
+  test('rejects source_not_found when from_ref is absent (with recovery hint + existing refs)', () => {
+    // 2026-06-12 (session 15B88D6B, voiceFeedbackId 22): bare {code, field}
+    // gave Sonnet nothing to recover with after a merged-stutter utterance
+    // produced rename_circuit(1→2) on an empty board — the dictated
+    // designation was silently lost. The error now carries the existing
+    // circuit refs and a create_circuit/ask_user recovery hint.
+    const err = validateRenameCircuit({ from_ref: 99, circuit_ref: 7 }, { circuits: { 3: {} } });
+    expect(err.code).toBe('source_not_found');
+    expect(err.field).toBe('from_ref');
+    expect(err.existing_refs).toEqual([3]);
+    expect(err.hint).toMatch(/create_circuit/);
+    expect(err.hint).toMatch(/ask_user/);
   });
   test('rejects target_exists when circuit_ref already present and differs from from_ref', () => {
     expect(
