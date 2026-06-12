@@ -101,3 +101,120 @@ export function validateBoardHierarchy(boards = [], circuits = []) {
 
   return { ok: errors.length === 0, errors };
 }
+
+/**
+ * Deterministically repair a board hierarchy instead of rejecting it.
+ *
+ * 2026-06-12 — job_1778443465217 field incident: the job's `sub-1` board
+ * carried `feed_circuit_ref: "2"` pointing at a parent circuit that no
+ * longer exists. The PUT gate rejected EVERY save of that job, so the
+ * client retried the identical payload every 30 s indefinitely (observed
+ * across 2026-06-05 → 2026-06-12) and every subsequent inspector edit was
+ * silently lost server-side — a permanently unsyncable job.
+ *
+ * Architecture decision: hierarchy validity is enforced strictly where the
+ * relationship is CREATED interactively (the add_board dispatcher, where
+ * the model/user can react to a rejection), but the persistence path must
+ * never wedge. The cert data in a PUT is the inspector's ground truth; a
+ * dangling relational pointer is repairable metadata. Each violation has a
+ * minimal-information-loss repair, applied to a deep copy:
+ *
+ *   feed_circuit_not_found → clear feed_circuit_ref (parent link kept; the
+ *                            feed pointer is re-establishable by voice/UI —
+ *                            "circuit 4 feeds the garage CU")
+ *   parent_not_found       → clear parent_board_id + feed_circuit_ref (board
+ *                            becomes top-level; reattachable later)
+ *   circular_reference     → clear parent_board_id + feed_circuit_ref on the
+ *                            reported board (breaks the cycle)
+ *   multiple_main_boards   → first main (array order) keeps the role; later
+ *                            mains demote to 'sub_distribution'. Demotion is
+ *                            reversible in the UI; an unsyncable job is not.
+ *
+ * Every repair strictly REMOVES constraint sources (clears pointers /
+ * resolves the main-count), so re-validation converges; the loop is bounded
+ * defensively and the caller falls back to rejection if `ok` never becomes
+ * true (should be unreachable).
+ *
+ * @param {Array<Object>} boards
+ * @param {Array<Object>} circuits
+ * @returns {{ok: boolean, boards: Array<Object>, repairs: Array<Object>}}
+ *   `boards` is a repaired deep copy (or the original reference when no
+ *   repairs were needed); `repairs` lists {code, board_id, action} entries.
+ */
+export function repairBoardHierarchy(boards = [], circuits = []) {
+  const first = validateBoardHierarchy(boards, circuits);
+  if (first.ok) {
+    return { ok: true, boards, repairs: [] };
+  }
+
+  const repaired = JSON.parse(JSON.stringify(boards));
+  const repairs = [];
+  const byId = (id) => repaired.find((b) => b?.id === id);
+
+  // Bounded: each pass strictly clears pointers, so two passes cover any
+  // cascade (e.g. a cycle reported on several boards); the third is a
+  // defensive ceiling.
+  for (let pass = 0; pass < 3; pass++) {
+    const { ok, errors } = validateBoardHierarchy(repaired, circuits);
+    if (ok) {
+      return { ok: true, boards: repaired, repairs };
+    }
+    for (const err of errors) {
+      switch (err.code) {
+        case 'feed_circuit_not_found': {
+          const b = byId(err.board_id);
+          if (b && b.feed_circuit_ref != null) {
+            b.feed_circuit_ref = null;
+            repairs.push({
+              code: err.code,
+              board_id: err.board_id,
+              action: 'cleared_feed_circuit_ref',
+              was: err.ref,
+            });
+          }
+          break;
+        }
+        case 'parent_not_found':
+        case 'circular_reference': {
+          const b = byId(err.board_id);
+          if (b && (b.parent_board_id != null || b.feed_circuit_ref != null)) {
+            repairs.push({
+              code: err.code,
+              board_id: err.board_id,
+              action: 'cleared_parent_link',
+              was_parent: b.parent_board_id ?? null,
+            });
+            b.parent_board_id = null;
+            b.feed_circuit_ref = null;
+          }
+          break;
+        }
+        case 'multiple_main_boards': {
+          let keptFirstMain = false;
+          for (const b of repaired) {
+            const isMainShaped = !b?.board_type || b.board_type === 'main';
+            if (!isMainShaped) continue;
+            if (!keptFirstMain) {
+              keptFirstMain = true;
+              continue;
+            }
+            b.board_type = 'sub_distribution';
+            repairs.push({
+              code: err.code,
+              board_id: b.id ?? null,
+              action: 'demoted_to_sub_distribution',
+            });
+          }
+          break;
+        }
+        default:
+          // Unknown future code — no repair known; the caller's fallback
+          // rejection path handles it.
+          break;
+      }
+    }
+  }
+
+  const final = validateBoardHierarchy(repaired, circuits);
+  return { ok: final.ok, boards: repaired, repairs };
+}

@@ -436,12 +436,15 @@ describe('Job routes (supertest)', () => {
       expect(res.body.unassigned_photos).toBeNull();
     });
 
-    test('rejects PUT with invalid board hierarchy (400)', async () => {
-      // Phase 2.3 — wire-level proof that the validator runs before S3 writes.
-      // Payload has a sub_main board pointing at a parent_board_id that does
-      // not exist in boards[], which is the cleanest single-error case.
+    test('repairs PUT with invalid board hierarchy instead of rejecting (2026-06-12)', async () => {
+      // Rearchitected from the Phase 2.3 reject gate: job_1778443465217 was
+      // permanently unsyncable because EVERY save 400'd on a dangling
+      // feed_circuit_ref — the client retried the identical payload every
+      // 30 s for a week and all subsequent edits were lost. The PUT path now
+      // repairs deterministically, persists, and echoes the repairs.
       mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1' });
       mockUploadText.mockClear();
+      mockDownloadText.mockResolvedValue(null);
 
       const token = makeToken('user-1');
       const res = await supertest(app)
@@ -454,16 +457,88 @@ describe('Job routes (supertest)', () => {
           ],
         });
 
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe('invalid_board_hierarchy');
-      expect(res.body.details).toContainEqual({
-        code: 'parent_not_found',
-        board_id: 'sub-1',
-        parent: 'does-not-exist',
-      });
-      // No S3 write should have happened — the validator rejected before
-      // the try block that builds extracted_data.json.
-      expect(mockUploadText).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.hierarchy_repairs).toContainEqual(
+        expect.objectContaining({
+          code: 'parent_not_found',
+          board_id: 'sub-1',
+          action: 'cleared_parent_link',
+        })
+      );
+      // The repaired hierarchy is echoed so the client can reconcile.
+      const sub = res.body.boards.find((b) => b.id === 'sub-1');
+      expect(sub.parent_board_id).toBeNull();
+      // The repaired (not raw) boards were persisted.
+      const written = mockUploadText.mock.calls.find(([, key]) =>
+        String(key).endsWith('extracted_data.json')
+      );
+      expect(written).toBeDefined();
+      const persisted = JSON.parse(written[0]);
+      expect(persisted.boards.find((b) => b.id === 'sub-1').parent_board_id).toBeNull();
+    });
+
+    test('repairs the field-incident shape: dangling feed_circuit_ref (job_1778443465217)', async () => {
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1' });
+      mockUploadText.mockClear();
+      mockDownloadText.mockResolvedValue(null);
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          boards: [
+            { id: 'FA6C8923', board_type: 'main' },
+            {
+              id: 'sub-1',
+              board_type: 'sub_main',
+              parent_board_id: 'FA6C8923',
+              feed_circuit_ref: '2',
+            },
+          ],
+          circuits: [{ circuit_ref: '1', board_id: null }],
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.hierarchy_repairs).toContainEqual(
+        expect.objectContaining({
+          code: 'feed_circuit_not_found',
+          board_id: 'sub-1',
+          action: 'cleared_feed_circuit_ref',
+          was: '2',
+        })
+      );
+      const sub = res.body.boards.find((b) => b.id === 'sub-1');
+      // Parent link survives — only the dangling feed pointer is cleared.
+      expect(sub.parent_board_id).toBe('FA6C8923');
+      expect(sub.feed_circuit_ref).toBeNull();
+    });
+
+    test('valid hierarchy passes through untouched (no repairs field)', async () => {
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1' });
+      mockDownloadText.mockResolvedValue(null);
+
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          boards: [
+            { id: 'main', board_type: 'main' },
+            {
+              id: 'sub-1',
+              board_type: 'sub_main',
+              parent_board_id: 'main',
+              feed_circuit_ref: '2',
+            },
+          ],
+          circuits: [{ circuit_ref: '2', board_id: null }],
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.hierarchy_repairs).toBeUndefined();
     });
 
     // Phase 2a closed the CSV-header round-trip gap (src/export.js

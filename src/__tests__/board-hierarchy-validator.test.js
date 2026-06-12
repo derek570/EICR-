@@ -201,3 +201,94 @@ describe('validateBoardHierarchy', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-06-12 — repairBoardHierarchy (PUT-path rearchitecture; see
+// job_1778443465217 incident in the function JSDoc). Strict validation still
+// gates interactive creation (add_board dispatcher); the persistence path
+// repairs deterministically so a job can never become permanently unsyncable.
+// ---------------------------------------------------------------------------
+import { repairBoardHierarchy } from '../extraction/board-hierarchy-validator.js';
+
+describe('repairBoardHierarchy', () => {
+  test('valid hierarchy returns original reference with no repairs', () => {
+    const boards = [{ id: 'main', board_type: 'main' }];
+    const r = repairBoardHierarchy(boards, []);
+    expect(r.ok).toBe(true);
+    expect(r.boards).toBe(boards);
+    expect(r.repairs).toEqual([]);
+  });
+
+  test('dangling feed_circuit_ref cleared, parent link kept (field incident shape)', () => {
+    const boards = [
+      { id: 'FA6C8923', board_type: 'main' },
+      { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'FA6C8923', feed_circuit_ref: '2' },
+    ];
+    const r = repairBoardHierarchy(boards, [{ circuit_ref: '1', board_id: null }]);
+    expect(r.ok).toBe(true);
+    const sub = r.boards.find((b) => b.id === 'sub-1');
+    expect(sub.feed_circuit_ref).toBeNull();
+    expect(sub.parent_board_id).toBe('FA6C8923');
+    expect(r.repairs).toEqual([
+      {
+        code: 'feed_circuit_not_found',
+        board_id: 'sub-1',
+        action: 'cleared_feed_circuit_ref',
+        was: '2',
+      },
+    ]);
+    // Pure: input untouched.
+    expect(boards[1].feed_circuit_ref).toBe('2');
+  });
+
+  test('parent_not_found clears parent link AND feed ref', () => {
+    const boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'ghost', feed_circuit_ref: '4' },
+    ];
+    const r = repairBoardHierarchy(boards, []);
+    expect(r.ok).toBe(true);
+    const sub = r.boards.find((b) => b.id === 'sub-1');
+    expect(sub.parent_board_id).toBeNull();
+    expect(sub.feed_circuit_ref).toBeNull();
+  });
+
+  test('circular_reference broken by clearing the reported board parent', () => {
+    const boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'a', board_type: 'sub_main', parent_board_id: 'b' },
+      { id: 'b', board_type: 'sub_main', parent_board_id: 'a' },
+    ];
+    const r = repairBoardHierarchy(boards, []);
+    expect(r.ok).toBe(true);
+    // At least one side of the cycle is now parentless; the other may keep
+    // its (now valid) parent link.
+    const a = r.boards.find((b) => b.id === 'a');
+    const b = r.boards.find((x) => x.id === 'b');
+    expect(a.parent_board_id === null || b.parent_board_id === null).toBe(true);
+  });
+
+  test('multiple mains: first keeps the role, later mains demote', () => {
+    const boards = [
+      { id: 'main-1', board_type: 'main' },
+      { id: 'main-2', board_type: 'main' },
+      { id: 'legacy-untyped' },
+    ];
+    const r = repairBoardHierarchy(boards, []);
+    expect(r.ok).toBe(true);
+    expect(r.boards.find((b) => b.id === 'main-1').board_type).toBe('main');
+    expect(r.boards.find((b) => b.id === 'main-2').board_type).toBe('sub_distribution');
+    expect(r.boards.find((b) => b.id === 'legacy-untyped').board_type).toBe('sub_distribution');
+  });
+
+  test('compound violations all repaired in one call', () => {
+    const boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'sub-1', board_type: 'sub_main', parent_board_id: 'ghost', feed_circuit_ref: '9' },
+      { id: 'sub-2', board_type: 'sub_main', parent_board_id: 'main', feed_circuit_ref: '99' },
+    ];
+    const r = repairBoardHierarchy(boards, [{ circuit_ref: '1', board_id: null }]);
+    expect(r.ok).toBe(true);
+    expect(r.repairs.length).toBeGreaterThanOrEqual(2);
+  });
+});

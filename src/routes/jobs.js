@@ -28,7 +28,10 @@ import {
 import logger from '../logger.js';
 import { parsePagination, paginatedResponse } from '../utils/pagination.js';
 import { sanitizeS3Path } from '../utils/sanitize.js';
-import { validateBoardHierarchy } from '../extraction/board-hierarchy-validator.js';
+import {
+  validateBoardHierarchy,
+  repairBoardHierarchy,
+} from '../extraction/board-hierarchy-validator.js';
 import { createFileFilter, IMAGE_MIMES, AUDIO_MIMES, handleUploadError } from '../utils/upload.js';
 
 const router = Router();
@@ -669,18 +672,43 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  // Phase 2.3: reject malformed multi-board hierarchies before they reach
-  // S3. Only fires when the payload includes `boards`; legacy single-board
+  // Phase 2.3 (rearchitected 2026-06-12): malformed multi-board hierarchies
+  // are REPAIRED, not rejected. The original reject gate permanently wedged
+  // job_1778443465217 — its sub-board carried a feed_circuit_ref whose parent
+  // circuit no longer existed, so EVERY save of that job 400'd, the client
+  // retried the identical payload every 30 s for a week, and all subsequent
+  // inspector edits were silently lost server-side. The cert data in a PUT
+  // is the inspector's ground truth; a dangling relational pointer is
+  // repairable metadata. Strict validation still gates the INTERACTIVE
+  // creation path (the add_board dispatcher), where a rejection can actually
+  // be acted on. Repairs are deterministic, minimal-information-loss
+  // (see repairBoardHierarchy), logged, and echoed in the response so
+  // clients can reconcile their local copy. The reject path survives only
+  // as a defensive fallback for violations with no known repair.
+  // Only fires when the payload includes `boards`; legacy single-board
   // saves (boards omitted, board_info only) are unaffected.
+  let boardsToSave = boards;
+  let hierarchyRepairs = [];
   if (boards) {
-    const { ok, errors } = validateBoardHierarchy(boards, circuits);
-    if (!ok) {
-      logger.warn('Rejecting PUT with invalid board hierarchy', {
+    const verdict = validateBoardHierarchy(boards, circuits);
+    if (!verdict.ok) {
+      const repaired = repairBoardHierarchy(boards, circuits);
+      if (!repaired.ok) {
+        logger.warn('Rejecting PUT with unrepairable board hierarchy', {
+          userId,
+          jobId,
+          errors: verdict.errors,
+        });
+        return res.status(400).json({ error: 'invalid_board_hierarchy', details: verdict.errors });
+      }
+      boardsToSave = repaired.boards;
+      hierarchyRepairs = repaired.repairs;
+      logger.warn('Repaired invalid board hierarchy on PUT', {
         userId,
         jobId,
-        errors,
+        errors: verdict.errors,
+        repairs: hierarchyRepairs,
       });
-      return res.status(400).json({ error: 'invalid_board_hierarchy', details: errors });
     }
   }
 
@@ -734,7 +762,7 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
       extractedData.board_info = board_info;
     }
     if (boards) {
-      extractedData.boards = boards;
+      extractedData.boards = boardsToSave;
     }
     if (installation_details) {
       extractedData.installation_details = installation_details;
@@ -808,6 +836,14 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
     }
     await db.updateJob(jobId, dbUpdate);
 
+    // hierarchy_repairs + boards echo: present ONLY when a repair fired.
+    // Lets clients reconcile their local copy with the repaired hierarchy
+    // (otherwise they re-send the dangling pointer on every sync and the
+    // repair re-fires — benign but noisy). Clients that ignore unknown
+    // response fields are unaffected.
+    if (hierarchyRepairs.length > 0) {
+      return res.json({ success: true, hierarchy_repairs: hierarchyRepairs, boards: boardsToSave });
+    }
     res.json({ success: true });
   } catch (error) {
     logger.error('Failed to update job', { userId, jobId, error: error.message });
