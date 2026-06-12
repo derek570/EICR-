@@ -56,6 +56,7 @@ import {
   DEFAULT_MAIN_BOARD_ID,
   ensureMultiBoardShape,
   getCircuitBucket,
+  getMainBoardId,
 } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 import { validateBoardScope, BOARD_FIELD_VALUE_ENUMS } from './stage6-dispatch-validation.js';
@@ -330,6 +331,49 @@ export async function dispatchRecordBoardReading(call, ctx) {
     boardId: input.board_id ?? undefined,
   });
 
+  // 4b) Bonding-continuity mirror derivation — 2026-06-12 field report
+  // (session 15B88D6B, voiceFeedbackId 21): "I'd like this [main protective
+  // bonding continuity] to pass when bonding of a service is given." When a
+  // bonding service check lands as PASS and the continuity slot is still
+  // empty, derive bonding_conductor_continuity = PASS — the inspector cannot
+  // have verified bonding to a service without the conductor being
+  // continuous, so the derivation is implied by the dictation, mirroring the
+  // iOS regex path's autoContinuityIfBonded. Never overrides an existing
+  // value (in particular FAIL/LIM stay untouched), and skips when the model
+  // wrote continuity itself this turn.
+  if (BONDING_SERVICE_FIELDS.has(input.field) && input.value === 'PASS') {
+    const continuityKey = encodeBoardReadingKey('bonding_conductor_continuity', input.board_id);
+    const current = readBoardFieldDualShape(
+      session.stateSnapshot,
+      'bonding_conductor_continuity',
+      input.board_id
+    );
+    const writtenThisTurn = perTurnWrites.boardReadings.has(continuityKey);
+    if (!writtenThisTurn && (current == null || current === '')) {
+      applyBoardReadingFlagAware(session.stateSnapshot, {
+        field: 'bonding_conductor_continuity',
+        value: 'PASS',
+        boardId: input.board_id,
+      });
+      perTurnWrites.boardReadings.set(continuityKey, {
+        value: 'PASS',
+        confidence: input.confidence ?? 1.0,
+        source_turn_id: input.source_turn_id,
+        // Derived write, not a model tool call — tag auto_resolved so the
+        // shadow comparator filters it (same convention as the RCBO pivot
+        // mirrors in stage6-shadow-harness.js). The bundler still emits it
+        // to iOS with the flag attached.
+        auto_resolved: true,
+        boardId: input.board_id ?? undefined,
+      });
+      logger.info('stage6.bonding_continuity_derived', {
+        sessionId: session.sessionId,
+        turnId,
+        trigger_field: input.field,
+      });
+    }
+  }
+
   // 5) log success.
   // PLAN voice-feedback-2026-06-05 W1.2 (b): extend input_summary with
   // `confidence` (numeric — Sonnet's self-reported confidence) and a
@@ -364,6 +408,36 @@ export async function dispatchRecordBoardReading(call, ctx) {
     },
   });
   return envelope(call.tool_call_id, { ok: true }, false);
+}
+
+// Bonding service checks whose PASS implies main bonding conductor
+// continuity (see 4b above). bonding_conductor_continuity itself is
+// deliberately absent — it is the derivation TARGET.
+const BONDING_SERVICE_FIELDS = new Set([
+  'bonding_water',
+  'bonding_gas',
+  'bonding_oil',
+  'bonding_structural_steel',
+  'bonding_lightning',
+  'bonding_other',
+]);
+
+/**
+ * Read a board-level field via the same dual-shape rule the mutators use:
+ * main-board target reads the legacy `circuits[0]` bucket, non-main targets
+ * read the BoardInfo entry on `snapshot.boards`. Returns undefined when the
+ * field (or board) is absent.
+ */
+function readBoardFieldDualShape(snapshot, field, boardId) {
+  const mainId = getMainBoardId(snapshot);
+  const target = boardId ?? snapshot?.currentBoardId ?? mainId;
+  if (target === mainId) {
+    return snapshot?.circuits?.[0]?.[field];
+  }
+  const board = Array.isArray(snapshot?.boards)
+    ? snapshot.boards.find((b) => b && b.id === target)
+    : undefined;
+  return board?.[field];
 }
 
 // ---------------------------------------------------------------------------
