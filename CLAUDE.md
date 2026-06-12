@@ -86,9 +86,20 @@ npm run format                     # Prettier
 
 **ALWAYS deploy via GitHub Actions.** Push to `main` → CI runs tests, builds ARM64 Docker images, pushes to ECR, deploys to ECS (~30 min end-to-end). Monitor with `gh run watch <run-id> --exit-status` (single long-poll connection — no polling). Run history: https://github.com/derek570/EICR-/actions
 
+**Auto-push backend to `main` at the end of a work session — do NOT wait to be asked.** When backend changes are committed locally on `main` (or a feature branch that has been merged via PR) and `npm test` is green, push to `origin/main` automatically before wrapping up. CI handles the rest.
+
+**When NOT to auto-push:**
+- `npm test` is failing — fix first; do not ship red.
+- The work is on a feature branch awaiting PR / review.
+- A pre-push hook (e.g. secrets scan, full test suite) fails — investigate; do not bypass with `--no-verify`.
+- The user explicitly said "don't push" for THIS task.
+- Schema / migration changes that need coordination with an iOS TestFlight cycle — push the backend FIRST and wait for ECS rollout (`gh run watch`) before kicking off iOS auto-push, so iOS hits a backend with the new shape live.
+
+Default is auto-push; the exclusions above are the only reasons to hold.
+
 Do **not** use the local `./deploy.sh` quick-deploy script even though it exists in the repo. Docker Desktop is not kept running on the dev Mac, so the script fails immediately, and its `tee`-wrapped invocation masks the failure as exit 0. CI is the only deploy path that works reliably.
 
-iOS TestFlight: `~/Developer/EICR_Automation/CertMateUnified/deploy-testflight.sh`.
+iOS TestFlight: `~/Developer/EICR_Automation/CertMateUnified/deploy-testflight.sh` — same auto-push-at-end-of-work policy applies; see `CertMateUnified/CLAUDE.md` § TestFlight Deployment.
 
 > Full details: [docs/reference/deployment.md](docs/reference/deployment.md) (AWS), [docs/reference/deploy-testflight.md](docs/reference/deploy-testflight.md) (iOS)
 
