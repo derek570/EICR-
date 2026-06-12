@@ -341,11 +341,25 @@ describe('PLAN_v4 — original-94 vocabulary preservation invariant', () => {
     expect(additions).toEqual(['afdd', 'cpc']);
   });
 
-  test('WEAK additions limited to none (original word set preserved verbatim minus moves)', () => {
+  test('WEAK additions limited to the 2026-06-12 cert-identity dictation markers', () => {
+    // 2026-06-12 field report (session 15B88D6B, voiceFeedbackId 20):
+    // "Customer is Michael Johnson" carried no digit / strong / weak
+    // trigger, so spoken corrections of client_name could never reach
+    // Sonnet. These words mark certificate dictation; bare 'name' is
+    // deliberately excluded so "Hello my name is ..." chitchat still
+    // blocks. Mirrored in the iOS TranscriptGate weakTriggers.
     const additions = [..._internals.WEAK_TRIGGER_WORDS]
       .filter((w) => !ORIGINAL_TRIGGER_WORDS_FROM_2026_05_26.has(w))
       .sort();
-    expect(additions).toEqual([]);
+    expect(additions).toEqual([
+      'address',
+      'client',
+      'customer',
+      'landlord',
+      'occupier',
+      'postcode',
+      'tenant',
+    ]);
   });
 });
 

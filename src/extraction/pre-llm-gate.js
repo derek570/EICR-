@@ -268,6 +268,23 @@ const WEAK_TRIGGER_WORDS = new Set(
     'overall',
     'summary',
     'inspection',
+    // Cert identity / address dictation markers — 2026-06-12 field report
+    // (session 15B88D6B, voiceFeedbackId 20): "Customer is Michael Johnson"
+    // has no digit, no strong trigger, and no weak trigger, so every spoken
+    // correction of a truncated client_name was blocked at LOW_CONTENT and
+    // the inspector could never fix the field by voice. These words mark
+    // certificate dictation ("customer is X", "client address is Y") rather
+    // than conversational English — bare 'name' stays OUT of the list so
+    // "Hello my name is Michael McGinley" (the 2026-05-29 chitchat case
+    // above) still blocks. Mirrored in the iOS TranscriptGate weakTriggers
+    // (DeepgramRecordingViewModel.swift) — keep the two lists in sync.
+    'customer',
+    'client',
+    'landlord',
+    'tenant',
+    'occupier',
+    'address',
+    'postcode',
   ].map((w) => w.toLowerCase())
 );
 
