@@ -213,6 +213,7 @@ Recent changes — one line each. **Full commit-body-level detail in [docs/refer
 
 | Date | Summary |
 |------|---------|
+| 2026-06-12 | PUT board-hierarchy gate rearchitected: invalid hierarchies are now deterministically REPAIRED (cleared dangling pointers, demoted duplicate mains) + persisted + echoed as `hierarchy_repairs`, never rejected — the reject gate had made job_1778443465217 permanently unsyncable for a week. Strict validation stays on the interactive add_board path. `repairBoardHierarchy` in `board-hierarchy-validator.js`. |
 | 2026-06-12 | Voice-feedback fixes (session 15B88D6B, 4 field reports + /rp-style retrospective review, 11 backend commits): gate cert-identity weak triggers + 2-word identity threshold (`pre-llm-gate.js`, mirrored on iOS) so spoken client-name corrections forward; bonding check-field PASS coercion + `bonding_conductor_continuity` mirror derivation + early-terminate parity fix; `rename_circuit` `source_not_found` recovery hint; prompt MAIN PROTECTIVE BONDING + MERGED/STUTTERED NAMING sections. Companion iOS commits `27ca1d2`..`06376de`. |
 | 2026-06-04 | iOS Fix D (`a62000e` + `b54cb75`) — voice path reconciled with backend Fix B's `spd_*` canonicalisation; legacy `main_fuse_*` aliases dropped from `applySonnetReadings`; supply-side regex split SPD-vs-main-switch. iOS-only. |
 | 2026-06-03 | Voice fix (PR #47, three F03B590C defects): FIELD-AMBIGUITY menu dropped, `"main fuse"` routes to `spd_*`, speculator skips off-enum round-1 synth. 4459 backend tests. |
