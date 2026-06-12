@@ -489,3 +489,64 @@ describe('shouldEarlyTerminate — predicate truth-table', () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-06-12 — derived boardReadings entries (bonding-continuity mirror,
+// stage6-dispatchers-board.js step 4b) carry no streamed tool call. The
+// parity check must subtract them or every clean bonding-service PASS turn
+// forfeits the round-1 early-terminate latency win.
+// ---------------------------------------------------------------------------
+describe('shouldEarlyTerminate — derived boardReadings entries', () => {
+  function makeBoardReadingsMap(entries) {
+    return new Map(entries);
+  }
+
+  test('YES: one streamed board write + one derived mirror entry still early-terminates', () => {
+    const writes = makePerTurnWrites({ readingsSize: 0 });
+    writes.boardReadings = makeBoardReadingsMap([
+      ['bonding_water', { value: 'PASS' }],
+      ['bonding_conductor_continuity', { value: 'PASS', auto_resolved: true, derived: true }],
+    ]);
+    expect(
+      shouldEarlyTerminate({
+        records: [makeRecord('record_board_reading')],
+        toolResults: [{ is_error: false }],
+        perTurnWrites: writes,
+        session: makeSession(),
+      })
+    ).toBe(true);
+  });
+
+  test('NO: a non-derived surplus entry still blocks early-terminate', () => {
+    const writes = makePerTurnWrites({ readingsSize: 0 });
+    writes.boardReadings = makeBoardReadingsMap([
+      ['bonding_water', { value: 'PASS' }],
+      ['bonding_gas', { value: 'PASS' }],
+    ]);
+    expect(
+      shouldEarlyTerminate({
+        records: [makeRecord('record_board_reading')],
+        toolResults: [{ is_error: false }],
+        perTurnWrites: writes,
+        session: makeSession(),
+      })
+    ).toBe(false);
+  });
+
+  test('YES: two streamed bonding writes + one derived entry', () => {
+    const writes = makePerTurnWrites({ readingsSize: 0 });
+    writes.boardReadings = makeBoardReadingsMap([
+      ['bonding_water', { value: 'PASS' }],
+      ['bonding_gas', { value: 'PASS' }],
+      ['bonding_conductor_continuity', { value: 'PASS', auto_resolved: true, derived: true }],
+    ]);
+    expect(
+      shouldEarlyTerminate({
+        records: [makeRecord('record_board_reading'), makeRecord('record_board_reading')],
+        toolResults: [{ is_error: false }, { is_error: false }],
+        perTurnWrites: writes,
+        session: makeSession(),
+      })
+    ).toBe(true);
+  });
+});

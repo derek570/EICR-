@@ -94,7 +94,21 @@ export function shouldEarlyTerminate({ records, toolResults, perTurnWrites, sess
     else if (r.name === 'record_board_reading') boardReadingCount += 1;
   }
   if (perTurnWrites.readings.size !== recordReadingCount) return false;
-  if (perTurnWrites.boardReadings.size !== boardReadingCount) return false;
+  // 2026-06-12 — the bonding-continuity mirror (stage6-dispatchers-board.js
+  // step 4b) appends a derived boardReadings entry with no corresponding
+  // streamed tool call. Subtract derived entries from the parity check or
+  // every clean bonding-service PASS turn would show size=N+1 vs count=N
+  // and forfeit the round-1 early-terminate latency win on exactly the
+  // utterance family the 2026-05-28 sprint optimised.
+  let derivedBoardReadingCount = 0;
+  if (typeof perTurnWrites.boardReadings.values === 'function') {
+    for (const v of perTurnWrites.boardReadings.values()) {
+      if (v && v.derived === true) derivedBoardReadingCount += 1;
+    }
+  }
+  if (perTurnWrites.boardReadings.size - derivedBoardReadingCount !== boardReadingCount) {
+    return false;
+  }
 
   // Multi-board guard ONLY applies when at least one record_reading is
   // present. record_board_reading sessions are by definition multi-board
