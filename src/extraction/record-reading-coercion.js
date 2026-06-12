@@ -109,6 +109,52 @@ const FAIL_ALIASES = new Set(['fail', 'failed']);
 
 const NOMINAL_VOLTAGE_FIELDS = new Set(['nominal_voltage_u', 'nominal_voltage_uo']);
 
+// PASS/FAIL/LIM/N/A check fields (board side) — 2026-06-12 field report
+// (session 15B88D6B, voiceFeedbackId 21): inspector said "Bonding is 10
+// millimeters to both the water and to the gas"; Sonnet recorded
+// bonding_conductor_csa fine but its bonding_water / bonding_gas writes
+// carried off-enum values and were rejected value_not_in_options — the
+// model did not retry, so the cert silently lost both checks and no TTS
+// confirmation fired. Coerce the common truthy synonyms Sonnet emits for
+// "this service is bonded" to the canonical PASS, and explicit
+// not-applicable phrasing to N/A. fail/failed map to FAIL. Bare "no" is
+// deliberately NOT mapped (ambiguous between "no gas supply" → N/A and
+// "not bonded" → FAIL — let the enum validator reject so Sonnet
+// disambiguates). Numeric values (e.g. the 10 mm² CSA misrouted into the
+// check field) stay rejected too — coercing a size into PASS would fake
+// a verification that wasn't dictated.
+const PASS_CHECK_FIELDS = new Set([
+  'bonding_conductor_continuity',
+  'bonding_water',
+  'bonding_gas',
+  'bonding_oil',
+  'bonding_structural_steel',
+  'bonding_lightning',
+  'bonding_other',
+]);
+
+const PASS_ALIASES = new Set([
+  'pass',
+  'passed',
+  'yes',
+  'true',
+  'y',
+  'ok',
+  'good',
+  'present',
+  'confirmed',
+  'verified',
+  'satisfactory',
+  'done',
+  'bonded',
+  'connected',
+  'installed',
+]);
+
+const NA_ALIASES = new Set(['n/a', 'na', 'not applicable', 'none', 'no supply']);
+
+const CHECK_FAIL_ALIASES = new Set(['fail', 'failed', 'unsatisfactory']);
+
 /**
  * Apply the same coercion the record_reading dispatcher applies. Pure;
  * returns the coerced value (string) or the input value unchanged.
@@ -170,11 +216,29 @@ export function coerceRecordReadingValue(field, value) {
  * @returns {*} coerced value
  */
 export function coerceRecordBoardReadingValue(field, value) {
+  // PASS-check fields accept raw booleans (Sonnet occasionally emits real
+  // booleans despite the string schema) — true means "this check passed".
+  // false is NOT coerced: it is ambiguous between FAIL and N/A, so it falls
+  // through to the enum validator for an explicit model retry.
+  if (typeof value === 'boolean' && PASS_CHECK_FIELDS.has(field)) {
+    return value ? 'PASS' : value;
+  }
   if (typeof value !== 'string') return value;
 
   if (NOMINAL_VOLTAGE_FIELDS.has(field)) {
     const trimmed = value.trim();
     if (trimmed === '240') return '230';
+    return value;
+  }
+
+  if (PASS_CHECK_FIELDS.has(field)) {
+    const v = value.trim().toLowerCase();
+    // Exact canonical values pass through case-normalised so "pass"/"Pass"
+    // land as the schema's uppercase enum members.
+    if (PASS_ALIASES.has(v)) return 'PASS';
+    if (NA_ALIASES.has(v)) return 'N/A';
+    if (CHECK_FAIL_ALIASES.has(v)) return 'FAIL';
+    if (v === 'lim' || v === 'limitation') return 'LIM';
     return value;
   }
 

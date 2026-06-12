@@ -209,3 +209,77 @@ describe('coerceRecordBoardReadingValue — nominal voltage 240 → 230', () => 
     expect(coerceRecordBoardReadingValue('nominal_voltage_uo', 240)).toBe(240);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 2026-06-12 (session 15B88D6B, voiceFeedbackId 21) — PASS-check coercion for
+// the bonding check fields. "Bonding is 10 millimeters to both the water and
+// to the gas" produced bonding_water / bonding_gas writes with off-enum
+// values that were rejected value_not_in_options with no retry; the cert
+// silently lost both checks. Truthy synonyms now coerce to PASS, explicit
+// not-applicable phrasing to N/A, fail/failed to FAIL. Bare "no" and numeric
+// values stay un-coerced so the enum validator forces the model to
+// disambiguate.
+// ---------------------------------------------------------------------------
+describe('coerceRecordBoardReadingValue — PASS-check fields (bonding family)', () => {
+  const FIELDS = [
+    'bonding_conductor_continuity',
+    'bonding_water',
+    'bonding_gas',
+    'bonding_oil',
+    'bonding_structural_steel',
+    'bonding_lightning',
+    'bonding_other',
+  ];
+
+  test.each(FIELDS)('%s: truthy synonyms coerce to PASS', (field) => {
+    for (const v of [
+      'yes',
+      'Yes',
+      'true',
+      'present',
+      'confirmed',
+      'bonded',
+      'ok',
+      'pass',
+      'Passed',
+    ]) {
+      expect(coerceRecordBoardReadingValue(field, v)).toBe('PASS');
+    }
+  });
+
+  test('boolean true coerces to PASS; boolean false passes through for explicit rejection', () => {
+    expect(coerceRecordBoardReadingValue('bonding_water', true)).toBe('PASS');
+    expect(coerceRecordBoardReadingValue('bonding_water', false)).toBe(false);
+  });
+
+  test('not-applicable phrasing coerces to N/A', () => {
+    expect(coerceRecordBoardReadingValue('bonding_gas', 'na')).toBe('N/A');
+    expect(coerceRecordBoardReadingValue('bonding_gas', 'not applicable')).toBe('N/A');
+    expect(coerceRecordBoardReadingValue('bonding_oil', 'no supply')).toBe('N/A');
+  });
+
+  test('fail/failed coerce to FAIL; lim/limitation to LIM', () => {
+    expect(coerceRecordBoardReadingValue('bonding_water', 'failed')).toBe('FAIL');
+    expect(coerceRecordBoardReadingValue('bonding_water', 'lim')).toBe('LIM');
+    expect(coerceRecordBoardReadingValue('bonding_water', 'limitation')).toBe('LIM');
+  });
+
+  test('ambiguous "no" and numeric/size values pass through for enum rejection', () => {
+    // "no" is ambiguous between N/A (no gas supply) and FAIL (not bonded).
+    expect(coerceRecordBoardReadingValue('bonding_gas', 'no')).toBe('no');
+    // The 10 mm² CSA misrouted into a check field must NOT fake a PASS.
+    expect(coerceRecordBoardReadingValue('bonding_water', '10')).toBe('10');
+    expect(coerceRecordBoardReadingValue('bonding_water', '10mm')).toBe('10mm');
+  });
+
+  test('canonical enum members pass through unchanged', () => {
+    for (const v of ['PASS', 'FAIL', 'LIM', 'N/A']) {
+      expect(coerceRecordBoardReadingValue('bonding_water', v)).toBe(v);
+    }
+  });
+
+  test('non-check fields are untouched by the PASS aliases', () => {
+    expect(coerceRecordBoardReadingValue('bonding_conductor_csa', 'yes')).toBe('yes');
+    expect(coerceRecordBoardReadingValue('earthing_arrangement', 'confirmed')).toBe('confirmed');
+  });
+});
