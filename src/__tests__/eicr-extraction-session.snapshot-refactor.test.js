@@ -35,6 +35,10 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
 const { EICRExtractionSession, EICR_SYSTEM_PROMPT, EIC_SYSTEM_PROMPT, EICR_AGENTIC_SYSTEM_PROMPT } =
   await import('../extraction/eicr-extraction-session.js');
 
+const { findCircuitsByDesignation } = await import(
+  '../extraction/dialogue-engine/helpers/circuit-resolution.js'
+);
+
 // ---------------------------------------------------------------------------
 // Plan 02-01 Task 4 regression guard — shared snapshot mutator atoms.
 // Kept from the prior version of this file. If these break, something
@@ -882,5 +886,121 @@ describe('"Work on Board" Phase A.4 — dual-shape snapshot serialiser', () => {
     s.stateSnapshot.currentBoardId = null;
     const snapshot = s.buildStateSnapshotMessage();
     expect(snapshot).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// designation-wire-sync (#3.4) — iOS designation reaches the server snapshot.
+//
+// #3.4.4: an iOS `job_state_update` carrying the LEGACY `designation` key must
+//         land on the CANONICAL `circuit_designation` so a stale Sonnet
+//         `circuit_designation` cannot shadow it via the resolver's
+//         `circuit_designation || designation` fallback — WITHOUT corrupting
+//         board designations through the shared `_mergeCircuitOrBoardFields`.
+// #3.4.5: the merge must route circuits by board_id (not ref-only) and seed the
+//         self-describing `{circuit, board_id}` skeleton on first-create so the
+//         dual-shape resolver can actually RESOLVE a sub-board designation.
+// ---------------------------------------------------------------------------
+describe('designation-wire-sync (#3.4) — iOS designation → server snapshot merge', () => {
+  test('#3.4.4 — iOS legacy `designation` rewrites the canonical key, not shadowed by a stale value', () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    // Stale Sonnet-written canonical designation on main circuit 2.
+    s.stateSnapshot.circuits[2] = { circuit_designation: 'Sockets' };
+    s.recentCircuitOrder = [2];
+
+    // iOS pushes a manual rename via the legacy `designation` key (what
+    // buildJobStateForServer actually emits).
+    s._mergeIncomingJobStateIntoSnapshot({ circuits: [{ ref: 2, designation: 'Kitchen' }] });
+
+    // Canonical key rewritten; no stale legacy alias left to shadow it.
+    expect(s.stateSnapshot.circuits[2].circuit_designation).toBe('Kitchen');
+    expect(s.stateSnapshot.circuits[2].designation).toBeUndefined();
+
+    // The resolver now matches the FRESH name, not the stale one.
+    expect(findCircuitsByDesignation(s, 'the kitchen').matched).toBe(2);
+    expect(findCircuitsByDesignation(s, 'the sockets').candidates).toEqual([]);
+  });
+
+  test('#3.4.4 — board designations are NOT moved into circuit_designation (shared-helper guard)', () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    // Default board is { id:'main', designation:'DB-1', board_type:'main' }.
+    s._mergeIncomingJobStateIntoSnapshot({
+      boards: [{ id: 'main', designation: 'Main DB (renamed)' }],
+    });
+    const mainBoard = s.stateSnapshot.boards.find((b) => b.id === 'main');
+    expect(mainBoard.designation).toBe('Main DB (renamed)');
+    // The circuit-only #3.4.4 alias must NOT have leaked into the board bucket.
+    expect(mainBoard.circuit_designation).toBeUndefined();
+  });
+
+  test('#3.4.5 — sub-board designation routes to the composite bucket and RESOLVES; main circuit untouched', () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'Garage DB',
+      board_type: 'sub-distribution',
+    });
+    // Main circuit 1 already has a designation that must NOT be clobbered.
+    s.stateSnapshot.circuits[1] = { circuit_designation: 'Lighting' };
+
+    // iOS pushes sub-board circuit 1 "Sockets" (boardId camelCase, as iOS emits).
+    // The sub-board bucket is PREVIOUSLY ABSENT — first-created by the merge.
+    s._mergeIncomingJobStateIntoSnapshot({
+      circuits: [{ ref: 1, designation: 'Sockets', boardId: 'sub-1' }],
+    });
+
+    // Composite bucket exists with a self-describing skeleton + canonical name.
+    expect(s.stateSnapshot.circuits['sub-1::1']).toEqual({
+      circuit: 1,
+      board_id: 'sub-1',
+      circuit_designation: 'Sockets',
+    });
+    // Main circuit 1 untouched (no ref-only collision).
+    expect(s.stateSnapshot.circuits[1]).toEqual({ circuit_designation: 'Lighting' });
+    // camelCase boardId did NOT leak into the bucket as a stray field.
+    expect(s.stateSnapshot.circuits['sub-1::1'].boardId).toBeUndefined();
+
+    // Crucially — the resolver RESOLVES the sub-board designation (proves the
+    // {circuit, board_id} skeleton was seeded, not merely that a bucket exists).
+    s.stateSnapshot.currentBoardId = 'sub-1';
+    expect(findCircuitsByDesignation(s, 'the sockets').matched).toBe(1);
+    // ...and on the main board "sockets" does NOT resolve (scoped correctly).
+    s.stateSnapshot.currentBoardId = 'main';
+    expect(findCircuitsByDesignation(s, 'the sockets').candidates).toEqual([]);
+  });
+
+  test('#3.4.5 — second push to an existing composite bucket keeps its skeleton', () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    s.stateSnapshot.boards.push({
+      id: 'sub-1',
+      designation: 'Garage DB',
+      board_type: 'sub-distribution',
+    });
+    s._mergeIncomingJobStateIntoSnapshot({
+      circuits: [{ ref: 3, designation: 'Cooker', boardId: 'sub-1' }],
+    });
+    // A later push updating the same sub-board circuit must not lose identity.
+    s._mergeIncomingJobStateIntoSnapshot({
+      circuits: [{ ref: 3, designation: 'Oven', boardId: 'sub-1' }],
+    });
+    expect(s.stateSnapshot.circuits['sub-1::3']).toEqual({
+      circuit: 3,
+      board_id: 'sub-1',
+      circuit_designation: 'Oven',
+    });
+  });
+
+  test('race order — iOS designation lands on a Sonnet-created designation-less bucket WITHOUT clobbering its reading', () => {
+    const s = new EICRExtractionSession('k', 's', 'eicr', { toolCallsMode: 'shadow' });
+    // Sonnet created circuit 2 designation-less but with a measured reading.
+    s.stateSnapshot.circuits[2] = { measured_zs_ohm: '0.41' };
+    s.recentCircuitOrder = [2];
+
+    s._mergeIncomingJobStateIntoSnapshot({ circuits: [{ ref: 2, designation: 'Sockets' }] });
+
+    // Designation landed; the Sonnet reading is preserved (fact-vs-reading).
+    expect(s.stateSnapshot.circuits[2].circuit_designation).toBe('Sockets');
+    expect(s.stateSnapshot.circuits[2].measured_zs_ohm).toBe('0.41');
+    expect(findCircuitsByDesignation(s, 'the sockets').matched).toBe(2);
   });
 });
