@@ -325,6 +325,27 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // "create_circuit" — both satisfy the requirement).
       expect(prompt.toLowerCase()).toEqual(expect.stringContaining('create'));
     });
+
+    test('contains the #3.4.2 NEGATIVE designation-on-create clause (designation-wire-sync)', () => {
+      // The prompt already steers designation-on-create POSITIVELY (CIRCUIT
+      // NAMING). #3.4.2 adds the EXPLICIT NEGATIVE counter to the schema's
+      // "Null if unknown" wording: never emit designation:null for a named
+      // circuit. This test must NOT pass on the generic positive guidance —
+      // it asserts the negative phrasing specifically.
+      const lower = prompt.toLowerCase();
+      // Anchor on the negative "designation:null when ... a name" idea.
+      const idx = lower.indexOf('designation:null');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const windowStart = Math.max(0, idx - 300);
+      const windowEnd = Math.min(prompt.length, idx + 300);
+      const section = lower.slice(windowStart, windowEnd);
+      // NEVER ... designation-less / designation:null, tied to a spoken name.
+      expect(section).toEqual(expect.stringContaining('never'));
+      expect(section).toEqual(expect.stringContaining('name'));
+      const hasNegativeDesignation =
+        section.includes('designation-less') || section.includes('designation:null');
+      expect(hasNegativeDesignation).toBe(true);
+    });
   });
 
   // ------------------------------------------------------------------

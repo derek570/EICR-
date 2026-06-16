@@ -134,11 +134,17 @@ describe('Commit 1 — updateJobState merges iOS state into stateSnapshot', () =
     expect(s.stateSnapshot.circuits[3].zs).toBe(0.18);
   });
 
-  test('case 20 — facts: iOS overwrites existing snapshot designation', () => {
+  test('case 20 — facts: iOS overwrites existing snapshot designation (canonical key, #3.4.4)', () => {
     const s = makeSession();
     s.stateSnapshot.circuits[3] = { designation: 'X' };
     s.updateJobState({ circuits: [{ ref: 3, designation: 'Y' }] });
-    expect(s.stateSnapshot.circuits[3].designation).toBe('Y');
+    // designation-wire-sync #3.4.4: an incoming CIRCUIT `designation` is now
+    // normalised to the canonical `circuit_designation` (and the stale legacy
+    // alias is dropped) so it can't be shadowed by `circuit_designation ||
+    // designation` in the resolver. Fact-overwrite precedence is unchanged —
+    // only the storage key moved to canonical.
+    expect(s.stateSnapshot.circuits[3].circuit_designation).toBe('Y');
+    expect(s.stateSnapshot.circuits[3].designation).toBeUndefined();
   });
 
   test('case 24 — board merge matches by id, not index', () => {
