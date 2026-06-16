@@ -109,7 +109,10 @@ describe('barrel re-exports', () => {
         source_turn_id: 't1',
       },
       clear_reading: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
-      create_circuit: { circuit_ref: 99 },
+      // circuit_ref 4 (not 99): the seed has only circuit 3, and the #5.2
+      // implausible_circuit_ref guard now rejects a ref >20 above the
+      // board max — 4 is the next free plausible ref and doesn't collide.
+      create_circuit: { circuit_ref: 4 },
       rename_circuit: { from_ref: 3, circuit_ref: 3 }, // rename-to-self = noop-ok
       record_observation: { code: 'C2', text: 'x', location: 'y', suggested_regulation: '411.3.4' },
       delete_observation: {
@@ -186,7 +189,7 @@ describe('barrel re-exports', () => {
       mark_distribution_circuit: { circuit: 3, feeds_board_id: 'main' },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
-      // Fresh session per call so create_circuit(99) etc don't collide.
+      // Fresh session per call so create_circuit(4) etc don't collide.
       const localSession = {
         sessionId: 's1',
         stateSnapshot: { circuits: { 3: { Ze_ohms: '0.35' } } },
