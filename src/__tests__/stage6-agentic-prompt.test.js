@@ -261,8 +261,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (restart-glued "Circuit 1 is circuit 2 is X" must not become
       // rename_circuit(1->2), voiceFeedbackId 22), on top of the merged
       // 2026-06-05 W1.6/W1.7 additions. Measured 15201; cap 15301 leaves ~100-token headroom.
+      //
+      // 2026-06-16 (field session F1AC26FB voice-feedback fixes): bumped to
+      // 15700 to absorb three steering additions — SWAP/REORDER DESIGNATIONS
+      // (#5.1, stop scratch-circuit-999), TAILS→main_switch_conductor_csa
+      // (#2.1, stop sub_main misroute), and the earthing head/value garble
+      // line (#1.4). Measured 15606; cap 15700 leaves ~94-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(15301);
+      expect(estimate).toBeLessThanOrEqual(15700);
     });
   });
 
@@ -867,8 +873,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     voiceFeedbackId 21) + MERGED / STUTTERED NAMING rule
       //     (voiceFeedbackId 22), on top of the merged 2026-06-05
       //     W1.6/W1.7 additions. Measured 10093; cap 10193 leaves ~100-token headroom.
+      //   - 10600 (2026-06-16 field session F1AC26FB): SWAP/REORDER
+      //     DESIGNATIONS (#5.1), TAILS→main_switch_conductor_csa (#2.1),
+      //     and the earthing head/value garble line (#1.4). Measured
+      //     10498; cap 10600 leaves ~100-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(10193);
+      expect(estimate).toBeLessThanOrEqual(10600);
     });
   });
 
