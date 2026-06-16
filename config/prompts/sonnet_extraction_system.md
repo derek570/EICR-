@@ -206,7 +206,7 @@ CIRCUIT FIELDS (per circuit):
 SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - ze: external earth fault loop impedance (Ze) in ohms. Only use for BARE "Ze 0.34" or "Ze is 0.34" WITHOUT a location qualifier. If the electrician says "Ze at DB", "Ze at the board", "Ze at the fuse board" — use zs_at_db instead (see below).
 - pfc: prospective fault current at origin in kA
-- earthing_arrangement: "TN-S", "TN-C-S", "TT"
+- earthing_arrangement: "TN-S", "TN-C-S", "TT", "TN-C", "IT". The head word garbles ("erthing"/"irthing"/"birthing"/"other thing"/"earth in" → earthing) and the value garbles ("TNS"/"t n s"/"t and s" → TN-S; "TNCS"/"PME" → TN-C-S) — normalise to the canonical hyphenated enum.
 - main_earth_conductor_csa: mm2
 - main_bonding_conductor_csa: mm2
 - bonding_water: "Yes" if water bonding present

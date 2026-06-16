@@ -144,6 +144,47 @@ describe('validateCreateCircuit', () => {
       field: 'cable_csa_mm2',
     });
   });
+
+  // F1AC26FB #5.2 — implausible scratch/temp ref guard (the junk circuit
+  // 999 "(temp)" Sonnet invented as swap scratch space).
+  test('rejects implausible ref 999 (>= 100 absolute cap)', () => {
+    expect(validateCreateCircuit({ circuit_ref: 999 }, { circuits: { 1: {}, 2: {} } })).toEqual({
+      code: 'implausible_circuit_ref',
+      field: 'circuit_ref',
+      max_existing_ref: 2,
+      hint: 'Do not create scratch/temp circuits for swaps; update existing circuit designations with rename_circuit.',
+    });
+  });
+
+  test('rejects a ref far above the current max (> maxExistingRef + 20)', () => {
+    expect(validateCreateCircuit({ circuit_ref: 30 }, { circuits: { 1: {}, 2: {}, 3: {} } })).toEqual(
+      {
+        code: 'implausible_circuit_ref',
+        field: 'circuit_ref',
+        max_existing_ref: 3,
+        hint: 'Do not create scratch/temp circuits for swaps; update existing circuit designations with rename_circuit.',
+      }
+    );
+  });
+
+  test('accepts the next normal ref just above the current max', () => {
+    expect(
+      validateCreateCircuit({ circuit_ref: 4 }, { circuits: { 1: {}, 2: {}, 3: {} } })
+    ).toBeNull();
+  });
+
+  test('accepts a sensible first circuit on an empty board', () => {
+    expect(validateCreateCircuit({ circuit_ref: 1 }, { circuits: {} })).toBeNull();
+  });
+
+  test('implausible ref that already exists is reported as already-exists, not implausible', () => {
+    // The existing-circuit check runs first, so re-creating circuit 999 (if
+    // it somehow already exists) surfaces the existing-circuit code.
+    expect(validateCreateCircuit({ circuit_ref: 999 }, { circuits: { 999: {} } })).toEqual({
+      code: 'circuit_already_exists',
+      field: 'circuit_ref',
+    });
+  });
 });
 
 describe('validateRenameCircuit', () => {

@@ -27,6 +27,7 @@ import {
   findCircuitByDesignation,
   findCircuitsByDesignation,
   readExistingValues,
+  stripDesignationFiller,
 } from './helpers/circuit-resolution.js';
 import {
   extractNamedFieldValues,
@@ -51,6 +52,7 @@ import {
   detectBroadcastIntent,
 } from './parsers/circuit-range.js';
 import { OBSERVATION_PATTERN } from '../pre-llm-gate.js';
+import { coerceRecordReadingValue } from '../record-reading-coercion.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -392,7 +394,12 @@ function hasNumericValueWithUnit(text) {
  * `whichCircuitQuestion` — there's nothing useful to quote back.
  */
 function buildCircuitRetryQuestion(schema, designationAttempt) {
-  const trimmed = typeof designationAttempt === 'string' ? designationAttempt.trim() : '';
+  // F1AC26FB #3.2 — strip leading filler/articles + trailing punctuation
+  // before quoting the user's failed answer back, so the re-ask reads
+  // "…circuit number for the sockets?" not "…for the For the sockets.?".
+  // If nothing useful survives the strip, fall back to the schema's bare
+  // whichCircuitQuestion rather than echoing raw text.
+  const trimmed = stripDesignationFiller(designationAttempt);
   if (typeof schema.retryCircuitQuestion === 'function') {
     const out = schema.retryCircuitQuestion(trimmed);
     if (typeof out === 'string' && out.length > 0) return out;
@@ -422,6 +429,12 @@ function initScriptState(session, schema, circuit_ref, now) {
     last_turn_at: now,
     circuit_retry_attempted: false,
     last_designation_attempt: null,
+    // Per-slot no-progress tracking (F1AC26FB #4.3). `{ field, misses }` —
+    // counts CONSECUTIVE unparseable answers to the same expected slot so a
+    // garble (Deepgram noise, off-enum reply) can't loop the same slot ask
+    // forever. 2nd miss → format hint; 3rd miss → skip the slot + fall
+    // through to Sonnet. Reset on any successful write / slot change.
+    slot_no_progress: null,
     // entered_via_pivot is set true only by runPivot; default false on
     // every direct entry path (regex / runEntry / enterScriptByName).
     entered_via_pivot: false,
@@ -1068,8 +1081,15 @@ function runActivePath({
       if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
         for (const w of state.pending_writes) {
           if (state.values[w.field] !== undefined) continue;
-          applyWrite(session, schema, ref, w.field, w.value, now);
-          writes.push(w);
+          // Defensive IR-LIM canonicalisation on drain (idempotent with the
+          // validWrites coercion) — covers pending_writes queued from any
+          // origin (seed path + followUpVolunteered) before they hit the
+          // snapshot. Scoped to ir_live_* (F1AC26FB #4.2).
+          const drainValue = w.field.startsWith('ir_live_')
+            ? coerceRecordReadingValue(w.field, w.value)
+            : w.value;
+          applyWrite(session, schema, ref, w.field, drainValue, now);
+          writes.push({ ...w, value: drainValue });
           drainedFromPending = true;
         }
         state.pending_writes = [];
@@ -1133,8 +1153,10 @@ function runActivePath({
       // miss-recoveries from genuine fallthroughs.
       if (!state.circuit_retry_attempted) {
         state.circuit_retry_attempted = true;
-        const trimmed = text.trim();
-        state.last_designation_attempt = trimmed.slice(0, 60);
+        // F1AC26FB #3.2 — store the filler-stripped designation so the
+        // re-ask echo and CloudWatch never carry raw "for the …" text.
+        const stripped = stripDesignationFiller(text);
+        state.last_designation_attempt = stripped.slice(0, 60);
         logger?.info?.(`${schema.logEventPrefix}_circuit_retry`, {
           sessionId,
           textPreview: text.slice(0, 80),
@@ -1488,6 +1510,61 @@ function runActivePath({
       logger,
       now,
     });
+  }
+
+  // 9b. Per-slot no-progress cap (F1AC26FB #4.3). When we're actively
+  //     expecting a slot and this turn produced NO write for it (the
+  //     answer didn't parse — any garble, not just LIM), count consecutive
+  //     misses on that slot. 2nd consecutive miss → emit a one-line format
+  //     hint and re-ask. 3rd → mark the slot skipped and fall through to
+  //     Sonnet so the loop can't run forever (the IR-LIM loop in F1AC26FB
+  //     re-asked the same slot ~indefinitely until a cancel word). Reset
+  //     whenever progress is made or the expected slot changes. Counting
+  //     is gated on a resolved circuit_ref so it never collides with the
+  //     circuit-resolution retry (#3.3 / circuit_retry_attempted). NOTE:
+  //     no replay-corpus scenario hits 2 consecutive misses on one slot,
+  //     so this adds no emit there and the legacy-vs-engine parity holds.
+  const madeProgress =
+    writes.length > 0 || pivotTo || circuitResolvedThisTurn || drainedFromPending;
+  if (madeProgress) {
+    state.slot_no_progress = null;
+  } else if (currentSlot && state.circuit_ref !== null) {
+    if (!state.slot_no_progress || state.slot_no_progress.field !== currentSlot.field) {
+      state.slot_no_progress = { field: currentSlot.field, misses: 0 };
+    }
+    state.slot_no_progress.misses += 1;
+    const misses = state.slot_no_progress.misses;
+    if (misses >= 3) {
+      state.skipped_slots.add(currentSlot.field);
+      state.slot_no_progress = null;
+      logger?.info?.(`${schema.logEventPrefix}_slot_no_progress_skip`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        field: currentSlot.field,
+        textPreview: text.slice(0, 80),
+      });
+      return { handled: true, fallthrough: true, transcriptText };
+    }
+    if (misses === 2) {
+      logger?.info?.(`${schema.logEventPrefix}_slot_no_progress_hint`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        field: currentSlot.field,
+        textPreview: text.slice(0, 80),
+      });
+      safeSend(
+        ws,
+        buildScriptInfo({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          kind: 'no_progress_hint',
+          text:
+            schema.noProgressHint ??
+            "Sorry, I didn't catch that. Say a number, 'greater than X', or 'LIM' — or say 'skip' to move on.",
+          now,
+        })
+      );
+    }
   }
 
   return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
@@ -1957,7 +2034,16 @@ export function enterScriptByName({
         if (w?.field) droppedFields.push(w.field);
         continue;
       }
-      validWrites.push({ field: w.field, value: w.value });
+      // Canonicalise IR-slot LIM garbles ("limitation"/"limb"/… → "LIM")
+      // for seeded pending_writes, which otherwise bypass the megaohms
+      // parser entirely (they are applied directly via
+      // applyWriteWithDerivations / queued for the drain path). Scoped to
+      // `ir_live_*` so bs_en / Y-N seed behaviour is unchanged (F1AC26FB
+      // #4.2). coerceRecordReadingValue is a no-op for non-LIM IR values.
+      const canonValue = w.field.startsWith('ir_live_')
+        ? coerceRecordReadingValue(w.field, w.value)
+        : w.value;
+      validWrites.push({ field: w.field, value: canonValue });
     }
   }
 
@@ -2227,8 +2313,13 @@ export function tryResumePausedScript({
   if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
     for (const w of state.pending_writes) {
       if (state.values[w.field] !== undefined) continue;
-      applyWrite(session, schema, matchedRef, w.field, w.value, now);
-      drainedWrites.push(w);
+      // Defensive IR-LIM canonicalisation on drain after circuit-create
+      // resume (idempotent; scoped to ir_live_* — F1AC26FB #4.2).
+      const drainValue = w.field.startsWith('ir_live_')
+        ? coerceRecordReadingValue(w.field, w.value)
+        : w.value;
+      applyWrite(session, schema, matchedRef, w.field, drainValue, now);
+      drainedWrites.push({ ...w, value: drainValue });
     }
     state.pending_writes = [];
   }

@@ -9,20 +9,27 @@
  *   - Saturation sentinels: "infinite", "infinity", "off scale", "OL",
  *     "out of range", "maxed out" → ">999" (canonical max — IR meters
  *     typically saturate at 999 MΩ).
+ *   - Limitation sentinel: "LIM" / "limb" / "limp" / "limit(ation/ed)" /
+ *     "Lynn" / "Lym" → canonical "LIM" (test not performed due to an
+ *     access/safety limitation — a valid value for ANY IR field).
  *   - Numeric: "200", "0.43", ".43" → preserved verbatim with leading-zero
  *     normalisation.
  *
  * The greater-than form accepts ANY value (per field-test request) — the
  * downstream schema validator allows arbitrary text in `ir_live_*_mohm`
- * (type "text"), so any ">N" string passes through.
+ * (type "text"), so any ">N" / "LIM" string passes through.
  *
- * DELIBERATELY EXCLUDED: "LIM" / "limit" / "limitation" — those are EICR
- * conventions for "test not performed due to access/safety limitation",
- * NOT saturation readings. A separate limitation-handling flow is the
- * right place for that signal (out of scope here).
+ * LIM ACCEPTANCE (reversed 2026-06-16): "LIM" was previously rejected here
+ * on the theory a "separate limitation-handling flow" owned it. That flow
+ * never existed, so spoken "LIM for live-to-live" looped the IR slot ask
+ * forever — reported 2026-02-18, 2026-06-08, and field session F1AC26FB
+ * (job_1781607199550, 2026-06-16). "LIM" is now a first-class sentinel,
+ * matching value-normalise.js:107, stage6-answer-resolver.js:607, and the
+ * Sonnet garble list in sonnet_full_transcript_system.md:39-40.
  *
  * Behaviour identical to parseValue() in insulation-resistance-script.js
- * to keep the byte-identical replay corpus passing.
+ * to keep the byte-identical replay corpus passing — any change here MUST
+ * be mirrored there (and vice versa).
  */
 export function parseMegaohms(text) {
   if (typeof text !== 'string') return null;
@@ -44,7 +51,16 @@ export function parseMegaohms(text) {
     return '>999';
   }
 
-  // 3. Numeric — accept "200", "0.43", ".43", or integer "1".
+  // 3. Limitation sentinel — "LIM" means the test could not be performed
+  //    (access/safety limitation). Deepgram garbles spoken "LIM" as
+  //    lim/limb/limp/limit(ation|ed)/lynn/lym (garble set per
+  //    sonnet_full_transcript_system.md:39 + "limp" seen in F1AC26FB).
+  //    Word-anchored so it never fires inside unrelated words.
+  if (/\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i.test(text)) {
+    return 'LIM';
+  }
+
+  // 4. Numeric — accept "200", "0.43", ".43", or integer "1".
   const m = text.match(/-?\d*\.\d+|-?\d+/);
   if (!m) return null;
   const raw = m[0];
@@ -74,7 +90,7 @@ export function parseMegaohms(text) {
 // active-script bare-value matching) and any future consumer would pick
 // up the same fix here.
 export const MEGAOHMS_VALUE_GROUP =
-  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\d*\\.?\\d+';
+  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d*\\.?\\d+';
 
 /**
  * Restricted value group for the BARE-BRIDGE arm of the L-L/L-E named
@@ -115,7 +131,7 @@ export const MEGAOHMS_VALUE_GROUP =
  * supported. Only the loose bare-bridge form is tightened.
  */
 export const MEGAOHMS_BARE_SAFE_VALUE_GROUP =
-  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\d+\\.\\d+|\\.\\d+|\\d{2,}';
+  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d+\\.\\d+|\\.\\d+|\\d{2,}';
 
 /**
  * Match a bare megaohms value at IR script entry — a number or sentinel

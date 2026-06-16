@@ -72,6 +72,17 @@ const YN_BOOLEAN_FIELDS = new Set([
 ]);
 const BS_EN_FIELDS = new Set(['ocpd_bs_en', 'rcd_bs_en']);
 
+// Insulation-resistance reading fields (circuit side). "LIM" (limitation —
+// test could not be performed) is a valid value for these; Deepgram garbles
+// spoken "LIM" as lim/limb/limp/limit(ation|ed)/lynn/lym. Coerce all to the
+// canonical "LIM" so a Sonnet record_reading / streamed speculation value of
+// "limitation" stores canonically rather than bypassing the dialogue-engine
+// parser's IR canonicalisation (F1AC26FB 2026-06-16; repeat of 2026-02-18 /
+// 2026-06-08 requests). Word-anchored matcher kept byte-aligned with
+// parseMegaohms() in dialogue-engine/parsers/megaohms.js.
+const IR_MOHM_FIELDS = new Set(['ir_live_live_mohm', 'ir_live_earth_mohm']);
+const IR_LIM_RE = /\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i;
+
 const YN_TRUE_ALIASES = new Set([
   'true',
   'yes',
@@ -184,6 +195,13 @@ export function coerceRecordReadingValue(field, value) {
   if (BS_EN_FIELDS.has(field)) {
     const canonical = parseBsCode(value);
     if (canonical) return canonical;
+    return value;
+  }
+
+  if (IR_MOHM_FIELDS.has(field)) {
+    // Only LIM garbles are coerced; numeric / ">N" / sentinel readings pass
+    // through verbatim (none contain a LIM word token).
+    if (IR_LIM_RE.test(value)) return 'LIM';
     return value;
   }
 

@@ -175,6 +175,41 @@ export async function dispatchRecordBoardReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
+  // 2b) F1AC26FB #2.2 — block sub_main_cable_csa when the job has NO
+  //     sub-distribution board. "tails are 25mm" (the supply meter tails
+  //     INTO the main board) belongs in main_switch_conductor_csa; with no
+  //     tails steering Sonnet picked the key whose label contains "cable"
+  //     and populated sub_main_cable_csa instead, on a single-board job
+  //     where that field is meaningless (it only describes the cable
+  //     FEEDING a separate sub-main). Redirect the model. #2.1 prompt
+  //     steering is the primary fix; this is the belt-and-braces guard.
+  //     Only fires when zero sub-boards exist — a real multi-board job is
+  //     left untouched.
+  if (input.field === 'sub_main_cable_csa') {
+    const boards = session.stateSnapshot?.boards;
+    const hasSubBoard =
+      Array.isArray(boards) && boards.some((b) => b && b.board_type && b.board_type !== 'main');
+    if (!hasSubBoard) {
+      const err = {
+        code: 'no_sub_board_for_sub_main',
+        field: 'field',
+        hint: 'This job has no sub-distribution board, so sub_main_cable_csa does not apply. Meter tails feeding the main board are main_switch_conductor_csa (bare number).',
+      };
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'record_board_reading',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: err,
+        input_summary: { field: input.field },
+      });
+      return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    }
+  }
+
   // Fix B 2026-06-02 (handoff §B) — value coercion + per-field VALUE
   // enum gate. Coerce first (currently nominal_voltage_u/uo "240"→"230"
   // for the UK pre-harmonisation drift; extend coerceRecordBoardReadingValue

@@ -231,18 +231,26 @@ export function parseValue(text) {
   }
 
   // 2. Saturation sentinels — meter is over-range. Canonical ">999".
-  //    DELIBERATELY EXCLUDED: "LIM" / "limit" / "limitation". These are
-  //    EICR conventions for "test not performed due to access/safety
-  //    limitation" — they are NOT saturation readings and must never be
-  //    written as a numeric IR value. A separate limitation-handling
-  //    flow (out of scope here) is the right place for that signal.
   if (
     /\b(?:infinite|infinity|off\s*scale|out\s*of\s*range|o\s*l|max(?:ed)?(?:\s+out)?)\b/i.test(text)
   ) {
     return '>999';
   }
 
-  // 3. Numeric — accept "200", "0.43", ".43", or integer "1".
+  // 3. Limitation sentinel — "LIM" means the test could not be performed
+  //    (access/safety limitation), a valid value for ANY IR field. Was
+  //    DELIBERATELY EXCLUDED until 2026-06-16 on the theory a "separate
+  //    limitation-handling flow" owned it; that flow never existed, so
+  //    spoken "LIM" looped the IR slot ask forever (reported 2026-02-18,
+  //    2026-06-08, F1AC26FB 2026-06-16). Deepgram garbles spoken "LIM" as
+  //    lim/limb/limp/limit(ation|ed)/lynn/lym — all canonicalise to "LIM".
+  //    MUST stay byte-identical to parseMegaohms() in
+  //    dialogue-engine/parsers/megaohms.js for the replay corpus.
+  if (/\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i.test(text)) {
+    return 'LIM';
+  }
+
+  // 4. Numeric — accept "200", "0.43", ".43", or integer "1".
   const m = text.match(/-?\d*\.\d+|-?\d+/);
   if (!m) return null;
   const raw = m[0];
@@ -285,7 +293,7 @@ export function extractNamedFieldValues(text) {
   if (typeof text !== 'string' || !text) return [];
   const out = [];
   const valueGroup =
-    '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\d*\\.?\\d+';
+    '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d*\\.?\\d+';
   // Field words (case-insensitive). The negative lookahead on "L L"-style
   // shorthand keeps it from biting on "L1" or letters inside other words.
   const patterns = [
