@@ -699,6 +699,64 @@ describe('engine — insulation resistance', () => {
     });
   });
 
+  // Per-slot no-progress cap (F1AC26FB #4.3). Three consecutive
+  // unparseable answers to the same slot: hint on the 2nd, skip + Sonnet
+  // fall-through on the 3rd. Closes the IR-LIM-style infinite re-ask loop
+  // for ANY garble.
+  describe('no-progress cap', () => {
+    const enter = (ws, session, now) =>
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'Insulation resistance for circuit 13.',
+        now,
+      });
+    const answer = (ws, session, text, now) =>
+      processInsulationResistanceTurn({ ws, session, sessionId: SESSION_ID, transcriptText: text, now });
+
+    test('2nd consecutive miss emits a format hint; 3rd skips + falls through', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
+      enter(ws, session, 1000);
+      expect(ws.sent.at(-1).context_field).toBe('ir_live_live_mohm');
+
+      // Miss 1 — re-ask, no hint.
+      const o1 = answer(ws, session, 'the weather is nice', 2000);
+      expect(o1).toEqual({ handled: true, fallthrough: false });
+      expect(ws.sent.some((m) => /no_progress_hint/.test(m.tool_call_id ?? ''))).toBe(false);
+
+      // Miss 2 — format hint emitted (then the slot is re-asked).
+      const o2 = answer(ws, session, 'the weather is nice', 3000);
+      expect(o2).toEqual({ handled: true, fallthrough: false });
+      const hint = ws.sent.find((m) => /no_progress_hint/.test(m.tool_call_id ?? ''));
+      expect(hint).toBeDefined();
+      expect(hint.question).toMatch(/LIM/);
+
+      // Miss 3 — skip the slot + fall through to Sonnet.
+      const o3 = answer(ws, session, 'the weather is nice', 4000);
+      expect(o3).toMatchObject({ handled: true, fallthrough: true });
+      expect(session.dialogueScriptState.skipped_slots.has('ir_live_live_mohm')).toBe(true);
+    });
+
+    test('a successful answer resets the miss counter', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
+      enter(ws, session, 1000);
+      answer(ws, session, 'the weather is nice', 2000); // miss 1
+      answer(ws, session, 'the weather is nice', 3000); // miss 2 (hint)
+      // Now a real reading lands — progress resets the counter.
+      answer(ws, session, 'live to live 200', 4000);
+      expect(session.stateSnapshot.circuits[13].ir_live_live_mohm).toBe('200');
+      expect(session.dialogueScriptState.slot_no_progress).toBeNull();
+
+      // A single subsequent miss on the NEXT slot must not immediately skip.
+      const o = answer(ws, session, 'the weather is nice', 5000);
+      expect(o).toEqual({ handled: true, fallthrough: false });
+      expect(session.dialogueScriptState.skipped_slots.has('ir_live_earth_mohm')).toBe(false);
+    });
+  });
+
   test('voltage phase silently finishes on unparseable reply', () => {
     const ws = new FakeWS();
     const session = buildSession({

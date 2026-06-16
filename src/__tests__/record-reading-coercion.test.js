@@ -98,6 +98,30 @@ describe('coerceRecordReadingValue — polarity_confirmed enum', () => {
   });
 });
 
+describe('coerceRecordReadingValue — IR LIM canonicalisation (F1AC26FB #4.2)', () => {
+  test.each(['LIM', 'lim', 'limb', 'limp', 'limit', 'limitation', 'limited', 'Lynn', 'Lym'])(
+    'ir_live_live_mohm "%s" → "LIM"',
+    (v) => {
+      expect(coerceRecordReadingValue('ir_live_live_mohm', v)).toBe('LIM');
+    }
+  );
+
+  test('ir_live_earth_mohm coerces LIM garbles too', () => {
+    expect(coerceRecordReadingValue('ir_live_earth_mohm', 'limitation')).toBe('LIM');
+  });
+
+  test('numeric / ">N" / sentinel IR readings pass through verbatim', () => {
+    expect(coerceRecordReadingValue('ir_live_live_mohm', '200')).toBe('200');
+    expect(coerceRecordReadingValue('ir_live_live_mohm', '>999')).toBe('>999');
+    expect(coerceRecordReadingValue('ir_live_earth_mohm', '0.43')).toBe('0.43');
+  });
+
+  test('word-anchored — does not fire inside unrelated words', () => {
+    expect(coerceRecordReadingValue('ir_live_live_mohm', 'eliminate')).toBe('eliminate');
+    expect(coerceRecordReadingValue('ir_live_earth_mohm', 'slimy')).toBe('slimy');
+  });
+});
+
 describe('coerceRecordReadingValue — fields with no coercion', () => {
   test('measured_zs_ohm, r1_r2_ohm, etc. pass through verbatim', () => {
     expect(coerceRecordReadingValue('measured_zs_ohm', '0.43')).toBe('0.43');

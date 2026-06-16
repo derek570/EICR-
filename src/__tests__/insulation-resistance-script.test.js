@@ -207,6 +207,27 @@ describe('parseValue', () => {
     expect(parseValue('maxed out')).toBe('>999');
   });
 
+  // LIM (limitation) sentinel — reversed 2026-06-16 (F1AC26FB). Deepgram
+  // garbles spoken "LIM" as lim/limb/limp/limit(ation|ed)/lynn/lym.
+  test.each(['LIM', 'lim', 'limb', 'limp', 'limit', 'limitation', 'limited', 'Lynn', 'Lym'])(
+    '"%s" → "LIM"',
+    (t) => {
+      expect(parseValue(t)).toBe('LIM');
+    }
+  );
+
+  test('"live to live limitation" → "LIM"', () => {
+    expect(parseValue('live to live limitation')).toBe('LIM');
+  });
+
+  test('LIM matcher is word-anchored — does not fire inside unrelated words', () => {
+    // "eliminate"/"slimy"/"glimpse" contain lim substrings but must NOT
+    // canonicalise to LIM (and carry no bare numeric value either).
+    expect(parseValue('eliminate')).toBeNull();
+    expect(parseValue('slimy')).toBeNull();
+    expect(parseValue('glimpse')).toBeNull();
+  });
+
   test('"hello world" → null (no value)', () => {
     expect(parseValue('hello world')).toBeNull();
   });
@@ -262,6 +283,20 @@ describe('extractNamedFieldValues', () => {
   test('"live to earth greater than 999" → ir_live_earth_mohm >999', () => {
     expect(extractNamedFieldValues('live to earth greater than 999')).toEqual([
       { field: 'ir_live_earth_mohm', value: '>999' },
+    ]);
+  });
+
+  // LIM via the named extractor (F1AC26FB #4.1) — value group now carries
+  // the LIM garble alternation, so "live to live LIM" tags L-L as LIM.
+  test('"live to live LIM" → ir_live_live_mohm LIM', () => {
+    expect(extractNamedFieldValues('live to live LIM')).toEqual([
+      { field: 'ir_live_live_mohm', value: 'LIM' },
+    ]);
+  });
+
+  test('"live to earth limb" → ir_live_earth_mohm LIM', () => {
+    expect(extractNamedFieldValues('live to earth limb')).toEqual([
+      { field: 'ir_live_earth_mohm', value: 'LIM' },
     ]);
   });
 
@@ -903,38 +938,49 @@ describe('"international" Deepgram garbling tolerance', () => {
 });
 
 // ---------------------------------------------------------------------------
-// "LIM" / "Limitation" must NOT parse as a value.
+// "LIM" / "Limitation" IS a valid value (reversed 2026-06-16, F1AC26FB).
 // ---------------------------------------------------------------------------
 //
-// EICR convention: when an inspector says "LIM" / "limit" / "limitation",
-// they mean the test could not be performed (access / safety constraint).
-// It is NOT a saturation reading. Mapping it to ">999" would silently
-// record a passing IR test that never happened. parseValue must return
-// null for these forms so a separate limitation-handling flow can pick
-// up the signal without poisoning the numeric value.
-describe('LIM / limitation must NOT parse as a saturation value', () => {
-  test('parseValue("LIM") → null (not a value)', () => {
-    expect(parseValue('LIM')).toBeNull();
+// EICR convention: "LIM" means the test could not be performed (access /
+// safety limitation) — a valid value for ANY IR field, NOT a saturation
+// reading and NOT ">999". This block previously asserted parseValue
+// returned null for LIM on the theory a "separate limitation-handling
+// flow" owned the signal; that flow never existed, so spoken "LIM"
+// looped the IR slot ask forever (reported 2026-02-18, 2026-06-08, and
+// field session F1AC26FB 2026-06-16). LIM now canonicalises to the
+// sentinel string "LIM" (NOT ">999", NOT >999) — matching
+// value-normalise.js / stage6-answer-resolver.js / the Sonnet prompt.
+describe('LIM / limitation IS a valid sentinel value', () => {
+  test('parseValue("LIM") → "LIM" (not null, not >999)', () => {
+    expect(parseValue('LIM')).toBe('LIM');
   });
 
-  test('parseValue("limit") → null (not a value)', () => {
-    expect(parseValue('limit')).toBeNull();
+  test('parseValue("limit") → "LIM"', () => {
+    expect(parseValue('limit')).toBe('LIM');
   });
 
-  test('parseValue("limitation") → null (not a value)', () => {
-    expect(parseValue('limitation')).toBeNull();
+  test('parseValue("limitation") → "LIM"', () => {
+    expect(parseValue('limitation')).toBe('LIM');
   });
 
-  test('extractNamedFieldValues("live to live LIM") → no IR write', () => {
-    expect(extractNamedFieldValues('live to live LIM')).toEqual([]);
+  test('extractNamedFieldValues("live to live LIM") → ir_live_live_mohm LIM', () => {
+    expect(extractNamedFieldValues('live to live LIM')).toEqual([
+      { field: 'ir_live_live_mohm', value: 'LIM' },
+    ]);
   });
 
-  test('extractNamedFieldValues("live to earth limitation") → no IR write', () => {
-    expect(extractNamedFieldValues('live to earth limitation')).toEqual([]);
+  test('extractNamedFieldValues("live to earth limitation") → ir_live_earth_mohm LIM', () => {
+    expect(extractNamedFieldValues('live to earth limitation')).toEqual([
+      { field: 'ir_live_earth_mohm', value: 'LIM' },
+    ]);
+  });
+
+  test('LIM canonicalises to the sentinel string, never the >999 saturation value', () => {
+    expect(parseValue('LIM')).not.toBe('>999');
+    expect(parseValue('limitation')).not.toBe('>999');
   });
 
   test('numeric readings still parse fine alongside lim-shaped words', () => {
-    // Sanity: removing the LIM sentinel must not break numeric parsing.
     expect(parseValue('200')).toBe('200');
     expect(parseValue('greater than 999')).toBe('>999');
   });
@@ -1087,8 +1133,8 @@ describe('IR entry-time designation lookup', () => {
 // ---------------------------------------------------------------------------
 // Session 6754FE6E end-to-end repro: garbled "installation" + entry-time
 // designation. Walks the full IR conversation that previously only got
-// one reading written. (LIM is deliberately NOT mapped to a value — see
-// the "LIM / limitation must NOT parse" describe block above.)
+// one reading written. (LIM now canonicalises to the sentinel "LIM" —
+// see the "LIM / limitation IS a valid sentinel value" describe above.)
 // ---------------------------------------------------------------------------
 describe('Session 6754FE6E end-to-end repro', () => {
   test('"Installation resistance for upstairs sockets" → walk-through completes', () => {
