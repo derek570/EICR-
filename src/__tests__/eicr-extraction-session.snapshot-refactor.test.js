@@ -35,9 +35,8 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
 const { EICRExtractionSession, EICR_SYSTEM_PROMPT, EIC_SYSTEM_PROMPT, EICR_AGENTIC_SYSTEM_PROMPT } =
   await import('../extraction/eicr-extraction-session.js');
 
-const { findCircuitsByDesignation } = await import(
-  '../extraction/dialogue-engine/helpers/circuit-resolution.js'
-);
+const { findCircuitsByDesignation } =
+  await import('../extraction/dialogue-engine/helpers/circuit-resolution.js');
 
 // ---------------------------------------------------------------------------
 // Plan 02-01 Task 4 regression guard — shared snapshot mutator atoms.
