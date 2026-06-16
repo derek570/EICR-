@@ -27,16 +27,17 @@ import {
 // scope; the byte-identical replay corpus depends on this match.
 const RING_VALUE_GROUP = '\\d*\\.?\\d+|infinite|open|discontinuous|infinity';
 
-// NOTE (2026-05-21, session 293F074F): the legacy script
-// `ring-continuity-script.js` was bidirectional-fixed to also catch
-// value-first phrasings ("0.21 on the lives"). This schema is
-// currently dead code (sonnet-stream.js calls the legacy script), so
-// the directional asymmetry below is harmless in production. If you
-// re-wire the dialogue engine for ring continuity, port the
-// bidirectional pattern from `extractNamedFieldValues` in
-// ring-continuity-script.js — and either accept a second capture
-// group in `helpers/extraction.js` or add an explicit
-// `namedExtractorMirror` field per slot.
+// KNOWN LIMITATION (orig. 2026-05-21 session 293F074F; "dead code" claim
+// corrected 2026-06-16): this schema IS the live ring-continuity path
+// (sonnet-stream.js → dialogue-engine/index.js → engine.js + this schema;
+// the legacy `ring-continuity-script.js` survives only as the
+// replay-corpus reference). The legacy script was bidirectional-fixed to
+// catch value-first phrasings ("0.21 on the lives"); the directional
+// namedExtractor below has NOT been ported, so value-first ring phrasing
+// still falls through to Sonnet. To close it: port the bidirectional
+// pattern from `extractNamedFieldValues` in ring-continuity-script.js and
+// either accept a second capture group in `helpers/extraction.js` or add
+// a `namedExtractorMirror` field per slot. (Out of scope for F1AC26FB.)
 const slots = [
   {
     field: 'ring_r1_ohm',

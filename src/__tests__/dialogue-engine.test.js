@@ -18,6 +18,10 @@ import {
   insulationResistanceSchema,
   ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
+import {
+  findCircuitsByDesignation,
+  stripDesignationFiller,
+} from '../extraction/dialogue-engine/helpers/circuit-resolution.js';
 
 const SESSION_ID = 'sess_test';
 
@@ -274,7 +278,8 @@ describe('engine — ring continuity', () => {
     expect(out).toEqual({ handled: true, fallthrough: false });
     expect(session.dialogueScriptState).not.toBeNull();
     expect(session.dialogueScriptState.circuit_retry_attempted).toBe(true);
-    expect(session.dialogueScriptState.last_designation_attempt).toBe('upstairs socket.');
+    // F1AC26FB #3.2 — stored form is now filler/punctuation-stripped.
+    expect(session.dialogueScriptState.last_designation_attempt).toBe('upstairs socket');
 
     // R1 was NOT discarded — still queued for the resolved circuit.
     expect(session.dialogueScriptState.pending_writes).toEqual([
@@ -288,7 +293,8 @@ describe('engine — ring continuity', () => {
       context_field: null,
       context_circuit: null,
       expected_answer_shape: 'value',
-      question: "What's the circuit number for the upstairs socket.?",
+      // F1AC26FB #3.2 — echo now strips trailing punctuation.
+      question: "What's the circuit number for the upstairs socket?",
     });
   });
 
@@ -406,7 +412,10 @@ describe('engine — ring continuity', () => {
     expect(out).toEqual({ handled: true, fallthrough: false });
     expect(session.dialogueScriptState).not.toBeNull();
     expect(session.dialogueScriptState.circuit_retry_attempted).toBe(true);
-    expect(ws.sent.at(-1).question).toBe("What's the circuit number for the upstairs socket.?");
+    // F1AC26FB #3.2 — the echo now strips trailing punctuation (and leading
+    // filler), so the re-ask reads cleanly without the raw "." carried in.
+    expect(ws.sent.at(-1).question).toBe("What's the circuit number for the upstairs socket?");
+    expect(session.dialogueScriptState.last_designation_attempt).toBe('upstairs socket');
   });
 
   // ------------------------------------------------------------------
@@ -1961,5 +1970,102 @@ describe('engine — schema isolation', () => {
     });
     expect(out).toEqual({ handled: false });
     expect(session.dialogueScriptState.schemaName).toBe('ring_continuity');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Designation filler-strip + echo (F1AC26FB #3.1/#3.2)
+// ---------------------------------------------------------------------------
+describe('stripDesignationFiller', () => {
+  test('strips leading "for the" and trailing period', () => {
+    expect(stripDesignationFiller('For the sockets.')).toBe('sockets');
+  });
+
+  test('strips bare leading article + trailing punctuation', () => {
+    expect(stripDesignationFiller('the upstairs lights?')).toBe('upstairs lights');
+    expect(stripDesignationFiller('on the cooker')).toBe('cooker');
+  });
+
+  test('leaves a clean designation untouched', () => {
+    expect(stripDesignationFiller('kitchen sockets')).toBe('kitchen sockets');
+  });
+
+  test('non-string / empty → ""', () => {
+    expect(stripDesignationFiller(null)).toBe('');
+    expect(stripDesignationFiller('   ')).toBe('');
+  });
+});
+
+describe('findCircuitsByDesignation — filler-stripped user text resolves', () => {
+  test('"For the sockets." matches circuit 2 designation "Sockets"', () => {
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Sockets' },
+    });
+    const r = findCircuitsByDesignation(session, 'For the sockets.');
+    expect(r.matched).toBe(2);
+  });
+
+  test('returns no match when the designation is absent (the [contract] #3.4 server gap)', () => {
+    // When create/rename churn left circuit 2 with an empty designation,
+    // there is nothing to match — the strip fix only helps once the
+    // designation is present. (#3.4 — making the designation reach the
+    // server snapshot — is a deferred [contract] item, not done here.)
+    const session = buildSession({ 1: { circuit_designation: 'Cooker' }, 2: {} });
+    const r = findCircuitsByDesignation(session, 'For the sockets.');
+    expect(r.matched).toBeNull();
+  });
+});
+
+describe('engine — designation resolution + clean echo (F1AC26FB #3)', () => {
+  test('IR queued readings drain onto circuit matched via "For the sockets."', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Sockets' },
+    });
+    // Enter IR with an L-L reading volunteered but no circuit named.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance live to live 200.',
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.pending_writes.length).toBeGreaterThan(0);
+
+    // Answer with filler-prefixed designation — resolves to circuit 2.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'For the sockets.',
+      now: 2000,
+    });
+    expect(session.dialogueScriptState.circuit_ref).toBe(2);
+    expect(session.stateSnapshot.circuits[2].ir_live_live_mohm).toBe('200');
+  });
+
+  test('unresolvable answer re-ask never echoes raw "for the" or trailing period', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: { circuit_designation: 'Cooker' } });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance live to live 200.',
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'For the wibble.',
+      now: 2000,
+    });
+    const q = ws.sent.at(-1).question;
+    expect(q).not.toMatch(/for the for the/i);
+    expect(q).toContain('wibble');
+    expect(q).not.toContain('wibble.');
   });
 });

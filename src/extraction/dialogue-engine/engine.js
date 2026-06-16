@@ -27,6 +27,7 @@ import {
   findCircuitByDesignation,
   findCircuitsByDesignation,
   readExistingValues,
+  stripDesignationFiller,
 } from './helpers/circuit-resolution.js';
 import {
   extractNamedFieldValues,
@@ -393,7 +394,12 @@ function hasNumericValueWithUnit(text) {
  * `whichCircuitQuestion` — there's nothing useful to quote back.
  */
 function buildCircuitRetryQuestion(schema, designationAttempt) {
-  const trimmed = typeof designationAttempt === 'string' ? designationAttempt.trim() : '';
+  // F1AC26FB #3.2 — strip leading filler/articles + trailing punctuation
+  // before quoting the user's failed answer back, so the re-ask reads
+  // "…circuit number for the sockets?" not "…for the For the sockets.?".
+  // If nothing useful survives the strip, fall back to the schema's bare
+  // whichCircuitQuestion rather than echoing raw text.
+  const trimmed = stripDesignationFiller(designationAttempt);
   if (typeof schema.retryCircuitQuestion === 'function') {
     const out = schema.retryCircuitQuestion(trimmed);
     if (typeof out === 'string' && out.length > 0) return out;
@@ -1147,8 +1153,10 @@ function runActivePath({
       // miss-recoveries from genuine fallthroughs.
       if (!state.circuit_retry_attempted) {
         state.circuit_retry_attempted = true;
-        const trimmed = text.trim();
-        state.last_designation_attempt = trimmed.slice(0, 60);
+        // F1AC26FB #3.2 — store the filler-stripped designation so the
+        // re-ask echo and CloudWatch never carry raw "for the …" text.
+        const stripped = stripDesignationFiller(text);
+        state.last_designation_attempt = stripped.slice(0, 60);
         logger?.info?.(`${schema.logEventPrefix}_circuit_retry`, {
           sessionId,
           textPreview: text.slice(0, 80),
