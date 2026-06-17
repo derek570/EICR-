@@ -267,8 +267,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (#5.1, stop scratch-circuit-999), TAILS→main_switch_conductor_csa
       // (#2.1, stop sub_main misroute), and the earthing head/value garble
       // line (#1.4). Measured 15606; cap 15700 leaves ~94-token headroom.
+      //
+      // 2026-06-17 (surge-protection-box, rebased onto F1AC26FB): bumped to
+      // 16030 to absorb the SURGE vs SUPPLY-FUSE DISAMBIGUATION block (routes
+      // "surge protection"/"Type N surge"/"SPD status" → surge_* while keeping
+      // "main fuse"/"cutout" → spd_*) ON TOP of the F1AC26FB additions.
+      // Measured 15930; cap 16030 leaves ~100-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(15700);
+      expect(estimate).toBeLessThanOrEqual(16030);
     });
   });
 
@@ -898,8 +904,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     DESIGNATIONS (#5.1), TAILS→main_switch_conductor_csa (#2.1),
       //     and the earthing head/value garble line (#1.4). Measured
       //     10498; cap 10600 leaves ~100-token headroom.
+      //   - 10920 (2026-06-17 surge-protection-box, rebased): SURGE vs
+      //     SUPPLY-FUSE DISAMBIGUATION block on top of F1AC26FB. Measured
+      //     10822; cap 10920 leaves ~98-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(10600);
+      expect(estimate).toBeLessThanOrEqual(10920);
     });
   });
 
@@ -1377,6 +1386,52 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // phrasing so a "drop the NOT C2" tidy-up that would let the
       // model wobble back to C2 fails the test loudly.
       expect(block).toMatch(/C3,\s*NOT\s*C2/i);
+    });
+  });
+
+  describe('Group 16 — 2026-06-17 surge-protection-box (SURGE vs SUPPLY-FUSE)', () => {
+    // Field session F1AC26FB: inspector said "the main fuse"; it correctly
+    // routed to spd_* (the DNO cutout) but the UI box read "(SPD)" =
+    // Surge Protection Device, and there was no box for a real surge device.
+    // Option A adds a separate surge_* family. The agentic prompt must teach
+    // the model to keep main-fuse/cutout on spd_* AND route genuine surge
+    // talk to surge_*, or the two collide again at the model layer.
+    test('SURGE vs SUPPLY-FUSE DISAMBIGUATION section exists with the surge_* family', () => {
+      const idx = prompt.search(/SURGE vs SUPPLY-FUSE DISAMBIGUATION/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next sibling block (MAIN PROTECTIVE BONDING).
+      const end = prompt.indexOf('MAIN PROTECTIVE BONDING', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+
+      // Surge vocabulary + the canonical field family it routes to. Both
+      // must co-occur or the routing is incomplete.
+      expect(block).toEqual(expect.stringContaining('surge protection'));
+      expect(block).toEqual(expect.stringContaining('surge_spd_present'));
+      expect(block).toEqual(expect.stringContaining('surge_spd_type'));
+      expect(block).toEqual(expect.stringContaining('surge_spd_bs_en'));
+      expect(block).toEqual(expect.stringContaining('surge_status_indicator'));
+
+      // Load-bearing: surge talk must NOT collapse into the spd_* cutout
+      // family. The block must explicitly keep main fuse/cutout on spd_*.
+      expect(block).toMatch(/NEVER route surge.*spd_\*/i);
+      expect(block).toEqual(expect.stringContaining('spd_*'));
+    });
+
+    test('§4 regression — main-fuse value-kinds stay split (BS→spd_bs_en, amps→spd_rated_current)', () => {
+      // Session F1AC26FB turn-13 dumped spd_bs_en="MCB 100" — type/current
+      // text leaked into the BS-number slot. The SUPPLY vs MAIN SWITCH block
+      // must keep the per-value-kind split so a "main fuse BS 1361, 100 amp"
+      // utterance separates the standard from the rating.
+      const idx = prompt.search(/SUPPLY vs MAIN SWITCH DISAMBIGUATION/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const end = prompt.indexOf('SURGE vs SUPPLY-FUSE DISAMBIGUATION', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      // BS/standard number → spd_bs_en; rating/amps → spd_rated_current.
+      expect(block).toEqual(expect.stringContaining('spd_bs_en'));
+      expect(block).toEqual(expect.stringContaining('spd_rated_current'));
+      expect(block).toMatch(/rating.*amps.*spd_rated_current|spd_rated_current/i);
     });
   });
 });
