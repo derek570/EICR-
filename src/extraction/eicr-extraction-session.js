@@ -755,11 +755,16 @@ const FACT_FIELDS = new Set([
   'supplyVoltage',
   'supply_type',
   'earthing_system',
-  // SPD device facts
+  // Supply protective device (DNO cutout / main fuse) facts
   'spd_bs_en',
   'spd_type_supply',
   'spd_short_circuit',
   'spd_rated_current',
+  // Surge protection device (transient overvoltage protection) facts
+  'surge_spd_present',
+  'surge_spd_type',
+  'surge_spd_bs_en',
+  'surge_status_indicator',
   // Earthing-presence flags
   'means_earthing_distributor',
   'means_earthing_electrode',

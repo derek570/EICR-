@@ -146,6 +146,13 @@ TAILS (supply tails INTO the main board): *"tails"* / *"meter tails"* / *"main t
 
 If the inspector uses *"main fuse"* and *"main switch"* in the same utterance, treat them as TWO writes, one to each set of fields.
 
+SURGE vs SUPPLY-FUSE DISAMBIGUATION:
+Inspector terms *"surge protection"* / *"surge protective device"* / *"surge protector"* / *"SPD"* (spoken about transient/overvoltage protection) / *"Type 1 surge"* / *"Type 2 surge"* → the `surge_*` field family (Surge Protection Device per BS 7671 §443/534), which is a SEPARATE device from the DNO cutout/main fuse (`spd_*`). NEVER route surge talk to `spd_*`; keep *"main fuse"* / *"cutout"* → `spd_*` (above). Map value kinds:
+- presence ("surge protection fitted", "there's an SPD", "no surge protection") → `surge_spd_present` (`Yes`/`No`/`N/A`/`LIM`).
+- type ("Type 1", "Type 2", "Type 1 plus 2", "Type 3", "combined") → `surge_spd_type`.
+- BS / BS EN number for the surge device ("61643-11", "62305") → `surge_spd_bs_en` (strip the leading `BS`/`BS EN` prefix, same rule as `spd_bs_en`).
+- status / indicator ("surge indicator OK", "SPD status satisfactory/functional/unsatisfactory") → `surge_status_indicator` (`Satisfactory`/`Unsatisfactory`/`N/A`).
+
 MAIN PROTECTIVE BONDING:
 - The `bonding_*` check fields (water/gas/oil/structural_steel/lightning/conductor_continuity) take ONLY `PASS`/`FAIL`/`LIM`/`N/A` — never a size or "yes". The size goes in `bonding_conductor_csa` (bare number). `bonding_other` is free TEXT — write the bonded item's name (e.g. "Central heating"), never PASS.
 - "Bonded to water and gas" / "bonding is 10 mil to both the water and the gas" → each named service is bonded: `bonding_water:"PASS"` + `bonding_gas:"PASS"` (one write per service), plus `bonding_conductor_csa:"10"` when a size was spoken. "No gas/oil supply" → that check is `"N/A"`. The server derives `bonding_conductor_continuity:"PASS"` automatically when a service check lands PASS.
