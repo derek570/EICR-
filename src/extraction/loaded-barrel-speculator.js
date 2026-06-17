@@ -224,7 +224,21 @@ export function createSpeculator({
   //
   // Default null = legacy behaviour: bundler emits canonical event
   // when round-1 stream completes, no mid-stream emit.
+  //
+  // Plan B (2026-06-17) B1a: the harness now wires this to null
+  // (suppress the mid-stream advertisement). Kept as a general hook for
+  // back-compat + tests.
   onSlotAudioReady = null,
+  // Plan B (2026-06-17) B1b — designation context for confirmation-text
+  // parity with the bundler. A Map (or plain object) of numeric circuit
+  // ref → designation string, seeded from session.stateSnapshot.circuits
+  // at construction time. The bundler builds confirmation text with the
+  // designation (stage6-event-bundler.js:412) but _speculate historically
+  // did not, so a named circuit's speculated text never matched the
+  // emitted text → false MISS on every clean named-circuit reading.
+  // Same-turn circuit_designation writes are layered on top as they are
+  // observed (onToolUseStreamed / onSnapshotPatch).
+  initialDesignations = null,
 }) {
   if (!sessionId) throw new TypeError('createSpeculator: sessionId required');
   if (!costTracker) throw new TypeError('createSpeculator: costTracker required');
@@ -278,11 +292,64 @@ export function createSpeculator({
   // turnId changes.
   const broadcastBuckets = new Map();
 
+  // Plan B (2026-06-17) B1b — per-turn speculation registry. No per-turn
+  // enumeration exists otherwise: pendingByCorrelation clears on synth
+  // complete (:647) and the cache exposes only a session-wide index. Keyed
+  // by turnId → Map<cacheKey, {cacheKey, slot:{field,circuit,boardId},
+  // expandedText, correlationId}>. The post-loop
+  // validateAgainstConfirmations(turnId, confirmations) reads this to decide
+  // which parked entries survive (their expandedText equals an emitted
+  // confirmation) vs are invalidated (corrected value / dropped by confidence
+  // / subsumed into a grouped line / turn aborted). The speculator is
+  // instantiated per turn (stage6-shadow-harness.js:460), so in practice this
+  // holds a single turn; keyed by turnId for defensiveness + clarity.
+  const speculationsByTurn = new Map();
+
+  // Plan B (2026-06-17) B1b — per-turn circuit designation map. Seeded from
+  // the session snapshot (initialDesignations) and updated when a same-turn
+  // circuit_designation write is observed. _speculate passes the resolved
+  // designation into buildConfirmationText so the speculated text matches the
+  // bundler's emitted text for named circuits.
+  const perTurnDesignations = new Map();
+  if (initialDesignations) {
+    const src =
+      initialDesignations instanceof Map
+        ? initialDesignations.entries()
+        : Object.entries(initialDesignations);
+    for (const [k, v] of src) {
+      const refNum = Number(k);
+      if (Number.isInteger(refNum) && refNum > 0 && typeof v === 'string' && v.trim()) {
+        perTurnDesignations.set(refNum, v.trim());
+      }
+    }
+  }
+
+  /**
+   * Record a same-turn circuit_designation write into perTurnDesignations so
+   * subsequent speculations for that circuit speak the designation. Both the
+   * streamed hook and the snapshot-patch hook funnel through here. circuit_ref
+   * is the circuit the designation applies to (record_reading.circuit /
+   * decoded reading key), value is the designation string.
+   */
+  function _observeDesignation(circuitRef, value) {
+    const refNum = Number(circuitRef);
+    const valueStr = typeof value === 'string' ? value.trim() : '';
+    if (Number.isInteger(refNum) && refNum > 0 && valueStr) {
+      perTurnDesignations.set(refNum, valueStr);
+    }
+  }
+
   function _resetTurnCapIfNew(turnId) {
     if (currentTurnId !== turnId) {
       currentTurnId = turnId;
       perTurnCount = 0;
       broadcastBuckets.clear();
+      // New turn → drop the prior turn's speculation registry (the
+      // per-turn speculator instance means this is essentially a no-op in
+      // production, but it keeps the registry single-turn if one instance
+      // ever sees two turnIds). Designations persist within the instance —
+      // they reflect the snapshot + same-turn writes for THIS turn only.
+      speculationsByTurn.clear();
     }
   }
 
@@ -443,7 +510,18 @@ export function createSpeculator({
       }
     }
 
-    const text = buildConfirmationText(field, value, circuit);
+    // Plan B (2026-06-17) B1b — resolve designation for confirmation-text
+    // parity with the bundler (stage6-event-bundler.js:412 passes the same
+    // designation via lookupDesignation). Circuit-level readings look up the
+    // per-turn designation map; board-level readings (circuit null/0) take no
+    // designation, matching the bundler's 3-arg board path. If the designation
+    // write hasn't been observed yet (a streamed reading reaches
+    // content_block_stop BEFORE its circuit_designation write), the lookup is
+    // empty → un-designated text → safe MISS at validate (drift → fresh synth),
+    // never a stale serve.
+    const designation =
+      Number.isInteger(circuit) && circuit > 0 ? (perTurnDesignations.get(circuit) ?? null) : null;
+    const text = buildConfirmationText(field, value, circuit, designation);
     if (!text) return;
     const expandedText = expandForTTS(text);
     if (!expandedText) return;
@@ -537,6 +615,22 @@ export function createSpeculator({
       promise,
       resolvePromise,
       controller,
+    });
+
+    // Plan B (2026-06-17) B1b — register this speculation for post-loop
+    // validation. Captured here (not in the synth-complete handler) so even a
+    // still-pending speculation is enumerable at validate time; the validate
+    // step re-peeks the cache to skip entries already terminated mid-turn.
+    let turnReg = speculationsByTurn.get(turnId);
+    if (!turnReg) {
+      turnReg = new Map();
+      speculationsByTurn.set(turnId, turnReg);
+    }
+    turnReg.set(cacheKey, {
+      cacheKey,
+      slot: { field, circuit, boardId },
+      expandedText,
+      correlationId,
     });
 
     // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.4) —
@@ -831,6 +925,19 @@ export function createSpeculator({
         }
       }
 
+      // Plan B (2026-06-17) B1b — observe same-turn circuit_designation writes
+      // in this patch BEFORE speculating, so readings on a renamed circuit pick
+      // up the designation and match the bundler's emitted text. Covers both
+      // added + overwritten designation writes.
+      for (const list of [patch.readings.added, patch.readings.overwritten]) {
+        for (const item of list) {
+          const slot = decodeReadingKey(item.key);
+          if (slot.field !== 'circuit_designation') continue;
+          const entry = item.value ?? item.after;
+          _observeDesignation(parseCircuit(slot.circuit), entry?.value);
+        }
+      }
+
       // 3. Speculate on added + overwritten (the new value, not the old).
       for (const added of patch.readings.added) {
         const slot = decodeReadingKey(added.key);
@@ -898,8 +1005,99 @@ export function createSpeculator({
    * loaded_barrel_text_drift_detected on mismatch.
    */
   function onLoopComplete(_evt) {
-    // intentional no-op for Phase 2.B. Phase 5 drift detector lands
-    // separately and may simply replace this function.
+    // Intentional no-op. The authoritative drift validation runs post-loop in
+    // the harness via validateAgainstConfirmations(turnId, confirmations) —
+    // the bundler's final emitted confirmations (which encode grouping +
+    // designations + confidence filtering) are only available AFTER runToolLoop
+    // returns and the harness builds circuitDesignations/totalCircuitsInJob from
+    // session.stateSnapshot. The onLoopComplete evt carries none of that, so the
+    // gate cannot run here. Kept as a wired hook for back-compat + future
+    // loop-timed telemetry.
+  }
+
+  /**
+   * Plan B (2026-06-17) B1b — post-loop drift validation.
+   *
+   * Called from runLiveMode AFTER the bundler has produced the FINAL emitted
+   * confirmation set (post mid-stream-canonical filter + applyConfirmationDebounce
+   * at stage6-shadow-harness.js). For each speculation registered this turn that
+   * is still live in the cache:
+   *   - its expandedText EQUALS an emitted confirmation's expanded text → leave
+   *     it servable; the canonical confirmation POST claims the parked MP3.
+   *   - NO matching emitted confirmation (corrected value, dropped by
+   *     confidence, or subsumed into a grouped line whose roll-up text differs
+   *     from the per-slot text) → invalidateBySlot + recordOutcome(
+   *     'loaded_barrel_text_drift_detected'). keys.js then structurally MISSES
+   *     (different expandedText → different cache key) and synthesises fresh.
+   * On an aborted / cap-hit turn, invalidate ALL live registered entries.
+   *
+   * Compares against the bundler's ACTUAL emitted expanded text — never
+   * recomputes — so grouped / designation / confidence cases are correct by
+   * construction. Never throws (telemetry must not break extraction).
+   *
+   * @param {string} turnId
+   * @param {Array<{text?: string, expanded_text?: string}>} confirmations final emitted set
+   * @param {{aborted?: boolean}} [opts] aborted=true → invalidate every live entry this turn
+   * @returns {number} count of speculations invalidated as drift
+   */
+  function validateAgainstConfirmations(turnId, confirmations, opts = {}) {
+    let invalidated = 0;
+    try {
+      const turnReg = speculationsByTurn.get(turnId);
+      if (!turnReg || turnReg.size === 0) return 0;
+
+      const aborted = opts.aborted === true;
+
+      // Build the set of EXPANDED texts the bundler actually emitted. Compare
+      // against `expanded_text` (the cache-key + iOS-POST form); fall back to
+      // expandForTTS(text) only if a confirmation lacks expanded_text. On an
+      // aborted/cap turn we leave the set empty so EVERY live entry drifts.
+      const emittedExpanded = new Set();
+      if (!aborted && Array.isArray(confirmations)) {
+        for (const c of confirmations) {
+          if (!c) continue;
+          const exp =
+            typeof c.expanded_text === 'string' && c.expanded_text
+              ? c.expanded_text
+              : typeof c.text === 'string' && c.text
+                ? expandForTTS(c.text)
+                : null;
+          if (exp) emittedExpanded.add(exp);
+        }
+      }
+
+      for (const reg of turnReg.values()) {
+        // Only entries still live in the cache (pending/ready) can be served;
+        // terminal ones were physically purged (cachePeek → null) — skip.
+        if (!cachePeek(reg.cacheKey)) continue;
+        if (!aborted && emittedExpanded.has(reg.expandedText)) continue; // valid HIT — leave servable
+        // Drift (or aborted/cap turn): the parked audio would not match what
+        // the inspector should hear. Drop it.
+        invalidateBySlot(sessionId, {
+          boardId: reg.slot.boardId,
+          field: reg.slot.field,
+          circuit: reg.slot.circuit,
+        });
+        recordOutcome(reg.correlationId, 'loaded_barrel_text_drift_detected', {
+          meta: {
+            sessionId,
+            turnId,
+            field: reg.slot.field,
+            circuit: reg.slot.circuit,
+            boardId: reg.slot.boardId,
+            reason: aborted ? 'turn_aborted' : 'text_drift',
+          },
+        });
+        invalidated += 1;
+      }
+    } catch (err) {
+      logger?.error?.('voice_latency.loaded_barrel.validate_error', {
+        sessionId,
+        turnId,
+        error: err?.message,
+      });
+    }
+    return invalidated;
   }
 
   /**
@@ -980,6 +1178,15 @@ export function createSpeculator({
       record.name === 'record_board_reading'
         ? coerceRecordBoardReadingValue(field, rawValue)
         : coerceRecordReadingValue(field, rawValue);
+
+    // Plan B (2026-06-17) B1b — observe a same-turn circuit_designation write
+    // (record_reading {field:'circuit_designation', circuit:N, value:'Cooker'})
+    // so a LATER reading on circuit N this turn speculates with the designation
+    // and matches the bundler's emitted text. Recorded BEFORE the enum-skip /
+    // _speculate below so the map is populated as early as the stream allows.
+    if (record.name === 'record_reading' && field === 'circuit_designation') {
+      _observeDesignation(circuit, value);
+    }
 
     // 2026-06-03b voice-correctness Fix C — skip pre-synth when the
     // dispatcher will reject this round-1 input as value_not_in_options.
@@ -1137,6 +1344,7 @@ export function createSpeculator({
     onSnapshotPatch,
     onLoopComplete,
     onToolUseStreamed,
+    validateAgainstConfirmations,
     abortBySlot,
     shutdown,
     _internalState: {

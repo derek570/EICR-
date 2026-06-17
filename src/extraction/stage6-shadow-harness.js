@@ -464,12 +464,31 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     try {
       const vl = getVoiceLatencyForSession(session.sessionId);
       if (vl?.flags?.loadedBarrel === true && session.costTracker) {
+        // Plan B (2026-06-17) B1b — seed the speculator with existing circuit
+        // designations from the session snapshot so a reading on an ALREADY-
+        // named circuit speculates "Cooker, Zs 0.62" (matching the bundler's
+        // emitted text) instead of "Circuit 4, Zs 0.62" (a false MISS).
+        // Snapshot-only here; same-turn circuit_designation writes are layered
+        // on inside the speculator as its hooks observe them. Mirrors the
+        // snapshot read the post-loop circuitDesignations build does (below).
+        const initialDesignations = new Map();
+        const seedCircuits = session?.stateSnapshot?.circuits;
+        if (seedCircuits && typeof seedCircuits === 'object') {
+          for (const [key, circ] of Object.entries(seedCircuits)) {
+            if (!circ || typeof circ !== 'object') continue;
+            const refNum = Number(key);
+            if (!Number.isInteger(refNum) || refNum <= 0) continue;
+            const d = circ.circuit_designation;
+            if (typeof d === 'string' && d.trim()) initialDesignations.set(refNum, d.trim());
+          }
+        }
         speculator = createSpeculator({
           sessionId: session.sessionId,
           // apiKey via fn so a secret rotation survives without re-instantiation.
           apiKey: () => getElevenLabsKey(),
           costTracker: session.costTracker,
           logger: log,
+          initialDesignations,
           // Plan B (2026-06-17) B1a — SUPPRESS the mid-stream advertisement.
           //
           // PREVIOUSLY (2026-05-28 mid-stream emit, lever 1): the moment a
@@ -1071,6 +1090,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           window_ms: 1500,
         });
       }
+    }
+
+    // Plan B (2026-06-17) B1b — post-loop speculation drift validation. Runs
+    // on the FINAL emitted confirmation set (after the mid-stream-canonical
+    // filter — a no-op post-B1a — AND applyConfirmationDebounce above), so a
+    // speculation is only kept servable when its expandedText equals a
+    // confirmation the backend actually emitted. Non-matching parked entries
+    // (corrected value, dropped by confidence, subsumed into a grouped line) and
+    // ALL entries on an aborted/cap-hit turn are invalidated so keys.js
+    // synthesises fresh. Compares actual emitted text (no recompute). Wrapped in
+    // the speculator's own try/catch; never throws.
+    if (speculator && typeof speculator.validateAgainstConfirmations === 'function') {
+      speculator.validateAgainstConfirmations(turnId, result.confirmations, {
+        aborted:
+          toolLoopOut.aborted === true || toolLoopOut.terminal_reason === 'tool_use_cap_hit',
+      });
     }
 
     // Increment turn count to match legacy's contract
