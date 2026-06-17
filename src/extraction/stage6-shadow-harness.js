@@ -594,17 +594,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // tool. Dedup via cachePeek inside _speculate ensures the
         // onSnapshotPatch fire that arrives later doesn't double-synth.
         onToolUseStreamed: speculator?.onToolUseStreamed,
-        // 2026-05-26 voice-latency fix: force tool emission first on
-        // round-1 so the streamed-speculation hook fires near the start
-        // of Sonnet's response (not the end). See the `toolChoiceAnyOnRound1`
-        // docstring in stage6-tool-loop.js for the repro (session 904344CD,
-        // every bundler turn showed loaded_barrel_hit_pending because the
-        // tool_use streamed at end-of-Sonnet, leaving ElevenLabs no time
-        // to finish synth before iOS asked for the audio). Defaults ON so
-        // the deploy realises the win without an out-of-band env-var step;
-        // flip `VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1=false` on the task
-        // def to disable in production without a code roll.
-        toolChoiceAnyOnRound1: process.env.VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1 !== 'false',
       });
     } catch (err) {
       askGateForTurn?.destroy();

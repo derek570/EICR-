@@ -335,42 +335,6 @@ export async function runToolLoop({
    * to pre-Phase-2.D behaviour.
    */
   onToolUseStreamed,
-  /**
-   * 2026-05-26 voice-latency fix — pass `tool_choice: { type: "any" }`
-   * on the ROUND-1 stream invocation only. Forces Sonnet to emit a
-   * tool_use without preceding text reasoning, which lets the Loaded
-   * Barrel streamed-speculation hook (assembler's onRecordComplete
-   * → loaded-barrel-speculator.onToolUseStreamed) fire ~1-2s earlier
-   * in the response than today.
-   *
-   * Repro: session 904344CD (2026-05-26). All early-terminated
-   * record_reading turns showed `loaded_barrel_started` /
-   * `loaded_barrel_fired` / `turn_core_summary` colocated in the
-   * SAME CloudWatch second — i.e. the first (and only) tool_use was
-   * landing at the END of the ~3s Sonnet stream, not the start.
-   * ElevenLabs synth therefore had ~0-500ms (instead of ~2s) to
-   * complete before iOS asked for the audio, producing
-   * `loaded_barrel_hit_pending` outcomes on every measurable turn.
-   *
-   * Why round-1 only: round-2+ may need to end_turn (cap-hit / no
-   * more tools needed) — forcing tool_choice there would make
-   * Sonnet emit an unwanted tool to satisfy the constraint.
-   *
-   * Safety: `tool_choice: { type: "any" }` still lets Sonnet choose
-   * which tool to use (record_reading, ask_user, etc.) — only the
-   * "emit no tool, just text + end_turn" path is suppressed. For
-   * irrelevant utterances the system prompt's "if you can't extract,
-   * call ask_user to clarify" guidance fills the gap. Monitored via
-   * a new `voice_latency.tool_choice_any_emitted` log line for early
-   * sightings of regression patterns; flag-flippable in the task def
-   * env if a class of failures surfaces.
-   *
-   * Default true so the deploy realises the latency win without an
-   * out-of-band env-var toggle; set
-   * `VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1=false` on the task def to
-   * disable in production without a code roll.
-   */
-  toolChoiceAnyOnRound1 = false,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -418,9 +382,6 @@ export async function runToolLoop({
     // Phase 0 (single-round latency sprint) — capture started/stream_complete/
     // dispatch_complete timestamps per round for emitTurnCoreSummary.
     const roundStartedNs = process.hrtime.bigint();
-    // Round-1 only: force Sonnet to emit a tool_use first (no
-    // preamble text). See `toolChoiceAnyOnRound1` docstring above.
-    //
     // 2026-05-28 mid-stream emit follow-up: round-1 model override. The
     // dominant short-utterance turn shape (single record_reading on a
     // ~120-token output) is bottlenecked by Sonnet 4.6's ~2.7-3.0 s
@@ -443,14 +404,6 @@ export async function runToolLoop({
       messages,
       tools,
     };
-    if (toolChoiceAnyOnRound1 && rounds === 1) {
-      streamArgs.tool_choice = { type: 'any' };
-      logger?.info?.('voice_latency.tool_choice_any_emitted', {
-        sessionId: ctx?.sessionId,
-        turnId: ctx?.turnId,
-        roundIdx: rounds,
-      });
-    }
     if (effectiveModel !== model) {
       logger?.info?.('voice_latency.round1_model_override', {
         sessionId: ctx?.sessionId,
