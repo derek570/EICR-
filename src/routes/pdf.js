@@ -102,6 +102,11 @@ router.post("/job/:userId/:jobId/generate-pdf", auth.requireAuth, routeTimeout(6
           spd_type_supply: supplyChars.spd_type_supply || boardInfo.spd_type_supply || "",
           spd_short_circuit: supplyChars.spd_short_circuit || boardInfo.spd_short_circuit || "",
           spd_rated_current: supplyChars.spd_rated_current || boardInfo.spd_rated_current || "",
+          // Surge Protection Device (surge-protection-box 2026-06-17).
+          surge_spd_present: supplyChars.surge_spd_present || boardInfo.surge_spd_present || "",
+          surge_spd_type: supplyChars.surge_spd_type || boardInfo.surge_spd_type || "",
+          surge_spd_bs_en: supplyChars.surge_spd_bs_en || boardInfo.surge_spd_bs_en || "",
+          surge_status_indicator: supplyChars.surge_status_indicator || boardInfo.surge_status_indicator || "",
           earth_electrode_type: supplyChars.earth_electrode_type || boardInfo.earth_electrode_type || "",
           earth_electrode_resistance: supplyChars.earth_electrode_resistance || boardInfo.earth_electrode_resistance || "",
           tails_csa: supplyChars.tails_csa || boardInfo.tails_csa || "",
@@ -207,6 +212,18 @@ router.post("/job/:userId/:jobId/generate-pdf", auth.requireAuth, routeTimeout(6
             ipf_at_db: supply.prospective_fault_current || board.ipf_at_db || "",
             earthing_arrangement: supply.earthing_arrangement || board.earthing_arrangement || "",
             voltage_rating: supply.nominal_voltage_u || board.voltage_rating || "",
+            // Supply protective device (main fuse) + surge device — without
+            // these the generator's nested supply dict renders blank on the
+            // fallback path. surge-protection-box 2026-06-17.
+            spd_bs_en: supply.spd_bs_en || board.spd_bs_en || "",
+            spd_type_supply: supply.spd_type_supply || board.spd_type_supply || "",
+            spd_short_circuit: supply.spd_short_circuit || board.spd_short_circuit || "",
+            spd_rated_current: supply.spd_rated_current || board.spd_rated_current || "",
+            surge_spd_present: supply.surge_spd_present || board.surge_spd_present || "",
+            surge_spd_type: supply.surge_spd_type || board.surge_spd_type || "",
+            surge_spd_bs_en: supply.surge_spd_bs_en || board.surge_spd_bs_en || "",
+            surge_status_indicator:
+              supply.surge_status_indicator || board.surge_status_indicator || "",
           };
           await fs.writeFile(boardPath, JSON.stringify(mergedBoard, null, 2));
           logger.info("Merged supply_characteristics into board_details for PDF", { jobId });

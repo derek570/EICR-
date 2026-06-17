@@ -2044,6 +2044,7 @@ if output_dirs:
             'ec_continuity', 'mpb_material', 'mpb_csa', 'mpb_continuity',
             'bond_water', 'bond_gas', 'bond_oil', 'bond_steel', 'bond_lightning', 'bond_other',
             'spd_type_board', 'spd_status', 'board_notes', 'observations',
+            'surge_present', 'surge_type', 'surge_bs_en', 'surge_status',
             'edited_circuits', 'inspection_items'
         ]
         for key in keys_to_clear:
@@ -2107,6 +2108,11 @@ if output_dirs:
                     st.session_state.bond_other = bd.get("bond_other", "N/A")
                     st.session_state.spd_type_board = bd.get("spd_type", "")
                     st.session_state.spd_status = bd.get("spd_status", "")
+                    # Surge Protection Device (surge-protection-box 2026-06-17)
+                    st.session_state.surge_present = bd.get("surge_spd_present", "")
+                    st.session_state.surge_type = bd.get("surge_spd_type", "")
+                    st.session_state.surge_bs_en = bd.get("surge_spd_bs_en", "")
+                    st.session_state.surge_status = bd.get("surge_status_indicator", "")
                     st.session_state.board_notes = bd.get("notes", "")
                     st.session_state.agreed_limitations = bd.get("agreed_limitations", "")
                     st.session_state.operational_limitations = bd.get("operational_limitations", "")
@@ -2510,8 +2516,8 @@ with tabs[TAB_SUPPLY]:
         )
 
     st.markdown("---")
-    st.markdown("##### Supply Protective Device")
-    st.caption("Default: LIM (Limited Information) - typically not accessible for inspection")
+    st.markdown("##### Supply Protective Device (Main Fuse)")
+    st.caption("DNO supply cutout / main fuse — Default: LIM (Limited Information), typically not accessible for inspection")
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -2544,6 +2550,41 @@ with tabs[TAB_SUPPLY]:
             "Rated Current (A)",
             value=board_details.get("spd_rated_current", "LIM"),
             key="spd_current"
+        )
+
+    # Surge Protection Device (transient overvoltage, BS EN 61643-11 — a
+    # SEPARATE device from the supply cutout above). surge-protection-box.
+    st.markdown("##### Surge Protection Device")
+    st.caption("Transient overvoltage protection (BS EN 61643-11) — distinct from the main fuse above")
+
+    scol1, scol2, scol3, scol4 = st.columns(4)
+    with scol1:
+        surge_present = st.selectbox(
+            "Fitted",
+            options=["", "Yes", "No", "N/A", "LIM"],
+            index=(["", "Yes", "No", "N/A", "LIM"].index(board_details.get("surge_spd_present", ""))
+                   if board_details.get("surge_spd_present", "") in ["", "Yes", "No", "N/A", "LIM"] else 0),
+            key="surge_present"
+        )
+    with scol2:
+        surge_type = st.text_input(
+            "Type",
+            value=board_details.get("surge_spd_type", ""),
+            key="surge_type"
+        )
+    with scol3:
+        surge_bs_en = st.text_input(
+            "BS(EN)",
+            value=board_details.get("surge_spd_bs_en", ""),
+            key="surge_bs_en"
+        )
+    with scol4:
+        surge_status = st.selectbox(
+            "Status Indicator",
+            options=["", "Satisfactory", "Unsatisfactory", "N/A"],
+            index=(["", "Satisfactory", "Unsatisfactory", "N/A"].index(board_details.get("surge_status_indicator", ""))
+                   if board_details.get("surge_status_indicator", "") in ["", "Satisfactory", "Unsatisfactory", "N/A"] else 0),
+            key="surge_status"
         )
 
 # ============================================================================
@@ -3974,6 +4015,14 @@ with tabs[TAB_PDF]:
                                 'type': st.session_state.get('spd_type', ''),
                                 'short_circuit_capacity': st.session_state.get('spd_capacity', ''),
                                 'rated_current': st.session_state.get('spd_current', ''),
+                            },
+                            # Surge Protection Device — uses the editor's own
+                            # surge_* session keys (surge-protection-box).
+                            'surge_protection_device': {
+                                'present': st.session_state.get('surge_present', ''),
+                                'type': st.session_state.get('surge_type', ''),
+                                'bs_en': st.session_state.get('surge_bs_en', ''),
+                                'status_indicator': st.session_state.get('surge_status', ''),
                             }
                         },
                         'particulars_of_installation': {
@@ -4181,11 +4230,16 @@ if st.sidebar.button("Save All Changes", type="secondary", use_container_width=T
         "nominal_voltage_uo": st.session_state.get("nominal_voltage_uo", "230"),
         "nominal_frequency": st.session_state.get("nominal_frequency", "50"),
         "number_of_supplies": st.session_state.get("number_of_supplies", "1"),
-        # Supply protective device
+        # Supply protective device (DNO cutout / main fuse)
         "spd_bs_en": st.session_state.get("spd_bs_en", "LIM"),
         "spd_type_supply": st.session_state.get("spd_type_supply", "LIM"),
         "spd_short_circuit": st.session_state.get("spd_capacity", "LIM"),
         "spd_rated_current": st.session_state.get("spd_current", "LIM"),
+        # Surge protection device (surge-protection-box 2026-06-17)
+        "surge_spd_present": st.session_state.get("surge_present", ""),
+        "surge_spd_type": st.session_state.get("surge_type", ""),
+        "surge_spd_bs_en": st.session_state.get("surge_bs_en", ""),
+        "surge_status_indicator": st.session_state.get("surge_status", ""),
         # Extent and limitations
         "extent": st.session_state.get("extent", "Fixed electrical wiring installation.\n20% of accessories opened"),
         "agreed_limitations": st.session_state.get("agreed_limitations", ""),
