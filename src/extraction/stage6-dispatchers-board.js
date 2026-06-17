@@ -399,13 +399,6 @@ export async function dispatchRecordBoardReading(call, ctx) {
         // mirrors in stage6-shadow-harness.js). The bundler still emits it
         // to iOS with the flag attached.
         auto_resolved: true,
-        // `derived` lets shouldEarlyTerminate subtract this entry from its
-        // streamed-call-vs-boardReadings.size parity check — without it a
-        // clean single-write bonding turn would show size=2 vs count=1 and
-        // lose the round-1 early-terminate latency win. Distinct from
-        // auto_resolved because '::auto::' ask-resolver entries carry that
-        // flag for the shadow comparator with different parity semantics.
-        derived: true,
         boardId: input.board_id ?? undefined,
       });
       logger.info('stage6.bonding_continuity_derived', {

@@ -289,15 +289,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
 
   // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4) + Phase 1
   // (Pivot 9, 12.2). Resolve the activeSessions entry once at the top so
-  // we can: (a) seed `fastPathCorrelationIdByTurn` from
+  // we can seed `fastPathCorrelationIdByTurn` from
   // `options.regexFastCorrelationId` so the audio finalizer's
-  // pre-decrement drain has the right correlation set; (b) read the
-  // VOICE_LATENCY_ROUND1_EARLY_TERMINATE snapshot flag to gate the new
-  // Phase 2 predicate inside runToolLoop. Anything that mutates the
-  // entry's per-turn maps below MUST be torn down in the `finally`
-  // block below the main body — error paths would otherwise leak this
-  // turn's entry forward and the speculator skip check would fire on a
-  // stale slot.
+  // pre-decrement drain has the right correlation set. Anything that
+  // mutates the entry's per-turn maps below MUST be torn down in the
+  // `finally` block below the main body — error paths would otherwise
+  // leak this turn's entry forward and the speculator skip check would
+  // fire on a stale slot.
   const entry = getActiveSessionEntry(session.sessionId);
   if (entry) {
     const rawCid = options?.regexFastCorrelationId;
@@ -328,8 +326,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
   }
-  const vlFlags = entry?.voiceLatency?.flags ?? null;
-  const earlyTerminateEnabled = vlFlags?.round1EarlyTerminate === true;
 
   // Phase 0 server-side audible-first-byte clock + counters.
   const runLiveStartNs = process.hrtime.bigint();
@@ -581,22 +577,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // session has zero overhead. The wrapper checks function-ness
         // before calling.
         //
-        // Single-round latency sprint Phase 2 (PLAN_v8 §A Pivot 1, Codex
-        // round-3 I4 fix): perTurnWritesRef is now passed UNCONDITIONALLY,
-        // independent of speculator state. The Phase 2 early-terminate
-        // predicate needs to read perTurnWrites whether or not Loaded
-        // Barrel is on. The runToolLoop wrapper still no-ops the function
-        // when undefined (back-compat with tests that don't supply it).
+        // perTurnWritesRef is passed UNCONDITIONALLY: onLoopComplete reads
+        // the finalised per-turn writes at end-of-loop for speculator drift
+        // detection, so the ref must be available whether or not the
+        // speculator hooks are wired this turn. The runToolLoop wrapper
+        // still no-ops the function when undefined (back-compat with tests
+        // that don't supply it).
         perTurnWritesRef: () => perTurnWrites,
         onSnapshotPatch: speculator?.onSnapshotPatch,
         onLoopComplete: speculator?.onLoopComplete,
-        // Single-round latency sprint Phase 2 (PLAN_v8 §A Pivot 1).
-        // Always pass earlyTerminateEnabled + earlyTerminateSession so
-        // the predicate fires when the flag is on, regardless of LB
-        // state. Predicate guards on session.stateSnapshot internally,
-        // so passing the live session through is safe.
-        earlyTerminateEnabled,
-        earlyTerminateSession: earlyTerminateEnabled ? session : undefined,
         // Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook. Fires
         // INSIDE the per-round stream loop as each tool_use's
         // content_block_stop arrives, so the speculator can begin
@@ -1227,10 +1216,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         rounds: toolLoopOut.rounds,
         // Phase 2 protocol-truth split: terminal_reason carries the
         // server-side classification (end_turn / tool_use_cap_hit /
-        // early_terminated / aborted); actual_stop_reason_per_round
-        // preserves Anthropic's stop_reason verbatim per round.
+        // aborted); actual_stop_reason_per_round preserves Anthropic's
+        // stop_reason verbatim per round.
         terminal_reason: toolLoopOut.terminal_reason ?? null,
-        early_terminated: toolLoopOut.early_terminated === true,
         actual_stop_reason_per_round: toolLoopOut.actual_stop_reason_per_round ?? [],
         tool_names_per_round: toolLoopOut.tool_names_per_round ?? [],
         tool_call_count_per_round: toolLoopOut.tool_call_count_per_round ?? [],

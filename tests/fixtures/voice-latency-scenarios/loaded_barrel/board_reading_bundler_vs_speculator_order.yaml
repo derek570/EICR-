@@ -5,8 +5,11 @@ description: |
   board-level reading. The speculator (Loaded Barrel) opens a
   pre-synth on `onToolUseStreamed` (content_block_stop) and emits an
   `extraction` envelope with `result.mid_stream_preview: true`. The
-  bundler emits its `extraction` envelope on round-1 completion
-  (early-terminate path for board readings, post-2026-05-28 widening).
+  bundler emits its `extraction` envelope when the full tool loop
+  terminates (end_turn) — early-terminate was removed in the 2026-06-17
+  loop-restoration, so the bundler envelope now lands at end-of-loop
+  rather than after a round-1 short-circuit. The wire ordering pinned
+  below is unaffected by that change.
 
   Pin: the BUNDLER envelope arrives BEFORE the speculator envelope
   on the wire. If a future regression flips the order (speculator

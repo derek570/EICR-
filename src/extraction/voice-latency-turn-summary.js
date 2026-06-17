@@ -194,10 +194,10 @@ export function pickEarliestPlaybackAck(acks) {
  * @param {Object} fields  All facets that are knowable at end-of-runLiveMode:
  *   sessionId, turnId, correlation_id_pre_synth, correlation_id_fast_path,
  *   rounds, stop_reasons (array), actual_stop_reasons (array),
- *   terminal_reason ('end_turn' | 'tool_use_cap_hit' | 'early_terminated'
- *   | 'aborted'), tool_call_count_per_round (array),
+ *   terminal_reason ('end_turn' | 'tool_use_cap_hit' | 'aborted'),
+ *   tool_call_count_per_round (array),
  *   tool_error_count_per_round (array), tool_names_per_round (array of
- *   arrays), early_terminate_predicate (`{fired, reject_reason}`),
+ *   arrays),
  *   sonnet_round1_ms, sonnet_round2_ms, dispatch_total_ms, bundler_ms,
  *   audible_first_byte_ms (server-side, may be null), audible_first_byte_source
  *   ('server_res_write' | 'ios_playback_ack' | null), path_classification.
