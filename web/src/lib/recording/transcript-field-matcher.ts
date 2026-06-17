@@ -348,14 +348,49 @@ const SUPPLY_VOLTAGE_PATTERN =
   /\bsupply\s+voltage\s+(?:is\s+|of\s+|=\s*)?(\d[\d\s]*\d)\s*(?:v(?:olts?)?)?/gi;
 const SUPPLY_FREQUENCY_PATTERN =
   /\b(?:supply\s+)?frequency\s+(?:is\s+|of\s+|=\s*)?(\d+)\s*(?:hz|hertz)?/gi;
-const MAIN_FUSE_BS_EN_PATTERN =
-  /\b(?:main\s+(?:fuse|switch|isolator)|supply\s+fuse)\s+(?:is\s+)?(?:a\s+)?(?:bs\s*(?:en\s*)?)?(1361|3036|88|1631|60947|61008|61009|4293|5419)\b/gi;
-const MAIN_FUSE_BS_EN_LIM_PATTERN =
-  /\b(?:main\s+(?:fuse|switch|isolator)|supply\s+fuse)\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b/gi;
-const MAIN_FUSE_RATING_PATTERN =
-  /\b(?:main\s+(?:fuse|switch|isolator)|supply\s+fuse|(?:(?:its|it'?s|the)\s+)?current\s+rating)\s+(?:is\s+)?(?:bs\s*(?:en\s*)?\w+\s+)?(?:and\s+(?:it'?s?\s+)?)?(?:(?:rated?|rating)\s+(?:at\s+)?)?(\d+)\s*(?:a(?:mps?)?)?\b/gi;
-const MAIN_FUSE_LIM_PATTERN =
-  /\b(?:main\s+(?:fuse|switch|isolator)|supply\s+fuse)(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:limitation|limited|lim)\b/gi;
+// Option A (surge-protection-box 2026-06-17): the device alternation was
+// previously `main (fuse|switch|isolator)|supply fuse` lumped together and
+// routed to main_switch_*, contradicting the established voice contract
+// ("main fuse"/"cutout" = the DNO Supply Protective Device → spd_*; "main
+// switch"/"isolator" = the consumer-unit isolator → main_switch_*). Split
+// into two device families so each routes to the correct slot — mirrors iOS
+// TranscriptFieldMatcher Fix D (2026-06-04).
+const SWITCH_DEVICE = String.raw`(?:main\s+switch|main\s+isolator|isolator)`;
+const FUSE_DEVICE = String.raw`(?:main\s+fuse|supply\s+fuse|service\s+fuse|cut\s*out|dno\s+fuse)`;
+// Consumer-unit main switch / isolator → main_switch_*
+const MAIN_SWITCH_BS_EN_PATTERN = new RegExp(
+  String.raw`\b${SWITCH_DEVICE}\s+(?:is\s+)?(?:a\s+)?(?:bs\s*(?:en\s*)?)?(1361|3036|88|1631|60947|61008|61009|4293|5419)\b`,
+  'gi'
+);
+const MAIN_SWITCH_BS_EN_LIM_PATTERN = new RegExp(
+  String.raw`\b${SWITCH_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b`,
+  'gi'
+);
+const MAIN_SWITCH_RATING_PATTERN = new RegExp(
+  String.raw`\b(?:${SWITCH_DEVICE}|(?:(?:its|it'?s|the)\s+)?current\s+rating)\s+(?:is\s+)?(?:bs\s*(?:en\s*)?\w+\s+)?(?:and\s+(?:it'?s?\s+)?)?(?:(?:rated?|rating)\s+(?:at\s+)?)?(\d+)\s*(?:a(?:mps?)?)?\b`,
+  'gi'
+);
+const MAIN_SWITCH_LIM_PATTERN = new RegExp(
+  String.raw`\b${SWITCH_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:limitation|limited|lim)\b`,
+  'gi'
+);
+// Supply protective device / DNO cutout / "main fuse" → spd_*
+const SUPPLY_FUSE_BS_EN_PATTERN = new RegExp(
+  String.raw`\b${FUSE_DEVICE}\s+(?:is\s+)?(?:a\s+)?(?:bs\s*(?:en\s*)?)?(1361|3036|88|1631|60947|61008|61009|4293|5419)\b`,
+  'gi'
+);
+const SUPPLY_FUSE_BS_EN_LIM_PATTERN = new RegExp(
+  String.raw`\b${FUSE_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b`,
+  'gi'
+);
+const SUPPLY_FUSE_RATING_PATTERN = new RegExp(
+  String.raw`\b${FUSE_DEVICE}\s+(?:is\s+)?(?:bs\s*(?:en\s*)?\w+\s+)?(?:and\s+(?:it'?s?\s+)?)?(?:(?:rated?|rating)\s+(?:at\s+)?)?(\d+)\s*(?:a(?:mps?)?)?\b`,
+  'gi'
+);
+const SUPPLY_FUSE_LIM_PATTERN = new RegExp(
+  String.raw`\b${FUSE_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:limitation|limited|lim)\b`,
+  'gi'
+);
 
 // Per-circuit Zs
 const ZS_EXCLUDE_PATTERN = /\bzs\s+(?:at|of)\s+(?:the\s+)?(?:board|db|distribution|cu|fuse)/gi;
@@ -1293,22 +1328,44 @@ export class TranscriptFieldMatcher {
       if (Number.isFinite(n) && n >= 45 && n <= 65) result.supply_updates.nominal_frequency = freq;
     }
 
-    const fuseBs = lastCapture(MAIN_FUSE_BS_EN_PATTERN, text);
+    // Supply protective device / DNO cutout / "main fuse" → spd_* (Option A).
+    const fuseBs = lastCapture(SUPPLY_FUSE_BS_EN_PATTERN, text);
     if (fuseBs !== undefined) {
-      result.supply_updates.main_switch_bs_en = BS_EN_MAP[fuseBs] ?? fuseBs;
+      result.supply_updates.spd_bs_en = BS_EN_MAP[fuseBs] ?? fuseBs;
     }
-    const fuseRating = lastCapture(MAIN_FUSE_RATING_PATTERN, text);
+    const fuseRating = lastCapture(SUPPLY_FUSE_RATING_PATTERN, text);
     if (fuseRating !== undefined) {
       const n = parseInt(fuseRating, 10);
       if (Number.isFinite(n) && n >= 16 && n <= 400) {
-        result.supply_updates.main_switch_current = fuseRating;
+        result.supply_updates.spd_rated_current = fuseRating;
       }
-    } else if (hasMatch(MAIN_FUSE_LIM_PATTERN, text)) {
+    } else if (hasMatch(SUPPLY_FUSE_LIM_PATTERN, text)) {
+      result.supply_updates.spd_rated_current = 'LIM';
+    }
+    if (
+      result.supply_updates.spd_bs_en === undefined &&
+      hasMatch(SUPPLY_FUSE_BS_EN_LIM_PATTERN, text)
+    ) {
+      result.supply_updates.spd_bs_en = 'LIM';
+    }
+
+    // Consumer-unit main switch / isolator → main_switch_* (unchanged target).
+    const switchBs = lastCapture(MAIN_SWITCH_BS_EN_PATTERN, text);
+    if (switchBs !== undefined) {
+      result.supply_updates.main_switch_bs_en = BS_EN_MAP[switchBs] ?? switchBs;
+    }
+    const switchRating = lastCapture(MAIN_SWITCH_RATING_PATTERN, text);
+    if (switchRating !== undefined) {
+      const n = parseInt(switchRating, 10);
+      if (Number.isFinite(n) && n >= 16 && n <= 400) {
+        result.supply_updates.main_switch_current = switchRating;
+      }
+    } else if (hasMatch(MAIN_SWITCH_LIM_PATTERN, text)) {
       result.supply_updates.main_switch_current = 'LIM';
     }
     if (
       result.supply_updates.main_switch_bs_en === undefined &&
-      hasMatch(MAIN_FUSE_BS_EN_LIM_PATTERN, text)
+      hasMatch(MAIN_SWITCH_BS_EN_LIM_PATTERN, text)
     ) {
       result.supply_updates.main_switch_bs_en = 'LIM';
     }

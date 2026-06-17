@@ -49,6 +49,10 @@ const SUPPLY_FIELD_TO_KEY: Record<keyof NonNullable<RegexMatchResult['supply_upd
   main_switch_bs_en: 'main_switch_bs_en',
   main_switch_current: 'main_switch_current',
   main_switch_conductor_csa: 'main_switch_conductor_csa',
+  // Supply protective device / DNO cutout / "main fuse" (Option A — distinct
+  // from the consumer-unit main switch). surge-protection-box 2026-06-17.
+  spd_bs_en: 'spd_bs_en',
+  spd_rated_current: 'spd_rated_current',
 };
 
 const BOARD_FIELD_TO_KEY: Record<keyof NonNullable<RegexMatchResult['board_updates']>, string> = {
@@ -64,6 +68,10 @@ const SUPPLY_FIELD_SECTION: Record<string, Section> = {
   main_switch_bs_en: 'board_info',
   main_switch_current: 'board_info',
   main_switch_conductor_csa: 'board_info',
+  // spd_* (main fuse) mirrors the main_switch_* live-fill convention — the
+  // LiveFillView reads board_info during recording. surge-protection-box.
+  spd_bs_en: 'board_info',
+  spd_rated_current: 'board_info',
 };
 
 const INSTALLATION_FIELD_TO_KEY: Record<
