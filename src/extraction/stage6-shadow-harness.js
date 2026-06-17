@@ -1192,10 +1192,30 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         ? result.confirmations.filter((c) => c?.expects_ios_ack !== false).length
         : 0;
       const runLiveDurationMs = Number((process.hrtime.bigint() - runLiveStartNs) / 1000000n);
+      // Plan B (2026-06-17) B3 — turn_shape dimension. Classifies the turn so
+      // dashboards can split Loaded Barrel HIT/MISS/drift + perceived latency by
+      // shape (and verify the trade-off: single-call HIT rate stays high while
+      // multi-call/round MISSes are expected & visible, not a silent regression).
+      //   multi_round → the agentic loop ran >= 2 rounds (the Plan A restoration
+      //                 in action — model reasoned/acted across rounds).
+      //   multi_call  → one round but >= 2 tool calls (batch emit / broadcast).
+      //   single_call → one round, <= 1 tool call (the clean fast path).
+      // Correlate to loaded_barrel.* outcome rows via {sessionId, turnId}.
+      const totalToolCalls = Array.isArray(toolLoopOut.tool_calls)
+        ? toolLoopOut.tool_calls.length
+        : 0;
+      const turnShape =
+        (toolLoopOut.rounds ?? 1) >= 2
+          ? 'multi_round'
+          : totalToolCalls >= 2
+            ? 'multi_call'
+            : 'single_call';
       emitTurnCoreSummary({
         sessionId: session.sessionId,
         turnId,
         rounds: toolLoopOut.rounds,
+        turn_shape: turnShape,
+        tool_call_count_total: totalToolCalls,
         // Phase 2 protocol-truth split: terminal_reason carries the
         // server-side classification (end_turn / tool_use_cap_hit /
         // aborted); actual_stop_reason_per_round preserves Anthropic's

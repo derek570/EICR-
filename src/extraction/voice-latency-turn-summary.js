@@ -200,7 +200,9 @@ export function pickEarliestPlaybackAck(acks) {
  *   arrays),
  *   sonnet_round1_ms, sonnet_round2_ms, dispatch_total_ms, bundler_ms,
  *   audible_first_byte_ms (server-side, may be null), audible_first_byte_source
- *   ('server_res_write' | 'ios_playback_ack' | null), path_classification.
+ *   ('server_res_write' | 'ios_playback_ack' | null), path_classification,
+ *   turn_shape ('single_call' | 'multi_call' | 'multi_round' — Plan B B3),
+ *   tool_call_count_total (number — Plan B B3).
  *
  *   Wrapped in try/catch — any throw logs `voice_latency.turn_summary_emit_error`
  *   and continues. Telemetry must never break the main extraction flow.
