@@ -119,8 +119,14 @@ export default function JobOverviewPage() {
           title="Main Fuse"
           href={`${base}/supply`}
           rows={[
-            ['BS/EN', str(supply.main_fuse_bs_en) ?? str(board.main_switch_bs_en)],
-            ['Current', str(supply.main_fuse_rating_a) ?? str(board.main_switch_rated_current_a)],
+            // Option A (surge-protection-box 2026-06-17): the Main Fuse box is
+            // the DNO supply cutout, which lives in supply.spd_*. It previously
+            // read nonexistent supply.main_fuse_* aliases and fell back to the
+            // consumer-unit main switch (board.main_switch_*), so it showed the
+            // wrong device and ignored the real cutout. Prefer supply.spd_*;
+            // keep the main-switch read only as a legacy fallback.
+            ['BS/EN', str(supply.spd_bs_en) ?? str(board.main_switch_bs_en)],
+            ['Current', str(supply.spd_rated_current) ?? str(board.main_switch_rated_current_a)],
             ['CSA', str(supply.tails_csa_mm2) ?? str(supply.tails_csa)],
           ]}
         />

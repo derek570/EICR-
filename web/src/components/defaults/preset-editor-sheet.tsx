@@ -129,7 +129,16 @@ function pickSupply(src: Record<string, unknown> | undefined): SupplyDraft {
   };
 }
 
-function emitDraft(name: string, installation: InstallationDraft, supply: SupplyDraft) {
+function emitDraft(
+  name: string,
+  installation: InstallationDraft,
+  supply: SupplyDraft,
+  // The original supply object the preset was loaded from. Any supply key the
+  // editor form does NOT control (e.g. spd_* main fuse, surge_* surge device)
+  // is merged back so an unrelated edit doesn't silently drop it.
+  // surge-protection-box 2026-06-17.
+  preservedSupply?: Record<string, unknown>
+) {
   const installationOut: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(installation)) {
     if (v === '' || v == null) continue;
@@ -141,6 +150,16 @@ function emitDraft(name: string, installation: InstallationDraft, supply: Supply
     }
   }
   const supplyOut: Record<string, unknown> = {};
+  // Preserve supply keys the editor form does not control (spd_* / surge_* /
+  // any future additive field) so editing an unrelated field never drops them.
+  if (preservedSupply) {
+    const formKeys = new Set(Object.keys(DEFAULT_SUPPLY));
+    for (const [k, v] of Object.entries(preservedSupply)) {
+      if (formKeys.has(k)) continue;
+      if (v === '' || v == null) continue;
+      supplyOut[k] = v;
+    }
+  }
   for (const [k, v] of Object.entries(supply)) {
     if (v === '' || v == null) continue;
     supplyOut[k] = v;
@@ -185,7 +204,14 @@ export function PresetEditorSheet({
     }
     setBusy(true);
     try {
-      await onSave(emitDraft(name, installation, supply));
+      await onSave(
+        emitDraft(
+          name,
+          installation,
+          supply,
+          existing?.default_data?.supply_characteristics as Record<string, unknown> | undefined
+        )
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save preset');
     } finally {
