@@ -83,11 +83,16 @@ export const KNOWN_FIELDS = new Set([
   'bonding_structural_steel',
   'bonding_lightning',
   'bonding_other',
-  // SPD fields
+  // Supply protective device (DNO cutout / main fuse) fields
   'spd_bs_en',
   'spd_type_supply',
   'spd_short_circuit',
   'spd_rated_current',
+  // Surge protection device (transient overvoltage protection) fields
+  'surge_spd_present',
+  'surge_spd_type',
+  'surge_spd_bs_en',
+  'surge_status_indicator',
   // Installation fields
   'address',
   'postcode',

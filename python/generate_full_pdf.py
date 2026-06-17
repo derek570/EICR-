@@ -295,12 +295,22 @@ def generate_full_certificate(output_dir: str) -> str:
             'prospective_fault_current': board.get('ipf_at_db', ''),
             'earth_loop_impedance_ze': board.get('ze', '') or board.get('zs_at_db', ''),
             'number_of_supplies': board.get('number_of_supplies', '1'),
-            # Supply Protective Device (default LIM - Limited Information)
+            # Supply Protective Device = DNO supply cutout / main fuse
+            # (default LIM - Limited Information)
             'supply_protective_device': {
                 'bs_en': board.get('spd_bs_en', 'LIM'),
                 'type': board.get('spd_type_supply', 'LIM'),
                 'short_circuit_capacity': board.get('spd_short_circuit', 'LIM'),
                 'rated_current': board.get('spd_rated_current', 'LIM'),
+            },
+            # Surge Protection Device (transient overvoltage, BS EN 61643-11) —
+            # a separate device from the supply cutout above.
+            # surge-protection-box 2026-06-17.
+            'surge_protection_device': {
+                'present': board.get('surge_spd_present', ''),
+                'type': board.get('surge_spd_type', ''),
+                'bs_en': board.get('surge_spd_bs_en', ''),
+                'status_indicator': board.get('surge_status_indicator', ''),
             },
         },
         'particulars_of_installation': {

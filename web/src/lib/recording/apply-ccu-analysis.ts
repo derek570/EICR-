@@ -212,9 +212,16 @@ function buildBoardPatch(
   };
 }
 
-/** Build the supply patch — merges the `spd_*` supply-section
- *  fallbacks (which the backend auto-derives from the main switch in
- *  routes/extraction.js:961-974) into `job.supply_characteristics`. */
+/** Build the supply patch.
+ *
+ *  Option A (surge-protection-box 2026-06-17): the CCU photo analyser's
+ *  `spd_*` fields detect a SURGE Protection Device inside the consumer unit
+ *  (the board-scoped FuseboardAnalysis surge surface) — NOT the DNO supply
+ *  cutout. They must therefore land in the new `surge_*` supply fields, never
+ *  in the supply `spd_*` (cutout / "main fuse") fields, which would pollute
+ *  the relabelled Main Fuse box. The old main-switch-derived spd_* fallbacks
+ *  (analysis.spd_rated_current / analysis.spd_type_supply) were removed from
+ *  the backend (routes/extraction.js) and no longer arrive. */
 function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string, unknown> | null {
   const existing = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
   const next: Record<string, unknown> = { ...existing };
@@ -228,23 +235,22 @@ function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string,
   };
 
   if (analysis.spd_present === true) {
-    apply('spd_bs_en', analysis.spd_bs_en);
-    apply('spd_type_supply', analysis.spd_type);
-    apply('spd_short_circuit', analysis.spd_short_circuit_ka);
-    apply('spd_rated_current', analysis.spd_rated_current_a);
+    apply('surge_spd_present', 'Yes');
+    apply('surge_spd_type', analysis.spd_type);
+    apply('surge_spd_bs_en', analysis.spd_bs_en);
   } else if (analysis.spd_present === false) {
-    // iOS parity: explicit N/A stamps when there's no SPD in the CU.
-    for (const key of ['spd_bs_en', 'spd_type_supply', 'spd_short_circuit', 'spd_rated_current']) {
+    // Explicit "No" + N/A stamps when there's no surge device in the CU.
+    if (!hasValue(existing.surge_spd_present)) {
+      next.surge_spd_present = 'No';
+      changed = true;
+    }
+    for (const key of ['surge_spd_type', 'surge_spd_bs_en', 'surge_status_indicator']) {
       if (!hasValue(existing[key])) {
         next[key] = 'N/A';
         changed = true;
       }
     }
   }
-
-  // Backend also sends fallbacks derived from the main switch.
-  apply('spd_rated_current', analysis.spd_rated_current);
-  apply('spd_type_supply', analysis.spd_type_supply);
 
   return changed ? next : null;
 }

@@ -934,7 +934,10 @@ class EICRPDFGenerator:
         elements.append(params_table)
 
         spd = supply.get('supply_protective_device', {})
-        elements.append(Paragraph("<b>Supply Protective Device</b>", self.styles['TableCell']))
+        # Option A (surge-protection-box 2026-06-17): this block is the DNO
+        # supply cutout / main fuse, NOT a surge device. The real Surge
+        # Protection Device renders separately below.
+        elements.append(Paragraph("<b>Supply Protective Device (Main Fuse)</b>", self.styles['TableCell']))
         spd_data = [[
             Paragraph(f"BS (EN): <b>{spd.get('bs_en', '')}</b>", self.styles['TinyText']),
             Paragraph(f"Type: <b>{spd.get('type', '')}</b>", self.styles['TinyText']),
@@ -951,6 +954,28 @@ class EICRPDFGenerator:
             ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
         ]))
         elements.append(spd_table)
+        elements.append(Spacer(1, 5))
+
+        # Surge Protection Device (transient overvoltage protection,
+        # BS EN 61643-11 — BS 7671 §443/534). surge-protection-box 2026-06-17.
+        surge = supply.get('surge_protection_device', {})
+        elements.append(Paragraph("<b>Surge Protection Device</b>", self.styles['TableCell']))
+        surge_data = [[
+            Paragraph(f"Fitted: <b>{surge.get('present', '')}</b>", self.styles['TinyText']),
+            Paragraph(f"Type: <b>{surge.get('type', '')}</b>", self.styles['TinyText']),
+            Paragraph(f"BS (EN): <b>{surge.get('bs_en', '')}</b>", self.styles['TinyText']),
+            Paragraph(f"Status indicator: <b>{surge.get('status_indicator', '')}</b>", self.styles['TinyText']),
+        ]]
+        surge_table = Table(surge_data, colWidths=[100, 100, 150, 100])
+        surge_table.setStyle(TableStyle([
+            ('FONTSIZE', (0, 0), (-1, -1), 7),
+            ('GRID', (0, 0), (-1, -1), 0.75, BORDER_GRAY),
+            ('BACKGROUND', (0, 0), (-1, -1), LIGHT_BLUE),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        elements.append(surge_table)
         elements.append(Spacer(1, 5))
 
         # Particulars of Installation

@@ -51,7 +51,11 @@ Return a JSON object with these top-level keys (include all, use empty strings/a
     "spd_bs_en": "",
     "spd_type_supply": "",
     "spd_short_circuit": "",
-    "spd_rated_current": ""
+    "spd_rated_current": "",
+    "surge_spd_present": "",
+    "surge_spd_type": "",
+    "surge_spd_bs_en": "",
+    "surge_status_indicator": ""
   },
   "board_info": {
     "name": "",
@@ -123,6 +127,11 @@ Return a JSON object with these top-level keys (include all, use empty strings/a
 - prospective_fault_current: PFC/Ipf value in kA (just the number, e.g., "2.5")
 - earth_loop_impedance_ze: Ze value in ohms (just the number)
 - spd_rated_current: DNO supply cutout fuse rating in A (NOT the main switch — only if a separate supply fuse/cutout is visible)
+- spd_bs_en / spd_type_supply / spd_short_circuit: DNO supply cutout / main fuse standard, type, breaking capacity (NOT surge, NOT the main switch)
+- surge_spd_present: Surge Protection Device fitted? "Yes"/"No"/"N/A"/"LIM" — a SEPARATE transient overvoltage device (BS EN 61643-11), not the DNO cutout
+- surge_spd_type: Surge Protection Device type ("Type 1"/"Type 2"/"Type 1+2"/"Type 3"/"Combined")
+- surge_spd_bs_en: Surge Protection Device standard (e.g. "61643-11", "62305")
+- surge_status_indicator: SPD status indicator ("Satisfactory"/"Unsatisfactory"/"N/A", inspection item 4.19)
 
 **Board Info:**
 - name: Board designation (DB-1, Main CU, etc.)
@@ -323,6 +332,10 @@ export async function extractFromCertificate(filePath) {
         spd_type_supply: '',
         spd_short_circuit: '',
         spd_rated_current: '',
+        surge_spd_present: '',
+        surge_spd_type: '',
+        surge_spd_bs_en: '',
+        surge_status_indicator: '',
       },
       board_info: extracted.board_info || {
         name: '',

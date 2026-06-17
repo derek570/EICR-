@@ -26,6 +26,12 @@
       "type": "",
       "short_circuit_capacity": "",
       "rated_current": ""
+    },
+    "surge_protection_device": {
+      "present": "N/A",
+      "type": "N/A",
+      "bs_en": "N/A",
+      "status_indicator": "N/A"
     }
   },
   "particulars_of_installation": {
