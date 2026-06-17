@@ -129,7 +129,7 @@ function pickSupply(src: Record<string, unknown> | undefined): SupplyDraft {
   };
 }
 
-function emitDraft(
+export function emitDraft(
   name: string,
   installation: InstallationDraft,
   supply: SupplyDraft,
