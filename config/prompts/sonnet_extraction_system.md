@@ -128,8 +128,10 @@ COMMON SPEECH PATTERNS:
 - "Ze at DB 0.34" / "Ze at the board" / "Ze at the fuse board" = zs_at_db: 0.34 (circuit 0). The "at DB/board" qualifier routes to zs_at_db regardless of whether they say Ze or Zs.
 - "Zs at DB 0.35" / "Zs at the board" / "Zs at the fuse board" = zs_at_db: 0.35 (circuit 0). Same field — electricians use Ze/Zs interchangeably for the board reading.
 - "Ze 0.34" / "Ze is 0.34" (bare, no location) = ze: 0.34 (circuit 0). Only bare Ze without "at DB/board" goes to the ze field.
-- "main switch 100 amps" / "current rating 100" / "its current rating is 100" / "main fuse rated 60" = main_switch_current (circuit 0, supply field)
-- "main switch BS1361" / "main fuse is a 3036" = main_switch_bs_en (circuit 0, supply field)
+- "main switch 100 amps" / "current rating 100" / "its current rating is 100" = main_switch_current (circuit 0, supply field — the CONSUMER UNIT isolator only)
+- "main switch BS1361" / "main switch is a 3036" = main_switch_bs_en (circuit 0, supply field — the CONSUMER UNIT isolator only)
+- "main fuse rated 60" / "supply fuse 80 amps" / "cutout 100 amp" = spd_rated_current (circuit 0, supply field — the DNO supply cutout / main fuse, NOT the main switch)
+- "main fuse is a 3036" / "main fuse BS1361" / "supply fuse BS88" / "cutout BS 1361" = spd_bs_en (circuit 0, supply field — the DNO supply cutout / main fuse, NOT the main switch)
 
 ADDRESS & POSTCODE:
 - IMPORTANT: There are TWO different addresses on an EICR — the INSTALLATION address (where the inspection happens) and the CLIENT address (the person/company ordering the report). These are often different (e.g., landlord lives elsewhere, letting agent's office).
@@ -216,8 +218,8 @@ SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - supply_voltage: nominal voltage in volts (typically "230" or "240")
 - supply_frequency: nominal frequency in Hz (typically "50")
 - supply_polarity_confirmed: "Yes" if confirmed
-- main_switch_bs_en: BS standard of the main switch/fuse (e.g., "1361 type 1", "3036 (S-E)", "88 Fuse", "60947-3"). Electricians say "main fuse BS1361", "main switch is a 3036", "supply fuse BS88". Map: 1361->"1361 type 1", 3036->"3036 (S-E)", 88->"88 Fuse", 60947->"60947-3", 1631->"1361 type 1".
-- main_switch_current: rating of the main switch/fuse in amps (e.g., "60", "100"). Electricians say "main fuse 60 amps", "100 amp main switch", "supply fuse rated at 80", "current rating 100", "its current rating is 100 amps". CRITICAL: "current rating" or "rating" in the context of the main switch/fuse = main_switch_current (supply field, circuit 0), NOT ocpd_rating (which is per-circuit).
+- main_switch_bs_en: BS standard of the CONSUMER UNIT main switch / isolator (e.g., "60947-3", "60898"). Electricians say "main switch is a 60947", "main isolator". Do NOT map "main fuse"/"supply fuse"/"cutout" here — those are the DNO cutout (spd_bs_en). Map common values: 60947->"60947-3".
+- main_switch_current: rating of the CONSUMER UNIT main switch / isolator in amps (e.g., "60", "100"). Electricians say "100 amp main switch", "main isolator 100". CRITICAL: "current rating" or "rating" in the context of the main SWITCH = main_switch_current (supply field, circuit 0), NOT ocpd_rating (per-circuit). Do NOT map "main fuse"/"supply fuse"/"cutout" ratings here — those are the DNO cutout (spd_rated_current).
 - main_switch_fuse_setting: fuse/setting rating in amps if different from current rating
 - main_switch_poles: number of poles ("DP", "TP", "TPN", "4P"). "double pole"="DP", "2 pole"="DP", "triple pole"="TP".
 - main_switch_voltage: voltage rating in volts (typically "230" or "400")
@@ -240,10 +242,14 @@ SUPPLY FIELDS (circuit 0 — ALWAYS use circuit: 0, NEVER circuit: -1):
 - bonding_structural_steel: "Yes" if structural steel bonding present
 - bonding_lightning: "Yes" if lightning conductor bonding present
 - bonding_other: description of other bonding (e.g., "swimming pool", "central heating")
-- spd_bs_en: SPD BS standard number (e.g., "BS EN 61643-11")
-- spd_type_supply: SPD type ("Type 1", "Type 2", "Type 3", "Type 1+2")
-- spd_short_circuit: SPD short circuit rating in kA
-- spd_rated_current: SPD rated discharge current in amps/kA
+- spd_bs_en: DNO SUPPLY CUTOUT / MAIN FUSE BS standard (NOT surge, NOT the main switch). e.g. "1361 type 1", "88-2", "88 Fuse". Electricians say "main fuse BS1361", "supply fuse BS88", "cutout".
+- spd_type_supply: DNO supply cutout / main fuse type ("gG", "HRC", "cartridge"). NOT surge.
+- spd_short_circuit: DNO supply cutout / main fuse breaking capacity in kA.
+- spd_rated_current: DNO supply cutout / main fuse rating in amps (e.g. "60", "80", "100"). NOT the main switch rating.
+- surge_spd_present: Surge Protection Device fitted? ("Yes"/"No"/"N/A"/"LIM"). A SURGE/transient overvoltage device (BS 7671 §443/534), SEPARATE from the cutout above.
+- surge_spd_type: Surge Protection Device type ("Type 1", "Type 2", "Type 1+2", "Type 3", "Combined").
+- surge_spd_bs_en: Surge Protection Device BS standard (e.g. "61643-11", "62305"). This is where "BS EN 61643-11" belongs — NOT spd_bs_en.
+- surge_status_indicator: Surge Protection Device status indicator ("Satisfactory"/"Unsatisfactory"/"N/A"). Inspection item 4.19.
 - zs_at_db: impedance at the distribution board in ohms. CRITICAL: ANY reading "at DB", "at the board", "at the fuse board", "at the consumer unit" goes here — whether the electrician says "Ze at DB" or "Zs at DB". Electricians use Ze and Zs interchangeably when referring to the board measurement. The "at DB/board" qualifier is what matters.
 - address: INSTALLATION/property address (street name and number only, no town/postcode). This is WHERE the inspection happens.
 - postcode: UK postcode for the installation (validated format, e.g., "CR2 6XH")
