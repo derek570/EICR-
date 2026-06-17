@@ -80,6 +80,28 @@ const RESULT_OPTIONS = [
   { value: 'LIM', label: 'LIM', variant: 'lim' as const },
 ];
 
+// Surge Protection Device options (mirrors field_schema.json surge_* enums +
+// iOS Constants.surge*Options). surge-protection-box 2026-06-17.
+const SURGE_PRESENT_OPTIONS = [
+  { value: 'Yes', label: 'Yes' },
+  { value: 'No', label: 'No' },
+  { value: 'N/A', label: 'N/A' },
+  { value: 'LIM', label: 'LIM' },
+];
+const SURGE_TYPE_OPTIONS = [
+  { value: 'Type 1', label: 'Type 1' },
+  { value: 'Type 2', label: 'Type 2' },
+  { value: 'Type 1+2', label: 'Type 1+2' },
+  { value: 'Type 3', label: 'Type 3' },
+  { value: 'Combined', label: 'Combined' },
+  { value: 'N/A', label: 'N/A' },
+];
+const SURGE_STATUS_OPTIONS = [
+  { value: 'Satisfactory', label: 'Satisfactory' },
+  { value: 'Unsatisfactory', label: 'Unsatisfactory' },
+  { value: 'N/A', label: 'N/A' },
+];
+
 export default function SupplyPage() {
   const { job, certificateType, updateJob } = useJobContext();
   // See DesignPage for the rationale — memo-wrap keeps identity stable
@@ -206,6 +228,10 @@ export default function SupplyPage() {
       'spd_type_supply',
       'spd_short_circuit',
       'spd_rated_current',
+      'surge_spd_present',
+      'surge_spd_type',
+      'surge_spd_bs_en',
+      'surge_status_indicator',
       'rcd_operating_current',
       'rcd_time_delay',
       'rcd_operating_time',
@@ -629,15 +655,28 @@ export default function SupplyPage() {
         />
       </SectionCard>
 
-      <SectionCard accent="magenta" icon={ShieldCheck} title="SPD (surge protection)" showCodeChip>
+      {/*
+        Supply Protective Device = the DNO supply cutout / "main fuse" — NOT a
+        surge device. The card was historically mistitled "SPD (surge
+        protection)" but is bound to the spd_* (cutout) fields, which the voice
+        contract routes "main fuse"/"cutout" to. Relabelled to remove the
+        collision; the real surge device lives in the separate card below.
+        (surge-protection-box 2026-06-17)
+      */}
+      <SectionCard
+        accent="magenta"
+        icon={ShieldCheck}
+        title="Supply Protective Device (Main Fuse)"
+        showCodeChip
+      >
         <div className="grid gap-3 md:grid-cols-2">
           <FloatingLabelInput
-            label="BS EN"
+            label="Main Fuse BS EN"
             value={text('spd_bs_en')}
             onChange={(e) => patch({ spd_bs_en: e.target.value })}
           />
           <FloatingLabelInput
-            label="Type (I / II / III)"
+            label="Main Fuse Type"
             value={text('spd_type_supply')}
             onChange={(e) => patch({ spd_type_supply: e.target.value })}
           />
@@ -654,6 +693,40 @@ export default function SupplyPage() {
             onChange={(e) => patch({ spd_rated_current: e.target.value })}
           />
         </div>
+      </SectionCard>
+
+      {/* Real Surge Protection Device (transient overvoltage, BS EN 61643-11). */}
+      <SectionCard
+        accent="magenta"
+        icon={ShieldCheck}
+        title="Surge Protection Device"
+        showCodeChip
+      >
+        <SelectChips
+          label="Surge protection fitted"
+          value={text('surge_spd_present') || null}
+          options={SURGE_PRESENT_OPTIONS}
+          onChange={(v) => patch({ surge_spd_present: v })}
+        />
+        <SelectChips
+          label="SPD type"
+          value={text('surge_spd_type') || null}
+          options={SURGE_TYPE_OPTIONS}
+          onChange={(v) => patch({ surge_spd_type: v })}
+        />
+        <div className="grid gap-3 md:grid-cols-2">
+          <FloatingLabelInput
+            label="SPD BS EN"
+            value={text('surge_spd_bs_en')}
+            onChange={(e) => patch({ surge_spd_bs_en: e.target.value })}
+          />
+        </div>
+        <SelectChips
+          label="Status indicator"
+          value={text('surge_status_indicator') || null}
+          options={SURGE_STATUS_OPTIONS}
+          onChange={(v) => patch({ surge_status_indicator: v })}
+        />
       </SectionCard>
     </div>
   );
