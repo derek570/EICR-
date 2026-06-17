@@ -25,8 +25,6 @@
  *   VOICE_LATENCY_STREAM_ASK_USER        default false
  *   VOICE_LATENCY_USE_MULTI_CONTEXT      default false
  *   VOICE_LATENCY_LOADED_BARREL          default false (Phase 1.E — v10)
- *   VOICE_LATENCY_ROUND1_EARLY_TERMINATE default false (single-round latency
- *                                         sprint Phase 2 — PLAN_v8 §A Pivot 1)
  *   VOICE_LATENCY_KILL_SWITCH            default false (live override)
  *
  * Non-flag tunables (numbers, read fresh each call — not snapshotted
@@ -42,7 +40,6 @@ const SNAPSHOTTED_FLAGS = Object.freeze([
   'VOICE_LATENCY_STREAM_ASK_USER',
   'VOICE_LATENCY_USE_MULTI_CONTEXT',
   'VOICE_LATENCY_LOADED_BARREL',
-  'VOICE_LATENCY_ROUND1_EARLY_TERMINATE',
 ]);
 
 function parseBool(s) {
@@ -66,13 +63,6 @@ export function snapshotFlagsForSession() {
     streamAskUser: parseBool(process.env.VOICE_LATENCY_STREAM_ASK_USER),
     useMultiContext: parseBool(process.env.VOICE_LATENCY_USE_MULTI_CONTEXT),
     loadedBarrel: parseBool(process.env.VOICE_LATENCY_LOADED_BARREL),
-    // Single-round latency sprint, Phase 2 (PLAN_v8 §A Pivot 1).
-    // When true AND the round-1 dispatch produces a clean single
-    // record_reading on a single-board session, the tool loop exits
-    // after pushing the real tool_results message and emits
-    // `terminal_reason: 'early_terminated'`. Saves ~2-2.5 s of round-2
-    // Sonnet wall on the dominant turn shape.
-    round1EarlyTerminate: parseBool(process.env.VOICE_LATENCY_ROUND1_EARLY_TERMINATE),
   });
 }
 

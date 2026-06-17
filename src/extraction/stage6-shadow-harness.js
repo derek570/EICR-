@@ -289,15 +289,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
 
   // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4) + Phase 1
   // (Pivot 9, 12.2). Resolve the activeSessions entry once at the top so
-  // we can: (a) seed `fastPathCorrelationIdByTurn` from
+  // we can seed `fastPathCorrelationIdByTurn` from
   // `options.regexFastCorrelationId` so the audio finalizer's
-  // pre-decrement drain has the right correlation set; (b) read the
-  // VOICE_LATENCY_ROUND1_EARLY_TERMINATE snapshot flag to gate the new
-  // Phase 2 predicate inside runToolLoop. Anything that mutates the
-  // entry's per-turn maps below MUST be torn down in the `finally`
-  // block below the main body — error paths would otherwise leak this
-  // turn's entry forward and the speculator skip check would fire on a
-  // stale slot.
+  // pre-decrement drain has the right correlation set. Anything that
+  // mutates the entry's per-turn maps below MUST be torn down in the
+  // `finally` block below the main body — error paths would otherwise
+  // leak this turn's entry forward and the speculator skip check would
+  // fire on a stale slot.
   const entry = getActiveSessionEntry(session.sessionId);
   if (entry) {
     const rawCid = options?.regexFastCorrelationId;
@@ -328,8 +326,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
   }
-  const vlFlags = entry?.voiceLatency?.flags ?? null;
-  const earlyTerminateEnabled = vlFlags?.round1EarlyTerminate === true;
 
   // Phase 0 server-side audible-first-byte clock + counters.
   const runLiveStartNs = process.hrtime.bigint();
@@ -456,103 +452,80 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // hook so the canonical bundler emit at end-of-round can skip them
     // (avoids iOS double-receiving the same reading + double-playing the
     // confirmation). Per-turn — the Set is scoped to this runLiveMode call.
+    //
+    // Plan B (2026-06-17) B1a: the mid-stream advertisement is now SUPPRESSED
+    // (onSlotAudioReady wired to null below), so this Set is never populated —
+    // it stays empty and the gated VOICE_MID_STREAM_FILTER block further down
+    // is a structural no-op. Kept (rather than ripped out) to avoid disturbing
+    // the gated filter logic; the canonical confirmations flow unfiltered and
+    // claim the parked MP3 post-validation.
     const midStreamEmittedSlots = new Set();
     let speculator = null;
     try {
       const vl = getVoiceLatencyForSession(session.sessionId);
       if (vl?.flags?.loadedBarrel === true && session.costTracker) {
+        // Plan B (2026-06-17) B1b — seed the speculator with existing circuit
+        // designations from the session snapshot so a reading on an ALREADY-
+        // named circuit speculates "Cooker, Zs 0.62" (matching the bundler's
+        // emitted text) instead of "Circuit 4, Zs 0.62" (a false MISS).
+        // Snapshot-only here; same-turn circuit_designation writes are layered
+        // on inside the speculator as its hooks observe them. Mirrors the
+        // snapshot read the post-loop circuitDesignations build does (below).
+        const initialDesignations = new Map();
+        const seedCircuits = session?.stateSnapshot?.circuits;
+        if (seedCircuits && typeof seedCircuits === 'object') {
+          for (const [key, circ] of Object.entries(seedCircuits)) {
+            if (!circ || typeof circ !== 'object') continue;
+            const refNum = Number(key);
+            if (!Number.isInteger(refNum) || refNum <= 0) continue;
+            const d = circ.circuit_designation;
+            if (typeof d === 'string' && d.trim()) initialDesignations.set(refNum, d.trim());
+          }
+        }
         speculator = createSpeculator({
           sessionId: session.sessionId,
           // apiKey via fn so a secret rotation survives without re-instantiation.
           apiKey: () => getElevenLabsKey(),
           costTracker: session.costTracker,
           logger: log,
-          // 2026-05-28 mid-stream emit. Fires the moment the speculator's
-          // ElevenLabs synth completes + the cache CAS confirms ready.
-          // Pushes a preliminary `extraction` WS message with just this
-          // slot's reading + confirmation so iOS can POST for the cached
-          // audio ~500-720 ms BEFORE Sonnet's round-1 stream completes.
-          // Production turn_core_summary timings (turn 11, session DFE90C4F)
-          // showed loaded_barrel_fired at 07.300 vs canonical emit at
-          // 07.822 — the wrap-up window we're cutting.
+          initialDesignations,
+          // Plan B (2026-06-17) B1a — SUPPRESS the mid-stream advertisement.
           //
-          // Slot tracking: each emitted slot keyed by (field, circuit,
-          // boardId) so the canonical end-of-round emit can filter them
-          // out of `extracted_readings` / `confirmations`. iOS already
-          // accumulates extractions idempotently (RollingExtractionResult),
-          // but filtering avoids double-POSTing for the same audio.
-          onSlotAudioReady: ws
-            ? (slot) => {
-                if (!slot || !ws || ws.readyState !== ws.OPEN) return;
-                const slotKey = `${slot.field}::${slot.circuit ?? 0}::${slot.boardId ?? ''}`;
-                if (midStreamEmittedSlots.has(slotKey)) return;
-                midStreamEmittedSlots.add(slotKey);
-                // Build a minimal extraction envelope mirroring the
-                // bundler's wire shape. iOS's handleServerExtraction
-                // applies extractedReadings + iterates confirmations
-                // for TTS POSTs. Empty arrays for other channels keep
-                // the decoder happy on legacy/strict builds.
-                const reading = {
-                  field: slot.field,
-                  value: slot.value,
-                  confidence: slot.confidence,
-                  source: 'tool_call',
-                };
-                // Canonical bundler at stage6-event-bundler.js:177-180 emits
-                // `circuit` as Int when parseable. iOS' ExtractedReading
-                // (CertMateUnified/Sources/Services/ClaudeService.swift:54)
-                // is typed `let circuit: Int`. The prior shape sent a
-                // string here, which made iOS' Codable decoder reject the
-                // entire preliminary frame and silently drop the reading
-                // (it was caught by the catch-all at
-                // ServerWebSocketService.swift:922). Aligning the
-                // preliminary's circuit type with the canonical bundler
-                // makes the speculator preview actually land in the UI.
-                if (Number.isInteger(slot.circuit)) reading.circuit = slot.circuit;
-                else reading.circuit = 0;
-                if (slot.boardId != null) reading.board_id = slot.boardId;
-                const confirmation = {
-                  text: slot.text,
-                  expanded_text: slot.expandedText,
-                  field: slot.field,
-                  circuit: Number.isInteger(slot.circuit) ? slot.circuit : null,
-                };
-                if (slot.boardId != null) confirmation.board_id = slot.boardId;
-                const envelope = {
-                  type: 'extraction',
-                  result: {
-                    readings: [reading],
-                    confirmations: [confirmation],
-                    observations: [],
-                    cleared_readings: [],
-                    circuit_updates: [],
-                    board_ops: [],
-                    validation_alerts: [],
-                    questions: [],
-                    turn_id: turnId,
-                    mid_stream_preview: true,
-                  },
-                };
-                try {
-                  ws.send(JSON.stringify(envelope));
-                  log?.info?.('voice_latency.mid_stream_emit', {
-                    sessionId: session.sessionId,
-                    turnId,
-                    field: slot.field,
-                    circuit: slot.circuit,
-                    boardId: slot.boardId,
-                    correlationId: slot.correlationId,
-                    expanded_text: slot.expandedText,
-                  });
-                } catch (sendErr) {
-                  log?.warn?.('voice_latency.mid_stream_emit_error', {
-                    sessionId: session.sessionId,
-                    turnId,
-                    error: sendErr?.message,
-                  });
-                }
-              }
-            : null,
+          // PREVIOUSLY (2026-05-28 mid-stream emit, lever 1): the moment a
+          // speculation's ElevenLabs synth completed + the cache CAS confirmed
+          // ready, this callback pushed a preliminary `extraction` WS envelope
+          // carrying `mid_stream_preview: true` so iOS could POST for the cached
+          // audio ~500-720 ms before Sonnet's stream completed. That advertised
+          // — and let iOS PLAY — speculative audio MID-TURN, BEFORE the loop
+          // validated the turn. On a turn that then took a second tool call /
+          // round 2 (a correction, a broadcast, a grouped confirmation), iOS had
+          // already played the now-wrong per-slot confirmation. A post-hoc
+          // invalidate cannot un-play served audio. This was the owner's
+          // "speculation fires too early / serves wrong audio" complaint.
+          //
+          // NOW: do NOT advertise speculative audio mid-turn at all. The MP3 is
+          // still synthesised + parked (markReady CAS, state==='ready') during
+          // the stream via the content_block_stop streaming hook (B2), so the
+          // latency win is preserved — the audio is *ready and waiting*, just not
+          // advertised. iOS learns of it via the NORMAL canonical confirmation
+          // POST, which arrives AFTER the loop validates (runLiveMode emits
+          // result.confirmations post-runToolLoop) and claims the parked MP3 by
+          // slot + expandedText (loaded-barrel-cache.buildCacheKey / keys.js:438).
+          // B1b post-loop validate (validateAgainstConfirmations below) then
+          // invalidates any parked entry whose text didn't survive to the final
+          // emitted confirmation (correction / grouped line / dropped-by-confidence).
+          //
+          // We deliberately do NOT re-emit/flush the preview after validation:
+          // the canonical confirmation already reaches iOS for the surviving
+          // slot, so a late preview flush would double-POST/double-play the same
+          // slot (the `midStreamEmittedSlots` dedup at the canonical filter has
+          // already run by then). Suppress-and-rely-on-canonical is the contract.
+          //
+          // `onSlotAudioReady: null` ⇒ the speculator's fire path
+          // (loaded-barrel-speculator.js:670) sees a non-function and skips, so
+          // no preview envelope is ever built and `midStreamEmittedSlots` stays
+          // empty (the gated VOICE_MID_STREAM_FILTER block below is now a no-op).
+          onSlotAudioReady: null,
         });
       }
     } catch (specErr) {
@@ -581,22 +554,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // session has zero overhead. The wrapper checks function-ness
         // before calling.
         //
-        // Single-round latency sprint Phase 2 (PLAN_v8 §A Pivot 1, Codex
-        // round-3 I4 fix): perTurnWritesRef is now passed UNCONDITIONALLY,
-        // independent of speculator state. The Phase 2 early-terminate
-        // predicate needs to read perTurnWrites whether or not Loaded
-        // Barrel is on. The runToolLoop wrapper still no-ops the function
-        // when undefined (back-compat with tests that don't supply it).
+        // perTurnWritesRef is passed UNCONDITIONALLY: onLoopComplete reads
+        // the finalised per-turn writes at end-of-loop for speculator drift
+        // detection, so the ref must be available whether or not the
+        // speculator hooks are wired this turn. The runToolLoop wrapper
+        // still no-ops the function when undefined (back-compat with tests
+        // that don't supply it).
         perTurnWritesRef: () => perTurnWrites,
         onSnapshotPatch: speculator?.onSnapshotPatch,
         onLoopComplete: speculator?.onLoopComplete,
-        // Single-round latency sprint Phase 2 (PLAN_v8 §A Pivot 1).
-        // Always pass earlyTerminateEnabled + earlyTerminateSession so
-        // the predicate fires when the flag is on, regardless of LB
-        // state. Predicate guards on session.stateSnapshot internally,
-        // so passing the live session through is safe.
-        earlyTerminateEnabled,
-        earlyTerminateSession: earlyTerminateEnabled ? session : undefined,
         // Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook. Fires
         // INSIDE the per-round stream loop as each tool_use's
         // content_block_stop arrives, so the speculator can begin
@@ -605,17 +571,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // tool. Dedup via cachePeek inside _speculate ensures the
         // onSnapshotPatch fire that arrives later doesn't double-synth.
         onToolUseStreamed: speculator?.onToolUseStreamed,
-        // 2026-05-26 voice-latency fix: force tool emission first on
-        // round-1 so the streamed-speculation hook fires near the start
-        // of Sonnet's response (not the end). See the `toolChoiceAnyOnRound1`
-        // docstring in stage6-tool-loop.js for the repro (session 904344CD,
-        // every bundler turn showed loaded_barrel_hit_pending because the
-        // tool_use streamed at end-of-Sonnet, leaving ElevenLabs no time
-        // to finish synth before iOS asked for the audio). Defaults ON so
-        // the deploy realises the win without an out-of-band env-var step;
-        // flip `VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1=false` on the task
-        // def to disable in production without a code roll.
-        toolChoiceAnyOnRound1: process.env.VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1 !== 'false',
       });
     } catch (err) {
       askGateForTurn?.destroy();
@@ -1137,6 +1092,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
+    // Plan B (2026-06-17) B1b — post-loop speculation drift validation. Runs
+    // on the FINAL emitted confirmation set (after the mid-stream-canonical
+    // filter — a no-op post-B1a — AND applyConfirmationDebounce above), so a
+    // speculation is only kept servable when its expandedText equals a
+    // confirmation the backend actually emitted. Non-matching parked entries
+    // (corrected value, dropped by confidence, subsumed into a grouped line) and
+    // ALL entries on an aborted/cap-hit turn are invalidated so keys.js
+    // synthesises fresh. Compares actual emitted text (no recompute). Wrapped in
+    // the speculator's own try/catch; never throws.
+    if (speculator && typeof speculator.validateAgainstConfirmations === 'function') {
+      speculator.validateAgainstConfirmations(turnId, result.confirmations, {
+        aborted:
+          toolLoopOut.aborted === true || toolLoopOut.terminal_reason === 'tool_use_cap_hit',
+      });
+    }
+
     // Increment turn count to match legacy's contract
     // (extractFromUtterance does this internally).
     session.turnCount = turnNum;
@@ -1221,16 +1192,35 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         ? result.confirmations.filter((c) => c?.expects_ios_ack !== false).length
         : 0;
       const runLiveDurationMs = Number((process.hrtime.bigint() - runLiveStartNs) / 1000000n);
+      // Plan B (2026-06-17) B3 — turn_shape dimension. Classifies the turn so
+      // dashboards can split Loaded Barrel HIT/MISS/drift + perceived latency by
+      // shape (and verify the trade-off: single-call HIT rate stays high while
+      // multi-call/round MISSes are expected & visible, not a silent regression).
+      //   multi_round → the agentic loop ran >= 2 rounds (the Plan A restoration
+      //                 in action — model reasoned/acted across rounds).
+      //   multi_call  → one round but >= 2 tool calls (batch emit / broadcast).
+      //   single_call → one round, <= 1 tool call (the clean fast path).
+      // Correlate to loaded_barrel.* outcome rows via {sessionId, turnId}.
+      const totalToolCalls = Array.isArray(toolLoopOut.tool_calls)
+        ? toolLoopOut.tool_calls.length
+        : 0;
+      const turnShape =
+        (toolLoopOut.rounds ?? 1) >= 2
+          ? 'multi_round'
+          : totalToolCalls >= 2
+            ? 'multi_call'
+            : 'single_call';
       emitTurnCoreSummary({
         sessionId: session.sessionId,
         turnId,
         rounds: toolLoopOut.rounds,
+        turn_shape: turnShape,
+        tool_call_count_total: totalToolCalls,
         // Phase 2 protocol-truth split: terminal_reason carries the
         // server-side classification (end_turn / tool_use_cap_hit /
-        // early_terminated / aborted); actual_stop_reason_per_round
-        // preserves Anthropic's stop_reason verbatim per round.
+        // aborted); actual_stop_reason_per_round preserves Anthropic's
+        // stop_reason verbatim per round.
         terminal_reason: toolLoopOut.terminal_reason ?? null,
-        early_terminated: toolLoopOut.early_terminated === true,
         actual_stop_reason_per_round: toolLoopOut.actual_stop_reason_per_round ?? [],
         tool_names_per_round: toolLoopOut.tool_names_per_round ?? [],
         tool_call_count_per_round: toolLoopOut.tool_call_count_per_round ?? [],
