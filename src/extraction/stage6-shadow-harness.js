@@ -452,6 +452,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // hook so the canonical bundler emit at end-of-round can skip them
     // (avoids iOS double-receiving the same reading + double-playing the
     // confirmation). Per-turn — the Set is scoped to this runLiveMode call.
+    //
+    // Plan B (2026-06-17) B1a: the mid-stream advertisement is now SUPPRESSED
+    // (onSlotAudioReady wired to null below), so this Set is never populated —
+    // it stays empty and the gated VOICE_MID_STREAM_FILTER block further down
+    // is a structural no-op. Kept (rather than ripped out) to avoid disturbing
+    // the gated filter logic; the canonical confirmations flow unfiltered and
+    // claim the parked MP3 post-validation.
     const midStreamEmittedSlots = new Set();
     let speculator = null;
     try {
@@ -463,92 +470,43 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           apiKey: () => getElevenLabsKey(),
           costTracker: session.costTracker,
           logger: log,
-          // 2026-05-28 mid-stream emit. Fires the moment the speculator's
-          // ElevenLabs synth completes + the cache CAS confirms ready.
-          // Pushes a preliminary `extraction` WS message with just this
-          // slot's reading + confirmation so iOS can POST for the cached
-          // audio ~500-720 ms BEFORE Sonnet's round-1 stream completes.
-          // Production turn_core_summary timings (turn 11, session DFE90C4F)
-          // showed loaded_barrel_fired at 07.300 vs canonical emit at
-          // 07.822 — the wrap-up window we're cutting.
+          // Plan B (2026-06-17) B1a — SUPPRESS the mid-stream advertisement.
           //
-          // Slot tracking: each emitted slot keyed by (field, circuit,
-          // boardId) so the canonical end-of-round emit can filter them
-          // out of `extracted_readings` / `confirmations`. iOS already
-          // accumulates extractions idempotently (RollingExtractionResult),
-          // but filtering avoids double-POSTing for the same audio.
-          onSlotAudioReady: ws
-            ? (slot) => {
-                if (!slot || !ws || ws.readyState !== ws.OPEN) return;
-                const slotKey = `${slot.field}::${slot.circuit ?? 0}::${slot.boardId ?? ''}`;
-                if (midStreamEmittedSlots.has(slotKey)) return;
-                midStreamEmittedSlots.add(slotKey);
-                // Build a minimal extraction envelope mirroring the
-                // bundler's wire shape. iOS's handleServerExtraction
-                // applies extractedReadings + iterates confirmations
-                // for TTS POSTs. Empty arrays for other channels keep
-                // the decoder happy on legacy/strict builds.
-                const reading = {
-                  field: slot.field,
-                  value: slot.value,
-                  confidence: slot.confidence,
-                  source: 'tool_call',
-                };
-                // Canonical bundler at stage6-event-bundler.js:177-180 emits
-                // `circuit` as Int when parseable. iOS' ExtractedReading
-                // (CertMateUnified/Sources/Services/ClaudeService.swift:54)
-                // is typed `let circuit: Int`. The prior shape sent a
-                // string here, which made iOS' Codable decoder reject the
-                // entire preliminary frame and silently drop the reading
-                // (it was caught by the catch-all at
-                // ServerWebSocketService.swift:922). Aligning the
-                // preliminary's circuit type with the canonical bundler
-                // makes the speculator preview actually land in the UI.
-                if (Number.isInteger(slot.circuit)) reading.circuit = slot.circuit;
-                else reading.circuit = 0;
-                if (slot.boardId != null) reading.board_id = slot.boardId;
-                const confirmation = {
-                  text: slot.text,
-                  expanded_text: slot.expandedText,
-                  field: slot.field,
-                  circuit: Number.isInteger(slot.circuit) ? slot.circuit : null,
-                };
-                if (slot.boardId != null) confirmation.board_id = slot.boardId;
-                const envelope = {
-                  type: 'extraction',
-                  result: {
-                    readings: [reading],
-                    confirmations: [confirmation],
-                    observations: [],
-                    cleared_readings: [],
-                    circuit_updates: [],
-                    board_ops: [],
-                    validation_alerts: [],
-                    questions: [],
-                    turn_id: turnId,
-                    mid_stream_preview: true,
-                  },
-                };
-                try {
-                  ws.send(JSON.stringify(envelope));
-                  log?.info?.('voice_latency.mid_stream_emit', {
-                    sessionId: session.sessionId,
-                    turnId,
-                    field: slot.field,
-                    circuit: slot.circuit,
-                    boardId: slot.boardId,
-                    correlationId: slot.correlationId,
-                    expanded_text: slot.expandedText,
-                  });
-                } catch (sendErr) {
-                  log?.warn?.('voice_latency.mid_stream_emit_error', {
-                    sessionId: session.sessionId,
-                    turnId,
-                    error: sendErr?.message,
-                  });
-                }
-              }
-            : null,
+          // PREVIOUSLY (2026-05-28 mid-stream emit, lever 1): the moment a
+          // speculation's ElevenLabs synth completed + the cache CAS confirmed
+          // ready, this callback pushed a preliminary `extraction` WS envelope
+          // carrying `mid_stream_preview: true` so iOS could POST for the cached
+          // audio ~500-720 ms before Sonnet's stream completed. That advertised
+          // — and let iOS PLAY — speculative audio MID-TURN, BEFORE the loop
+          // validated the turn. On a turn that then took a second tool call /
+          // round 2 (a correction, a broadcast, a grouped confirmation), iOS had
+          // already played the now-wrong per-slot confirmation. A post-hoc
+          // invalidate cannot un-play served audio. This was the owner's
+          // "speculation fires too early / serves wrong audio" complaint.
+          //
+          // NOW: do NOT advertise speculative audio mid-turn at all. The MP3 is
+          // still synthesised + parked (markReady CAS, state==='ready') during
+          // the stream via the content_block_stop streaming hook (B2), so the
+          // latency win is preserved — the audio is *ready and waiting*, just not
+          // advertised. iOS learns of it via the NORMAL canonical confirmation
+          // POST, which arrives AFTER the loop validates (runLiveMode emits
+          // result.confirmations post-runToolLoop) and claims the parked MP3 by
+          // slot + expandedText (loaded-barrel-cache.buildCacheKey / keys.js:438).
+          // B1b post-loop validate (validateAgainstConfirmations below) then
+          // invalidates any parked entry whose text didn't survive to the final
+          // emitted confirmation (correction / grouped line / dropped-by-confidence).
+          //
+          // We deliberately do NOT re-emit/flush the preview after validation:
+          // the canonical confirmation already reaches iOS for the surviving
+          // slot, so a late preview flush would double-POST/double-play the same
+          // slot (the `midStreamEmittedSlots` dedup at the canonical filter has
+          // already run by then). Suppress-and-rely-on-canonical is the contract.
+          //
+          // `onSlotAudioReady: null` ⇒ the speculator's fire path
+          // (loaded-barrel-speculator.js:670) sees a non-function and skips, so
+          // no preview envelope is ever built and `midStreamEmittedSlots` stays
+          // empty (the gated VOICE_MID_STREAM_FILTER block below is now a no-op).
+          onSlotAudioReady: null,
         });
       }
     } catch (specErr) {
