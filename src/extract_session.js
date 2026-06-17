@@ -36,9 +36,11 @@ on-device WhisperKit speech recognition on a busy job site — expect these arte
     earthing_conductor_csa, earthing_conductor_material,
     main_bonding_csa, main_bonding_material,
     bonding_water, bonding_gas, bonding_oil, bonding_structural_steel,
-    spd_bs_en, spd_type_supply, spd_short_circuit, spd_rated_current
+    spd_bs_en, spd_type_supply, spd_short_circuit, spd_rated_current,
+    surge_spd_present, surge_spd_type, surge_spd_bs_en, surge_status_indicator
   }
 }
+(spd_* = DNO supply cutout / main fuse; surge_* = a separate Surge Protection Device, BS EN 61643-11.)
 
 === CIRCUIT FIELDS (use ALL that apply) ===
 circuit_ref, circuit_designation, wiring_type, ref_method, number_of_points,

@@ -412,6 +412,18 @@ async function saveSession(
           'bonding_oil',
           'bonding_structural_steel',
           'supply_polarity_confirmed',
+          // Supply protective device (DNO cutout / main fuse) + surge device.
+          // NOTE: this /api/recording finish-merge is LEGACY — live iOS + web
+          // both record via /api/sonnet-stream. Kept complete so a stray call
+          // doesn't silently drop supply data. (surge-protection-box 2026-06-17)
+          'spd_bs_en',
+          'spd_type_supply',
+          'spd_short_circuit',
+          'spd_rated_current',
+          'surge_spd_present',
+          'surge_spd_type',
+          'surge_spd_bs_en',
+          'surge_status_indicator',
         ];
         for (const field of supplyFillFields) {
           if (gptSupply[field] && !existingSupply[field]) {

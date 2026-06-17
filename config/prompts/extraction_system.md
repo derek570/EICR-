@@ -29,7 +29,11 @@ Shape:
     "spd_bs_en": "DNO supply cutout fuse standard (e.g. 1361, 88) — NOT the consumer's main switch",
     "spd_type_supply": "DNO supply cutout fuse type (e.g. gG) — NOT the consumer's main switch",
     "spd_short_circuit": "Supply cutout breaking capacity kA",
-    "spd_rated_current": "DNO supply cutout fuse rating A — NOT the main switch rating. Only populate if a SEPARATE supply fuse/cutout is identified. Do NOT copy the main switch value here."
+    "spd_rated_current": "DNO supply cutout fuse rating A — NOT the main switch rating. Only populate if a SEPARATE supply fuse/cutout is identified. Do NOT copy the main switch value here.",
+    "surge_spd_present": "Surge Protection Device fitted? Yes/No/N/A/LIM — a transient overvoltage device (BS 7671 443/534), SEPARATE from the DNO cutout above",
+    "surge_spd_type": "Surge Protection Device type: Type 1/Type 2/Type 1+2/Type 3/Combined",
+    "surge_spd_bs_en": "Surge Protection Device standard (e.g. 61643-11, 62305) — this is where BS EN 61643-11 belongs, NOT spd_bs_en",
+    "surge_status_indicator": "Surge Protection Device status indicator: Satisfactory/Unsatisfactory/N/A (inspection item 4.19)"
   },
   "board": {
     "name": "DB-1",
