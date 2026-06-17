@@ -9,9 +9,15 @@
  * Driver: field session F1AC26FB (2026-06-16).
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { jest } from '@jest/globals';
 import { KNOWN_FIELDS } from '../extraction/known-fields.js';
 import { FIELD_CORRECTIONS } from '../extraction/field-name-corrections.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROMPTS_DIR = path.join(__dirname, '..', '..', 'config', 'prompts');
 
 // utils/jobs.js transitively imports storage.js, which uses
 // `import.meta.dirname` — undefined under jest --experimental-vm-modules.
@@ -101,4 +107,40 @@ describe('surge-protection — transformExtractedData (document/photo → job st
       expect(k in supply_characteristics).toBe(true);
     }
   });
+});
+
+describe('surge-protection — doc-extraction prompts reconciled to Option A', () => {
+  // §3a/§4 regression: a photographed/written "main fuse"/"supply fuse"/
+  // "cutout" must route to spd_*, NOT main_switch_*, and surge keys must
+  // exist so 61643-11 lands in surge_spd_bs_en. These prompts are sent to
+  // GPT-Vision; the runtime model output can't be unit-tested, but the
+  // PROMPT TEXT is the contract and is asserted here.
+  for (const file of ['sonnet_extraction_system.md', 'sonnet_extraction_eic_system.md']) {
+    describe(file, () => {
+      const prompt = fs.readFileSync(path.join(PROMPTS_DIR, file), 'utf8');
+
+      test('routes main fuse / supply fuse / cutout examples to spd_*', () => {
+        expect(prompt).toMatch(/main fuse[^\n]*spd_(?:rated_current|bs_en)/i);
+        // The spd_* field descriptions describe the DNO cutout, not surge.
+        expect(prompt).toMatch(/spd_bs_en:[^\n]*cutout/i);
+      });
+
+      test('main_switch_* descriptions explicitly de-alias main fuse to spd_*', () => {
+        // The main_switch_* descriptions must no longer POSITIVELY claim the
+        // main-fuse aliases. They now carry the corrective "Do NOT map main
+        // fuse here → spd_*" instruction, scoping main_switch to the isolator.
+        const bsLine = prompt.split('\n').find((l) => l.includes('main_switch_bs_en:'));
+        const curLine = prompt.split('\n').find((l) => l.includes('main_switch_current:'));
+        expect(bsLine).toMatch(/Do NOT map .*main fuse.*spd_bs_en/i);
+        expect(curLine).toMatch(/Do NOT map .*main fuse.*spd_rated_current/i);
+      });
+
+      test('carries the 4 surge_* keys (61643-11 lives in surge_spd_bs_en)', () => {
+        for (const k of SURGE_KEYS) {
+          expect(prompt).toEqual(expect.stringContaining(k));
+        }
+        expect(prompt).toMatch(/surge_spd_bs_en:[^\n]*61643/i);
+      });
+    });
+  }
 });
