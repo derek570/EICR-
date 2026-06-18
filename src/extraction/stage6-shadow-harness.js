@@ -99,6 +99,17 @@ import { createAskDispatcher } from './stage6-dispatcher-ask.js';
 // reverts to the Phase 3/4 dispatcher shape unchanged.
 import { createAskGateWrapper, wrapAskDispatcherWithGates } from './stage6-ask-gate-wrapper.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
+// readback-correction-optionb §3.3a/b — rolling conversational window so the
+// live model can resolve a bare "no" against the read-backs it spoke.
+import {
+  isReadingConfirmation,
+  toReadbackEntry,
+  dedupeReadbacks,
+  pushReadbackTurn,
+  buildReadbackWindowMessages,
+  windowHasReadback,
+} from './readback-window.js';
+import { STANDALONE_NEGATION_PATTERN } from './pre-llm-gate.js';
 import {
   bundleToolCallsIntoResult,
   BUNDLER_PHASE,
@@ -465,6 +476,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // (avoids iOS double-receiving the same reading + double-playing the
     // confirmation). Per-turn — the Set is scoped to this runLiveMode call.
     const midStreamEmittedSlots = new Set();
+    // readback-correction-optionb §3.3a — per-turn accumulator of the read-backs
+    // the inspector actually HEARD, sourced from BOTH the loaded-barrel mid-
+    // stream path (onSlotAudioReady, below) AND the final post-debounce/post-
+    // filter reading confirmations (after the debounce step). De-duped + pushed
+    // onto session.readbackWindow at the end of the turn.
+    const spokenReadbacks = [];
     let speculator = null;
     try {
       const vl = getVoiceLatencyForSession(session.sessionId);
@@ -526,6 +543,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                   circuit: Number.isInteger(slot.circuit) ? slot.circuit : null,
                 };
                 if (slot.boardId != null) confirmation.board_id = slot.boardId;
+                // readback-correction-optionb §3.3a — record this mid-stream
+                // read-back in the per-turn accumulator. Mid-stream slots are
+                // always single-circuit readings; carry slot.value for
+                // completeness (dedup is by slot identity, not value).
+                spokenReadbacks.push(
+                  toReadbackEntry({
+                    text: slot.text,
+                    field: slot.field,
+                    circuit: Number.isInteger(slot.circuit) ? slot.circuit : null,
+                    board_id: slot.boardId ?? null,
+                    value: slot.value,
+                  })
+                );
                 const envelope = {
                   type: 'extraction',
                   result: {
@@ -572,13 +602,38 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       speculator = null;
     }
 
+    // readback-correction-optionb §3.3b — inject the rolling window as fresh
+    // PER-TURN messages BEFORE the current utterance (NOT into the cached
+    // system blocks — that would invalidate the large cached prefix every
+    // turn). Chronological user→assistant pairs put the most recent read-back
+    // immediately before the current utterance, so a bare "no" sits adjacent to
+    // the value it rejects. Empty window → [] → byte-identical to the old
+    // single-message shape. The window holds PRIOR turns only (the current turn
+    // is appended after this turn's read-backs are known, below).
+    const readbackWindow = Array.isArray(session.readbackWindow) ? session.readbackWindow : [];
+    const windowMessages = buildReadbackWindowMessages(readbackWindow);
+    const liveMessages = [...windowMessages, { role: 'user', content: transcriptText }];
+
+    // readback-correction-optionb §6 — round-1 tool_choice:any no-op allowance.
+    // For a standalone forwarded negation ("no"/"nope"/"nah") with NO applicable
+    // read-back in the window, there is nothing to correct: forcing a tool would
+    // produce a spurious ask_user. Disable the round-1 tool_choice:any force for
+    // that turn so the windowed model may legitimately emit zero tools. When the
+    // window DOES carry a read-back, the model should emit the correction ask, so
+    // the force stays on.
+    const isStandaloneNegationTurn =
+      typeof transcriptText === 'string' && STANDALONE_NEGATION_PATTERN.test(transcriptText);
+    const allowNoOpForNegation = isStandaloneNegationTurn && !windowHasReadback(readbackWindow);
+    const toolChoiceAnyOnRound1 =
+      process.env.VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1 !== 'false' && !allowNoOpForNegation;
+
     let toolLoopOut;
     try {
       toolLoopOut = await runToolLoop({
         client: session.client,
         model: SHADOW_MODEL,
         system: systemBlocks,
-        messages: [{ role: 'user', content: transcriptText }],
+        messages: liveMessages,
         tools: TOOL_SCHEMAS,
         dispatcher,
         ctx: { sessionId: session.sessionId, turnId },
@@ -623,7 +678,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // the deploy realises the win without an out-of-band env-var step;
         // flip `VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1=false` on the task
         // def to disable in production without a code roll.
-        toolChoiceAnyOnRound1: process.env.VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1 !== 'false',
+        // readback-correction-optionb §6 — also disabled for a standalone-
+        // negation turn with no applicable read-back in the window (computed
+        // above) so the model can no-op instead of emitting a spurious ask.
+        toolChoiceAnyOnRound1,
       });
     } catch (err) {
       askGateForTurn?.destroy();
@@ -1144,6 +1202,27 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         });
       }
     }
+
+    // readback-correction-optionb §3.3a — add the FINAL post-debounce/post-
+    // filter READING confirmations to the per-turn accumulator (state-change /
+    // observation / deletion / clear confirmations are excluded so a bare "no"
+    // never binds a non-reading). Runs AFTER the mid-stream-filter + debounce
+    // so the buffer reflects exactly what iOS will play. Combined with the
+    // mid-stream entries pushed during the loop, then de-duped by slot identity
+    // (a slot read back mid-stream AND finally appears ONCE).
+    if (Array.isArray(result.confirmations)) {
+      for (const c of result.confirmations) {
+        if (isReadingConfirmation(c)) spokenReadbacks.push(toReadbackEntry(c));
+      }
+    }
+    // Push this turn onto the rolling window (PRIOR turns were used for
+    // injection above; the current turn becomes available to the NEXT turn).
+    // Stored even when empty so read-backs age out by turn count (§7 staleness).
+    session.readbackWindow = pushReadbackTurn(
+      session.readbackWindow,
+      transcriptText,
+      dedupeReadbacks(spokenReadbacks)
+    );
 
     // Increment turn count to match legacy's contract
     // (extractFromUtterance does this internally).
