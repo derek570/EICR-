@@ -17,7 +17,14 @@ import { ORIGINAL_TRIGGER_WORDS_FROM_2026_05_26 } from './fixtures/pre-llm-gate-
 describe('shouldForwardToSonnet — blocking decisions', () => {
   test.each([
     ['Yeah.', GATE_REASONS.LOW_CONTENT],
-    ['No.', GATE_REASONS.LOW_CONTENT],
+    // 'No.' moved to the forwarding table below (readback-correction-optionb
+    // §3.3, 2026-06-18) — a bare negation now forwards so the model can
+    // resolve it against the most recent read-back. Innocuous "no …" phrases
+    // (with a content word) STAY here / on LOW_CONTENT — see negative pins.
+    ['No earth.', GATE_REASONS.LOW_CONTENT],
+    ['No problem.', GATE_REASONS.LOW_CONTENT],
+    ['No signal.', GATE_REASONS.LOW_CONTENT],
+    ['No spare.', GATE_REASONS.LOW_CONTENT],
     ['Hello?', GATE_REASONS.LOW_CONTENT],
     ['Girl.', GATE_REASONS.LOW_CONTENT],
     ['Sock it.', GATE_REASONS.LOW_CONTENT],
@@ -280,6 +287,33 @@ describe('Phase 5.1 — COMPLAINT_OR_NEGATION trigger', () => {
       expect(result.forward).toBe(true);
       expect(result.reason).toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
     });
+  });
+
+  // readback-correction-optionb §3.3 (2026-06-18) — STANDALONE bare
+  // negation now forwards so the live model (with a rolling window of the
+  // read-backs it spoke) can resolve "no" against the most recent read-back
+  // and ask for the replacement (Option B). Previously these dropped to
+  // LOW_CONTENT (the continuation-pronoun discipline above).
+  describe('standalone bare negation forwards (audio-first read-back rejection)', () => {
+    test.each(['No.', 'no', 'Nope.', 'nope', 'Nah', 'nah.', '  No!  '])(
+      'forwards "%s" with HAS_COMPLAINT_OR_NEGATION',
+      (text) => {
+        const result = shouldForwardToSonnet(text);
+        expect(result.forward).toBe(true);
+        expect(result.reason).toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
+      }
+    );
+
+    // The bare-negation relaxation is anchored ^…$ so a "no <content word>"
+    // phrase still falls through (these carry an inspection/content word and
+    // are NOT a standalone negation).
+    test.each(['No earth.', 'No problem.', 'No signal.', 'No spare.'])(
+      'does NOT forward "%s" as a standalone negation',
+      (text) => {
+        const result = shouldForwardToSonnet(text);
+        expect(result.reason).not.toBe(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION);
+      }
+    );
   });
 
   describe('negative cases — innocuous bare-"no" forms must NOT trip the trigger', () => {

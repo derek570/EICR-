@@ -397,6 +397,20 @@ export const GATE_REASONS = Object.freeze({
 export const COMPLAINT_OR_NEGATION_PATTERN =
   /\b(no[,.]?\s+(that|that's|i|you|it|we|wrong|incorrect)|that's not|that is not|you haven't|you have not|why (did|haven't|are|do|don't) you|stop( it)?|wrong|incorrect|that's wrong|undo|cancel that|fix that|delete that|that's not right|i didn't say)\b/i;
 
+// readback-correction-optionb §3.3 (2026-06-18) — STANDALONE bare negation.
+// Audio-first: every applied reading is read back aloud, and the inspector
+// rejects a wrong read-back by simply saying "no" / "nope" / "nah". That
+// bare token was previously dropped to LOW_CONTENT (the complaint pattern
+// above deliberately requires a continuation pronoun). Forward it so the
+// live model — which now sees a rolling window of the read-backs it just
+// spoke — can resolve the negation against the most recent read-back and
+// ask for the replacement (Option B: never clear, only overwrite). This
+// matches ONLY the WHOLE utterance being a bare negation (anchored
+// ^…$), so "No earth.", "No problem", "No signal", "No spare" — which carry
+// a content word — still fall through to the LOW_CONTENT path. Mirror this
+// exact relaxation in the iOS TranscriptGate (Phase B).
+export const STANDALONE_NEGATION_PATTERN = /^\s*(no|nope|nah)[.!?]*\s*$/i;
+
 /**
  * Decide whether a transcript should be forwarded to Sonnet.
  *
@@ -467,7 +481,7 @@ export function shouldForwardToSonnet(text, opts = {}) {
   // requires a continuation pronoun after a bare "no" so innocuous
   // utterances ("no problem", "no signal", "no spare") still block via
   // the LOW_CONTENT path.
-  if (COMPLAINT_OR_NEGATION_PATTERN.test(trimmed)) {
+  if (COMPLAINT_OR_NEGATION_PATTERN.test(trimmed) || STANDALONE_NEGATION_PATTERN.test(trimmed)) {
     return { forward: true, reason: GATE_REASONS.HAS_COMPLAINT_OR_NEGATION };
   }
   if (DIGIT_REGEX.test(trimmed)) {
