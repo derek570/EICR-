@@ -261,8 +261,18 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (restart-glued "Circuit 1 is circuit 2 is X" must not become
       // rename_circuit(1->2), voiceFeedbackId 22), on top of the merged
       // 2026-06-05 W1.6/W1.7 additions. Measured 15201; cap 15301 leaves ~100-token headroom.
+      //
+      // 2026-06-18 (readback-correction-optionb §3.2 + §3.3): bumped to
+      // 16450 to absorb (a) the CONFIDENCE SCORING rewrite to diagnostic-
+      // only (structurally complete readings WRITE at any confidence — no
+      // silent drop); (b) the Directive-3 + RESTRAINT bare-negation
+      // exceptions (ask once, never clear_reading); (c) the RECENT CONTEXT
+      // = transient-anaphora-memory sentence reconciling the cached-prefix
+      // source-of-truth; (d) the BARE NEGATION AFTER A READ-BACK behaviour
+      // block + Example 10 worked example. Measured 16355; cap 16450
+      // leaves ~95-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(15301);
+      expect(estimate).toBeLessThanOrEqual(16450);
     });
   });
 
@@ -867,8 +877,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     voiceFeedbackId 21) + MERGED / STUTTERED NAMING rule
       //     (voiceFeedbackId 22), on top of the merged 2026-06-05
       //     W1.6/W1.7 additions. Measured 10093; cap 10193 leaves ~100-token headroom.
+      //   - 11350 (2026-06-18 readback-correction-optionb §3.2 + §3.3):
+      //     CONFIDENCE SCORING rewrite (diagnostic-only, no silent drop) +
+      //     Directive-3/RESTRAINT bare-negation exceptions + RECENT
+      //     CONTEXT transient-memory sentence + BARE NEGATION AFTER A
+      //     READ-BACK behaviour block + Example 10. Measured 11247; cap
+      //     11350 leaves ~103-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(10193);
+      expect(estimate).toBeLessThanOrEqual(11350);
     });
   });
 
