@@ -384,7 +384,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // start_dialogue_script dispatcher (added 2026-04-30 Silvertown
     // follow-up) can hand it to enterScriptByName for first-ask emission.
     // Other dispatchers in the table ignore it.
-    const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, { ws });
+    // readback-correction-optionb §6 — thread the parsed capability so
+    // dispatchRecordReading's PRE-APPLY gate can skip `< 0.5` readings
+    // until the client advertises low_conf_readback_v1 (rollout safety).
+    const hasLowConfReadbackV1 =
+      entry?.voiceLatency?.capabilities?.hasLowConfReadbackV1 === true;
+    const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, {
+      ws,
+      hasLowConfReadbackV1,
+    });
     // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
     // path into the normal write infrastructure: when ask_user carries a
     // pending_write and the user's reply matches a circuit deterministically,

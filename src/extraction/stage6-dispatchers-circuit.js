@@ -102,6 +102,11 @@ function envelope(tool_use_id, body, is_error) {
 export async function dispatchRecordReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = call.input;
+  // readback-correction-optionb §6 — capability flag threaded via the
+  // write dispatcher's extraCtx (stage6-shadow-harness.js sources it from
+  // entry.voiceLatency.capabilities.hasLowConfReadbackV1). Absent/false on
+  // pre-Phase-B clients.
+  const hasLowConfReadbackV1 = ctx.hasLowConfReadbackV1 === true;
 
   // 2026-05-24 value canonicalisation — routes both BS-EN (ocpd_bs_en /
   // rcd_bs_en, via parseBsCode + Levenshtein-1 fallback) AND the Y/N
@@ -177,6 +182,48 @@ export async function dispatchRecordReading(call, ctx) {
         transcript_preview: transcript.slice(0, 80),
       });
     }
+  }
+
+  // readback-correction-optionb §6 — PRE-APPLY rollout gate for the
+  // confidence-ungated read-back. Until the client advertises
+  // `low_conf_readback_v1` (iOS Phase B drops its local `< 0.5` drop),
+  // a reading the model self-scored below 0.5 is NOT applied. WHY here
+  // (before applyReadingFlagAware + perTurnWrites.set): the FINAL read-back
+  // no longer gates on confidence, so if we APPLIED a `< 0.5` reading an
+  // OLD client would HEAR it read back but DROP it from the grid — a false
+  // confirmation plus silent data loss. A wire post-filter wouldn't fix
+  // this (it'd desync backend snapshot vs the old-iOS grid), so the skip is
+  // PRE-APPLY: no snapshot mutation, no perTurnWrites entry, no wire
+  // reading, no confirmation. Returns a NON-error skipped envelope so the
+  // model does NOT retry or ask. A reading with NO numeric confidence
+  // (undefined → treated as 1.0 downstream) applies normally. Once the
+  // client advertises the capability, every reading applies + reads back.
+  if (
+    !hasLowConfReadbackV1 &&
+    typeof input.confidence === 'number' &&
+    input.confidence < 0.5
+  ) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: false,
+      outcome: 'skipped',
+      validation_error: null,
+      input_summary: {
+        field: input.field,
+        circuit: input.circuit,
+        confidence: input.confidence,
+        reason: 'low_conf_readback_capability_missing',
+      },
+    });
+    return envelope(
+      call.tool_call_id,
+      { ok: true, skipped: true, reason: 'low_conf_readback_capability_missing' },
+      false
+    );
   }
 
   applyReadingFlagAware(session.stateSnapshot, {
