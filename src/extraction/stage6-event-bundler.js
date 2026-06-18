@@ -23,7 +23,10 @@ import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-write
 // of the bundler into its call site. No behavioural change here.
 import {
   CONFIRMATION_FRIENDLY_NAMES,
-  CONFIRMATION_MIN_CONFIDENCE,
+  // CONFIRMATION_MIN_CONFIDENCE intentionally NOT imported here anymore:
+  // the FINAL read-back no longer gates on confidence (audio-first,
+  // 2026-06-18). The threshold survives in confirmation-text.js purely as
+  // the loaded-barrel speculator's pre-synth cost gate.
   buildConfirmationText,
   buildGroupedConfirmationText,
   deriveFriendlyName,
@@ -338,7 +341,15 @@ function synthesiseConfirmations(
   const groups = new Map();
   for (let i = 0; i < readings.length; i += 1) {
     const r = readings[i];
-    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    // Audio-first (2026-06-18, readback-correction-optionb): the FINAL
+    // read-back no longer drops on the model's self-reported confidence.
+    // A hands-free inspector verifies by EAR, so every applied reading is
+    // read back exactly once regardless of confidence — the inspector
+    // catches a wrong value and corrects it by speaking. The `< 0.5`
+    // capability rollout gate now lives PRE-APPLY in dispatchRecordReading
+    // (so an un-applied reading never reaches this list), and the
+    // CONFIRMATION_MIN_CONFIDENCE threshold is now ONLY the loaded-barrel
+    // speculator's pre-synth cost gate (shouldGenerateConfirmation).
     // Group key excludes circuit on purpose — that's the dimension we
     // want to collapse across. Board scope still matters (the same
     // field+value on board A vs board B is two distinct broadcasts).
@@ -402,7 +413,9 @@ function synthesiseConfirmations(
   for (let i = 0; i < readings.length; i += 1) {
     if (consumedReadingIndices.has(i)) continue;
     const r = readings[i];
-    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    // Audio-first: no confidence gate on the final read-back (see grouping
+    // loop above). Every applied reading is read back regardless of
+    // self-reported confidence.
     // 2026-05-29 — pass designation so the TTS reads "Cooker, Zs 0.62"
     // instead of "Circuit 1, Zs 0.62". Lookup uses the same per-turn
     // circuit_designation write so a brand-new circuit confirmed in the
@@ -436,7 +449,7 @@ function synthesiseConfirmations(
     out.push(entry);
   }
   for (const r of boardReadings) {
-    if (typeof r.confidence === 'number' && r.confidence < CONFIRMATION_MIN_CONFIDENCE) continue;
+    // Audio-first: no confidence gate on the final read-back (see above).
     const text = buildConfirmationText(r.field, r.value, null);
     if (!text) continue;
     const entry = {
@@ -534,6 +547,18 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   //    trips cleanly; fall back to the raw string otherwise (future-proof
   //    against a non-integer circuit_ref the schema doesn't currently allow).
   const extracted_readings = [];
+  // Audio-first read-back exemption (2026-06-18): automatic derivations and
+  // side-effect ticks are computed consequences, NOT dictated readings, and
+  // must NOT produce a spoken confirmation (Audio-First invariant 1
+  // exception). Calculator writes carry a `::calc::<tool>` source_turn_id
+  // (applyCalculatedReading); polarity/mirror derivations carry `derived:
+  // true` (e.g. the bonding-continuity mirror in stage6-dispatchers-board).
+  // We still emit them on the wire (iOS needs the value) but exclude their
+  // projected reading objects from synthesiseConfirmations via this Set.
+  const suppressConfirmationReadings = new Set();
+  const isDerivedWrite = (entry) =>
+    entry?.derived === true ||
+    (typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::'));
   for (const [key, entry] of perTurnWrites.readings) {
     // Slice 1.1c — decodeReadingKey handles BOTH the new boardId-tagged
     // shape `${field}::${circuit}<NUL>__board__<NUL>${boardId}<NUL>` and
@@ -570,6 +595,9 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // no change.
     if (entry.boardId != null) {
       reading.board_id = entry.boardId;
+    }
+    if (isDerivedWrite(entry)) {
+      suppressConfirmationReadings.add(reading);
     }
     extracted_readings.push(reading);
   }
@@ -658,6 +686,9 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       if (entry.boardId != null) {
         reading.board_id = entry.boardId;
       }
+      if (isDerivedWrite(entry)) {
+        suppressConfirmationReadings.add(reading);
+      }
       extracted_board_readings.push(reading);
     }
     result.extracted_board_readings = extracted_board_readings;
@@ -720,9 +751,17 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // the current target so a fan-out on board B doesn't count board
     // A's circuits toward the total). Null means "I don't know" → the
     // helper falls through to range/list phrasing.
+    // Audio-first: exclude auto-derivations (::calc:: / mirror) from the
+    // spoken read-back while keeping them on the extracted_readings wire.
+    const confirmableReadings = extracted_readings.filter(
+      (r) => !suppressConfirmationReadings.has(r)
+    );
+    const confirmableBoardReadings = boardReadings.filter(
+      (r) => !suppressConfirmationReadings.has(r)
+    );
     const confirmations = synthesiseConfirmations(
-      extracted_readings,
-      boardReadings,
+      confirmableReadings,
+      confirmableBoardReadings,
       options.circuitDesignations,
       options.totalCircuitsInJob ?? null
     );
@@ -828,6 +867,27 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
 // caller threads it in. windowMs defaults to 1500 per the plan.
 export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
 
+// Audio-first (2026-06-18, readback-correction-optionb): the debounce key
+// must include circuit(s) + board_id + value, NOT field alone. A field-only
+// key suppressed the SECOND of two distinct same-field readings on different
+// circuits dictated close together (e.g. "Circuit 3 Zs 0.86" then "Circuit 4
+// Zs 0.91" within 1.5 s) — violating "read back EVERY applied reading
+// exactly once". With the composite key the debounce only coalesces a
+// genuine duplicate of the SAME reading (same field+circuit+board+value);
+// distinct readings always ride through and are each read back. iOS slice
+// 7.1's TTS queue serialiser handles playing them back-to-back. The `value`
+// proxy prefers an explicit `value` (test fixtures) and falls back to the
+// rendered `text` (live confirmation entries, which encode circuit+value).
+export function confirmationDebounceKey(c) {
+  if (!c) return '';
+  const field = c.field ?? '';
+  const circuit = Number.isInteger(c.circuit) ? String(c.circuit) : '';
+  const circuits = Array.isArray(c.circuits) ? c.circuits.join(',') : '';
+  const board = c.board_id ?? '';
+  const value = c.value != null ? String(c.value) : (c.text ?? '');
+  return `${field} ${circuit} ${circuits} ${board} ${value}`;
+}
+
 export function applyConfirmationDebounce(newConfirmations, debounceState, options = {}) {
   if (!Array.isArray(newConfirmations) || newConfirmations.length === 0) {
     return Array.isArray(newConfirmations) ? newConfirmations : [];
@@ -839,14 +899,20 @@ export function applyConfirmationDebounce(newConfirmations, debounceState, optio
   let suppressedCount = 0;
   for (const c of newConfirmations) {
     const field = c?.field ?? null;
+    const key = confirmationDebounceKey(c);
     const elapsed = now - (debounceState.lastEmittedAt || 0);
-    const sameField = field !== null && debounceState.lastField === field;
-    if (sameField && elapsed < windowMs) {
+    // Coalesce only a genuine duplicate of the SAME reading within the
+    // window (same field+circuit+board+value). Distinct readings — even
+    // same-field different-circuit — always pass.
+    const sameReading = key !== '' && debounceState.lastKey === key;
+    if (sameReading && elapsed < windowMs) {
       suppressedCount += 1;
       continue;
     }
     out.push(c);
     debounceState.lastEmittedAt = now;
+    debounceState.lastKey = key;
+    // lastField preserved for back-compat telemetry/state shape.
     debounceState.lastField = field;
   }
   if (suppressedCount > 0) {

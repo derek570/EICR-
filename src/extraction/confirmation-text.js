@@ -174,10 +174,15 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   client_county: 'customer county',
 });
 
-// Confidence threshold mirrors the legacy prompt's confirmation gate
-// ("confidence >= 0.8") at config/prompts/sonnet_extraction_system.md
-// so the agentic path doesn't read back values Sonnet itself would
-// have withheld under the prose-JSON contract.
+// Loaded-barrel SPECULATOR pre-synth cost gate (audio-first, 2026-06-18).
+// This threshold is NO LONGER applied to the FINAL end-of-turn read-back
+// (stage6-event-bundler.js) — a hands-free inspector verifies by ear, so
+// every applied reading is read back regardless of self-reported
+// confidence. The ONLY remaining consumer is shouldGenerateConfirmation
+// below, which the loaded-barrel speculator uses to decide whether to
+// pre-synthesise a mid-stream preview: a sub-threshold confidence skips
+// the speculative pre-synth (a cost optimisation), and the value is still
+// read back at turn end by the (now un-gated) bundler.
 export const CONFIRMATION_MIN_CONFIDENCE = 0.8;
 
 /**
