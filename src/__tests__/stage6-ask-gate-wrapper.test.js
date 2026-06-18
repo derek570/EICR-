@@ -120,6 +120,48 @@ describe('deriveAskKey', () => {
     expect(deriveAskKey({})).toBe('_:_');
   });
 
+  // readback-correction-optionb §6 — board scope in the ask key.
+  describe('context_board_id board scope (readback-correction-optionb §6)', () => {
+    test('null / missing / empty board_id leaves the key byte-identical (back-compat)', () => {
+      expect(deriveAskKey({ context_field: 'ze', context_circuit: 0 })).toBe('ze:0');
+      expect(deriveAskKey({ context_field: 'ze', context_circuit: 0, context_board_id: null })).toBe(
+        'ze:0'
+      );
+      expect(deriveAskKey({ context_field: 'ze', context_circuit: 0, context_board_id: '' })).toBe(
+        'ze:0'
+      );
+    });
+
+    test('a non-null board_id appends a @<board> segment', () => {
+      expect(
+        deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 3, context_board_id: 'sub-1' })
+      ).toBe('measured_zs_ohm:3@sub-1');
+    });
+
+    test('same field+circuit on DIFFERENT boards derive SEPARATE keys', () => {
+      const main = deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 3 });
+      const subA = deriveAskKey({
+        context_field: 'measured_zs_ohm',
+        context_circuit: 3,
+        context_board_id: 'A',
+      });
+      const subB = deriveAskKey({
+        context_field: 'measured_zs_ohm',
+        context_circuit: 3,
+        context_board_id: 'B',
+      });
+      expect(new Set([main, subA, subB]).size).toBe(3);
+    });
+
+    test('same field+circuit+board derive the SAME key (still dedupes)', () => {
+      expect(
+        deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 3, context_board_id: 'A' })
+      ).toBe(
+        deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 3, context_board_id: 'A' })
+      );
+    });
+  });
+
   // ===========================================================================
   // Plan 05-08 r2-#2 — null vs "none" key bypass.
   // ===========================================================================

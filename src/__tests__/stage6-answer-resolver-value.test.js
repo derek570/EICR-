@@ -41,6 +41,29 @@ describe('resolveValueAnswer — happy path', () => {
     });
   });
 
+  test('contextBoardId stamps board_id onto the resolved write (readback-correction-optionb §6)', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.68',
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 3,
+      sourceTurnId: 'turn-12',
+      contextBoardId: 'sub-1',
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].board_id).toBe('sub-1');
+    expect(verdict.writes[0].circuit).toBe(3);
+  });
+
+  test('no contextBoardId → write omits board_id (back-compat byte shape)', () => {
+    const verdict = resolveValueAnswer({
+      userText: '0.68',
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 3,
+      sourceTurnId: 'turn-12',
+    });
+    expect(verdict.writes[0]).not.toHaveProperty('board_id');
+  });
+
   test('"is 0.47" / "the value is 0.47" — strips surrounding words, keeps the numeric', () => {
     const verdict = resolveValueAnswer({
       userText: 'the value is 0.47',
