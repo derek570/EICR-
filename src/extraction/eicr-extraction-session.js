@@ -755,11 +755,16 @@ const FACT_FIELDS = new Set([
   'supplyVoltage',
   'supply_type',
   'earthing_system',
-  // SPD device facts
+  // Supply protective device (DNO cutout / main fuse) facts
   'spd_bs_en',
   'spd_type_supply',
   'spd_short_circuit',
   'spd_rated_current',
+  // Surge protection device (transient overvoltage protection) facts
+  'surge_spd_present',
+  'surge_spd_type',
+  'surge_spd_bs_en',
+  'surge_status_indicator',
   // Earthing-presence flags
   'means_earthing_distributor',
   'means_earthing_electrode',
@@ -829,6 +834,13 @@ const MERGE_SKIP_KEYS = new Set([
   'circuitNumber',
   'number',
   'board_id',
+  // #3.4.5 (designation-wire-sync, 2026-06-16) — iOS `buildJobStateForServer`
+  // emits the addressing field in camelCase (`boardId`). It is consumed by the
+  // bucket-routing in `_mergeIncomingJobStateIntoSnapshot` (which reads
+  // `board_id ?? boardId`); it must NOT then leak into the merged bucket as a
+  // stray reading field — that would pollute the snapshot/prompt and never
+  // match the canonical `board_id` the dual-shape readers key on.
+  'boardId',
 ]);
 
 /**
@@ -1863,26 +1875,54 @@ export class EICRExtractionSession {
 
     // --- CIRCUITS ---
     if (Array.isArray(jobState.circuits)) {
+      // #3.4.5 (designation-wire-sync, 2026-06-16) — route per circuit by
+      // board_id, mirroring `_seedStateFromJobState` (~:1516-1526). Pre-fix
+      // this branch keyed purely by `ref`, so an iOS designation push for
+      // sub-board circuit 1 would land on (and overwrite) MAIN circuit 1.
+      // Main-board / board-less circuits keep the legacy bare-numeric key
+      // (byte-identical for every single-board job); known non-main boards
+      // get the composite `${boardId}::${ref}` key WITH a self-describing
+      // `{circuit, board_id}` skeleton so the dual-shape readers
+      // (`listCircuitRefsInBoard` / `getCircuitBucket`) can see them.
+      const mainBoardId = getMainBoardId(this.stateSnapshot);
+      const knownBoardIds = new Set((this.stateSnapshot.boards ?? []).map((b) => b?.id));
       for (const incoming of jobState.circuits) {
         if (!incoming || typeof incoming !== 'object') continue;
         const ref = incoming.ref ?? incoming.circuitNumber ?? incoming.number;
         if (ref == null) continue;
-        // Existing snapshot bucket keying is numeric for legacy main-board
-        // refs (the supply bucket lives at `0`); composite keys ("main::1")
-        // exist for sub-board circuits but are written by Sonnet
-        // tool-dispatch rather than by iOS jobState pushes. Round-trip
-        // through Number() only when the raw ref is a numeric-looking
+        // Round-trip through Number() only when the raw ref is a numeric-looking
         // string so we don't break existing numeric-key semantics.
-        const key = typeof ref === 'number' || /^\d+$/.test(String(ref)) ? Number(ref) : ref;
+        const isNumericRef = typeof ref === 'number' || /^\d+$/.test(String(ref));
+        const num = isNumericRef ? Number(ref) : ref;
+        const incomingBoardId = incoming.board_id ?? incoming.boardId;
+        let key;
+        if (
+          isNumericRef &&
+          incomingBoardId &&
+          incomingBoardId !== mainBoardId &&
+          knownBoardIds.has(incomingBoardId)
+        ) {
+          // Sub-board circuit → composite key. Seed the dual-shape skeleton on
+          // FIRST create so the bucket is visible to the resolver; an existing
+          // composite bucket keeps its `{circuit, board_id}` identity.
+          key = `${incomingBoardId}::${num}`;
+          if (!this.stateSnapshot.circuits[key]) {
+            this.stateSnapshot.circuits[key] = { circuit: num, board_id: incomingBoardId };
+          }
+        } else {
+          // Main board, board-less, unknown board (safe legacy fallback), or
+          // a non-numeric ref (a pre-existing composite key passed verbatim).
+          key = num;
+        }
         const target = this.stateSnapshot.circuits[key] || (this.stateSnapshot.circuits[key] = {});
-        this._mergeCircuitOrBoardFields(target, incoming);
+        this._mergeCircuitOrBoardFields(target, incoming, 'circuit');
       }
     }
 
     // --- SUPPLY (lives at circuits[0] per the supply-bucket convention) ---
     if (jobState.supply && typeof jobState.supply === 'object') {
       const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
-      this._mergeCircuitOrBoardFields(target, jobState.supply);
+      this._mergeCircuitOrBoardFields(target, jobState.supply, 'supply');
     }
 
     // --- BOARDS — match by id, not by index (Codex v5 F2) ---
@@ -1897,7 +1937,9 @@ export class EICRExtractionSession {
           target = { id: incoming.id };
           this.stateSnapshot.boards.push(target);
         }
-        this._mergeCircuitOrBoardFields(target, incoming);
+        // kind: 'board' — do NOT apply the #3.4.4 circuit designation→
+        // circuit_designation alias here; boards carry their own `designation`.
+        this._mergeCircuitOrBoardFields(target, incoming, 'board');
       }
     }
   }
@@ -1917,13 +1959,38 @@ export class EICRExtractionSession {
    * (clearing an iOS-corrected installation property must propagate)
    * but skipped for readings (don't let an iOS null punch out a Sonnet
    * reading — the same value will still be there next push).
+   *
+   * `kind` ('circuit' | 'supply' | 'board') scopes the #3.4.4
+   * designation-key normalisation (designation-wire-sync, 2026-06-16). iOS
+   * sends a circuit name under the LEGACY key `designation`; the resolver
+   * (`findCircuitsByDesignation`) reads `circuit_designation || designation`,
+   * so a stale CANONICAL `circuit_designation` (e.g. an old Sonnet value)
+   * would shadow a fresh iOS edit written verbatim as `target.designation`.
+   * For circuit buckets ONLY we therefore alias an incoming `designation`
+   * to the canonical `circuit_designation` (and drop the stale legacy alias),
+   * mirroring `upsertCircuitMeta`'s canonical-key write and the 286D500D
+   * prod-loop lesson (see `stage6-snapshot-mutators.js:120-126`). Boards keep
+   * their own `designation` (read as `board.designation` by prompt rendering);
+   * supply has no designation — so the alias is circuit-scoped and must NOT
+   * be applied for `kind === 'board'` / `'supply'`, which would corrupt board
+   * designations through this SHARED helper.
    */
-  _mergeCircuitOrBoardFields(target, incoming) {
+  _mergeCircuitOrBoardFields(target, incoming, kind = 'circuit') {
     if (!incoming || typeof incoming !== 'object') return;
-    for (const [field, value] of Object.entries(incoming)) {
-      if (MERGE_SKIP_KEYS.has(field)) continue;
+    for (const [rawField, value] of Object.entries(incoming)) {
+      if (MERGE_SKIP_KEYS.has(rawField)) continue;
+      // #3.4.4 — circuit-only legacy→canonical designation key normalisation.
+      const field =
+        kind === 'circuit' && rawField === 'designation' ? 'circuit_designation' : rawField;
       if (FACT_FIELDS.has(field)) {
         target[field] = value;
+        // Having just authoritatively written the canonical key from an
+        // incoming legacy `designation`, drop any stale `target.designation`
+        // so `circuit_designation || designation` can never fall back to an
+        // out-of-date alias and re-shadow the iOS edit downstream.
+        if (kind === 'circuit' && rawField === 'designation' && 'designation' in target) {
+          delete target.designation;
+        }
       } else {
         // Reading: only fill an empty cell. The empty-string check
         // mirrors the same null/empty contract the snapshot serialiser

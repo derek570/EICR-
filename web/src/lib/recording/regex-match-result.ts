@@ -34,6 +34,10 @@ export interface SupplyUpdates {
   main_switch_bs_en?: string;
   main_switch_current?: string;
   main_switch_conductor_csa?: string;
+  // Supply protective device / DNO cutout / "main fuse" (Option A — distinct
+  // from the consumer-unit main switch above). surge-protection-box 2026-06-17.
+  spd_bs_en?: string;
+  spd_rated_current?: string;
 }
 
 export interface CircuitUpdates {

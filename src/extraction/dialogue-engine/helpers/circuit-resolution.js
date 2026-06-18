@@ -38,6 +38,25 @@ export function parseCircuitDigit(text) {
 }
 
 /**
+ * Normalise a USER designation utterance for matching / echoing: lowercase,
+ * collapse whitespace, drop trailing sentence punctuation, and strip a
+ * single leading article/filler phrase ("for the sockets." → "sockets").
+ * F1AC26FB #3.1/#3.2. Longest filler phrases first so "for the" wins over
+ * "for". Applies ONLY to user input — stored designations are never
+ * stripped. Returns '' for empty / non-string input.
+ */
+export function stripDesignationFiller(text) {
+  if (typeof text !== 'string') return '';
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.?!,;:]+$/g, '')
+    .replace(/^(?:for\s+the|on\s+the|in\s+the|for|on|the|a|an)\s+/, '')
+    .trim();
+}
+
+/**
  * Look up circuits whose designation matches a transcript fragment.
  *
  * Returns `{ matched, candidates, sharedDesignation }`:
@@ -76,7 +95,12 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
   if (typeof text !== 'string' || !text) return empty;
   const snapshot = session?.stateSnapshot;
   if (!snapshot?.circuits) return empty;
-  const normalised = text.toLowerCase().replace(/\s+/g, ' ').trim();
+  // Strip a single leading article/filler phrase + trailing punctuation
+  // from the USER text so "For the sockets." resolves against a "Sockets"
+  // designation (F1AC26FB #3.1). Applies ONLY to user input — the
+  // stored-designation reads below (`circuit_designation || designation`)
+  // are deliberately NOT stripped.
+  const normalised = stripDesignationFiller(text);
   if (!normalised) return empty;
 
   // Hotfix slice 4 — designation matching scopes to the ACTIVE board so

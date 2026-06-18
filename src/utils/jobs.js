@@ -116,9 +116,20 @@ export function transformExtractedData(extractedInstallation, extractedBoard) {
     earth_loop_impedance_ze: board.ze || board.earth_loop_impedance_ze || '',
     supply_polarity_confirmed: board.supply_polarity_confirmed ?? false,
     spd_bs_en: board.spd_bs_en || '',
-    spd_type_supply: board.spd_type_supply || board.spd_type || '',
+    // Option A (surge-protection-box 2026-06-17): spd_type_supply is the DNO
+    // cutout / main fuse type ONLY. The previous `|| board.spd_type` fallback
+    // pulled board-scoped CCU surge data (`board.spd_type`) into the supply
+    // Main Fuse box — removed. board.spd_type is surge/board data and must NOT
+    // pollute supply_characteristics.spd_type_supply.
+    spd_type_supply: board.spd_type_supply || '',
     spd_short_circuit: board.spd_short_circuit || '',
     spd_rated_current: board.spd_rated_current || '',
+    // Surge Protection Device (transient overvoltage) — distinct family from
+    // the DNO cutout above.
+    surge_spd_present: board.surge_spd_present || '',
+    surge_spd_type: board.surge_spd_type || '',
+    surge_spd_bs_en: board.surge_spd_bs_en || '',
+    surge_status_indicator: board.surge_status_indicator || '',
   };
 
   const board_info = {

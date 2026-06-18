@@ -335,59 +335,6 @@ export async function runToolLoop({
    * to pre-Phase-2.D behaviour.
    */
   onToolUseStreamed,
-  /**
-   * Phase 2 (single-round latency sprint, PLAN_v8 §A Pivot 1 + §E).
-   * When true AND the round-1 dispatch produced exactly one clean
-   * write tool with no errors and no ask_user, skip the round-2
-   * Sonnet invocation entirely and exit the loop with
-   * `terminal_reason: 'early_terminated'`.
-   *
-   * Independent of Loaded Barrel — passed always from runLiveMode
-   * regardless of speculator state (closes Codex round-3 I4).
-   */
-  earlyTerminateEnabled = false,
-  /**
-   * Phase 2 — the session object the predicate inspects for
-   * board-count and currentBoardId. Required when
-   * earlyTerminateEnabled is true; ignored otherwise.
-   */
-  earlyTerminateSession,
-  /**
-   * 2026-05-26 voice-latency fix — pass `tool_choice: { type: "any" }`
-   * on the ROUND-1 stream invocation only. Forces Sonnet to emit a
-   * tool_use without preceding text reasoning, which lets the Loaded
-   * Barrel streamed-speculation hook (assembler's onRecordComplete
-   * → loaded-barrel-speculator.onToolUseStreamed) fire ~1-2s earlier
-   * in the response than today.
-   *
-   * Repro: session 904344CD (2026-05-26). All early-terminated
-   * record_reading turns showed `loaded_barrel_started` /
-   * `loaded_barrel_fired` / `turn_core_summary` colocated in the
-   * SAME CloudWatch second — i.e. the first (and only) tool_use was
-   * landing at the END of the ~3s Sonnet stream, not the start.
-   * ElevenLabs synth therefore had ~0-500ms (instead of ~2s) to
-   * complete before iOS asked for the audio, producing
-   * `loaded_barrel_hit_pending` outcomes on every measurable turn.
-   *
-   * Why round-1 only: round-2+ may need to end_turn (cap-hit / no
-   * more tools needed) — forcing tool_choice there would make
-   * Sonnet emit an unwanted tool to satisfy the constraint.
-   *
-   * Safety: `tool_choice: { type: "any" }` still lets Sonnet choose
-   * which tool to use (record_reading, ask_user, etc.) — only the
-   * "emit no tool, just text + end_turn" path is suppressed. For
-   * irrelevant utterances the system prompt's "if you can't extract,
-   * call ask_user to clarify" guidance fills the gap. Monitored via
-   * a new `voice_latency.tool_choice_any_emitted` log line for early
-   * sightings of regression patterns; flag-flippable in the task def
-   * env if a class of failures surfaces.
-   *
-   * Default true so the deploy realises the latency win without an
-   * out-of-band env-var toggle; set
-   * `VOICE_LATENCY_TOOL_CHOICE_ANY_ROUND1=false` on the task def to
-   * disable in production without a code roll.
-   */
-  toolChoiceAnyOnRound1 = false,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -395,7 +342,6 @@ export async function runToolLoop({
   // Phase 2: terminal_reason carries the SERVER-SIDE termination cause.
   // 'end_turn'         — Anthropic returned end_turn organically.
   // 'tool_use_cap_hit' — rounds === maxRounds with stop_reason='tool_use'.
-  // 'early_terminated' — Phase 2 predicate fired after round-1 dispatch.
   // 'aborted'          — runtime aborted before normal termination.
   let terminalReason = null;
   // Phase 0: per-round timings + actual stop_reasons (the API's truth,
@@ -407,7 +353,6 @@ export async function runToolLoop({
   const toolErrorCountPerRound = [];
   // Phase 0: convenience timing for emitTurnCoreSummary (sonnet_round1_ms /
   // sonnet_round2_ms). Bundler/dispatch timings come from elsewhere.
-  let earlyTerminated = false;
   const allCalls = [];
   // Per-round usage accumulator. Summed from each round's
   // stream.finalMessage().usage (Anthropic Message.usage shape). Returned
@@ -437,9 +382,6 @@ export async function runToolLoop({
     // Phase 0 (single-round latency sprint) — capture started/stream_complete/
     // dispatch_complete timestamps per round for emitTurnCoreSummary.
     const roundStartedNs = process.hrtime.bigint();
-    // Round-1 only: force Sonnet to emit a tool_use first (no
-    // preamble text). See `toolChoiceAnyOnRound1` docstring above.
-    //
     // 2026-05-28 mid-stream emit follow-up: round-1 model override. The
     // dominant short-utterance turn shape (single record_reading on a
     // ~120-token output) is bottlenecked by Sonnet 4.6's ~2.7-3.0 s
@@ -462,14 +404,6 @@ export async function runToolLoop({
       messages,
       tools,
     };
-    if (toolChoiceAnyOnRound1 && rounds === 1) {
-      streamArgs.tool_choice = { type: 'any' };
-      logger?.info?.('voice_latency.tool_choice_any_emitted', {
-        sessionId: ctx?.sessionId,
-        turnId: ctx?.turnId,
-        roundIdx: rounds,
-      });
-    }
     if (effectiveModel !== model) {
       logger?.info?.('voice_latency.round1_model_override', {
         sessionId: ctx?.sessionId,
@@ -884,53 +818,6 @@ export async function runToolLoop({
     });
     toolCallCountPerRound.push(records.length);
     toolErrorCountPerRound.push(toolErrorCount);
-
-    // Phase 2 (single-round latency sprint, PLAN_v8 §A Pivot 1 + §E) —
-    // server-side round-1 early-terminate. Runs AFTER the dispatch loop
-    // pushes the real (non-empty) tool_results user message above. Anthropic
-    // protocol balance is preserved.
-    //
-    // If the predicate fires, we set terminalReason='early_terminated' and
-    // break BEFORE the next round's client.messages.stream invocation —
-    // saving the ~2.5s Sonnet round-2 wall on the dominant single-clean-
-    // record_reading turn shape. The Anthropic-reported stop_reason for
-    // round 1 stays 'tool_use' (preserved in actualStopReasonPerRound).
-    if (earlyTerminateEnabled && rounds === 1 && earlyTerminateSession) {
-      try {
-        const ptw = typeof perTurnWritesRef === 'function' ? perTurnWritesRef() : null;
-        if (ptw) {
-          // Lazy-import the predicate so the loop has no module-load
-          // dependency unless the flag is on.
-
-          const { shouldEarlyTerminate } = await import('./stage6-early-terminate.js');
-          if (
-            shouldEarlyTerminate({
-              records,
-              toolResults,
-              perTurnWrites: ptw,
-              session: earlyTerminateSession,
-            })
-          ) {
-            terminalReason = 'early_terminated';
-            earlyTerminated = true;
-            logger?.info?.('voice_latency.round1_early_terminate_fired', {
-              sessionId: ctx?.sessionId,
-              turnId: ctx?.turnId,
-              rounds,
-              tool_count: records.length,
-            });
-            break;
-          }
-        }
-      } catch (err) {
-        logger?.warn?.('voice_latency.early_terminate_predicate_error', {
-          sessionId: ctx?.sessionId,
-          turnId: ctx?.turnId,
-          error: err?.message || String(err),
-        });
-        // Fall through to normal round-2 invocation on any predicate error.
-      }
-    }
   }
 
   // Phase 2: set terminalReason for paths that didn't already set it.
@@ -981,7 +868,6 @@ export async function runToolLoop({
     // Phase 0 + Phase 2 (single-round latency sprint) — additive return fields.
     // Legacy callers ignore unknown keys, so the back-compat is preserved.
     terminal_reason: terminalReason,
-    early_terminated: earlyTerminated,
     actual_stop_reason_per_round: actualStopReasonPerRound,
     tool_names_per_round: toolNamesPerRound,
     tool_call_count_per_round: toolCallCountPerRound,

@@ -14,7 +14,6 @@ const ENV_KEYS = [
   'VOICE_LATENCY_USE_MULTI_CONTEXT',
   'VOICE_LATENCY_LOADED_BARREL',
   'VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN',
-  'VOICE_LATENCY_ROUND1_EARLY_TERMINATE',
   'VOICE_LATENCY_KILL_SWITCH',
 ];
 
@@ -35,7 +34,6 @@ describe('snapshotFlagsForSession', () => {
       streamAskUser: false,
       useMultiContext: false,
       loadedBarrel: false,
-      round1EarlyTerminate: false,
     });
   });
 
@@ -46,7 +44,6 @@ describe('snapshotFlagsForSession', () => {
     process.env.VOICE_LATENCY_STREAM_ASK_USER = 'on';
     process.env.VOICE_LATENCY_USE_MULTI_CONTEXT = 'True';
     process.env.VOICE_LATENCY_LOADED_BARREL = 'on';
-    process.env.VOICE_LATENCY_ROUND1_EARLY_TERMINATE = 'TRUE';
     const snap = flags.snapshotFlagsForSession();
     expect(snap).toEqual({
       streamConfirmations: true,
@@ -55,7 +52,6 @@ describe('snapshotFlagsForSession', () => {
       streamAskUser: true,
       useMultiContext: true,
       loadedBarrel: true,
-      round1EarlyTerminate: true,
     });
   });
 
@@ -66,7 +62,6 @@ describe('snapshotFlagsForSession', () => {
     process.env.VOICE_LATENCY_STREAM_ASK_USER = 'yes please';
     process.env.VOICE_LATENCY_USE_MULTI_CONTEXT = '';
     process.env.VOICE_LATENCY_LOADED_BARREL = 'maybe';
-    process.env.VOICE_LATENCY_ROUND1_EARLY_TERMINATE = 'sometimes';
     const snap = flags.snapshotFlagsForSession();
     expect(snap).toEqual({
       streamConfirmations: false,
@@ -75,7 +70,6 @@ describe('snapshotFlagsForSession', () => {
       streamAskUser: false,
       useMultiContext: false,
       loadedBarrel: false,
-      round1EarlyTerminate: false,
     });
   });
 
@@ -118,7 +112,7 @@ describe('isKillSwitchActive', () => {
 });
 
 describe('SNAPSHOT_FLAG_ENV_NAMES', () => {
-  test('lists exactly the 7 snapshotted env-var names', () => {
+  test('lists exactly the 6 snapshotted env-var names', () => {
     expect(flags.SNAPSHOT_FLAG_ENV_NAMES).toEqual([
       'VOICE_LATENCY_STREAM_CONFIRMATIONS',
       'VOICE_LATENCY_SUPPRESSION',
@@ -126,7 +120,6 @@ describe('SNAPSHOT_FLAG_ENV_NAMES', () => {
       'VOICE_LATENCY_STREAM_ASK_USER',
       'VOICE_LATENCY_USE_MULTI_CONTEXT',
       'VOICE_LATENCY_LOADED_BARREL',
-      'VOICE_LATENCY_ROUND1_EARLY_TERMINATE',
     ]);
   });
 

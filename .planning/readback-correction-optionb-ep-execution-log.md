@@ -74,3 +74,13 @@
   - §3.2 + §3.3 prompt edits committed together (one file, shared size-budget cap).
 - **Deploy:** backend Phase A mandated by plan §6 ("→ ECS via CI, gh run watch to COMPLETED"); gate passed → ready PR + merge + CI watch. No new task-def env vars (no drift-check concern). low_conf_readback_v1 is a CLIENT-advertised capability, not an env var.
 - **NOT in scope this run (Phase B — separate /ep against CertMateUnified, AFTER backend rollout):** iOS drop the `<0.5` client filter, relax TranscriptGate for bare no/nope/nah, advertise `low_conf_readback_v1` in voice_latency.supports, EC5 `extractionTurnId != nil` single-fire guard. TestFlight follow-on.
+
+## Rebase against main (PR #60 landed mid-run) — 2026-06-18
+- `gh pr merge` reported non-mergeable: PR #60 (loaded-barrel agentic restore, Plan A+B) merged to main after I branched, overlapping confirmation-text.js, voice-latency-config.js, sonnet_agentic_system.md, stage6-shadow-harness.js, stage6-tool-loop.js + tests.
+- Merged origin/main into the branch; 3 conflicts resolved:
+  1. **stage6-shadow-harness.js onSlotAudioReady** — main's Plan B (B1a) set `onSlotAudioReady: null` (suppress mid-stream advertisement entirely). Took main's side; dropped my mid-stream `spokenReadbacks.push`. CONSEQUENCE: under Plan B the inspector hears ONLY canonical (final) confirmations, so the rolling buffer is now sourced from final reading confirmations alone — correct (the dual-source mid-stream path no longer plays to iOS). The `spokenReadbacks` accumulator + final-confirmation population are retained.
+  2. **stage6-shadow-harness.js toolChoiceAnyOnRound1** — main REMOVED the round-1 tool_choice force from the tool loop entirely (grep: no `tool_choice` in stage6-tool-loop.js). So my §6 no-op allowance guards a force that no longer exists → DROPPED the bespoke negation no-op gate (dead code) + the now-unused `windowHasReadback`/`STANDALONE_NEGATION_PATTERN` imports. The model already no-ops on round 1 by default. Rolling-window injection retained (the load-bearing part).
+  3. **stage6-shadow-harness.js buffer-push vs B1b** — independent; kept BOTH my buffer population AND main's `speculator.validateAgainstConfirmations` (B1b drift validate).
+- Prompt size-budget caps re-measured on the MERGED prompt (both my + main's additions present): combined 16030→17150 (measured 17060), base 10920→12050 (measured 11952).
+- CLAUDE.md changelog: kept both my 2026-06-18 rows + main's 2026-06-16 row; noted the tool_choice no-op drop.
+- **Full suite re-run on merged tree: 4807 passed / 19 skipped / 0 failed (198/200 suites).** Lint clean on resolved files.

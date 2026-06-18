@@ -108,6 +108,20 @@ export const FIELD_CORRECTIONS = {
   main_fuse_type: 'spd_type_supply',
   supply_fuse_rating: 'spd_rated_current',
   supply_fuse_type: 'spd_bs_en',
+  // "Surge" = Surge Protection Device (transient overvoltage protection), a
+  // SEPARATE family from the DNO cutout/main fuse (spd_*). Canonicalise the
+  // common surge_* / surge_protection_* variants the model may emit.
+  surge_protection_present: 'surge_spd_present',
+  surge_protection_fitted: 'surge_spd_present',
+  surge_present: 'surge_spd_present',
+  surge_protection_type: 'surge_spd_type',
+  surge_type: 'surge_spd_type',
+  surge_protection_bs_en: 'surge_spd_bs_en',
+  surge_bs_en: 'surge_spd_bs_en',
+  surge_protection_standard: 'surge_spd_bs_en',
+  surge_status: 'surge_status_indicator',
+  surge_indicator: 'surge_status_indicator',
+  surge_protection_status: 'surge_status_indicator',
 };
 
 /**

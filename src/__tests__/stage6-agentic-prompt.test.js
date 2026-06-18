@@ -262,17 +262,29 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // rename_circuit(1->2), voiceFeedbackId 22), on top of the merged
       // 2026-06-05 W1.6/W1.7 additions. Measured 15201; cap 15301 leaves ~100-token headroom.
       //
-      // 2026-06-18 (readback-correction-optionb §3.2 + §3.3): bumped to
-      // 16450 to absorb (a) the CONFIDENCE SCORING rewrite to diagnostic-
-      // only (structurally complete readings WRITE at any confidence — no
-      // silent drop); (b) the Directive-3 + RESTRAINT bare-negation
-      // exceptions (ask once, never clear_reading); (c) the RECENT CONTEXT
-      // = transient-anaphora-memory sentence reconciling the cached-prefix
-      // source-of-truth; (d) the BARE NEGATION AFTER A READ-BACK behaviour
-      // block + Example 10 worked example. Measured 16355; cap 16450
-      // leaves ~95-token headroom.
+      // 2026-06-16 (field session F1AC26FB voice-feedback fixes): bumped to
+      // 15700 to absorb three steering additions — SWAP/REORDER DESIGNATIONS
+      // (#5.1, stop scratch-circuit-999), TAILS→main_switch_conductor_csa
+      // (#2.1, stop sub_main misroute), and the earthing head/value garble
+      // line (#1.4). Measured 15606; cap 15700 leaves ~94-token headroom.
+      //
+      // 2026-06-17 (surge-protection-box, rebased onto F1AC26FB): bumped to
+      // 16030 to absorb the SURGE vs SUPPLY-FUSE DISAMBIGUATION block (routes
+      // "surge protection"/"Type N surge"/"SPD status" → surge_* while keeping
+      // "main fuse"/"cutout" → spd_*) ON TOP of the F1AC26FB additions.
+      // Measured 15930; cap 16030 leaves ~100-token headroom.
+      //
+      // 2026-06-18 (readback-correction-optionb §3.2 + §3.3, rebased onto the
+      // surge-protection + F1AC26FB additions above): bumped to 17150 to absorb
+      // (a) the CONFIDENCE SCORING rewrite to diagnostic-only (structurally
+      // complete readings WRITE at any confidence — no silent drop); (b) the
+      // Directive-3 + RESTRAINT bare-negation exceptions (ask once, never
+      // clear_reading); (c) the RECENT CONTEXT = transient-anaphora-memory
+      // sentence reconciling the cached-prefix source-of-truth; (d) the BARE
+      // NEGATION AFTER A READ-BACK behaviour block + Example 10. Measured 17060
+      // on the MERGED prompt; cap 17150 leaves ~90-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(16450);
+      expect(estimate).toBeLessThanOrEqual(17150);
     });
   });
 
@@ -328,6 +340,27 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // And names creation as part of the guidance (either "create" or
       // "create_circuit" — both satisfy the requirement).
       expect(prompt.toLowerCase()).toEqual(expect.stringContaining('create'));
+    });
+
+    test('contains the #3.4.2 NEGATIVE designation-on-create clause (designation-wire-sync)', () => {
+      // The prompt already steers designation-on-create POSITIVELY (CIRCUIT
+      // NAMING). #3.4.2 adds the EXPLICIT NEGATIVE counter to the schema's
+      // "Null if unknown" wording: never emit designation:null for a named
+      // circuit. This test must NOT pass on the generic positive guidance —
+      // it asserts the negative phrasing specifically.
+      const lower = prompt.toLowerCase();
+      // Anchor on the negative "designation:null when ... a name" idea.
+      const idx = lower.indexOf('designation:null');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const windowStart = Math.max(0, idx - 300);
+      const windowEnd = Math.min(prompt.length, idx + 300);
+      const section = lower.slice(windowStart, windowEnd);
+      // NEVER ... designation-less / designation:null, tied to a spoken name.
+      expect(section).toEqual(expect.stringContaining('never'));
+      expect(section).toEqual(expect.stringContaining('name'));
+      const hasNegativeDesignation =
+        section.includes('designation-less') || section.includes('designation:null');
+      expect(hasNegativeDesignation).toBe(true);
     });
   });
 
@@ -877,14 +910,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     voiceFeedbackId 21) + MERGED / STUTTERED NAMING rule
       //     (voiceFeedbackId 22), on top of the merged 2026-06-05
       //     W1.6/W1.7 additions. Measured 10093; cap 10193 leaves ~100-token headroom.
-      //   - 11350 (2026-06-18 readback-correction-optionb §3.2 + §3.3):
-      //     CONFIDENCE SCORING rewrite (diagnostic-only, no silent drop) +
-      //     Directive-3/RESTRAINT bare-negation exceptions + RECENT
-      //     CONTEXT transient-memory sentence + BARE NEGATION AFTER A
-      //     READ-BACK behaviour block + Example 10. Measured 11247; cap
-      //     11350 leaves ~103-token headroom.
+      //   - 10600 (2026-06-16 field session F1AC26FB): SWAP/REORDER
+      //     DESIGNATIONS (#5.1), TAILS→main_switch_conductor_csa (#2.1),
+      //     and the earthing head/value garble line (#1.4). Measured
+      //     10498; cap 10600 leaves ~100-token headroom.
+      //   - 10920 (2026-06-17 surge-protection-box, rebased): SURGE vs
+      //     SUPPLY-FUSE DISAMBIGUATION block on top of F1AC26FB. Measured
+      //     10822; cap 10920 leaves ~98-token headroom.
+      //   - 12050 (2026-06-18 readback-correction-optionb §3.2 + §3.3,
+      //     rebased onto the above): CONFIDENCE SCORING rewrite (diagnostic-
+      //     only, no silent drop) + Directive-3/RESTRAINT bare-negation
+      //     exceptions + RECENT CONTEXT transient-memory sentence + BARE
+      //     NEGATION AFTER A READ-BACK behaviour block + Example 10.
+      //     Measured 11952 on the MERGED base; cap 12050 leaves ~98-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(11350);
+      expect(estimate).toBeLessThanOrEqual(12050);
     });
   });
 
@@ -1362,6 +1402,52 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // phrasing so a "drop the NOT C2" tidy-up that would let the
       // model wobble back to C2 fails the test loudly.
       expect(block).toMatch(/C3,\s*NOT\s*C2/i);
+    });
+  });
+
+  describe('Group 16 — 2026-06-17 surge-protection-box (SURGE vs SUPPLY-FUSE)', () => {
+    // Field session F1AC26FB: inspector said "the main fuse"; it correctly
+    // routed to spd_* (the DNO cutout) but the UI box read "(SPD)" =
+    // Surge Protection Device, and there was no box for a real surge device.
+    // Option A adds a separate surge_* family. The agentic prompt must teach
+    // the model to keep main-fuse/cutout on spd_* AND route genuine surge
+    // talk to surge_*, or the two collide again at the model layer.
+    test('SURGE vs SUPPLY-FUSE DISAMBIGUATION section exists with the surge_* family', () => {
+      const idx = prompt.search(/SURGE vs SUPPLY-FUSE DISAMBIGUATION/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Section ends at the next sibling block (MAIN PROTECTIVE BONDING).
+      const end = prompt.indexOf('MAIN PROTECTIVE BONDING', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+
+      // Surge vocabulary + the canonical field family it routes to. Both
+      // must co-occur or the routing is incomplete.
+      expect(block).toEqual(expect.stringContaining('surge protection'));
+      expect(block).toEqual(expect.stringContaining('surge_spd_present'));
+      expect(block).toEqual(expect.stringContaining('surge_spd_type'));
+      expect(block).toEqual(expect.stringContaining('surge_spd_bs_en'));
+      expect(block).toEqual(expect.stringContaining('surge_status_indicator'));
+
+      // Load-bearing: surge talk must NOT collapse into the spd_* cutout
+      // family. The block must explicitly keep main fuse/cutout on spd_*.
+      expect(block).toMatch(/NEVER route surge.*spd_\*/i);
+      expect(block).toEqual(expect.stringContaining('spd_*'));
+    });
+
+    test('§4 regression — main-fuse value-kinds stay split (BS→spd_bs_en, amps→spd_rated_current)', () => {
+      // Session F1AC26FB turn-13 dumped spd_bs_en="MCB 100" — type/current
+      // text leaked into the BS-number slot. The SUPPLY vs MAIN SWITCH block
+      // must keep the per-value-kind split so a "main fuse BS 1361, 100 amp"
+      // utterance separates the standard from the rating.
+      const idx = prompt.search(/SUPPLY vs MAIN SWITCH DISAMBIGUATION/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const end = prompt.indexOf('SURGE vs SUPPLY-FUSE DISAMBIGUATION', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+      // BS/standard number → spd_bs_en; rating/amps → spd_rated_current.
+      expect(block).toEqual(expect.stringContaining('spd_bs_en'));
+      expect(block).toEqual(expect.stringContaining('spd_rated_current'));
+      expect(block).toMatch(/rating.*amps.*spd_rated_current|spd_rated_current/i);
     });
   });
 });

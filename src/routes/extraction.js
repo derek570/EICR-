@@ -2721,21 +2721,14 @@ router.post(
         analysis.main_switch_voltage = '230';
       }
 
-      // Supply Protective Device fallback: in most domestic installations the
-      // CU main switch rating is the relevant value for the EICR form's
-      // "Supply Protective Device" section. These keys (spd_rated_current,
-      // spd_bs_en, spd_type_supply) are the supply_characteristics schema —
-      // distinct from the CU surge-protector fields (spd_rated_current_a etc.)
-      // that the classifier writes via spd_present.
-      if (!analysis.spd_rated_current && analysis.main_switch_current) {
-        analysis.spd_rated_current = analysis.main_switch_current;
-      }
-      if (!analysis.spd_bs_en && analysis.main_switch_bs_en) {
-        analysis.spd_bs_en = analysis.main_switch_bs_en;
-      }
-      if (!analysis.spd_type_supply && analysis.main_switch_type) {
-        analysis.spd_type_supply = analysis.main_switch_type;
-      }
+      // NOTE (Option A, surge-protection-box 2026-06-17): the DNO supply
+      // cutout / main fuse (spd_*) is a SEPARATE device from the consumer
+      // unit's main switch. The previous fallback that auto-copied
+      // main_switch_* into spd_rated_current / spd_bs_en / spd_type_supply was
+      // removed because it polluted the (relabeled) "Supply Protective Device
+      // (Main Fuse)" box with main-switch values. spd_* must only be filled
+      // when a genuine supply cutout/fuse is identified (via voice or the
+      // doc/photo cutout fields), never derived from the CU main switch.
 
       // Cost: classifier (Stage 1) + Stage 3 + Stage 4 token usage.
       // Sonnet 4.6 pricing: $3/1M input, $15/1M output.
@@ -3305,6 +3298,10 @@ If the cert has a single combined address block like "Mr J Smith, 12 Acacia Aven
 - polarity_confirmed / rcd_button_confirmed / afdd_button_confirmed: "OK" | "Y" | "N" (or omit)
 - spd_status: "Fitted" | "Not Fitted" | "Not Required"
 - spd_type: "Type 1" | "Type 2" | "Type 3" | "Type 1+2" | "Type 2+3"
+- surge_spd_present (supply): "Yes" | "No" | "N/A" | "LIM"
+- surge_spd_type (supply): "Type 1" | "Type 2" | "Type 1+2" | "Type 3" | "Combined" | "N/A"
+- surge_status_indicator (supply): "Satisfactory" | "Unsatisfactory" | "N/A"
+- DISAMBIGUATION: supply_characteristics.spd_* = the DNO supply cutout / "main fuse" (NOT surge, NOT the main switch). supply_characteristics.surge_* = a real Surge Protection Device (transient overvoltage, BS EN 61643-11). A photographed "main fuse BS 1361, 100 amp" → spd_bs_en/spd_rated_current (NOT main_switch_*); a "Type 2 surge device" → surge_*. (board_info.spd_status/spd_type are the board-scoped CCU surge surface — leave those as-is.)
 - premises_description: "Residential" | "Commercial" | "Industrial" | "Agricultural" | "Other"
 - observation code: "C1" (danger present) | "C2" (potentially dangerous) | "C3" (improvement recommended) | "FI" (further investigation required)
 - next_inspection_years: integer 1, 2, 3, 4, 5, or 10
@@ -3363,10 +3360,14 @@ Return ONLY this JSON. Omit any key whose value is not legibly present in the im
     "earth_electrode_type": "Rod",
     "earth_electrode_resistance": "12.5",
     "earth_electrode_location": "Where the electrode is — e.g. 'Front garden'",
-    "spd_bs_en": "Standard for DNO supply cutout fuse",
+    "spd_bs_en": "Standard for DNO supply cutout / main fuse (NOT surge, NOT the main switch), e.g. '1361 type 1', '88-2'",
     "spd_type_supply": "DNO cutout fuse type, e.g. 'gG'",
     "spd_short_circuit": "DNO cutout breaking capacity in kA",
     "spd_rated_current": "DNO cutout rating in amps",
+    "surge_spd_present": "Surge Protection Device fitted? 'Yes' | 'No' | 'N/A' | 'LIM' — a transient overvoltage device (BS 7671 443/534), SEPARATE from the DNO cutout above",
+    "surge_spd_type": "Surge Protection Device type: 'Type 1' | 'Type 2' | 'Type 1+2' | 'Type 3' | 'Combined' | 'N/A'",
+    "surge_spd_bs_en": "Surge Protection Device standard, e.g. '61643-11', '62305' — BS EN 61643-11 belongs HERE, not spd_bs_en",
+    "surge_status_indicator": "Surge Protection Device status indicator: 'Satisfactory' | 'Unsatisfactory' | 'N/A' (inspection item 4.19)",
     "main_switch_bs_en": "60947-3",
     "main_switch_poles": "2",
     "main_switch_voltage": "230",

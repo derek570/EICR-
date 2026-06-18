@@ -242,6 +242,29 @@ export function validateCreateCircuit(input, snapshot) {
   if (circuitExistsInSnapshot(snapshot, input.circuit_ref, input.board_id)) {
     return { code: 'circuit_already_exists', field: 'circuit_ref' };
   }
+  // F1AC26FB #5.2 — reject implausible scratch/temp circuit refs. There is
+  // no atomic swap tool, so to "swap circuits 3 and 4" Sonnet parked a
+  // scratch circuit 999 "(temp)" as a rekey buffer and never cleaned it up,
+  // leaving a junk circuit on the cert. A real circuit ref is a small board
+  // position: refs >= 100, or far above the current max for this board, are
+  // almost always model-invented scratch. Designation swaps must use two
+  // rename_circuit calls (see the SWAP/REORDER prompt rule), never a
+  // placeholder. iOS already tolerates a rejected op, so this is safe.
+  // (>= 100 is the absolute cap; +20 over the current max catches scratch
+  // refs on boards that legitimately run to high way-counts. Bump only if a
+  // real board exceeds 100 ways.)
+  if (Number.isInteger(input.circuit_ref)) {
+    const existingRefs = listCircuitRefsInBoard(snapshot, input.board_id);
+    const maxExistingRef = existingRefs.length > 0 ? Math.max(...existingRefs) : 0;
+    if (input.circuit_ref >= 100 || input.circuit_ref > maxExistingRef + 20) {
+      return {
+        code: 'implausible_circuit_ref',
+        field: 'circuit_ref',
+        max_existing_ref: maxExistingRef,
+        hint: 'Do not create scratch/temp circuits for swaps; update existing circuit designations with rename_circuit.',
+      };
+    }
+  }
   if (input.rating_amps != null && typeof input.rating_amps !== 'number') {
     return { code: 'invalid_type', field: 'rating_amps' };
   }

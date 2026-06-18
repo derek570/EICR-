@@ -625,6 +625,33 @@
       "description": "Current rating of supply protective device",
       "ai_guidance": "DNO supply cutout fuse rating. NOT the consumer's main switch rating — do NOT copy the main switch value here. Only populate if a separate supply fuse/cutout is mentioned. Listen for 'cutout', 'supply fuse', 'DNO fuse'. Common: 60A, 80A, 100A."
     },
+    "surge_spd_present": {
+      "label": "Surge Protection Device Fitted",
+      "type": "select",
+      "options": ["Yes", "No", "N/A", "LIM"],
+      "description": "Whether a Surge Protection Device (SPD) is installed at the origin",
+      "ai_guidance": "A SURGE protection device (transient overvoltage protection per BS 7671 Section 443/534), NOT the DNO supply cutout/main fuse (that is spd_*). Listen for 'surge protection', 'surge protective device', 'surge protector', 'transient protection'. 'LIM' = limited/excluded by agreement."
+    },
+    "surge_spd_type": {
+      "label": "SPD Type",
+      "type": "select",
+      "options": ["Type 1", "Type 2", "Type 1+2", "Type 3", "Combined", "N/A"],
+      "description": "Type of Surge Protection Device fitted",
+      "ai_guidance": "Surge Protection Device type per BS EN 61643-11. Type 1 (origin/lightning), Type 2 (consumer unit/transient), Type 3 (point of use), or combined. Listen for 'Type 1', 'Type 2', 'Type 1 plus 2', 'combined SPD'."
+    },
+    "surge_spd_bs_en": {
+      "label": "SPD BS EN",
+      "type": "text",
+      "description": "Standard number for the Surge Protection Device",
+      "ai_guidance": "Standard for a SURGE protection device. Common: '61643-11' (BS EN 61643-11), '62305 LPS'. Do NOT confuse with the DNO supply cutout fuse standard (spd_bs_en, e.g. 88-2, 1361)."
+    },
+    "surge_status_indicator": {
+      "label": "SPD Status Indicator",
+      "type": "select",
+      "options": ["Satisfactory", "Unsatisfactory", "N/A"],
+      "description": "Confirmation of indication that the SPD is functional (BS 7671 651.4, inspection item 4.19)",
+      "ai_guidance": "The SPD's own status/fault indicator window. Listen for 'surge indicator OK', 'SPD status green', 'indicator satisfactory/functional'. Maps to inspection schedule item 4.19."
+    },
     "means_earthing_distributor": {
       "label": "Distributor's Facility",
       "type": "boolean",

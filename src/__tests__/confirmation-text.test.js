@@ -58,6 +58,18 @@ describe('confirmation-text — constants', () => {
     expect(CONFIRMATION_FRIENDLY_NAMES.spd_type_supply).toBe('main fuse type');
     expect(CONFIRMATION_FRIENDLY_NAMES.main_switch_bs_en).toBe('main switch BS EN');
   });
+
+  test('2026-06-17 surge-protection-box — CONFIRMATION_FRIENDLY_NAMES has surge_* entries', () => {
+    // The surge_* family is a separate device from the main fuse (spd_*).
+    // Without explicit friendly names, deriveFriendlyName would speak the
+    // raw "surge spd present" snake-case — not inspector vocabulary.
+    expect(CONFIRMATION_FRIENDLY_NAMES.surge_spd_present).toBe('surge protection fitted');
+    expect(CONFIRMATION_FRIENDLY_NAMES.surge_spd_type).toBe('surge protection type');
+    expect(CONFIRMATION_FRIENDLY_NAMES.surge_spd_bs_en).toBe('surge protection BS EN');
+    expect(CONFIRMATION_FRIENDLY_NAMES.surge_status_indicator).toBe(
+      'surge protection indicator'
+    );
+  });
 });
 
 describe('confirmation-text — buildConfirmationText', () => {

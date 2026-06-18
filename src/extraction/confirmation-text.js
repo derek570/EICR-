@@ -96,6 +96,13 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   spd_rated_current: 'main fuse rating',
   spd_short_circuit: 'main fuse breaking capacity',
   spd_type_supply: 'main fuse type',
+  // Surge Protection Device (transient overvoltage protection) — distinct
+  // from the main fuse / DNO cutout above. Spoken in the inspector's surge
+  // vocabulary, not "SPD" jargon.
+  surge_spd_present: 'surge protection fitted',
+  surge_spd_type: 'surge protection type',
+  surge_spd_bs_en: 'surge protection BS EN',
+  surge_status_indicator: 'surge protection indicator',
   main_switch_bs_en: 'main switch BS EN',
   rcd_operating_current_ma: 'RCD',
   rcd_time_ms: 'RCD time',

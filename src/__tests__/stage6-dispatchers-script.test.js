@@ -838,6 +838,7 @@ describe('Silvertown end-to-end recovery (Fix 1 + Fix 2 combined)', () => {
     // Fix 1 kicks in — engine re-asks instead of discarding state.
     expect(out).toEqual({ handled: true, fallthrough: false });
     expect(session.dialogueScriptState.circuit_retry_attempted).toBe(true);
-    expect(ws.sent.at(-1).question).toBe("What's the circuit number for the upstairs socket.?");
+    // F1AC26FB #3.2 — echo now strips trailing punctuation.
+    expect(ws.sent.at(-1).question).toBe("What's the circuit number for the upstairs socket?");
   });
 });

@@ -14,8 +14,8 @@ import { LiveField, LiveFieldWide } from './live-field';
  *
  * Sections (in scroll order):
  *   1. Installation — client + premises metadata
- *   2. Supply       — earthing, Ze, PFC, voltage, SPD
- *   3. Board        — main switch + board-level SPD
+ *   2. Supply       — earthing, Ze, PFC, voltage, surge protection device
+ *   3. Board        — main switch + main fuse (DNO cutout) live mirror
  *   4. Circuits     — one row per circuit, readings inline
  *   5. Observations — EICR only (EIC has no observations)
  *
@@ -200,6 +200,28 @@ export function LiveFillView() {
               value={str(supply.earth_electrode_resistance)}
               monospace
             />
+            {/* Surge Protection Device (transient overvoltage) — distinct from
+                the main fuse below. surge-protection-box 2026-06-17. */}
+            <LiveField
+              fieldKey="supply.surge_spd_present"
+              label="Surge fitted"
+              value={str(supply.surge_spd_present)}
+            />
+            <LiveField
+              fieldKey="supply.surge_spd_type"
+              label="Surge type"
+              value={str(supply.surge_spd_type)}
+            />
+            <LiveField
+              fieldKey="supply.surge_spd_bs_en"
+              label="Surge BS EN"
+              value={str(supply.surge_spd_bs_en)}
+            />
+            <LiveField
+              fieldKey="supply.surge_status_indicator"
+              label="Surge indicator"
+              value={str(supply.surge_status_indicator)}
+            />
           </div>
         </SectionCard>
       </div>
@@ -241,15 +263,22 @@ export function LiveFillView() {
               value={str(board.rcd_operating_current)}
               monospace
             />
-            <LiveField fieldKey="board.spd_bs_en" label="SPD BS EN" value={str(board.spd_bs_en)} />
+            {/* Option A: board.spd_* is the live-fill mirror of the DNO
+                supply cutout / main fuse (regex routes spd_* → board_info),
+                NOT surge. Relabelled from "SPD" to "Main Fuse". */}
+            <LiveField
+              fieldKey="board.spd_bs_en"
+              label="Main Fuse BS EN"
+              value={str(board.spd_bs_en)}
+            />
             <LiveField
               fieldKey="board.spd_type_supply"
-              label="SPD type"
+              label="Main Fuse type"
               value={str(board.spd_type_supply)}
             />
             <LiveField
               fieldKey="board.spd_rated_current"
-              label="SPD rating (A)"
+              label="Main Fuse rating (A)"
               value={str(board.spd_rated_current)}
               monospace
             />

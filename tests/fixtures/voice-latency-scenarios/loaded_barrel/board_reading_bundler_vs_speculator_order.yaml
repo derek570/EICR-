@@ -1,30 +1,31 @@
 name: board_reading_bundler_vs_speculator_order
 suite: loaded_barrel
 description: |
-  Documents the bundler-vs-speculator emit ordering for a single
-  board-level reading. The speculator (Loaded Barrel) opens a
-  pre-synth on `onToolUseStreamed` (content_block_stop) and emits an
-  `extraction` envelope with `result.mid_stream_preview: true`. The
-  bundler emits its `extraction` envelope on round-1 completion
-  (early-terminate path for board readings, post-2026-05-28 widening).
+  Documents the bundler emit for a single board-level reading under the
+  Plan B (2026-06-17) B1a SUPPRESS contract.
 
-  Pin: the BUNDLER envelope arrives BEFORE the speculator envelope
-  on the wire. If a future regression flips the order (speculator
-  fires first, bundler second), iOS would see a confirmation that
-  pre-dates the actual reading — which would race with the value
-  rendering and cause a "green flash before the value lands"
-  UI artefact.
+  PREVIOUSLY this fixture pinned bundler-BEFORE-speculator ordering: the
+  speculator opened a pre-synth on `onToolUseStreamed` (content_block_stop)
+  and emitted an `extraction` envelope with `result.mid_stream_preview: true`.
+  Plan B B1a SUPPRESSES that mid-stream advertisement entirely (the speculator
+  still synthesises + parks the MP3, but never emits the preview), because the
+  preview let iOS PLAY speculative audio mid-turn, BEFORE the loop validated —
+  the "green flash before the value lands" / wrong-audio-on-a-corrected-turn
+  artefact. iOS now learns of the parked audio via the NORMAL canonical
+  confirmation POST (post-validate), which claims the parked MP3.
 
-  Implementation: the new `expect.event_ordering` predicate keys on
-  `extraction:bundler` (no `mid_stream_preview` flag set) vs
-  `extraction:speculator` (mid_stream_preview === true). Both arrive
-  as `type: extraction` on the wire, so a plain saw_event_types check
-  wouldn't distinguish them.
+  Pin (post-B1a): the BUNDLER `extraction` envelope arrives and NO
+  `extraction:speculator` (mid_stream_preview) envelope is ever sent. If a
+  future regression re-introduces the mid-stream preview, the forbid assertion
+  below trips.
 
-  Pre-requisite: VOICE_LATENCY_LOADED_BARREL=true on the task def
-  (the speculator must actually fire). If the speculator is disabled,
-  only the bundler envelope arrives — the ordering assertion would
-  then fail, surfacing the missing speculator as a misconfig.
+  Implementation: the `event_ordering` / `forbid_event_tokens` predicates key on
+  `extraction:bundler` (no `mid_stream_preview` flag) vs `extraction:speculator`
+  (mid_stream_preview === true). Both would arrive as `type: extraction`, so a
+  plain saw_event_types check wouldn't distinguish them.
+
+  Pre-requisite: VOICE_LATENCY_LOADED_BARREL=true on the task def (the
+  speculator must construct + park the MP3 so the canonical POST can HIT).
 
 job_state:
   boards:
@@ -52,14 +53,14 @@ expect:
       field: ze
       value: "0.86"
   ask_user_count: { max: 0 }
-  # Bundler MUST arrive before speculator. Predicate matches in
-  # relative order — additional events between them are fine.
+  # Post-B1a: the bundler envelope arrives; the mid-stream speculator
+  # preview is suppressed. Pin the bundler emit and FORBID the preview.
   event_ordering:
     - extraction:bundler
+  forbid_event_tokens:
     - extraction:speculator
-  # The first TTS fetch should serve the bundler's confirmation. We
-  # don't strictly cap fetch count since the speculator may also
-  # trigger one (cache MISS path). Min 1 is the only safety net.
+  # The first TTS fetch serves the bundler's confirmation (which claims the
+  # parked MP3 on a HIT, or synthesises fresh on a MISS). Min 1 safety net.
   tts_fetch_count: { min: 1 }
 
 config:

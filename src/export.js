@@ -130,10 +130,17 @@ const SUPPLY_HEADERS = {
   prospective_fault_current: 'Prospective Fault Current (kA)',
   earth_loop_impedance_ze: 'Earth Loop Impedance Ze (Ohm)',
   supply_polarity_confirmed: 'Supply Polarity Confirmed',
-  spd_bs_en: 'SPD BS EN',
-  spd_type_supply: 'SPD Type',
-  spd_short_circuit: 'SPD Short Circuit (kA)',
-  spd_rated_current: 'SPD Rated Current (A)',
+  // Option A (surge-protection-box 2026-06-17): spd_* = the DNO supply cutout /
+  // main fuse (NOT surge). Renamed from the misleading "SPD" headers; the real
+  // Surge Protection Device gets its own surge_* columns below.
+  spd_bs_en: 'Main Fuse BS EN',
+  spd_type_supply: 'Main Fuse Type',
+  spd_short_circuit: 'Main Fuse Short Circuit (kA)',
+  spd_rated_current: 'Main Fuse Rated Current (A)',
+  surge_spd_present: 'Surge Protection Fitted',
+  surge_spd_type: 'Surge Protection Type',
+  surge_spd_bs_en: 'Surge Protection BS EN',
+  surge_status_indicator: 'Surge Status Indicator',
 };
 
 /**
