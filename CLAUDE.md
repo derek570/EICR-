@@ -33,6 +33,17 @@ Automated EICR/EIC certificate creation for electrical inspectors using an iOS-f
 6. **Review & Edit** - Inspector reviews populated certificate in iOS app tabs
 7. **PDF Generation** - Generate complete EICR/EIC PDF certificates
 
+## Audio-First Design Principles
+
+CertMate is evolving into an **audio-first, hands-free** tool. The inspector works in **AirPods**, walking the installation with the phone pocketed and **no eyes on the screen** — they dictate readings and hear them read back. Treat the spoken channel as the **primary UI**; the on-screen grid is the secondary/visual mirror.
+
+The following are **MANDATORY** product invariants. They override older guidance that optimised for screen-first use or for minimising TTS chatter, and they span both backend (extraction/confirmation synthesis) and iOS (TTS playback):
+
+1. **Every dictated reading is read back aloud — exactly once. Never silently entered into the UI.** A value that only appears on screen is invisible to a hands-free inspector, so every applied reading/correction MUST produce one spoken confirmation. *Exactly once* — not zero (silent entry) and not twice (the double-confirm bug). This holds for ALL apply paths, including client-initiated reassignments, not just server-extraction turns.
+   - **Exception (by design):** automatic derivations and side-effect ticks — e.g. polarity auto-ticked from Zs, mirror-derived fields — are computed consequences, NOT dictated readings, and do **not** get a spoken confirmation.
+2. **Low-confidence readings ASK — never silently drop.** Below the confidence threshold the system MUST ask a clarifying question ("Did you say 250 volts?") rather than dropping the value or entering it silently. A dropped reading is invisible to a hands-free user. This supersedes the older "suppress low-confidence confirmations to cut noise" stance on both server (`CONFIRMATION_MIN_CONFIDENCE`) and iOS.
+3. **Latency is a first-class concern.** The dictate→confirm loop is conversational; perceived latency between speaking and hearing the read-back directly shapes usability. Optimise for low perceived latency and treat regressions as bugs, not cosmetics.
+
 ## Tech Stack
 
 | Component | Technology |
@@ -213,6 +224,7 @@ Recent changes — one line each. **Full commit-body-level detail in [docs/refer
 
 | Date | Summary |
 |------|---------|
+| 2026-06-18 | **Audio-First Design Principles** added to hub + iOS CLAUDE.md — product direction shift to hands-free AirPods use (no eyes on screen). Three MANDATORY invariants: (1) every dictated reading read back aloud exactly once, never silently entered into the UI — all apply paths, with auto-derivations (polarity tick, mirrors) exempt by design; (2) low-confidence readings ASK rather than silently drop (supersedes the `CONFIRMATION_MIN_CONFIDENCE` suppress stance); (3) latency is first-class. Supersedes older screen-first / minimise-TTS-chatter guidance. Spans backend extraction/confirmation synthesis + iOS TTS. |
 | 2026-06-12 | PUT board-hierarchy gate rearchitected: invalid hierarchies are now deterministically REPAIRED (cleared dangling pointers, demoted duplicate mains) + persisted + echoed as `hierarchy_repairs`, never rejected — the reject gate had made job_1778443465217 permanently unsyncable for a week. Strict validation stays on the interactive add_board path. `repairBoardHierarchy` in `board-hierarchy-validator.js`. |
 | 2026-06-12 | Voice-feedback fixes (session 15B88D6B, 4 field reports + /rp-style retrospective review, 11 backend commits): gate cert-identity weak triggers + 2-word identity threshold (`pre-llm-gate.js`, mirrored on iOS) so spoken client-name corrections forward; bonding check-field PASS coercion + `bonding_conductor_continuity` mirror derivation + early-terminate parity fix; `rename_circuit` `source_not_found` recovery hint; prompt MAIN PROTECTIVE BONDING + MERGED/STUTTERED NAMING sections. Companion iOS commits `27ca1d2`..`06376de`. |
 | 2026-06-04 | iOS Fix D (`a62000e` + `b54cb75`) — voice path reconciled with backend Fix B's `spd_*` canonicalisation; legacy `main_fuse_*` aliases dropped from `applySonnetReadings`; supply-side regex split SPD-vs-main-switch. iOS-only. |
