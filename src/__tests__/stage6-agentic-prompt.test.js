@@ -273,8 +273,18 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // "surge protection"/"Type N surge"/"SPD status" → surge_* while keeping
       // "main fuse"/"cutout" → spd_*) ON TOP of the F1AC26FB additions.
       // Measured 15930; cap 16030 leaves ~100-token headroom.
+      //
+      // 2026-06-18 (readback-correction-optionb §3.2 + §3.3, rebased onto the
+      // surge-protection + F1AC26FB additions above): bumped to 17150 to absorb
+      // (a) the CONFIDENCE SCORING rewrite to diagnostic-only (structurally
+      // complete readings WRITE at any confidence — no silent drop); (b) the
+      // Directive-3 + RESTRAINT bare-negation exceptions (ask once, never
+      // clear_reading); (c) the RECENT CONTEXT = transient-anaphora-memory
+      // sentence reconciling the cached-prefix source-of-truth; (d) the BARE
+      // NEGATION AFTER A READ-BACK behaviour block + Example 10. Measured 17060
+      // on the MERGED prompt; cap 17150 leaves ~90-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(16030);
+      expect(estimate).toBeLessThanOrEqual(17150);
     });
   });
 
@@ -907,8 +917,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //   - 10920 (2026-06-17 surge-protection-box, rebased): SURGE vs
       //     SUPPLY-FUSE DISAMBIGUATION block on top of F1AC26FB. Measured
       //     10822; cap 10920 leaves ~98-token headroom.
+      //   - 12050 (2026-06-18 readback-correction-optionb §3.2 + §3.3,
+      //     rebased onto the above): CONFIDENCE SCORING rewrite (diagnostic-
+      //     only, no silent drop) + Directive-3/RESTRAINT bare-negation
+      //     exceptions + RECENT CONTEXT transient-memory sentence + BARE
+      //     NEGATION AFTER A READ-BACK behaviour block + Example 10.
+      //     Measured 11952 on the MERGED base; cap 12050 leaves ~98-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(10920);
+      expect(estimate).toBeLessThanOrEqual(12050);
     });
   });
 

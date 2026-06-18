@@ -311,7 +311,7 @@ describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
 });
 
 describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
-  test('lists exactly the 7 known support strings', () => {
+  test('lists exactly the 8 known support strings', () => {
     expect([...flags.VOICE_LATENCY_KNOWN_SUPPORTS]).toEqual([
       'streaming_http_audio',
       'source_field_in_tts_post',
@@ -320,6 +320,41 @@ describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
       'kill_switch_drop_queue',
       'regex_fast_v2',
       'client_playback_telemetry',
+      // readback-correction-optionb §6 — rollout-sequencing gate.
+      'low_conf_readback_v1',
     ]);
+  });
+});
+
+describe('parseVoiceLatencyCapabilities — hasLowConfReadbackV1 (readback-correction-optionb §6)', () => {
+  test('true when the client advertises low_conf_readback_v1', () => {
+    const caps = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: ['low_conf_readback_v1'] },
+    });
+    expect(caps.hasLowConfReadbackV1).toBe(true);
+  });
+
+  test('false when advertised supports omit it', () => {
+    const caps = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: ['regex_fast_v2'] },
+    });
+    expect(caps.hasLowConfReadbackV1).toBe(false);
+  });
+
+  test('present and false on the empty()/v0 shape (missing capabilities)', () => {
+    // Load-bearing: the accessor MUST exist on the v0 fallback too, so the
+    // dispatcher gate reads false (safe — skip <0.5) rather than undefined.
+    expect(flags.parseVoiceLatencyCapabilities(null)).toHaveProperty(
+      'hasLowConfReadbackV1',
+      false
+    );
+    expect(flags.parseVoiceLatencyCapabilities({ voice_latency: { version: 0 } })).toHaveProperty(
+      'hasLowConfReadbackV1',
+      false
+    );
+    // version present but not 1 → forced-empty shape still carries the key.
+    expect(
+      flags.parseVoiceLatencyCapabilities({ voice_latency: { version: 2, supports: [] } })
+    ).toHaveProperty('hasLowConfReadbackV1', false);
   });
 });

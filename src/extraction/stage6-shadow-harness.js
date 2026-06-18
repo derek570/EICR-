@@ -99,6 +99,15 @@ import { createAskDispatcher } from './stage6-dispatcher-ask.js';
 // reverts to the Phase 3/4 dispatcher shape unchanged.
 import { createAskGateWrapper, wrapAskDispatcherWithGates } from './stage6-ask-gate-wrapper.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
+// readback-correction-optionb §3.3a/b — rolling conversational window so the
+// live model can resolve a bare "no" against the read-backs it spoke.
+import {
+  isReadingConfirmation,
+  toReadbackEntry,
+  dedupeReadbacks,
+  pushReadbackTurn,
+  buildReadbackWindowMessages,
+} from './readback-window.js';
 import {
   bundleToolCallsIntoResult,
   BUNDLER_PHASE,
@@ -380,7 +389,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // start_dialogue_script dispatcher (added 2026-04-30 Silvertown
     // follow-up) can hand it to enterScriptByName for first-ask emission.
     // Other dispatchers in the table ignore it.
-    const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, { ws });
+    // readback-correction-optionb §6 — thread the parsed capability so
+    // dispatchRecordReading's PRE-APPLY gate can skip `< 0.5` readings
+    // until the client advertises low_conf_readback_v1 (rollout safety).
+    const hasLowConfReadbackV1 =
+      entry?.voiceLatency?.capabilities?.hasLowConfReadbackV1 === true;
+    const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, {
+      ws,
+      hasLowConfReadbackV1,
+    });
     // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
     // path into the normal write infrastructure: when ask_user carries a
     // pending_write and the user's reply matches a circuit deterministically,
@@ -460,6 +477,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the gated filter logic; the canonical confirmations flow unfiltered and
     // claim the parked MP3 post-validation.
     const midStreamEmittedSlots = new Set();
+    // readback-correction-optionb §3.3a — per-turn accumulator of the read-backs
+    // the inspector actually HEARD, sourced from BOTH the loaded-barrel mid-
+    // stream path (onSlotAudioReady, below) AND the final post-debounce/post-
+    // filter reading confirmations (after the debounce step). De-duped + pushed
+    // onto session.readbackWindow at the end of the turn.
+    const spokenReadbacks = [];
     let speculator = null;
     try {
       const vl = getVoiceLatencyForSession(session.sessionId);
@@ -537,13 +560,34 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       speculator = null;
     }
 
+    // readback-correction-optionb §3.3b — inject the rolling window as fresh
+    // PER-TURN messages BEFORE the current utterance (NOT into the cached
+    // system blocks — that would invalidate the large cached prefix every
+    // turn). Chronological user→assistant pairs put the most recent read-back
+    // immediately before the current utterance, so a bare "no" sits adjacent to
+    // the value it rejects. Empty window → [] → byte-identical to the old
+    // single-message shape. The window holds PRIOR turns only (the current turn
+    // is appended after this turn's read-backs are known, below).
+    const readbackWindow = Array.isArray(session.readbackWindow) ? session.readbackWindow : [];
+    const windowMessages = buildReadbackWindowMessages(readbackWindow);
+    const liveMessages = [...windowMessages, { role: 'user', content: transcriptText }];
+
+    // readback-correction-optionb §6 — round-1 tool_choice:any no-op allowance:
+    // NO LONGER NEEDED. PR #60 (Plan B) removed the round-1 tool_choice:any
+    // FORCE from the tool loop entirely (it was tied to the now-suppressed
+    // mid-stream speculation timing), so round 1 already uses the default
+    // (auto) tool_choice — a forwarded standalone negation with no applicable
+    // read-back in the window can already emit ZERO tools and no-op. With no
+    // force to disable, the bespoke negation gate is moot; the rolling-window
+    // injection above is the load-bearing part of resolving a bare "no".
+
     let toolLoopOut;
     try {
       toolLoopOut = await runToolLoop({
         client: session.client,
         model: SHADOW_MODEL,
         system: systemBlocks,
-        messages: [{ role: 'user', content: transcriptText }],
+        messages: liveMessages,
         tools: TOOL_SCHEMAS,
         dispatcher,
         ctx: { sessionId: session.sessionId, turnId },
@@ -1091,6 +1135,27 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         });
       }
     }
+
+    // readback-correction-optionb §3.3a — add the FINAL post-debounce/post-
+    // filter READING confirmations to the per-turn accumulator (state-change /
+    // observation / deletion / clear confirmations are excluded so a bare "no"
+    // never binds a non-reading). Runs AFTER the mid-stream-filter + debounce
+    // so the buffer reflects exactly what iOS will play. Combined with the
+    // mid-stream entries pushed during the loop, then de-duped by slot identity
+    // (a slot read back mid-stream AND finally appears ONCE).
+    if (Array.isArray(result.confirmations)) {
+      for (const c of result.confirmations) {
+        if (isReadingConfirmation(c)) spokenReadbacks.push(toReadbackEntry(c));
+      }
+    }
+    // Push this turn onto the rolling window (PRIOR turns were used for
+    // injection above; the current turn becomes available to the NEXT turn).
+    // Stored even when empty so read-backs age out by turn count (§7 staleness).
+    session.readbackWindow = pushReadbackTurn(
+      session.readbackWindow,
+      transcriptText,
+      dedupeReadbacks(spokenReadbacks)
+    );
 
     // Plan B (2026-06-17) B1b — post-loop speculation drift validation. Runs
     // on the FINAL emitted confirmation set (after the mid-stream-canonical

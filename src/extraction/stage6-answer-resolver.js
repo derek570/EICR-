@@ -343,9 +343,15 @@ function matchDesignation(cleaned, circuits) {
  * @param {string} args.userText                         the inspector's reply
  * @param {object|null|undefined} args.pendingWrite      buffered write, may be null
  * @param {Array<object>} args.availableCircuits         stateSnapshot circuits
+ * @param {string|null} [args.contextBoardId]            board the ask is scoped to (readback-correction-optionb §3.3/§6); stamped onto each resolved write so a sub-board pending_write lands on the right board
  * @returns {{kind: string, writes?: Array, parsed_hint?: string, available_circuits?: Array}}
  */
-export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits }) {
+export function resolveCircuitAnswer({
+  userText,
+  pendingWrite,
+  availableCircuits,
+  contextBoardId = null,
+}) {
   if (!pendingWrite || typeof pendingWrite !== 'object') {
     return { kind: 'no_pending_write' };
   }
@@ -378,7 +384,7 @@ export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits
   // honours it by emitting a single write.
   if (BROADCAST_PHRASES.includes(stripped)) {
     if (pendingWrite.tool === 'record_board_reading') {
-      return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, 0)] };
+      return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, 0, contextBoardId)] };
     }
     const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
     if (circuits.length === 0) {
@@ -391,7 +397,7 @@ export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits
             ? c.circuit_ref
             : Number.parseInt(String(c.circuit_ref), 10);
         if (!Number.isFinite(ref)) return null;
-        return buildWrite(pendingWrite, ref);
+        return buildWrite(pendingWrite, ref, contextBoardId);
       })
       .filter(Boolean);
     return { kind: 'auto_resolve', writes };
@@ -414,7 +420,7 @@ export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits
   // Numeric path: bare digit ("2"), word ("two"), "circuit 2", "circuit two".
   const numericRef = extractCircuitRef(lower);
   if (numericRef !== null) {
-    return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, numericRef)] };
+    return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, numericRef, contextBoardId)] };
   }
 
   // Designation match. Require the cleaned residue to be at least 2 chars —
@@ -435,7 +441,7 @@ export function resolveCircuitAnswer({ userText, pendingWrite, availableCircuits
   }
   const match = matchDesignation(cleaned, availableCircuits ?? []);
   if (match.kind === 'exact' || match.kind === 'unique_substring') {
-    return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, match.circuitRefs[0])] };
+    return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, match.circuitRefs[0], contextBoardId)] };
   }
   if (match.kind === 'ambiguous') {
     return {
@@ -553,9 +559,15 @@ export function extractCircuitRef(lowerText) {
  *
  * @param {object} pendingWrite
  * @param {number} circuitRef
+ * @param {string|null} [contextBoardId]  board the ask is scoped to
+ *   (readback-correction-optionb §3.3/§6). Stamped onto the resolved write
+ *   so a sub-board circuit-resolution lands on the right board. A board_id
+ *   already on the pendingWrite (rare) wins; otherwise the ask's
+ *   context_board_id is used. Omitted from the write when both are null.
  * @returns {object}
  */
-function buildWrite(pendingWrite, circuitRef) {
+function buildWrite(pendingWrite, circuitRef, contextBoardId = null) {
+  const boardId = pendingWrite.board_id ?? contextBoardId ?? null;
   return {
     tool: pendingWrite.tool,
     field: pendingWrite.field,
@@ -563,6 +575,7 @@ function buildWrite(pendingWrite, circuitRef) {
     value: pendingWrite.value,
     confidence: pendingWrite.confidence ?? 0.95,
     source_turn_id: pendingWrite.source_turn_id ?? null,
+    ...(boardId != null ? { board_id: boardId } : {}),
   };
 }
 
@@ -624,6 +637,7 @@ const DISCONTINUOUS_PHRASES = [
  * @param {number|null} args.contextCircuit       circuit_ref for single-circuit asks, or null when contextCircuits is set
  * @param {number[]|null} args.contextCircuits    list of circuit_refs (length >= 2) for multi-circuit asks; resolver fans the write out across each circuit
  * @param {string|null} args.sourceTurnId         turn id for source_turn_id stamp
+ * @param {string|null} args.contextBoardId       board the ask is scoped to (readback-correction-optionb §3.3/§6); stamped onto each resolved record_reading so a sub-board correction lands on the right board. Omitted from the write when null (back-compat).
  */
 export function resolveValueAnswer({
   userText,
@@ -631,6 +645,7 @@ export function resolveValueAnswer({
   contextCircuit,
   contextCircuits,
   sourceTurnId,
+  contextBoardId = null,
 }) {
   // Need both pieces to value-resolve. Sentinel field names (`none`,
   // `observation_clarify`) are not real fields — fall through.
@@ -669,6 +684,10 @@ export function resolveValueAnswer({
       value,
       confidence,
       source_turn_id: sourceTurnId ?? null,
+      // readback-correction-optionb §3.3/§6 — carry the ask's board scope so
+      // a sub-board correction overwrites the correct board. Omitted when
+      // null so single-board writes stay byte-identical.
+      ...(contextBoardId != null ? { board_id: contextBoardId } : {}),
     }));
   const text = String(userText ?? '').trim();
   if (!text) {
@@ -1185,6 +1204,7 @@ export function resolveEnumAnswer({
   contextCircuits,
   sourceTurnId,
   fieldSchema,
+  contextBoardId = null,
 }) {
   // Accept either single contextCircuit OR multi contextCircuits.
   // Multi asks (e.g. "wiring type for circuits 2 and 3") fan out the
@@ -1233,6 +1253,10 @@ export function resolveEnumAnswer({
       value,
       confidence,
       source_turn_id: sourceTurnId ?? null,
+      // readback-correction-optionb §3.3/§6 — carry the ask's board scope so
+      // a sub-board correction overwrites the correct board. Omitted when
+      // null so single-board writes stay byte-identical.
+      ...(contextBoardId != null ? { board_id: contextBoardId } : {}),
     }));
   const text = String(userText ?? '').trim();
   if (!text) {

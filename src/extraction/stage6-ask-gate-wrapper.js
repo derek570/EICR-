@@ -191,7 +191,20 @@ export function deriveAskKey(input) {
     Array.isArray(circuitsArr) && circuitsArr.length >= 2
       ? `[${[...circuitsArr].sort((a, b) => a - b).join('-')}]`
       : (input?.context_circuit ?? '_');
-  return `${field}:${circuitToken}`;
+  // readback-correction-optionb §6 — board scope in the ask-budget /
+  // debounce key. WITHOUT this, the same circuit_ref on two different
+  // boards collapses into ONE bucket, so a valid sub-board correction ask
+  // could be gated/exhausted by an unrelated main-board ask on the same
+  // (field, circuit). We APPEND a `@<board>` segment ONLY when a non-null,
+  // non-empty board_id is present — so every pre-existing main/unscoped key
+  // (`ze:0`, `_:_`, `_:3`) stays byte-identical (no bucket shift, no test
+  // churn) while same-field+circuit asks on DIFFERENT boards get SEPARATE
+  // buckets and same-field+circuit+board still dedupes. The `_`/absent
+  // behaviour for board is exactly "no suffix".
+  const boardRaw = input?.context_board_id;
+  const base = `${field}:${circuitToken}`;
+  if (boardRaw == null || boardRaw === '') return base;
+  return `${base}@${String(boardRaw)}`;
 }
 
 /**

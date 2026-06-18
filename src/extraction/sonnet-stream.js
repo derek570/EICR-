@@ -63,7 +63,13 @@ import {
 // trigger-free / ≤2-content-word text) and bypasses pending asks,
 // in_response_to replies, and drained-retry replays. Telemetry:
 // voice_latency.gate_blocked. Kill-switch: VOICE_PRE_LLM_GATE=false.
-import { shouldForwardToSonnet, GATE_REASONS, OBSERVATION_PATTERN } from './pre-llm-gate.js';
+import {
+  shouldForwardToSonnet,
+  GATE_REASONS,
+  OBSERVATION_PATTERN,
+  COMPLAINT_OR_NEGATION_PATTERN,
+  STANDALONE_NEGATION_PATTERN,
+} from './pre-llm-gate.js';
 
 const PRE_LLM_GATE_ENABLED = process.env.VOICE_PRE_LLM_GATE !== 'false';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
@@ -909,7 +915,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 const observationHit = OBSERVATION_PATTERN.test(
                   typeof msg.text === 'string' ? msg.text : ''
                 );
-                if (wakeWord || regexHit || observationHit) {
+                // readback-correction-optionb §3.3 (2026-06-18) — a forwarded
+                // negation (bare "no"/"nope"/"nah", or a fuller complaint
+                // "no that's wrong") must also wake a paused session: the
+                // inspector rejecting a read-back IS re-engagement. Without
+                // this, the gate forwards "no" but chitchat-pause swallows it
+                // and the correction loop never closes.
+                const negationHit =
+                  typeof msg.text === 'string' &&
+                  (STANDALONE_NEGATION_PATTERN.test(msg.text) ||
+                    COMPLAINT_OR_NEGATION_PATTERN.test(msg.text));
+                if (wakeWord || regexHit || observationHit || negationHit) {
                   const replay = drainReplayBuffer(ccState);
                   if (replay) {
                     msg = {
@@ -924,7 +940,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                         ? 'wake_word'
                         : regexHit
                           ? 'regex_hint'
-                          : 'observation_prefix',
+                          : observationHit
+                            ? 'observation_prefix'
+                            : 'negation',
                     });
                   }
                   exitChitchatPause({
@@ -932,7 +950,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     sendEnvelope: (env) => ws.send(JSON.stringify(env)),
                     logger,
                     sessionId: currentSessionId,
-                    reason: wakeWord ? 'wake_word' : regexHit ? 'regex_hint' : 'observation_prefix',
+                    reason: wakeWord
+                      ? 'wake_word'
+                      : regexHit
+                        ? 'regex_hint'
+                        : observationHit
+                          ? 'observation_prefix'
+                          : 'negation',
                   });
                   // fall through to handleTranscript with the
                   // (possibly replay-prefixed) wake utterance

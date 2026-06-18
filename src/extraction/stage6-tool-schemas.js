@@ -529,6 +529,19 @@ const askUser = makeTool({
       description:
         'Optional: the list of circuit_refs this ask covers when it scopes to multiple circuits at once (e.g. "What is the wiring type for circuits 2 and 3?"). Use ONLY when 2+ circuits share a missing value; for single-circuit asks use context_circuit. When set, context_circuit MUST be null. When set, the server enum/value resolvers fan out the auto-resolved write across each circuit. minItems:2 enforces the "use plural for plural" rule; minimum:1 keeps circuit_ref 0 (a board-level sentinel per stage6-ask-gate-wrapper.js:123-130) out of the plural fan-out.',
     },
+    context_board_id: {
+      // readback-correction-optionb §3.3/§6 (2026-06-18). Optional board
+      // scope for the ask, mirroring record_reading.board_id. Required so a
+      // bare-negation correction after a read-back on a SUB-BOARD circuit
+      // resolves the overwrite onto the correct board (the auto-resolver
+      // threads this through to record_reading.board_id and the ask-budget
+      // key). Omit / null for main-board / unscoped asks (back-compat —
+      // every pre-2026-06-18 ask). additionalProperties:false would reject
+      // the field if it were emitted without this schema entry.
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description:
+        'Optional board the ask is scoped to (defaults to currentBoardId when omitted). Set when correcting/asking about a circuit on a specific sub-board so the resolved write lands on the right board — e.g. a bare-negation "no" after a read-back of a sub-board circuit.',
+    },
     expected_answer_shape: {
       type: 'string',
       enum: enumerations.expected_answer_shape,

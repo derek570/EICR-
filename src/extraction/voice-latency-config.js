@@ -156,6 +156,19 @@ const KNOWN_SUPPORTS = Object.freeze([
   // `voice_latency_ack` (which referred to the legacy server-side
   // streaming ACK).
   'client_playback_telemetry',
+  // readback-correction-optionb §6 (2026-06-18). iOS advertises
+  // `low_conf_readback_v1` once its client has DROPPED the local
+  // `reading.confidence < 0.5` filter (Phase B). It is a ROLLOUT-
+  // SEQUENCING gate, NOT a behavioural confidence threshold: until the
+  // client advertises it, the backend dispatcher SKIPS applying a
+  // `< 0.5` reading (pre-apply, no wire) so an old client never hears a
+  // value read back that it would then drop from the grid (false
+  // confirmation + silent loss). Once advertised, the backend applies +
+  // reads back at any confidence. NOTE: unknown support strings already
+  // survive in the `supports` Set; the load-bearing change is the
+  // `hasLowConfReadbackV1` ACCESSOR below (on BOTH the populated result
+  // AND the empty()/v0 shape).
+  'low_conf_readback_v1',
 ]);
 
 export function parseVoiceLatencyCapabilities(capabilitiesObj) {
@@ -170,6 +183,11 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     hasKillSwitchDropQueue: false,
     hasRegexFastV2: false,
     hasClientPlaybackTelemetry: false,
+    // readback-correction-optionb §6 — MUST be present on the empty()/v0
+    // shape too, else an old/absent-capabilities client reads as
+    // `undefined` (falsy) which is the SAFE default (skip < 0.5 apply),
+    // but accessing it must not throw / drift from the populated shape.
+    hasLowConfReadbackV1: false,
     raw,
   });
 
@@ -193,6 +211,7 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     hasKillSwitchDropQueue: supports.has('kill_switch_drop_queue'),
     hasRegexFastV2: supports.has('regex_fast_v2'),
     hasClientPlaybackTelemetry: supports.has('client_playback_telemetry'),
+    hasLowConfReadbackV1: supports.has('low_conf_readback_v1'),
     raw,
   };
 }

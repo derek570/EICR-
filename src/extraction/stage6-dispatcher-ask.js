@@ -567,6 +567,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       contextField: input.context_field ?? null,
       contextCircuit: input.context_circuit ?? null,
       contextCircuits: input.context_circuits ?? null,
+      // readback-correction-optionb §3.3/§6 — thread the ask's board scope so
+      // a sub-board correction's auto-resolved write lands on the right board.
+      contextBoardId: input.context_board_id ?? null,
       session,
       autoResolveWrite,
       logger,
@@ -598,6 +601,7 @@ async function buildResolvedBody({
   contextField,
   contextCircuit,
   contextCircuits,
+  contextBoardId = null,
   session,
   autoResolveWrite,
   logger,
@@ -737,6 +741,7 @@ async function buildResolvedBody({
       contextCircuits,
       sourceTurnId: turnId,
       fieldSchema: FIELD_SCHEMA,
+      contextBoardId,
     });
     if (enumVerdict.kind === 'auto_resolve') {
       const dispatched = [];
@@ -824,6 +829,7 @@ async function buildResolvedBody({
       contextCircuit,
       contextCircuits,
       sourceTurnId: turnId,
+      contextBoardId,
     });
     if (valueVerdict.kind === 'auto_resolve') {
       const dispatched = [];
@@ -924,6 +930,7 @@ async function buildResolvedBody({
     userText: outcome.user_text,
     pendingWrite,
     availableCircuits,
+    contextBoardId,
   });
 
   if (verdict.kind === 'auto_resolve') {

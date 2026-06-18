@@ -212,6 +212,105 @@ describe('dispatchRecordReading', () => {
     expect(entry).not.toHaveProperty('circuit');
   });
 
+  // readback-correction-optionb §6 — PRE-APPLY rollout gate for the <0.5
+  // read-back change. The capability is threaded via createWriteDispatcher's
+  // extraCtx (5th arg → ctx.hasLowConfReadbackV1).
+  describe('low_conf_readback_v1 PRE-APPLY gate (<0.5)', () => {
+    function lowConfCall() {
+      return {
+        tool_call_id: 'tu_lc',
+        name: 'record_reading',
+        input: {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.62',
+          confidence: 0.3,
+          source_turn_id: 't1',
+        },
+      };
+    }
+
+    test('WITHOUT capability: <0.5 reading is SKIPPED — no mutation, no perTurnWrites, non-error envelope', async () => {
+      const session = makeSession({ circuits: { 3: {} } });
+      const logger = mockLogger();
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, logger, 'turn-1', writes); // no extraCtx → gate active
+
+      const result = await d(lowConfCall(), {});
+
+      // Non-error skipped envelope so the model does NOT retry/ask.
+      expect(result.is_error).toBe(false);
+      const body = JSON.parse(result.content);
+      expect(body).toMatchObject({
+        ok: true,
+        skipped: true,
+        reason: 'low_conf_readback_capability_missing',
+      });
+      // No snapshot mutation, no perTurnWrites entry.
+      expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBeUndefined();
+      expect(writes.readings.size).toBe(0);
+      // Logged as a non-error skipped tool call.
+      const rows = toolCallRows(logger);
+      expect(rows[0]).toMatchObject({ outcome: 'skipped', is_error: false });
+    });
+
+    test('WITH capability: <0.5 reading APPLIES normally', async () => {
+      const session = makeSession({ circuits: { 3: {} } });
+      const logger = mockLogger();
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, logger, 'turn-1', writes, {
+        hasLowConfReadbackV1: true,
+      });
+
+      const result = await d(lowConfCall(), {});
+
+      expect(result.is_error).toBe(false);
+      expect(JSON.parse(result.content).skipped).toBeUndefined();
+      expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('0.62');
+      expect(writes.readings.size).toBe(1);
+    });
+
+    test('0.5–0.8 reading applies identically with OR without the capability', async () => {
+      for (const extra of [undefined, { hasLowConfReadbackV1: true }]) {
+        const session = makeSession({ circuits: { 3: {} } });
+        const writes = createPerTurnWrites();
+        const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes, extra);
+        await d(
+          {
+            tool_call_id: 'tu_mid',
+            name: 'record_reading',
+            input: {
+              field: 'measured_zs_ohm',
+              circuit: 3,
+              value: '0.55',
+              confidence: 0.6,
+              source_turn_id: 't1',
+            },
+          },
+          {}
+        );
+        expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('0.55');
+        expect(writes.readings.size).toBe(1);
+      }
+    });
+
+    test('a reading with NO numeric confidence applies normally even without the capability', async () => {
+      const session = makeSession({ circuits: { 3: {} } });
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes);
+      await d(
+        {
+          tool_call_id: 'tu_noc',
+          name: 'record_reading',
+          input: { field: 'measured_zs_ohm', circuit: 3, value: '0.62', source_turn_id: 't1' },
+        },
+        {}
+      );
+      expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('0.62');
+      expect(writes.readings.size).toBe(1);
+    });
+  });
+
   test('round counter monotonically increments across three sequential calls (STO-01)', async () => {
     const session = makeSession({ circuits: { 1: {}, 2: {}, 3: {} } });
     const logger = mockLogger();

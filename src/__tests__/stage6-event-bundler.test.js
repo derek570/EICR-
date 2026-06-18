@@ -474,7 +474,14 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(fields).toEqual(new Set(['circuit_designation', 'ocpd_bs_en', 'address', 'postcode']));
   });
 
-  test('opt-in: low-confidence readings (<0.8) are skipped, mirroring legacy prompt gate', () => {
+  test('audio-first (2026-06-18): low-confidence readings are READ BACK, not skipped', () => {
+    // Supersedes the old "low-confidence (<0.8) skipped, mirroring legacy
+    // prompt gate" behaviour. A hands-free inspector verifies by ear, so
+    // every APPLIED reading is read back regardless of the model's
+    // self-reported confidence (the `< 0.5` rollout gate now lives
+    // pre-apply in dispatchRecordReading — an un-applied reading never
+    // reaches this bundler list). Both readings here are applied, so both
+    // are spoken.
     const readings = new Map([
       [
         encodeReadingKey('measured_zs_ohm', 1),
@@ -493,6 +500,12 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'Circuit 1, zed S zero point six two',
         field: 'measured_zs_ohm',
         circuit: 1,
+      },
+      {
+        text: 'Circuit 2, R1 plus R2 0.6',
+        expanded_text: 'Circuit 2, R 1 plus R 2 zero point six',
+        field: 'r1_r2_ohm',
+        circuit: 2,
       },
     ]);
   });
@@ -530,6 +543,47 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { confirmationsEnabled: true }
     );
     expect(r2).not.toHaveProperty('confirmations');
+  });
+
+  test('audio-first: auto-derivations (::calc:: + derived) are NOT read back but DO appear on the wire', () => {
+    // Audio-First invariant 1 exception: computed consequences (calc-
+    // derived Zs, mirror-derived fields) are not dictated readings and get
+    // no spoken confirmation. They still ride on extracted_readings /
+    // extracted_board_readings so iOS lands the value.
+    const readings = new Map([
+      // A genuine dictated reading → read back.
+      [
+        encodeReadingKey('r1_r2_ohm', 1),
+        { value: '0.30', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      // A calc-derived Zs (source_turn_id ::calc::) → NOT read back.
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.55', confidence: 1.0, source_turn_id: '::calc::calculate_zs' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.boardReadings = new Map([
+      // A mirror-derived board reading (derived: true) → NOT read back.
+      [
+        encodeBoardReadingKey('bonding_conductor_continuity'),
+        { value: 'PASS', confidence: 1.0, source_turn_id: 't1', derived: true },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    // Both derived writes are on the wire.
+    const wireFields = new Set(r.extracted_readings.map((e) => e.field));
+    expect(wireFields).toEqual(new Set(['r1_r2_ohm', 'measured_zs_ohm']));
+    expect(r.extracted_board_readings.map((e) => e.field)).toEqual(['bonding_conductor_continuity']);
+    // Only the dictated reading is read back.
+    expect(r.confirmations).toEqual([
+      {
+        text: 'Circuit 1, R1 plus R2 0.30',
+        expanded_text: 'Circuit 1, R 1 plus R 2 zero point three zero',
+        field: 'r1_r2_ohm',
+        circuit: 1,
+      },
+    ]);
   });
 
   test('legacy passthrough: when legacyResultShape already has confirmations, synthesis is bypassed', () => {

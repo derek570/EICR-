@@ -91,6 +91,19 @@ describe('resolveEnumAnswer — happy path (canonical match)', () => {
     });
   });
 
+  test('contextBoardId stamps board_id onto the enum write (readback-correction-optionb §6)', () => {
+    const verdict = resolveEnumAnswer({
+      userText: '61008',
+      contextField: 'rcd_bs_en',
+      contextCircuit: 1,
+      sourceTurnId: 't1',
+      fieldSchema: RCD_SCHEMA,
+      contextBoardId: 'sub-2',
+    });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].board_id).toBe('sub-2');
+  });
+
   test('"BS 61009" — surrounding words stripped, digits resolve', () => {
     const verdict = resolveEnumAnswer({
       userText: 'BS 61009',

@@ -198,6 +198,15 @@ describe('stage6-tool-schemas', () => {
     );
   });
 
+  test('ask_user has an optional nullable context_board_id (readback-correction-optionb §6)', () => {
+    const askUser = byName('ask_user');
+    const prop = askUser.input_schema.properties.context_board_id;
+    expect(prop).toBeDefined();
+    // anyOf [string, null] — optional board scope; NOT in required.
+    expect(prop.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
+    expect(askUser.input_schema.required).not.toContain('context_board_id');
+  });
+
   test('record_observation.code enum sourced from stage6-enumerations.json', () => {
     const recordObs = byName('record_observation');
     expect(recordObs.input_schema.properties.code.enum).toEqual(enumerations.observation_code);
