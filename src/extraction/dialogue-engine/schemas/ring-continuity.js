@@ -133,12 +133,15 @@ export const ringContinuitySchema = {
   whichCircuitQuestion: 'Which circuit is the ring continuity for?',
   cancelMessage: ({ filled, total }) => `Ring continuity cancelled. ${filled} of ${total} saved.`,
   cancelMessageEmpty: 'Ring continuity cancelled.',
-  finishMessage: ({ values }) => {
-    const r1 = values.ring_r1_ohm ?? '?';
-    const rn = values.ring_rn_ohm ?? '?';
-    const r2 = values.ring_r2_ohm ?? '?';
-    return `Got it. R1 ${r1}, Rn ${rn}, R2 ${r2}.`;
-  },
+  // #34 (2026-06-19, session AD0AE9FA, build 404): completion ack must be
+  // terse. The confirmation prompt above ("R1 X, Rn Y, R2 Z. All correct?")
+  // ALREADY read the triple aloud, so re-reading the same three values on the
+  // "yes" completion made the inspector hear the readout twice (double
+  // read-back, violating the audio-first "read back exactly once" invariant).
+  // Drop the value re-read; "Got it." is the acknowledgement the user just
+  // approved. Kept byte-identical with the legacy ring-continuity-script.js
+  // finishScript text so dialogue-engine-replay.test.js parity holds.
+  finishMessage: () => 'Got it.',
   // 2026-05-26: confirmation gate. When the engine sees all slots
   // filled, it emits `confirmationMessage(values)` as an
   // `ask_user_started` (reason `confirmation.reason`) instead of

@@ -1174,15 +1174,16 @@ function finishScript(ws, session, sessionId, now, logger) {
   const state = session.ringContinuityScript;
   if (!state) return;
   const { circuit_ref, values } = state;
-  const r1 = values.ring_r1_ohm ?? '?';
-  const rn = values.ring_rn_ohm ?? '?';
-  const r2 = values.ring_r2_ohm ?? '?';
+  // #34 (2026-06-19): terse completion ack — the "All correct?" confirmation
+  // prompt already read R1/Rn/R2 aloud, so re-reading them here double-read
+  // the triple. Kept byte-identical with the dialogue-engine ring-continuity
+  // schema finishMessage so dialogue-engine-replay.test.js parity holds.
   safeSend(
     ws,
     buildScriptInfo({
       sessionId,
       kind: 'done',
-      text: `Got it. R1 ${r1}, Rn ${rn}, R2 ${r2}.`,
+      text: 'Got it.',
       now,
     })
   );

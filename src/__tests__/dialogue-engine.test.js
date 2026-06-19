@@ -202,12 +202,15 @@ describe('engine — ring continuity', () => {
       transcriptText: 'yes',
       now: 5000,
     });
+    // #34 (2026-06-19): completion ack is now terse — the confirmation prompt
+    // above already read R1/Rn/R2 aloud, so the finish must NOT re-read them.
     expect(ws.sent.at(-1)).toMatchObject({
       type: 'ask_user_started',
       reason: 'info',
-      question: 'Got it. R1 0.43, Rn 0.43, R2 0.78.',
+      question: 'Got it.',
       expected_answer_shape: 'none',
     });
+    expect(ws.sent.at(-1).question).not.toMatch(/R1|Rn|R2/);
     expect(session.stateSnapshot.circuits[13]).toMatchObject({
       ring_r1_ohm: '0.43',
       ring_rn_ohm: '0.43',
@@ -722,7 +725,13 @@ describe('engine — insulation resistance', () => {
         now,
       });
     const answer = (ws, session, text, now) =>
-      processInsulationResistanceTurn({ ws, session, sessionId: SESSION_ID, transcriptText: text, now });
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: text,
+        now,
+      });
 
     test('2nd consecutive miss emits a format hint; 3rd skips + falls through', () => {
       const ws = new FakeWS();
