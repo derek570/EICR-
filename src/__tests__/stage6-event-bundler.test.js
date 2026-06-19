@@ -552,10 +552,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     // extracted_board_readings so iOS lands the value.
     const readings = new Map([
       // A genuine dictated reading → read back.
-      [
-        encodeReadingKey('r1_r2_ohm', 1),
-        { value: '0.30', confidence: 1.0, source_turn_id: 't1' },
-      ],
+      [encodeReadingKey('r1_r2_ohm', 1), { value: '0.30', confidence: 1.0, source_turn_id: 't1' }],
       // A calc-derived Zs (source_turn_id ::calc::) → NOT read back.
       [
         encodeReadingKey('measured_zs_ohm', 1),
@@ -574,7 +571,9 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     // Both derived writes are on the wire.
     const wireFields = new Set(r.extracted_readings.map((e) => e.field));
     expect(wireFields).toEqual(new Set(['r1_r2_ohm', 'measured_zs_ohm']));
-    expect(r.extracted_board_readings.map((e) => e.field)).toEqual(['bonding_conductor_continuity']);
+    expect(r.extracted_board_readings.map((e) => e.field)).toEqual([
+      'bonding_conductor_continuity',
+    ]);
     // Only the dictated reading is read back.
     expect(r.confirmations).toEqual([
       {
@@ -919,5 +918,99 @@ describe('bundleToolCallsIntoResult — utterance_id echo (Voice-latency plan 20
       { utteranceId: { foo: 'bar' } }
     );
     expect('utterance_id' in r2).toBe(false);
+  });
+});
+
+// #31 (2026-06-19, session AD0AE9FA, build 404 field test): a value
+// *replacement* dictated as a correction ("customer name is Charles Henry")
+// is modelled by Sonnet as clear_reading{slot} + record_reading{slot} in ONE
+// turn. The clear used to emit a standalone "<field> cleared" confirmation in
+// addition to the new value's read-back → the inspector heard the slot
+// confirmed twice. Audio-first invariant: every dictated reading read back
+// EXACTLY once. The bundler now suppresses the field_cleared confirmation when
+// the same turn also WRITES the same field+scope; the new value's read-back is
+// the confirmation. A clear with NO same-turn write still speaks "cleared".
+describe('bundleToolCallsIntoResult — #31 same-turn clear+write suppression', () => {
+  test('board-level replacement: clear client_name + record_board_reading{client_name} in one turn → only the new value spoken, no "customer name cleared"', () => {
+    const writes = makePerTurnWrites();
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('client_name'),
+        { value: 'Charles Henry', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 0,
+        field: 'client_name',
+        previous_value: 'Charlie Henry',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    // The new value is read back …
+    const clientNameConfirm = r.confirmations.find((c) => c.field === 'client_name');
+    expect(clientNameConfirm).toBeDefined();
+    expect(clientNameConfirm.text).toContain('Charles Henry');
+    // … and the redundant "field_cleared" confirmation is suppressed.
+    expect(r.confirmations.some((c) => c.field === 'field_cleared')).toBe(false);
+  });
+
+  test('clear WITHOUT a same-turn write still speaks "<field> cleared" (normal clear path unchanged)', () => {
+    const writes = makePerTurnWrites();
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 0,
+        field: 'client_name',
+        previous_value: 'Charlie Henry',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const cleared = r.confirmations.find((c) => c.field === 'field_cleared');
+    expect(cleared).toBeDefined();
+    expect(cleared.text.toLowerCase()).toContain('cleared');
+  });
+
+  test('circuit-scoped: clear r2_ohm c5 + record r2_ohm c5 same turn → cleared suppressed', () => {
+    const readings = new Map([
+      [encodeReadingKey('r2_ohm', 5), { value: '0.30', confidence: 1.0, source_turn_id: 't1' }],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 5,
+        field: 'r2_ohm',
+        previous_value: '0.40',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    expect(r.confirmations.some((c) => c.field === 'field_cleared')).toBe(false);
+  });
+
+  test('scope precision: clear r2_ohm c5 but write r2_ohm c6 → cleared still spoken (different circuit)', () => {
+    const readings = new Map([
+      [encodeReadingKey('r2_ohm', 6), { value: '0.30', confidence: 1.0, source_turn_id: 't1' }],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 5,
+        field: 'r2_ohm',
+        previous_value: '0.40',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    expect(r.confirmations.some((c) => c.field === 'field_cleared')).toBe(true);
   });
 });

@@ -283,8 +283,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // sentence reconciling the cached-prefix source-of-truth; (d) the BARE
       // NEGATION AFTER A READ-BACK behaviour block + Example 10. Measured 17060
       // on the MERGED prompt; cap 17150 leaves ~90-token headroom.
+      //
+      // 2026-06-19 (field session AD0AE9FA #35 — observation not landing,
+      // recurring): bumped to 17550 to absorb the OBSERVATIONS RULE 1a
+      // ("observation note …" lead-in is ALWAYS an observation, never no-op,
+      // even when the text references circuits / sounds compliant) + Example 11
+      // (the exact "Observation note RCD protection for circuits 1 and 2."
+      // session case). Measured 17453; cap 17550 leaves ~97-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(17150);
+      expect(estimate).toBeLessThanOrEqual(17550);
     });
   });
 
@@ -302,6 +309,25 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt).toEqual(expect.stringContaining('record_observation'));
       expect(prompt).toEqual(expect.stringContaining('delete_observation'));
       expect(prompt).toEqual(expect.stringContaining('ask_user'));
+    });
+
+    test('#35 (AD0AE9FA): "observation note" lead-in rule + worked example are present (never no-op)', () => {
+      // Field session AD0AE9FA #35 — "Observation note RCD protection for
+      // circuits 1 and 2." was silently no-op'd (observations:0). RULE 1a +
+      // Example 11 instruct the model to ALWAYS record an explicit
+      // "observation"/"observation note" lead-in, even when the text references
+      // circuits or sounds compliant. Lock the steering wording so it can't be
+      // dropped by a future prompt edit without a test failure.
+      const lower = prompt.toLowerCase();
+      expect(lower).toEqual(expect.stringContaining('observation note'));
+      expect(lower).toEqual(expect.stringContaining('never no-op'));
+      // The worked example pins the exact recurring session phrasing.
+      expect(prompt).toEqual(expect.stringContaining('RCD protection for circuits 1 and 2'));
+      // RULE 1a headline + its forbid-record_reading clause must be present.
+      expect(lower).toEqual(expect.stringContaining('lead-in is always an observation'));
+      expect(lower).toEqual(
+        expect.stringContaining('does not turn the utterance into a circuit reading')
+      );
     });
 
     test('contains a "prefer silent writes" directive (STQ-01 #2)', () => {
@@ -923,8 +949,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     exceptions + RECENT CONTEXT transient-memory sentence + BARE
       //     NEGATION AFTER A READ-BACK behaviour block + Example 10.
       //     Measured 11952 on the MERGED base; cap 12050 leaves ~98-token headroom.
+      //   - 12450 (2026-06-19 field session AD0AE9FA #35 — observation not
+      //     landing, recurring): OBSERVATIONS RULE 1a ("observation note …"
+      //     lead-in is ALWAYS an observation, never no-op, even when the text
+      //     references circuits / sounds compliant) + Example 11 (the exact
+      //     "Observation note RCD protection for circuits 1 and 2." case).
+      //     Measured 12345 on the base; cap 12450 leaves ~105-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(12050);
+      expect(estimate).toBeLessThanOrEqual(12450);
     });
   });
 

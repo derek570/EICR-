@@ -204,7 +204,8 @@ function synthesiseObservationAndClearedConfirmations(
   observations,
   deletedObservations,
   fieldCorrections,
-  designations = null
+  designations = null,
+  writtenSlots = null
 ) {
   const out = [];
   const lookupDesignation = (circuit) => {
@@ -280,6 +281,31 @@ function synthesiseObservationAndClearedConfirmations(
       if (c.reason !== 'clear_reading') continue;
       const field = c.field;
       if (typeof field !== 'string' || field.length === 0) continue;
+      // #31 (2026-06-19, session AD0AE9FA): when the SAME turn also WRITES this
+      // slot — a value *replacement*, e.g. "customer name is Charles Henry"
+      // models as clear_reading{client_name} + record_board_reading{client_name}
+      // — the new value's read-back IS the confirmation. Speaking a standalone
+      // "<field> cleared" on top of it double-confirms, violating the audio-first
+      // invariant "every dictated reading read back exactly once". Suppress the
+      // field_cleared confirmation when a write for the same field+scope landed
+      // this turn. Keyed by same-turn same-slot (circuit ref for circuit
+      // readings, field-level for board/installation readings), NOT by tool
+      // adjacency — tool results aren't reliably ordered/adjacent.
+      if (writtenSlots) {
+        const circ = c.circuit;
+        if (Number.isInteger(circ) && circ > 0) {
+          if (
+            writtenSlots.circuitSlots instanceof Set &&
+            writtenSlots.circuitSlots.has(`${field}|${String(circ)}`)
+          ) {
+            continue;
+          }
+        } else if (writtenSlots.boardFields instanceof Set && writtenSlots.boardFields.has(field)) {
+          // Board/installation-level clear (circuit 0/null) with a same-field
+          // board write this turn — a replacement; let the write speak.
+          continue;
+        }
+      }
       // Skip suppressed fields + *_id (mirrors buildConfirmationText
       // gating so we don't speak internal IDs being cleared).
       // Match by re-importing the predicate would tighten the dep
@@ -830,11 +856,33 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // explicit clear_reading corrections were silent. Inspector
     // running AirPods-only would never know whether the system had
     // logged their dictated defect.
+    // #31 — collect the slots WRITTEN this turn so a same-turn clear+write
+    // (value replacement) suppresses the redundant "<field> cleared" read-back.
+    // Circuit readings key by field+circuit ref; board/installation readings
+    // (client_name, supply fields, …) live in a separate slot with no circuit,
+    // so they key field-only at board scope.
+    const writtenCircuitSlots = new Set();
+    for (const r of extracted_readings) {
+      if (typeof r.field === 'string' && r.circuit != null) {
+        writtenCircuitSlots.add(`${r.field}|${String(r.circuit)}`);
+      }
+    }
+    const writtenBoardFields = new Set();
+    if (Array.isArray(result.extracted_board_readings)) {
+      for (const r of result.extracted_board_readings) {
+        if (typeof r.field === 'string') writtenBoardFields.add(r.field);
+      }
+    }
+    const writtenSlots = {
+      circuitSlots: writtenCircuitSlots,
+      boardFields: writtenBoardFields,
+    };
     const obsAndClears = synthesiseObservationAndClearedConfirmations(
       perTurnWrites.observations,
       perTurnWrites.deletedObservations,
       perTurnWrites.fieldCorrections,
-      options.circuitDesignations
+      options.circuitDesignations,
+      writtenSlots
     );
     const merged = confirmations.concat(stateChanges).concat(obsAndClears);
     if (merged.length > 0) {

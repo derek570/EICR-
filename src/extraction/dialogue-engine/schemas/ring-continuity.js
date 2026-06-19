@@ -98,6 +98,16 @@ const topicSwitchTriggers = [
   /\binsulation\s+resistance\b/i,
   /\bRCD\s+(?:trip|test|time)\b/i,
   /\bpolarity\b/i,
+  // C2 (2026-06-19, session AD0AE9FA #35): an explicit observation lead-in
+  // ("observation"/"observation note"/"obs"/"make a note", plus the Deepgram
+  // garble "observant") while a ring-continuity loop is still active must EXIT
+  // the loop (topic switch → partials saved → transcript falls through to
+  // Sonnet, which records the observation per RULE 1a). Before this, a bare
+  // "observation." at 06:18:38 was EATEN by the still-active ring script AND
+  // re-entered it, enqueuing a "Got it" pseudo-question that never presented —
+  // the kickoff for the Group A AlertManager pump lockout. Kept in sync with
+  // the legacy ring-continuity-script.js TOPIC_SWITCH_PATTERNS for replay parity.
+  /\b(?:observ\w*|obs|make\s+a\s+note)\b/i,
 ];
 
 // End-of-loop confirmation (2026-05-26). After all three slots fill,
@@ -133,12 +143,15 @@ export const ringContinuitySchema = {
   whichCircuitQuestion: 'Which circuit is the ring continuity for?',
   cancelMessage: ({ filled, total }) => `Ring continuity cancelled. ${filled} of ${total} saved.`,
   cancelMessageEmpty: 'Ring continuity cancelled.',
-  finishMessage: ({ values }) => {
-    const r1 = values.ring_r1_ohm ?? '?';
-    const rn = values.ring_rn_ohm ?? '?';
-    const r2 = values.ring_r2_ohm ?? '?';
-    return `Got it. R1 ${r1}, Rn ${rn}, R2 ${r2}.`;
-  },
+  // #34 (2026-06-19, session AD0AE9FA, build 404): completion ack must be
+  // terse. The confirmation prompt above ("R1 X, Rn Y, R2 Z. All correct?")
+  // ALREADY read the triple aloud, so re-reading the same three values on the
+  // "yes" completion made the inspector hear the readout twice (double
+  // read-back, violating the audio-first "read back exactly once" invariant).
+  // Drop the value re-read; "Got it." is the acknowledgement the user just
+  // approved. Kept byte-identical with the legacy ring-continuity-script.js
+  // finishScript text so dialogue-engine-replay.test.js parity holds.
+  finishMessage: () => 'Got it.',
   // 2026-05-26: confirmation gate. When the engine sees all slots
   // filled, it emits `confirmationMessage(values)` as an
   // `ask_user_started` (reason `confirmation.reason`) instead of

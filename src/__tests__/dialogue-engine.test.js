@@ -202,12 +202,15 @@ describe('engine — ring continuity', () => {
       transcriptText: 'yes',
       now: 5000,
     });
+    // #34 (2026-06-19): completion ack is now terse — the confirmation prompt
+    // above already read R1/Rn/R2 aloud, so the finish must NOT re-read them.
     expect(ws.sent.at(-1)).toMatchObject({
       type: 'ask_user_started',
       reason: 'info',
-      question: 'Got it. R1 0.43, Rn 0.43, R2 0.78.',
+      question: 'Got it.',
       expected_answer_shape: 'none',
     });
+    expect(ws.sent.at(-1).question).not.toMatch(/R1|Rn|R2/);
     expect(session.stateSnapshot.circuits[13]).toMatchObject({
       ring_r1_ohm: '0.43',
       ring_rn_ohm: '0.43',
@@ -238,6 +241,84 @@ describe('engine — ring continuity', () => {
       fallthrough: true,
       transcriptText: 'Zs is 0.62.',
     });
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  // C2 (2026-06-19, session AD0AE9FA #35): an observation lead-in arriving
+  // while a ring loop is active must NOT be eaten by the script. It exits the
+  // loop (state cleared) and the transcript falls through to Sonnet, which
+  // records the observation per RULE 1a. Two exit paths cover this:
+  //   - the NEW observation topicSwitchTrigger (this fix) for single-circuit /
+  //     bare observation lead-ins → { handled:true, fallthrough:true };
+  //   - the pre-existing broadcast-intent abort (engine.js:94) for the exact
+  //     session phrase, which names "circuits 1 and 2" → { handled:false }.
+  // Both clear dialogueScriptState and let Sonnet see the utterance — the
+  // observation is never silently consumed by the loop.
+  test('#35: bare "observation." exits an active ring loop via topic switch (this fix)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Observation.',
+      now: 2000,
+    });
+    expect(out.handled).toBe(true);
+    expect(out.fallthrough).toBe(true);
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('#35: single-circuit "observation note …" exits an active ring loop via topic switch', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Observation note the RCD cover is cracked.',
+      now: 2000,
+    });
+    expect(out.handled).toBe(true);
+    expect(out.fallthrough).toBe(true);
+    expect(out.transcriptText).toBe('Observation note the RCD cover is cracked.');
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('#35: exact session phrase "Observation note RCD protection for circuits 1 and 2." is not eaten (broadcast-intent abort)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Observation note RCD protection for circuits 1 and 2.',
+      now: 2000,
+    });
+    // Not consumed by the loop — script aborts and the turn falls through to
+    // Sonnet (handled:false is the "fall through to Sonnet flow" contract).
+    expect(out).toEqual({ handled: false });
     expect(session.dialogueScriptState).toBeNull();
   });
 
@@ -722,7 +803,13 @@ describe('engine — insulation resistance', () => {
         now,
       });
     const answer = (ws, session, text, now) =>
-      processInsulationResistanceTurn({ ws, session, sessionId: SESSION_ID, transcriptText: text, now });
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: text,
+        now,
+      });
 
     test('2nd consecutive miss emits a format hint; 3rd skips + falls through', () => {
       const ws = new FakeWS();
