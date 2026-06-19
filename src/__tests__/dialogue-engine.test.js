@@ -244,6 +244,84 @@ describe('engine — ring continuity', () => {
     expect(session.dialogueScriptState).toBeNull();
   });
 
+  // C2 (2026-06-19, session AD0AE9FA #35): an observation lead-in arriving
+  // while a ring loop is active must NOT be eaten by the script. It exits the
+  // loop (state cleared) and the transcript falls through to Sonnet, which
+  // records the observation per RULE 1a. Two exit paths cover this:
+  //   - the NEW observation topicSwitchTrigger (this fix) for single-circuit /
+  //     bare observation lead-ins → { handled:true, fallthrough:true };
+  //   - the pre-existing broadcast-intent abort (engine.js:94) for the exact
+  //     session phrase, which names "circuits 1 and 2" → { handled:false }.
+  // Both clear dialogueScriptState and let Sonnet see the utterance — the
+  // observation is never silently consumed by the loop.
+  test('#35: bare "observation." exits an active ring loop via topic switch (this fix)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Observation.',
+      now: 2000,
+    });
+    expect(out.handled).toBe(true);
+    expect(out.fallthrough).toBe(true);
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('#35: single-circuit "observation note …" exits an active ring loop via topic switch', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Observation note the RCD cover is cracked.',
+      now: 2000,
+    });
+    expect(out.handled).toBe(true);
+    expect(out.fallthrough).toBe(true);
+    expect(out.transcriptText).toBe('Observation note the RCD cover is cracked.');
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
+  test('#35: exact session phrase "Observation note RCD protection for circuits 1 and 2." is not eaten (broadcast-intent abort)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Observation note RCD protection for circuits 1 and 2.',
+      now: 2000,
+    });
+    // Not consumed by the loop — script aborts and the turn falls through to
+    // Sonnet (handled:false is the "fall through to Sonnet flow" contract).
+    expect(out).toEqual({ handled: false });
+    expect(session.dialogueScriptState).toBeNull();
+  });
+
   test('Silvertown repro — first unresolvable circuit answer re-asks instead of discarding R1', () => {
     // 2026-04-30 14 Silvertown Road (session 842A3289): inspector said
     // "Ring continuity lives are 0.32" → script entered, R1=0.32 queued,

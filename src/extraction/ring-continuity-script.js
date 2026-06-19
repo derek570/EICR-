@@ -143,6 +143,11 @@ const TOPIC_SWITCH_PATTERNS = [
   /\b(?:insulation|installation)\s+resistance\b/i,
   /\bRCD\s+(?:trip|test|time)\b/i,
   /\bpolarity\b/i,
+  // C2 (2026-06-19, #35): observation lead-in exits the ring loop so a bare
+  // "observation." isn't eaten by an active script. Mirrors the engine schema
+  // dialogue-engine/schemas/ring-continuity.js topicSwitchTriggers for replay
+  // parity.
+  /\b(?:observ\w*|obs|make\s+a\s+note)\b/i,
 ];
 
 /**

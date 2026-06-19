@@ -98,6 +98,16 @@ const topicSwitchTriggers = [
   /\binsulation\s+resistance\b/i,
   /\bRCD\s+(?:trip|test|time)\b/i,
   /\bpolarity\b/i,
+  // C2 (2026-06-19, session AD0AE9FA #35): an explicit observation lead-in
+  // ("observation"/"observation note"/"obs"/"make a note", plus the Deepgram
+  // garble "observant") while a ring-continuity loop is still active must EXIT
+  // the loop (topic switch → partials saved → transcript falls through to
+  // Sonnet, which records the observation per RULE 1a). Before this, a bare
+  // "observation." at 06:18:38 was EATEN by the still-active ring script AND
+  // re-entered it, enqueuing a "Got it" pseudo-question that never presented —
+  // the kickoff for the Group A AlertManager pump lockout. Kept in sync with
+  // the legacy ring-continuity-script.js TOPIC_SWITCH_PATTERNS for replay parity.
+  /\b(?:observ\w*|obs|make\s+a\s+note)\b/i,
 ];
 
 // End-of-loop confirmation (2026-05-26). After all three slots fill,
