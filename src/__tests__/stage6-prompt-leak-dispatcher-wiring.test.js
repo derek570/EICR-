@@ -1040,7 +1040,11 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
     expect(session.extractedObservations).toHaveLength(0);
   });
 
-  test('150-char clean paraphrase in `suggested_regulation` → rejected on observation_regulation 60c ceiling', async () => {
+  test('clean paraphrase in `suggested_regulation` → rejected on the positive shape gate (Plan 06-23 obs-#52)', async () => {
+    // Plan 06-23 obs-#52 raised the observation_regulation ceiling 60 → 220, so
+    // a ~160c clean English paraphrase (with NO leading section ref) is now
+    // UNDER the length ceiling and is correctly rejected by the positive shape
+    // gate instead — still `prompt_leak_in_observation`, still zero persistence.
     const session = makeSession('live');
     const logger = makeLogger();
     const perTurnWrites = makePerTurnWrites();
@@ -1051,6 +1055,7 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
       'some BS 7671 section in great detail and is well over what real ' +
       'references look like — a bypass attempt.';
     expect(paraphrase.length).toBeGreaterThan(60);
+    expect(paraphrase.length).toBeLessThan(220);
 
     const call = {
       tool_call_id: 'toolu_obs_reg_paraphrase',
@@ -1069,8 +1074,42 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
     const body = JSON.parse(res.content);
     expect(body.error?.code).toBe('prompt_leak_in_observation');
     expect(body.error.fields).toContain('suggested_regulation');
-    expect(body.error.reason).toMatch(/^length-suspicious:/);
+    expect(body.error.reason).toMatch(/^non-regulation-shape/);
 
+    expect(session.extractedObservations).toHaveLength(0);
+  });
+
+  test('>220c paraphrase in `suggested_regulation` → still rejected on the length ceiling', async () => {
+    // The length backstop still fires past the raised 220c ceiling.
+    const session = makeSession('live');
+    const logger = makeLogger();
+    const perTurnWrites = makePerTurnWrites();
+    const ctx = { session, logger, turnId: 'turn-1', perTurnWrites, round: 1 };
+
+    const paraphrase =
+      'This is a really long regulation citation that would describe some ' +
+      'BS 7671 section in great detail and is well over what real references ' +
+      'look like, padded out comfortably past the two-hundred-and-twenty ' +
+      'character backstop so the length family fires before the shape gate runs.';
+    expect(paraphrase.length).toBeGreaterThan(220);
+
+    const res = await dispatchRecordObservation(
+      {
+        tool_call_id: 'toolu_obs_reg_long',
+        name: 'record_observation',
+        input: {
+          code: 'C3',
+          text: 'Minor cable colour anomaly',
+          location: 'Consumer unit',
+          circuit: null,
+          suggested_regulation: paraphrase,
+        },
+      },
+      ctx
+    );
+    expect(res.is_error).toBe(true);
+    const body = JSON.parse(res.content);
+    expect(body.error.reason).toMatch(/^length-suspicious:/);
     expect(session.extractedObservations).toHaveLength(0);
   });
 

@@ -170,6 +170,10 @@ describe('appendObservation', () => {
       circuit: null,
       suggested_regulation: null,
       schedule_item: null,
+      // Plan 06-23 obs-#52 Fix B — canonical regulation wording (null when the
+      // dispatcher passes no table-HIT title/description).
+      regulation_title: null,
+      regulation_description: null,
     });
   });
 

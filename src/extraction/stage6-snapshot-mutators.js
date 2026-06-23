@@ -497,7 +497,18 @@ export function applyBoardReadingFlagAware(snapshot, args) {
  */
 export function appendObservation(
   session,
-  { code, location, text, circuit, suggested_regulation, schedule_item }
+  {
+    code,
+    location,
+    text,
+    circuit,
+    suggested_regulation,
+    schedule_item,
+    // Plan 06-23 obs-#52 Fix B — canonical BS 7671 wording attached by the
+    // dispatcher on a regulation-table HIT (null on a MISS / no ref).
+    regulation_title,
+    regulation_description,
+  }
 ) {
   const id = randomUUID();
   if (!Array.isArray(session.extractedObservations)) {
@@ -511,6 +522,8 @@ export function appendObservation(
     circuit: circuit ?? null,
     suggested_regulation: suggested_regulation ?? null,
     schedule_item: schedule_item ?? null,
+    regulation_title: regulation_title ?? null,
+    regulation_description: regulation_description ?? null,
   });
   return { id };
 }

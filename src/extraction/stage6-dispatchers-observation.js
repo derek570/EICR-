@@ -53,6 +53,7 @@ import {
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
+import { lookupRegulation } from './regulation-lookup.js';
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
@@ -206,6 +207,16 @@ export async function dispatchRecordObservation(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
+  // Plan 06-23 obs-#52 Fix B — authoritative regulation wording.
+  // Derive the bare table key from the (shape-validated) suggested_regulation
+  // and, on a table HIT, attach the canonical BS 7671 title/description so the
+  // displayed wording is table-validated rather than model free-text. MISS
+  // (the COMMON case — the table is BS 7671:2018+A2:2022, the schema cites
+  // A4:2026) leaves both null and the model's wording stands.
+  const canonicalReg = lookupRegulation(input.suggested_regulation ?? null);
+  const regulation_title = canonicalReg?.title ?? null;
+  const regulation_description = canonicalReg?.description ?? null;
+
   // Atom owns UUID generation. Atom writes to session.extractedObservations.
   // (Legacy session.stateSnapshot.observations is a separate text-dedup
   // surface the atom deliberately does NOT touch — see Plan 02-01 SUMMARY.)
@@ -216,6 +227,8 @@ export async function dispatchRecordObservation(call, ctx) {
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
     schedule_item: input.schedule_item ?? null,
+    regulation_title,
+    regulation_description,
   });
 
   perTurnWrites.observations.push({
@@ -226,6 +239,8 @@ export async function dispatchRecordObservation(call, ctx) {
     circuit: input.circuit ?? null,
     suggested_regulation: input.suggested_regulation ?? null,
     schedule_item: input.schedule_item ?? null,
+    regulation_title,
+    regulation_description,
   });
 
   logToolCall(logger, {

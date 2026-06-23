@@ -238,6 +238,60 @@ describe('dispatchRecordObservation', () => {
     // The full wording survives into the stored observation (no truncation).
     expect(session.extractedObservations[0].suggested_regulation).toBe(regWithWording);
   });
+
+  test('Plan 06-23 obs-#52 Fix B: table HIT attaches canonical title/description to the stored observation', async () => {
+    // 411.3.3 IS in config/bs7671-regulations.json → the dispatcher emits the
+    // canonical BS 7671 title + description alongside the model wording.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_hit',
+        name: 'record_observation',
+        input: {
+          text: 'No earth continuity at socket',
+          code: 'C2',
+          suggested_regulation: '411.3.3 — some model paraphrase of the wording',
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+    const stored = session.extractedObservations[0];
+    expect(typeof stored.regulation_title).toBe('string');
+    expect(stored.regulation_title.length).toBeGreaterThan(0);
+    expect(typeof stored.regulation_description).toBe('string');
+    expect(stored.regulation_description.length).toBeGreaterThan(0);
+    // perTurnWrites carries the canonical wording too (iOS consumer).
+    expect(perTurnWrites.observations[0].regulation_title).toBe(stored.regulation_title);
+  });
+
+  test('Plan 06-23 obs-#52 Fix B: table MISS falls back to model wording (canonical fields null)', async () => {
+    // 411.3.4 is the schema's own example ref but is NOT in the table (which
+    // is A2:2022; the schema cites A4:2026). MISS is the COMMON case → the
+    // canonical fields stay null and the model's suggested_regulation stands.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const modelWording = '411.3.4 — Additional protection for AC final circuits up to 32 A';
+    await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_miss',
+        name: 'record_observation',
+        input: {
+          text: 'No RCD on socket circuit',
+          code: 'C2',
+          suggested_regulation: modelWording,
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+    const stored = session.extractedObservations[0];
+    expect(stored.regulation_title).toBeNull();
+    expect(stored.regulation_description).toBeNull();
+    // The shape-validated model wording survives unchanged.
+    expect(stored.suggested_regulation).toBe(modelWording);
+  });
 });
 
 describe('dispatchDeleteObservation', () => {
