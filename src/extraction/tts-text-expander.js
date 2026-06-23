@@ -40,7 +40,7 @@
  * Format: ISO date of edit, allowing alphanumeric suffix for same-day
  * iterations ("2026-05-24a", "2026-05-24b").
  */
-export const EXPANDER_VERSION = '2026-05-24';
+export const EXPANDER_VERSION = '2026-06-23';
 
 const REPLACEMENTS = Object.freeze([
   // Impedance values — compound patterns FIRST so `\bZe\/Zs\b` wins
@@ -146,7 +146,17 @@ export function expandForTTS(text) {
     // withTemplate:)` with an NSRange covering the whole string.
     result = result.replace(re, rep);
   }
-  return expandNumbers(result);
+  result = expandNumbers(result);
+  // item #7 (session DFCE2145, 2026-06-23) — append a terminating period when
+  // the expanded text ends on a bare digit (e.g. "R C D time 28", "9 points"
+  // would NOT — it ends on the noun). ElevenLabs renders utterance-final bare
+  // numerals unreliably (clipped/rushed prosody — the reported "…points 9"
+  // garble); an explicit end-of-sentence cue fixes the prosody. Decimals are
+  // already expanded to words ("zero point six two") so they don't end in a
+  // digit and are untouched. MUST stay byte-identical with iOS
+  // AlertManager.expandForTTS — the speculator pre-synth text and the iOS
+  // cache-lookup POST body must match.
+  return /\d$/.test(result) ? `${result}.` : result;
 }
 
 /** Exported for parity-test introspection only. Do not depend on the
