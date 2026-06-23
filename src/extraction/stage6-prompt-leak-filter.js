@@ -248,18 +248,38 @@ const EXAMPLE_HEADER_RE = /\bExample\s+[1-9]:/i;
  *     (~58 chars). A 120c ceiling catches a 150-char benign
  *     paraphrase of the prompt with zero FPs on real location data.
  *
- *   - `observation_regulation` (60c): real regulation refs are
- *     VERY short — "Regulation 522.6.201" (20 chars), "BS 7671
- *     643.3.2" (15 chars), occasional rich forms up to ~55 chars
- *     ("BS 7671 regulation 522.6.201 shock-risk installation").
- *     60c ceiling catches anything longer as suspicious with
- *     zero FPs on real regulation data.
+ *   - `observation_regulation` (220c — Plan 06-23 obs-#52): the
+ *     ORIGINAL 60c ceiling was set when the field was assumed to
+ *     hold a bare ref ("Regulation 522.6.201", ~20 chars). But the
+ *     tool schema (stage6-tool-schemas.js) instructs the model to
+ *     cite the regulation NUMBER *and* a wording fragment
+ *     ("411.3.4 — Additional protection for AC final circuits up to
+ *     32 A…"), which is naturally 60–150 chars. The 60c ceiling
+ *     therefore FOUGHT the schema: every observation produced 2–6
+ *     `length-suspicious` rejects while the model squeezed the
+ *     wording out, then accepted only once the wording was stripped
+ *     (#52) — also adding latency + suppressing the iOS processing
+ *     cue (#54). Raised to 220c to cover the schema-described
+ *     number + wording fragment with headroom for a longer A4:2026
+ *     wording. SECURITY: the ceiling is NOT the real backstop for
+ *     this field — the positive shape gate (Family 9,
+ *     `looksLikeRegulationRef`) is, and the earlier detector
+ *     families (markers / requirement-ids / phrases / reversed /
+ *     entropy, :843-897) still run FIRST. The exact ceiling is
+ *     non-critical above ~160; 220 is a round, safe choice.
  */
 const LENGTH_CEILING = {
   question: 500,
   observation_text: 1000,
   observation_location: 120,
-  observation_regulation: 60,
+  // Plan 06-23 obs-#52: 60 → 220. See docblock above — the schema
+  // asks for "number + wording", which the 60c ceiling truncated.
+  observation_regulation: 220,
+  // Plan 06-23 obs-#51: `rationale` is a single spoken clause (read back
+  // aloud), so it is short by design. 300c catches a longer paraphrase of
+  // the prompt with zero FPs on a real one-clause rationale. No positive
+  // shape gate applies (free-form prose, unlike observation_regulation).
+  observation_rationale: 300,
   designation: 120,
 };
 
@@ -437,6 +457,100 @@ const BARE_MODIFIER_PATTERNS = [
 ];
 
 /**
+ * Plan 06-23 obs-#52 — numeric/regulation-SECTION subset of
+ * FULLY_QUALIFIED_PATTERNS, used ONLY as the allowable HEAD when a
+ * `suggested_regulation` value carries a leading ref followed by a
+ * free-text wording fragment (see `looksLikeSectionRefWithProse`).
+ *
+ * A SECTION ref names a specific regulation clause (bare numeric,
+ * Regulation/Reg <num>) or a BS-7671 subdivision (BS <num> <modifier>
+ * <section> / BS <num> <numeric section>). It is DELIBERATELY a strict
+ * subset — it EXCLUDES the bare-standard / non-section shapes:
+ *   - bare BS series (`BS 7671`)                  FULLY_QUALIFIED[2] :390
+ *   - BS hyphen series (`BS 88-2`)                FULLY_QUALIFIED[3] :393
+ *   - BS EN series (`BS EN 61008-1`)              FULLY_QUALIFIED[6] :405
+ *   - IET / HSE Guidance                          FULLY_QUALIFIED[7/8] :408-409
+ * Allowing those as a prose HEAD would re-open a
+ * "BS 7671 — <arbitrary prose>" / "IET Guidance — <arbitrary prose>"
+ * bypass of the shape backstop. The four patterns below MUST stay in
+ * sync with FULLY_QUALIFIED_PATTERNS indices 0/1/4/5 — they are
+ * duplicated here (not index-referenced) so a reorder of that array
+ * cannot silently change which heads introduce prose.
+ */
+const SECTION_REF_HEAD_PATTERNS = [
+  // bare numeric (FULLY_QUALIFIED[0] :382)
+  /^\d{1,4}(\.\d{1,3}){1,4}[a-z]?$/,
+  // "Regulation <num>" / "Reg <num>" (FULLY_QUALIFIED[1] :386)
+  /^Reg(ulation)?\s+\d{1,4}(\.\d{1,3}){0,4}[a-z]?$/i,
+  // "BS <num> <modifier> <section>" (FULLY_QUALIFIED[4] :399)
+  /^BS\s+\d{1,5}\s+(Table|Part|Section|Chapter|Annex|Appendix|Figure|Regulation)\s+(\d{1,4}(\.\d{1,3}){0,3}|[A-Z])$/i,
+  // "BS <num> <numeric section>" (FULLY_QUALIFIED[5] :402)
+  /^BS\s+\d{1,5}\s+\d{1,4}(\.\d{1,3}){0,4}[a-z]?$/i,
+];
+
+/**
+ * Plan 06-23 obs-#52 — first-spaced-delimiter splitter for
+ * "section-ref + prose" values.
+ *
+ * Matches the FIRST whitespace-delimited separator only: " — " (em-dash),
+ * " – " (en-dash), " - " (SPACED ASCII hyphen — common in model /
+ * speech-normalised output like "411.3.4 - wording"), or ": " (colon +
+ * trailing whitespace).
+ *
+ * CRITICAL — it NEVER matches a BARE (unspaced) hyphen: valid refs
+ * legitimately contain unspaced hyphens ("BS 88-2", "BS EN 61008-1"), so
+ * only a separator surrounded by whitespace splits. Non-global so `.exec`
+ * returns the FIRST match (we split once: head + remaining-prose tail).
+ */
+const SECTION_REF_PROSE_SEPARATOR_RE = /\s(?:—|–|-)\s|:\s/;
+
+/**
+ * Plan 06-23 obs-#52 — accepts a leading section-ref followed by a
+ * free-text wording fragment, e.g.
+ * "411.3.4 — Additional protection for AC final circuits up to 32 A".
+ *
+ * WHY: the tool schema (stage6-tool-schemas.js) instructs the model to
+ * cite the regulation NUMBER *and* a wording fragment. The single-ref +
+ * composite paths reject that (they require EVERY token to be a bare ref),
+ * which forced the model into a multi-round prompt-leak reject loop that
+ * stripped the wording (#52), added latency, and suppressed the iOS
+ * processing cue (#54). This is the dedicated branch that lets the
+ * schema-requested wording survive.
+ *
+ * Accepts iff: (1) the value contains a SPACED delimiter, (2) the HEAD
+ * (before the first delimiter) matches a SECTION_REF_HEAD_PATTERNS entry
+ * — section refs only, NOT bare standard names — and (3) the TAIL is
+ * non-empty (bounded by the 220c observation_regulation ceiling enforced
+ * by Family 8 BEFORE this gate runs).
+ *
+ * SECURITY TRADE-OFF (stated honestly): this narrows-but-still-weakens
+ * the LAST-resort shape backstop — a ≤220c paraphrased instruction
+ * PREFIXED with a real section ref would now pass the shape gate.
+ * Mitigations: the earlier detector families (markers, requirement-IDs,
+ * structural phrases, reversed content, entropy — :843-897) run BEFORE
+ * this gate and still catch KNOWN prompt-leak content; the section-ref-
+ * head requirement blocks the bare-standard-prefix bypass; the 220c
+ * ceiling bounds the tail. Residual risk accepted: the earlier families
+ * catch known markers/phrases/entropy, NOT every short paraphrased
+ * instruction under 220c — accepted for the product win (the
+ * schema-requested wording must reach the inspector).
+ *
+ * @param {string} text  trimmed candidate value
+ * @returns {boolean}
+ */
+function looksLikeSectionRefWithProse(text) {
+  const m = SECTION_REF_PROSE_SEPARATOR_RE.exec(text);
+  if (!m) return false;
+  const head = text.slice(0, m.index).trim();
+  const tail = text.slice(m.index + m[0].length).trim();
+  if (head.length === 0 || tail.length === 0) return false;
+  for (const re of SECTION_REF_HEAD_PATTERNS) {
+    if (re.test(head)) return true;
+  }
+  return false;
+}
+
+/**
  * Plan 04-30 r23-#1 — composite-reference separator regex.
  *
  * Matches: slash (`/`), comma (`,`), semicolon (`;`), or word-
@@ -563,6 +677,10 @@ function looksLikeRegulationRef(text) {
   // when a separator is present AND first-token is fully qualified
   // AND every subsequent non-empty token is valid.
   if (looksLikeCompositeRegulationRef(trimmed)) return true;
+  // Plan 06-23 obs-#52 — section-ref + wording-prose path. Runs LAST
+  // (after single-ref + composite) so a pure ref never trips it. Lets
+  // the schema-requested "411.3.4 — <wording>" survive the shape gate.
+  if (looksLikeSectionRefWithProse(trimmed)) return true;
   return false;
 }
 

@@ -421,6 +421,16 @@ const recordObservation = makeTool({
       description:
         'BS 7671 Schedule of Inspection section number this observation maps to. The COMPLETE Schedule of Inspections is appended to the system prompt — read it and pick the section whose description most precisely matches this defect. Value MUST be a section ref taken verbatim from that list. Null when no schedule section cleanly applies.',
     },
+    rationale: {
+      // Plan 06-23 obs-#51 — one short clause explaining WHY this code was
+      // chosen, surfaced on the iOS observation card and spoken as a
+      // "…because …" clause so a hands-free inspector can audit the coding.
+      // Named `rationale` to align with the existing refinement/update field
+      // (server observation_update.rationale + iOS ObservationUpdate.rationale).
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description:
+        'One short clause explaining WHY this code was chosen (e.g. "no RCD on a socket circuit likely to supply outdoor equipment"). Keep it to a single concise clause — it is read back aloud. Null when there is no specific rationale beyond the observation text itself.',
+    },
   },
   // STS-05 lists all 6 fields in the strict tool shape. Under strict:true,
   // non-required fields may be omitted — so a nullable field that the
@@ -434,7 +444,19 @@ const recordObservation = makeTool({
   // ObservationScheduleLinker.swift wired to auto-tick the matching schedule
   // row, but Stage 6's record_observation schema dropped it during the
   // tool-schema migration so iOS never received a value to link).
-  required: ['code', 'location', 'text', 'circuit', 'suggested_regulation', 'schedule_item'],
+  // Plan 06-23 obs-#51 — `rationale` is required-with-null per the nullable-
+  // required convention above (the tool is no longer strict:true but
+  // additionalProperties:false is preserved, so the key must be in the schema;
+  // "optional" is expressed as null, not absence).
+  required: [
+    'code',
+    'location',
+    'text',
+    'circuit',
+    'suggested_regulation',
+    'schedule_item',
+    'rationale',
+  ],
 });
 
 // ---------------------------------------------------------------------------
