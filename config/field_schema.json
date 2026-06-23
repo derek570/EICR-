@@ -528,6 +528,12 @@
       "type": "text",
       "description": "Inspector's narrative summary of the overall installation condition",
       "ai_guidance": "Single-sentence narrative. Listen for 'general condition is...', 'overall the installation is...', 'condition is good/poor/satisfactory'. Treat the whole sentence as the value, not just trailing adjectives."
+    },
+    "comments": {
+      "label": "Comments on Existing Installation",
+      "type": "text",
+      "description": "Free-text comments on the existing installation. On an EIC this is where a note diverted from a (non-applicable) observation is recorded; iOS renders it in the EIC PDF comments cell (extentAndType.comments).",
+      "ai_guidance": "Use ONLY when explicitly directed — e.g. on an EIC after the inspector agrees to note a would-be observation under comments. Write the inspector's note as the value; iOS appends it to any existing comments."
     }
   },
 

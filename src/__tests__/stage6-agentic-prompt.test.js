@@ -290,8 +290,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // even when the text references circuits / sounds compliant) + Example 11
       // (the exact "Observation note RCD protection for circuits 1 and 2."
       // session case). Measured 17453; cap 17550 leaves ~97-token headroom.
+      //
+      // 2026-06-23 (field session DFCE2145, obs-#49 + #55 + #53): bumped to
+      // 18000 to absorb OBSERVATIONS RULE 0 (EIC has no observations → graceful
+      // comments ask) + the #55 no-CPC clarifying-ask steering + the #53
+      // bare-observation deterministic ask. Measured 17656 after RULE 0; cap
+      // 18000 leaves headroom for the #55/#53 prompt steering in the same sprint.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(17550);
+      expect(estimate).toBeLessThanOrEqual(18000);
     });
   });
 
@@ -955,8 +961,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     references circuits / sounds compliant) + Example 11 (the exact
       //     "Observation note RCD protection for circuits 1 and 2." case).
       //     Measured 12345 on the base; cap 12450 leaves ~105-token headroom.
+      //   - 12900 (2026-06-23 field session DFCE2145 obs-#49 + #55 + #53):
+      //     OBSERVATIONS RULE 0 (EIC has no observations → graceful comments
+      //     ask) + the #55 no-CPC clarifying-ask steering + #53 bare-observation
+      //     deterministic ask. Measured 12548 after RULE 0; cap 12900 leaves
+      //     headroom for the #55/#53 steering in the same sprint.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(12450);
+      expect(estimate).toBeLessThanOrEqual(12900);
     });
   });
 
@@ -1327,7 +1338,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       const idx = prompt.search(/SUPPLY vs MAIN SWITCH DISAMBIGUATION/);
       expect(idx).toBeGreaterThanOrEqual(0);
       // Section ends at the next sibling block (OBSERVATIONS).
-      const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+      const end = prompt.indexOf('OBSERVATIONS (seven rules)', idx);
       expect(end).toBeGreaterThan(idx);
       const block = prompt.slice(idx, end);
       // Inspector vocabulary for the DNO-side device + the canonical
@@ -1360,7 +1371,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // ambiguous default to SITE and a durable "no" answer.
       const idx = prompt.search(/CLIENT BILLING ADDRESS — SITE COPY RULE/);
       expect(idx).toBeGreaterThanOrEqual(0);
-      const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+      const end = prompt.indexOf('OBSERVATIONS (seven rules)', idx);
       expect(end).toBeGreaterThan(idx);
       const block = prompt.slice(idx, end);
 
@@ -1383,7 +1394,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
 
     test('CLIENT BILLING ADDRESS block contains both directions (site→customer AND customer→site) of the mirror copy', () => {
       const idx = prompt.search(/CLIENT BILLING ADDRESS — SITE COPY RULE/);
-      const end = prompt.indexOf('OBSERVATIONS (six rules)', idx);
+      const end = prompt.indexOf('OBSERVATIONS (seven rules)', idx);
       const block = prompt.slice(idx, end);
 
       // Two worked examples — yes-answer (site→customer copy) and

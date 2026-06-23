@@ -114,6 +114,11 @@ export const KNOWN_FIELDS = new Set([
   'general_condition',
   'next_inspection_years',
   'premises_description',
+  // Plan 06-23 obs-#49 — EIC "comments on existing installation". iOS accepts
+  // `comments` natively (DeepgramRecordingViewModel.swift apply switch +
+  // accepted-field list), so list it here to keep the optimizer's
+  // canonical-name-leak detector from false-positiving on a name iOS decodes.
+  'comments',
   // Circuit fields
   'zs',
   'insulation_resistance_l_e',

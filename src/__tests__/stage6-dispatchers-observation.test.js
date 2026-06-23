@@ -292,6 +292,56 @@ describe('dispatchRecordObservation', () => {
     // The shape-validated model wording survives unchanged.
     expect(stored.suggested_regulation).toBe(modelWording);
   });
+
+  test('Plan 06-23 obs-#49: record_observation on an EIC is REJECTED and never persists', async () => {
+    // An EIC has no observations section. The dispatcher returns a rejection
+    // envelope (defence-in-depth behind the prompt clause) whose reason steers
+    // the model toward a graceful comments ask. Nothing is written.
+    const session = { ...makeSession(), certType: 'eic' };
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_eic',
+        name: 'record_observation',
+        input: {
+          text: 'Fuse board has a large hole in the side',
+          code: 'C2',
+          suggested_regulation: '421.1.201',
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+    expect(result.is_error).toBe(true);
+    const body = JSON.parse(result.content);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('observations_not_applicable_on_eic');
+    // Zero persistence — neither the session array nor perTurnWrites grew.
+    expect(session.extractedObservations).toHaveLength(0);
+    expect(perTurnWrites.observations).toHaveLength(0);
+    // Rejection logged with the EIC validation_error (PII-safe summary).
+    const row = logger.info.mock.calls[0][1];
+    expect(row.outcome).toBe('rejected');
+    expect(row.validation_error).toBe('observations_not_applicable_on_eic');
+  });
+
+  test('Plan 06-23 obs-#49: record_observation on an EICR (default certType) is UNAFFECTED', async () => {
+    // The guard is EIC-only — an EICR session (or one with no certType) records
+    // observations exactly as before.
+    const session = { ...makeSession(), certType: 'eicr' };
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_eicr_ok',
+        name: 'record_observation',
+        input: { text: 'Cracked socket outlet', code: 'C2', suggested_regulation: '621.2' },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+    expect(result.is_error).toBe(false);
+    expect(session.extractedObservations).toHaveLength(1);
+  });
 });
 
 describe('dispatchDeleteObservation', () => {

@@ -87,6 +87,39 @@ export async function dispatchRecordObservation(call, ctx) {
     round,
   };
 
+  // Plan 06-23 obs-#49 — observations are not applicable on an EIC.
+  // An EIC (Electrical Installation Certificate) certifies a NEW installation
+  // as compliant; it has no observations/defects section. The agentic path is
+  // otherwise cert-agnostic (a single EICR_AGENTIC_SYSTEM_PROMPT), so without
+  // this guard observations were silently recorded on EICs (field test
+  // 2026-06-23, session DFCE2145). PRIMARY fix is the prompt clause steering
+  // the model to call ask_user gracefully on an EIC; this dispatcher guard is
+  // defence-in-depth: if the model ignores the prompt and calls
+  // record_observation anyway, return a rejection envelope so it self-corrects
+  // (mirroring the prompt_leak rejection-envelope shape below). NEVER persist.
+  if (typeof session.certType === 'string' && session.certType.toLowerCase() === 'eic') {
+    logToolCall(logger, {
+      ...baseLogRow,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: 'observations_not_applicable_on_eic',
+      input_summary: { code: input.code ?? null },
+    });
+    return envelope(
+      call.tool_call_id,
+      {
+        ok: false,
+        error: {
+          code: 'observations_not_applicable_on_eic',
+          reason:
+            'This is an installation certificate (EIC), which has no observations section. ' +
+            'Ask the inspector whether to note this under comments on the existing installation instead.',
+        },
+      },
+      true
+    );
+  }
+
   // 2026-06-03: validateRecordObservation moved DOWN, after the leak filter.
   // The validator's `regulation_required_for_coded_observation` check would
   // otherwise preempt the leak-blocking reject — and a leak-bearing call
