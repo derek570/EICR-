@@ -245,6 +245,41 @@ describe('PLAN_v4 — telemetry reason values', () => {
   test('HAS_COMPLAINT_OR_NEGATION value (PLAN-backend-final Phase 5.1)', () => {
     expect(GATE_REASONS.HAS_COMPLAINT_OR_NEGATION).toBe('has_complaint_or_negation');
   });
+  test('HAS_EARTHING_SYSTEM value (item #8, session DFCE2145)', () => {
+    expect(GATE_REASONS.HAS_EARTHING_SYSTEM).toBe('has_earthing_system');
+  });
+});
+
+// item #8 (session DFCE2145, 2026-06-23) — earthing-system markers. The
+// five field-repro utterances were ALL blocked (iOS gate + backend
+// LOW_CONTENT): no digit, no strong/weak trigger, and the short forms carry
+// one distinct content word. Forward at threshold 1; once forwarded the
+// model WRITES + reads back the earthing classification (invariant #2).
+// Keep these cases byte-for-byte aligned with the iOS TranscriptGateTests.
+describe('item #8 — earthing-system markers forward', () => {
+  test.each([
+    'Supply is a TNCS.',
+    'supply is TNCS.',
+    'It is TNCS.',
+    "I think it's TNCS.",
+    'TNCS.',
+    'The earthing is TN-S.',
+    'It is a TT system.',
+    'PME here.',
+  ])('forwards "%s" with HAS_EARTHING_SYSTEM', (text) => {
+    const result = shouldForwardToSonnet(text);
+    expect(result.forward).toBe(true);
+    expect(result.reason).toBe(GATE_REASONS.HAS_EARTHING_SYSTEM);
+  });
+
+  test.each([
+    ['supply cupboard is locked', GATE_REASONS.LOW_CONTENT],
+    ['it is locked', GATE_REASONS.LOW_CONTENT],
+  ])('still blocks "%s" (no earthing token, bare supply is not a trigger)', (text, reason) => {
+    const result = shouldForwardToSonnet(text);
+    expect(result.forward).toBe(false);
+    expect(result.reason).toBe(reason);
+  });
 });
 
 // PLAN-backend-final.md Phase 5.3 — COMPLAINT_OR_NEGATION trigger
