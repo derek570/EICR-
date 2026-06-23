@@ -3935,6 +3935,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         null;
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
+        // item #10 orphan net — the harness skips its clarifying prompt when
+        // the utterance is an answer to a TTS question (the ask-resolution
+        // path owns those). Mirror the gate's own in_response_to read.
+        inResponseTo: !!(msg.in_response_to && typeof msg.in_response_to === 'object'),
         // Voice-latency plan 2026-06-05 Phase 2.1 — see comment above.
         utteranceId: consumedUtteranceId,
         // Stage 6 Phase 3 Plan 03-08: activate Plan 03-07's dispatcher
