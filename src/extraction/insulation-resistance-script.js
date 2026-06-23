@@ -294,6 +294,19 @@ export function extractNamedFieldValues(text) {
   const out = [];
   const valueGroup =
     '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d*\\.?\\d+';
+  // Separator gap between the field phrase and the value. The ORIGINAL
+  // class `[^\d∞>a-z]{0,30}?` excluded ALL letters, so any connective
+  // ("is"/"was") or Deepgram filler ("raining") between the phrase and the
+  // number broke the match — the real DFCE2145 utterance "live to live is
+  // -- Raining 299 megahertz" captured nothing, and even clean "live to
+  // live is 299" missed (item #3). The loosened gap allows letters ONLY as
+  // a whitelisted set of connective/filler words; any other letter run
+  // (notably the OTHER leg's field words "earth"/"live"/"line") still
+  // breaks the gap, so an L-L capture can never swallow an L-E value.
+  // Non-greedy + the all-numeric value group still preferring the shortest
+  // gap means a tight "L-L 299" match is taken before any looser one.
+  const gap =
+    '(?:[^\\d∞>a-z]|\\b(?:is|was|are|reads?|reading|of|at|equals?|measures?|approximately|about|around|raining|rating|gives?)\\b){0,20}?';
   // Field words (case-insensitive). The negative lookahead on "L L"-style
   // shorthand keeps it from biting on "L1" or letters inside other words.
   const patterns = [
@@ -304,7 +317,7 @@ export function extractNamedFieldValues(text) {
       // "L-L" land. Word boundaries on both ends prevent biting on "ll" inside
       // words like "called" / "yellow".
       re: new RegExp(
-        `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b[^\\d∞>a-z]{0,30}?(${valueGroup})`,
+        `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b${gap}(${valueGroup})`,
         'i'
       ),
     },
@@ -312,7 +325,7 @@ export function extractNamedFieldValues(text) {
       field: 'ir_live_earth_mohm',
       // "live to earth", "line to earth", "L to E", "L E" / "LE" / "L-E" / "L.E".
       re: new RegExp(
-        `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b[^\\d∞>a-z]{0,30}?(${valueGroup})`,
+        `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b${gap}(${valueGroup})`,
         'i'
       ),
     },

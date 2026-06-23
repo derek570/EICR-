@@ -325,6 +325,49 @@ describe('extractNamedFieldValues', () => {
     ]);
   });
 
+  // ── Connective / Deepgram-filler tolerance (item #3, session DFCE2145) ──
+  // The original separator class excluded ALL letters, so a connective
+  // ("is") or Deepgram garble-filler ("raining") between the field phrase
+  // and the value broke the match and the volunteered reading was lost.
+  test('"live to live is 299" → captures despite the "is" connective', () => {
+    expect(extractNamedFieldValues('live to live is 299')).toEqual([
+      { field: 'ir_live_live_mohm', value: '299' },
+    ]);
+  });
+
+  test('DFCE2145 verbatim: "live to live is -- Raining 299 megohms" → 299', () => {
+    expect(extractNamedFieldValues('live to live is -- Raining 299 megohms')).toEqual([
+      { field: 'ir_live_live_mohm', value: '299' },
+    ]);
+  });
+
+  test('"L-L reads 200" → captures despite the "reads" connective', () => {
+    expect(extractNamedFieldValues('L-L reads 200')).toEqual([
+      { field: 'ir_live_live_mohm', value: '200' },
+    ]);
+  });
+
+  test('"live to earth was 150" → captures despite the "was" connective', () => {
+    expect(extractNamedFieldValues('live to earth was 150')).toEqual([
+      { field: 'ir_live_earth_mohm', value: '150' },
+    ]);
+  });
+
+  // Cross-capture guards: the loosened gap must NOT let an L-L phrase reach
+  // across the other leg's field words to swallow an L-E value.
+  test('"live to live 299 live to earth 150" → no cross-capture (both legs correct)', () => {
+    expect(extractNamedFieldValues('live to live 299 live to earth 150')).toEqual([
+      { field: 'ir_live_live_mohm', value: '299' },
+      { field: 'ir_live_earth_mohm', value: '150' },
+    ]);
+  });
+
+  test('"live to live and live to earth 150" → only L-E binds (L-L has no value, must not steal 150)', () => {
+    expect(extractNamedFieldValues('live to live and live to earth 150')).toEqual([
+      { field: 'ir_live_earth_mohm', value: '150' },
+    ]);
+  });
+
   test('"ring continuity lives 0.43" → no match (ring vocabulary, not IR)', () => {
     // The IR script's vocabulary is intentionally narrower than ring's.
     // Bare "lives" maps to ring R1 in ring mode; in IR mode it's a topic
