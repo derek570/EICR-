@@ -780,6 +780,191 @@ describe('processInsulationResistanceTurn — non-standard voltage confirm', () 
   });
 });
 
+// ── item #2b — post-completion reading correction (field-anchored breadcrumb) ──
+// After the IR script finishes, a NEGATION + IR value within 15 s re-writes the
+// last L-L/L-E leg. Triple-guarded against "no, <not-a-value>" / topic switches.
+describe('processInsulationResistanceTurn — post-completion correction', () => {
+  function driveToCompletion() {
+    const ws = new MockWS();
+    const session = buildSession();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText:
+        'insulation resistance for circuit 3 live to live 200 live to earth greater than 999.',
+      now: 100,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '500',
+      now: 200,
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+    return { ws, session };
+  }
+
+  test('finish leaves a breadcrumb for the last reading leg (L-E here)', () => {
+    const { session } = driveToCompletion();
+    expect(session.irCorrectionBreadcrumb).toMatchObject({
+      circuit_ref: 3,
+      field: 'ir_live_earth_mohm',
+    });
+  });
+
+  test('"No. 250." within window re-writes the last leg + speaks one confirmation', () => {
+    const { session } = driveToCompletion();
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 3000,
+    });
+    expect(out).toMatchObject({ handled: true, fallthrough: false });
+    const extraction = ws.sent.find((m) => m.type === 'extraction');
+    expect(extraction.result.readings[0]).toMatchObject({
+      field: 'ir_live_earth_mohm',
+      value: '250',
+    });
+    const info = ws.sent.find((m) => m.type === 'ask_user_started');
+    expect(info.question).toMatch(/got it, live-to-earth 250/i);
+    // One-shot — breadcrumb consumed.
+    expect(session.irCorrectionBreadcrumb).toBeNull();
+  });
+
+  test('">999" / "greater than 200" / "lim" corrections parse', () => {
+    for (const [reply, expected] of [
+      ['No, greater than 200.', '>200'],
+      ['No. Infinite.', '>999'],
+    ]) {
+      const { session } = driveToCompletion();
+      const ws = new MockWS();
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: reply,
+        now: 3000,
+      });
+      const extraction = ws.sent.find((m) => m.type === 'extraction');
+      expect(extraction?.result.readings[0]?.value).toBe(expected);
+    }
+  });
+
+  // MISFIRE GUARDS — the value-only anchor must reject any "no…" utterance that
+  // is not PURELY an IR value, so a stray number can never land on the leg
+  // (adversarial-review repros).
+  test.each([
+    ['No, circuit 5 next.', 'topic cue + trailing word'],
+    ["No, it isn't 200.", 'leading words negating the OLD value'],
+    ['No, that was 5 amps.', 'wrong unit (amps)'],
+    ['No, 0.5 seconds.', 'wrong unit (seconds — a trip time)'],
+    ['No, not greater than 200.', 'leading "not"'],
+    ["No, it's 250.", 'leading filler (deliberately rejected — say the bare value)'],
+  ])('MISFIRE GUARD — %j does NOT correct (%s)', (reply) => {
+    const { session } = driveToCompletion();
+    const before = session.stateSnapshot.circuits[3].ir_live_earth_mohm;
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: reply,
+      now: 3000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+    expect(session.stateSnapshot.circuits[3].ir_live_earth_mohm).toBe(before);
+    // A rejected attempt must NOT consume the breadcrumb.
+    expect(session.irCorrectionBreadcrumb).not.toBeNull();
+  });
+
+  test('value-only with trailing unit IS accepted ("No, 250 megohms")', () => {
+    const { session } = driveToCompletion();
+    const ws = new MockWS();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, 250 megohms.',
+      now: 3000,
+    });
+    const extraction = ws.sent.find((m) => m.type === 'extraction');
+    expect(extraction?.result.readings[0]).toMatchObject({
+      field: 'ir_live_earth_mohm',
+      value: '250',
+    });
+  });
+
+  test('BOARD GUARD — a board switch within the window skips the correction', () => {
+    const { session } = driveToCompletion();
+    // Breadcrumb pinned to the board the script finished on (null here).
+    expect(session.irCorrectionBreadcrumb.boardId).toBe(null);
+    // Inspector switches to a sub-board, THEN says "No, 250".
+    session.stateSnapshot.currentBoardId = 'sub-board-b';
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 3000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+  });
+
+  test('STALE-FIRE GUARD — a new script entry clears the prior breadcrumb', () => {
+    const { session } = driveToCompletion(); // c3 finished, breadcrumb set
+    // Start a NEW script for circuit 4 within the window…
+    processInsulationResistanceTurn({
+      ws: new MockWS(),
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'insulation resistance for circuit 4.',
+      now: 2000,
+    });
+    expect(session.irCorrectionBreadcrumb).toBeNull();
+    // …then cancel it, then say "No, 250" — must NOT rewrite circuit 3.
+    processInsulationResistanceTurn({
+      ws: new MockWS(),
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cancel.',
+      now: 3000,
+    });
+    const c3Before = session.stateSnapshot.circuits[3].ir_live_earth_mohm;
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 4000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(session.stateSnapshot.circuits[3].ir_live_earth_mohm).toBe(c3Before);
+  });
+
+  test('outside the 15 s window → no correction', () => {
+    const { session } = driveToCompletion();
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 200 + 16_000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+  });
+});
+
 describe('processInsulationResistanceTurn — bare-value fallback (script asked LL)', () => {
   test('after "What\'s the live-to-live?", reply "200" lands on LL', () => {
     const ws = new MockWS();

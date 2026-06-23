@@ -87,6 +87,25 @@ const STANDARD_IR_VOLTAGES = Object.freeze(new Set([100, 250, 500, 1000]));
 const AFFIRMATIVE_RE = /^\s*(?:yes|yeah|yep|yup|correct|that'?s right|aye)\b/i;
 const NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 
+// item #2b — post-completion reading correction. The breadcrumb is honoured
+// for this long after the IR script finishes.
+const IR_CORRECTION_WINDOW_MS = 15_000;
+// A correction is a NEGATION followed by the captured remainder.
+const IR_CORRECTION_RE = /^\s*no\b[,.]?\s+(.+?)[.!?]*\s*$/i;
+// CRITICAL guard (adversarial-review finding): the remainder must be NOTHING
+// BUT an IR value — an anchored ^…$ match of the parseValue grammar (bare
+// number / .N / >N / greater-than-N / infinite / OL / LIM), with an OPTIONAL
+// trailing resistance unit. parseValue alone is unanchored (it extracts the
+// first number ANYWHERE), so without this anchor "No, it isn't 200" / "No, 5
+// amps" / "No, 0.5 seconds" would each leak a stray number into the IR leg —
+// the exact silent-corruption class cluster-B warned about. Anything with
+// extra words (a leading "it isn't", a non-resistance unit like "amps" /
+// "seconds") fails the anchor and is rejected. Deliberately strict: a real
+// correction phrased with leading filler ("no, it's 250") is rejected rather
+// than risk a misfire — the inspector simply says the bare value.
+const IR_VALUE_ONLY_RE =
+  /^(?:>\s*\.?\d+(?:\.\d+)?|(?:greater|more)\s+than\s+\.?\d+(?:\.\d+)?|(?:over|above)\s+\.?\d+(?:\.\d+)?|\.?\d+(?:\.\d+)?|infinit(?:e|y)|off\s*scale|out\s*of\s*range|o\.?\s*l|max(?:ed)?(?:\s+out)?|lim|limb|limp|limit(?:ation|ed)?|lynn|lym)(?:\s*(?:mΩ|MΩ|meg(?:a|ger)?\s*ohms?|megohms?|milli\s*ohms?|m\s*ohms?|ohms?))?$/i;
+
 /**
  * Entry triggers — variations that start the script. Pattern 1 ("full")
  * matches "insulation resistance" with optional "circuit N" within ~50
@@ -352,6 +371,12 @@ export function extractNamedFieldValues(text) {
 }
 
 function initScript(session, circuit_ref, now) {
+  // item #2b — a new script supersedes any prior completion's correction
+  // breadcrumb. Clearing here closes the stale-fire window where a
+  // started-then-aborted new script would otherwise leave the OLD breadcrumb
+  // live (adversarial-review finding): "finish c3 → start c4 → cancel c4 →
+  // 'No, 250'" must NOT rewrite c3.
+  session.irCorrectionBreadcrumb = null;
   session.insulationResistanceScript = {
     active: true,
     circuit_ref,
@@ -471,6 +496,12 @@ function applyWrite(session, circuit_ref, field, value, now) {
   if (session.insulationResistanceScript) {
     session.insulationResistanceScript.values[field] = value;
     session.insulationResistanceScript.last_turn_at = now;
+    // item #2b — track the last READING field written (L-L / L-E, not
+    // voltage) so finishScript can leave a breadcrumb for a post-completion
+    // "No, <value>" correction.
+    if (IR_FIELDS.includes(field)) {
+      session.insulationResistanceScript.lastReadingField = field;
+    }
   }
   if (IR_FIELDS.includes(field)) {
     recordIrWrite(session, circuit_ref, now);
@@ -586,6 +617,22 @@ function finishScript(ws, session, sessionId, now, logger) {
     circuit_ref,
     values: { ...values },
   });
+  // item #2b — leave a short-lived breadcrumb so a post-completion
+  // "No, <value>" can correct the last L-L/L-E reading. Only when a reading
+  // field was actually written this run (a voltage-only finish leaves none).
+  // Voltage corrections are handled in-loop by #2a; this covers the reading
+  // legs once the script has cleared.
+  if (state.lastReadingField && IR_FIELDS.includes(state.lastReadingField)) {
+    session.irCorrectionBreadcrumb = {
+      circuit_ref,
+      field: state.lastReadingField,
+      // Pin the board the script completed on so a correction after a board
+      // switch (within the 15 s window) can't land on the wrong board
+      // (adversarial-review finding).
+      boardId: session.stateSnapshot?.currentBoardId ?? null,
+      at: now,
+    };
+  }
   clearScript(session);
   clearIrState(session, circuit_ref);
 }
@@ -628,6 +675,63 @@ export function processInsulationResistanceTurn(ctx) {
   // ─────────────────────────────────────── Inactive: detect entry ──
   const stateAfterSweep = session.insulationResistanceScript;
   if (!stateAfterSweep?.active) {
+    // item #2b — post-completion reading correction. Within a short window
+    // after the IR script finished, a NEGATION followed by a remainder that is
+    // NOTHING BUT an IR value re-writes the last L-L/L-E leg. Guards (all must
+    // hold) so an utterance that moves ON can never grab the leg:
+    //   (1) breadcrumb fresh (< 15 s);
+    //   (2) the remainder after "no" matches IR_VALUE_ONLY_RE (anchored ^…$ —
+    //       rejects "it isn't 200", "5 amps", "0.5 seconds", "circuit 5 next");
+    //   (3) the current board is the SAME one the script completed on (a board
+    //       switch within the window makes the target ambiguous → skip);
+    //   (4) parseValue canonicalises the (already value-only) remainder.
+    // Runs BEFORE detectEntry (a correction is not an entry).
+    const breadcrumb = session.irCorrectionBreadcrumb;
+    const currentBoardId = session.stateSnapshot?.currentBoardId ?? null;
+    if (
+      breadcrumb &&
+      now - breadcrumb.at <= IR_CORRECTION_WINDOW_MS &&
+      (breadcrumb.boardId ?? null) === currentBoardId
+    ) {
+      const m = text.match(IR_CORRECTION_RE);
+      if (m && IR_VALUE_ONLY_RE.test(m[1])) {
+        const corrected = parseValue(m[1]);
+        if (corrected !== null) {
+          session.irCorrectionBreadcrumb = null; // one-shot
+          // Write directly (script is cleared) — do NOT route through
+          // applyWrite, which would re-arm the IR re-ask timeout for an
+          // already-complete bucket.
+          applyReadingFlagAware(session.stateSnapshot, {
+            circuit: breadcrumb.circuit_ref,
+            field: breadcrumb.field,
+            value: corrected,
+          });
+          safeSend(
+            ws,
+            buildExtractionPayload(breadcrumb.circuit_ref, [
+              { field: breadcrumb.field, value: corrected },
+            ])
+          );
+          const label = FIELD_PROMPTS[breadcrumb.field]?.label ?? breadcrumb.field;
+          safeSend(
+            ws,
+            buildScriptInfo({
+              sessionId,
+              kind: 'correction',
+              text: `Got it, ${label} ${corrected}.`,
+              now,
+            })
+          );
+          logger?.info?.('stage6.insulation_resistance_post_completion_correction', {
+            sessionId,
+            circuit_ref: breadcrumb.circuit_ref,
+            field: breadcrumb.field,
+            value: corrected,
+          });
+          return { handled: true, fallthrough: false };
+        }
+      }
+    }
     const entry = detectEntry(text);
     if (!entry.matched) return { handled: false };
 
