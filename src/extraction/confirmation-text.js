@@ -243,6 +243,25 @@ export function deriveFriendlyName(field) {
   return s;
 }
 
+// Count-style fields whose friendly name is a plural noun read more
+// naturally as "<N> <noun>" than "<noun> <N>" — and, critically, end the
+// utterance on the noun rather than a bare terminal numeral. ElevenLabs
+// renders an utterance-final bare digit unreliably (clipped/rushed
+// prosody — the 2026-06-23 DFCE2145 "…points 9" garble, item #7). Putting
+// the count before the noun ("…, 9 points") removes the terminal-digit
+// trap for the reported field.
+//
+// NOTE: a broader "append a period to every confirmation that ends on a
+// digit" pass was prototyped and deliberately NOT shipped — the vast
+// majority of confirmations end on a numeric value (e.g. "Zs 0.62"), so a
+// blanket period changes ~every dedupe key and churns dozens of bundler/
+// speculator/byte-identity fixtures for an UNCONFIRMED (no audio in logs)
+// inference. The count reorder removes the only field reported garbled;
+// if ear-verification later shows "RCD time 28"-style tails also garble,
+// revisit with a coordinated synth-layer cue rather than touching the
+// dedupe-keyed confirmation text.
+const COUNT_STYLE_FIELDS = Object.freeze(new Set(['number_of_points']));
+
 /**
  * Build a SINGLE grouped confirmation for a fan-out reading that
  * touched multiple circuits in one turn (e.g. an IR reading dictated
@@ -316,6 +335,9 @@ export function buildGroupedConfirmationText(field, value, circuits, totalCircui
     const isTrue = lc === 'true' || lc === 'y' || lc === 'ok' || lc === 'yes';
     if (!isTrue) return null;
     tail = 'polarity confirmed';
+  } else if (COUNT_STYLE_FIELDS.has(field)) {
+    // Count before noun — see buildConfirmationText (item #7).
+    tail = `${valueStr} ${friendly}`;
   } else {
     tail = `${friendly} ${valueStr}`;
   }
@@ -397,13 +419,19 @@ export function buildConfirmationText(field, value, circuit, designation = null)
     if (circuit == null || circuit === 0) return 'polarity confirmed';
     return `${circuitPrefix}, polarity confirmed`;
   }
+  // Count-style fields read "<N> <noun>" (count before noun) so the
+  // utterance ends on the noun, not a bare terminal numeral (item #7).
+  const body = COUNT_STYLE_FIELDS.has(field)
+    ? `${valueStr} ${friendly}`
+    : `${friendly} ${valueStr}`;
+
   // Board-level readings (circuit 0 or absent) skip the prefix — "Ze
   // 0.25" is a complete sentence in inspector parlance, "Circuit 0, Ze"
   // would be confusing.
   if (circuit == null || circuit === 0) {
-    return `${friendly} ${valueStr}`;
+    return body;
   }
-  return `${circuitPrefix}, ${friendly} ${valueStr}`;
+  return `${circuitPrefix}, ${body}`;
 }
 
 /**
