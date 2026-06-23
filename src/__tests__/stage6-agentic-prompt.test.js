@@ -292,12 +292,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // session case). Measured 17453; cap 17550 leaves ~97-token headroom.
       //
       // 2026-06-23 (field session DFCE2145, obs-#49 + #55 + #53): bumped to
-      // 18000 to absorb OBSERVATIONS RULE 0 (EIC has no observations → graceful
-      // comments ask) + the #55 no-CPC clarifying-ask steering + the #53
-      // bare-observation deterministic ask. Measured 17656 after RULE 0; cap
-      // 18000 leaves headroom for the #55/#53 prompt steering in the same sprint.
+      // 18250 to absorb OBSERVATIONS RULE 0 (EIC has no observations → graceful
+      // comments ask) + the #55 no-CPC clarifying-ask steering (base prompt +
+      // WRAG Q2.66) + the #53 bare-observation deterministic ask. The combined
+      // prompt includes the appended WRAG, so the #55 WRAG edit counts here.
+      // Measured 18129; cap 18250 leaves ~121-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(18000);
+      expect(estimate).toBeLessThanOrEqual(18250);
     });
   });
 
