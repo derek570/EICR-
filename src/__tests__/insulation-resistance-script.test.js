@@ -619,6 +619,167 @@ describe('processInsulationResistanceTurn — voltage phase', () => {
   });
 });
 
+// ── Non-standard voltage confirmation + in-loop correction (item #2a/#2b) ──
+// Field session DFCE2145: "fifty" (misheard "two fifty") was written
+// silently and the script finished; the later "No. 250." correction
+// evaporated. Now a non-standard voltage is confirmed (script stays active),
+// so a repeat accepts it and a correction lands in-loop.
+describe('processInsulationResistanceTurn — non-standard voltage confirm', () => {
+  function driveToVoltagePhase(now = 100) {
+    const ws = new MockWS();
+    const session = buildSession();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText:
+        'insulation resistance for circuit 3 live to live 200 live to earth greater than 999.',
+      now,
+    });
+    expect(session.insulationResistanceScript.phase).toBe('voltage');
+    ws.sent = [];
+    return { ws, session };
+  }
+
+  test('non-standard "50" → confirm ask, NO write, script stays active', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    // No voltage write yet.
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+    // A confirmation ask was emitted, anchored to the voltage field so the
+    // reply routes back into this phase.
+    const confirm = ws.sent.find((m) => m.type === 'ask_user_started');
+    expect(confirm.context_field).toBe('ir_test_voltage_v');
+    expect(confirm.question).toMatch(/did you say 50 volts/i);
+    // Script still active, pending the confirmation.
+    expect(session.insulationResistanceScript.phase).toBe('voltage');
+    expect(session.insulationResistanceScript.voltagePendingConfirm).toBe(50);
+  });
+
+  test('confirm then "No. 250." → writes 250 and finishes (in-loop correction)', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 300,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '250',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+  });
+
+  test('confirm then repeat "50" → accepts the genuine non-standard value (one-shot guard)', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 300,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '50',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+  });
+
+  test('confirm then bare "yes" → accepts pending value', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'yes.',
+      now: 300,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '50',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+  });
+
+  test('confirm then bare "no" (no value) → re-asks voltage, no write, script active', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'no.',
+      now: 300,
+    });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+    const ask = ws.sent.find((m) => m.type === 'ask_user_started');
+    expect(ask.context_field).toBe('ir_test_voltage_v');
+    expect(ask.question).toMatch(/what was the test voltage/i);
+    expect(session.insulationResistanceScript.phase).toBe('voltage');
+    expect(session.insulationResistanceScript.voltagePendingConfirm).toBeNull();
+  });
+
+  test('standard "500" → still writes immediately, no confirm (regression)', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '500',
+      now: 200,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '500',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+  });
+});
+
 describe('processInsulationResistanceTurn — bare-value fallback (script asked LL)', () => {
   test('after "What\'s the live-to-live?", reply "200" lands on LL', () => {
     const ws = new MockWS();
