@@ -24,7 +24,7 @@ const slots = [
     field: 'ocpd_bs_en',
     kind: 'bs_code',
     label: 'BS number',
-    question: "What's the BS number?",
+    question: "What's the BS number of the RCBO?",
     parser: parseBsCode,
     namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
     acceptsBareValue: true,

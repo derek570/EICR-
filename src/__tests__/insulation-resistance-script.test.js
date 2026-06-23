@@ -325,6 +325,49 @@ describe('extractNamedFieldValues', () => {
     ]);
   });
 
+  // ── Connective / Deepgram-filler tolerance (item #3, session DFCE2145) ──
+  // The original separator class excluded ALL letters, so a connective
+  // ("is") or Deepgram garble-filler ("raining") between the field phrase
+  // and the value broke the match and the volunteered reading was lost.
+  test('"live to live is 299" → captures despite the "is" connective', () => {
+    expect(extractNamedFieldValues('live to live is 299')).toEqual([
+      { field: 'ir_live_live_mohm', value: '299' },
+    ]);
+  });
+
+  test('DFCE2145 verbatim: "live to live is -- Raining 299 megohms" → 299', () => {
+    expect(extractNamedFieldValues('live to live is -- Raining 299 megohms')).toEqual([
+      { field: 'ir_live_live_mohm', value: '299' },
+    ]);
+  });
+
+  test('"L-L reads 200" → captures despite the "reads" connective', () => {
+    expect(extractNamedFieldValues('L-L reads 200')).toEqual([
+      { field: 'ir_live_live_mohm', value: '200' },
+    ]);
+  });
+
+  test('"live to earth was 150" → captures despite the "was" connective', () => {
+    expect(extractNamedFieldValues('live to earth was 150')).toEqual([
+      { field: 'ir_live_earth_mohm', value: '150' },
+    ]);
+  });
+
+  // Cross-capture guards: the loosened gap must NOT let an L-L phrase reach
+  // across the other leg's field words to swallow an L-E value.
+  test('"live to live 299 live to earth 150" → no cross-capture (both legs correct)', () => {
+    expect(extractNamedFieldValues('live to live 299 live to earth 150')).toEqual([
+      { field: 'ir_live_live_mohm', value: '299' },
+      { field: 'ir_live_earth_mohm', value: '150' },
+    ]);
+  });
+
+  test('"live to live and live to earth 150" → only L-E binds (L-L has no value, must not steal 150)', () => {
+    expect(extractNamedFieldValues('live to live and live to earth 150')).toEqual([
+      { field: 'ir_live_earth_mohm', value: '150' },
+    ]);
+  });
+
   test('"ring continuity lives 0.43" → no match (ring vocabulary, not IR)', () => {
     // The IR script's vocabulary is intentionally narrower than ring's.
     // Bare "lives" maps to ring R1 in ring mode; in IR mode it's a topic
@@ -573,6 +616,167 @@ describe('processInsulationResistanceTurn — voltage phase', () => {
       field: 'ir_test_voltage_v',
       value: '250',
     });
+  });
+});
+
+// ── Non-standard voltage confirmation + in-loop correction (item #2a/#2b) ──
+// Field session DFCE2145: "fifty" (misheard "two fifty") was written
+// silently and the script finished; the later "No. 250." correction
+// evaporated. Now a non-standard voltage is confirmed (script stays active),
+// so a repeat accepts it and a correction lands in-loop.
+describe('processInsulationResistanceTurn — non-standard voltage confirm', () => {
+  function driveToVoltagePhase(now = 100) {
+    const ws = new MockWS();
+    const session = buildSession();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText:
+        'insulation resistance for circuit 3 live to live 200 live to earth greater than 999.',
+      now,
+    });
+    expect(session.insulationResistanceScript.phase).toBe('voltage');
+    ws.sent = [];
+    return { ws, session };
+  }
+
+  test('non-standard "50" → confirm ask, NO write, script stays active', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    // No voltage write yet.
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+    // A confirmation ask was emitted, anchored to the voltage field so the
+    // reply routes back into this phase.
+    const confirm = ws.sent.find((m) => m.type === 'ask_user_started');
+    expect(confirm.context_field).toBe('ir_test_voltage_v');
+    expect(confirm.question).toMatch(/did you say 50 volts/i);
+    // Script still active, pending the confirmation.
+    expect(session.insulationResistanceScript.phase).toBe('voltage');
+    expect(session.insulationResistanceScript.voltagePendingConfirm).toBe(50);
+  });
+
+  test('confirm then "No. 250." → writes 250 and finishes (in-loop correction)', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 300,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '250',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+  });
+
+  test('confirm then repeat "50" → accepts the genuine non-standard value (one-shot guard)', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 300,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '50',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+  });
+
+  test('confirm then bare "yes" → accepts pending value', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'yes.',
+      now: 300,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '50',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+  });
+
+  test('confirm then bare "no" (no value) → re-asks voltage, no write, script active', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50.',
+      now: 200,
+    });
+    ws.sent = [];
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'no.',
+      now: 300,
+    });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+    const ask = ws.sent.find((m) => m.type === 'ask_user_started');
+    expect(ask.context_field).toBe('ir_test_voltage_v');
+    expect(ask.question).toMatch(/what was the test voltage/i);
+    expect(session.insulationResistanceScript.phase).toBe('voltage');
+    expect(session.insulationResistanceScript.voltagePendingConfirm).toBeNull();
+  });
+
+  test('standard "500" → still writes immediately, no confirm (regression)', () => {
+    const { ws, session } = driveToVoltagePhase();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '500',
+      now: 200,
+    });
+    const extractionMsg = ws.sent.find((m) => m.type === 'extraction');
+    expect(extractionMsg.result.readings[0]).toMatchObject({
+      field: 'ir_test_voltage_v',
+      value: '500',
+    });
+    expect(session.insulationResistanceScript).toBeNull();
   });
 });
 

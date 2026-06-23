@@ -329,6 +329,27 @@ const CERT_IDENTITY_TRIGGER_REGEX =
   /\b(?:customer|client|landlord|tenant|occupier|address|postcode)\b/i;
 const MIN_DISTINCT_CONTENT_WORDS_IDENTITY = 2;
 
+// 2026-06-23 (session DFCE2145, item #8) — earthing-system markers get the
+// LOWEST content threshold (1). Field repro: "Supply is a TNCS.",
+// "supply is TNCS.", "It is TNCS.", "I think it's TNCS." were ALL blocked
+// at the iOS TranscriptGate / backend LOW_CONTENT — no digit, no strong
+// trigger, no weak trigger ("supply"/"tncs" were absent from every list),
+// and the short forms carry only ONE distinct content word ("it"/"is"/"a"
+// are stopwords). A real earthing reading was silently dropped at the gate
+// with no ASK (audio-first invariant #2 violation). The earthing-system
+// classification is a structurally-complete reading, so once forwarded it
+// is WRITTEN + read back — never asked. Threshold 1 (not 2) is required so
+// the bare "TNCS." / "It is TNCS." shapes pass; the token itself is the
+// single content word. Bare "supply" is deliberately NOT a trigger — that
+// would wrongly forward "supply cupboard is locked"; "supply" only helps
+// when an earthing token is also present (which already forwards on the
+// token alone). MUST stay byte-for-byte in sync with the iOS TranscriptGate
+// earthingTriggers (DeepgramRecordingViewModel.swift) — mistakes-log
+// precedent on gate-list drift.
+const EARTHING_TRIGGER_REGEX =
+  /\b(?:tncs|tn[-\s]?c[-\s]?s|tn[-\s]?s|tns|tn[-\s]?c|tnc|tt|pme|earthing)\b/i;
+const MIN_DISTINCT_CONTENT_WORDS_EARTHING = 1;
+
 // Common-English stopwords. Deliberately small — the goal is to filter
 // scaffolding words ("the", "is") so that the distinct-content-word
 // count reflects whether there's any substantive subject in the text.
@@ -365,6 +386,10 @@ export const GATE_REASONS = Object.freeze({
   // 4 words). The COMPLAINT_OR_NEGATION_PATTERN below catches all three
   // and forces the gate to forward so Sonnet can run a corrective turn.
   HAS_COMPLAINT_OR_NEGATION: 'has_complaint_or_negation',
+  // 2026-06-23 (session DFCE2145, item #8) — earthing-system markers
+  // (TNCS / TN-S / TT / PME / earthing). Forward at content threshold 1 so
+  // a bare "It is TNCS." reaches the model and is WRITTEN + read back.
+  HAS_EARTHING_SYSTEM: 'has_earthing_system',
   LOW_CONTENT: 'low_content',
   FALLBACK_FORWARD: 'fallback',
   // Bypass reasons (always forward)
@@ -511,6 +536,20 @@ export function shouldForwardToSonnet(text, opts = {}) {
     if (w.length > 1 && !STOPWORDS.has(w)) {
       distinctContent.add(w);
     }
+  }
+  // 2026-06-23 item #8 — earthing-system markers forward at threshold 1
+  // (the marker is the single content word). Checked before the weak path
+  // so "It is TNCS." / "TNCS." (which carry no weak trigger and only one
+  // content word) still forward, logged with the cleaner reason code.
+  if (
+    EARTHING_TRIGGER_REGEX.test(trimmed) &&
+    distinctContent.size >= MIN_DISTINCT_CONTENT_WORDS_EARTHING
+  ) {
+    return {
+      forward: true,
+      reason: GATE_REASONS.HAS_EARTHING_SYSTEM,
+      distinctContentWords: distinctContent.size,
+    };
   }
   const hasWeak = WEAK_TRIGGER_REGEX.test(trimmed);
   const minContent = CERT_IDENTITY_TRIGGER_REGEX.test(trimmed)

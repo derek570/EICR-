@@ -229,6 +229,23 @@ function estimateShadowCost(/* toolLoopOut */) {
  * @param {Object} options
  * @param {Object} log  Logger.
  */
+// item #10 — clarifying prompts for the deterministic orphan net. Rotated by
+// turn number so two consecutive orphans don't collide on iOS's text-hashed
+// confirmation dedupe key (a fixed string would speak once per session and
+// then be silently deduped). Phrasings are interchangeable; the rotation is
+// purely to vary the dedupe key, and reads more naturally than a robotic
+// repeat besides.
+const ORPHAN_PROMPTS = Object.freeze([
+  "Sorry, I didn't catch what that reading was for. Could you say it again?",
+  "I didn't quite get that — could you repeat the reading?",
+  "Sorry, I'm not sure where that reading goes. Could you say it once more?",
+]);
+
+// item #10 — default ON (the inspector explicitly asked for a spoken ASK
+// instead of a silent drop). Set VOICE_ORPHAN_PROMPT=false to disable
+// without a code change if it over-asks on numeric chitchat in the field.
+const ORPHAN_PROMPT_ENABLED = process.env.VOICE_ORPHAN_PROMPT !== 'false';
+
 async function runLiveMode(session, transcriptText, regexResults, options, log) {
   const turnNum = (session.turnCount ?? 0) + 1;
   const turnId = `${session.sessionId}-turn-${turnNum}`;
@@ -392,8 +409,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // readback-correction-optionb §6 — thread the parsed capability so
     // dispatchRecordReading's PRE-APPLY gate can skip `< 0.5` readings
     // until the client advertises low_conf_readback_v1 (rollout safety).
-    const hasLowConfReadbackV1 =
-      entry?.voiceLatency?.capabilities?.hasLowConfReadbackV1 === true;
+    const hasLowConfReadbackV1 = entry?.voiceLatency?.capabilities?.hasLowConfReadbackV1 === true;
     const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, {
       ws,
       hasLowConfReadbackV1,
@@ -570,7 +586,33 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // is appended after this turn's read-backs are known, below).
     const readbackWindow = Array.isArray(session.readbackWindow) ? session.readbackWindow : [];
     const windowMessages = buildReadbackWindowMessages(readbackWindow);
-    const liveMessages = [...windowMessages, { role: 'user', content: transcriptText }];
+
+    // item #10 context-carry (Derek's confirmed refinement). When the
+    // previous turn was an orphan (a forwarded, digit-bearing utterance that
+    // produced zero tool calls → emitted the "say it again" prompt below),
+    // its raw transcript is stashed on session.orphanContext. The inspector's
+    // repeat lands THIS turn — inject the prior unplaced utterance as a fresh
+    // per-turn note immediately before the current transcript so the model
+    // resolves placement from BOTH together (load-bearing when the repeat is
+    // itself garbled). Only consume it for the IMMEDIATELY following turn;
+    // otherwise it is stale and discarded (the inspector moved on).
+    const orphanContext = session.orphanContext ?? null;
+    session.orphanContext = null; // consume-or-discard: never carry >1 turn
+    const orphanContextMessages =
+      orphanContext && orphanContext.turnNum === turnNum - 1
+        ? [
+            {
+              role: 'user',
+              content: `[note] My previous words "${orphanContext.transcript}" weren't understood and nothing was recorded. I'm repeating that reading now — use both my previous words and what I say next to work out the field, circuit, and value.`,
+            },
+          ]
+        : [];
+
+    const liveMessages = [
+      ...windowMessages,
+      ...orphanContextMessages,
+      { role: 'user', content: transcriptText },
+    ];
 
     // readback-correction-optionb §6 — round-1 tool_choice:any no-op allowance:
     // NO LONGER NEEDED. PR #60 (Plan B) removed the round-1 tool_choice:any
@@ -1168,8 +1210,90 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the speculator's own try/catch; never throws.
     if (speculator && typeof speculator.validateAgainstConfirmations === 'function') {
       speculator.validateAgainstConfirmations(turnId, result.confirmations, {
-        aborted:
-          toolLoopOut.aborted === true || toolLoopOut.terminal_reason === 'tool_use_cap_hit',
+        aborted: toolLoopOut.aborted === true || toolLoopOut.terminal_reason === 'tool_use_cap_hit',
+      });
+    }
+
+    // ── item #10 / #4 / #6 — deterministic post-turn orphan net ──
+    // A NEW, purely DETERMINISTIC (no second LLM round) safety net. When a
+    // forwarded, digit-bearing utterance produces ZERO tool calls and ZERO
+    // output — the silent-drop class behind #4 (split "Zs"…"for the sockets
+    // is 0.86"), #6 (the dropped "reference method … is 101"), and #10 ("EFC
+    // is 0.86") — emit exactly ONE NON-BLOCKING spoken prompt and stash the
+    // unplaced transcript so the NEXT turn re-extracts the inspector's repeat
+    // WITH this utterance as context (the §3.3b orphan-context injection
+    // above). This converts a chimed-but-dropped value into an audible ASK,
+    // satisfying invariant #2 ("a dropped reading is invisible to a hands-free
+    // user").
+    //
+    // Why a confirmation, not an ask_user: a post-loop ask_user would register
+    // focused-answer mode (pendingAsks) with no continuation to resolve it, so
+    // the inspector's repeat would be swallowed as an unresolved ask-answer.
+    // The prompt rides result.confirmations, which iOS speaks via the
+    // non-blocking FIFO WITHOUT entering awaiting-response — the repeat then
+    // arrives as a normal fresh transcript and is re-extracted.
+    //
+    // SCOPE NOTE: the plan's "deterministically placeable → synthetic write"
+    // branch is intentionally NOT built here. The only safe deterministic
+    // placement signal available server-side is the iOS regex hint, and those
+    // values are ALREADY applied client-side by iOS's instant-fill tier (so
+    // they are not silently dropped from the UI — only their read-back). The
+    // utterances the plan cites as placeable (#4/#6) carried regex
+    // fields_matched:0, so a regex-hint write would not fire for them anyway —
+    // they are correctly recovered by this prompt + the context-carried repeat.
+    // Building a fresh free-text field/scope/value resolver to write on the
+    // first pass is unbounded scope and a silent-corruption risk (mis-placement
+    // writes the wrong field); deferred deliberately. This net NEVER writes
+    // data — zero corruption risk; worst case is a spurious prompt on numeric
+    // chitchat (mitigated by VOICE_ORPHAN_PROMPT=false + chitchat-pause).
+    try {
+      const orphanToolCalls = Array.isArray(toolLoopOut.tool_calls)
+        ? toolLoopOut.tool_calls.length
+        : 0;
+      const producedNothing =
+        orphanToolCalls === 0 &&
+        (result.extracted_readings?.length ?? 0) === 0 &&
+        (result.observations?.length ?? 0) === 0 &&
+        (result.confirmations?.length ?? 0) === 0;
+      // An answer turn is owned by the ask-resolution path — never second-guess
+      // it. (A tool call of ANY kind, including a real ask_user, also trips
+      // orphanToolCalls > 0 and skips the net, covering the "Haiku asked but
+      // wrote nothing" negative case.)
+      const isAnswerTurn = options.inResponseTo === true || (options.pendingAsks?.size ?? 0) > 0;
+      // Require a numeric value so a bare field-only fragment ("Zs") still
+      // WAITS on the existing incomplete-reading path rather than prompting.
+      const carriesValue = /\d/.test(transcriptText || '');
+      if (
+        ORPHAN_PROMPT_ENABLED &&
+        options.confirmationsEnabled === true &&
+        producedNothing &&
+        !isAnswerTurn &&
+        carriesValue
+      ) {
+        const prompt = ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
+        if (!Array.isArray(result.confirmations)) result.confirmations = [];
+        result.confirmations.push({
+          text: prompt,
+          field: null,
+          circuit: null,
+          // Keep out of the audio-finalizer expected-ACK accounting — this is a
+          // clarifying prompt, not a value read-back to reconcile against a
+          // fast-path POST.
+          expects_ios_ack: false,
+        });
+        session.orphanContext = { transcript: transcriptText, turnNum };
+        log.info?.('stage6.orphan_prompt_emitted', {
+          sessionId: session.sessionId,
+          turnId,
+          rounds: toolLoopOut.rounds,
+          textPreview: String(transcriptText || '').slice(0, 80),
+        });
+      }
+    } catch (orphanErr) {
+      log.warn?.('stage6.orphan_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: orphanErr?.message ?? String(orphanErr),
       });
     }
 

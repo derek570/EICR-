@@ -111,7 +111,7 @@ describe('rcbo schema — BS-code slot configuration', () => {
 
   test('rcd_bs_en question is distinct from ocpd_bs_en (defence-in-depth)', () => {
     expect(findSlot('rcd_bs_en').question).toBe("What's the RCD's BS number?");
-    expect(findSlot('ocpd_bs_en').question).toBe("What's the BS number?");
+    expect(findSlot('ocpd_bs_en').question).toBe("What's the BS number of the RCBO?");
   });
 });
 

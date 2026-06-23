@@ -76,6 +76,17 @@ const FIELD_PROMPTS = {
 
 const VOLTAGE_PROMPT = 'What was the test voltage?';
 
+// Standard BS 7671 insulation-resistance test voltages. A reply outside
+// this set (e.g. a misheard "fifty" for "two fifty") is confirmed before
+// it is written, never silently accepted (item #2a, session DFCE2145).
+const STANDARD_IR_VOLTAGES = Object.freeze(new Set([100, 250, 500, 1000]));
+
+// Bare yes/no replies to the voltage-confirm question. Kept deliberately
+// tight — a value-bearing reply ("no, 250") is handled by re-parsing the
+// voltage, not by these, so a stray "no" never strands the value.
+const AFFIRMATIVE_RE = /^\s*(?:yes|yeah|yep|yup|correct|that'?s right|aye)\b/i;
+const NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
+
 /**
  * Entry triggers — variations that start the script. Pattern 1 ("full")
  * matches "insulation resistance" with optional "circuit N" within ~50
@@ -294,6 +305,19 @@ export function extractNamedFieldValues(text) {
   const out = [];
   const valueGroup =
     '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d*\\.?\\d+';
+  // Separator gap between the field phrase and the value. The ORIGINAL
+  // class `[^\d∞>a-z]{0,30}?` excluded ALL letters, so any connective
+  // ("is"/"was") or Deepgram filler ("raining") between the phrase and the
+  // number broke the match — the real DFCE2145 utterance "live to live is
+  // -- Raining 299 megahertz" captured nothing, and even clean "live to
+  // live is 299" missed (item #3). The loosened gap allows letters ONLY as
+  // a whitelisted set of connective/filler words; any other letter run
+  // (notably the OTHER leg's field words "earth"/"live"/"line") still
+  // breaks the gap, so an L-L capture can never swallow an L-E value.
+  // Non-greedy + the all-numeric value group still preferring the shortest
+  // gap means a tight "L-L 299" match is taken before any looser one.
+  const gap =
+    '(?:[^\\d∞>a-z]|\\b(?:is|was|are|reads?|reading|of|at|equals?|measures?|approximately|about|around|raining|rating|gives?)\\b){0,20}?';
   // Field words (case-insensitive). The negative lookahead on "L L"-style
   // shorthand keeps it from biting on "L1" or letters inside other words.
   const patterns = [
@@ -304,7 +328,7 @@ export function extractNamedFieldValues(text) {
       // "L-L" land. Word boundaries on both ends prevent biting on "ll" inside
       // words like "called" / "yellow".
       re: new RegExp(
-        `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b[^\\d∞>a-z]{0,30}?(${valueGroup})`,
+        `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b${gap}(${valueGroup})`,
         'i'
       ),
     },
@@ -312,7 +336,7 @@ export function extractNamedFieldValues(text) {
       field: 'ir_live_earth_mohm',
       // "live to earth", "line to earth", "L to E", "L E" / "LE" / "L-E" / "L.E".
       re: new RegExp(
-        `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b[^\\d∞>a-z]{0,30}?(${valueGroup})`,
+        `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b${gap}(${valueGroup})`,
         'i'
       ),
     },
@@ -859,6 +883,81 @@ export function processInsulationResistanceTurn(ctx) {
   // 5. If we're in the voltage phase, parse the reply as a voltage.
   if (state.phase === 'voltage') {
     const voltage = parseVoltage(text);
+    const pendingConfirm = state.voltagePendingConfirm ?? null;
+
+    const writeVoltageAndFinish = (v) => {
+      applyWrite(session, state.circuit_ref, VOLTAGE_FIELD, String(v), now);
+      writes.push({ field: VOLTAGE_FIELD, value: String(v) });
+      safeSend(ws, buildExtractionPayload(state.circuit_ref, writes));
+      finishScript(ws, session, sessionId, now, logger);
+    };
+
+    // 5a. Replying to a "Did you say <N> volts?" non-standard confirmation.
+    if (pendingConfirm !== null) {
+      if (voltage !== null && Number(voltage) === Number(pendingConfirm)) {
+        // Inspector repeated the SAME non-standard value → genuine meter
+        // reading, accept it (the one-shot confirmation guard is satisfied).
+        state.voltagePendingConfirm = null;
+        writeVoltageAndFinish(voltage);
+        return { handled: true, fallthrough: false };
+      }
+      if (voltage !== null) {
+        // A DIFFERENT value was supplied — a spoken correction ("No, 250").
+        // Clear the pending flag and fall through to the standard-vs-
+        // non-standard decision below so 250 is accepted (or re-confirmed
+        // if it too is non-standard). This is the item #2b correction path:
+        // because #2a keeps the script ACTIVE through the confirmation, the
+        // correction lands in-loop instead of evaporating post-completion.
+        state.voltagePendingConfirm = null;
+      } else if (AFFIRMATIVE_RE.test(text)) {
+        // "Yes" / "correct" → accept the pending non-standard value.
+        state.voltagePendingConfirm = null;
+        writeVoltageAndFinish(pendingConfirm);
+        return { handled: true, fallthrough: false };
+      } else if (NEGATIVE_RE.test(text)) {
+        // Bare "no" with no value → re-ask the voltage question rather than
+        // finishing (would otherwise strand the field empty).
+        state.voltagePendingConfirm = null;
+        state.last_turn_at = now;
+        safeSend(
+          ws,
+          buildScriptAsk({
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            missing_field: VOLTAGE_FIELD,
+            now,
+            kind: 'voltage',
+          })
+        );
+        return { handled: true, fallthrough: false };
+      } else {
+        // Unrecognised reply to the confirm — finish rather than loop
+        // forever (the 60s timeout doesn't track voltage).
+        state.voltagePendingConfirm = null;
+        finishScript(ws, session, sessionId, now, logger);
+        return { handled: true, fallthrough: false };
+      }
+    }
+
+    // 5b. First voltage answer. A non-standard value is confirmed before it
+    // is written — never silently accepted (item #2a). Re-uses the voltage
+    // ask wire-shape (context_field=ir_test_voltage_v) so the reply routes
+    // straight back into this phase next turn.
+    if (voltage !== null && !STANDARD_IR_VOLTAGES.has(Number(voltage))) {
+      state.voltagePendingConfirm = Number(voltage);
+      state.last_turn_at = now;
+      safeSend(ws, {
+        type: 'ask_user_started',
+        tool_call_id: `srv-irs-${sessionId}-${state.circuit_ref}-${VOLTAGE_FIELD}-confirm-${now}`,
+        question: `Did you say ${voltage} volts? The usual is 250 or 500 — if that's right, just say it again.`,
+        reason: 'missing_value',
+        context_field: VOLTAGE_FIELD,
+        context_circuit: state.circuit_ref,
+        expected_answer_shape: 'value',
+      });
+      return { handled: true, fallthrough: false };
+    }
+
     if (voltage !== null) {
       applyWrite(session, state.circuit_ref, VOLTAGE_FIELD, voltage, now);
       writes.push({ field: VOLTAGE_FIELD, value: voltage });

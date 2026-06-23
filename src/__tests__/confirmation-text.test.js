@@ -66,9 +66,7 @@ describe('confirmation-text — constants', () => {
     expect(CONFIRMATION_FRIENDLY_NAMES.surge_spd_present).toBe('surge protection fitted');
     expect(CONFIRMATION_FRIENDLY_NAMES.surge_spd_type).toBe('surge protection type');
     expect(CONFIRMATION_FRIENDLY_NAMES.surge_spd_bs_en).toBe('surge protection BS EN');
-    expect(CONFIRMATION_FRIENDLY_NAMES.surge_status_indicator).toBe(
-      'surge protection indicator'
-    );
+    expect(CONFIRMATION_FRIENDLY_NAMES.surge_status_indicator).toBe('surge protection indicator');
   });
 });
 
@@ -244,7 +242,7 @@ describe('confirmation-text — buildConfirmationText', () => {
   });
 
   test('numeric value is string-coerced + trimmed', () => {
-    expect(buildConfirmationText('number_of_points', 5, 1)).toBe('Circuit 1, points 5');
+    expect(buildConfirmationText('number_of_points', 5, 1)).toBe('Circuit 1, 5 points');
     expect(buildConfirmationText('measured_zs_ohm', '  0.62  ', 1)).toBe('Circuit 1, Zs 0.62');
   });
 });

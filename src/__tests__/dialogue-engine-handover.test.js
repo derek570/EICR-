@@ -230,7 +230,7 @@ describe('tryEnterScriptFromWrites — post-Sonnet re-entry', () => {
     });
     expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
     expect(ws.sent.at(-1).question).toBe(
-      "What's the BS number? Or do you want to fill that in later?"
+      "What's the BS number of the RCD? Or do you want to fill that in later?"
     );
     const enteredLog = logger.events.find(
       (e) => e.name === 'stage6.rcd_script_entered_from_sonnet_write'

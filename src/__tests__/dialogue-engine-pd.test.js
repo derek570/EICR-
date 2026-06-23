@@ -53,7 +53,7 @@ describe('OCPD walk-through', () => {
     });
     expect(out.handled).toBe(true);
     expect(ws.sent.at(-1).context_field).toBe('ocpd_bs_en');
-    expect(ws.sent.at(-1).question).toBe("What's the BS number?");
+    expect(ws.sent.at(-1).question).toBe("What's the BS number of the breaker?");
 
     processProtectiveDeviceTurn({
       ws,
@@ -210,7 +210,7 @@ describe('RCD walk-through', () => {
       expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
       // Question text includes the new "fill later" hint.
       expect(ws.sent.at(-1).question).toBe(
-        "What's the BS number? Or do you want to fill that in later?"
+        "What's the BS number of the RCD? Or do you want to fill that in later?"
       );
     });
 
