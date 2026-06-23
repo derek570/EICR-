@@ -148,12 +148,16 @@ const SHADOW_MODEL = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').t
  *   location                    →   item_location
  *   suggested_regulation        →   regulation
  *   code                        →   code               (unchanged)
+ *   rationale                   →   rationale          (Plan 06-23 obs-#51)
  *
  * `circuit` is preserved (server-side `refineObservationsAsync` uses it; iOS
  * ignores unknown keys). `schedule_item` is iOS-known and now populated by
  * Stage 6 (2026-05-01 restoration) — passes through to iOS so the
  * `ObservationScheduleLinker` can auto-tick the matching Schedule of
- * Inspection row.
+ * Inspection row. `rationale` (obs-#51) carries the same key name as the
+ * existing observation_update.rationale path so initial + refined are
+ * consistent; without carrying it here the rationale is stored server-side
+ * but never reaches the iOS observation card.
  */
 export function renameObservationsForLegacyWire(observations) {
   if (!Array.isArray(observations)) return observations;
@@ -166,6 +170,7 @@ export function renameObservationsForLegacyWire(observations) {
       item_location: obs.item_location ?? obs.location ?? null,
       regulation: obs.regulation ?? obs.suggested_regulation ?? null,
       schedule_item: obs.schedule_item ?? null,
+      rationale: obs.rationale ?? null,
     };
     if (obs.circuit !== undefined) renamed.circuit = obs.circuit;
     return renamed;

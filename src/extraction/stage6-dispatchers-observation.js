@@ -168,6 +168,10 @@ export async function dispatchRecordObservation(call, ctx) {
     text: 'observation_text',
     location: 'observation_location',
     suggested_regulation: 'observation_regulation',
+    // Plan 06-23 obs-#51 — `rationale` is new model-controlled free text shown
+    // on the iOS card AND spoken; it MUST pass the same leak filter so a
+    // leaked/injected rationale can't bypass the guard.
+    rationale: 'observation_rationale',
   };
   const offendingLeaks = [];
   for (const [fieldName, fieldClass] of Object.entries(OBS_FREE_TEXT_FIELD_CLASSES)) {
@@ -262,6 +266,8 @@ export async function dispatchRecordObservation(call, ctx) {
     schedule_item: input.schedule_item ?? null,
     regulation_title,
     regulation_description,
+    // Plan 06-23 obs-#51 — one-clause "why this code" rationale (null if none).
+    rationale: input.rationale ?? null,
   });
 
   perTurnWrites.observations.push({
@@ -274,6 +280,7 @@ export async function dispatchRecordObservation(call, ctx) {
     schedule_item: input.schedule_item ?? null,
     regulation_title,
     regulation_description,
+    rationale: input.rationale ?? null,
   });
 
   logToolCall(logger, {

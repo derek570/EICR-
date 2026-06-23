@@ -508,6 +508,8 @@ export function appendObservation(
     // dispatcher on a regulation-table HIT (null on a MISS / no ref).
     regulation_title,
     regulation_description,
+    // Plan 06-23 obs-#51 — one-clause "why this code" rationale (null if none).
+    rationale,
   }
 ) {
   const id = randomUUID();
@@ -524,6 +526,7 @@ export function appendObservation(
     schedule_item: schedule_item ?? null,
     regulation_title: regulation_title ?? null,
     regulation_description: regulation_description ?? null,
+    rationale: rationale ?? null,
   });
   return { id };
 }

@@ -44,10 +44,26 @@ describe('renameObservationsForLegacyWire', () => {
         item_location: 'Gas meter cupboard',
         regulation: 'Reg 411.3.1.2',
         schedule_item: '5.4',
+        // Plan 06-23 obs-#51 — rationale carried (null when the source has none).
+        rationale: null,
         // circuit preserved — refineObservationsAsync uses it; iOS ignores.
         circuit: 4,
       },
     ]);
+  });
+
+  test('Plan 06-23 obs-#51: rationale carries through the legacy wire (and falls back to null)', () => {
+    const renamed = renameObservationsForLegacyWire([
+      {
+        id: 'r1',
+        code: 'C2',
+        text: 'No RCD on socket circuit',
+        rationale: 'sockets likely to supply outdoor equipment',
+      },
+      { id: 'r2', code: 'C3', text: 'Labels missing' /* rationale undefined */ },
+    ]);
+    expect(renamed[0].rationale).toBe('sockets likely to supply outdoor equipment');
+    expect(renamed[1].rationale).toBeNull();
   });
 
   test('schedule_item passes through to iOS wire shape (2026-05-01 BPG4 restoration)', () => {

@@ -275,6 +275,11 @@ const LENGTH_CEILING = {
   // Plan 06-23 obs-#52: 60 → 220. See docblock above — the schema
   // asks for "number + wording", which the 60c ceiling truncated.
   observation_regulation: 220,
+  // Plan 06-23 obs-#51: `rationale` is a single spoken clause (read back
+  // aloud), so it is short by design. 300c catches a longer paraphrase of
+  // the prompt with zero FPs on a real one-clause rationale. No positive
+  // shape gate applies (free-form prose, unlike observation_regulation).
+  observation_rationale: 300,
   designation: 120,
 };
 

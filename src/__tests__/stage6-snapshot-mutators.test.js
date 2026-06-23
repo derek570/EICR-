@@ -174,6 +174,8 @@ describe('appendObservation', () => {
       // dispatcher passes no table-HIT title/description).
       regulation_title: null,
       regulation_description: null,
+      // Plan 06-23 obs-#51 — one-clause rationale (null when none passed).
+      rationale: null,
     });
   });
 

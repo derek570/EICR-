@@ -212,7 +212,7 @@ describe('stage6-tool-schemas', () => {
     expect(recordObs.input_schema.properties.code.enum).toEqual(enumerations.observation_code);
   });
 
-  test('record_observation requires all 6 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required under strict:true)', () => {
+  test('record_observation requires all 7 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required under strict:true)', () => {
     // Under strict:true, non-required fields may be omitted entirely. A
     // nullable field like `circuit: integer | null` or `suggested_regulation:
     // string | null` that the dispatcher needs to interpret unambiguously
@@ -221,9 +221,19 @@ describe('stage6-tool-schemas', () => {
     // (key absent) collapse into the same undefined-key state.
     // schedule_item added 2026-05-01 with the same nullable-but-required
     // contract — null when no Schedule of Inspection section applies.
+    // rationale added 2026-06-23 (Plan obs-#51) — same nullable-but-required
+    // contract; null when the observation text alone explains the coding.
     const recordObs = byName('record_observation');
     expect(recordObs.input_schema.required.sort()).toEqual(
-      ['code', 'location', 'text', 'circuit', 'suggested_regulation', 'schedule_item'].sort()
+      [
+        'code',
+        'location',
+        'text',
+        'circuit',
+        'suggested_regulation',
+        'schedule_item',
+        'rationale',
+      ].sort()
     );
   });
 
@@ -392,8 +402,17 @@ describe('stage6-tool-schemas', () => {
     );
     // STS-05 record_observation (Phase 1 round-4 MAJOR #3 — re-asserted)
     // schedule_item added 2026-05-01 (BPG4 pipeline restoration).
+    // rationale added 2026-06-23 (Plan obs-#51 — required-with-null).
     expect(byName('record_observation').input_schema.required.sort()).toEqual(
-      ['circuit', 'code', 'location', 'schedule_item', 'suggested_regulation', 'text'].sort()
+      [
+        'circuit',
+        'code',
+        'location',
+        'rationale',
+        'schedule_item',
+        'suggested_regulation',
+        'text',
+      ].sort()
     );
     // STS-06 delete_observation
     expect(byName('delete_observation').input_schema.required.sort()).toEqual(
