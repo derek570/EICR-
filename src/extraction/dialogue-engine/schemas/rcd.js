@@ -60,7 +60,7 @@ const slots = [
     field: 'rcd_bs_en',
     kind: 'bs_code',
     label: 'BS number',
-    question: "What's the BS number? Or do you want to fill that in later?",
+    question: "What's the BS number of the RCD? Or do you want to fill that in later?",
     parser: parseBsCode,
     namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
     acceptsBareValue: true,

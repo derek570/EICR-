@@ -23,7 +23,7 @@ import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 
 const validInput = (overrides = {}) => ({
-  question: "What's the BS number?",
+  question: "What's the BS number of the RCD? Or do you want to fill that in later?",
   // missing_context is the canonical wire-schema reason for "I have a
   // value but I'm missing some piece of context to apply it" — used here
   // even though the user-visible reason in the iOS UI may be displayed as

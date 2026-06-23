@@ -27,7 +27,7 @@ const slots = [
     field: 'ocpd_bs_en',
     kind: 'bs_code',
     label: 'BS number',
-    question: "What's the BS number?",
+    question: "What's the BS number of the breaker?",
     parser: parseBsCode,
     // Accepts both clean `BS 60898` / `BS EN 60898` and Flux's
     // letter-splitting `a b s 60898` / `a. b. s. e. n. 60898` forms.

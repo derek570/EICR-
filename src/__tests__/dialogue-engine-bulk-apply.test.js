@@ -399,7 +399,9 @@ describe('RCD bulk-apply integration', () => {
     expect(session.stateSnapshot.circuits[1].rcd_trip_time).toBe('25');
     const askPayload = ws.sent.find((m) => m.context_field === 'rcd_bs_en');
     expect(askPayload).toBeDefined();
-    expect(askPayload.question).toBe("What's the BS number? Or do you want to fill that in later?");
+    expect(askPayload.question).toBe(
+      "What's the BS number of the RCD? Or do you want to fill that in later?"
+    );
 
     // Inspector defers — script exits cleanly, trip_time preserved.
     processProtectiveDeviceTurn({
