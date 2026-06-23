@@ -90,15 +90,21 @@ const NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 // item #2b — post-completion reading correction. The breadcrumb is honoured
 // for this long after the IR script finishes.
 const IR_CORRECTION_WINDOW_MS = 15_000;
-// A correction must be a NEGATION followed by what is essentially JUST an IR
-// value — capture the remainder so it can be validated against parseValue.
+// A correction is a NEGATION followed by the captured remainder.
 const IR_CORRECTION_RE = /^\s*no\b[,.]?\s+(.+?)[.!?]*\s*$/i;
-// Reject remainders that carry topic/field/navigation cues — those mean the
-// inspector moved ON, not corrected the reading. This is the guard that keeps
-// "no, circuit 5 next" from rewriting the last IR leg to 5 (cluster-B's
-// silent-corruption warning).
-const IR_CORRECTION_TOPIC_BLOCK_RE =
-  /\b(?:circuit|board|ring|continuity|zs|ze|pfc|pscc|polarity|live|earth|neutral|next|previous|delete|remove|skip|cancel|voltage|volts?)\b/i;
+// CRITICAL guard (adversarial-review finding): the remainder must be NOTHING
+// BUT an IR value — an anchored ^…$ match of the parseValue grammar (bare
+// number / .N / >N / greater-than-N / infinite / OL / LIM), with an OPTIONAL
+// trailing resistance unit. parseValue alone is unanchored (it extracts the
+// first number ANYWHERE), so without this anchor "No, it isn't 200" / "No, 5
+// amps" / "No, 0.5 seconds" would each leak a stray number into the IR leg —
+// the exact silent-corruption class cluster-B warned about. Anything with
+// extra words (a leading "it isn't", a non-resistance unit like "amps" /
+// "seconds") fails the anchor and is rejected. Deliberately strict: a real
+// correction phrased with leading filler ("no, it's 250") is rejected rather
+// than risk a misfire — the inspector simply says the bare value.
+const IR_VALUE_ONLY_RE =
+  /^(?:>\s*\.?\d+(?:\.\d+)?|(?:greater|more)\s+than\s+\.?\d+(?:\.\d+)?|(?:over|above)\s+\.?\d+(?:\.\d+)?|\.?\d+(?:\.\d+)?|infinit(?:e|y)|off\s*scale|out\s*of\s*range|o\.?\s*l|max(?:ed)?(?:\s+out)?|lim|limb|limp|limit(?:ation|ed)?|lynn|lym)(?:\s*(?:mΩ|MΩ|meg(?:a|ger)?\s*ohms?|megohms?|milli\s*ohms?|m\s*ohms?|ohms?))?$/i;
 
 /**
  * Entry triggers — variations that start the script. Pattern 1 ("full")
@@ -365,6 +371,12 @@ export function extractNamedFieldValues(text) {
 }
 
 function initScript(session, circuit_ref, now) {
+  // item #2b — a new script supersedes any prior completion's correction
+  // breadcrumb. Clearing here closes the stale-fire window where a
+  // started-then-aborted new script would otherwise leave the OLD breadcrumb
+  // live (adversarial-review finding): "finish c3 → start c4 → cancel c4 →
+  // 'No, 250'" must NOT rewrite c3.
+  session.irCorrectionBreadcrumb = null;
   session.insulationResistanceScript = {
     active: true,
     circuit_ref,
@@ -614,6 +626,10 @@ function finishScript(ws, session, sessionId, now, logger) {
     session.irCorrectionBreadcrumb = {
       circuit_ref,
       field: state.lastReadingField,
+      // Pin the board the script completed on so a correction after a board
+      // switch (within the 15 s window) can't land on the wrong board
+      // (adversarial-review finding).
+      boardId: session.stateSnapshot?.currentBoardId ?? null,
       at: now,
     };
   }
@@ -660,16 +676,25 @@ export function processInsulationResistanceTurn(ctx) {
   const stateAfterSweep = session.insulationResistanceScript;
   if (!stateAfterSweep?.active) {
     // item #2b — post-completion reading correction. Within a short window
-    // after the IR script finished, a NEGATION followed by essentially JUST
-    // an IR value re-writes the last L-L/L-E leg. Triple-guarded so an
-    // utterance that moves ON ("no, circuit 5 next") can never grab the leg:
-    //   (1) breadcrumb fresh (< 15 s), (2) the remainder after "no" must
-    //   parse as an IR value, (3) the remainder must carry no topic / field /
-    //   navigation cue. Runs BEFORE detectEntry (a correction is not an entry).
+    // after the IR script finished, a NEGATION followed by a remainder that is
+    // NOTHING BUT an IR value re-writes the last L-L/L-E leg. Guards (all must
+    // hold) so an utterance that moves ON can never grab the leg:
+    //   (1) breadcrumb fresh (< 15 s);
+    //   (2) the remainder after "no" matches IR_VALUE_ONLY_RE (anchored ^…$ —
+    //       rejects "it isn't 200", "5 amps", "0.5 seconds", "circuit 5 next");
+    //   (3) the current board is the SAME one the script completed on (a board
+    //       switch within the window makes the target ambiguous → skip);
+    //   (4) parseValue canonicalises the (already value-only) remainder.
+    // Runs BEFORE detectEntry (a correction is not an entry).
     const breadcrumb = session.irCorrectionBreadcrumb;
-    if (breadcrumb && now - breadcrumb.at <= IR_CORRECTION_WINDOW_MS) {
+    const currentBoardId = session.stateSnapshot?.currentBoardId ?? null;
+    if (
+      breadcrumb &&
+      now - breadcrumb.at <= IR_CORRECTION_WINDOW_MS &&
+      (breadcrumb.boardId ?? null) === currentBoardId
+    ) {
       const m = text.match(IR_CORRECTION_RE);
-      if (m && !IR_CORRECTION_TOPIC_BLOCK_RE.test(m[1])) {
+      if (m && IR_VALUE_ONLY_RE.test(m[1])) {
         const corrected = parseValue(m[1]);
         if (corrected !== null) {
           session.irCorrectionBreadcrumb = null; // one-shot

@@ -855,7 +855,17 @@ describe('processInsulationResistanceTurn — post-completion correction', () =>
     }
   });
 
-  test('MISFIRE GUARD — "No, circuit 5 next." does NOT correct (topic cue)', () => {
+  // MISFIRE GUARDS — the value-only anchor must reject any "no…" utterance that
+  // is not PURELY an IR value, so a stray number can never land on the leg
+  // (adversarial-review repros).
+  test.each([
+    ['No, circuit 5 next.', 'topic cue + trailing word'],
+    ["No, it isn't 200.", 'leading words negating the OLD value'],
+    ['No, that was 5 amps.', 'wrong unit (amps)'],
+    ['No, 0.5 seconds.', 'wrong unit (seconds — a trip time)'],
+    ['No, not greater than 200.', 'leading "not"'],
+    ["No, it's 250.", 'leading filler (deliberately rejected — say the bare value)'],
+  ])('MISFIRE GUARD — %j does NOT correct (%s)', (reply) => {
     const { session } = driveToCompletion();
     const before = session.stateSnapshot.circuits[3].ir_live_earth_mohm;
     const ws = new MockWS();
@@ -863,14 +873,81 @@ describe('processInsulationResistanceTurn — post-completion correction', () =>
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'No, circuit 5 next.',
+      transcriptText: reply,
       now: 3000,
     });
     expect(out).toEqual({ handled: false });
     expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
     expect(session.stateSnapshot.circuits[3].ir_live_earth_mohm).toBe(before);
-    // Breadcrumb NOT consumed by a rejected attempt.
+    // A rejected attempt must NOT consume the breadcrumb.
     expect(session.irCorrectionBreadcrumb).not.toBeNull();
+  });
+
+  test('value-only with trailing unit IS accepted ("No, 250 megohms")', () => {
+    const { session } = driveToCompletion();
+    const ws = new MockWS();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, 250 megohms.',
+      now: 3000,
+    });
+    const extraction = ws.sent.find((m) => m.type === 'extraction');
+    expect(extraction?.result.readings[0]).toMatchObject({
+      field: 'ir_live_earth_mohm',
+      value: '250',
+    });
+  });
+
+  test('BOARD GUARD — a board switch within the window skips the correction', () => {
+    const { session } = driveToCompletion();
+    // Breadcrumb pinned to the board the script finished on (null here).
+    expect(session.irCorrectionBreadcrumb.boardId).toBe(null);
+    // Inspector switches to a sub-board, THEN says "No, 250".
+    session.stateSnapshot.currentBoardId = 'sub-board-b';
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 3000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+  });
+
+  test('STALE-FIRE GUARD — a new script entry clears the prior breadcrumb', () => {
+    const { session } = driveToCompletion(); // c3 finished, breadcrumb set
+    // Start a NEW script for circuit 4 within the window…
+    processInsulationResistanceTurn({
+      ws: new MockWS(),
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'insulation resistance for circuit 4.',
+      now: 2000,
+    });
+    expect(session.irCorrectionBreadcrumb).toBeNull();
+    // …then cancel it, then say "No, 250" — must NOT rewrite circuit 3.
+    processInsulationResistanceTurn({
+      ws: new MockWS(),
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cancel.',
+      now: 3000,
+    });
+    const c3Before = session.stateSnapshot.circuits[3].ir_live_earth_mohm;
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 4000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(session.stateSnapshot.circuits[3].ir_live_earth_mohm).toBe(c3Before);
   });
 
   test('outside the 15 s window → no correction', () => {
