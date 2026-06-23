@@ -780,6 +780,114 @@ describe('processInsulationResistanceTurn — non-standard voltage confirm', () 
   });
 });
 
+// ── item #2b — post-completion reading correction (field-anchored breadcrumb) ──
+// After the IR script finishes, a NEGATION + IR value within 15 s re-writes the
+// last L-L/L-E leg. Triple-guarded against "no, <not-a-value>" / topic switches.
+describe('processInsulationResistanceTurn — post-completion correction', () => {
+  function driveToCompletion() {
+    const ws = new MockWS();
+    const session = buildSession();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText:
+        'insulation resistance for circuit 3 live to live 200 live to earth greater than 999.',
+      now: 100,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '500',
+      now: 200,
+    });
+    expect(session.insulationResistanceScript).toBeNull();
+    return { ws, session };
+  }
+
+  test('finish leaves a breadcrumb for the last reading leg (L-E here)', () => {
+    const { session } = driveToCompletion();
+    expect(session.irCorrectionBreadcrumb).toMatchObject({
+      circuit_ref: 3,
+      field: 'ir_live_earth_mohm',
+    });
+  });
+
+  test('"No. 250." within window re-writes the last leg + speaks one confirmation', () => {
+    const { session } = driveToCompletion();
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 3000,
+    });
+    expect(out).toMatchObject({ handled: true, fallthrough: false });
+    const extraction = ws.sent.find((m) => m.type === 'extraction');
+    expect(extraction.result.readings[0]).toMatchObject({
+      field: 'ir_live_earth_mohm',
+      value: '250',
+    });
+    const info = ws.sent.find((m) => m.type === 'ask_user_started');
+    expect(info.question).toMatch(/got it, live-to-earth 250/i);
+    // One-shot — breadcrumb consumed.
+    expect(session.irCorrectionBreadcrumb).toBeNull();
+  });
+
+  test('">999" / "greater than 200" / "lim" corrections parse', () => {
+    for (const [reply, expected] of [
+      ['No, greater than 200.', '>200'],
+      ['No. Infinite.', '>999'],
+    ]) {
+      const { session } = driveToCompletion();
+      const ws = new MockWS();
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: reply,
+        now: 3000,
+      });
+      const extraction = ws.sent.find((m) => m.type === 'extraction');
+      expect(extraction?.result.readings[0]?.value).toBe(expected);
+    }
+  });
+
+  test('MISFIRE GUARD — "No, circuit 5 next." does NOT correct (topic cue)', () => {
+    const { session } = driveToCompletion();
+    const before = session.stateSnapshot.circuits[3].ir_live_earth_mohm;
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, circuit 5 next.',
+      now: 3000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+    expect(session.stateSnapshot.circuits[3].ir_live_earth_mohm).toBe(before);
+    // Breadcrumb NOT consumed by a rejected attempt.
+    expect(session.irCorrectionBreadcrumb).not.toBeNull();
+  });
+
+  test('outside the 15 s window → no correction', () => {
+    const { session } = driveToCompletion();
+    const ws = new MockWS();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. 250.',
+      now: 200 + 16_000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(ws.sent.find((m) => m.type === 'extraction')).toBeUndefined();
+  });
+});
+
 describe('processInsulationResistanceTurn — bare-value fallback (script asked LL)', () => {
   test('after "What\'s the live-to-live?", reply "200" lands on LL', () => {
     const ws = new MockWS();
