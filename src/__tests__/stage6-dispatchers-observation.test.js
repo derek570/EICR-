@@ -204,6 +204,40 @@ describe('dispatchRecordObservation', () => {
     expect(session.extractedObservations[0].schedule_item).toBeNull();
     expect(perTurnWrites.observations[0].schedule_item).toBeNull();
   });
+
+  test('Plan 06-23 obs-#52: number+wording suggested_regulation is accepted on the FIRST call (no reject loop)', async () => {
+    // Field-test root cause: the 60c ceiling + every-token-must-be-a-bare-ref
+    // shape gate rejected the schema-requested "number + wording", forcing
+    // 2–6 prompt_leak_blocked rejects per observation before the wording was
+    // stripped enough to squeeze under 60c. With the ceiling at 220 + the
+    // section-ref-with-prose branch, the value is accepted on the FIRST call:
+    // no rejection envelope, no prompt_leak_blocked warn row, wording intact.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const regWithWording =
+      '411.3.4 — Additional protection for AC final circuits up to 32 A for use by ordinary persons';
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_wording',
+        name: 'record_observation',
+        input: {
+          text: 'No RCD protection on socket circuit',
+          code: 'C2',
+          suggested_regulation: regWithWording,
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    // Accepted first time — not a rejection envelope.
+    expect(result.is_error).toBe(false);
+    expect(JSON.parse(result.content).ok).toBe(true);
+    // No prompt_leak_blocked reject loop.
+    expect(logger.warn).not.toHaveBeenCalledWith('stage6.prompt_leak_blocked', expect.anything());
+    // The full wording survives into the stored observation (no truncation).
+    expect(session.extractedObservations[0].suggested_regulation).toBe(regWithWording);
+  });
 });
 
 describe('dispatchDeleteObservation', () => {
