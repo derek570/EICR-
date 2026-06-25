@@ -120,7 +120,11 @@ import {
   tryEnterScriptFromWrites,
   ALL_DIALOGUE_SCHEMAS,
 } from './dialogue-engine/index.js';
+import { extractNamedFieldValues } from './dialogue-engine/helpers/extraction.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
+import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
+import { buildConfirmationText } from './confirmation-text.js';
+import { expandForTTS } from './tts-text-expander.js';
 
 /**
  * Sonnet model literal used by shadow-mode tool loop. Mirrors the literal at
@@ -250,6 +254,109 @@ const ORPHAN_PROMPTS = Object.freeze([
 // instead of a silent drop). Set VOICE_ORPHAN_PROMPT=false to disable
 // without a code change if it over-asks on numeric chitchat in the field.
 const ORPHAN_PROMPT_ENABLED = process.env.VOICE_ORPHAN_PROMPT !== 'false';
+
+// #5a apply-complete guard — field report 2026-06-24 #4/#5. When the orphan
+// net is about to fire on a turn that produced NOTHING but the transcript
+// plainly carries a structurally-complete reading (the garble class — e.g. a
+// Deepgram mishearing the dialogue-engine deterministic trigger missed), apply
+// it instead of emitting a contentless clarifying prompt. Default ON; set
+// IR_ORPHAN_APPLY_COMPLETE=false to fall back to the prompt without a redeploy
+// (the flag is allowlisted in scripts/audit-env-var-source.sh and persisted to
+// ecs/task-def-backend.json — infra-from-source). This is a SEPARATE flag from
+// VOICE_ORPHAN_PROMPT; do NOT conflate them.
+const ORPHAN_APPLY_COMPLETE_ENABLED = process.env.IR_ORPHAN_APPLY_COMPLETE !== 'false';
+
+// Dialogue-engine schema SLOT field name → Stage 6 canonical extraction field
+// name. extractNamedFieldValues returns the slot field (e.g. RCD uses the wire
+// name `rcd_trip_time`); the Stage 6 path stores + ships the canonical
+// `rcd_time_ms` (validateAndCorrectFields rewrites it to the iOS wire form
+// downstream, exactly as for a Haiku-emitted reading). Explicit map — NOT an
+// inverse of FIELD_CORRECTIONS, whose RHS collides (rcd_time_ms AND
+// rcd_trip_time_ms both map to rcd_trip_time) and would be order-dependent. IR
+// slots are already canonical so they pass through unchanged.
+const ORPHAN_SLOT_TO_STAGE6_FIELD = Object.freeze({ rcd_trip_time: 'rcd_time_ms' });
+
+/**
+ * Deterministic re-parse for the #5a apply-complete guard. The orphan net fires
+ * only when the turn `producedNothing`, so there is NO structured reading in
+ * `result` to apply — the complete reading exists ONLY in `transcriptText`.
+ * Re-parse it with the dialogue-engine schema extractors and return a single
+ * complete `{slotField, circuit, value}` tuple, or null if there is not EXACTLY
+ * one (zero, or ambiguous multiple → fall through to the clarifying prompt
+ * rather than risk mis-placing a safety-critical reading). Circuit is taken
+ * ONLY from the trigger's explicit digit capture — no fuzzy designation
+ * resolution in the net.
+ *
+ * @param {string} transcriptText
+ * @param {Array} schemas  dialogue-engine schemas (ALL_DIALOGUE_SCHEMAS)
+ * @returns {{slotField: string, circuit: number, value: string}|null}
+ */
+export function reparseSingleCompleteReading(transcriptText, schemas) {
+  const text = typeof transcriptText === 'string' ? transcriptText : '';
+  if (!text || !Array.isArray(schemas)) return null;
+  const tuples = [];
+  for (const schema of schemas) {
+    let circuit = null;
+    for (const pattern of schema.triggers ?? []) {
+      const m = text.match(pattern);
+      if (m && m[1]) {
+        const ref = Number(m[1]);
+        if (Number.isInteger(ref) && ref > 0) {
+          circuit = ref;
+          break;
+        }
+      }
+    }
+    if (circuit === null) continue;
+    const volunteered = extractNamedFieldValues(text, schema.slots);
+    for (const v of volunteered) {
+      if (v && v.field && v.value !== undefined && v.value !== null && v.value !== '') {
+        tuples.push({ slotField: v.field, circuit, value: v.value });
+      }
+    }
+  }
+  return tuples.length === 1 ? tuples[0] : null;
+}
+
+/**
+ * Apply a single complete reading recovered by the orphan-net re-parse:
+ * persist to the backend snapshot (flag-aware, multi-board), push a wire
+ * reading (canonical field name → validateAndCorrectFields rewrites it), and
+ * push a content-bearing spoken read-back (audio-first invariant #1 — the
+ * inspector verifies by ear). Returns the pushed reading.
+ */
+export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) {
+  const stage6Field = ORPHAN_SLOT_TO_STAGE6_FIELD[tuple.slotField] ?? tuple.slotField;
+  applyReadingFlagAware(session.stateSnapshot, {
+    circuit: tuple.circuit,
+    field: stage6Field,
+    value: tuple.value,
+  });
+  if (!Array.isArray(result.extracted_readings)) result.extracted_readings = [];
+  const reading = {
+    field: stage6Field,
+    circuit: tuple.circuit,
+    value: tuple.value,
+    confidence: 0.9,
+    source_turn_id: turnId ?? null,
+  };
+  result.extracted_readings.push(reading);
+  const designation = session.stateSnapshot?.circuits?.[tuple.circuit]?.circuit_designation ?? null;
+  const text = buildConfirmationText(stage6Field, tuple.value, tuple.circuit, designation);
+  if (text) {
+    if (!Array.isArray(result.confirmations)) result.confirmations = [];
+    result.confirmations.push({
+      text,
+      expanded_text: expandForTTS(text),
+      field: stage6Field,
+      circuit: tuple.circuit,
+      // Recovered out-of-band — it never went through the fast-path POST, so
+      // the audio-finalizer must not expect a reconciling ACK for it.
+      expects_ios_ack: false,
+    });
+  }
+  return reading;
+}
 
 async function runLiveMode(session, transcriptText, regexResults, options, log) {
   const turnNum = (session.turnCount ?? 0) + 1;
@@ -1275,24 +1382,47 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         !isAnswerTurn &&
         carriesValue
       ) {
-        const prompt = ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
-        if (!Array.isArray(result.confirmations)) result.confirmations = [];
-        result.confirmations.push({
-          text: prompt,
-          field: null,
-          circuit: null,
-          // Keep out of the audio-finalizer expected-ACK accounting — this is a
-          // clarifying prompt, not a value read-back to reconcile against a
-          // fast-path POST.
-          expects_ios_ack: false,
-        });
-        session.orphanContext = { transcript: transcriptText, turnNum };
-        log.info?.('stage6.orphan_prompt_emitted', {
-          sessionId: session.sessionId,
-          turnId,
-          rounds: toolLoopOut.rounds,
-          textPreview: String(transcriptText || '').slice(0, 80),
-        });
+        // #5a apply-complete guard — before emitting a contentless clarifying
+        // prompt, try a deterministic re-parse of transcriptText (result is
+        // EMPTY here by definition of producedNothing). If it yields EXACTLY
+        // one complete (field, circuit, value), apply + read it back instead of
+        // orphaning it. This removes BOTH #4's contentless local-apply fallback
+        // and #5's next-turn duplicate at the source.
+        let recovered = null;
+        if (ORPHAN_APPLY_COMPLETE_ENABLED) {
+          const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
+          if (tuple) {
+            recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
+            log.info?.('stage6.orphan_apply_complete', {
+              sessionId: session.sessionId,
+              turnId,
+              field: recovered.field,
+              circuit: recovered.circuit,
+              value: recovered.value,
+              textPreview: String(transcriptText || '').slice(0, 80),
+            });
+          }
+        }
+        if (!recovered) {
+          const prompt = ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
+          if (!Array.isArray(result.confirmations)) result.confirmations = [];
+          result.confirmations.push({
+            text: prompt,
+            field: null,
+            circuit: null,
+            // Keep out of the audio-finalizer expected-ACK accounting — this is
+            // a clarifying prompt, not a value read-back to reconcile against a
+            // fast-path POST.
+            expects_ios_ack: false,
+          });
+          session.orphanContext = { transcript: transcriptText, turnNum };
+          log.info?.('stage6.orphan_prompt_emitted', {
+            sessionId: session.sessionId,
+            turnId,
+            rounds: toolLoopOut.rounds,
+            textPreview: String(transcriptText || '').slice(0, 80),
+          });
+        }
       }
     } catch (orphanErr) {
       log.warn?.('stage6.orphan_net_error', {

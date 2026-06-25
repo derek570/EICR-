@@ -121,6 +121,7 @@ VAPID_PRIVATE_KEY                  # web push keys; PWA push notifications not y
 VAPID_PUBLIC_KEY                   # web push keys; PWA push notifications not yet enabled in prod
 VOICE_MID_STREAM_FILTER            # Loaded Barrel mid-stream canonical-emit filter; in-code default OFF (field-test rollback 2026-05-29 — re-enable when iOS preliminary-receive path verified)
 VOICE_ORPHAN_PROMPT                # stage6-shadow-harness.js orphan net gates on `!== 'false'`; in-code default ON (inspector-requested ASK-on-silent-drop, item #10 2026-06-23) — set =false only to disable if it over-asks in the field
+IR_ORPHAN_APPLY_COMPLETE           # stage6-shadow-harness.js #5a apply-complete guard gates on `!== 'false'`; in-code default ON (field report 2026-06-24 #4/#5 — apply a structurally-complete reading the garble class orphaned instead of a contentless prompt) — set =false in the task-def (+commit, infra-from-source) only to disable if it mis-applies in the field
 VOICE_PRE_LLM_GATE                 # sonnet-stream.js gates on `!== 'false'`; in-code default ON matches prod
 WHATSAPP_PHONE_NUMBER_ID           # WhatsApp integration not used by EICR (lives in a different repo)
 WHATSAPP_TOKEN                     # WhatsApp integration not used by EICR
