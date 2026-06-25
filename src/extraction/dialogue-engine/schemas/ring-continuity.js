@@ -44,7 +44,13 @@ const slots = [
     label: 'lives',
     question: 'What are the lives?',
     parser: parseOhms,
-    namedExtractor: new RegExp(`\\blives?\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`, 'i'),
+    // `r\s*1` alias added 2026-06-25 (field session 6674E8C5): the loop
+    // read-back speaks "R1 …, Rn …, R2 …", so inspectors correct in that
+    // vocabulary ("Your RN is 1.35"). Without the abbreviation the amend
+    // gate matched nothing and the first correction was dropped, costing two
+    // wasted Sonnet round-trips. `r\s*1` also matches "r1"/"r 1" — mirrors
+    // the existing c\s*p\s*c spacing tolerance for Deepgram.
+    namedExtractor: new RegExp(`\\b(?:lives?|r\\s*1)\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`, 'i'),
     acceptsBareValue: true,
   },
   {
@@ -52,7 +58,10 @@ const slots = [
     label: 'neutrals',
     question: 'What are the neutrals?',
     parser: parseOhms,
-    namedExtractor: new RegExp(`\\bneutrals?\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`, 'i'),
+    namedExtractor: new RegExp(
+      `\\b(?:neutrals?|r\\s*n)\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`,
+      'i'
+    ),
     acceptsBareValue: true,
   },
   {
@@ -61,7 +70,7 @@ const slots = [
     question: "What's the CPC?",
     parser: parseOhms,
     namedExtractor: new RegExp(
-      `\\b(?:earths?|cpc|c\\s*p\\s*c)\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`,
+      `\\b(?:earths?|cpc|c\\s*p\\s*c|r\\s*2)\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`,
       'i'
     ),
     acceptsBareValue: true,

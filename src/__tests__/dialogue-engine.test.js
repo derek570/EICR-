@@ -219,6 +219,89 @@ describe('engine — ring continuity', () => {
     expect(session.dialogueScriptState).toBeNull();
   });
 
+  // M3 (field session 6674E8C5): the loop read-back speaks "R1 …, Rn …, R2 …",
+  // so inspectors correct using those abbreviations. Before the namedExtractor
+  // aliases were added the amend gate matched nothing and the correction was
+  // dropped ("Sorry, I didn't catch what that reading was for"), costing two
+  // wasted Sonnet round-trips.
+  function walkToConfirmation() {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: 'Ring continuity for circuit 13.', now: 1000 });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: '0.43', now: 2000 });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: 'Neutrals are 0.43.', now: 3000 });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: '0.78', now: 4000 });
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: 'R1 0.43, Rn 0.43, R2 0.78. All correct?',
+    });
+    return { ws, session };
+  }
+
+  test('amend via "Rn" abbreviation ("Your RN is 1.35") overwrites slot + re-emits confirm (no orphan drop)', () => {
+    const { ws, session } = walkToConfirmation();
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Your RN is 1.35.',
+      now: 5000,
+    });
+    // Consumed by the script (NOT dropped to Sonnet / orphan net).
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Slot overwritten + confirm re-emitted with the corrected value.
+    expect(session.stateSnapshot.circuits[13].ring_rn_ohm).toBe('1.35');
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: 'R1 0.43, Rn 1.35, R2 0.78. All correct?',
+    });
+    expect(session.dialogueScriptState.awaiting_confirmation).toBe(true);
+  });
+
+  test('amend via "R1 is 0.50" abbreviation overwrites lives slot', () => {
+    const { ws, session } = walkToConfirmation();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R1 is 0.50.',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.50');
+    expect(ws.sent.at(-1).question).toBe('R1 0.50, Rn 0.43, R2 0.78. All correct?');
+  });
+
+  test('amend via "R2 0.60" abbreviation overwrites CPC slot', () => {
+    const { ws, session } = walkToConfirmation();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R2 0.60.',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('0.60');
+    expect(ws.sent.at(-1).question).toBe('R1 0.43, Rn 0.43, R2 0.60. All correct?');
+  });
+
+  test('"R1 plus R2" still exits via topic-switch (NOT captured by the new r-alias amend)', () => {
+    const { ws, session } = walkToConfirmation();
+    const before = ws.sent.length;
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R1 plus R2 is 0.47.',
+      now: 5000,
+    });
+    // Topic-switch (engine.js:931) runs BEFORE the confirmation amend gate, so
+    // this falls through to Sonnet rather than being eaten by the r2 alias.
+    expect(out.fallthrough).toBe(true);
+    // The R2 slot must NOT have been overwritten to 0.47 by the alias.
+    expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('0.78');
+    expect(before).toBeGreaterThan(0);
+  });
+
   test('topic switch falls through to Sonnet with same transcript', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
