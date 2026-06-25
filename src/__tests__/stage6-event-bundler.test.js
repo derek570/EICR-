@@ -1014,3 +1014,36 @@ describe('bundleToolCallsIntoResult — #31 same-turn clear+write suppression', 
     expect(r.confirmations.some((c) => c.field === 'field_cleared')).toBe(true);
   });
 });
+
+// Field report 2026-06-24 #6 — the observation read-back was capped at 50 chars
+// before TTS synthesis, cutting "…combustible material" to "…combustible m"
+// mid-word. Resolved decision #6: speak the FULL body, no cap / no guard.
+describe('bundleToolCallsIntoResult — observation TTS speaks the full body (#6)', () => {
+  const LONG_BODY =
+    'Consumer unit enclosure is made from combustible material and requires upgrade to a non-combustible enclosure';
+
+  test('observation confirmation contains the full body and NO ellipsis (code + text)', () => {
+    const writes = makePerTurnWrites({
+      observations: [{ code: 'C3', text: LONG_BODY }],
+    });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const obs = r.confirmations.find((c) => c.field === 'observation');
+    expect(obs).toBeTruthy();
+    // Full body present verbatim …
+    expect(obs.text).toBe(`Observation C3 — ${LONG_BODY}`);
+    // … and nothing was truncated.
+    expect(obs.text.includes('…')).toBe(false);
+    expect(obs.text.length).toBeGreaterThan(50 + 'Observation C3 — '.length);
+  });
+
+  test('observation confirmation contains the full body and NO ellipsis (text only, no code)', () => {
+    const writes = makePerTurnWrites({
+      observations: [{ text: LONG_BODY }],
+    });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const obs = r.confirmations.find((c) => c.field === 'observation');
+    expect(obs).toBeTruthy();
+    expect(obs.text).toBe(`Observation — ${LONG_BODY}`);
+    expect(obs.text.includes('…')).toBe(false);
+  });
+});
