@@ -5,11 +5,14 @@
 
 import {
   IR_FIELDS,
+  VOLTAGE_FIELD,
   INSULATION_RESISTANCE_TIMEOUT_MS,
   recordIrWrite,
   clearIrState,
   findExpiredPartial,
   buildAskForMissingIrValue,
+  recordVoltageReask,
+  drainExpiredVoltage,
 } from '../extraction/insulation-resistance-timeout.js';
 
 const SESSION_ID = 'sess-ir';
@@ -34,11 +37,12 @@ describe('recordIrWrite + findExpiredPartial', () => {
     expect(findExpiredPartial(buildSession())).toBeNull();
   });
 
-  test('tracked but recent (< 60s) → null', () => {
+  test('tracked but recent (< 30s) → null', () => {
     const s = buildSession();
     fillCircuit(s, 1, { ir_live_live_mohm: '200' });
     recordIrWrite(s, 1, 1000);
-    expect(findExpiredPartial(s, 1000 + 30_000)).toBeNull();
+    // M4 (2026-06-25): IR partial-fill window cut 60s → 30s. Probe inside it.
+    expect(findExpiredPartial(s, 1000 + 15_000)).toBeNull();
   });
 
   test('tracked and expired with partial fill → returns the missing field', () => {
@@ -113,5 +117,41 @@ describe('buildAskForMissingIrValue', () => {
       server_emitted: true,
     });
     expect(ask.question).toContain('circuit 3');
+  });
+});
+
+describe('M4 voltage re-ask carrier', () => {
+  test('VOLTAGE_FIELD is the test-voltage key and is NOT in IR_FIELDS', () => {
+    expect(VOLTAGE_FIELD).toBe('ir_test_voltage_v');
+    expect(IR_FIELDS).not.toContain(VOLTAGE_FIELD);
+  });
+
+  test('recordVoltageReask pushes a de-duped carrier entry', () => {
+    const s = buildSession();
+    recordVoltageReask(s, 5, 'main');
+    recordVoltageReask(s, 5, 'main'); // dup ignored
+    recordVoltageReask(s, 6, null);
+    expect(s.pendingVoltageReask).toEqual([
+      { circuit_ref: 5, board_id: 'main' },
+      { circuit_ref: 6, board_id: null },
+    ]);
+  });
+
+  test('drainExpiredVoltage returns circuits still lacking voltage; drops ones already filled', () => {
+    const s = buildSession({
+      5: { circuit_ref: 5, ir_live_live_mohm: '200', ir_live_earth_mohm: '>999' }, // no voltage
+      6: { circuit_ref: 6, ir_test_voltage_v: '500' }, // voltage already present
+    });
+    recordVoltageReask(s, 6, 'main'); // filled → should be dropped
+    recordVoltageReask(s, 5, 'main'); // still missing → should surface
+    const first = drainExpiredVoltage(s);
+    expect(first).toEqual({ circuit_ref: 5, missing_field: 'ir_test_voltage_v', board_id: 'main' });
+    // Carrier fully drained now.
+    expect(drainExpiredVoltage(s)).toBeNull();
+  });
+
+  test('drainExpiredVoltage on an empty/absent carrier → null', () => {
+    expect(drainExpiredVoltage(buildSession())).toBeNull();
+    expect(drainExpiredVoltage({})).toBeNull();
   });
 });

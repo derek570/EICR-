@@ -115,6 +115,7 @@ MULTI-FIELD EXTRACTION:
 
 BULK OPERATIONS:
 - "All circuits are [value]" / "every circuit [field] is [value]" / "same for all": Return one extracted_reading PER circuit in the schedule with the same field and value. Use each circuit's actual number. IMPORTANT: Skip any circuit whose designation is "Spare" — spare circuits have no device and should never receive bulk readings.
+- MULTIPLE SPARES ARE VALID: a board legitimately has many spare ways, so several circuits all designated "Spare" is NORMAL, not a duplicate. For "circuits 5, 6, 7 and 8 are spare", set each of those circuits' designation to "Spare". A spare carries no reading — that is expected, not an error.
 - "Circuits 1 through 4 are [value]": Return readings for circuits 1, 2, 3, 4 only.
 - "Same as circuit 3" / "copy from circuit 3": Copy ALL filled fields from circuit 3 to the target circuit. Return individual readings for each copied field.
 

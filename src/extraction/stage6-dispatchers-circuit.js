@@ -490,7 +490,18 @@ export async function dispatchCreateCircuit(call, ctx) {
   // word ("Lighting" vs "Outside Lighting").
   if (typeof input.designation === 'string') {
     const wantedDesig = input.designation.trim().toLowerCase();
-    if (wantedDesig) {
+    // "Spare" carve-out: a board legitimately has many spare ways, so the same
+    // "Spare" designation repeating across circuit_refs on one board is valid —
+    // NOT a phantom duplicate. Spares never receive readings, so the misrouting
+    // risk the guard protects against does not apply to a literal spare.
+    // Exact-match ONLY (`=== 'spare'`): do NOT reuse the broad /\bspare\b/ bulk
+    // predicate, which would also exempt real designations that merely contain
+    // the word (e.g. "Spare Room Lights") and re-admit the 2026-05-24 phantom-dup
+    // bug. Without this, dictating "circuits 5, 6, 7, 8 are spare" rejected 5-8 as
+    // duplicate_designation, the model went silent, and the inspector heard only
+    // "Circuit 4 is now the Spare" (field session 6674E8C5 turn-11).
+    const isTrueSpare = wantedDesig === 'spare' || wantedDesig === 'spare way';
+    if (wantedDesig && !isTrueSpare) {
       const sameBoardRefs = listCircuitRefsInBoard(session.stateSnapshot, input.board_id);
       for (const existingRef of sameBoardRefs) {
         if (existingRef === input.circuit_ref) continue;

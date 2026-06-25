@@ -219,6 +219,89 @@ describe('engine — ring continuity', () => {
     expect(session.dialogueScriptState).toBeNull();
   });
 
+  // M3 (field session 6674E8C5): the loop read-back speaks "R1 …, Rn …, R2 …",
+  // so inspectors correct using those abbreviations. Before the namedExtractor
+  // aliases were added the amend gate matched nothing and the correction was
+  // dropped ("Sorry, I didn't catch what that reading was for"), costing two
+  // wasted Sonnet round-trips.
+  function walkToConfirmation() {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: 'Ring continuity for circuit 13.', now: 1000 });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: '0.43', now: 2000 });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: 'Neutrals are 0.43.', now: 3000 });
+    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: '0.78', now: 4000 });
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: 'R1 0.43, Rn 0.43, R2 0.78. All correct?',
+    });
+    return { ws, session };
+  }
+
+  test('amend via "Rn" abbreviation ("Your RN is 1.35") overwrites slot + re-emits confirm (no orphan drop)', () => {
+    const { ws, session } = walkToConfirmation();
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Your RN is 1.35.',
+      now: 5000,
+    });
+    // Consumed by the script (NOT dropped to Sonnet / orphan net).
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Slot overwritten + confirm re-emitted with the corrected value.
+    expect(session.stateSnapshot.circuits[13].ring_rn_ohm).toBe('1.35');
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      question: 'R1 0.43, Rn 1.35, R2 0.78. All correct?',
+    });
+    expect(session.dialogueScriptState.awaiting_confirmation).toBe(true);
+  });
+
+  test('amend via "R1 is 0.50" abbreviation overwrites lives slot', () => {
+    const { ws, session } = walkToConfirmation();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R1 is 0.50.',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.50');
+    expect(ws.sent.at(-1).question).toBe('R1 0.50, Rn 0.43, R2 0.78. All correct?');
+  });
+
+  test('amend via "R2 0.60" abbreviation overwrites CPC slot', () => {
+    const { ws, session } = walkToConfirmation();
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R2 0.60.',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('0.60');
+    expect(ws.sent.at(-1).question).toBe('R1 0.43, Rn 0.43, R2 0.60. All correct?');
+  });
+
+  test('"R1 plus R2" still exits via topic-switch (NOT captured by the new r-alias amend)', () => {
+    const { ws, session } = walkToConfirmation();
+    const before = ws.sent.length;
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'R1 plus R2 is 0.47.',
+      now: 5000,
+    });
+    // Topic-switch (engine.js:931) runs BEFORE the confirmation amend gate, so
+    // this falls through to Sonnet rather than being eaten by the r2 alias.
+    expect(out.fallthrough).toBe(true);
+    // The R2 slot must NOT have been overwritten to 0.47 by the alias.
+    expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('0.78');
+    expect(before).toBeGreaterThan(0);
+  });
+
   test('topic switch falls through to Sonnet with same transcript', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
@@ -918,6 +1001,165 @@ describe('engine — insulation resistance', () => {
     expect(ws.sent.at(-1).reason).toBe('info');
     expect(ws.sent.at(-1).question).toBe('Got it. L-L 200, L-E 200.');
     expect(session.dialogueScriptState).toBeNull();
+  });
+
+  // M4 (2026-06-25, field session 6674E8C5): the voltage phase used to EAT a
+  // fresh reading dictated instead of a voltage, dropping the new utterance and
+  // reading back the prior circuit's stale values. The escape hatch must:
+  // finish the prior circuit (read back its 2 readings ONCE), register a
+  // post-script voltage re-ask for it, and NOT drop the fresh reading.
+  describe('M4 voltage-phase escape hatch', () => {
+    function enterVoltagePhase(ws, session, ref, now) {
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: `Insulation resistance for circuit ${ref}.`,
+        now,
+      });
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: '200',
+        now: now + 1000,
+      });
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'over 999',
+        now: now + 2000,
+      });
+      expect(ws.sent.at(-1).context_field).toBe('ir_test_voltage_v');
+    }
+
+    test('fresh IR reading (different circuit by designation) → prior reads back once, new reading NOT dropped, voltage carrier registered', () => {
+      const ws = new FakeWS();
+      const session = buildSession({
+        5: { circuit_designation: 'Sockets' },
+        6: { circuit_designation: 'Cooker' },
+      });
+      enterVoltagePhase(ws, session, 5, 1000);
+
+      const out = processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'Insulation resistance for the cooker. Live to earth is 1.8.',
+        now: 4000,
+      });
+
+      // Prior circuit 5 read back its two captured readings exactly once.
+      const readback = ws.sent.find(
+        (m) => m.reason === 'info' && m.question === 'Got it. L-L 200, L-E >999.'
+      );
+      expect(readback).toBeDefined();
+      // Voltage re-ask registered for the PRIOR circuit (5).
+      expect(session.pendingVoltageReask).toEqual([
+        expect.objectContaining({ circuit_ref: 5 }),
+      ]);
+      // Fresh reading NOT dropped — circuit 6 received live-to-earth.
+      expect(session.stateSnapshot.circuits[6].ir_live_earth_mohm).toBeDefined();
+      expect(session.stateSnapshot.circuits[6].ir_live_earth_mohm).not.toBe('>999');
+      // The new circuit's walk-through is now active, asking its next slot.
+      expect(ws.sent.at(-1).context_field).toBe('ir_live_live_mohm');
+      expect(out).toMatchObject({ handled: true });
+    });
+
+    test('same-circuit correction during voltage phase OVERWRITES the seeded reading (overwriteVolunteered)', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
+      enterVoltagePhase(ws, session, 13, 1000);
+      expect(session.stateSnapshot.circuits[13].ir_live_earth_mohm).toBe('>999');
+
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        // parseVoltage("...circuit 13...5") → "13" is <50 so out of range → null,
+        // so the escape hatch (not a voltage parse) fires.
+        transcriptText: 'Insulation resistance for circuit 13. Live to earth is 5.',
+        now: 4000,
+      });
+
+      // The fresh LE OVERWROTE the stale >999 rather than being skipped.
+      expect(session.stateSnapshot.circuits[13].ir_live_earth_mohm).toBe('5');
+      // Re-entered circuit 13's walk-through, asking voltage again.
+      expect(ws.sent.at(-1).context_field).toBe('ir_test_voltage_v');
+    });
+
+    test('topic switch (Zs) during voltage phase → reads back captured readings once + registers voltage carrier + falls through', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 7: { circuit_designation: 'Sockets' } });
+      enterVoltagePhase(ws, session, 7, 1000);
+
+      const out = processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'Zs is 0.5',
+        now: 4000,
+      });
+
+      expect(out).toMatchObject({ handled: true, fallthrough: true });
+      const readback = ws.sent.find(
+        (m) => m.reason === 'info' && m.question === 'Got it. L-L 200, L-E >999.'
+      );
+      expect(readback).toBeDefined();
+      expect(session.pendingVoltageReask).toEqual([
+        expect.objectContaining({ circuit_ref: 7 }),
+      ]);
+      expect(session.dialogueScriptState).toBeNull();
+    });
+
+    test('in-script 30s one-shot voltage re-ask fires on genuine silence, then finishes', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 9: { circuit_designation: 'Sockets' } });
+      enterVoltagePhase(ws, session, 9, 1000);
+      // voltage ask was emitted at now=3000 (entry+2000). Garble <30s → finish? No:
+      // garble at +31s from the voltage-phase stamp → one-shot re-ask.
+      const o1 = processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'the weather is nice',
+        now: 3000 + 31_000,
+      });
+      expect(o1).toMatchObject({ handled: true, fallthrough: false });
+      // Re-asked the voltage; script still active.
+      expect(ws.sent.at(-1).context_field).toBe('ir_test_voltage_v');
+      expect(session.dialogueScriptState).not.toBeNull();
+
+      // A second garble → no second re-ask (one-shot); finishes.
+      const o2 = processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'the weather is nice',
+        now: 3000 + 62_000,
+      });
+      expect(o2).toMatchObject({ handled: true, fallthrough: false });
+      expect(ws.sent.at(-1).reason).toBe('info');
+      expect(session.dialogueScriptState).toBeNull();
+    });
+
+    test('genuine brief unparseable reply (<30s, no IR signal) still finishes silently (legacy behaviour preserved)', () => {
+      const ws = new FakeWS();
+      const session = buildSession({ 11: { circuit_designation: 'Sockets' } });
+      enterVoltagePhase(ws, session, 11, 1000);
+      const out = processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'uhh',
+        now: 4000,
+      });
+      expect(out).toEqual({ handled: true, fallthrough: false });
+      expect(ws.sent.at(-1).reason).toBe('info');
+      expect(ws.sent.at(-1).question).toBe('Got it. L-L 200, L-E >999.');
+      expect(session.dialogueScriptState).toBeNull();
+    });
   });
 
   test('cancel during readings shows count of 2 (voltage excluded)', () => {

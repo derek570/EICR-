@@ -133,10 +133,10 @@ describe('tts-text-expander — iOS parity', () => {
     });
   });
 
-  describe('"live" → "lyve" pronunciation', () => {
+  describe('"live" → "lighv" pronunciation', () => {
     const cases = [
-      ['live CSA', 'lyve CSA'],
-      ['the live conductor', 'the lyve conductor'],
+      ['live CSA', 'lighv CSA'],
+      ['the live conductor', 'the lighv conductor'],
       // Word boundary — "lived" is NOT replaced (no \b after live):
       ['I have lived here', 'I have lived here'],
       // Mid-word substring — NOT matched:
@@ -203,7 +203,7 @@ describe('tts-text-expander — iOS parity', () => {
       ['Circuit 3, RCD 30', 'Circuit 3, R C D 30.'],
       ['Circuit 3, RCD time 200', 'Circuit 3, R C D time 200.'],
       ['Circuit 3, RCD type AC', 'Circuit 3, R C D type AC'],
-      ['Circuit 5, live CSA 4', 'Circuit 5, lyve CSA 4.'],
+      ['Circuit 5, live CSA 4', 'Circuit 5, lighv CSA 4.'],
       ['Circuit 5, CPC CSA 1.5', 'Circuit 5, CPC CSA one point five'],
       ['Circuit 3, wiring type A', 'Circuit 3, wiring type A'],
     ];

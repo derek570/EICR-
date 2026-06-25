@@ -238,6 +238,90 @@ describe('dispatchCreateCircuit', () => {
     expect(rows[0].input_summary).not.toHaveProperty('cable_csa_mm2');
     expect(rows[0].input_summary).toEqual({ circuit_ref: 5, phase: 'L1' });
   });
+
+  // M1 Defect A — "Spare" carve-out from the 2026-05-24 same-board
+  // duplicate-designation guard. A board has many spare ways, so the same
+  // "Spare" designation repeating across refs is valid; without the carve-out
+  // "circuits 5,6,7,8 are spare" rejected 5-8 as duplicate_designation and the
+  // model went silent (field session 6674E8C5 turn-11).
+  test('M1 spare carve-out: second "Spare" on same board is ALLOWED (distinct ref)', async () => {
+    const session = makeSession({ circuits: { 4: { circuit_designation: 'Spare' } } });
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_spare2',
+        name: 'create_circuit',
+        input: { circuit_ref: 5, designation: 'Spare' },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(JSON.parse(result.content)).toEqual({ ok: true });
+    expect(session.stateSnapshot.circuits[5]).toEqual({ circuit_designation: 'Spare' });
+    expect(writes.circuitOps).toHaveLength(1);
+  });
+
+  test('M1 spare carve-out: case-insensitive ("spare" lower) still allowed', async () => {
+    const session = makeSession({ circuits: { 4: { circuit_designation: 'Spare' } } });
+    const d = createWriteDispatcher(session, mockLogger(), 'turn-1', createPerTurnWrites());
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_spare_lc',
+        name: 'create_circuit',
+        input: { circuit_ref: 5, designation: 'spare' },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.stateSnapshot.circuits[5]).toEqual({ circuit_designation: 'spare' });
+  });
+
+  test('M1 guard intact: non-spare duplicate designation on same board STILL rejected', async () => {
+    const session = makeSession({ circuits: { 4: { circuit_designation: 'Upstairs Lighting' } } });
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_dupdes',
+        name: 'create_circuit',
+        input: { circuit_ref: 5, designation: 'Upstairs Lighting' },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(true);
+    const body = JSON.parse(result.content);
+    expect(body.error.code).toBe('duplicate_designation');
+    expect(body.error.existing_circuit_ref).toBe(4);
+    expect(writes.circuitOps).toHaveLength(0);
+  });
+
+  test('M1 guard intact: designation merely CONTAINING "spare" ("Spare Room Lights") STILL rejected (no broad-predicate re-admit of 2026-05-24 bug)', async () => {
+    const session = makeSession({
+      circuits: { 4: { circuit_designation: 'Spare Room Lights' } },
+    });
+    const d = createWriteDispatcher(session, mockLogger(), 'turn-1', createPerTurnWrites());
+
+    const result = await d(
+      {
+        tool_call_id: 'tu_spareroom',
+        name: 'create_circuit',
+        input: { circuit_ref: 5, designation: 'Spare Room Lights' },
+      },
+      {}
+    );
+
+    expect(result.is_error).toBe(true);
+    expect(JSON.parse(result.content).error.code).toBe('duplicate_designation');
+  });
 });
 
 describe('dispatchRenameCircuit', () => {

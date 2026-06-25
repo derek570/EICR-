@@ -40,7 +40,7 @@
  * Format: ISO date of edit, allowing alphanumeric suffix for same-day
  * iterations ("2026-05-24a", "2026-05-24b").
  */
-export const EXPANDER_VERSION = '2026-06-23';
+export const EXPANDER_VERSION = '2026-06-25';
 
 const REPLACEMENTS = Object.freeze([
   // Impedance values — compound patterns FIRST so `\bZe\/Zs\b` wins
@@ -85,8 +85,15 @@ const REPLACEMENTS = Object.freeze([
   [/\bTN-S\b/g, 'T N S'],
   [/\bTT\b/g, 'T T'],
   [/\bPME\b/g, 'P M E'],
-  // Electrical "live" pronounced as "lyve" (alive), not "liv".
-  [/\blive\b/g, 'lyve'],
+  // Electrical "live" pronounced as "lyve" (alive, long-i /laɪv/), not "liv".
+  // 2026-06-25 (field session 6674E8C5): ElevenLabs mispronounced the previous
+  // "lyve" respelling, so the inspector heard a wrong "live-to-live". Switched
+  // to "lighv" — the "igh" grapheme (as in high/light/night) is the single most
+  // reliable long-i cue in English orthography. ⚠️ This string MUST stay
+  // byte-identical with iOS AlertManager.swift (the Loaded Barrel speculator
+  // keys the TTS cache on the expanded text). NEEDS AN EAR-CHECK against the
+  // live ElevenLabs voice; alternatives if it's still off: "lyv", "lyev".
+  [/\blive\b/g, 'lighv'],
 ]);
 
 const DIGIT_WORDS = Object.freeze([

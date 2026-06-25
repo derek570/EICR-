@@ -968,8 +968,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     ask) + the #55 no-CPC clarifying-ask steering + #53 bare-observation
       //     deterministic ask + #51 RULE 7 (rationale clause). Measured 12980;
       //     cap 13100 leaves ~120-token headroom.
+      //   - 13200 (2026-06-25 field session 6674E8C5 M1): SPARE CIRCUITS bullet
+      //     (multiple "Spare" circuits are valid, emit one create_circuit per
+      //     ref, never go silent on a spare rejection) — defense-in-depth for
+      //     the silent-drop fix. Measured 13138 on the merged base; cap 13200
+      //     leaves ~62-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(13100);
+      expect(estimate).toBeLessThanOrEqual(13200);
     });
   });
 
