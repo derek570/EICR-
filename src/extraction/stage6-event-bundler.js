@@ -198,8 +198,6 @@ function synthesiseStateChangeConfirmations(
  *   the spoken circuit name when known.
  * @returns {Array<{text, expanded_text, field, circuit}>}
  */
-const OBSERVATION_TTS_TEXT_MAX_CHARS = 50;
-
 function synthesiseObservationAndClearedConfirmations(
   observations,
   deletedObservations,
@@ -226,19 +224,16 @@ function synthesiseObservationAndClearedConfirmations(
       const rawText = typeof obs.text === 'string' ? obs.text.trim() : '';
       let text;
       if (code && rawText) {
-        const truncated =
-          rawText.length > OBSERVATION_TTS_TEXT_MAX_CHARS
-            ? `${rawText.slice(0, OBSERVATION_TTS_TEXT_MAX_CHARS).trim()}…`
-            : rawText;
-        text = `Observation ${code} — ${truncated}`;
+        // Field report 2026-06-24 #6: speak the FULL observation body — the
+        // old 50-char cap cut "…combustible material" to "…combustible m"
+        // mid-word before TTS synthesis. Audio-first invariant #1 (verify by
+        // ear) means the inspector must hear the whole observation; no cap, no
+        // runaway guard. Resolved decision #6 (2026-06-24).
+        text = `Observation ${code} — ${rawText}`;
       } else if (code) {
         text = `Observation ${code} recorded`;
       } else if (rawText) {
-        const truncated =
-          rawText.length > OBSERVATION_TTS_TEXT_MAX_CHARS
-            ? `${rawText.slice(0, OBSERVATION_TTS_TEXT_MAX_CHARS).trim()}…`
-            : rawText;
-        text = `Observation — ${truncated}`;
+        text = `Observation — ${rawText}`;
       } else {
         // Empty observation with no code or text — don't speak anything.
         continue;

@@ -45,7 +45,7 @@ import {
 } from './helpers/wire-emit.js';
 import { applyDerivations } from './helpers/derivations.js';
 import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
-import { applyReadingToSnapshot } from '../stage6-snapshot-mutators.js';
+import { applyReadingToSnapshot, applyReadingFlagAware } from '../stage6-snapshot-mutators.js';
 import {
   parseCircuitRange,
   formatBulkApplyConfirm,
@@ -181,6 +181,64 @@ export function processDialogueTurn(ctx) {
     }
   }
 
+  // Post-completion reading correction (#1 belt-and-braces, field report
+  // 2026-06-24). Within a short window after a schema with `correctionBreadcrumb`
+  // finished, a NEGATION + value-only remainder ("No, 0.47") re-writes the last
+  // reading leg. Runs BEFORE entry detection (a correction is not an entry) and
+  // only when the breadcrumb's schema is in THIS call's schema list — so the
+  // two-wrapper ring/IR dispatch (each invoked with a single-schema list) can't
+  // consume the other's crumb. Writes directly to the snapshot (flag-aware, no
+  // timeout re-arm) since the script has already cleared. Lifted from the
+  // legacy script's item #2b.
+  {
+    const crumb = session.dialogueCorrectionBreadcrumb;
+    const crumbSchema = crumb ? schemas.find((s) => s.name === crumb.schemaName) : null;
+    const cbCfg = crumbSchema?.correctionBreadcrumb ?? null;
+    if (crumb && cbCfg) {
+      const currentBoardId = session.stateSnapshot?.currentBoardId ?? null;
+      if (now - crumb.at <= cbCfg.windowMs && (crumb.boardId ?? null) === currentBoardId) {
+        const m = text.match(cbCfg.correctionRe);
+        if (m && cbCfg.valueOnlyRe.test(m[1])) {
+          const corrected = cbCfg.valueParser(m[1]);
+          if (corrected !== null && corrected !== undefined) {
+            session.dialogueCorrectionBreadcrumb = null; // one-shot
+            applyReadingFlagAware(session.stateSnapshot, {
+              circuit: crumb.circuit_ref,
+              field: crumb.field,
+              value: corrected,
+            });
+            safeSend(
+              ws,
+              buildExtractionPayload(
+                crumb.circuit_ref,
+                [{ field: crumb.field, value: corrected }],
+                crumbSchema.extractionSource
+              )
+            );
+            const label = cbCfg.fieldLabels?.[crumb.field] ?? crumb.field;
+            safeSend(
+              ws,
+              buildScriptInfo({
+                toolCallIdPrefix: crumbSchema.toolCallIdPrefix,
+                sessionId,
+                kind: 'correction',
+                text: `Got it, ${label} ${corrected}.`,
+                now,
+              })
+            );
+            logger?.info?.(`${crumbSchema.logEventPrefix}_post_completion_correction`, {
+              sessionId,
+              circuit_ref: crumb.circuit_ref,
+              field: crumb.field,
+              value: corrected,
+            });
+            return { handled: true, fallthrough: false };
+          }
+        }
+      }
+    }
+  }
+
   // 2026-05-31 — observation-prefixed utterances skip entry detection.
   // Field repro: inspector says "Observation: the RCD cover is cracked."
   // intending to log a defect. RCD schema's trigger regex (rcd.js:107
@@ -261,6 +319,12 @@ const RCD_ENTRY_EXCLUSION_PATTERN = {
     return RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) || RCD_ENTRY_EXCLUSION_DENIAL.test(text);
   },
 };
+
+// Bare yes/no replies to a slot confirm gate (#1 IR voltage). Kept deliberately
+// tight — a value-bearing reply ("no, 250") is handled by re-parsing the slot,
+// not by these, so a stray "no" never strands the value.
+const AFFIRMATIVE_RE = /^\s*(?:yes|yeah|yep|yup|correct|that'?s right|aye)\b/i;
+const NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 
 /**
  * Test if a transcript matches a schema's entry triggers. Returns
@@ -418,11 +482,20 @@ function buildCircuitRetryQuestion(schema, designationAttempt) {
  * branch for the failure mode they fix.
  */
 function initScriptState(session, schema, circuit_ref, now) {
+  // A new script invalidates any pending post-completion correction crumb —
+  // closes the stale-fire window where a started-then-aborted script would
+  // otherwise leave an OLD breadcrumb pointing at the wrong leg (#1).
+  session.dialogueCorrectionBreadcrumb = null;
   session.dialogueScriptState = {
     active: true,
     schemaName: schema.name,
     circuit_ref,
     values: {},
+    // One-shot pending value awaiting a standard-set confirm (#1 IR voltage).
+    // Holds the non-standard Number the engine asked the inspector to repeat;
+    // null when no confirm is in flight. Lives on state so it clears with the
+    // script and never leaks across circuits.
+    slotPendingConfirm: null,
     pending_writes: [],
     skipped_slots: new Set(),
     entered_at: now,
@@ -1371,6 +1444,112 @@ function runActivePath({
   //    the bare text. If nothing parses, finish silently.
   if (currentSlot && currentSlot.exclusiveWhenExpected) {
     const value = currentSlot.parser(text);
+
+    // Local: write the parsed exclusive value (+ any derivations) and finish.
+    const writeExclusiveAndFinish = (v) => {
+      const r = applyWriteWithDerivations(session, schema, currentSlot, state.circuit_ref, v, now);
+      writes.push({ field: currentSlot.field, value: v });
+      // Audit-2026-06-02 Phase 2 — IR voltage / similar exclusive-slot parsers
+      // don't currently have mirroring derivations, but the wire shape stays
+      // consistent across paths if a future schema declares them.
+      for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
+      for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
+      if (writes.length > 0) {
+        safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
+      }
+      finishScript({ ws, session, sessionId, schema, logger, now });
+      return { handled: true, fallthrough: false };
+    };
+
+    // Standard-value confirm gate (#1 — field report 2026-06-24, session
+    // B0F28CFB). When the slot declares `confirmWhenNotIn` and the parsed value
+    // is outside that set (a misheard "fifty" for "two fifty"), do NOT
+    // write+finish. Re-ask as a one-shot confirmation and STAY in the slot so a
+    // spoken correction ("No, 250") lands IN-LOOP on the active circuit. Pre-
+    // fix the script finished on the misheard value, so the correction arrived
+    // with no active script, fell to Haiku, and was mis-attributed to the
+    // most-recently-focused circuit (4) instead of the IR circuit (2). This is
+    // the live-engine port of the legacy script's item #2a (which never ran —
+    // it lived in the dead insulation-resistance-script.js).
+    const confirmSet = currentSlot.confirmWhenNotIn ?? null;
+    if (confirmSet) {
+      const pending = state.slotPendingConfirm ?? null;
+      if (pending !== null) {
+        // Replying to a "Did you say N volts?" confirm.
+        if (value !== null && value !== undefined && Number(value) === Number(pending)) {
+          // Repeated the SAME non-standard value → genuine meter reading, accept.
+          state.slotPendingConfirm = null;
+          return writeExclusiveAndFinish(value);
+        }
+        if (value !== null && value !== undefined) {
+          // A DIFFERENT value ("No, 250") → clear the pending flag and fall
+          // through to the standard decision below so the corrected value is
+          // accepted (or re-confirmed if it too is non-standard).
+          state.slotPendingConfirm = null;
+        } else if (AFFIRMATIVE_RE.test(text)) {
+          state.slotPendingConfirm = null;
+          return writeExclusiveAndFinish(pending);
+        } else if (NEGATIVE_RE.test(text)) {
+          // Bare "no" with no value → re-ask, stay active (don't strand empty).
+          state.slotPendingConfirm = null;
+          state.last_turn_at = now;
+          safeSend(
+            ws,
+            buildScriptAsk({
+              toolCallIdPrefix: schema.toolCallIdPrefix,
+              sessionId,
+              circuit_ref: state.circuit_ref,
+              missing_field: currentSlot.field,
+              slotQuestion: currentSlot.question,
+              now,
+              kind: 'value',
+            })
+          );
+          return { handled: true, fallthrough: false };
+        } else {
+          // Unrecognised reply to the confirm → finish (don't loop forever; the
+          // 60s timeout doesn't track voltage).
+          state.slotPendingConfirm = null;
+          finishScript({ ws, session, sessionId, schema, logger, now });
+          return { handled: true, fallthrough: false };
+        }
+      }
+      // Standard decision (no pending, or just cleared after a different value).
+      if (value !== null && value !== undefined && !confirmSet.has(Number(value))) {
+        state.slotPendingConfirm = Number(value);
+        state.last_turn_at = now;
+        safeSend(
+          ws,
+          buildScriptAsk({
+            toolCallIdPrefix: schema.toolCallIdPrefix,
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            missing_field: currentSlot.field,
+            slotQuestion:
+              typeof currentSlot.confirmQuestion === 'function'
+                ? currentSlot.confirmQuestion(value)
+                : currentSlot.question,
+            now,
+            kind: 'value',
+          })
+        );
+        logger?.info?.(`${schema.logEventPrefix}_value_confirm_prompted`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          field: currentSlot.field,
+          pending_value: value,
+        });
+        return { handled: true, fallthrough: false };
+      }
+      // Standard value (or unparseable) → write (if any) + finish.
+      if (value !== null && value !== undefined) {
+        return writeExclusiveAndFinish(value);
+      }
+      finishScript({ ws, session, sessionId, schema, logger, now });
+      return { handled: true, fallthrough: false };
+    }
+
+    // No confirm gate declared — original behaviour: write (if any) + finish.
     if (value !== null && value !== undefined) {
       const r = applyWriteWithDerivations(
         session,
@@ -1381,10 +1560,6 @@ function runActivePath({
         now
       );
       writes.push({ field: currentSlot.field, value });
-      // Audit-2026-06-02 Phase 2 — IR voltage / similar exclusive-slot
-      // parsers don't currently have mirroring derivations, but the
-      // wire shape stays consistent across paths if a future schema
-      // declares them.
       for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
       for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
     }
@@ -1825,6 +2000,30 @@ function finishScript({ ws, session, sessionId, schema, logger, now }) {
     circuit_ref,
     values: { ...values },
   });
+  // Post-completion correction breadcrumb (#1 belt-and-braces, field report
+  // 2026-06-24). Leave a short-lived crumb naming the last reading leg written
+  // so a "No, <value-only>" within the window re-writes it even after the
+  // script clears. Only when a reading field was actually written this run (a
+  // voltage-only finish leaves none — voltage corrections are handled in-loop
+  // by the confirm gate). Pin the board so a correction after a board switch
+  // can't land on the wrong board.
+  if (schema.correctionBreadcrumb) {
+    const cb = schema.correctionBreadcrumb;
+    const fields = Array.isArray(cb.fields) ? cb.fields : [];
+    let lastReadingField = null;
+    for (const f of fields) {
+      if (values[f] !== undefined) lastReadingField = f;
+    }
+    if (lastReadingField) {
+      session.dialogueCorrectionBreadcrumb = {
+        schemaName: schema.name,
+        circuit_ref,
+        field: lastReadingField,
+        boardId: session.stateSnapshot?.currentBoardId ?? null,
+        at: now,
+      };
+    }
+  }
   clearScriptState(session);
   if (typeof schema.onFinish === 'function') {
     schema.onFinish(session, circuit_ref);

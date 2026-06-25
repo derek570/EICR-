@@ -740,6 +740,44 @@ describe('engine — insulation resistance', () => {
     });
   });
 
+  // Field report 2026-06-24 #3 — "Insulation resistance for the cooker" was
+  // garbled by Deepgram to "Insurance resistance for the cooker", which missed
+  // the IR trigger alternation, so the engine never entered and never resolved
+  // "cooker"→circuit 1; the turn fell to Haiku, which asked "which circuit?".
+  test('#3 "insurance" garble still enters IR and resolves designation (cooker→c1), no "which circuit?" ask', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Upstairs Sockets' },
+    });
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insurance resistance for the cooker.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Resolved cooker → circuit 1 and went straight to the first value slot —
+    // NOT a generic circuit-disambiguation ask.
+    expect(ws.sent[0]).toMatchObject({
+      type: 'ask_user_started',
+      context_field: 'ir_live_live_mohm',
+      context_circuit: 1,
+    });
+    expect(ws.sent[0].question).toBe("What's the live-to-live?");
+  });
+
+  test('#3 IR trigger regex matches insurance/insulation/installation head-words', () => {
+    const [pattern1] = insulationResistanceSchema.triggers;
+    expect(pattern1.test('insurance resistance for the cooker')).toBe(true);
+    // Regression — the existing head-words must still match.
+    expect(pattern1.test('insulation resistance for circuit 3')).toBe(true);
+    expect(pattern1.test('installation resistance live to live')).toBe(true);
+    // Unrelated "insurance" sentences must NOT match (needs "resistance").
+    expect(pattern1.test('the insurance documents are in the van')).toBe(false);
+  });
+
   test('full walkthrough: L-L → L-E → voltage → finished', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
@@ -2154,5 +2192,230 @@ describe('engine — designation resolution + clean echo (F1AC26FB #3)', () => {
     expect(q).not.toMatch(/for the for the/i);
     expect(q).toContain('wibble');
     expect(q).not.toContain('wibble.');
+  });
+});
+
+// Field report 2026-06-24 #1 — IR voltage correction re-ran the whole loop and
+// landed on the wrong circuit. The 2026-06-23 standard-voltage gate + breadcrumb
+// fix had landed in the DEAD legacy script and never ran; ported here to the
+// live dialogue engine. Resolved decision #1 (2026-06-24).
+describe('engine — IR standard-voltage confirm gate (#1)', () => {
+  const enterAndFillReadings = (ws, session, circuit) => {
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: `Insulation resistance for circuit ${circuit}.`,
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '200',
+      now: 2000,
+    }); // L-L
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'over 999',
+      now: 3000,
+    }); // L-E → now voltage is the expected slot
+  };
+
+  test('non-standard voltage (50) → one-shot confirm, script stays ACTIVE, nothing written', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: { circuit_designation: 'Cooker' }, 4: {} });
+    enterAndFillReadings(ws, session, 2);
+    expect(ws.sent.at(-1).context_field).toBe('ir_test_voltage_v');
+
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50',
+      now: 4000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: 'ask_user_started',
+      context_field: 'ir_test_voltage_v',
+      context_circuit: 2,
+    });
+    expect(ws.sent.at(-1).question).toMatch(/did you say 50 volts/i);
+    expect(session.dialogueScriptState?.active).toBe(true);
+    expect(session.stateSnapshot.circuits[2].ir_test_voltage_v).toBeUndefined();
+  });
+
+  test('"No. Voltage was 250." after a misheard-50 confirm writes 250 to the ACTIVE circuit (2), never c4', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: { circuit_designation: 'Cooker' }, 4: {} });
+    enterAndFillReadings(ws, session, 2);
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50',
+      now: 4000,
+    }); // confirm in flight
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No. Voltage was 250.',
+      now: 5000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // 250 is standard → written to circuit 2; the overview cell updates.
+    expect(session.stateSnapshot.circuits[2].ir_test_voltage_v).toBe('250');
+    // c4 (the most-recently-focused circuit pre-fix) is NEVER touched.
+    expect(session.stateSnapshot.circuits[4].ir_test_voltage_v).toBeUndefined();
+    // Script finished — no re-entry.
+    expect(session.dialogueScriptState).toBeFalsy();
+    expect(ws.sent.at(-1).question).toMatch(/got it\. l-l 200, l-e >999, voltage 250/i);
+  });
+
+  test('repeating the same non-standard value confirms it (genuine meter reading)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: {} });
+    enterAndFillReadings(ws, session, 2);
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50',
+      now: 4000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50',
+      now: 5000,
+    });
+    expect(session.stateSnapshot.circuits[2].ir_test_voltage_v).toBe('50');
+    expect(session.dialogueScriptState).toBeFalsy();
+  });
+
+  test('bare "no" to the confirm re-asks voltage and stays active (never strands empty)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: {} });
+    enterAndFillReadings(ws, session, 2);
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '50',
+      now: 4000,
+    });
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'no',
+      now: 5000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState?.active).toBe(true);
+    expect(ws.sent.at(-1).context_field).toBe('ir_test_voltage_v');
+    expect(session.stateSnapshot.circuits[2].ir_test_voltage_v).toBeUndefined();
+  });
+
+  test('a STANDARD voltage (500) writes + finishes with no confirm (regression)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: {} });
+    enterAndFillReadings(ws, session, 2);
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '500',
+      now: 4000,
+    });
+    expect(session.stateSnapshot.circuits[2].ir_test_voltage_v).toBe('500');
+    expect(session.dialogueScriptState).toBeFalsy();
+    expect(ws.sent.at(-1).question).toMatch(/^got it\./i);
+  });
+});
+
+describe('engine — IR post-completion correction breadcrumb (#1 belt-and-braces)', () => {
+  const completeIR = (ws, session, circuit, le = '0.33') => {
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: `Insulation resistance for circuit ${circuit}.`,
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '200',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: le,
+      now: 3000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '500',
+      now: 4000,
+    }); // standard voltage → finishes
+  };
+
+  test('"No, 0.47." within the window re-writes the last reading leg (L-E) on the same circuit', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: { circuit_designation: 'Cooker' } });
+    completeIR(ws, session, 2, '0.33');
+    expect(session.dialogueScriptState).toBeFalsy();
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('0.33');
+
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, 0.47.',
+      now: 5000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('0.47');
+    expect(ws.sent.at(-1).question).toMatch(/got it, live-to-earth 0\.47/i);
+  });
+
+  test('"No, 5 amps." (extra words / wrong unit) is rejected — breadcrumb not honoured', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: {} });
+    completeIR(ws, session, 2, '0.33');
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, 5 amps.',
+      now: 5000,
+    });
+    // The L-E leg is untouched — the anchored value-only guard rejected it.
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('0.33');
+  });
+
+  test('a correction after the window has passed is ignored', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: {} });
+    completeIR(ws, session, 2, '0.33');
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, 0.47.',
+      now: 4000 + 20_000, // > 15s window
+    });
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('0.33');
   });
 });

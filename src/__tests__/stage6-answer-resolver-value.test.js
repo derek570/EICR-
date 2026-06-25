@@ -120,8 +120,11 @@ describe('resolveValueAnswer — sentinels', () => {
     expect(verdict.writes[0].field).toBe('ring_r1_ohm');
   });
 
-  test('"open circuit" / "infinity" / "OL" / "LIM" — all map to ∞ on continuity fields', () => {
-    for (const phrase of ['open circuit', 'infinity', 'OL', 'lim']) {
+  test('"open circuit" / "infinity" / "OL" — all map to ∞ on continuity fields', () => {
+    // NOTE: "LIM"/"lim" is deliberately NOT in this list — see the dedicated
+    // LIM-sentinel test below. Field report 2026-06-24 #2: "limitation" is a
+    // STRING sentinel, never ∞.
+    for (const phrase of ['open circuit', 'infinity', 'OL']) {
       const verdict = resolveValueAnswer({
         userText: phrase,
         contextField: 'r1_r2_ohm',
@@ -130,6 +133,52 @@ describe('resolveValueAnswer — sentinels', () => {
       });
       expect(verdict.kind).toBe('auto_resolve');
       expect(verdict.writes[0].value).toBe('∞');
+    }
+  });
+
+  // Field report 2026-06-24 #2 — "Limb." (Deepgram garble of "LIM") was
+  // substring-matched by 'lim' in DISCONTINUOUS_PHRASES and silently wrote
+  // ring_r1_ohm = ∞ (corruption, deduped on TTS). LIM is a STRING sentinel
+  // consistent with record-reading-coercion.js / value-normalise.js.
+  test('"limb" / "lim" / "limitation" on a continuity field → write the string "LIM", never ∞', () => {
+    for (const phrase of ['limb', 'lim', 'Limb.', 'limitation', 'limited']) {
+      const verdict = resolveValueAnswer({
+        userText: phrase,
+        contextField: 'ring_r1_ohm',
+        contextCircuit: 2,
+        sourceTurnId: 't',
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes[0].value).toBe('LIM');
+      expect(verdict.writes[0].value).not.toBe('∞');
+      expect(verdict.writes[0].field).toBe('ring_r1_ohm');
+    }
+  });
+
+  test('"limitation" on a non-continuity field → escalate (not ∞, not a drop)', () => {
+    const verdict = resolveValueAnswer({
+      userText: 'limitation',
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 2,
+      sourceTurnId: 't',
+    });
+    expect(verdict.kind).toBe('escalate');
+    expect(verdict.parsed_hint).toBe('lim_on_non_continuity_field');
+  });
+
+  // Word-boundary guard: "open"/"ol" tokens must not bite mid-word.
+  test('mid-word substrings ("old", "olive", "opening 12") do NOT trigger the ∞ sentinel', () => {
+    for (const phrase of ['old wiring', 'olive', 'opening is 12']) {
+      const verdict = resolveValueAnswer({
+        userText: phrase,
+        contextField: 'ring_r1_ohm',
+        contextCircuit: 2,
+        sourceTurnId: 't',
+      });
+      // Should NOT auto-resolve to ∞ via a mid-word false match.
+      if (verdict.kind === 'auto_resolve') {
+        expect(verdict.writes[0].value).not.toBe('∞');
+      }
     }
   });
 
