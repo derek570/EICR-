@@ -70,7 +70,20 @@ import { coerceRecordReadingValue } from '../record-reading-coercion.js';
  * @param {number} [ctx.now]      Override for test determinism
  */
 export function processDialogueTurn(ctx) {
-  const { ws, session, sessionId, transcriptText, schemas, logger, now = Date.now() } = ctx;
+  const {
+    ws,
+    session,
+    sessionId,
+    transcriptText,
+    schemas,
+    logger,
+    now = Date.now(),
+    // M4: when set, runEntry applies explicitly-volunteered writes with
+    // OVERWRITE semantics (bypasses the skip-already-seeded guard). Used only
+    // by the IR voltage-phase escape hatch's reprocess, so a same-circuit
+    // correction overwrites the stale seeded value instead of being dropped.
+    overwriteVolunteered = false,
+  } = ctx;
   if (!session) return { handled: false };
   if (!Array.isArray(schemas) || schemas.length === 0) return { handled: false };
   const text = typeof transcriptText === 'string' ? transcriptText : '';
@@ -237,7 +250,18 @@ export function processDialogueTurn(ctx) {
       continue;
     }
 
-    return runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger, now });
+    return runEntry({
+      ws,
+      session,
+      sessionId,
+      text,
+      schema,
+      schemas,
+      entry,
+      logger,
+      now,
+      overwriteVolunteered,
+    });
   }
 
   return { handled: false };
@@ -477,6 +501,15 @@ function initScriptState(session, schema, circuit_ref, now) {
     // positive replies call finishScript, anything else falls
     // through to Sonnet without clearing state.
     awaiting_confirmation: false,
+    // M4 (2026-06-25, field session 6674E8C5): IR voltage-phase tracking.
+    // `voltage_phase_entered_at` is stamped (once) by askNextOrFinish the
+    // first time it emits the exclusive voltage ask; the step-6 voltage block
+    // uses it for a one-shot 30s in-script re-ask on genuine silence. Do NOT
+    // reuse last_turn_at for this — it resets to `now` at the top of every
+    // active turn, so `now - last_turn_at ≈ 0` and the check would never fire.
+    // `voltage_reask_done` makes that re-ask one-shot.
+    voltage_phase_entered_at: null,
+    voltage_reask_done: false,
   };
 }
 
@@ -517,7 +550,18 @@ function transitionToConfirmation({ ws, session, sessionId, schema, logger, now 
  * volunteered values from the entry utterance, then asks for the next
  * missing slot.
  */
-function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger, now }) {
+function runEntry({
+  ws,
+  session,
+  sessionId,
+  text,
+  schema,
+  schemas,
+  entry,
+  logger,
+  now,
+  overwriteVolunteered = false,
+}) {
   let circuitRef = entry.circuit_ref;
   let entryDesignationMatched = false;
   // Designation lookup at entry time. Three outcomes:
@@ -609,7 +653,13 @@ function runEntry({ ws, session, sessionId, text, schema, schemas, entry, logger
   const writes = [];
   let pivotTo = null;
   for (const w of volunteered) {
-    if (state.values[w.field] !== undefined) continue;
+    // M4: normally skip a field already seeded from the snapshot (don't
+    // re-write a value the inspector didn't restate). When overwriteVolunteered
+    // is set (the voltage-phase escape-hatch reprocess), an explicitly-spoken
+    // fresh value MUST overwrite the seeded value — otherwise a same-circuit IR
+    // correction is silently dropped (the stale value persists). applyWrite
+    // updates state.values too, so subsequent slot logic stays consistent.
+    if (!overwriteVolunteered && state.values[w.field] !== undefined) continue;
     if (circuitRef !== null) {
       const slot = schema.slots.find((s) => s.field === w.field);
       const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now);
@@ -930,6 +980,41 @@ function runActivePath({
   // 3. Topic switch — clear state, fallthrough to Sonnet.
   if (matchesAny(text, schema.topicSwitchTriggers)) {
     const { filled } = countFilledForCancel(state.values, schema.slots);
+    // M4(1b) (2026-06-25, field session 6674E8C5): a topic switch DURING the
+    // exclusive (IR voltage) phase, with the two readings already captured,
+    // must still READ THEM BACK (finishScript) and register a post-script
+    // voltage re-ask — otherwise the captured LL/LE vanish silently. The
+    // step-6 null-parse escape hatch can't cover this: a true topic-switch
+    // trigger is caught HERE, before step 6. (Fresh IR readings are NOT
+    // topic-switch triggers for the IR schema, so they route to step-6's 1a.)
+    const exclusiveSlot = schema.slots.find((s) => s.exclusiveWhenExpected);
+    const voltageVal = exclusiveSlot ? state.values[exclusiveSlot.field] : undefined;
+    const inVoltagePhase =
+      state.voltage_phase_entered_at != null &&
+      exclusiveSlot &&
+      (voltageVal === undefined || voltageVal === null || voltageVal === '');
+    if (inVoltagePhase) {
+      const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
+      const readingsCaptured =
+        readingSlots.length > 0 &&
+        readingSlots.every((s) => {
+          const v = state.values[s.field];
+          return v !== undefined && v !== null && v !== '';
+        });
+      logger?.info?.(`${schema.logEventPrefix}_topic_switch_voltage_phase`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        filled,
+        readings_captured: readingsCaptured,
+        textPreview: text.slice(0, 80),
+      });
+      if (readingsCaptured && typeof schema.onExclusiveSlotAbandoned === 'function') {
+        schema.onExclusiveSlotAbandoned(session, state.circuit_ref, now);
+      }
+      // finishScript reads back the captured readings AND clears state.
+      finishScript({ ws, session, sessionId, schema, logger, now });
+      return { handled: true, fallthrough: true, transcriptText };
+    }
     logger?.info?.(`${schema.logEventPrefix}_topic_switch`, {
       sessionId,
       circuit_ref: state.circuit_ref,
@@ -1387,10 +1472,95 @@ function runActivePath({
       // declares them.
       for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
       for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
+      if (writes.length > 0) {
+        safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
+      }
+      finishScript({ ws, session, sessionId, schema, logger, now });
+      return { handled: true, fallthrough: false };
     }
-    if (writes.length > 0) {
-      safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
+
+    // M4 (2026-06-25, field session 6674E8C5): the voltage didn't parse.
+    // The legacy behaviour finished the script silently here, which ATE any
+    // fresh reading the inspector dictated instead of a voltage (e.g. "old
+    // house lights 2. Live to earth is 1.8") — dropping the whole utterance
+    // AND reading back the prior circuit's stale values. Disambiguate three
+    // cases before the unconditional finish:
+    //
+    //   (1a) The reply is actually a FRESH IR reading or a fresh IR entry →
+    //        do NOT eat it. Register the prior circuit's missed voltage for a
+    //        post-script re-ask (M4(2)/(3b) carrier), finish the prior circuit
+    //        (read-back of its two captured readings), then REPROCESS the
+    //        fresh transcript. overwriteVolunteered:true so a same-circuit
+    //        correction ("insulation resistance for <same designation>, live
+    //        to earth is 5") overwrites the seeded snapshot value rather than
+    //        being skipped by runEntry's skip-already-set guard.
+    //   (3a) Genuine silence/garble that's been ≥30s in the voltage phase →
+    //        one-shot in-script voltage re-ask (script STAYS active; the
+    //        registered round-trip isn't needed).
+    //   else → legacy finish-and-consume (a brief unparseable "uh" with no
+    //        IR signal and <30s elapsed).
+    const freshVolunteered = extractNamedFieldValues(text, schema.slots);
+    const freshEntry = detectEntry(text, schema).matched;
+    if (freshVolunteered.length > 0 || freshEntry) {
+      // Only register a voltage re-ask if the prior circuit's readings were
+      // actually captured (re-asking voltage for an empty circuit is noise).
+      const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
+      const readingsCaptured =
+        readingSlots.length > 0 &&
+        readingSlots.every((s) => {
+          const v = state.values[s.field];
+          return v !== undefined && v !== null && v !== '';
+        });
+      if (readingsCaptured && typeof schema.onExclusiveSlotAbandoned === 'function') {
+        schema.onExclusiveSlotAbandoned(session, state.circuit_ref, now);
+      }
+      logger?.info?.(`${schema.logEventPrefix}_voltage_fresh_reading_escape`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        readings_captured: readingsCaptured,
+        textPreview: text.slice(0, 80),
+      });
+      finishScript({ ws, session, sessionId, schema, logger, now });
+      return processDialogueTurn({
+        ws,
+        session,
+        sessionId,
+        transcriptText,
+        schemas: [schema],
+        logger,
+        now,
+        overwriteVolunteered: true,
+      });
     }
+
+    if (
+      state.voltage_phase_entered_at != null &&
+      !state.voltage_reask_done &&
+      now - state.voltage_phase_entered_at >= 30_000
+    ) {
+      state.voltage_reask_done = true;
+      logger?.info?.(`${schema.logEventPrefix}_voltage_reask`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        ms_in_phase: now - state.voltage_phase_entered_at,
+        textPreview: text.slice(0, 80),
+      });
+      safeSend(
+        ws,
+        buildScriptAsk({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          missing_field: currentSlot.field,
+          whichCircuitQuestion: schema.whichCircuitQuestion,
+          slotQuestion: currentSlot.question,
+          now,
+          kind: 'value',
+        })
+      );
+      return { handled: true, fallthrough: false };
+    }
+
     finishScript({ ws, session, sessionId, schema, logger, now });
     return { handled: true, fallthrough: false };
   }
@@ -1675,6 +1845,14 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
     }
     finishScript({ ws, session, sessionId, schema, logger, now });
     return { handled: true, fallthrough: false };
+  }
+  // M4 — stamp the moment the exclusive (IR voltage) slot ask is first
+  // emitted, so the step-6 voltage block can fire a one-shot 30s in-script
+  // re-ask on genuine silence. Stamp once (the slot stays exclusive until a
+  // reply), and reset the one-shot flag the first time we enter the phase.
+  if (nextSlot.exclusiveWhenExpected && state.voltage_phase_entered_at == null) {
+    state.voltage_phase_entered_at = now;
+    state.voltage_reask_done = false;
   }
   safeSend(
     ws,

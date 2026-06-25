@@ -21,7 +21,12 @@ import {
   MEGAOHMS_BARE_SAFE_VALUE_GROUP,
 } from '../parsers/megaohms.js';
 import { parseVoltage } from '../parsers/voltage.js';
-import { IR_FIELDS, recordIrWrite, clearIrState } from '../../insulation-resistance-timeout.js';
+import {
+  IR_FIELDS,
+  recordIrWrite,
+  clearIrState,
+  recordVoltageReask,
+} from '../../insulation-resistance-timeout.js';
 
 const VOLTAGE_FIELD = 'ir_test_voltage_v';
 
@@ -232,5 +237,13 @@ export const insulationResistanceSchema = {
   },
   onWrite: (session, circuit_ref, now) => recordIrWrite(session, circuit_ref, now),
   onFinish: (session, circuit_ref) => clearIrState(session, circuit_ref),
+  // M4 (2026-06-25): the engine calls this when the exclusive voltage slot is
+  // abandoned WITH both readings present (a fresh interrupting reading or a
+  // topic switch during the voltage phase). Register a post-script voltage
+  // re-ask for this circuit so the missed test voltage is recovered once no
+  // script is active (sonnet-stream drains the carrier). circuit_ref is the
+  // PRIOR circuit; board scope from the current snapshot.
+  onExclusiveSlotAbandoned: (session, circuit_ref) =>
+    recordVoltageReask(session, circuit_ref, session?.stateSnapshot?.currentBoardId ?? null),
   fieldOrder: IR_FIELDS,
 };
