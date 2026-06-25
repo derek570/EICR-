@@ -139,10 +139,14 @@ const slots = [
 ];
 
 const triggers = [
-  // Pattern 1 (full): "insulation/installation resistance" + optional "circuit N".
-  // The "installation" alternation tolerates Deepgram's tendency to mis-hear
-  // "insulation" as "installation".
-  /\b(?:insulation|installation)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  // Pattern 1 (full): "insulation/installation/insurance resistance" + optional
+  // "circuit N". The "installation"/"insurance" alternations tolerate Deepgram's
+  // tendency to mis-hear "insulation". Field report 2026-06-24 #3: "insurance
+  // resistance for the cooker" missed this trigger, so findCircuitsByDesignation
+  // never resolved "cooker"→circuit 1 and the turn fell to Haiku, which asked
+  // "which circuit?". "Insurance resistance" never occurs in real EICR dictation
+  // so the false-positive surface is negligible (same rationale as "installation").
+  /\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 (terse): "IR for circuit N" — requires "circuit N" trailer.
   /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];

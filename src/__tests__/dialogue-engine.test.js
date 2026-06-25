@@ -740,6 +740,44 @@ describe('engine — insulation resistance', () => {
     });
   });
 
+  // Field report 2026-06-24 #3 — "Insulation resistance for the cooker" was
+  // garbled by Deepgram to "Insurance resistance for the cooker", which missed
+  // the IR trigger alternation, so the engine never entered and never resolved
+  // "cooker"→circuit 1; the turn fell to Haiku, which asked "which circuit?".
+  test('#3 "insurance" garble still enters IR and resolves designation (cooker→c1), no "which circuit?" ask', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Upstairs Sockets' },
+    });
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insurance resistance for the cooker.',
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    // Resolved cooker → circuit 1 and went straight to the first value slot —
+    // NOT a generic circuit-disambiguation ask.
+    expect(ws.sent[0]).toMatchObject({
+      type: 'ask_user_started',
+      context_field: 'ir_live_live_mohm',
+      context_circuit: 1,
+    });
+    expect(ws.sent[0].question).toBe("What's the live-to-live?");
+  });
+
+  test('#3 IR trigger regex matches insurance/insulation/installation head-words', () => {
+    const [pattern1] = insulationResistanceSchema.triggers;
+    expect(pattern1.test('insurance resistance for the cooker')).toBe(true);
+    // Regression — the existing head-words must still match.
+    expect(pattern1.test('insulation resistance for circuit 3')).toBe(true);
+    expect(pattern1.test('installation resistance live to live')).toBe(true);
+    // Unrelated "insurance" sentences must NOT match (needs "resistance").
+    expect(pattern1.test('the insurance documents are in the van')).toBe(false);
+  });
+
   test('full walkthrough: L-L → L-E → voltage → finished', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
