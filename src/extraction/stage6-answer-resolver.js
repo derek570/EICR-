@@ -441,7 +441,10 @@ export function resolveCircuitAnswer({
   }
   const match = matchDesignation(cleaned, availableCircuits ?? []);
   if (match.kind === 'exact' || match.kind === 'unique_substring') {
-    return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, match.circuitRefs[0], contextBoardId)] };
+    return {
+      kind: 'auto_resolve',
+      writes: [buildWrite(pendingWrite, match.circuitRefs[0], contextBoardId)],
+    };
   }
   if (match.kind === 'ambiguous') {
     return {
@@ -635,7 +638,7 @@ const LIM_RE = /\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i;
 // ("open circuit") are matched verbatim with word boundaries on each end.
 const DISCONTINUOUS_RE = new RegExp(
   `\\b(?:${DISCONTINUOUS_PHRASES.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
-  'i',
+  'i'
 );
 
 /**
