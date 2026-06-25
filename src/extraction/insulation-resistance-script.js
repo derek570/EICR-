@@ -1,4 +1,23 @@
 /**
+ * @deprecated DEAD CODE — NOT on any runtime path. The live insulation-
+ * resistance walk-through is the schema-driven dialogue engine:
+ * `processInsulationResistanceTurn` from `./dialogue-engine/index.js`
+ * (schema `src/extraction/dialogue-engine/schemas/insulation-resistance.js`),
+ * dispatched from `sonnet-stream.js`. This file is imported ONLY by two legacy
+ * parity *test* files (`__tests__/dialogue-engine-replay.test.js`,
+ * `__tests__/insulation-resistance-script.test.js`).
+ *
+ * Field report 2026-06-24 #1 proved fixes can silently land here and never
+ * run: the 2026-06-23 standard-voltage gate + post-completion correction
+ * breadcrumb (item #2a/#2b) were added HERE and never executed, so a misheard
+ * IR voltage correction was mis-attributed to the wrong circuit in production.
+ * Those mechanisms were PORTED to the live dialogue engine on 2026-06-25
+ * (`confirmWhenNotIn`/`confirmQuestion` on the voltage slot + schema
+ * `correctionBreadcrumb`, consumed in `engine.js`). DO NOT add new behaviour
+ * here — change the dialogue-engine schema/engine instead. Scheduled for
+ * deletion in a separate cleanup PR that must also migrate/remove the two
+ * importing test files.
+ *
  * Insulation resistance script — server-driven micro-conversation that
  * captures the two IR readings (Live-to-Live, Live-to-Earth) for a single
  * circuit and prompts for the test voltage when the field hasn't been set.

@@ -25,6 +25,27 @@ import { IR_FIELDS, recordIrWrite, clearIrState } from '../../insulation-resista
 
 const VOLTAGE_FIELD = 'ir_test_voltage_v';
 
+// Standard BS 7671 insulation-resistance test voltages. A reply outside this
+// set (e.g. a misheard "fifty" for "two fifty") is CONFIRMED before it is
+// written, never silently accepted (field report 2026-06-24 #1, session
+// B0F28CFB — the 2026-06-23 fix for this landed in the now-dead legacy
+// insulation-resistance-script.js and never ran; this is the live-engine port).
+// 50 V SELV is deliberately NOT included (resolved decision #1, 2026-06-24):
+// genuine 50 V tests are rare and the confirm is cheap, so a misheard "50" is
+// challenged rather than silently accepted.
+const STANDARD_IR_VOLTAGES = Object.freeze(new Set([100, 250, 500, 1000]));
+
+// A post-completion correction is a NEGATION followed by a remainder that is
+// NOTHING BUT an IR value (anchored ^…$). parseMegaohms alone is unanchored
+// (it extracts the first number ANYWHERE), so without this anchor "No, it
+// isn't 200" / "No, 5 amps" / "No, 0.5 seconds" would each leak a stray number
+// into the IR leg. Lifted verbatim from the legacy script's adversarial-review
+// guard. Anything with extra words (leading "it isn't", a non-resistance unit)
+// fails the anchor and is rejected — deliberately strict: the inspector simply
+// says the bare value.
+const IR_VALUE_ONLY_RE =
+  /^(?:>\s*\.?\d+(?:\.\d+)?|(?:greater|more)\s+than\s+\.?\d+(?:\.\d+)?|(?:over|above)\s+\.?\d+(?:\.\d+)?|\.?\d+(?:\.\d+)?|infinit(?:e|y)|off\s*scale|out\s*of\s*range|o\.?\s*l|max(?:ed)?(?:\s+out)?|lim|limb|limp|limit(?:ation|ed)?|lynn|lym)(?:\s*(?:mΩ|MΩ|meg(?:a|ger)?\s*ohms?|megohms?|milli\s*ohms?|m\s*ohms?|ohms?))?$/i;
+
 const slots = [
   {
     field: 'ir_live_live_mohm',
@@ -135,6 +156,15 @@ const slots = [
     acceptsBareValue: true,
     countsTowardCancelTally: false,
     exclusiveWhenExpected: true,
+    // Standard-voltage confirm gate (#1). When the parsed voltage is outside
+    // this set the engine does NOT write+finish — it re-asks as a one-shot
+    // confirmation and STAYS in the voltage slot, so a spoken correction
+    // ("No, 250") lands in-loop on the active circuit instead of finishing on
+    // the misheard value and falling to Haiku (which mis-attributed the bare
+    // correction to the most-recently-focused circuit). See engine.js step 6.
+    confirmWhenNotIn: STANDARD_IR_VOLTAGES,
+    confirmQuestion: (v) =>
+      `Did you say ${v} volts? The usual is 250 or 500 — if that's right, just say it again.`,
   },
 ];
 
@@ -237,4 +267,20 @@ export const insulationResistanceSchema = {
   onWrite: (session, circuit_ref, now) => recordIrWrite(session, circuit_ref, now),
   onFinish: (session, circuit_ref) => clearIrState(session, circuit_ref),
   fieldOrder: IR_FIELDS,
+  // Post-completion correction breadcrumb (#1 belt-and-braces, field report
+  // 2026-06-24). finishScript leaves a short-lived crumb naming the last
+  // L-L/L-E leg written; within `windowMs` a "No, <value-only>" on the SAME
+  // board re-writes that leg even though the script has cleared. The voltage
+  // leg is handled in-loop by the confirm gate above; this covers the reading
+  // legs once the script exits. Lifted from the legacy script's item #2b.
+  correctionBreadcrumb: {
+    windowMs: 15_000,
+    fields: IR_FIELDS,
+    fieldLabels: { ir_live_live_mohm: 'live-to-live', ir_live_earth_mohm: 'live-to-earth' },
+    // NEGATION + captured remainder.
+    correctionRe: /^\s*no\b[,.]?\s+(.+?)[.!?]*\s*$/i,
+    // The remainder must be NOTHING BUT an IR value (anchored ^…$).
+    valueOnlyRe: IR_VALUE_ONLY_RE,
+    valueParser: parseMegaohms,
+  },
 };
