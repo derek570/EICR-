@@ -246,6 +246,16 @@ const ORPHAN_PROMPTS = Object.freeze([
   "Sorry, I'm not sure where that reading goes. Could you say it once more?",
 ]);
 
+// M1 Defect B — spoken net for the all-tool-calls-rejected case. The action
+// WAS understood (a tool call was made) but every call was rejected, so the
+// turn would otherwise emit zero TTS. The inspector's strongest ask: "if it
+// beeps for processing there should ALWAYS be a TTS — never silently dropped."
+const REJECTED_PROMPTS = Object.freeze([
+  "Sorry, I couldn't action that — could you say it again?",
+  "I wasn't able to apply that one. Could you repeat it?",
+  "Sorry, that didn't go through. Could you say it once more?",
+]);
+
 // item #10 — default ON (the inspector explicitly asked for a spoken ASK
 // instead of a silent drop). Set VOICE_ORPHAN_PROMPT=false to disable
 // without a code change if it over-asks on numeric chitchat in the field.
@@ -1252,11 +1262,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // data — zero corruption risk; worst case is a spurious prompt on numeric
     // chitchat (mitigated by VOICE_ORPHAN_PROMPT=false + chitchat-pause).
     try {
-      const orphanToolCalls = Array.isArray(toolLoopOut.tool_calls)
-        ? toolLoopOut.tool_calls.length
-        : 0;
+      const toolCalls = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
+      const orphanToolCalls = toolCalls.length;
+      // M1 Defect B (silent-drop hole): a turn whose tool calls were ALL
+      // rejected (every dispatcher envelope is_error===true) ends with
+      // zero readings/confirmations/questions and emits ZERO TTS — exactly
+      // the "circuits 5,6,7,8 are spare" all-duplicate-rejected case
+      // (field session 6674E8C5 turn-11). The existing orphan net gates on
+      // orphanToolCalls===0 so it misses this. Broaden: ALSO fire when every
+      // tool call this turn was rejected. is_error is the ONLY top-level
+      // envelope signal — ok/error/reason live INSIDE the stringified
+      // result.content, so do NOT check result.ok (no such field). A real
+      // ask_user returns is_error:false (so the every() test already excludes
+      // it — the inspector hears that question over WS via ask_user_started);
+      // the explicit name guard is belt-and-suspenders against double-speak.
+      const allRejected =
+        orphanToolCalls > 0 &&
+        toolCalls.every((c) => c?.result?.is_error === true) &&
+        !toolCalls.some((c) => c?.name === 'ask_user');
       const producedNothing =
-        orphanToolCalls === 0 &&
+        (orphanToolCalls === 0 || allRejected) &&
         (result.extracted_readings?.length ?? 0) === 0 &&
         (result.observations?.length ?? 0) === 0 &&
         (result.confirmations?.length ?? 0) === 0;
@@ -1275,7 +1300,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         !isAnswerTurn &&
         carriesValue
       ) {
-        const prompt = ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
+        // All-rejected turns get an "I couldn't action that" message (the action
+        // was understood but rejected); the zero-tool-call orphan case keeps the
+        // "didn't catch what that was for" wording.
+        const prompt = allRejected
+          ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
+          : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
         if (!Array.isArray(result.confirmations)) result.confirmations = [];
         result.confirmations.push({
           text: prompt,
@@ -1291,6 +1321,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           sessionId: session.sessionId,
           turnId,
           rounds: toolLoopOut.rounds,
+          cause: allRejected ? 'all_rejected' : 'zero_tool_calls',
           textPreview: String(transcriptText || '').slice(0, 80),
         });
       }

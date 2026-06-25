@@ -249,3 +249,83 @@ describe('orphan net — does NOT fire', () => {
     expect(prompt).toBeUndefined();
   });
 });
+
+// M1 Defect B — the all-tool-calls-rejected silent-drop hole. A turn that
+// made tool calls but had EVERY call rejected (is_error===true) emits zero
+// TTS — the "circuits 5,6,7,8 are spare" all-duplicate-rejected case
+// (field session 6674E8C5 turn-11). The net must fire a spoken prompt for it
+// too, but NEVER for a turn that emitted a real ask_user.
+describe('orphan net — all-rejected branch (M1 Defect B)', () => {
+  const rejectedCall = (name) => ({
+    name,
+    input: {},
+    result: { tool_use_id: 't', content: '{"ok":false}', is_error: true },
+  });
+  const okCall = (name) => ({
+    name,
+    input: {},
+    result: { tool_use_id: 't', content: '{"ok":true}', is_error: false },
+  });
+
+  test('every tool call rejected + digit-bearing → fires exactly ONE rejected-style confirmation', async () => {
+    runToolLoopSpy.mockImplementation(async () => ({
+      stop_reason: 'end_turn',
+      rounds: 1,
+      tool_calls: [rejectedCall('create_circuit'), rejectedCall('create_circuit')],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const session = makeSession();
+    const result = await runShadowHarness(
+      session,
+      'Circuits 5, 6, 7, 8 are spare.',
+      [],
+      baseOpts()
+    );
+    const prompts = (result.confirmations ?? []).filter((c) =>
+      /(couldn't action|able to apply|didn't go through)/i.test(c.text || '')
+    );
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].circuit).toBeNull();
+    expect(prompts[0].expects_ios_ack).toBe(false);
+    expect(session.orphanContext).toMatchObject({ transcript: 'Circuits 5, 6, 7, 8 are spare.' });
+  });
+
+  test('rejected calls + a real ask_user (is_error:false) → NO prompt (ask_user already spoken over WS)', async () => {
+    runToolLoopSpy.mockImplementation(async () => ({
+      stop_reason: 'tool_use',
+      rounds: 1,
+      tool_calls: [rejectedCall('create_circuit'), okCall('ask_user')],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const session = makeSession();
+    const result = await runShadowHarness(session, 'Circuit 5 is spare.', [], baseOpts());
+    const prompt = (result.confirmations ?? []).find((c) =>
+      /(couldn't action|able to apply|didn't go through|catch|repeat|say it)/i.test(c.text || '')
+    );
+    expect(prompt).toBeUndefined();
+  });
+
+  test('a successful tool call present (not all rejected) → NO prompt', async () => {
+    runToolLoopSpy.mockImplementation(async () => ({
+      stop_reason: 'end_turn',
+      rounds: 1,
+      tool_calls: [rejectedCall('create_circuit'), okCall('create_circuit')],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const session = makeSession();
+    const result = await runShadowHarness(session, 'Circuits 5, 6 are spare.', [], baseOpts());
+    const prompt = (result.confirmations ?? []).find((c) =>
+      /(couldn't action|able to apply|didn't go through)/i.test(c.text || '')
+    );
+    expect(prompt).toBeUndefined();
+  });
+});
