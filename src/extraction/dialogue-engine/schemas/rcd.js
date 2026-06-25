@@ -50,8 +50,22 @@ const slots = [
     // to consume "for circuit 5 is " to reach "25 ms". Allowing the
     // filler to contain digits (only excluding ∞) is safe because
     // the trailing unit pins the actual value position.
+    //
+    // `tryptoid` — Deepgram garble of "trip time" (field report
+    // 2026-06-24 #4/#5, session B0F28CFB: "RCD tryptoid of circuit 2 is
+    // 28 ms"). Without it the named-extractor returned 0 volunteered
+    // values, the entry hit the handover-to-Sonnet branch
+    // (engine.js, hasNumericValueWithUnit && volunteered.length===0),
+    // and the orphan net (stage6-shadow-harness.js) caught a STRUCTURALLY
+    // COMPLETE reading — producing a contentless local-apply read-back on
+    // iOS (#4) and a duplicate re-emit next turn (#5). Adding the garble
+    // here populates `volunteered`, so the handover is skipped and the
+    // engine applies + confirms the reading itself — the net is never
+    // reached for this garble. The unit anchor keeps the false-positive
+    // surface negligible. The broader garble class is the dedicated
+    // keyterm sibling sprint, NOT this wave (resolved decision #5).
     namedExtractor:
-      /\btrip\s*time\b[^∞]{0,40}?(\d+(?:\.\d+)?)\s*(?:m\s*s|millisecond|milliseconds)\b/i,
+      /(?:\btrip\s*time\b|\btryptoid\b)[^∞]{0,40}?(\d+(?:\.\d+)?)\s*(?:m\s*s|millisecond|milliseconds)\b/i,
     acceptsBareValue: false,
     volunteeredOnly: true,
     countsTowardCancelTally: false,
