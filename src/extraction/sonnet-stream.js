@@ -37,7 +37,10 @@ import { runShadowHarness } from './stage6-shadow-harness.js';
 // and `.planning-stage6-agentic/handoffs/silent-drop-fix-2026-04-28/README.md`
 // for the handoff that drove this wiring.
 import { findExpiredPartial } from './ring-continuity-timeout.js';
-import { findExpiredPartial as findExpiredIrPartial } from './insulation-resistance-timeout.js';
+import {
+  findExpiredPartial as findExpiredIrPartial,
+  drainExpiredVoltage,
+} from './insulation-resistance-timeout.js';
 // Slice 1 of the chitchat-pause feature (2026-05-06). State machine that
 // stops forwarding transcript turns to Sonnet after 10 consecutive turns
 // of zero engagement (no readings, no observations, no questions).
@@ -3606,7 +3609,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (irExpired) {
         const irNote =
           `[Server note: circuit ${irExpired.circuit_ref} insulation resistance is incomplete; ` +
-          `${irExpired.missing_field} has not been recorded and 60s have elapsed since the last ` +
+          `${irExpired.missing_field} has not been recorded and 30s have elapsed since the last ` +
           `IR write. Please ask the user for this value via ask_user with ` +
           `context_field="${irExpired.missing_field}", context_circuit=${irExpired.circuit_ref}, ` +
           `expected_answer_shape="value", reason="missing_value".] `;
@@ -3617,6 +3620,42 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           missing_field: irExpired.missing_field,
           last_write_ms: irExpired.last_write_ms,
         });
+      }
+
+      // M4 (2026-06-25, field session 6674E8C5) — post-script voltage re-ask.
+      // When the IR script captured LL+LE but exited the voltage phase before a
+      // test voltage was given (the inspector dictated a fresh reading, or
+      // switched topic), the dialogue engine pushed the prior circuit onto the
+      // voltage carrier. findExpiredIrPartial CANNOT recover it (it prunes
+      // both-readings-filled circuits). Drain the carrier HERE — after the IR
+      // script early-return above — so it only fires when no script is active,
+      // avoiding a concurrent-ask conflict with a fresh walk-through the
+      // interrupting reading may have started. Same server-note → Sonnet
+      // ask_user → pendingAsks → answer-resolver shape as irExpired; the
+      // inspector's later voltage answer value-resolves to context_field
+      // ir_test_voltage_v on the PRIOR circuit. Only one note is prepended per
+      // turn — if irExpired already fired, the voltage re-ask waits a turn.
+      if (!irExpired) {
+        const voltageExpired = drainExpiredVoltage(entry.session);
+        if (voltageExpired) {
+          const boardClause =
+            voltageExpired.board_id != null
+              ? `, context_board_id="${voltageExpired.board_id}"`
+              : '';
+          const voltageNote =
+            `[Server note: circuit ${voltageExpired.circuit_ref} insulation resistance has both ` +
+            `readings but no test voltage was recorded. Please ask the user for the test voltage ` +
+            `via ask_user with context_field="${voltageExpired.missing_field}", ` +
+            `context_circuit=${voltageExpired.circuit_ref}${boardClause}, ` +
+            `expected_answer_shape="value", reason="missing_value".] `;
+          transcriptText = `${voltageNote}${transcriptText}`;
+          logger.info('stage6.insulation_resistance_voltage_reask_detected', {
+            sessionId,
+            circuit_ref: voltageExpired.circuit_ref,
+            missing_field: voltageExpired.missing_field,
+            board_id: voltageExpired.board_id,
+          });
+        }
       }
 
       logger.info('Extracting from transcript', {
