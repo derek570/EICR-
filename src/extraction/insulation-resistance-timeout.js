@@ -28,7 +28,17 @@
 
 export const IR_FIELDS = ['ir_live_live_mohm', 'ir_live_earth_mohm'];
 
-export const INSULATION_RESISTANCE_TIMEOUT_MS = 60_000;
+// M4 (2026-06-25): the test voltage slot. Deliberately NOT in IR_FIELDS —
+// IR_FIELDS is the canonical 2-reading LL/LE set wired into the schema's
+// onWrite/filledCount===2-means-complete semantics; adding voltage would break
+// the partial-fill detection. Voltage recovery rides its own carrier below.
+export const VOLTAGE_FIELD = 'ir_test_voltage_v';
+
+// M4 decision (user-confirmed 2026-06-25): 60s → 30s. Governs the LL/LE
+// partial-fill net (and, indirectly, how stale a circuit must be before the
+// voltage carrier note fires). The in-script 30s voltage re-ask in the
+// dialogue engine uses its own threshold and is NOT governed by this constant.
+export const INSULATION_RESISTANCE_TIMEOUT_MS = 30_000;
 
 const FIELD_LABELS = {
   ir_live_live_mohm: 'live-to-live',
@@ -133,4 +143,62 @@ export function buildAskForMissingIrValue(expiry, sessionId, now = Date.now()) {
     expected_answer_shape: 'value',
     server_emitted: true,
   };
+}
+
+// ─── M4: voltage re-ask carrier (2026-06-25, field session 6674E8C5) ───
+// When the IR script captures LL+LE but exits the voltage phase before a test
+// voltage is given — because the inspector dictated a FRESH reading (escape
+// hatch) or switched topic — the circuit is left with both readings filled and
+// voltage empty. findExpiredPartial PRUNES filledCount===2 circuits, so this
+// case needs its own carrier. The dialogue engine pushes the prior circuit onto
+// `session.pendingVoltageReask` before finishing; sonnet-stream drains it AFTER
+// the IR-script early return (i.e. only when no script is active) and prepends a
+// voltage server-note → Sonnet ask_user → pendingAsks → answer resolver. Doing
+// it post-script (next eligible turn) avoids a concurrent-ask conflict with a
+// fresh walk-through started by the interrupting reading.
+
+/**
+ * Record a pending voltage re-ask for a circuit. De-duped by circuit_ref.
+ */
+export function recordVoltageReask(session, circuit_ref, board_id = null) {
+  if (!session || circuit_ref == null) return;
+  if (!Array.isArray(session.pendingVoltageReask)) session.pendingVoltageReask = [];
+  if (session.pendingVoltageReask.some((e) => e.circuit_ref === circuit_ref)) return;
+  session.pendingVoltageReask.push({ circuit_ref, board_id });
+}
+
+function circuitHasVoltage(stateSnapshot, circuit_ref) {
+  if (!stateSnapshot) return false;
+  let bucket = null;
+  const circuits = stateSnapshot.circuits;
+  if (circuits && typeof circuits === 'object' && !Array.isArray(circuits)) {
+    bucket = circuits[circuit_ref] || circuits[String(circuit_ref)] || null;
+  } else if (Array.isArray(circuits)) {
+    bucket = circuits.find((c) => c && Number(c.circuit_ref) === Number(circuit_ref)) || null;
+  }
+  if (!bucket) return false;
+  const v = bucket[VOLTAGE_FIELD];
+  return v !== undefined && v !== null && v !== '';
+}
+
+/**
+ * Pop the next pending voltage re-ask whose circuit STILL lacks a voltage.
+ * Circuits that have since received a voltage are silently dropped. Returns
+ * `{ circuit_ref, missing_field, board_id }` or null.
+ */
+export function drainExpiredVoltage(session) {
+  if (!Array.isArray(session?.pendingVoltageReask) || session.pendingVoltageReask.length === 0) {
+    return null;
+  }
+  while (session.pendingVoltageReask.length > 0) {
+    const entry = session.pendingVoltageReask.shift();
+    if (entry && !circuitHasVoltage(session.stateSnapshot, entry.circuit_ref)) {
+      return {
+        circuit_ref: entry.circuit_ref,
+        missing_field: VOLTAGE_FIELD,
+        board_id: entry.board_id ?? null,
+      };
+    }
+  }
+  return null;
 }
