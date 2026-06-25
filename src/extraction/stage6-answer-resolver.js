@@ -617,8 +617,26 @@ const DISCONTINUOUS_PHRASES = [
   'overload',
   'over load',
   'ol',
-  'lim',
 ];
+// Continuity field set — the only fields on which a discontinuous/open reply
+// maps to ∞, and on which a "limitation" reply maps to the "LIM" sentinel.
+const CONTINUITY_FIELDS = ['r1_r2_ohm', 'r2_ohm', 'ring_r1_ohm', 'ring_rn_ohm', 'ring_r2_ohm'];
+// "LIM" (limitation) is a STRING sentinel, NOT infinity. The inspector's
+// "limitation" can be garbled by Deepgram as lim/limb/limp/limit(ation|ed)/
+// lynn/lym. This MUST stay word-boundaried and consistent with the rest of the
+// codebase (record-reading-coercion.js IR_LIM_RE, value-normalise.js) — field
+// report 2026-06-24 #2: the inspector said "Limb." and a substring
+// `"limb".includes("lim")` here wrote ring_r1_ohm = ∞ (silent data corruption,
+// deduped on TTS). On a continuity field "limitation" writes the string "LIM";
+// ∞ requires an explicit discontinuous/open/infinity phrase below.
+const LIM_RE = /\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i;
+// Build a \b-anchored matcher for the discontinuous phrases so a token like
+// "ol"/"open" never bites mid-word (e.g. "old", "opening"). Multi-word phrases
+// ("open circuit") are matched verbatim with word boundaries on each end.
+const DISCONTINUOUS_RE = new RegExp(
+  `\\b(?:${DISCONTINUOUS_PHRASES.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+  'i',
+);
 
 /**
  * Resolve a value-disambiguation ask_user reply against the asked field +
@@ -701,23 +719,38 @@ export function resolveValueAnswer({
     return { kind: 'cancel' };
   }
 
-  // Discontinuous / open-circuit sentinel — emit ∞ per the prompt contract
-  // (line 58 of sonnet_agentic_system.md). Only valid for ring continuity /
-  // r2 / r1+r2 fields; others escalate.
-  for (const phrase of DISCONTINUOUS_PHRASES) {
-    if (lower.includes(phrase)) {
-      const continuityFields = ['r1_r2_ohm', 'r2_ohm', 'ring_r1_ohm', 'ring_rn_ohm', 'ring_r2_ohm'];
-      if (continuityFields.includes(contextField)) {
-        return {
-          kind: 'auto_resolve',
-          writes: buildWrites('∞', 0.9),
-        };
-      }
+  // "Limitation" sentinel (word-boundaried) — a continuity "limitation" reply
+  // writes the STRING "LIM", never ∞ and never a silent drop. Checked BEFORE
+  // the discontinuous branch so "limb"/"lim" can no longer fall through to ∞.
+  // Field report 2026-06-24 #2: "Limb." silently wrote ring_r1_ohm = ∞.
+  if (LIM_RE.test(lower)) {
+    if (CONTINUITY_FIELDS.includes(contextField)) {
       return {
-        kind: 'escalate',
-        parsed_hint: 'discontinuous_on_non_continuity_field',
+        kind: 'auto_resolve',
+        writes: buildWrites('LIM', 0.9),
       };
     }
+    return {
+      kind: 'escalate',
+      parsed_hint: 'lim_on_non_continuity_field',
+    };
+  }
+
+  // Discontinuous / open-circuit sentinel — emit ∞ per the prompt contract
+  // (line 58 of sonnet_agentic_system.md). Only valid for ring continuity /
+  // r2 / r1+r2 fields; others escalate. Word-boundaried (DISCONTINUOUS_RE) so
+  // "ol"/"open" never bite mid-word.
+  if (DISCONTINUOUS_RE.test(lower)) {
+    if (CONTINUITY_FIELDS.includes(contextField)) {
+      return {
+        kind: 'auto_resolve',
+        writes: buildWrites('∞', 0.9),
+      };
+    }
+    return {
+      kind: 'escalate',
+      parsed_hint: 'discontinuous_on_non_continuity_field',
+    };
   }
 
   // Numeric extraction — find every numeric in the reply.
