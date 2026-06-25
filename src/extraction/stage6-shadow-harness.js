@@ -149,6 +149,8 @@ const SHADOW_MODEL = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').t
  *   suggested_regulation        →   regulation
  *   code                        →   code               (unchanged)
  *   rationale                   →   rationale          (Plan 06-23 obs-#51)
+ *   regulation_title            →   regulation_title   (Plan 06-23 obs-#52 Fix B)
+ *   regulation_description      →   regulation_description (Plan 06-23 obs-#52 Fix B)
  *
  * `circuit` is preserved (server-side `refineObservationsAsync` uses it; iOS
  * ignores unknown keys). `schedule_item` is iOS-known and now populated by
@@ -158,6 +160,16 @@ const SHADOW_MODEL = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').t
  * existing observation_update.rationale path so initial + refined are
  * consistent; without carrying it here the rationale is stored server-side
  * but never reaches the iOS observation card.
+ *
+ * `regulation_title` / `regulation_description` (obs-#52 Fix B) are the
+ * canonical BS 7671 wording looked up from `config/bs7671-regulations.json`
+ * by the `record_observation` dispatcher and stored on the observation. They
+ * are carried here for the SAME reason as `rationale`: the dispatcher writes
+ * them server-side, but without forwarding them through the legacy-wire rename
+ * they never reach the iOS observation card, which would then only ever show
+ * the model's `suggested_regulation` string and never the authoritative table
+ * wording on a HIT. Null-fallback on a table MISS (the common case — the table
+ * is BS 7671:2018+A2:2022 and most cited refs are absent).
  */
 export function renameObservationsForLegacyWire(observations) {
   if (!Array.isArray(observations)) return observations;
@@ -171,6 +183,8 @@ export function renameObservationsForLegacyWire(observations) {
       regulation: obs.regulation ?? obs.suggested_regulation ?? null,
       schedule_item: obs.schedule_item ?? null,
       rationale: obs.rationale ?? null,
+      regulation_title: obs.regulation_title ?? null,
+      regulation_description: obs.regulation_description ?? null,
     };
     if (obs.circuit !== undefined) renamed.circuit = obs.circuit;
     return renamed;
