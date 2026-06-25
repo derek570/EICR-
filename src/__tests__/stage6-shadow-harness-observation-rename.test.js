@@ -46,10 +46,39 @@ describe('renameObservationsForLegacyWire', () => {
         schedule_item: '5.4',
         // Plan 06-23 obs-#51 — rationale carried (null when the source has none).
         rationale: null,
+        // Plan 06-23 obs-#52 Fix B — canonical BS 7671 wording carried (null
+        // when the source observation has none, e.g. a table MISS).
+        regulation_title: null,
+        regulation_description: null,
         // circuit preserved — refineObservationsAsync uses it; iOS ignores.
         circuit: 4,
       },
     ]);
+  });
+
+  test('Plan 06-23 obs-#52 Fix B: regulation_title/description carry through (and fall back to null)', () => {
+    // The record_observation dispatcher looks up the canonical BS 7671 wording
+    // and stamps `regulation_title`/`regulation_description` on the observation
+    // BEFORE it reaches the legacy-wire rename. Without forwarding them here the
+    // canonical wording never reaches the iOS card (same gap class as rationale).
+    const renamed = renameObservationsForLegacyWire([
+      {
+        id: 'hit',
+        code: 'C2',
+        text: 'Inadequate ADS',
+        suggested_regulation: '411.3.3',
+        regulation_title: 'Additional protection',
+        regulation_description: 'RCD protection for socket-outlets up to 32 A.',
+      },
+      { id: 'miss', code: 'C3', text: 'Labels missing' /* no canonical fields */ },
+    ]);
+    expect(renamed[0].regulation_title).toBe('Additional protection');
+    expect(renamed[0].regulation_description).toBe(
+      'RCD protection for socket-outlets up to 32 A.'
+    );
+    // Table MISS / no canonical wording → null fallback (iOS shows model wording).
+    expect(renamed[1].regulation_title).toBeNull();
+    expect(renamed[1].regulation_description).toBeNull();
   });
 
   test('Plan 06-23 obs-#51: rationale carries through the legacy wire (and falls back to null)', () => {

@@ -3100,6 +3100,25 @@ export class EICRExtractionSession {
     const hasExtractedObs =
       includeDigests && this.extractedObservations && this.extractedObservations.length > 0;
 
+    // Follow-up 1 (#49) — surface the CERTIFICATE TYPE so the model can
+    // proactively avoid `record_observation` on an EIC (RULE 0). An EIC is a
+    // NEW-installation certificate with NO observations section; without this
+    // line the model can only learn that REACTIVELY — it calls
+    // record_observation, gets the `observations_not_applicable_on_eic`
+    // rejection envelope, THEN asks to note it under comments. That wasted
+    // round-trip is latency the audio-first principle treats as a bug. The
+    // cert type never changes within a session, so the line rides in the
+    // cache-stable PREFIX (right after the trust-boundary preamble, before
+    // CIRCUIT SCHEDULE), NOT the per-turn-volatile tail. EIC-only: the
+    // dominant EICR path's cached prefix is byte-unchanged, so no cache-hit
+    // regression and no steer is needed (EICR is the default and supports
+    // observations). The line is authoritative SYSTEM context, NOT quoted
+    // user data, so it is deliberately OUTSIDE the <<<USER_TEXT>>> markers.
+    const certTypeLine =
+      this.certType === 'eic'
+        ? 'CERTIFICATE TYPE: EIC (Electrical Installation Certificate — NEW installation, NO observations section). Do NOT call record_observation on this certificate; if the inspector dictates an observation, offer to note it under the certificate comments instead.'
+        : null;
+
     if (
       !hasCircuits &&
       !hasPending &&
@@ -3110,6 +3129,27 @@ export class EICRExtractionSession {
       !hasExtractedObs &&
       !hasBoards
     ) {
+      // Follow-up 1 (#49) — UNCONDITIONAL EIC steer (Resolved decision 3). On a
+      // fresh EIC session the inspector's FIRST utterance may be an observation
+      // while every content surface is still empty. The legacy contract returns
+      // isEmpty:true here → buildStateSnapshotMessage returns null → no snapshot
+      // pair is emitted, so the proactive steer would be missing exactly when
+      // it is first needed. Emit a minimal snapshot (preamble + cert-type line)
+      // for EIC so RULE 0 fires from turn 1. EICR keeps the legacy empty→null
+      // contract untouched (it is the default cert type, needs no steer, and the
+      // empty-session canary asserts the null shape stays byte-identical).
+      if (certTypeLine) {
+        const emptyPreamble =
+          this.toolCallsMode === 'off'
+            ? SNAPSHOT_TRUST_BOUNDARY_PREAMBLE_USER_CHANNEL
+            : SNAPSHOT_TRUST_BOUNDARY_PREAMBLE_SYSTEM_CHANNEL;
+        return {
+          prefixText: `${emptyPreamble}\n\n${certTypeLine}`,
+          tailText: '',
+          isEmpty: false,
+          currentBoardId,
+        };
+      }
       return {
         prefixText: '',
         tailText: '',
@@ -3190,6 +3230,15 @@ export class EICRExtractionSession {
         ? SNAPSHOT_TRUST_BOUNDARY_PREAMBLE_USER_CHANNEL
         : SNAPSHOT_TRUST_BOUNDARY_PREAMBLE_SYSTEM_CHANNEL;
     prefixParts.push(preamble);
+
+    // Follow-up 1 (#49) — cert-type steer rides immediately after the
+    // trust-boundary preamble and BEFORE CIRCUIT SCHEDULE, so it lives in the
+    // cache-stable prefix tier (the cert type never changes within a session).
+    // EIC-only (null for EICR → no push → EICR prefix byte-unchanged). See the
+    // certTypeLine definition above for the full proactive-RULE-0 rationale.
+    if (certTypeLine) {
+      prefixParts.push(certTypeLine);
+    }
 
     // Include circuit schedule so Sonnet knows circuit designations, supply info,
     // and hardware details even after early messages drop from the sliding window.

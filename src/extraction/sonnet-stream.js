@@ -32,6 +32,13 @@ import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
 import { runShadowHarness } from './stage6-shadow-harness.js';
+// Plan 06-23 obs-#52 Fix B — canonical BS 7671 regulation lookup. The
+// `record_observation` dispatcher (stage6-dispatchers-observation.js) already
+// imports this for INITIAL extraction; the refinement (BPG4) + RULE-6 edit
+// payloads below also need it so the canonical title/description travel to iOS
+// on EVERY observation_update path (not just initial extraction). Without this
+// import the lookupRegulation(...) calls below would ReferenceError.
+import { lookupRegulation } from './regulation-lookup.js';
 // 2026-04-28 — server-side ring continuity timeout detector. See
 // `src/extraction/ring-continuity-timeout.js` for the full design rationale
 // and `.planning-stage6-agentic/handoffs/silent-drop-fix-2026-04-28/README.md`
@@ -425,6 +432,12 @@ async function refineObservationsAsync(entry, sessionId, observations) {
       // the row's observationText with this value (see Sources/Recording/
       // DeepgramRecordingViewModel.swift handleObservationUpdate).
       const updateText = refined.professional_text || obs.observation_text || obs.description || '';
+      // Plan 06-23 obs-#52 Fix B — the refinement (BPG4) ref is FRESH (the
+      // gpt-5-search-api refiner may cite a different reg than initial
+      // extraction), so look it up against the canonical table HERE rather than
+      // reusing the initial-extraction lookup. Null-fallback on a table MISS
+      // (the common case) so iOS falls back to the model `regulation` wording.
+      const refinedCanonical = lookupRegulation(refined.regulation);
       currentWs.send(
         JSON.stringify({
           type: 'observation_update',
@@ -440,6 +453,8 @@ async function refineObservationsAsync(entry, sessionId, observations) {
           original_text: obs.observation_text || obs.description || '',
           code: refined.code,
           regulation: refined.regulation,
+          regulation_title: refinedCanonical?.title ?? null,
+          regulation_description: refinedCanonical?.description ?? null,
           schedule_item: refined.schedule_item,
           rationale: refined.rationale,
           source: refined.source,
@@ -497,6 +512,10 @@ async function replayPendingRefinements(entry, sessionId) {
       try {
         const replayText =
           refined.professional_text || obs.observation_text || obs.description || '';
+        // Plan 06-23 obs-#52 Fix B — same canonical lookup as the live
+        // refinement send above so the replayed-on-reconnect path carries the
+        // table wording too (null-fallback on a MISS).
+        const replayCanonical = lookupRegulation(refined.regulation);
         entry.ws.send(
           JSON.stringify({
             type: 'observation_update',
@@ -505,6 +524,8 @@ async function replayPendingRefinements(entry, sessionId) {
             original_text: obs.observation_text || obs.description || '',
             code: refined.code,
             regulation: refined.regulation,
+            regulation_title: replayCanonical?.title ?? null,
+            regulation_description: replayCanonical?.description ?? null,
             schedule_item: refined.schedule_item,
             rationale: refined.rationale,
             source: refined.source,
@@ -552,6 +573,12 @@ function dispatchObservationUpdates(ws, sessionId, updates) {
   if (ws.readyState !== ws.OPEN) return;
   for (const u of updates) {
     try {
+      // Plan 06-23 obs-#52 Fix B — a RULE-6 code-correction edit ("make that a
+      // C2") can also change the regulation ref, so look it up against the
+      // canonical table here too and carry the wording to iOS. Without this the
+      // RULE-6 edit path silently drops the canonical wording (same gap class
+      // as the refinement path above). Null-fallback on a table MISS.
+      const ruleSixCanonical = lookupRegulation(u.regulation);
       ws.send(
         JSON.stringify({
           type: 'observation_update',
@@ -559,6 +586,8 @@ function dispatchObservationUpdates(ws, sessionId, updates) {
           observation_text: u.observation_text || '',
           code: u.code,
           regulation: u.regulation || null,
+          regulation_title: ruleSixCanonical?.title ?? null,
+          regulation_description: ruleSixCanonical?.description ?? null,
           rationale: u.rationale || null,
           source: u.source || 'rule_6_edit',
         })
@@ -4489,3 +4518,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 // previously imported `activeSessions` from this module. The canonical
 // definition now lives in `./active-sessions.js`.
 export { activeSessions };
+
+// Plan 06-23 obs-#52 Fix B — test seam. `dispatchObservationUpdates` is the
+// RULE-6 code-correction edit emitter (a pure ws.send loop); exporting it lets
+// the obs-#52 wire-payload test assert that a RULE-6 edit carries the canonical
+// `regulation_title`/`regulation_description` (HIT) or null-fallback (MISS)
+// WITHOUT standing up the full WS-server closure. The two refinement-path
+// payloads use the byte-identical `lookupRegulation(ref)?.title ?? null` idiom
+// and are covered transitively by this test plus the regulation-lookup unit
+// tests (mocking the async gpt-5-search refiner to reach them directly would
+// add a heavy harness for no extra idiom coverage).
+export { dispatchObservationUpdates as _test_dispatchObservationUpdates };

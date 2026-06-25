@@ -1495,4 +1495,30 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toMatch(/rating.*amps.*spd_rated_current|spd_rated_current/i);
     });
   });
+
+  describe('Group 17 — 2026-06-23 obs-#49 proactive EIC observation-handling (RULE 0)', () => {
+    test('RULE 0 carries a PROACTIVE clause keyed off the snapshot CERTIFICATE TYPE: EIC line', () => {
+      // Follow-up 1 (#49) — the snapshot now surfaces `CERTIFICATE TYPE: EIC`
+      // (eicr-extraction-session.js _computeSnapshotParts). RULE 0 must key off
+      // it so the model goes STRAIGHT to the graceful comments ask without first
+      // making the rejected `record_observation` round-trip. The snapshot line
+      // alone is insufficient — the prompt clause is the behavioural backstop.
+      const idx = prompt.search(/RULE 0 — EIC HAS NO OBSERVATIONS/);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      // Bound the RULE 0 block at the next sibling rule.
+      const end = prompt.indexOf('RULE 1 —', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
+
+      // Proactive trigger: names the snapshot cert-type signal + a PROACTIVE marker.
+      expect(block).toEqual(expect.stringContaining('CERTIFICATE TYPE'));
+      expect(block).toMatch(/PROACTIVE/);
+      // The proactive directive: do NOT call record_observation on an EIC.
+      expect(block).toMatch(/do NOT call `record_observation`/i);
+      // Reactive fallback retained as defence-in-depth (dispatcher reject path).
+      expect(block).toEqual(expect.stringContaining('observations_not_applicable_on_eic'));
+      // The graceful comments ask is still the destination on both paths.
+      expect(block).toEqual(expect.stringContaining('there are no observations'));
+    });
+  });
 });
