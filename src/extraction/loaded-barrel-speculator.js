@@ -692,7 +692,15 @@ export function createSpeculator({
     // belt-and-braces against cachePeek (gate #1) which is the braces.
     // On rejection the ledger NEVER opens and the Set is NOT populated,
     // so the cost invariant holds without further work.
-    if (!costTracker.recordElevenLabsSpeculativeStarted(expandedText.length, correlationId)) {
+    // Pass the speculator's stream client model id (defaults to
+    // eleven_flash_v2_5) so speculative chars are attributed at the right rate.
+    if (
+      !costTracker.recordElevenLabsSpeculativeStarted(
+        expandedText.length,
+        correlationId,
+        client.modelId
+      )
+    ) {
       pendingControllers.delete(controller);
       pendingByCorrelation.delete(correlationId);
       try {

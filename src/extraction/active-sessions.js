@@ -52,13 +52,14 @@ export const activeSessions = new Map();
  * @param {number} characterCount
  * @returns {boolean} true if tracker found and usage recorded, false otherwise
  */
-export function recordElevenLabsUsageForSession(sessionId, characterCount) {
+export function recordElevenLabsUsageForSession(sessionId, characterCount, modelId) {
   if (!sessionId || typeof characterCount !== 'number' || characterCount <= 0) {
     return false;
   }
   const entry = activeSessions.get(sessionId);
   if (!entry || !entry.session || !entry.session.costTracker) return false;
-  entry.session.costTracker.addElevenLabsUsage(characterCount);
+  // modelId is optional; addElevenLabsUsage defaults it to the live model.
+  entry.session.costTracker.addElevenLabsUsage(characterCount, modelId);
   return true;
 }
 
@@ -74,14 +75,21 @@ export function recordElevenLabsUsageForSession(sessionId, characterCount) {
 export function recordElevenLabsStreamingStartedForSession(
   sessionId,
   characterCount,
-  correlationId
+  correlationId,
+  modelId
 ) {
   if (!sessionId || typeof characterCount !== 'number' || characterCount <= 0 || !correlationId) {
     return false;
   }
   const entry = activeSessions.get(sessionId);
   if (!entry?.session?.costTracker?.recordElevenLabsStreamingStarted) return false;
-  return entry.session.costTracker.recordElevenLabsStreamingStarted(characterCount, correlationId);
+  // modelId is optional; recordElevenLabsStreamingStarted defaults it to the
+  // live model so the streaming attribution callback signature stays back-compat.
+  return entry.session.costTracker.recordElevenLabsStreamingStarted(
+    characterCount,
+    correlationId,
+    modelId
+  );
 }
 
 /**

@@ -256,7 +256,9 @@ async function streamConfirmationViaElevenLabs({
   res.set('X-Voice-Latency-Source', 'confirmation');
 
   // Billable counter — once per correlation, regardless of terminal state.
-  recordStartedAttribution(sessionId, text.length, correlationId);
+  // Pass the stream client's actual model id (defaults to eleven_flash_v2_5)
+  // so per-model cost accounting attributes the chars at the right rate.
+  recordStartedAttribution(sessionId, text.length, correlationId, client.modelId);
 
   // Voice-latency plan 2026-06-03 Tier 2b — declare firstByteMs +
   // synthStartNs at the outer scope so the finally block's logger.info
@@ -589,7 +591,16 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       },
       body: JSON.stringify({
         text,
-        model_id: 'eleven_turbo_v2_5',
+        // Consolidated turbo→flash 2026-06-26: every live TTS path now runs
+        // on eleven_flash_v2_5 (the streaming WS path already did). Flash is
+        // ElevenLabs' documented recommended real-time model — Turbo v2.5 is
+        // "superseded by" Flash. Contract-preserving for iOS/web: same Archer
+        // voice, same default mp3_44100_128 output, same voice_settings; the
+        // audio/mpeg byte contract is unchanged, so no client rebuild needed.
+        // Both Flash and Turbo bill at 0.5 credits/char ($0.05/1k), so cost is
+        // unchanged; the win is lower first-byte latency (~75ms vs ~250ms) and
+        // one model across all confirmation paths.
+        model_id: 'eleven_flash_v2_5',
         voice_settings: {
           stability: 0.5,
           similarity_boost: 0.75,
@@ -647,7 +658,14 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       try {
         const { recordElevenLabsUsageForSession } =
           await import('../extraction/active-sessions.js');
-        trackerRecorded = recordElevenLabsUsageForSession(sessionId, text.length);
+        // The non-streaming proxy POST above synthesises with eleven_flash_v2_5
+        // (consolidated from turbo 2026-06-26) — attribute the chars at the
+        // Flash rate so per-model cost accounting matches the model actually used.
+        trackerRecorded = recordElevenLabsUsageForSession(
+          sessionId,
+          text.length,
+          'eleven_flash_v2_5'
+        );
       } catch (err) {
         logger.warn('ElevenLabs cost attribution failed', {
           sessionId,

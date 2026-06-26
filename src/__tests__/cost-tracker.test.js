@@ -29,6 +29,17 @@ describe('CostTracker', () => {
       expect(tracker.SONNET_RATES.output).toBe(15.0);
       expect(tracker.ELEVENLABS_RATE_PER_CHAR).toBe(0.00005);
     });
+
+    test('should expose per-model ElevenLabs rates + default model id', () => {
+      // Flash/Turbo: 0.5 credits/char = $0.05 per 1,000 chars.
+      expect(tracker.ELEVENLABS_RATE_PER_CHAR_BY_MODEL.eleven_flash_v2_5).toBe(0.00005);
+      expect(tracker.ELEVENLABS_RATE_PER_CHAR_BY_MODEL.eleven_turbo_v2_5).toBe(0.00005);
+      // Standard models: 1 credit/char = $0.10 per 1,000 chars (double).
+      expect(tracker.ELEVENLABS_RATE_PER_CHAR_BY_MODEL.eleven_multilingual_v2).toBe(0.0001);
+      expect(tracker.ELEVENLABS_RATE_PER_CHAR_BY_MODEL.eleven_v3).toBe(0.0001);
+      // Default live model is Flash (the consolidated proxy/streaming model).
+      expect(tracker.DEFAULT_ELEVENLABS_MODEL_ID).toBe('eleven_flash_v2_5');
+    });
   });
 
   describe('Deepgram cost tracking', () => {
@@ -257,7 +268,42 @@ describe('CostTracker', () => {
       tracker.addElevenLabsUsage(200);
 
       expect(tracker.elevenLabsCharacters).toBe(300);
+      // Default model is Flash @ $0.00005/char.
       expect(tracker.elevenLabsCost).toBeCloseTo(300 * 0.00005, 6);
+    });
+
+    test('bills each model at its own rate + sums buckets for the derived total', () => {
+      // Flash (default) + an explicit standard model in the same session.
+      tracker.addElevenLabsUsage(100); // flash, 0.00005
+      tracker.addElevenLabsUsage(200, 'eleven_multilingual_v2'); // standard, 0.0001
+
+      // elevenLabsCharacters is the derived total across all model buckets.
+      expect(tracker.elevenLabsCharacters).toBe(300);
+      expect(tracker.elevenLabsCharsByModel.eleven_flash_v2_5).toBe(100);
+      expect(tracker.elevenLabsCharsByModel.eleven_multilingual_v2).toBe(200);
+      // Cost is per-model: 100×0.00005 (flash) + 200×0.0001 (standard).
+      expect(tracker.elevenLabsCost).toBeCloseTo(100 * 0.00005 + 200 * 0.0001, 6);
+    });
+
+    test('turbo bills identically to flash (both 0.5 credits/char)', () => {
+      tracker.addElevenLabsUsage(500, 'eleven_turbo_v2_5');
+      expect(tracker.elevenLabsCost).toBeCloseTo(500 * 0.00005, 6);
+    });
+
+    test('unknown model id falls back to the flat ELEVENLABS_RATE_PER_CHAR', () => {
+      tracker.addElevenLabsUsage(400, 'some_future_model');
+      expect(tracker.elevenLabsCharsByModel.some_future_model).toBe(400);
+      expect(tracker.elevenLabsCost).toBeCloseTo(400 * 0.00005, 6);
+    });
+
+    test('streaming + speculative accumulators thread modelId into buckets', () => {
+      tracker.recordElevenLabsStreamingStarted(60, 'corr-stream'); // default flash
+      tracker.recordElevenLabsSpeculativeStarted(40, 'corr-spec', 'eleven_multilingual_v2');
+
+      expect(tracker.elevenLabsCharsByModel.eleven_flash_v2_5).toBe(60);
+      expect(tracker.elevenLabsCharsByModel.eleven_multilingual_v2).toBe(40);
+      expect(tracker.elevenLabsCharacters).toBe(100);
+      expect(tracker.elevenLabsCost).toBeCloseTo(60 * 0.00005 + 40 * 0.0001, 6);
     });
   });
 
@@ -393,6 +439,16 @@ describe('recordElevenLabsUsageForSession', () => {
 
     expect(result).toBe(true);
     expect(costTracker.elevenLabsCharacters).toBe(120);
+    expect(costTracker.elevenLabsCost).toBeCloseTo(120 * 0.00005, 6);
+  });
+
+  test('threads an explicit modelId through to the per-model bucket', () => {
+    const costTracker = new CostTracker();
+    activeSessions.set('sess-model', { session: { costTracker } });
+
+    // The proxy route passes 'eleven_flash_v2_5' explicitly post-consolidation.
+    expect(recordFn('sess-model', 120, 'eleven_flash_v2_5')).toBe(true);
+    expect(costTracker.elevenLabsCharsByModel.eleven_flash_v2_5).toBe(120);
     expect(costTracker.elevenLabsCost).toBeCloseTo(120 * 0.00005, 6);
   });
 
