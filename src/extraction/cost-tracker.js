@@ -35,13 +35,34 @@ export class CostTracker {
       opus: this.OPUS_RATES,
     };
 
-    // ElevenLabs pricing: $0.050 per 1,000 characters (current Scale tier
-    // post-2026-04 pricing update). Was 0.00003 — bump per voice-latency
-    // Loaded Barrel plan v6 §G so per-correlation cost attribution matches
-    // the invoice we actually pay. Telemetry/cost reports use this rate
-    // directly; downstream session-optimizer + analyse-session both read
-    // CostTracker.elevenLabsCost.
+    // ElevenLabs pricing is PER MODEL, billed in credits where the USD
+    // value of one character depends on the model's credit multiplier
+    // (verified against ElevenLabs' published per-character API pricing,
+    // 2026-06-26):
+    //   - Flash v2.5 / Turbo v2.5 (and the v2 variants): 0.5 credits/char
+    //     = $0.05 per 1,000 chars = $0.00005/char. (Turbo dropped to 0.5
+    //     credits in ElevenLabs' Aug-2024 price cut, so Flash and Turbo are
+    //     the SAME rate — the turbo→flash live-path consolidation does NOT
+    //     change live session cost.)
+    //   - Multilingual v2 / eleven_v3 (standard models): 1 credit/char
+    //     = $0.10 per 1,000 chars = $0.0001/char.
+    // The per-model map is the source of truth at compute time;
+    // ELEVENLABS_RATE_PER_CHAR is retained as the named fallback for any
+    // model id not in the map (matches the historical flat rate). Telemetry/
+    // cost reports read CostTracker.elevenLabsCost; downstream
+    // session-optimizer + analyse-session both consume it.
     this.ELEVENLABS_RATE_PER_CHAR = 0.00005;
+    this.DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_flash_v2_5';
+    this.ELEVENLABS_RATE_PER_CHAR_BY_MODEL = {
+      // Flash/Turbo — 0.5 credits/char
+      eleven_flash_v2_5: 0.00005,
+      eleven_flash_v2: 0.00005,
+      eleven_turbo_v2_5: 0.00005,
+      eleven_turbo_v2: 0.00005,
+      // Standard models — 1 credit/char
+      eleven_multilingual_v2: 0.0001,
+      eleven_v3: 0.0001,
+    };
 
     // GPT Vision pricing (per token, per image)
     this.GPT_VISION_RATES = {
@@ -74,7 +95,12 @@ export class CostTracker {
     // toCostUpdate() wire shape + existing consumers don't break.
     this.modelUsage = new Map();
 
-    this.elevenLabsCharacters = 0;
+    // Per-model character buckets. Each accumulation method adds chars to
+    // elevenLabsCharsByModel[modelId]; the elevenLabsCost getter sums each
+    // bucket × its model's rate. `elevenLabsCharacters` is preserved as a
+    // DERIVED total (getter, sum of all buckets) so the cost_update wire
+    // shape + every existing reader keep working unchanged.
+    this.elevenLabsCharsByModel = {};
     // Stage 2 commit 2.6 — split streaming accounting per PLAN_v4 §A.10.
     // chars_started: idempotent counter incremented exactly ONCE per
     // correlationId on the `synthesising` transition (text-sent to
@@ -229,9 +255,26 @@ export class CostTracker {
     this.sonnet.outputTokens += usage.output_tokens || 0;
   }
 
-  // ElevenLabs TTS usage
-  addElevenLabsUsage(characterCount) {
-    this.elevenLabsCharacters += characterCount;
+  // Add chars to the per-model bucket. Unknown/omitted modelId falls back
+  // to the default live model so legacy callers don't regress.
+  _addElevenLabsChars(characterCount, modelId) {
+    const m = modelId || this.DEFAULT_ELEVENLABS_MODEL_ID;
+    this.elevenLabsCharsByModel[m] = (this.elevenLabsCharsByModel[m] || 0) + characterCount;
+  }
+
+  // Derived total chars across all models — back-compat for the cost_update
+  // wire shape (toCostUpdate) and any consumer that read the old scalar.
+  get elevenLabsCharacters() {
+    let total = 0;
+    for (const m in this.elevenLabsCharsByModel) total += this.elevenLabsCharsByModel[m];
+    return total;
+  }
+
+  // ElevenLabs TTS usage. `modelId` defaults to the live model so existing
+  // callers that don't pass it bill at the Flash rate (the live proxy/stream
+  // model). Pass the actual model for non-default paths (e.g. offline v3).
+  addElevenLabsUsage(characterCount, modelId = this.DEFAULT_ELEVENLABS_MODEL_ID) {
+    this._addElevenLabsChars(characterCount, modelId);
   }
 
   /**
@@ -243,16 +286,20 @@ export class CostTracker {
    * Idempotent: a duplicate call with the same correlationId is a no-op,
    * so retry/cleanup paths can call it freely without double-counting.
    */
-  recordElevenLabsStreamingStarted(characterCount, correlationId) {
+  recordElevenLabsStreamingStarted(
+    characterCount,
+    correlationId,
+    modelId = this.DEFAULT_ELEVENLABS_MODEL_ID
+  ) {
     if (!correlationId) return false;
     if (this.elevenLabsStreaming._seenCorrelationIds.has(correlationId)) return false;
     this.elevenLabsStreaming._seenCorrelationIds.add(correlationId);
     this.elevenLabsStreaming.charsStarted += characterCount;
-    // Mirror into the existing single-counter so legacy cost calc + the
-    // cost_update wire shape continue to surface streaming spend
-    // without any consumer changes. Stage 6 cost-reconciliation cron
-    // (commit 6.5) compares this number to the vendor-reported total.
-    this.elevenLabsCharacters += characterCount;
+    // Mirror into the per-model bucket so the cost getter + cost_update wire
+    // shape continue to surface streaming spend without any consumer changes.
+    // Stage 6 cost-reconciliation cron (commit 6.5) compares this number to
+    // the vendor-reported total.
+    this._addElevenLabsChars(characterCount, modelId);
     return true;
   }
 
@@ -276,7 +323,14 @@ export class CostTracker {
   }
 
   get elevenLabsCost() {
-    return this.elevenLabsCharacters * this.ELEVENLABS_RATE_PER_CHAR;
+    // Sum each per-model bucket × that model's rate; unknown models fall
+    // back to the flat ELEVENLABS_RATE_PER_CHAR.
+    let cost = 0;
+    for (const m in this.elevenLabsCharsByModel) {
+      const rate = this.ELEVENLABS_RATE_PER_CHAR_BY_MODEL[m] ?? this.ELEVENLABS_RATE_PER_CHAR;
+      cost += this.elevenLabsCharsByModel[m] * rate;
+    }
+    return cost;
   }
 
   /**
@@ -296,16 +350,20 @@ export class CostTracker {
    * Idempotent on correlationId.
    * Returns true if recorded, false if no-op (missing id or duplicate).
    */
-  recordElevenLabsSpeculativeStarted(characterCount, correlationId) {
+  recordElevenLabsSpeculativeStarted(
+    characterCount,
+    correlationId,
+    modelId = this.DEFAULT_ELEVENLABS_MODEL_ID
+  ) {
     if (!correlationId) return false;
     if (!Number.isFinite(characterCount) || characterCount <= 0) return false;
     if (this.elevenLabsSpeculative._seenCorrelationIds.has(correlationId)) return false;
     this.elevenLabsSpeculative._seenCorrelationIds.add(correlationId);
     this.elevenLabsSpeculative._charsByCorrelationId.set(correlationId, characterCount);
     this.elevenLabsSpeculative.charsStarted += characterCount;
-    // Mirror into legacy aggregate so cost-update wire shape + the
+    // Mirror into the per-model bucket so cost-update wire shape + the
     // session-optimizer's cost summary remain accurate.
-    this.elevenLabsCharacters += characterCount;
+    this._addElevenLabsChars(characterCount, modelId);
     return true;
   }
 
