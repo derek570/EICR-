@@ -231,9 +231,12 @@ function buildPage1(args: {
   constructor: PdfInspector | undefined;
   signatureDataURI: string | undefined;
 }): string {
+  // NOTE: `args.company` is accepted but not destructured — the iOS
+  // buildPage1 has the same signature and same non-use (contractor
+  // details render on page 3 / the EIC sections); kept for 1:1
+  // call-shape parity.
   const {
     job,
-    company,
     certTitle,
     certNumber,
     logoDataURI,

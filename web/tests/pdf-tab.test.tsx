@@ -152,9 +152,12 @@ vi.mock('@/lib/job-context', () => ({
 // legalTextVersions + acceptCertAttestations live inside the modal
 // which we stub out below, so they're not strictly needed here.
 const generatePdfMock = vi.fn<(userId: string, jobId: string) => Promise<Blob>>();
-const updateAttestationPdfKeyMock = vi.fn(
-  async (_args: { attestation_ids: number[]; pdf_s3_key: string }) => ({ ok: true, updated: 2 })
-);
+const updateAttestationPdfKeyMock = vi.fn<
+  (args: {
+    attestation_ids: number[];
+    pdf_s3_key: string;
+  }) => Promise<{ ok: true; updated: number }>
+>(async () => ({ ok: true, updated: 2 }));
 vi.mock('@/lib/api-client', () => ({
   api: {
     generatePdf: (userId: string, jobId: string) => generatePdfMock(userId, jobId),
