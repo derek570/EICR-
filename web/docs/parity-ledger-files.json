@@ -301,6 +301,9 @@
     "dashboard/dashboardview-294",
     "dashboard/jobrowview"
   ],
+  "web/src/components/dashboard/preset-picker-sheet.tsx": [
+    "dashboard/createcertificatesheet"
+  ],
   "web/src/components/job/board-selector-bar.tsx": [
     "board/boardtab-22"
   ],
@@ -325,6 +328,11 @@
     "crosscutting/job-tab-nav-pill-bar",
     "crosscutting/tab-rail-form",
     "overview/ios-tab-model-one-tab"
+  ],
+  "web/src/components/job/pending-ccu-banner.tsx": [
+    "ccu-flow/circuitstab-272",
+    "ccu-flow/circuitstab-486",
+    "circuits-misc/circuitstab-278"
   ],
   "web/src/components/layout/app-shell.tsx": [
     "crosscutting/pwa-nav-transitions",
@@ -437,6 +445,15 @@
   "web/src/lib/api-client.ts": [
     "pdf/pdftab-270"
   ],
+  "web/src/lib/ccu/pending-extraction-queue.ts": [
+    "ccu-flow/circuitstab-272"
+  ],
+  "web/src/lib/defaults/job-creation.ts": [
+    "dashboard/job-creation-defaults-flow"
+  ],
+  "web/src/lib/defaults/standard-defaults.ts": [
+    "dashboard/job-creation-defaults-flow"
+  ],
   "web/src/lib/defaults/types.ts": [
     "dashboard/job-creation-defaults-flow"
   ],
@@ -466,6 +483,7 @@
     "recording/voice-command-executor-e-g-move"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
+    "ccu-flow/off-peak-mode",
     "supply/surge-namespace"
   ],
   "web/src/lib/recording/apply-document-extraction.ts": [
@@ -506,6 +524,9 @@
   ],
   "web/src/lib/tour/steps.ts": [
     "dashboard/dashboardview-676",
+    "dashboard/tour-v11"
+  ],
+  "web/src/lib/tour/tour-chime.ts": [
     "dashboard/tour-v11"
   ],
   "web/src/lib/types.ts": [

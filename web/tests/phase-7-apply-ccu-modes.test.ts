@@ -370,3 +370,78 @@ describe('applyCcuAnalysisToJob — hardware_update mode', () => {
     expect(c1Preserved?.measured_zs_ohm).toBe('0.45');
   });
 });
+
+describe('applyCcuAnalysisToJob — add_off_peak_board mode (WS6)', () => {
+  // iOS canon: FuseboardAnalysisApplier.applyAddOffPeakBoard — appends a
+  // SIBLING board stamped board_type='off_peak' + designation "Off-Peak
+  // Board", never touches supply characteristics or existing boards, and
+  // leaves parent_board_id / feed_circuit_ref unset (fed straight from
+  // the supply mains, not from a distribution circuit).
+  it('appends an off_peak sibling board with iOS-canon designation and applies analysis to it', () => {
+    const job = makeJob();
+    const analysis = makeAnalysis();
+
+    const result = applyCcuAnalysisToJob(job, analysis, { mode: 'add_off_peak_board' });
+
+    const boards = result.patch.boards as Array<Record<string, unknown>>;
+    expect(boards).toHaveLength(2);
+    // Existing main board untouched.
+    expect(boards[0].id).toBe('board-1');
+    expect(boards[0].manufacturer).toBe('Existing Co');
+    // New board: off_peak sibling, canon designation, analyser hardware
+    // applied with overwrite (brand-new board).
+    const offPeak = boards[1];
+    expect(offPeak.board_type).toBe('off_peak');
+    expect(offPeak.designation).toBe('Off-Peak Board');
+    expect(offPeak.manufacturer).toBe('Wylex');
+    expect(offPeak.parent_board_id).toBeUndefined();
+    expect(offPeak.feed_circuit_ref).toBeUndefined();
+  });
+
+  it('stamps every extracted circuit with the new board id and keeps existing circuits', () => {
+    const job = makeJob({
+      circuits: [{ id: 'c-main', board_id: 'board-1', circuit_ref: '1' }] as never,
+    });
+    const analysis = makeAnalysis();
+
+    const result = applyCcuAnalysisToJob(job, analysis, { mode: 'add_off_peak_board' });
+
+    const boards = result.patch.boards as Array<Record<string, unknown>>;
+    const newBoardId = boards[1].id as string;
+    const circuits = result.patch.circuits as CircuitRow[];
+    expect(circuits).toHaveLength(3);
+    expect(circuits[0].id).toBe('c-main'); // existing row untouched
+    for (const row of circuits.slice(1)) {
+      expect(row.board_id).toBe(newBoardId);
+    }
+    // Per-board analysis persisted under the NEW board's key.
+    const byBoard = result.patch.ccu_analysis_by_board!;
+    expect(Object.keys(byBoard)).toContain(newBoardId);
+  });
+
+  it('never touches supply characteristics (board-level SPD only — iOS parity)', () => {
+    const job = makeJob({ supply_characteristics: { earthing_type: 'TN-C-S' } as never });
+    const analysis = makeAnalysis(); // spd_present: true
+
+    const result = applyCcuAnalysisToJob(job, analysis, { mode: 'add_off_peak_board' });
+
+    // add_off_peak_board must not emit a supply patch even when the
+    // analyser found an SPD — the SPD lands on the new BOARD, mirroring
+    // iOS applyBoardInfo's idx===0 supply gate.
+    expect(result.patch.supply_characteristics).toBeUndefined();
+    const offPeak = (result.patch.boards as Array<Record<string, unknown>>)[1];
+    expect(offPeak.spd_status).toBe('Fitted');
+  });
+
+  it('add_new_board still leaves board_type blank for the inspector (no regression)', () => {
+    const job = makeJob();
+    const analysis = makeAnalysis();
+
+    const result = applyCcuAnalysisToJob(job, analysis, { mode: 'add_new_board' });
+
+    const boards = result.patch.boards as Array<Record<string, unknown>>;
+    expect(boards).toHaveLength(2);
+    expect(boards[1].designation).toBe('DB-2');
+    expect(boards[1].board_type).toBeUndefined();
+  });
+});

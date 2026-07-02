@@ -39,7 +39,7 @@ import { BoardSelectorBar } from '@/components/job/board-selector-bar';
 
 type BoardRecord = Record<string, string | undefined> & {
   id: string;
-  board_type?: 'main' | 'sub_distribution' | 'sub_main';
+  board_type?: 'main' | 'sub_distribution' | 'sub_main' | 'off_peak';
   parent_board_id?: string;
   /** Truthy-ish ('✓' / 'yes' / 'true') when polarity has been confirmed. */
   polarity_confirmed?: string;
@@ -50,6 +50,12 @@ const BOARD_TYPE_OPTIONS = [
   { value: 'main', label: 'Main board' },
   { value: 'sub_distribution', label: 'Sub-distribution' },
   { value: 'sub_main', label: 'Sub-main' },
+  // iOS `BoardType.offPeak` ("Off-Peak Board", BoardInfo.swift:15) —
+  // an independent secondary board fed directly from the supply mains
+  // (Economy 7 / storage heaters). A SIBLING of main, not a sub-board:
+  // no parent picker, no Sub-Main Cable section, and the backend
+  // hierarchy validator accepts one main + one off_peak side by side.
+  { value: 'off_peak', label: 'Off-Peak Board' },
 ];
 
 const PHASES_OPTIONS = [
@@ -300,11 +306,13 @@ export default function BoardPage() {
           value={active.board_type ?? null}
           options={BOARD_TYPE_OPTIONS}
           onChange={(v) => {
-            // Mirror iOS boardTypeBinding (L356-L368): clearing the
-            // parent when the user flips back to "main" avoids
-            // orphaned supplied-from references.
+            // Mirror iOS boardTypeBinding (BoardTab.swift:411-425):
+            // clearing the parent when the user flips to "main" OR
+            // "off_peak" avoids orphaned supplied-from references —
+            // both are top-level boards fed directly from the supply
+            // mains, so neither should carry a parent_board_id.
             const patch: Partial<BoardRecord> = { board_type: v as BoardRecord['board_type'] };
-            if (v === 'main') {
+            if (v === 'main' || v === 'off_peak') {
               patch.parent_board_id = undefined;
               patch.supplied_from = undefined;
             }

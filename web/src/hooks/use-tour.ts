@@ -9,6 +9,7 @@ import {
   type TourState,
 } from '@/lib/tour/state';
 import { DASHBOARD_TOUR_STEPS, DASHBOARD_TOUR_TOTAL, type TourStep } from '@/lib/tour/steps';
+import { playTourProcessingChime } from '@/lib/tour/tour-chime';
 import { speak as speakNarration, isTtsAvailable, cancelSpeech } from '@/lib/recording/tts';
 
 /**
@@ -234,6 +235,12 @@ export function useTour(options: UseTourOptions = {}): TourController {
     if (!text) return;
 
     const onSpeechDone = () => {
+      // WS6 (tour v11): the "conversational + tone" step plays the
+      // real 960 Hz "sent for processing" chime right after its
+      // narration — the inspector hears the exact sound the step just
+      // described. iOS splices it into the bundled MP3; web appends it
+      // because SpeechSynthesis can't splice mid-utterance.
+      if (currentStep.chime) playTourProcessingChime();
       // Re-check inside the timer that the tour is still on this
       // step before auto-advancing — paused / nexted / stopped during
       // speech all need to short-circuit.

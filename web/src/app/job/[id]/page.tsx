@@ -19,6 +19,7 @@ import {
 import { useJobContext } from '@/lib/job-context';
 import type { CircuitRow, ObservationRow } from '@/lib/types';
 import { useMediaQuery, DESKTOP_BREAKPOINT } from '@/hooks/use-media-query';
+import { PendingCcuOverviewPill } from '@/components/job/pending-ccu-banner';
 
 /**
  * Job overview tab — at-a-glance dashboard mirroring the iOS Overview
@@ -68,6 +69,11 @@ export default function JobOverviewPage() {
       className="mx-auto flex w-full flex-col gap-5 px-4 py-5 landscape:gap-1.5 landscape:px-1.5 landscape:py-1.5 portrait:md:px-8 portrait:md:py-7"
       style={{ maxWidth: isDesktop ? '100%' : '1280px' }}
     >
+      {/* WS6 item 2 — per-job pending-CCU badge (iOS JobDetailView
+          "N photos waiting to upload / Tap to view" pill,
+          JobDetailView.swift:1174-1190). Renders nothing when empty. */}
+      <PendingCcuOverviewPill jobId={jobId} />
+
       {/* ── Hero strip ───────────────────────────────────────────
           Landscape (incl. landscape phone): 5 boxes side-by-side,
           mirroring iOS LiveFillView landscape layout (5x HStack with
