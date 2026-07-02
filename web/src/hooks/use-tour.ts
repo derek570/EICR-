@@ -9,7 +9,7 @@ import {
   type TourState,
 } from '@/lib/tour/state';
 import { DASHBOARD_TOUR_STEPS, DASHBOARD_TOUR_TOTAL, type TourStep } from '@/lib/tour/steps';
-import { playTourProcessingChime } from '@/lib/tour/tour-chime';
+import { playSentForProcessingChime } from '@/lib/recording/tones';
 import { speak as speakNarration, isTtsAvailable, cancelSpeech } from '@/lib/recording/tts';
 
 /**
@@ -240,7 +240,7 @@ export function useTour(options: UseTourOptions = {}): TourController {
       // narration — the inspector hears the exact sound the step just
       // described. iOS splices it into the bundled MP3; web appends it
       // because SpeechSynthesis can't splice mid-utterance.
-      if (currentStep.chime) playTourProcessingChime();
+      if (currentStep.chime) playSentForProcessingChime();
       // Re-check inside the timer that the tour is still on this
       // step before auto-advancing — paused / nexted / stopped during
       // speech all need to short-circuit.

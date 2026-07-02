@@ -108,7 +108,7 @@ describe('dispatch gate wiring (Tier-1 mirror of recording-context dispatchFinal
   let now: number;
   let tracker: InFlightQuestionTracker;
   let sends: Array<{ kind: string; text: string; toolCallId?: string; inResponseTo?: unknown }>;
-  let chime: ReturnType<typeof vi.fn>;
+  let chime: ReturnType<typeof vi.fn<() => void>>;
   let processing: number;
   let stage6ToolCallId: string | null;
 
@@ -136,7 +136,7 @@ describe('dispatch gate wiring (Tier-1 mirror of recording-context dispatchFinal
     now = 0;
     tracker = new InFlightQuestionTracker(() => now, 10_000);
     sends = [];
-    chime = vi.fn();
+    chime = vi.fn<() => void>();
     processing = 0;
     stage6ToolCallId = null;
   });
