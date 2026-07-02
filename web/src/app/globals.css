@@ -7,9 +7,20 @@
 @theme {
   /* ---------- Brand ---------- */
   --color-brand-blue: #0066ff;
-  --color-brand-blue-soft: #3b82f6;
+  --color-brand-blue-soft: #3385ff; /* CMDesign brandBlueSoft rgb(0.2,0.522,1.0) */
   --color-brand-green: #00cc66;
-  --color-brand-green-soft: #22c55e;
+  --color-brand-green-soft: #33dd88; /* CMDesign brandGreenSoft rgb(0.2,0.867,0.533) */
+
+  /* ---------- Accent scales (CMDesign Colors.Green / Colors.Blue) ----------
+   * subtle/glow variants are opacity mixes of `vibrant` — use
+   * color-mix(in srgb, var(--color-green-vibrant) 8%|20%, transparent)
+   * at the call site rather than duplicating tokens. */
+  --color-green-vibrant: #00e676;
+  --color-green-standard: #00c853;
+  --color-green-muted: #00a844;
+  --color-blue-vibrant: #2979ff;
+  --color-blue-standard: #448aff;
+  --color-blue-muted: #1565c0;
 
   /* ---------- Surface hierarchy (dark mode, forced) ---------- */
   --color-surface-0: #0a0a0f; /* page background */
@@ -18,23 +29,24 @@
   --color-surface-3: #24242e; /* hovered / top-of-stack card */
   --color-surface-4: #2d2d38; /* pressed */
 
-  /* ---------- Text ---------- */
-  --color-text-primary: #f5f5f7;
-  --color-text-secondary: #a0a0aa;
-  --color-text-tertiary: #6e6e78;
-  --color-text-disabled: #48484f;
+  /* ---------- Text (CMDesign TextColors) ---------- */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #b0b0c0;
+  --color-text-tertiary: #6b6b80;
+  --color-text-disabled: #48484f; /* web-extra; iOS reuses tertiary for disabled */
+  --color-text-inverse: #0a0a0f; /* text on filled green/blue buttons */
 
   /* ---------- Borders / dividers ---------- */
   --color-border-subtle: rgba(255, 255, 255, 0.06);
   --color-border-default: rgba(255, 255, 255, 0.1);
   --color-border-strong: rgba(255, 255, 255, 0.18);
 
-  /* ---------- Status ---------- */
-  --color-status-pending: #6e6e78;
-  --color-status-processing: #ff9f0a;
-  --color-status-done: #30d158;
-  --color-status-failed: #ff453a;
-  --color-status-limitation: #bf5af2;
+  /* ---------- Status (CMDesign Colors.Status; web keys kept) ---------- */
+  --color-status-pending: #6b6b80; /* iOS Status.neutral */
+  --color-status-processing: #ffb300; /* iOS Status.expiring */
+  --color-status-done: #00e676; /* iOS Status.valid */
+  --color-status-failed: #ff5252; /* iOS Status.expired */
+  --color-status-limitation: #bf5af2; /* iOS system purple (dark) */
 
   /* ---------- Recording states ---------- */
   --color-rec-idle: #6e6e78;
@@ -46,7 +58,7 @@
   --color-rec-confirmed: #30d158;
 
   /* ---------- Transcript bar ---------- */
-  --color-transcript-keyword: #3b82f6;
+  --color-transcript-keyword: #0a84ff; /* iOS Color.blue (dark) */
   --color-transcript-value-bg: rgba(48, 209, 88, 0.18);
   --color-transcript-value-border: rgba(48, 209, 88, 0.36);
 
@@ -66,11 +78,20 @@
   --spacing-2xl: 32px;
   --spacing-3xl: 48px;
 
-  /* ---------- Radius ---------- */
+  /* ---------- Radius ----------
+   * Generic scale kept for existing call sites; the semantic tokens below
+   * carry the iOS component radii (live-call-site winners — see
+   * web/audit/cmdesign-token-map-2026-07.md). */
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
   --radius-xl: 20px;
+  --radius-input: 12px; /* CMDesign inputRedesign — live floating fields */
+  --radius-button: 14px; /* CMDesign CornerRadius.button */
+  --radius-card: 18px; /* CMDesign CornerRadius.card — cmCardStyle */
+  --radius-section-card: 16px; /* CMDesign cardRedesign — CMSectionCard */
+  --radius-hero: 22px; /* CMDesign heroCard */
+  --radius-cta-pill: 26px; /* CMDesign ctaPill */
 
   /* ---------- Fonts (SF Pro Rounded stack on macOS/iOS, Inter fallback elsewhere) ---------- */
   --font-rounded:
@@ -79,12 +100,14 @@
   --font-mono:
     ui-monospace, "SF Mono", "Menlo", "Cascadia Code", Consolas, monospace;
 
-  /* ---------- Heights ---------- */
-  --h-input: 44px;
-  --h-button: 44px;
+  /* ---------- Heights (CMDesign Heights) ---------- */
+  --h-input: 52px; /* Heights.inputField */
+  --h-button: 44px; /* Heights.buttonMedium */
+  --h-button-lg: 52px; /* Heights.buttonLarge */
+  --h-list-row: 72px; /* Heights.listRow */
   --h-touch-target: 44px;
   --h-topnav: 56px;
-  --h-tabbar: 48px;
+  --h-tabbar: 49px; /* Heights.tabBar */
   --h-transcript-strip: 56px;
 }
 
