@@ -235,6 +235,39 @@ jobs:
         run: npm audit --audit-level=high || true
 
   # ============================================
+  # Job 2c: Parity-ledger staleness warning (WS1 governance)
+  # ============================================
+  # WARN-ONLY, fully isolated: no job may `needs:` this one, so it can never
+  # gate the deploy path. The script itself always exits 0; continue-on-error
+  # is belt-and-braces for crashes outside the script (checkout, node setup).
+  parity-ledger-warn:
+    name: Parity Ledger Staleness (warn-only)
+    runs-on: ubuntu-latest
+    # pull_request ONLY: on push/workflow_dispatch `github.base_ref` is empty
+    # and the diff below would error-annotate every production deploy run.
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code (full history for base diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Compute files touched by this PR
+        run: |
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > /tmp/parity-ledger-changed-files.txt
+          echo "$(wc -l < /tmp/parity-ledger-changed-files.txt) changed file(s)"
+
+      - name: Warn on stale parity-ledger rows
+        run: node scripts/check-parity-ledger.mjs --ledger web/docs/parity-ledger.md --map web/docs/parity-ledger-files.json --changed-files /tmp/parity-ledger-changed-files.txt
+
+  # ============================================
   # Job 3: Build, Scan & Cache Docker Images
   # ============================================
   build-images:

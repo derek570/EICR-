@@ -47,6 +47,16 @@ aws logs tail /ecs/eicr/eicr-frontend --region eu-west-2 --since 10m
 aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m
 ```
 
+### Parity-ledger staleness warning (PR-only, warn-only)
+
+`.github/workflows/deploy.yml` job `parity-ledger-warn` (added 2026-07-02, WS1 of the iOS↔Web Full-Parity Program):
+
+- Runs ONLY on `pull_request` events (`if: github.event_name == 'pull_request'` — on push/dispatch `github.base_ref` is empty and the diff would error-annotate every deploy run).
+- Computes the PR's touched files (`git diff --name-only origin/${{ github.base_ref }}...HEAD`, checkout with `fetch-depth: 0`) and runs `node scripts/check-parity-ledger.mjs --ledger web/docs/parity-ledger.md --map web/docs/parity-ledger-files.json --changed-files …`.
+- Emits GitHub `::warning::` annotations when a touched file maps (via `web/docs/parity-ledger-files.json`) to ledger rows whose `last-verified` is blank, invalid, or >30 days old. Blank-dated rows collapse into ONE summary line; a map id missing from the ledger and duplicate ledger ids also warn.
+- **Never blocks anything:** the script always exits 0, the job has `continue-on-error: true`, and no other job `needs:` it. Touched files with no map entry are silently ignored by design.
+- To silence a warning properly: re-verify the row against current iOS source and update its `last-verified` date in `web/docs/parity-ledger.md`.
+
 ## Deployment State (Jan 2026)
 
 - PWA Frontend: `eicr-pwa` service running on ECS Fargate
