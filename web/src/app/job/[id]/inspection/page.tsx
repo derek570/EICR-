@@ -20,6 +20,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ObservationSheet } from '@/components/observations/observation-sheet';
 import type { ObservationRow } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { EICR_INSPECTION_SECTION_CATEGORIES } from '@/lib/constants/section-accents';
 import {
   EIC_SCHEDULE,
   EICR_SCHEDULE,
@@ -71,16 +72,10 @@ type InspectionShape = {
 };
 
 const EICR_SECTION_ICONS = [Eye, Bolt, Shield, Wrench, ClipboardCheck, BathIcon, Flame, MapPin];
-const EICR_SECTION_ACCENTS: Array<'blue' | 'green' | 'amber' | 'magenta' | 'red'> = [
-  'blue',
-  'amber',
-  'green',
-  'magenta',
-  'blue',
-  'green',
-  'red',
-  'amber',
-];
+// WS5 (2026-07-02): the local ad-hoc colour list (blue/amber/green/
+// magenta/…) is consolidated into the shared iOS category map —
+// EICR_INSPECTION_SECTION_CATEGORIES in lib/constants/section-accents.ts
+// (canon: InspectionTab.swift:362-374 `sectionCategory(for:)`).
 
 const OBSERVATION_CODES: ReadonlyArray<ScheduleOutcome> = ['C1', 'C2', 'C3'];
 
@@ -381,7 +376,10 @@ export default function InspectionPage() {
             (i) => items[i.ref] !== undefined || autoControlled.has(i.ref)
           ).length;
           const Icon = EICR_SECTION_ICONS[sectionIndex % EICR_SECTION_ICONS.length];
-          const accent = EICR_SECTION_ACCENTS[sectionIndex % EICR_SECTION_ACCENTS.length];
+          const accent =
+            EICR_INSPECTION_SECTION_CATEGORIES[
+              sectionIndex % EICR_INSPECTION_SECTION_CATEGORIES.length
+            ];
           return (
             <SectionCard key={section.title} accent={accent} icon={Icon} title={section.title}>
               <div className="flex items-center justify-between gap-2 pb-1">
