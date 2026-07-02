@@ -22,8 +22,8 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-describe('v3 → v4 migration (runs first — installs v3 manually then bumps)', () => {
-  it('preserves a populated v3 schema and adds the new store on bump', async () => {
+describe('v3 → current migration (runs first — installs v3 manually then bumps)', () => {
+  it('preserves a populated v3 schema and adds the new stores on bump', async () => {
     // Step 1: open the DB at v3 directly via raw IDB and seed user data.
     // This must happen before any code path opens at v4.
     await new Promise<void>((resolve, reject) => {
@@ -64,10 +64,11 @@ describe('v3 → v4 migration (runs first — installs v3 manually then bumps)',
     });
 
     // Step 2: dynamic-import the module — first openDB call triggers
-    // the v4 upgrade path, which must create the new store without
-    // touching the v3 data.
+    // the upgrade path to the CURRENT version, which must create the
+    // newer stores (v4 pending-observation-photo, v5 WS6
+    // pending-ccu-extraction) without touching the v3 data.
     const cache = await import('@/lib/pwa/job-cache');
-    expect(cache.DB_VERSION).toBe(4);
+    expect(cache.DB_VERSION).toBe(5);
 
     // jobs-list survived the upgrade.
     const jobs = await cache.getCachedJobs('u1');
@@ -89,6 +90,10 @@ describe('v3 → v4 migration (runs first — installs v3 manually then bumps)',
       status: 'pending',
     });
     expect((await cache.readPendingPhoto('any-job'))?.blobId).toBe('new');
+
+    // New v5 store (WS6 pending-CCU queue) exists and starts empty.
+    const queue = await import('@/lib/ccu/pending-extraction-queue');
+    expect(await queue.getPendingCcuExtractions('any-job')).toEqual([]);
   });
 });
 
