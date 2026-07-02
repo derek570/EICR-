@@ -7,9 +7,20 @@
 export const cmColors = {
   brand: {
     blue: '#0066FF',
-    blueSoft: '#3B82F6',
+    blueSoft: '#3385FF', // CMDesign brandBlueSoft
     green: '#00CC66',
-    greenSoft: '#22C55E',
+    greenSoft: '#33DD88', // CMDesign brandGreenSoft
+  },
+  /** CMDesign Colors.Green / Colors.Blue accent scales. */
+  green: {
+    vibrant: '#00E676',
+    standard: '#00C853',
+    muted: '#00A844',
+  },
+  blue: {
+    vibrant: '#2979FF',
+    standard: '#448AFF',
+    muted: '#1565C0',
   },
   surface: {
     0: '#0A0A0F',
@@ -19,16 +30,17 @@ export const cmColors = {
     4: '#2D2D38',
   },
   text: {
-    primary: '#F5F5F7',
-    secondary: '#A0A0AA',
-    tertiary: '#6E6E78',
+    primary: '#FFFFFF',
+    secondary: '#B0B0C0',
+    tertiary: '#6B6B80',
     disabled: '#48484F',
+    inverse: '#0A0A0F',
   },
   status: {
-    pending: '#6E6E78',
-    processing: '#FF9F0A',
-    done: '#30D158',
-    failed: '#FF453A',
+    pending: '#6B6B80',
+    processing: '#FFB300',
+    done: '#00E676',
+    failed: '#FF5252',
     limitation: '#BF5AF2',
   },
   rec: {
@@ -64,14 +76,24 @@ export const cmRadius = {
   md: 10,
   lg: 14,
   xl: 20,
+  // Semantic iOS component radii (CMDesign live-call-site winners — see
+  // web/audit/cmdesign-token-map-2026-07.md).
+  input: 12,
+  button: 14,
+  card: 18,
+  sectionCard: 16,
+  hero: 22,
+  ctaPill: 26,
 } as const;
 
 export const cmHeights = {
-  input: 44,
-  button: 44,
+  input: 52, // CMDesign Heights.inputField
+  button: 44, // Heights.buttonMedium
+  buttonLg: 52, // Heights.buttonLarge
+  listRow: 72, // Heights.listRow
   touchTarget: 44,
   topNav: 56,
-  tabBar: 48,
+  tabBar: 49, // Heights.tabBar
   transcriptStrip: 56,
 } as const;
 

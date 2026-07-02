@@ -6,15 +6,14 @@ export function Card({
   glass = false,
   ...props
 }: React.HTMLAttributes<HTMLDivElement> & { glass?: boolean }) {
+  // WS5 (2026-07-02): default card is the iOS `cmCardStyle()` glass
+  // recipe (`.cm-card` in globals.css) — radius 18 + 20px padding
+  // (CMDesign CornerRadius.card / Spacing.cardPadding, the live-call-
+  // site winners). The `glass` variant keeps the heavier `.cm-glass`
+  // blur used by the login/error hero cards.
   return (
     <div
-      className={cn(
-        'rounded-[var(--radius-lg)] p-4 md:p-6',
-        glass
-          ? 'cm-glass'
-          : 'bg-[var(--color-surface-2)] border border-[var(--color-border-subtle)]',
-        className
-      )}
+      className={cn('p-5', glass ? 'cm-glass rounded-[var(--radius-card)]' : 'cm-card', className)}
       {...props}
     />
   );

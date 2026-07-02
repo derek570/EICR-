@@ -294,7 +294,12 @@ function TermsPageInner() {
         }}
       >
         <DialogContent
-          className="fixed left-1/2 top-1/2 z-50 mx-4 flex max-h-[80vh] w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] p-0 shadow-lg"
+          // WS5 (2026-07-02): positioning/translate/border/bg classes
+          // removed — the DialogContent primitive already supplies them,
+          // and re-specifying `-translate-*` here re-introduced the
+          // Tailwind-v4 double-offset the primitive fix eliminated.
+          // Only the layout deltas vs the default card remain.
+          className="flex max-h-[80vh] max-w-3xl flex-col p-0"
           showCloseButton={false}
         >
           <div className="flex items-center justify-between border-b border-[var(--color-border-subtle)] px-5 py-4">

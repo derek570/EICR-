@@ -1,5 +1,6 @@
 'use client';
 
+import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -23,8 +24,10 @@ import { useJobContext } from '@/lib/job-context';
  *
  * Each tab renders as an icon-over-label cell with an optional small status
  * dot (green=complete, amber=warning) anchored to the top-right of the icon.
- * Active tab shows a blue label + a thin underline beneath it; inactive tabs
- * keep a muted gray label with the brand-coloured icon.
+ * Active tab (WS5, iOS JobDetailView canon): brand-blue icon + white bold
+ * label; inactive tabs sit at white/35 icon + white/45 label. A single 3px
+ * blue→green gradient underline slides between tabs (see the indicator
+ * comment inside the component).
  *
  * Tab set is cert-type-gated to mirror iOS
  * `CertMateUnified/Sources/Views/JobDetail/JobDetailView.swift:472-536`:
@@ -122,10 +125,42 @@ export function JobTabNav({ jobId }: { jobId: string }) {
   const base = `/job/${jobId}`;
   const tabs = certificateType === 'EIC' ? EIC_TABS : EICR_TABS;
 
+  // WS5 (2026-07-02) — iOS tab rail restyle (JobDetailView.swift:266-309):
+  // active tab = brand-blue icon + white bold label; inactive tabs sit at
+  // white/35 (icon) and white/45 (label) — the old per-tab coloured icons
+  // (green Supply etc.) had no iOS equivalent. The underline is a single
+  // 3px blue→green gradient bar (`Gradients.tabIndicator`, radius 1.5,
+  // blue glow) that SLIDES between tabs — the iOS matchedGeometryEffect +
+  // tabSlide spring, ported by measuring the active link and
+  // transitioning left/width on one shared indicator element. The global
+  // prefers-reduced-motion guard collapses the slide to an instant move.
+  const navRef = React.useRef<HTMLElement>(null);
+  const [indicator, setIndicator] = React.useState<{ left: number; width: number } | null>(null);
+
+  React.useEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const measure = () => {
+      const active = nav.querySelector<HTMLElement>('a[aria-current="page"]');
+      if (!active) {
+        setIndicator(null);
+        return;
+      }
+      setIndicator({ left: active.offsetLeft, width: active.offsetWidth });
+      // Keep the active tab reachable on narrow rails.
+      active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(nav);
+    return () => ro.disconnect();
+  }, [pathname, tabs]);
+
   return (
     <nav
+      ref={navRef}
       aria-label="Job sections"
-      className="flex w-full gap-0 overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)] px-2 scrollbar-hide"
+      className="relative flex w-full gap-0 overflow-x-auto border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)] px-2 scrollbar-hide"
     >
       {tabs.map((tab) => {
         const href = `${base}${tab.slug}`;
@@ -134,27 +169,24 @@ export function JobTabNav({ jobId }: { jobId: string }) {
             ? pathname === base
             : pathname === href || pathname.startsWith(`${href}/`);
 
-        const iconColor =
-          tab.slug === '/supply' ? 'var(--color-brand-green)' : 'var(--color-brand-blue)';
-
         return (
           <Link
             key={tab.slug || 'overview'}
             href={href}
             aria-current={isActive ? 'page' : undefined}
             className={cn(
-              'relative flex flex-shrink-0 flex-col items-center gap-1 whitespace-nowrap px-3 pb-2 pt-2.5 text-[11px] font-medium transition',
-              isActive
-                ? 'text-[var(--color-brand-blue)]'
-                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+              'relative flex min-h-[44px] flex-shrink-0 flex-col items-center justify-center gap-1 whitespace-nowrap px-3 pb-2 pt-2.5 text-[12px] transition',
+              isActive ? 'font-bold text-white' : 'font-medium text-white/45 hover:text-white/70'
             )}
           >
             <span className="relative">
               <tab.Icon
-                className="h-5 w-5"
-                strokeWidth={2}
+                className={cn('h-5 w-5 transition-transform', !isActive && 'scale-[0.92]')}
+                strokeWidth={isActive ? 2.5 : 2}
                 aria-hidden
-                style={{ color: isActive ? 'var(--color-brand-blue)' : iconColor }}
+                style={{
+                  color: isActive ? 'var(--color-brand-blue)' : 'rgba(255,255,255,0.35)',
+                }}
               />
               {tab.status ? (
                 <span
@@ -170,15 +202,21 @@ export function JobTabNav({ jobId }: { jobId: string }) {
               ) : null}
             </span>
             <span className="leading-none">{tab.label}</span>
-            {isActive ? (
-              <span
-                aria-hidden
-                className="absolute bottom-0 left-1/2 h-[2px] w-8 -translate-x-1/2 rounded-full bg-[var(--color-brand-blue)]"
-              />
-            ) : null}
           </Link>
         );
       })}
+      {indicator ? (
+        <span
+          aria-hidden
+          className="absolute bottom-0 h-[3px] rounded-[1.5px] shadow-[0_2px_6px_rgba(0,102,255,0.4)] transition-[left,width] duration-300"
+          style={{
+            left: indicator.left,
+            width: indicator.width,
+            background: 'linear-gradient(90deg, var(--color-brand-blue), var(--color-brand-green))',
+            transitionTimingFunction: 'var(--ease-spring)',
+          }}
+        />
+      ) : null}
     </nav>
   );
 }

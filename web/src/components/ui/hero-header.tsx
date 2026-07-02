@@ -45,7 +45,10 @@ export function HeroHeader({
   return (
     <div
       className={cn(
-        'cm-hero relative flex items-center justify-between gap-4 overflow-hidden rounded-[var(--radius-xl)] px-5 py-5 md:px-6 md:py-6',
+        // WS5: radius 22 (CMDesign heroCard) + blue-glow shadow
+        // (Shadows.blueGlow — brandBlue 30%); `.cm-hero::after` in
+        // globals.css adds the cmHeroShimmer sweep.
+        'cm-hero relative flex items-center justify-between gap-4 overflow-hidden rounded-[var(--radius-hero)] px-5 py-5 shadow-[0_4px_32px_rgba(0,102,255,0.3)] md:px-6 md:py-6',
         className
       )}
       style={
