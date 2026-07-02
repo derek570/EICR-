@@ -163,6 +163,11 @@ describe('SonnetSession · observation_update dispatch (audit Phase 6 P0)', () =
       code: 'C2',
       regulation: '411.3.1.2',
       rationale: 'BPG4 5.3 update',
+      // WS3 item 3 (obs-#52 Fix B) — canonical wording decodes to null
+      // when the server omits it (table MISS / older server); null must
+      // survive decode so the apply layer can CLEAR stale wording.
+      regulation_title: null,
+      regulation_description: null,
       source: 'BPG4',
     });
 

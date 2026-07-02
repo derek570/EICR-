@@ -35,9 +35,13 @@
  * reconciles byte-for-byte against client reality.
  */
 
-const DJB2_INIT = 5381n;
-const DJB2_MULT = 33n;
-const U64_MASK = (1n << 64n) - 1n;
+// BigInt() constructor calls (not `5381n` literals) — the web tsconfig
+// targets ES2017 where BigInt LITERALS are a syntax error, but the
+// BigInt runtime global is universally available in the PWA's supported
+// browsers (iOS Safari ≥ 14). Semantics are identical.
+const DJB2_INIT = BigInt(5381);
+const DJB2_MULT = BigInt(33);
+const U64_MASK = (BigInt(1) << BigInt(64)) - BigInt(1);
 
 /**
  * djb2 over Unicode scalars, wrapping at UInt64, decimal-string output.
