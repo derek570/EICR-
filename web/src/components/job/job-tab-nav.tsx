@@ -24,8 +24,10 @@ import { useJobContext } from '@/lib/job-context';
  *
  * Each tab renders as an icon-over-label cell with an optional small status
  * dot (green=complete, amber=warning) anchored to the top-right of the icon.
- * Active tab shows a blue label + a thin underline beneath it; inactive tabs
- * keep a muted gray label with the brand-coloured icon.
+ * Active tab (WS5, iOS JobDetailView canon): brand-blue icon + white bold
+ * label; inactive tabs sit at white/35 icon + white/45 label. A single 3px
+ * blue→green gradient underline slides between tabs (see the indicator
+ * comment inside the component).
  *
  * Tab set is cert-type-gated to mirror iOS
  * `CertMateUnified/Sources/Views/JobDetail/JobDetailView.swift:472-536`:
