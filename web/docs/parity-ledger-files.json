@@ -200,6 +200,7 @@
     "pdf/pdftab-203",
     "pdf/pdftab-225",
     "pdf/pdftab-243",
+    "pdf/pdftab-270",
     "pdf/pdftab-68"
   ],
   "web/src/app/job/[id]/staff/page.tsx": [
@@ -473,6 +474,37 @@
   ],
   "web/src/lib/job-context.tsx": [
     "crosscutting/offline-dirty-guard"
+  ],
+  "web/src/lib/pdf/generate-certificate.ts": [
+    "pdf/pdf-fidelity",
+    "pdf/pdftab-270"
+  ],
+  "web/src/lib/pdf/render/assemble.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/render/capture.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/render/index.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/template/css.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/template/decode.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/template/eicr-html-template.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/template/helpers.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/template/inspection-items.ts": [
+    "pdf/pdf-fidelity"
+  ],
+  "web/src/lib/pdf/template/types.ts": [
+    "pdf/pdf-fidelity"
   ],
   "web/src/lib/pwa/job-cache.ts": [
     "observations/obs-photo-autolink"
