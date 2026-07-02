@@ -1,5 +1,7 @@
 # iOS ↔ PWA Parity Backlog
 
+> **⚠️ SUPERSEDED 2026-07-02 by [`web/audit/INDEX-2026-07.md`](INDEX-2026-07.md)** (the iOS↔Web Full-Parity Program gap index, WS0 sweep). This file is retained as the historical Wave A/B (2026-04) record. Three entry clusters below carry inline corrections: the `utterance_end_ms` "2000 → 1500" claim (actual value is 1000), the "preset picker needs backend/schema work" entries (zero-backend rule; presets already on web), and the "T&Cs signature deferred pending legal review" entries (Derek 2026-07-01: port it — WS7).
+
 Rollup of gaps surfaced by the eight-phase parity audit (Wave A, 2026-04-24). Each line links to a phase report; detailed gap bodies live there.
 
 Audit methodology & prompt templates: `~/.claude/plans/we-ve-just-finished-a-enumerated-hellman.md`.
@@ -21,7 +23,7 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 | B5.1 | Staff tab — InspectorProfile shape + roster fetch | ✅ done | `317d18d`, `780266a` (codex fix) |
 | B2.1 | T&Cs acceptance gate (Phase 2 P0 #1) | ✅ done | `06caaf9`, `6465a4a` (codex fix) |
 | B2.4 | Dashboard JobRow swipe-delete regression test | ✅ done — feature already on main from `9fcbeed`; this commit only adds the missing test coverage flagged by the audit (Phase 2 P0 #4 was a false-positive from stage6) |
-| B4.1 | Deepgram `utterance_end_ms` 2000 → 1500 (iOS canon) | ✅ done | `ba3bbdf` |
+| B4.1 | Deepgram `utterance_end_ms` 2000 → 1500 (iOS canon) | ✅ done | `ba3bbdf` — **CORRECTION 2026-07-02: the shipped value is `1000`, not 1500 (`deepgram-service.ts:532`, comment + code agree); this log line was the stale claim. Truth recorded in ledger row `recording/flux-migration`.** |
 | B4.2 | Deepgram keyterm prompting (port iOS `KeywordBoostGenerator`) | ✅ done | `e38fa5e`, `fed9a1c` (codex fix) |
 | B6.1 | Sonnet ALB heartbeat + `observation_update` handler | ✅ done | `d035b71`, `f104a3e` (codex fix) |
 | B6.2 | Cross-check verifications: LiveFillView used, Sonnet questions wired, AudioRingBuffer present | ✅ all stage6-only false positives — closed by inspection |
@@ -81,7 +83,7 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 2. ~~**Staff roster fetch** (Phase 5 #5.1)~~ ✅ closed by `317d18d` (Staff page now fetches via `api.inspectorProfiles(user.id)` on mount; the unused `inspectors?: Inspector[]` field on the StaffJobShape was dropped). Codex P2 follow-up `780266a` clears stale state on user-change / fetch-rejection.
 3. ~~**Phase 4 #12** (inline observation workflow on schedule taps)~~ ✅ already on main — audit was wrong because it ran against stage6 (`inspection/page.tsx` carries the `inlineFormRef` / `pendingChange` flow on `main`).
 4. ~~**T&Cs gate** (Phase 2 P0 #1)~~ ✅ closed by `06caaf9` (`/terms` page with verbatim iOS legal text + 3-doc / 3-confirmation gate, AppShell client-side redirect, iOS-parity localStorage keys). Codex P1 + P2 follow-ups in `6465a4a` (open-redirect closed via `sanitiseRedirect`, query string preserved through the gate). One deliberate divergence: signature capture deferred (signatures live on `InspectorProfile` on web; iOS's `termsAcceptanceSignature` audit-trail blob has no web counterpart yet).
-5. **Preset picker on job creation** (Phase 2 P0 #3) — ⚠️ deferred. iOS uses multiple-named `CertificateDefault` records per user (preset per cert type) backed by GRDB; web uses a single `user_defaults.json` blob applied on-demand from the Circuits tab (`/settings/defaults` is the editor, no auto-apply at job creation by deliberate architectural choice — see `web/src/app/settings/defaults/page.tsx` doc-comment). iOS's "1 preset → auto-apply, 2+ presets → picker" model doesn't translate without either schema migration on web (multi-named-preset CRUD endpoints) or a different UX (e.g., a single "Apply your defaults?" Yes/Skip sheet that doesn't match iOS's picker shape). Needs a design decision before implementation; not a single-commit follow-up.
+5. ~~**Preset picker on job creation** (Phase 2 P0 #3)~~ — **SUPERSEDED 2026-07-02:** web now HAS named `CertificateDefaultPreset` records + `cable_defaults[]` (`web/src/lib/defaults/`) under the existing settings endpoint — no schema migration or backend endpoint is needed (and would violate the 2026-07-01 zero-backend rule). Remaining gap is the frontend-only job-creation flow: ledger row `dashboard/job-creation-defaults-flow` (WS6). Original entry (historical): ⚠️ deferred. iOS uses multiple-named `CertificateDefault` records per user (preset per cert type) backed by GRDB; web uses a single `user_defaults.json` blob applied on-demand from the Circuits tab (`/settings/defaults` is the editor, no auto-apply at job creation by deliberate architectural choice — see `web/src/app/settings/defaults/page.tsx` doc-comment). iOS's "1 preset → auto-apply, 2+ presets → picker" model doesn't translate without either schema migration on web (multi-named-preset CRUD endpoints) or a different UX (e.g., a single "Apply your defaults?" Yes/Skip sheet that doesn't match iOS's picker shape). Needs a design decision before implementation; not a single-commit follow-up.
 6. ~~**Swipe delete on dashboard job rows** (Phase 2 P0 #4)~~ ✅ already on main — feature shipped in commit `9fcbeed` (Phase 3 — dashboard expiring count, swipe/context-menu delete, tour tile). Audit was wrong because stage6 had regressed it. Regression test added in this batch (`tests/job-row-swipe-delete.test.tsx`) since coverage was zero.
 7. **Deepgram config drift** (Phase 6 P0s) — main-vs-stage6 cross-check now done. Two real on-main divergences:
    - ✅ `utterance_end_ms` (web 2000 → iOS canon 1500) closed by `ba3bbdf` with regression-locking URL-param test.
@@ -93,14 +95,14 @@ Guiding rule: **iOS is canon. Divergence is a bug unless explicitly documented**
 
 Real remaining work is empty. Three categorical follow-ups remain, each with documented reasons not to ship in this branch:
 
-- **Preset picker on job creation (#5)** — architectural mismatch (web's single-blob defaults vs iOS's multi-named CertificateDefault records). Needs a design decision before implementation.
+- ~~**Preset picker on job creation (#5)** — architectural mismatch…~~ **SUPERSEDED 2026-07-02:** the single-blob claim is stale; named presets exist on web. Frontend-only WS6 work — ledger row `dashboard/job-creation-defaults-flow`.
 - **Regex-layer + 3-tier field priority** — port iOS `TranscriptFieldMatcher` (~40 ms instant regex extraction before Sonnet's ~1-2 s) and the Pre-existing > Sonnet > Regex tier rule. Coupled features; their own scope.
-- **T&Cs signature capture for legal review** — iOS captures a finger-drawn signature into `UserDefaults["termsAcceptanceSignature"]` for an audit trail. Web doesn't (signatures already live on `InspectorProfile`); decide via legal review whether to port `SignatureCaptureView` as a fourth confirmation step.
+- ~~**T&Cs signature capture for legal review**~~ — **DECIDED 2026-07-01: PORT IT.** No longer awaiting legal review — ledger row `crosscutting/terms-signature-port` (WS7): finger/pointer-drawn signature on the web terms gate, client-side storage, no backend write.
 
 ### Deliberate divergence — needs legal review
 
 - **T&Cs port (`06caaf9`)** — `web/src/app/terms/legal-texts.ts` carries the iOS legal text verbatim, including Apple-specific clauses (T&C §17, EULA §10/§13). These survive on web because (a) inspectors who installed iOS first already accepted them there, (b) the same operator owns both surfaces. A future legal-review pass may carve them out — log here so we don't lose track.
-- **No signature capture on web T&Cs gate (`06caaf9`)** — iOS captures a finger-drawn signature into `UserDefaults["termsAcceptanceSignature"]` for an audit trail. On web, the inspector's signature already lives on their `InspectorProfile`. If legal review requires the audit trail, port `SignatureCaptureView` and add it as a fourth confirmation step.
+- ~~**No signature capture on web T&Cs gate (`06caaf9`)**~~ — **DECIDED 2026-07-01: PORT IT** (WS7, ledger row `crosscutting/terms-signature-port`). The "await legal review" stance is superseded.
 
 ### How to resume
 
