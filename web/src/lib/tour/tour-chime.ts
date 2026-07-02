@@ -78,7 +78,10 @@ export function playTourProcessingChime(): void {
   try {
     const samples = synthesiseChimeSamples();
     const buffer = context.createBuffer(1, samples.length, CHIME_SAMPLE_RATE);
-    buffer.copyToChannel(samples, 0);
+    // `.set` instead of `copyToChannel` — TS 5.7's generic TypedArrays
+    // type the latter's parameter as Float32Array<ArrayBuffer> which a
+    // plain `new Float32Array(n)` no longer satisfies structurally.
+    buffer.getChannelData(0).set(samples);
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
