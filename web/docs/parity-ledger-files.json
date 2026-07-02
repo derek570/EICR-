@@ -340,11 +340,15 @@
     "recording/livefillview-1",
     "supply/surge-namespace"
   ],
+  "web/src/components/observations/job-photos-picker-sheet.tsx": [
+    "observations/obs-photo-autolink"
+  ],
   "web/src/components/observations/observation-sheet.tsx": [
     "observations/addobservationsheet-remedial-action",
     "observations/l201-l207",
     "observations/l220-l221",
     "observations/l230-l256",
+    "observations/obs-photo-autolink",
     "observations/observationstab-181"
   ],
   "web/src/components/pwa/install-prompt-provider.tsx": [
@@ -364,6 +368,7 @@
     "recording/processingbadgeview-5"
   ],
   "web/src/components/recording/recording-chrome.tsx": [
+    "observations/obs-photo-autolink",
     "recording/3-tier-sleep-active-dozing",
     "recording/recording-chrome-tsx-2",
     "recording/recordingoverlay-105",
@@ -426,6 +431,9 @@
   "web/src/hooks/use-postcode-lookup.ts": [
     "installation/installationtab-64"
   ],
+  "web/src/lib/adapters/job.ts": [
+    "observations/obs-photo-autolink"
+  ],
   "web/src/lib/api-client.ts": [
     "pdf/pdftab-270"
   ],
@@ -440,8 +448,14 @@
   "web/src/lib/haptic.ts": [
     "crosscutting/uiimpactfeedbackgenerator"
   ],
+  "web/src/lib/image-resize.ts": [
+    "observations/obs-photo-autolink"
+  ],
   "web/src/lib/job-context.tsx": [
     "crosscutting/offline-dirty-guard"
+  ],
+  "web/src/lib/pwa/job-cache.ts": [
+    "observations/obs-photo-autolink"
   ],
   "web/src/lib/recording-context.tsx": [
     "observations/obs-photo-autolink",
@@ -457,11 +471,20 @@
   "web/src/lib/recording/apply-document-extraction.ts": [
     "supply/surge-namespace"
   ],
+  "web/src/lib/recording/apply-extraction.ts": [
+    "observations/obs-photo-autolink"
+  ],
+  "web/src/lib/recording/capture-observation-photo.ts": [
+    "observations/obs-photo-autolink"
+  ],
   "web/src/lib/recording/deepgram-service.ts": [
     "recording/flux-migration"
   ],
   "web/src/lib/recording/elevenlabs-tts.ts": [
     "recording/tts-fifo"
+  ],
+  "web/src/lib/recording/observation-photo.ts": [
+    "observations/obs-photo-autolink"
   ],
   "web/src/lib/recording/sonnet-session.ts": [
     "observations/obs-card-canonical-wording",
@@ -484,5 +507,26 @@
   "web/src/lib/tour/steps.ts": [
     "dashboard/dashboardview-676",
     "dashboard/tour-v11"
+  ],
+  "web/src/lib/types.ts": [
+    "observations/obs-photo-autolink"
+  ],
+  "web/tests/adapters.test.ts": [
+    "observations/obs-photo-autolink"
+  ],
+  "web/tests/apply-extraction-photo-link.test.ts": [
+    "observations/obs-photo-autolink"
+  ],
+  "web/tests/capture-observation-photo.test.ts": [
+    "observations/obs-photo-autolink"
+  ],
+  "web/tests/job-photos-picker.test.ts": [
+    "observations/obs-photo-autolink"
+  ],
+  "web/tests/observation-photo.test.ts": [
+    "observations/obs-photo-autolink"
+  ],
+  "web/tests/pwa-pending-photo-store.test.ts": [
+    "observations/obs-photo-autolink"
   ]
 }
