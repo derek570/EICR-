@@ -382,6 +382,12 @@ const CIRCUIT_0_SECTION: Record<string, Section> = {
   // Extent (EIC)
   extent_of_installation: 'extent_and_type',
   installation_type: 'extent_and_type',
+  // EIC divert-to-comments (obs-#49, backend PR #66/#68) — the RULE 0
+  // EIC observation path diverts spoken defect notes into the
+  // installation-level comments field. Routed here for field_clears;
+  // reading APPLIES go through the dedicated append branch in
+  // applyCircuit0Readings (EIC-only guard + newline-append, iOS canon).
+  comments: 'extent_and_type',
   // Design (EIC)
   departures_from_bs7671: 'design_construction',
   departure_details: 'design_construction',
@@ -481,6 +487,46 @@ function applyCircuit0Readings(
       !targets.includes('supply_characteristics')
     ) {
       targets.push('supply_characteristics');
+    }
+
+    // EIC divert-to-comments branch (obs-#49, WS3 item 9b 2026-07-02) —
+    // dedicated append path, iOS canon: the `comments` case in
+    // applySonnetReadings (DeepgramRecordingViewModel.swift:6650-6670).
+    // The backend emits ONLY the new diverted-observation note as the
+    // value; the client owns the single append (newline-separated) so a
+    // note diverted from an EIC observation doesn't overwrite earlier
+    // comments. EIC-ONLY: iOS drops the field on an EICR with a warn —
+    // observations are first-class there, so a comments write would be
+    // a model error.
+    if (reading.field === 'comments') {
+      const certType = typeof job.certificate_type === 'string' ? job.certificate_type : 'EICR';
+      if (certType !== 'EIC') {
+        pipelineLog('apply_eic_field_dropped_on_eicr', { field: 'comments' });
+        continue;
+      }
+      const sec: Section = 'extent_and_type';
+      const inBySection = (bySection[sec] as Record<string, unknown> | undefined) ?? {};
+      const existingSection = (job[sec] as Record<string, unknown> | undefined) ?? {};
+      const fromPatch = inBySection.comments;
+      const current =
+        typeof fromPatch === 'string' && fromPatch.trim().length > 0
+          ? fromPatch
+          : typeof existingSection.comments === 'string'
+            ? (existingSection.comments as string)
+            : '';
+      const delta = String(reading.value ?? '').trim();
+      if (!delta) continue;
+      // No userValueKept gate here (append semantics make it moot —
+      // mirrors iOS, where the dedicated case always combines).
+      const combined = current.trim().length === 0 ? delta : `${current}\n${delta}`;
+      if (combined === current) continue;
+      bySection[sec] = { ...inBySection, comments: combined };
+      pipelineLog('apply_eic_comments_appended', {
+        delta_length: delta.length,
+        combined_length: combined.length,
+        was_first_write: current.trim().length === 0,
+      });
+      continue;
     }
 
     // Narrative-field branch — iOS canon `applySonnetNarrativeValue`
