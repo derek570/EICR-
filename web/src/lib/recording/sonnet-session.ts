@@ -509,6 +509,40 @@ const PENDING_DIAGNOSTICS_MAX = 200;
  */
 const STAGE6_PROTOCOL_VERSION = 'stage6';
 
+/**
+ * The `capabilities.voice_latency.supports` list advertised in the
+ * `session_start` payload. Exported as a constant so it is the single
+ * source of truth for the payload AND assertable in tests without
+ * standing up a websocket — mirroring iOS
+ * `ServerWebSocketService.voiceLatencySupports` (:303). Each string MUST
+ * match the backend source-of-truth list `VOICE_LATENCY_KNOWN_SUPPORTS`
+ * (src/extraction/voice-latency-config.js:220) — a mismatch silently
+ * disables the capability server-side.
+ *
+ * Wire shape matters: `parseVoiceLatencyCapabilities`
+ * (voice-latency-config.js:174) accepts ONLY
+ * `capabilities: { voice_latency: { version: 1, supports: [...] } }`.
+ * A bare `capabilities: [...]` array parses as v0 and leaves every
+ * capability DORMANT.
+ *
+ * - `low_conf_readback_v1`: rollout-sequencing gate for universal
+ *   read-back (readback-correction-optionb §6, 2026-06-18). Advertised
+ *   because the web apply path has NO local `reading.confidence < 0.5`
+ *   drop filter (verified 2026-07-02: zero reading-confidence gating in
+ *   `apply-extraction.ts` / `recording-context.tsx` — the only
+ *   confidence plumbing client-side is Deepgram TRANSCRIPT confidence,
+ *   which never gates a reading apply). Until a client advertises this,
+ *   the backend dispatcher SKIPS applying `< 0.5` readings pre-apply, so
+ *   web users silently lost low-confidence dictated values.
+ *
+ * iOS additionally advertises `regex_fast_v2` and
+ * `client_playback_telemetry`. Web MUST NOT claim them until the
+ * corresponding plumbing ships (fast-path TTS port / playback-ack
+ * telemetry — parity-ledger rows name the follow-up owners): advertising
+ * an unimplemented capability is worse than lagging.
+ */
+export const VOICE_LATENCY_SUPPORTS: readonly string[] = ['low_conf_readback_v1'];
+
 export class SonnetSession {
   private ws: WebSocket | null = null;
   private state: SonnetConnectionState = 'disconnected';
@@ -755,6 +789,17 @@ export class SonnetSession {
             // UI while Sonnet waits for an answer that never arrives. See
             // Farm Close prod incident, sess_moqvdgjl_fo6w, 2026-05-04.
             protocol_version: STAGE6_PROTOCOL_VERSION,
+            // Voice-latency capability advertisement — session_start ONLY,
+            // mirroring iOS (resume rehydrates the parsed capabilities
+            // server-side within the TTL window). See the
+            // VOICE_LATENCY_SUPPORTS doc comment for the wire-shape
+            // contract and why only low_conf_readback_v1 is claimed.
+            capabilities: {
+              voice_latency: {
+                version: 1,
+                supports: [...VOICE_LATENCY_SUPPORTS],
+              },
+            },
           });
         }
       }

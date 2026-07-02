@@ -19,7 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WS from 'jest-websocket-mock';
-import { SonnetSession } from '@/lib/recording/sonnet-session';
+import { SonnetSession, VOICE_LATENCY_SUPPORTS } from '@/lib/recording/sonnet-session';
 
 /**
  * Controllable scheduler for reconnect-path tests. The reconnect tick is
@@ -521,6 +521,35 @@ describe('SonnetSession', () => {
       const frame = JSON.parse(raw as string) as { type: string; protocol_version?: string };
       expect(frame.type).toBe('session_start');
       expect(frame.protocol_version).toBe('stage6');
+    });
+
+    it('advertises voice-latency capabilities in the exact parser shape on session_start (WS3 item 1)', async () => {
+      // parseVoiceLatencyCapabilities (src/extraction/voice-latency-config.js:174)
+      // accepts ONLY `capabilities: { voice_latency: { version: 1, supports } }`.
+      // A bare array parses as v0 and leaves the capability DORMANT — this
+      // test pins the nested shape so a refactor can't silently regress it.
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'client-s', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      const raw = await server.nextMessage;
+      const frame = JSON.parse(raw as string) as {
+        type: string;
+        capabilities?: { voice_latency?: { version?: number; supports?: string[] } };
+      };
+      expect(frame.type).toBe('session_start');
+      expect(frame.capabilities).toEqual({
+        voice_latency: {
+          version: 1,
+          supports: ['low_conf_readback_v1'],
+        },
+      });
+      // Exported constant is the single source of truth (iOS parity:
+      // ServerWebSocketService.voiceLatencySupports).
+      expect(VOICE_LATENCY_SUPPORTS).toEqual(['low_conf_readback_v1']);
+      // regex_fast_v2 / client_playback_telemetry MUST NOT be claimed until
+      // their web plumbing ships (parity-ledger follow-up rows own them).
+      expect(VOICE_LATENCY_SUPPORTS).not.toContain('regex_fast_v2');
+      expect(VOICE_LATENCY_SUPPORTS).not.toContain('client_playback_telemetry');
     });
 
     it('advertises protocol_version="stage6" on session_resume', async () => {
