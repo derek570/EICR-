@@ -450,7 +450,9 @@ export default function CircuitsPage() {
             ? 'Analysing additional rail…'
             : mode === 'add_new_board'
               ? 'Analysing sub-board…'
-              : 'Analysing consumer unit…'
+              : mode === 'add_off_peak_board'
+                ? 'Analysing off-peak board…'
+                : 'Analysing consumer unit…'
     );
     try {
       const analysis = await api.analyzeCCU(file);
@@ -506,25 +508,28 @@ export default function CircuitsPage() {
       updateJob(patch);
       // If we just synthesised a board, surface it as the active one
       // so the new circuits are visible under the selector. Same for
-      // add_new_board mode — the inspector just photographed a sub-
+      // the two board-appending modes (add_new_board /
+      // add_off_peak_board) — the inspector just photographed a new
       // board, so the active selection should jump to it (otherwise
       // the new circuits appear to vanish under the previously
       // selected board).
+      const appendsBoard = mode === 'add_new_board' || mode === 'add_off_peak_board';
       const patchedBoards = (patch.boards ?? []) as { id: string }[];
       if (!selectedBoardId && patchedBoards.length > 0) {
         setSelectedBoardId(patchedBoards[0].id);
-      } else if (mode === 'add_new_board' && patchedBoards.length > 0) {
+      } else if (appendsBoard && patchedBoards.length > 0) {
         setSelectedBoardId(patchedBoards[patchedBoards.length - 1].id);
       }
       const added = analysis.circuits?.length ?? 0;
-      const verb =
-        mode === 'append_rail' ? 'appended' : mode === 'add_new_board' ? 'added' : 'merged';
+      const verb = mode === 'append_rail' ? 'appended' : appendsBoard ? 'added' : 'merged';
       const suffix =
         mode === 'names_only'
           ? ' (labels only)'
           : mode === 'add_new_board'
             ? ' to a new sub-board'
-            : '';
+            : mode === 'add_off_peak_board'
+              ? ' to a new off-peak board'
+              : '';
       setActionHint(
         added > 0
           ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} ${verb}${suffix}.`

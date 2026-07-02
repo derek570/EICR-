@@ -82,14 +82,15 @@ const READING_KEYS = [
   'polarity_confirmed',
 ] as const;
 
-/** Three client-side apply strategies — the backend returns the same
+/** Client-side apply strategies — the backend returns the same
  *  superset regardless of which one is selected. */
 export type CcuApplyMode =
   | 'names_only'
   | 'full_capture'
   | 'hardware_update'
   | 'append_rail'
-  | 'add_new_board';
+  | 'add_new_board'
+  | 'add_off_peak_board';
 
 export interface CcuApplyOptions {
   /** Which board the analysis targets. Defaults to the first board
@@ -569,6 +570,18 @@ export function applyCcuAnalysisToJob(
     return applyAddNewBoardMode(job, analysis);
   }
 
+  // M8c — Add-off-peak-board mode. iOS canon `applyAddOffPeakBoard`
+  // (`FuseboardAnalysisApplier.swift:487`): inspector photographs an
+  // off-peak / Economy 7 consumer unit. Same append-a-fresh-board flow
+  // as add_new_board, but the board is a SIBLING of main (fed directly
+  // from the supply mains): `board_type: 'off_peak'`, designation
+  // "Off-Peak Board", and `parent_board_id` / `feed_circuit_ref`
+  // deliberately unset — the Board tab hides the Fed-From picker for
+  // off-peak boards, matching iOS's `isSubBoard` gate.
+  if (mode === 'add_off_peak_board') {
+    return applyAddOffPeakBoardMode(job, analysis);
+  }
+
   // Hardware Update mode overwrites board-level fields (physically
   // different board). The other two modes are non-destructive.
   const overwriteBoard = mode === 'hardware_update';
@@ -757,13 +770,44 @@ function applyAppendRailMode(
  * Board tab "Fed From" picker, not the CCU photo.
  */
 function applyAddNewBoardMode(job: JobDetail, analysis: CCUAnalysis): CcuApplyResult {
+  return applyAppendedBoardMode(job, analysis, {
+    designation: `DB-${(job.boards ?? []).length + 1}`,
+  });
+}
+
+/**
+ * Add-off-peak-board mode. Identical append flow to add_new_board with
+ * two iOS-canon differences (`FuseboardAnalysisApplier.applyAddOffPeakBoard`):
+ *   - `board_type` is pre-set to `'off_peak'` (vs left blank for the
+ *     inspector on a sub-board);
+ *   - default designation is "Off-Peak Board" (vs "DB-N") so the board's
+ *     purpose is recognisable on sight in the selector strip and PDF.
+ *
+ * Off-peak boards are siblings of main — fed directly from the supply
+ * mains, never from a distribution circuit — so `parent_board_id` /
+ * `feed_circuit_ref` stay unset and the backend hierarchy validator
+ * accepts one `main` + one `off_peak` side by side.
+ */
+function applyAddOffPeakBoardMode(job: JobDetail, analysis: CCUAnalysis): CcuApplyResult {
+  return applyAppendedBoardMode(job, analysis, {
+    designation: 'Off-Peak Board',
+    board_type: 'off_peak',
+  });
+}
+
+/** Shared appender behind add_new_board + add_off_peak_board — the two
+ *  modes differ only in the seed fields stamped onto the new board. */
+function applyAppendedBoardMode(
+  job: JobDetail,
+  analysis: CCUAnalysis,
+  seed: { designation: string; board_type?: string }
+): CcuApplyResult {
   const patch: Partial<JobDetail> = {};
   const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
   const newId = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
-  const newDesignation = `DB-${existingBoards.length + 1}`;
   const newBoard: Record<string, unknown> = {
     id: newId,
-    designation: newDesignation,
+    ...seed,
   };
   // Apply analysis to the new board — re-use the buildBoardPatch
   // logic by synthesising a temp `job` whose only board is the new

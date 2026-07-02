@@ -1,11 +1,12 @@
 /**
  * Phase 7 — CCU mode sheet render + interaction tests.
  *
- * Pins the five-mode contract at the UI layer (M8 UX closure on
+ * Pins the six-mode contract at the UI layer (M8 UX closure on
  * 2026-05-13 — append_rail + add_new_board tiles added to the
  * picker; helpers had been shipped in `ead645b` but were dead
- * weight until the UI exposed them):
- *   - all five modes render when the sheet is open AND the active
+ * weight until the UI exposed them; WS6 2026-07-02 added
+ * add_off_peak_board):
+ *   - all six modes render when the sheet is open AND the active
  *     board has existing circuits,
  *   - `append_rail` is HIDDEN when `existingCircuitCount === 0`
  *     (iOS parity — there's nothing to append onto, see
@@ -47,6 +48,7 @@ vi.mock('lucide-react', () => {
     RefreshCw: makeIcon('RefreshCw'),
     Layers: makeIcon('Layers'),
     Columns2: makeIcon('Columns2'),
+    MoonStar: makeIcon('MoonStar'),
     X: makeIcon('X'),
   };
 });
@@ -69,7 +71,7 @@ vi.mock('@/components/ui/dialog', () => ({
   ),
 }));
 
-import { CcuModeSheet } from '@/components/job/ccu-mode-sheet';
+import { CcuModeSheet, useLastCcuMode } from '@/components/job/ccu-mode-sheet';
 import type { CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
 
 function mount(element: React.ReactElement): { container: HTMLElement; root: Root } {
@@ -104,31 +106,35 @@ afterEach(() => {
 });
 
 describe('CcuModeSheet', () => {
-  it('renders four mode tiles when the active board has no circuits (append_rail hidden)', () => {
+  it('renders five mode tiles when the active board has no circuits (append_rail hidden)', () => {
     const onSelect = vi.fn();
     mounted = mount(
       <CcuModeSheet open onOpenChange={() => {}} onSelect={onSelect} existingCircuitCount={0} />
     );
     const tiles = mounted.container.querySelectorAll('[role="listitem"]');
-    expect(tiles).toHaveLength(4);
+    expect(tiles).toHaveLength(5);
     const titles = Array.from(tiles).map((t) => t.textContent);
     expect(titles.some((t) => t?.includes('Circuit Names Only'))).toBe(true);
     expect(titles.some((t) => t?.includes('Update Hardware'))).toBe(true);
     expect(titles.some((t) => t?.includes('Full New Consumer Unit'))).toBe(true);
     expect(titles.some((t) => t?.includes('Add Sub-Board'))).toBe(true);
+    // Off-Peak is ALWAYS visible (iOS parity — CCUExtractionModeSheet
+    // only ever hides append_rail).
+    expect(titles.some((t) => t?.includes('Add Off-Peak Board'))).toBe(true);
     // append_rail tile hidden — no rail-1 schedule to append onto.
     expect(titles.some((t) => t?.includes('Add Another Rail'))).toBe(false);
   });
 
-  it('renders all five mode tiles when the active board has existing circuits', () => {
+  it('renders all six mode tiles when the active board has existing circuits', () => {
     mounted = mount(
       <CcuModeSheet open onOpenChange={() => {}} onSelect={() => {}} existingCircuitCount={6} />
     );
     const tiles = mounted.container.querySelectorAll('[role="listitem"]');
-    expect(tiles).toHaveLength(5);
+    expect(tiles).toHaveLength(6);
     const titles = Array.from(tiles).map((t) => t.textContent);
     expect(titles.some((t) => t?.includes('Add Another Rail'))).toBe(true);
     expect(titles.some((t) => t?.includes('Add Sub-Board'))).toBe(true);
+    expect(titles.some((t) => t?.includes('Add Off-Peak Board'))).toBe(true);
   });
 
   it('does not render anything when closed', () => {
@@ -228,5 +234,46 @@ describe('CcuModeSheet', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(onSelect).toHaveBeenCalledWith('add_new_board' satisfies CcuApplyMode);
     expect(window.localStorage.getItem('cm-ccu-last-mode')).toBe('add_new_board');
+  });
+
+  it('fires onSelect with "add_off_peak_board" and the last-mode guard round-trips the 6th value', async () => {
+    const onSelect = vi.fn();
+    const onOpenChange = vi.fn();
+    mounted = mount(
+      <CcuModeSheet open onOpenChange={onOpenChange} onSelect={onSelect} existingCircuitCount={0} />
+    );
+    const tile = Array.from(mounted.container.querySelectorAll('[role="listitem"]')).find((t) =>
+      t.textContent?.includes('Add Off-Peak Board')
+    )!;
+
+    await act(async () => {
+      (tile as HTMLElement).click();
+    });
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(onSelect).toHaveBeenCalledWith('add_off_peak_board' satisfies CcuApplyMode);
+    // WS6: the localStorage last-mode parsing guard was widened 5→6
+    // valid strings — the persisted value must survive a re-read via
+    // useLastCcuMode (a stale guard would silently return null and the
+    // "Last used" hint would break for off-peak users only).
+    expect(window.localStorage.getItem('cm-ccu-last-mode')).toBe('add_off_peak_board');
+
+    function Probe() {
+      const last = useLastCcuMode();
+      return <span data-testid="last-mode">{last ?? 'null'}</span>;
+    }
+    const probe = mount(<Probe />);
+    try {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+      expect(probe.container.querySelector('[data-testid="last-mode"]')?.textContent).toBe(
+        'add_off_peak_board'
+      );
+    } finally {
+      act(() => probe.root.unmount());
+      probe.container.remove();
+    }
   });
 });

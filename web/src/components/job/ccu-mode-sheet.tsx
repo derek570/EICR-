@@ -1,7 +1,15 @@
 'use client';
 
 import * as React from 'react';
-import { ChevronRight, Camera, ListChecks, RefreshCw, Layers, Columns2 } from 'lucide-react';
+import {
+  ChevronRight,
+  Camera,
+  ListChecks,
+  RefreshCw,
+  Layers,
+  Columns2,
+  MoonStar,
+} from 'lucide-react';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import type { CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
 
@@ -14,7 +22,7 @@ import type { CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
  * The backend `/api/analyze-ccu` returns the same superset in every
  * case — the mode only changes which client-side merge runs.
  *
- * Five modes (iOS parity — same ordering, same copy, same icons
+ * Six modes (iOS parity — same ordering, same copy, same icons
  * approximated from SF Symbols):
  *
  *   1. Circuit Names Only — read labels only. Skips OCPD / RCD /
@@ -40,6 +48,11 @@ import type { CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
  *      `job.boards`, stamps every extracted circuit with the new
  *      board id, leaves `parent_board_id` / `feed_circuit_ref`
  *      unset for the inspector to fill via the Board tab.
+ *   6. Add Off-Peak Board — photograph an off-peak / Economy 7
+ *      consumer unit. Same append flow as Add Sub-Board but the new
+ *      board is stamped `board_type: 'off_peak'` + designation
+ *      "Off-Peak Board" and is a SIBLING of main (fed straight from
+ *      the supply mains — no parent board, no Fed-From picker).
  *
  * UX shape:
  *   - Tall mode tiles (title + subtitle + coloured icon + chevron).
@@ -85,7 +98,8 @@ function readLastMode(): CcuApplyMode | null {
       v === 'full_capture' ||
       v === 'hardware_update' ||
       v === 'append_rail' ||
-      v === 'add_new_board'
+      v === 'add_new_board' ||
+      v === 'add_off_peak_board'
     )
       return v;
   } catch {
@@ -161,6 +175,17 @@ const MODES: ModeSpec[] = [
     title: 'Add Sub-Board',
     subtitle: 'Photograph a sub-distribution / sub-main board',
     icon: Columns2,
+    colour: 'var(--color-brand-blue)',
+  },
+  {
+    // iOS canon `CCUExtractionMode.addOffPeakBoard`
+    // (`CCUExtractionMode.swift:38` — "Add Off-Peak Board" / moon.stars
+    // icon). Always visible regardless of existing boards/circuits —
+    // same as Add Sub-Board (`CCUExtractionModeSheet.swift:16-26`).
+    value: 'add_off_peak_board',
+    title: 'Add Off-Peak Board',
+    subtitle: 'Photograph a secondary board fed from the mains (e.g. Economy 7)',
+    icon: MoonStar,
     colour: 'var(--color-brand-blue)',
   },
 ];
