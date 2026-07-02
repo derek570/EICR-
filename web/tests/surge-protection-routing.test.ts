@@ -8,6 +8,8 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TranscriptFieldMatcher } from '@/lib/recording/transcript-field-matcher';
+import { applyExtractionToJob } from '@/lib/recording/apply-extraction';
+import type { ExtractionResult } from '@/lib/recording/sonnet-session';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
 import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
 import { emitDraft } from '@/components/defaults/preset-editor-sheet';
@@ -152,5 +154,36 @@ describe('surge — preset editor preserves surge_* through an unrelated edit', 
     expect(supply.surge_spd_type).toBe('Type 2');
     expect(supply.spd_bs_en).toBe('1361 type 1');
     expect(supply.earthing_arrangement).toBe('TT');
+  });
+});
+
+// WS3 item 9a (2026-07-02) — Sonnet VOICE apply routing for the surge_*
+// namespace. Web has no dedicated surge cases in CIRCUIT_0_SECTION; the
+// `?? 'supply_characteristics'` default routes them — which is exactly
+// where iOS's dedicated cases write (applySonnetReadings
+// surge_spd_present/type/bs_en/status_indicator → supplyCharacteristics,
+// DeepgramRecordingViewModel.swift:6368-6395). This pins that the default
+// keeps matching the iOS destination if a routing-map refactor lands.
+describe('surge — Sonnet voice readings route to supply_characteristics (iOS parity)', () => {
+  it('all four surge_* keys land on the supply patch, never board pollution', () => {
+    const job = makeJob();
+    const result: ExtractionResult = {
+      readings: [
+        { field: 'surge_spd_present', value: 'Yes', circuit: 0 },
+        { field: 'surge_spd_type', value: 'Type 2', circuit: 0 },
+        { field: 'surge_spd_bs_en', value: '61643-11', circuit: 0 },
+        { field: 'surge_status_indicator', value: 'Satisfactory', circuit: 0 },
+      ] as ExtractionResult['readings'],
+      observations: [],
+    };
+    const applied = applyExtractionToJob(job, result);
+    expect(applied).not.toBeNull();
+    const supply = applied!.patch.supply_characteristics as Record<string, unknown>;
+    expect(supply.surge_spd_present).toBe('Yes');
+    expect(supply.surge_spd_type).toBe('Type 2');
+    expect(supply.surge_spd_bs_en).toBe('61643-11');
+    expect(supply.surge_status_indicator).toBe('Satisfactory');
+    // Option A: surge data must never fold into the DNO-cutout family.
+    expect(supply.spd_type_supply).toBeUndefined();
   });
 });
