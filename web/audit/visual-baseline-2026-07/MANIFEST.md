@@ -58,6 +58,8 @@
 
 `job-{overview,installation,supply,board,circuits,extent,design,inspection,staff,pdf}-eic` could not be captured: **the EIC job never appears in the iOS job list.** Root cause (verified in source + API): `/api/jobs/:userId` returns both seeded jobs, but iOS `JobListViewModel.deduplicateApiJobs` collapses jobs **by address** and keeps the first — the two fixtures share "1 Test Fixture Lane", so the EIC job is silently dropped before caching. This is an iOS product bug for legitimate same-address EICR+EIC pairs (a common real-world scenario) — log-don't-replicate class (parent §3E). Re-run options: reseed the EIC job at a distinct address and re-run the driver (`testCaptureBaseline` walks whichever cert types it finds), or fix the iOS dedupe first.
 
+**WS5 deferred-review note (2026-07-02, user-confirmed):** WS5's design-system acceptance ran EICR screens against their iOS baselines; the EIC screens were reviewed web-before/after only, using the iOS EICR tab captures as canon PROXY for shared styling. The EIC-vs-iOS screen-by-screen review is DEFERRED until the 10 iOS EIC captures above land. (Note the EIC fixture has since been reseeded at "7 Fixture Court, Reading, RG2 2BB", so the address-dedupe blocker no longer applies to a re-run.)
+
 ### Cross-platform deltas noticed during capture (RECORDED only)
 
 - iOS CCU mode sheet has SIX modes (incl. **Add Off-Peak Board**); web has five — matches the existing WS6 off-peak ledger gap, now with baseline evidence.

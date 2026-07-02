@@ -35,6 +35,27 @@ export interface SectionAccentTokens {
   stripe: string;
 }
 
+/**
+ * EICR inspection-schedule per-section categories — iOS canon:
+ * `InspectionTab.swift:362-374` `sectionCategory(for:)`. Index-aligned
+ * with the EICR schedule sections; consumed modulo length (both
+ * platforms define 7 EICR schedule sections against this 8-entry list,
+ * so the 8th entry — iOS `.client` for the "General" section — only
+ * fires if an 8th section is ever added). The duplicate `notes, notes`
+ * pair is genuine iOS behaviour (Special locations + Notes both map to
+ * the notes category), not a typo.
+ */
+export const EICR_INSPECTION_SECTION_CATEGORIES: readonly SectionAccent[] = [
+  'schedule', // Visual inspection
+  'electrical', // Electrical supply
+  'protection', // Protection
+  'board', // Distribution equipment
+  'test-results', // Testing
+  'notes', // Special locations
+  'notes', // Notes
+  'client', // General
+];
+
 export const SECTION_ACCENTS: Record<SectionAccent, SectionAccentTokens> = {
   client: {
     text: '#2979FF',

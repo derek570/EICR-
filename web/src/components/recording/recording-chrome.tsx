@@ -457,7 +457,12 @@ function RecordingActionBar() {
             <button
               type="button"
               onClick={openCamera}
-              className="flex flex-col items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-5 text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-blue)]"
+              // WS5 (2026-07-02): the original classes referenced
+              // `--color-border` / `--color-surface-elevated` /
+              // `--color-surface-hover`, none of which exist in the
+              // @theme block — the tiles rendered with UA-default
+              // (transparent) surfaces. Mapped onto the real tokens.
+              className="flex flex-col items-center gap-2 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-surface-3)] p-5 text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-4)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-blue)]"
             >
               <Camera className="h-8 w-8" strokeWidth={1.75} aria-hidden />
               <span className="text-sm font-semibold">Camera</span>
@@ -465,7 +470,7 @@ function RecordingActionBar() {
             <button
               type="button"
               onClick={openLibrary}
-              className="flex flex-col items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-elevated)] p-5 text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-blue)]"
+              className="flex flex-col items-center gap-2 rounded-xl border border-[var(--color-border-default)] bg-[var(--color-surface-3)] p-5 text-[var(--color-text-primary)] transition hover:bg-[var(--color-surface-4)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-brand-blue)]"
             >
               <ImageIcon className="h-8 w-8" strokeWidth={1.75} aria-hidden />
               <span className="text-sm font-semibold">Library</span>

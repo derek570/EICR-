@@ -15,8 +15,25 @@
  * Run:  node tests-e2e/visual-baseline-capture.mjs
  * Env:  BASE_URL   capture origin (default https://certmate.uk — production,
  *                  read-only usage against the seeded parity-test jobs)
+ *       API_BASE_URL  backend origin for the script's own login fetch
+ *                  (default: BASE for non-production BASEs — but a local
+ *                  `next dev` has no /api routes, so local recapture runs
+ *                  pass API_BASE_URL=https://api.certmate.uk)
+ *       OUT_DIR    output directory (default: the COMMITTED WS0 baseline
+ *                  folder — pass a scratch dir for local re-captures so
+ *                  the WS8 acceptance reference is never clobbered)
  *       CREDS_FILE creds path (default ~/.certmate-test-creds)
  *       SKIP_RECORDING=1 to skip the live-session screen
+ *
+ * Local recapture (WS5+ before/after diffs against unmerged styling):
+ *   cd web && NEXT_PUBLIC_API_URL=https://api.certmate.uk PORT=3001 npx next dev --turbopack &
+ *   BASE_URL=http://localhost:3001 API_BASE_URL=https://api.certmate.uk \
+ *     OUT_DIR=/tmp/ws-after node tests-e2e/visual-baseline-capture.mjs
+ * When BASE is localhost, api.certmate.uk requests are intercepted and
+ * re-fetched Node-side (CORS-free) with a production Origin, and the
+ * response is re-served with localhost CORS headers — production's CORS
+ * allow-list rejects localhost origins and the Authorization-header
+ * preflight can't be rewritten in-flight, so route.continue is not enough.
  */
 import { chromium, devices } from '@playwright/test';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -25,7 +42,9 @@ import { join } from 'node:path';
 
 const BASE = process.env.BASE_URL ?? 'https://certmate.uk';
 const CREDS_FILE = process.env.CREDS_FILE ?? join(homedir(), '.certmate-test-creds');
-const OUT = new URL('../audit/visual-baseline-2026-07/web/', import.meta.url).pathname;
+const OUT_BASE =
+  process.env.OUT_DIR ?? new URL('../audit/visual-baseline-2026-07/web/', import.meta.url).pathname;
+const OUT = OUT_BASE.endsWith('/') ? OUT_BASE : `${OUT_BASE}/`;
 mkdirSync(OUT, { recursive: true });
 
 // -- creds ------------------------------------------------------------------
@@ -57,7 +76,8 @@ const STATE_FILE = join(tmpdir(), 'cm-visual-baseline-state.json');
  * middleware gates on.
  */
 async function buildStorageState() {
-  const apiBase = BASE === 'https://certmate.uk' ? 'https://api.certmate.uk' : BASE;
+  const apiBase =
+    process.env.API_BASE_URL ?? (BASE === 'https://certmate.uk' ? 'https://api.certmate.uk' : BASE);
   const res = await fetch(`${apiBase}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -170,6 +190,67 @@ async function shot(page, name, tag, opts = {}) {
   console.log('captured', file);
 }
 
+/**
+ * Local-recapture CORS shim. When the page origin is localhost, the
+ * production backend rejects it (CORS allow-list is non-production-only,
+ * src/app.js:56-68) and the api-client's Authorization header forces a
+ * preflight, so rewriting the Origin with route.continue can't work —
+ * the reflected ACAO would still be https://certmate.uk. Instead every
+ * api.certmate.uk request is re-fetched Node-side (CORS-free) with a
+ * production Origin, and fulfilled back to the browser with CORS headers
+ * matching the localhost page origin. Encoding/framing headers are
+ * stripped from the passthrough — the fetched body is already
+ * decompressed, and re-sending content-encoding breaks decoding.
+ */
+const IS_LOCAL_CAPTURE = new URL(BASE).hostname === 'localhost';
+async function installCorsShim(ctx) {
+  if (!IS_LOCAL_CAPTURE) return;
+  await ctx.route('https://api.certmate.uk/**', async (route) => {
+    // HARD READ-ONLY GUARD (added 2026-07-02 after a live incident): the
+    // app is NOT passive on load — the installation/supply pages
+    // auto-seed defaults on mount (`ensureDateOfInspection`, supply N/A
+    // coercions), so if the job-detail GET fails/hydrates blank, the
+    // debounced queueSaveJob PUT writes that BLANK state back and WIPES
+    // the seeded fixture (this happened to job_eicr on 2026-07-02;
+    // restored from the twin EIC fixture the same session). In local
+    // capture mode every mutating method is therefore rejected at the
+    // route layer — reads render everything a screenshot needs, and a
+    // 503 keeps failed saves visible in the UI instead of on the server.
+    const method = route.request().method().toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      console.warn(`read-only guard: blocked ${method} ${route.request().url()}`);
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        headers: {
+          'access-control-allow-origin': BASE,
+          'access-control-allow-credentials': 'true',
+        },
+        body: JSON.stringify({ error: 'blocked by visual-baseline read-only guard' }),
+      });
+      return;
+    }
+    const resp = await ctx.request.fetch(route.request(), {
+      headers: { ...route.request().headers(), origin: 'https://certmate.uk' },
+    });
+    await route.fulfill({
+      response: resp,
+      headers: {
+        ...Object.fromEntries(
+          Object.entries(resp.headers()).filter(
+            ([k]) =>
+              !['content-encoding', 'content-length', 'transfer-encoding'].includes(
+                k.toLowerCase(),
+              ),
+          ),
+        ),
+        'access-control-allow-origin': BASE,
+        'access-control-allow-credentials': 'true',
+      },
+    });
+  });
+}
+
 // -- launch (fake mic so the recording overlay can start headlessly) --------
 const browser = await chromium.launch({
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
@@ -178,6 +259,7 @@ const browser = await chromium.launch({
 // -- 1. unauthenticated login screen + one real UI login for storage state --
 for (const vp of VIEWPORTS) {
   const ctx = await browser.newContext({ ...vp.device, colorScheme: 'dark' });
+  await installCorsShim(ctx);
   const page = await ctx.newPage();
   await visit(page, '/login', 750);
   await shot(page, 'login', vp.tag);
@@ -195,6 +277,7 @@ for (const vp of VIEWPORTS) {
     storageState: STATE_FILE,
     permissions: ['microphone'],
   });
+  await installCorsShim(ctx);
   const page = await ctx.newPage();
 
   await disableDashboardTour(page);
@@ -254,6 +337,7 @@ if (!process.env.SKIP_RECORDING) {
       storageState: STATE_FILE,
       permissions: ['microphone'],
     });
+    await installCorsShim(ctx);
     const page = await ctx.newPage();
     await visit(page, `/job/${JOB.eicr}`);
     try {

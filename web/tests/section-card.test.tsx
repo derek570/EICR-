@@ -1,14 +1,16 @@
 /**
- * Phase 1 — SectionCard accent regression.
+ * SectionCard accent regression (Phase 1, re-locked for WS5 2026-07-02).
  *
  * Locks two contracts:
  *   1. The five legacy colour accents (blue/green/amber/magenta/red)
- *      render with the unchanged surface-2 background + subtle border so
- *      every existing /job + /settings callsite stays byte-identical.
- *   2. The seven new iOS-parity category accents (client, electrical,
- *      board, test-results, schedule, notes, protection) paint an
- *      accent-tinted inline background + accent border, and set the
- *      stripe colour to the token value from SECTION_ACCENTS.
+ *      stay class-styled — no inline background/borderColor — so they
+ *      inherit the shared card chrome and nothing per-callsite.
+ *   2. The seven iOS-parity category accents (client, electrical,
+ *      board, test-results, schedule, notes, protection) paint the
+ *      CMSectionCard recipe inline: L1 + blue-subtle tint background
+ *      with an accent 20%→8% gradient border (padding-box/border-box
+ *      trick), and a 3px accent→40% gradient conduit stripe (iOS
+ *      `cmStatusConduit`, WS5 restyle of the old solid stripe).
  *
  * We assert on DOM-level attributes (style.borderColor, inline
  * background, the accent stripe span's background) rather than computed
@@ -24,6 +26,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SectionCard } from '@/components/ui/section-card';
 import { SECTION_ACCENTS } from '@/lib/constants/section-accents';
 
+/** jsdom normalises hex colours to rgb() in SOME serialised values (the
+ *  single-gradient stripe) but preserves hex in others (the multi-layer
+ *  section background) — accept either spelling of the accent colour. */
 function hexToRgb(hex: string): string {
   const m = /^#([0-9a-f]{6})$/i.exec(hex);
   if (!m) return hex;
@@ -32,6 +37,11 @@ function hexToRgb(hex: string): string {
   const g = (int >> 8) & 0xff;
   const b = int & 0xff;
   return `rgb(${r}, ${g}, ${b})`;
+}
+
+function expectContainsColour(haystack: string, hex: string): void {
+  const found = haystack.includes(hex) || haystack.includes(hexToRgb(hex));
+  expect(found, `expected style to contain ${hex} (or ${hexToRgb(hex)}): ${haystack}`).toBe(true);
 }
 
 function mount(element: React.ReactElement): { container: HTMLElement; root: Root } {
@@ -111,12 +121,14 @@ describe('SectionCard', () => {
       // value. That's the real contract we care about here.
       const styleAttr = section.getAttribute('style') ?? '';
       expect(styleAttr).toContain('color-mix');
-      expect(styleAttr).toContain(tokens.stripe);
-      // Stripe span paints the full-strength stripe colour. jsdom
-      // normalises the hex to rgb on flat background values — compare
-      // against the rgb form.
+      expectContainsColour(styleAttr, tokens.stripe);
+      // Stripe span paints the iOS conduit gradient: full-strength
+      // accent fading to 40% (WS5 restyle — was a flat colour).
       const stripe = getStripe(mounted.container);
-      expect(stripe.style.background).toBe(hexToRgb(tokens.stripe));
+      const stripeStyle = stripe.getAttribute('style') ?? '';
+      expect(stripeStyle).toContain('linear-gradient');
+      expectContainsColour(stripeStyle, tokens.stripe);
+      expect(stripeStyle).toContain('40%');
     }
   );
 
