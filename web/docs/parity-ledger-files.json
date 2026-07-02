@@ -439,6 +439,9 @@
   "web/src/hooks/use-postcode-lookup.ts": [
     "installation/installationtab-64"
   ],
+  "web/src/hooks/use-tour.ts": [
+    "dashboard/tour-v11"
+  ],
   "web/src/lib/adapters/job.ts": [
     "observations/obs-photo-autolink"
   ],
@@ -489,16 +492,23 @@
     "supply/surge-namespace"
   ],
   "web/src/lib/recording/apply-extraction.ts": [
+    "installation/eic-comments",
     "observations/obs-photo-autolink"
   ],
   "web/src/lib/recording/capture-observation-photo.ts": [
     "observations/obs-photo-autolink"
+  ],
+  "web/src/lib/recording/confirmation-dedupe-key.ts": [
+    "recording/readback-dedup-rekey"
   ],
   "web/src/lib/recording/deepgram-service.ts": [
     "recording/flux-migration"
   ],
   "web/src/lib/recording/elevenlabs-tts.ts": [
     "recording/tts-fifo"
+  ],
+  "web/src/lib/recording/in-flight-question.ts": [
+    "recording/transcript-gate"
   ],
   "web/src/lib/recording/observation-photo.ts": [
     "observations/obs-photo-autolink"
@@ -512,6 +522,9 @@
   "web/src/lib/recording/tones.ts": [
     "recording/gate-pass-chime"
   ],
+  "web/src/lib/recording/transcript-gate.ts": [
+    "recording/transcript-gate"
+  ],
   "web/src/lib/recording/tts.ts": [
     "recording/readback-dedup-rekey",
     "recording/recordingoverlay-47",
@@ -522,9 +535,6 @@
   ],
   "web/src/lib/tour/steps.ts": [
     "dashboard/dashboardview-676",
-    "dashboard/tour-v11"
-  ],
-  "web/src/lib/tour/tour-chime.ts": [
     "dashboard/tour-v11"
   ],
   "web/src/lib/types.ts": [
