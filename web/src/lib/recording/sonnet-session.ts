@@ -68,6 +68,18 @@ export interface Observation {
   item_location?: string | null;
   schedule_item?: string | null;
   regulation?: string | null;
+  /** Canonical BS 7671 regulation wording (obs-#52 Fix B, 2026-06-23) —
+   *  table-validated title/description looked up server-side from the
+   *  cited regulation ref. Null on a table MISS (the COMMON case — the
+   *  table is BS 7671:2018+A2:2022), in which case the model's
+   *  `regulation` free-text stands alone. Mirrors iOS
+   *  `Observation.regulationTitle/.regulationDescription`
+   *  (Observation.swift:59). */
+  regulation_title?: string | null;
+  regulation_description?: string | null;
+  /** One-clause "why this code" rationale (obs-#51). Rendered italic as
+   *  "Because {rationale}" on the observation card, iOS parity. */
+  rationale?: string | null;
   /** Multi-board attribution. Backend bundler propagates the active
    *  board_id onto Sonnet-created observations (Phase 6 multi-board
    *  sprint). PWA captures into `ObservationRow.board_id` so a
@@ -100,6 +112,13 @@ export interface ObservationUpdate {
   regulation?: string | null;
   schedule_item?: string | null;
   rationale?: string | null;
+  /** Canonical BS 7671 wording for the REFINED ref (obs-#52 Fix B). The
+   *  server re-runs `lookupRegulation` on every observation_update path
+   *  (rename / BPG4 refinement / RULE-6 edit) — null on a table MISS.
+   *  Consumers apply these UNCONDITIONALLY (null CLEARS stale wording
+   *  carried from a prior ref), mirroring iOS handleObservationUpdate. */
+  regulation_title?: string | null;
+  regulation_description?: string | null;
   source?: string | null;
 }
 
@@ -173,7 +192,19 @@ export interface Confirmation {
   text: string;
   field?: string | null;
   circuit?: number | null;
+  /** Vestigial — NOT populated from the current wire. The value is embedded
+   *  in `text` via the backend's `buildConfirmationText`; dedupe uses `text`
+   *  as the value discriminator (see confirmation-dedupe-key.ts). */
   value?: string | number | boolean;
+  /** Multi-circuit roll-up — populated by the backend bundler only when a
+   *  grouped broadcast covers 2+ circuit-level readings on the same
+   *  (field, board_id, value). Mirrors iOS `ValueConfirmation.circuits`
+   *  (ClaudeService.swift:324). */
+  circuits?: number[] | null;
+  /** Board scope — emitted when the reading targeted a specific board
+   *  (Loaded Barrel Phase 1.B; omitted on single-board sessions). Mirrors
+   *  iOS `ValueConfirmation.boardId`. */
+  board_id?: string | null;
 }
 
 /** Multi-board mutation op carried on the extraction envelope's
@@ -509,6 +540,40 @@ const PENDING_DIAGNOSTICS_MAX = 200;
  */
 const STAGE6_PROTOCOL_VERSION = 'stage6';
 
+/**
+ * The `capabilities.voice_latency.supports` list advertised in the
+ * `session_start` payload. Exported as a constant so it is the single
+ * source of truth for the payload AND assertable in tests without
+ * standing up a websocket — mirroring iOS
+ * `ServerWebSocketService.voiceLatencySupports` (:303). Each string MUST
+ * match the backend source-of-truth list `VOICE_LATENCY_KNOWN_SUPPORTS`
+ * (src/extraction/voice-latency-config.js:220) — a mismatch silently
+ * disables the capability server-side.
+ *
+ * Wire shape matters: `parseVoiceLatencyCapabilities`
+ * (voice-latency-config.js:174) accepts ONLY
+ * `capabilities: { voice_latency: { version: 1, supports: [...] } }`.
+ * A bare `capabilities: [...]` array parses as v0 and leaves every
+ * capability DORMANT.
+ *
+ * - `low_conf_readback_v1`: rollout-sequencing gate for universal
+ *   read-back (readback-correction-optionb §6, 2026-06-18). Advertised
+ *   because the web apply path has NO local `reading.confidence < 0.5`
+ *   drop filter (verified 2026-07-02: zero reading-confidence gating in
+ *   `apply-extraction.ts` / `recording-context.tsx` — the only
+ *   confidence plumbing client-side is Deepgram TRANSCRIPT confidence,
+ *   which never gates a reading apply). Until a client advertises this,
+ *   the backend dispatcher SKIPS applying `< 0.5` readings pre-apply, so
+ *   web users silently lost low-confidence dictated values.
+ *
+ * iOS additionally advertises `regex_fast_v2` and
+ * `client_playback_telemetry`. Web MUST NOT claim them until the
+ * corresponding plumbing ships (fast-path TTS port / playback-ack
+ * telemetry — parity-ledger rows name the follow-up owners): advertising
+ * an unimplemented capability is worse than lagging.
+ */
+export const VOICE_LATENCY_SUPPORTS: readonly string[] = ['low_conf_readback_v1'];
+
 export class SonnetSession {
   private ws: WebSocket | null = null;
   private state: SonnetConnectionState = 'disconnected';
@@ -755,6 +820,17 @@ export class SonnetSession {
             // UI while Sonnet waits for an answer that never arrives. See
             // Farm Close prod incident, sess_moqvdgjl_fo6w, 2026-05-04.
             protocol_version: STAGE6_PROTOCOL_VERSION,
+            // Voice-latency capability advertisement — session_start ONLY,
+            // mirroring iOS (resume rehydrates the parsed capabilities
+            // server-side within the TTL window). See the
+            // VOICE_LATENCY_SUPPORTS doc comment for the wire-shape
+            // contract and why only low_conf_readback_v1 is claimed.
+            capabilities: {
+              voice_latency: {
+                version: 1,
+                supports: [...VOICE_LATENCY_SUPPORTS],
+              },
+            },
           });
         }
       }
@@ -1766,6 +1842,12 @@ export class SonnetSession {
           regulation: (json.regulation as string | null | undefined) ?? null,
           schedule_item: (json.schedule_item as string | null | undefined) ?? null,
           rationale: (json.rationale as string | null | undefined) ?? null,
+          // obs-#52 Fix B — canonical wording rides EVERY update path;
+          // null (table MISS) must survive decode so the apply layer can
+          // CLEAR stale wording rather than keep it.
+          regulation_title: (json.regulation_title as string | null | undefined) ?? null,
+          regulation_description:
+            (json.regulation_description as string | null | undefined) ?? null,
           source: (json.source as string | null | undefined) ?? null,
         };
         // Defensive: skip if the server somehow emitted an empty payload.
@@ -1876,24 +1958,6 @@ export class SonnetSession {
       }
       case 'cost_update': {
         this.callbacks.onCostUpdate?.(json as unknown as CostUpdate);
-        break;
-      }
-      case 'observation_update': {
-        // BPG4 / BS 7671 lookup resolved — refine the observation row
-        // the inspector saw populate from the initial extraction. iOS
-        // parity: `ServerWebSocketService.swift:760` decodes the same
-        // wire shape and fans out to `handleObservationUpdate`. Without
-        // this branch the observation stays at its initial-extraction
-        // classification forever even though the server sent the
-        // refined code/regulation seconds later.
-        this.callbacks.onObservationUpdate?.({
-          observation_id: typeof json.observation_id === 'string' ? json.observation_id : undefined,
-          observation_text: (json.observation_text as string) ?? '',
-          code: (json.code as string) ?? '',
-          regulation: typeof json.regulation === 'string' ? json.regulation : undefined,
-          rationale: typeof json.rationale === 'string' ? json.rationale : undefined,
-          source: typeof json.source === 'string' ? json.source : undefined,
-        });
         break;
       }
       case 'error': {

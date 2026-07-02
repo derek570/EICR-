@@ -382,6 +382,12 @@ const CIRCUIT_0_SECTION: Record<string, Section> = {
   // Extent (EIC)
   extent_of_installation: 'extent_and_type',
   installation_type: 'extent_and_type',
+  // EIC divert-to-comments (obs-#49, backend PR #66/#68) — the RULE 0
+  // EIC observation path diverts spoken defect notes into the
+  // installation-level comments field. Routed here for field_clears;
+  // reading APPLIES go through the dedicated append branch in
+  // applyCircuit0Readings (EIC-only guard + newline-append, iOS canon).
+  comments: 'extent_and_type',
   // Design (EIC)
   departures_from_bs7671: 'design_construction',
   departure_details: 'design_construction',
@@ -481,6 +487,46 @@ function applyCircuit0Readings(
       !targets.includes('supply_characteristics')
     ) {
       targets.push('supply_characteristics');
+    }
+
+    // EIC divert-to-comments branch (obs-#49, WS3 item 9b 2026-07-02) —
+    // dedicated append path, iOS canon: the `comments` case in
+    // applySonnetReadings (DeepgramRecordingViewModel.swift:6650-6670).
+    // The backend emits ONLY the new diverted-observation note as the
+    // value; the client owns the single append (newline-separated) so a
+    // note diverted from an EIC observation doesn't overwrite earlier
+    // comments. EIC-ONLY: iOS drops the field on an EICR with a warn —
+    // observations are first-class there, so a comments write would be
+    // a model error.
+    if (reading.field === 'comments') {
+      const certType = typeof job.certificate_type === 'string' ? job.certificate_type : 'EICR';
+      if (certType !== 'EIC') {
+        pipelineLog('apply_eic_field_dropped_on_eicr', { field: 'comments' });
+        continue;
+      }
+      const sec: Section = 'extent_and_type';
+      const inBySection = (bySection[sec] as Record<string, unknown> | undefined) ?? {};
+      const existingSection = (job[sec] as Record<string, unknown> | undefined) ?? {};
+      const fromPatch = inBySection.comments;
+      const current =
+        typeof fromPatch === 'string' && fromPatch.trim().length > 0
+          ? fromPatch
+          : typeof existingSection.comments === 'string'
+            ? (existingSection.comments as string)
+            : '';
+      const delta = String(reading.value ?? '').trim();
+      if (!delta) continue;
+      // No userValueKept gate here (append semantics make it moot —
+      // mirrors iOS, where the dedicated case always combines).
+      const combined = current.trim().length === 0 ? delta : `${current}\n${delta}`;
+      if (combined === current) continue;
+      bySection[sec] = { ...inBySection, comments: combined };
+      pipelineLog('apply_eic_comments_appended', {
+        delta_length: delta.length,
+        combined_length: combined.length,
+        was_first_write: current.trim().length === 0,
+      });
+      continue;
     }
 
     // Narrative-field branch — iOS canon `applySonnetNarrativeValue`
@@ -918,6 +964,13 @@ function applyObservations(
     };
     if (obs.observation_id) row.server_id = obs.observation_id;
     if (obs.regulation) row.regulation = obs.regulation;
+    // obs-#51 / obs-#52 Fix B (WS3 item 3, 2026-07-02) — carry the "why
+    // this code" rationale and the canonical BS 7671 wording from the
+    // initial extraction onto the row. iOS parity: applySonnetObservations
+    // sets all three (DeepgramRecordingViewModel.swift:7235/:7253).
+    if (obs.rationale) row.rationale = obs.rationale;
+    if (obs.regulation_title) row.regulation_title = obs.regulation_title;
+    if (obs.regulation_description) row.regulation_description = obs.regulation_description;
     // M11 — schedule_item validation. Drop the back-reference if
     // the ref isn't in the cert-type schedule. Observation still
     // lands; it just won't render under the Inspection-tab preview.
@@ -994,6 +1047,13 @@ export function applyObservationUpdate(
     code: string;
     regulation?: string | null;
     schedule_item?: string | null;
+    rationale?: string | null;
+    /** obs-#52 Fix B — canonical wording for the REFINED ref. Applied
+     *  UNCONDITIONALLY on the update path: null/absent (table MISS)
+     *  CLEARS stale wording carried from a prior ref, mirroring iOS
+     *  handleObservationUpdate's unconditional assignment. */
+    regulation_title?: string | null;
+    regulation_description?: string | null;
   }
 ): ObservationRow[] | null {
   const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
@@ -1041,6 +1101,14 @@ export function applyObservationUpdate(
     if (update.observation_id) newRow.server_id = update.observation_id;
     if (update.regulation) newRow.regulation = update.regulation;
     if (update.schedule_item) newRow.schedule_item = update.schedule_item;
+    // obs-#51 / obs-#52 Fix B — carry rationale + canonical wording onto
+    // the CREATE-from-miss row (iOS: newObs.rationale/.regulationTitle/
+    // .regulationDescription in handleObservationUpdate's append paths).
+    if (update.rationale) newRow.rationale = update.rationale;
+    if (update.regulation_title) newRow.regulation_title = update.regulation_title;
+    if (update.regulation_description) {
+      newRow.regulation_description = update.regulation_description;
+    }
     existing.push(newRow);
     return existing;
   }
@@ -1058,6 +1126,28 @@ export function applyObservationUpdate(
   }
   if (update.regulation && update.regulation !== before.regulation) {
     next.regulation = update.regulation;
+    changed = true;
+  }
+  // obs-#51 — refined rationale overwrites only when non-empty (iOS:
+  // `if let newRationale = update.rationale, !newRationale.isEmpty`).
+  if (update.rationale && update.rationale !== before.rationale) {
+    next.rationale = update.rationale;
+    changed = true;
+  }
+  // obs-#52 Fix B — canonical wording is set UNCONDITIONALLY so a
+  // refinement whose new ref is a table MISS (title/description null)
+  // CLEARS any stale HIT wording carried from the prior ref — the card
+  // then falls back to the model `regulation` string. Mirrors iOS
+  // handleObservationUpdate's unconditional assignment
+  // (DeepgramRecordingViewModel.swift, obs-#52 Fix B comment).
+  const nextTitle = update.regulation_title ?? undefined;
+  if (nextTitle !== before.regulation_title) {
+    next.regulation_title = nextTitle;
+    changed = true;
+  }
+  const nextDescription = update.regulation_description ?? undefined;
+  if (nextDescription !== before.regulation_description) {
+    next.regulation_description = nextDescription;
     changed = true;
   }
   const trimmedText = update.observation_text.trim();

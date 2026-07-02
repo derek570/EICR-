@@ -418,6 +418,30 @@ function ObservationCard({
           {obs.description}
         </p>
       ) : null}
+      {/* obs-#52 Fix B (WS3 item 3) — regulation ref + canonical BS 7671
+          wording + rationale, same order/emphasis as iOS
+          ObservationCardView.swift:71-88: ref line (info colour), canonical
+          title (primary), canonical description (secondary), then italic
+          "Because {rationale}". Title/description absent on a table MISS —
+          only ref + rationale show, unchanged from before. */}
+      {obs.regulation ? (
+        <p className="text-[12px] leading-snug text-[var(--color-brand-blue)]">{obs.regulation}</p>
+      ) : null}
+      {obs.regulation_title ? (
+        <p className="text-[12px] leading-snug text-[var(--color-text-primary)]">
+          {obs.regulation_title}
+        </p>
+      ) : null}
+      {obs.regulation_description ? (
+        <p className="text-[12px] leading-snug text-[var(--color-text-secondary)]">
+          {obs.regulation_description}
+        </p>
+      ) : null}
+      {obs.rationale ? (
+        <p className="text-[12px] italic leading-snug text-[var(--color-text-secondary)]">
+          Because {obs.rationale}
+        </p>
+      ) : null}
       {obs.remedial ? (
         <p className="border-t border-[var(--color-border-default)]/50 pt-2 text-[12.5px] italic text-[var(--color-text-secondary)]">
           <span className="font-semibold not-italic text-[var(--color-text-primary)]">

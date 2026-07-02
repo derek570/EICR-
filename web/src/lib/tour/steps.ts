@@ -133,7 +133,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
     // v11 NEW step (iOS jobSteps[3], 2026-06-30): the conversational
     // contract — auto read-back + the "sent for processing" tone. The
     // chime flag plays the real 960 Hz / 80 ms sound after narration
-    // (iOS splices it into the bundled MP3; see tour-chime.ts).
+    // (iOS splices it into the bundled MP3; see playSentForProcessingChime in lib/recording/tones.ts).
     id: 'job-tone',
     selector: '[data-tour="transcript-bar"]',
     title: 'Conversational — listen for the tone',

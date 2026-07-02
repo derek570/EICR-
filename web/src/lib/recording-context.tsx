@@ -27,8 +27,14 @@ import { resizeImage } from './image-resize';
 import { applyRegexMatchToJob } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
-import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
+import {
+  buildRegexSummary,
+  isEmptyResult,
+  type RegexResultsWire,
+} from './recording/regex-match-result';
+import { shouldForward } from './recording/transcript-gate';
 import { InFlightQuestionTracker } from './recording/in-flight-question';
+import { buildConfirmationDedupeKey } from './recording/confirmation-dedupe-key';
 import {
   PendingReadingsBuffer,
   buildPendingReadingsQuestion,
@@ -60,7 +66,11 @@ import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tt
 import { clientDiagnostic, setDiagnosticSink } from './recording/client-diagnostic';
 import { record as recordLifecycle } from './diagnostics/lifecycle-log';
 import { pipelineLog } from './diagnostics/pipeline-log';
-import { playAttentionTone, playConfirmationChime } from './recording/tones';
+import {
+  playAttentionTone,
+  playConfirmationChime,
+  playSentForProcessingChime,
+} from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
 import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
@@ -1524,8 +1534,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
             : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-        const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
+        // WS3 item 7 (2026-07-02) — the in-flight-ask signal is computed
+        // FIRST via a NON-consuming peek. It feeds BOTH (a) the regex
+        // skip below (which guards the sess_mp79tvcj_6prk 2026-05-15
+        // regression and MUST keep receiving the signal) and (b) the
+        // transcript gate's hasPendingAsk input. Consumption of the
+        // tool_call_id happens only on the gate-PASS path immediately
+        // before the send — a gate REJECT must not burn ask state.
+        const peekedToolCallId = sonnetRef.current?.peekInFlightToolCallId() ?? null;
+        const isAnswerToAsk = Boolean(peekedToolCallId);
         let regexResults: RegexResultsWire | undefined = undefined;
+        // Flag-independent match-presence signal for the gate: a
+        // regex-matchable reading must never be silently gate-rejected in
+        // a build where the HINTS flag is off (the flag gates hint
+        // APPLICATION, not reading detection — prod sets it to 1 via
+        // deploy.yml, but local/dev/test builds don't).
+        let gateRegexHit = false;
         const regexHintsEnabled = process.env.NEXT_PUBLIC_REGEX_HINTS_ENABLED === '1';
         console.info(
           `[recording:pipeline] stage=regex enabled=${regexHintsEnabled} matcher=${Boolean(regexMatcherRef.current)} tracker=${Boolean(fieldSourceTrackerRef.current)}`
@@ -1544,14 +1568,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // race it. Also avoid extending `cumulativeTranscriptRef` so
         // subsequent utterances don't inherit the answer's text in their
         // sliding-match window (Sonnet wrote the value; the matcher
-        // should remain unaware).
-        const isAnswerToAsk = Boolean(inFlightToolCallId);
-        if (
-          regexHintsEnabled &&
-          regexMatcherRef.current &&
-          fieldSourceTrackerRef.current &&
-          !isAnswerToAsk
-        ) {
+        // should remain unaware). When the regex pass is skipped for an
+        // ask-answer, gateRegexHit stays false and the gate passes via
+        // hasPendingAsk instead.
+        if (regexMatcherRef.current && fieldSourceTrackerRef.current && !isAnswerToAsk) {
           // `text` is already normalised at the top of dispatchFinal; no
           // need to re-run normaliseTranscriptText. The matcher does its
           // OWN internal normalisation (transcript-field-matcher.ts:958
@@ -1563,37 +1583,90 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             cumulativeTranscriptRef.current,
             jobRef.current
           );
-          const applied = applyRegexMatchToJob(
-            jobRef.current,
-            matchResult,
-            fieldSourceTrackerRef.current
-          );
-          console.info(
-            `[recording:pipeline] stage=regex_applied changedKeys=${applied?.changedKeys.length ?? 0} keys=${(applied?.changedKeys ?? []).slice(0, 5).join(',')}`
-          );
-          clientDiagnostic('pipeline_regex_applied', {
-            normalisedPreview: text.slice(0, 80),
-            changedKeysCount: applied?.changedKeys.length ?? 0,
-            changedKeysPreview: (applied?.changedKeys ?? []).slice(0, 5),
-          });
-          if (applied) {
-            updateJobRef.current(applied.patch);
-            jobRef.current = {
-              ...jobRef.current,
-              ...(applied.patch as Partial<typeof jobRef.current>),
-            };
-            if (applied.changedKeys.length > 0) {
-              liveFill.markUpdated(applied.changedKeys);
+          if (regexHintsEnabled) {
+            const applied = applyRegexMatchToJob(
+              jobRef.current,
+              matchResult,
+              fieldSourceTrackerRef.current
+            );
+            console.info(
+              `[recording:pipeline] stage=regex_applied changedKeys=${applied?.changedKeys.length ?? 0} keys=${(applied?.changedKeys ?? []).slice(0, 5).join(',')}`
+            );
+            clientDiagnostic('pipeline_regex_applied', {
+              normalisedPreview: text.slice(0, 80),
+              changedKeysCount: applied?.changedKeys.length ?? 0,
+              changedKeysPreview: (applied?.changedKeys ?? []).slice(0, 5),
+            });
+            if (applied) {
+              updateJobRef.current(applied.patch);
+              jobRef.current = {
+                ...jobRef.current,
+                ...(applied.patch as Partial<typeof jobRef.current>),
+              };
+              if (applied.changedKeys.length > 0) {
+                liveFill.markUpdated(applied.changedKeys);
+              }
             }
+            const writtenKeys = fieldSourceTrackerRef.current.consumeTurnWrites();
+            regexResults = buildRegexSummary(writtenKeys, jobRef.current);
+            gateRegexHit = Array.isArray(regexResults) && regexResults.length > 0;
+          } else {
+            // HINTS flag off (local/dev/test): the matcher still ran for
+            // gate purposes — nothing is applied and no hints are sent,
+            // but a matchable reading must still count as a regex hit so
+            // the gate can't reject it.
+            gateRegexHit = !isEmptyResult(matchResult);
           }
-          const writtenKeys = fieldSourceTrackerRef.current.consumeTurnWrites();
-          regexResults = buildRegexSummary(writtenKeys, jobRef.current);
-        } else if (regexHintsEnabled && isAnswerToAsk) {
+        } else if (regexMatcherRef.current && isAnswerToAsk) {
           clientDiagnostic('pipeline_regex_skipped_ask_answer', {
-            toolCallIdShort: inFlightToolCallId?.slice(0, 12) ?? null,
+            toolCallIdShort: peekedToolCallId?.slice(0, 12) ?? null,
             textPreview: text.slice(0, 80),
           });
         }
+        // ── WS3 item 7 — client-side transcript forward-gate ─────────────
+        // Literal port of iOS TranscriptGate.shouldForward, inserted at
+        // the same point in the pipeline: after the voice-command
+        // short-circuit + regex pass, immediately before the send. The
+        // audible contract: chime = "received and committed to
+        // processing"; silence = "heard but won't extract, carry on".
+        //
+        // Gate inputs are NON-MUTATING peeks: `peekedToolCallId` (Stage 6
+        // ask, peeked above) and `peekPayloadForTranscript()` (legacy
+        // in_response_to slot with the same stale-window test as
+        // takePayload but no burn/clear). Raw peekSlot() would be wrong
+        // here — it has no stale-window check, so a stale TTS question
+        // could force a PASS, chime, then send with a null payload.
+        // iOS-canon consequence: a non-expired pending ask or a valid
+        // in_response_to payload is a gate-PASS by definition.
+        const peekedPayload = inFlightQuestionRef.current.peekPayloadForTranscript();
+        const gatePassed = shouldForward({
+          text,
+          hasRegexHit: gateRegexHit,
+          hasPendingAsk: isAnswerToAsk,
+          inResponseTo: peekedPayload != null,
+        });
+        if (!gatePassed) {
+          // REJECT: no chime, no send, no ask-state consumption, no
+          // processing-count increment (the counter is decremented solely
+          // by Sonnet response/error frames — a reject produces no server
+          // round-trip, so an increment here would stick the indicator on
+          // permanently). Housekeeping: clear ONLY an EXPIRED question
+          // slot; valid ask state is consumed exclusively on the PASS
+          // path after the send.
+          inFlightQuestionRef.current.clearExpiredSlot();
+          console.info(
+            `[recording:pipeline] stage=transcript_gate_blocked text="${text.slice(0, 60)}"`
+          );
+          clientDiagnostic('transcript_gate_blocked', {
+            textPreview: text.slice(0, 80),
+            hadRegexHit: gateRegexHit,
+          });
+          sleepManagerRef.current?.onSpeechActivity();
+          return;
+        }
+        // PASS: consume the Stage 6 tool_call_id (peeked earlier) — the
+        // consume/peek pair is race-free inside this synchronous block.
+        const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
         console.info(
           `[recording:pipeline] stage=sonnet_send utteranceId=${utteranceId.slice(0, 8)} inFlightToolCallId=${inFlightToolCallId?.slice(0, 12) ?? 'none'} regexHints=${regexResults?.length ?? 0}`
         );
@@ -1617,6 +1690,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // NEXT unrelated transcript.
         const drainedPayload = inFlightQuestionRef.current.takePayload(text);
         const inResponseTo = inFlightToolCallId ? undefined : (drainedPayload ?? undefined);
+        // Gate-pass chime — iOS chimes on BOTH branches (stage6_ask_answer
+        // and legacy_free_text) before the send; TranscriptGate.playChime
+        // parity.
+        playSentForProcessingChime();
         sonnetRef.current?.sendTranscript(text, {
           confirmationsEnabled: getConfirmationModeEnabled(),
           utteranceId,
@@ -2046,18 +2123,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // re-extraction of the same field+circuit doesn't TTS twice.
       // Mirrors iOS `flushPendingConfirmations`
       // (DeepgramRecordingViewModel.swift:3290-3317): iterate the
-      // confirmations array, build `<field>_<circuit>` dedup key,
-      // skip on hit, otherwise speak via the user-toggle-gated path.
+      // confirmations array, build the shared dedupe key, skip on hit,
+      // otherwise speak via the user-toggle-gated path.
       // Pre-fix the PWA only spoke the FIRST confirmation per turn —
       // the inspector lost audio feedback on a multi-reading turn
       // (two finals merged via the burst buffer can carry two field
       // updates, and only the first got announced).
+      //
+      // WS3 item 2 (2026-07-02): key re-keyed from field+circuit-only
+      // (`<field>_none` degenerate fallback) to the full iOS
+      // `buildConfirmationDedupeKey` shape — field + circuit + sorted
+      // circuits + board_id + text-hash. The old fallback collided on
+      // every board-level confirmation pair (84CE2125: second spd_bs_en
+      // read-back swallowed) and on multi-circuit broadcasts (C0C21546:
+      // turn-10 broadcast silenced by turn-9's key). The text IS the
+      // value discriminator, so "same field, different value" now reads
+      // back — audio-first invariant #1 (exactly once, never zero).
       const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
       for (const conf of confirmations) {
         if (!conf || typeof conf.text !== 'string' || conf.text.trim().length === 0) continue;
-        const dedupeKey = `${conf.field ?? 'unknown'}_${
-          conf.circuit != null ? String(conf.circuit) : 'none'
-        }`;
+        const dedupeKey = buildConfirmationDedupeKey(conf);
         if (confirmedFieldKeysRef.current.has(dedupeKey)) {
           clientDiagnostic('onExtraction_confirmation_deduped', {
             dedupeKey,

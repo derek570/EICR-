@@ -380,6 +380,14 @@ export interface ObservationRow {
    *  observations[] AND on observation_update payloads. iOS
    *  counterpart: `Observation.regulation`. */
   regulation?: string;
+  /** Canonical BS 7671 regulation wording (obs-#52 Fix B) — table-
+   *  validated title/description for the cited ref, sent on both the
+   *  initial extraction and every `observation_update` path. Undefined
+   *  on a table MISS; the apply layer CLEARS these on a refinement whose
+   *  new ref misses the table (iOS parity — stale HIT wording must not
+   *  outlive its ref). iOS: `Observation.regulationTitle/Description`. */
+  regulation_title?: string;
+  regulation_description?: string;
   /** Free-text rationale from the refinement lookup. */
   rationale?: string;
   /** Refinement source identifier (e.g. "BPG4"). */

@@ -221,6 +221,54 @@ export class InFlightQuestionTracker {
   }
 
   /**
+   * NON-MUTATING stale-window peek — WS3 item 7 (transcript forward-gate).
+   *
+   * The gate needs the `inResponseTo` signal BEFORE deciding whether to
+   * forward, but `takePayload()` both clears an expired slot and burns a
+   * valid one — calling it pre-gate would mean a stale TTS question could
+   * force shouldForward=true, chime, then send after the real
+   * `takePayload()` returns null; and a REJECT after a mutating call
+   * would have consumed valid ask state with no send. This helper applies
+   * the exact same stale-window test but NEVER mutates: returns the
+   * payload for a live, non-stale slot, null otherwise. Only a gate PASS
+   * then calls the mutating `takePayload(text)` immediately before
+   * `sendTranscript` (matching iOS, where consumption happens on the
+   * send path).
+   *
+   * Note: `takePayload`'s transcript argument only drives the BURN
+   * decision, which a peek by definition never takes — so this helper
+   * needs no transcript.
+   */
+  peekPayloadForTranscript(): InFlightPayload | null {
+    if (!this.slot) return null;
+    const age = this.now() - this.slot.askedAt;
+    if (age > this.staleWindowMs) return null;
+    const payload: InFlightPayload = {
+      type: this.slot.type,
+      question: this.slot.question,
+    };
+    if (this.slot.field != null) payload.field = this.slot.field;
+    if (this.slot.circuit != null) payload.circuit = this.slot.circuit;
+    return payload;
+  }
+
+  /**
+   * Clear the slot ONLY if it is past the stale window — the gate-REJECT
+   * housekeeping path (WS3 item 7). A rejected utterance must not burn a
+   * still-valid ask (consumption of valid state happens only after
+   * `sendTranscript`/`sendAskUserAnswered` on the PASS path), but an
+   * expired slot should not linger to mis-attach to a later transcript.
+   * Same expiry test as `takePayload()`.
+   */
+  clearExpiredSlot(): void {
+    if (!this.slot) return;
+    const age = this.now() - this.slot.askedAt;
+    if (age > this.staleWindowMs) {
+      this.slot = null;
+    }
+  }
+
+  /**
    * Force-clear the slot. Used after a Stage 6 `ask_user_answered` wire
    * emit — the answer is canonical via the wire path so the slot
    * shouldn't mis-attach to the next unrelated transcript. iOS canon

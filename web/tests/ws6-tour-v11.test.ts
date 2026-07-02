@@ -16,14 +16,18 @@
 
 import { describe, expect, it } from 'vitest';
 import { DASHBOARD_TOUR_STEPS, JOB_TOUR_STEPS, OVERALL_TOUR_TOTAL } from '@/lib/tour/steps';
+// WS3 item 7 (2026-07-02): the chime synthesis moved from the WS6
+// interim tour-local module (lib/tour/tour-chime.ts, deleted) into the
+// canonical lib/recording/tones.ts — same waveform, one copy in web/.
 import {
   CHIME_AMPLITUDE,
   CHIME_ATTACK_S,
   CHIME_DURATION_S,
   CHIME_SAMPLE_RATE,
   synthesiseChimeSamples,
-  playTourProcessingChime,
-} from '@/lib/tour/tour-chime';
+  playSentForProcessingChime,
+  __resetTonesForTests,
+} from '@/lib/recording/tones';
 
 describe('tour v11 step structure', () => {
   it('has 2 dashboard + 9 job = 11 steps overall (iOS TourManager v11)', () => {
@@ -113,7 +117,8 @@ describe('tour chime synthesis (iOS makeChimeWAVData port)', () => {
     expect(late / early).toBeLessThan(0.55);
   });
 
-  it('playTourProcessingChime is fail-quiet without an AudioContext (jsdom)', () => {
-    expect(() => playTourProcessingChime()).not.toThrow();
+  it('playSentForProcessingChime is fail-quiet without an AudioContext (jsdom)', () => {
+    __resetTonesForTests(); // fresh lazy-init path, no cached context
+    expect(() => playSentForProcessingChime()).not.toThrow();
   });
 });

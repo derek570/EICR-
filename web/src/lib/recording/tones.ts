@@ -122,10 +122,89 @@ export function playConfirmationChime(): void {
   ]);
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// "Sent for processing" chime — WS3 item 7 (2026-07-02).
+//
+// Sample-accurate port of iOS `DeepgramRecordingViewModel.makeChimeWAVData()`
+// (:209-232): 960 Hz sine, 80 ms total, 10 ms linear attack ramp then
+// `exp(-(t - attack) * 20)` decay, amplitude 0.5, 22.05 kHz mono. Chosen by
+// Derek 2026-06-01 (Issue 3): 960 Hz is the iPhone tri-tone send anchor —
+// warmer than 880 Hz in ambient CU-cupboard environments; the 80 ms decay
+// confirms "received and processing" without lingering past the inspector's
+// next syllable.
+//
+// Played ONLY when a transcript passes the forward-gate
+// (transcript-gate.ts) and is sent to the backend — the audible contract
+// is "chime = we committed to processing; silence = heard but won't
+// extract". Also reused by the tour's "conversational + tone" step, which
+// teaches this exact sound (absorbed from WS6's interim
+// web/src/lib/tour/tour-chime.ts local synth — WS3 item 7 owns the switch;
+// never two copies of the synthesis in web/).
+//
+// Implementation note: unlike the oscillator+gain approach above, this
+// renders exact PCM samples into an AudioBuffer — the iOS envelope (linear
+// attack + exponential decay with a specific constant) is the thing being
+// taught, and "close by ear" isn't good enough when the tour says "this is
+// the sound". Do NOT refactor onto playSequence(); the pinned waveform
+// tests will fail.
+// ────────────────────────────────────────────────────────────────────────
+
+export const CHIME_SAMPLE_RATE = 22050;
+export const CHIME_FREQUENCY_HZ = 960;
+export const CHIME_DURATION_S = 0.08;
+export const CHIME_ATTACK_S = 0.01;
+export const CHIME_AMPLITUDE = 0.5;
+
+/**
+ * Pure synthesis of the chime waveform — mirrors the iOS sample loop
+ * one-for-one (modulo Int16 quantisation, irrelevant at Float32).
+ * Exported for tests so the envelope contract is pinned without an
+ * AudioContext.
+ */
+export function synthesiseChimeSamples(sampleRate: number = CHIME_SAMPLE_RATE): Float32Array {
+  const sampleCount = Math.floor(sampleRate * CHIME_DURATION_S);
+  const samples = new Float32Array(sampleCount);
+  for (let i = 0; i < sampleCount; i++) {
+    const t = i / sampleRate;
+    const envelope = t < CHIME_ATTACK_S ? t / CHIME_ATTACK_S : Math.exp(-(t - CHIME_ATTACK_S) * 20);
+    samples[i] = Math.sin(2 * Math.PI * CHIME_FREQUENCY_HZ * t) * CHIME_AMPLITUDE * envelope;
+  }
+  return samples;
+}
+
+/**
+ * Play the "sent for processing" chime once. Fail-quiet like the other
+ * tones — no AudioContext (SSR, jsdom, pre-gesture iOS Safari) means
+ * silence, never a throw. Recording starts with a tap, so the context is
+ * gesture-unlocked by the time a gate-pass can occur.
+ */
+export function playSentForProcessingChime(): void {
+  const context = getContext();
+  if (!context) return;
+  if (context.state === 'suspended') {
+    void context.resume().catch(() => {});
+  }
+  try {
+    const samples = synthesiseChimeSamples();
+    const buffer = context.createBuffer(1, samples.length, CHIME_SAMPLE_RATE);
+    // `.set` instead of `copyToChannel` — TS 5.7's generic TypedArrays
+    // type the latter's parameter as Float32Array<ArrayBuffer> which a
+    // plain `new Float32Array(n)` no longer satisfies structurally.
+    buffer.getChannelData(0).set(samples);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    source.start();
+  } catch {
+    // Non-critical audio cue — swallow (same semantics as playSequence).
+  }
+}
+
 /**
  * Test-only — drop the cached AudioContext so a fresh test starts
  * without state from a prior test. The audio API itself is mocked at
  * the test-harness level; this just ensures the lazy-init path runs.
+ * Covers ALL tones in this module including playSentForProcessingChime.
  */
 export function __resetTonesForTests(): void {
   ctx = null;
