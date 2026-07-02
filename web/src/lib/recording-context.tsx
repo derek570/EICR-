@@ -762,7 +762,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     if (!filename) return;
     const currentJob = jobRef.current;
     if (!currentJob) return;
-    const existing = (currentJob.unassigned_photos as string[] | undefined) ?? [];
+    const existing = currentJob.unassigned_photos ?? [];
     if (existing.includes(filename)) return;
     const next = [...existing, filename];
     updateJobRef.current({ unassigned_photos: next });

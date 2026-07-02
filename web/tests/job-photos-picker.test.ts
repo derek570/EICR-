@@ -91,4 +91,13 @@ describe('hasAnyPickableJobPhotos', () => {
     });
     expect(hasAnyPickableJobPhotos(job, 'current')).toBe(true);
   });
+
+  it('treats unassigned_photos: null (blank-slate backend shape) as an empty pool', () => {
+    // GET /api/job emits `unassigned_photos: null` when the pool was
+    // never written (src/routes/jobs.js:594, pinned by backend
+    // round-trip tests) — the gate must read that as "nothing
+    // pickable", not crash or show the From-Job button.
+    const job = makeJob({ unassigned_photos: null });
+    expect(hasAnyPickableJobPhotos(job, null)).toBe(false);
+  });
 });

@@ -133,7 +133,7 @@ export function ObservationSheet({
       }
       if (!job) return;
       if (source.kind === 'unassigned') {
-        const pool = (job.unassigned_photos as string[] | undefined) ?? [];
+        const pool = job.unassigned_photos ?? [];
         const nextPool = pool.filter((f) => f !== filename);
         if (nextPool.length !== pool.length) {
           updateJob({ unassigned_photos: nextPool });
