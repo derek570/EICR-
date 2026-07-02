@@ -122,17 +122,38 @@ async function loadDocument(
 
 /** Serialise one page div (plus the document's stylesheet) into a
  * self-contained SVG foreignObject document. XMLSerializer guarantees
- * well-formed XHTML regardless of how the source HTML was authored. */
+ * well-formed XHTML regardless of how the source HTML was authored.
+ *
+ * The wrapper carries the source document BODY's computed typography as
+ * inline style: the template scopes its base font on `body { … }`, and
+ * inside the foreignObject the content root is a <div>, so a bare copy
+ * of the stylesheet would silently drop the body rule and every page
+ * would rasterise in the engine's default serif face (caught in the
+ * WS9 acceptance diff vs the iOS reference). */
 function pageToSvg(pageEl: Element, css: string, width: number, height: number): string {
   const clone = pageEl.cloneNode(true) as HTMLElement;
   // Page-by-page isolation: the template relies on one div per PDF page;
   // the clone is the only content in this SVG so display stays block.
   clone.style.display = 'block';
   const serialized = new XMLSerializer().serializeToString(clone);
+
+  const body = pageEl.ownerDocument?.body;
+  const view = pageEl.ownerDocument?.defaultView;
+  let bodyStyle = '';
+  if (body && view) {
+    const computed = view.getComputedStyle(body);
+    bodyStyle =
+      `font-family:${computed.fontFamily};` +
+      `font-size:${computed.fontSize};` +
+      `font-weight:${computed.fontWeight};` +
+      `line-height:${computed.lineHeight};` +
+      `color:${computed.color};`;
+  }
+
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
     `<foreignObject width="100%" height="100%">` +
-    `<div xmlns="http://www.w3.org/1999/xhtml">` +
+    `<div xmlns="http://www.w3.org/1999/xhtml" style="${bodyStyle}">` +
     `<style>${css}</style>` +
     serialized +
     `</div>` +

@@ -159,6 +159,20 @@ export function cssStyles(): string {
             flex-wrap: wrap; margin-bottom: 1pt;
         }
         .legend-item { display: flex; align-items: center; gap: 2pt; }
+
+        /* WEB-ONLY compensation (dated 2026-07-02, WS9 acceptance diff):
+           iOS's WKWebView paints the circuit-table group-header band red,
+           but per strict cascade the row-striping rule above
+           (.circuit-table tr:nth-child(odd) td — specificity 0,2,2)
+           beats .circuit-table .group-header (0,2,0), and the capture
+           renderer's engine resolves it that way, leaving a white band
+           with invisible white text. Re-assert the iOS-visible result
+           at higher specificity. Everything above this comment stays
+           byte-identical to EICRHTMLTemplate.swift cssStyles(). */
+        .circuit-table tr:nth-child(odd) td.group-header,
+        .circuit-table tr:nth-child(even) td.group-header {
+            background: #B80000;
+        }
         `;
 }
 
