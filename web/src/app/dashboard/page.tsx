@@ -19,9 +19,12 @@ import { api } from '@/lib/api-client';
 import { clearAuth, getUser } from '@/lib/auth';
 import { getCachedJobs, putCachedJobs } from '@/lib/pwa/job-cache';
 import { useOutboxState } from '@/lib/pwa/use-outbox-state';
-import { ApiError, type Job } from '@/lib/types';
+import { ApiError, type Job, type JobDetail } from '@/lib/types';
+import { applyPickedPreset, prepareCreatedJob, skipPresetPick } from '@/lib/defaults/job-creation';
+import type { CertificateDefaultPreset } from '@/lib/defaults/types';
 import { AnimatedCounter } from '@/components/dashboard/animated-counter';
 import { JobRow } from '@/components/dashboard/job-row';
+import { PresetPickerSheet } from '@/components/dashboard/preset-picker-sheet';
 import { TourOverlay } from '@/components/tour/tour-overlay';
 import { useTour } from '@/hooks/use-tour';
 
@@ -173,12 +176,41 @@ export default function DashboardPage() {
   );
   const recentTruncated = recentFiltered.length > recent.length;
 
+  /**
+   * WS6 item 6 — post-create defaults ladder (iOS
+   * `JobListViewModel.autoApplyDefaults`): after `api.createJob`
+   * (returns only `{id}`), fetch the created JobDetail, then
+   *   0 presets → apply standard defaults, persist, navigate;
+   *   1 preset  → auto-apply it, persist, navigate;
+   *   2+        → show the PresetPickerSheet (Skip navigates untouched).
+   * The ladder must never BLOCK job creation — if the fetch/preset
+   * lookup fails (offline dashboard, transient 5xx), we fall back to
+   * navigating bare, exactly like the pre-WS6 behaviour.
+   */
+  const [presetPick, setPresetPick] = React.useState<{
+    detail: JobDetail;
+    presets: CertificateDefaultPreset[];
+  } | null>(null);
+
   async function createJob(kind: 'EICR' | 'EIC') {
     const user = getUser();
     if (!user) return;
     setCreating(true);
     try {
       const { id } = await api.createJob(user.id, kind);
+      try {
+        const outcome = await prepareCreatedJob(user.id, id, kind);
+        if (outcome.kind === 'pick') {
+          // Hold navigation until the inspector picks or skips — the
+          // sheet's handlers below finish the flow.
+          setPresetPick({ detail: outcome.detail, presets: outcome.presets });
+          return;
+        }
+      } catch {
+        // Defaults are a convenience — creation already succeeded, so
+        // never strand the inspector on the dashboard over a defaults
+        // hiccup. Navigate to the bare job.
+      }
       router.push(`/job/${id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create job");
@@ -186,6 +218,19 @@ export default function DashboardPage() {
       setCreating(false);
     }
   }
+
+  const finishPresetPick = React.useCallback(
+    async (action: () => Promise<void>, jobId: string) => {
+      try {
+        await action();
+      } catch {
+        // Same never-block rule as above — the job exists; go there.
+      }
+      setPresetPick(null);
+      router.push(`/job/${jobId}`);
+    },
+    [router]
+  );
 
   // Phase 3 — drop a deleted job out of the list without a full refetch.
   // The JobRow calls this once the backend DELETE lands.
@@ -373,6 +418,32 @@ export default function DashboardPage() {
           tour isn't active, so mounting is free on every dashboard
           visit. */}
       <TourOverlay controller={tour} />
+
+      {/* WS6 item 6 — 2+ preset picker after job creation (iOS
+          PresetPickerSheet). Pick applies + persists then navigates;
+          Skip navigates with the created job untouched. */}
+      {presetPick ? (
+        <PresetPickerSheet
+          open
+          presets={presetPick.presets}
+          onSelect={(preset) => {
+            const user = getUser();
+            if (!user) return;
+            void finishPresetPick(
+              () => applyPickedPreset(user.id, presetPick.detail, preset),
+              presetPick.detail.id
+            );
+          }}
+          onSkip={() => {
+            const user = getUser();
+            if (!user) return;
+            void finishPresetPick(
+              () => skipPresetPick(user.id, presetPick.detail),
+              presetPick.detail.id
+            );
+          }}
+        />
+      ) : null}
     </main>
   );
 }
