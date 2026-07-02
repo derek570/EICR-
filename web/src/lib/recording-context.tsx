@@ -17,7 +17,6 @@ import {
   applyObservationUpdate,
 } from './recording/apply-extraction';
 import {
-  isWithinLinkWindow,
   OBSERVATION_PHOTO_LINK_WINDOW_MS,
   type PendingObservationPhoto,
   type RecentObservationRef,
