@@ -33,17 +33,20 @@ export function LabelledSelect({
   const reactId = React.useId();
   return (
     <div className="flex flex-col gap-1">
+      {/* WS5 (2026-07-02): field chrome matched to CMFloatingTextField /
+          CMFloatingPicker — L2 bg, 1.5px L3 border, green focus + glow,
+          radius 12, height 52, 12px medium label, 17px value. */}
       <div
-        className={`group relative flex h-14 items-stretch rounded-[var(--radius-md)] border bg-[var(--color-surface-1)] transition focus-within:border-[var(--color-brand-blue)] ${
+        className={`group relative flex h-[var(--h-input)] items-stretch rounded-[var(--radius-input)] border-[1.5px] bg-[var(--color-surface-2)] transition focus-within:border-[var(--color-green-vibrant)] focus-within:shadow-[0_0_12px_rgba(0,230,118,0.2)] ${
           disabled
-            ? 'border-[var(--color-border-subtle)] opacity-60'
-            : 'border-[var(--color-border-default)]'
+            ? 'border-[color:var(--color-border-subtle)] opacity-60'
+            : 'border-[color:var(--color-surface-3)]'
         }`}
       >
         <div className="flex flex-1 flex-col justify-center px-3">
           <label
             htmlFor={reactId}
-            className="pointer-events-none text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]"
+            className="pointer-events-none text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors group-focus-within:text-[var(--color-green-vibrant)]"
           >
             {label}
           </label>
@@ -52,7 +55,7 @@ export function LabelledSelect({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             disabled={disabled}
-            className="w-full bg-transparent text-[15px] font-medium text-[var(--color-text-primary)] focus:outline-none disabled:cursor-not-allowed"
+            className="w-full bg-transparent text-[17px] text-[var(--color-text-primary)] focus:outline-none disabled:cursor-not-allowed"
           >
             {options.map((o) => (
               <option key={o.value} value={o.value}>

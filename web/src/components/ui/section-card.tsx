@@ -72,26 +72,39 @@ export function SectionCard({
 } & Omit<React.HTMLAttributes<HTMLDivElement>, 'title'>) {
   const category = isCategoryAccent(accent) ? SECTION_ACCENTS[accent] : null;
   const accentColor = category ? category.stripe : COLOUR_ACCENTS[accent as ColourAccent];
+  // WS5 (2026-07-02) — iOS CMSectionCard recipe (CMSectionCard.swift:48-108):
+  // L1 background + Blue.subtle (blue-vibrant 8%) tint, gradient border
+  // from the accent at 20% → 8% (padding-box/border-box trick), radius 16
+  // (cardRedesign), padding 16. Category accents carry the full recipe;
+  // legacy colour accents get the same card chrome with a plain subtle
+  // border (they predate the iOS category system).
   const surfaceStyle: React.CSSProperties = category
     ? {
-        background: `linear-gradient(0deg, ${category.bg}, ${category.bg}), var(--color-surface-2)`,
-        borderColor: category.border,
+        background:
+          `linear-gradient(color-mix(in srgb, var(--color-blue-vibrant) 8%, transparent), color-mix(in srgb, var(--color-blue-vibrant) 8%, transparent)) padding-box, ` +
+          `linear-gradient(var(--color-surface-1), var(--color-surface-1)) padding-box, ` +
+          `linear-gradient(135deg, color-mix(in srgb, ${category.stripe} 20%, transparent), color-mix(in srgb, ${category.stripe} 8%, transparent)) border-box`,
+        borderColor: 'transparent',
       }
     : {};
   return (
     <section
       {...props}
       className={cn(
-        'relative overflow-hidden rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] pl-4 pr-4 py-4 md:pl-5 md:pr-5 md:py-5',
+        'relative overflow-hidden rounded-[var(--radius-section-card)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] p-4',
         className
       )}
       style={{ ...surfaceStyle, ...(props.style ?? {}) }}
     >
-      {/* Left accent stripe */}
+      {/* Left accent bar — iOS `cmStatusConduit`: 3px vertical gradient
+          (accent → 40%), inset from the card edges like the SwiftUI
+          original (leading 4px, vertical 8px). */}
       <span
         aria-hidden
-        className="absolute left-0 top-0 h-full w-[3px] rounded-r-full"
-        style={{ background: accentColor }}
+        className="absolute bottom-2 left-1 top-2 w-[3px] rounded-full"
+        style={{
+          background: `linear-gradient(180deg, ${accentColor}, color-mix(in srgb, ${accentColor} 40%, transparent))`,
+        }}
       />
 
       {(title || Icon) && (

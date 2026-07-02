@@ -53,20 +53,28 @@ export function SelectChips({
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="listbox"
+        // WS5 (2026-07-02): trigger chrome matched to CMFloatingPicker —
+        // L2 bg, 1.5px L3 border, green active state + glow, radius 12,
+        // height 52, 12px medium label, 17px value.
         className={cn(
-          'flex h-14 items-center justify-between gap-2 rounded-[var(--radius-md)] border bg-[var(--color-surface-1)] px-3 text-left transition',
+          'flex h-[var(--h-input)] items-center justify-between gap-2 rounded-[var(--radius-input)] border-[1.5px] bg-[var(--color-surface-2)] px-3 text-left transition',
           open
-            ? 'border-[var(--color-brand-blue)]'
-            : 'border-[var(--color-border-default)] hover:border-[var(--color-border-strong)]'
+            ? 'border-[var(--color-green-vibrant)] shadow-[0_0_12px_rgba(0,230,118,0.2)]'
+            : 'border-[color:var(--color-surface-3)] hover:border-[color:var(--color-border-strong)]'
         )}
       >
         <span className="flex flex-col">
-          <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
+          <span
+            className={cn(
+              'text-[12px] font-medium transition-colors',
+              open ? 'text-[var(--color-green-vibrant)]' : 'text-[var(--color-text-secondary)]'
+            )}
+          >
             {label}
           </span>
           <span
             className={cn(
-              'text-[15px] font-medium',
+              'text-[17px]',
               selected ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-tertiary)]'
             )}
           >
