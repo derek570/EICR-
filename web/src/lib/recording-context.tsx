@@ -25,7 +25,6 @@ import {
 import { captureObservationPhoto as runCaptureObservationPhoto } from './recording/capture-observation-photo';
 import { clearPendingPhoto, readPendingPhoto, writePendingPhoto } from './pwa/job-cache';
 import { resizeImage } from './image-resize';
-import { toast } from 'sonner';
 import { applyRegexMatchToJob } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
