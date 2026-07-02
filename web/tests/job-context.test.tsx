@@ -171,6 +171,46 @@ describe('Wave 5 D7 E1 · JobProvider.updateJob stale-closure contract (P0-2 reg
     expect(harness.ctxRef.current?.isDirty).toBe(true);
   });
 
+  it('(e) WS6 dirty-guard: a NEWER server doc (advanced updated_at) must NOT clobber unsaved local edits', () => {
+    // iOS `isJobDirty` parity (parent WS6 item 4 / ledger row
+    // crosscutting/offline-dirty-guard): a background refresh that
+    // lands mid-edit carries a newer `updated_at`, which is exactly
+    // the case the id-only test (c) doesn't cover — the guard must
+    // ALSO require a clean local doc before replacing.
+    act(() => {
+      harness.ctxRef.current!.updateJob({ address: 'inspector mid-edit' });
+    });
+    expect(harness.ctxRef.current?.isDirty).toBe(true);
+
+    const newerServerDoc: JobDetail = {
+      ...BASE_A,
+      address: 'server background refresh',
+      updated_at: '2026-07-02T12:00:00Z',
+    };
+    harness.rerender(newerServerDoc);
+
+    expect(harness.ctxRef.current?.job.address).toBe('inspector mid-edit');
+    expect(harness.ctxRef.current?.isDirty).toBe(true);
+  });
+
+  it('(f) WS6 dirty-guard: a NEWER server doc DOES hydrate when the local doc is clean', () => {
+    // The other half of the contract — cache-then-hydrate must still
+    // work: with no unsaved edits, an advanced `updated_at` replaces
+    // the (possibly stale-cache) doc. Without this, the id-only gate
+    // would freeze the first-painted cache snapshot forever.
+    expect(harness.ctxRef.current?.isDirty).toBe(false);
+
+    const newerServerDoc: JobDetail = {
+      ...BASE_A,
+      address: 'fresh from network',
+      updated_at: '2026-07-02T12:00:00Z',
+    };
+    harness.rerender(newerServerDoc);
+
+    expect(harness.ctxRef.current?.job.address).toBe('fresh from network');
+    expect(harness.ctxRef.current?.isDirty).toBe(false);
+  });
+
   it('(d) re-providing initial with a NEW id resets state + clears isDirty', () => {
     // Navigating from job A to job B is the one case where we MUST
     // clobber — carrying A's dirty flag into B would be a correctness
