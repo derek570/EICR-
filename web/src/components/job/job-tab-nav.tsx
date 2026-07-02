@@ -27,7 +27,7 @@ import { useJobContext } from '@/lib/job-context';
  * keep a muted gray label with the brand-coloured icon.
  *
  * Tab set is cert-type-gated to mirror iOS
- * `CertMateUnified/Sources/Views/JobDetail/JobDetailView.swift:313-357`:
+ * `CertMateUnified/Sources/Views/JobDetail/JobDetailView.swift:472-536`:
  *   EICR: Overview, Installation, Supply, Board, Circuits, Observations,
  *         Inspection, Staff, PDF
  *   EIC : Overview, Installation, Supply, Board, Circuits, Inspection,
