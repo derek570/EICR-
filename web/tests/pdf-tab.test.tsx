@@ -145,26 +145,41 @@ vi.mock('@/lib/job-context', () => ({
   }),
 }));
 
-// api-client mock — the page calls generatePdf (after the attestation
-// modal accepts) and updateAttestationPdfKey (fire-and-forget,
-// post-render). legalTextVersions + acceptCertAttestations live inside
-// the modal which we stub out below, so they're not strictly needed
-// here, but include them to keep the mock complete.
+// api-client mock — the page calls generatePdf ONLY on the explicit
+// server-fallback action (WS9: the primary Generate is the client
+// render) and updateAttestationPdfKey (fire-and-forget, post-render;
+// args captured so the local:// / route:// stamping can be pinned).
+// legalTextVersions + acceptCertAttestations live inside the modal
+// which we stub out below, so they're not strictly needed here.
 const generatePdfMock = vi.fn<(userId: string, jobId: string) => Promise<Blob>>();
-const updateAttestationPdfKeyMock = vi.fn(async () => ({ ok: true, updated: 2 }));
+const updateAttestationPdfKeyMock = vi.fn(
+  async (_args: { attestation_ids: number[]; pdf_s3_key: string }) => ({ ok: true, updated: 2 })
+);
 vi.mock('@/lib/api-client', () => ({
   api: {
     generatePdf: (userId: string, jobId: string) => generatePdfMock(userId, jobId),
     updateAttestationPdfKey: (args: { attestation_ids: number[]; pdf_s3_key: string }) =>
-      updateAttestationPdfKeyMock(),
+      updateAttestationPdfKeyMock(args),
   },
+}));
+
+// Client renderer mock — the page dynamic-imports this module inside
+// handleGenerate. The real pipeline (template + foreignObject capture +
+// pdf-lib) needs a real browser; its own coverage lives in
+// tests/pdf-template.test.ts + tests-e2e/pdf-renderer-spike.spec.ts.
+const generateCertificatePdfMock = vi.fn<(userId: string, detail: unknown) => Promise<Blob>>();
+vi.mock('@/lib/pdf/generate-certificate', () => ({
+  generateCertificatePdf: (userId: string, detail: unknown) =>
+    generateCertificatePdfMock(userId, detail),
 }));
 
 // Stub the attestation modal — these tests pin the *page's* PDF
 // generation behaviour, not the modal's UX. When the page passes
 // open=true the stub auto-confirms with mock attestation_ids so the
-// flow reaches handleGenerate. Real modal UX is exercised in
-// issue-certificate-modal.test.tsx (host of its own coverage).
+// flow reaches handleGenerate. `attestationPromptCount` counts modal
+// presentations so the spec §4.3 no-re-prompt retry can be pinned.
+// Real modal UX is exercised in issue-certificate-modal.test.tsx.
+let attestationPromptCount = 0;
 vi.mock('@/components/job/issue-certificate-modal', () => ({
   IssueCertificateModal: ({
     open,
@@ -175,6 +190,7 @@ vi.mock('@/components/job/issue-certificate-modal', () => ({
   }) => {
     React.useEffect(() => {
       if (open) {
+        attestationPromptCount += 1;
         onConfirmed([101, 102]);
       }
     }, [open, onConfirmed]);
@@ -216,6 +232,9 @@ let harness: { container: HTMLDivElement; root: Root } | null = null;
 
 beforeEach(() => {
   generatePdfMock.mockReset();
+  generateCertificatePdfMock.mockReset();
+  updateAttestationPdfKeyMock.mockClear();
+  attestationPromptCount = 0;
   downloadBlobMock.mockReset();
   // URL.createObjectURL / revokeObjectURL aren't implemented in jsdom.
   // Stub both so PdfPreview can mount without throwing.
@@ -258,8 +277,10 @@ describe('Phase 2 · PDF tab', () => {
     expect(harness.container.textContent).toContain('Not yet generated');
   });
 
-  it('calls api.generatePdf with (getUser().id, useParams().id) and enables secondary buttons on success', async () => {
-    generatePdfMock.mockResolvedValueOnce(new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' }));
+  it('renders CLIENT-side via generateCertificatePdf(userId, job) and enables secondary buttons on success', async () => {
+    generateCertificatePdfMock.mockResolvedValueOnce(
+      new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' })
+    );
     harness = mount();
 
     const generate = findButton(harness.container, 'Generate PDF');
@@ -267,13 +288,25 @@ describe('Phase 2 · PDF tab', () => {
 
     await act(async () => {
       generate!.click();
-      // Let the pending microtask + setState flush.
+      // Let the pending microtask + setState flush (dynamic import adds
+      // an extra tick).
+      await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(generatePdfMock).toHaveBeenCalledTimes(1);
-    expect(generatePdfMock).toHaveBeenCalledWith('user-7', 'job-42');
+    // The primary Generate is the iOS-parity CLIENT render — the
+    // server generator must NOT be called on this path.
+    expect(generateCertificatePdfMock).toHaveBeenCalledTimes(1);
+    expect(generateCertificatePdfMock).toHaveBeenCalledWith('user-7', jobStub);
+    expect(generatePdfMock).not.toHaveBeenCalled();
+
+    // Attestation rows stamped with the iOS local:// scheme
+    // (PDFTab.swift:363), using the share filename.
+    expect(updateAttestationPdfKeyMock).toHaveBeenCalledWith({
+      attestation_ids: [101, 102],
+      pdf_s3_key: 'local://EICR_job-42.pdf',
+    });
 
     const preview = findButton(harness.container, 'Preview PDF');
     const share = findButton(harness.container, 'Share PDF');
@@ -287,8 +320,32 @@ describe('Phase 2 · PDF tab', () => {
     expect(harness.container.querySelector('iframe')).not.toBeNull();
   });
 
-  it('surfaces the backend error message on a failed generate and allows retry', async () => {
-    generatePdfMock.mockRejectedValueOnce(
+  it('keeps the server generator reachable via the explicit fallback action, stamping route://', async () => {
+    generatePdfMock.mockResolvedValueOnce(new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' }));
+    harness = mount();
+
+    const serverBtn = findButton(harness.container, 'Generate on server (fallback)');
+    expect(serverBtn).not.toBeNull();
+
+    await act(async () => {
+      serverBtn!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(generatePdfMock).toHaveBeenCalledTimes(1);
+    expect(generatePdfMock).toHaveBeenCalledWith('user-7', 'job-42');
+    expect(generateCertificatePdfMock).not.toHaveBeenCalled();
+    expect(updateAttestationPdfKeyMock).toHaveBeenCalledWith({
+      attestation_ids: [101, 102],
+      pdf_s3_key: 'route://api/job/user-7/job-42/generate-pdf',
+    });
+    expect(findButton(harness.container, 'Preview PDF')?.disabled).toBe(false);
+  });
+
+  it('surfaces the error on a failed render; Try again re-uses the attestation ids with NO re-prompt (spec §4.3)', async () => {
+    generateCertificatePdfMock.mockRejectedValueOnce(
       new ApiError(500, 'PDF generation failed: missing test results CSV')
     );
     harness = mount();
@@ -298,28 +355,71 @@ describe('Phase 2 · PDF tab', () => {
       generate!.click();
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(harness.container.textContent).toContain(
       'PDF generation failed: missing test results CSV'
     );
+    expect(attestationPromptCount).toBe(1);
     // Secondary buttons stay disabled on failure.
     expect(findButton(harness.container, 'Preview PDF')?.disabled).toBe(true);
-    // "Try again" button is present and re-fires generate when clicked.
-    generatePdfMock.mockResolvedValueOnce(new Blob(['%PDF-1.4 ok'], { type: 'application/pdf' }));
+
+    // "Try again" re-fires the render WITHOUT re-presenting the
+    // attestation modal — the audit rows written before the failed
+    // render are re-used (pdf-issuance-attestations.md §4.3; current
+    // iOS re-prompts here, which is an open iOS spec-parity todo dated
+    // 2026-07-02 — web deliberately implements the SPEC).
+    generateCertificatePdfMock.mockResolvedValueOnce(
+      new Blob(['%PDF-1.4 ok'], { type: 'application/pdf' })
+    );
     const retry = findButton(harness.container, 'Try again');
     expect(retry).not.toBeNull();
     await act(async () => {
       retry!.click();
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
     });
-    expect(generatePdfMock).toHaveBeenCalledTimes(2);
+    expect(generateCertificatePdfMock).toHaveBeenCalledTimes(2);
+    expect(attestationPromptCount).toBe(1);
+    // The successful re-render stamps the SAME attestation ids.
+    expect(updateAttestationPdfKeyMock).toHaveBeenCalledWith({
+      attestation_ids: [101, 102],
+      pdf_s3_key: 'local://EICR_job-42.pdf',
+    });
     expect(findButton(harness.container, 'Preview PDF')?.disabled).toBe(false);
   });
 
+  it('re-prompts the attestation modal on a fresh issuance after success (spec §3)', async () => {
+    generateCertificatePdfMock.mockResolvedValue(
+      new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' })
+    );
+    harness = mount();
+
+    await act(async () => {
+      findButton(harness!.container, 'Generate PDF')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(attestationPromptCount).toBe(1);
+
+    // Regenerate — a fresh SUCCESSFUL issuance always re-prompts.
+    await act(async () => {
+      findButton(harness!.container, 'Regenerate PDF')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(attestationPromptCount).toBe(2);
+    expect(generateCertificatePdfMock).toHaveBeenCalledTimes(2);
+  });
+
   it('falls back to downloadBlob when navigator.canShare returns false', async () => {
-    generatePdfMock.mockResolvedValueOnce(new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' }));
+    generateCertificatePdfMock.mockResolvedValueOnce(
+      new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' })
+    );
     // Force the "desktop" path where canShare({files}) returns false.
     const nav = navigator as unknown as {
       canShare?: (data: unknown) => boolean;
@@ -351,7 +451,9 @@ describe('Phase 2 · PDF tab', () => {
     // Regression guard for the Phase 2 post-codex fix: a navigator.share
     // AbortError must not silently fall through to downloadBlob — the
     // user explicitly cancelled, so we should leave them alone.
-    generatePdfMock.mockResolvedValueOnce(new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' }));
+    generateCertificatePdfMock.mockResolvedValueOnce(
+      new Blob(['%PDF-1.4 stub'], { type: 'application/pdf' })
+    );
     const nav = navigator as unknown as {
       canShare?: (data: unknown) => boolean;
       share?: (data: unknown) => Promise<void>;

@@ -33,15 +33,25 @@ import { cn } from '@/lib/utils';
  * otherwise), a warnings card listing any missing data, and the
  * Generate / Preview / Share / Delete action row.
  *
- * Generation pipeline (Phase 2, matches iOS behaviour):
- *   1. Click Generate → `POST /api/job/:userId/:jobId/generate-pdf`.
- *      Backend returns raw PDF bytes (`application/pdf`).
- *   2. Bytes are wrapped in a `Blob` and held in component state for the
- *      session. We intentionally do NOT persist the Blob anywhere —
- *      iOS re-generates each time (`PDFTab.swift:L270-L292`) so the
- *      web tab does the same. This also means a navigation away +
- *      back returns to the amber "not yet generated" state, matching
- *      the iOS tab on re-entry.
+ * Generation pipeline (parity WS9 — matches iOS PDFGenerator exactly):
+ *   1. Click Generate → CLIENT-SIDE render: the ported iOS template
+ *      (`@/lib/pdf/template`) + foreignObject capture renderer
+ *      (`@/lib/pdf/render`) produce a PDF Blob in the browser from the
+ *      same job state the tabs edit — the web twin of iOS
+ *      `PDFTab → PDFGenerator.generate` (WKWebView). The module is
+ *      dynamic-imported so pdf-lib stays out of the main bundle.
+ *      The previous server path (`POST /api/job/:userId/:jobId/
+ *      generate-pdf`) stays REACHABLE via the explicit "server
+ *      fallback" action below until field validation accepts the
+ *      client renderer. TODO(ws9-followup): after field validation,
+ *      hide the server button behind the debug page (parent-program
+ *      §6.5 decision, 2026-07-01) — do not delete the endpoint.
+ *   2. The Blob is held in component state for the session. We
+ *      intentionally do NOT persist it anywhere — iOS re-generates
+ *      each time (`PDFTab.swift:L270-L292`) so the web tab does the
+ *      same. This also means a navigation away + back returns to the
+ *      amber "not yet generated" state, matching the iOS tab on
+ *      re-entry.
  *   3. PdfPreview renders the Blob via an object URL in an iframe;
  *      URL lifecycle is owned by that component.
  *   4. Share uses the Web Share API (`navigator.canShare` + a `File`
@@ -103,34 +113,66 @@ export default function PdfPage() {
   // The Generate-PDF button does NOT directly trigger the render —
   // it opens the modal first. Only after both attestations are
   // confirmed server-side does the render fire. Re-prompted on every
-  // tap, including unchanged re-renders.
+  // SUCCESSFUL issuance (spec §3) — but NOT on a retry after a failed
+  // render (spec §4.3, see failedAttempt below).
   const [showAttestationModal, setShowAttestationModal] = React.useState(false);
+
+  // Which render engine the pending attestation confirm belongs to.
+  // 'client' is the primary path (iOS-parity local render); 'server'
+  // is the explicit fallback kept reachable until field validation.
+  type RenderEngine = 'client' | 'server';
+  const engineRef = React.useRef<RenderEngine>('client');
+
+  // Spec §4.3 (pdf-issuance-attestations.md): if the downstream render
+  // FAILS after the attestation rows were written, a retry re-uses the
+  // already-written attestation_ids with NO re-prompt. We keep the
+  // failed attempt's receipt (+ engine) here; the error card's "Try
+  // again" consumes it directly. Cleared on success and on any fresh
+  // issuance request. NOTE: current iOS does NOT implement this spec
+  // path (PDFTab's only retry re-presents IssueCertificateSheet) —
+  // dated iOS-parity todo recorded 2026-07-02 (vault todos-certmate.md
+  // + ledger row pdf/pdftab-270); web deliberately implements the SPEC.
+  const failedAttemptRef = React.useRef<{ ids: number[]; engine: RenderEngine } | null>(null);
 
   const hasPdf = pdfBlob !== null;
 
   const filename = `${certificateType}_${jobId}.pdf`;
 
-  // The actual render. Called only by the attestation modal's
-  // onConfirmed once the server has accepted both attestations. The
+  // The actual render. Called by the attestation modal's onConfirmed
+  // once the server has accepted both attestations, or by the failed-
+  // render retry path with the saved attestation_ids. The
   // attestation_ids parameter is the receipt — on a downstream render
   // failure we leave the audit rows in place (spec §4.3 carve-out).
   const handleGenerate = React.useCallback(
-    async (attestationIds: number[]) => {
+    async (attestationIds: number[], engine: RenderEngine) => {
       if (!userId || !jobId || isGenerating) return;
       setIsGenerating(true);
       setError(null);
       try {
-        const blob = await api.generatePdf(userId, jobId);
+        let blob: Blob;
+        if (engine === 'client') {
+          // iOS-parity path: render the ported template locally.
+          const { generateCertificatePdf } = await import('@/lib/pdf/generate-certificate');
+          blob = await generateCertificatePdf(userId, job);
+        } else {
+          blob = await api.generatePdf(userId, jobId);
+        }
         setPdfBlob(blob);
-        // Best-effort: stamp the PDF route reference onto the
-        // attestation rows. The shared-utils download path doesn't
-        // give us an S3 key here, so we record the backend route
-        // reference instead. The S3 sync flow upstream will update
-        // with the real key.
+        failedAttemptRef.current = null;
+        // Best-effort: stamp a reference onto the attestation rows.
+        // Local renders stamp `local://<filename>` — EXACTLY the iOS
+        // scheme (`PDFTab.swift:363` stamps local://<lastPathComponent>
+        // for its own WKWebView renders; the field is write-only and
+        // the backend stores it opaquely). `route://` stays reserved
+        // for the server-fallback path. The S3 sync flow upstream will
+        // update with the real key.
         void api
           .updateAttestationPdfKey({
             attestation_ids: attestationIds,
-            pdf_s3_key: `route://api/job/${userId}/${jobId}/generate-pdf`,
+            pdf_s3_key:
+              engine === 'client'
+                ? `local://${filename}`
+                : `route://api/job/${userId}/${jobId}/generate-pdf`,
           })
           .catch(() => {
             // Non-blocking. Audit rows are already in place.
@@ -143,19 +185,41 @@ export default function PdfPage() {
               ? err.message
               : 'PDF generation failed';
         setError(message);
+        // Keep the receipt so "Try again" can re-render without
+        // re-prompting (spec §4.3).
+        failedAttemptRef.current = { ids: attestationIds, engine };
       } finally {
         setIsGenerating(false);
       }
     },
+    [userId, jobId, isGenerating, job, filename]
+  );
+
+  // Open the attestation modal for a FRESH issuance (client render by
+  // default; 'server' for the explicit fallback action). Clears any
+  // saved failed-attempt receipt — a fresh issuance re-prompts.
+  const handleRequestGenerate = React.useCallback(
+    (engine: RenderEngine = 'client') => {
+      if (!userId || !jobId || isGenerating) return;
+      setError(null);
+      engineRef.current = engine;
+      failedAttemptRef.current = null;
+      setShowAttestationModal(true);
+    },
     [userId, jobId, isGenerating]
   );
 
-  // Open the attestation modal. Called by the Generate-PDF button.
-  const handleRequestGenerate = React.useCallback(() => {
-    if (!userId || !jobId || isGenerating) return;
-    setError(null);
-    setShowAttestationModal(true);
-  }, [userId, jobId, isGenerating]);
+  // Failed-render retry (spec §4.3): re-use the saved attestation_ids
+  // with NO re-prompt. Falls back to a fresh prompted issuance if no
+  // receipt is held (e.g. the failure happened before attestations).
+  const handleRetryAfterFailure = React.useCallback(() => {
+    const saved = failedAttemptRef.current;
+    if (saved) {
+      void handleGenerate(saved.ids, saved.engine);
+    } else {
+      handleRequestGenerate(engineRef.current);
+    }
+  }, [handleGenerate, handleRequestGenerate]);
 
   const handleScrollToPreview = React.useCallback(() => {
     previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -241,7 +305,7 @@ export default function PdfPage() {
           <div>
             <button
               type="button"
-              onClick={handleRequestGenerate}
+              onClick={handleRetryAfterFailure}
               disabled={isGenerating}
               className={cn(
                 'inline-flex items-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-status-failed)] px-3 py-1.5 text-[13px] font-semibold text-[var(--color-status-failed)] transition hover:bg-[var(--color-status-failed)]/10',
@@ -260,7 +324,7 @@ export default function PdfPage() {
         <SectionCard accent="board" icon={Sparkles} title="Actions">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <GenerateButton
-              onClick={handleRequestGenerate}
+              onClick={() => handleRequestGenerate('client')}
               isGenerating={isGenerating}
               label={hasPdf ? 'Regenerate PDF' : 'Generate PDF'}
             />
@@ -282,6 +346,16 @@ export default function PdfPage() {
               icon={Trash2}
               label="Delete"
               variant="danger"
+            />
+            {/* Server-side generator — explicit fallback during the
+                client-renderer field-validation window (WS9).
+                TODO(ws9-followup): hide behind the debug page once
+                field validation accepts the client render. */}
+            <SecondaryActionButton
+              onClick={() => handleRequestGenerate('server')}
+              disabled={isGenerating}
+              icon={FileText}
+              label="Generate on server (fallback)"
             />
           </div>
         </SectionCard>
@@ -335,7 +409,7 @@ export default function PdfPage() {
           setShowAttestationModal(false);
           // Fire-and-forget — the render happens inside handleGenerate
           // and updates its own state.
-          void handleGenerate(attestationIds);
+          void handleGenerate(attestationIds, engineRef.current);
         }}
         onCancelled={() => setShowAttestationModal(false)}
       />
