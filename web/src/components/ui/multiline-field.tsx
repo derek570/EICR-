@@ -33,11 +33,14 @@ export function MultilineField({
   showCount?: boolean;
 }) {
   const id = React.useId();
+  // WS5 (2026-07-02): field chrome matched to the iOS floating-field /
+  // cmTextEditorStyle spec — L2 bg, 1.5px L3 border, green focus + glow,
+  // radius 12, 12px medium label, 17px value.
   const box = (
-    <div className="flex flex-col rounded-[var(--radius-md)] border border-[var(--color-border-default)] bg-[var(--color-surface-1)] px-3 py-2 transition focus-within:border-[var(--color-brand-blue)]">
+    <div className="group flex flex-col rounded-[var(--radius-input)] border-[1.5px] border-[color:var(--color-surface-3)] bg-[var(--color-surface-2)] px-3 py-2 transition focus-within:border-[var(--color-green-vibrant)] focus-within:shadow-[0_0_12px_rgba(0,230,118,0.2)]">
       <label
         htmlFor={id}
-        className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]"
+        className="text-[12px] font-medium text-[var(--color-text-secondary)] transition-colors group-focus-within:text-[var(--color-green-vibrant)]"
       >
         {label}
       </label>
@@ -46,7 +49,7 @@ export function MultilineField({
         rows={rows}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full resize-none bg-transparent text-[15px] font-medium text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)]/60 focus:outline-none"
+        className="w-full resize-none bg-transparent text-[17px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)]/60 focus:outline-none"
       />
     </div>
   );
