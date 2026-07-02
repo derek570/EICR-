@@ -1,0 +1,488 @@
+{
+  "packages/shared-utils/src/voice-commands.ts": [
+    "recording/voice-command-executor-e-g-move"
+  ],
+  "web/src/app/alerts/page.tsx": [
+    "dashboard/alertsview",
+    "dashboard/alertsview-130",
+    "dashboard/alertsview-176"
+  ],
+  "web/src/app/dashboard/page.tsx": [
+    "crosscutting/skeleton-shimmer-dashboard-loading",
+    "dashboard/dashboardview-115",
+    "dashboard/dashboardview-384",
+    "dashboard/dashboardview-419",
+    "dashboard/dashboardview-512",
+    "dashboard/dashboardview-552",
+    "dashboard/dashboardview-584",
+    "dashboard/dashboardview-611",
+    "dashboard/dashboardview-642",
+    "dashboard/dashboardview-708",
+    "dashboard/dashboardview-89"
+  ],
+  "web/src/app/globals.css": [
+    "crosscutting/certmatedesign",
+    "crosscutting/cmdesign-token-deltas",
+    "crosscutting/cmstaggeredentrance-index-appeared",
+    "crosscutting/dataarrivalflash",
+    "crosscutting/environment-accessibilityreducemotion",
+    "crosscutting/ios-signature-styling",
+    "crosscutting/pwa-chrome-suppressions",
+    "crosscutting/skeleton-shimmer-dashboard-loading"
+  ],
+  "web/src/app/job/[id]/board/page.tsx": [
+    "board/boardtab",
+    "board/boardtab-122",
+    "board/boardtab-190",
+    "board/boardtab-191",
+    "board/boardtab-192",
+    "board/boardtab-193",
+    "board/boardtab-196",
+    "board/boardtab-205",
+    "board/boardtab-209",
+    "board/boardtab-212",
+    "board/boardtab-217",
+    "board/boardtab-231",
+    "board/boardtab-236",
+    "board/boardtab-237",
+    "board/boardtab-238",
+    "board/boardtab-248",
+    "board/boardtab-249",
+    "board/boardtab-250",
+    "board/boardtab-259",
+    "board/boardtab-260",
+    "board/boardtab-261",
+    "board/boardtab-262",
+    "board/boardtab-263",
+    "board/boardtab-272",
+    "board/boardtab-273",
+    "board/boardtab-282",
+    "board/boardtab-283",
+    "board/boardtab-284",
+    "board/boardtab-296",
+    "board/boardtab-297",
+    "board/boardtab-298",
+    "board/boardtab-304",
+    "board/boardtab-370",
+    "board/boardtab-50",
+    "board/boardtab-71"
+  ],
+  "web/src/app/job/[id]/circuits/match-review/page.tsx": [
+    "ccu-flow/circuitmatchreviewview-5",
+    "ccu-flow/circuitstab-457"
+  ],
+  "web/src/app/job/[id]/circuits/page.tsx": [
+    "ccu-flow/circuitstab-437",
+    "ccu-flow/circuitstab-470",
+    "circuits-col/constants-181",
+    "circuits-col/constants-182",
+    "circuits-col/constants-183",
+    "circuits-col/constants-184",
+    "circuits-col/constants-185",
+    "circuits-col/constants-186",
+    "circuits-col/constants-187",
+    "circuits-col/constants-188",
+    "circuits-col/constants-189",
+    "circuits-col/constants-190",
+    "circuits-col/constants-191",
+    "circuits-col/constants-192",
+    "circuits-col/constants-193",
+    "circuits-col/constants-194",
+    "circuits-col/constants-195",
+    "circuits-col/constants-196",
+    "circuits-col/constants-197",
+    "circuits-col/constants-198",
+    "circuits-col/constants-199",
+    "circuits-col/constants-200",
+    "circuits-col/constants-201",
+    "circuits-col/constants-202",
+    "circuits-col/constants-203",
+    "circuits-col/constants-204",
+    "circuits-col/constants-205",
+    "circuits-col/constants-206",
+    "circuits-col/constants-207",
+    "circuits-col/constants-208",
+    "circuits-misc/circuitstab-393",
+    "circuits-misc/circuitstab-411",
+    "circuits-misc/circuitstab-486",
+    "circuits-misc/circuitstab-565",
+    "circuits-rail/circuitstab-157",
+    "circuits-rail/circuitstab-166",
+    "circuits-rail/circuitstab-182",
+    "circuits-rail/circuitstab-190",
+    "circuits-rail/circuitstab-199",
+    "circuits-rail/circuitstab-224",
+    "circuits-rail/circuitstab-247",
+    "circuits-rail/circuitstab-79",
+    "circuits-rail/doc-extraction-parity",
+    "circuits/lim-sentinel-display",
+    "crosscutting/keyboard-accessory-bar"
+  ],
+  "web/src/app/job/[id]/design/page.tsx": [
+    "design/designtab-24",
+    "design/designtab-38",
+    "design/designtab-61",
+    "design/designtab-64",
+    "design/designtab-82"
+  ],
+  "web/src/app/job/[id]/extent/page.tsx": [
+    "extent/extenttab-26",
+    "extent/extenttab-36",
+    "extent/extenttab-52",
+    "extent/extenttab-78",
+    "installation/eic-comments"
+  ],
+  "web/src/app/job/[id]/inspection/page.tsx": [
+    "crosscutting/outcomebuttongroup",
+    "inspection/inspectiontab-112",
+    "inspection/inspectiontab-134",
+    "inspection/inspectiontab-147",
+    "inspection/inspectiontab-154",
+    "inspection/inspectiontab-181",
+    "inspection/inspectiontab-209",
+    "inspection/inspectiontab-255",
+    "inspection/inspectiontab-266",
+    "inspection/inspectiontab-286",
+    "inspection/inspectiontab-322",
+    "inspection/inspectiontab-43",
+    "inspection/inspectiontab-70",
+    "inspection/section-accents-dup",
+    "observations/inspectiontab-286"
+  ],
+  "web/src/app/job/[id]/installation/page.tsx": [
+    "installation/installationtab-103",
+    "installation/installationtab-109",
+    "installation/installationtab-122",
+    "installation/installationtab-130",
+    "installation/installationtab-132",
+    "installation/installationtab-145",
+    "installation/installationtab-146",
+    "installation/installationtab-155",
+    "installation/installationtab-166",
+    "installation/installationtab-177",
+    "installation/installationtab-180",
+    "installation/installationtab-183",
+    "installation/installationtab-184",
+    "installation/installationtab-310",
+    "installation/installationtab-344",
+    "installation/installationtab-502",
+    "installation/installationtab-60",
+    "installation/installationtab-61",
+    "installation/installationtab-62",
+    "installation/installationtab-63",
+    "installation/installationtab-64",
+    "installation/installationtab-65",
+    "installation/installationtab-66",
+    "installation/installationtab-76",
+    "installation/installationtab-77",
+    "installation/installationtab-80",
+    "installation/installationtab-90",
+    "installation/installationtab-95"
+  ],
+  "web/src/app/job/[id]/observations/page.tsx": [
+    "observations/obs-card-canonical-wording",
+    "observations/observationcardview-photo-thumbnails-inline-prev",
+    "observations/observationstab-146",
+    "observations/observationstab-173",
+    "observations/observationstab-22",
+    "observations/observationstab-66"
+  ],
+  "web/src/app/job/[id]/page.tsx": [
+    "overview/overview-circuits-compact-table-lg",
+    "overview/overview-general-condition-summary-card",
+    "overview/overview-observations-panel-with-c1-c2-c3-fi"
+  ],
+  "web/src/app/job/[id]/pdf/page.tsx": [
+    "pdf/delete-discard-generated-pdf",
+    "pdf/pdf-fidelity",
+    "pdf/pdftab-125",
+    "pdf/pdftab-178",
+    "pdf/pdftab-203",
+    "pdf/pdftab-225",
+    "pdf/pdftab-243",
+    "pdf/pdftab-68"
+  ],
+  "web/src/app/job/[id]/staff/page.tsx": [
+    "staff/inspectortab-112",
+    "staff/inspectortab-117",
+    "staff/inspectortab-188",
+    "staff/inspectortab-20",
+    "staff/inspectortab-41",
+    "staff/inspectortab-60",
+    "staff/inspectortab-67",
+    "staff/inspectortab-77"
+  ],
+  "web/src/app/job/[id]/supply/page.tsx": [
+    "supply/supplytab-113",
+    "supply/supplytab-134",
+    "supply/supplytab-140",
+    "supply/supplytab-162",
+    "supply/supplytab-184",
+    "supply/supplytab-190",
+    "supply/supplytab-193",
+    "supply/supplytab-199",
+    "supply/supplytab-213",
+    "supply/supplytab-226",
+    "supply/supplytab-241",
+    "supply/supplytab-264",
+    "supply/supplytab-277",
+    "supply/supplytab-28",
+    "supply/supplytab-303",
+    "supply/supplytab-316",
+    "supply/supplytab-342",
+    "supply/supplytab-343",
+    "supply/supplytab-344",
+    "supply/supplytab-346",
+    "supply/supplytab-348",
+    "supply/supplytab-350",
+    "supply/supplytab-353",
+    "supply/supplytab-377",
+    "supply/supplytab-394",
+    "supply/supplytab-405",
+    "supply/supplytab-442",
+    "supply/supplytab-488",
+    "supply/supplytab-50",
+    "supply/supplytab-56",
+    "supply/supplytab-62",
+    "supply/supplytab-74",
+    "supply/supplytab-88",
+    "supply/supplytab-93",
+    "supply/surge-namespace"
+  ],
+  "web/src/app/settings/admin/users/[userId]/page.tsx": [
+    "settings-admin/adminedituserview-1"
+  ],
+  "web/src/app/settings/admin/users/new/page.tsx": [
+    "settings-admin/admincreateuserview-1"
+  ],
+  "web/src/app/settings/admin/users/page.tsx": [
+    "settings-admin/adminuserslistview-1"
+  ],
+  "web/src/app/settings/company/dashboard/page.tsx": [
+    "settings-admin/adminstatsview-1",
+    "settings-admin/companydashboardview-1"
+  ],
+  "web/src/app/settings/company/page.tsx": [
+    "dashboard/dashboardview-596",
+    "settings-company/companydetailsview-14",
+    "settings-company/companydetailsviewmodel-load"
+  ],
+  "web/src/app/settings/page.tsx": [
+    "dashboard/dashboardview-605",
+    "settings-profile/components-pwa-ios-install-hint-tsx",
+    "settings-profile/settings-administration-manage",
+    "settings-profile/settings-offline-sync-web-only",
+    "settings-profile/settingshubview-109",
+    "settings-profile/settingshubview-113",
+    "settings-profile/settingshubview-122",
+    "settings-profile/settingshubview-133",
+    "settings-profile/settingshubview-154",
+    "settings-profile/settingshubview-240",
+    "settings-profile/settingshubview-51",
+    "settings-profile/settingshubview-81"
+  ],
+  "web/src/app/settings/staff/[inspectorId]/page.tsx": [
+    "installation/installationtab-12",
+    "settings-staff/inspectordetailview-1"
+  ],
+  "web/src/app/settings/staff/page.tsx": [
+    "dashboard/dashboardview-602",
+    "settings-staff/inspectorlistview"
+  ],
+  "web/src/app/terms/page.tsx": [
+    "crosscutting/terms-signature-port"
+  ],
+  "web/src/components/brand/logo.tsx": [
+    "crosscutting/brand-logo"
+  ],
+  "web/src/components/dashboard/job-row.tsx": [
+    "crosscutting/job-deletion-confirmation-alert-universally",
+    "dashboard/dashboardview-133",
+    "dashboard/dashboardview-294",
+    "dashboard/jobrowview"
+  ],
+  "web/src/components/job/board-selector-bar.tsx": [
+    "board/boardtab-22"
+  ],
+  "web/src/components/job/ccu-mode-sheet.tsx": [
+    "ccu-flow/ccuextractionmodesheet-5",
+    "ccu-flow/circuitstab-429",
+    "ccu-flow/off-peak-mode"
+  ],
+  "web/src/components/job/circuits-sticky-table.tsx": [
+    "circuits-col/constants-209",
+    "circuits-col/constants-210",
+    "circuits-misc/circuitstab-565"
+  ],
+  "web/src/components/job/floating-action-bar.tsx": [
+    "crosscutting/floating-mic-fab-when-idle"
+  ],
+  "web/src/components/job/job-header.tsx": [
+    "crosscutting/job-header-back-title",
+    "overview/jobdetailview-68"
+  ],
+  "web/src/components/job/job-tab-nav.tsx": [
+    "crosscutting/job-tab-nav-pill-bar",
+    "crosscutting/tab-rail-form",
+    "overview/ios-tab-model-one-tab"
+  ],
+  "web/src/components/layout/app-shell.tsx": [
+    "crosscutting/pwa-nav-transitions",
+    "crosscutting/splash-continuity",
+    "crosscutting/tab-bar-sidebar-navigation",
+    "dashboard/dashboardview-201"
+  ],
+  "web/src/components/live-fill/live-field.tsx": [
+    "crosscutting/dataarrivalflash"
+  ],
+  "web/src/components/live-fill/live-fill-view.tsx": [
+    "overview/livefillstate-job",
+    "recording/livefillview-1",
+    "supply/surge-namespace"
+  ],
+  "web/src/components/observations/observation-sheet.tsx": [
+    "observations/addobservationsheet-remedial-action",
+    "observations/l201-l207",
+    "observations/l220-l221",
+    "observations/l230-l256",
+    "observations/observationstab-181"
+  ],
+  "web/src/components/pwa/install-prompt-provider.tsx": [
+    "crosscutting/components-pwa-install-button-tsx"
+  ],
+  "web/src/components/pwa/offline-indicator.tsx": [
+    "crosscutting/offlinebanner",
+    "dashboard/dashboardview-43"
+  ],
+  "web/src/components/recording/alert-card.tsx": [
+    "recording/alertcardview-1"
+  ],
+  "web/src/components/recording/pending-data-banner.tsx": [
+    "recording/pendingdatabanner-1"
+  ],
+  "web/src/components/recording/processing-badge.tsx": [
+    "recording/processingbadgeview-5"
+  ],
+  "web/src/components/recording/recording-chrome.tsx": [
+    "recording/3-tier-sleep-active-dozing",
+    "recording/recording-chrome-tsx-2",
+    "recording/recordingoverlay-105",
+    "recording/recordingoverlay-124",
+    "recording/recordingoverlay-143",
+    "recording/recordingoverlay-163",
+    "recording/recordingoverlay-182",
+    "recording/recordingoverlay-255",
+    "recording/recordingoverlay-38",
+    "recording/recordingoverlay-47",
+    "recording/recordingoverlay-66",
+    "recording/recordingoverlay-86",
+    "recording/waveformview",
+    "recording/x-xx"
+  ],
+  "web/src/components/recording/transcript-bar.tsx": [
+    "recording/transcriptstripview-35"
+  ],
+  "web/src/components/recording/vad-indicator.tsx": [
+    "recording/vadindicatorview-1"
+  ],
+  "web/src/components/settings/logo-uploader.tsx": [
+    "settings-company/logo-upload-via-photospicker"
+  ],
+  "web/src/components/settings/signature-canvas.tsx": [
+    "crosscutting/signaturecaptureview",
+    "settings-staff/signaturecaptureview"
+  ],
+  "web/src/components/tour/tour-overlay.tsx": [
+    "dashboard/touroverlayview-13"
+  ],
+  "web/src/components/tour/tour-step-highlight.tsx": [
+    "dashboard/touroverlayview-13"
+  ],
+  "web/src/components/ui/floating-label-input.tsx": [
+    "crosscutting/cmfloatingtextfield",
+    "crosscutting/cmunittextfield"
+  ],
+  "web/src/components/ui/hero-header.tsx": [
+    "crosscutting/hero-gradient-blue-green-or-green-blue"
+  ],
+  "web/src/components/ui/labelled-select.tsx": [
+    "crosscutting/cmfloatingpicker"
+  ],
+  "web/src/components/ui/pill.tsx": [
+    "crosscutting/statusbadge"
+  ],
+  "web/src/components/ui/section-card.tsx": [
+    "crosscutting/cmsectioncard"
+  ],
+  "web/src/components/ui/select-chips.tsx": [
+    "crosscutting/cmfloatingpicker"
+  ],
+  "web/src/components/ui/skeleton-row.tsx": [
+    "crosscutting/skeleton-shimmer-dashboard-loading"
+  ],
+  "web/src/components/ui/tally-badge.tsx": [
+    "crosscutting/tally-badge-primitive-observations-totals-phase"
+  ],
+  "web/src/hooks/use-postcode-lookup.ts": [
+    "installation/installationtab-64"
+  ],
+  "web/src/lib/api-client.ts": [
+    "pdf/pdftab-270"
+  ],
+  "web/src/lib/defaults/types.ts": [
+    "dashboard/job-creation-defaults-flow"
+  ],
+  "web/src/lib/design-tokens.ts": [
+    "crosscutting/certmatedesign",
+    "crosscutting/cmdesign-token-deltas",
+    "crosscutting/ios-signature-styling"
+  ],
+  "web/src/lib/haptic.ts": [
+    "crosscutting/uiimpactfeedbackgenerator"
+  ],
+  "web/src/lib/job-context.tsx": [
+    "crosscutting/offline-dirty-guard"
+  ],
+  "web/src/lib/recording-context.tsx": [
+    "observations/obs-photo-autolink",
+    "recording/ask-context-board-id",
+    "recording/fast-path-tts",
+    "recording/readback-dedup-rekey",
+    "recording/transcript-gate",
+    "recording/voice-command-executor-e-g-move"
+  ],
+  "web/src/lib/recording/apply-ccu-analysis.ts": [
+    "supply/surge-namespace"
+  ],
+  "web/src/lib/recording/apply-document-extraction.ts": [
+    "supply/surge-namespace"
+  ],
+  "web/src/lib/recording/deepgram-service.ts": [
+    "recording/flux-migration"
+  ],
+  "web/src/lib/recording/elevenlabs-tts.ts": [
+    "recording/tts-fifo"
+  ],
+  "web/src/lib/recording/sonnet-session.ts": [
+    "observations/obs-card-canonical-wording",
+    "recording/ask-context-board-id",
+    "recording/capability-advertising",
+    "recording/fast-path-tts",
+    "recording/playback-telemetry"
+  ],
+  "web/src/lib/recording/tones.ts": [
+    "recording/gate-pass-chime"
+  ],
+  "web/src/lib/recording/tts.ts": [
+    "recording/readback-dedup-rekey",
+    "recording/recordingoverlay-47",
+    "recording/tts-fifo"
+  ],
+  "web/src/lib/tour/state.ts": [
+    "dashboard/certmateapp"
+  ],
+  "web/src/lib/tour/steps.ts": [
+    "dashboard/dashboardview-676",
+    "dashboard/tour-v11"
+  ]
+}
