@@ -2,7 +2,7 @@
 
 **Read this first** in a new session. Full plan in sibling [`PLAN.md`](PLAN.md) (~530 lines, refer as needed).
 Drafted 2026-05-13.
-Status: **PARKED 2026-05-28 — code complete on branch, awaiting rebase sprint.** (See "Parking note" below.)
+Status: **DEPLOYED/PARTIAL 2026-07-02 — awaiting iPad Safari smoke.** The parity-WS2 session rebased the branch onto main and merged it (4 commits preserved via cherry-pick + a `JobDetailSchema`/nullable-type contract fix; real conflict set was ONE keep-both hunk in `recording-context.tsx`, far smaller than the parking note predicted). Do NOT read parity as shipped/`match`: the playbook step-4 iPad Safari smoke (deal-breaker #1 upload-during-resize race + §Risks camera quirks) has not run — todo in vault `todos-certmate.md` (2026-07-02); ledger row `observations/obs-photo-autolink` is `partial` until it passes. Two dated deliberate divergences recorded there (no CCU picker source — zero-backend rule; web-extra camera/library chooser). This doc is retained as audit trail; historical PARKED note below.
 
 ---
 

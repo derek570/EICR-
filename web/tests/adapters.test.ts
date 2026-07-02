@@ -168,6 +168,36 @@ describe('JobListSchema + JobDetailSchema', () => {
     expect(result).toBe(raw);
     expect(warnCalls).toHaveLength(1);
   });
+
+  // L2 obs-photo Phase 6 regression — JobDetailSchema extends a
+  // strip-mode z.object, so a key that isn't declared gets silently
+  // dropped by api.job() (the Wave-5 alias bug all over again). These
+  // two pins guarantee the unassigned-photos pool survives the adapter
+  // boundary in both wire shapes the backend emits
+  // (src/routes/jobs.js:594 — `extractedData.unassigned_photos || null`).
+  it('preserves a populated unassigned_photos pool through JobDetailSchema', () => {
+    const fixture = {
+      id: 'j1',
+      address: '12 High St',
+      status: 'done' as const,
+      created_at: '2026-04-01',
+      unassigned_photos: ['photo-a.jpg'],
+    };
+    const result = JobDetailSchema.parse(fixture);
+    expect(result.unassigned_photos).toEqual(['photo-a.jpg']);
+  });
+
+  it('preserves unassigned_photos: null (blank-slate job) through JobDetailSchema', () => {
+    const fixture = {
+      id: 'j1',
+      address: '12 High St',
+      status: 'done' as const,
+      created_at: '2026-04-01',
+      unassigned_photos: null,
+    };
+    const result = JobDetailSchema.parse(fixture);
+    expect(result.unassigned_photos).toBeNull();
+  });
 });
 
 describe('CCUAnalysisSchema', () => {

@@ -110,6 +110,12 @@ export const JobDetailSchema = JobSchema.extend({
   ccu_analysis: z.record(z.string(), z.unknown()).optional(),
   ccu_analysis_by_board: z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
   last_session_id: z.string().optional(),
+  // Observation-photo pool (L2 obs-photo sprint Phase 6). MUST be
+  // declared here: `JobDetailSchema` extends a strip-mode `z.object`,
+  // so an undeclared key is silently dropped by `api.job()` — the
+  // exact failure mode the Wave-5 alias bug above hit. Backend emits
+  // `null` when the pool was never written (src/routes/jobs.js:594).
+  unassigned_photos: z.array(z.string()).nullable().optional(),
 });
 
 export const CreateJobResponseSchema = z.object({ id: z.string() });
