@@ -28,7 +28,7 @@ Automated EICR/EIC certificate creation for electrical inspectors using an iOS-f
 2. **CCU Analysis** - GPT Vision extracts circuit data from consumer unit photos
 3. **Document Extraction** - GPT Vision extracts certificate data from previous certificates, handwritten notes, or photos
 4. **Voice Recording** - Inspector dictates test readings and observations into iOS app
-4. **Live Transcription** - Deepgram Nova-3 transcribes speech in real time (direct from iOS)
+4. **Live Transcription** - Deepgram Flux transcribes speech in real time (direct from iOS; `flux-general-en` on `/v2/listen`). Web still uses Nova-3 until the WS4 Flux migration lands
 5. **Live Extraction** - Server-side Sonnet 4.5 extracts structured certificate data via multi-turn conversation
 6. **Review & Edit** - Inspector reviews populated certificate in iOS app tabs
 7. **PDF Generation** - Generate complete EICR/EIC PDF certificates
@@ -49,7 +49,7 @@ The following are **MANDATORY** product invariants. They override older guidance
 | Component | Technology |
 |-----------|------------|
 | iOS App | SwiftUI (CertMateUnified) |
-| Transcription | Deepgram Nova-3 (direct WebSocket from iOS) |
+| Transcription | Deepgram Flux `flux-general-en` (direct WebSocket from iOS, `/v2/listen`); web remains Nova-3 `/v1/listen` until WS4 |
 | Live Extraction | Claude Sonnet 4.5 (server-side multi-turn via WebSocket) |
 | CCU Photo AI | GPT Vision (consumer unit analysis) |
 | Document Extraction AI | GPT Vision (certificate/notes data extraction) |
@@ -125,7 +125,7 @@ gh run list --limit 5
 ## iOS Recording Pipeline (v3)
 
 ```
-iOS (16kHz PCM) -> DeepgramService (direct Nova-3 WS)
+iOS (16kHz PCM) -> DeepgramService (direct Deepgram Flux WS, flux-general-en /v2/listen)
     -> transcript -> NumberNormaliser -> TranscriptFieldMatcher (instant regex)
     -> ServerWebSocketService (wss://backend/api/sonnet-stream) + regex hints
     -> Backend: multi-turn Sonnet 4.5 extraction (with regex context)
@@ -214,7 +214,7 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 - **⚡ CCU pipeline (live):** single-shot `gpt-5.5` over the whole image via `src/extraction/ccu-single-shot.js`. **No per-slot cropping.** Stage-3/Stage-4 per-slot pipeline (`ccu-geometric.js`, `ccu-label-pass.js`) is LEGACY FALLBACK only, gated behind `CCU_USE_SINGLE_SHOT=false`. In-scope failure modes: gpt-5.5 mis-counts in long identical-MCB runs, label-column mis-alignment, post-merge enrichment overrides, `slotsToCircuits` phase-walking heuristics. NOT in scope: CV crop accuracy / slot crop boundaries (not in live path). Full details: [docs/reference/architecture.md#ccu-photo-extraction-pipeline](docs/reference/architecture.md#ccu-photo-extraction-pipeline).
 - **Web rebuild in production** since 2026-04-18 (PR #1, merge `9202351c`). certmate.uk serves Next 16 / React 19 PWA client from `web/`.
 - **Live in production:** Deepgram auto-sleep (3-tier Active/Dozing/Sleeping), server-side Sonnet v3 multi-turn extraction.
-- **Next candidates:** wire `queueSaveJob` into JobProvider's save path (outbox plumbed, no production caller yet); Playwright E2E coverage for offline-sync.
+- **Next candidates:** Playwright E2E coverage for offline-sync. (`queueSaveJob` IS wired into JobProvider's save path at `web/src/lib/job-context.tsx:159` — verified 2026-07-02; the earlier "no production caller yet" note was stale.)
 - **PARKED 2026-05-28:** PWA observation-photo auto-link sprint (Phases 3–6, 4 commits + 33 tests) on `origin/pwa-observation-photo-autolink-2026-05-13`. Awaiting rebase against post-2026-05-13 main (heavy collision in `web/src/lib/recording-context.tsx`). Playbook: [.planning-stage6-agentic/handoffs/pwa-observation-photo-autolink-2026-05-13/HANDOFF.md](.planning-stage6-agentic/handoffs/pwa-observation-photo-autolink-2026-05-13/HANDOFF.md).
 - **OPEN FOLLOWUP 2026-06-05 — voice-latency Phase 2.2 (deferred from PR #52, merged).** Surface proactively on any voice-latency or field-test discussion. Pick server `FINALIZER_TIMEOUT_MS` widen vs iOS Apple-native `local_fallback` emit once 1–2 field sessions hit the deployed code. Runbook: [CertMateUnified/.planning-stage6-agentic/handoffs/voice-latency-correlation-fix-2026-06-05/FOLLOWUP.md](../CertMateUnified/.planning-stage6-agentic/handoffs/voice-latency-correlation-fix-2026-06-05/FOLLOWUP.md).
 
