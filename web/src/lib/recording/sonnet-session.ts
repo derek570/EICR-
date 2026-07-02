@@ -173,7 +173,19 @@ export interface Confirmation {
   text: string;
   field?: string | null;
   circuit?: number | null;
+  /** Vestigial — NOT populated from the current wire. The value is embedded
+   *  in `text` via the backend's `buildConfirmationText`; dedupe uses `text`
+   *  as the value discriminator (see confirmation-dedupe-key.ts). */
   value?: string | number | boolean;
+  /** Multi-circuit roll-up — populated by the backend bundler only when a
+   *  grouped broadcast covers 2+ circuit-level readings on the same
+   *  (field, board_id, value). Mirrors iOS `ValueConfirmation.circuits`
+   *  (ClaudeService.swift:324). */
+  circuits?: number[] | null;
+  /** Board scope — emitted when the reading targeted a specific board
+   *  (Loaded Barrel Phase 1.B; omitted on single-board sessions). Mirrors
+   *  iOS `ValueConfirmation.boardId`. */
+  board_id?: string | null;
 }
 
 /** Multi-board mutation op carried on the extraction envelope's

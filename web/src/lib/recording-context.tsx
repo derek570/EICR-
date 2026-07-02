@@ -29,6 +29,7 @@ import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { InFlightQuestionTracker } from './recording/in-flight-question';
+import { buildConfirmationDedupeKey } from './recording/confirmation-dedupe-key';
 import {
   PendingReadingsBuffer,
   buildPendingReadingsQuestion,
@@ -2046,18 +2047,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // re-extraction of the same field+circuit doesn't TTS twice.
       // Mirrors iOS `flushPendingConfirmations`
       // (DeepgramRecordingViewModel.swift:3290-3317): iterate the
-      // confirmations array, build `<field>_<circuit>` dedup key,
-      // skip on hit, otherwise speak via the user-toggle-gated path.
+      // confirmations array, build the shared dedupe key, skip on hit,
+      // otherwise speak via the user-toggle-gated path.
       // Pre-fix the PWA only spoke the FIRST confirmation per turn —
       // the inspector lost audio feedback on a multi-reading turn
       // (two finals merged via the burst buffer can carry two field
       // updates, and only the first got announced).
+      //
+      // WS3 item 2 (2026-07-02): key re-keyed from field+circuit-only
+      // (`<field>_none` degenerate fallback) to the full iOS
+      // `buildConfirmationDedupeKey` shape — field + circuit + sorted
+      // circuits + board_id + text-hash. The old fallback collided on
+      // every board-level confirmation pair (84CE2125: second spd_bs_en
+      // read-back swallowed) and on multi-circuit broadcasts (C0C21546:
+      // turn-10 broadcast silenced by turn-9's key). The text IS the
+      // value discriminator, so "same field, different value" now reads
+      // back — audio-first invariant #1 (exactly once, never zero).
       const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
       for (const conf of confirmations) {
         if (!conf || typeof conf.text !== 'string' || conf.text.trim().length === 0) continue;
-        const dedupeKey = `${conf.field ?? 'unknown'}_${
-          conf.circuit != null ? String(conf.circuit) : 'none'
-        }`;
+        const dedupeKey = buildConfirmationDedupeKey(conf);
         if (confirmedFieldKeysRef.current.has(dedupeKey)) {
           clientDiagnostic('onExtraction_confirmation_deduped', {
             dedupeKey,
