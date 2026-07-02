@@ -9,17 +9,18 @@ import { JOB_TOUR_STEPS } from '@/lib/tour/steps';
  * Phase D — Job-detail tour mount.
  *
  * Lives inside `job/[id]/layout.tsx` so the tour activates on every
- * job-detail surface (Overview, Circuits, PDF, etc.). 8 steps mirror
- * iOS `TourManager.jobSteps`:
+ * job-detail surface (Overview, Circuits, PDF, etc.). 9 steps mirror
+ * iOS `TourManager.jobSteps` (v11, build 417):
  *
  *   1. Overview / transcript bar intro
  *   2. CCU photo button
  *   3. How to give readings (circuit + test phrase)
- *   4. Multi-circuit shortcut
- *   5. Voice confirmations + observations
- *   6. Obs photo + always-check reminder
- *   7. Voice queries + commands
- *   8. PDF tab — preview + generate
+ *   4. Conversational + tone (plays the real processing chime)
+ *   5. Multi-circuit shortcut
+ *   6. Observations
+ *   7. Obs photo + always-check reminder
+ *   8. Voice queries + commands
+ *   9. PDF tab — preview + generate
  *
  * Persisted state is per-key (`cm-tour-job` localStorage), so the
  * dashboard's "seen" flag doesn't suppress the job tour and

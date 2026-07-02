@@ -2,13 +2,14 @@
  * Tour step definitions — port of iOS
  * `CertMateUnified/Sources/Services/TourManager.swift`.
  *
- * Two phases:
+ * Two phases (v11 — iOS build 417 / 2026-06-30 revision):
  *   1. **Dashboard** (2 steps): home overview + defaults explanation,
  *      narrated on `/dashboard` first-run.
- *   2. **Job** (8 steps): overview / CCU photo tip / how to give
- *      readings / multi-circuit shortcut / voice + observations / obs
- *      photo + reminder / voice queries + commands / PDF generation,
- *      narrated when the inspector lands on a job-detail screen.
+ *   2. **Job** (9 steps): overview / CCU photo tip / how to give
+ *      readings / conversational + tone (plays the real chime) /
+ *      multi-circuit shortcut / observations / obs photo + reminder /
+ *      voice queries + commands / PDF generation, narrated when the
+ *      inspector lands on a job-detail screen.
  *
  * Narration strings are copied verbatim from iOS so future iOS edits
  * port mechanically — keep the wording and the comment markers in sync.
@@ -50,6 +51,15 @@ export interface TourStep {
   /** For job-tour steps: the slug under `/job/[id]` to navigate to
    *  before showing the step (e.g. '' for Overview, '/pdf' for PDF). */
   tabSlug?: string;
+  /**
+   * WS6 (tour v11): play the "sent for processing" chime after this
+   * step's narration finishes, so the inspector hears the real sound
+   * the step just described. iOS splices the chime INTO the bundled
+   * MP3 (build 417, `build_step6` in generate-tour-audio.sh); Web
+   * Speech API can't splice mid-utterance, so web plays it right after
+   * the narration instead — same teaching moment, adjacent placement.
+   */
+  chime?: boolean;
 }
 
 /**
@@ -73,17 +83,20 @@ export const DASHBOARD_TOUR_STEPS: readonly TourStep[] = Object.freeze([
     id: 'defaults',
     selector: '[data-tour="setup-tools"]',
     title: 'Set up your defaults',
-    body: 'Set the values that stay the same across most inspections — supply type, earthing, default cable sizes for each circuit type — so they auto-fill on every new certificate.',
+    body: 'Set the values that stay the same across most inspections — plus standard default cable sizes per circuit type — so they auto-fill on every new certificate.',
+    // v11 (iOS 2026-06-30 revision): the long supply-type/earthing +
+    // cable-size worked examples + OCPD guidance were stripped per
+    // inspector feedback — now a single neutral explanation.
     narration:
-      "This is where you set your default values — things like supply type, earthing arrangement, installation age, and other details that stay the same across most of your inspections. You can also set default cable sizes for different circuit types — for example, two point five mil twin and earth for ring finals, one point five mil for lighting, and six mil for cookers. These will automatically fill in when you start a new certificate. Note that cable sizes are limited by the OCPD rating — a six amp MCB with one mil cable is fine for lighting, but a thirty two amp ring final needs two point five mil minimum. I'd recommend setting these up before starting your first job.",
+      "This is where you set your default values — the details that stay the same across most of your inspections, so they fill in automatically on every new certificate. You can also set standard default cable sizes for each circuit type, which will fill in automatically when you start a new job. I'd recommend setting these up before your first job.",
     placement: 'top',
   },
 ]);
 
 /**
- * Job-detail tour — 8 steps. iOS canon narrations preserved verbatim
- * from `TourManager.jobSteps`. Steps 1-7 land on Overview; step 8
- * navigates to the PDF tab.
+ * Job-detail tour — 9 steps (v11, iOS build 417). iOS canon narrations
+ * preserved verbatim from `TourManager.jobSteps`. Steps 1-8 land on
+ * Overview; step 9 navigates to the PDF tab.
  */
 export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   {
@@ -117,6 +130,21 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
     tabSlug: '',
   },
   {
+    // v11 NEW step (iOS jobSteps[3], 2026-06-30): the conversational
+    // contract — auto read-back + the "sent for processing" tone. The
+    // chime flag plays the real 960 Hz / 80 ms sound after narration
+    // (iOS splices it into the bundled MP3; see tour-chime.ts).
+    id: 'job-tone',
+    selector: '[data-tour="transcript-bar"]',
+    title: 'Conversational — listen for the tone',
+    body: 'Every reading is read back to you automatically. A short tone after you speak means it was sent for processing — no tone means nothing was sent, so say it again.',
+    narration:
+      "CertMate is conversational. Every reading you give is automatically read back to you, so you can keep your eyes off the screen. When you finish speaking, you'll hear a short tone — that means what you said has been sent for processing, and a response is on its way. Some more complex requests take a few seconds, but they'll always be answered. If you didn't hear a tone, nothing was sent and there'll be no response — so just say the reading again.",
+    placement: 'bottom',
+    tabSlug: '',
+    chime: true,
+  },
+  {
     id: 'job-multi',
     selector: '[data-tour="circuits-table"]',
     title: 'Multi-circuit shortcut',
@@ -127,12 +155,15 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
     tabSlug: '',
   },
   {
-    id: 'job-voice',
+    // v11 (iOS jobSteps[5], 2026-06-30): the stale "press the voice
+    // button to read back confirmations" line was dropped — read-backs
+    // are automatic now (Audio-First invariant 1). Observations only.
+    id: 'job-observations',
     selector: '[data-tour="voice-button"]',
-    title: 'Voice confirmations & observations',
-    body: 'Press Voice to hear confirmations read back. Say "observation" to log a finding — code, regulation, and schedule item are filled in automatically.',
+    title: 'Observations',
+    body: 'Say "observation" to log a finding — code, regulation, and schedule item are filled in automatically. Edit them any time in the Observations tab.',
     narration:
-      "If you'd like me to read back confirmations, press the voice button. To make an observation, just say 'observation' and I'll write up what you say in the Observations tab — assigning the appropriate code, regulation reference, and schedule location if you haven't specified them. These can easily be changed in the Observations tab afterwards.",
+      "To make an observation, just say 'observation' and I'll write up what you say in the Observations tab — assigning the appropriate code, regulation reference, and schedule location if you haven't specified them. These can easily be changed in the Observations tab afterwards.",
     placement: 'top',
     tabSlug: '',
   },
