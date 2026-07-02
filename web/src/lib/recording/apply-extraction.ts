@@ -918,6 +918,13 @@ function applyObservations(
     };
     if (obs.observation_id) row.server_id = obs.observation_id;
     if (obs.regulation) row.regulation = obs.regulation;
+    // obs-#51 / obs-#52 Fix B (WS3 item 3, 2026-07-02) — carry the "why
+    // this code" rationale and the canonical BS 7671 wording from the
+    // initial extraction onto the row. iOS parity: applySonnetObservations
+    // sets all three (DeepgramRecordingViewModel.swift:7235/:7253).
+    if (obs.rationale) row.rationale = obs.rationale;
+    if (obs.regulation_title) row.regulation_title = obs.regulation_title;
+    if (obs.regulation_description) row.regulation_description = obs.regulation_description;
     // M11 — schedule_item validation. Drop the back-reference if
     // the ref isn't in the cert-type schedule. Observation still
     // lands; it just won't render under the Inspection-tab preview.
@@ -994,6 +1001,13 @@ export function applyObservationUpdate(
     code: string;
     regulation?: string | null;
     schedule_item?: string | null;
+    rationale?: string | null;
+    /** obs-#52 Fix B — canonical wording for the REFINED ref. Applied
+     *  UNCONDITIONALLY on the update path: null/absent (table MISS)
+     *  CLEARS stale wording carried from a prior ref, mirroring iOS
+     *  handleObservationUpdate's unconditional assignment. */
+    regulation_title?: string | null;
+    regulation_description?: string | null;
   }
 ): ObservationRow[] | null {
   const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
@@ -1041,6 +1055,14 @@ export function applyObservationUpdate(
     if (update.observation_id) newRow.server_id = update.observation_id;
     if (update.regulation) newRow.regulation = update.regulation;
     if (update.schedule_item) newRow.schedule_item = update.schedule_item;
+    // obs-#51 / obs-#52 Fix B — carry rationale + canonical wording onto
+    // the CREATE-from-miss row (iOS: newObs.rationale/.regulationTitle/
+    // .regulationDescription in handleObservationUpdate's append paths).
+    if (update.rationale) newRow.rationale = update.rationale;
+    if (update.regulation_title) newRow.regulation_title = update.regulation_title;
+    if (update.regulation_description) {
+      newRow.regulation_description = update.regulation_description;
+    }
     existing.push(newRow);
     return existing;
   }
@@ -1058,6 +1080,28 @@ export function applyObservationUpdate(
   }
   if (update.regulation && update.regulation !== before.regulation) {
     next.regulation = update.regulation;
+    changed = true;
+  }
+  // obs-#51 — refined rationale overwrites only when non-empty (iOS:
+  // `if let newRationale = update.rationale, !newRationale.isEmpty`).
+  if (update.rationale && update.rationale !== before.rationale) {
+    next.rationale = update.rationale;
+    changed = true;
+  }
+  // obs-#52 Fix B — canonical wording is set UNCONDITIONALLY so a
+  // refinement whose new ref is a table MISS (title/description null)
+  // CLEARS any stale HIT wording carried from the prior ref — the card
+  // then falls back to the model `regulation` string. Mirrors iOS
+  // handleObservationUpdate's unconditional assignment
+  // (DeepgramRecordingViewModel.swift, obs-#52 Fix B comment).
+  const nextTitle = update.regulation_title ?? undefined;
+  if (nextTitle !== before.regulation_title) {
+    next.regulation_title = nextTitle;
+    changed = true;
+  }
+  const nextDescription = update.regulation_description ?? undefined;
+  if (nextDescription !== before.regulation_description) {
+    next.regulation_description = nextDescription;
     changed = true;
   }
   const trimmedText = update.observation_text.trim();

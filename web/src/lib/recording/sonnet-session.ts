@@ -68,6 +68,18 @@ export interface Observation {
   item_location?: string | null;
   schedule_item?: string | null;
   regulation?: string | null;
+  /** Canonical BS 7671 regulation wording (obs-#52 Fix B, 2026-06-23) —
+   *  table-validated title/description looked up server-side from the
+   *  cited regulation ref. Null on a table MISS (the COMMON case — the
+   *  table is BS 7671:2018+A2:2022), in which case the model's
+   *  `regulation` free-text stands alone. Mirrors iOS
+   *  `Observation.regulationTitle/.regulationDescription`
+   *  (Observation.swift:59). */
+  regulation_title?: string | null;
+  regulation_description?: string | null;
+  /** One-clause "why this code" rationale (obs-#51). Rendered italic as
+   *  "Because {rationale}" on the observation card, iOS parity. */
+  rationale?: string | null;
   /** Multi-board attribution. Backend bundler propagates the active
    *  board_id onto Sonnet-created observations (Phase 6 multi-board
    *  sprint). PWA captures into `ObservationRow.board_id` so a
@@ -100,6 +112,13 @@ export interface ObservationUpdate {
   regulation?: string | null;
   schedule_item?: string | null;
   rationale?: string | null;
+  /** Canonical BS 7671 wording for the REFINED ref (obs-#52 Fix B). The
+   *  server re-runs `lookupRegulation` on every observation_update path
+   *  (rename / BPG4 refinement / RULE-6 edit) — null on a table MISS.
+   *  Consumers apply these UNCONDITIONALLY (null CLEARS stale wording
+   *  carried from a prior ref), mirroring iOS handleObservationUpdate. */
+  regulation_title?: string | null;
+  regulation_description?: string | null;
   source?: string | null;
 }
 
@@ -1823,6 +1842,12 @@ export class SonnetSession {
           regulation: (json.regulation as string | null | undefined) ?? null,
           schedule_item: (json.schedule_item as string | null | undefined) ?? null,
           rationale: (json.rationale as string | null | undefined) ?? null,
+          // obs-#52 Fix B — canonical wording rides EVERY update path;
+          // null (table MISS) must survive decode so the apply layer can
+          // CLEAR stale wording rather than keep it.
+          regulation_title: (json.regulation_title as string | null | undefined) ?? null,
+          regulation_description:
+            (json.regulation_description as string | null | undefined) ?? null,
           source: (json.source as string | null | undefined) ?? null,
         };
         // Defensive: skip if the server somehow emitted an empty payload.
@@ -1933,24 +1958,6 @@ export class SonnetSession {
       }
       case 'cost_update': {
         this.callbacks.onCostUpdate?.(json as unknown as CostUpdate);
-        break;
-      }
-      case 'observation_update': {
-        // BPG4 / BS 7671 lookup resolved — refine the observation row
-        // the inspector saw populate from the initial extraction. iOS
-        // parity: `ServerWebSocketService.swift:760` decodes the same
-        // wire shape and fans out to `handleObservationUpdate`. Without
-        // this branch the observation stays at its initial-extraction
-        // classification forever even though the server sent the
-        // refined code/regulation seconds later.
-        this.callbacks.onObservationUpdate?.({
-          observation_id: typeof json.observation_id === 'string' ? json.observation_id : undefined,
-          observation_text: (json.observation_text as string) ?? '',
-          code: (json.code as string) ?? '',
-          regulation: typeof json.regulation === 'string' ? json.regulation : undefined,
-          rationale: typeof json.rationale === 'string' ? json.rationale : undefined,
-          source: typeof json.source === 'string' ? json.source : undefined,
-        });
         break;
       }
       case 'error': {
