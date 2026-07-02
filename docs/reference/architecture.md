@@ -14,7 +14,7 @@
 | Photo Analysis | OpenAI Vision API |
 | Backend | Node.js (ES modules) — API server, job processing, S3 storage |
 | Editor UI | Python Streamlit (legacy, replaced by iOS app) |
-| PDF Generation | Python ReportLab + Playwright (Chromium) |
+| PDF Generation | CLIENT-SIDE on both apps since 2026-07-02: iOS `EICRHTMLTemplate.swift`→WKWebView; web `web/src/lib/pdf/` (TS port of the iOS template + foreignObject capture + pdf-lib Blob). Server Python ReportLab + Playwright (Chromium) is FALLBACK/DEBUG-ONLY (web "Generate on server (fallback)" action; flips behind the debug page after field validation) |
 | Cloud Storage | AWS S3 |
 | Secrets | AWS Secrets Manager |
 
@@ -22,8 +22,8 @@
 
 The backend Docker container (`Dockerfile.backend`) includes:
 - **Node.js 20** - Job processing pipeline
-- **Python 3 + pip** - PDF generation scripts
-- **Playwright + Chromium** - Browser-based PDF rendering
+- **Python 3 + pip** - PDF generation scripts (fallback path only since 2026-07-02 — the web PWA renders certificates client-side)
+- **Playwright + Chromium** - Browser-based PDF rendering (same fallback path)
 - **Sharp/libvips** - Image processing
 - **All Python dependencies** from `requirements.txt`
 
