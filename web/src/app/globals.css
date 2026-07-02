@@ -93,6 +93,14 @@
   --radius-hero: 22px; /* CMDesign heroCard */
   --radius-cta-pill: 26px; /* CMDesign ctaPill */
 
+  /* ---------- Motion easings (CMDesign.Animation spring approximations) ----------
+   * CSS spring() is not shipping cross-browser; these cubic-beziers carry
+   * the spring FEEL (slight overshoot on the snappy curve, fast-out-soft-
+   * landing on the smooth one). Pair with the durations iOS uses
+   * (~250-350ms interactive, ~400-550ms entrances). */
+  --ease-spring: cubic-bezier(0.34, 1.2, 0.44, 1); /* springSnappy-ish, slight overshoot */
+  --ease-out-soft: cubic-bezier(0.2, 0.8, 0.2, 1); /* springSmooth-ish decel */
+
   /* ---------- Fonts (SF Pro Rounded stack on macOS/iOS, Inter fallback elsewhere) ---------- */
   --font-rounded:
     ui-rounded, -apple-system, BlinkMacSystemFont, "SF Pro Rounded", "SF Pro",
@@ -318,10 +326,33 @@ body {
   border: 1px solid var(--color-border-default);
 }
 
+/*
+ * Glass card — WS5 port of iOS `cmCardStyle()` (CertMateDesign.swift:636-668):
+ * L1 base + brand-blue 3% tint + white-gradient glass layer, 1px
+ * directional gradient border (white 16% → blue 6% → white 4%), radius
+ * `--radius-card` (18), soft shadow. The gradient border rides the
+ * padding-box/border-box background trick so no extra wrapper element
+ * is needed.
+ */
 .cm-card {
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01)) padding-box,
+    linear-gradient(
+        color-mix(in srgb, var(--color-brand-blue) 3%, transparent),
+        color-mix(in srgb, var(--color-brand-blue) 3%, transparent)
+      )
+      padding-box,
+    linear-gradient(var(--color-surface-1), var(--color-surface-1)) padding-box,
+    linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.16),
+        color-mix(in srgb, var(--color-brand-blue) 6%, transparent),
+        rgba(255, 255, 255, 0.04)
+      )
+      border-box;
+  border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  box-shadow: 0 3px 20px rgba(0, 0, 0, 0.1);
 }
 
 .cm-pulse-dot {
@@ -394,6 +425,31 @@ body {
     opacity: 0.75;
     transform: scale(1.08);
   }
+}
+
+/* Hero shimmer sweep — WS5 port of iOS `cmHeroShimmer` (CertMateDesign.
+ * swift:850-872): a soft white band (~half the banner width) sweeping
+ * across the hero, 2s ease-in-out autoreversing (Duration.breathe).
+ * Runs as a ::after on the existing `.cm-hero` root so no extra DOM.
+ * The global prefers-reduced-motion guard collapses the animation. */
+@keyframes cm-hero-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+.cm-hero::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  animation: cm-hero-shimmer 2s ease-in-out infinite alternate;
 }
 
 .cm-hero-glow {
