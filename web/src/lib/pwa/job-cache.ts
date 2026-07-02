@@ -61,14 +61,25 @@ import type { Job, JobDetail } from '@/lib/types';
  *                  recording (iOS doesn't need this — the view model is
  *                  process-lived — but PWA loses React state on page
  *                  reload). See sprint plan §0.4.
+ *   v5 (WS6 pending-CCU queue 2026-07-02): added
+ *                  `pending-ccu-extraction` store (keyPath `id`, index
+ *                  `by-job` on `jobId`) — the web port of iOS
+ *                  `PendingExtractionQueue.swift` (filesystem queue of
+ *                  photo + metadata sidecars). Photo Blobs are stored
+ *                  directly in the row; IDB structured-clones Blobs so
+ *                  they survive reload/crash the same way iOS's .jpg
+ *                  files do. CRUD lives in
+ *                  `web/src/lib/ccu/pending-extraction-queue.ts`.
  */
 export const DB_NAME = 'certmate-cache';
-export const DB_VERSION = 4;
+export const DB_VERSION = 5;
 const STORE_JOBS_LIST = 'jobs-list';
 const STORE_JOB_DETAIL = 'job-detail';
 export const STORE_OUTBOX = 'outbox';
 export const STORE_APP_SETTINGS = 'app-settings';
 export const STORE_PENDING_PHOTO = 'pending-observation-photo';
+export const STORE_PENDING_CCU = 'pending-ccu-extraction';
+export const PENDING_CCU_INDEX_BY_JOB = 'by-job';
 export const OUTBOX_INDEX_BY_USER = 'by-user';
 
 interface CachedJobsList {
@@ -145,6 +156,14 @@ export function openDB(): Promise<IDBDatabase> {
       // honoured by the next page load — see PLAN §0.4 + Risks §4.
       if (!db.objectStoreNames.contains(STORE_PENDING_PHOTO)) {
         db.createObjectStore(STORE_PENDING_PHOTO, { keyPath: 'jobId' });
+      }
+      // v5 — pending-ccu-extraction. `id`-keyed (one row per capture,
+      // multiple captures per job allowed — matches iOS's
+      // `{jobId}_{timestamp}` filenames). The `by-job` index drives the
+      // per-job banner + badge without a full-store scan.
+      if (!db.objectStoreNames.contains(STORE_PENDING_CCU)) {
+        const store = db.createObjectStore(STORE_PENDING_CCU, { keyPath: 'id' });
+        store.createIndex(PENDING_CCU_INDEX_BY_JOB, 'jobId', { unique: false });
       }
       // Silence the unused-parameter lint without weakening the type:
       // the event object is often useful for debugging upgrade paths.
@@ -501,14 +520,18 @@ export async function clearJobCache(): Promise<void> {
     // user B's session on a shared device. Mirrors the
     // STORE_JOBS_LIST / STORE_JOB_DETAIL / STORE_OUTBOX shared-device
     // safety contract documented above.
+    // STORE_PENDING_CCU is included for the same shared-device reason:
+    // a queued CCU photo captured under user A must not be replayed
+    // (and billed) under user B's credentials after a sign-out swap.
     const tx = db.transaction(
-      [STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX, STORE_PENDING_PHOTO],
+      [STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX, STORE_PENDING_PHOTO, STORE_PENDING_CCU],
       'readwrite'
     );
     tx.objectStore(STORE_JOBS_LIST).clear();
     tx.objectStore(STORE_JOB_DETAIL).clear();
     tx.objectStore(STORE_OUTBOX).clear();
     tx.objectStore(STORE_PENDING_PHOTO).clear();
+    tx.objectStore(STORE_PENDING_CCU).clear();
     await wrapTransaction(tx);
   } catch (err) {
     console.warn('[job-cache] clearJobCache failed', err);

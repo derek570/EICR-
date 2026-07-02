@@ -384,13 +384,26 @@ export const api = {
    * new fields and the merge helper (`apply-ccu-analysis.ts`) picks
    * only the keys it knows about. Callers should treat unknown fields
    * as informational.
+   *
+   * `idempotencyKey` (WS6 pending-CCU queue): one UUID minted per
+   * CAPTURE and persisted with the queued Blob, sent as
+   * `X-Idempotency-Key` on the initial attempt AND every retry of that
+   * capture. The backend route is wrapped in `withIdempotency('ccu')`
+   * (src/middleware/idempotency.js) so retries of the same capture
+   * short-circuit to the cached response — one capture = one paid
+   * vision call, no matter how the client retries. Mirrors iOS
+   * `PendingExtractionQueue` metadata (one key per capture, reused).
+   * Document extraction has NO key path on purpose — iOS's queue is
+   * CCU-only and `/api/analyze-document` is not idempotency-wrapped.
    */
-  analyzeCCU(photo: Blob | File): Promise<CCUAnalysis> {
+  analyzeCCU(photo: Blob | File, opts?: { idempotencyKey?: string }): Promise<CCUAnalysis> {
     const form = new FormData();
     form.append('photo', photo);
+    const headers: Record<string, string> = {};
+    if (opts?.idempotencyKey) headers['X-Idempotency-Key'] = opts.idempotencyKey;
     return request<CCUAnalysis>(
       '/api/analyze-ccu',
-      { method: 'POST', body: form },
+      { method: 'POST', body: form, headers },
       CCUAnalysisSchema
     );
   },

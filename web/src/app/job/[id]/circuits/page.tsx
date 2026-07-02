@@ -34,7 +34,13 @@ import { useUserDefaults } from '@/hooks/use-user-defaults';
 import { ApiError, type CCUAnalysisCircuit, type CircuitRow } from '@/lib/types';
 import { applyCcuAnalysisToJob, type CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
+import {
+  savePendingCcuExtraction,
+  submitCcuCapture,
+  type CcuSubmitResult,
+} from '@/lib/ccu/pending-extraction-queue';
 import { writeMatchHandoff } from '@/lib/recording/ccu-match-handoff';
+import { PendingCcuBanner } from '@/components/job/pending-ccu-banner';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { IconButton } from '@/components/ui/icon-button';
@@ -146,6 +152,18 @@ export default function CircuitsPage() {
    */
   const [ccuModeSheetOpen, setCcuModeSheetOpen] = React.useState(false);
   const pendingCcuModeRef = React.useRef<CcuApplyMode | null>(null);
+  /**
+   * WS6 item 2 — backend quality-gate (422 retake_required) state.
+   * Carries the failed capture's mode so "Retake Photo" re-arms the
+   * SAME mode and jumps straight back to the picker (iOS
+   * acknowledgeRetake → modeSelection equivalent, collapsed one step
+   * since web's mode was already chosen).
+   */
+  const [ccuRetake, setCcuRetake] = React.useState<{
+    mode: CcuApplyMode;
+    reason: string;
+    message: string;
+  } | null>(null);
   const [docBusy, setDocBusy] = React.useState(false);
   const [docError, setDocError] = React.useState<string | null>(null);
   const docInputRef = React.useRef<HTMLInputElement>(null);
@@ -430,6 +448,131 @@ export default function CircuitsPage() {
     window.setTimeout(() => ccuInputRef.current?.click(), 0);
   };
 
+  /**
+   * Post-analysis application — shared by the live capture path and
+   * the pending-queue replay path (banner retry / auto-retry), so a
+   * photo that failed offline applies IDENTICALLY when it finally
+   * uploads. `targetBoardId` is the board selection at CAPTURE time
+   * (persisted on the queue entry), not necessarily the current one.
+   */
+  const applyCcuAnalysisResult = (
+    mode: CcuApplyMode,
+    analysis: Awaited<ReturnType<typeof api.analyzeCCU>>,
+    targetBoardId: string | null
+  ) => {
+    if (mode === 'hardware_update') {
+      // Run the matcher locally, stash the result in sessionStorage,
+      // and navigate to the Match Review screen. The apply step runs
+      // there once the inspector confirms / reassigns.
+      //
+      // Candidates MUST be strictly board-scoped — legacy boardless
+      // circuits would otherwise get pulled into the match, and
+      // accepting the match would silently migrate them onto the
+      // active board along with their readings. That's the same
+      // cross-board-collateral trap that `boardScoped` protects the
+      // other bulk actions from. When no board is selected (e.g.
+      // single-board jobs on the pre-Phase-4 schema) we fall back
+      // to the unscoped list.
+      const boardCircuits = (
+        targetBoardId
+          ? (job.circuits ?? []).filter((c) => (c.board_id as string | undefined) === targetBoardId)
+          : (job.circuits ?? [])
+      ) as CircuitRow[];
+      const initialMatches: CircuitMatch<CCUAnalysisCircuit, CircuitRow>[] = matchCircuits(
+        analysis.circuits ?? [],
+        boardCircuits
+      );
+      // Even if the matcher returned 0 candidates, we still hand
+      // off — the review screen will show every circuit as "new"
+      // which is the correct state and lets the inspector double-
+      // check before we touch the job.
+      const patchedBoardsSnapshot = (job.boards ?? []) as { id: string }[];
+      const boardId = targetBoardId ?? patchedBoardsSnapshot[0]?.id ?? 'board-pending';
+      const nonce = writeMatchHandoff(jobId, {
+        analysis,
+        matches: initialMatches,
+        boardId,
+        existingBoardCircuits: boardCircuits,
+      });
+      router.push(`/job/${jobId}/circuits/match-review?nonce=${nonce}`);
+      setActionHint(
+        `Review ${initialMatches.length} proposed match${initialMatches.length === 1 ? '' : 'es'}…`
+      );
+      return;
+    }
+
+    // Names Only + Full Capture — apply immediately.
+    const { patch, questions } = applyCcuAnalysisToJob(job, analysis, {
+      mode,
+      targetBoardId,
+    });
+    updateJob(patch);
+    // If we just synthesised a board, surface it as the active one
+    // so the new circuits are visible under the selector. Same for
+    // the two board-appending modes (add_new_board /
+    // add_off_peak_board) — the inspector just photographed a new
+    // board, so the active selection should jump to it (otherwise
+    // the new circuits appear to vanish under the previously
+    // selected board).
+    const appendsBoard = mode === 'add_new_board' || mode === 'add_off_peak_board';
+    const patchedBoards = (patch.boards ?? []) as { id: string }[];
+    if (!targetBoardId && patchedBoards.length > 0) {
+      setSelectedBoardId(patchedBoards[0].id);
+    } else if (appendsBoard && patchedBoards.length > 0) {
+      setSelectedBoardId(patchedBoards[patchedBoards.length - 1].id);
+    }
+    const added = analysis.circuits?.length ?? 0;
+    const verb = mode === 'append_rail' ? 'appended' : appendsBoard ? 'added' : 'merged';
+    const suffix =
+      mode === 'names_only'
+        ? ' (labels only)'
+        : mode === 'add_new_board'
+          ? ' to a new sub-board'
+          : mode === 'add_off_peak_board'
+            ? ' to a new off-peak board'
+            : '';
+    setActionHint(
+      added > 0
+        ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} ${verb}${suffix}.`
+        : 'CCU analysed — no circuits detected.'
+    );
+    setCcuQuestions(questions);
+  };
+
+  /**
+   * Route a submit-engine outcome into page state. Shared by the live
+   * capture path and the pending-banner replay path so both surface
+   * identical UX (WS6 item 2 — iOS `flowState` branching).
+   */
+  const handleCcuSubmitResult = (
+    mode: CcuApplyMode,
+    targetBoardId: string | null,
+    result: CcuSubmitResult
+  ) => {
+    switch (result.kind) {
+      case 'analysis':
+        applyCcuAnalysisResult(mode, result.analysis, targetBoardId);
+        return;
+      case 'retake':
+        // Quality gate — queue entry already dropped by the engine.
+        // Surface the reason/message card; NEVER auto-retry (iOS
+        // CCUExtractionViewModel drops the entry on retake).
+        setCcuRetake({ mode, reason: result.reason, message: result.message });
+        setActionHint(null);
+        return;
+      case 'queued':
+        // Positive non-blocking state — the photo IS saved; auto-retry
+        // fires on connectivity restore via the banner (iOS
+        // savedForRetry toast semantics, not an error).
+        setActionHint(result.message);
+        return;
+      case 'error':
+        setCcuError(result.message);
+        setActionHint(null);
+        return;
+    }
+  };
+
   const handleCcuFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     // Reset the input immediately so the same file can be chosen again
@@ -441,6 +584,7 @@ export default function CircuitsPage() {
 
     setCcuBusy(true);
     setCcuError(null);
+    setCcuRetake(null);
     setActionHint(
       mode === 'names_only'
         ? 'Analysing board labels…'
@@ -455,87 +599,30 @@ export default function CircuitsPage() {
                 : 'Analysing consumer unit…'
     );
     try {
-      const analysis = await api.analyzeCCU(file);
+      // WS6 item 2 — persist-BEFORE-upload (iOS PendingExtractionQueue
+      // save-first model): the Blob + mode + board + idempotency key
+      // land in IDB first, so a network drop or tab crash mid-upload
+      // loses neither the photo nor the framing. The entry carries the
+      // capture's one-and-only idempotency key; every retry reuses it.
+      const entry = user?.id
+        ? await savePendingCcuExtraction({
+            userId: user.id,
+            jobId,
+            mode,
+            photo: file,
+            targetBoardId: selectedBoardId,
+          })
+        : null;
 
-      if (mode === 'hardware_update') {
-        // Run the matcher locally, stash the result in sessionStorage,
-        // and navigate to the Match Review screen. The apply step runs
-        // there once the inspector confirms / reassigns.
-        //
-        // Candidates MUST be strictly board-scoped — legacy boardless
-        // circuits would otherwise get pulled into the match, and
-        // accepting the match would silently migrate them onto the
-        // active board along with their readings. That's the same
-        // cross-board-collateral trap that `boardScoped` protects the
-        // other bulk actions from. When no board is selected (e.g.
-        // single-board jobs on the pre-Phase-4 schema) we fall back
-        // to the unscoped list.
-        const boardCircuits = (
-          selectedBoardId
-            ? (job.circuits ?? []).filter(
-                (c) => (c.board_id as string | undefined) === selectedBoardId
-              )
-            : (job.circuits ?? [])
-        ) as CircuitRow[];
-        const initialMatches: CircuitMatch<CCUAnalysisCircuit, CircuitRow>[] = matchCircuits(
-          analysis.circuits ?? [],
-          boardCircuits
-        );
-        // Even if the matcher returned 0 candidates, we still hand
-        // off — the review screen will show every circuit as "new"
-        // which is the correct state and lets the inspector double-
-        // check before we touch the job.
-        const patchedBoardsSnapshot = (job.boards ?? []) as { id: string }[];
-        const boardId = selectedBoardId ?? patchedBoardsSnapshot[0]?.id ?? 'board-pending';
-        const nonce = writeMatchHandoff(jobId, {
-          analysis,
-          matches: initialMatches,
-          boardId,
-          existingBoardCircuits: boardCircuits,
-        });
-        router.push(`/job/${jobId}/circuits/match-review?nonce=${nonce}`);
-        setActionHint(
-          `Review ${initialMatches.length} proposed match${initialMatches.length === 1 ? '' : 'es'}…`
-        );
-        return;
+      if (entry) {
+        const result = await submitCcuCapture(entry);
+        handleCcuSubmitResult(mode, entry.targetBoardId, result);
+      } else {
+        // Degraded no-queue mode (IDB unavailable / user briefly
+        // unknown) — upload directly like the pre-WS6 path.
+        const analysis = await api.analyzeCCU(file);
+        applyCcuAnalysisResult(mode, analysis, selectedBoardId);
       }
-
-      // Names Only + Full Capture — apply immediately.
-      const { patch, questions } = applyCcuAnalysisToJob(job, analysis, {
-        mode,
-        targetBoardId: selectedBoardId,
-      });
-      updateJob(patch);
-      // If we just synthesised a board, surface it as the active one
-      // so the new circuits are visible under the selector. Same for
-      // the two board-appending modes (add_new_board /
-      // add_off_peak_board) — the inspector just photographed a new
-      // board, so the active selection should jump to it (otherwise
-      // the new circuits appear to vanish under the previously
-      // selected board).
-      const appendsBoard = mode === 'add_new_board' || mode === 'add_off_peak_board';
-      const patchedBoards = (patch.boards ?? []) as { id: string }[];
-      if (!selectedBoardId && patchedBoards.length > 0) {
-        setSelectedBoardId(patchedBoards[0].id);
-      } else if (appendsBoard && patchedBoards.length > 0) {
-        setSelectedBoardId(patchedBoards[patchedBoards.length - 1].id);
-      }
-      const added = analysis.circuits?.length ?? 0;
-      const verb = mode === 'append_rail' ? 'appended' : appendsBoard ? 'added' : 'merged';
-      const suffix =
-        mode === 'names_only'
-          ? ' (labels only)'
-          : mode === 'add_new_board'
-            ? ' to a new sub-board'
-            : mode === 'add_off_peak_board'
-              ? ' to a new off-peak board'
-              : '';
-      setActionHint(
-        added > 0
-          ? `CCU analysed — ${added} circuit${added === 1 ? '' : 's'} ${verb}${suffix}.`
-          : 'CCU analysed — no circuits detected.'
-      );
-      setCcuQuestions(questions);
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -724,6 +811,17 @@ export default function CircuitsPage() {
             aria-hidden
           />
 
+          {/* WS6 item 2 — pending CCU extractions (iOS CircuitsTab
+              banner). Self-contained; replays route through the same
+              apply path as live captures. */}
+          <PendingCcuBanner
+            jobId={jobId}
+            busy={ccuBusy}
+            onResult={(entry, result) =>
+              handleCcuSubmitResult(entry.mode, entry.targetBoardId, result)
+            }
+          />
+
           {actionHint ? (
             <p
               className="rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-3 py-2 text-[12px] text-[var(--color-text-secondary)]"
@@ -731,6 +829,41 @@ export default function CircuitsPage() {
             >
               {actionHint}
             </p>
+          ) : null}
+
+          {ccuRetake ? (
+            <div
+              className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-[var(--color-status-failed)]/40 bg-[var(--color-status-failed)]/10 px-3 py-2"
+              role="alert"
+            >
+              <p className="text-[12px] font-semibold text-[var(--color-status-failed)]">
+                Photo can&rsquo;t be used — retake needed
+              </p>
+              <p className="text-[12px] text-[var(--color-text-secondary)]">{ccuRetake.message}</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Re-arm the SAME mode and reopen the picker — the
+                    // queue entry was already dropped (never auto-retry
+                    // a quality-gate rejection).
+                    pendingCcuModeRef.current = ccuRetake.mode;
+                    setCcuRetake(null);
+                    window.setTimeout(() => ccuInputRef.current?.click(), 0);
+                  }}
+                  className="rounded-full bg-[var(--color-status-failed)] px-3 py-1.5 text-[12px] font-semibold text-white"
+                >
+                  Retake Photo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCcuRetake(null)}
+                  className="rounded-full border border-[var(--color-border-subtle)] px-3 py-1.5 text-[12px] font-semibold text-[var(--color-text-secondary)]"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
           ) : null}
 
           {ccuError ? (
