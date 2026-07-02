@@ -476,7 +476,6 @@
   ],
   "web/src/lib/recording-context.tsx": [
     "observations/obs-photo-autolink",
-    "recording/ask-context-board-id",
     "recording/fast-path-tts",
     "recording/readback-dedup-rekey",
     "recording/transcript-gate",
@@ -506,7 +505,6 @@
   ],
   "web/src/lib/recording/sonnet-session.ts": [
     "observations/obs-card-canonical-wording",
-    "recording/ask-context-board-id",
     "recording/capability-advertising",
     "recording/fast-path-tts",
     "recording/playback-telemetry"
