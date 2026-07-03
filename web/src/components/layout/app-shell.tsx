@@ -153,7 +153,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <TermsRedirect />
       </Suspense>
       <header
-        className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)]/80 px-4 backdrop-blur"
+        // WS7: `pt-safe` (env(safe-area-inset-top)) keeps the header content
+        // clear of the notch/status bar in installed mode — with
+        // `viewport-fit: cover` + a black-translucent status bar (layout.tsx)
+        // the page paints under the notch, so without this the logo/back
+        // button sit behind the clock. `h-14` remains the content-row height;
+        // the safe-area inset is added on top and the surface-0 backdrop
+        // fills the notch strip. `pl-safe`/`pr-safe` cover landscape notches.
+        className="sticky top-0 z-30 flex min-h-14 items-center justify-between border-b border-[var(--color-border-subtle)] bg-[var(--color-surface-0)]/80 px-4 pt-safe pl-safe pr-safe backdrop-blur"
         role="banner"
       >
         <div className="flex items-center gap-3">
