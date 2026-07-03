@@ -17,6 +17,35 @@ summaries had casing errors and an out-of-date memory of the wire shapes.
 - `web/src/lib/recording/transcript-field-matcher.ts`
 - `web/src/lib/recording/number-normaliser.ts`
 
+## WS4 update (2026-07-03) — Flux path shipped behind the runtime kill-switch
+
+The web STT path is no longer nova-3-only. `web/src/lib/recording/deepgram-service.ts`
+now carries BOTH models behind an `sttModel: 'nova3' | 'flux'` selector:
+
+| Surface | iOS (Flux) | PWA Flux path | Status |
+|---|---|---|---|
+| Model / endpoint | `flux-general-en` `/v2/listen` | `buildFluxURL` → `flux-general-en` `/v2/listen` | ✓ (behind selector) |
+| Turn detection | `eot_threshold=0.7`, `eot_timeout_ms=5000` | identical | ✓ |
+| GDPR | `mip_opt_out=true` | identical (per-connection) | ✓ |
+| Turn events | `TurnInfo`/{Update,StartOfTurn,EndOfTurn} | mapped onto the SAME delegate API (onInterim/onSpeechStarted/onFinal/onUtteranceEnd) — no parallel forwarder | ✓ |
+| Configure | echo-validated, RTT logged | `sendConfigure` → ConfigureResult, echo-validated, RTT, `onConfigureResult` | ✓ |
+| Message robustness | Error/ConfigureFailure surfaced | Error/Fatal/ConfigureFailure surfaced, never dropped | ✓ |
+| Keyterms | equal-weight, no `:boost`, 20–50 curated | `generateFluxKeyterms` equal-weight, no suffix (PROVISIONAL curated ~40 pending iOS half-1 list) | partial |
+| Audio batching | 80ms / 1280-sample frames | identical batcher | ✓ |
+| KeepAlive | none on Flux (idle-close → reconnect) | Flux skips the nova-3 KeepAlive | ✓ |
+
+**But web still runs nova-3 by DEFAULT.** `DEFAULT_STT_MODEL='nova3'` and
+`ecs/task-def-frontend.json` sets `DEEPGRAM_STT_MODEL=nova3`. Flux is selected
+only when the runtime kill-switch resolves `flux`, which is NOT the product
+default this cycle: the Phase-0 probe was only partially conclusive (LIM
+corrected; insulation/trip-time inconclusive) and the iOS `default_config.json`
+curation + TestFlight gate is unmet. So this is **Flux-CAPABLE-vs-Flux**, not
+yet **Flux-DEFAULT-vs-Flux**. The nova-3 rows below remain the LIVE web path
+(kill-switch fallback) until the flip. Full Flux-vs-Flux is reached by one
+commit flipping `DEFAULT_STT_MODEL` + the task-def value to `flux` after the
+curated iOS list ships via TestFlight and a real-audio spot check passes. See
+`~/.claude/handoffs/EICR_Automation--parity-ws4-flux-wave-2026-07-02/phase0-probe-results.md`.
+
 ## 1. Confirmed alignments
 
 | Surface | iOS | PWA | Status |
