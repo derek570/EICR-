@@ -329,9 +329,20 @@ describe('WS7 parity · /terms acceptance gate (7 attestations incl. signature)'
     };
     try {
       // Keep the throwing override active across the FULL async accept
-      // (getBlob→FileReader→recordTermsAcceptance) — restoring in a plain
-      // finally would race the macrotask and let the persist succeed.
+      // (getBlob→FileReader→recordTermsAcceptance). The signature persist runs
+      // in a FileReader.onload macrotask that can fire AFTER clickAccept's
+      // fixed flush under CI's full-suite timing — a plain finally restore then
+      // races the macrotask and lets the persist succeed (spurious redirect,
+      // order-dependent CI failure). Drain macrotasks until the error surfaces
+      // so the persist deterministically runs while setItem still throws.
       await clickAccept(harness.container);
+      for (
+        let i = 0;
+        i < 25 && !/couldn.t save your acceptance/i.test(harness.container.textContent ?? '');
+        i++
+      ) {
+        await flushAsync();
+      }
     } finally {
       window.localStorage.setItem = realSet;
     }
