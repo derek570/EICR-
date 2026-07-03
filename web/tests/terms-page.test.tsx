@@ -228,6 +228,10 @@ async function clickAccept(container: HTMLElement) {
 
 let harness: { container: HTMLDivElement; root: Root } | null = null;
 
+// Pristine setItem captured before any test replaces it with a throwing stub —
+// used by afterEach to force-restore it so a raced override can't leak.
+const PRISTINE_SET_ITEM = window.localStorage.setItem.bind(window.localStorage);
+
 beforeEach(() => {
   replaceMock.mockReset();
   searchParamsStub.clear();
@@ -242,6 +246,10 @@ afterEach(() => {
     harness.container.remove();
     harness = null;
   }
+  // Force-restore storage methods in case a per-test throw-override raced its
+  // own finally (the signature persist runs in a FileReader macrotask), so a
+  // throwing setItem can never leak into a later test/file.
+  window.localStorage.setItem = PRISTINE_SET_ITEM;
   window.localStorage.clear();
   vi.useRealTimers();
 });
