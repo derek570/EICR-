@@ -4,6 +4,12 @@
 
 # Deployment & Troubleshooting
 
+## Local Node version (match CI)
+
+**Use Node 20 for local work.** CI pins Node 20 (`.github/workflows/deploy.yml` `node-version: '20'`, 4 sites); the repo-root `.nvmrc` = `20` records that pin for nvm users (`nvm use` at the repo root). The `web` workspace also declares `"engines": { "node": ">=20 <21" }` and a WARN-level preflight (`web/scripts/check-node.mjs`, wired as `pretest`) that fires on every `npm test --workspace=web` and in `.husky/pre-push`.
+
+Why it matters: jsdom / Storage / experimental-webstorage behaviour differs across Node majors. Running the web vitest suite on a different major (e.g. v25) can pass locally while failing on CI's Node 20 — this is exactly what bit WS7 (the conditional `localStorage` shim in `web/tests/setup.ts`). The preflight is **warn-only** (exits 0) so it never blocks unrelated work or a GUI-git push; set `CHECK_NODE_STRICT=1` to make a mismatched major hard-fail. For an exact-patch pin, bump `.nvmrc` and `deploy.yml` to the same `20.x.y` in one commit.
+
 ## Deploy Changes to Cloud
 
 The production site runs at **https://certomatic3000.co.uk**

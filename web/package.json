@@ -2,6 +2,9 @@
   "name": "web",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20 <21"
+  },
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --webpack",
@@ -9,6 +12,7 @@
     "lint": "eslint",
     "verify": "tsx scripts/verify-visual.ts",
     "typecheck": "tsc --noEmit",
+    "pretest": "node scripts/check-node.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test",
