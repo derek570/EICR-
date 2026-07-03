@@ -568,6 +568,155 @@ function dedupAndCap(boosts: KeytermBoost[], cap: number): KeytermBoost[] {
   return sorted.slice(0, cap);
 }
 
+// ---------------------------------------------------------------------
+// Flux equal-weight keyterm builder (parity WS4)
+// ---------------------------------------------------------------------
+//
+// Deepgram Flux (`flux-general-en`, /v2/listen) keyterms are EQUAL-WEIGHT:
+// there is no per-term boost, the `:boost` suffix is stripped/ignored, and
+// Deepgram's best practice is "the most important 20–50 terms" (a bloated
+// generic-heavy list DILUTES recall). This is a fundamentally different
+// selection model from the nova-3 boost-ranked builder above, so it gets its
+// own builder rather than reusing `generateKeyterms` / `appendKeytermsToUrl`.
+//
+// ⚠️ PROVISIONAL LIST — pending the iOS half-1 curation.
+// The one-wave decision (parity WS4) is that web ports the FINAL curated iOS
+// keyterm list ONCE, after the Phase-0 probe green-lights it and the pruned
+// `CertMateUnified/Sources/Resources/default_config.json` ships via TestFlight.
+// That curation is HELD this session (the Phase-0 synthetic probe validated the
+// mechanism on LIM but left insulation/trip-time inconclusive — see
+// handoff `phase0-probe-results.md`). Until the FINAL list lands, this constant
+// is a deliberate, hand-curated ~40-term subset of the garble-critical +
+// core-domain vocabulary — NOT an auto-derived dump of the uncurated nova-3
+// boost map (which the plan explicitly forbids wiring to a production Flux
+// builder). It is gated behind `DEEPGRAM_STT_MODEL=flux`, which is NOT the
+// product default (`DEFAULT_STT_MODEL='nova3'`), so it never reaches production
+// this session. The Flux-default flip commit replaces this list with the FINAL
+// curated set in the same change that flips the default — see the flip runbook.
+//
+// Flux builder constants mirror the iOS Flux path (≤100 terms / 2000-char URL
+// budget, distinct from the nova-3 web caps of 85/1800). At a ~40-term curated
+// size these ceilings are never hit; they are pinned here so the constants are
+// explicit and a future list-growth can't silently overflow.
+const FLUX_MAX_KEYTERMS = 100;
+const FLUX_URL_LENGTH_BUDGET = 2000;
+
+const FLUX_CURATED_KEYTERMS_PROVISIONAL: readonly string[] = [
+  // Garble-critical measurement nouns (the sprint's whole reason for existing).
+  'insulation resistance',
+  'trip time',
+  'megohms',
+  'LIM',
+  'continuity',
+  'ring continuity',
+  // Loop-impedance / earthing measurement vocabulary.
+  'Zs',
+  'Ze',
+  'R1 plus R2',
+  'R1',
+  'R2',
+  'Rn',
+  'CPC',
+  'loop impedance',
+  'polarity',
+  // Device / protective-device names.
+  'RCD',
+  'RCBO',
+  'MCB',
+  'AFDD',
+  'SPD',
+  // Earthing arrangements.
+  'TN-C-S',
+  'TN-S',
+  'TT',
+  'PME',
+  'bonding',
+  'earthing',
+  'main earth',
+  'meter tails',
+  // Observation / outcome codes.
+  'C1',
+  'C2',
+  'C3',
+  'FI',
+  'observation',
+  'limitation',
+  'N/A',
+  // Cabling / methods that mishear.
+  'MICC',
+  'SWA',
+  'conduit',
+  'trunking',
+  // Common board manufacturers.
+  'Hager',
+  'Wylex',
+  'Schneider',
+  'Crabtree',
+];
+
+/**
+ * Build the equal-weight Flux keyterm list. Returns plain strings (NO `:boost`
+ * suffix — Flux ignores it). Optionally augments the provisional curated set
+ * with CCU-derived board vocabulary (manufacturer/model, OCPD types, circuit
+ * refs, RCD ratings, label terms), deduped case-insensitively, capped at
+ * `FLUX_MAX_KEYTERMS`. Mirrors the iOS Flux keyterm shape (equal-weight, no
+ * suffix); the URL-length cut happens in the Flux URL builder.
+ */
+export function generateFluxKeyterms(analysis?: CcuAnalysisLite | null): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (raw: string | null | undefined) => {
+    if (!raw) return;
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const lc = trimmed.toLowerCase();
+    if (seen.has(lc)) return;
+    seen.add(lc);
+    out.push(trimmed);
+  };
+
+  for (const term of FLUX_CURATED_KEYTERMS_PROVISIONAL) add(term);
+
+  if (analysis) {
+    add(analysis.board_manufacturer);
+    add(analysis.board_model);
+    add(analysis.main_switch_type);
+    if (analysis.spd_present === true) add('surge protection');
+    for (const ocpd of extractOcpdTypes(analysis.circuits ?? [])) add(ocpd);
+    for (const term of extractLabelTerms(analysis.circuits ?? [])) add(term);
+    for (const circuit of analysis.circuits ?? []) {
+      if (typeof circuit.circuit_number === 'number') add(`circuit ${circuit.circuit_number}`);
+    }
+    for (const rating of extractRcdRatings(analysis.circuits ?? [])) add(rating);
+  }
+
+  return out.slice(0, FLUX_MAX_KEYTERMS);
+}
+
+/**
+ * Append equal-weight `keyterm=` params (Flux) to a `URLSearchParams`, in list
+ * order, until the projected URL length would exceed `FLUX_URL_LENGTH_BUDGET`.
+ * NO `:boost` suffix (Flux strips it). Mirrors iOS `buildFluxURL`'s per-term
+ * append + URL-cap-and-stop loop. Returns the count actually appended.
+ */
+export function appendFluxKeytermsToUrl(
+  params: URLSearchParams,
+  keyterms: string[],
+  baseUrlLength: number
+): number {
+  let appended = 0;
+  let projectedLen = baseUrlLength;
+  for (const keyword of keyterms) {
+    const encoded = encodeURIComponent(keyword);
+    const overhead = '&keyterm='.length + encoded.length;
+    if (projectedLen + overhead > FLUX_URL_LENGTH_BUDGET) break;
+    params.append('keyterm', keyword);
+    projectedLen += overhead;
+    appended += 1;
+  }
+  return appended;
+}
+
 // Re-export constants for tests + diagnostics.
 export const KEYTERM_INTERNALS = {
   MAX_KEYTERMS,
@@ -576,4 +725,7 @@ export const KEYTERM_INTERNALS = {
   ANALYSIS_RESERVED_SLOTS,
   BASE_KEYWORD_BOOSTS,
   BOARD_TYPE_BOOSTS,
+  FLUX_MAX_KEYTERMS,
+  FLUX_URL_LENGTH_BUDGET,
+  FLUX_CURATED_KEYTERMS_PROVISIONAL,
 } as const;

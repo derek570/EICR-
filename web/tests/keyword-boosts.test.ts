@@ -20,6 +20,8 @@ import {
   KEYTERM_INTERNALS,
   appendKeytermsToUrl,
   generateKeyterms,
+  generateFluxKeyterms,
+  appendFluxKeytermsToUrl,
 } from '@/lib/recording/keyword-boosts';
 
 describe('generateKeyterms — config-only path', () => {
@@ -208,6 +210,71 @@ describe('generateKeyterms — CCU-augmented path', () => {
     expect(keys).toContain('100mA');
     // No duplicates.
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe('generateFluxKeyterms — equal-weight Flux builder (parity WS4)', () => {
+  it('returns plain equal-weight strings with NO :boost suffix', () => {
+    const list = generateFluxKeyterms();
+    expect(Array.isArray(list)).toBe(true);
+    expect(list.every((t) => typeof t === 'string')).toBe(true);
+    expect(list.some((t) => t.includes(':'))).toBe(false);
+  });
+
+  it('includes the garble-critical nouns in the provisional curated set', () => {
+    const set = new Set(generateFluxKeyterms().map((t) => t.toLowerCase()));
+    for (const term of ['insulation resistance', 'trip time', 'megohms', 'lim']) {
+      expect(set.has(term)).toBe(true);
+    }
+  });
+
+  it('stays within the 20–50 curated target (Deepgram best practice) before CCU augmentation', () => {
+    const list = generateFluxKeyterms();
+    expect(list.length).toBeGreaterThanOrEqual(20);
+    expect(list.length).toBeLessThanOrEqual(50);
+  });
+
+  it('never exceeds the FLUX_MAX_KEYTERMS ceiling, even with heavy CCU augmentation', () => {
+    const circuits = Array.from({ length: 80 }, (_, i) => ({
+      circuit_number: i + 1,
+      label: `Room ${i} sockets`,
+      ocpd_type: 'mcb',
+      rcd_rating_ma: `${i}`,
+    }));
+    const list = generateFluxKeyterms({ board_manufacturer: 'Acme', board_model: 'X1', circuits });
+    expect(list.length).toBeLessThanOrEqual(KEYTERM_INTERNALS.FLUX_MAX_KEYTERMS);
+  });
+
+  it('appends CCU board vocabulary on top of the curated set, deduped', () => {
+    const list = generateFluxKeyterms({
+      board_manufacturer: 'Acme Boards',
+      circuits: [{ circuit_number: 7, label: 'Kitchen sockets' }],
+    });
+    const lc = list.map((t) => t.toLowerCase());
+    expect(lc).toContain('acme boards');
+    expect(lc).toContain('circuit 7');
+    // No duplicates.
+    expect(new Set(lc).size).toBe(lc.length);
+  });
+});
+
+describe('appendFluxKeytermsToUrl — equal-weight URL budget', () => {
+  it('appends bare keyterms (no suffix) and stops at the 2000-char Flux budget', () => {
+    const params = new URLSearchParams({ model: 'flux-general-en' });
+    const long = Array.from({ length: 300 }, (_, i) => `keyterm${'x'.repeat(20)}${i}`);
+    const appended = appendFluxKeytermsToUrl(params, long, 1900);
+    expect(appended).toBeLessThan(long.length);
+    for (const v of params.getAll('keyterm')) expect(v.includes(':')).toBe(false);
+  });
+
+  it('returns 0 when the first keyterm already overflows the budget', () => {
+    const params = new URLSearchParams();
+    const appended = appendFluxKeytermsToUrl(
+      params,
+      ['x'],
+      KEYTERM_INTERNALS.FLUX_URL_LENGTH_BUDGET
+    );
+    expect(appended).toBe(0);
   });
 });
 
