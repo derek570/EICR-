@@ -56,5 +56,26 @@ export default defineConfig({
     // over 5s is almost certainly a hung async or a real-timer
     // oversight — fail loud instead of silently waiting.
     testTimeout: 5_000,
+    // Global cleanup hygiene (added 2026-07-03 test-harness hardening).
+    // Without these, spies, `vi.stubGlobal`/`vi.stubEnv` state, and mock
+    // call history leak across tests and files, producing order-dependent
+    // "passes in isolation / fails in a full run" failures — the class of
+    // bug behind the WS7 CI break. Verified against vitest 4.1.4: all four
+    // cleanup flags default false; `isolate` defaults true (stated
+    // explicitly here so the isolation guarantee is self-documenting).
+    //
+    //   restoreMocks  — restore every `vi.spyOn` to its original impl
+    //   clearMocks    — clear mock.calls/results on every mock+spy
+    //   unstubGlobals — revert `vi.stubGlobal` (e.g. stubbed `fetch`)
+    //   unstubEnvs    — revert `vi.stubEnv`
+    //
+    // NOTE: these do NOT restore fake timers — a `vi.useFakeTimers()` leak
+    // needs a separate `vi.useRealTimers()`, which tests/setup.ts installs
+    // as a global afterEach.
+    restoreMocks: true,
+    clearMocks: true,
+    unstubGlobals: true,
+    unstubEnvs: true,
+    isolate: true,
   },
 });

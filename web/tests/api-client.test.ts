@@ -24,15 +24,19 @@ interface StubResponseInit {
 }
 
 function fetchStub(responses: Array<StubResponseInit>): () => void {
-  const originalFetch = globalThis.fetch;
   let call = 0;
-  globalThis.fetch = vi.fn().mockImplementation(() => {
-    const next = responses[Math.min(call, responses.length - 1)];
-    call += 1;
-    return Promise.resolve(makeResponse(next));
-  }) as unknown as typeof fetch;
+  // vi.stubGlobal (auto-restored by `unstubGlobals` in vitest.config.ts)
+  // instead of a direct `globalThis.fetch = fn` reassignment.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation(() => {
+      const next = responses[Math.min(call, responses.length - 1)];
+      call += 1;
+      return Promise.resolve(makeResponse(next));
+    })
+  );
   return () => {
-    globalThis.fetch = originalFetch;
+    vi.unstubAllGlobals();
   };
 }
 
@@ -331,18 +335,14 @@ describe('saveJob (P0-1)', () => {
         _body: { success: true },
       })
     );
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = spy as unknown as typeof fetch;
-    try {
-      await api.saveJob('u1', 'j1', { address: '1 Test St' });
-      expect(spy).toHaveBeenCalledTimes(1);
-      const [, init] = spy.mock.calls[0];
-      expect(init.method).toBe('PUT');
-      // Partial body — only dirty fields — per saveJob contract.
-      expect(JSON.parse(init.body)).toEqual({ address: '1 Test St' });
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // vi.stubGlobal auto-restored by `unstubGlobals` — no manual finally.
+    vi.stubGlobal('fetch', spy);
+    await api.saveJob('u1', 'j1', { address: '1 Test St' });
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [, init] = spy.mock.calls[0];
+    expect(init.method).toBe('PUT');
+    // Partial body — only dirty fields — per saveJob contract.
+    expect(JSON.parse(init.body)).toEqual({ address: '1 Test St' });
   });
 });
 
@@ -364,7 +364,6 @@ describe('saveJob (P0-1)', () => {
  */
 describe('api.generatePdf — Phase 2 PDF wiring', () => {
   it('POSTs to /api/job/:userId/:jobId/generate-pdf and returns the raw Blob', async () => {
-    const originalFetch = globalThis.fetch;
     const spy = vi.fn().mockResolvedValue(
       makeResponse({
         status: 200,
@@ -375,16 +374,13 @@ describe('api.generatePdf — Phase 2 PDF wiring', () => {
         _body: '%PDF-1.4 test',
       })
     );
-    globalThis.fetch = spy as unknown as typeof fetch;
-    try {
-      const blob = await api.generatePdf('user 1', 'job/1');
-      expect(blob).toBeInstanceOf(Blob);
-      const [url, init] = spy.mock.calls[0];
-      expect(url).toMatch(/\/api\/job\/user%201\/job%2F1\/generate-pdf$/);
-      expect(init.method).toBe('POST');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // vi.stubGlobal auto-restored by `unstubGlobals` — no manual finally.
+    vi.stubGlobal('fetch', spy);
+    const blob = await api.generatePdf('user 1', 'job/1');
+    expect(blob).toBeInstanceOf(Blob);
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toMatch(/\/api\/job\/user%201\/job%2F1\/generate-pdf$/);
+    expect(init.method).toBe('POST');
   });
 
   it('lifts a 500 {error} envelope onto ApiError.message', async () => {

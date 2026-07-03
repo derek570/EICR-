@@ -22,19 +22,22 @@ import {
   __resetRuntimeConfigCacheForTests,
 } from '@/lib/runtime-config';
 
-const originalFetch = globalThis.fetch;
-
 function stubFetch(
   impl: (url: string) => { ok: boolean; status?: number; json?: () => Promise<unknown> }
 ) {
-  globalThis.fetch = vi.fn().mockImplementation((url: string) => {
-    const r = impl(String(url));
-    return Promise.resolve({
-      ok: r.ok,
-      status: r.status ?? (r.ok ? 200 : 500),
-      json: r.json ?? (() => Promise.resolve({})),
-    });
-  }) as unknown as typeof fetch;
+  // vi.stubGlobal (auto-restored by `unstubGlobals` in vitest.config.ts)
+  // instead of a direct `globalThis.fetch = fn` reassignment.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation((url: string) => {
+      const r = impl(String(url));
+      return Promise.resolve({
+        ok: r.ok,
+        status: r.status ?? (r.ok ? 200 : 500),
+        json: r.json ?? (() => Promise.resolve({})),
+      });
+    })
+  );
 }
 
 describe('resolveSttModel — pure resolution matrix', () => {
@@ -67,21 +70,26 @@ describe('ensureRuntimeConfigLoaded — fetch + fail-safe', () => {
     __resetRuntimeConfigCacheForTests();
   });
   afterEach(() => {
-    globalThis.fetch = originalFetch;
+    // `unstubGlobals` + `restoreMocks` in vitest.config.ts revert the fetch
+    // stub and all spies automatically; this is belt-and-suspenders.
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   it('fetches /runtime-config (NOT under /api/*) with cache:no-store', async () => {
     let seenUrl = '';
-    globalThis.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      seenUrl = String(url);
-      expect(init?.cache).toBe('no-store');
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ sttModel: 'nova3' }),
-      });
-    }) as unknown as typeof fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        seenUrl = String(url);
+        expect(init?.cache).toBe('no-store');
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ sttModel: 'nova3' }),
+        });
+      })
+    );
     await ensureRuntimeConfigLoaded({ force: true });
     expect(seenUrl).toBe(RUNTIME_CONFIG_PATH);
     expect(RUNTIME_CONFIG_PATH).toBe('/runtime-config');
@@ -111,20 +119,21 @@ describe('ensureRuntimeConfigLoaded — fetch + fail-safe', () => {
 
   it('fetch failure → SAFE_STT_MODEL + diagnostic', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    globalThis.fetch = vi
-      .fn()
-      .mockRejectedValue(new Error('network down')) as unknown as typeof fetch;
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
     expect(await ensureRuntimeConfigLoaded({ force: true })).toBe(SAFE_STT_MODEL);
     expect(spy).toHaveBeenCalled();
   });
 
   it('non-JSON body (login-redirect HTML) → SAFE_STT_MODEL', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON')),
-    }) as unknown as typeof fetch;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError('Unexpected token < in JSON')),
+      })
+    );
     expect(await ensureRuntimeConfigLoaded({ force: true })).toBe(SAFE_STT_MODEL);
   });
 
@@ -144,14 +153,12 @@ describe('ensureRuntimeConfigLoaded — fetch + fail-safe', () => {
   });
 
   it('without force, returns the cached value (one fetch per recording session)', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ sttModel: 'nova3' }),
-      });
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ sttModel: 'nova3' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
     await ensureRuntimeConfigLoaded({ force: true });
     await ensureRuntimeConfigLoaded(); // no force → cached, no second fetch
     expect(fetchMock).toHaveBeenCalledTimes(1);

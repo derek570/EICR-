@@ -18,9 +18,24 @@
  *     reset needed beyond the per-test `deleteDB` calls we already do.
  */
 import * as matchers from '@testing-library/jest-dom/matchers';
-import { expect } from 'vitest';
+import { afterEach, expect, vi } from 'vitest';
 expect.extend(matchers);
 import 'fake-indexeddb/auto';
+
+/**
+ * Global fake-timer safety net (added 2026-07-03 test-harness hardening).
+ *
+ * vitest's `restoreMocks`/`clearMocks`/`unstubGlobals`/`unstubEnvs`
+ * (see vitest.config.ts) clean spies, stubbed globals and env, but they
+ * do NOT restore fake timers. A test that calls `vi.useFakeTimers()`
+ * without a matching `vi.useRealTimers()` would leave fake timers
+ * installed for every subsequent test in the same file/worker — an
+ * order-dependent leak. Restoring real timers after every test closes
+ * that gap once, centrally, instead of per-file.
+ */
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * jsdom 29 under vitest 4 ships a `Storage` prototype that is installed

@@ -323,18 +323,19 @@ describe('WS7 parity · /terms acceptance gate (7 attestations incl. signature)'
 
     // Force the persist to throw — recordTermsAcceptance returns false,
     // so the page must NOT navigate and must surface a retry.
-    const realSet = window.localStorage.setItem.bind(window.localStorage);
-    window.localStorage.setItem = () => {
+    //
+    // vi.spyOn (auto-restored by `restoreMocks` in vitest.config.ts) instead
+    // of a direct `window.localStorage.setItem = fn` reassignment: a real
+    // jsdom Storage can silently ignore the per-instance override (the WS7
+    // CI failure mode), and the spy is honoured deterministically. It also
+    // removes the macrotask race the old manual finally had to work around —
+    // the spy stays active across the FULL async accept
+    // (getBlob→FileReader→recordTermsAcceptance) and is only reverted in the
+    // afterEach AFTER the test resolves, so nothing can restore it mid-flight.
+    vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
       throw new Error('QuotaExceededError');
-    };
-    try {
-      // Keep the throwing override active across the FULL async accept
-      // (getBlob→FileReader→recordTermsAcceptance) — restoring in a plain
-      // finally would race the macrotask and let the persist succeed.
-      await clickAccept(harness.container);
-    } finally {
-      window.localStorage.setItem = realSet;
-    }
+    });
+    await clickAccept(harness.container);
 
     expect(replaceMock).not.toHaveBeenCalled();
     expect(hasAcceptedCurrentTerms()).toBe(false);

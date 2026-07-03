@@ -42,29 +42,34 @@ interface StubResponse {
 }
 
 let calls: StubCall[] = [];
-let originalFetch: typeof fetch;
 
 function stubFetch(responses: StubResponse[]): void {
   let i = 0;
-  globalThis.fetch = vi.fn().mockImplementation((url: string, init: RequestInit) => {
-    calls.push({ url: String(url), headers: new Headers(init?.headers) });
-    const next = responses[Math.min(i, responses.length - 1)];
-    i += 1;
-    if (next.networkError) {
-      return Promise.reject(new TypeError('Failed to fetch'));
-    }
-    const status = next.status ?? 200;
-    return Promise.resolve({
-      status,
-      ok: status >= 200 && status < 300,
-      statusText: '',
-      headers: {
-        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
-      },
-      json: () => Promise.resolve(next.body ?? {}),
-      text: () => Promise.resolve(JSON.stringify(next.body ?? {})),
-    } as unknown as Response);
-  }) as unknown as typeof fetch;
+  // vi.stubGlobal (auto-restored by `unstubGlobals` in vitest.config.ts)
+  // instead of a direct `globalThis.fetch = fn` reassignment.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation((url: string, init: RequestInit) => {
+      calls.push({ url: String(url), headers: new Headers(init?.headers) });
+      const next = responses[Math.min(i, responses.length - 1)];
+      i += 1;
+      if (next.networkError) {
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      const status = next.status ?? 200;
+      return Promise.resolve({
+        status,
+        ok: status >= 200 && status < 300,
+        statusText: '',
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === 'content-type' ? 'application/json' : null,
+        },
+        json: () => Promise.resolve(next.body ?? {}),
+        text: () => Promise.resolve(JSON.stringify(next.body ?? {})),
+      } as unknown as Response);
+    })
+  );
 }
 
 const ANALYSIS_OK = { board_manufacturer: 'Wylex', circuits: [] };
@@ -89,13 +94,14 @@ async function queueOne(jobId = 'job-q1') {
 
 beforeEach(() => {
   calls = [];
-  originalFetch = globalThis.fetch;
   // No real sleeping for the 409 Retry-After path.
   vi.spyOn(inflightWait, 'sleep').mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
-  globalThis.fetch = originalFetch;
+  // `unstubGlobals` + `restoreMocks` in vitest.config.ts revert the fetch
+  // stub and the sleep spy automatically; this is belt-and-suspenders.
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   // Drain the store between tests.
   for (const jobId of ['job-q1', 'job-q2']) {
