@@ -40,7 +40,14 @@ const BUILD_ID = process.env.NEXT_PUBLIC_BUILD_ID ?? `local-${Date.now()}`;
  * Matcher helpers — kept small and explicit so the priority order in the
  * Serwist constructor below reads as a routing table, not a puzzle.
  */
-const NEVER_CACHE_PATHS = /^\/_next\/app\//;
+// `/_next/app/*` (server-action dispatch) plus `/runtime-config` — the STT
+// kill-switch endpoint (parity WS4). A stale SW-cached `/runtime-config`
+// answer would defeat the kill-switch (an operator flips DEEPGRAM_STT_MODEL on
+// ECS but clients keep serving the cached model), so it is pinned NetworkOnly
+// here explicitly. It is ALSO a non-navigate fetch with `cache:'no-store'`, so
+// no existing runtimeCaching rule would capture it today — this is
+// belt-and-suspenders against a future SW edit adding a broad matcher.
+const NEVER_CACHE_PATHS = /^(?:\/_next\/app\/|\/runtime-config$)/;
 const STATIC_ASSET_PATHS = /^\/_next\/static\//;
 const FONT_EXTENSIONS = /\.(?:woff2?|ttf|otf)$/i;
 const ICON_PATHS = /^\/(?:icons\/|apple-icon|favicon)/;
