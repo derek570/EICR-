@@ -1,2 +1,23 @@
+# Pre-push gate — run the SAME suites CI runs, on a Node as close to CI's as
+# we can get locally, so "green locally" means "green in CI".
+#
+# WHY THIS SHAPE:
+#   - `export PATH=/opt/homebrew/bin` is load-bearing: husky hooks run with a
+#     minimal PATH (GUI git clients like Tower/GitHub Desktop don't inherit a
+#     login shell), so node must be resolvable from Homebrew as a fallback.
+#     It goes FIRST so it's the no-nvm baseline.
+#   - nvm is a shell FUNCTION, not on PATH in husky's non-interactive sh, so we
+#     source it explicitly if present; `nvm use` then selects the .nvmrc Node
+#     (20) so it wins over Homebrew when nvm is installed. All best-effort
+#     (`|| true`) — a missing nvm must never block a push.
+#   - `check-node.mjs` WARNS (never fails) on a non-20 major. It runs here
+#     explicitly as an EARLY heads-up before the long backend Jest run; it also
+#     runs again via the web `pretest` lifecycle below — the second warning is
+#     expected and harmless.
+#   - We run BOTH backend Jest (`npm test`) AND the web vitest suite
+#     (`npm test --workspace=web`). The old hook ran ONLY backend Jest, so the
+#     web suite that broke in WS7 was never gated locally at all.
 export PATH="/opt/homebrew/bin:$PATH"
-npm test
+[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" && nvm use --silent 2>/dev/null || true
+node web/scripts/check-node.mjs
+npm test && npm test --workspace=web
