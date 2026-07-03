@@ -79,17 +79,14 @@ describe('T&Cs gate helpers', () => {
     });
 
     it('returns false when localStorage.getItem throws (privacy mode)', () => {
-      const realGet = window.localStorage.getItem;
-      // localStorage.getItem is a writable own property in jsdom; the
-      // assignment type-checks cleanly without a directive.
-      window.localStorage.getItem = () => {
+      // vi.spyOn (auto-restored by `restoreMocks` in vitest.config.ts) instead
+      // of a direct `localStorage.getItem = fn` reassignment — a real jsdom
+      // Storage can silently ignore per-instance method overrides, which is
+      // the WS7 CI failure mode. A spy is honoured deterministically.
+      vi.spyOn(window.localStorage, 'getItem').mockImplementation(() => {
         throw new Error('SecurityError: localStorage disabled');
-      };
-      try {
-        expect(hasAcceptedCurrentTerms()).toBe(false);
-      } finally {
-        window.localStorage.getItem = realGet;
-      }
+      });
+      expect(hasAcceptedCurrentTerms()).toBe(false);
     });
   });
 
@@ -99,27 +96,23 @@ describe('T&Cs gate helpers', () => {
       // accepted/version flags so a later throw can never leave
       // termsAccepted=true without a signature on file.
       const order: string[] = [];
+      // Capture the real setItem BEFORE spying, then have the spy record the
+      // write order and delegate to it. Auto-restored by `restoreMocks`.
       const realSet = window.localStorage.setItem.bind(window.localStorage);
-      window.localStorage.setItem = (k: string, v: string) => {
+      vi.spyOn(window.localStorage, 'setItem').mockImplementation((k: string, v: string) => {
         order.push(k);
         realSet(k, v);
-      };
-      try {
-        const ok = recordTermsAcceptance({
-          signatureDataUrl: SIG,
-          now: new Date('2026-04-25T12:34:56.000Z'),
-        });
-        expect(ok).toBe(true);
-        expect(order[0]).toBe(TERMS_STORAGE_KEYS.signature);
-        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.signature)).toBe(SIG);
-        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.accepted)).toBe('true');
-        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.version)).toBe(TERMS_VERSION);
-        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.date)).toBe(
-          '2026-04-25T12:34:56.000Z'
-        );
-      } finally {
-        window.localStorage.setItem = realSet;
-      }
+      });
+      const ok = recordTermsAcceptance({
+        signatureDataUrl: SIG,
+        now: new Date('2026-04-25T12:34:56.000Z'),
+      });
+      expect(ok).toBe(true);
+      expect(order[0]).toBe(TERMS_STORAGE_KEYS.signature);
+      expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.signature)).toBe(SIG);
+      expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.accepted)).toBe('true');
+      expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.version)).toBe(TERMS_VERSION);
+      expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.date)).toBe('2026-04-25T12:34:56.000Z');
     });
 
     it('flips hasAcceptedCurrentTerms() to true', () => {
@@ -138,18 +131,15 @@ describe('T&Cs gate helpers', () => {
       // Pre-seed a stale value to prove the rollback clears everything,
       // not just the keys this call wrote.
       window.localStorage.setItem(TERMS_STORAGE_KEYS.accepted, 'stale');
-      const realSet = window.localStorage.setItem.bind(window.localStorage);
       // Throw on the FIRST write (the signature) — the largest, likeliest
-      // thrower — so accepted/version/date never get written.
-      window.localStorage.setItem = () => {
+      // thrower — so accepted/version/date never get written. Spy is
+      // installed AFTER the pre-seed (which uses the real setItem) and is
+      // auto-restored by `restoreMocks`.
+      vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
         throw new Error('QuotaExceededError');
-      };
-      try {
-        const ok = recordTermsAcceptance({ signatureDataUrl: SIG });
-        expect(ok).toBe(false);
-      } finally {
-        window.localStorage.setItem = realSet;
-      }
+      });
+      const ok = recordTermsAcceptance({ signatureDataUrl: SIG });
+      expect(ok).toBe(false);
       // Every terms key removed — no soft-bypass residue.
       for (const key of Object.values(TERMS_STORAGE_KEYS)) {
         expect(window.localStorage.getItem(key)).toBeNull();
@@ -158,20 +148,14 @@ describe('T&Cs gate helpers', () => {
     });
 
     it('does not throw even if setItem AND removeItem both throw', () => {
-      const realSet = window.localStorage.setItem.bind(window.localStorage);
-      const realRemove = window.localStorage.removeItem.bind(window.localStorage);
-      window.localStorage.setItem = () => {
+      // Both spies auto-restored by `restoreMocks` — no manual finally.
+      vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
         throw new Error('QuotaExceededError');
-      };
-      window.localStorage.removeItem = () => {
+      });
+      vi.spyOn(window.localStorage, 'removeItem').mockImplementation(() => {
         throw new Error('SecurityError');
-      };
-      try {
-        expect(recordTermsAcceptance({ signatureDataUrl: SIG })).toBe(false);
-      } finally {
-        window.localStorage.setItem = realSet;
-        window.localStorage.removeItem = realRemove;
-      }
+      });
+      expect(recordTermsAcceptance({ signatureDataUrl: SIG })).toBe(false);
     });
   });
 });
