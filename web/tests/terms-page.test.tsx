@@ -228,10 +228,6 @@ async function clickAccept(container: HTMLElement) {
 
 let harness: { container: HTMLDivElement; root: Root } | null = null;
 
-// Pristine setItem captured before any test replaces it with a throwing stub —
-// used by afterEach to force-restore it so a raced override can't leak.
-const PRISTINE_SET_ITEM = window.localStorage.setItem.bind(window.localStorage);
-
 beforeEach(() => {
   replaceMock.mockReset();
   searchParamsStub.clear();
@@ -246,10 +242,6 @@ afterEach(() => {
     harness.container.remove();
     harness = null;
   }
-  // Force-restore storage methods in case a per-test throw-override raced its
-  // own finally (the signature persist runs in a FileReader macrotask), so a
-  // throwing setItem can never leak into a later test/file.
-  window.localStorage.setItem = PRISTINE_SET_ITEM;
   window.localStorage.clear();
   vi.useRealTimers();
 });
@@ -337,20 +329,9 @@ describe('WS7 parity · /terms acceptance gate (7 attestations incl. signature)'
     };
     try {
       // Keep the throwing override active across the FULL async accept
-      // (getBlob→FileReader→recordTermsAcceptance). The signature persist runs
-      // in a FileReader.onload macrotask that can fire AFTER clickAccept's
-      // fixed flush under CI's full-suite timing — a plain finally restore then
-      // races the macrotask and lets the persist succeed (spurious redirect,
-      // order-dependent CI failure). Drain macrotasks until the error surfaces
-      // so the persist deterministically runs while setItem still throws.
+      // (getBlob→FileReader→recordTermsAcceptance) — restoring in a plain
+      // finally would race the macrotask and let the persist succeed.
       await clickAccept(harness.container);
-      for (
-        let i = 0;
-        i < 25 && !/couldn.t save your acceptance/i.test(harness.container.textContent ?? '');
-        i++
-      ) {
-        await flushAsync();
-      }
     } finally {
       window.localStorage.setItem = realSet;
     }

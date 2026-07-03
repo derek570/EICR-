@@ -37,14 +37,17 @@ import 'fake-indexeddb/auto';
  * working without test-by-test shims.
  */
 function installStorageShim(name: 'localStorage' | 'sessionStorage'): void {
-  try {
-    const existing = (globalThis as unknown as Record<string, unknown>)[name];
-    const hasWorkingGetItem =
-      existing && typeof (existing as { getItem?: unknown }).getItem === 'function';
-    if (hasWorkingGetItem) return;
-  } catch {
-    // fallthrough to install
-  }
+  // Install UNCONDITIONALLY. jsdom's real Storage object can appear to work
+  // (`getItem` exists, so an earlier `hasWorkingGetItem` guard skipped the
+  // shim) while still IGNORING per-instance method overrides like
+  // `window.localStorage.setItem = () => { throw }`. Several tests intentionally
+  // replace setItem/removeItem to simulate quota / privacy-mode failures; on CI
+  // (a jsdom/Node build where the real Storage survived the guard) those
+  // overrides were silently no-ops, so persist-failure tests saw the write
+  // succeed and failed order-dependently. Locally the guard installed the shim
+  // and the tests passed — hence CI-only. Always installing the writable
+  // Map-backed shim makes override behaviour deterministic across Node/jsdom
+  // versions and CI workers.
   const store = new Map<string, string>();
   const shim: Storage = {
     get length() {

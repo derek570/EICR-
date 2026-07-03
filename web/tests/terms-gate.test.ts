@@ -22,23 +22,12 @@ import {
   recordTermsAcceptance,
 } from '@/app/terms/legal-texts-gate';
 
-// Pristine storage methods captured before any test overrides them. Several
-// tests replace setItem/removeItem with throwing stubs to exercise the
-// all-or-nothing persist path; under CI's full-suite timing a per-test finally
-// can race the async persist and leave a throwing override in place, which then
-// leaks into the next test (order-dependent failures). The afterEach below
-// force-restores them so an override can never survive a single test.
-const PRISTINE_SET_ITEM = window.localStorage.setItem.bind(window.localStorage);
-const PRISTINE_REMOVE_ITEM = window.localStorage.removeItem.bind(window.localStorage);
-
 describe('T&Cs gate helpers', () => {
   beforeEach(() => {
     window.localStorage.clear();
   });
 
   afterEach(() => {
-    window.localStorage.setItem = PRISTINE_SET_ITEM;
-    window.localStorage.removeItem = PRISTINE_REMOVE_ITEM;
     window.localStorage.clear();
     vi.useRealTimers();
   });
