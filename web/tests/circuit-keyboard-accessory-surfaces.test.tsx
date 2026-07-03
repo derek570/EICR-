@@ -80,10 +80,12 @@ const bar = () => container.querySelector('[data-testid="circuit-keyboard-access
 const tbtn = (id: string) => container.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`);
 
 // ── Real surface suites (sticky + desktop) ─────────────────────────────
+// Matches the surfaces' `CircuitLike` ({ id: string; [k]: unknown }).
+type TestCircuit = { id: string } & Record<string, string>;
 interface SurfaceCfg {
   name: string;
   render: (
-    circuits: Array<Record<string, string>>,
+    circuits: TestCircuit[],
     onPatch: (id: string, patch: Record<string, string>) => void
   ) => React.ReactElement;
   // aria-label substrings for the cells we drive
@@ -93,7 +95,7 @@ interface SurfaceCfg {
   tokenField: string; // field key expected in the patch
 }
 
-const circuits = [
+const circuits: TestCircuit[] = [
   { id: 'c1', circuit_ref: '1', circuit_designation: 'Lights' },
   { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets' },
 ];
@@ -201,13 +203,16 @@ for (const cfg of SURFACES) {
 // web/src/app/job/[id]/circuits/page.tsx.
 const CARD_FIELDS = orderCircuitFocusFields(['circuit_ref', 'number_of_points', 'measured_zs_ohm']);
 
+// Applied tokens captured out-of-band (avoids mutating the component
+// during render). Reset per test.
+let cardMirrorPatches: Array<[string, Record<string, string>]> = [];
+
 function CardMirror() {
   const ids = ['c1', 'c2'];
   const [expandedId, setExpandedId] = React.useState<string | null>('c1');
   const inputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
   const pending = React.useRef<{ circuitId: string; fieldKey: string } | null>(null);
   const key = (c: string, f: string) => `${c}::${f}`;
-  const patch = React.useRef<Array<[string, Record<string, string>]>>([]);
 
   const registerRef = React.useCallback((c: string, f: string, el: HTMLInputElement | null) => {
     const k = key(c, f);
@@ -232,10 +237,9 @@ function CardMirror() {
   const controller = useCircuitAccessoryController({
     circuitIds: ids,
     fieldOrder: CARD_FIELDS,
-    applyToken: (c, f, t) => patch.current.push([c, { [f]: t }]),
+    applyToken: (c, f, t) => cardMirrorPatches.push([c, { [f]: t }]),
     focusField,
   });
-  (CardMirror as unknown as { lastPatch: typeof patch }).lastPatch = patch;
 
   return (
     <div>
@@ -278,14 +282,12 @@ describe('accessory wiring — card view (auto-expand latch mirror)', () => {
 
   it('LIM writes the token on a token cell; ref cell shows no tokens', () => {
     installKeyboard();
+    cardMirrorPatches = [];
     mount(<CardMirror />);
     act(() => inputByAria('Circuit c1 measured_zs_ohm').focus());
     expect(tbtn('accessory-lim')).not.toBeNull();
     act(() => tbtn('accessory-lim')!.click());
-    const patch = (
-      CardMirror as unknown as { lastPatch: { current: Array<[string, Record<string, string>]> } }
-    ).lastPatch.current;
-    expect(patch).toContainEqual(['c1', { measured_zs_ohm: CIRCUIT_TOKEN_LIM }]);
+    expect(cardMirrorPatches).toContainEqual(['c1', { measured_zs_ohm: CIRCUIT_TOKEN_LIM }]);
     // ref cell → no tokens
     act(() => inputByAria('Circuit c1 circuit_ref').focus());
     expect(tbtn('accessory-lim')).toBeNull();

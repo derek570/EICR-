@@ -55,7 +55,7 @@ describe('globals.css standalone chrome rules', () => {
   const css = readSrc('app/globals.css');
 
   it('blocks overscroll chaining on html and body', () => {
-    expect(css).toMatch(/html\s*\{[^}]*overscroll-behavior:\s*none/s);
+    expect(css).toMatch(/html\s*\{[^}]*overscroll-behavior:\s*none/);
     expect(css).toContain('overscroll-behavior-y: none');
   });
 
