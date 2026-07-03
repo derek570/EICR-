@@ -3,8 +3,8 @@
  * `KeywordBoostGenerator.swift` + the `keyword_boosts` block of
  * `CertMateUnified/Sources/Resources/default_config.json`.
  *
- * Why: iOS's recording pipeline sends ~89 boost-scored Nova-3 `keyterm`
- * URL params on every WebSocket connect. They massively improve
+ * Why: iOS's recording pipeline sends boost-scored `keyterm` URL params
+ * on every WebSocket connect. They massively improve
  * recognition of electrical jargon ("Zs", "R1 plus R2", "MICC",
  * "ring continuity") that Nova-3's general English model would
  * otherwise mishear. Pre-port the web client sent zero keyterms —
@@ -19,7 +19,11 @@
  *   - 1.0: circuit labels, circuit numbers, general terms
  *
  * URL-length budget: Deepgram's HTTP→WS upgrade rejects URLs over
- * ~2048 chars. iOS uses 1800 as the practical safety cap; we match.
+ * ~2048 chars. This nova-3 web mirror uses a DELIBERATELY TIGHTER
+ * 1800-char cap than iOS's 2000 (`DEEPGRAM_MAX_URL_LENGTH = 2000`,
+ * DeepgramService.swift:49) — the web cap is intentionally distinct,
+ * NOT a match. See `MAX_KEYTERMS` below for the matching keyterm-count
+ * divergence (web 85 vs iOS 100).
  *
  * Boost-suffix optimisation: Deepgram interprets a bare keyterm
  * (`?keyterm=foo`) at the model's default boost intensity, and a
@@ -30,8 +34,13 @@
  * more keyterms. We carry the same convention here so behaviour
  * matches iOS at the URL byte level.
  *
- * If iOS ever changes either constant — `MAX_KEYTERMS` (100) or the
- * URL budget (1800) — keep them in lockstep with this file.
+ * Per-client caps are DISTINCT, not lockstep: iOS caps at 100 keyterms
+ * / 2000-char URL (`KeywordBoostGenerator.swift:21`,
+ * `DeepgramService.swift:49`); this web nova-3 mirror caps at 85
+ * keyterms / 1800-char URL (`MAX_KEYTERMS` / `URL_LENGTH_BUDGET`
+ * below). Only the keyterm LIST membership is kept in sync across
+ * clients (rules/mistakes.md) — the caps are intentionally different,
+ * so a term surviving iOS's cut does NOT guarantee it survives web's.
  */
 
 /**
@@ -74,7 +83,17 @@ const BASE_KEYWORD_BOOSTS: Record<string, number> = {
   polarity: 1.0,
   'push button': 1.5,
   'push button works': 2.0,
-  'trip time': 1.5,
+  // Survival-driven bump 1.5→2.5 (parity WS4 / deepgram-flux-keyterm-sprint,
+  // 2026-07-03). At 1.5 "trip time" ranked ~107th of 120 and was DROPPED by
+  // web's 85-term cut, so the "tryptoid"→trip time garble (sprint garble #4/#5)
+  // never reached Deepgram on web even though the term was in this list. This
+  // is a targeted survival bump for a garble-critical noun, NOT the banned
+  // equal-weight re-curation: on nova-3 the boost is BOTH the acoustic boost
+  // and the inclusion priority, so 2.5 lifts it above the cut AND strengthens
+  // recall. At 2.5 it lands in the top ~15 and survives both the 85-term and
+  // 1800-char limits. megohms (3.0) / insulation resistance (2.5) / LIM (3.0)
+  // already survived; only "trip time" needed the bump.
+  'trip time': 2.5,
   megger: 1.5,
   'earth fault': 1.5,
   continuity: 1.5,
@@ -167,12 +186,15 @@ const BOARD_TYPE_BOOSTS: Record<string, number> = {
 };
 
 /**
- * Hard cap on keyterm count. iOS uses 100 but iOS's base config is
- * "87+8=95" entries (per its `_budget_note`) so iOS rarely hits the
- * cap. Web's base config is larger (~113 base + 8 board after recent
- * additions) which means at MAX=100 the URL-byte budget (1800 chars)
- * becomes the second cap, dropping the alpha-tail of the keyterm
- * list — including the analysis-reserved slots in some scenarios.
+ * Hard cap on keyterm count. iOS uses 100; iOS's shipped
+ * `default_config.json` carries 153 base + 8 board = 161 entries
+ * (2026-07-03 count — the in-file `_budget_note` still reads the stale
+ * "151 base + 8 board = 159"), sorted boost-desc and cut by iOS's
+ * 2000-char URL cap. This web nova-3 mirror is a fully independent
+ * hardcoded copy of 112 base + 8 board = 120 entries; at MAX=100 the
+ * URL-byte budget (1800 chars) would become the second cap, dropping
+ * the alpha-tail of the keyterm list — including the analysis-reserved
+ * slots in some scenarios.
  *
  * Lowering MAX to 85 puts the keyterm-count cap below the URL-byte
  * cap so the analysis-reserved-slot policy actually delivers what it
@@ -197,11 +219,12 @@ const URL_LENGTH_BUDGET = 1800;
  *
  * This is a deliberate, small divergence from iOS's strict
  * boost-desc cap. iOS's `KeywordBoostGenerator` has the same latent
- * issue but iOS's base config is shorter (the inline `_budget_note`
- * in `default_config.json` says "87 base + 8 board" — written when
- * the list was smaller than today's 113 entries). Reserving 10
- * slots restores the user-facing "CCU augmentation surfaces in the
- * Deepgram URL" behaviour that the keyterm port is meant to deliver.
+ * issue; its `default_config.json` `_budget_note` reads a stale
+ * "151 base + 8 board = 159" (verified live count 153 + 8 = 161),
+ * while this web copy carries 112 base + 8 board = 120 entries.
+ * Reserving 10 slots restores the user-facing "CCU augmentation
+ * surfaces in the Deepgram URL" behaviour that the keyterm port is
+ * meant to deliver.
  *
  * Codex review finding on commit `e38fa5e`: "1.0 CCU-derived
  * keyterms are deterministically removed by the existing 100-term

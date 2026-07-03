@@ -67,9 +67,40 @@ describe('generateKeyterms — config-only path', () => {
     expect(tails?.boost).toBe(2.0);
   });
 
-  it('caps at MAX_KEYTERMS (100)', () => {
+  it('caps at MAX_KEYTERMS (85 — web is intentionally tighter than iOS 100)', () => {
     const list = generateKeyterms();
+    expect(KEYTERM_INTERNALS.MAX_KEYTERMS).toBe(85);
     expect(list.length).toBeLessThanOrEqual(KEYTERM_INTERNALS.MAX_KEYTERMS);
+  });
+
+  it("all four garble-critical nouns SURVIVE web's 85-term + 1800-char cut (parity WS4)", () => {
+    // Config-sync intent is "same critical terms actually REACH Deepgram on
+    // both clients", not just "appear in both lists". iOS and web truncate at
+    // DIFFERENT points (iOS 100/2000, web 85/1800), so membership ≠ survival.
+    // Regression lock for the "trip time" survival bump: at boost 1.5 "trip
+    // time" ranked ~107th of 120 and was DROPPED by the 85-cut; bumped to 2.5
+    // it now survives. megohms/insulation resistance/LIM already survived.
+    const list = generateKeyterms();
+    const keys = new Set(list.map((k) => k.keyword.toLowerCase()));
+    for (const term of ['megohms', 'insulation resistance', 'trip time', 'lim']) {
+      expect(keys.has(term)).toBe(true);
+    }
+    // And they must also survive the URL-byte budget (appended before the cut).
+    const params = new URLSearchParams({ model: 'nova-3' });
+    const baseLen = 'wss://api.deepgram.com/v1/listen?model=nova-3'.length;
+    appendKeytermsToUrl(params, list, baseLen);
+    const appended = params.getAll('keyterm').map((v) => v.split(':')[0].toLowerCase());
+    const appendedSet = new Set(appended);
+    for (const term of ['megohms', 'insulation resistance', 'trip time', 'lim']) {
+      expect(appendedSet.has(term)).toBe(true);
+    }
+  });
+
+  it('"trip time" carries the survival-driven boost (≥2.5) so it clears the cut', () => {
+    const list = generateKeyterms();
+    const tripTime = list.find((b) => b.keyword.toLowerCase() === 'trip time');
+    expect(tripTime).toBeDefined();
+    expect(tripTime!.boost).toBeGreaterThanOrEqual(2.5);
   });
 });
 
