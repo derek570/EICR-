@@ -60,6 +60,15 @@ interface JobContextValue {
   isSaving: boolean;
   /** Non-null when the last save returned a 4xx (validation error). */
   saveError: string | null;
+  /**
+   * True once the doc held in state is (or descends from) a successful
+   * network fetch — NOT a cache paint. Mount-time auto-seeders MUST gate
+   * on this: seeding a cached/blank doc and letting the debounced save
+   * PUT it wipes the job's sections server-side (the 2026-07-02 WS5
+   * data-loss incident — see `web/audit/INDEX-2026-07.md`). Mirrors iOS,
+   * which seeds only after `load()` succeeds.
+   */
+  isHydrated: boolean;
 }
 
 const JobContext = React.createContext<JobContextValue | null>(null);
@@ -83,15 +92,32 @@ export function useJobContext(): JobContextValue {
 
 export function JobProvider({
   initial,
+  hydrated = true,
   children,
 }: {
   initial: JobDetail;
+  /**
+   * Whether the CURRENT `initial` prop came from a successful network
+   * fetch (vs an IDB cache paint). The job layout passes this; it flips
+   * false → true when `api.job()` resolves. Defaults to true so callers
+   * that don't do cache-then-hydrate (tests, future embeds) keep the
+   * pre-guard behaviour.
+   */
+  hydrated?: boolean;
   children: React.ReactNode;
 }) {
   const [job, setJob] = React.useState<JobDetail>(initial);
   const [isDirty, setIsDirty] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState<string | null>(null);
+  // `isHydrated` is provider STATE, not the raw prop: it must only flip
+  // true once the hydrated doc has actually been accepted into `job`
+  // (the re-sync effect below). Exposing the prop directly would race —
+  // child effects (the tab-page auto-seeders) run BEFORE this provider's
+  // effects on the same commit, so they'd see hydrated=true while `job`
+  // still holds the cached blank doc, seed against it, and the resulting
+  // pending patch would then block the fresh doc from ever landing.
+  const [isHydrated, setIsHydrated] = React.useState(hydrated);
 
   // Keep a ref of the freshest job so `flushSave` (fired from a timer)
   // reads the post-patch doc even when the closure was captured with a
@@ -134,8 +160,24 @@ export function JobProvider({
       setJob(initial);
       setIsDirty(false);
       setSaveError(null);
+      // The accepted doc's provenance travels with it: a network doc
+      // marks us hydrated; a cache paint (id change while offline)
+      // marks us NOT hydrated so the auto-seeders stay off.
+      setIsHydrated(hydrated);
+    } else if (hydrated && !idChanged && !updatedChanged) {
+      // Network doc landed but matches the version we already hold
+      // (the cache was fresh — same id, same `updated_at`). Nothing to
+      // replace, but the doc in state IS the network version, so the
+      // seeders can safely run. Without this branch a fresh-cache visit
+      // would never hydrate and seeding would be permanently off.
+      setIsHydrated(true);
     }
-  }, [initial, isDirty]);
+    // NOTE: when a hydrated doc is REJECTED (dirty local edits), we
+    // deliberately stay un-hydrated — state holds cache+edits, not the
+    // server doc, and silently seeding on top of that mix is exactly
+    // the wipe vector this flag exists to close. Safe direction: the
+    // seeders simply never run for that mount.
+  }, [initial, isDirty, hydrated]);
 
   const flushSave = React.useCallback(async () => {
     const pending = pendingPatchRef.current;
@@ -226,8 +268,9 @@ export function JobProvider({
       isDirty,
       isSaving,
       saveError,
+      isHydrated,
     }),
-    [job, updateJob, isDirty, isSaving, saveError]
+    [job, updateJob, isDirty, isSaving, saveError, isHydrated]
   );
 
   return <JobContext.Provider value={value}>{children}</JobContext.Provider>;

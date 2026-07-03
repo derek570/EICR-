@@ -41,7 +41,7 @@ export interface User {
   company_name?: string;
   role?: 'admin' | 'user';
   /** System-wide tenant membership. Nullable for legacy users not yet bound to a company. */
-  company_id?: string;
+  company_id?: string | null;
   /** Role within a company. `owner`/`admin` grant company-admin privileges; `employee` is rank-and-file. */
   company_role?: 'owner' | 'admin' | 'employee';
   /**

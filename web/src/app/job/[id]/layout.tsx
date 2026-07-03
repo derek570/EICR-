@@ -41,6 +41,13 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
 
   const [job, setJob] = React.useState<JobDetail | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  // True once `api.job()` has resolved for the CURRENT jobId — i.e. the
+  // `job` state above is (or has been replaced by) a real server doc,
+  // not just an IDB cache paint. Feeds `<JobProvider hydrated>` so the
+  // tab pages' mount-time auto-seeders stay off until the server doc is
+  // in. Seeding a cached/blank paint and letting the debounced save PUT
+  // it is the 2026-07-02 data-loss bug (web/audit/INDEX-2026-07.md).
+  const [networkHydrated, setNetworkHydrated] = React.useState(false);
 
   React.useEffect(() => {
     const user = getUser();
@@ -49,6 +56,11 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       return;
     }
     let cancelled = false;
+    // Re-arm the hydration gate for this jobId — on first mount this is
+    // a no-op (already false); on an in-place param change (job → job
+    // navigation keeps this layout mounted) it stops the previous job's
+    // hydrated=true leaking onto the next job's cache paint.
+    setNetworkHydrated(false);
 
     // Phase 7b — stale-while-revalidate via the IDB job cache.
     //
@@ -92,7 +104,12 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       .then((detail) => {
         if (cancelled) return;
         networkLanded = true;
+        // Same-handler ordering matters: React batches these two setters
+        // into one commit, so JobProvider sees the fresh doc and
+        // hydrated=true together — never hydrated=true with a stale
+        // cached `initial`.
         setJob(detail);
+        setNetworkHydrated(true);
         void putCachedJob(user.id, jobId, detail);
       })
       .catch((err: Error) => {
@@ -125,7 +142,7 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       {job === null ? (
         <JobShellLoading error={error} />
       ) : (
-        <JobProvider initial={job}>
+        <JobProvider initial={job} hydrated={networkHydrated}>
           <RecordingProvider>
             <div className="flex min-h-[calc(100dvh-56px)] flex-col">
               <JobHeader />

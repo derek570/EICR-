@@ -86,7 +86,7 @@ const PREMISES_OPTIONS = [
 ];
 
 export default function InstallationPage() {
-  const { job, certificateType, updateJob } = useJobContext();
+  const { job, certificateType, updateJob, isHydrated } = useJobContext();
   const isEIC = certificateType === 'EIC';
   // See DesignPage for the rationale — memo-wrap keeps identity stable
   // so `patch` isn't rebuilt every render.
@@ -165,19 +165,27 @@ export default function InstallationPage() {
   };
 
   // -----------------------------------------------------------------
-  // Auto-seed defaults on first mount — iOS parity
+  // Auto-seed defaults — iOS parity
   // (`ensureDateOfInspection` + default `next_inspection_years = 5`
   // at `InstallationTab.swift:L503-L527`).
   //
-  // We run this once-per-mount and guard with a ref so a parent
-  // re-render (e.g. the job saving in the background) can't re-trigger
-  // the seed after the user has deliberately cleared a field. Also
-  // avoids the classic pitfall of reading `details` from closure —
-  // we compute the seed patch inline off the passed `job`.
+  // HYDRATION GATE: the seed waits for `isHydrated` — i.e. the job doc
+  // in context is a real server fetch, not an IDB cache paint. Seeding
+  // a cached/blank doc marks the job dirty, which (a) queues a PUT that
+  // wipes the job's sections server-side and (b) blocks the fresh
+  // network doc from ever replacing local state. That was the
+  // 2026-07-02 WS5 data-loss incident (web/audit/INDEX-2026-07.md).
+  // iOS is canon here too: `ensureDateOfInspection` only runs after
+  // `load()` succeeds. Offline (never hydrates) → no auto-seed; manual
+  // edits still save through the outbox as before.
+  //
+  // We run this once and guard with a ref so a parent re-render (e.g.
+  // the job saving in the background) can't re-trigger the seed after
+  // the user has deliberately cleared a field.
   // -----------------------------------------------------------------
   const seededRef = React.useRef(false);
   React.useEffect(() => {
-    if (seededRef.current) return;
+    if (!isHydrated || seededRef.current) return;
     seededRef.current = true;
     const seed: Partial<InstallationShape> = {};
     if (!details.date_of_inspection) {
@@ -197,11 +205,13 @@ export default function InstallationPage() {
     if (Object.keys(seed).length > 0) {
       patch(seed);
     }
-    // `patch` changes identity per render (memoised on details), but
-    // the ref guard prevents re-entry, so we can safely depend only on
-    // the mount.
+    // `patch` / `details` change identity per render, but the ref guard
+    // prevents re-entry, so depending only on the hydration flip is
+    // safe. When the flip arrives, this render's closure already sees
+    // the hydrated `details` — JobProvider batches the doc swap and the
+    // `isHydrated` flip into the same commit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isHydrated]);
 
   return (
     <div

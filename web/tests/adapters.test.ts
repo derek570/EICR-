@@ -91,6 +91,18 @@ describe('UserSchema + LoginResponseSchema', () => {
     expect(() => UserSchema.parse(fixture)).not.toThrow();
   });
 
+  it('accepts a literal company_id: null (legacy user, backend emits null not absent)', () => {
+    // WS0 visual-baseline bug #2 (2026-07-02): the backend serialises
+    // unbound users as `company_id: null`; `.optional()` alone rejected
+    // it and — login being a STRICT parse — failed the whole login.
+    const fixture = {
+      token: 'ey...',
+      user: { id: 'u0', email: 'legacy@x.co', name: 'Legacy', company_id: null },
+    };
+    const result = LoginResponseSchema.parse(fixture);
+    expect(result.user.company_id).toBeNull();
+  });
+
   it('rejects an unknown role enum', () => {
     const raw = { id: 'u1', email: 'a@b', name: 'A', role: 'god' };
     const { result, warnCalls } = withWarnSpy(() => parseOrWarn(UserSchema, raw, 'test'));
