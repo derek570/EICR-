@@ -73,7 +73,7 @@ export function JobHeader() {
       <div className="relative flex min-h-[44px] items-center">
         <button
           type="button"
-          onClick={() => router.back()}
+          onClick={() => router.push('/dashboard')}
           className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] px-2 py-1.5 text-[15px] font-medium text-[var(--color-brand-blue)] transition hover:bg-[var(--color-surface-2)] focus-visible:outline-2 focus-visible:outline-[var(--color-brand-blue)]"
         >
           <ChevronLeft className="h-5 w-5" strokeWidth={2.25} aria-hidden />

@@ -191,7 +191,15 @@ export function JobRow({
 
   return (
     <div
-      className="relative overflow-hidden rounded-[14px]"
+      // shrink-0 is load-bearing: the dashboard/alerts lists put these
+      // rows in a `flex flex-col max-h-[60vh] overflow-y-auto` container.
+      // Without an explicit flex-shrink:0, iOS Safari COMPRESSES the flex
+      // children to fit the max-height instead of scrolling — once a user
+      // has enough jobs to overflow (50 rows on a 100-job account) every
+      // row collapses to a ~3px hairline with its content clipped. Chrome
+      // scrolls correctly so the bug is Safari-only and invisible in dev.
+      // (Measured 2026-07-03: rows render at 67px until they overflow.)
+      className="relative shrink-0 overflow-hidden rounded-[14px]"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
