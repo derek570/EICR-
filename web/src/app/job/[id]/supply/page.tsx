@@ -103,7 +103,7 @@ const SURGE_STATUS_OPTIONS = [
 ];
 
 export default function SupplyPage() {
-  const { job, certificateType, updateJob } = useJobContext();
+  const { job, certificateType, updateJob, isHydrated } = useJobContext();
   // See DesignPage for the rationale — memo-wrap keeps identity stable
   // so `patch` isn't rebuilt every render.
   const supply = React.useMemo<SupplyShape>(
@@ -218,9 +218,16 @@ export default function SupplyPage() {
    * N/A reads as "confirmed absent". The inspector can still
    * overwrite any of them.
    */
+  // HYDRATION GATE — same contract as the Installation tab's seeder:
+  // never seed until the job doc in context is a real server fetch
+  // (`isHydrated`), otherwise the N/A coercions run against a cached/
+  // blank paint and the debounced PUT wipes `supply_characteristics`
+  // server-side (2026-07-02 WS5 data-loss incident,
+  // web/audit/INDEX-2026-07.md). iOS `applyDefaultsIfNeeded` likewise
+  // only runs after a successful load.
   const seededRef = React.useRef(false);
   React.useEffect(() => {
-    if (seededRef.current) return;
+    if (!isHydrated || seededRef.current) return;
     seededRef.current = true;
     const seed: SupplyShape = {};
     const defaults: Array<keyof SupplyShape> = [
@@ -248,9 +255,11 @@ export default function SupplyPage() {
       }
     }
     if (Object.keys(seed).length > 0) patch(seed);
-    // One-shot — guarded by seededRef. Intentionally empty deps.
+    // One-shot — guarded by seededRef. Deps deliberately limited to the
+    // hydration flip; the closure sees the hydrated `supply` because
+    // JobProvider commits the doc swap and the flag together.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isHydrated]);
 
   const markManualOverride = (field: string) => {
     manualOverridesRef.current.add(field);
@@ -696,12 +705,7 @@ export default function SupplyPage() {
       </SectionCard>
 
       {/* Real Surge Protection Device (transient overvoltage, BS EN 61643-11). */}
-      <SectionCard
-        accent="magenta"
-        icon={ShieldCheck}
-        title="Surge Protection Device"
-        showCodeChip
-      >
+      <SectionCard accent="magenta" icon={ShieldCheck} title="Surge Protection Device" showCodeChip>
         <SelectChips
           label="Surge protection fitted"
           value={text('surge_spd_present') || null}

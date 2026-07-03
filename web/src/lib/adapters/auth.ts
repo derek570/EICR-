@@ -19,7 +19,11 @@ export const UserSchema = z.object({
   role: ROLE.optional(),
   // Nullable at the JWT layer for legacy users not yet bound to a
   // company — see `CLAUDE.md > RBAC` and P0-5/D4 in the fix plan.
-  company_id: z.string().optional(),
+  // `.nullable()` matters: the backend emits a literal `company_id:
+  // null` for those users, and `.optional()` alone rejects it — the
+  // strict-mode login parse then fails the WHOLE login (WS0 visual-
+  // baseline bug #2, 2026-07-02).
+  company_id: z.string().nullable().optional(),
   company_role: COMPANY_ROLE.optional(),
   // Consent-gate fields surfaced by /api/auth/me's extension on
   // 2026-05-12. Optional so older /me responses still validate.

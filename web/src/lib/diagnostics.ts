@@ -49,7 +49,8 @@ export interface DiagnosticsUser {
   email: string;
   name?: string;
   role?: string;
-  company_id?: string;
+  /** `null` mirrors `User.company_id` — legacy users not bound to a company. */
+  company_id?: string | null;
   company_role?: string;
 }
 
