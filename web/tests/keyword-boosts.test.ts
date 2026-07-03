@@ -20,6 +20,8 @@ import {
   KEYTERM_INTERNALS,
   appendKeytermsToUrl,
   generateKeyterms,
+  generateFluxKeyterms,
+  appendFluxKeytermsToUrl,
 } from '@/lib/recording/keyword-boosts';
 
 describe('generateKeyterms — config-only path', () => {
@@ -67,9 +69,40 @@ describe('generateKeyterms — config-only path', () => {
     expect(tails?.boost).toBe(2.0);
   });
 
-  it('caps at MAX_KEYTERMS (100)', () => {
+  it('caps at MAX_KEYTERMS (85 — web is intentionally tighter than iOS 100)', () => {
     const list = generateKeyterms();
+    expect(KEYTERM_INTERNALS.MAX_KEYTERMS).toBe(85);
     expect(list.length).toBeLessThanOrEqual(KEYTERM_INTERNALS.MAX_KEYTERMS);
+  });
+
+  it("all four garble-critical nouns SURVIVE web's 85-term + 1800-char cut (parity WS4)", () => {
+    // Config-sync intent is "same critical terms actually REACH Deepgram on
+    // both clients", not just "appear in both lists". iOS and web truncate at
+    // DIFFERENT points (iOS 100/2000, web 85/1800), so membership ≠ survival.
+    // Regression lock for the "trip time" survival bump: at boost 1.5 "trip
+    // time" ranked ~107th of 120 and was DROPPED by the 85-cut; bumped to 2.5
+    // it now survives. megohms/insulation resistance/LIM already survived.
+    const list = generateKeyterms();
+    const keys = new Set(list.map((k) => k.keyword.toLowerCase()));
+    for (const term of ['megohms', 'insulation resistance', 'trip time', 'lim']) {
+      expect(keys.has(term)).toBe(true);
+    }
+    // And they must also survive the URL-byte budget (appended before the cut).
+    const params = new URLSearchParams({ model: 'nova-3' });
+    const baseLen = 'wss://api.deepgram.com/v1/listen?model=nova-3'.length;
+    appendKeytermsToUrl(params, list, baseLen);
+    const appended = params.getAll('keyterm').map((v) => v.split(':')[0].toLowerCase());
+    const appendedSet = new Set(appended);
+    for (const term of ['megohms', 'insulation resistance', 'trip time', 'lim']) {
+      expect(appendedSet.has(term)).toBe(true);
+    }
+  });
+
+  it('"trip time" carries the survival-driven boost (≥2.5) so it clears the cut', () => {
+    const list = generateKeyterms();
+    const tripTime = list.find((b) => b.keyword.toLowerCase() === 'trip time');
+    expect(tripTime).toBeDefined();
+    expect(tripTime!.boost).toBeGreaterThanOrEqual(2.5);
   });
 });
 
@@ -177,6 +210,71 @@ describe('generateKeyterms — CCU-augmented path', () => {
     expect(keys).toContain('100mA');
     // No duplicates.
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe('generateFluxKeyterms — equal-weight Flux builder (parity WS4)', () => {
+  it('returns plain equal-weight strings with NO :boost suffix', () => {
+    const list = generateFluxKeyterms();
+    expect(Array.isArray(list)).toBe(true);
+    expect(list.every((t) => typeof t === 'string')).toBe(true);
+    expect(list.some((t) => t.includes(':'))).toBe(false);
+  });
+
+  it('includes the garble-critical nouns in the provisional curated set', () => {
+    const set = new Set(generateFluxKeyterms().map((t) => t.toLowerCase()));
+    for (const term of ['insulation resistance', 'trip time', 'megohms', 'lim']) {
+      expect(set.has(term)).toBe(true);
+    }
+  });
+
+  it('stays within the 20–50 curated target (Deepgram best practice) before CCU augmentation', () => {
+    const list = generateFluxKeyterms();
+    expect(list.length).toBeGreaterThanOrEqual(20);
+    expect(list.length).toBeLessThanOrEqual(50);
+  });
+
+  it('never exceeds the FLUX_MAX_KEYTERMS ceiling, even with heavy CCU augmentation', () => {
+    const circuits = Array.from({ length: 80 }, (_, i) => ({
+      circuit_number: i + 1,
+      label: `Room ${i} sockets`,
+      ocpd_type: 'mcb',
+      rcd_rating_ma: `${i}`,
+    }));
+    const list = generateFluxKeyterms({ board_manufacturer: 'Acme', board_model: 'X1', circuits });
+    expect(list.length).toBeLessThanOrEqual(KEYTERM_INTERNALS.FLUX_MAX_KEYTERMS);
+  });
+
+  it('appends CCU board vocabulary on top of the curated set, deduped', () => {
+    const list = generateFluxKeyterms({
+      board_manufacturer: 'Acme Boards',
+      circuits: [{ circuit_number: 7, label: 'Kitchen sockets' }],
+    });
+    const lc = list.map((t) => t.toLowerCase());
+    expect(lc).toContain('acme boards');
+    expect(lc).toContain('circuit 7');
+    // No duplicates.
+    expect(new Set(lc).size).toBe(lc.length);
+  });
+});
+
+describe('appendFluxKeytermsToUrl — equal-weight URL budget', () => {
+  it('appends bare keyterms (no suffix) and stops at the 2000-char Flux budget', () => {
+    const params = new URLSearchParams({ model: 'flux-general-en' });
+    const long = Array.from({ length: 300 }, (_, i) => `keyterm${'x'.repeat(20)}${i}`);
+    const appended = appendFluxKeytermsToUrl(params, long, 1900);
+    expect(appended).toBeLessThan(long.length);
+    for (const v of params.getAll('keyterm')) expect(v.includes(':')).toBe(false);
+  });
+
+  it('returns 0 when the first keyterm already overflows the budget', () => {
+    const params = new URLSearchParams();
+    const appended = appendFluxKeytermsToUrl(
+      params,
+      ['x'],
+      KEYTERM_INTERNALS.FLUX_URL_LENGTH_BUDGET
+    );
+    expect(appended).toBe(0);
   });
 });
 

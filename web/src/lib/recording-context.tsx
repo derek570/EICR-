@@ -2,7 +2,12 @@
 
 import * as React from 'react';
 import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
-import { DeepgramService, type DeepgramConnectionState } from './recording/deepgram-service';
+import {
+  DeepgramService,
+  type DeepgramConnectionState,
+  type SttModel,
+} from './recording/deepgram-service';
+import { ensureRuntimeConfigLoaded, DEFAULT_STT_MODEL } from '@/lib/runtime-config';
 import { resampleTo16k } from './recording/resample';
 import {
   SonnetSession,
@@ -982,6 +987,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // down without tripping React's effect dependency machinery.
   const micRef = React.useRef<MicCaptureHandle | null>(null);
   const deepgramRef = React.useRef<DeepgramService | null>(null);
+  // STT model resolved ONCE per RECORDING session by the runtime kill-switch
+  // (parity WS4). Set in start() after the runtime-config fetch; read by
+  // openDeepgram when constructing DeepgramService. Auto-sleep wake/resume
+  // reconnects reuse this ref and MUST NOT refetch mid-recording; stop()
+  // clears it so the next start() re-reads the ECS env (picking up an
+  // emergency flip). null → not yet resolved → openDeepgram falls to
+  // DEFAULT_STT_MODEL.
+  const activeSttModelRef = React.useRef<SttModel | null>(null);
   const sonnetRef = React.useRef<SonnetSession | null>(null);
   // Debounced job-state push. iOS calls
   // `sonnetSession.sendJobStateUpdate(job)` after every applied
@@ -1737,256 +1750,278 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         sleepManagerRef.current?.onSpeechActivity();
       };
 
-      const service = new DeepgramService({
-        onStateChange: setDeepgramState,
-        onInterimTranscript: (text) => {
-          setInterim(text);
-          // Mirror iOS `isSpeaking` flag — interim arrival proves the
-          // inspector is mid-utterance. The phantom-VAD watchdog
-          // armed by `onSpeechStarted` would otherwise un-flip the
-          // ref after 1.2s of no interim, so we cancel it the moment
-          // a real interim lands.
-          isInspectorSpeakingRef.current = true;
-          if (speechConfirmTimerRef.current) {
-            clearTimeout(speechConfirmTimerRef.current);
-            speechConfirmTimerRef.current = null;
-          }
-          // Inspector is speaking → cancel the post-wake "could you
-          // repeat that" prompt. They're talking; the prompt would be
-          // an interruption.
-          if (postWakeMonitorTimerRef.current) {
-            clearTimeout(postWakeMonitorTimerRef.current);
-            postWakeMonitorTimerRef.current = null;
-          }
-        },
-        onSpeechStarted: () => {
-          // Stamp the time so the post-wake monitor (#53) can tell
-          // a pre-wake SpeechStarted from a post-wake one.
-          lastSpeechStartedTimeRef.current = Date.now();
-          // Don't trust the SpeechStarted alone — Deepgram fires it on
-          // ambient breath/rumble. Arm a 1.2s watchdog that un-flips
-          // `isInspectorSpeakingRef` if no interim follows. Cancelled
-          // by the first interim above. Mirrors iOS `speechConfirmTimer`
-          // at DeepgramRecordingViewModel.swift:1620-1623.
-          if (speechConfirmTimerRef.current) clearTimeout(speechConfirmTimerRef.current);
-          speechConfirmTimerRef.current = setTimeout(() => {
-            speechConfirmTimerRef.current = null;
-            // If no interim fired in the window, the original
-            // SpeechStarted was phantom — flip back to "not speaking"
-            // so a deferred TTS isn't held indefinitely.
+      const service = new DeepgramService(
+        {
+          onStateChange: setDeepgramState,
+          onInterimTranscript: (text) => {
+            setInterim(text);
+            // Mirror iOS `isSpeaking` flag — interim arrival proves the
+            // inspector is mid-utterance. The phantom-VAD watchdog
+            // armed by `onSpeechStarted` would otherwise un-flip the
+            // ref after 1.2s of no interim, so we cancel it the moment
+            // a real interim lands.
+            isInspectorSpeakingRef.current = true;
+            if (speechConfirmTimerRef.current) {
+              clearTimeout(speechConfirmTimerRef.current);
+              speechConfirmTimerRef.current = null;
+            }
+            // Inspector is speaking → cancel the post-wake "could you
+            // repeat that" prompt. They're talking; the prompt would be
+            // an interruption.
+            if (postWakeMonitorTimerRef.current) {
+              clearTimeout(postWakeMonitorTimerRef.current);
+              postWakeMonitorTimerRef.current = null;
+            }
+          },
+          onSpeechStarted: () => {
+            // Stamp the time so the post-wake monitor (#53) can tell
+            // a pre-wake SpeechStarted from a post-wake one.
+            lastSpeechStartedTimeRef.current = Date.now();
+            // Don't trust the SpeechStarted alone — Deepgram fires it on
+            // ambient breath/rumble. Arm a 1.2s watchdog that un-flips
+            // `isInspectorSpeakingRef` if no interim follows. Cancelled
+            // by the first interim above. Mirrors iOS `speechConfirmTimer`
+            // at DeepgramRecordingViewModel.swift:1620-1623.
+            if (speechConfirmTimerRef.current) clearTimeout(speechConfirmTimerRef.current);
+            speechConfirmTimerRef.current = setTimeout(() => {
+              speechConfirmTimerRef.current = null;
+              // If no interim fired in the window, the original
+              // SpeechStarted was phantom — flip back to "not speaking"
+              // so a deferred TTS isn't held indefinitely.
+              isInspectorSpeakingRef.current = false;
+            }, SPEECH_CONFIRM_TIMEOUT_MS);
+          },
+          onUtteranceEnd: () => {
+            // Inspector finished a sentence. Flip the flag back and
+            // drain any deferred TTS so the question they were talking
+            // over plays now. Mirrors iOS `resumeDeferredTTSIfNeeded` at
+            // AlertManager.swift:1144-1179.
             isInspectorSpeakingRef.current = false;
-          }, SPEECH_CONFIRM_TIMEOUT_MS);
-        },
-        onUtteranceEnd: () => {
-          // Inspector finished a sentence. Flip the flag back and
-          // drain any deferred TTS so the question they were talking
-          // over plays now. Mirrors iOS `resumeDeferredTTSIfNeeded` at
-          // AlertManager.swift:1144-1179.
-          isInspectorSpeakingRef.current = false;
-          if (speechConfirmTimerRef.current) {
-            clearTimeout(speechConfirmTimerRef.current);
-            speechConfirmTimerRef.current = null;
-          }
-          const deferred = deferredTtsRef.current;
-          if (deferred) {
-            deferredTtsRef.current = null;
-            clientDiagnostic('tts_deferred_drain', {
-              toolCallIdShort: deferred.toolCallId?.slice(0, 12) ?? null,
-              textPreview: deferred.text.slice(0, 80),
-            });
-            speak(deferred.text);
-          }
-        },
-        onFinalTranscript: (text, confidence) => {
-          setInterim('');
-          // Stage 1 of the recording pipeline — verbose log so we can
-          // confirm at the field-test console that the transcript
-          // actually reached the host before any gating runs.
-          console.info(
-            `[recording:pipeline] stage=onFinalTranscript text="${text.slice(0, 80)}" len=${text.length} conf=${confidence.toFixed(2)}`
-          );
-          clientDiagnostic('pipeline_final_transcript', {
-            textLength: text.length,
-            textPreview: text.slice(0, 80),
-            confidence,
-          });
-          pipelineLog('recording_final_transcript', {
-            textLength: text.length,
-            textPreview: text.slice(0, 40),
-            confidence: Math.round(confidence * 1000) / 1000,
-          });
-          // Mic-feedback gate (iOS parity) — discard finals that
-          // arrived while the device's own TTS was audible. Without
-          // this, the speaker plays "Should I create circuit 1?", the
-          // mic picks it up, Deepgram emits a transcript, and Sonnet
-          // processes the question as if the inspector said it.
-          //
-          // iOS canon barges in (AlertManager.swift:1369): when the
-          // inspector starts speaking ON TOP of a question's TTS audio,
-          // the question's audio is cancelled and the inspector's reply
-          // is honoured. The PWA previously discarded the reply
-          // unconditionally — exactly the "no way to add an answer"
-          // symptom reported in the field. Match iOS: if there is an
-          // in-flight ask_user (tool_call_id pending) AND the heard
-          // text is plausibly a content reply (not just a 1-word burp
-          // that's more likely the mic catching its own speaker), then
-          // BARGE IN — cancel TTS and let the transcript through.
-          if (isWithinTtsWindow()) {
-            const hasInFlightAsk = Boolean(sonnetRef.current?.peekInFlightToolCallId());
-            const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
-            // Single-token replies ARE legitimate ("yes", "no", "0.6",
-            // "TT"). iOS uses a separate VAD gate; we approximate by
-            // letting any non-empty reply through when there is an
-            // in-flight ask, but suppress when there isn't (no ask =
-            // any TTS-window utterance is almost certainly self-feedback).
-            if (hasInFlightAsk) {
-              console.info(
-                `[recording:barge-in] cancelling TTS, accepting reply text="${text.slice(0, 80)}" words=${wordCount}`
-              );
-              clientDiagnostic('pipeline_barge_in', {
-                textLength: text.length,
-                textPreview: text.slice(0, 80),
-                wordCount,
+            if (speechConfirmTimerRef.current) {
+              clearTimeout(speechConfirmTimerRef.current);
+              speechConfirmTimerRef.current = null;
+            }
+            const deferred = deferredTtsRef.current;
+            if (deferred) {
+              deferredTtsRef.current = null;
+              clientDiagnostic('tts_deferred_drain', {
+                toolCallIdShort: deferred.toolCallId?.slice(0, 12) ?? null,
+                textPreview: deferred.text.slice(0, 80),
               });
-              cancelSpeech();
-              // Fall through — don't return — so the transcript routes
-              // to Sonnet AND fires ask_user_answered below.
-            } else {
-              console.info(
-                `[recording:final-suppressed] inside TTS window, no in-flight ask text="${text.slice(0, 60)}"`
-              );
-              clientDiagnostic('pipeline_final_suppressed', {
+              speak(deferred.text);
+            }
+          },
+          onFinalTranscript: (text, confidence) => {
+            setInterim('');
+            // Stage 1 of the recording pipeline — verbose log so we can
+            // confirm at the field-test console that the transcript
+            // actually reached the host before any gating runs.
+            console.info(
+              `[recording:pipeline] stage=onFinalTranscript text="${text.slice(0, 80)}" len=${text.length} conf=${confidence.toFixed(2)}`
+            );
+            clientDiagnostic('pipeline_final_transcript', {
+              textLength: text.length,
+              textPreview: text.slice(0, 80),
+              confidence,
+            });
+            pipelineLog('recording_final_transcript', {
+              textLength: text.length,
+              textPreview: text.slice(0, 40),
+              confidence: Math.round(confidence * 1000) / 1000,
+            });
+            // Mic-feedback gate (iOS parity) — discard finals that
+            // arrived while the device's own TTS was audible. Without
+            // this, the speaker plays "Should I create circuit 1?", the
+            // mic picks it up, Deepgram emits a transcript, and Sonnet
+            // processes the question as if the inspector said it.
+            //
+            // iOS canon barges in (AlertManager.swift:1369): when the
+            // inspector starts speaking ON TOP of a question's TTS audio,
+            // the question's audio is cancelled and the inspector's reply
+            // is honoured. The PWA previously discarded the reply
+            // unconditionally — exactly the "no way to add an answer"
+            // symptom reported in the field. Match iOS: if there is an
+            // in-flight ask_user (tool_call_id pending) AND the heard
+            // text is plausibly a content reply (not just a 1-word burp
+            // that's more likely the mic catching its own speaker), then
+            // BARGE IN — cancel TTS and let the transcript through.
+            if (isWithinTtsWindow()) {
+              const hasInFlightAsk = Boolean(sonnetRef.current?.peekInFlightToolCallId());
+              const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+              // Single-token replies ARE legitimate ("yes", "no", "0.6",
+              // "TT"). iOS uses a separate VAD gate; we approximate by
+              // letting any non-empty reply through when there is an
+              // in-flight ask, but suppress when there isn't (no ask =
+              // any TTS-window utterance is almost certainly self-feedback).
+              if (hasInFlightAsk) {
+                console.info(
+                  `[recording:barge-in] cancelling TTS, accepting reply text="${text.slice(0, 80)}" words=${wordCount}`
+                );
+                clientDiagnostic('pipeline_barge_in', {
+                  textLength: text.length,
+                  textPreview: text.slice(0, 80),
+                  wordCount,
+                });
+                cancelSpeech();
+                // Fall through — don't return — so the transcript routes
+                // to Sonnet AND fires ask_user_answered below.
+              } else {
+                console.info(
+                  `[recording:final-suppressed] inside TTS window, no in-flight ask text="${text.slice(0, 60)}"`
+                );
+                clientDiagnostic('pipeline_final_suppressed', {
+                  textLength: text.length,
+                  textPreview: text.slice(0, 60),
+                  reason: 'tts_window_no_ask',
+                });
+                return;
+              }
+            }
+            // Belt-and-braces — fingerprint echo gate (iOS canon
+            // DeepgramRecordingViewModel.swift:2823). The wall-clock TTS
+            // window above catches finals whose timing overlaps the
+            // current TTS audio. The fingerprint check catches finals
+            // that arrived OUTSIDE the wall-clock window but match a
+            // recently-spoken TTS phrase — Deepgram processing latency
+            // can delay finals by 500-1500ms, putting them past the
+            // 300ms cooldown but still inside the 15-second fingerprint
+            // window. Without this, the user reported "keeps asking the
+            // same question" because the mic picked up its own
+            // question through the speaker, Deepgram transcribed
+            // fragments, and Sonnet processed those fragments as the
+            // inspector's reply.
+            if (isTTSEcho(text)) {
+              console.info(`[recording:tts-echo-discarded] text="${text.slice(0, 60)}"`);
+              clientDiagnostic('pipeline_tts_echo_discarded', {
                 textLength: text.length,
                 textPreview: text.slice(0, 60),
-                reason: 'tts_window_no_ask',
               });
               return;
             }
-          }
-          // Belt-and-braces — fingerprint echo gate (iOS canon
-          // DeepgramRecordingViewModel.swift:2823). The wall-clock TTS
-          // window above catches finals whose timing overlaps the
-          // current TTS audio. The fingerprint check catches finals
-          // that arrived OUTSIDE the wall-clock window but match a
-          // recently-spoken TTS phrase — Deepgram processing latency
-          // can delay finals by 500-1500ms, putting them past the
-          // 300ms cooldown but still inside the 15-second fingerprint
-          // window. Without this, the user reported "keeps asking the
-          // same question" because the mic picked up its own
-          // question through the speaker, Deepgram transcribed
-          // fragments, and Sonnet processed those fragments as the
-          // inspector's reply.
-          if (isTTSEcho(text)) {
-            console.info(`[recording:tts-echo-discarded] text="${text.slice(0, 60)}"`);
-            clientDiagnostic('pipeline_tts_echo_discarded', {
-              textLength: text.length,
-              textPreview: text.slice(0, 60),
-            });
-            return;
-          }
-          // Bug K (2026-05-11) — pending-naming utterance buffer.
-          // If a previous final was a bare "Circuit N is" without
-          // completion, it's currently held in pendingNamingBufferRef
-          // waiting for a follow-up. Concatenate so the regex matcher
-          // sees both halves in the same cumulative-transcript pass
-          // AND Sonnet sees them as a single turn — which is the only
-          // way Sonnet routes "downstairs sockets" to circuit 2
-          // rather than mis-renaming circuit 1 via DESCRIPTION
-          // MATCHING. See TRAILING_CIRCUIT_NAMING_PATTERN for the
-          // full rationale and the iOS-parity note.
-          let effectiveText = text;
-          let effectiveConfidence = confidence;
-          const pending = pendingNamingBufferRef.current;
-          if (pending) {
-            clearTimeout(pending.timer);
-            pendingNamingBufferRef.current = null;
-            effectiveText = (pending.text + ' ' + text).trim();
-            // Combined confidence is the LOWER of the two — pessimistic,
-            // mirrors how a single transcript would carry one confidence.
-            effectiveConfidence = Math.min(pending.confidence, confidence);
-            clientDiagnostic('pipeline_naming_buffer_concat', {
-              bufferedPreview: pending.text.slice(0, 40),
-              followUpPreview: text.slice(0, 40),
-              combinedPreview: effectiveText.slice(0, 80),
-            });
-          }
-          // If the (possibly concatenated) text is itself a trailing
-          // "Circuit N is" — i.e. the inspector paused again or just
-          // re-stated the preface — buffer it and wait. This branch
-          // covers: (a) the original buffer trigger when no pending
-          // existed; (b) the rare case of two naming prefaces in a row
-          // (e.g. "Circuit 2 is" + "Circuit 3 is" — user backed out).
-          // Either way we want to hold for the completion.
-          if (isTrailingCircuitNamingPattern(effectiveText)) {
-            const armedAt = Date.now();
-            const timer = setTimeout(() => {
-              const buffered = pendingNamingBufferRef.current;
-              if (!buffered || buffered.timer !== timer) {
-                // Either nothing pending (someone else cleared it) or
-                // a fresher timer is now in flight — drop the stale fire.
-                return;
-              }
+            // Bug K (2026-05-11) — pending-naming utterance buffer.
+            // If a previous final was a bare "Circuit N is" without
+            // completion, it's currently held in pendingNamingBufferRef
+            // waiting for a follow-up. Concatenate so the regex matcher
+            // sees both halves in the same cumulative-transcript pass
+            // AND Sonnet sees them as a single turn — which is the only
+            // way Sonnet routes "downstairs sockets" to circuit 2
+            // rather than mis-renaming circuit 1 via DESCRIPTION
+            // MATCHING. See TRAILING_CIRCUIT_NAMING_PATTERN for the
+            // full rationale and the iOS-parity note.
+            let effectiveText = text;
+            let effectiveConfidence = confidence;
+            const pending = pendingNamingBufferRef.current;
+            if (pending) {
+              clearTimeout(pending.timer);
               pendingNamingBufferRef.current = null;
-              clientDiagnostic('pipeline_naming_buffer_timeout', {
-                textPreview: buffered.text.slice(0, 80),
-                heldMs: Date.now() - armedAt,
+              effectiveText = (pending.text + ' ' + text).trim();
+              // Combined confidence is the LOWER of the two — pessimistic,
+              // mirrors how a single transcript would carry one confidence.
+              effectiveConfidence = Math.min(pending.confidence, confidence);
+              clientDiagnostic('pipeline_naming_buffer_concat', {
+                bufferedPreview: pending.text.slice(0, 40),
+                followUpPreview: text.slice(0, 40),
+                combinedPreview: effectiveText.slice(0, 80),
               });
-              // Flush the buffered final via the dispatch helper — the
-              // TTS gates above already passed at buffer-time, and a
-              // 3 s delay is short enough that re-running them would
-              // be a no-op in the overwhelming majority of cases. iOS
-              // canon ports the same single-gate model. Route through
-              // dispatchFinalBurstBuffered so a subsequent final
-              // within 500ms can still be merged.
-              dispatchFinalBurstBuffered(buffered.text, buffered.confidence);
-            }, NAMING_BUFFER_TIMEOUT_MS);
-            pendingNamingBufferRef.current = {
-              text: effectiveText,
-              confidence: effectiveConfidence,
-              timer,
-            };
-            clientDiagnostic('pipeline_naming_buffer_armed', {
-              textPreview: effectiveText.slice(0, 80),
-              timeoutMs: NAMING_BUFFER_TIMEOUT_MS,
+            }
+            // If the (possibly concatenated) text is itself a trailing
+            // "Circuit N is" — i.e. the inspector paused again or just
+            // re-stated the preface — buffer it and wait. This branch
+            // covers: (a) the original buffer trigger when no pending
+            // existed; (b) the rare case of two naming prefaces in a row
+            // (e.g. "Circuit 2 is" + "Circuit 3 is" — user backed out).
+            // Either way we want to hold for the completion.
+            if (isTrailingCircuitNamingPattern(effectiveText)) {
+              const armedAt = Date.now();
+              const timer = setTimeout(() => {
+                const buffered = pendingNamingBufferRef.current;
+                if (!buffered || buffered.timer !== timer) {
+                  // Either nothing pending (someone else cleared it) or
+                  // a fresher timer is now in flight — drop the stale fire.
+                  return;
+                }
+                pendingNamingBufferRef.current = null;
+                clientDiagnostic('pipeline_naming_buffer_timeout', {
+                  textPreview: buffered.text.slice(0, 80),
+                  heldMs: Date.now() - armedAt,
+                });
+                // Flush the buffered final via the dispatch helper — the
+                // TTS gates above already passed at buffer-time, and a
+                // 3 s delay is short enough that re-running them would
+                // be a no-op in the overwhelming majority of cases. iOS
+                // canon ports the same single-gate model. Route through
+                // dispatchFinalBurstBuffered so a subsequent final
+                // within 500ms can still be merged.
+                dispatchFinalBurstBuffered(buffered.text, buffered.confidence);
+              }, NAMING_BUFFER_TIMEOUT_MS);
+              pendingNamingBufferRef.current = {
+                text: effectiveText,
+                confidence: effectiveConfidence,
+                timer,
+              };
+              clientDiagnostic('pipeline_naming_buffer_armed', {
+                textPreview: effectiveText.slice(0, 80),
+                timeoutMs: NAMING_BUFFER_TIMEOUT_MS,
+              });
+              return;
+            }
+            // Normal dispatch path — either the original final didn't
+            // trigger the naming buffer OR it just resolved via
+            // concatenation. Route through dispatchFinalBurstBuffered
+            // so consecutive Deepgram finals within 500ms get merged
+            // into a single Sonnet turn (mitigates the "Observation."
+            // + "There is a crack…" split that prompted this fix).
+            dispatchFinalBurstBuffered(effectiveText, effectiveConfidence);
+          },
+          onReconnected: () => {
+            // Socket just reopened after an auto-reconnect. Replay the
+            // ring buffer so words spoken during the backoff gap aren't
+            // lost — mirrors the iOS wake path. drain() returns undefined
+            // if the buffer is empty or unavailable, in which case the
+            // live sample loop picks up on its own.
+            const replay = ringBufferRef.current?.drain();
+            if (replay && replay.length > 0) {
+              deepgramRef.current?.sendInt16PCM(replay);
+            }
+          },
+          onError: (err) => {
+            pipelineLog('recording_deepgram_on_error', {
+              messageLength: err.message.length,
+              messagePreview: err.message.slice(0, 80),
+              hasService: deepgramRef.current != null,
             });
-            return;
-          }
-          // Normal dispatch path — either the original final didn't
-          // trigger the naming buffer OR it just resolved via
-          // concatenation. Route through dispatchFinalBurstBuffered
-          // so consecutive Deepgram finals within 500ms get merged
-          // into a single Sonnet turn (mitigates the "Observation."
-          // + "There is a crack…" split that prompted this fix).
-          dispatchFinalBurstBuffered(effectiveText, effectiveConfidence);
+            // Only surface in the UI if we're not already closing down — a
+            // normal CloseStream can race with `stop()` and emit a spurious
+            // error that would otherwise flip the overlay red. In fetcher
+            // mode onError fires only for terminal failures (first-connect
+            // key fetch fail) — transient close codes are absorbed by the
+            // service's auto-reconnect and don't bubble here at all.
+            if (deepgramRef.current) {
+              setErrorMessage(err.message);
+            }
+          },
+          // Flux-only (no-op on nova-3): log Configure success + RTT (parent
+          // WS4 acceptance) and surface a ConfigureFailure/echo-mismatch. The
+          // focused-answer narrowing path drives the Configure round-trips.
+          onConfigureResult: (result) => {
+            if (result.ok) {
+              clientDiagnostic('flux_configure_success', { rttMs: result.rttMs });
+            } else {
+              clientDiagnostic('flux_configure_failed', {
+                reason: result.reason,
+                rttMs: result.rttMs,
+              });
+            }
+          },
         },
-        onReconnected: () => {
-          // Socket just reopened after an auto-reconnect. Replay the
-          // ring buffer so words spoken during the backoff gap aren't
-          // lost — mirrors the iOS wake path. drain() returns undefined
-          // if the buffer is empty or unavailable, in which case the
-          // live sample loop picks up on its own.
-          const replay = ringBufferRef.current?.drain();
-          if (replay && replay.length > 0) {
-            deepgramRef.current?.sendInt16PCM(replay);
-          }
-        },
-        onError: (err) => {
-          pipelineLog('recording_deepgram_on_error', {
-            messageLength: err.message.length,
-            messagePreview: err.message.slice(0, 80),
-            hasService: deepgramRef.current != null,
-          });
-          // Only surface in the UI if we're not already closing down — a
-          // normal CloseStream can race with `stop()` and emit a spurious
-          // error that would otherwise flip the overlay red. In fetcher
-          // mode onError fires only for terminal failures (first-connect
-          // key fetch fail) — transient close codes are absorbed by the
-          // service's auto-reconnect and don't bubble here at all.
-          if (deepgramRef.current) {
-            setErrorMessage(err.message);
-          }
-        },
-      });
+        // No WebSocket factory override in production (tests inject one).
+        undefined,
+        // STT model for this session — resolved by the runtime kill-switch in
+        // start(). openDeepgram re-runs on auto-sleep wake/resume; each rebuild
+        // reads the same already-resolved ref (no refetch). DEFAULT_STT_MODEL
+        // only if the ref is somehow unset (defensive — start() always sets it).
+        activeSttModelRef.current ?? DEFAULT_STT_MODEL
+      );
       // Bind the ref BEFORE starting the async connect so a concurrent
       // stop()/teardownDeepgram can call service.disconnect() and abort
       // the in-flight key fetch via `shouldReconnect=false`.
@@ -2995,6 +3030,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // cannot hear it, the conversation stalls, and the session ends
     // with near-empty extraction (see sess_mox58v7n_kpr9, 2026-05-08).
     primeTts();
+    // Resolve the STT model for THIS recording session via the runtime
+    // kill-switch (parity WS4) — once per recording, forced so an emergency
+    // ECS `DEEPGRAM_STT_MODEL` flip is picked up without a page reload (the
+    // RecordingProvider stays mounted across stop/start cycles, so an
+    // app-session cache would ignore the flip until reload). Placed AFTER the
+    // synchronous primeTts() gesture grant (which does not survive an await)
+    // and BEFORE any await that starts mic/Sonnet/backend/Deepgram. A fetch
+    // failure or a non-JSON (login-redirect) body resolves to the fail-safe
+    // nova3 inside ensureRuntimeConfigLoaded. Auto-sleep reconnects reuse this
+    // ref; stop() clears it.
+    activeSttModelRef.current = await ensureRuntimeConfigLoaded({ force: true });
+    pipelineLog('recording_stt_model_resolved', { model: activeSttModelRef.current });
     // Wire the SleepManager TTS-active gate. Every TTS dispatch (question,
     // confirmation, voice-command response) flips the no-transcript timer
     // off while the device speaker is producing artificial silence on the
@@ -3255,6 +3302,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownDeepgram();
     teardownSonnet();
     teardownSleep();
+    // Clear the resolved STT model so the next start() re-fetches the runtime
+    // config and picks up any ECS `DEEPGRAM_STT_MODEL` flip (parity WS4).
+    activeSttModelRef.current = null;
     // Cancel any in-flight TTS so the last confirmation doesn't keep
     // speaking after the inspector has ended the session.
     cancelSpeech();

@@ -20,8 +20,29 @@
  * change there.
  */
 
-import { appendKeytermsToUrl, generateKeyterms, type CcuAnalysisLite } from './keyword-boosts';
+import {
+  appendKeytermsToUrl,
+  generateKeyterms,
+  appendFluxKeytermsToUrl,
+  generateFluxKeyterms,
+  type CcuAnalysisLite,
+} from './keyword-boosts';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
+
+/**
+ * STT model selector. `nova3` is the legacy `/v1/listen` path (still the
+ * product default + kill-switch fallback until Flux is field-validated).
+ * `flux` is the `/v2/listen` `flux-general-en` path ported from iOS
+ * `DeepgramService.swift` in parity WS4. The URL shape, turn-detection
+ * events, and keyterm semantics differ substantially between the two — see
+ * `buildNova3URL` / `buildFluxURL` and `handleMessage` / `handleFluxMessage`.
+ */
+export type SttModel = 'nova3' | 'flux';
+
+/** Outcome of a Flux `Configure` control-message round-trip. */
+export type ConfigureResult =
+  | { ok: true; rttMs: number }
+  | { ok: false; reason: string; rttMs: number };
 
 export type DeepgramConnectionState =
   | 'disconnected'
@@ -45,6 +66,13 @@ export interface DeepgramCallbacks {
   onSpeechStarted?: () => void;
   onStateChange?: (state: DeepgramConnectionState) => void;
   onError?: (err: Error) => void;
+  /**
+   * Flux-only. Fires when a `Configure` control-message round-trip resolves
+   * (ConfigureSuccess with a matching echo, ConfigureFailure, or timeout).
+   * Lets the caller surface Configure success + RTT (parent WS4 acceptance)
+   * and fail closed on a ConfigureFailure. No-op on the nova-3 path.
+   */
+  onConfigureResult?: (result: ConfigureResult) => void;
   /**
    * Fires after a successful auto-reconnect (not on the initial open).
    * Consumers typically replay their `AudioRingBuffer` via `sendInt16PCM()`
@@ -148,13 +176,51 @@ export class DeepgramService {
   // mid-session reopens keep the augmented keyterm set.
   private ccuAnalysis: CcuAnalysisLite | null = null;
 
-  constructor(callbacks: DeepgramCallbacks, wsFactory?: WebSocketFactory) {
+  // STT model for this service instance. Locked at construction (the runtime
+  // kill-switch resolves the model once per RECORDING session in
+  // recording-context and passes it here; auto-reconnects reuse the same
+  // instance/model, never refetch). Defaults to 'nova3' so every pre-Flux
+  // call site + unit test keeps its exact behaviour.
+  private readonly sttModel: SttModel;
+
+  // ── Flux Configure round-trip state ─────────────────────────────────────
+  // A single in-flight Configure at a time (matches iOS — the focused-answer
+  // path sends one Configure and awaits its echo before the next). The pending
+  // resolver is settled by ConfigureSuccess/ConfigureFailure or a timeout.
+  private pendingConfigure: {
+    sentAtMs: number;
+    expectedKeytermCount: number;
+    eotThreshold: number;
+    eotTimeoutMs: number;
+    resolve: (r: ConfigureResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+
+  // ── Flux 80ms audio batching ────────────────────────────────────────────
+  // Flux ingests audio best in ~80ms frames (1280 samples @16k = 2560 bytes),
+  // matching the iOS chunk batcher. The mic pipeline hands us variable-size
+  // blocks, so we accumulate Int16 samples and flush in 1280-sample frames.
+  // nova-3 sends blocks as-is (no batching) — behaviour unchanged.
+  private static readonly FLUX_FRAME_SAMPLES = 1280; // 80ms @ 16kHz
+  private fluxSampleBuffer: Int16Array = new Int16Array(0);
+
+  constructor(
+    callbacks: DeepgramCallbacks,
+    wsFactory?: WebSocketFactory,
+    sttModel: SttModel = 'nova3'
+  ) {
     this.callbacks = callbacks;
     // Default to the real global WebSocket. Tests pass a factory whose
     // sockets expose a mutable `bufferedAmount` so the KeepAlive gate
     // can be exercised deterministically. Kept as an optional second
     // arg so every existing call site keeps working unchanged.
     this.wsFactory = wsFactory ?? ((url, protocols) => new WebSocket(url, protocols));
+    this.sttModel = sttModel;
+  }
+
+  /** The STT model this instance was constructed with (diagnostics/tests). */
+  get model(): SttModel {
+    return this.sttModel;
   }
 
   get connectionState(): DeepgramConnectionState {
@@ -405,11 +471,51 @@ export class DeepgramService {
 
     this.lastAudioSendMs = performance.now();
 
+    if (this.sttModel === 'flux') {
+      this.enqueueFluxFrames(int16);
+      return;
+    }
+
     try {
       this.ws.send(int16.buffer);
     } catch {
       // WS buffer full — drop the block. Rare; surfaces as minor gap.
     }
+  }
+
+  /**
+   * Flux 80ms chunk batcher. Accumulates Int16 samples and flushes exactly
+   * 1280-sample (2560-byte) frames — the ~80ms cadence Flux ingests best, and
+   * the iOS chunk-batcher size. A partial tail (< one frame) is held until the
+   * next block completes it. Cleared on disconnect so a stale tail can't leak
+   * into the next session. nova-3 never calls this (sends blocks as-is).
+   */
+  private enqueueFluxFrames(int16: Int16Array): void {
+    const FRAME = DeepgramService.FLUX_FRAME_SAMPLES;
+    // Append to the carry-over buffer.
+    let buf: Int16Array;
+    if (this.fluxSampleBuffer.length === 0) {
+      buf = int16;
+    } else {
+      buf = new Int16Array(this.fluxSampleBuffer.length + int16.length);
+      buf.set(this.fluxSampleBuffer, 0);
+      buf.set(int16, this.fluxSampleBuffer.length);
+    }
+    let offset = 0;
+    while (buf.length - offset >= FRAME) {
+      const frame = buf.subarray(offset, offset + FRAME);
+      try {
+        // Copy the exact frame range into its own buffer before send.
+        const out = new Int16Array(FRAME);
+        out.set(frame);
+        this.ws!.send(out.buffer);
+      } catch {
+        // WS backpressure — drop this frame; the next flush re-evaluates.
+      }
+      offset += FRAME;
+    }
+    // Retain the sub-frame remainder for the next block.
+    this.fluxSampleBuffer = offset < buf.length ? buf.slice(offset) : new Int16Array(0);
   }
 
   /** Drop a pre-recorded Int16 PCM block straight into the WS. Used by
@@ -454,6 +560,14 @@ export class DeepgramService {
   disconnect(): void {
     this.stopKeepAlive();
     this.paused = false;
+    // Reset Flux batching + Configure state so nothing leaks into the next
+    // session (a stale sub-frame tail or an orphaned Configure resolver).
+    this.fluxSampleBuffer = new Int16Array(0);
+    if (this.pendingConfigure) {
+      clearTimeout(this.pendingConfigure.timer);
+      this.pendingConfigure.resolve({ ok: false, reason: 'disconnected', rttMs: 0 });
+      this.pendingConfigure = null;
+    }
     // Kill auto-reconnect BEFORE anything else — prevents onclose below
     // from scheduling a fresh attempt on the way out, and short-circuits
     // any in-flight `openWithFreshKey` key-fetch.
@@ -498,6 +612,44 @@ export class DeepgramService {
   }
 
   private buildURL(): string {
+    return this.sttModel === 'flux' ? this.buildFluxURL() : this.buildNova3URL();
+  }
+
+  /**
+   * Flux `/v2/listen` `flux-general-en` URL. Ports iOS `buildFluxURL`
+   * (DeepgramService.swift): drops every nova-3 turn-detection knob
+   * (interim_results/endpointing/utterance_end_ms/vad_events — Flux's
+   * model-driven turn detector replaces all of them), keeps audio format
+   * identical, and appends EQUAL-WEIGHT keyterms (no `:boost` suffix — Flux
+   * strips it) up to the 2000-char Flux URL budget. `mip_opt_out=true` stays
+   * on the connect URL (GDPR/DPIA — per-connection, must not regress).
+   */
+  private buildFluxURL(): string {
+    const params = new URLSearchParams({
+      model: 'flux-general-en',
+      encoding: 'linear16',
+      sample_rate: '16000',
+      // Flux turn-detection defaults, stated explicitly (self-documenting
+      // baseline; the 2026-05-29 threshold-tightening was rolled back —
+      // plain thresholds are canon). eot_threshold 0.5–0.9 default 0.7;
+      // eot_timeout_ms 500–10000 default 5000.
+      eot_threshold: '0.7',
+      eot_timeout_ms: '5000',
+      // GDPR/DPIA M2.1 — opt out of Deepgram's Model Improvement Partnership.
+      // Per-connection by design so an account-config change can't regress it.
+      // Mirrors iOS DeepgramService.swift:1705 + the nova-3 branch below.
+      mip_opt_out: 'true',
+    });
+
+    const baseUrl = 'wss://api.deepgram.com/v2/listen';
+    const baseLength = baseUrl.length + '?'.length + params.toString().length;
+    const keyterms = generateFluxKeyterms(this.ccuAnalysis);
+    appendFluxKeytermsToUrl(params, keyterms, baseLength);
+
+    return `${baseUrl}?${params.toString()}`;
+  }
+
+  private buildNova3URL(): string {
     const params = new URLSearchParams({
       model: 'nova-3',
       smart_format: 'true',
@@ -603,6 +755,14 @@ export class DeepgramService {
     this.stopKeepAlive();
     this.keepAliveTimer = setInterval(() => {
       if (!this.ws || this.state !== 'connected') return;
+      // Flux rejects the nova-3 KeepAlive: `{type:'KeepAlive'}` is an
+      // UNPARSABLE_CLIENT_MESSAGE on /v2/listen, and 500ms of silent PCM
+      // zeros trigger a spurious EndOfTurn. So the JSON-KeepAlive + silent-PCM
+      // idle-hold is nova-3-ONLY. On Flux an extended-silence idle-close is
+      // handled by auto-reconnect (fetcher mode) / the sleep manager, exactly
+      // as iOS does (it never KeepAlives on Flux). Matches
+      // DeepgramService.swift's Flux idle handling.
+      if (this.sttModel === 'flux') return;
       // Backpressure gate — skip this tick if the browser still has
       // bytes queued for the socket. See `WebSocketFactory` + the 4b
       // tests for how this gets exercised (mock-socket hardcodes
@@ -633,6 +793,11 @@ export class DeepgramService {
       const text = typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer);
       json = JSON.parse(text) as Record<string, unknown>;
     } catch {
+      return;
+    }
+
+    if (this.sttModel === 'flux') {
+      this.handleFluxMessage(json);
       return;
     }
 
@@ -706,5 +871,250 @@ export class DeepgramService {
       default:
       // Metadata + other housekeeping — ignored.
     }
+  }
+
+  /**
+   * Flux `/v2/listen` message dispatch. Ports iOS's Flux handler
+   * (`DeepgramService.swift` — Connected / ConfigureSuccess / ConfigureFailure
+   * / TurnInfo / Error). Maps Flux turn events onto the SAME delegate API as
+   * nova-3 so recording-context needs no Flux-awareness:
+   *   - TurnInfo/Update      → onInterimTranscript
+   *   - TurnInfo/StartOfTurn → onSpeechStarted
+   *   - TurnInfo/EndOfTurn (transcript)  → onFinalTranscript
+   *   - TurnInfo/EndOfTurn (empty)       → onUtteranceEnd (silence-driven close)
+   *
+   * "Dispatch ALL message types" (2026-05-15 mistake): Error AND
+   * ConfigureFailure are surfaced, never silently dropped.
+   */
+  private handleFluxMessage(json: Record<string, unknown>): void {
+    const type = json.type as string | undefined;
+    switch (type) {
+      case 'Connected': {
+        pipelineLog('deepgram_flux_connected', {
+          requestId: (json.request_id as string | undefined) ?? '?',
+        });
+        break;
+      }
+      case 'ConfigureSuccess':
+        this.resolveConfigure(json, /*success*/ true);
+        break;
+      case 'ConfigureFailure':
+        this.resolveConfigure(json, /*success*/ false);
+        break;
+      case 'TurnInfo':
+        this.handleFluxTurnInfo(json);
+        break;
+      case 'Error': {
+        // Surface — never drop. Flux fatal errors arrive as {type:'Error'|'Fatal'}.
+        const msg =
+          (json.description as string | undefined) ??
+          (json.message as string | undefined) ??
+          'Unknown Deepgram Flux error';
+        pipelineLog('deepgram_flux_error', {
+          messagePreview: msg.slice(0, 80),
+        });
+        this.callbacks.onError?.(new Error(msg));
+        break;
+      }
+      case 'Fatal': {
+        const msg =
+          (json.description as string | undefined) ??
+          (json.message as string | undefined) ??
+          'Deepgram Flux fatal';
+        pipelineLog('deepgram_flux_fatal', { messagePreview: msg.slice(0, 80) });
+        this.callbacks.onError?.(new Error(msg));
+        break;
+      }
+      default:
+      // Metadata / housekeeping — ignored.
+    }
+  }
+
+  /**
+   * Flux `TurnInfo` handler — the `event` discriminator carries the turn
+   * sub-type. Ports iOS `handleFluxTurnInfo`. EagerEndOfTurn is ignored
+   * (eager mode disabled — no `eager_eot_threshold` in the URL), matching iOS.
+   */
+  private handleFluxTurnInfo(json: Record<string, unknown>): void {
+    const event = json.event as string | undefined;
+    if (!event) return;
+    const transcript = (json.transcript as string | undefined) ?? '';
+    const confidence = (json.end_of_turn_confidence as number | undefined) ?? 0;
+
+    switch (event) {
+      case 'Update': {
+        if (!transcript) return;
+        pipelineLog('deepgram_interim', {
+          textLength: transcript.length,
+          confidence: Math.round(confidence * 1000) / 1000,
+        });
+        this.callbacks.onInterimTranscript(transcript, confidence);
+        break;
+      }
+      case 'StartOfTurn':
+        pipelineLog('deepgram_speech_started', {});
+        this.callbacks.onSpeechStarted?.();
+        break;
+      case 'EndOfTurn': {
+        if (!transcript) {
+          // Pure silence-driven turn close (Flux fires this every
+          // eot_timeout_ms of silence). Map to utterance-end for the sleep
+          // state machine; do NOT fire a final. Matches iOS.
+          pipelineLog('deepgram_utterance_end', {});
+          this.callbacks.onUtteranceEnd?.();
+          return;
+        }
+        // Flux EndOfTurn is the trusted turn-end signal (no nova-3-style
+        // speech_final gating). Build word timings from Flux's word array.
+        const words: DeepgramWord[] = [];
+        const rawWords = json.words as Array<Record<string, unknown>> | undefined;
+        if (rawWords) {
+          for (const w of rawWords) {
+            if (
+              typeof w.word === 'string' &&
+              typeof w.start === 'number' &&
+              typeof w.end === 'number' &&
+              typeof w.confidence === 'number'
+            ) {
+              words.push({
+                word: w.word,
+                start: w.start,
+                end: w.end,
+                confidence: w.confidence,
+                punctuated_word: w.punctuated_word as string | undefined,
+              });
+            }
+          }
+        }
+        pipelineLog('deepgram_final', {
+          textLength: transcript.length,
+          textPreview: transcript.slice(0, 40),
+          confidence: Math.round(confidence * 1000) / 1000,
+          wordCount: words.length,
+        });
+        this.callbacks.onFinalTranscript(transcript, confidence, words);
+        break;
+      }
+      case 'EagerEndOfTurn':
+        // Eager mode disabled in v1 — log defensively, take no action.
+        pipelineLog('deepgram_flux_eager_eot_ignored', {});
+        break;
+      case 'TurnResumed':
+        pipelineLog('deepgram_flux_turn_resumed', {});
+        break;
+      default:
+      // Unknown event — ignore.
+    }
+  }
+
+  /**
+   * Send a Flux `Configure` control message and await its echo. Ports iOS
+   * `sendConfigureMessage` echo-validation: `.ok` only if ConfigureSuccess
+   * arrives within `timeoutMs` AND the echoed thresholds + keyterm count match
+   * the request; ConfigureFailure or a mismatch or a timeout → `.ok:false`.
+   * Also fires `onConfigureResult` (so the caller can log Configure success +
+   * RTT — parent WS4 acceptance — and fail closed on failure).
+   *
+   * No-op-with-failure on the nova-3 path or when not connected. Used by the
+   * focused-answer keyterm-narrowing path (equal-weight keyterms, plain
+   * thresholds — the 2026-05-29 tightening rollback is canon).
+   */
+  sendConfigure(opts: {
+    keyterms: string[];
+    eotThreshold?: number;
+    eotTimeoutMs?: number;
+    timeoutMs?: number;
+  }): Promise<ConfigureResult> {
+    const eotThreshold = opts.eotThreshold ?? 0.7;
+    const eotTimeoutMs = opts.eotTimeoutMs ?? 5000;
+    const timeoutMs = opts.timeoutMs ?? 500;
+    if (this.sttModel !== 'flux') {
+      const r: ConfigureResult = { ok: false, reason: 'not_flux', rttMs: 0 };
+      return Promise.resolve(r);
+    }
+    if (!this.ws || this.state !== 'connected') {
+      const r: ConfigureResult = { ok: false, reason: 'not_connected', rttMs: 0 };
+      return Promise.resolve(r);
+    }
+    // Only one Configure in flight — settle any prior as superseded.
+    if (this.pendingConfigure) {
+      clearTimeout(this.pendingConfigure.timer);
+      this.pendingConfigure.resolve({ ok: false, reason: 'superseded', rttMs: 0 });
+      this.pendingConfigure = null;
+    }
+    const message = {
+      type: 'Configure',
+      thresholds: { eot_threshold: eotThreshold, eot_timeout_ms: eotTimeoutMs },
+      keyterms: opts.keyterms,
+    };
+    const sentAtMs = performance.now();
+    return new Promise<ConfigureResult>((resolve) => {
+      const settle = (r: ConfigureResult) => {
+        if (this.pendingConfigure?.timer) clearTimeout(this.pendingConfigure.timer);
+        this.pendingConfigure = null;
+        this.callbacks.onConfigureResult?.(r);
+        resolve(r);
+      };
+      const timer = setTimeout(() => {
+        settle({ ok: false, reason: 'timeout', rttMs: Math.round(performance.now() - sentAtMs) });
+      }, timeoutMs);
+      this.pendingConfigure = {
+        sentAtMs,
+        expectedKeytermCount: opts.keyterms.length,
+        eotThreshold,
+        eotTimeoutMs,
+        resolve: settle,
+        timer,
+      };
+      try {
+        this.ws!.send(JSON.stringify(message));
+        pipelineLog('deepgram_flux_configure_sent', { keytermCount: opts.keyterms.length });
+      } catch (err) {
+        settle({ ok: false, reason: 'send_failed:' + String(err), rttMs: 0 });
+      }
+    });
+  }
+
+  /**
+   * Resolve the pending Configure round-trip against a ConfigureSuccess /
+   * ConfigureFailure message. On success, validate the echo (thresholds +
+   * keyterm count) — a mismatch is treated as failure (fail closed), matching
+   * iOS's echo-parity check.
+   */
+  private resolveConfigure(json: Record<string, unknown>, success: boolean): void {
+    const pending = this.pendingConfigure;
+    if (!pending) {
+      // Unsolicited ack (e.g. Flux's initial config ack) — nothing to resolve.
+      pipelineLog('deepgram_flux_configure_unsolicited', { success });
+      return;
+    }
+    const rttMs = Math.round(performance.now() - pending.sentAtMs);
+    if (!success) {
+      const reason =
+        (json.description as string | undefined) ??
+        (json.message as string | undefined) ??
+        'configure_failure';
+      pending.resolve({ ok: false, reason, rttMs });
+      return;
+    }
+    // Validate the echo. Flux echoes the applied `thresholds` + `keyterms`.
+    const thresholds = json.thresholds as Record<string, unknown> | undefined;
+    const echoedEot = thresholds?.eot_threshold as number | undefined;
+    const echoedTimeoutRaw = thresholds?.eot_timeout_ms;
+    const echoedTimeout = typeof echoedTimeoutRaw === 'number' ? echoedTimeoutRaw : undefined;
+    const echoedKeyterms = json.keyterms as unknown[] | undefined;
+    if (echoedEot !== undefined && Math.abs(echoedEot - pending.eotThreshold) > 1e-6) {
+      pending.resolve({ ok: false, reason: 'echo_eot_threshold', rttMs });
+      return;
+    }
+    if (echoedTimeout !== undefined && echoedTimeout !== pending.eotTimeoutMs) {
+      pending.resolve({ ok: false, reason: 'echo_eot_timeout_ms', rttMs });
+      return;
+    }
+    if (Array.isArray(echoedKeyterms) && echoedKeyterms.length !== pending.expectedKeytermCount) {
+      pending.resolve({ ok: false, reason: 'echo_keyterm_count', rttMs });
+      return;
+    }
+    pending.resolve({ ok: true, rttMs });
   }
 }

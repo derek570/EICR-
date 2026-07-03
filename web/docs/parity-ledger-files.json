@@ -250,6 +250,9 @@
     "supply/supplytab-93",
     "supply/surge-namespace"
   ],
+  "web/src/app/runtime-config/route.ts": [
+    "recording/flux-kill-switch"
+  ],
   "web/src/app/settings/admin/users/[userId]/page.tsx": [
     "settings-admin/adminedituserview-1"
   ],
@@ -289,6 +292,9 @@
   "web/src/app/settings/staff/page.tsx": [
     "dashboard/dashboardview-602",
     "settings-staff/inspectorlistview"
+  ],
+  "web/src/app/sw.ts": [
+    "recording/flux-kill-switch"
   ],
   "web/src/app/terms/page.tsx": [
     "crosscutting/terms-signature-port"
@@ -512,6 +518,8 @@
   "web/src/lib/recording-context.tsx": [
     "observations/obs-photo-autolink",
     "recording/fast-path-tts",
+    "recording/flux-kill-switch",
+    "recording/flux-migration",
     "recording/readback-dedup-rekey",
     "recording/transcript-gate",
     "recording/voice-command-executor-e-g-move"
@@ -534,6 +542,7 @@
     "recording/readback-dedup-rekey"
   ],
   "web/src/lib/recording/deepgram-service.ts": [
+    "recording/flux-kill-switch",
     "recording/flux-migration"
   ],
   "web/src/lib/recording/elevenlabs-tts.ts": [
@@ -541,6 +550,9 @@
   ],
   "web/src/lib/recording/in-flight-question.ts": [
     "recording/transcript-gate"
+  ],
+  "web/src/lib/recording/keyword-boosts.ts": [
+    "recording/flux-migration"
   ],
   "web/src/lib/recording/observation-photo.ts": [
     "observations/obs-photo-autolink"
@@ -561,6 +573,9 @@
     "recording/readback-dedup-rekey",
     "recording/recordingoverlay-47",
     "recording/tts-fifo"
+  ],
+  "web/src/lib/runtime-config.ts": [
+    "recording/flux-kill-switch"
   ],
   "web/src/lib/tour/state.ts": [
     "dashboard/certmateapp"

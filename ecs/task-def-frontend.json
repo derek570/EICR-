@@ -27,7 +27,8 @@
       "environment": [
         { "name": "AWS_REGION",   "value": "eu-west-2" },
         { "name": "NODE_ENV",     "value": "production" },
-        { "name": "BACKEND_URL",  "value": "https://api.certmate.uk" }
+        { "name": "BACKEND_URL",  "value": "https://api.certmate.uk" },
+        { "name": "DEEPGRAM_STT_MODEL", "value": "nova3" }
       ],
       "secrets": [
         {
