@@ -11,6 +11,7 @@ import {
 import { DASHBOARD_TOUR_STEPS, DASHBOARD_TOUR_TOTAL, type TourStep } from '@/lib/tour/steps';
 import { playSentForProcessingChime } from '@/lib/recording/tones';
 import { speak as speakNarration, isTtsAvailable, cancelSpeech } from '@/lib/recording/tts';
+import { playTourAudio, cancelTourAudio } from '@/lib/tour/tour-audio';
 
 /**
  * Inter-step delay matching iOS `TourManager.interStepDelay`. The
@@ -229,18 +230,21 @@ export function useTour(options: UseTourOptions = {}): TourController {
     // paused / step changes. The new effect body re-arms based on the
     // current step.
     cancelSpeech();
+    cancelTourAudio();
     clearAdvance();
     if (!narrate || !active || paused || !currentStep) return;
     const text = currentStep.narration ?? currentStep.body;
     if (!text) return;
 
-    const onSpeechDone = () => {
+    const onSpeechDone = (chimeEmbedded = false) => {
       // WS6 (tour v11): the "conversational + tone" step plays the
       // real 960 Hz "sent for processing" chime right after its
       // narration — the inspector hears the exact sound the step just
-      // described. iOS splices it into the bundled MP3; web appends it
-      // because SpeechSynthesis can't splice mid-utterance.
-      if (currentStep.chime) playSentForProcessingChime();
+      // described. iOS splices the chime INTO the bundled MP3, so on the
+      // pre-recorded path (`chimeEmbedded`) it's ALREADY in the audio and
+      // must NOT be replayed. The Web Speech fallback can't splice
+      // mid-utterance, so it appends the chime here instead.
+      if (currentStep.chime && !chimeEmbedded) playSentForProcessingChime();
       // Re-check inside the timer that the tour is still on this
       // step before auto-advancing — paused / nexted / stopped during
       // speech all need to short-circuit.
@@ -259,17 +263,38 @@ export function useTour(options: UseTourOptions = {}): TourController {
       }, INTER_STEP_DELAY_MS);
     };
 
-    if (isTtsAvailable()) {
-      speakNarration(text, { force: true, onEnd: onSpeechDone });
+    // Live-TTS fallback — the Archer-voice MP3 is a strict upgrade, but
+    // when it can't play (autoplay-blocked first-run auto-start, missing
+    // asset, jsdom) we degrade to exactly the pre-existing behaviour:
+    // Web Speech narration, or a read-time estimate timer if even that's
+    // unavailable. The chime (step 6) is NOT embedded on these paths, so
+    // onSpeechDone appends it.
+    const fallbackNarrate = () => {
+      if (isTtsAvailable()) {
+        speakNarration(text, { force: true, onEnd: () => onSpeechDone(false) });
+      } else {
+        // Estimate read time: ~14 chars/sec. Cap at 14s so a
+        // verbose step doesn't keep the user waiting forever.
+        const estMs = Math.min(14_000, Math.max(2_500, text.length * 70));
+        advanceTimerRef.current = setTimeout(() => onSpeechDone(false), estMs);
+      }
+    };
+
+    if (typeof currentStep.audioStep === 'number') {
+      // Pre-recorded Archer-voice narration (iOS-parity, zero ElevenLabs
+      // runtime cost). Chime for step 6 is embedded in the MP3 → pass
+      // chimeEmbedded=true so it isn't played twice.
+      playTourAudio(currentStep.audioStep, {
+        onEnd: () => onSpeechDone(true),
+        onError: fallbackNarrate,
+      });
     } else {
-      // Estimate read time: ~14 chars/sec. Cap at 14s so a
-      // verbose step doesn't keep the user waiting forever.
-      const estMs = Math.min(14_000, Math.max(2_500, text.length * 70));
-      advanceTimerRef.current = setTimeout(onSpeechDone, estMs);
+      fallbackNarrate();
     }
 
     return () => {
       cancelSpeech();
+      cancelTourAudio();
       clearAdvance();
     };
   }, [narrate, active, paused, currentStep, steps.length, writePersisted, clearAdvance]);

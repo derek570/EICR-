@@ -42,6 +42,15 @@ export type TourPlacement = 'top' | 'bottom' | 'left' | 'right' | 'center';
 
 export interface TourStep {
   id: string;
+  /**
+   * 1-based index of the bundled narration MP3 at
+   * `/public/tour-audio/tour_step_<n>.mp3`, matching iOS `tour_step_<n>`
+   * (dashboard steps 1-2, job steps 3-11). When set, the tour plays the
+   * pre-recorded Archer-voice audio (ElevenLabs `eleven_v3`, baked once)
+   * instead of synthesising live — zero runtime TTS cost. Falls back to
+   * Web Speech if the MP3 can't load/play.
+   */
+  audioStep?: number;
   selector: string | null;
   title: string;
   body: string;
@@ -72,6 +81,7 @@ export interface TourStep {
 export const DASHBOARD_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   {
     id: 'home',
+    audioStep: 1,
     selector: '[data-tour="hero"]',
     title: 'Welcome to CertMate',
     body: 'This is the home screen — start a new job, find past jobs, or open Defaults / Company / Staff to set up your account.',
@@ -81,6 +91,7 @@ export const DASHBOARD_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   },
   {
     id: 'defaults',
+    audioStep: 2,
     selector: '[data-tour="setup-tools"]',
     title: 'Set up your defaults',
     body: 'Set the values that stay the same across most inspections — plus standard default cable sizes per circuit type — so they auto-fill on every new certificate.',
@@ -101,6 +112,7 @@ export const DASHBOARD_TOUR_STEPS: readonly TourStep[] = Object.freeze([
 export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   {
     id: 'job-overview',
+    audioStep: 3,
     selector: '[data-tour="transcript-bar"]',
     title: 'Getting started',
     body: 'Most screens work best in landscape. Talk naturally and the form fills in. The transcript bar at the top shows what you said, live.',
@@ -111,6 +123,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   },
   {
     id: 'job-ccu',
+    audioStep: 4,
     selector: '[data-tour="ccu-button"]',
     title: 'Take a CCU photo first',
     body: 'Tap the orange CCU button to photograph the consumer unit before recording — circuits and BS numbers get captured automatically. RCD types may need clarification.',
@@ -121,6 +134,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   },
   {
     id: 'job-readings',
+    audioStep: 5,
     selector: '[data-tour="circuits-table"]',
     title: 'How to give readings',
     body: 'Say which circuit and which test, then the value. e.g. "Circuit four, insulation resistance, live to earth, greater than 999 megaohms." AirPods help.',
@@ -135,6 +149,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
     // chime flag plays the real 960 Hz / 80 ms sound after narration
     // (iOS splices it into the bundled MP3; see playSentForProcessingChime in lib/recording/tones.ts).
     id: 'job-tone',
+    audioStep: 6,
     selector: '[data-tour="transcript-bar"]',
     title: 'Conversational — listen for the tone',
     body: 'Every reading is read back to you automatically. A short tone after you speak means it was sent for processing — no tone means nothing was sent, so say it again.',
@@ -146,6 +161,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   },
   {
     id: 'job-multi',
+    audioStep: 7,
     selector: '[data-tour="circuits-table"]',
     title: 'Multi-circuit shortcut',
     body: 'Apply the same value across many circuits in one phrase: "RCD trip time for circuits one to five is 25 milliseconds."',
@@ -159,6 +175,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
     // button to read back confirmations" line was dropped — read-backs
     // are automatic now (Audio-First invariant 1). Observations only.
     id: 'job-observations',
+    audioStep: 8,
     selector: '[data-tour="voice-button"]',
     title: 'Observations',
     body: 'Say "observation" to log a finding — code, regulation, and schedule item are filled in automatically. Edit them any time in the Observations tab.',
@@ -169,6 +186,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   },
   {
     id: 'job-obs-photo',
+    audioStep: 9,
     selector: '[data-tour="obs-button"]',
     title: 'Photos for observations',
     body: 'Tap Obs to attach a photo to your last spoken observation (within ~1 minute). Always check readings before sending — I can make mistakes.',
@@ -179,6 +197,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   },
   {
     id: 'job-queries',
+    audioStep: 10,
     selector: '[data-tour="transcript-bar"]',
     title: 'Voice queries & commands',
     body: 'Ask "what\'s the Zs for circuit three?" or say "move circuits 7 and 8 to positions 2 and 3" or "calculate Zs for all circuits" — I\'ll handle it hands-free.',
@@ -189,6 +208,7 @@ export const JOB_TOUR_STEPS: readonly TourStep[] = Object.freeze([
   },
   {
     id: 'job-pdf',
+    audioStep: 11,
     selector: '[data-tour="generate-pdf"]',
     title: 'Generate the certificate',
     body: 'Preview and generate the PDF here. Always check it thoroughly before sending. Tour complete — you can replay it any time from Dashboard or /settings/about.',
