@@ -322,7 +322,8 @@
   "web/src/components/job/circuits-sticky-table.tsx": [
     "circuits-col/constants-209",
     "circuits-col/constants-210",
-    "circuits-misc/circuitstab-565"
+    "circuits-misc/circuitstab-565",
+    "crosscutting/keyboard-accessory-bar"
   ],
   "web/src/components/job/floating-action-bar.tsx": [
     "crosscutting/floating-mic-fab-when-idle"
@@ -334,7 +335,8 @@
   "web/src/components/job/job-tab-nav.tsx": [
     "crosscutting/job-tab-nav-pill-bar",
     "crosscutting/tab-rail-form",
-    "overview/ios-tab-model-one-tab"
+    "overview/ios-tab-model-one-tab",
+    "crosscutting/uiimpactfeedbackgenerator"
   ],
   "web/src/components/job/pending-ccu-banner.tsx": [
     "ccu-flow/circuitstab-272",
@@ -345,7 +347,8 @@
     "crosscutting/pwa-nav-transitions",
     "crosscutting/splash-continuity",
     "crosscutting/tab-bar-sidebar-navigation",
-    "dashboard/dashboardview-201"
+    "dashboard/dashboardview-201",
+    "crosscutting/pwa-chrome-suppressions"
   ],
   "web/src/components/live-fill/live-field.tsx": [
     "crosscutting/dataarrivalflash"
@@ -410,7 +413,8 @@
   ],
   "web/src/components/settings/signature-canvas.tsx": [
     "crosscutting/signaturecaptureview",
-    "settings-staff/signaturecaptureview"
+    "settings-staff/signaturecaptureview",
+    "crosscutting/terms-signature-port"
   ],
   "web/src/components/tour/tour-overlay.tsx": [
     "dashboard/touroverlayview-13"
@@ -522,7 +526,8 @@
     "recording/flux-migration",
     "recording/readback-dedup-rekey",
     "recording/transcript-gate",
-    "recording/voice-command-executor-e-g-move"
+    "recording/voice-command-executor-e-g-move",
+    "crosscutting/uiimpactfeedbackgenerator"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
@@ -604,5 +609,23 @@
   ],
   "web/tests/pwa-pending-photo-store.test.ts": [
     "observations/obs-photo-autolink"
+  ],
+  "web/src/components/job/circuits-schedule-desktop.tsx": [
+    "crosscutting/keyboard-accessory-bar"
+  ],
+  "web/src/components/job/circuit-keyboard-accessory.tsx": [
+    "crosscutting/keyboard-accessory-bar"
+  ],
+  "web/src/components/job/circuit-focus-fields.ts": [
+    "crosscutting/keyboard-accessory-bar"
+  ],
+  "web/src/app/terms/legal-texts-gate.ts": [
+    "crosscutting/terms-signature-port"
+  ],
+  "web/src/components/brand/branded-splash.tsx": [
+    "crosscutting/splash-continuity"
+  ],
+  "web/src/app/loading.tsx": [
+    "crosscutting/splash-continuity"
   ]
 }
