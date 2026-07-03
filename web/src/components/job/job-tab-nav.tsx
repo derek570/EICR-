@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useJobContext } from '@/lib/job-context';
+import { haptic } from '@/lib/haptic';
 
 /**
  * Job tab navigation — horizontal strip, iOS-style.
@@ -174,6 +175,14 @@ export function JobTabNav({ jobId }: { jobId: string }) {
             key={tab.slug || 'overview'}
             href={href}
             aria-current={isActive ? 'page' : undefined}
+            // WS7 haptic parity: iOS fires a light UIImpactFeedbackGenerator
+            // on EVERY job tab-rail tap (JobDetailView.swift:190). Feature-
+            // detected no-op off Android/Chromium; iPhone Safari has no
+            // Vibration API (accepted divergence, parent §6.4). NOTE: this is
+            // the ONLY app-level tab haptic — AppTabBar.swift is legacy
+            // ("tab bar removed", MainTabView renders DashboardView directly)
+            // and the web AppShell has no bottom-nav, so no app-shell haptic.
+            onClick={() => haptic('light')}
             className={cn(
               'relative flex min-h-[44px] flex-shrink-0 flex-col items-center justify-center gap-1 whitespace-nowrap px-3 pb-2 pt-2.5 text-[12px] transition',
               isActive ? 'font-bold text-white' : 'font-medium text-white/45 hover:text-white/70'
