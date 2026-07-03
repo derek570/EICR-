@@ -59,10 +59,28 @@ export interface SignatureCanvasProps {
    */
   initialSignatureFile?: string | null;
   height?: number;
+  /**
+   * Optional caption shown under the canvas in place of the default
+   * "Draw your signature above…" hint. Used by the T&Cs gate to explain
+   * the acceptance signature (WS7).
+   */
+  helperText?: string;
+  /**
+   * Fired whenever the canvas transitions between "has content" and
+   * "empty": `true` after a background signature loads or a stroke is
+   * committed on pointer-up; `false` from either clear path (the visible
+   * Clear button and the imperative `clear()` handle). The T&Cs gate uses
+   * this to enable/disable its Accept button without polling
+   * `hasContent()` (WS7).
+   */
+  onContentChange?: (hasContent: boolean) => void;
 }
 
 export const SignatureCanvas = React.forwardRef<SignatureCanvasHandle, SignatureCanvasProps>(
-  function SignatureCanvas({ userId, initialSignatureFile, height = 180 }, ref) {
+  function SignatureCanvas(
+    { userId, initialSignatureFile, height = 180, helperText, onContentChange },
+    ref
+  ) {
     const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
     const linesRef = React.useRef<Point[][]>([]);
     const currentLineRef = React.useRef<Point[]>([]);
@@ -70,6 +88,15 @@ export const SignatureCanvas = React.forwardRef<SignatureCanvasHandle, Signature
     const [hasStrokes, setHasStrokes] = React.useState(false);
     const [hasBackground, setHasBackground] = React.useState(false);
     const [loadError, setLoadError] = React.useState<string | null>(null);
+
+    // Keep the latest onContentChange in a ref so the fire sites (load
+    // effect, pointer-up, clear) don't need it in their dependency arrays
+    // — a parent passing an inline callback would otherwise re-run the
+    // background-load effect on every render.
+    const onContentChangeRef = React.useRef(onContentChange);
+    React.useEffect(() => {
+      onContentChangeRef.current = onContentChange;
+    }, [onContentChange]);
 
     // --- Draw ---------------------------------------------------------------
     const drawLine = React.useCallback((ctx: CanvasRenderingContext2D, points: Point[]) => {
@@ -129,6 +156,19 @@ export const SignatureCanvas = React.forwardRef<SignatureCanvasHandle, Signature
       if (currentLineRef.current.length > 0) drawLine(ctx, currentLineRef.current);
     }, [drawLine]);
 
+    // Shared clear — used by BOTH the visible Clear button and the
+    // imperative clear() handle so the onContentChange(false) signal can
+    // never drift between the two paths (WS7 contract).
+    const clearAll = React.useCallback(() => {
+      linesRef.current = [];
+      currentLineRef.current = [];
+      backgroundImgRef.current = null;
+      setHasStrokes(false);
+      setHasBackground(false);
+      onContentChangeRef.current?.(false);
+      redraw();
+    }, [redraw]);
+
     // --- Canvas sizing (handle DPR for crispness on retina) ---------------
     const resize = React.useCallback(() => {
       const canvas = canvasRef.current;
@@ -164,6 +204,7 @@ export const SignatureCanvas = React.forwardRef<SignatureCanvasHandle, Signature
             if (cancelled) return;
             backgroundImgRef.current = img;
             setHasBackground(true);
+            onContentChangeRef.current?.(true);
             redraw();
           };
           img.onerror = () => setLoadError('Failed to render saved signature');
@@ -209,6 +250,7 @@ export const SignatureCanvas = React.forwardRef<SignatureCanvasHandle, Signature
         linesRef.current.push(currentLineRef.current);
         currentLineRef.current = [];
         setHasStrokes(true);
+        onContentChangeRef.current?.(true);
       }
       redraw();
     };
@@ -226,18 +268,13 @@ export const SignatureCanvas = React.forwardRef<SignatureCanvasHandle, Signature
           });
         },
         clear() {
-          linesRef.current = [];
-          currentLineRef.current = [];
-          backgroundImgRef.current = null;
-          setHasStrokes(false);
-          setHasBackground(false);
-          redraw();
+          clearAll();
         },
         hasContent() {
           return hasStrokes || hasBackground;
         },
       }),
-      [hasStrokes, hasBackground, redraw]
+      [hasStrokes, hasBackground, clearAll]
     );
 
     const hasAny = hasStrokes || hasBackground;
@@ -270,23 +307,12 @@ export const SignatureCanvas = React.forwardRef<SignatureCanvasHandle, Signature
             <span className="text-[var(--color-status-failed)]">{loadError}</span>
           ) : (
             <span className="text-[var(--color-text-tertiary)]">
-              Draw your signature above — it will be saved when you save the profile.
+              {helperText ??
+                'Draw your signature above — it will be saved when you save the profile.'}
             </span>
           )}
           {hasAny ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                linesRef.current = [];
-                currentLineRef.current = [];
-                backgroundImgRef.current = null;
-                setHasStrokes(false);
-                setHasBackground(false);
-                redraw();
-              }}
-            >
+            <Button type="button" variant="ghost" size="sm" onClick={clearAll}>
               Clear
             </Button>
           ) : null}

@@ -43,8 +43,12 @@ describe('T&Cs gate helpers', () => {
       accepted: 'termsAccepted',
       version: 'termsAcceptedVersion',
       date: 'termsAcceptedDate',
+      // WS7 — the acceptance signature (iOS UserDefaults key).
+      signature: 'termsAcceptanceSignature',
     });
   });
+
+  const SIG = 'data:image/png;base64,iVBORw0KGgoAAAANS';
 
   describe('hasAcceptedCurrentTerms', () => {
     it('returns false on a fresh device (no flags set)', () => {
@@ -90,43 +94,83 @@ describe('T&Cs gate helpers', () => {
   });
 
   describe('recordTermsAcceptance', () => {
-    it('writes the three iOS-parity keys atomically', () => {
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date('2026-04-25T12:34:56.000Z'));
-      recordTermsAcceptance();
-      expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.accepted)).toBe('true');
-      expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.version)).toBe(TERMS_VERSION);
-      expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.date)).toBe('2026-04-25T12:34:56.000Z');
+    it('writes the four iOS-parity keys and returns true, with the signature FIRST', () => {
+      // Capture write ORDER — the signature must persist before the
+      // accepted/version flags so a later throw can never leave
+      // termsAccepted=true without a signature on file.
+      const order: string[] = [];
+      const realSet = window.localStorage.setItem.bind(window.localStorage);
+      window.localStorage.setItem = (k: string, v: string) => {
+        order.push(k);
+        realSet(k, v);
+      };
+      try {
+        const ok = recordTermsAcceptance({
+          signatureDataUrl: SIG,
+          now: new Date('2026-04-25T12:34:56.000Z'),
+        });
+        expect(ok).toBe(true);
+        expect(order[0]).toBe(TERMS_STORAGE_KEYS.signature);
+        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.signature)).toBe(SIG);
+        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.accepted)).toBe('true');
+        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.version)).toBe(TERMS_VERSION);
+        expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.date)).toBe(
+          '2026-04-25T12:34:56.000Z'
+        );
+      } finally {
+        window.localStorage.setItem = realSet;
+      }
     });
 
     it('flips hasAcceptedCurrentTerms() to true', () => {
       expect(hasAcceptedCurrentTerms()).toBe(false);
-      recordTermsAcceptance();
+      expect(recordTermsAcceptance({ signatureDataUrl: SIG })).toBe(true);
       expect(hasAcceptedCurrentTerms()).toBe(true);
     });
 
     it('uses the supplied Date when given (deterministic test seam)', () => {
       const fixed = new Date('2026-01-01T00:00:00.000Z');
-      recordTermsAcceptance(fixed);
+      recordTermsAcceptance({ signatureDataUrl: SIG, now: fixed });
       expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.date)).toBe(fixed.toISOString());
     });
 
-    it('silently no-ops if localStorage.setItem throws', () => {
-      const realSet = window.localStorage.setItem;
-      // Same pattern as the getter override above — writable own
-      // property in jsdom; no @ts-expect-error needed.
+    it('on a setItem throw: leaves NO terms keys and returns false (all-or-nothing)', () => {
+      // Pre-seed a stale value to prove the rollback clears everything,
+      // not just the keys this call wrote.
+      window.localStorage.setItem(TERMS_STORAGE_KEYS.accepted, 'stale');
+      const realSet = window.localStorage.setItem.bind(window.localStorage);
+      // Throw on the FIRST write (the signature) — the largest, likeliest
+      // thrower — so accepted/version/date never get written.
       window.localStorage.setItem = () => {
         throw new Error('QuotaExceededError');
       };
       try {
-        // The intent is "doesn't throw"; absence of an exception is
-        // the assertion. We don't care about post-conditions here
-        // because the page's own redirect runs regardless — the gate
-        // will simply re-prompt next mount, which is the documented
-        // graceful-degrade path.
-        expect(() => recordTermsAcceptance()).not.toThrow();
+        const ok = recordTermsAcceptance({ signatureDataUrl: SIG });
+        expect(ok).toBe(false);
       } finally {
         window.localStorage.setItem = realSet;
+      }
+      // Every terms key removed — no soft-bypass residue.
+      for (const key of Object.values(TERMS_STORAGE_KEYS)) {
+        expect(window.localStorage.getItem(key)).toBeNull();
+      }
+      expect(hasAcceptedCurrentTerms()).toBe(false);
+    });
+
+    it('does not throw even if setItem AND removeItem both throw', () => {
+      const realSet = window.localStorage.setItem.bind(window.localStorage);
+      const realRemove = window.localStorage.removeItem.bind(window.localStorage);
+      window.localStorage.setItem = () => {
+        throw new Error('QuotaExceededError');
+      };
+      window.localStorage.removeItem = () => {
+        throw new Error('SecurityError');
+      };
+      try {
+        expect(recordTermsAcceptance({ signatureDataUrl: SIG })).toBe(false);
+      } finally {
+        window.localStorage.setItem = realSet;
+        window.localStorage.removeItem = realRemove;
       }
     });
   });
