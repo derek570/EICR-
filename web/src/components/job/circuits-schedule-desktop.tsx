@@ -33,8 +33,25 @@ import {
   type CircuitFieldKey,
 } from '@/lib/constants/circuit-field-options';
 import { applyDefaultsToCircuit } from '@certmate/shared-utils';
+import { orderCircuitFocusFields } from './circuit-focus-fields';
+import { useCircuitAccessoryController } from './circuit-keyboard-accessory';
 
 type CircuitLike = { id: string; [key: string]: unknown };
+
+/**
+ * WS7 keyboard-accessory glue for the desktop schedule — threads the
+ * shared controller's ref registration + focus/blur handlers to each
+ * text `CellInput` (the `options` popover cells summon no keyboard, so
+ * they don't register). No-ops when the provider is absent.
+ */
+interface DesktopAccessoryContextValue {
+  registerRef: (circuitId: string, fieldKey: string, el: HTMLInputElement | null) => void;
+  inputHandlers: (
+    circuitId: string,
+    fieldKey: string
+  ) => { onFocus: () => void; onBlur: () => void };
+}
+const DesktopAccessoryContext = React.createContext<DesktopAccessoryContextValue | null>(null);
 
 interface ColumnSpec {
   key: string;
@@ -118,12 +135,62 @@ export interface CircuitsScheduleDesktopProps {
   onRemove: (id: string) => void;
 }
 
+// Keyboard-input field keys this surface renders: ref/designation plus
+// every column that is NOT an options-popover cell (those show a dropdown
+// button, no soft keyboard). Ordered by the shared canonical order.
+const DESKTOP_KEYBOARD_FIELDS = orderCircuitFocusFields([
+  'circuit_ref',
+  'circuit_designation',
+  ...COLUMNS.filter((c) => !(c.kind === 'options' && c.key in CIRCUIT_FIELD_OPTIONS)).map(
+    (c) => c.key
+  ),
+]);
+
 export function CircuitsScheduleDesktop({
   circuits,
   onPatch,
   onBulkPatch,
   onRemove,
 }: CircuitsScheduleDesktopProps) {
+  const circuitIds = React.useMemo(() => circuits.map((c) => c.id), [circuits]);
+  const inputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
+  const refKey = (circuitId: string, fieldKey: string) => `${circuitId}::${fieldKey}`;
+
+  const registerInputRef = React.useCallback(
+    (circuitId: string, fieldKey: string, el: HTMLInputElement | null) => {
+      const key = refKey(circuitId, fieldKey);
+      if (el) inputRefs.current.set(key, el);
+      else inputRefs.current.delete(key);
+    },
+    []
+  );
+
+  const focusField = React.useCallback((circuitId: string, fieldKey: string) => {
+    const el = inputRefs.current.get(refKey(circuitId, fieldKey));
+    if (el) {
+      el.focus();
+      el.select();
+    }
+  }, []);
+
+  const applyToken = React.useCallback(
+    (circuitId: string, fieldKey: string, token: string) => {
+      onPatch(circuitId, { [fieldKey]: token });
+    },
+    [onPatch]
+  );
+
+  const accessoryController = useCircuitAccessoryController({
+    circuitIds,
+    fieldOrder: DESKTOP_KEYBOARD_FIELDS,
+    applyToken,
+    focusField,
+  });
+
+  const accessoryCtx = React.useMemo<DesktopAccessoryContextValue>(
+    () => ({ registerRef: registerInputRef, inputHandlers: accessoryController.inputHandlers }),
+    [registerInputRef, accessoryController.inputHandlers]
+  );
   // Active inline popover: one cell at a time, keyed by `${rowId}::${colKey}`.
   const [activeCell, setActiveCell] = React.useState<string | null>(null);
   // Active header popover: column key for which the bulk-fill UI is open.
@@ -266,85 +333,88 @@ export function CircuitsScheduleDesktop({
   }, []);
 
   return (
-    <div
-      ref={containerRef}
-      className="relative w-full overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_2px_12px_rgba(0,0,0,0.18)]"
-      data-testid="circuits-schedule-desktop"
-    >
-      <table
-        className="w-max text-[13px] text-[var(--color-text-primary)]"
-        style={{ borderCollapse: 'separate', borderSpacing: 0 }}
+    <DesktopAccessoryContext.Provider value={accessoryCtx}>
+      <div
+        ref={containerRef}
+        className="relative w-full overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] shadow-[0_2px_12px_rgba(0,0,0,0.18)]"
+        data-testid="circuits-schedule-desktop"
       >
-        <thead>
-          <tr className="text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-secondary)]">
-            <th
-              className="sticky left-0 z-20 border-b border-r border-[var(--color-border-subtle)] px-3 py-3 text-left"
-              style={{
-                width: REF_WIDTH,
-                minWidth: REF_WIDTH,
-                background:
-                  'linear-gradient(180deg, color-mix(in srgb, var(--color-brand-blue) 14%, var(--color-surface-2)) 0%, var(--color-surface-2) 100%)',
-              }}
-              scope="col"
-            >
-              Ref
-            </th>
-            <th
-              className="sticky z-20 border-b border-r border-[var(--color-border-subtle)] px-3 py-3 text-left"
-              style={{
-                left: REF_WIDTH,
-                width: DESIGNATION_WIDTH,
-                minWidth: DESIGNATION_WIDTH,
-                background:
-                  'linear-gradient(180deg, color-mix(in srgb, var(--color-brand-blue) 14%, var(--color-surface-2)) 0%, var(--color-surface-2) 100%)',
-              }}
-              scope="col"
-            >
-              Designation
-            </th>
-            {COLUMNS.map((col) => (
-              <HeaderCell
-                key={col.key}
-                column={col}
-                isActive={activeHeader === col.key}
-                onToggle={() => {
-                  setActiveHeader((prev) => (prev === col.key ? null : col.key));
-                  setActiveCell(null);
+        <table
+          className="w-max text-[13px] text-[var(--color-text-primary)]"
+          style={{ borderCollapse: 'separate', borderSpacing: 0 }}
+        >
+          <thead>
+            <tr className="text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-secondary)]">
+              <th
+                className="sticky left-0 z-20 border-b border-r border-[var(--color-border-subtle)] px-3 py-3 text-left"
+                style={{
+                  width: REF_WIDTH,
+                  minWidth: REF_WIDTH,
+                  background:
+                    'linear-gradient(180deg, color-mix(in srgb, var(--color-brand-blue) 14%, var(--color-surface-2)) 0%, var(--color-surface-2) 100%)',
                 }}
-                onApply={(value, skipSpare) => {
-                  onBulkPatch(col.key, value, { skipSpare });
-                  setActiveHeader(null);
+                scope="col"
+              >
+                Ref
+              </th>
+              <th
+                className="sticky z-20 border-b border-r border-[var(--color-border-subtle)] px-3 py-3 text-left"
+                style={{
+                  left: REF_WIDTH,
+                  width: DESIGNATION_WIDTH,
+                  minWidth: DESIGNATION_WIDTH,
+                  background:
+                    'linear-gradient(180deg, color-mix(in srgb, var(--color-brand-blue) 14%, var(--color-surface-2)) 0%, var(--color-surface-2) 100%)',
                 }}
-                onClose={() => setActiveHeader(null)}
+                scope="col"
+              >
+                Designation
+              </th>
+              {COLUMNS.map((col) => (
+                <HeaderCell
+                  key={col.key}
+                  column={col}
+                  isActive={activeHeader === col.key}
+                  onToggle={() => {
+                    setActiveHeader((prev) => (prev === col.key ? null : col.key));
+                    setActiveCell(null);
+                  }}
+                  onApply={(value, skipSpare) => {
+                    onBulkPatch(col.key, value, { skipSpare });
+                    setActiveHeader(null);
+                  }}
+                  onClose={() => setActiveHeader(null)}
+                />
+              ))}
+              <th
+                className="border-b border-[var(--color-border-subtle)] px-2 py-3 text-right"
+                style={{ width: DELETE_WIDTH, minWidth: DELETE_WIDTH }}
+                scope="col"
+              >
+                <span className="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {circuits.map((c, idx) => (
+              <Row
+                key={c.id}
+                circuit={c}
+                rowIndex={idx}
+                onPatch={onPatch}
+                onRemove={onRemove}
+                activeCell={activeCell}
+                setActiveCell={setActiveCell}
+                flashed={flashed}
+                onDesignationChange={scheduleDesignationDefaults}
+                onDesignationBlur={flushDesignationDefaults}
               />
             ))}
-            <th
-              className="border-b border-[var(--color-border-subtle)] px-2 py-3 text-right"
-              style={{ width: DELETE_WIDTH, minWidth: DELETE_WIDTH }}
-              scope="col"
-            >
-              <span className="sr-only">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {circuits.map((c, idx) => (
-            <Row
-              key={c.id}
-              circuit={c}
-              rowIndex={idx}
-              onPatch={onPatch}
-              onRemove={onRemove}
-              activeCell={activeCell}
-              setActiveCell={setActiveCell}
-              flashed={flashed}
-              onDesignationChange={scheduleDesignationDefaults}
-              onDesignationBlur={flushDesignationDefaults}
-            />
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </tbody>
+        </table>
+      </div>
+      {accessoryController.accessory}
+    </DesktopAccessoryContext.Provider>
   );
 }
 
@@ -726,13 +796,22 @@ function CellInput({
 }) {
   const alignClass = align === 'center' ? 'text-center' : 'text-left';
   const weightClass = weight === 'semibold' ? 'font-semibold' : '';
+  const accessory = React.useContext(DesktopAccessoryContext);
+  const handlers = accessory?.inputHandlers(id, colKey);
   return (
     <input
       type="text"
       inputMode={inputMode}
+      ref={(el) => accessory?.registerRef(id, colKey, el)}
       value={value ?? ''}
       onChange={(e) => onPatch(id, { [colKey]: e.target.value })}
-      onBlur={onBlur}
+      onFocus={handlers?.onFocus}
+      onBlur={() => {
+        // Compose: the designation cell's debounced-defaults blur + the
+        // accessory's hide-deferral blur both need to run.
+        onBlur?.();
+        handlers?.onBlur();
+      }}
       aria-label={ariaLabel}
       className={`h-10 w-full rounded-[var(--radius-sm)] border border-transparent bg-transparent px-2 text-[13px] transition-colors duration-150 hover:border-[var(--color-border-subtle)] hover:bg-[var(--color-surface-2)] focus:border-[var(--color-brand-blue)] focus:bg-[var(--color-surface-2)] focus:shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-brand-blue)_25%,transparent)] focus:outline-none ${alignClass} ${weightClass}`}
     />

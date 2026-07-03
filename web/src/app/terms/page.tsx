@@ -10,6 +10,7 @@ import {
   FileText,
   Lock,
   ShieldCheck,
+  Signature,
   Square,
   CheckSquare,
   Sparkles,
@@ -19,6 +20,10 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
+import {
+  SignatureCanvas,
+  type SignatureCanvasHandle,
+} from '@/components/settings/signature-canvas';
 import { sanitiseRedirect } from '@/lib/auth-redirect';
 import { cn } from '@/lib/utils';
 import { LEGAL_DOCUMENTS, type LegalDocumentId } from './legal-texts';
@@ -29,24 +34,30 @@ import { recordTermsAcceptance } from './legal-texts-gate';
  * `TermsAcceptanceView.swift`.
  *
  * Inspectors must accept three legal documents (T&Cs, Privacy Policy,
- * EULA) and confirm three professional declarations (qualified, insured,
- * AI-disclaimer aware) before the rest of the app is unlocked.
+ * EULA), confirm three professional declarations (qualified, insured,
+ * AI-disclaimer aware), AND draw an acceptance signature before the rest
+ * of the app is unlocked — seven attestations total.
  *
- * Storage parity: the same three localStorage keys iOS writes to
- * `UserDefaults` so an inspector who already accepted on iPhone is not
- * re-prompted on web (and vice versa, once a future sync moves these to
- * the server). Keys: `termsAccepted=true`, `termsAcceptedVersion="1.0"`,
- * `termsAcceptedDate=<ISO8601>`.
+ * Storage parity: the same localStorage keys iOS writes to `UserDefaults`
+ * so an inspector who already accepted on iPhone is not re-prompted on
+ * web (and vice versa, once a future sync moves these to the server).
+ * Keys: `termsAccepted=true`, `termsAcceptedVersion="1.0"`,
+ * `termsAcceptedDate=<ISO8601>`, and `termsAcceptanceSignature=<PNG data
+ * URL>`. The signature persists FIRST and all four writes are
+ * all-or-nothing (see `recordTermsAcceptance` in `legal-texts-gate.ts`)
+ * so a quota/security throw can never leave `termsAccepted=true` without
+ * the audit signature.
+ *
+ * WS7 (2026-07-03): signature capture PORTED (parent §6.3 — Derek's
+ * 2026-07-01 decision un-parked it). The finger/pointer-drawn signature
+ * mirrors iOS `TermsAcceptanceView` `UserDefaults["termsAcceptanceSignature"]`
+ * and is stored client-side only (no backend write). Reuses the staff
+ * `SignatureCanvas` with terms-friendly `helperText` + `onContentChange`.
+ * `hasAcceptedCurrentTerms()` still gates on accepted/version ONLY
+ * (mirrors iOS `hasAcceptedCurrentVersion`) so already-accepted users are
+ * NOT forced to re-sign on upgrade.
  *
  * Deliberate divergence from iOS:
- *   - **No signature capture** in v1. iOS captures a finger-drawn
- *     signature into `UserDefaults["termsAcceptanceSignature"]` for an
- *     audit trail. On web, the inspector's signature already lives on
- *     their `InspectorProfile` (signed once during staff setup), and a
- *     dedicated signature pad is its own dependency choice. Tracked in
- *     `web/audit/INDEX.md` as a known-divergence item; if legal review
- *     requires the audit trail, port `SignatureCaptureView` and add it
- *     here under a fourth confirmation step.
  *   - **Read-detection via modal-open** rather than iOS's scroll-to-80%
  *     heuristic. The modal opens once per doc and the row marks itself
  *     read when closed. Stricter scroll detection adds little legal
@@ -124,12 +135,20 @@ function TermsPageInner() {
   });
   const [openDoc, setOpenDoc] = React.useState<LegalDocumentId | null>(null);
   const [isAccepting, setIsAccepting] = React.useState(false);
+  // Signature content is tracked via the canvas's onContentChange so the
+  // Accept button and completion bar react without polling; the ref is
+  // re-checked at accept() time before recording (WS7).
+  const [hasSignature, setHasSignature] = React.useState(false);
+  const [acceptError, setAcceptError] = React.useState<string | null>(null);
+  const signatureRef = React.useRef<SignatureCanvasHandle>(null);
 
   const allRead = readDocs.termsAndConditions && readDocs.privacyPolicy && readDocs.eula;
   const allConfirmed =
     confirmations.qualified && confirmations.insured && confirmations.aiDisclaimer;
-  const canAccept = allRead && allConfirmed && !isAccepting;
+  const canAccept = allRead && allConfirmed && hasSignature && !isAccepting;
 
+  // Seven attestations now (was six) — the acceptance signature is the
+  // seventh, matching iOS TermsAcceptanceView.completionProgress.
   const completion =
     [
       readDocs.termsAndConditions,
@@ -138,7 +157,8 @@ function TermsPageInner() {
       confirmations.qualified,
       confirmations.insured,
       confirmations.aiDisclaimer,
-    ].filter(Boolean).length / 6;
+      hasSignature,
+    ].filter(Boolean).length / 7;
 
   function markRead(id: LegalDocumentId) {
     setReadDocs((prev) => ({ ...prev, [id]: true }));
@@ -151,7 +171,40 @@ function TermsPageInner() {
   async function accept() {
     if (!canAccept) return;
     setIsAccepting(true);
-    recordTermsAcceptance();
+    setAcceptError(null);
+    // Re-check the live canvas — state can lag a synchronous stroke, and
+    // this is the audit-critical gate.
+    const canvas = signatureRef.current;
+    if (!canvas || !canvas.hasContent()) {
+      setIsAccepting(false);
+      setAcceptError('Please add your signature above before accepting.');
+      return;
+    }
+    let signatureDataUrl: string;
+    try {
+      const blob = await canvas.getBlob();
+      if (!blob) {
+        setIsAccepting(false);
+        setAcceptError('We couldn’t capture your signature — please try again.');
+        return;
+      }
+      signatureDataUrl = await blobToDataUrl(blob);
+    } catch {
+      setIsAccepting(false);
+      setAcceptError('We couldn’t read your signature — please try again.');
+      return;
+    }
+    // All-or-nothing persist. On a storage throw recordTermsAcceptance
+    // rolls back every terms key and returns false — do NOT navigate, so
+    // the gate re-prompts rather than soft-bypassing with no signature.
+    const ok = recordTermsAcceptance({ signatureDataUrl });
+    if (!ok) {
+      setIsAccepting(false);
+      setAcceptError(
+        'We couldn’t save your acceptance on this device (storage may be full or blocked). Please try again.'
+      );
+      return;
+    }
     router.replace(next);
   }
 
@@ -267,6 +320,27 @@ function TermsPageInner() {
         })}
       </SectionCard>
 
+      <SectionCard accent="blue" icon={Signature} title="Acceptance Signature">
+        <p className="text-[12.5px] leading-snug text-[var(--color-text-secondary)]">
+          Draw your signature below to confirm you have read and accepted the documents and
+          declarations above.
+        </p>
+        <SignatureCanvas
+          ref={signatureRef}
+          helperText="Sign with your finger or a stylus — stored on this device only."
+          onContentChange={setHasSignature}
+        />
+      </SectionCard>
+
+      {acceptError ? (
+        <p
+          role="alert"
+          className="px-1 text-[12.5px] font-medium text-[var(--color-status-failed)]"
+        >
+          {acceptError}
+        </p>
+      ) : null}
+
       <Button
         type="button"
         variant="primary"
@@ -319,6 +393,21 @@ function TermsPageInner() {
       </Dialog>
     </div>
   );
+}
+
+/**
+ * Read a PNG Blob into a `data:image/png;base64,…` data URL via
+ * FileReader — the storable form iOS mirrors in
+ * `UserDefaults["termsAcceptanceSignature"]`. Rejects on reader error so
+ * accept() can surface a retry rather than persisting a broken value.
+ */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error('signature read failed'));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function ProgressBar({ value }: { value: number }) {

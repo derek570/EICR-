@@ -1,30 +1,32 @@
 /**
  * Terms acceptance page — UI regression locks.
  *
- * Three slices of the contract get tested here, each one a place where
- * a future refactor could regress legal compliance:
+ * Slices of the contract tested here, each a place where a future
+ * refactor could regress legal compliance:
  *
- *   1. Accept button stays disabled until *all six* attestations land
- *      (3 doc-reads + 3 confirmations). iOS `TermsAcceptanceView` has
- *      the same gate — slipping any of them would let an inspector
- *      bypass a doc or a confirmation.
+ *   1. Accept button stays disabled until *all seven* attestations land
+ *      (3 doc-reads + 3 confirmations + 1 acceptance signature). iOS
+ *      `TermsAcceptanceView` has the same seven-item gate (WS7 added the
+ *      signature) — slipping any of them would let an inspector bypass a
+ *      doc, a confirmation, or the audit signature.
  *
- *   2. On Accept, the three iOS-parity localStorage keys land with the
- *      right values (delegated to `recordTermsAcceptance`, asserted at
- *      the unit level in `terms-gate.test.ts`; here we only assert the
- *      page calls it). Then `router.replace(next)` fires so the user
- *      lands back on the page they were originally heading to.
+ *   2. On Accept, the four iOS-parity localStorage keys land (incl. the
+ *      signature) via `recordTermsAcceptance` (unit-asserted in
+ *      `terms-gate.test.ts`; here we assert the page calls it with the
+ *      captured signature). Then `router.replace(next)` fires ONLY on a
+ *      successful persist.
  *
- *   3. Reading a doc opens the modal AND marks the row as read on
- *      close. This is the web-equivalent of iOS's scroll-to-bottom
- *      detection. Without this branch the docs row would never tick
- *      and Accept would never enable.
+ *   3. A storage-failure on persist must NOT redirect — the gate has to
+ *      re-prompt rather than soft-bypass with no signature on file.
  *
- * Mount strategy mirrors `pdf-tab.test.tsx` — inline `createRoot`
- * rather than RTL to dodge the React dual-copy hazard documented in
- * `vitest.config.ts`. Radix Dialog is stubbed because Radix internals
- * resolve `react` from the monorepo root rather than `web/`'s pinned
- * 19.2.4, which would crash mount with "Invalid hook call".
+ *   4. Reading a doc opens the modal AND marks the row read on close.
+ *
+ * Mount strategy mirrors `pdf-tab.test.tsx` — inline `createRoot` rather
+ * than RTL. Radix Dialog is stubbed (react dual-copy hazard). The
+ * `SignatureCanvas` is stubbed to a tiny sign/clear machine — its own
+ * drawing internals are covered by `signature-canvas.test.tsx`; here we
+ * only need to drive its `onContentChange` + imperative
+ * `hasContent`/`getBlob`.
  */
 
 import * as React from 'react';
@@ -50,6 +52,7 @@ vi.mock('lucide-react', () => {
     FileText: makeIcon('FileText'),
     Lock: makeIcon('Lock'),
     ShieldCheck: makeIcon('ShieldCheck'),
+    Signature: makeIcon('Signature'),
     Sparkles: makeIcon('Sparkles'),
     Square: makeIcon('Square'),
     UserCheck: makeIcon('UserCheck'),
@@ -58,8 +61,7 @@ vi.mock('lucide-react', () => {
 });
 
 // Radix Dialog → minimal open/close machine that still exercises the
-// `onOpenChange` callback so the page's "mark read on close" branch
-// runs. Mirrors the stub used in `pdf-tab.test.tsx`.
+// `onOpenChange` callback so the page's "mark read on close" branch runs.
 vi.mock('@/components/ui/dialog', () => {
   const Dialog: React.FC<{
     open: boolean;
@@ -86,6 +88,49 @@ vi.mock('@/components/ui/dialog', () => {
     asChild?: boolean;
   }> = ({ children }) => <>{children}</>;
   return { Dialog, DialogContent, DialogTitle, DialogClose };
+});
+
+// SignatureCanvas stub — a sign/clear machine exposing the same
+// imperative handle the page consumes. Clicking `sign-stub` marks it
+// "signed" and fires onContentChange(true); getBlob returns a real PNG
+// Blob so the page's FileReader → data URL path runs unmocked.
+interface StubHandle {
+  hasContent: () => boolean;
+  getBlob: () => Promise<Blob | null>;
+  clear: () => void;
+}
+vi.mock('@/components/settings/signature-canvas', () => {
+  const SignatureCanvas = React.forwardRef<
+    StubHandle,
+    { onContentChange?: (has: boolean) => void; helperText?: string }
+  >(function SignatureCanvasStub({ onContentChange }, ref) {
+    const [signed, setSigned] = React.useState(false);
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        hasContent: () => signed,
+        getBlob: async () => (signed ? new Blob(['fake-png-bytes'], { type: 'image/png' }) : null),
+        clear: () => {
+          setSigned(false);
+          onContentChange?.(false);
+        },
+      }),
+      [signed, onContentChange]
+    );
+    return (
+      <button
+        type="button"
+        data-testid="sign-stub"
+        onClick={() => {
+          setSigned(true);
+          onContentChange?.(true);
+        }}
+      >
+        sign
+      </button>
+    );
+  });
+  return { SignatureCanvas };
 });
 
 const replaceMock = vi.fn<(href: string) => void>();
@@ -121,6 +166,66 @@ function findButton(container: HTMLElement, label: string): HTMLButtonElement | 
     null) as HTMLButtonElement | null;
 }
 
+async function readAllDocs(container: HTMLElement) {
+  const readButtons = Array.from(
+    container.querySelectorAll<HTMLButtonElement>('button[data-doc-id]')
+  );
+  for (const btn of readButtons) {
+    await act(async () => {
+      btn.click();
+    });
+    const dialog = container.querySelector('[data-testid="legal-dialog"]');
+    await act(async () => {
+      (dialog as HTMLElement).click();
+    });
+  }
+}
+
+async function tickAllConfirmations(container: HTMLElement) {
+  for (const text of ['I am a qualified', 'I hold valid', 'I understand that CertMate']) {
+    const btn = Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes(text)
+    );
+    await act(async () => {
+      btn!.click();
+    });
+  }
+}
+
+async function sign(container: HTMLElement) {
+  const stub = container.querySelector<HTMLButtonElement>('[data-testid="sign-stub"]');
+  expect(stub).not.toBeNull();
+  await act(async () => {
+    stub!.click();
+  });
+}
+
+async function completeAllSeven(container: HTMLElement) {
+  await readAllDocs(container);
+  await tickAllConfirmations(container);
+  await sign(container);
+}
+
+// accept() is async: getBlob() → FileReader.readAsDataURL (a MACROtask in
+// jsdom) → recordTermsAcceptance. `await Promise.resolve()` only drains
+// microtasks, so drain a couple of macrotask boundaries too or the
+// persist+redirect will still be pending when assertions run (and would
+// leak into the next test).
+async function flushAsync() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+async function clickAccept(container: HTMLElement) {
+  const accept = findButton(container, 'I Accept');
+  await act(async () => {
+    accept!.click();
+  });
+  await flushAsync();
+}
+
 let harness: { container: HTMLDivElement; root: Root } | null = null;
 
 beforeEach(() => {
@@ -141,189 +246,118 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('Wave B parity · /terms acceptance gate', () => {
-  it('renders Accept disabled with all six attestations un-ticked', () => {
+describe('WS7 parity · /terms acceptance gate (7 attestations incl. signature)', () => {
+  it('renders Accept disabled with all seven attestations un-ticked', () => {
     harness = mount();
     const accept = findButton(harness.container, 'I Accept');
     expect(accept).not.toBeNull();
     expect(accept!.disabled).toBe(true);
-    // Page text confirms it's the gate, not some other "Accept" button.
     expect(harness.container.textContent).toContain('Review & Accept Our Terms');
     expect(harness.container.textContent).toContain('0%');
+    // Signature section is present.
+    expect(harness.container.textContent).toContain('Acceptance Signature');
+    expect(harness.container.querySelector('[data-testid="sign-stub"]')).not.toBeNull();
   });
 
-  it('keeps Accept disabled if only the docs are read (confirmations not ticked)', async () => {
+  it('keeps Accept disabled if only the docs are read (3/7 = 43%)', async () => {
     harness = mount();
-
-    // Open & close all three doc modals — each "Read" button opens the
-    // dialog stub which closes via onOpenChange on click.
-    const readButtons = Array.from(
-      harness.container.querySelectorAll<HTMLButtonElement>('button[data-doc-id]')
-    );
-    expect(readButtons).toHaveLength(3);
-    for (const btn of readButtons) {
-      await act(async () => {
-        btn.click();
-      });
-      const dialog = harness.container.querySelector('[data-testid="legal-dialog"]');
-      expect(dialog).not.toBeNull();
-      await act(async () => {
-        (dialog as HTMLElement).click(); // closes the stubbed dialog
-      });
-    }
-
-    // Accept still disabled — confirmations remain unticked.
+    await readAllDocs(harness.container);
     const accept = findButton(harness.container, 'I Accept');
     expect(accept!.disabled).toBe(true);
-    expect(harness.container.textContent).toContain('50%');
+    expect(harness.container.textContent).toContain('43%');
   });
 
-  it('keeps Accept disabled if only the confirmations are ticked (docs not read)', async () => {
+  it('keeps Accept disabled if only the confirmations are ticked (3/7 = 43%)', async () => {
     harness = mount();
-    // Confirmation rows are buttons containing text from the iOS
-    // confirmation copy. Match by the distinctive opening clauses.
-    const confirmationStartsWith = [
-      'I am a qualified',
-      'I hold valid',
-      'I understand that CertMate',
-    ];
-    for (const text of confirmationStartsWith) {
-      const btn = Array.from(harness.container.querySelectorAll('button')).find((b) =>
-        b.textContent?.includes(text)
-      );
-      expect(btn).toBeDefined();
-      await act(async () => {
-        btn!.click();
-      });
-    }
-
+    await tickAllConfirmations(harness.container);
     const accept = findButton(harness.container, 'I Accept');
     expect(accept!.disabled).toBe(true);
-    expect(harness.container.textContent).toContain('50%');
+    expect(harness.container.textContent).toContain('43%');
   });
 
-  it('enables Accept once all six attestations land, then writes the iOS-parity keys + redirects', async () => {
+  it('keeps Accept disabled at 6/7 (docs + confirmations, NO signature) then enables at 7/7', async () => {
+    harness = mount();
+    await readAllDocs(harness.container);
+    await tickAllConfirmations(harness.container);
+    // Six of seven — signature still missing.
+    let accept = findButton(harness.container, 'I Accept');
+    expect(accept!.disabled).toBe(true);
+    expect(harness.container.textContent).toContain('86%');
+    expect(harness.container.textContent).not.toContain('100%');
+    // Sign → seventh attestation lands, Accept unlocks, 100%.
+    await sign(harness.container);
+    accept = findButton(harness.container, 'I Accept');
+    expect(accept!.disabled).toBe(false);
+    expect(harness.container.textContent).toContain('100%');
+  });
+
+  it('enables Accept once all seven land, then writes the four iOS-parity keys (incl signature) + redirects', async () => {
     searchParamsStub.set('next', '/job/abc/circuits');
-
     harness = mount();
+    await completeAllSeven(harness.container);
 
-    // Read all three docs.
-    const readButtons = Array.from(
-      harness.container.querySelectorAll<HTMLButtonElement>('button[data-doc-id]')
-    );
-    for (const btn of readButtons) {
-      await act(async () => {
-        btn.click();
-      });
-      const dialog = harness.container.querySelector('[data-testid="legal-dialog"]');
-      await act(async () => {
-        (dialog as HTMLElement).click();
-      });
-    }
-
-    // Tick all three confirmations.
-    for (const text of ['I am a qualified', 'I hold valid', 'I understand that CertMate']) {
-      const btn = Array.from(harness.container.querySelectorAll('button')).find((b) =>
-        b.textContent?.includes(text)
-      );
-      await act(async () => {
-        btn!.click();
-      });
-    }
-
-    // Accept is now enabled.
     const accept = findButton(harness.container, 'I Accept');
     expect(accept!.disabled).toBe(false);
     expect(harness.container.textContent).toContain('100%');
 
-    await act(async () => {
-      accept!.click();
-      await Promise.resolve();
-    });
+    await clickAccept(harness.container);
 
-    // localStorage keys were set via recordTermsAcceptance.
     expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.accepted)).toBe('true');
     expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.version)).toBe(TERMS_VERSION);
     expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.date)).toMatch(
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
     );
+    // The audit signature persisted as a PNG data URL.
+    expect(window.localStorage.getItem(TERMS_STORAGE_KEYS.signature)).toMatch(
+      /^data:image\/png;base64,/
+    );
 
-    // Gate now reports accepted.
     expect(hasAcceptedCurrentTerms()).toBe(true);
-
-    // Router redirected back to the original target.
     expect(replaceMock).toHaveBeenCalledTimes(1);
     expect(replaceMock).toHaveBeenCalledWith('/job/abc/circuits');
   });
 
-  it('rejects an open-redirect `next` and routes to /dashboard instead (codex P1 on 06caaf9)', async () => {
-    // A crafted `?next=https://evil.example` would let an attacker hand
-    // an authenticated user a Terms link that bounces them off-site the
-    // moment they accept. The page now runs `next` through
-    // `sanitiseRedirect`, which keeps only same-origin absolute paths.
-    searchParamsStub.set('next', 'https://evil.example/landing');
-
+  it('does NOT redirect (and shows an error) when localStorage persist fails', async () => {
     harness = mount();
-    const readButtons = Array.from(
-      harness.container.querySelectorAll<HTMLButtonElement>('button[data-doc-id]')
-    );
-    for (const btn of readButtons) {
-      await act(async () => {
-        btn.click();
-      });
-      const dialog = harness.container.querySelector('[data-testid="legal-dialog"]');
-      await act(async () => {
-        (dialog as HTMLElement).click();
-      });
+    await completeAllSeven(harness.container);
+
+    // Force the persist to throw — recordTermsAcceptance returns false,
+    // so the page must NOT navigate and must surface a retry.
+    const realSet = window.localStorage.setItem.bind(window.localStorage);
+    window.localStorage.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    try {
+      // Keep the throwing override active across the FULL async accept
+      // (getBlob→FileReader→recordTermsAcceptance) — restoring in a plain
+      // finally would race the macrotask and let the persist succeed.
+      await clickAccept(harness.container);
+    } finally {
+      window.localStorage.setItem = realSet;
     }
-    for (const text of ['I am a qualified', 'I hold valid', 'I understand that CertMate']) {
-      const btn = Array.from(harness.container.querySelectorAll('button')).find((b) =>
-        b.textContent?.includes(text)
-      );
-      await act(async () => {
-        btn!.click();
-      });
-    }
+
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(hasAcceptedCurrentTerms()).toBe(false);
+    // Inline error surfaced + button re-enabled for a retry.
+    expect(harness.container.textContent).toMatch(/couldn.t save your acceptance/i);
     const accept = findButton(harness.container, 'I Accept');
-    await act(async () => {
-      accept!.click();
-      await Promise.resolve();
-    });
+    expect(accept!.disabled).toBe(false);
+  });
+
+  it('rejects an open-redirect `next` and routes to /dashboard instead (codex P1 on 06caaf9)', async () => {
+    searchParamsStub.set('next', 'https://evil.example/landing');
+    harness = mount();
+    await completeAllSeven(harness.container);
+    await clickAccept(harness.container);
     expect(replaceMock).toHaveBeenCalledTimes(1);
     expect(replaceMock).toHaveBeenCalledWith('/dashboard');
-    // And the protocol-relative variant — also sanitised away.
     expect(replaceMock).not.toHaveBeenCalledWith('https://evil.example/landing');
   });
 
   it('defaults the redirect target to /dashboard when no `next` param is provided', async () => {
     harness = mount();
-
-    // Run the full enable+accept dance via the same path as above.
-    const readButtons = Array.from(
-      harness.container.querySelectorAll<HTMLButtonElement>('button[data-doc-id]')
-    );
-    for (const btn of readButtons) {
-      await act(async () => {
-        btn.click();
-      });
-      const dialog = harness.container.querySelector('[data-testid="legal-dialog"]');
-      await act(async () => {
-        (dialog as HTMLElement).click();
-      });
-    }
-    for (const text of ['I am a qualified', 'I hold valid', 'I understand that CertMate']) {
-      const btn = Array.from(harness.container.querySelectorAll('button')).find((b) =>
-        b.textContent?.includes(text)
-      );
-      await act(async () => {
-        btn!.click();
-      });
-    }
-    const accept = findButton(harness.container, 'I Accept');
-    await act(async () => {
-      accept!.click();
-      await Promise.resolve();
-    });
+    await completeAllSeven(harness.container);
+    await clickAccept(harness.container);
     expect(replaceMock).toHaveBeenCalledWith('/dashboard');
   });
 });

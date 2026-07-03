@@ -200,6 +200,61 @@ body {
   overscroll-behavior-y: none;
 }
 
+/* =============================================================================
+ * WS7 — installed-mode ("standalone") chrome
+ *
+ * Make the PWA feel like the native iOS app in Add-to-Home-Screen mode: no
+ * bounce-scroll chaining to the browser, no grey tap-highlight flash, no
+ * long-press callout on chrome, and no text-selection of toolbar labels
+ * (you can't select a nav label in a native app). REAL content — inputs,
+ * textareas, contenteditable, and anything marked `.cm-selectable` — stays
+ * fully selectable so inspectors can still copy readings and observation
+ * text. Safe-area helpers pad chrome clear of the notch/home-indicator
+ * under `viewport-fit: cover` (see layout.tsx).
+ * ============================================================================= */
+html {
+  /* Stop overscroll from chaining to the browser (rubber-band / pull-to-
+   * refresh) in standalone. body already blocks the Y axis; html covers
+   * both axes as the belt-and-braces root. */
+  overscroll-behavior: none;
+}
+body {
+  /* Kill the translucent grey rectangle iOS/Android paint on tap. */
+  -webkit-tap-highlight-color: transparent;
+}
+/* Non-content chrome: not text-selectable, no long-press callout. */
+button,
+[role='button'],
+[role='toolbar'],
+[role='tab'],
+nav[aria-label],
+label {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+/* Editable fields + explicitly-selectable content stay selectable. */
+input,
+textarea,
+[contenteditable='true'],
+.cm-selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* Safe-area padding helpers (notched devices, standalone cover viewport). */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
 /* Focus ring: 2px in brand blue */
 :focus-visible {
   outline: 2px solid var(--color-brand-blue);

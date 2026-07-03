@@ -29,6 +29,7 @@ import {
 import { captureObservationPhoto as runCaptureObservationPhoto } from './recording/capture-observation-photo';
 import { clearPendingPhoto, readPendingPhoto, writePendingPhoto } from './pwa/job-cache';
 import { resizeImage } from './image-resize';
+import { haptic } from './haptic';
 import { applyRegexMatchToJob } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
@@ -1706,7 +1707,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Gate-pass chime — iOS chimes on BOTH branches (stage6_ask_answer
         // and legacy_free_text) before the send; TranscriptGate.playChime
         // parity.
+        //
+        // WS7 haptic parity: iOS DeepgramRecordingViewModel.playChime()
+        // fires a heavy UIImpactFeedbackGenerator alongside the chime, so
+        // the inspector feels the "sent for processing" beat in AirPods-only
+        // hands-free use. Feature-detected no-op off Android/Chromium; iPhone
+        // Safari (no Vibration API) is an accepted divergence (parent §6.4).
+        // Deliberately NOT moved inside playSentForProcessingChime() — the
+        // WS6 tour step replays that same tone and iOS tour playback has no
+        // haptic; keeping the call here scopes the buzz to the live gate-pass.
         playSentForProcessingChime();
+        haptic('heavy');
         sonnetRef.current?.sendTranscript(text, {
           confirmationsEnabled: getConfirmationModeEnabled(),
           utteranceId,

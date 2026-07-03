@@ -32,8 +32,25 @@
 import * as React from 'react';
 import { Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
+import { orderCircuitFocusFields } from './circuit-focus-fields';
+import { useCircuitAccessoryController } from './circuit-keyboard-accessory';
 
 type Cell = string | undefined;
+
+/**
+ * WS7 keyboard-accessory glue — passes the shared controller's per-input
+ * ref registration + focus/blur handlers down to each `CellInput` without
+ * drilling through Row/CellField. Consumers no-op when absent so the
+ * component still renders standalone (e.g. in isolation tests).
+ */
+interface StickyAccessoryContextValue {
+  registerRef: (circuitId: string, fieldKey: string, el: HTMLInputElement | null) => void;
+  inputHandlers: (
+    circuitId: string,
+    fieldKey: string
+  ) => { onFocus: () => void; onBlur: () => void };
+}
+const StickyAccessoryContext = React.createContext<StickyAccessoryContextValue | null>(null);
 
 type CircuitLike = { id: string; [key: string]: unknown };
 
@@ -131,62 +148,114 @@ export interface CircuitsStickyTableProps {
   onRemove: (id: string) => void;
 }
 
+// Keyboard-input field keys this surface renders (ref/designation + every
+// non-select column), ordered by the shared canonical order. Select
+// columns render a <select> (no soft keyboard) so they're excluded.
+const STICKY_KEYBOARD_FIELDS = orderCircuitFocusFields([
+  'circuit_ref',
+  'circuit_designation',
+  ...COLUMNS.filter((c) => c.kind !== 'select').map((c) => c.key),
+]);
+
 export function CircuitsStickyTable({ circuits, onPatch, onRemove }: CircuitsStickyTableProps) {
+  const circuitIds = React.useMemo(() => circuits.map((c) => c.id), [circuits]);
+  const inputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
+  const refKey = (circuitId: string, fieldKey: string) => `${circuitId}::${fieldKey}`;
+
+  const registerRef = React.useCallback(
+    (circuitId: string, fieldKey: string, el: HTMLInputElement | null) => {
+      const key = refKey(circuitId, fieldKey);
+      if (el) inputRefs.current.set(key, el);
+      else inputRefs.current.delete(key);
+    },
+    []
+  );
+
+  const focusField = React.useCallback((circuitId: string, fieldKey: string) => {
+    const el = inputRefs.current.get(refKey(circuitId, fieldKey));
+    if (el) {
+      el.focus();
+      el.select();
+    }
+  }, []);
+
+  const applyToken = React.useCallback(
+    (circuitId: string, fieldKey: string, token: string) => {
+      onPatch(circuitId, { [fieldKey]: token });
+    },
+    [onPatch]
+  );
+
+  const controller = useCircuitAccessoryController({
+    circuitIds,
+    fieldOrder: STICKY_KEYBOARD_FIELDS,
+    applyToken,
+    focusField,
+  });
+
+  const ctxValue = React.useMemo<StickyAccessoryContextValue>(
+    () => ({ registerRef, inputHandlers: controller.inputHandlers }),
+    [registerRef, controller.inputHandlers]
+  );
+
   return (
-    <div
-      className="relative overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)]"
-      data-testid="circuits-sticky-table"
-    >
-      <table
-        className="w-max text-[12px] text-[var(--color-text-primary)]"
-        style={{ borderCollapse: 'separate', borderSpacing: 0 }}
+    <StickyAccessoryContext.Provider value={ctxValue}>
+      <div
+        className="relative overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)]"
+        data-testid="circuits-sticky-table"
       >
-        <thead>
-          <tr className="bg-[var(--color-surface-2)] text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]">
-            <th
-              className="sticky left-0 z-20 border-b border-r border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2 py-2 text-left"
-              style={{ width: REF_WIDTH, minWidth: REF_WIDTH }}
-              scope="col"
-            >
-              Ref
-            </th>
-            <th
-              className="sticky z-20 border-b border-r border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2 py-2 text-left"
-              style={{
-                left: REF_WIDTH,
-                width: DESIGNATION_WIDTH,
-                minWidth: DESIGNATION_WIDTH,
-              }}
-              scope="col"
-            >
-              Designation
-            </th>
-            {COLUMNS.map((col) => (
+        <table
+          className="w-max text-[12px] text-[var(--color-text-primary)]"
+          style={{ borderCollapse: 'separate', borderSpacing: 0 }}
+        >
+          <thead>
+            <tr className="bg-[var(--color-surface-2)] text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]">
               <th
-                key={col.key}
-                className="border-b border-[var(--color-border-subtle)] px-2 py-2 text-left"
-                style={{ width: col.width, minWidth: col.width }}
+                className="sticky left-0 z-20 border-b border-r border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2 py-2 text-left"
+                style={{ width: REF_WIDTH, minWidth: REF_WIDTH }}
                 scope="col"
               >
-                {col.label}
+                Ref
               </th>
+              <th
+                className="sticky z-20 border-b border-r border-[var(--color-border-subtle)] bg-[var(--color-surface-2)] px-2 py-2 text-left"
+                style={{
+                  left: REF_WIDTH,
+                  width: DESIGNATION_WIDTH,
+                  minWidth: DESIGNATION_WIDTH,
+                }}
+                scope="col"
+              >
+                Designation
+              </th>
+              {COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  className="border-b border-[var(--color-border-subtle)] px-2 py-2 text-left"
+                  style={{ width: col.width, minWidth: col.width }}
+                  scope="col"
+                >
+                  {col.label}
+                </th>
+              ))}
+              <th
+                className="border-b border-[var(--color-border-subtle)] px-2 py-2 text-right"
+                style={{ width: DELETE_WIDTH, minWidth: DELETE_WIDTH }}
+                scope="col"
+              >
+                <span className="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {circuits.map((c) => (
+              <Row key={c.id} circuit={c} onPatch={onPatch} onRemove={onRemove} />
             ))}
-            <th
-              className="border-b border-[var(--color-border-subtle)] px-2 py-2 text-right"
-              style={{ width: DELETE_WIDTH, minWidth: DELETE_WIDTH }}
-              scope="col"
-            >
-              <span className="sr-only">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {circuits.map((c) => (
-            <Row key={c.id} circuit={c} onPatch={onPatch} onRemove={onRemove} />
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </tbody>
+        </table>
+      </div>
+      {controller.accessory}
+    </StickyAccessoryContext.Provider>
   );
 }
 
@@ -323,12 +392,17 @@ function CellInput({
   inputMode?: 'decimal' | 'numeric' | 'text';
   ariaLabel: string;
 }) {
+  const accessory = React.useContext(StickyAccessoryContext);
+  const handlers = accessory?.inputHandlers(id, colKey);
   return (
     <input
       type="text"
       inputMode={inputMode}
+      ref={(el) => accessory?.registerRef(id, colKey, el)}
       value={value ?? ''}
       onChange={(e) => onPatch(id, { [colKey]: e.target.value })}
+      onFocus={handlers?.onFocus}
+      onBlur={handlers?.onBlur}
       aria-label={ariaLabel}
       className="w-full rounded-[var(--radius-sm)] border border-transparent bg-transparent px-1 py-0.5 text-[12px] focus:border-[var(--color-brand-blue)] focus:outline-none"
     />
