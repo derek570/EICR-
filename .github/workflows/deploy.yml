@@ -31,6 +31,11 @@ on:
           - both
           - backend
           - frontend
+          # frontend-taskdef: register ecs/task-def-frontend.json against the
+          # EXISTING frontend image + roll eicr-pwa only — NO Docker rebuild.
+          # This is the ~3-5 min path for flipping the DEEPGRAM_STT_MODEL
+          # runtime kill-switch (parity WS4) vs a ~30 min full frontend build.
+          - frontend-taskdef
         default: both
       environment:
         description: 'Target environment'
@@ -77,7 +82,16 @@ jobs:
         id: filter
         uses: dorny/paths-filter@v3
         with:
+          # `list-files: json` also emits `<filter>_files` per filter — we use
+          # `all_files` below to detect the EXACT single-file taskdef-only case
+          # (a boolean filter can't distinguish "exactly task-def-frontend.json"
+          # from "task-def plus other frontend files").
+          list-files: json
           filters: |
+            all:
+              - '**'
+            taskdef_frontend:
+              - 'ecs/task-def-frontend.json'
             frontend:
               - 'web/**'
               - 'docker/nextjs.Dockerfile'
@@ -96,6 +110,11 @@ jobs:
               - '.github/workflows/deploy.yml'
       - name: Compute effective target
         id: compute
+        env:
+          # Passed via env (not inline `${{ }}`) so the JSON array can't break
+          # the shell when a filename contains a quote.
+          ALL_FILES: ${{ steps.filter.outputs.all_files }}
+          TASKDEF_FRONTEND: ${{ steps.filter.outputs.taskdef_frontend }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "target=${{ inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
@@ -103,7 +122,19 @@ jobs:
           else
             FE='${{ steps.filter.outputs.frontend }}'
             BE='${{ steps.filter.outputs.backend }}'
-            if [ "$FE" = "true" ] && [ "$BE" = "true" ]; then
+            # frontend-taskdef: the changed-file set is EXACTLY
+            # ecs/task-def-frontend.json (the runtime kill-switch flip path).
+            # Register the task def against the existing image + roll eicr-pwa
+            # only — no Docker rebuild, no backend steps. Guarded by BOTH the
+            # dedicated `taskdef_frontend` filter AND an exact changed-file-count
+            # check so "task-def PLUS other frontend files" falls through to the
+            # normal frontend/both branches (which rebuild).
+            COUNT=$(echo "$ALL_FILES" | jq 'length')
+            ONLY=$(echo "$ALL_FILES" | jq -r 'if length==1 then .[0] else "" end')
+            if [ "$TASKDEF_FRONTEND" = "true" ] && [ "$COUNT" = "1" ] && [ "$ONLY" = "ecs/task-def-frontend.json" ]; then
+              echo "target=frontend-taskdef" >> "$GITHUB_OUTPUT"
+              echo "Path filter — task-def-frontend.json ONLY (target=frontend-taskdef, no rebuild)"
+            elif [ "$FE" = "true" ] && [ "$BE" = "true" ]; then
               echo "target=both" >> "$GITHUB_OUTPUT"
               echo "Path filter — both changed (target=both)"
             elif [ "$FE" = "true" ]; then
@@ -284,7 +315,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Frontend Image
-        if: needs.detect-changes.outputs.target != 'backend'
+        # frontend-taskdef skips the rebuild — it re-registers the task def
+        # against the EXISTING image and rolls eicr-pwa only.
+        if: needs.detect-changes.outputs.target != 'backend' && needs.detect-changes.outputs.target != 'frontend-taskdef'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -303,7 +336,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build Backend Image
-        if: needs.detect-changes.outputs.target != 'frontend'
+        if: needs.detect-changes.outputs.target != 'frontend' && needs.detect-changes.outputs.target != 'frontend-taskdef'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -316,7 +349,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan Frontend Image (blocking on CRITICAL)
-        if: needs.detect-changes.outputs.target != 'backend'
+        if: needs.detect-changes.outputs.target != 'backend' && needs.detect-changes.outputs.target != 'frontend-taskdef'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-frontend:${{ github.sha }}'
@@ -326,7 +359,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan Frontend Image (HIGH - advisory only)
-        if: always() && needs.detect-changes.outputs.target != 'backend'
+        if: always() && needs.detect-changes.outputs.target != 'backend' && needs.detect-changes.outputs.target != 'frontend-taskdef'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-frontend:${{ github.sha }}'
@@ -335,7 +368,7 @@ jobs:
           severity: 'HIGH'
 
       - name: Scan Backend Image (blocking on CRITICAL)
-        if: needs.detect-changes.outputs.target != 'frontend'
+        if: needs.detect-changes.outputs.target != 'frontend' && needs.detect-changes.outputs.target != 'frontend-taskdef'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-backend:${{ github.sha }}'
@@ -345,7 +378,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Scan Backend Image (HIGH - advisory only)
-        if: always() && needs.detect-changes.outputs.target != 'frontend'
+        if: always() && needs.detect-changes.outputs.target != 'frontend' && needs.detect-changes.outputs.target != 'frontend-taskdef'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: 'eicr-backend:${{ github.sha }}'
@@ -516,7 +549,9 @@ jobs:
           echo "Deploy scope: ${{ needs.detect-changes.outputs.target }}"
 
       - name: Build and push Frontend to ECR
-        if: steps.scope.outputs.target != 'backend'
+        # frontend-taskdef re-registers the task def against the EXISTING
+        # :latest image (no rebuild) — so skip the build+push here.
+        if: steps.scope.outputs.target != 'backend' && steps.scope.outputs.target != 'frontend-taskdef'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -536,7 +571,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push Backend to ECR
-        if: steps.scope.outputs.target != 'frontend'
+        if: steps.scope.outputs.target != 'frontend' && steps.scope.outputs.target != 'frontend-taskdef'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -570,6 +605,10 @@ jobs:
           ./scripts/check-task-def-env-drift.sh ${{ env.ECS_SERVICE_FRONTEND }} ecs/task-def-frontend.json
 
       - name: Register ARM64 Frontend Task Definition
+        # Runs for both 'frontend'/'both' AND 'frontend-taskdef'. For
+        # frontend-taskdef this registers the task def against the EXISTING
+        # :latest image (the build+push above was skipped) — the whole point
+        # of the fast kill-switch flip.
         if: steps.scope.outputs.target != 'backend'
         id: register-frontend-taskdef
         run: |
@@ -581,7 +620,7 @@ jobs:
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
 
       - name: Check Backend Task-Def Drift
-        if: steps.scope.outputs.target != 'frontend'
+        if: steps.scope.outputs.target != 'frontend' && steps.scope.outputs.target != 'frontend-taskdef'
         env:
           ECS_CLUSTER: ${{ env.ECS_CLUSTER }}
           AWS_REGION: ${{ env.AWS_REGION }}
@@ -597,12 +636,12 @@ jobs:
       # register-task-definition so a new flag that needs to ride into
       # production can't be silently defaulted.
       - name: Audit Env-Var Source (backend code vs task-def)
-        if: steps.scope.outputs.target != 'frontend'
+        if: steps.scope.outputs.target != 'frontend' && steps.scope.outputs.target != 'frontend-taskdef'
         run: |
           ./scripts/audit-env-var-source.sh ecs/task-def-backend.json
 
       - name: Register ARM64 Backend Task Definition
-        if: steps.scope.outputs.target != 'frontend'
+        if: steps.scope.outputs.target != 'frontend' && steps.scope.outputs.target != 'frontend-taskdef'
         id: register-backend-taskdef
         run: |
           TASK_ARN=$(aws ecs register-task-definition \
@@ -630,7 +669,7 @@ jobs:
       # stops here — old code keeps serving against the old schema, which
       # is the right side to fail to during a botched migration.
       - name: Run DB migrations (one-off Fargate task)
-        if: steps.scope.outputs.target != 'frontend'
+        if: steps.scope.outputs.target != 'frontend' && steps.scope.outputs.target != 'frontend-taskdef'
         run: |
           set -euo pipefail
 
@@ -701,7 +740,7 @@ jobs:
             --force-new-deployment
 
       - name: Update ECS Backend Service
-        if: steps.scope.outputs.target != 'frontend'
+        if: steps.scope.outputs.target != 'frontend' && steps.scope.outputs.target != 'frontend-taskdef'
         run: |
           aws ecs update-service \
             --cluster ${{ env.ECS_CLUSTER }} \
@@ -711,13 +750,14 @@ jobs:
 
       - name: Wait for deployment
         run: |
+          # frontend-taskdef waits for eicr-pwa ONLY (no backend rolled).
           if [ "${{ steps.scope.outputs.target }}" != "backend" ]; then
             echo "Waiting for frontend deployment..."
             aws ecs wait services-stable \
               --cluster ${{ env.ECS_CLUSTER }} \
               --services ${{ env.ECS_SERVICE_FRONTEND }}
           fi
-          if [ "${{ steps.scope.outputs.target }}" != "frontend" ]; then
+          if [ "${{ steps.scope.outputs.target }}" != "frontend" ] && [ "${{ steps.scope.outputs.target }}" != "frontend-taskdef" ]; then
             echo "Waiting for backend deployment..."
             aws ecs wait services-stable \
               --cluster ${{ env.ECS_CLUSTER }} \
