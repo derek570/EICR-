@@ -52,6 +52,8 @@ import { CircuitsScheduleDesktop } from '@/components/job/circuits-schedule-desk
 import { CcuModeSheet } from '@/components/job/ccu-mode-sheet';
 import { useMediaQuery, DESKTOP_BREAKPOINT } from '@/hooks/use-media-query';
 import { isSpareCircuit } from '@/lib/constants/circuit-field-options';
+import { orderCircuitFocusFields } from '@/components/job/circuit-focus-fields';
+import { useCircuitAccessoryController } from '@/components/job/circuit-keyboard-accessory';
 
 /**
  * Circuits tab — mirrors iOS `CircuitsTab.swift` + `Circuit.swift`.
@@ -94,6 +96,91 @@ const POLARITY_OPTIONS = [
   { value: 'fail', label: 'Fail', variant: 'fail' as const },
   { value: 'na', label: 'N/A', variant: 'neutral' as const },
 ];
+
+// WS7 — the card view's keyboard-input (FloatingLabelInput) fields, in the
+// shared canonical order. Chip/segmented/toggle fields (ocpd_type,
+// rcd_type, polarity_confirmed, rcd/afdd button) are not keyboard inputs
+// and are excluded. Ordering by the shared constant keeps prev/next
+// identical to the table surfaces.
+const CARD_KEYBOARD_FIELDS = orderCircuitFocusFields([
+  'circuit_ref',
+  'circuit_designation',
+  'number_of_points',
+  'max_disconnect_time_s',
+  'wiring_type',
+  'ref_method',
+  'live_csa_mm2',
+  'cpc_csa_mm2',
+  'ocpd_bs_en',
+  'ocpd_rating_a',
+  'ocpd_breaking_capacity_ka',
+  'ocpd_max_zs_ohm',
+  'rcd_bs_en',
+  'rcd_operating_current_ma',
+  'rcd_rating_a',
+  'ring_r1_ohm',
+  'ring_rn_ohm',
+  'ring_r2_ohm',
+  'r1_r2_ohm',
+  'r2_ohm',
+  'measured_zs_ohm',
+  'ir_test_voltage_v',
+  'ir_live_live_mohm',
+  'ir_live_earth_mohm',
+  'rcd_time_ms',
+]);
+
+/**
+ * WS7 keyboard-accessory glue for the card view. The controller lives at
+ * the page level (it needs every visible circuit for cross-circuit
+ * prev/next); each CircuitCard passes its `circuit.id` down to the field
+ * inputs, which register + attach focus/blur via this context. No-ops
+ * when absent so CircuitCard can render standalone.
+ */
+interface CardAccessoryContextValue {
+  registerRef: (circuitId: string, fieldKey: string, el: HTMLInputElement | null) => void;
+  inputHandlers: (
+    circuitId: string,
+    fieldKey: string
+  ) => { onFocus: () => void; onBlur: () => void };
+}
+const CardAccessoryContext = React.createContext<CardAccessoryContextValue | null>(null);
+
+/**
+ * A single card field input — FloatingLabelInput wired to the shared
+ * accessory controller. Derives its `onChange` from `field` and registers
+ * for focus/prev-next/token. Replaces the raw FloatingLabelInput calls in
+ * CircuitCard so every keyboard-backed card field participates.
+ */
+function CircuitFieldInput({
+  circuitId,
+  field,
+  label,
+  value,
+  inputMode,
+  onPatch,
+}: {
+  circuitId: string;
+  field: string;
+  label: string;
+  value: string;
+  inputMode?: 'decimal' | 'numeric' | 'text';
+  onPatch: (patch: Partial<Circuit>) => void;
+}) {
+  const accessory = React.useContext(CardAccessoryContext);
+  const handlers = accessory?.inputHandlers(circuitId, field);
+  return (
+    <FloatingLabelInput
+      label={label}
+      inputMode={inputMode}
+      value={value}
+      ref={(el) => accessory?.registerRef(circuitId, field, el)}
+      onChange={(e) => onPatch({ [field]: e.target.value } as Partial<Circuit>)}
+      onFocus={handlers?.onFocus}
+      onBlur={handlers?.onBlur}
+    />
+  );
+}
 
 function newCircuit(ref: string, boardId?: string): Circuit {
   return {
@@ -258,6 +345,71 @@ export default function CircuitsPage() {
   // replaces the compact sticky table. Mobile/tablet keep the existing
   // cards-vs-table toggle and right-side rail.
   const isDesktop = useMediaQuery(DESKTOP_BREAKPOINT);
+
+  // WS7 keyboard accessory (card view). Cross-circuit prev/next needs the
+  // full visible list; collapsed cards mount no inputs, so focusField
+  // expands the target card first and focuses on the input's register
+  // callback (a pending-focus latch) rather than deriving from the DOM.
+  const cardCircuitIds = React.useMemo(() => visible.map((c) => c.id), [visible]);
+  const cardInputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
+  const pendingCardFocus = React.useRef<{ circuitId: string; fieldKey: string } | null>(null);
+  const cardRefKey = (circuitId: string, fieldKey: string) => `${circuitId}::${fieldKey}`;
+
+  const registerCardRef = React.useCallback(
+    (circuitId: string, fieldKey: string, el: HTMLInputElement | null) => {
+      const key = cardRefKey(circuitId, fieldKey);
+      if (el) {
+        cardInputRefs.current.set(key, el);
+        // If this input was the pending target of a cross-circuit
+        // navigation (the card just expanded), focus it now that it's
+        // mounted.
+        const pending = pendingCardFocus.current;
+        if (pending && pending.circuitId === circuitId && pending.fieldKey === fieldKey) {
+          pendingCardFocus.current = null;
+          el.focus();
+          el.select();
+        }
+      } else {
+        cardInputRefs.current.delete(key);
+      }
+    },
+    []
+  );
+
+  const focusCardField = React.useCallback((circuitId: string, fieldKey: string) => {
+    const el = cardInputRefs.current.get(cardRefKey(circuitId, fieldKey));
+    if (el) {
+      el.focus();
+      el.select();
+      return;
+    }
+    // Target circuit is collapsed (its inputs aren't mounted) — expand it
+    // and let registerCardRef focus the field once it mounts.
+    pendingCardFocus.current = { circuitId, fieldKey };
+    setExpandedId(circuitId);
+  }, []);
+
+  // patchCircuit is re-created each render (it closes over the current
+  // `circuits`). Hold it in a ref so applyCardToken stays referentially
+  // stable WITHOUT capturing a stale `circuits` — writing a token must
+  // merge into the latest array, never a snapshot from mount (data-loss).
+  const patchCircuitRef = React.useRef(patchCircuit);
+  patchCircuitRef.current = patchCircuit;
+  const applyCardToken = React.useCallback((circuitId: string, fieldKey: string, token: string) => {
+    patchCircuitRef.current(circuitId, { [fieldKey]: token } as Partial<Circuit>);
+  }, []);
+
+  const cardAccessory = useCircuitAccessoryController({
+    circuitIds: cardCircuitIds,
+    fieldOrder: CARD_KEYBOARD_FIELDS,
+    applyToken: applyCardToken,
+    focusField: focusCardField,
+  });
+
+  const cardAccessoryCtx = React.useMemo<CardAccessoryContextValue>(
+    () => ({ registerRef: registerCardRef, inputHandlers: cardAccessory.inputHandlers }),
+    [registerCardRef, cardAccessory.inputHandlers]
+  );
 
   /**
    * Bulk-fill one circuit field across every visible (board-scoped)
@@ -933,16 +1085,19 @@ export default function CircuitsPage() {
               />
             )
           ) : (
-            visible.map((c) => (
-              <CircuitCard
-                key={c.id}
-                circuit={c}
-                expanded={expandedId === c.id}
-                onToggle={() => setExpandedId((p) => (p === c.id ? null : c.id))}
-                onPatch={(patch) => patchCircuit(c.id, patch)}
-                onRemove={() => requestDeleteCircuit(c.id)}
-              />
-            ))
+            <CardAccessoryContext.Provider value={cardAccessoryCtx}>
+              {visible.map((c) => (
+                <CircuitCard
+                  key={c.id}
+                  circuit={c}
+                  expanded={expandedId === c.id}
+                  onToggle={() => setExpandedId((p) => (p === c.id ? null : c.id))}
+                  onPatch={(patch) => patchCircuit(c.id, patch)}
+                  onRemove={() => requestDeleteCircuit(c.id)}
+                />
+              ))}
+              {cardAccessory.accessory}
+            </CardAccessoryContext.Provider>
           )}
         </div>
 
@@ -1321,6 +1476,7 @@ function CircuitCard({
   onRemove: () => void;
 }) {
   const text = (k: keyof Circuit) => circuit[k] ?? '';
+  const circuitId = circuit.id;
   const ref = text('circuit_ref') || '—';
   const designation = text('circuit_designation') || 'Untitled circuit';
   const rating = text('ocpd_rating_a');
@@ -1365,64 +1521,82 @@ function CircuitCard({
         <div className="flex flex-col gap-4 border-t border-[var(--color-border-subtle)] p-4">
           <SectionCard accent="blue" title="Identity">
             <div className="grid gap-3 md:grid-cols-2">
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="circuit_ref"
                 label="Circuit ref"
                 value={text('circuit_ref')}
-                onChange={(e) => onPatch({ circuit_ref: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="circuit_designation"
                 label="Designation"
                 value={text('circuit_designation')}
-                onChange={(e) => onPatch({ circuit_designation: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="number_of_points"
                 label="Number of points"
                 inputMode="numeric"
                 value={text('number_of_points')}
-                onChange={(e) => onPatch({ number_of_points: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="max_disconnect_time_s"
                 label="Max disconnect time (s)"
                 inputMode="decimal"
                 value={text('max_disconnect_time_s')}
-                onChange={(e) => onPatch({ max_disconnect_time_s: e.target.value })}
+                onPatch={onPatch}
               />
             </div>
           </SectionCard>
 
           <SectionCard accent="blue" title="Cable">
             <div className="grid gap-3 md:grid-cols-2">
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="wiring_type"
                 label="Wiring type"
                 value={text('wiring_type')}
-                onChange={(e) => onPatch({ wiring_type: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ref_method"
                 label="Reference method"
                 value={text('ref_method')}
-                onChange={(e) => onPatch({ ref_method: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="live_csa_mm2"
                 label="Live CSA (mm²)"
                 inputMode="decimal"
                 value={text('live_csa_mm2')}
-                onChange={(e) => onPatch({ live_csa_mm2: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="cpc_csa_mm2"
                 label="CPC CSA (mm²)"
                 inputMode="decimal"
                 value={text('cpc_csa_mm2')}
-                onChange={(e) => onPatch({ cpc_csa_mm2: e.target.value })}
+                onPatch={onPatch}
               />
             </div>
           </SectionCard>
 
           <SectionCard accent="amber" title="OCPD">
             <div className="grid gap-3 md:grid-cols-2">
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ocpd_bs_en"
                 label="BS EN"
                 value={text('ocpd_bs_en')}
-                onChange={(e) => onPatch({ ocpd_bs_en: e.target.value })}
+                onPatch={onPatch}
               />
               <SelectChips
                 label="Type"
@@ -1430,33 +1604,41 @@ function CircuitCard({
                 options={OCPD_TYPES}
                 onChange={(v) => onPatch({ ocpd_type: v })}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ocpd_rating_a"
                 label="Rating (A)"
                 inputMode="decimal"
                 value={text('ocpd_rating_a')}
-                onChange={(e) => onPatch({ ocpd_rating_a: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ocpd_breaking_capacity_ka"
                 label="Breaking capacity (kA)"
                 inputMode="decimal"
                 value={text('ocpd_breaking_capacity_ka')}
-                onChange={(e) => onPatch({ ocpd_breaking_capacity_ka: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ocpd_max_zs_ohm"
                 label="Max Zs (Ω)"
                 inputMode="decimal"
                 value={text('ocpd_max_zs_ohm')}
-                onChange={(e) => onPatch({ ocpd_max_zs_ohm: e.target.value })}
+                onPatch={onPatch}
               />
             </div>
           </SectionCard>
 
           <SectionCard accent="amber" title="RCD">
             <div className="grid gap-3 md:grid-cols-2">
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="rcd_bs_en"
                 label="BS EN"
                 value={text('rcd_bs_en')}
-                onChange={(e) => onPatch({ rcd_bs_en: e.target.value })}
+                onPatch={onPatch}
               />
               <SelectChips
                 label="Type"
@@ -1464,17 +1646,21 @@ function CircuitCard({
                 options={RCD_TYPES}
                 onChange={(v) => onPatch({ rcd_type: v })}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="rcd_operating_current_ma"
                 label="Operating current (mA)"
                 inputMode="decimal"
                 value={text('rcd_operating_current_ma')}
-                onChange={(e) => onPatch({ rcd_operating_current_ma: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="rcd_rating_a"
                 label="Rating (A)"
                 inputMode="decimal"
                 value={text('rcd_rating_a')}
-                onChange={(e) => onPatch({ rcd_rating_a: e.target.value })}
+                onPatch={onPatch}
               />
             </div>
             {/* Test-button confirmation toggles — iOS canon writes the
@@ -1500,65 +1686,85 @@ function CircuitCard({
 
           <SectionCard accent="green" title="Test readings">
             <div className="grid gap-3 md:grid-cols-3">
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ring_r1_ohm"
                 label="Ring R1 (Ω)"
                 inputMode="decimal"
                 value={text('ring_r1_ohm')}
-                onChange={(e) => onPatch({ ring_r1_ohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ring_rn_ohm"
                 label="Ring Rn (Ω)"
                 inputMode="decimal"
                 value={text('ring_rn_ohm')}
-                onChange={(e) => onPatch({ ring_rn_ohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ring_r2_ohm"
                 label="Ring R2 (Ω)"
                 inputMode="decimal"
                 value={text('ring_r2_ohm')}
-                onChange={(e) => onPatch({ ring_r2_ohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="r1_r2_ohm"
                 label="R1+R2 (Ω)"
                 inputMode="decimal"
                 value={text('r1_r2_ohm')}
-                onChange={(e) => onPatch({ r1_r2_ohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="r2_ohm"
                 label="R2 (Ω)"
                 inputMode="decimal"
                 value={text('r2_ohm')}
-                onChange={(e) => onPatch({ r2_ohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="measured_zs_ohm"
                 label="Measured Zs (Ω)"
                 inputMode="decimal"
                 value={text('measured_zs_ohm')}
-                onChange={(e) => onPatch({ measured_zs_ohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ir_test_voltage_v"
                 label="IR test voltage (V)"
                 inputMode="decimal"
                 value={text('ir_test_voltage_v')}
-                onChange={(e) => onPatch({ ir_test_voltage_v: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ir_live_live_mohm"
                 label="IR L-L (MΩ)"
                 inputMode="decimal"
                 value={text('ir_live_live_mohm')}
-                onChange={(e) => onPatch({ ir_live_live_mohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="ir_live_earth_mohm"
                 label="IR L-E (MΩ)"
                 inputMode="decimal"
                 value={text('ir_live_earth_mohm')}
-                onChange={(e) => onPatch({ ir_live_earth_mohm: e.target.value })}
+                onPatch={onPatch}
               />
-              <FloatingLabelInput
+              <CircuitFieldInput
+                circuitId={circuitId}
+                field="rcd_time_ms"
                 label="RCD time (ms)"
                 inputMode="decimal"
                 value={text('rcd_time_ms')}
-                onChange={(e) => onPatch({ rcd_time_ms: e.target.value })}
+                onPatch={onPatch}
               />
             </div>
             <div className="flex flex-col gap-2">
