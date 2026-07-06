@@ -406,6 +406,17 @@ export interface SonnetSessionCallbacks {
    */
   onChitchatPaused?: () => void;
   onChitchatResumed?: (reason: string) => void;
+  /**
+   * Inbound `cancel_pending_tts` (parity with iOS Phase 6.3). The backend
+   * emits `{ type: 'cancel_pending_tts', prefix }` on every
+   * `*_script_cancelled` (`src/extraction/dialogue-engine/engine.js:1020-1024`,
+   * prefix `srv-<script>-`) to silence a stale focused-mode script PROMPT (e.g.
+   * "BS number?"). Its real target rides the DIRECT `speak()`/`deferredTtsRef`
+   * path, so the consumer cancels THAT + clears the cancelled ask STATE and
+   * (forward-looking, no-op today) purges the confirmation FIFO by prefix.
+   * The decode passes an OBJECT; the recording-context helper takes the STRING.
+   */
+  onCancelPendingTts?: (msg: { prefix: string; sessionId?: string | null }) => void;
   onError?: (err: Error, recoverable: boolean) => void;
 }
 
@@ -1253,6 +1264,21 @@ export class SonnetSession {
     return id;
   }
 
+  /**
+   * Clear the in-flight ask_user toolCallId iff it starts with `prefix`.
+   * Part of the `cancel_pending_tts` state-clear (parity with iOS Phase 6.3):
+   * silencing the stale prompt's audio is necessary but not sufficient — the
+   * cancelled ask's toolCallId must also be dropped here, or the next inspector
+   * utterance resolves via `consumeInFlightToolCallId` against an ask the
+   * backend already abandoned. No-op on an empty prefix or a non-match.
+   */
+  clearInFlightToolCallIdByPrefix(prefix: string): void {
+    if (!prefix) return;
+    if (this.inFlightToolCallId && this.inFlightToolCallId.startsWith(prefix)) {
+      this.inFlightToolCallId = null;
+    }
+  }
+
   /** Push the latest JobDetail snapshot to Sonnet mid-session. Used when
    *  the user types a field manually while recording — Sonnet then knows
    *  not to overwrite it. */
@@ -1954,6 +1980,24 @@ export class SonnetSession {
         // the UI just clears the banner.
         const reason = typeof json.reason === 'string' ? json.reason : '';
         this.callbacks.onChitchatResumed?.(reason);
+        break;
+      }
+      case 'cancel_pending_tts': {
+        // iOS Phase 6.3 parity. Backend emits this on every *_script_cancelled
+        // (engine.js:1020-1024) to silence a stale focused-mode script prompt
+        // by prefix `srv-<script>-`. Ignore an empty/missing prefix (nothing
+        // to target). The consumer (recording-context handleCancelPendingTts)
+        // cancels the DIRECT speak()/deferredTtsRef prompt + clears its ask
+        // state; forward-looking, it also purges the confirmation FIFO by
+        // prefix (no-op today — confirmations carry no cancelKey).
+        const prefix = typeof json.prefix === 'string' ? json.prefix : '';
+        const sessionId = typeof json.sessionId === 'string' ? (json.sessionId as string) : null;
+        clientDiagnostic('cancel_pending_tts_decoded', {
+          hasPrefix: prefix.length > 0,
+          prefixPreview: prefix.slice(0, 24),
+        });
+        if (!prefix) break;
+        this.callbacks.onCancelPendingTts?.({ prefix, sessionId });
         break;
       }
       case 'cost_update': {
