@@ -588,6 +588,228 @@ export function speakElevenLabs(
   });
 }
 
+/** Prepared-audio handle from `prepareElevenLabs` — the fetch/play split that
+ *  lets the confirmation FIFO apply its last-mile deferral gate AFTER the
+ *  fetch/decode but BEFORE audio starts. */
+export interface PreparedElevenLabs {
+  /** Start playback of the already-fetched audio (fires `lifecycle.onStart`
+   *  on the `playing` event, `onEnd` on `ended`, `onError` on a play error). */
+  play: () => void;
+  /** Abort + revoke WITHOUT playing. Fires no outward lifecycle terminal —
+   *  the FIFO owns the un-record via its own `onDiscarded`. */
+  discard: () => void;
+}
+
+/**
+ * Fetch ElevenLabs audio for `text` and hand back a prepared handle WITHOUT
+ * playing it. This is the fetch/play split the confirmation FIFO needs: iOS
+ * re-checks `shouldDeferPlayback` at the PLAYBACK moment (playOrDeferQueueHead,
+ * AlertManager.swift:1648), which runs AFTER the fetch/decode Task — so an
+ * inspector who starts speaking DURING the 1-3s fetch window is not talked
+ * over. `speakElevenLabs` (kept unchanged for the direct `speak()` path) fuses
+ * fetch+play and cannot express that gap; `prepareElevenLabs` splits them.
+ *
+ * `onPrepared(handle)` fires once when audio is fetched + decoded and ready to
+ * play. `onPrepared(null, reason)` fires on a PRE-playback failure — the caller
+ * falls back to native TTS for any reason except `'aborted'` (which means a
+ * supersede/preempt already claimed the channel).
+ *
+ * Reuses the same cancel-before-replace module state as `speakElevenLabs`
+ * (`activeAbortController` / `sharedAudio` / `activeBlobUrl` / `activeLifecycle`
+ * / `terminalFiredLifecycles`): the FIFO plays one head at a time and the
+ * direct path preempts it, so only one ElevenLabs lifecycle is ever live.
+ */
+export function prepareElevenLabs(
+  text: string,
+  lifecycle: ElevenLabsLifecycle = {},
+  onPrepared: (prepared: PreparedElevenLabs | null, reason?: ElevenLabsFailureReason) => void
+): void {
+  cancelElevenLabs();
+  activeLifecycle = lifecycle;
+
+  clientDiagnostic('elevenlabs_prepare_entered', {
+    textLength: text.length,
+    textPreview: text.slice(0, 80),
+    hasActiveSessionId: Boolean(activeSessionId),
+  });
+
+  if (!isElevenLabsAvailable()) {
+    onPrepared(null, 'offline');
+    return;
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    onPrepared(null, 'offline');
+    return;
+  }
+  if (!activeSessionId) {
+    onPrepared(null, 'no-session');
+    return;
+  }
+  const token = getToken();
+  if (!token) {
+    onPrepared(null, 'no-token');
+    return;
+  }
+  const audio = getSharedAudio();
+  if (!audio) {
+    onPrepared(null, 'play');
+    return;
+  }
+
+  const controller = new AbortController();
+  activeAbortController = controller;
+  let timeoutFired = false;
+  const timeoutId = window.setTimeout(() => {
+    timeoutFired = true;
+    controller.abort();
+  }, FETCH_TIMEOUT_MS);
+
+  // Playback-phase terminal. Only fires AFTER play() is invoked; identical
+  // WeakSet/activeLifecycle discipline to speakElevenLabs.settle so a
+  // superseded lifecycle can't double-fire.
+  let playSettled = false;
+  const onPlaying = () => {
+    clientDiagnostic('elevenlabs_prepared_playing', {});
+    lifecycle.onStart?.();
+  };
+  const onEnded = () => {
+    clientDiagnostic('elevenlabs_prepared_ended', {});
+    settlePlay(true);
+  };
+  const onAudioError = () => {
+    clientDiagnostic('elevenlabs_prepared_audio_error', {});
+    settlePlay(false, 'play');
+  };
+  const detach = () => {
+    audio.removeEventListener('playing', onPlaying);
+    audio.removeEventListener('ended', onEnded);
+    audio.removeEventListener('error', onAudioError);
+  };
+  const revoke = () => {
+    if (activeBlobUrl) {
+      try {
+        URL.revokeObjectURL(activeBlobUrl);
+      } catch {
+        /* ignore */
+      }
+      activeBlobUrl = null;
+    }
+  };
+  function settlePlay(ok: boolean, reason?: ElevenLabsFailureReason) {
+    if (playSettled) return;
+    playSettled = true;
+    window.clearTimeout(timeoutId);
+    if (activeLifecycle === lifecycle) activeLifecycle = null;
+    const alreadyTerminal = terminalFiredLifecycles.has(lifecycle);
+    if (!alreadyTerminal) {
+      terminalFiredLifecycles.add(lifecycle);
+      if (!ok && reason) lifecycle.onError?.(reason);
+      else if (ok) lifecycle.onEnd?.();
+    }
+    detach();
+    if (activeAbortController === controller) activeAbortController = null;
+    revoke();
+  }
+
+  clientDiagnostic('elevenlabs_prepare_fetch_start', {});
+  fetch(`${API_BASE_URL}/api/proxy/elevenlabs-tts`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    credentials: 'include',
+    body: JSON.stringify({ text, sessionId: activeSessionId }),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (controller.signal.aborted) {
+        window.clearTimeout(timeoutId);
+        if (activeLifecycle === lifecycle) activeLifecycle = null;
+        onPrepared(null, 'aborted');
+        return;
+      }
+      if (!res.ok) {
+        window.clearTimeout(timeoutId);
+        if (activeLifecycle === lifecycle) activeLifecycle = null;
+        if (activeAbortController === controller) activeAbortController = null;
+        onPrepared(null, 'fetch');
+        return;
+      }
+      const blob = await res.blob();
+      if (controller.signal.aborted) {
+        window.clearTimeout(timeoutId);
+        if (activeLifecycle === lifecycle) activeLifecycle = null;
+        onPrepared(null, 'aborted');
+        return;
+      }
+      window.clearTimeout(timeoutId);
+      clientDiagnostic('elevenlabs_prepare_fetch_ok', { blobSize: blob.size });
+      const url = URL.createObjectURL(blob);
+      activeBlobUrl = url;
+
+      const handle: PreparedElevenLabs = {
+        play: () => {
+          audio.addEventListener('playing', onPlaying, { once: true });
+          audio.addEventListener('ended', onEnded);
+          audio.addEventListener('error', onAudioError);
+          audio.muted = false;
+          audio.volume = 1.0;
+          audio.src = url;
+          const playPromise = audio.play();
+          if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch((err: unknown) => {
+              const name = err instanceof Error ? err.name : 'unknown';
+              const message = err instanceof Error ? err.message.slice(0, 120) : '';
+              clientDiagnostic('elevenlabs_prepared_play_rejected', { errorName: name, message });
+              settlePlay(false, 'play');
+            });
+          }
+        },
+        discard: () => {
+          // Abort + revoke WITHOUT firing an outward terminal. The FIFO nulls
+          // its head state (and un-records the dedupe key) before calling this.
+          window.clearTimeout(timeoutId);
+          if (activeLifecycle === lifecycle) activeLifecycle = null;
+          if (activeAbortController === controller) {
+            try {
+              controller.abort();
+            } catch {
+              /* ignore */
+            }
+            activeAbortController = null;
+          }
+          detach();
+          try {
+            audio.pause();
+            audio.removeAttribute('src');
+            audio.load();
+          } catch {
+            /* ignore */
+          }
+          revoke();
+        },
+      };
+      onPrepared(handle);
+    })
+    .catch((err: unknown) => {
+      window.clearTimeout(timeoutId);
+      if (activeLifecycle === lifecycle) activeLifecycle = null;
+      if (activeAbortController === controller) activeAbortController = null;
+      if (controller.signal.aborted) {
+        onPrepared(null, timeoutFired ? 'timeout' : 'aborted');
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'fetch failed';
+      clientDiagnostic('elevenlabs_prepare_fetch_threw', { message: message.slice(0, 120) });
+      if (message.includes('aborted') || message.includes('AbortError')) {
+        onPrepared(null, 'aborted');
+      } else {
+        onPrepared(null, 'fetch');
+      }
+    });
+}
+
 /** Test-only: clear all module state so each test starts clean. */
 export function __resetElevenLabsForTests(): void {
   cancelElevenLabs();
