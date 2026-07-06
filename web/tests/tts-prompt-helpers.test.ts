@@ -58,12 +58,12 @@ describe('handleCancelPendingTts', () => {
   interface Harness {
     deferredTtsRef: { current: DeferredTts | null };
     activeDirectPromptToolCallIdRef: { current: ActiveDirectPrompt | null };
-    cancelSpeech: ReturnType<typeof vi.fn>;
-    purgeQueue: ReturnType<typeof vi.fn>;
-    clearSonnetInFlightByPrefix: ReturnType<typeof vi.fn>;
-    removeInFlightQuestionByPrefix: ReturnType<typeof vi.fn>;
+    cancelSpeech: ReturnType<typeof vi.fn<(opts?: { resetQueue?: boolean }) => void>>;
+    purgeQueue: ReturnType<typeof vi.fn<(prefix: string) => void>>;
+    clearSonnetInFlightByPrefix: ReturnType<typeof vi.fn<(prefix: string) => void>>;
+    removeInFlightQuestionByPrefix: ReturnType<typeof vi.fn<(prefix: string) => void>>;
     questionsRef: { current: CancellableQuestion[] };
-    setQuestions: ReturnType<typeof vi.fn>;
+    setQuestions: ReturnType<typeof vi.fn<(qs: CancellableQuestion[]) => void>>;
     dismissTimersRef: { current: Map<string, ReturnType<typeof setTimeout>> };
     windowOpen: boolean;
   }
@@ -89,12 +89,12 @@ describe('handleCancelPendingTts', () => {
     h = {
       deferredTtsRef: ref<DeferredTts | null>(null),
       activeDirectPromptToolCallIdRef: ref<ActiveDirectPrompt | null>(null),
-      cancelSpeech: vi.fn(),
-      purgeQueue: vi.fn(),
-      clearSonnetInFlightByPrefix: vi.fn(),
-      removeInFlightQuestionByPrefix: vi.fn(),
+      cancelSpeech: vi.fn<(opts?: { resetQueue?: boolean }) => void>(),
+      purgeQueue: vi.fn<(prefix: string) => void>(),
+      clearSonnetInFlightByPrefix: vi.fn<(prefix: string) => void>(),
+      removeInFlightQuestionByPrefix: vi.fn<(prefix: string) => void>(),
       questionsRef: ref<CancellableQuestion[]>([]),
-      setQuestions: vi.fn(),
+      setQuestions: vi.fn<(qs: CancellableQuestion[]) => void>(),
       dismissTimersRef: ref(new Map<string, ReturnType<typeof setTimeout>>()),
       windowOpen: false,
     };
