@@ -33,6 +33,7 @@ import {
   speak,
   speakConfirmation,
 } from '@/lib/recording/tts';
+import { __resetForTests as __resetTtsQueueForTests } from '@/lib/recording/tts-queue';
 
 type ShimUtterance = {
   text: string;
@@ -74,6 +75,10 @@ beforeEach(() => {
     SpeechSynthesisUtteranceShim;
   window.localStorage.clear();
   __resetTtsWindowForTests();
+  // speakConfirmation() now FIFO-queues (iOS Phase 7.1). The jsdom shim never
+  // fires utterance.onend, so a head would stay busy and leak into the next
+  // test — reset the queue between tests.
+  __resetTtsQueueForTests();
 });
 
 afterEach(() => {

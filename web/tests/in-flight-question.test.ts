@@ -218,3 +218,40 @@ describe('InFlightQuestionTracker', () => {
     expect(payload?.type).toBe('a');
   });
 });
+
+describe('removeByToolCallIdPrefix (cancel_pending_tts state-clear)', () => {
+  it('drops matching PENDING entries, keeps non-matching', () => {
+    const t = new InFlightQuestionTracker();
+    t.enqueue({ type: 'a', question: 'BS number?', toolCallId: 'srv-bs-1' });
+    t.enqueue({ type: 'b', question: 'Other?', toolCallId: 'other-2' });
+    t.removeByToolCallIdPrefix('srv-bs-');
+    expect(t.pendingCount).toBe(1);
+    // The surviving one promotes + attaches.
+    t.onTtsStart('Other?');
+    expect(t.takePayload('yes')?.type).toBe('b');
+  });
+
+  it('clears the ACTIVE slot when its toolCallId matches the prefix', () => {
+    const t = new InFlightQuestionTracker();
+    t.enqueue({ type: 'a', question: 'BS number?', toolCallId: 'srv-bs-1' });
+    t.onTtsStart('BS number?');
+    expect(t.hasActiveSlot).toBe(true);
+    t.removeByToolCallIdPrefix('srv-bs-');
+    expect(t.hasActiveSlot).toBe(false);
+  });
+
+  it('leaves the slot when the toolCallId does NOT match', () => {
+    const t = new InFlightQuestionTracker();
+    t.enqueue({ type: 'a', question: 'BS number?', toolCallId: 'srv-bs-1' });
+    t.onTtsStart('BS number?');
+    t.removeByToolCallIdPrefix('srv-ir-');
+    expect(t.hasActiveSlot).toBe(true);
+  });
+
+  it('an empty prefix is a no-op', () => {
+    const t = new InFlightQuestionTracker();
+    t.enqueue({ type: 'a', question: 'Q?', toolCallId: 'srv-bs-1' });
+    t.removeByToolCallIdPrefix('');
+    expect(t.pendingCount).toBe(1);
+  });
+});

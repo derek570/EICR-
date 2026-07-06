@@ -139,6 +139,75 @@ describe('SonnetSession', () => {
   });
 
   // ────────────────────────────────────────────────────────────────────────
+  // cancel_pending_tts decode (web TTS FIFO parity — iOS Phase 6.3)
+  // ────────────────────────────────────────────────────────────────────────
+  describe('cancel_pending_tts decode', () => {
+    it('fires onCancelPendingTts with the exact { prefix, sessionId } shape', async () => {
+      const onCancelPendingTts = vi.fn();
+      const session = new SonnetSession({ onCancelPendingTts });
+      session.connect({ sessionId: 'c-1', jobId: 'job-1', certificateType: 'EICR' });
+      await server.connected;
+
+      server.send(
+        JSON.stringify({ type: 'cancel_pending_tts', prefix: 'srv-ir-', sessionId: 'srv-abc' })
+      );
+      await Promise.resolve();
+
+      expect(onCancelPendingTts).toHaveBeenCalledWith({ prefix: 'srv-ir-', sessionId: 'srv-abc' });
+    });
+
+    it('defaults sessionId to null when the frame omits it', async () => {
+      const onCancelPendingTts = vi.fn();
+      const session = new SonnetSession({ onCancelPendingTts });
+      session.connect({ sessionId: 'c-2', jobId: 'job-2', certificateType: 'EICR' });
+      await server.connected;
+
+      server.send(JSON.stringify({ type: 'cancel_pending_tts', prefix: 'srv-bs-' }));
+      await Promise.resolve();
+
+      expect(onCancelPendingTts).toHaveBeenCalledWith({ prefix: 'srv-bs-', sessionId: null });
+    });
+
+    it('IGNORES a frame with an empty/missing prefix', async () => {
+      const onCancelPendingTts = vi.fn();
+      const session = new SonnetSession({ onCancelPendingTts });
+      session.connect({ sessionId: 'c-3', jobId: 'job-3', certificateType: 'EICR' });
+      await server.connected;
+
+      server.send(JSON.stringify({ type: 'cancel_pending_tts', prefix: '' }));
+      server.send(JSON.stringify({ type: 'cancel_pending_tts' }));
+      await Promise.resolve();
+
+      expect(onCancelPendingTts).not.toHaveBeenCalled();
+    });
+
+    it('clearInFlightToolCallIdByPrefix drops a matching in-flight ask, keeps a non-match', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'c-4', jobId: 'job-4', certificateType: 'EICR' });
+      await server.connected;
+
+      // Latch an in-flight ask_user toolCallId via the wire.
+      server.send(
+        JSON.stringify({
+          type: 'ask_user_started',
+          question: 'BS number?',
+          tool_call_id: 'srv-bs-1',
+        })
+      );
+      await Promise.resolve();
+      expect(session.peekInFlightToolCallId()).toBe('srv-bs-1');
+
+      // Non-matching prefix leaves it.
+      session.clearInFlightToolCallIdByPrefix('srv-ir-');
+      expect(session.peekInFlightToolCallId()).toBe('srv-bs-1');
+
+      // Matching prefix clears it.
+      session.clearInFlightToolCallIdByPrefix('srv-bs-');
+      expect(session.peekInFlightToolCallId()).toBeNull();
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
   // Commit B — reconnect state machine (feature-flagged)
   //
   // We stub `Math.random` to 0 so `computeBackoffDelay` collapses to 0 and
