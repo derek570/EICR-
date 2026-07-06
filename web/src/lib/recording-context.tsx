@@ -61,13 +61,26 @@ import {
   cancelSpeech,
   confirmationToSentence,
   getConfirmationModeEnabled,
+  getTtsAudioWindow,
+  isDirectAudioActive,
   isTTSEcho,
   isWithinTtsWindow,
   primeTts,
   setTtsLifecycleObserver,
   speak as speakRaw,
   speakConfirmation,
+  type SpeakOptions,
 } from './recording/tts';
+import {
+  purge as ttsQueuePurge,
+  resumeIfDeferred as ttsQueueResumeIfDeferred,
+  setOnDiscarded as ttsQueueSetOnDiscarded,
+  setShouldDeferPlayback as ttsQueueSetShouldDeferPlayback,
+} from './recording/tts-queue';
+import {
+  handleCancelPendingTts,
+  handleInspectorStoppedSpeaking,
+} from './recording/tts-prompt-helpers';
 import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tts';
 import { clientDiagnostic, setDiagnosticSink } from './recording/client-diagnostic';
 import { record as recordLifecycle } from './diagnostics/lifecycle-log';
@@ -1173,10 +1186,61 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // question text, so the observer needs to know what's playing.
   // Naming: `speak` shadows the renamed import (`speakRaw`) so existing
   // call sites elsewhere in this file continue to work unchanged.
-  const speak = React.useCallback((text: string) => {
+  const speak = React.useCallback((text: string, options?: SpeakOptions) => {
     lastSpokenTextRef.current = text;
-    speakRaw(text);
+    speakRaw(text, options);
   }, []);
+  // Token-paired tracker for the currently-live DIRECT prompt (ask_user /
+  // drained deferred prompt). Set by `speakDirectPrompt` at dispatch, cleared
+  // on the prompt's terminal (token-guarded so a superseding prompt's stale
+  // terminal can't clear the newer one's ref). Read by `handleCancelPendingTts`
+  // to silence an in-flight script prompt — active from DISPATCH (before audio)
+  // until terminal, NOT gated on the audio window.
+  const activeDirectPromptToolCallIdRef = React.useRef<{
+    toolCallId: string | null;
+    token: symbol;
+  } | null>(null);
+  // The ONE direct-prompt dispatch site (immediate onQuestion branch AND the
+  // deferred-drain). Sets the cancellable ref/token, then `speak()` (which
+  // preempts the confirmation FIFO and sets the tts.ts 'direct' owner
+  // transitively). On terminal, clears the ref (token-guarded) FIRST, THEN
+  // resumes any confirmation head parked behind the prompt — order is
+  // load-bearing (a resume while the owner is still 'direct' re-defers and
+  // strands the head forever).
+  const speakDirectPrompt = React.useCallback(
+    (text: string, toolCallId: string | null) => {
+      const token = Symbol('direct-prompt');
+      activeDirectPromptToolCallIdRef.current = { toolCallId, token };
+      const clearRefIfMine = () => {
+        if (activeDirectPromptToolCallIdRef.current?.token === token) {
+          activeDirectPromptToolCallIdRef.current = null;
+        }
+      };
+      speak(text, {
+        onEnd: () => {
+          clearRefIfMine();
+          ttsQueueResumeIfDeferred();
+        },
+        onError: () => {
+          clearRefIfMine();
+          ttsQueueResumeIfDeferred();
+        },
+      });
+    },
+    [speak]
+  );
+  // Shared "inspector finished a sentence" resume — called from BOTH
+  // speaking-ended sites (`onUtteranceEnd` AND the phantom `speechConfirmTimer`
+  // reset). Drains the deferred DIRECT prompt (Symptom-2b fix) AND releases a
+  // deferred CONFIRMATION head (its Symptom-2b clone). Idempotent — safe if
+  // both sites fire for the same utterance.
+  const onInspectorStoppedSpeaking = React.useCallback(() => {
+    handleInspectorStoppedSpeaking({
+      deferredTtsRef,
+      speakDirectPrompt,
+      resumeIfDeferred: ttsQueueResumeIfDeferred,
+    });
+  }, [speakDirectPrompt]);
   // D4 — pending-readings buffer. iOS canon
   // `TranscriptProcessor.swift:52-287` + `askAboutPendingReadings` at
   // `DeepgramRecordingViewModel.swift:5417`. When Sonnet returns a
@@ -1800,27 +1864,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               // SpeechStarted was phantom — flip back to "not speaking"
               // so a deferred TTS isn't held indefinitely.
               isInspectorSpeakingRef.current = false;
+              // Symptom-2b fix: a phantom SpeechStarted produces NO
+              // `onUtteranceEnd`, so pre-fix this cleared the speaking flag
+              // WITHOUT draining `deferredTtsRef` — the deferred question (and
+              // any deferred confirmation head) was stranded forever. Drain
+              // both from the shared helper here too.
+              onInspectorStoppedSpeaking();
             }, SPEECH_CONFIRM_TIMEOUT_MS);
           },
           onUtteranceEnd: () => {
-            // Inspector finished a sentence. Flip the flag back and
-            // drain any deferred TTS so the question they were talking
-            // over plays now. Mirrors iOS `resumeDeferredTTSIfNeeded` at
-            // AlertManager.swift:1144-1179.
+            // Inspector finished a sentence. Flip the flag back and drain any
+            // deferred TTS so the question they were talking over plays now.
+            // Mirrors iOS `resumeDeferredTTSIfNeeded` (AlertManager.swift:
+            // 1144-1179). The shared helper drains the deferred DIRECT prompt
+            // (via `speakDirectPrompt` so it stays cancellable) AND releases a
+            // deferred CONFIRMATION head.
             isInspectorSpeakingRef.current = false;
             if (speechConfirmTimerRef.current) {
               clearTimeout(speechConfirmTimerRef.current);
               speechConfirmTimerRef.current = null;
             }
-            const deferred = deferredTtsRef.current;
-            if (deferred) {
-              deferredTtsRef.current = null;
-              clientDiagnostic('tts_deferred_drain', {
-                toolCallIdShort: deferred.toolCallId?.slice(0, 12) ?? null,
-                textPreview: deferred.text.slice(0, 80),
-              });
-              speak(deferred.text);
-            }
+            onInspectorStoppedSpeaking();
           },
           onFinalTranscript: (text, confidence) => {
             setInterim('');
@@ -1873,7 +1937,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                   textPreview: text.slice(0, 80),
                   wordCount,
                 });
-                cancelSpeech();
+                // Barge-in cancels ONLY the in-flight DIRECT prompt (the ask
+                // the inspector is answering) — `resetQueue: false` leaves the
+                // confirmation FIFO intact so read-backs still queued from a
+                // prior turn aren't nuked (zero read-back). tts.ts owner-gates
+                // this: it no-ops when a confirmation (not the question) owns
+                // the audio.
+                cancelSpeech({ resetQueue: false });
                 // Fall through — don't return — so the transcript routes
                 // to Sonnet AND fires ask_user_answered below.
               } else {
@@ -2050,7 +2120,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         return key;
       }, sourceSampleRate);
     },
-    [liveFill]
+    [liveFill, onInspectorStoppedSpeaking]
   );
 
   /** Apply a structured Sonnet extraction to the active JobDetail.
@@ -2203,7 +2273,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           dedupeKey,
           sentencePreview: sentence.slice(0, 80),
         });
-        speakConfirmation(sentence);
+        // FIFO-enqueue (no longer clobbers a prior confirmation). Thread the
+        // dedupeKey so the queue can un-record it via `onDiscarded` if this
+        // confirmation is discarded before it ever plays (overflow / preempt /
+        // purge / reset) — the sole "never a permanent read-back drop"
+        // mechanism (Audio-First #1).
+        speakConfirmation(sentence, { dedupeKey });
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they
@@ -2241,6 +2316,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     fieldSourceTrackerRef.current = new FieldSourceTracker();
     fieldSourceTrackerRef.current.seedFromJob(jobRef.current);
     cumulativeTranscriptRef.current = '';
+
+    // Register the confirmation-FIFO session wiring (the ONLY registrations —
+    // the player is injected per-enqueue by `speakConfirmation`). The defer
+    // gate reads live refs/state: defer a confirmation while the inspector is
+    // mid-utterance OR while a direct `speak()` prompt owns the audio (so a
+    // lower-priority read-back can't cut off an urgent ask_user). `onDiscarded`
+    // un-records a dedupe key for any confirmation discarded before it played,
+    // so the backend can re-speak it on a later re-emit (Audio-First #1). Both
+    // are restored to defaults by `ttsQueue.reset()` (run inside the
+    // `cancelSpeech({resetQueue:true})` at stop/unmount).
+    ttsQueueSetShouldDeferPlayback(() => isInspectorSpeakingRef.current || isDirectAudioActive());
+    ttsQueueSetOnDiscarded((dedupeKey) => {
+      confirmedFieldKeysRef.current.delete(dedupeKey);
+    });
 
     const session = new SonnetSession({
       onStateChange: setSonnetState,
@@ -2430,7 +2519,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
             deferredTtsRef.current = { text: q.question, toolCallId };
           } else {
-            speak(q.question);
+            // Dispatch through `speakDirectPrompt` (NOT plain `speak`) so the
+            // prompt stays cancellable — a later `cancel_pending_tts` during
+            // its fetch/playback can silence it and clear its ask state.
+            const toolCallId =
+              typeof q.tool_call_id === 'string' && q.tool_call_id.length > 0
+                ? q.tool_call_id
+                : null;
+            speakDirectPrompt(q.question, toolCallId);
           }
         } else {
           clientDiagnostic('onQuestion_skipped_speak', {
@@ -2698,6 +2794,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           setSonnetCostUsd(update.totalJobCost);
         }
       },
+      onCancelPendingTts: ({ prefix }) => {
+        // iOS Phase 6.3 parity. The cancelled focused-mode script prompt rides
+        // the DIRECT `speak()`/`deferredTtsRef` path — silence THAT (deferred
+        // OR in-flight, NOT gated on the audio window) and clear its ask state
+        // everywhere it lingers. `ttsQueue.purge(prefix)` is a forward hook
+        // (no-op today — confirmations carry no cancelKey). Pure helper so the
+        // seam is unit-testable and dodges the dismiss-timer hooks TDZ.
+        handleCancelPendingTts(prefix, {
+          deferredTtsRef,
+          activeDirectPromptToolCallIdRef,
+          cancelSpeech,
+          purgeQueue: ttsQueuePurge,
+          isTtsWindowOpen: () => getTtsAudioWindow()?.endMs == null && getTtsAudioWindow() != null,
+          clearSonnetInFlightByPrefix: (p) => sonnetRef.current?.clearInFlightToolCallIdByPrefix(p),
+          removeInFlightQuestionByPrefix: (p) =>
+            inFlightQuestionRef.current.removeByToolCallIdPrefix(p),
+          questionsRef,
+          setQuestions,
+          dismissTimersRef,
+        });
+      },
       onError: (err, recoverable) => {
         pipelineLog('recording_sonnet_on_error', {
           recoverable,
@@ -2730,7 +2847,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // can fire `client_diagnostic` envelopes without plumbing the session
     // reference through every layer. Cleared on teardownSonnet.
     setDiagnosticSink(session);
-  }, [applyExtraction]);
+  }, [applyExtraction, speakDirectPrompt]);
 
   /** Open the mic stream and forward audio to Deepgram. Shared between
    *  `start()` and `resume()`. Also owns the SleepManager + ring buffer
