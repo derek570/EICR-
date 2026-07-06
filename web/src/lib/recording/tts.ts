@@ -5,9 +5,16 @@ import {
   isElevenLabsAvailable,
   getActiveSessionId,
   primeAudioElement,
+  prepareElevenLabs,
   speakElevenLabs,
   type ElevenLabsFailureReason,
 } from './elevenlabs-tts';
+import {
+  enqueueConfirmation,
+  preemptFlush as ttsQueuePreemptFlush,
+  reset as ttsQueueReset,
+  type QueuePlayControls,
+} from './tts-queue';
 import { clientDiagnostic } from './client-diagnostic';
 
 /**
@@ -29,12 +36,26 @@ import { clientDiagnostic } from './client-diagnostic';
  *     transcript so Sonnet only emits confirmation strings when the
  *     user wants them — see DeepgramRecordingViewModel.swift:1863.
  *
- * Why a singleton + cancel-before-queue:
- *   - The inspector may produce rapid-fire confirmations (each Sonnet
- *     turn can acknowledge several field fills at once). Queueing each
- *     into the browser's utterance queue would backlog speech behind
- *     stale news. The iOS TTS cancels the current utterance before
- *     speaking a new one — we mirror that for parity.
+ * Two paths, mirroring iOS AlertManager Phase 7.1 (`AlertManager.swift:236`):
+ *   - `speakConfirmation()` — read-backs — are FIFO-QUEUED via `tts-queue.ts`
+ *     so rapid back-to-back confirmations (a Sonnet turn can acknowledge
+ *     several field fills at once) play IN ORDER, one at a time. iOS does NOT
+ *     cancel between confirmations; it queues them. The earlier prose here
+ *     claimed "iOS cancels … we mirror that for parity" — that was FACTUALLY
+ *     WRONG and was the root of the field bug where a two-circuit turn read
+ *     back only the last circuit (the first was aborted 5ms in). Audio-First
+ *     invariant #1 ("every dictated reading read back, exactly once, never
+ *     zero") requires the queue.
+ *   - `speak()` — ask_user prompts / validation alerts / tour narration — stay
+ *     on the DIRECT path (no FIFO), matching iOS's separate `speakWithTTS` +
+ *     single `deferredTTS` slot. A direct prompt is more urgent than a queued
+ *     read-back, so `speak()` PREEMPTS the confirmation queue (`preemptFlush()`)
+ *     before dispatching. Routing an `ask_user` through the FIFO would make a
+ *     "which circuit?" question wait behind up to 6 queued read-backs.
+ *   - `cancelElevenLabs()` / `speechSynthesis.cancel()` are the low-level
+ *     cancel-before-replace PRIMITIVES, still used by the queue's teardown
+ *     paths and the direct `speak()` preempt/barge-in — not by a per-
+ *     confirmation cancel.
  *   - A shared utterance object keeps voice/rate/pitch consistent across
  *     calls; constructing a fresh one per speak() would also work but
  *     this keeps diffing trivial in tests.
@@ -148,13 +169,49 @@ function pickVoice(): SpeechSynthesisVoice | null {
   }
 }
 
-interface SpeakOptions {
+export interface SpeakOptions {
   /** Bypass any internal preference check. Used by `speakConfirmation`
    *  for the ON-transition preview so the inspector hears their toggle
    *  work even though the new value hasn't been re-read yet. */
   force?: boolean;
   lang?: string;
+  /** Confirmation dedupe key — forwarded into the FIFO so the queue can
+   *  un-record it via `onDiscarded` if the confirmation is discarded before
+   *  it ever plays (overflow / preempt / purge / reset). */
+  dedupeKey?: string;
+  /** Fired when real audio begins (ElevenLabs `playing` / native
+   *  `utterance.onstart`). Load-bearing for the FIFO's `startedPlayback` flag
+   *  and the direct-audio-owner tracking. */
+  onStart?: () => void;
   onEnd?: () => void;
+  /** Fired on a terminal error (`'aborted'` on supersede/preempt, native
+   *  synth error, etc.). Threaded so the direct-prompt owner/ref can be
+   *  cleared token-guarded on the abort path (which does NOT fire `onEnd`). */
+  onError?: (reason?: unknown) => void;
+}
+
+/**
+ * Which path owns the currently-live audio channel — the direct `speak()`
+ * path or the confirmation FIFO. Token-guarded so a superseding dispatch's
+ * synchronous prior-`onEnd` (fired by `cancelElevenLabs()`) can't null the
+ * owner just set for the NEW prompt.
+ *
+ * - `dispatch()` is the SOLE place that sets `'direct'` (synchronously, at
+ *   entry, when `caller === 'speak'`, before the fetch) so the flag is
+ *   `'direct'` throughout the pre-audio fetch window — the window a fast
+ *   `cancel_pending_tts` arrives in.
+ * - The FIFO player sets `'queue'` from its playback `onStart`.
+ * - Every clear is token-guarded (a terminal only clears if its token still
+ *   matches); a full teardown (`cancelSpeech({resetQueue:true})`) clears
+ *   unconditionally because it tears everything down synchronously.
+ */
+let activeAudioOwner: { owner: 'direct' | 'queue'; token: symbol } | null = null;
+
+/** True iff a direct `speak()` prompt owns the audio channel (playing OR still
+ *  fetching). Read live by recording-context's confirmation-deferral gate so a
+ *  lower-priority confirmation doesn't cut off an in-flight ask_user prompt. */
+export function isDirectAudioActive(): boolean {
+  return activeAudioOwner?.owner === 'direct';
 }
 
 /**
@@ -400,6 +457,38 @@ function dispatch(
   // starts).
   registerTtsFingerprint(trimmed);
 
+  // Direct `speak()` path OWNS the audio channel. Set the owner SYNCHRONOUSLY
+  // here (the SOLE `'direct'` set-site) — before the ElevenLabs/native
+  // dispatch, so the flag is `'direct'` throughout the pre-audio fetch window
+  // (when a fast `cancel_pending_tts` / barge-in arrives). Token-guarded so a
+  // superseding dispatch's synchronous prior-onEnd can't null the new prompt's
+  // owner. Cleared on the wrapped terminal (onEnd/onError, incl. the abort
+  // path) below.
+  if (caller === 'speak') {
+    const token = Symbol('direct');
+    activeAudioOwner = { owner: 'direct', token };
+    const clearIfMine = () => {
+      if (activeAudioOwner?.token === token) activeAudioOwner = null;
+    };
+    const wrapped: SpeakOptions = {
+      force: options?.force,
+      lang: options?.lang,
+      dedupeKey: options?.dedupeKey,
+      onStart: options?.onStart,
+      onEnd: () => {
+        clearIfMine();
+        options?.onEnd?.();
+      },
+      onError: (reason) => {
+        clearIfMine();
+        options?.onError?.(reason);
+      },
+    };
+    if (elevenLabsAvailable && sessionId) dispatchElevenLabs(trimmed, wrapped);
+    else dispatchNative(trimmed, wrapped);
+    return;
+  }
+
   if (elevenLabsAvailable && sessionId) {
     dispatchElevenLabs(trimmed, options);
     return;
@@ -463,6 +552,11 @@ function dispatchElevenLabs(text: string, options?: SpeakOptions): void {
       // the window — calling dispatchNative here would race against it.
       if (reason === 'aborted') {
         clientDiagnostic('tts_elevenlabs_aborted', {});
+        // Fire onError('aborted') so a direct-prompt owner/ref wrapper
+        // (dispatch's `caller==='speak'` branch) clears — the abort path
+        // otherwise returns WITHOUT any terminal, leaving a stale 'direct'
+        // owner that would then swallow the NEXT prompt's cancel.
+        options?.onError?.('aborted');
         return;
       }
       clientDiagnostic('tts_elevenlabs_fallback_to_native', {
@@ -540,6 +634,12 @@ function dispatchNative(text: string, options?: SpeakOptions): void {
         myStartMs = Date.now();
         ttsWindow = { startMs: myStartMs, endMs: null };
       }
+      // Fire onStart AFTER the ttsWindow restamp. Load-bearing for the FIFO:
+      // on iPhone/iPad Safari the native path is the DEFAULT until the
+      // ElevenLabs gesture grant fires, so a native confirmation head must set
+      // `startedPlayback` from THIS event or a heard confirmation is un-
+      // recorded on teardown and double-read on re-emit.
+      options?.onStart?.();
     };
     utterance.onend = () => {
       closeWindow();
@@ -547,10 +647,13 @@ function dispatchNative(text: string, options?: SpeakOptions): void {
     };
     // Some browsers fire `onerror` instead of `onend` on cancel; the
     // tour controller calls cancelSpeech() on every step change so a
-    // missing end-event would stall auto-advance. `onerror` fallback.
+    // missing end-event would stall auto-advance. When an explicit
+    // `onError` is supplied (direct-prompt / FIFO wiring) fire that so the
+    // owner/ref clears; otherwise fall back to `onEnd` (tour auto-advance).
     utterance.onerror = () => {
       closeWindow();
-      options?.onEnd?.();
+      if (options?.onError) options.onError('native-error');
+      else options?.onEnd?.();
     };
     window.speechSynthesis.speak(utterance);
   } catch {
@@ -649,7 +752,132 @@ export function speak(text: string, options?: SpeakOptions): void {
     options?.onEnd?.();
     return;
   }
+  // A direct prompt is more urgent than a queued read-back — PREEMPT the
+  // confirmation FIFO before dispatching so the question plays with nothing
+  // racing behind it. preemptFlush() empties the queue deterministically and
+  // un-records (via onDiscarded) any still-unplayed confirmations so the
+  // backend can re-speak them on a later re-emit. This runs BEFORE dispatch()
+  // sets the 'direct' owner (preemptFlush touches queue state only). In a
+  // mixed apply+ask turn the flushed confirmations are dropped unless the
+  // backend re-emits — iOS-canonical (resetQueueAfterInterrupt) but NOT an
+  // absolute "never zero read-back" guarantee; the count is surfaced so the
+  // drop is monitorable in CloudWatch.
+  const discardedCount = ttsQueuePreemptFlush();
+  if (discardedCount > 0) {
+    clientDiagnostic('tts_speak_preempted_confirmation', { discarded_count: discardedCount });
+  }
   dispatch(text, options, 'speak');
+}
+
+/**
+ * The injected FIFO player for a confirmation head. Replicates `dispatch()`'s
+ * responsibilities so echo-suppression + ElevenLabs-primary/native-fallback +
+ * the mic-feedback ttsWindow stay intact (bypassing `dispatch()` would drop
+ * them): (1) registers the echo-suppression fingerprint; (2) routes to
+ * ElevenLabs when available+session, else native; (3) on a pre-playback
+ * ElevenLabs failure (reason !== 'aborted') falls back to native. The last-mile
+ * deferral gate is applied by the queue via `controls.ready(prepared)` — the
+ * player fetches, hands back the prepared audio, and the queue decides
+ * play-now vs park. Guarantees exactly one terminal (`onEnd` OR `onError`) per
+ * head so the pump advances even when a head is aborted.
+ */
+function playConfirmationHead(text: string, controls: QueuePlayControls): void {
+  registerTtsFingerprint(text);
+  const useElevenLabs = isElevenLabsAvailable() && Boolean(getActiveSessionId());
+  if (!useElevenLabs) {
+    playConfirmationNative(text, controls);
+    return;
+  }
+  // Canceller hard-aborts the in-flight fetch / stops playing ElevenLabs audio.
+  controls.registerCanceller(() => {
+    cancelElevenLabs();
+  });
+  const myToken = Symbol('queue');
+  let myStartMs: number | null = null;
+  prepareElevenLabs(
+    text,
+    {
+      onStart: () => {
+        // Real audio began — open the mic-feedback window PER HEAD (R1) and
+        // claim the 'queue' owner from the playback moment (queue heads are
+        // never targeted by cancel_pending_tts/barge-in during their fetch,
+        // so onStart timing is safe here).
+        myStartMs = Date.now();
+        ttsWindow = { startMs: myStartMs, endMs: null };
+        notifyTtsLifecycle('start');
+        activeAudioOwner = { owner: 'queue', token: myToken };
+        controls.onStart();
+      },
+      onEnd: () => {
+        if (myStartMs != null && ttsWindow && ttsWindow.startMs === myStartMs) {
+          ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+          notifyTtsLifecycle('end');
+        }
+        if (activeAudioOwner?.token === myToken) activeAudioOwner = null;
+        controls.onEnd();
+      },
+      onError: (reason) => {
+        // Only a MID-PLAYBACK error reaches here (pre-playback failures come
+        // through the onPrepared(null, reason) path below). Close the window
+        // and terminate the head so the pump advances.
+        if (ttsWindow && myStartMs != null && ttsWindow.startMs === myStartMs) {
+          ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+          notifyTtsLifecycle('end');
+        }
+        if (activeAudioOwner?.token === myToken) activeAudioOwner = null;
+        controls.onError(reason);
+      },
+    },
+    (prepared, reason) => {
+      if (prepared) {
+        controls.ready({ play: prepared.play, discard: prepared.discard });
+        return;
+      }
+      if (reason && reason !== 'aborted') {
+        // Pre-playback ElevenLabs failure → native fallback (mirror dispatch).
+        playConfirmationNative(text, controls);
+        return;
+      }
+      // Superseded/preempted before audio — terminal so the pump advances.
+      controls.onError('aborted');
+    }
+  );
+}
+
+/** Native (SpeechSynthesis) branch of the FIFO player. No async fetch, so the
+ *  last-mile gate is expressed by delaying `dispatchNative` until the queue
+ *  calls `prepared.play()`. `onStart` (from `utterance.onstart`) sets
+ *  `startedPlayback` + the 'queue' owner — the iPhone/iPad-Safari default. */
+function playConfirmationNative(text: string, controls: QueuePlayControls): void {
+  controls.registerCanceller(() => {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      /* ignore */
+    }
+  });
+  const myToken = Symbol('queue');
+  controls.ready({
+    play: () => {
+      dispatchNative(text, {
+        onStart: () => {
+          activeAudioOwner = { owner: 'queue', token: myToken };
+          controls.onStart();
+        },
+        onEnd: () => {
+          if (activeAudioOwner?.token === myToken) activeAudioOwner = null;
+          controls.onEnd();
+        },
+        onError: (reason) => {
+          if (activeAudioOwner?.token === myToken) activeAudioOwner = null;
+          controls.onError(reason);
+        },
+      });
+    },
+    discard: () => {
+      /* nothing allocated before play() on the native path */
+    },
+  });
 }
 
 /**
@@ -663,27 +891,49 @@ export function speak(text: string, options?: SpeakOptions): void {
  * backend on every `transcript` so Sonnet only emits confirmations the
  * client is willing to speak.
  */
-export function speakConfirmation(text: string, options?: SpeakOptions): void {
+export function speakConfirmation(
+  text: string,
+  options?: SpeakOptions
+): { enqueued: boolean; discardedCount: number } {
   clientDiagnostic('tts_speak_confirmation_called', {
     textLength: typeof text === 'string' ? text.length : 0,
     textPreview: typeof text === 'string' ? text.slice(0, 80) : '',
     forced: Boolean(options?.force),
   });
+  // Suppressed cases are dropped BEFORE enqueue so they never occupy a queue
+  // slot — `{ enqueued: false }` is honest. The dedupe key (recorded by the
+  // caller) STAYS recorded for a client-suppressed confirmation by design (a
+  // muted confirmation the inspector chose not to hear should not re-prompt);
+  // `onDiscarded` fires ONLY for queue-side discards.
   if (!isTtsAvailable()) {
     clientDiagnostic('tts_speak_confirmation_skipped_unavailable', {});
     options?.onEnd?.();
-    return;
+    return { enqueued: false, discardedCount: 0 };
   }
   const enabled = options?.force ? true : getConfirmationModeEnabled();
   if (!enabled) {
     clientDiagnostic('tts_speak_confirmation_skipped_muted', {});
     // Muted — fire the end callback synchronously so any caller waiting
-    // on speech end (none today, but symmetric with `speak`) doesn't
-    // stall.
+    // on speech end (none today, but symmetric with `speak`) doesn't stall.
     options?.onEnd?.();
-    return;
+    return { enqueued: false, discardedCount: 0 };
   }
-  dispatch(text, options, 'speakConfirmation');
+  const trimmed = text?.trim();
+  if (!trimmed) {
+    clientDiagnostic('tts_speak_confirmation_skipped_empty', {});
+    options?.onEnd?.();
+    return { enqueued: false, discardedCount: 0 };
+  }
+  // FIFO-queue the confirmation — the pump plays one head at a time so
+  // back-to-back read-backs no longer clobber each other. The injected player
+  // is the thin wrapper above (ElevenLabs-primary + native-fallback + echo
+  // suppression + per-head ttsWindow), NOT bare `dispatch()`.
+  return enqueueConfirmation({
+    text: trimmed,
+    dedupeKey: options?.dedupeKey,
+    play: playConfirmationHead,
+    onEnd: options?.onEnd,
+  });
 }
 
 /**
@@ -694,31 +944,75 @@ export function speakConfirmation(text: string, options?: SpeakOptions): void {
  */
 export function __resetTtsWindowForTests(): void {
   ttsWindow = null;
+  activeAudioOwner = null;
 }
 
 /**
- * Cancel any in-flight speech. Called on recording stop so the last
- * confirmation doesn't trail on after the inspector has ended the
- * session. Also closes the TTS audio window so the cooldown gate
- * doesn't keep suppressing transcripts after teardown.
+ * Cancel in-flight speech. Two modes:
+ *
+ * - `resetQueue: true` (DEFAULT — stop / provider-unmount / tour step-change):
+ *   a synchronous FULL teardown. Runs `ttsQueue.reset()` FIRST (it nulls
+ *   `currentHeadId`/`head`/`busy` so a stray synchronous `onEnd` from the
+ *   cancel below no-ops via the pump's id-guard — reset-first is REQUIRED: if
+ *   a queue head is playing and we cancel BEFORE reset, its `onEnd` advances
+ *   the pump and the NEXT head's fetch starts and plays AFTER stop, the exact
+ *   post-stop stray-audio regression this exists to prevent), THEN cancels the
+ *   direct path (`speechSynthesis.cancel()` + `cancelElevenLabs()`) and clears
+ *   the owner. Not token-guarded — a full teardown tears everything down.
+ *
+ * - `resetQueue: false` (barge-in — `recording-context.tsx:1876`): cancel ONLY
+ *   the DIRECT audio, and ONLY when the direct path owns it
+ *   (`activeAudioOwner?.owner === 'direct'`). Leaves the confirmation FIFO
+ *   intact — flushing it here would nuke read-backs still queued from a prior
+ *   turn (zero read-back). When the QUEUE owns the audio this is a no-op
+ *   against the confirmation (it finishes + advances naturally). Owner-gates
+ *   BOTH backends: a direct native prompt (iPhone/iPad-Safari default) needs
+ *   `speechSynthesis.cancel()`, and a queue-owned native confirmation must NOT
+ *   be cut, so `owner === 'direct'` cancels both and `owner === 'queue'`
+ *   cancels neither.
  */
-export function cancelSpeech(): void {
-  if (!isTtsAvailable()) return;
-  try {
-    window.speechSynthesis.cancel();
+export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
+  const resetQueue = opts?.resetQueue ?? true;
+  if (!isTtsAvailable()) {
+    // Still flush the queue on a full teardown so a stuck `busy` can't survive
+    // into the next session (queue is normally empty in the SSR/no-synth case).
+    if (resetQueue) ttsQueueReset();
+    return;
+  }
+  const closeWindow = () => {
     if (ttsWindow && ttsWindow.endMs == null) {
       ttsWindow = { startMs: ttsWindow.startMs, endMs: Date.now() };
       notifyTtsLifecycle('end');
     }
-  } catch {
-    // ignore
+  };
+  if (resetQueue) {
+    // FULL teardown — reset the queue FIRST (see docblock), then cancel direct.
+    ttsQueueReset();
+    try {
+      window.speechSynthesis.cancel();
+      closeWindow();
+    } catch {
+      // ignore
+    }
+    cancelElevenLabs();
+    activeAudioOwner = null;
+    return;
   }
-  // Cancel any in-flight ElevenLabs fetch and pause the shared audio
-  // element. Without this, a Stop tap mid-fetch would let the audio
-  // arrive and play AFTER recording stopped — the inspector hears
-  // Sonnet's last question over the silence after they've already
-  // moved on.
-  cancelElevenLabs();
+  // Selective cancel (barge-in) — only when the DIRECT path owns the audio.
+  if (activeAudioOwner?.owner === 'direct') {
+    try {
+      window.speechSynthesis.cancel();
+      closeWindow();
+    } catch {
+      // ignore
+    }
+    // cancelElevenLabs fires the direct prompt's synchronous onEnd, which the
+    // dispatch() wrapper uses to clear the owner + (via recording-context's
+    // onEnd) the direct-prompt tool-call ref.
+    cancelElevenLabs();
+    activeAudioOwner = null;
+  }
+  // owner === 'queue' | null → no-op against the confirmation FIFO.
 }
 
 /**
