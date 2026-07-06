@@ -521,11 +521,13 @@
   ],
   "web/src/lib/recording-context.tsx": [
     "observations/obs-photo-autolink",
+    "recording/cancel-pending-tts",
     "recording/fast-path-tts",
     "recording/flux-kill-switch",
     "recording/flux-migration",
     "recording/readback-dedup-rekey",
     "recording/transcript-gate",
+    "recording/tts-fifo",
     "recording/voice-command-executor-e-g-move",
     "crosscutting/uiimpactfeedbackgenerator"
   ],
@@ -554,6 +556,7 @@
     "recording/tts-fifo"
   ],
   "web/src/lib/recording/in-flight-question.ts": [
+    "recording/cancel-pending-tts",
     "recording/transcript-gate"
   ],
   "web/src/lib/recording/keyword-boosts.ts": [
@@ -564,6 +567,7 @@
   ],
   "web/src/lib/recording/sonnet-session.ts": [
     "observations/obs-card-canonical-wording",
+    "recording/cancel-pending-tts",
     "recording/capability-advertising",
     "recording/fast-path-tts",
     "recording/playback-telemetry"
@@ -573,6 +577,13 @@
   ],
   "web/src/lib/recording/transcript-gate.ts": [
     "recording/transcript-gate"
+  ],
+  "web/src/lib/recording/tts-prompt-helpers.ts": [
+    "recording/cancel-pending-tts",
+    "recording/tts-fifo"
+  ],
+  "web/src/lib/recording/tts-queue.ts": [
+    "recording/tts-fifo"
   ],
   "web/src/lib/recording/tts.ts": [
     "recording/readback-dedup-rekey",
