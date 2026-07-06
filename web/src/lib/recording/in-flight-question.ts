@@ -279,6 +279,28 @@ export class InFlightQuestionTracker {
     this.slot = null;
   }
 
+  /**
+   * Remove every PENDING and ACTIVE entry whose `toolCallId` starts with
+   * `prefix`. Used by the `cancel_pending_tts` handler (parity with iOS
+   * Phase 6.3): when the backend cancels a stale focused-mode script ask
+   * (prefix `srv-<script>-`), its in-flight question state must be dropped or
+   * the next inspector utterance is mis-attributed to a dead ask. No-op on an
+   * empty prefix or when nothing matches.
+   */
+  removeByToolCallIdPrefix(prefix: string): void {
+    if (!prefix) return;
+    this.pending = this.pending.filter(
+      (p) => !(typeof p.toolCallId === 'string' && p.toolCallId.startsWith(prefix))
+    );
+    if (
+      this.slot &&
+      typeof this.slot.toolCallId === 'string' &&
+      this.slot.toolCallId.startsWith(prefix)
+    ) {
+      this.slot = null;
+    }
+  }
+
   /** Read-only introspection for diagnostics. */
   get hasActiveSlot(): boolean {
     return this.slot !== null;
