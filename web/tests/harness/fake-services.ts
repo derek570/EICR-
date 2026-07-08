@@ -7,10 +7,11 @@
  * pipeline) is the REAL production code, driven through the real
  * RecordingProvider. That composition is the harness's whole subject.
  */
-import type {
-  DeepgramCallbacks,
-  DeepgramConnectionState,
-  SttModel,
+import {
+  DeepgramService,
+  type DeepgramCallbacks,
+  type DeepgramConnectionState,
+  type SttModel,
 } from '@/lib/recording/deepgram-service';
 import type {
   DeepgramServiceLike,
@@ -22,59 +23,126 @@ import type { MicCaptureHandle, MicCaptureOptions } from '@/lib/recording/mic-ca
 import type { SpeakOptions } from '@/lib/recording/tts';
 import type { QueuePlayControls, PreparedAudio } from '@/lib/recording/tts-queue';
 
+/** Minimal captive WebSocket the wrapped REAL DeepgramService talks to.
+ *  Mirrors the FakeWS the flux unit tests use. */
+class CaptiveWS {
+  static OPEN = 1;
+  url: string;
+  protocols?: string[];
+  binaryType = 'blob';
+  bufferedAmount = 0;
+  readyState = 1;
+  onopen: (() => void) | null = null;
+  onmessage: ((e: { data: unknown }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onclose: ((e: { code: number; reason?: string; wasClean?: boolean }) => void) | null = null;
+  sent: Array<string | ArrayBuffer> = [];
+  constructor(url: string, protocols?: string[]) {
+    this.url = url;
+    this.protocols = protocols;
+  }
+  send(data: string | ArrayBuffer) {
+    this.sent.push(data);
+  }
+  close() {
+    this.onclose?.({ code: 1000, wasClean: true });
+  }
+  open() {
+    this.onopen?.();
+  }
+  emit(obj: unknown) {
+    this.onmessage?.({ data: JSON.stringify(obj) });
+  }
+}
+
 /**
- * Fake Deepgram service. The harness drives the recording pipeline by
- * calling the emit* helpers, which invoke the REAL recording-context
- * callbacks — exactly what the real service does when Flux frames arrive.
+ * Harness Deepgram service — wraps a REAL `DeepgramService` around a
+ * captive fake WebSocket, so the harness drives RAW FLUX FRAMES through
+ * the REAL frame parsing + TurnInfo→delegate mapping. This is
+ * load-bearing for the keystone: A1 lives INSIDE that mapping
+ * (EndOfTurn-with-transcript → final + utterance-end), so a fake that
+ * invoked the delegate callbacks directly would keep the harness green
+ * with A1 reverted (discovered in the first keystone RED attempt —
+ * the fake was hardcoding the fixed mapping).
+ *
+ * Only the network is fake: connect() feeds the real service a static
+ * key (skipping the fetcher — no network) and auto-opens the captive
+ * socket.
  */
 export class FakeDeepgramService implements DeepgramServiceLike {
-  readonly callbacks: DeepgramCallbacks;
   readonly model: SttModel;
-  paused = false;
-  disconnected = false;
+  private readonly inner: DeepgramService;
+  private ws: CaptiveWS | null = null;
   sentSampleBlocks = 0;
 
   constructor(callbacks: DeepgramCallbacks, model: SttModel) {
-    this.callbacks = callbacks;
     this.model = model;
+    this.inner = new DeepgramService(
+      callbacks,
+      (url, protocols) => {
+        this.ws = new CaptiveWS(url, protocols);
+        return this.ws as unknown as WebSocket;
+      },
+      model
+    );
   }
 
-  connect(): void {
-    this.callbacks.onStateChange?.('connected');
+  connect(_keyOrFetcher: string | (() => Promise<string>), sourceSampleRate: number): void {
+    // Static-key mode constructs the socket synchronously (same recipe as
+    // the flux unit tests); the production fetcher is ignored — no network.
+    this.inner.connect('harness-static-key', sourceSampleRate);
+    this.ws?.open();
   }
   disconnect(): void {
-    this.disconnected = true;
-    this.callbacks.onStateChange?.('disconnected');
+    this.inner.disconnect();
   }
   pause(): void {
-    this.paused = true;
+    this.inner.pause();
   }
-  resume(): void {
-    this.paused = false;
+  resume(replay?: Int16Array | null): void {
+    this.inner.resume(replay ?? undefined);
   }
-  sendSamples(): void {
+  sendSamples(samples: Float32Array): void {
     this.sentSampleBlocks += 1;
+    this.inner.sendSamples(samples);
   }
-  sendInt16PCM(): void {}
+  sendInt16PCM(pcm: Int16Array): void {
+    this.inner.sendInt16PCM(pcm);
+  }
   get connectionState(): DeepgramConnectionState {
-    return this.disconnected ? 'disconnected' : 'connected';
+    return this.inner.connectionState;
   }
 
-  // ── Flux-equivalent event drivers (mirror handleFluxTurnInfo mapping) ──
+  // ── Raw Flux frame drivers — parsed by the REAL service ──
+  emitFrame(frame: Record<string, unknown>): void {
+    if (!this.ws) throw new Error('FakeDeepgramService: connect() has not run');
+    this.ws.emit(frame);
+  }
   emitSpeechStarted(): void {
-    this.callbacks.onSpeechStarted?.();
+    this.emitFrame({ type: 'TurnInfo', event: 'StartOfTurn' });
   }
   emitInterim(text: string, confidence = 0.5): void {
-    this.callbacks.onInterimTranscript(text, confidence);
+    this.emitFrame({
+      type: 'TurnInfo',
+      event: 'Update',
+      transcript: text,
+      end_of_turn_confidence: confidence,
+    });
   }
-  /** Transcript-bearing EndOfTurn: final THEN utterance-end (A1 mapping). */
+  /** Transcript-bearing EndOfTurn — the REAL mapping decides what fires
+   *  (post-A1: final + utterance-end; pre-A1: final only). */
   emitEndOfTurn(text: string, confidence = 0.9): void {
-    this.callbacks.onFinalTranscript(text, confidence, []);
-    this.callbacks.onUtteranceEnd?.();
+    this.emitFrame({
+      type: 'TurnInfo',
+      event: 'EndOfTurn',
+      transcript: text,
+      end_of_turn_confidence: confidence,
+      words: [],
+    });
   }
-  /** Empty EndOfTurn (silence-driven close): utterance-end only. */
+  /** Empty EndOfTurn (silence-driven close). */
   emitEmptyEndOfTurn(): void {
-    this.callbacks.onUtteranceEnd?.();
+    this.emitFrame({ type: 'TurnInfo', event: 'EndOfTurn', transcript: '' });
   }
 }
 
