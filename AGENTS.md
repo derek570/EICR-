@@ -305,3 +305,5 @@ Older entries (before 2026-02-22) are in [docs/reference/changelog.md](docs/refe
 ## iOS Deploy (TestFlight)
 
 See [docs/reference/deploy-testflight.md](docs/reference/deploy-testflight.md) for the deploy script, ASC credentials, TestFlight group IDs, and the onnxruntime `MinimumOSVersion` patch.
+
+- **PWA replay harness** (2026-07-08): composition-level web-pipeline replay + iOS differential + generated field sweep — see `docs/reference/pwa-replay-harness.md`; commands `npm run pwa-replay`, `pwa-replay:session`, `pwa-replay:sweep`.

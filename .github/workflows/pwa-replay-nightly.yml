@@ -1,0 +1,197 @@
+# PWA replay harness — nightly LIVE lane (pwa-replay-harness E1b).
+#
+# Boots the real backend against a CI Postgres, replays the session-fixture
+# corpus through the REAL web recording pipeline in LIVE mode (real
+# SonnetSession → real extraction on the cheap Haiku env), and asserts the
+# D1 invariants. ADVISORY: failure files a GitHub issue; it never blocks a
+# deploy (mirrors the parity-ledger-warn precedent).
+#
+# Env contract (plan §4 WS-E E1 — explicit, not hand-waved):
+#   - Postgres service container + `node-pg-migrate up` BEFORE boot (the
+#     2026-05-29 cert_attestations incident is the cautionary tale).
+#   - JWT_SECRET: deterministic PER-RUN (generated below) — exported to the
+#     backend AND used to mint the harness token via
+#     POST /api/test/harness-mint-jwt (STAGE0_BENCH=1 gate). No repo secret
+#     needed for auth.
+#   - ANTHROPIC_API_KEY: the ONLY vendor key, from repo secrets.
+#     *** PROVISIONING IS A HUMAN STEP *** — until `ANTHROPIC_API_KEY` is
+#     added to repo secrets this workflow exits early with a notice (see
+#     the guard step). Deepgram/ElevenLabs are NOT needed: the harness
+#     feeds text frames and injects TTS players.
+#   - NO AWS credentials in the lane (asserted) — nothing may touch prod
+#     resources; the backend's S3/Secrets paths must fail closed to local
+#     behaviour.
+#
+# Budget guard (§8 decision 2 — £10/month cap): the live lane replays ONLY
+# the checked-in session fixtures (a handful of scenarios) on the Haiku +
+# 1h-cache env (~pennies/night at current counts). Do NOT point the live
+# lane at the generated 116-field sweep without re-costing against the cap.
+
+name: PWA Replay Nightly (live lane)
+
+on:
+  schedule:
+    - cron: '17 2 * * *' # 02:17 UTC nightly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  live-replay:
+    name: Live replay vs local backend (Haiku env)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: certmate
+          POSTGRES_PASSWORD: certmate
+          POSTGRES_DB: certmate_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U certmate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Guard — ANTHROPIC_API_KEY provisioned?
+        id: guard
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::notice::ANTHROPIC_API_KEY repo secret not provisioned — live lane skipped (see docs/reference/pwa-replay-harness.md § Nightly lane)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assert no AWS credentials in the lane
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          if [ -n "${AWS_ACCESS_KEY_ID:-}" ] || [ -n "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "::error::AWS credentials present in the nightly lane — refusing to run (nothing may touch prod resources)."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        if: steps.guard.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        if: steps.guard.outputs.run == 'true'
+        run: npm ci
+
+      - name: Bootstrap base schema + run migrations
+        if: steps.guard.outputs.run == 'true'
+        # The prod `users` table predates both db.js ensure* and the
+        # migrations tree (001_baseline ALTERs it), so a fresh CI database
+        # needs a minimal bootstrap first. Columns = the set src/auth.js
+        # reads (verified 2026-07-08).
+        run: |
+          PGPASSWORD=certmate psql -h localhost -U certmate -d certmate_ci -c "
+            CREATE TABLE IF NOT EXISTS users (
+              id varchar(255) PRIMARY KEY,
+              email text UNIQUE NOT NULL,
+              name text,
+              password_hash text,
+              role text DEFAULT 'user',
+              is_active boolean DEFAULT true,
+              failed_login_attempts integer DEFAULT 0,
+              locked_until timestamp,
+              last_login timestamp,
+              created_at timestamp DEFAULT now()
+            );
+            CREATE TABLE IF NOT EXISTS jobs (
+              id varchar(255) PRIMARY KEY,
+              user_id varchar(255),
+              certificate_type text,
+              data jsonb,
+              created_at timestamp DEFAULT now()
+            );"
+          npx node-pg-migrate up
+        env:
+          DATABASE_URL: postgres://certmate:certmate@localhost:5432/certmate_ci
+
+      - name: Seed harness user
+        if: steps.guard.outputs.run == 'true'
+        # The mint endpoint resolves the token against a real user row.
+        run: |
+          PGPASSWORD=certmate psql -h localhost -U certmate -d certmate_ci -c \
+            "INSERT INTO users (id, email, password_hash, is_active)
+             VALUES ('harness-user-1', 'harness@certmate.uk', 'x', true)
+             ON CONFLICT DO NOTHING;"
+
+      - name: Boot backend (Haiku env, per-run JWT secret)
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          JWT_SECRET=$(openssl rand -hex 32)
+          echo "::add-mask::$JWT_SECRET"
+          echo "JWT_SECRET=$JWT_SECRET" >> "$GITHUB_ENV"
+          JWT_SECRET="$JWT_SECRET" \
+          DATABASE_URL=postgres://certmate:certmate@localhost:5432/certmate_ci \
+          ANTHROPIC_API_KEY='${{ secrets.ANTHROPIC_API_KEY }}' \
+          SONNET_EXTRACT_MODEL=claude-haiku-4-5-20251001 \
+          SONNET_CACHE_TTL=1h \
+          STAGE0_BENCH=1 \
+          AWS_EC2_METADATA_DISABLED=true \
+          NODE_ENV=test \
+          nohup npm start > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/api/health/ready >/dev/null 2>&1; then
+              echo "backend ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::backend did not become ready — /tmp/backend.log tail:"
+          tail -50 /tmp/backend.log
+          exit 1
+
+      - name: Mint harness JWT
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          TOKEN=$(curl -sf -X POST http://localhost:3000/api/test/harness-mint-jwt \
+            -H "Content-Type: application/json" \
+            -H "X-Bench-Secret: $JWT_SECRET" \
+            -d '{"email":"harness@certmate.uk"}' | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>console.log(JSON.parse(d).token))")
+          echo "::add-mask::$TOKEN"
+          echo "PWA_REPLAY_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Live replay — session fixtures (budget-capped corpus)
+        if: steps.guard.outputs.run == 'true'
+        working-directory: web
+        run: npx vitest run tests/harness/pwa-replay-scenarios.test.ts
+        env:
+          CI: true
+          PWA_REPLAY_MODE: live
+          NEXT_PUBLIC_API_URL: http://localhost:3000
+
+      - name: Backend log tail (always, for triage)
+        if: always() && steps.guard.outputs.run == 'true'
+        run: tail -100 /tmp/backend.log || true
+
+      - name: File advisory issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `PWA replay nightly (live lane) failed — ${new Date().toISOString().slice(0, 10)}`,
+              body: `Advisory nightly live-lane failure: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\nThis lane never blocks deploys — triage per docs/reference/pwa-replay-harness.md § Nightly lane.`,
+              labels: ['pwa-replay-nightly'],
+            });
