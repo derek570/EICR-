@@ -19,7 +19,8 @@
     "format": "prettier --write \"src/**/*.js\" \"packages/**/*.ts\"",
     "prepare": "husky",
     "migrate": "node-pg-migrate",
-    "migrate:up": "node-pg-migrate up"
+    "migrate:up": "node-pg-migrate up",
+    "pwa-replay": "node scripts/pwa-replay/run.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
