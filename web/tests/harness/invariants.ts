@@ -13,6 +13,7 @@
 
 import type { BehaviouralTrace, UtteranceTrace } from './trace';
 import { isNonCircuitField } from '@/lib/recording/non-circuit-fields';
+import { shouldForward } from '@/lib/recording/transcript-gate';
 
 export type InvariantViolation = string;
 
@@ -129,7 +130,134 @@ export function invariant5_chitchatIsInert(
   return violations;
 }
 
-/** Run the Wave-3 seed set. Wave 5 extends this aggregate. */
+/**
+ * Invariant 2 (Audio-First #1 exception): auto-derivations/mirrors produce
+ * ZERO confirmations. Trace formulation: an utterance whose applies came
+ * with NO confirmation frames (regex-tier fills, mirror-only patches) must
+ * play nothing — silent by design; the read-back comes from the backend
+ * confirmation when there is one.
+ */
+export function invariant2_derivationsAreSilent(trace: BehaviouralTrace): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  for (const u of trace.utterances) {
+    if (u.confirmationsEnqueued === 0 && u.confirmationsPlayed.length > 0) {
+      violations.push(
+        `invariant2: "${u.text.slice(0, 40)}" played ${u.confirmationsPlayed.length} confirmation(s) with none enqueued for it (derivation/mirror must be silent)`
+      );
+    }
+  }
+  return violations;
+}
+
+/**
+ * Invariant 4: a gate PASS requires at least one of the gate's ACTUAL
+ * trigger conditions — re-derived by calling the REAL gate with the
+ * trace's inputs (fresh regex changedKeys, in-flight-ask candidacy) and
+ * the utterance text (digit / strong trigger / observation pattern /
+ * weak-trigger + >=3 content words live inside shouldForward). A bare
+ * digit re-dictation legitimately passes without a fresh regex change.
+ */
+export function invariant4_gatePassHasATrigger(trace: BehaviouralTrace): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  for (const u of trace.utterances) {
+    if (u.gate !== 'passed') continue;
+    const justified = shouldForward({
+      // The gate ran on the DISPATCHED (normalised) text — "Two sugars"
+      // becomes "2 sugars" and legitimately gains a digit trigger.
+      text: u.dispatchedText ?? u.text,
+      hasRegexHit: u.regexChangedKeys.length > 0,
+      hasPendingAsk: u.hasInFlightAsk,
+      inResponseTo: u.hasInResponseTo,
+    });
+    if (!justified) {
+      violations.push(
+        `invariant4: "${u.text.slice(0, 40)}" passed the gate with NO trigger (no fresh regex, no ask, not reading-shaped)`
+      );
+    }
+  }
+  return violations;
+}
+
+/**
+ * Invariant 6: obvious chitchat must be gate-BLOCKED (invariant 5 covers
+ * the declared set); a gate-passed utterance that applies nothing and asks
+ * nothing is allowed ONLY when it is reading-shaped or an in-flight-answer
+ * candidate — and two consecutive such no-op turns are a WARN (the
+ * dropped-reading detector, mirroring analyze-session's
+ * `unmapped_readings`). WARNs are prefixed "WARN:" so callers can split
+ * severity.
+ */
+export function invariant6_noOpPassesAreBounded(trace: BehaviouralTrace): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  let consecutiveNoOps = 0;
+  for (const u of trace.utterances) {
+    if (u.gate !== 'passed') {
+      consecutiveNoOps = 0;
+      continue;
+    }
+    const applied = u.appliedFields.length > 0;
+    const asked = u.questionsAsked.length > 0 || u.pendingReadingsAsks > 0;
+    if (applied || asked) {
+      consecutiveNoOps = 0;
+      continue;
+    }
+    const readingShaped = shouldForward({
+      text: u.dispatchedText ?? u.text,
+      hasRegexHit: false,
+      hasPendingAsk: false,
+      inResponseTo: false,
+    });
+    if (!readingShaped && !u.hasInFlightAsk && !u.hasInResponseTo) {
+      violations.push(
+        `invariant6: no-op gate pass for non-reading-shaped "${u.text.slice(0, 40)}"`
+      );
+      consecutiveNoOps = 0;
+      continue;
+    }
+    consecutiveNoOps += 1;
+    if (consecutiveNoOps >= 2) {
+      violations.push(
+        `WARN: invariant6: ${consecutiveNoOps} consecutive no-op gate passes ending at "${u.text.slice(0, 40)}" (dropped-reading detector)`
+      );
+    }
+  }
+  return violations;
+}
+
+/** Feedback trigger regex — iOS canon `^\s*(?:feedback|debug)\b`
+ *  (TranscriptProcessor.swift:233). */
+export const FEEDBACK_TRIGGER = /^\s*(?:feedback|debug)\b/i;
+
+/**
+ * Invariant 7 (post-A4/Wave-6): a feedback trigger starts capture and
+ * suppresses Sonnet/chime; the marker POST occurs exactly once, on
+ * explicit exit or session-stop cleanup — never on the trigger or
+ * capture-continuation finals.
+ */
+export function invariant7_feedbackCapture(trace: BehaviouralTrace): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  let captureStarted = false;
+  let uploads = 0;
+  for (const u of trace.utterances) {
+    const isTrigger = FEEDBACK_TRIGGER.test(u.text);
+    if (isTrigger) {
+      captureStarted = true;
+      if (!u.events.some((e) => e.kind.startsWith('feedback_'))) {
+        violations.push(`invariant7: trigger "${u.text.slice(0, 40)}" produced no feedback event`);
+      }
+      if (u.sonnetSent)
+        violations.push(`invariant7: trigger "${u.text.slice(0, 40)}" reached Sonnet`);
+      if (u.chimes > 0) violations.push(`invariant7: trigger "${u.text.slice(0, 40)}" chimed`);
+    }
+    uploads += u.events.filter((e) => e.kind === 'feedback_marker_uploaded').length;
+  }
+  if (captureStarted && uploads > 1) {
+    violations.push(`invariant7: marker uploaded ${uploads}x (must be exactly once per capture)`);
+  }
+  return violations;
+}
+
+/** Run the Wave-3 seed set (kept for the keystone lanes). */
 export function runSeedInvariants(
   trace: BehaviouralTrace,
   opts: { chitchatUtterances?: readonly string[] } = {}
@@ -139,4 +267,26 @@ export function runSeedInvariants(
     ...invariant3_noCircuitAskForSectionFields(trace),
     ...invariant5_chitchatIsInert(trace, opts.chitchatUtterances ?? []),
   ];
+}
+
+/**
+ * Full D1 set (Wave 5). Invariant 7 joins the FAIL set only once Wave 6
+ * ships A4 (`includeFeedback`). WARN-prefixed entries are advisory —
+ * callers split them out rather than failing.
+ */
+export function runAllInvariants(
+  trace: BehaviouralTrace,
+  opts: { chitchatUtterances?: readonly string[]; includeFeedback?: boolean } = {}
+): { failures: InvariantViolation[]; warnings: InvariantViolation[] } {
+  const all = [
+    ...runSeedInvariants(trace, opts),
+    ...invariant2_derivationsAreSilent(trace),
+    ...invariant4_gatePassHasATrigger(trace),
+    ...invariant6_noOpPassesAreBounded(trace),
+    ...(opts.includeFeedback ? invariant7_feedbackCapture(trace) : []),
+  ];
+  return {
+    failures: all.filter((v) => !v.startsWith('WARN:')),
+    warnings: all.filter((v) => v.startsWith('WARN:')),
+  };
 }

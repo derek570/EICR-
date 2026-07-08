@@ -182,10 +182,10 @@ mock_frames:
     frames:
       - type: extraction
         readings:
-          - circuit: null
+          - circuit: 0
             field: main_switch_fuse_setting
             value: LIM
-          - circuit: null
+          - circuit: 0
             field: main_switch_current
             value: LIM
         confirmations: []

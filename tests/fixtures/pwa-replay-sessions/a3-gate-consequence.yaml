@@ -51,7 +51,7 @@ mock_frames:
         readings:
           - field: client_name
             value: 'Michael Payden'
-            circuit: null
+            circuit: 0 # section readings ride circuit 0 on the wire
         confirmations:
           - field: client_name
             circuit: null
@@ -62,7 +62,7 @@ mock_frames:
         readings:
           - field: client_name
             value: 'Michael Hayden'
-            circuit: null
+            circuit: 0 # section readings ride circuit 0 on the wire
         confirmations:
           - field: client_name
             circuit: null

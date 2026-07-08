@@ -32,7 +32,11 @@ import { RecordingProvider, useRecording } from '@/lib/recording-context';
 import { __setRecordingTestServices } from '@/lib/recording/test-services';
 import { setDiagnosticTap } from '@/lib/recording/client-diagnostic';
 import { __resetForTests as resetTtsQueue } from '@/lib/recording/tts-queue';
-import { setConfirmationModeEnabled } from '@/lib/recording/tts';
+import {
+  setConfirmationModeEnabled,
+  __resetTtsFingerprintsForTests,
+  __resetTtsWindowForTests,
+} from '@/lib/recording/tts';
 import type { JobDetail } from '@/lib/types';
 import { buildHarnessServices } from './fake-services';
 import { TraceCollector, type BehaviouralTrace } from './trace';
@@ -105,6 +109,13 @@ export async function replayScenario(
   }
   setConfirmationModeEnabled(true);
   resetTtsQueue();
+  // Cross-scenario hygiene: echo fingerprints/window are tts.ts module
+  // state with a 15s wall-clock TTL — under back-to-back replays a
+  // confirmation spoken in scenario N-1 ("Circuit 1, Zs 0.35") would make
+  // scenario N's dictation ("Circuit 1 Zs is 0.35.") look like TTS echo
+  // and silently discard the final (found by the Wave-5 sweep).
+  __resetTtsFingerprintsForTests();
+  __resetTtsWindowForTests();
 
   const collector = new TraceCollector();
   const harness = buildHarnessServices();
@@ -258,6 +269,8 @@ export async function replayScenario(
     __setRecordingTestServices(null);
     setDiagnosticTap(null);
     resetTtsQueue();
+    __resetTtsFingerprintsForTests();
+    __resetTtsWindowForTests();
     vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();

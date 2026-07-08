@@ -38,6 +38,14 @@ export interface UtteranceTrace {
   gate: 'passed' | 'blocked' | 'none';
   regexChangedKeys: string[];
   sonnetSent: boolean;
+  /** The send carried an in-flight ask answer (invariant-4 gate input). */
+  hasInFlightAsk: boolean;
+  /** The send carried legacy in_response_to candidacy (client-ask answer). */
+  hasInResponseTo: boolean;
+  /** The DISPATCHED text (post-NumberNormaliser) — gate decisions ran on
+   *  this, not the raw final ("Two sugars" → "2 sugars" gains a digit
+   *  trigger). Null when the utterance never reached a send. */
+  dispatchedText: string | null;
   chimes: number;
   appliedFields: AppliedField[];
   confirmationsEnqueued: number;
@@ -72,6 +80,9 @@ function emptyUtterance(text: string): UtteranceTrace {
     gate: 'none',
     regexChangedKeys: [],
     sonnetSent: false,
+    hasInFlightAsk: false,
+    hasInResponseTo: false,
+    dispatchedText: null,
     chimes: 0,
     appliedFields: [],
     confirmationsEnqueued: 0,
@@ -157,6 +168,9 @@ export class TraceCollector {
       case 'pipeline_sonnet_send':
         cur.gate = 'passed';
         cur.sonnetSent = true;
+        cur.hasInFlightAsk = Boolean(payload.hasInFlightAsk);
+        cur.hasInResponseTo = Boolean(payload.hasInResponseTo);
+        cur.dispatchedText = typeof payload.textPreview === 'string' ? payload.textPreview : null;
         break;
       case 'pipeline_regex_applied':
         cur.regexChangedKeys = Array.isArray(payload.changedKeysPreview)

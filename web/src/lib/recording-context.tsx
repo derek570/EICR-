@@ -1800,6 +1800,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           textPreview: text.slice(0, 80),
           utteranceIdShort: utteranceId.slice(0, 12),
           hasInFlightAsk: Boolean(inFlightToolCallId),
+          // Legacy in_response_to candidacy at gate time (the same
+          // `peekedPayload != null` the gate consumed) — e.g. an answer to
+          // the client's own 2s circuit-disambiguation ask. The harness
+          // invariants re-derive gate justification from both ask signals.
+          hasInResponseTo: peekedPayload != null,
           regexHintsCount: regexResults?.length ?? 0,
         });
         // iOS canon DeepgramRecordingViewModel.swift:2122 — attach

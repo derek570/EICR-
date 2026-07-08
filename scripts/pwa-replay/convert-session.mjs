@@ -147,7 +147,9 @@ function frameReadingsFor(u) {
       });
     } else {
       const inner = key.replace(/^(supply|board|installation)\./, '');
-      readings.push({ circuit: null, field: camelToSnake(inner), value });
+      // Section readings ride circuit 0 on the wire (applyCircuit0Readings
+      // requires === 0; null never routes).
+      readings.push({ circuit: 0, field: camelToSnake(inner), value });
     }
   }
   return readings;
