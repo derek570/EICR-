@@ -1,0 +1,290 @@
+{
+  "session_id": "B1916AD6-EF29-47C3-922E-E2BF9C9E4DCA",
+  "initial_state_fidelity": "hand_authored",
+  "utterances": [
+    {
+      "text": "Ze is 0.35.",
+      "raw": "Zed e is naught point three five.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [
+        {
+          "key": "supply.ze"
+        }
+      ],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [
+        {
+          "field": "earth_loop_impedance_ze",
+          "circuit": null,
+          "text": "Ze 0.35",
+          "deferred": true
+        },
+        {
+          "field": "earth_loop_impedance_ze",
+          "circuit": null,
+          "text": "Ze 0.35",
+          "deferred": true
+        }
+      ],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "My infuse is LIM. My infuse current is LIM.",
+      "raw": "My infuse is LIM. My infuse current is LIM.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [
+        {
+          "key": "supply.mainSwitchFuseSetting",
+          "value": "LIM"
+        },
+        {
+          "key": "supply.mainSwitchCurrent",
+          "value": "LIM"
+        }
+      ],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Smoke alarm Zs is limp.",
+      "raw": "Smoke alarm Zed s is limp.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [
+        {
+          "key": "circuit.1.zs",
+          "value": "LIM"
+        }
+      ],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [
+        {
+          "field": "measured_zs_ohm",
+          "circuit": "1",
+          "text": "Smoke Alarm, circuit 1, Zs LIM",
+          "deferred": false
+        },
+        {
+          "field": "measured_zs_ohm",
+          "circuit": "1",
+          "text": "Circuit 1, Zs LIM",
+          "deferred": false
+        }
+      ],
+      "confirmationsDeduped": 1,
+      "ttsPlays": 1,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Downstairs lighting Zs is 1.08.",
+      "raw": "Downstairs lighting Zs is one point zero eight.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [
+        {
+          "key": "circuit.2.zs",
+          "value": "1.08"
+        }
+      ],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [
+        {
+          "field": "measured_zs_ohm",
+          "circuit": "2",
+          "text": "Downstairs Lighting, circuit 2, Zs 1.08",
+          "deferred": false
+        },
+        {
+          "field": "measured_zs_ohm",
+          "circuit": "2",
+          "text": "Circuit 2, Zs 1.08",
+          "deferred": false
+        }
+      ],
+      "confirmationsDeduped": 1,
+      "ttsPlays": 1,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Delete downstairs light in R1 plus R2.",
+      "raw": "Delete downstairs light in r one plus r two.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Calculate R1 plus R2 for all circuits.",
+      "raw": "Calculate r one plus r two for all circuits.",
+      "gate": "none",
+      "sonnetForwarded": false,
+      "fieldSets": [],
+      "regexMatches": [],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 1,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": [
+        "sleep_enter_sleeping",
+        "sleep_state_sleeping",
+        "sleep_wake",
+        "sleep_state_wake"
+      ]
+    },
+    {
+      "text": "Do you know where the gas laser is?",
+      "raw": "Do you know where the gas laser is?",
+      "gate": "none",
+      "sonnetForwarded": false,
+      "fieldSets": [],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Andrew?",
+      "raw": "Andrew?",
+      "gate": "blocked",
+      "sonnetForwarded": false,
+      "fieldSets": [],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 1,
+      "ttsDeferredResumed": 1,
+      "questions": [
+        "I'm not sure what you mean by \"gas laser\" — could you clarify? Are you referring to the gas bonding conductor location, or something else on the installation?"
+      ],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "RCD trip time for sockets is 19 ms.",
+      "raw": "RCD trip time for sockets is nineteen milliseconds.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [
+        {
+          "key": "circuit.6.rcd",
+          "value": "19"
+        }
+      ],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 1,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [
+        "What's the BS number? Or do you want to fill that in later?"
+      ],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Later.",
+      "raw": "Later.",
+      "gate": "none",
+      "sonnetForwarded": false,
+      "fieldSets": [],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.35"
+        }
+      ],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": [
+        "sleep_enter_sleeping",
+        "sleep_state_sleeping"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "session_id": "A02B018D-7E87-468F-9711-E1DD67B4210A",
+  "initial_state_fidelity": "empty_fallback",
+  "utterances": [
+    {
+      "text": "R1PlusR2 is",
+      "raw": "R1PlusR2 is",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "0.64.",
+      "raw": "0.64.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Testing, 43.",
+      "raw": "Testing, 43.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Is a test.",
+      "raw": "Is a test.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "Hello?",
+      "raw": "Hello?",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 1,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [
+        "Was that 43 ohms for R1+R2? And which circuit?"
+      ],
+      "feedbackEvents": [],
+      "sleepWake": []
+    },
+    {
+      "text": "No.",
+      "raw": "No.",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 1,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": [
+        "sleep_enter_dozing",
+        "sleep_state_dozing"
+      ]
+    },
+    {
+      "text": "Ze is 0.36",
+      "raw": "Zeddy is 0.36",
+      "gate": "passed",
+      "sonnetForwarded": true,
+      "fieldSets": [],
+      "regexMatches": [
+        {
+          "field": "ze",
+          "value": "0.36"
+        }
+      ],
+      "confirmations": [],
+      "confirmationsDeduped": 0,
+      "ttsPlays": 0,
+      "ttsDeferred": 0,
+      "ttsDeferredResumed": 0,
+      "questions": [],
+      "feedbackEvents": [],
+      "sleepWake": []
+    }
+  ]
+}

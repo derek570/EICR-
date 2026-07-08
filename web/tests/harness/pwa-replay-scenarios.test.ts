@@ -47,8 +47,11 @@ function maybeWriteTrace(name: string, trace: unknown): void {
 }
 
 describe(`pwa-replay — recorded/authored session scenarios (${MODE} mode)`, () => {
-  it('found at least the two Wave-1 fixtures', () => {
-    expect(scenarios.length).toBeGreaterThanOrEqual(2);
+  it('found scenarios to replay', () => {
+    // Unfiltered runs must see at least the two Wave-1 fixtures; a
+    // PWA_REPLAY_SCENARIO-filtered run (the pwa-replay:session command)
+    // needs exactly its match.
+    expect(scenarios.length).toBeGreaterThanOrEqual(process.env.PWA_REPLAY_SCENARIO ? 1 : 2);
   });
 
   for (const scenario of scenarios) {
