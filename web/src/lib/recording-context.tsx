@@ -55,6 +55,7 @@ import {
   type PendingReading,
 } from './recording/pending-readings-buffer';
 import { isNonCircuitField } from './recording/non-circuit-fields';
+import { FeedbackCapture } from './recording/feedback-capture';
 import { normalise as normaliseTranscriptText } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
@@ -1282,6 +1283,56 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // shouldn't TTS "Updated Zs to 0.42" twice). Field/circuit nulls fold
   // into the key as 'unknown'/'none' to match iOS line 3307.
   const confirmedFieldKeysRef = React.useRef<Set<string>>(new Set());
+  // A4 (Wave 6) — voice feedback marker capture. iOS canon:
+  // TranscriptProcessor.swift HEAD (state machine + 30s rolling window) +
+  // DeepgramRecordingViewModel.performStopCleanup auto-close. The
+  // pre-trigger window snapshot is stashed at TRIGGER time and cleared on
+  // upload (clear-on-capture — a failed upload must not attach stale
+  // context to the NEXT marker; iOS §G3).
+  const feedbackCaptureRef = React.useRef<FeedbackCapture | null>(null);
+  if (feedbackCaptureRef.current === null) {
+    feedbackCaptureRef.current = new FeedbackCapture();
+  }
+  const pendingFeedbackContextRef = React.useRef<Array<{ ts: string; text: string }> | null>(null);
+  /** Upload a captured voice-feedback marker (A4). Mirrors iOS
+   *  `uploadDebugIssue` (DeepgramRecordingViewModel.swift:2160-2205):
+   *  snapshot-and-clear the pre-trigger window BEFORE the async upload,
+   *  POST to the existing /api/debug-report route, TTS-ack "Feedback
+   *  logged" through the confirmation-gated path on success. Non-fatal on
+   *  failure — never interrupts recording. */
+  const uploadFeedbackIssue = React.useCallback((issue: string, sessionId: string) => {
+    if (!sessionId) return;
+    const windowSnapshot = pendingFeedbackContextRef.current;
+    pendingFeedbackContextRef.current = null;
+    const address =
+      (jobRef.current?.installation_details as { address?: string } | null | undefined)?.address ??
+      jobRef.current?.address ??
+      null;
+    const jobId = jobRef.current?.id ?? null;
+    void api
+      .debugReport({
+        sessionId,
+        issueText: issue,
+        address,
+        jobId,
+        lastTranscriptWindow: windowSnapshot && windowSnapshot.length > 0 ? windowSnapshot : null,
+      })
+      .then(() => {
+        clientDiagnostic('feedback_marker_uploaded', {
+          issuePreview: issue.slice(0, 100),
+          transcriptWindowLength: windowSnapshot?.length ?? 0,
+        });
+        // iOS parity ack (DeepgramRecordingViewModel.swift:2201) — the
+        // confirmation-gated FIFO path, same as speakBriefConfirmation.
+        speakConfirmation('Feedback logged');
+      })
+      .catch((err) => {
+        clientDiagnostic('feedback_upload_failed', {
+          message: err instanceof Error ? err.message.slice(0, 120) : String(err),
+        });
+      });
+  }, []);
+
   if (pendingReadingsBufferRef.current === null) {
     const onPendingReadingsTimeout = (readings: PendingReading[]) => {
       const buffer = pendingReadingsBufferRef.current;
@@ -1635,6 +1686,47 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           sleepManagerRef.current?.onSpeechActivity();
           return;
+        }
+        // A4 (Wave 6) — voice feedback marker capture. Placement rule
+        // (plan §4, load-bearing): AFTER the local voice-command
+        // short-circuit, BEFORE the cumulative-transcript append, regex,
+        // TranscriptGate, chime and sonnet_send. Trigger/capture/exit
+        // finals return immediately — a feedback monologue must not
+        // poison the next utterance's regex window (iOS Workstream-G).
+        // The 30s pre-trigger rolling window is snapshotted BEFORE
+        // processing the trigger final; only normal text feeds it.
+        {
+          const feedback = feedbackCaptureRef.current!;
+          const preTriggerSnapshot = feedback.isCapturing ? null : feedback.snapshotRollingFinals();
+          const feedbackResult = feedback.processCommand(text);
+          if (feedbackResult.kind !== 'normal') {
+            if (feedbackResult.kind === 'capture_started') {
+              pendingFeedbackContextRef.current = preTriggerSnapshot;
+              clientDiagnostic('feedback_capture_started', {
+                textPreview: text.slice(0, 80),
+                windowLength: preTriggerSnapshot?.length ?? 0,
+              });
+            } else if (feedbackResult.kind === 'capture_continuing') {
+              clientDiagnostic('feedback_capture_continuing', {
+                textPreview: text.slice(0, 80),
+              });
+            } else {
+              // issue_complete — single-utterance completions stash the
+              // pre-trigger window too (the trigger and exit shared one
+              // final, so the snapshot taken above is the right context).
+              if (feedbackResult.singleUtterance) {
+                pendingFeedbackContextRef.current = preTriggerSnapshot;
+              }
+              clientDiagnostic('feedback_issue_captured', {
+                issuePreview: feedbackResult.issue.slice(0, 100),
+                singleUtterance: feedbackResult.singleUtterance,
+              });
+              uploadFeedbackIssue(feedbackResult.issue, sessionIdRef.current);
+            }
+            sleepManagerRef.current?.onSpeechActivity();
+            return;
+          }
+          feedback.appendRollingFinal(text);
         }
         const utteranceId =
           typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -2180,7 +2272,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         return key;
       }, sourceSampleRate);
     },
-    [liveFill, onInspectorStoppedSpeaking]
+    [liveFill, onInspectorStoppedSpeaking, uploadFeedbackIssue]
   );
 
   /** Apply a structured Sonnet extraction to the active JobDetail.
@@ -3359,6 +3451,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // D4 — drop any orphan readings carried over from a previous
     // session so the 2 s timer doesn't fire mid-warmup.
     pendingReadingsBufferRef.current?.reset();
+    // A4 — fresh feedback state per session (no cross-session window leak).
+    feedbackCaptureRef.current?.reset();
+    pendingFeedbackContextRef.current = null;
     // D6 — clear the per-field confirmation dedup set. Same iOS
     // canon as line 799 (`confirmedFieldKeys = []`).
     confirmedFieldKeysRef.current.clear();
@@ -3511,6 +3606,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     if (statusRef.current === 'idle') return;
     recordLifecycle('recording-stop', { status: statusRef.current });
     pipelineLog('recording_stop_invoked', { status: statusRef.current });
+    // A4 — auto-close any in-progress feedback capture and upload it
+    // BEFORE the sessionId rotates (the upload needs it). iOS canon:
+    // performStopCleanup (DeepgramRecordingViewModel.swift:1854-1870).
+    {
+      const openIssue = feedbackCaptureRef.current?.closeCapture() ?? null;
+      if (openIssue) {
+        clientDiagnostic('feedback_issue_auto_closed', {
+          issuePreview: openIssue.slice(0, 100),
+        });
+        uploadFeedbackIssue(openIssue, sessionIdRef.current);
+      }
+      feedbackCaptureRef.current?.reset();
+      pendingFeedbackContextRef.current = null;
+    }
     sessionIdRef.current = '';
     // Clear the TTS sessionId in lockstep so post-stop speak() calls
     // (e.g. an ask_user that arrived after the WS close) bypass the

@@ -331,6 +331,39 @@ export const api = {
   },
 
   /**
+   * Upload a voice-feedback marker (A4, pwa-replay-harness Wave 6).
+   * Mirrors iOS `APIClient.uploadDebugReport` (APIClient.swift:1305-1330)
+   * against the EXISTING `POST /api/debug-report` route
+   * (src/routes/recording.js — read-only consumer; backend untouched).
+   * `lastTranscriptWindow` is omitted when empty so the wire shape matches
+   * iOS byte-for-byte on the no-window path. Known divergence (ledger row
+   * `recording/voice-feedback-capture`): the backend hardcodes
+   * `source: 'ios_v2_voice'`, so web markers are distinguishable only via
+   * the `sess_*` session-id shape.
+   */
+  debugReport(payload: {
+    sessionId: string;
+    issueText: string;
+    address?: string | null;
+    jobId?: string | null;
+    lastTranscriptWindow?: Array<{ ts: string; text: string }> | null;
+  }): Promise<{ success: boolean }> {
+    const body: Record<string, unknown> = {
+      sessionId: payload.sessionId,
+      issueText: payload.issueText,
+      address: payload.address ?? null,
+      jobId: payload.jobId ?? null,
+    };
+    if (payload.lastTranscriptWindow && payload.lastTranscriptWindow.length > 0) {
+      body.lastTranscriptWindow = payload.lastTranscriptWindow;
+    }
+    return request<{ success: boolean }>('/api/debug-report', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /**
    * Attach a photo to the current recording session for the
    * debug-report audit trail. Mirrors iOS DeepgramRecordingViewModel
    * `submitPhoto`. Multipart field name "photo"; `audioSeconds` is

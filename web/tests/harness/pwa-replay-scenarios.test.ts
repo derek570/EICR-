@@ -66,9 +66,10 @@ describe(`pwa-replay — recorded/authored session scenarios (${MODE} mode)`, ()
     });
 
     if (webExpect.xfail_until_wave6) {
-      // xfail: A4 ships in Wave 6, which flips `it.fails` → `it` and
-      // re-runs this GREEN (plan §6 — the four-bug proof completes there).
-      it.fails(`${scenario.name} — A4 feedback capture [xfail until Wave 6]`, async () => {
+      // Wave 6 SHIPPED A4 — the xfail flipped to a plain `it` and the
+      // four-bug proof is complete (plan §6). The YAML key name is kept
+      // for fixture stability.
+      it(`${scenario.name} — A4 feedback capture (shipped Wave 6)`, async () => {
         const result = await replayScenario(scenario);
         const failures = evaluateA4Expectations(result, webExpect.xfail_until_wave6!);
         expect(failures).toEqual([]);

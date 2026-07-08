@@ -7,7 +7,7 @@
 
 import type { ReplayResult } from './runner';
 import type { WebExpectations } from './scenario';
-import { runSeedInvariants } from './invariants';
+import { runSeedInvariants, invariant7_feedbackCapture } from './invariants';
 
 export function evaluateWebExpectations(
   result: ReplayResult,
@@ -88,9 +88,11 @@ export function evaluateWebExpectations(
   }
 
   // Seed invariants (D1 1/3/5) run on EVERY scenario; gate_blocked doubles
-  // as the chitchat declaration for invariant 5.
+  // as the chitchat declaration for invariant 5. Invariant 7 (feedback
+  // capture) joined at Wave 6 when A4 shipped.
   failures.push(
-    ...runSeedInvariants(trace, { chitchatUtterances: expectations.gate_blocked ?? [] })
+    ...runSeedInvariants(trace, { chitchatUtterances: expectations.gate_blocked ?? [] }),
+    ...invariant7_feedbackCapture(trace)
   );
   return failures;
 }
