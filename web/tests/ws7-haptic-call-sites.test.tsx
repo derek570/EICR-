@@ -188,7 +188,12 @@ describe('WS7 haptic call sites', () => {
     // Same import style as the file's ./image-resize sibling import.
     expect(src).toContain("import { haptic } from './haptic'");
     // Adjacency: chime then heavy haptic, with only whitespace between.
-    expect(src).toMatch(/playSentForProcessingChime\(\);\s*\n\s*haptic\('heavy'\);/);
+    // Since B1 (pwa-replay-harness Wave 2) both effects are injectable —
+    // the harness seams wrap them; production defaults are unchanged — so
+    // the pinned shape is the seam-wrapped pair.
+    expect(src).toMatch(
+      /\(getRecordingTestServices\(\)\?\.chime \?\? playSentForProcessingChime\)\(\);\s*\n\s*\(getRecordingTestServices\(\)\?\.haptic \?\? haptic\)\('heavy'\);/
+    );
   });
 
   it('recording-context does NOT haptic on the confirmation chime paths', () => {
