@@ -225,6 +225,58 @@ export function friendlyFieldName(field: string): string {
   }
 }
 
+/** Minimal reading shape the classifier needs (subset of the wire
+ *  `ExtractionResult.readings[]` entry). */
+export interface ClassifiableReading {
+  field?: unknown;
+  value?: unknown;
+  circuit?: unknown;
+}
+
+export interface ClassifiedReadings {
+  /** Circuit-attributed readings — resolve matching buffered orphans. */
+  resolved: PendingReading[];
+  /** Circuit-less circuit readings — enter the 2s disambiguation buffer. */
+  orphans: PendingReading[];
+  /** Circuit-less SECTION readings (A2 rescue) — already applied by
+   *  `applyExtraction`; must NEVER enter the buffer (iOS `supplyFields`
+   *  rescue, DeepgramRecordingViewModel.swift:5430). */
+  rescued: PendingReading[];
+}
+
+/**
+ * Orphan classifier for the pending-readings buffer — the decision that was
+ * inline in recording-context `onExtraction` (extracted 2026-07-08 with the
+ * A2 fix; behaviour identical apart from the new rescue branch).
+ *
+ * iOS canon: readings with `circuit == -1` buffer UNLESS the field is in the
+ * `supplyFields` rescue set (section-level fields need no circuit and were
+ * already applied). Pre-fix the web classifier buffered EVERY `circuit < 1`
+ * reading, so a dictated client name produced a false "Which circuit was
+ * that client_name reading for?" ask (sess_mrbnds2d_jczh, A2).
+ */
+export function classifyReadingsForBuffer(
+  readings: readonly ClassifiableReading[],
+  isNonCircuit: (field: string) => boolean
+): ClassifiedReadings {
+  const resolved: PendingReading[] = [];
+  const orphans: PendingReading[] = [];
+  const rescued: PendingReading[] = [];
+  for (const r of readings) {
+    if (!r || typeof r.field !== 'string' || r.field.length === 0) continue;
+    const value =
+      typeof r.value === 'string' ? r.value : r.value == null ? '' : String(r.value as unknown);
+    if (typeof r.circuit === 'number' && r.circuit >= 1) {
+      resolved.push({ field: r.field, value });
+    } else if (isNonCircuit(r.field)) {
+      rescued.push({ field: r.field, value });
+    } else {
+      orphans.push({ field: r.field, value });
+    }
+  }
+  return { resolved, orphans, rescued };
+}
+
 /**
  * Build the conversational disambiguation question that the timer
  * callback speaks. Mirrors iOS canon `askAboutPendingReadings`

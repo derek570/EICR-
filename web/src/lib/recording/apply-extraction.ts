@@ -398,6 +398,15 @@ function routeSupplyField(field: string): Section {
   return CIRCUIT_0_SECTION[field] ?? 'supply_characteristics';
 }
 
+/** Test-only view of the explicit circuit-0 section routes. Consumed by the
+ *  A2 drift guard (`non-circuit-fields.test.ts`) so `NON_CIRCUIT_FIELDS`
+ *  membership is asserted against the REAL route map, not a copied literal
+ *  (a raw key-set equality check would be both over- and under-inclusive —
+ *  default-routed and alias-translated fields exist on both sides). */
+export function __circuit0SectionRoutesForTests(): Readonly<Record<string, Section>> {
+  return CIRCUIT_0_SECTION;
+}
+
 /** Non-empty / non-null check used by the 3-tier priority guard. */
 export function hasValue(v: unknown): boolean {
   if (v == null) return false;

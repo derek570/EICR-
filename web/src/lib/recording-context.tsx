@@ -44,8 +44,10 @@ import { buildConfirmationDedupeKey } from './recording/confirmation-dedupe-key'
 import {
   PendingReadingsBuffer,
   buildPendingReadingsQuestion,
+  classifyReadingsForBuffer,
   type PendingReading,
 } from './recording/pending-readings-buffer';
+import { isNonCircuitField } from './recording/non-circuit-fields';
 import { normalise as normaliseTranscriptText } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
 import { SleepManager, type SleepState } from './recording/sleep-manager';
@@ -2395,21 +2397,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         const buffer = pendingReadingsBufferRef.current;
         if (!buffer) return;
         const readings = Array.isArray(result.readings) ? result.readings : [];
-        const resolved: PendingReading[] = [];
-        const orphans: PendingReading[] = [];
-        for (const r of readings) {
-          if (!r || typeof r.field !== 'string' || r.field.length === 0) continue;
-          const value =
-            typeof r.value === 'string'
-              ? r.value
-              : r.value == null
-                ? ''
-                : String(r.value as unknown);
-          if (typeof r.circuit === 'number' && r.circuit >= 1) {
-            resolved.push({ field: r.field, value });
-          } else {
-            orphans.push({ field: r.field, value });
-          }
+        // A2 (sess_mrbnds2d_jczh) — section-level fields need no circuit and
+        // were already applied by applyExtraction above. iOS canon rescues
+        // them from the buffer (`supplyFields` check inside the circuit == -1
+        // branch, DeepgramRecordingViewModel.swift:5430); the web D4 port
+        // omitted the rescue, so "customer is Michael Payden" produced a
+        // false "Which circuit was that client_name reading for?" ask that
+        // preempt-flushed the queued read-back.
+        const { resolved, orphans, rescued } = classifyReadingsForBuffer(
+          readings,
+          isNonCircuitField
+        );
+        for (const r of rescued) {
+          clientDiagnostic('non_circuit_field_rescued_from_buffer', {
+            field: r.field,
+            valuePreview: r.value.slice(0, 40),
+          });
         }
         if (resolved.length > 0) buffer.removeResolved(resolved);
         if (orphans.length > 0) buffer.addAll(orphans);
