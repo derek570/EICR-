@@ -1,0 +1,166 @@
+# sess_mrbnds2d_jczh — the 2026-07-08 four-bug PWA field session.
+#
+# HAND-AUTHORED (initial_state_fidelity: hand_authored) from the forensic
+# CloudWatch client_diagnostic log during Wave 1 of the pwa-replay-harness
+# plan, while the forensics were fresh. This is a WEB session: it has NO
+# debug_log.jsonl in S3 (web analytics upload gap), so it CANNOT go through
+# the WS-C1 converter — `pwa-replay:session` must load this checked-in file
+# when asked for this session id. It runs INVARIANT-ONLY (no iOS trace to
+# diff against) and is the permanent regression pin for the Wave-3 keystone
+# gate (A1–A3 red on reverted fixes, green on main; A4 xfail until Wave 6).
+#
+# Transcripts below are byte-exact from `pipeline_final_transcript`
+# textPreview entries (all under the 80-char CloudWatch truncation, so no
+# text was lost). at_ms offsets are relative to session start 05:38:58 UTC.
+# Interims are synthetic (the web log records only lengths/confidence).
+#
+# Recorded (pre-fix) behaviour this fixture exists to prevent regressing to:
+#   05:39:33  "Customer is Michael Payden." → regex install.client_name,
+#             gate PASS, Sonnet extracts client_name + 1 confirmation
+#   05:39:36  confirmation enqueued → dequeued → DEFERRED (A1: Flux
+#             EndOfTurn never fired onUtteranceEnd; isInspectorSpeaking
+#             stuck true since the first interim)
+#   05:39:38  pending_readings_ask fieldsPreview:client_name (A2: no
+#             supplyFields rescue) → tts_queue_preempt_flush
+#             discardedCount:1 — the read-back was NEVER heard
+#   05:39:47  "What do you mean?" → phantom regex re-hit of the SAME
+#             client_name value (A3: no value-equality) → gate PASS →
+#             chime → Sonnet extracts nothing → silence; chitchat pause
+#             counter reset by the phantom hint (counter_reset_regex)
+#   05:39:59  "Debug. Um, feedback." + 05:40:11 "Feedback." → should have
+#             started feedback marker capture (A4 — web port missing);
+#             instead phantom re-hits, chimes, empty extractions
+#
+# Also recorded (earlier in the session, kept as garble-dictionary data +
+# gate-block regression): "Asteroids." (junk), "Michael Hayden." (bare
+# name), "Custer is Michael Hayden." (Deepgram garble Custer→Customer —
+# correctly gate-blocked; the inspector re-stated).
+
+name: sess_mrbnds2d_jczh
+description: |
+  Four-bug web field session (2026-07-08). Invariant-only regression
+  fixture — the Wave-3 keystone red/green pin for A1 (Flux utterance-end
+  / FIFO defer-resume), A2 (non-circuit rescue), A3 (regex freshness
+  gate), and — from Wave 6 — A4 (feedback marker capture).
+suite: pwa-replay-sessions
+
+metadata:
+  session_id: sess_mrbnds2d_jczh
+  session_date: '2026-07-08'
+  session_start_utc: '2026-07-08T05:38:58Z'
+  source: cloudwatch-client-diagnostic (hand-transcribed 2026-07-08)
+  platform: web
+  initial_state_fidelity: hand_authored
+  synthetic_interims: true
+  backend_git_context: post-ff620997 (Flux prod flip 2026-07-03)
+
+capabilities:
+  voice_latency:
+    version: 1
+    supports:
+      - low_conf_readback_v1
+
+# Minimal hand-authored initial state. The live job (job_1783489132589)
+# had a pre-existing installation_details.client_name (the extraction
+# apply logged `user_value_kept`); the replay starts blank so the apply
+# WRITES instead — the fixture's assertions are tier-independent.
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      circuits:
+        - number: 1
+          designation: Lighting
+
+# Utterance timeline (finals byte-exact from the log; at_ms from session
+# start). The harness synthesises Flux StartOfTurn/Update/EndOfTurn frames
+# from each entry (synthetic_interims: true).
+transcript:
+  - at_ms: 9000
+    text: 'Asteroids.'
+    isFinal: true
+  - at_ms: 12000
+    text: 'Michael Hayden.'
+    isFinal: true
+  - at_ms: 19000
+    text: 'Custer is Michael Hayden.'
+    isFinal: true
+  - at_ms: 35000
+    text: 'Customer is Michael Payden.'
+    isFinal: true
+  - at_ms: 49000
+    text: 'What do you mean?'
+    isFinal: true
+  - at_ms: 61000
+    text: 'Debug. Um, feedback.'
+    isFinal: true
+  - at_ms: 73000
+    text: 'Feedback.'
+    isFinal: true
+
+# Mock-mode backend script — the extraction/question frames the REAL
+# backend produced in this session (reconstructed from onExtraction_entered
+# + the confirmation preview; confidence/board_id synthesised — approximate
+# by design, sufficient for the client-logic lanes). Keyed by the utterance
+# text the send carried. Utterances with no entry produce no frames (the
+# backend returned empty extractions for the chitchat sends pre-fix; post-
+# fix those sends never happen).
+mock_frames:
+  - on_transcript: 'Customer is Michael Payden.'
+    frames:
+      - type: extraction
+        readings:
+          - field: client_name
+            value: 'Michael Payden'
+            circuit: null
+        confirmations:
+          - field: client_name
+            circuit: null
+            text: 'customer name Michael Payden'
+
+expect:
+  web:
+    # A3 — chitchat/garble/bare-name utterances are gate-BLOCKED: no chime,
+    # no sonnet_send, no phantom regex changedKeys. ('Custer is Michael
+    # Hayden.' stays blocked — the garbled keyword genuinely doesn't match;
+    # the inspector re-stated. Recorded pre-fix behaviour for the last two:
+    # gate PASS via phantom install.client_name re-hit + chime + empty
+    # extraction.)
+    gate_blocked:
+      - 'Asteroids.'
+      - 'Michael Hayden.'
+      - 'Custer is Michael Hayden.'
+      - 'What do you mean?'
+    gate_passed:
+      - 'Customer is Michael Payden.'
+    chime_count: 1 # exactly one send → exactly one sent-for-processing chime
+    sonnet_send_count: 1
+    # A2 — the section reading must never produce a circuit-disambiguation
+    # ask. Recorded pre-fix: pending_readings_ask fieldsPreview:client_name.
+    pending_readings_ask_count: 0
+    rescued_from_buffer:
+      - field: client_name
+    # A1 — the confirmation defers while the inspector is mid-utterance but
+    # MUST resume on the utterance end and play exactly once; never
+    # preempt-flushed/discarded (recorded pre-fix: deferred forever, then
+    # discarded by the false ask's preempt flush).
+    confirmations_played:
+      - contains: 'Michael Payden'
+    confirmation_played_exactly_once: true
+    no_confirmation_permanently_deferred: true
+    no_confirmation_discarded_without_replay: true
+    # Applied field lands with the spoken value.
+    applied_fields:
+      - key: installation_details.client_name
+        value: 'Michael Payden'
+    # A4 — feedback marker capture (WAVE-6 SCOPE; xfail at Wave 3).
+    # 'Debug. Um, feedback.' and 'Feedback.' are sentence-opener triggers
+    # (^\s*(?:feedback|debug)\b): they must start capture, produce NO
+    # pipeline_regex_applied, NO chime, NO sonnet_send, and a feedback
+    # marker event; the marker uploads once on explicit exit or
+    # session-stop cleanup (iOS HEAD canon — no inactivity timeout).
+    xfail_until_wave6:
+      feedback_capture_started:
+        - 'Debug. Um, feedback.'
+        - 'Feedback.'
+      feedback_utterances_not_sent_to_sonnet: true

@@ -1,0 +1,80 @@
+# A3 gate-consequence fixture — minimal pin of the phantom-regex-re-hit
+# sequence from sess_mrbnds2d_jczh (see the full session fixture alongside
+# this file). Exists as a focused scenario so the A3 lane fails in
+# isolation: name statement matches once; the following chitchat re-hits
+# the SAME cumulative match and must NOT pass the gate / chime / reach
+# Sonnet; a genuinely changed value later still passes.
+#
+# Runs in BOTH env modes: hints-ON (prod parity, default) and hints-OFF
+# (env_override) — the hints-OFF path uses the per-session freshness
+# shadow (A3 fix, both paths share computeFreshRegexWrites).
+
+name: a3-gate-consequence
+description: |
+  Cumulative-regex freshness: 'Customer is Michael Payden.' passes once;
+  'What do you mean?' re-hits the same value and must be gate-blocked
+  (pre-fix: gate PASS + chime + empty Sonnet turn on every chitchat
+  utterance); 'Customer is Michael Hayden.' (changed value) passes.
+suite: pwa-replay-sessions
+
+metadata:
+  session_id: sess_mrbnds2d_jczh (derived)
+  session_date: '2026-07-08'
+  source: cloudwatch-client-diagnostic (hand-transcribed 2026-07-08)
+  platform: web
+  initial_state_fidelity: hand_authored
+  synthetic_interims: true
+
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      circuits:
+        - number: 1
+          designation: Lighting
+
+transcript:
+  - at_ms: 0
+    text: 'Customer is Michael Payden.'
+    isFinal: true
+  - at_ms: 8000
+    text: 'What do you mean?'
+    isFinal: true
+  - at_ms: 16000
+    text: 'Customer is Michael Hayden.'
+    isFinal: true
+
+mock_frames:
+  - on_transcript: 'Customer is Michael Payden.'
+    frames:
+      - type: extraction
+        readings:
+          - field: client_name
+            value: 'Michael Payden'
+            circuit: null
+        confirmations:
+          - field: client_name
+            circuit: null
+            text: 'customer name Michael Payden'
+  - on_transcript: 'Customer is Michael Hayden.'
+    frames:
+      - type: extraction
+        readings:
+          - field: client_name
+            value: 'Michael Hayden'
+            circuit: null
+        confirmations:
+          - field: client_name
+            circuit: null
+            text: 'customer name Michael Hayden'
+
+expect:
+  web:
+    gate_passed:
+      - 'Customer is Michael Payden.'
+      - 'Customer is Michael Hayden.'
+    gate_blocked:
+      - 'What do you mean?'
+    chime_count: 2
+    sonnet_send_count: 2
+    pending_readings_ask_count: 0
