@@ -91,13 +91,13 @@ Steps 2-3 are skipped entirely when `OPENAI_API_KEY` is unset (dev/sandbox).
 
 ## 6. Quality gate, 422 retake, idempotency
 
-**Quality gate** (`src/extraction/ccu-quality-gate.js`, pure function; design intent verbatim: *"never return wrong data silently"*). Hard signals only:
+**Quality gate** (`src/extraction/ccu-quality-gate.js`, pure function; design intent verbatim: *"never return wrong data silently"*):
 
 | Reason | Trigger | Threshold |
 |---|---|---|
-| `classifier_low_confidence` | Stage-1 confidence | < 0.85 (clean photos run 0.92-0.97) |
+| `classifier_low_confidence` | Stage-1 confidence | hard-fail < 0.65; between 0.65 and 0.85 fails ONLY without corroboration (extraction with ≥ 3 OCPD circuits and ≤ 50% null ratings passes). Softened 2026-07-08: a Contactum board pinned 0.82 on three different photos (the score is a property of the BOARD — model unidentifiable — not the photo) while the extraction was perfect, so < 0.85 alone rejected every retake forever. Do NOT fix via board-model identification — too much hardware variance within one model number (Derek, 2026-07-08). |
 | `poor_quad_fit` | rectNormCorr from quad refinement | < 0.20 (good photos 0.35-0.55) |
-| `too_many_nulls` | fraction of MCB/RCBO circuits with null rating | > 0.5 |
+| `too_many_nulls` | fraction of OCPD circuits with null rating | > 0.5. Dead on live traffic until 2026-07-08: the filter only matched slot-shaped rows (`device_kind`), but live merged circuits from `buildCircuitFromSlot` carry no kind key — now also recognised via `ocpd_bs_en`/`is_rcbo`/`ocpd_rating_a`. |
 
 Fail ⇒ `422 {status:'retake_required', reason, message, diagnostic}`. Clients treat 422 as **terminal**: drop the queued photo, show a retake card, never auto-retry the same bytes (web: `web/src/lib/ccu/pending-extraction-queue.ts`; iOS canon `CCUExtractionViewModel.swift:464-470` in the separate CertMateUnified repo).
 
@@ -161,11 +161,9 @@ The CCU pipeline is the repo's highest-churn experimental zone (geometric → pe
 
 | Claim | Where | Reality |
 |---|---|---|
-| `uniform_low_conf` trigger live and over-firing | `docs/reference/architecture.md` §CCU step 5 | Removed 2026-05-21 (extraction.js:458-487) |
-| SPD-from-main-switch fallback | same | Removed 2026-06-17 (extraction.js:2724) |
-| Single-shot failure → `classifier-only` | architecture.md "Failure mode" | Falls back to per-slot first (extraction.js:2318-2351); `classifier-only` only if that also yields nothing |
-| Prompt "enforces same-vertical-column label alignment / tie-break null" | architecture.md step 3 | Superseded 2026-05-21 by the position matcher — the prompt now forbids VLM-side label assignment |
 | "per-slot is the only path" | `scripts/ccu-local-run.mjs` header | Single-shot is live; harness covers legacy only |
+
+(The four architecture.md §CCU stale claims previously listed here — `uniform_low_conf` live, SPD-from-main-switch fallback, single-shot→`classifier-only`, prompt-side label alignment — were corrected in the doc on 2026-07-08 alongside the quality-gate softening.)
 
 If you touch the pipeline, fixing the matching architecture.md lines is part of the change (hub MANDATORY docs rule).
 
