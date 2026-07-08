@@ -30,14 +30,14 @@ import { captureObservationPhoto as runCaptureObservationPhoto } from './recordi
 import { clearPendingPhoto, readPendingPhoto, writePendingPhoto } from './pwa/job-cache';
 import { resizeImage } from './image-resize';
 import { haptic } from './haptic';
-import { applyRegexMatchToJob } from './recording/apply-regex-match';
+import {
+  applyRegexMatchToJob,
+  computeFreshRegexWrites,
+  shadowBaselineReader,
+} from './recording/apply-regex-match';
 import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
-import {
-  buildRegexSummary,
-  isEmptyResult,
-  type RegexResultsWire,
-} from './recording/regex-match-result';
+import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
 import { InFlightQuestionTracker } from './recording/in-flight-question';
 import { buildConfirmationDedupeKey } from './recording/confirmation-dedupe-key';
@@ -1065,6 +1065,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const regexMatcherRef = React.useRef<TranscriptFieldMatcher | null>(null);
   const fieldSourceTrackerRef = React.useRef<FieldSourceTracker | null>(null);
   const cumulativeTranscriptRef = React.useRef<string>('');
+  // A3 hints-OFF freshness shadow — last gate-passed regex candidate value
+  // per tracker key. In hints-OFF builds the regex value is deliberately
+  // never written to the job, so freshness can't baseline on job state (a
+  // cumulative-window re-hit would look fresh forever). Session-scoped,
+  // reset with the matcher/tracker. Unused (empty) in hints-ON builds.
+  const regexShadowRef = React.useRef<Map<string, unknown>>(new Map());
   // Phase 4e — 3-second pre-wake PCM ring buffer + state machine driving
   // doze/sleep transitions. The ring buffer is always written while the
   // mic is live so a wake from sleeping can replay the words the
@@ -1437,6 +1443,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     regexMatcherRef.current = null;
     fieldSourceTrackerRef.current = null;
     cumulativeTranscriptRef.current = '';
+    regexShadowRef.current = new Map();
   }, []);
 
   const teardownSleep = React.useCallback(() => {
@@ -1694,8 +1701,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             // HINTS flag off (local/dev/test): the matcher still ran for
             // gate purposes — nothing is applied and no hints are sent,
             // but a matchable reading must still count as a regex hit so
-            // the gate can't reject it.
-            gateRegexHit = !isEmptyResult(matchResult);
+            // the gate can't reject it. A3 (2026-07-08): derive the hit
+            // from the SAME freshness helper as the hints-ON path —
+            // `!isEmptyResult` was equally phantom-prone (a cumulative
+            // re-hit of an unchanged value passed the gate forever).
+            // Baseline is the per-session shadow map (the value is never
+            // written to the job in this mode), advanced on each fresh
+            // hit so the next re-hit of the same value is not fresh.
+            const fresh = computeFreshRegexWrites(
+              jobRef.current,
+              matchResult,
+              fieldSourceTrackerRef.current,
+              shadowBaselineReader(regexShadowRef.current)
+            );
+            for (const c of fresh) regexShadowRef.current.set(c.trackerKey, c.value);
+            gateRegexHit = fresh.length > 0;
           }
         } else if (regexMatcherRef.current && isAnswerToAsk) {
           clientDiagnostic('pipeline_regex_skipped_ask_answer', {
@@ -2318,6 +2338,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     fieldSourceTrackerRef.current = new FieldSourceTracker();
     fieldSourceTrackerRef.current.seedFromJob(jobRef.current);
     cumulativeTranscriptRef.current = '';
+    regexShadowRef.current = new Map();
 
     // Register the confirmation-FIFO session wiring (the ONLY registrations —
     // the player is injected per-enqueue by `speakConfirmation`). The defer

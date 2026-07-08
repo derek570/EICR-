@@ -106,6 +106,151 @@ export interface RegexApplyOutput {
   changedKeys: string[];
 }
 
+// MARK: — A3 freshness gate (sess_mrbnds2d_jczh, 2026-07-08)
+//
+// The matcher deliberately re-scans a CUMULATIVE transcript window
+// (cross-utterance carryover), so an old match re-fires on every later
+// utterance. Pre-fix the apply layer had no value-equality check, so a
+// re-hit of "Customer is Michael Payden" masqueraded as a fresh write on
+// pure chitchat ("What do you mean?"), passed the TranscriptGate, played
+// the sent-for-processing chime, and reset the backend chitchat pause
+// counter. iOS freshness canon: `applyRegexValue`'s
+// `newValue != currentValue` check (DeepgramRecordingViewModel.swift:
+// 7577-7595) feeds `thisTurnRegexWrites` → the gate's `hasRegexHit`.
+// The pure helper below ports that mechanism for BOTH env paths
+// (hints-ON compares against job state — the write happens; hints-OFF
+// compares against a per-session shadow map because the value is never
+// written to the job there).
+
+/** One tracker-approved candidate write from a regex pass. */
+export interface RegexWriteCandidate {
+  trackerKey: string;
+  target: 'supply_characteristics' | 'board_info' | 'installation_details' | 'circuit';
+  fieldKey: string;
+  value: unknown;
+  /** circuit-target only */
+  circuitIdx?: number;
+}
+
+/** Reads the value a candidate would overwrite. Injected so hints-ON can
+ *  baseline on the job while hints-OFF baselines on the freshness shadow. */
+export type BaselineReader = (candidate: RegexWriteCandidate) => unknown;
+
+/** String-compare after trim (the matcher emits trimmed strings; job values
+ *  may be numbers/booleans/null). null/undefined fold to '' so an unset
+ *  field never equals a real value. */
+export function valuesEqualAfterTrim(a: unknown, b: unknown): boolean {
+  const norm = (v: unknown) => (v == null ? '' : String(v).trim());
+  return norm(a) === norm(b);
+}
+
+/** Baseline reader for the hints-ON path: the current job value at the
+ *  location the patch would write. */
+export function jobBaselineReader(job: JobDetail): BaselineReader {
+  return (c) => {
+    if (c.target === 'circuit') {
+      const row = (job.circuits ?? [])[c.circuitIdx ?? -1] as Record<string, unknown> | undefined;
+      return row?.[c.fieldKey];
+    }
+    const section = job[c.target] as Record<string, unknown> | null | undefined;
+    return section?.[c.fieldKey];
+  };
+}
+
+/** Baseline reader for the hints-OFF path: a per-session shadow of the last
+ *  gate-passed candidate values (the job is never patched in that mode, so
+ *  job state would leave every re-hit looking fresh forever). */
+export function shadowBaselineReader(shadow: ReadonlyMap<string, unknown>): BaselineReader {
+  return (c) => shadow.get(c.trackerKey);
+}
+
+/**
+ * Pure candidate computation — the four write loops (supply / board /
+ * installation / circuit) with the tracker's 3-tier gating and the A3
+ * value-equality freshness gate, but NO state commits: no
+ * `tracker.recordRegexWrite`, no patch. Candidates whose value string-equals
+ * the baseline are NOT fresh and are dropped (no changedKey, no chime, no
+ * Sonnet send, no chitchat-counter reset). A changed value for a
+ * previously-set field is still fresh (legit cumulative carryover).
+ */
+export function computeFreshRegexWrites(
+  job: JobDetail,
+  result: RegexMatchResult,
+  tracker: FieldSourceTracker,
+  baseline: BaselineReader
+): RegexWriteCandidate[] {
+  const fresh: RegexWriteCandidate[] = [];
+  const consider = (candidate: RegexWriteCandidate) => {
+    if (!tracker.canRegexWrite(candidate.trackerKey)) return;
+    if (valuesEqualAfterTrim(candidate.value, baseline(candidate))) return; // re-hit, not fresh
+    fresh.push(candidate);
+  };
+
+  // Supply (some fields route to board_info — main_switch_* / spd_*).
+  for (const [matcherField, value] of Object.entries(result.supply_updates)) {
+    if (value === undefined) continue;
+    const fieldKey =
+      SUPPLY_FIELD_TO_KEY[matcherField as keyof typeof SUPPLY_FIELD_TO_KEY] ?? matcherField;
+    const section = SUPPLY_FIELD_SECTION[matcherField] ?? 'supply_characteristics';
+    consider({
+      trackerKey: `${section === 'board_info' ? 'board' : 'supply'}.${fieldKey}`,
+      target: section,
+      fieldKey,
+      value,
+    });
+  }
+
+  // Board.
+  for (const [matcherField, value] of Object.entries(result.board_updates)) {
+    if (value === undefined) continue;
+    const fieldKey =
+      BOARD_FIELD_TO_KEY[matcherField as keyof typeof BOARD_FIELD_TO_KEY] ?? matcherField;
+    consider({ trackerKey: `board.${fieldKey}`, target: 'board_info', fieldKey, value });
+  }
+
+  // Installation.
+  for (const [matcherField, value] of Object.entries(result.installation_updates)) {
+    if (value === undefined) continue;
+    const fieldKey =
+      INSTALLATION_FIELD_TO_KEY[matcherField as keyof typeof INSTALLATION_FIELD_TO_KEY] ??
+      matcherField;
+    consider({
+      trackerKey: `install.${fieldKey}`,
+      target: 'installation_details',
+      fieldKey,
+      value,
+    });
+  }
+
+  // Per-circuit. Translate matcher's `circuit_ref` keys to row UUIDs so
+  // the tracker key uses the stable id.
+  if (Object.keys(result.circuit_updates).length > 0) {
+    const circuits = job.circuits ?? [];
+    const indexByRef = new Map<string, number>();
+    circuits.forEach((row, idx) => {
+      const ref = (row as { circuit_ref?: unknown }).circuit_ref;
+      if (typeof ref === 'string') indexByRef.set(ref, idx);
+    });
+    for (const [ref, updates] of Object.entries(result.circuit_updates)) {
+      const idx = indexByRef.get(ref);
+      if (idx === undefined) continue; // ref without a row — out of scope
+      const id = circuits[idx].id;
+      for (const [field, value] of Object.entries(updates as CircuitUpdates)) {
+        if (value === undefined) continue;
+        consider({
+          trackerKey: `circuit.${id}.${field}`,
+          target: 'circuit',
+          fieldKey: field,
+          value,
+          circuitIdx: idx,
+        });
+      }
+    }
+  }
+
+  return fresh;
+}
+
 /**
  * Apply a RegexMatchResult onto a JobDetail. Returns null if no fields
  * actually wrote (so the caller can skip a needless updateJob cycle).
@@ -113,7 +258,11 @@ export interface RegexApplyOutput {
  * Each candidate write is gated through `tracker.canRegexWrite(key)` —
  * if Sonnet or a pre-existing value already owns the field, the regex
  * write is silently dropped and the key does NOT appear in changedKeys
- * or the next regexResults wire payload.
+ * or the next regexResults wire payload. Since A3 (2026-07-08) each
+ * candidate is ALSO freshness-gated against the current job value —
+ * cumulative-window re-hits of an unchanged value no longer write,
+ * count as changedKeys, or reach the tracker's turn-writes (so they no
+ * longer flip the TranscriptGate's hasRegexHit).
  */
 export function applyRegexMatchToJob(
   job: JobDetail,
@@ -129,83 +278,31 @@ export function applyRegexMatchToJob(
   const patch: Partial<JobDetail> = {};
   const changedKeys: string[] = [];
 
+  const freshWrites = computeFreshRegexWrites(job, result, tracker, jobBaselineReader(job));
+
   // Section buckets — accumulated and folded into the patch at the end so
   // multiple section writes don't smear across each other.
   const supplyPatch: Record<string, unknown> = {};
   const boardPatch: Record<string, unknown> = {};
   const installPatch: Record<string, unknown> = {};
-
-  // Supply.
-  for (const [matcherField, value] of Object.entries(result.supply_updates)) {
-    if (value === undefined) continue;
-    const fieldKey =
-      SUPPLY_FIELD_TO_KEY[matcherField as keyof typeof SUPPLY_FIELD_TO_KEY] ?? matcherField;
-    const section = SUPPLY_FIELD_SECTION[matcherField] ?? 'supply_characteristics';
-    const trackerKey = `${section === 'board_info' ? 'board' : 'supply'}.${fieldKey}`;
-    if (!tracker.canRegexWrite(trackerKey)) continue;
-    if (section === 'board_info') boardPatch[fieldKey] = value;
-    else supplyPatch[fieldKey] = value;
-    tracker.recordRegexWrite(trackerKey);
-    changedKeys.push(trackerKey);
-  }
-
-  // Board.
-  for (const [matcherField, value] of Object.entries(result.board_updates)) {
-    if (value === undefined) continue;
-    const fieldKey =
-      BOARD_FIELD_TO_KEY[matcherField as keyof typeof BOARD_FIELD_TO_KEY] ?? matcherField;
-    const trackerKey = `board.${fieldKey}`;
-    if (!tracker.canRegexWrite(trackerKey)) continue;
-    boardPatch[fieldKey] = value;
-    tracker.recordRegexWrite(trackerKey);
-    changedKeys.push(trackerKey);
-  }
-
-  // Installation.
-  for (const [matcherField, value] of Object.entries(result.installation_updates)) {
-    if (value === undefined) continue;
-    const fieldKey =
-      INSTALLATION_FIELD_TO_KEY[matcherField as keyof typeof INSTALLATION_FIELD_TO_KEY] ??
-      matcherField;
-    const trackerKey = `install.${fieldKey}`;
-    if (!tracker.canRegexWrite(trackerKey)) continue;
-    installPatch[fieldKey] = value;
-    tracker.recordRegexWrite(trackerKey);
-    changedKeys.push(trackerKey);
-  }
-
-  // Per-circuit. Translate matcher's `circuit_ref` keys to row UUIDs so
-  // the tracker key uses the stable id.
   let circuits: CircuitRow[] | null = null;
-  if (Object.keys(result.circuit_updates).length > 0) {
-    circuits = [...(job.circuits ?? [])];
-    const indexByRef = new Map<string, number>();
-    circuits.forEach((row, idx) => {
-      const ref = (row as { circuit_ref?: unknown }).circuit_ref;
-      if (typeof ref === 'string') indexByRef.set(ref, idx);
-    });
 
-    let circuitsChanged = false;
-    for (const [ref, updates] of Object.entries(result.circuit_updates)) {
-      const idx = indexByRef.get(ref);
-      if (idx === undefined) continue; // matcher emitted a ref we don't have a row for — out of scope
+  for (const c of freshWrites) {
+    if (c.target === 'circuit') {
+      if (circuits === null) circuits = [...(job.circuits ?? [])];
+      const idx = c.circuitIdx ?? -1;
       const row = circuits[idx];
-      const id = row.id;
-      const rowFieldUpdates: Record<string, unknown> = {};
-      for (const [field, value] of Object.entries(updates as CircuitUpdates)) {
-        if (value === undefined) continue;
-        const trackerKey = `circuit.${id}.${field}`;
-        if (!tracker.canRegexWrite(trackerKey)) continue;
-        rowFieldUpdates[field] = value;
-        tracker.recordRegexWrite(trackerKey);
-        changedKeys.push(trackerKey);
-      }
-      if (Object.keys(rowFieldUpdates).length > 0) {
-        circuits[idx] = { ...row, ...rowFieldUpdates };
-        circuitsChanged = true;
-      }
+      if (!row) continue;
+      circuits[idx] = { ...row, [c.fieldKey]: c.value };
+    } else if (c.target === 'board_info') {
+      boardPatch[c.fieldKey] = c.value;
+    } else if (c.target === 'installation_details') {
+      installPatch[c.fieldKey] = c.value;
+    } else {
+      supplyPatch[c.fieldKey] = c.value;
     }
-    if (!circuitsChanged) circuits = null;
+    tracker.recordRegexWrite(c.trackerKey);
+    changedKeys.push(c.trackerKey);
   }
 
   // Fold section patches into JobDetail patch (preserving other keys
