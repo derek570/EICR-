@@ -299,6 +299,67 @@ jobs:
         run: node scripts/check-parity-ledger.mjs --ledger web/docs/parity-ledger.md --map web/docs/parity-ledger-files.json --changed-files /tmp/parity-ledger-changed-files.txt
 
   # ============================================
+  # Job 2d: PWA replay harness — per-PR mock lane (pwa-replay-harness E1a)
+  # ============================================
+  # Deterministic, ZERO tokens: replays the session fixtures + the full
+  # generated field sweep through the REAL RecordingProvider in mock mode.
+  # PR-only + path-filtered to recording/harness surfaces; target <5 min.
+  # Deploy jobs do NOT depend on this job (it cannot run on push), so it
+  # gates PR merges via the checks UI only.
+  pwa-replay-mock-lane:
+    name: PWA Replay (mock lane)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code (full history for base diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute changed files
+        id: changed
+        run: |
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > /tmp/pwa-replay-changed.txt
+          if grep -qE '^(web/src/lib/recording|web/src/lib/recording-context|web/tests/harness/|scripts/pwa-replay/|tests/fixtures/pwa-replay|config/field_schema\.json)' /tmp/pwa-replay-changed.txt; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No recording/harness paths touched — skipping replay lane."
+          fi
+
+      - name: Setup Node.js
+        if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        if: steps.changed.outputs.run == 'true'
+        run: npm ci
+
+      - name: Generated sweep in sync with field_schema.json
+        if: steps.changed.outputs.run == 'true'
+        run: node scripts/pwa-replay/generate-field-sweep.mjs --check
+
+      - name: Replay session fixtures (mock mode)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: web
+        run: npx vitest run tests/harness/
+        env:
+          CI: true
+
+      - name: Replay generated field sweep (mock mode)
+        if: steps.changed.outputs.run == 'true'
+        working-directory: web
+        run: npx vitest run tests/harness/field-sweep.lane.test.ts
+        env:
+          CI: true
+          PWA_SWEEP: '1'
+
+  # ============================================
   # Job 3: Build, Scan & Cache Docker Images
   # ============================================
   build-images:

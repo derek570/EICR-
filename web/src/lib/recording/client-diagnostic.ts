@@ -34,6 +34,11 @@ interface DiagnosticSink {
 
 let activeSink: DiagnosticSink | null = null;
 
+/** B1 harness tap — receives EVERY clientDiagnostic envelope in addition
+ *  to the normal console + WS sinks. Null in production (default). The
+ *  replay harness registers a trace collector here (Wave 2, B1). */
+let diagnosticTap: ((category: string, payload: Record<string, unknown>) => void) | null = null;
+
 /**
  * Wire the active SonnetSession (or any object exposing
  * `sendClientDiagnostic`) so subsequent `clientDiagnostic()` calls
@@ -41,6 +46,13 @@ let activeSink: DiagnosticSink | null = null;
  */
 export function setDiagnosticSink(sink: DiagnosticSink | null): void {
   activeSink = sink;
+}
+
+/** Register (or clear with null) the harness diagnostic tap. Test-only. */
+export function setDiagnosticTap(
+  tap: ((category: string, payload: Record<string, unknown>) => void) | null
+): void {
+  diagnosticTap = tap;
 }
 
 /**
@@ -52,6 +64,11 @@ export function clientDiagnostic(category: string, payload: Record<string, unkno
     console.info(`[client-diagnostic] ${category}`, payload);
   } catch {
     /* ignore */
+  }
+  try {
+    diagnosticTap?.(category, payload);
+  } catch {
+    /* ignore — a bad harness tap must never affect the pipeline */
   }
   try {
     activeSink?.sendClientDiagnostic(category, payload);

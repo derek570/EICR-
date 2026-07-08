@@ -114,7 +114,7 @@ describe('DeepgramService — Flux TurnInfo → delegate mapping', () => {
     expect(cbs.onSpeechStarted).toHaveBeenCalledTimes(1);
   });
 
-  it('maps EndOfTurn (with transcript) → onFinalTranscript with words', () => {
+  it('maps EndOfTurn (with transcript) → onFinalTranscript AND onUtteranceEnd, in that order', () => {
     const { ws, cbs } = makeService();
     ws.open();
     ws.emit({
@@ -130,6 +130,15 @@ describe('DeepgramService — Flux TurnInfo → delegate mapping', () => {
     expect(conf).toBeCloseTo(0.92);
     expect(words).toHaveLength(1);
     expect(words[0].word).toBe('LIM');
+    // iOS canon: EndOfTurn with transcript fires final + utterance-end. The
+    // missing utterance-end left isInspectorSpeaking stuck true on web and
+    // permanently deferred every FIFO confirmation (sess_mrbnds2d_jczh, A1).
+    expect(cbs.onUtteranceEnd).toHaveBeenCalledTimes(1);
+    const finalOrder = (cbs.onFinalTranscript as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    const utteranceEndOrder = (cbs.onUtteranceEnd as ReturnType<typeof vi.fn>).mock
+      .invocationCallOrder[0];
+    expect(finalOrder).toBeLessThan(utteranceEndOrder);
   });
 
   it('maps EndOfTurn (empty transcript) → onUtteranceEnd, NOT a final', () => {

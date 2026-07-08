@@ -1,0 +1,101 @@
+{
+  "description": "D3 — garble dictionary seeded from REAL field sessions (pwa-replay-harness Wave 5). Garbles are TEST INPUTS, never something the pipeline corrects (fuzzy correction is banned per research-methodology). Each entry records provenance. `sweep_safe: true` = the garble preserves the utterance's gate trigger (a digit or strong keyword survives), so the generated field sweep may apply it and still expect the dictation to flow; `sweep_safe: false` garbles kill the gate trigger and live only in dedicated session fixtures (e.g. the Custer utterance pinned in sess_mrbnds2d_jczh.yaml).",
+  "garbles": [
+    {
+      "heard": "Custer",
+      "meant": "Customer",
+      "source_session": "sess_mrbnds2d_jczh",
+      "date": "2026-07-08",
+      "sweep_safe": false,
+      "note": "Killed the client-name regex + gate; inspector re-stated. Pinned in the session fixture."
+    },
+    {
+      "heard": "Payden",
+      "meant": "Hayden",
+      "source_session": "sess_mrbnds2d_jczh",
+      "date": "2026-07-08",
+      "sweep_safe": true,
+      "note": "Proper-noun mishear — value garble, trigger intact."
+    },
+    {
+      "heard": "Asteroids.",
+      "meant": "(junk / ambient)",
+      "source_session": "sess_mrbnds2d_jczh",
+      "date": "2026-07-08",
+      "sweep_safe": false,
+      "note": "Pure junk utterance — chitchat-corpus material, must gate-block."
+    },
+    {
+      "heard": "infuse",
+      "meant": "main fuse",
+      "source_session": "B1916AD6-EF29-47C3-922E-E2BF9C9E4DCA",
+      "date": "2026-05-29",
+      "sweep_safe": false,
+      "note": "'My infuse is LIM' — backend recovered it; regex/gate keyword lost."
+    },
+    {
+      "heard": "limp",
+      "meant": "LIM",
+      "source_session": "B1916AD6-EF29-47C3-922E-E2BF9C9E4DCA",
+      "date": "2026-05-29",
+      "sweep_safe": true,
+      "note": "'Smoke alarm Zed s is limp.' — Zs trigger intact, value garbled; backend recovered LIM."
+    },
+    {
+      "heard": "lion",
+      "meant": "LIM",
+      "source_session": "WS4 synthetic TTS probe",
+      "date": "2026-07-03",
+      "sweep_safe": true,
+      "note": "Corrected by equal-weight Flux keyterms in the probe; kept as a value-garble input."
+    },
+    {
+      "heard": "tryptoid",
+      "meant": "trip time",
+      "source_session": "field logs (WS4 keyword-boost evidence)",
+      "date": "2026-07-03",
+      "sweep_safe": false,
+      "note": "Killed the trip-time keyword; drove the nova-3 boost 1.5→2.5."
+    },
+    {
+      "heard": "Zed e",
+      "meant": "Ze",
+      "source_session": "B1916AD6-EF29-47C3-922E-E2BF9C9E4DCA",
+      "date": "2026-05-29",
+      "sweep_safe": true,
+      "note": "Spelling-out garble the NumberNormaliser handles; canonical spoken form."
+    },
+    {
+      "heard": "naught point",
+      "meant": "0.",
+      "source_session": "B1916AD6-EF29-47C3-922E-E2BF9C9E4DCA",
+      "date": "2026-05-29",
+      "sweep_safe": true,
+      "note": "Number-word form — normaliser territory, trigger intact."
+    },
+    {
+      "heard": "Wing",
+      "meant": "Ring",
+      "source_session": "job_1776846730679",
+      "date": "2026-04",
+      "sweep_safe": false,
+      "note": "Ring-continuity keyword lost (pre-Flux Deepgram mishear)."
+    },
+    {
+      "heard": "Installation of resistance",
+      "meant": "Insulation resistance",
+      "source_session": "job_1776846730679",
+      "date": "2026-04",
+      "sweep_safe": true,
+      "note": "'resistance' + digits keep the utterance reading-shaped."
+    },
+    {
+      "heard": "gas laser",
+      "meant": "gas bonding location(?)",
+      "source_session": "B1916AD6-EF29-47C3-922E-E2BF9C9E4DCA",
+      "date": "2026-05-29",
+      "sweep_safe": false,
+      "note": "Chitchat-question garble — Sonnet asked for clarification."
+    }
+  ]
+}

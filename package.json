@@ -19,7 +19,10 @@
     "format": "prettier --write \"src/**/*.js\" \"packages/**/*.ts\"",
     "prepare": "husky",
     "migrate": "node-pg-migrate",
-    "migrate:up": "node-pg-migrate up"
+    "migrate:up": "node-pg-migrate up",
+    "pwa-replay": "node scripts/pwa-replay/run.mjs",
+    "pwa-replay:session": "node scripts/pwa-replay/session.mjs",
+    "pwa-replay:sweep": "PWA_SWEEP=1 npm run --workspace=web test -- tests/harness/field-sweep.lane.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",

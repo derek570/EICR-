@@ -880,7 +880,7 @@ export class DeepgramService {
    * nova-3 so recording-context needs no Flux-awareness:
    *   - TurnInfo/Update      → onInterimTranscript
    *   - TurnInfo/StartOfTurn → onSpeechStarted
-   *   - TurnInfo/EndOfTurn (transcript)  → onFinalTranscript
+   *   - TurnInfo/EndOfTurn (transcript)  → onFinalTranscript + onUtteranceEnd
    *   - TurnInfo/EndOfTurn (empty)       → onUtteranceEnd (silence-driven close)
    *
    * "Dispatch ALL message types" (2026-05-15 mistake): Error AND
@@ -993,6 +993,15 @@ export class DeepgramService {
           wordCount: words.length,
         });
         this.callbacks.onFinalTranscript(transcript, confidence, words);
+        // iOS canon (DeepgramService.swift handleFluxTurnInfo): EndOfTurn with
+        // a transcript fires BOTH didReceiveFinalTranscript AND
+        // didReceiveUtteranceEnd. Without the utterance-end,
+        // isInspectorSpeaking sticks true after the first real utterance and
+        // every FIFO confirmation defers forever (sess_mrbnds2d_jczh, A1).
+        // Order matters: final first, then utterance-end, so the deferred
+        // FIFO head drains after the final has been dispatched.
+        pipelineLog('deepgram_utterance_end', {});
+        this.callbacks.onUtteranceEnd?.();
         break;
       }
       case 'EagerEndOfTurn':

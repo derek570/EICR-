@@ -244,3 +244,24 @@ Every claim above was verified against the working tree on 2026-07-06. Re-verify
 | Harness cost numbers (re-measure when prompt size shifts) | `cat scripts/voice-latency-bench/HARNESS_COST_NOTES.md` |
 | Prod-mint endpoint still enabled (`STAGE0_BENCH=1` in task def) | `grep -n "STAGE0_BENCH" ecs/task-def-backend.json` |
 | ElevenLabs per-model cost buckets | `grep -n "elevenLabsCharsByModel" src/extraction/cost-tracker.js` |
+
+## PWA replay harness (added 2026-07-08)
+
+The web-pipeline counterpart to the backend voice bench — replays recorded/authored
+sessions through the REAL `RecordingProvider` (mock backend by default, zero tokens).
+Full doc: `docs/reference/pwa-replay-harness.md`.
+
+| Task | Command |
+|------|---------|
+| Replay the session-fixture corpus (mock) | `npm run pwa-replay` |
+| One-command iOS-session differential (fetch→convert→replay→diff) | `npm run pwa-replay:session -- --session=<UUID>` |
+| 116-field generated sweep | `npm run pwa-replay:sweep` |
+| Dump behavioural traces | `npm run pwa-replay -- --trace-out=<dir>` |
+| Regenerate/verify the sweep vs field_schema.json | `node scripts/pwa-replay/generate-field-sweep.mjs [--check]` |
+
+Key facts: web sessions have NO `debug_log.jsonl` in S3 (ledger
+`crosscutting/session-analytics-upload`) — hand-author them from CloudWatch
+`client_diagnostic` while fresh (`tests/fixtures/pwa-replay-sessions/sess_mrbnds2d_jczh.yaml`
+is the template). iOS conversions are `empty_fallback` fidelity unless you pass
+`--initial-state=` (final `job_snapshot.json` minus session-applied fields). Mock frames
+reconstruct from SERVER-ORIGIN (`sonnet/`) log events ONLY — never regex-category events.

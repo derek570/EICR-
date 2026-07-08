@@ -16,6 +16,7 @@ import {
   type QueuePlayControls,
 } from './tts-queue';
 import { clientDiagnostic } from './client-diagnostic';
+import { getRecordingTestServices } from './test-services';
 
 /**
  * Text-to-speech wrapper — ElevenLabs primary, browser SpeechSynthesis
@@ -484,16 +485,69 @@ function dispatch(
         options?.onError?.(reason);
       },
     };
-    if (elevenLabsAvailable && sessionId) dispatchElevenLabs(trimmed, wrapped);
+    const harnessDirect = getRecordingTestServices()?.ttsDirectSpeak;
+    if (harnessDirect) dispatchHarnessDirect(trimmed, wrapped, harnessDirect);
+    else if (elevenLabsAvailable && sessionId) dispatchElevenLabs(trimmed, wrapped);
     else dispatchNative(trimmed, wrapped);
     return;
   }
 
+  {
+    const harnessDirect = getRecordingTestServices()?.ttsDirectSpeak;
+    if (harnessDirect) {
+      dispatchHarnessDirect(trimmed, options, harnessDirect);
+      return;
+    }
+  }
   if (elevenLabsAvailable && sessionId) {
     dispatchElevenLabs(trimmed, options);
     return;
   }
   dispatchNative(trimmed, options);
+}
+
+/**
+ * B1 harness audio backend for the DIRECT path. Keeps the REAL ttsWindow /
+ * lifecycle bookkeeping (mirroring dispatchNative) while delegating the
+ * actual "audio" to the injected player — so `isWithinTtsWindow`, the
+ * SleepManager TTS gate, and `isDirectAudioActive` all behave exactly as
+ * production during a replay. The injected player MUST fire the callbacks
+ * it is given (onStart, then exactly one of onEnd/onError).
+ */
+function dispatchHarnessDirect(
+  text: string,
+  options: SpeakOptions | undefined,
+  player: (text: string, options?: SpeakOptions) => void
+): void {
+  const myStartMs = Date.now();
+  ttsWindow = { startMs: myStartMs, endMs: null };
+  notifyTtsLifecycle('start');
+  const closeWindow = () => {
+    if (ttsWindow && ttsWindow.startMs === myStartMs) {
+      ttsWindow = { startMs: myStartMs, endMs: Date.now() };
+      notifyTtsLifecycle('end');
+    }
+  };
+  try {
+    player(text, {
+      ...options,
+      onStart: () => {
+        options?.onStart?.();
+      },
+      onEnd: () => {
+        closeWindow();
+        options?.onEnd?.();
+      },
+      onError: (reason: unknown) => {
+        closeWindow();
+        if (options?.onError) options.onError(reason);
+        else options?.onEnd?.();
+      },
+    });
+  } catch {
+    closeWindow();
+    options?.onEnd?.();
+  }
 }
 
 /**
@@ -747,7 +801,10 @@ export function speak(text: string, options?: SpeakOptions): void {
     textLength: typeof text === 'string' ? text.length : 0,
     textPreview: typeof text === 'string' ? text.slice(0, 80) : '',
   });
-  if (!isTtsAvailable()) {
+  // B1 harness seam: an injected direct player counts as "TTS available"
+  // (jsdom has no SpeechSynthesis, and the harness must exercise the real
+  // preempt/owner/window logic below).
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsDirectSpeak) {
     clientDiagnostic('tts_speak_skipped_unavailable', {});
     options?.onEnd?.();
     return;
@@ -905,7 +962,8 @@ export function speakConfirmation(
   // caller) STAYS recorded for a client-suppressed confirmation by design (a
   // muted confirmation the inspector chose not to hear should not re-prompt);
   // `onDiscarded` fires ONLY for queue-side discards.
-  if (!isTtsAvailable()) {
+  // B1 harness seam: an injected confirmation player counts as available.
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) {
     clientDiagnostic('tts_speak_confirmation_skipped_unavailable', {});
     options?.onEnd?.();
     return { enqueued: false, discardedCount: 0 };
@@ -927,11 +985,20 @@ export function speakConfirmation(
   // FIFO-queue the confirmation — the pump plays one head at a time so
   // back-to-back read-backs no longer clobber each other. The injected player
   // is the thin wrapper above (ElevenLabs-primary + native-fallback + echo
-  // suppression + per-head ttsWindow), NOT bare `dispatch()`.
+  // suppression + per-head ttsWindow), NOT bare `dispatch()`. B1 harness
+  // seam: an injected confirmation player replaces ONLY the audio backend;
+  // the queue (defer gate, overflow, dedupe un-record) and the
+  // echo-suppression fingerprint stay real.
+  const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
   return enqueueConfirmation({
     text: trimmed,
     dedupeKey: options?.dedupeKey,
-    play: playConfirmationHead,
+    play: harnessPlayer
+      ? (t, controls) => {
+          registerTtsFingerprint(t);
+          harnessPlayer(t, controls);
+        }
+      : playConfirmationHead,
     onEnd: options?.onEnd,
   });
 }

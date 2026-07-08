@@ -381,3 +381,23 @@ Every volatile fact above, with a one-line re-verification command:
 | Ledger warner warn-only, 30-day staleness | `sed -n 1,45p scripts/check-parity-ledger.mjs` |
 | Bug-I fix + next-day revert commits | `git log --oneline --follow -- src/__tests__/stage6-fold-circuit-fields.test.js` |
 | Backend test count ~4952 (dated 2026-06-26, changelog figure — UNVERIFIED by a live run here) | `npm test 2>&1 \| tail -5` |
+
+## PWA replay harness lanes (added 2026-07-08)
+
+- **Composition evidence bar:** unit-green is NOT sufficient for `web/src/lib/recording*`
+  changes — sess_mrbnds2d_jczh shipped four bugs past 1300+ green units. The harness
+  suite (`web/tests/harness/`, runs in the default web suite) + the 116-field sweep
+  (`npm run pwa-replay:sweep`, opt-in `PWA_SWEEP=1`) are the composition gates.
+- **CI:** per-PR `pwa-replay-mock-lane` (deploy.yml, path-filtered, deterministic,
+  blocking on PR checks); nightly live lane (`pwa-replay-nightly.yml`) is ADVISORY
+  (issue-on-failure) and no-ops until the `ANTHROPIC_API_KEY` repo secret is provisioned.
+- **Pre-push hook unchanged** — the sweep is too heavy for it (explicit E2 decision).
+- **Harness test hygiene traps found 2026-07-08:** TTS echo-fingerprints are tts.ts
+  module state with a wall-clock TTL — reset per replay or scenario N-1's confirmation
+  makes scenario N's dictation look like echo; `vi.runOnlyPendingTimersAsync()` fires the
+  60s auto-sleep timer and REBUILDS the fake session mid-test (use small
+  `advanceTimersByTimeAsync` steps); section readings ride `circuit: 0` on the wire
+  (`applyCircuit0Readings` requires `=== 0`; null never routes).
+- **Keystone rule:** any change to the harness's fakes must preserve the red/green
+  discrimination — the fakes wrap REAL service internals (raw Flux frames through the
+  real mapping); a delegate-level fake silently loses the A1 lane.
