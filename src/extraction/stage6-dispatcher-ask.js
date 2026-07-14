@@ -96,12 +96,21 @@ import { validateAskUser } from './stage6-dispatch-validation.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 import {
   resolveCircuitAnswer,
   resolveValueAnswer,
   resolveEnumAnswer,
   resolveBoardIdAnswer,
+  extractCircuitRef,
 } from './stage6-answer-resolver.js';
+// §A4 (field-feedback-2026-07-14, F8) — pending-value capture + field-name
+// resolution + the typed detector for the write-or-reask guarantee.
+import {
+  extractPendingValue,
+  resolveFieldNameAnswer,
+  detectStructuredReading,
+} from './stage6-pending-value.js';
 
 const require = createRequire(import.meta.url);
 // Schema-driven enum validation for select-typed asks (Bug B from session
@@ -332,10 +341,37 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         // `.code = 'DUPLICATE_TOOL_CALL_ID'` stamp that the registry puts on
         // its own throw. Anything else → clearTimeout + rethrow so the tool
         // loop sees the real error.
+        // §A4 (F8) — capture the dangling VALUE for the INVERTED ask shape
+        // (`context_field:"none"` / absent: field expected in the answer,
+        // value already spoken). Derived from the turn transcript FIRST,
+        // question fallback — the prompt's canonical ask wording sometimes
+        // omits the numeric ("what was that reading for?"). Null capture is
+        // fine (shape-2 of the re-ask machine covers it); a wrong guess is
+        // not (extractPendingValue never guesses across multiple unbound
+        // numbers).
+        const capturedPendingValue =
+          input.context_field == null || input.context_field === 'none'
+            ? extractPendingValue({
+                transcript: session.activeTurnTranscript,
+                question: input.question,
+              })
+            : null;
+        if (capturedPendingValue && logger?.info) {
+          logger.info('stage6.pending_value_captured', {
+            sessionId,
+            turnId,
+            tool_call_id: toolCallId,
+            value: capturedPendingValue.value,
+            unit: capturedPendingValue.unit,
+            source: capturedPendingValue.source,
+          });
+        }
         try {
           pendingAsks.register(toolCallId, {
             contextField: input.context_field,
             contextCircuit: input.context_circuit,
+            // §A4 — sibling of pendingWrite; see stage6-pending-asks-registry.js.
+            pendingValue: capturedPendingValue,
             // Plan 03-11 Task 2 (STG r3 MAJOR remediation) — stash the ask's
             // expected_answer_shape on the registry entry so classifyOvertake
             // can short-circuit the "no regex hits → user_moved_on" fallback
@@ -576,6 +612,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       sessionId,
       turnId,
       toolCallId,
+      // §A4 — the deterministic-ask BROKER needs the registry + ws so a
+      // brokered `pvr-*` follow-up registers BEFORE its ask_user_started
+      // send and resolves through the same channels as any other ask.
+      pendingAsks,
+      ws,
     });
 
     return {
@@ -608,11 +649,47 @@ async function buildResolvedBody({
   sessionId,
   turnId,
   toolCallId,
+  pendingAsks = null,
+  ws = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
   if (!outcome.answered) {
     return { answered: false, reason: outcome.reason };
+  }
+
+  // §A4 (field-feedback-2026-07-14, F8) — pending-value resolution for the
+  // INVERTED ask shape (`context_field:"none"`: value captured at ask time,
+  // FIELD expected in the answer). Runs BEFORE the board/enum/value
+  // resolvers — all three return silent fall-throughs for a 'none' context
+  // (resolveValueAnswer's `no_value_context` was exactly the F8 silence).
+  //
+  // Engagement guard: fires ONLY when the reply resolves to a field name OR
+  // a pendingValue was captured. A 'none' ask whose reply is neither (e.g.
+  // the mandatory no-CPC/Class-II question answered "yes") falls through to
+  // the legacy body untouched — that flow is explicitly preserved by the
+  // plan and must keep its ask_user_answered semantics.
+  if (
+    autoResolveWrite &&
+    pendingAsks &&
+    (contextField == null || contextField === 'none') &&
+    outcome.user_text
+  ) {
+    const pvBody = await resolvePendingValueFlow({
+      outcome,
+      contextCircuit,
+      contextBoardId,
+      session,
+      autoResolveWrite,
+      logger,
+      sessionId,
+      turnId,
+      toolCallId,
+      pendingAsks,
+      ws,
+    });
+    if (pvBody) return pvBody;
+    // null → not engaged; fall through to the existing resolvers/legacy body.
   }
 
   // Bug-J fix (2026-04-28) — value-resolve.
@@ -1054,4 +1131,378 @@ function collectAvailableCircuits(session) {
     out.push({ circuit_ref: ref, circuit_designation: designation });
   }
   return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §A4 (field-feedback-2026-07-14, F8) — deterministic-ask BROKER + the
+// pending-value write-or-reask chain.
+//
+// The broker is NOT a bare `buildScriptAsk` + ws.send: a bare emit constructs
+// and transmits the question but registers nothing, so the inspector's answer
+// would arrive at pendingAsks.resolve(), find no entry, and be logged
+// unresolved — the F8 silent loss again. The broker REGISTERS the `pvr-*`
+// entry (pending value/field state, timeout timer, resolver callback) BEFORE
+// sending ask_user_started, then awaits its outcome inside the ORIGINAL
+// resolution flow, so Sonnet's tool loop stays blocked on the original
+// tool_use until the whole chain lands a write, exhausts its retry, or the
+// inspector moves on.
+//
+// ID prefix: `pvr-` is DELIBERATE — sonnet-stream.js routes every `srv-*`
+// tool_call_id to the dialogue engine and bypasses pendingAsks.resolve()
+// entirely, so `srv-` would break both answer channels. `pvr-*` flows
+// through the normal ask_user_answered handler AND the transcript-overtake
+// classifier (which has a narrow pvr numeric branch — §A4 round-10).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One brokered server ask. Registers FIRST, then emits, then awaits. */
+async function brokerDeterministicAsk({
+  pendingAsks,
+  ws,
+  logger,
+  sessionId,
+  turnId,
+  question,
+  contextField,
+  contextCircuit,
+  expectedAnswerShape,
+  pendingValue,
+}) {
+  const pvrId = `pvr-${randomUUID().slice(0, 13)}`;
+  const askStartedAt = Date.now();
+  const outcome = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+    }, ASK_USER_TIMEOUT_MS);
+    try {
+      pendingAsks.register(pvrId, {
+        contextField,
+        contextCircuit,
+        expectedAnswerShape,
+        pendingWrite: null,
+        pendingValue: pendingValue ?? null,
+        resolve,
+        timer,
+        askStartedAt,
+      });
+    } catch (err) {
+      // randomUUID collisions are not a real path; treat any register throw
+      // as a broker failure so the chain falls to its audible terminal.
+      clearTimeout(timer);
+      resolve({ answered: false, reason: 'broker_register_failed', error: err?.message });
+      return;
+    }
+    // Emit AFTER registration (the load-bearing ordering — see block comment).
+    if (ws && ws.readyState === ws.OPEN) {
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'ask_user_started',
+            tool_call_id: pvrId,
+            question,
+            reason: 'missing_context',
+            context_field: contextField,
+            context_circuit: contextCircuit,
+            expected_answer_shape: expectedAnswerShape,
+          })
+        );
+      } catch {
+        // Same contract as the model-ask path: a ws.send failure must not
+        // tear down the ask — the transcript channel can still answer it.
+      }
+    }
+    logger?.info?.('stage6.pending_value_reask_sent', {
+      sessionId,
+      turnId,
+      tool_call_id: pvrId,
+      context_field: contextField,
+      context_circuit: contextCircuit,
+      expected_answer_shape: expectedAnswerShape,
+      has_pending_value: pendingValue != null,
+    });
+  });
+  return { pvrId, outcome };
+}
+
+/**
+ * Queue ONE deterministic apology TTS line on the session. Drained into
+ * `result.confirmations` by the shadow harness post-loop (field:null,
+ * expects_ios_ack:false — the same non-blocking FIFO channel as the orphan
+ * net, and A1(b)-exempt on the client via the 30 s field-nil TTL). This is
+ * the "always hears SOMETHING" terminal of the chain — an escalation body
+ * handed back to Haiku would be the same compliance dependency that
+ * produced the original F8 silence.
+ */
+function queuePendingValueApology(session, text) {
+  if (!session) return;
+  if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
+  session.pendingVoicePrompts.push({ text });
+}
+
+const PENDING_VALUE_APOLOGY =
+  "Sorry, I couldn't place that reading — could you say the field and value together again?";
+
+/**
+ * Engagement wrapper — returns a tool_result body when the pending-value
+ * flow owns this answer, or null to fall through to the legacy resolvers.
+ */
+async function resolvePendingValueFlow(args) {
+  const { outcome, logger, sessionId, turnId, toolCallId } = args;
+  const pendingValue = outcome.pendingValue ?? null;
+  const fieldKey = resolveFieldNameAnswer(outcome.user_text);
+  // Not the inverted shape at all (no captured value, reply isn't a field
+  // name) → not engaged. Preserves the no-CPC/Class-II mandatory question
+  // and every other legacy 'none' ask verbatim.
+  if (!fieldKey && !pendingValue) return null;
+  // Belt-and-braces overtake guard (the primary gate lives in the
+  // sonnet-stream direct-answer handler, which re-injects): a structurally
+  // complete FRESH reading must never be consumed as the answer. Refusing
+  // to engage hands the text to the legacy body, where Sonnet sees it as
+  // quoted user speech.
+  const structured = detectStructuredReading(outcome.user_text ?? '');
+  if (structured && structured.complete === true) return null;
+
+  logger?.info?.('stage6.ask_user_value_resolution_escalated', {
+    sessionId,
+    turnId,
+    tool_call_id: toolCallId,
+    field: fieldKey ?? null,
+    circuit: args.contextCircuit ?? null,
+    parsed_hint: 'pending_value_flow',
+    has_pending_value: pendingValue != null,
+  });
+
+  return runPendingValueChain({
+    ...args,
+    fieldKey,
+    value: pendingValue ? pendingValue.value : null,
+    valueUnit: pendingValue ? pendingValue.unit : null,
+  });
+}
+
+/**
+ * The four-shape re-ask state machine (§A4). Shapes are NOT conflated:
+ *   (1) value present, field unresolved → ONE brokered FIELD ask.
+ *   (2) field resolved, no value       → ONE brokered VALUE ask
+ *       (answer routes through resolveValueAnswer / numeric capture).
+ *   (3) field + value, no circuit      → ONE brokered circuit_ref ask,
+ *       RETAINING both.
+ *   (4) terminal — the audible apology (never silent, never model-
+ *       dependent); no re-ask.
+ * Retry counters cover shapes 1–3 at ONE each; every exit is audible
+ * (a dispatched write's read-back, a spoken brokered question, or the
+ * apology) EXCEPT deliberate user_moved_on/timeout — where the inspector
+ * either moved on (their fresh utterance gets its own response) or ignored
+ * an already-audible question.
+ */
+async function runPendingValueChain(args) {
+  const {
+    outcome,
+    contextCircuit,
+    contextBoardId,
+    session,
+    autoResolveWrite,
+    logger,
+    sessionId,
+    turnId,
+    toolCallId,
+    pendingAsks,
+    ws,
+  } = args;
+  let fieldKey = args.fieldKey ?? null;
+  let value = args.value ?? null;
+  let valueUnit = args.valueUnit ?? null;
+  let circuit = Number.isInteger(contextCircuit) ? contextCircuit : null;
+  const asked = { field: 0, value: 0, circuit: 0 };
+  const brokered = [];
+
+  const terminalApology = () => {
+    queuePendingValueApology(session, PENDING_VALUE_APOLOGY);
+    logger?.info?.('stage6.pending_value_failed', {
+      sessionId,
+      turnId,
+      tool_call_id: toolCallId,
+      field: fieldKey,
+      value,
+      circuit,
+      brokered_asks: brokered,
+    });
+    return {
+      answered: true,
+      untrusted_user_text: outcome.user_text,
+      auto_resolved: false,
+      match_status: 'pending_value_failed',
+      field: fieldKey,
+      pending_value: value,
+    };
+  };
+  const movedOn = (reason) => ({
+    answered: true,
+    untrusted_user_text: outcome.user_text,
+    auto_resolved: false,
+    match_status: 'pending_value_unresolved',
+    reason,
+  });
+
+  // Bounded loop: at most 3 broker rounds (one per shape) + the dispatch.
+  for (let round = 0; round < 4; round += 1) {
+    if (fieldKey && value != null) {
+      if (circuit == null) {
+        // Shape (3) — field AND value but no circuit scope. Board-scoped
+        // fields (record_board_reading family) need no circuit; the typed
+        // lexicon in stage6-pending-value.js only resolves CIRCUIT fields
+        // here (resolveFieldNameAnswer is circuit-field scoped), so a
+        // missing circuit always brokers a circuit_ref ask — never a
+        // record_reading with invalid scope, never a silent fall-through.
+        if (asked.circuit >= 1) return terminalApology();
+        asked.circuit += 1;
+        const { pvrId, outcome: circOutcome } = await brokerDeterministicAsk({
+          pendingAsks,
+          ws,
+          logger,
+          sessionId,
+          turnId,
+          question: `Which circuit is that ${value}${valueUnit ? ` ${valueUnit}` : ''} reading for?`,
+          contextField: fieldKey,
+          contextCircuit: null,
+          expectedAnswerShape: 'circuit_ref',
+          pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
+        });
+        brokered.push({ id: pvrId, shape: 'circuit_ref', answered: circOutcome.answered });
+        if (!circOutcome.answered) return movedOn(circOutcome.reason);
+        const parsed = extractCircuitRef(String(circOutcome.user_text ?? '').toLowerCase());
+        if (parsed == null) return terminalApology();
+        circuit = parsed;
+        continue;
+      }
+      // Dispatch through the NORMAL write path — validation, wire
+      // canonicalisation (rcd_time_ms → rcd_trip_time), perTurnWrites and
+      // the confirmation/read-back bundling all apply. NEVER a direct
+      // snapshot write (that would be a silent write — the headline
+      // invariant this wave enforces).
+      const write = {
+        tool: 'record_reading',
+        field: fieldKey,
+        circuit,
+        value,
+        confidence: 1.0,
+        source_turn_id: turnId ?? null,
+        ...(contextBoardId != null ? { board_id: contextBoardId } : {}),
+      };
+      let dispatched;
+      try {
+        const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+        dispatched = { ...write, ok: result?.ok !== false };
+      } catch (err) {
+        logger?.warn?.('stage6.pending_value_dispatch_failed', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: fieldKey,
+          circuit,
+          error: err?.message || String(err),
+        });
+        return terminalApology();
+      }
+      if (!dispatched.ok) return terminalApology();
+      logger?.info?.('stage6.pending_value_resolved', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        field: fieldKey,
+        circuit,
+        value,
+        brokered_asks: brokered,
+      });
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        auto_resolved: true,
+        match_status: 'pending_value_resolved',
+        resolved_writes: [{ tool: 'record_reading', field: fieldKey, circuit, value, ok: true }],
+      };
+    }
+
+    if (!fieldKey && value != null) {
+      // Shape (1) — value captured, field unresolved. Ask for the FIELD.
+      if (asked.field >= 1) return terminalApology();
+      asked.field += 1;
+      const { pvrId, outcome: fieldOutcome } = await brokerDeterministicAsk({
+        pendingAsks,
+        ws,
+        logger,
+        sessionId,
+        turnId,
+        question: `Sorry — which reading was that ${value}${valueUnit ? ` ${valueUnit}` : ''} for${circuit != null ? `, on circuit ${circuit}` : ''}?`,
+        contextField: 'none',
+        contextCircuit: circuit,
+        expectedAnswerShape: 'free_text',
+        // Carrying the pendingValue on the registry entry is what lets the
+        // transcript-overtake continuation branch accept the field-name
+        // reply (classifyOvertake requires non-null pendingValue there).
+        pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
+      });
+      brokered.push({ id: pvrId, shape: 'field_name', answered: fieldOutcome.answered });
+      if (!fieldOutcome.answered) return movedOn(fieldOutcome.reason);
+      const resolved = resolveFieldNameAnswer(fieldOutcome.user_text);
+      if (!resolved) return terminalApology();
+      fieldKey = resolved;
+      continue;
+    }
+
+    if (fieldKey && value == null) {
+      // Shape (2) — field resolved but NO captured value (extraction
+      // declined/ambiguous). Ordinary field-known VALUE ask, concrete
+      // context_field; its transcript-channel coverage is the pvr numeric
+      // overtake branch (round-10). Deliberately does NOT rely on
+      // pendingValue (none exists in this shape).
+      if (asked.value >= 1) return terminalApology();
+      asked.value += 1;
+      const { pvrId, outcome: valueOutcome } = await brokerDeterministicAsk({
+        pendingAsks,
+        ws,
+        logger,
+        sessionId,
+        turnId,
+        question: `What is the ${fieldKey.replace(/_/g, ' ')} reading${circuit != null ? ` for circuit ${circuit}` : ''}?`,
+        contextField: fieldKey,
+        contextCircuit: circuit,
+        expectedAnswerShape: 'number',
+        pendingValue: null,
+      });
+      brokered.push({ id: pvrId, shape: 'value', answered: valueOutcome.answered });
+      if (!valueOutcome.answered) return movedOn(valueOutcome.reason);
+      if (circuit != null) {
+        // Route through the EXISTING numeric value-resolver path so
+        // sentinels (LIM, discontinuous) and range parsing behave exactly
+        // like any field-known ask.
+        const verdict = resolveValueAnswer({
+          userText: valueOutcome.user_text,
+          contextField: fieldKey,
+          contextCircuit: circuit,
+          contextCircuits: null,
+          sourceTurnId: turnId,
+          contextBoardId,
+        });
+        if (verdict.kind === 'auto_resolve') {
+          value = verdict.writes[0]?.value ?? null;
+          if (value == null) return terminalApology();
+          continue;
+        }
+        if (verdict.kind === 'cancel') return movedOn('cancelled');
+        return terminalApology();
+      }
+      // No circuit yet — capture the numeric and loop (shape 3 handles scope).
+      const captured = extractPendingValue({ transcript: valueOutcome.user_text, question: null });
+      if (!captured) return terminalApology();
+      value = captured.value;
+      valueUnit = captured.unit;
+      continue;
+    }
+
+    // Neither field nor value — shape (4): unreachable from the engagement
+    // guard on the first round; on later rounds every branch either set a
+    // piece or returned. Terminal apology as the safe default.
+    return terminalApology();
+  }
+  return terminalApology();
 }

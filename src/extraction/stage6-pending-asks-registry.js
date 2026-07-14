@@ -45,6 +45,7 @@ export function createPendingAsksRegistry() {
         contextCircuit,
         expectedAnswerShape,
         pendingWrite,
+        pendingValue,
         resolve,
         timer,
         askStartedAt,
@@ -75,6 +76,13 @@ export function createPendingAsksRegistry() {
         // observation_confirmation, etc.) — those resume Sonnet with the
         // legacy untrusted_user_text body.
         pendingWrite: pendingWrite ?? null,
+        // §A4 (field-feedback-2026-07-14, F8) — the INVERTED ask shape:
+        // value known, field expected (`context_field:"none"` after a
+        // garbled field name). A SIBLING of pendingWrite, never a
+        // replacement: pendingWrite covers field-known asks (value expected
+        // in the answer). Shape: {value, unit, sourceText, source} from
+        // stage6-pending-value.js extractPendingValue, or null.
+        pendingValue: pendingValue ?? null,
         askStartedAt,
       });
     },
@@ -93,6 +101,14 @@ export function createPendingAsksRegistry() {
       entry.resolve({
         // 3
         ...outcome,
+        // §A4 registry-lifecycle trap: this resolve() DELETES the entry
+        // BEFORE the dispatcher's resolution logic (buildResolvedBody) runs,
+        // and buildResolvedBody works from the original ask INPUT — so a
+        // pendingValue stored only on the registry entry would be
+        // unreachable on the direct ask_user_answered path. Copy it into
+        // the resolve OUTCOME here; the registry copy (until this delete)
+        // serves the transcript-overtake classifier path.
+        pendingValue: entry.pendingValue ?? null,
         wait_duration_ms: Date.now() - entry.askStartedAt,
       });
       return true;

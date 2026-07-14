@@ -1581,6 +1581,33 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
+    // §A4 (field-feedback-2026-07-14) — drain deterministic voice prompts
+    // queued during the turn (the pending-value chain's terminal apology,
+    // stage6-dispatcher-ask.js queuePendingValueApology). Same non-blocking
+    // FIFO channel as the orphan net: field:null so the client's A1(b)
+    // 30 s field-nil TTL (not the permanent set) governs its dedupe, and
+    // expects_ios_ack:false so the audio finalizer never arms for it.
+    // Runs AFTER the orphan net so the two nets stay independent (the
+    // orphan net can't fire on an ask-bearing turn anyway — tool_calls > 0).
+    if (Array.isArray(session.pendingVoicePrompts) && session.pendingVoicePrompts.length > 0) {
+      const prompts = session.pendingVoicePrompts.splice(0);
+      if (!Array.isArray(result.confirmations)) result.confirmations = [];
+      for (const p of prompts) {
+        if (!p || typeof p.text !== 'string' || !p.text) continue;
+        result.confirmations.push({
+          text: p.text,
+          field: null,
+          circuit: null,
+          expects_ios_ack: false,
+        });
+        log.info?.('stage6.pending_value_apology_emitted', {
+          sessionId: session.sessionId,
+          turnId,
+          textPreview: p.text.slice(0, 80),
+        });
+      }
+    }
+
     // Increment turn count to match legacy's contract
     // (extractFromUtterance does this internally).
     session.turnCount = turnNum;
