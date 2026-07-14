@@ -674,6 +674,19 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       }
     }
 
+    // INV-2 (field session 6B6FE011 F1): bytes-per-char ratio of the synth.
+    // ElevenLabs Flash occasionally returns garbled audio that is wildly
+    // LONGER than the text warrants — F1 saw 172,661 bytes (~11s @128kbps)
+    // for a 33-char address read-back (≈5232 bytes/char) while the 42-char
+    // twin synthesised normally at 41,839 bytes (≈996 bytes/char). Normal
+    // synth runs ~1000-1300 bytes/char, so a guarded ABSOLUTE threshold of
+    // 2500 separates the garble class cleanly with no session-median state
+    // to maintain (the DECIDED rule). textLength>0 is defensive — the 400
+    // guard above already rejects empty text — and avoids a divide-by-zero
+    // ratio ever reaching the log.
+    const bytesPerChar =
+      text.length > 0 ? Math.round((buffer.length / text.length) * 10) / 10 : null;
+
     // Record what was actually spoken + how much Sonnet-wording the
     // inspector heard. `textPreview` (first 120 chars) is sufficient to
     // pair with the QuestionGate "Flushing questions to iOS" log — we just
@@ -698,7 +711,31 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       // event-pair gap into vendor-network-first-byte + vendor-tail.
       elevenlabs_first_byte_ms: firstByteMs,
       elevenlabs_synth_total_ms: totalSynthMs,
+      // INV-2: audio-size-to-text-size ratio (see the anomaly WARN below).
+      bytes_per_char: bytesPerChar,
     });
+
+    // INV-2 anomaly event — a dedicated WARN row (not just the field on the
+    // success log) so a single CloudWatch Insights query over the WARN level
+    // surfaces every garbled synth without scanning the success firehose.
+    // Strictly-greater-than so a boundary-exact ratio doesn't page; the
+    // garble class sits at ~2x the threshold and normal synth at ~half, so
+    // the boundary carries no signal either way. model_id mirrors the
+    // literal in the synth POST body above — the non-streaming proxy is
+    // pinned to Flash (consolidated 2026-06-26); the streaming WS path has
+    // its own client and is deliberately OUT OF SCOPE for this check.
+    if (text.length > 0 && bytesPerChar > 2500) {
+      logger.warn('elevenlabs_tts_audio_anomaly', {
+        sessionId: sessionId || null,
+        turnId: turnId || null,
+        source,
+        bytes: buffer.length,
+        textLength: text.length,
+        bytes_per_char: bytesPerChar,
+        model_id: 'eleven_flash_v2_5',
+        textPreview: text.slice(0, 120),
+      });
+    }
     res.send(buffer);
   } catch (error) {
     logger.error('ElevenLabs TTS proxy error', { error: error.message });
