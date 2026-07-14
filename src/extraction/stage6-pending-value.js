@@ -408,9 +408,15 @@ export function detectStructuredReading(text, fieldSchema = FIELD_SCHEMA) {
     const words = lower.split(/\s+/);
     hasValue = words.some((w) => BOOLEAN_VOCAB.has(w.replace(/[.]+$/, '')));
   } else {
-    // Free-text — assignment form: "<field name> is|was|equals <rest>".
+    // Free-text — assignment form: "<field name> is|was|equals <rest>" OR
+    // (Codex r2-#2) any NON-SCOPE number in the utterance: many numeric
+    // fields are schema type "text" (number_of_points, live_csa_mm2,
+    // ocpd_rating_a), and scoped forms like "OCPD rating circuit 4 is 32
+    // amps" break the adjacency the assignment regex needs. Numbers are
+    // never chit-chat in this domain, so a field name + a non-scope number
+    // is structurally complete.
     const re = new RegExp(`\\b${escapeRe(matchedName)}\\b\\s+(?:is|was|equals)\\s+(\\S+)`, 'i');
-    hasValue = re.test(lower);
+    hasValue = re.test(lower) || classifyNumbers(lower).some((n) => !n.isScope);
   }
 
   const complete = hasValue && (hit.family !== 'circuit' || circuit != null);

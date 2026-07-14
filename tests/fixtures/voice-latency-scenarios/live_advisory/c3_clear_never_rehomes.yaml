@@ -1,0 +1,40 @@
+# ============================================================================
+# LIVE-LANE ADVISORY PROBE (Codex r2-#5 — C1/C2/C3 prompt-steering pins,
+# field-feedback-2026-07-14). Needs a real model; advisory, not a hard gate.
+# Run with:
+#   node scripts/voice-latency-bench/transcript-replay-direct.mjs --loaded-barrel=off \
+#     --scenario=tests/fixtures/voice-latency-scenarios/live_advisory/<this file>
+# ============================================================================
+name: c3_clear_never_rehomes
+suite: live_advisory
+lane: live-advisory
+description: |
+  C3 pin (F5 second half): "clear R1+R2 on the water heater" is a DELETION —
+  clear_reading only, no companion record_reading re-homing the value.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 2
+      board_id: main
+      designation: Water Heater
+      r1_r2_ohm: "0.86"
+
+transcript:
+  - at_ms: 0
+    text: "Clear the R1 plus R2 on the water heater."
+    isFinal: true
+
+expect:
+  tool_call_sequence:
+    - tool: clear_reading
+  forbid_tools:
+    - record_reading
+
+config:
+  timeout_ms: 60000
+  drain_ms: 15000
+  fetch_tts: false

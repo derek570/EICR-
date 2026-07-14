@@ -349,13 +349,12 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         // fine (shape-2 of the re-ask machine covers it); a wrong guess is
         // not (extractPendingValue never guesses across multiple unbound
         // numbers).
-        const capturedPendingValue =
-          input.context_field == null || input.context_field === 'none'
-            ? extractPendingValue({
-                transcript: session.activeTurnTranscript,
-                question: input.question,
-              })
-            : null;
+        const capturedPendingValue = isPendingValueAsk(input)
+          ? extractPendingValue({
+              transcript: session.activeTurnTranscript,
+              question: input.question,
+            })
+          : null;
         if (capturedPendingValue && logger?.info) {
           logger.info('stage6.pending_value_captured', {
             sessionId,
@@ -686,6 +685,13 @@ async function buildResolvedBody({
     autoResolveWrite &&
     pendingAsks &&
     (contextField == null || contextField === 'none') &&
+    // Codex r2-#1 — the flow engages ONLY on pendingValue-class asks: a
+    // captured value (registered via isPendingValueAsk) or a pvr-* broker
+    // ask. Without this gate ANY context-free question containing numbers
+    // could be hijacked — e.g. the address-mirror ask ("Should I use this
+    // same address for the site?") captured the HOUSE NUMBER as a pending
+    // reading and routed the "yes" into the re-ask machine.
+    (outcome.pendingValue != null || String(toolCallId ?? '').startsWith('pvr-')) &&
     outcome.user_text
   ) {
     const pvBody = await resolvePendingValueFlow({
@@ -1249,6 +1255,22 @@ function queuePendingValueApology(session, text) {
   if (!session) return;
   if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
   session.pendingVoicePrompts.push({ text });
+}
+
+/**
+ * Codex r2-#1 — eligibility for pendingValue capture: ONLY the A4 inverted
+ * missing-field reading shapes. reason is the closed ask_user enum; the
+ * inverted ask is prompt-mandated to use the missing_field family. A generic
+ * 'none' ask (address mirror, no-CPC, EIC comments, recovery asks) must
+ * NEVER capture — a number inside its question is not a dangling reading.
+ */
+function isPendingValueAsk(input) {
+  if (!(input?.context_field == null || input.context_field === 'none')) return false;
+  return (
+    input?.reason === 'missing_field' ||
+    input?.reason === 'missing_field_and_circuit' ||
+    input?.reason === 'missing_field_and_context'
+  );
 }
 
 const PENDING_VALUE_APOLOGY =

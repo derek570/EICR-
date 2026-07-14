@@ -207,6 +207,18 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     (r) =>
       r && typeof r.field === 'string' && RECORDABLE_READING_FIELDS.has(r.field) && r.value != null
   );
+  // Codex r2-#3 — the typed-detector guard runs BEFORE the
+  // observation_clarify continuation AND before the step-3 shape branches:
+  // a structurally complete fresh reading is an OVERTAKE no matter which
+  // pending ask shape might otherwise claim it (a detector-complete
+  // utterance consumed as a circuit_ref/free-text answer loses the reading).
+  const structuredEarly = !hasRecordableRegex
+    ? detectStructuredReading(typeof newText === 'string' ? newText : '')
+    : null;
+  if (structuredEarly && structuredEarly.complete === true) {
+    return { kind: 'user_moved_on' };
+  }
+
   if (!hasRecordableRegex) {
     for (const [id, entry] of pendingAsks.entries()) {
       if (
@@ -232,44 +244,41 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     // first must be an OVERTAKE (fall through to user_moved_on so the
     // fresh reading is processed normally), never consumed as the field
     // answer with the stale pendingValue joined to it.
-    const structured = detectStructuredReading(typeof newText === 'string' ? newText : '');
-    const isCompleteFreshReading = structured != null && structured.complete === true;
-    if (!isCompleteFreshReading) {
+    // (Detector-complete utterances already returned user_moved_on above.)
+    for (const [id, entry] of pendingAsks.entries()) {
+      if (
+        entry.contextField === 'none' &&
+        entry.pendingValue != null &&
+        entry.expectedAnswerShape === 'free_text' &&
+        typeof newText === 'string' &&
+        newText.trim().length > 0
+      ) {
+        return { kind: 'answers', toolCallId: id, userText: newText };
+      }
+    }
+
+    // §A4 round-10 — brokered pvr-* VALUE asks (concrete context_field,
+    // numeric/sentinel reply expected). classifyOvertake only accepted
+    // yes/no + circuit-ref no-regex shapes, so a transcript-first numeric
+    // reply ("26 milliseconds") to a pvr value ask would be classified
+    // user_moved_on and delete the registry entry BEFORE the duplicate
+    // direct ask_user_answered frame arrived — beep-then-no-write again.
+    // Narrowly scoped: only pvr-* ids (server-brokered), only a concrete
+    // context_field, only a numeric or sentinel-shaped reply.
+    const trimmed = typeof newText === 'string' ? newText.trim() : '';
+    const looksLikeValue =
+      /\d/.test(trimmed) ||
+      /\b(?:lim|limitation|discontinuous|open circuit|infinity)\b/i.test(trimmed);
+    if (trimmed && looksLikeValue) {
       for (const [id, entry] of pendingAsks.entries()) {
         if (
-          entry.contextField === 'none' &&
-          entry.pendingValue != null &&
-          entry.expectedAnswerShape === 'free_text' &&
-          typeof newText === 'string' &&
-          newText.trim().length > 0
+          typeof id === 'string' &&
+          id.startsWith('pvr-') &&
+          typeof entry.contextField === 'string' &&
+          entry.contextField !== 'none' &&
+          entry.contextField !== 'observation_clarify'
         ) {
           return { kind: 'answers', toolCallId: id, userText: newText };
-        }
-      }
-
-      // §A4 round-10 — brokered pvr-* VALUE asks (concrete context_field,
-      // numeric/sentinel reply expected). classifyOvertake only accepted
-      // yes/no + circuit-ref no-regex shapes, so a transcript-first numeric
-      // reply ("26 milliseconds") to a pvr value ask would be classified
-      // user_moved_on and delete the registry entry BEFORE the duplicate
-      // direct ask_user_answered frame arrived — beep-then-no-write again.
-      // Narrowly scoped: only pvr-* ids (server-brokered), only a concrete
-      // context_field, only a numeric or sentinel-shaped reply.
-      const trimmed = typeof newText === 'string' ? newText.trim() : '';
-      const looksLikeValue =
-        /\d/.test(trimmed) ||
-        /\b(?:lim|limitation|discontinuous|open circuit|infinity)\b/i.test(trimmed);
-      if (trimmed && looksLikeValue) {
-        for (const [id, entry] of pendingAsks.entries()) {
-          if (
-            typeof id === 'string' &&
-            id.startsWith('pvr-') &&
-            typeof entry.contextField === 'string' &&
-            entry.contextField !== 'none' &&
-            entry.contextField !== 'observation_clarify'
-          ) {
-            return { kind: 'answers', toolCallId: id, userText: newText };
-          }
         }
       }
     }

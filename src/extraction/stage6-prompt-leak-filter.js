@@ -743,6 +743,18 @@ const SANITISE_TRAILING_PUNCT_RE = /[)."',;:\]»]+$/;
 export function sanitizeObservationRegulation(value) {
   if (typeof value !== 'string') return null;
   const words = value.trim().split(/\s+/);
+  // Codex r2-#4 — collect + RANK candidates instead of returning the first
+  // match: the bare dotted-number pattern accepts any decimal, so first-match
+  // could persist a MEASUREMENT as the regulation ("The maximum Zs is 0.35
+  // ohms under Regulation 411.4.4" must sanitise to "Regulation 411.4.4",
+  // never "0.35"). Tier 1: candidates explicitly introduced by a citation
+  // keyword (Regulation/Reg/BS/IET/HSE — either inside the candidate or as
+  // the immediately preceding word). Tier 2: bare tokens, EXCLUDING
+  // leading-zero decimals ("0.35", "0.4") — regulation refs never start
+  // "0."; those are measurements.
+  const KEYWORD_RE = /\b(?:regulation|reg\.?|bs|iet|hse)\b/i;
+  const LEADING_ZERO_DECIMAL_RE = /^0\.\d+$/;
+  let bareFallback = null;
   for (let start = 0; start < words.length; start++) {
     const maxSize = Math.min(SANITISE_MAX_WINDOW_WORDS, words.length - start);
     for (let size = maxSize; size >= 1; size--) {
@@ -752,12 +764,24 @@ export function sanitizeObservationRegulation(value) {
         .replace(SANITISE_LEADING_PUNCT_RE, '')
         .replace(SANITISE_TRAILING_PUNCT_RE, '');
       if (candidate.length === 0) continue;
+      let matched = false;
       for (const re of FULLY_QUALIFIED_PATTERNS) {
-        if (re.test(candidate)) return candidate;
+        if (re.test(candidate)) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) continue;
+      const prevWord = start > 0 ? words[start - 1] : '';
+      if (KEYWORD_RE.test(candidate) || KEYWORD_RE.test(prevWord)) {
+        return candidate; // tier 1 — earliest keyword-introduced match wins
+      }
+      if (bareFallback === null && !LEADING_ZERO_DECIMAL_RE.test(candidate)) {
+        bareFallback = candidate; // tier 2 — remembered, keep scanning for tier 1
       }
     }
   }
-  return null;
+  return bareFallback;
 }
 
 /**

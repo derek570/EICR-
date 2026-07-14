@@ -37,7 +37,10 @@ const buildSession = (overrides = {}) => ({
 
 const noneAsk = (overrides = {}) => ({
   question: 'I heard 26 milliseconds for circuit 2 — which reading was that for?',
-  reason: 'missing_context',
+  // The inverted-ask shape is prompt-mandated to use the missing_field
+  // family (FIELD-AMBIGUITY rule) — the Codex r2-#1 eligibility predicate
+  // requires it, so a generic missing_context 'none' ask never captures.
+  reason: 'missing_field',
   context_field: 'none',
   context_circuit: 2,
   expected_answer_shape: 'free_text',
