@@ -302,6 +302,46 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     expect(net).toBeUndefined();
   });
 
+  test('Codex r1-#3: a PRE-FIRE continuation outcome (ask_budget_exhausted — never spoken) does NOT qualify → net fires', async () => {
+    const preFireContinuation = {
+      name: 'ask_user',
+      tool_call_id: 'toolu_c2',
+      input: { context_field: 'observation_clarify', question: 'follow-up' },
+      result: {
+        is_error: false,
+        content: JSON.stringify({ answered: false, reason: 'ask_budget_exhausted' }),
+      },
+    };
+    toolLoopResult = loopOut([answeredClarify('toolu_c1'), preFireContinuation]);
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeDefined(); // the continuation was never audible — silence guarded
+  });
+
+  test('Codex r1-#3: delete_observation does NOT qualify (removes a different observation, records nothing) → net fires', async () => {
+    const del = {
+      name: 'delete_observation',
+      tool_call_id: 'del_1',
+      input: { id: 'obs-unrelated' },
+      result: { is_error: false, content: JSON.stringify({ ok: true }) },
+    };
+    toolLoopResult = loopOut([answeredClarify('toolu_c1'), del]);
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeDefined();
+  });
+
+  test('Codex r1-#4: the anchor chain RETIRES on net evaluation (success or terminal — the clarification is over)', async () => {
+    const retire = jest.fn();
+    const session = makeSession();
+    session.obsClarifyChains = { known: new Set(['obsclr-7']), mint: () => 'obsclr-8', retire };
+    const anchored = answeredClarify('toolu_c1');
+    anchored.input.clarification_chain_id = 'obsclr-7';
+    toolLoopResult = loopOut([anchored, okObservation()]);
+    await runShadowHarness(session, 'just cosmetic', [], baseOpts());
+    expect(retire).toHaveBeenCalledWith('obsclr-7');
+  });
+
   test('NEGATIVE: no observation_clarify ask in the turn → net never fires', async () => {
     toolLoopResult = loopOut([okReading()]);
     const result = await runShadowHarness(makeSession(), 'Zs circuit 1 0.3', [], baseOpts());

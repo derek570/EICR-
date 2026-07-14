@@ -357,13 +357,17 @@ function synthesiseObservationAndClearedConfirmations(
         expanded_text: expandForTTS(text),
         field: 'field_cleared',
         circuit: circ,
-        // §A1a token — {field, circuit, turn/ordinal} tuple. turnId keeps
-        // identical clears in SEPARATE turns distinct (both speak); the
-        // ordinal is the no-turnId fallback for legacy callers. NOTE: `field`
-        // here is the RAW dispatcher key (perTurnWrites is never
-        // canonicalised — §A2); the token is an opaque identity so raw-vs-
-        // wire key spelling inside it is irrelevant to clients.
-        dedupe_token: `clear_${field}_${circ ?? 'board'}_${turnId ?? `ord${corrIdx}`}`,
+        // §A1a token — {field, circuit, turn AND ordinal} (Codex r1-#5:
+        // turn-only collapsed two DISTINCT same-slot clears within one
+        // extraction turn into one token, so the token-aware debounce ate
+        // the second). turnId keeps identical clears in SEPARATE turns
+        // distinct; the ordinal keeps distinct same-turn operations
+        // distinct; a wire replay of ONE operation still carries the
+        // identical token. NOTE: `field` here is the RAW dispatcher key
+        // (perTurnWrites is never canonicalised — §A2); the token is an
+        // opaque identity so raw-vs-wire spelling inside it is irrelevant
+        // to clients.
+        dedupe_token: `clear_${field}_${circ ?? 'board'}_${turnId ?? 'legacy'}_ord${corrIdx}`,
         // Voice-latency Tier 1.1 sub-step 5: see observation entry above.
         // field_cleared confirmations also route through the no-context
         // iOS speak path.

@@ -66,8 +66,9 @@ expect:
   ask_user:
     - reason: observation_confirmation
       context_field: observation_clarify
-      # The question must name a deciding fact, not offer a code menu.
-      question_contains_any:
+      # The question must name the deciding facts — all three concepts of
+      # the three-way outcome (Codex r1-#6 strengthened from contains_any).
+      question_contains:
         - "live parts"
         - "cosmetic"
   # Bare code-menu wording is banned everywhere.

@@ -141,9 +141,9 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
     expect(
       buildDegenerateDedupeKey('observation', 'Observation C2 — cracked socket', null, 'obs_obs-7')
     ).toBe('observation_obs_obs-7');
-    // clear → {field, circuit, turn/ordinal}
-    expect(buildPerCircuitDedupeKey('field_cleared', 3, 'clear_r1_r2_ohm_3_turn-9')).toBe(
-      'field_cleared_clear_r1_r2_ohm_3_turn-9'
+    // clear → {field, circuit, turn, ordinal}
+    expect(buildPerCircuitDedupeKey('field_cleared', 3, 'clear_r1_r2_ohm_3_turn-9_ord0')).toBe(
+      'field_cleared_clear_r1_r2_ohm_3_turn-9_ord0'
     );
     // rename/circuit op → turn + operation identity (turnId + ordinal + op + ref)
     expect(buildPerCircuitDedupeKey('circuit_op', 4, 'circop_turn-9_0_rename_4')).toBe(
@@ -190,13 +190,13 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
       'field_cleared',
       'R1 plus R2 cleared',
       null,
-      'clear_r1_r2_ohm_board_t7'
+      'clear_r1_r2_ohm_board_t7_ord0'
     );
     const replay2 = buildDegenerateDedupeKey(
       'field_cleared',
       'R1 plus R2 cleared',
       null,
-      'clear_r1_r2_ohm_board_t7'
+      'clear_r1_r2_ohm_board_t7_ord0'
     );
     expect(replay1).toBe(replay2);
   });

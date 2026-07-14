@@ -139,6 +139,16 @@ describe('detectStructuredReading — typed, schema-aware completeness', () => {
     expect(d.complete).toBe(false);
   });
 
+  test('Codex r1-#2: select ALIASES count — "earthing arrangement is PME" is complete (PME ≡ TN-C-S per the prompt garble list)', () => {
+    const d = detectStructuredReading('earthing arrangement is PME');
+    expect(d).toMatchObject({ fieldKey: 'earthing_arrangement', complete: true });
+  });
+
+  test('Codex r1-#2: squashed option forms count — "earthing arrangement is t n s" (TN-S) is complete', () => {
+    const d = detectStructuredReading('earthing arrangement is t n s');
+    expect(d).toMatchObject({ fieldKey: 'earthing_arrangement', complete: true });
+  });
+
   test('sentinel value counts for a numeric circuit field ("R1 plus R2 on circuit 3 is a limitation")', () => {
     const d = detectStructuredReading('R1 plus R2 on circuit 3 is a limitation');
     expect(d).toMatchObject({ fieldKey: 'r1_r2_ohm', circuit: 3, complete: true });

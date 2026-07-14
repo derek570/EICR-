@@ -252,6 +252,17 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
             confidence: write.confidence,
             source_turn_id: write.source_turn_id,
           };
+    // §A4 Codex r1-#1 (field-feedback-2026-07-14) — carry the ask's board
+    // scope through to the dispatcher. The resolvers (resolveValueAnswer /
+    // resolveEnumAnswer / the pending-value chain) stamp `board_id` onto
+    // their writes per readback-correction-optionb §3.3/§6, but this hook
+    // rebuilt synthInput WITHOUT it, so on a multi-board job an auto-resolved
+    // reading validated/wrote against currentBoardId instead of the board
+    // the original ask named. Omit-when-null keeps single-board synthCalls
+    // byte-identical.
+    if (write.board_id != null) {
+      synthInput.board_id = write.board_id;
+    }
     const synthCall = {
       tool_call_id: synthCallId,
       name: write.tool,

@@ -331,6 +331,16 @@ export function createObsClarifyChainBroker() {
       }
       return id;
     },
+    // §D2 Codex r1-#4 — chains RETIRE on observation mutation or terminal
+    // fallback (the harness post-answer net drives this). A retired id is
+    // no longer joinable: a later ask echoing it mints a FRESH chain (the
+    // mint-on-unknown path below), which is the LENIENT failure — an extra
+    // audible ask — rather than a validation_error the inspector never
+    // hears (rejection would reintroduce the silent-path class this wave
+    // exists to close; that trade-off is deliberate).
+    retire(chainId) {
+      if (typeof chainId === 'string') known.delete(chainId);
+    },
   };
 }
 

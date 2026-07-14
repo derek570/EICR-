@@ -869,7 +869,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
 
     // field_cleared → {field, circuit, turn}.
     const clr = r.confirmations.find((c) => c.field === 'field_cleared');
-    expect(clr.dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9');
+    expect(clr.dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9_ord0');
 
     // circuit_designation → turn + operation identity (stamped in the bundle
     // function — it arrives via synthesiseConfirmations, not the state-change
@@ -954,6 +954,24 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(r.field_corrections[0].field).toBe('r1_plus_r2');
   });
 
+  test('§A1a Codex r1-#5 — two DISTINCT same-slot clears in ONE turn get DISTINCT tokens (turn AND ordinal)', () => {
+    const writes = makePerTurnWrites();
+    writes.fieldCorrections = [
+      { field: 'r1_r2_ohm', circuit: 3, previous_value: '0.86', reason: 'clear_reading' },
+      { field: 'r1_r2_ohm', circuit: 3, previous_value: '0.90', reason: 'clear_reading' },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const clears = r.confirmations.filter((c) => c.field === 'field_cleared');
+    expect(clears).toHaveLength(2);
+    expect(clears[0].dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9_ord0');
+    expect(clears[1].dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9_ord1');
+    expect(clears[0].dedupe_token).not.toBe(clears[1].dedupe_token);
+  });
+
   test('§A1a — no turnId (legacy caller): designation gets NO token; ops/clears fall back to ordinal identity', () => {
     const readings = new Map([
       [
@@ -970,7 +988,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     // No stable turn identity → no token; clients fall back to the bare key.
     expect(desig).not.toHaveProperty('dedupe_token');
     const clr = r.confirmations.find((c) => c.field === 'field_cleared');
-    expect(clr.dedupe_token).toBe('clear_measured_zs_ohm_1_ord0');
+    expect(clr.dedupe_token).toBe('clear_measured_zs_ohm_1_legacy_ord0');
   });
 });
 

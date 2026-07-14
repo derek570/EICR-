@@ -1636,25 +1636,58 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         }
       }
       if (anchorIdx >= 0) {
+        // Codex r1-#3 — qualification is DELIBERATELY narrow:
+        //   - only a successful record_observation counts as the observation
+        //     WRITE (delete_observation removes a different observation and
+        //     records nothing — the clarified defect is still lost);
+        //   - an unanswered continuation counts ONLY when its outcome proves
+        //     the question was actually EMITTED/audible. Pre-fire outcomes
+        //     (ask_budget_exhausted / restrained_mode / gated /
+        //     validation_error / prompt_leak_blocked / shadow_mode /
+        //     duplicate_tool_call_id / dispatcher_error*) were never spoken,
+        //     so counting them would preserve the beep-then-silence failure.
+        const AUDIBLE_NON_ANSWER_REASONS = new Set([
+          'timeout',
+          'user_moved_on',
+          'transcript_already_extracted',
+          'session_stopped',
+          'session_reconnected',
+          'session_terminated',
+        ]);
+        const parseReason = (c) => {
+          try {
+            const body = JSON.parse(c?.result?.content ?? 'null');
+            return body && body.answered === false ? (body.reason ?? null) : null;
+          } catch {
+            return null;
+          }
+        };
         let qualified = false;
         for (let i = anchorIdx + 1; i < seq.length; i += 1) {
           const c = seq[i];
-          if (
-            (c?.name === 'record_observation' || c?.name === 'delete_observation') &&
-            c?.result?.is_error !== true
-          ) {
+          if (c?.name === 'record_observation' && c?.result?.is_error !== true) {
             qualified = true;
             break;
           }
           if (
             c?.name === 'ask_user' &&
             c?.input?.context_field === 'observation_clarify' &&
-            !parseAnswered(c)
+            !parseAnswered(c) &&
+            AUDIBLE_NON_ANSWER_REASONS.has(parseReason(c))
           ) {
-            // Unanswered/timed-out continuation — audible termination.
+            // Audibly-terminated continuation (the question was spoken).
             qualified = true;
             break;
           }
+        }
+        // §D2 Codex r1-#4 — retire the chain when the observation resolved
+        // (success) OR when the deterministic terminal fallback fires below:
+        // in both cases the clarification is OVER, and a later
+        // observation_clarify ask (a NEW ambiguous observation) must get a
+        // fresh budget bucket rather than joining this chain's.
+        const anchorChainId = seq[anchorIdx]?.input?.clarification_chain_id ?? null;
+        if (anchorChainId && session.obsClarifyChains?.retire) {
+          session.obsClarifyChains.retire(anchorChainId);
         }
         if (!qualified) {
           if (!Array.isArray(result.confirmations)) result.confirmations = [];

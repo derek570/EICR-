@@ -42,7 +42,7 @@
  * src/__tests__/ios-dedupe-key.test.js):
  *   - observation           → `obs_<observation id>`
  *   - observation_deletion  → `obsdel_<observation id>`
- *   - field_cleared         → `clear_<field>_<circuit|board>_<turnId|ordinal>`
+ *   - field_cleared         → `clear_<field>_<circuit|board>_<turnId|legacy>_ord<N>`
  *   - circuit_op            → `circop_<turnId|noturn>_<ordinal>_<op>_<ref>`
  *   - circuit_designation   → `desig_<circuit(s)>_<turnId>`
  * Measured-value fields NEVER carry a token — their bare `{field}_{circuit}`

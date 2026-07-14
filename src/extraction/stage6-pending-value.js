@@ -243,6 +243,12 @@ const DETECTOR_ALIASES = new Map([
   ['ref method', ['circuit', 'ref_method']],
 ]);
 
+// Codex r1-#2 — evidence-backed spoken aliases for select values that don't
+// reduce to a hyphen/space squash of a canonical option. PME is the
+// prompt-documented garble/synonym class for TN-C-S ("'TN-C-S' → 'TNCS' /
+// 'PME'", VALUE NORMALISATION). Extend only with field evidence.
+const SELECT_VALUE_ALIASES = new Map([['earthing_arrangement', ['pme']]]);
+
 const BOOLEAN_VOCAB = new Set([
   'yes',
   'no',
@@ -370,12 +376,29 @@ export function detectStructuredReading(text, fieldSchema = FIELD_SCHEMA) {
   let hasValue = false;
 
   if (options && options.length > 0) {
-    // Select field — one of the canonical options present as a word.
+    // Select field — a canonical option present as a word, OR (Codex r1-#2)
+    // an established spoken alias/garble of one. Two conservative layers:
+    //   1. hyphen/space-insensitive option matching — "t n s"/"TNS" count as
+    //      TN-S, "TNCS" as TN-C-S (the prompt's VALUE NORMALISATION garble
+    //      list is exactly this class);
+    //   2. a tiny evidence-backed alias map (PME → TN-C-S, prompt-documented).
+    // Without this, a structurally complete "earthing arrangement is PME"
+    // would be consumed as a stale pending-value answer instead of being
+    // re-injected and WRITTEN (audio-first invariant 2).
+    const squash = (t) => t.toLowerCase().replace(/[\s-]+/g, '');
+    const lowerSquashed = ` ${squash(lower)} `;
     hasValue = options.some((opt) => {
       const o = String(opt).toLowerCase().trim();
       if (!o) return false;
-      return new RegExp(`\\b${escapeRe(o)}\\b`, 'i').test(lower);
+      if (new RegExp(`\\b${escapeRe(o)}\\b`, 'i').test(lower)) return true;
+      const oSquashed = squash(o);
+      return oSquashed.length >= 2 && lowerSquashed.includes(oSquashed);
     });
+    if (!hasValue && SELECT_VALUE_ALIASES.has(hit.key)) {
+      hasValue = SELECT_VALUE_ALIASES.get(hit.key).some((alias) =>
+        new RegExp(`\\b${escapeRe(alias)}\\b`, 'i').test(lower)
+      );
+    }
   } else if (type === 'number' || /(ohm|_ms|_ma|_v|_s|_ka|current|voltage|time)/.test(hit.key)) {
     // Numeric-ish — a non-scope number or a sentinel.
     const numbers = classifyNumbers(lower).filter((n) => !n.isScope);
