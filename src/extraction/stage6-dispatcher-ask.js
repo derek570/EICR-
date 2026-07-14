@@ -619,6 +619,19 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       ws,
     });
 
+    // §D2 (field-feedback-2026-07-14) — echo the server-assigned
+    // clarification chain id on observation_clarify tool_results so the
+    // model can include it VERBATIM on the single bounded continuation ask
+    // (the ask-budget bucket for the chain — see stage6-ask-gate-wrapper.js).
+    // The gate wrapper stamped it onto input before dispatch.
+    if (
+      input.context_field === 'observation_clarify' &&
+      typeof input.clarification_chain_id === 'string' &&
+      input.clarification_chain_id
+    ) {
+      body.clarification_chain_id = input.clarification_chain_id;
+    }
+
     return {
       tool_use_id: toolCallId,
       content: JSON.stringify(body),

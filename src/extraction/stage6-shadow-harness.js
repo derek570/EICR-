@@ -97,7 +97,11 @@ import { createAskDispatcher } from './stage6-dispatcher-ask.js';
 // options.askBudget AND options.restrainedMode through (Plans 05-03 +
 // 05-04 wire the activeSessions entry); without both, runShadowHarness
 // reverts to the Phase 3/4 dispatcher shape unchanged.
-import { createAskGateWrapper, wrapAskDispatcherWithGates } from './stage6-ask-gate-wrapper.js';
+import {
+  createAskGateWrapper,
+  wrapAskDispatcherWithGates,
+  createObsClarifyChainBroker,
+} from './stage6-ask-gate-wrapper.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
 // readback-correction-optionb §3.3a/b — rolling conversational window so the
 // live model can resolve a bare "no" against the read-backs it spoke.
@@ -603,6 +607,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           sessionId: liveSession.sessionId,
           mode: 'live',
         });
+        // §D2 (field-feedback-2026-07-14) — per-session observation_clarify
+        // chain broker. Lazy on the session (like confirmationDebounceState)
+        // so chain ids survive across turns; the wrapper mints/stamps chain
+        // ids and keys the ask budget per OBSERVATION instead of per scope.
+        if (!liveSession.obsClarifyChains) {
+          liveSession.obsClarifyChains = createObsClarifyChainBroker();
+        }
         asks = wrapAskDispatcherWithGates(asks, {
           askBudget: options.askBudget,
           restrainedMode: options.restrainedMode,
@@ -611,6 +622,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           logger: log,
           sessionId: liveSession.sessionId,
           mode: 'live',
+          obsClarifyChains: liveSession.obsClarifyChains,
         });
       }
       dispatcher = createToolDispatcher(writes, asks);
@@ -1578,6 +1590,93 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         sessionId: session.sessionId,
         turnId,
         error: orphanErr?.message ?? String(orphanErr),
+      });
+    }
+
+    // ── §D2 (field-feedback-2026-07-14) — post-answer write-or-reask net
+    // for observation_clarify chains. A D2 clarification ask that gets
+    // ANSWERED and is then followed by a zero-tool (or unrelated-tool) model
+    // turn would go silent, and the A3 orphan net CANNOT catch it: on the
+    // resumed invocation the registry deleted the ask before the post-loop
+    // check (isAnswerTurn reads false) while the accumulated successful
+    // ask_user tool call makes producedNothing false. So this net keys
+    // INDEPENDENTLY of both: scan the accumulated tool-call sequence for the
+    // LATEST ANSWERED observation_clarify ask (advancing the anchor through
+    // each answered continuation — an earlier ask must not be satisfied by a
+    // later continuation whose own answer went nowhere), then require a
+    // qualifying success AFTER that anchor:
+    //   - a successful observation mutation (record_observation /
+    //     delete_observation with is_error false), OR
+    //   - a LATER observation_clarify continuation ask that is UNANSWERED /
+    //     timed out (its question was audible — the chain terminated out
+    //     loud; the answered case advances the anchor instead).
+    // An arbitrary confirmation or unrelated ask does NOT count — Haiku
+    // recording an unrelated reading while dropping the observation still
+    // triggers the net. Failure → ONE deterministic apology/re-ask through
+    // the same A1(b)-exempt field-nil confirmation channel as A4's fallback.
+    try {
+      const seq = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
+      const parseAnswered = (c) => {
+        try {
+          const body = JSON.parse(c?.result?.content ?? 'null');
+          return body && body.answered === true;
+        } catch {
+          return false;
+        }
+      };
+      let anchorIdx = -1;
+      for (let i = 0; i < seq.length; i += 1) {
+        const c = seq[i];
+        if (
+          c?.name === 'ask_user' &&
+          c?.input?.context_field === 'observation_clarify' &&
+          parseAnswered(c)
+        ) {
+          anchorIdx = i;
+        }
+      }
+      if (anchorIdx >= 0) {
+        let qualified = false;
+        for (let i = anchorIdx + 1; i < seq.length; i += 1) {
+          const c = seq[i];
+          if (
+            (c?.name === 'record_observation' || c?.name === 'delete_observation') &&
+            c?.result?.is_error !== true
+          ) {
+            qualified = true;
+            break;
+          }
+          if (
+            c?.name === 'ask_user' &&
+            c?.input?.context_field === 'observation_clarify' &&
+            !parseAnswered(c)
+          ) {
+            // Unanswered/timed-out continuation — audible termination.
+            qualified = true;
+            break;
+          }
+        }
+        if (!qualified) {
+          if (!Array.isArray(result.confirmations)) result.confirmations = [];
+          result.confirmations.push({
+            text: "Sorry — I didn't record that observation. Could you give it to me again?",
+            field: null,
+            circuit: null,
+            expects_ios_ack: false,
+          });
+          log.info?.('stage6.observation_clarify_dropped_net', {
+            sessionId: session.sessionId,
+            turnId,
+            anchor_tool_call_id: seq[anchorIdx]?.tool_call_id ?? null,
+            tool_calls: seq.length,
+          });
+        }
+      }
+    } catch (obsNetErr) {
+      log.warn?.('stage6.observation_clarify_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: obsNetErr?.message ?? String(obsNetErr),
       });
     }
 

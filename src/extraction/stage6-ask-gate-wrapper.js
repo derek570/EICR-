@@ -308,6 +308,33 @@ function synthResultWithoutLog(call, reason) {
 }
 
 /**
+ * §D2 (field-feedback-2026-07-14) — per-session observation_clarify chain
+ * broker. Mints server-assigned chain ids (unique per OBSERVATION) that key
+ * the ask budget for severity-clarification chains; see the stamping site in
+ * wrapAskDispatcherWithGates. FIFO-capped so a pathological session can't
+ * grow the set unboundedly — evicting the oldest known id simply means a
+ * very stale echo mints a fresh chain (lenient, never blocking a legitimate
+ * new observation).
+ */
+export function createObsClarifyChainBroker() {
+  const known = new Set();
+  let next = 1;
+  return {
+    known,
+    mint() {
+      const id = `obsclr-${next}`;
+      next += 1;
+      known.add(id);
+      if (known.size > 64) {
+        const oldest = known.values().next().value;
+        known.delete(oldest);
+      }
+      return id;
+    },
+  };
+}
+
+/**
  * Per-turn debounce engine. Maintains a private `Map<key, entry>` of pending
  * timers. Same-key arrivals within `delayMs` cancel the pending timer and
  * REPLACE it (Research §Q10 scenario 3 — without explicit replacement the
@@ -522,7 +549,16 @@ export function createAskGateWrapper({
  */
 export function wrapAskDispatcherWithGates(
   innerDispatcher,
-  { askBudget, restrainedMode, gate, filledSlotsShadow, logger, sessionId, mode = 'live' }
+  {
+    askBudget,
+    restrainedMode,
+    gate,
+    filledSlotsShadow,
+    logger,
+    sessionId,
+    mode = 'live',
+    obsClarifyChains = null,
+  }
 ) {
   return async function dispatchAskUserGated(call, ctx) {
     // (1) Shadow-log FIRST, regardless of downstream outcome.
@@ -536,7 +572,34 @@ export function wrapAskDispatcherWithGates(
       /* shadow must not tear down dispatch */
     }
 
-    const key = deriveAskKey(call.input);
+    let key = deriveAskKey(call.input);
+
+    // §D2 (field-feedback-2026-07-14) — per-OBSERVATION clarification-chain
+    // budget identity. The scope key above is session-wide per
+    // (field, circuit, board): one initial ask + one continuation for the
+    // FIRST ambiguous observation on a circuit exhausts the cap of two, and
+    // the NEXT ambiguous observation there short-circuits
+    // ask_budget_exhausted (silent, wrong). For observation_clarify asks the
+    // budget key becomes `observation_clarify#<chain id>` — a SERVER-
+    // assigned id minted on each initial ask (no id supplied) and echoed by
+    // the model on that observation's single bounded continuation via
+    // `clarification_chain_id` (stamped onto the input here so the
+    // dispatcher can echo it in the tool_result). Distinct observations —
+    // even two ambiguous ones sharing one extraction turn (NOT ctx.turnId,
+    // which they'd share) — get distinct buckets; a chain's own THIRD ask
+    // arrives carrying its id, lands in the exhausted bucket, and is
+    // blocked. An unknown/invented id mints a fresh chain (defensive —
+    // never lets a wrong echo join another observation's bucket).
+    if (call.input?.context_field === 'observation_clarify' && obsClarifyChains) {
+      const provided =
+        typeof call.input.clarification_chain_id === 'string' && call.input.clarification_chain_id
+          ? call.input.clarification_chain_id
+          : null;
+      const chainId =
+        provided && obsClarifyChains.known.has(provided) ? provided : obsClarifyChains.mint();
+      call.input.clarification_chain_id = chainId;
+      key = `observation_clarify#${chainId}`;
+    }
 
     // (2) Restrained-mode short-circuit. The state machine in Plan 05-04
     // is session-wide (not per-turn), so isActive() takes no arg.
