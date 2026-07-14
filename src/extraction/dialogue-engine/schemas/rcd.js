@@ -64,8 +64,17 @@ const slots = [
     // reached for this garble. The unit anchor keeps the false-positive
     // surface negligible. The broader garble class is the dedicated
     // keyterm sibling sprint, NOT this wave (resolved decision #5).
+    //
+    // `triptan` — second Deepgram garble of "trip time", same class as
+    // `tryptoid` (field session 6B6FE011 F8). Previously it relied on
+    // the Sonnet handover; the enumerated alias makes it deterministic
+    // like `tryptoid`. The ICD-prefixed form of the phrase ("ICD trip
+    // time 26 milliseconds", same session) needs no extractor change —
+    // the `\btrip\s*time\b` anchor is prefix-agnostic; the fix for
+    // that garble is the `ICD` entry-trigger alias below, without
+    // which the extractor was never consulted.
     namedExtractor:
-      /(?:\btrip\s*time\b|\btryptoid\b)[^∞]{0,40}?(\d+(?:\.\d+)?)\s*(?:m\s*s|millisecond|milliseconds)\b/i,
+      /(?:\btrip\s*time\b|\btryptoid\b|\btriptan\b)[^∞]{0,40}?(\d+(?:\.\d+)?)\s*(?:m\s*s|millisecond|milliseconds)\b/i,
     acceptsBareValue: false,
     volunteeredOnly: true,
     countsTowardCancelTally: false,
@@ -126,7 +135,15 @@ const triggers = [
   // for the cooker is 25 ms." utterance — without it, that utterance
   // matched but the entry parser couldn't harvest "25 ms" because
   // `rcd_trip_time` wasn't a slot.
-  /\bRCD\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  //
+  // `ICD` — Deepgram garble of "RCD" (field session 6B6FE011 F8:
+  // "ICD trip time"). Without it the utterance never entered the
+  // schema at all and fell through to Sonnet. Same enumerated-alias
+  // class as `tryptoid` below — a specific field-evidenced garble,
+  // NOT broad fuzzy matching. Non-capturing so group 1 stays the
+  // circuit ref (reparseSingleCompleteReading and the entry parser
+  // both read m[1] as the circuit number).
+  /\b(?:RCD|ICD)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
 ];
 
 const cancelTriggers = [
