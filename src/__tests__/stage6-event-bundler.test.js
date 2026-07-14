@@ -882,6 +882,78 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(zs).not.toHaveProperty('dedupe_token');
   });
 
+  test('§A2 — outbound field_corrected wire copy is canonicalised (r1_r2_ohm → r1_plus_r2) while perTurnWrites stays RAW', () => {
+    const writes = makePerTurnWrites();
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 3,
+        field: 'r1_r2_ohm',
+        previous_value: '0.86',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-5' }
+    );
+    // Wire copy speaks the record-APPLY dialect the iOS/web clients map.
+    expect(r.field_corrections[0].field).toBe('r1_plus_r2');
+    // NEW objects — the internal accumulator keeps the raw dispatcher key
+    // (consumed by the same-turn clear+write suppression compare below).
+    expect(writes.fieldCorrections[0].field).toBe('r1_r2_ohm');
+  });
+
+  test('§A2 — CLEAR_WIRE_EXEMPT: r2_ohm stays RAW on the wire (canonical r2 would mis-clear R1+R2 on build-418)', () => {
+    const writes = makePerTurnWrites();
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 2,
+        field: 'r2_ohm',
+        previous_value: '0.41',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    expect(r.field_corrections[0].field).toBe('r2_ohm');
+  });
+
+  test('§A2 — same-turn clear+record of the same slot still emits ONLY the replacement read-back (suppression regression)', () => {
+    // The wire canonicalisation must not break the raw-key suppression
+    // compare in synthesiseObservationAndClearedConfirmations: a value
+    // REPLACEMENT (clear + record in one turn) speaks the new value once,
+    // never "<field> cleared" on top (exactly-once invariant, #31).
+    const readings = new Map([
+      [encodeReadingKey('r1_r2_ohm', 3), { value: '0.30', confidence: 1.0, source_turn_id: 't1' }],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 3,
+        field: 'r1_r2_ohm',
+        previous_value: '0.86',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-6' }
+    );
+    const cleared = r.confirmations.filter((c) => c.field === 'field_cleared');
+    expect(cleared).toHaveLength(0); // suppressed — the write speaks instead
+    const replacement = r.confirmations.filter((c) => c.field === 'r1_r2_ohm');
+    expect(replacement).toHaveLength(1);
+    // The wire copy is still canonicalised even when the TTS is suppressed.
+    expect(r.field_corrections[0].field).toBe('r1_plus_r2');
+  });
+
   test('§A1a — no turnId (legacy caller): designation gets NO token; ops/clears fall back to ordinal identity', () => {
     const readings = new Map([
       [

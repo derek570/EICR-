@@ -36,6 +36,9 @@ import {
 // so it runs on the SURVIVING post-debounce confirmation list. Only the
 // allowlist is needed here, for the token-aware debounce key.
 import { DEDUPE_TOKEN_FIELDS } from './ios-dedupe-key.js';
+// §A2 (field-feedback-2026-07-14) — outbound `field_corrected` wire
+// canonicalisation. field-name-corrections.js is a leaf module (no cycle).
+import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
 // ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
@@ -45,6 +48,21 @@ import { DEDUPE_TOKEN_FIELDS } from './ios-dedupe-key.js';
 import { expandForTTS } from './tts-text-expander.js';
 
 export const BUNDLER_PHASE = 2;
+
+// §A2 (field-feedback-2026-07-14, F5) — raw dispatcher keys whose outbound
+// `field_corrected` wire copy must NOT be canonicalised through
+// FIELD_CORRECTIONS. Exactly one entry today: FIELD_CORRECTIONS maps
+// `r2_ohm` → `r2`, but the deployed iOS clearer maps `r2` → the R1+R2 cell
+// (`r1r2`) while `r2_ohm` maps to the DISTINCT R2 end-to-end cell (`r2Ohm`,
+// Stage6FieldClearer.swift Group E/#32). Canonicalising would make
+// "clear R2" wipe the R1+R2 cell on every build-418 device the moment this
+// deploys. The wire keeps sending raw `r2_ohm`, which the clearer AND both
+// record-APPLY paths already handle correctly — zero deployed-client
+// behaviour change. Deliberately a LOCAL exemption here, NOT a deletion of
+// the `r2_ohm` entry in FIELD_CORRECTIONS itself, which record_reading wire
+// canonicalisation (sonnet-stream.js:794) still uses. Pinned by the
+// semantic round-trip audit in stage6-clear-wire-audit.test.js.
+export const CLEAR_WIRE_EXEMPT = new Set(['r2_ohm']);
 
 /**
  * Synthesise brief read-back confirmations from the bundled readings.
@@ -689,7 +707,29 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // previous_value/reason). OMITTED when empty so back-compat decoders
   // never see the key.
   if (Array.isArray(perTurnWrites.fieldCorrections) && perTurnWrites.fieldCorrections.length > 0) {
-    result.field_corrections = [...perTurnWrites.fieldCorrections];
+    // §A2 (field-feedback-2026-07-14, F5) — canonicalise ONLY this outbound
+    // wire copy, with NEW objects. Session 6B6FE011: `dispatchClearReading`
+    // pushed the raw dispatcher key (`r1_r2_ohm`) and it went to the wire
+    // uncanonicalised → iOS `stage6_field_corrected_unmapped` → the cell
+    // never cleared while the TTS said "cleared" (a silent wrong-state, the
+    // inverse of the audio-first invariant). The record-APPLY wire path
+    // already canonicalises (sonnet-stream.js:794 applyFieldNameCorrection),
+    // so the clear path must speak the same dialect.
+    //
+    // Two constraints make this exact shape load-bearing:
+    // 1. NEW objects (map + spread), never in-place: the confirmation-
+    //    synthesis block below (synthesiseObservationAndClearedConfirmations)
+    //    runs AFTER this line in the same function and compares
+    //    perTurnWrites.fieldCorrections against writtenSlots on the RAW key
+    //    to suppress the redundant "<field> cleared" TTS when the same turn
+    //    also writes a replacement. An in-place `.field` rewrite through the
+    //    old shallow copy would corrupt that compare and double-speak.
+    // 2. CLEAR_WIRE_EXEMPT (r2_ohm): see the constant's comment — the
+    //    canonical `r2` lands on the WRONG deployed clearer cell.
+    result.field_corrections = perTurnWrites.fieldCorrections.map((c) => ({
+      ...c,
+      field: CLEAR_WIRE_EXEMPT.has(c.field) ? c.field : (FIELD_CORRECTIONS[c.field] ?? c.field),
+    }));
   }
 
   // 7. Phase 2 carryover slot — supply / installation / board-level writes

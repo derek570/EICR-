@@ -249,6 +249,27 @@ const recordReading = makeTool({
 // STS-02: clear_reading
 // Clears a previously-written reading. Used for corrections.
 // ---------------------------------------------------------------------------
+// §A2 (field-feedback-2026-07-14) — three circuit_fields keys are NOT
+// clearable and are excluded from the enum:
+//   - circuit_ref: the row identity — "clearing" it has no cell semantics
+//     (deleting a circuit is delete_circuit).
+//   - is_distribution_circuit / feeds_board_id: applied atomically via
+//     mark_distribution_circuit; an independent clear could leave an
+//     inconsistent board hierarchy, and the bundler suppresses *_id
+//     confirmations so feeds_board_id would clear SILENTLY (violating the
+//     read-back invariant). If voice unmarking is wanted later, that is a
+//     future atomic unmark_distribution_circuit — not clear_reading.
+// The semantic round-trip audit (stage6-clear-wire-audit.test.js) pins its
+// domain to EXACTLY this resulting enum — update both together.
+const CLEAR_READING_EXCLUDED_FIELDS = new Set([
+  'circuit_ref',
+  'is_distribution_circuit',
+  'feeds_board_id',
+]);
+export const CLEAR_READING_FIELD_ENUM = Object.keys(fieldSchema.circuit_fields).filter(
+  (k) => !CLEAR_READING_EXCLUDED_FIELDS.has(k)
+);
+
 const clearReading = makeTool({
   name: 'clear_reading',
   description:
@@ -256,7 +277,7 @@ const clearReading = makeTool({
   properties: {
     field: {
       type: 'string',
-      enum: Object.keys(fieldSchema.circuit_fields),
+      enum: CLEAR_READING_FIELD_ENUM,
       description: 'The circuit_fields key to clear.',
     },
     circuit: {
