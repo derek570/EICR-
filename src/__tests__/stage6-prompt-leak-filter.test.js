@@ -25,7 +25,10 @@
  *   Group 7 — false-positive guard (20 normal utterances).
  */
 
-import { checkForPromptLeak } from '../extraction/stage6-prompt-leak-filter.js';
+import {
+  checkForPromptLeak,
+  sanitizeObservationRegulation,
+} from '../extraction/stage6-prompt-leak-filter.js';
 
 describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () => {
   // ------------------------------------------------------------------
@@ -2701,6 +2704,74 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       });
       expect(result.safe).toBe(false);
       expect(result.reason).toMatch(/^marker:/);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 15 — Plan 07-14 B3 sanitise-to-token helper
+  // ------------------------------------------------------------------
+  describe('Group 15 — sanitizeObservationRegulation() (B3 sanitise-to-token)', () => {
+    // The helper only ever runs on values the shape gate has ALREADY
+    // rejected as non-regulation-shape; each positive fixture here is
+    // probe-verified to reject today (leading ref + prose with NO spaced
+    // delimiter, so the obs-#52 prose branch does not accept it).
+    test.each([
+      [
+        'Regulation 411.3.4 requires additional protection by a 30 mA RCD for socket outlets rated up to 32 A',
+        'Regulation 411.3.4',
+      ],
+      [
+        '411.3.3 requires all socket outlets to have additional RCD protection in domestic premises',
+        '411.3.3',
+      ],
+      // Longest-window-first at the earliest matching start: the 4-word
+      // "BS 7671 Regulation 411.3.3" beats its "BS 7671" prefix.
+      [
+        'See BS 7671 Regulation 411.3.3 for additional protection requirements',
+        'BS 7671 Regulation 411.3.3',
+      ],
+      // Edge punctuation is stripped before pattern-matching.
+      ['(Regulation 522.6.201.) applies here', 'Regulation 522.6.201'],
+      ['Regulation 411.3.3, which requires RCD protection', 'Regulation 411.3.3'],
+    ])('extracts the fully-qualified token: %s → %s', (value, expected) => {
+      // Precondition pin: the input IS rejected by the shape gate today —
+      // the sanitiser's contract is defined over exactly these values.
+      expect(checkForPromptLeak(value, { field: 'observation_regulation' })).toEqual({
+        safe: false,
+        reason: 'non-regulation-shape',
+        sanitised: expect.anything(),
+      });
+      expect(sanitizeObservationRegulation(value)).toBe(expected);
+
+      // The extracted token itself passes the shape gate (safe by
+      // construction — it matched FULLY_QUALIFIED_PATTERNS).
+      expect(checkForPromptLeak(expected, { field: 'observation_regulation' }).safe).toBe(true);
+    });
+
+    test.each([
+      ['The installation lacks additional protection for socket outlets'],
+      ['no specific regulation applies to this note'],
+      // Bare modifier keywords without a dotted section number are
+      // standalone-invalid (r24-#1) — nothing to extract.
+      ['as shown in the relevant Table of the document'],
+      [''],
+      ['   '],
+    ])('returns null when no fully-qualified token exists: %s', (value) => {
+      expect(sanitizeObservationRegulation(value)).toBeNull();
+    });
+
+    test('documented trade-off: a dotted number inside a bare-modifier phrase extracts as a bare-numeric token', () => {
+      // "Table 41.1" is NOT extracted as a modifier form (BARE_MODIFIER is
+      // deliberately unscanned — r24-#1 standalone-invalid), but the "41.1"
+      // inside it matches the bare-numeric fully-qualified shape. Pinned so
+      // the trade-off documented on the helper stays a conscious choice.
+      expect(sanitizeObservationRegulation('as shown in Table 41.1 of the document')).toBe('41.1');
+    });
+
+    test('non-string input returns null (defensive)', () => {
+      expect(sanitizeObservationRegulation(null)).toBeNull();
+      expect(sanitizeObservationRegulation(undefined)).toBeNull();
+      expect(sanitizeObservationRegulation(42)).toBeNull();
     });
   });
 

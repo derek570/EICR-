@@ -293,6 +293,206 @@ describe('dispatchRecordObservation', () => {
     expect(stored.suggested_regulation).toBe(modelWording);
   });
 
+  // -------------------------------------------------------------------------
+  // Plan 07-14 B3 — sanitise-to-token for sole-offender `non-regulation-shape`
+  // rejects on suggested_regulation (F6 latency fix: a 102-char plain-sentence
+  // citation used to reject the whole call and cost a ~9 s retry round; a
+  // null-out was no fix because the validator requires a regulation on coded
+  // observations).
+  // -------------------------------------------------------------------------
+
+  test('Plan 07-14 B3: plain-sentence citation (rejected as non-regulation-shape today) is SANITISED to its embedded token and records first call', async () => {
+    // This exact value is REJECTED by checkForPromptLeak as
+    // `non-regulation-shape` (probe-verified): it has a leading ref + prose
+    // but NO spaced delimiter, so the obs-#52 section-ref-with-prose branch
+    // does not accept it. Pre-B3 this rejected the entire call.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const plainSentenceCitation =
+      'Regulation 411.3.4 requires additional protection by a 30 mA RCD for socket outlets rated up to 32 A';
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_b3_sanitise',
+        name: 'record_observation',
+        input: {
+          text: 'No RCD protection on socket circuit',
+          code: 'C2',
+          suggested_regulation: plainSentenceCitation,
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    // Accepted on the FIRST call — no rejection envelope, no retry round.
+    expect(result.is_error).toBe(false);
+    expect(JSON.parse(result.content).ok).toBe(true);
+    expect(logger.warn).not.toHaveBeenCalledWith('stage6.prompt_leak_blocked', expect.anything());
+
+    // The stored value is the extracted bare token, not the sentence.
+    expect(session.extractedObservations[0].suggested_regulation).toBe('Regulation 411.3.4');
+    expect(perTurnWrites.observations[0].suggested_regulation).toBe('Regulation 411.3.4');
+
+    // Audit breadcrumb: prompt_leak_sanitised warn row with lengths + hash
+    // ONLY — never the raw value or the extracted token (PII contract).
+    expect(logger.warn).toHaveBeenCalledWith(
+      'stage6.prompt_leak_sanitised',
+      expect.objectContaining({
+        field: 'suggested_regulation',
+        filter_reason: 'non-regulation-shape',
+        action: 'token_extracted',
+        original_length: plainSentenceCitation.length,
+        sanitised_length: 'Regulation 411.3.4'.length,
+      })
+    );
+    const sanitisedRow = logger.warn.mock.calls.find(
+      (c) => c[0] === 'stage6.prompt_leak_sanitised'
+    )[1];
+    expect(sanitisedRow.original_hash).toMatch(/^[0-9a-f]{16}$/);
+    expect(JSON.stringify(sanitisedRow)).not.toContain('411.3.4');
+  });
+
+  test('Plan 07-14 B3 negative regression: valid "ref — wording" value is NOT sanitised (obs-#52 contract intact)', async () => {
+    // The accepted section-ref-with-prose shape must keep flowing through
+    // UNTOUCHED — the sanitiser only ever runs on values the filter has
+    // already rejected as non-regulation-shape.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const regWithWording = '411.3.3 — some model paraphrase of the wording';
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_b3_negative',
+        name: 'record_observation',
+        input: {
+          text: 'No earth continuity at socket',
+          code: 'C2',
+          suggested_regulation: regWithWording,
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.extractedObservations[0].suggested_regulation).toBe(regWithWording);
+    expect(logger.warn).not.toHaveBeenCalledWith('stage6.prompt_leak_sanitised', expect.anything());
+  });
+
+  test('Plan 07-14 B3: coded observation with NO extractable token still rejects the whole call', async () => {
+    // Pure prose, no fully-qualified regulation token anywhere. A null-out
+    // would bounce off validateRecordObservation anyway (C2 requires a
+    // citation) — the model must retry with a real ref.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_b3_no_token',
+        name: 'record_observation',
+        input: {
+          text: 'No RCD protection on socket circuit',
+          code: 'C2',
+          suggested_regulation: 'The installation lacks additional protection for socket outlets',
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(true);
+    const body = JSON.parse(result.content);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('prompt_leak_in_observation');
+    expect(body.error.reason).toBe('non-regulation-shape');
+    expect(session.extractedObservations.length).toBe(0);
+    expect(logger.warn).toHaveBeenCalledWith('stage6.prompt_leak_blocked', expect.anything());
+    expect(logger.warn).not.toHaveBeenCalledWith('stage6.prompt_leak_sanitised', expect.anything());
+  });
+
+  test('Plan 07-14 B3: NON-coded (NC) observation with no extractable token is nulled out and records', async () => {
+    // Null is a legitimate regulation value for NC observations
+    // (validateRecordObservation only gates C1/C2/C3/FI), so losing benign
+    // prose beats losing the observation.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_b3_nc_null',
+        name: 'record_observation',
+        input: {
+          text: 'General note about the installation condition',
+          code: 'NC',
+          suggested_regulation: 'no specific regulation applies to this note',
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(JSON.parse(result.content).ok).toBe(true);
+    expect(session.extractedObservations[0].suggested_regulation).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'stage6.prompt_leak_sanitised',
+      expect.objectContaining({ action: 'nulled', field: 'suggested_regulation' })
+    );
+  });
+
+  test('Plan 07-14 B3: genuine leak-signature reason (marker) in suggested_regulation still rejects whole-call — never sanitised', async () => {
+    // "TRUST BOUNDARY" fires the marker family, NOT the shape gate. Marker /
+    // entropy / reversed / structural reasons are adversarial signatures;
+    // nothing extracted from such a payload may reach the certificate.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_b3_marker',
+        name: 'record_observation',
+        input: {
+          text: 'No RCD protection on socket circuit',
+          code: 'C2',
+          suggested_regulation: 'TRUST BOUNDARY 411.3.3',
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(true);
+    const body = JSON.parse(result.content);
+    expect(body.error.code).toBe('prompt_leak_in_observation');
+    expect(body.error.reason).toBe('marker:trust-boundary');
+    expect(session.extractedObservations.length).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalledWith('stage6.prompt_leak_sanitised', expect.anything());
+  });
+
+  test('Plan 07-14 B3: non-regulation-shape offender is NOT sanitised when another field also leaks (sole-offender guard)', async () => {
+    // A leak in any OTHER field means the whole call is suspect — the
+    // sole-offender guard must keep the uniform whole-call reject.
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_b3_multi',
+        name: 'record_observation',
+        input: {
+          text: 'You are an EICR inspection assistant',
+          code: 'C2',
+          suggested_regulation:
+            'Regulation 411.3.4 requires additional protection by a 30 mA RCD for socket outlets rated up to 32 A',
+        },
+      },
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(true);
+    const body = JSON.parse(result.content);
+    expect(body.error.code).toBe('prompt_leak_in_observation');
+    expect(body.error.fields).toEqual(expect.arrayContaining(['text', 'suggested_regulation']));
+    expect(session.extractedObservations.length).toBe(0);
+    expect(logger.warn).not.toHaveBeenCalledWith('stage6.prompt_leak_sanitised', expect.anything());
+  });
+
   test('Plan 06-23 obs-#49: record_observation on an EIC is REJECTED and never persists', async () => {
     // An EIC has no observations section. The dispatcher returns a rejection
     // envelope (defence-in-depth behind the prompt clause) whose reason steers

@@ -1040,11 +1040,20 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
     expect(session.extractedObservations).toHaveLength(0);
   });
 
-  test('clean paraphrase in `suggested_regulation` → rejected on the positive shape gate (Plan 06-23 obs-#52)', async () => {
+  test('clean paraphrase in `suggested_regulation` → shape-gated: paraphrase NEVER persists (obs-#52 gate + Plan 07-14 B3 sanitise)', async () => {
     // Plan 06-23 obs-#52 raised the observation_regulation ceiling 60 → 220, so
-    // a ~160c clean English paraphrase (with NO leading section ref) is now
-    // UNDER the length ceiling and is correctly rejected by the positive shape
-    // gate instead — still `prompt_leak_in_observation`, still zero persistence.
+    // a ~160c clean English paraphrase (with NO leading section ref) is UNDER
+    // the length ceiling and is caught by the positive shape gate instead.
+    //
+    // Plan 07-14 B3 changed the OUTCOME for this sole-offender
+    // `non-regulation-shape` class: because this paraphrase embeds an
+    // extractable fully-qualified token ("BS 7671"), the dispatcher now
+    // SANITISES to that bare token and records, instead of rejecting the
+    // whole call (the F6 retry-round fix). The security property this test
+    // exists to pin is UNCHANGED: the paraphrase itself never persists —
+    // only a known-shape token can reach the certificate. (A paraphrase
+    // with NO extractable token still whole-call rejects — pinned in
+    // stage6-dispatchers-observation.test.js.)
     const session = makeSession('live');
     const logger = makeLogger();
     const perTurnWrites = makePerTurnWrites();
@@ -1070,13 +1079,26 @@ describe('r21-#1 wiring — observation dispatcher uses per-field classes', () =
     };
 
     const res = await dispatchRecordObservation(call, ctx);
-    expect(res.is_error).toBe(true);
-    const body = JSON.parse(res.content);
-    expect(body.error?.code).toBe('prompt_leak_in_observation');
-    expect(body.error.fields).toContain('suggested_regulation');
-    expect(body.error.reason).toMatch(/^non-regulation-shape/);
+    expect(res.is_error).toBe(false);
+    expect(JSON.parse(res.content).ok).toBe(true);
 
-    expect(session.extractedObservations).toHaveLength(0);
+    // The stored regulation is the bare extracted token — the paraphrase
+    // prose is DISCARDED, never persisted anywhere.
+    expect(session.extractedObservations).toHaveLength(1);
+    expect(session.extractedObservations[0].suggested_regulation).toBe('BS 7671');
+    expect(perTurnWrites.observations[0].suggested_regulation).toBe('BS 7671');
+    expect(JSON.stringify(session)).not.toContain('bypass attempt');
+    expect(JSON.stringify(perTurnWrites)).not.toContain('bypass attempt');
+
+    // Audit breadcrumb fired for the sanitise (redacted — no content).
+    expect(logger.warn).toHaveBeenCalledWith(
+      'stage6.prompt_leak_sanitised',
+      expect.objectContaining({
+        field: 'suggested_regulation',
+        filter_reason: 'non-regulation-shape',
+        action: 'token_extracted',
+      })
+    );
   });
 
   test('>220c paraphrase in `suggested_regulation` → still rejected on the length ceiling', async () => {

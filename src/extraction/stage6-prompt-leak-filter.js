@@ -685,6 +685,82 @@ function looksLikeRegulationRef(text) {
 }
 
 /**
+ * Plan 07-14 B3 — sanitise-to-token for `non-regulation-shape` rejects.
+ *
+ * Extracts a bare fully-qualified regulation token from a value the
+ * shape gate (Family 9) has ALREADY rejected as `non-regulation-shape`,
+ * e.g. "Regulation 411.3.4 requires additional protection by a 30 mA
+ * RCD …" → "Regulation 411.3.4".
+ *
+ * WHY: field session F6 — the tool schema asks the model to cite the
+ * regulation number *and* a wording fragment, and the obs-#52 prose
+ * branch only accepts that when a SPACED delimiter separates head from
+ * tail ("411.3.4 — wording"). When the model instead emits a plain
+ * sentence ("Regulation 411.3.4 requires …", 102 chars in F6), the
+ * shape gate rejects the WHOLE record_observation call — and because
+ * `validateRecordObservation()` requires a non-null regulation on coded
+ * (C1/C2/C3/FI) observations, the model cannot simply drop the field on
+ * retry. The reject therefore costs a full extra model round (~9 s in
+ * F6) to reach a shape the gate accepts. Extracting the embedded ref
+ * and writing THAT preserves the shape gate's security contract (only a
+ * known-shape token ever reaches the certificate) while eliminating the
+ * retry round.
+ *
+ * HOW: whitespace-word window scan. For each start word, windows of
+ * SANITISE_MAX_WINDOW_WORDS..1 words (longest-first, so "BS 7671
+ * Regulation 411.3.3" beats its "BS 7671" prefix) are stripped of
+ * leading/trailing punctuation and tested against
+ * FULLY_QUALIFIED_PATTERNS — the same anchored shapes the gate itself
+ * trusts, so the returned token is safe by construction (a
+ * fully-qualified match cannot carry marker/phrase/entropy content).
+ * Earliest matching start wins: in schema-shaped output the citation
+ * leads the value, and an early standard name ("BS 7671 …") is still a
+ * correct — if less specific — citation.
+ *
+ * WHY max 4 words: the longest fully-qualified shapes are 4 words
+ * ("BS 7671 Table 41.1", "IET Guidance Note 3.2", "BS 7671 Regulation
+ * 411.3.3"). Wider windows can never match an anchored pattern.
+ *
+ * KNOWN TRADE-OFF: the bare-numeric pattern accepts any dotted number
+ * ("0.35"), so prose whose ONLY dotted token is a measurement would
+ * extract that as the "regulation". Accepted: the field is
+ * `suggested_regulation` — the model is citing a regulation, and in
+ * every observed reject the real ref is present and leads the value.
+ * BARE_MODIFIER_PATTERNS are deliberately NOT scanned — a bare
+ * "Table 41.1" in prose has no preceding standard to scope it (the
+ * r24-#1 standalone-invalid contract).
+ *
+ * @param {any} value  The `suggested_regulation` value the shape gate
+ *                     rejected. Non-strings return null (defensive —
+ *                     the dispatcher only calls this on string values).
+ * @returns {string|null} Bare regulation token, or null when no
+ *                        fully-qualified token can be extracted.
+ */
+const SANITISE_MAX_WINDOW_WORDS = 4;
+const SANITISE_LEADING_PUNCT_RE = /^[("'[«]+/;
+const SANITISE_TRAILING_PUNCT_RE = /[)."',;:\]»]+$/;
+
+export function sanitizeObservationRegulation(value) {
+  if (typeof value !== 'string') return null;
+  const words = value.trim().split(/\s+/);
+  for (let start = 0; start < words.length; start++) {
+    const maxSize = Math.min(SANITISE_MAX_WINDOW_WORDS, words.length - start);
+    for (let size = maxSize; size >= 1; size--) {
+      const candidate = words
+        .slice(start, start + size)
+        .join(' ')
+        .replace(SANITISE_LEADING_PUNCT_RE, '')
+        .replace(SANITISE_TRAILING_PUNCT_RE, '');
+      if (candidate.length === 0) continue;
+      for (const re of FULLY_QUALIFIED_PATTERNS) {
+        if (re.test(candidate)) return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Plan 04-27 r20-#3 — high-entropy substring detection.
  *
  * Regex captures contiguous base64 or hex blobs of at least 40

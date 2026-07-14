@@ -52,7 +52,11 @@ import {
   validateDeleteObservation,
 } from './stage6-dispatch-validation.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
-import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
+import {
+  checkForPromptLeak,
+  hashPayload,
+  sanitizeObservationRegulation,
+} from './stage6-prompt-leak-filter.js';
 import { lookupRegulation } from './regulation-lookup.js';
 
 function envelope(tool_use_id, body, is_error) {
@@ -155,7 +159,11 @@ export async function dispatchRecordObservation(call, ctx) {
   // the ENTIRE call (is_error:true). Uniform reject rule — no
   // substitution attempt for these short fields because a refusal
   // string in the PDF location column or regulation reference row
-  // would be nonsensical. The prompt_leak_blocked warn row carries
+  // would be nonsensical. ONE exception (Plan 07-14 B3, below): a
+  // sole `suggested_regulation` offender whose reason is the shape
+  // gate (`non-regulation-shape`) is SANITISED to its embedded
+  // regulation token instead — that reason class is "wrong shape",
+  // not a leak signature. The prompt_leak_blocked warn row carries
   // the audit breadcrumb (which fields leaked, what filter family
   // fired, how long the payload was — NEVER any substring of the
   // blocked content; see r20-#2 redaction).
@@ -181,6 +189,68 @@ export async function dispatchRecordObservation(call, ctx) {
     if (!leak.safe) {
       offendingLeaks.push({ field: fieldName, reason: leak.reason, length: value.length });
     }
+  }
+
+  // Plan 07-14 B3 — sanitise-to-token instead of reject-call when the
+  // ONLY offender is `suggested_regulation` failing the positive shape
+  // gate (`non-regulation-shape`). Field session F6: the tool schema
+  // asks for "number + wording", but a plain-sentence citation
+  // ("Regulation 411.3.4 requires …", 102 chars) misses the obs-#52
+  // spaced-delimiter prose branch and rejected the whole call — costing
+  // a ~9 s retry round. And a naive null-out would NOT fix that:
+  // `validateRecordObservation()` (below) rejects coded C1/C2/C3/FI
+  // observations with a null/empty regulation, so the call would still
+  // bounce. Instead, extract the embedded fully-qualified token
+  // ("Regulation 411.3.4") and write THAT.
+  //
+  // Scope guards (all deliberate):
+  //   - ONLY the `non-regulation-shape` reason class sanitises. It is
+  //     the shape gate saying "not a known citation shape" — a content-
+  //     class signal, not a leak signature. Genuine leak-signature
+  //     reasons (marker / req-id / phrase / reversed / entropy / length)
+  //     still reject the whole call: their payloads are adversarial and
+  //     nothing extracted from them should reach the certificate.
+  //   - ONLY when suggested_regulation is the SOLE offender. A leak in
+  //     any other field means the whole call is suspect.
+  //   - No extractable token: coded observations keep the whole-call
+  //     reject (the validator would bounce a null anyway — the model
+  //     must retry with a real citation); non-coded (NC / null code)
+  //     observations null the field out and record, since null is a
+  //     legitimate value for them and losing benign prose beats losing
+  //     the observation.
+  //
+  // The extracted token matched FULLY_QUALIFIED_PATTERNS inside the
+  // filter module, so it is safe by construction — no re-scan needed.
+  // PII discipline: the warn row carries lengths + hash only, NEVER the
+  // value or the extracted token (regulation refs are caller-contract
+  // non-loggable, see header).
+  if (
+    offendingLeaks.length === 1 &&
+    offendingLeaks[0].field === 'suggested_regulation' &&
+    offendingLeaks[0].reason === 'non-regulation-shape'
+  ) {
+    const originalValue = input.suggested_regulation;
+    const token = sanitizeObservationRegulation(originalValue);
+    const code = typeof input.code === 'string' ? input.code.toUpperCase() : '';
+    const isCoded = ['C1', 'C2', 'C3', 'FI'].includes(code);
+    if (token !== null || !isCoded) {
+      input.suggested_regulation = token; // null when unextractable + non-coded
+      offendingLeaks.length = 0;
+      logger.warn('stage6.prompt_leak_sanitised', {
+        tool: 'record_observation',
+        tool_call_id: call.tool_call_id,
+        sessionId: session.sessionId,
+        turnId,
+        filter_reason: 'non-regulation-shape',
+        field: 'suggested_regulation',
+        action: token !== null ? 'token_extracted' : 'nulled',
+        original_length: typeof originalValue === 'string' ? originalValue.length : 0,
+        original_hash: hashPayload(originalValue),
+        sanitised_length: token !== null ? token.length : 0,
+      });
+    }
+    // else: coded observation, no extractable token → fall through to
+    // the whole-call reject below (offendingLeaks still populated).
   }
 
   if (offendingLeaks.length > 0) {
