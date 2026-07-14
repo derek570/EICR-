@@ -954,6 +954,32 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(r.field_corrections[0].field).toBe('r1_plus_r2');
   });
 
+  test('§A1a Codex r3-#2 — two DISTINCT same-turn designation ops BOTH speak, with distinct ordinal tokens', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 2),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 2, boardId: null, value: 'Lights', confidence: 0.9 },
+      { circuit: 2, boardId: null, value: 'Sockets', confidence: 0.95 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    expect(desigs).toHaveLength(2);
+    expect(desigs[0].dedupe_token).toBe('desig_2_turn-9_ord0');
+    expect(desigs[1].dedupe_token).toBe('desig_2_turn-9_ord1');
+    expect(desigs[0].text).not.toBe(desigs[1].text);
+    // Wire state stays last-write-wins — only the read-backs expand.
+    expect(r.extracted_readings.filter((e) => e.field === 'circuit_designation')).toHaveLength(1);
+  });
+
   test('§A1a Codex r1-#5 — two DISTINCT same-slot clears in ONE turn get DISTINCT tokens (turn AND ordinal)', () => {
     const writes = makePerTurnWrites();
     writes.fieldCorrections = [

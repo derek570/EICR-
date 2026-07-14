@@ -886,6 +886,42 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         entry.dedupe_token = `desig_${scope}_${_turnId}`;
       }
     }
+    // Codex r3-#2 — when the per-turn designation-op LOG shows more ops than
+    // the last-write-wins readings Map surfaced, expand the read-backs to
+    // one per operation (plan-pinned: "two designation changes on one
+    // circuit → both speak"). The wire extracted_readings still carry only
+    // the FINAL value (state is last-write-wins by design); only the spoken
+    // confirmations expand. Tokens gain an ordinal so each op is a distinct
+    // replay-stable identity for the client dedupe.
+    if (Array.isArray(perTurnWrites.designationOps) && perTurnWrites.designationOps.length > 0) {
+      const opsByScope = new Map();
+      for (const op of perTurnWrites.designationOps) {
+        const k = `${op.circuit}|${op.boardId ?? ''}`;
+        if (!opsByScope.has(k)) opsByScope.set(k, []);
+        opsByScope.get(k).push(op);
+      }
+      for (const [k, ops] of opsByScope) {
+        if (ops.length < 2) continue; // single op — the Map-derived entry is exact
+        const idx = confirmations.findIndex(
+          (c) => c.field === 'circuit_designation' && c.circuit === ops[0].circuit
+        );
+        if (idx < 0) continue;
+        const replacement = ops.map((op, i) => {
+          const text = buildConfirmationText('circuit_designation', op.value, op.circuit, op.value);
+          const entry = {
+            text,
+            expanded_text: expandForTTS(text),
+            field: 'circuit_designation',
+            circuit: op.circuit,
+            dedupe_token: `desig_${op.circuit}_${_turnId ?? 'noturn'}_ord${i}`,
+            _confidence: typeof op.confidence === 'number' ? op.confidence : null,
+          };
+          if (op.boardId != null) entry.board_id = op.boardId;
+          return entry;
+        });
+        confirmations.splice(idx, 1, ...replacement);
+      }
+    }
     // 2026-05-29 — state-change confirmations (create_circuit, rename,
     // delete, add_board, select_board, mark_distribution_circuit) so the
     // AirPods-only inspector hears EVERY state change, not just record_

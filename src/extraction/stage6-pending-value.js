@@ -385,14 +385,19 @@ export function detectStructuredReading(text, fieldSchema = FIELD_SCHEMA) {
     // Without this, a structurally complete "earthing arrangement is PME"
     // would be consumed as a stale pending-value answer instead of being
     // re-injected and WRITTEN (audio-first invariant 2).
-    const squash = (t) => t.toLowerCase().replace(/[\s-]+/g, '');
-    const lowerSquashed = ` ${squash(lower)} `;
+    // Codex r3-#4 — boundary-aware compact matching: option chars may be
+    // separated by spaces/hyphens in speech ("t n s" for TN-S, "TNCS" for
+    // TN-C-S), but the match must be ANCHORED on non-alphanumeric
+    // boundaries — a naive squashed-substring search matched 'TT' inside
+    // "not tested" and 'AC' inside "actually".
     hasValue = options.some((opt) => {
       const o = String(opt).toLowerCase().trim();
       if (!o) return false;
       if (new RegExp(`\\b${escapeRe(o)}\\b`, 'i').test(lower)) return true;
-      const oSquashed = squash(o);
-      return oSquashed.length >= 2 && lowerSquashed.includes(oSquashed);
+      const chars = o.replace(/[\s-]+/g, '').split('');
+      if (chars.length < 2) return false;
+      const compact = chars.map((c) => escapeRe(c)).join('[\\s-]*');
+      return new RegExp(`(?<![a-z0-9])${compact}(?![a-z0-9])`, 'i').test(lower);
     });
     if (!hasValue && SELECT_VALUE_ALIASES.has(hit.key)) {
       hasValue = SELECT_VALUE_ALIASES.get(hit.key).some((alias) =>

@@ -325,6 +325,65 @@ describe('§A4 — brokered pvr-* asks (the deterministic-ask BROKER)', () => {
   });
 });
 
+describe('§A4 Codex r3-#1/#3 — shape-2 reachability + pre-emit broker failures', () => {
+  test('r3-#1 shape (2): eligible ask with NO captured value + field-name reply → brokered VALUE ask, resolveValueAnswer path, write dispatched', async () => {
+    // Transcript carries NO number → capture returns null; eligibility alone
+    // must route the field-name reply into the chain.
+    const session = buildSession({ activeTurnTranscript: 'something garbled entirely' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher(
+      {
+        tool_call_id: 'toolu_s2',
+        name: 'ask_user',
+        input: noneAsk({ question: 'For circuit 2, what was that reading for?' }),
+      },
+      {}
+    );
+    await tick();
+    pendingAsks.resolve('toolu_s2', { answered: true, user_text: 'RCD trip time' });
+    await tick();
+    const started = ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0].context_field).toBe('rcd_time_ms');
+    expect(started[0].expected_answer_shape).toBe('number');
+    pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: '26' });
+    const env = await p;
+    const body = JSON.parse(env.content);
+    expect(body.match_status).toBe('pending_value_resolved');
+    expect(autoResolveWrite).toHaveBeenCalledWith(
+      expect.objectContaining({ field: 'rcd_time_ms', circuit: 2, value: '26' }),
+      expect.anything()
+    );
+  });
+
+  test('r3-#3: broker with a CLOSED socket → question never emitted → terminal apology, never a silent move-on', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const closedWs = { readyState: 3, OPEN: 1, sent: [], send() {} };
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, closedWs, {
+      autoResolveWrite,
+    });
+    const p = dispatcher({ tool_call_id: 'toolu_c3', name: 'ask_user', input: noneAsk() }, {});
+    await tick();
+    // Reply doesn't resolve a field → the chain brokers a FIELD ask, but the
+    // socket is closed → pre-emit failure → audible apology queued.
+    pendingAsks.resolve('toolu_c3', { answered: true, user_text: 'no idea' });
+    const env = await p;
+    const body = JSON.parse(env.content);
+    expect(body.match_status).toBe('pending_value_failed');
+    expect(session.pendingVoicePrompts).toHaveLength(1);
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+  });
+});
+
 describe('§A4 — regressions: flows that must NOT engage', () => {
   test('no-CPC-class preservation: a "none" ask with NO captured value and a yes/no reply falls through to the LEGACY body', async () => {
     const session = buildSession({ activeTurnTranscript: 'is there a CPC on this circuit' });

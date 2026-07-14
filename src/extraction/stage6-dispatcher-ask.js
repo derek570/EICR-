@@ -349,7 +349,12 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         // fine (shape-2 of the re-ask machine covers it); a wrong guess is
         // not (extractPendingValue never guesses across multiple unbound
         // numbers).
-        const capturedPendingValue = isPendingValueAsk(input)
+        // Codex r3-#1 — eligibility is registered SEPARATELY from capture:
+        // an eligible missing-field ask whose extraction deliberately
+        // returned null (value absent/ambiguous) must still route a
+        // field-name reply into the chain (shape 2 brokers the VALUE ask).
+        const pendingValueEligible = isPendingValueAsk(input);
+        const capturedPendingValue = pendingValueEligible
           ? extractPendingValue({
               transcript: session.activeTurnTranscript,
               question: input.question,
@@ -371,6 +376,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
             contextCircuit: input.context_circuit,
             // §A4 — sibling of pendingWrite; see stage6-pending-asks-registry.js.
             pendingValue: capturedPendingValue,
+            pendingValueEligible,
             // Plan 03-11 Task 2 (STG r3 MAJOR remediation) — stash the ask's
             // expected_answer_shape on the registry entry so classifyOvertake
             // can short-circuit the "no regex hits → user_moved_on" fallback
@@ -691,7 +697,9 @@ async function buildResolvedBody({
     // could be hijacked — e.g. the address-mirror ask ("Should I use this
     // same address for the site?") captured the HOUSE NUMBER as a pending
     // reading and routed the "yes" into the re-ask machine.
-    (outcome.pendingValue != null || String(toolCallId ?? '').startsWith('pvr-')) &&
+    (outcome.pendingValue != null ||
+      outcome.pendingValueEligible === true ||
+      String(toolCallId ?? '').startsWith('pvr-')) &&
     outcome.user_text
   ) {
     const pvBody = await resolvePendingValueFlow({
@@ -1211,6 +1219,12 @@ async function brokerDeterministicAsk({
       return;
     }
     // Emit AFTER registration (the load-bearing ordering — see block comment).
+    // Codex r3-#3 — pre-emit failures must NOT masquerade as audible
+    // outcomes: if the socket is missing/closed or send throws, the question
+    // was never SPOKEN, so resolve immediately with a broker_* reason (the
+    // chain routes those to the terminal apology instead of treating them
+    // as an already-audible move-on/timeout).
+    let questionEmitted = false;
     if (ws && ws.readyState === ws.OPEN) {
       try {
         ws.send(
@@ -1224,10 +1238,14 @@ async function brokerDeterministicAsk({
             expected_answer_shape: expectedAnswerShape,
           })
         );
+        questionEmitted = true;
       } catch {
-        // Same contract as the model-ask path: a ws.send failure must not
-        // tear down the ask — the transcript channel can still answer it.
+        // fall through to the pre-emit resolve below
       }
+    }
+    if (!questionEmitted) {
+      pendingAsks.resolve(pvrId, { answered: false, reason: 'broker_emit_failed' });
+      return;
     }
     logger?.info?.('stage6.pending_value_reask_sent', {
       sessionId,
@@ -1403,7 +1421,10 @@ async function runPendingValueChain(args) {
           pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
         });
         brokered.push({ id: pvrId, shape: 'circuit_ref', answered: circOutcome.answered });
-        if (!circOutcome.answered) return movedOn(circOutcome.reason);
+        if (!circOutcome.answered) {
+          if (String(circOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
+          return movedOn(circOutcome.reason);
+        }
         const parsed = extractCircuitRef(String(circOutcome.user_text ?? '').toLowerCase());
         if (parsed == null) return terminalApology();
         circuit = parsed;
@@ -1477,7 +1498,10 @@ async function runPendingValueChain(args) {
         pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
       });
       brokered.push({ id: pvrId, shape: 'field_name', answered: fieldOutcome.answered });
-      if (!fieldOutcome.answered) return movedOn(fieldOutcome.reason);
+      if (!fieldOutcome.answered) {
+        if (String(fieldOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
+        return movedOn(fieldOutcome.reason);
+      }
       const resolved = resolveFieldNameAnswer(fieldOutcome.user_text);
       if (!resolved) return terminalApology();
       fieldKey = resolved;
@@ -1505,7 +1529,10 @@ async function runPendingValueChain(args) {
         pendingValue: null,
       });
       brokered.push({ id: pvrId, shape: 'value', answered: valueOutcome.answered });
-      if (!valueOutcome.answered) return movedOn(valueOutcome.reason);
+      if (!valueOutcome.answered) {
+        if (String(valueOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
+        return movedOn(valueOutcome.reason);
+      }
       if (circuit != null) {
         // Route through the EXISTING numeric value-resolver path so
         // sentinels (LIM, discontinuous) and range parsing behave exactly

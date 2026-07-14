@@ -46,6 +46,7 @@ export function createPendingAsksRegistry() {
         expectedAnswerShape,
         pendingWrite,
         pendingValue,
+        pendingValueEligible,
         resolve,
         timer,
         askStartedAt,
@@ -83,6 +84,10 @@ export function createPendingAsksRegistry() {
         // in the answer). Shape: {value, unit, sourceText, source} from
         // stage6-pending-value.js extractPendingValue, or null.
         pendingValue: pendingValue ?? null,
+        // Codex r3-#1 — eligibility survives capture failure so shape (2)
+        // (field resolved from the reply, NO captured value → brokered
+        // VALUE ask) is reachable for ORIGINAL asks, not just pvr-* ones.
+        pendingValueEligible: pendingValueEligible === true,
         askStartedAt,
       });
     },
@@ -109,6 +114,7 @@ export function createPendingAsksRegistry() {
         // the resolve OUTCOME here; the registry copy (until this delete)
         // serves the transcript-overtake classifier path.
         pendingValue: entry.pendingValue ?? null,
+        pendingValueEligible: entry.pendingValueEligible === true,
         wait_duration_ms: Date.now() - entry.askStartedAt,
       });
       return true;

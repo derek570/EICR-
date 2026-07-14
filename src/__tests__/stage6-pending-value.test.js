@@ -149,6 +149,11 @@ describe('detectStructuredReading — typed, schema-aware completeness', () => {
     expect(d).toMatchObject({ fieldKey: 'earthing_arrangement', complete: true });
   });
 
+  test('Codex r3-#4: boundary anchoring — "earthing arrangement is not tested" is NOT complete (no TT inside "not tested")', () => {
+    const d = detectStructuredReading('earthing arrangement is not tested');
+    expect(d == null || d.complete === false).toBe(true);
+  });
+
   test('sentinel value counts for a numeric circuit field ("R1 plus R2 on circuit 3 is a limitation")', () => {
     const d = detectStructuredReading('R1 plus R2 on circuit 3 is a limitation');
     expect(d).toMatchObject({ fieldKey: 'r1_r2_ohm', circuit: 3, complete: true });
