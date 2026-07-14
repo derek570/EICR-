@@ -216,6 +216,8 @@ beforeEach(() => {
 afterEach(() => {
   activeSessions.clear();
   sonnetSessionStore.clear();
+  // Clear ask timers a test deliberately left pending (see makeAskTimer).
+  while (askTimers.length > 0) clearTimeout(askTimers.pop());
   jest.useRealTimers();
 });
 
@@ -298,7 +300,7 @@ describe('§A4 (2) — ordinary toolu_* concrete-field ask survives a bare-numer
       contextCircuit: 5,
       expectedAnswerShape: 'number',
       resolve: userResolve,
-      timer: setTimeout(() => {}, 60000),
+      timer: makeAskTimer(),
       askStartedAt: Date.now(),
     });
     const resolveSpy = jest.spyOn(entry.pendingAsks, 'resolve');
