@@ -121,6 +121,7 @@ import {
   ALL_DIALOGUE_SCHEMAS,
 } from './dialogue-engine/index.js';
 import { extractNamedFieldValues } from './dialogue-engine/helpers/extraction.js';
+import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { buildConfirmationText } from './confirmation-text.js';
@@ -282,6 +283,16 @@ const REJECTED_PROMPTS = Object.freeze([
   "I wasn't able to apply that one. Could you repeat it?",
   "Sorry, that didn't go through. Could you say it once more?",
 ]);
+
+// A3 (sessions F3 turn-16 / F9 turn-28) — observation-flavoured apology for
+// the digit-less-observation silent-drop class ("observation that the water
+// bond is not connected"). The reading nets above gate on /\d/, so a spoken
+// observation with no number produced ZERO TTS when the model no-opped.
+// Deliberately a SINGLE text distinct from every ORPHAN_/REJECTED_ phrasing:
+// the iOS A1(b) apology dedupe keys on text, so sharing wording with the
+// reading apology would cross-dedupe the two channels — and naming the
+// "observation" channel tells the inspector WHICH kind of utterance was lost.
+const OBSERVATION_ORPHAN_PROMPT = 'Sorry, I missed that observation — could you say it again?';
 
 // item #10 — default ON (the inspector explicitly asked for a spoken ASK
 // instead of a silent drop). Set VOICE_ORPHAN_PROMPT=false to disable
@@ -1483,12 +1494,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // Require a numeric value so a bare field-only fragment ("Zs") still
       // WAITS on the existing incomplete-reading path rather than prompting.
       const carriesValue = /\d/.test(transcriptText || '');
+      // A3 — digit-less observations ("observation that the water bond is not
+      // connected", F9 turn-28) carry no digit, so the /\d/ gate alone let
+      // them vanish without ANY spoken response when the model no-opped.
+      // OBSERVATION_PATTERN is the same fuzzy "observation"+garbles trigger
+      // the pre-LLM gate uses to FORWARD these turns — so anything it
+      // forwarded on that basis gets the same silent-drop protection here.
+      const carriesObservation = OBSERVATION_PATTERN.test(transcriptText || '');
       if (
         ORPHAN_PROMPT_ENABLED &&
         options.confirmationsEnabled === true &&
         producedNothing &&
         !isAnswerTurn &&
-        carriesValue
+        (carriesValue || carriesObservation)
       ) {
         // #5a apply-complete guard (PR #68) — before emitting a contentless
         // clarifying prompt, try a deterministic re-parse of transcriptText
@@ -1516,9 +1534,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // M1 Defect B: all-rejected turns get an "I couldn't action that"
           // message (the action WAS understood but rejected); the zero-tool-call
           // orphan case keeps the "didn't catch what that was for" wording.
+          // A3: an observation-shaped zero-tool-call turn gets the observation
+          // flavour instead — including the dual-match case where the
+          // transcript ALSO carries a digit ("observation that socket on
+          // circuit 3 is cracked"): the #5a re-parse above has already run and
+          // recovered nothing, so the observation lead-in is the stronger
+          // signal for what the utterance WAS. allRejected keeps precedence:
+          // there the tool call happened and was rejected, and "couldn't
+          // action that" is the accurate story regardless of shape.
           const prompt = allRejected
             ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
-            : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
+            : carriesObservation
+              ? OBSERVATION_ORPHAN_PROMPT
+              : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
           if (!Array.isArray(result.confirmations)) result.confirmations = [];
           result.confirmations.push({
             text: prompt,
@@ -1534,7 +1562,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             sessionId: session.sessionId,
             turnId,
             rounds: toolLoopOut.rounds,
-            cause: allRejected ? 'all_rejected' : 'zero_tool_calls',
+            // A3: the observation shape gets its own cause for forensics;
+            // the two pre-existing reading causes are unchanged.
+            cause: allRejected
+              ? 'all_rejected'
+              : carriesObservation
+                ? 'observation_no_tool_calls'
+                : 'zero_tool_calls',
             textPreview: String(transcriptText || '').slice(0, 80),
           });
         }

@@ -329,3 +329,94 @@ describe('orphan net — all-rejected branch (M1 Defect B)', () => {
     expect(prompt).toBeUndefined();
   });
 });
+
+// A3 — digit-less observation branch. The original net gated on /\d/, so a
+// spoken observation with no number ("observation that the water bond is not
+// connected", F9 turn-28) that the model silently no-opped produced ZERO TTS.
+// The gate is widened with OBSERVATION_PATTERN (the same fuzzy trigger the
+// pre-LLM gate forwards these turns on) and speaks a DISTINCT observation
+// apology so the iOS A1(b) text-keyed dedupe never cross-dedupes it against
+// the reading apology.
+describe('orphan net — digit-less observation branch (A3)', () => {
+  const OBS_APOLOGY = 'Sorry, I missed that observation — could you say it again?';
+
+  test('F3 turn-16 "observation that socket in upstairs bedroom is cracked" → observation apology + orphanContext', async () => {
+    const session = makeSession();
+    const opts = baseOpts();
+    const transcript = 'observation that socket in upstairs bedroom is cracked';
+    const result = await runShadowHarness(session, transcript, [], opts);
+
+    const prompts = (result.confirmations ?? []).filter((c) => c.text === OBS_APOLOGY);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].field).toBeNull();
+    expect(prompts[0].circuit).toBeNull();
+    expect(prompts[0].expects_ios_ack).toBe(false);
+    // Context-carry armed so the repeat re-extracts with this transcript.
+    expect(session.orphanContext).toMatchObject({ transcript, turnNum: 1 });
+    // Forensics: distinguishable cause, existing reading causes untouched.
+    const row = opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_prompt_emitted');
+    expect(row).toBeDefined();
+    expect(row[1].cause).toBe('observation_no_tool_calls');
+  });
+
+  test('F9 turn-28 "observation that the water bond is not connected." → observation apology + orphanContext', async () => {
+    const session = makeSession();
+    const transcript = 'observation that the water bond is not connected.';
+    const result = await runShadowHarness(session, transcript, [], baseOpts());
+
+    const prompts = (result.confirmations ?? []).filter((c) => c.text === OBS_APOLOGY);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].field).toBeNull();
+    expect(prompts[0].expects_ios_ack).toBe(false);
+    expect(session.orphanContext).toMatchObject({ transcript, turnNum: 1 });
+  });
+
+  test('dual-match "observation that socket on circuit 3 is cracked" (digit-carrying) → OBSERVATION flavour wins over the reading apology', async () => {
+    const session = makeSession();
+    const opts = baseOpts();
+    const transcript = 'observation that socket on circuit 3 is cracked';
+    const result = await runShadowHarness(session, transcript, [], opts);
+
+    // The #5a apply-complete re-parse ran first and recovered nothing
+    // ("cracked" is not a field+value tuple) — no reading was applied.
+    expect(opts.logger.info.mock.calls.some(([ev]) => ev === 'stage6.orphan_apply_complete')).toBe(
+      false
+    );
+    expect(result.extracted_readings ?? []).toHaveLength(0);
+    // Exactly the observation apology, NOT the rotated reading phrasings.
+    const prompts = (result.confirmations ?? []).filter((c) => c.field == null && c.text);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].text).toBe(OBS_APOLOGY);
+    expect(prompts[0].text).not.toMatch(/reading/i);
+    const row = opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_prompt_emitted');
+    expect(row[1].cause).toBe('observation_no_tool_calls');
+  });
+
+  test('observation transcript + model asked (ask_user tool call) → NO orphan on top (exactly-once)', async () => {
+    runToolLoopSpy.mockImplementation(async () => ({
+      stop_reason: 'tool_use',
+      rounds: 1,
+      tool_calls: [
+        {
+          name: 'ask_user',
+          input: {},
+          result: { tool_use_id: 't', content: '{}', is_error: false },
+        },
+      ],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const session = makeSession();
+    const result = await runShadowHarness(
+      session,
+      'observation that socket in upstairs bedroom is cracked',
+      [],
+      baseOpts()
+    );
+    const prompt = (result.confirmations ?? []).find((c) => c.text === OBS_APOLOGY);
+    expect(prompt).toBeUndefined();
+    expect(session.orphanContext == null).toBe(true);
+  });
+});
