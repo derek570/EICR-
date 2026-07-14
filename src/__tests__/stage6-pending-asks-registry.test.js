@@ -350,3 +350,72 @@ describe('createPendingAsksRegistry — entries iterator', () => {
     expect(reg.size).toBe(2);
   });
 });
+
+// -----------------------------------------------------------------------------
+// Group 7: §A4 (field-feedback-2026-07-14, F8) — pendingValue storage + outcome
+// threading.
+//
+// The registry-lifecycle trap this group pins: resolve() DELETES the entry
+// BEFORE the dispatcher's buildResolvedBody runs, and buildResolvedBody works
+// from the original ask INPUT — so a pendingValue stored ONLY on the registry
+// entry would be unreachable on the direct ask_user_answered path. resolve()
+// therefore copies entry.pendingValue into the resolve OUTCOME; the registry
+// copy (until the delete) serves the transcript-overtake classifier path.
+// If a future refactor drops either half, the F8 "beep-then-silence" class
+// (value stored nowhere) comes back.
+// -----------------------------------------------------------------------------
+
+describe('createPendingAsksRegistry — §A4 pendingValue', () => {
+  const PENDING_VALUE = {
+    value: '26',
+    unit: 'ms',
+    sourceText: 'ICD trip time for circuit 2 is 26 milliseconds.',
+    source: 'transcript',
+  };
+
+  test('register() stores pendingValue on the entry (classifier-visible via entries())', () => {
+    const reg = createPendingAsksRegistry();
+    reg.register('call_pv', makeEntry());
+    // makeEntry() has no pendingValue — register a second entry WITH one via
+    // the same positional payload shape the dispatcher passes.
+    const base = makeEntry({ contextField: 'none', contextCircuit: null });
+    reg.register('call_pv_2', { ...base, pendingValue: PENDING_VALUE });
+
+    const [, plainEntry] = [...reg.entries()].find(([id]) => id === 'call_pv');
+    const [, pvEntry] = [...reg.entries()].find(([id]) => id === 'call_pv_2');
+    // No pendingValue supplied → normalised to null (never undefined), so the
+    // classifier's `entry.pendingValue != null` guard reads a stable shape.
+    expect(plainEntry.pendingValue).toBeNull();
+    expect(pvEntry.pendingValue).toEqual(PENDING_VALUE);
+  });
+
+  test('resolve() outcome carries the stored pendingValue', () => {
+    const reg = createPendingAsksRegistry();
+    const userResolve = jest.fn();
+    const base = makeEntry({ contextField: 'none', contextCircuit: null, resolve: userResolve });
+    reg.register('call_pv', { ...base, pendingValue: PENDING_VALUE });
+
+    reg.resolve('call_pv', { answered: true, user_text: 'RCD trip time.' });
+
+    expect(userResolve).toHaveBeenCalledTimes(1);
+    const [payload] = userResolve.mock.calls[0];
+    expect(payload.answered).toBe(true);
+    expect(payload.user_text).toBe('RCD trip time.');
+    expect(payload.pendingValue).toEqual(PENDING_VALUE);
+    expect(typeof payload.wait_duration_ms).toBe('number');
+  });
+
+  test('entries registered WITHOUT pendingValue resolve with pendingValue:null', () => {
+    const reg = createPendingAsksRegistry();
+    const userResolve = jest.fn();
+    reg.register('call_plain', makeEntry({ resolve: userResolve }));
+
+    reg.resolve('call_plain', { answered: true, user_text: '0.25' });
+
+    const [payload] = userResolve.mock.calls[0];
+    // Explicit null (not undefined) — buildResolvedBody branches on
+    // `outcome.pendingValue != null`, so both read identically today, but a
+    // stable null keeps log rows and JSON serialisation deterministic.
+    expect(payload.pendingValue).toBeNull();
+  });
+});
