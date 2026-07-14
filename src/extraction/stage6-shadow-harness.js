@@ -125,6 +125,15 @@ import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { buildConfirmationText } from './confirmation-text.js';
 import { expandForTTS } from './tts-text-expander.js';
+// §A1a (field-feedback-2026-07-14) — the ios_send_attempt telemetry loop
+// moved here from stage6-event-bundler.js so it emits one row per SURVIVING
+// wire confirmation (after the mid-stream-canonical filter AND the token-
+// aware debounce), covering all five allowlisted text-op fields.
+import {
+  buildPerCircuitDedupeKey,
+  buildMultiCircuitDedupeKey,
+  buildDegenerateDedupeKey,
+} from './ios-dedupe-key.js';
 
 /**
  * Sonnet model literal used by shadow-mode tool loop. Mirrors the literal at
@@ -1311,6 +1320,66 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           surviving: result.confirmations.length,
           window_ms: 1500,
         });
+      }
+    }
+
+    // §A1a (field-feedback-2026-07-14) — ios_send_attempt telemetry, MOVED
+    // here from the bundler. One row per confirmation that SURVIVED the
+    // mid-stream-canonical filter + the token-aware debounce above — i.e.
+    // exactly the entries about to reach the wire. This closes the two
+    // holes in the old bundler-internal placement: (1) stateChanges/
+    // obsAndClears merged AFTER the loop, so circuit_op / observation /
+    // field_cleared confirmations never got a row (the forensic contract
+    // this wave's F2/F7/F10 diagnosis depended on was silently false for
+    // exactly those ops); (2) a debounce-suppressed confirmation still
+    // produced a row. `expected_dedupe_key` is computed via the token-aware
+    // mirror using the entry's stamped `dedupe_token` — byte-equal to what
+    // a token-aware client computes (forward-looking during the
+    // backend→TestFlight/web rollout window; see ios-dedupe-key.js).
+    //
+    // The `_confidence` strip runs UNCONDITIONALLY on every surviving entry
+    // (NOT inside the debounce's length>0 guard) — reading entries carry
+    // the transient sidecar from synthesiseConfirmations; state-change/obs/
+    // clear entries have none and the telemetry row emits null confidence
+    // for them. Strip AFTER telemetry so the row can read it, BEFORE the
+    // wire so no WS frame ever carries `_confidence`.
+    if (Array.isArray(result.confirmations)) {
+      for (const entry of result.confirmations) {
+        let expectedDedupeKey;
+        if (Number.isInteger(entry.circuit)) {
+          expectedDedupeKey = buildPerCircuitDedupeKey(
+            entry.field,
+            entry.circuit,
+            entry.dedupe_token
+          );
+        } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {
+          expectedDedupeKey = buildMultiCircuitDedupeKey(
+            entry.field,
+            entry.circuits,
+            entry.text,
+            entry.dedupe_token
+          );
+        } else {
+          expectedDedupeKey = buildDegenerateDedupeKey(
+            entry.field,
+            entry.text,
+            entry.board_id,
+            entry.dedupe_token
+          );
+        }
+        log?.info?.('ios_send_attempt', {
+          sessionId: session.sessionId ?? null,
+          turnId,
+          field: entry.field ?? null,
+          circuit: Number.isInteger(entry.circuit) ? entry.circuit : null,
+          circuits: Array.isArray(entry.circuits) ? entry.circuits : null,
+          board_id: entry.board_id ?? null,
+          confidence: typeof entry._confidence === 'number' ? entry._confidence : null,
+          expected_dedupe_key: expectedDedupeKey,
+        });
+      }
+      for (const entry of result.confirmations) {
+        if ('_confidence' in entry) delete entry._confidence;
       }
     }
 

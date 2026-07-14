@@ -31,11 +31,11 @@ import {
   buildGroupedConfirmationText,
   deriveFriendlyName,
 } from './confirmation-text.js';
-import {
-  buildPerCircuitDedupeKey,
-  buildMultiCircuitDedupeKey,
-  buildDegenerateDedupeKey,
-} from './ios-dedupe-key.js';
+// §A1a (field-feedback-2026-07-14) — the ios_send_attempt telemetry loop
+// (which consumed the three key builders) moved to stage6-shadow-harness.js
+// so it runs on the SURVIVING post-debounce confirmation list. Only the
+// allowlist is needed here, for the token-aware debounce key.
+import { DEDUPE_TOKEN_FIELDS } from './ios-dedupe-key.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
 // ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
@@ -94,11 +94,13 @@ function synthesiseStateChangeConfirmations(
   circuitOps,
   boardOps,
   skipCircuitDesignations,
-  boardDesignations
+  boardDesignations,
+  turnId = null
 ) {
   const out = [];
   if (Array.isArray(circuitOps)) {
-    for (const op of circuitOps) {
+    for (let opIdx = 0; opIdx < circuitOps.length; opIdx += 1) {
+      const op = circuitOps[opIdx];
       const ref = op.circuit_ref;
       if (!Number.isInteger(ref) || ref <= 0) continue;
       let text = null;
@@ -127,6 +129,11 @@ function synthesiseStateChangeConfirmations(
         expanded_text: expandForTTS(text),
         field: 'circuit_op',
         circuit: ref,
+        // §A1a operation dedupe token — turn + operation identity (ordinal
+        // separates two DISTINCT same-circuit ops in one turn; a wire replay
+        // of ONE op carries the identical token so client dedupe still
+        // works). Composition pinned by the ios-dedupe-key drift test.
+        dedupe_token: `circop_${turnId ?? 'noturn'}_${opIdx}_${op.op}_${ref}`,
         // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: state-change
         // confirmations are played on the iOS side via speakBriefConfirmation
         // call sites that lack a per-confirmation turnId today (the 10
@@ -203,7 +210,8 @@ function synthesiseObservationAndClearedConfirmations(
   deletedObservations,
   fieldCorrections,
   designations = null,
-  writtenSlots = null
+  writtenSlots = null,
+  turnId = null
 ) {
   const out = [];
   const lookupDesignation = (circuit) => {
@@ -243,6 +251,9 @@ function synthesiseObservationAndClearedConfirmations(
         expanded_text: expandForTTS(text),
         field: 'observation',
         circuit: Number.isInteger(obs.circuit) ? obs.circuit : null,
+        // §A1a token — the observation ID is replay-stable operation
+        // identity (two distinct observations always have distinct ids).
+        ...(obs.id != null ? { dedupe_token: `obs_${obs.id}` } : {}),
         // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: synthesised
         // observation/cleared confirmations route through the same iOS
         // no-LoadedBarrelTTSContext paths as state-changes; the playback-ack
@@ -261,6 +272,11 @@ function synthesiseObservationAndClearedConfirmations(
         expanded_text: expandForTTS(text),
         field: 'observation_deletion',
         circuit: null,
+        // §A1a token — deletion identity is the deleted observation's ID.
+        // Every deletion speaks the same "Observation deleted" text with
+        // circuit:null, so WITHOUT the token two same-turn deletions compute
+        // identical degenerate keys and the client swallows the second.
+        ...(d.id != null ? { dedupe_token: `obsdel_${d.id}` } : {}),
         // Voice-latency Tier 1.1 sub-step 5: see observation entry above.
         expects_ios_ack: false,
       });
@@ -268,7 +284,8 @@ function synthesiseObservationAndClearedConfirmations(
   }
 
   if (Array.isArray(fieldCorrections)) {
-    for (const c of fieldCorrections) {
+    for (let corrIdx = 0; corrIdx < fieldCorrections.length; corrIdx += 1) {
+      const c = fieldCorrections[corrIdx];
       if (!c) continue;
       // Only speak explicit clears; field_corrected with a non-clear
       // reason is a side-effect of a regular record_reading that the
@@ -322,6 +339,13 @@ function synthesiseObservationAndClearedConfirmations(
         expanded_text: expandForTTS(text),
         field: 'field_cleared',
         circuit: circ,
+        // §A1a token — {field, circuit, turn/ordinal} tuple. turnId keeps
+        // identical clears in SEPARATE turns distinct (both speak); the
+        // ordinal is the no-turnId fallback for legacy callers. NOTE: `field`
+        // here is the RAW dispatcher key (perTurnWrites is never
+        // canonicalised — §A2); the token is an opaque identity so raw-vs-
+        // wire key spelling inside it is irrelevant to clients.
+        dedupe_token: `clear_${field}_${circ ?? 'board'}_${turnId ?? `ord${corrIdx}`}`,
         // Voice-latency Tier 1.1 sub-step 5: see observation entry above.
         // field_cleared confirmations also route through the no-context
         // iOS speak path.
@@ -786,48 +810,37 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       options.circuitDesignations,
       options.totalCircuitsInJob ?? null
     );
-    // PLAN voice-feedback-2026-06-05 W1.4 — emit one `ios_send_attempt`
-    // row per confirmation entry the bundler is about to put on the wire.
-    // Each row carries the byte-equal-to-iOS `expected_dedupe_key` (using
-    // the canonical TTS text, NOT the dispatcher's value-proxy) plus
-    // `confidence` so an operator can correlate this row with the
-    // dispatcher's `stage6_tool_call` row and with iOS's
-    // `confirmation_tts_decision` row. The three rows in sequence are
-    // the diagnostic surface for Group A condition 2 (dedupe collisions)
-    // and condition 3 (confidence-gate dropouts).
+    // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
+    // loop and the `_confidence` strip MOVED to stage6-shadow-harness.js,
+    // immediately after `applyConfirmationDebounce`. Rationale: rows were
+    // emitted here BEFORE stateChanges/obsAndClears merged into the stream
+    // (three of the five allowlisted text-op fields never got telemetry) and
+    // BEFORE the harness's mid-stream filter + debounce (a suppressed
+    // confirmation still produced a row — the forensic contract was false
+    // both ways). The bundler now returns `result.confirmations` with the
+    // transient `_confidence` sidecar INTACT on reading entries; the harness
+    // emits telemetry from the SURVIVING post-debounce list and strips
+    // `_confidence` before the wire. This also restores the module's
+    // documented purity (no logger side effects).
     //
-    // Logger + sessionId/turnId are taken from options. When the caller
-    // doesn't supply them (older test fixtures, the runShadowHarness
-    // path without confirmations enabled, etc.) the emit is silently
-    // skipped — the rest of the bundler is preserved exactly.
-    if (options.logger && typeof options.logger.info === 'function') {
+    // §A1a token stamping for circuit_designation — the fifth allowlisted
+    // text-op field arrives via synthesiseConfirmations (record_reading),
+    // not the state-change/obs synthesisers, so stamp it here where turnId
+    // is in scope. Only when turnId exists: without it there is no stable
+    // operation identity and the client falls back to the bare key (today's
+    // behaviour). The readings Map keys field::circuit, so a same-turn
+    // designation re-write overwrites — one surviving op per circuit per
+    // turn, and `desig_<circuit(s)>_<turnId>` is unique per operation.
+    if (_turnId) {
       for (const entry of confirmations) {
-        let expectedDedupeKey;
-        if (Number.isInteger(entry.circuit)) {
-          expectedDedupeKey = buildPerCircuitDedupeKey(entry.field, entry.circuit);
-        } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {
-          expectedDedupeKey = buildMultiCircuitDedupeKey(entry.field, entry.circuits, entry.text);
-        } else {
-          expectedDedupeKey = buildDegenerateDedupeKey(entry.field, entry.text, entry.board_id);
-        }
-        options.logger.info('ios_send_attempt', {
-          sessionId: options.sessionId ?? null,
-          turnId: _turnId,
-          field: entry.field ?? null,
-          circuit: Number.isInteger(entry.circuit) ? entry.circuit : null,
-          circuits: Array.isArray(entry.circuits) ? entry.circuits : null,
-          board_id: entry.board_id ?? null,
-          confidence: typeof entry._confidence === 'number' ? entry._confidence : null,
-          expected_dedupe_key: expectedDedupeKey,
-        });
+        if (entry.field !== 'circuit_designation') continue;
+        const scope = Number.isInteger(entry.circuit)
+          ? String(entry.circuit)
+          : Array.isArray(entry.circuits)
+            ? entry.circuits.join('-')
+            : 'board';
+        entry.dedupe_token = `desig_${scope}_${_turnId}`;
       }
-    }
-    // Strip transient `_confidence` sidecar so it never reaches the
-    // wire. iOS's Codable decoder ignores unknown keys, but the strip
-    // keeps the wire surface clean for tests that snapshot full
-    // confirmation entries (and for any future static-decode consumer).
-    for (const entry of confirmations) {
-      if ('_confidence' in entry) delete entry._confidence;
     }
     // 2026-05-29 — state-change confirmations (create_circuit, rename,
     // delete, add_board, select_board, mark_distribution_circuit) so the
@@ -845,7 +858,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       perTurnWrites.circuitOps,
       perTurnWrites.boardOps,
       skipDesignations,
-      options.boardDesignations
+      options.boardDesignations,
+      _turnId
     );
     // 2026-06-01 Issue 8 — observations, observation deletions and
     // explicit clear_reading corrections were silent. Inspector
@@ -877,7 +891,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       perTurnWrites.deletedObservations,
       perTurnWrites.fieldCorrections,
       options.circuitDesignations,
-      writtenSlots
+      writtenSlots,
+      _turnId
     );
     const merged = confirmations.concat(stateChanges).concat(obsAndClears);
     if (merged.length > 0) {
@@ -924,6 +939,17 @@ export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
 export function confirmationDebounceKey(c) {
   if (!c) return '';
   const field = c.field ?? '';
+  // §A1a (field-feedback-2026-07-14) — token-aware key for the five
+  // allowlisted text-op fields. Deletions have null value so the composite
+  // key falls to text, and every deletion's text is the constant
+  // "Observation deleted" — two DISTINCT same-turn deletions would be
+  // collapsed server-side before any client saw them. With the token:
+  // distinct operations survive the debounce; a replay carrying the SAME
+  // token is still suppressed. Measured-value fields never carry a token
+  // and keep the composite shape below.
+  if (c.dedupe_token && DEDUPE_TOKEN_FIELDS.has(field)) {
+    return `${field} tok:${c.dedupe_token}`;
+  }
   const circuit = Number.isInteger(c.circuit) ? String(c.circuit) : '';
   const circuits = Array.isArray(c.circuits) ? c.circuits.join(',') : '';
   const board = c.board_id ?? '';

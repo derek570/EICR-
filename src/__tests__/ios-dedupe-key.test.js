@@ -18,6 +18,7 @@ import {
   buildPerCircuitDedupeKey,
   buildMultiCircuitDedupeKey,
   buildDegenerateDedupeKey,
+  DEDUPE_TOKEN_FIELDS,
 } from '../extraction/ios-dedupe-key.js';
 
 describe('djb2UInt64Decimal — UInt64 wrap arithmetic mirror', () => {
@@ -110,5 +111,104 @@ describe('buildDegenerateDedupeKey — Wave 2 W2.3 shape replaces "<field>_none"
     const c = buildDegenerateDedupeKey('client_name', 'customer X', '');
     expect(a).toBe(b);
     expect(b).toBe(c);
+  });
+});
+
+// ── field-feedback-2026-07-14 §A1a — dedupe_token drift test ──
+// Pins BOTH the allowlisted field list AND the per-op token composition.
+// This is the shared contract between the backend bundler (which stamps the
+// token), this mirror (which computes expected_dedupe_key telemetry), the
+// iOS `buildConfirmationDedupeKey`, and web `confirmation-dedupe-key.ts`
+// (whose vectors are generated from this mirror). A change on any side must
+// consciously update all four.
+describe('§A1a dedupe_token — allowlist + token composition drift test', () => {
+  test('the allowlist is EXACTLY the five collision-prone text-op fields', () => {
+    expect([...DEDUPE_TOKEN_FIELDS].sort()).toEqual([
+      'circuit_designation',
+      'circuit_op',
+      'field_cleared',
+      'observation',
+      'observation_deletion',
+    ]);
+  });
+
+  test('token composition per operation (pinned vectors — mirror to iOS/web before changing)', () => {
+    // deletion → observation ID
+    expect(
+      buildDegenerateDedupeKey('observation_deletion', 'Observation deleted', null, 'obsdel_obs-42')
+    ).toBe('observation_deletion_obsdel_obs-42');
+    // observation → observation ID
+    expect(
+      buildDegenerateDedupeKey('observation', 'Observation C2 — cracked socket', null, 'obs_obs-7')
+    ).toBe('observation_obs_obs-7');
+    // clear → {field, circuit, turn/ordinal}
+    expect(buildPerCircuitDedupeKey('field_cleared', 3, 'clear_r1_r2_ohm_3_turn-9')).toBe(
+      'field_cleared_clear_r1_r2_ohm_3_turn-9'
+    );
+    // rename/circuit op → turn + operation identity (turnId + ordinal + op + ref)
+    expect(buildPerCircuitDedupeKey('circuit_op', 4, 'circop_turn-9_0_rename_4')).toBe(
+      'circuit_op_circop_turn-9_0_rename_4'
+    );
+    // designation → turn + operation identity
+    expect(buildPerCircuitDedupeKey('circuit_designation', 2, 'desig_2_turn-9')).toBe(
+      'circuit_designation_desig_2_turn-9'
+    );
+  });
+
+  test('token takes precedence in EVERY branch an allowlisted confirmation can reach', () => {
+    // Degenerate branch (every deletion lands here: circuit null, constant text).
+    const degA = buildDegenerateDedupeKey(
+      'observation_deletion',
+      'Observation deleted',
+      null,
+      'obsdel_a'
+    );
+    const degB = buildDegenerateDedupeKey(
+      'observation_deletion',
+      'Observation deleted',
+      null,
+      'obsdel_b'
+    );
+    expect(degA).not.toBe(degB); // identical text, distinct ops → distinct keys
+    // Multi-circuit branch (grouped designation broadcast).
+    expect(
+      buildMultiCircuitDedupeKey(
+        'circuit_designation',
+        [1, 2],
+        'Circuits 1, 2 named Sockets',
+        'desig_1-2_t1'
+      )
+    ).toBe('circuit_designation_desig_1-2_t1');
+    // Per-circuit branch.
+    expect(buildPerCircuitDedupeKey('circuit_op', 3, 'circop_t1_0_rename_3')).toBe(
+      'circuit_op_circop_t1_0_rename_3'
+    );
+  });
+
+  test('degenerate-branch token vectors — same op replay → SAME key; distinct ops → distinct keys', () => {
+    const replay1 = buildDegenerateDedupeKey(
+      'field_cleared',
+      'R1 plus R2 cleared',
+      null,
+      'clear_r1_r2_ohm_board_t7'
+    );
+    const replay2 = buildDegenerateDedupeKey(
+      'field_cleared',
+      'R1 plus R2 cleared',
+      null,
+      'clear_r1_r2_ohm_board_t7'
+    );
+    expect(replay1).toBe(replay2);
+  });
+
+  test('NEGATIVE: measured-value fields IGNORE the token — bare key preserved for the iOS correction-TTS cross-match', () => {
+    expect(buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'spurious_token')).toBe(
+      'measured_zs_ohm_1'
+    );
+    expect(buildPerCircuitDedupeKey('r1_r2_ohm', 2, 'spurious_token')).toBe('r1_r2_ohm_2');
+    // And token absence on an allowlisted field falls back to the legacy shape
+    // (backward-compatible fallback — ship order is backend-first).
+    expect(buildPerCircuitDedupeKey('circuit_op', 3, null)).toBe('circuit_op_3');
+    expect(buildPerCircuitDedupeKey('circuit_op', 3, undefined)).toBe('circuit_op_3');
   });
 });
