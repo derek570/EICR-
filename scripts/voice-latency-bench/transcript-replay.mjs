@@ -52,6 +52,14 @@ const SCENARIO_PATH = args.scenario ?? null;
 const SCENARIO_DIR =
   args['scenario-dir'] ?? path.resolve('tests/fixtures/voice-latency-scenarios');
 const SUITE_FILTER = args.suite ? String(args.suite).split(',') : null;
+// Lane gate (2026-07-14, D1/D2 harness extension): scenarios tagged
+// `lane: <value>` (the live_advisory/ behavioural probes) are excluded from
+// sweeps unless --lane=<value> is passed. They are authored for the DIRECT
+// runner (transcript-replay-direct.mjs) — their expect primitives
+// (expect.observations, object-shaped expect.ask_user matchers,
+// forbid_ask_question_fragments) are not implemented by this WS runner, so
+// picking them up in a default full-tree sweep would mis-evaluate them.
+const LANE = args.lane ?? null;
 const OUTPUT_DIR = args.output ?? null;
 const VERBOSE = !!args.verbose;
 // Optimizer rewrite plan Decision 2: auto-generated probes live under
@@ -125,6 +133,9 @@ function loadScenarios() {
   }
   walk(SCENARIO_DIR);
   return scenarios.filter((s) => {
+    // Lane gate — see the LANE const above. Untagged scenarios only run on
+    // the default lane; tagged ones only when their lane is named.
+    if ((s.lane ?? null) !== LANE) return false;
     if (!SUITE_FILTER) return true;
     return SUITE_FILTER.includes(s.suite);
   });

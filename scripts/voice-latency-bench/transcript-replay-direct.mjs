@@ -25,6 +25,53 @@
  *       text: "Circuit 4."         # transcript dispatched after the ask
  *       at_ms_after_ask: 1500      # delay relative to ask emission (default 1000)
  *
+ *   Answer channel (2026-07-14, D1/D2 harness extension): configured
+ *   responses are now answered IN-TURN. The stub ws reacts to the
+ *   dispatcher's `ask_user_started` frame and resolves the registered
+ *   tool-call id through the SAME pendingAsks.resolve(toolCallId,
+ *   {answered:true, user_text}) channel production's ask_user_answered
+ *   path uses (sonnet-stream.js) — while runShadowHarness is still
+ *   awaiting. The tool loop therefore continues in the same turn, so
+ *   "code follows the answer" probes actually exercise the post-answer
+ *   path. (Pre-extension, replies were only dispatched as NEW transcript
+ *   turns after the ask had already timed out at 45 s.) An ask with no
+ *   matching configured response still blocks to the production timeout;
+ *   a response that never matched an in-turn ask falls back to the legacy
+ *   post-turn transcript dispatch.
+ *
+ *   lane: live-advisory            # optional. Scenarios tagged with a `lane`
+ *                                  # are SKIPPED by --scenario-dir discovery
+ *                                  # unless --lane=<value> is passed.
+ *                                  # --scenario=<file> always runs the file.
+ *
+ *   expect.observations:           # each matcher must be satisfied by ≥1
+ *     - code: C2                   #   recorded observation (all constraints
+ *       final: true                #   on the SAME observation). `final: true`
+ *       text_contains: [socket]    #   matches against last-write-wins state
+ *       text_contains_any:         #   per observation_id (post updates /
+ *         - thermal                #   post ask replies); default matches the
+ *       text_not_contains:         #   full per-turn timeline.
+ *         - looks overheated       # text_contains: ALL must appear.
+ *       text_not_equals: "..."     # text_contains_any: ≥1 must appear.
+ *                                  # text_not_contains: NONE may appear.
+ *                                  # text_not_equals: case-insensitive
+ *                                  #   trimmed byte-inequality (professional-
+ *                                  #   rewording probe: output must differ
+ *                                  #   from the dictated remainder).
+ *
+ *   expect.ask_user:               # per-ask matchers; each entry must match
+ *     - question_contains: []      #   ≥1 emitted ask (all fragments on the
+ *       question_contains_any:     #   same ask). Same semantics as the
+ *         - live parts             #   observation text fields, applied to
+ *         - cosmetic               #   the ask's question text.
+ *       question_not_contains:
+ *         - C2 or C3
+ *       reason: observation_confirmation      # optional equality
+ *       context_field: observation_clarify    # optional equality
+ *
+ *   expect.forbid_ask_question_fragments:     # global: NO emitted ask may
+ *     - "C2 or C3"                            #   contain any of these.
+ *
  *   expect.loaded_barrel:
  *     - after_turn: 1              # 1-indexed turn the speculator should fire on
  *       status: ready|fired|hit|miss_ttl_expired|miss_text_drift|aborted|absent
@@ -70,6 +117,7 @@ const args = Object.fromEntries(
 const SCENARIO_PATH = args.scenario ?? null;
 const SCENARIO_DIR = args['scenario-dir'] ?? null;
 const FILTER = args.filter ?? null;
+const LANE = args.lane ?? null;
 const VERBOSE = !!args.verbose;
 const LOADED_BARREL = args['loaded-barrel'] !== 'off';
 
@@ -106,15 +154,30 @@ function getElevenLabsKey() {
 }
 
 // --- Stub ws ---------------------------------------------------------------
-function makeStubWs(events) {
+// `OPEN: 1` is load-bearing (2026-07-14): the ask dispatcher guards its
+// `ask_user_started` emit on `ws.readyState === ws.OPEN`. The pre-extension
+// stub had readyState but no OPEN constant, so `1 === undefined` suppressed
+// the frame and the in-turn answer channel had nothing to react to.
+// `opts.onFrame(msg)` fires for every JSON frame the backend sends — the
+// scenario runner uses it to answer asks while the tool loop is blocked.
+function makeStubWs(events, opts = {}) {
   return {
     readyState: 1, // OPEN
+    OPEN: 1,
     send(payload) {
+      let msg = null;
       try {
-        const msg = JSON.parse(payload);
+        msg = JSON.parse(payload);
         events.push({ at: Date.now(), msg });
       } catch {
         events.push({ at: Date.now(), raw: String(payload).slice(0, 200) });
+      }
+      if (msg && typeof opts.onFrame === 'function') {
+        try {
+          opts.onFrame(msg);
+        } catch {
+          // A responder bug must not masquerade as a backend ws failure.
+        }
       }
     },
     on() {},
@@ -177,6 +240,11 @@ function makeCapturingLogger(buckets) {
 }
 
 // --- Scenario discovery ---------------------------------------------------
+// Lane gate (2026-07-14): scenarios tagged `lane: <value>` (e.g. the
+// live-advisory D1/D2 behavioural probes) are excluded from --scenario-dir
+// discovery unless --lane=<value> is passed. They need a real model and are
+// ADVISORY — they must never ride along on a default corpus sweep or any
+// deterministic CI lane. A direct --scenario=<file> always runs the file.
 function discoverScenarios() {
   if (SCENARIO_PATH) return [SCENARIO_PATH];
   const files = fs
@@ -184,7 +252,18 @@ function discoverScenarios() {
     .filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'))
     .filter((f) => !FILTER || f.includes(FILTER))
     .map((f) => path.join(SCENARIO_DIR, f));
-  return files;
+  return files.filter((f) => {
+    let lane = null;
+    try {
+      lane = yaml.load(fs.readFileSync(f, 'utf8'))?.lane ?? null;
+    } catch {
+      return true; // unparseable file: let runScenario surface the real error
+    }
+    if (lane == null) return LANE == null; // untagged scenarios only run on the default lane
+    if (lane === LANE) return true;
+    process.stderr.write(`↷ skipping ${path.basename(f)} (lane: ${lane}; pass --lane=${lane} to run)\n`);
+    return false;
+  });
 }
 
 // --- Loaded Barrel inspection ---------------------------------------------
@@ -242,9 +321,41 @@ function summariseLoadedBarrelEvents(events, sessionId) {
 }
 
 // --- Assertion runner -----------------------------------------------------
+// Shared fragment semantics for observation-text and ask-question matchers
+// (D1/D2 harness extension, 2026-07-14). All matching is case-insensitive.
+function matchTextConstraints(text, want) {
+  const t = (text ?? '').toLowerCase();
+  if (Array.isArray(want.contains)) {
+    for (const frag of want.contains) {
+      if (!t.includes(String(frag).toLowerCase())) return false;
+    }
+  }
+  if (Array.isArray(want.contains_any) && want.contains_any.length > 0) {
+    const hit = want.contains_any.some((frag) => t.includes(String(frag).toLowerCase()));
+    if (!hit) return false;
+  }
+  if (Array.isArray(want.not_contains)) {
+    for (const frag of want.not_contains) {
+      if (t.includes(String(frag).toLowerCase())) return false;
+    }
+  }
+  if (want.not_equals != null) {
+    if (t.trim() === String(want.not_equals).toLowerCase().trim()) return false;
+  }
+  return true;
+}
+
 function evaluateExpectations(expect, ctx) {
   const failures = [];
-  const { askUsers, readings, toolCalls, lbEntries, transcriptCount } = ctx;
+  const {
+    askUsers,
+    readings,
+    toolCalls,
+    lbEntries,
+    transcriptCount,
+    observations = [],
+    finalObservations = [],
+  } = ctx;
 
   if (expect.extraction_count) {
     const got = transcriptCount;
@@ -322,6 +433,71 @@ function evaluateExpectations(expect, ctx) {
     for (const forbidden of expect.forbid_tools) {
       const hit = toolCalls.find((t) => t.tool === forbidden && t.outcome === 'ok');
       if (hit) failures.push(`forbid_tools: ${forbidden} should not have fired`);
+    }
+  }
+
+  // Observation matchers (D1/D2 harness extension). Each matcher must be
+  // satisfied by at least ONE observation — every constraint on the SAME
+  // observation. `final: true` matches against last-write-wins state per
+  // observation_id (post updates / post ask replies); default matches every
+  // per-turn emission.
+  if (Array.isArray(expect.observations)) {
+    for (const want of expect.observations) {
+      const pool = want.final === true ? finalObservations : observations;
+      const hit = pool.find((obs) => {
+        if (want.code != null && String(obs.code ?? '').toUpperCase() !== String(want.code).toUpperCase()) {
+          return false;
+        }
+        return matchTextConstraints(obs.text, {
+          contains: want.text_contains,
+          contains_any: want.text_contains_any,
+          not_contains: want.text_not_contains,
+          not_equals: want.text_not_equals,
+        });
+      });
+      if (!hit) {
+        const actual =
+          pool.map((o) => `[${o.code ?? '?'}] "${(o.text ?? '').slice(0, 80)}"`).join('; ') || 'none';
+        failures.push(
+          `observations${want.final ? ' (final)' : ''} unmatched: ${JSON.stringify(want)} | actual: ${actual}`,
+        );
+      }
+    }
+  }
+
+  // Per-ask question matchers. Each entry must match ≥1 emitted ask (all
+  // constraints on the same ask).
+  if (Array.isArray(expect.ask_user)) {
+    for (const want of expect.ask_user) {
+      const hit = askUsers.find((a) => {
+        if (want.reason != null && a.reason !== want.reason) return false;
+        if (want.context_field != null && a.context_field !== want.context_field) return false;
+        return matchTextConstraints(a.question, {
+          contains: want.question_contains,
+          contains_any: want.question_contains_any,
+          not_contains: want.question_not_contains,
+        });
+      });
+      if (!hit) {
+        const actual = askUsers.map((a) => `"${(a.question ?? '').slice(0, 80)}"`).join('; ') || 'none';
+        failures.push(`ask_user unmatched: ${JSON.stringify(want)} | actual: ${actual}`);
+      }
+    }
+  }
+
+  // Global forbidden question fragments — NO emitted ask may contain any.
+  // (A matcher-level question_not_contains only constrains the matched ask;
+  // this constrains every ask — e.g. the banned bare "C2 or C3?" wording.)
+  if (Array.isArray(expect.forbid_ask_question_fragments)) {
+    for (const frag of expect.forbid_ask_question_fragments) {
+      const hit = askUsers.find((a) =>
+        (a.question ?? '').toLowerCase().includes(String(frag).toLowerCase()),
+      );
+      if (hit) {
+        failures.push(
+          `forbid_ask_question_fragments: "${frag}" appeared in ask "${(hit.question ?? '').slice(0, 100)}"`,
+        );
+      }
     }
   }
 
@@ -443,9 +619,48 @@ async function runScenario(scenarioPath, apiKey) {
   };
   session.start(jobState);
   const wsEvents = [];
-  const ws = makeStubWs(wsEvents);
   const readings = [];
+  const observations = []; // per-turn timeline: record_observation emissions + observation updates
   const pendingAsks = createPendingAsksRegistry();
+  const answeredInTurn = new Set(); // tool_call_ids resolved via the in-turn channel
+  const inTurnAnswers = []; // audit trail for the JSON report
+
+  // In-turn ask answering (D1/D2 harness extension, 2026-07-14). The ask
+  // dispatcher registers the pendingAsks entry BEFORE it emits
+  // `ask_user_started` (stage6-dispatcher-ask.js step 3b → 3c), so by the
+  // time this frame reaches the stub the registry entry is live and the
+  // dispatcher is (about to be) awaiting it. Resolving through
+  // pendingAsks.resolve(toolCallId, {answered:true, user_text}) is EXACTLY
+  // production's ask_user_answered path (sonnet-stream.js), so the tool
+  // loop resumes in the same turn and Sonnet sees the answer in the
+  // tool_result — a "code follows the answer" probe now tests the real
+  // post-answer path instead of a post-timeout transcript re-dispatch.
+  // setTimeout (never synchronous resolve) keeps us out of the dispatcher's
+  // emit path; the wait is capped like the legacy reply path — we don't
+  // need real-time.
+  const ws = makeStubWs(wsEvents, {
+    onFrame(msg) {
+      if (msg?.type !== 'ask_user_started' || !msg.tool_call_id) return;
+      const resp = findAskUserResponse(scenario, msg);
+      if (!resp) return;
+      const delay = Math.min(resp.at_ms_after_ask ?? 1000, 250);
+      setTimeout(() => {
+        const resolved = pendingAsks.resolve(msg.tool_call_id, {
+          answered: true,
+          user_text: resp.text,
+        });
+        if (resolved) {
+          answeredInTurn.add(msg.tool_call_id);
+          inTurnAnswers.push({
+            tool_call_id: msg.tool_call_id,
+            question: msg.question ?? null,
+            reply_text: resp.text,
+          });
+          process.stderr.write(`    ↳ in-turn ask reply: "${resp.text}"\n`);
+        }
+      }, delay);
+    },
+  });
   const turnTimings = []; // per-turn wall-clock spans
   const lbEntries = []; // populated from outcome events after all turns complete
 
@@ -487,15 +702,43 @@ async function runScenario(scenarioPath, apiKey) {
     for (const r of result?.extracted_readings ?? []) {
       readings.push({ circuit: r.circuit, field: r.field, value: r.value });
     }
+    // Observation capture (D1/D2 harness extension). `observations` is the
+    // legacy-wire-renamed shape ({observation_id, code, observation_text, …});
+    // `observationUpdates` (RULE-6 edit path) re-uses the original
+    // observation_id with the corrected code/text. Both land on one timeline
+    // so the evaluator can compute last-write-wins final state per id.
+    for (const o of result?.observations ?? []) {
+      observations.push({
+        turn: turnIndex,
+        observation_id: o.observation_id ?? null,
+        code: o.code ?? null,
+        text: o.observation_text ?? '',
+        location: o.item_location ?? null,
+      });
+    }
+    for (const o of result?.observationUpdates ?? []) {
+      observations.push({
+        turn: turnIndex,
+        observation_id: o.observation_id ?? null,
+        code: o.code ?? null,
+        text: o.observation_text ?? '',
+        location: o.item_location ?? null,
+        update: true,
+      });
+    }
 
-    // Process any ask_user that fired this turn and a configured response exists.
+    // Legacy post-turn reply path: only for asks the in-turn channel did NOT
+    // answer (e.g. an ask emitted without an ask_user_started frame — the
+    // fallbackToLegacy suppression path). In-turn-answered asks are skipped
+    // here or the same reply would double-dispatch as a fresh transcript.
     const newAskUsers = buckets.askUsers.slice(askUsersSeenAtTurnStart);
     for (const ask of newAskUsers) {
+      if (ask.tool_call_id && answeredInTurn.has(ask.tool_call_id)) continue;
       const resp = findAskUserResponse(scenario, ask);
       if (resp) {
         const delay = resp.at_ms_after_ask ?? 1000;
         await new Promise((res) => setTimeout(res, Math.min(delay, 250))); // cap the simulated wait at 250ms; we don't need real-time
-        process.stderr.write(`    ↳ ask_user reply: "${resp.text}"\n`);
+        process.stderr.write(`    ↳ ask_user reply (post-turn transcript): "${resp.text}"\n`);
         await runOneTurn(resp.text, []);
       }
     }
@@ -563,10 +806,19 @@ async function runScenario(scenarioPath, apiKey) {
   // needs the post-run logs.
   void removedTransports;
 
+  // Last-write-wins final observation state per observation_id. Entries
+  // without an id (defensive — the dispatcher always assigns one) key by
+  // timeline position so they still surface individually.
+  const finalById = new Map();
+  observations.forEach((o, i) => finalById.set(o.observation_id ?? `__anon_${i}`, o));
+  const finalObservations = [...finalById.values()];
+
   const failures = evaluateExpectations(scenario.expect ?? {}, {
     toolCalls: buckets.toolCalls,
     askUsers: buckets.askUsers,
     readings,
+    observations,
+    finalObservations,
     lbEntries,
     transcriptCount: turnIndex,
   });
@@ -621,6 +873,9 @@ async function runScenario(scenarioPath, apiKey) {
       context_circuit: a.context_circuit,
       answer_outcome: a.answer_outcome,
     })),
+    in_turn_answers: inTurnAnswers,
+    observations,
+    final_observations: finalObservations,
     final_circuits: session.stateSnapshot?.circuits ?? {},
     readings,
   };

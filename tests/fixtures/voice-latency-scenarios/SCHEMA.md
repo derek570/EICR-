@@ -224,3 +224,31 @@ legacy just like circuit-level ones. So `earth_loop_impedance_ze` →
 (direct runner sees pre-rewrite shape) and SHOULD NOT be templated
 verbatim for WS-runner scenarios. Codex review 2026-06-01 caught
 this.
+
+## Direct-runner additions (transcript-replay-direct.mjs)
+
+The direct (no-HTTP) runner accepts everything above plus additions
+documented in its own header comment (`scripts/voice-latency-bench/
+transcript-replay-direct.mjs`). Summary (2026-07-14, D1/D2 harness
+extension):
+
+- `lane: live-advisory` — scenarios tagged with a `lane` are SKIPPED
+  by `--scenario-dir` discovery unless `--lane=<value>` is passed
+  (direct `--scenario=<file>` always runs). Used by the
+  `live_advisory/` behavioural probes, which need a real model and
+  are advisory, never CI-gating.
+- `ask_user_responses` are answered IN-TURN: the stub ws reacts to
+  `ask_user_started` and resolves the registered tool-call id via
+  `pendingAsks.resolve(toolCallId, {answered:true, user_text})` —
+  production's ask_user_answered channel — while the tool loop is
+  still awaiting, so post-answer behaviour (e.g. "code follows the
+  answer") is actually exercised.
+- `expect.observations` — observation text/code matchers
+  (`text_contains` / `text_contains_any` / `text_not_contains` /
+  `text_not_equals` / `code`, with `final: true` for last-write-wins
+  state per observation_id).
+- `expect.ask_user` — question-wording matchers
+  (`question_contains` / `question_contains_any` /
+  `question_not_contains` + `reason` / `context_field` equality).
+- `expect.forbid_ask_question_fragments` — fragments no emitted ask
+  may contain (e.g. the banned bare "C2 or C3?").

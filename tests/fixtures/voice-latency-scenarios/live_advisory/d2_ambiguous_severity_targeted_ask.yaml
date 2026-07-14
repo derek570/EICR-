@@ -1,0 +1,89 @@
+# ============================================================================
+# LIVE-LANE ADVISORY PROBE — NOT part of the deterministic mock/CI lane.
+# Needs a real Anthropic model (Stage 6 live tool loop) and is ADVISORY:
+# it pins prompt BEHAVIOUR (D2 ambiguous C2/C3 severity clarification,
+# field-feedback-2026-07-14), so a failure is a prompt regression signal,
+# not a hard gate. The `lane: live-advisory` tag makes --scenario-dir
+# discovery skip this file unless --lane=live-advisory is passed.
+#
+# Run with:
+#   node scripts/voice-latency-bench/transcript-replay-direct.mjs --loaded-barrel=off \
+#     --scenario=tests/fixtures/voice-latency-scenarios/live_advisory/d2_ambiguous_severity_targeted_ask.yaml
+#
+# Or the whole advisory lane:
+#   node scripts/voice-latency-bench/transcript-replay-direct.mjs --loaded-barrel=off \
+#     --scenario-dir=tests/fixtures/voice-latency-scenarios/live_advisory --lane=live-advisory
+#
+# (--loaded-barrel=off: these probes assert prompt behaviour, not the
+# speculator; leaving the speculator off avoids the ElevenLabs dependency
+# and keeps the run fast/deterministic.)
+# ============================================================================
+name: d2_ambiguous_severity_targeted_ask
+suite: live_advisory
+lane: live-advisory
+description: |
+  D2 probe (field-feedback-2026-07-14, F3): a cracked socket with no
+  further facts is GENUINELY ambiguous between C2 (enclosure compromised)
+  and C3 (cosmetic) — prompt Example 13's exact input. The AMBIGUOUS
+  C2/C3 SEVERITY block requires ONE targeted factual ask BEFORE
+  recording (reason observation_confirmation, context_field
+  observation_clarify) whose question NAMES THE DECIDING FACT — bare
+  "C2 or C3?" is BANNED wording (RULE 3). The configured reply "just
+  cosmetic, nothing live showing" resolves the three-way outcome to C3,
+  recorded in the same response as the answer.
+
+  The reply is delivered IN-TURN: the harness stub ws reacts to
+  ask_user_started and resolves the registered tool-call id through
+  pendingAsks.resolve — production's ask_user_answered channel — while
+  runShadowHarness is still awaiting, so the final-code assertion
+  exercises the real post-answer path.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Upstairs sockets
+
+transcript:
+  - at_ms: 0
+    text: "Observation that the socket in the upstairs bedroom is cracked."
+    isFinal: true
+
+ask_user_responses:
+  - matches: "crack"
+    text: "Just cosmetic, nothing live showing."
+    at_ms_after_ask: 100
+
+expect:
+  extraction_count: { min: 1 }
+  # Exactly ONE clarification ask (one targeted factual ask, one bounded
+  # chain — no re-ask after the answer resolves the code).
+  ask_user_count: { min: 1, max: 1 }
+  ask_user:
+    - reason: observation_confirmation
+      context_field: observation_clarify
+      # The question must name a deciding fact, not offer a code menu.
+      question_contains_any:
+        - "live parts"
+        - "cosmetic"
+  # Bare code-menu wording is banned everywhere.
+  forbid_ask_question_fragments:
+    - "C2 or C3"
+  tool_call_sequence:
+    - tool: record_observation
+  observations:
+    # Final state after the configured reply: the crack resolved as
+    # cosmetic-only → C3.
+    - final: true
+      code: C3
+      text_contains:
+        - "crack"
+
+config:
+  timeout_ms: 60000
+  drain_ms: 15000
+  fetch_tts: false

@@ -96,6 +96,9 @@ try {
     path.join(REPO_ROOT, 'scripts/voice-latency-bench/transcript-replay-direct.mjs'),
     `--scenario-dir=${SCENARIO_DIR}`,
     ...(FILTER ? [`--filter=${FILTER}`] : []),
+    // Lane passthrough (2026-07-14): lane-tagged scenarios (live-advisory
+    // D1/D2 probes) are skipped by dir discovery unless the lane is named.
+    ...(args.lane ? [`--lane=${args.lane}`] : []),
   ].join(' ');
   jsonOut = execSync(cmd, {
     stdio: ['ignore', 'pipe', 'inherit'],
