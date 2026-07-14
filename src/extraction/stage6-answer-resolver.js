@@ -273,8 +273,32 @@ function cleanReplyForDesignation(reply) {
  *
  * @param {string} cleaned        cleanReplyForDesignation() output
  * @param {Array<{circuit_ref: number|string, circuit_designation?: string, designation?: string}>} circuits
- * @returns {{kind: 'exact'|'unique_substring'|'ambiguous'|'no_match', circuitRefs: number[]}}
+ * @returns {{kind: 'exact'|'unique_substring'|'fuzzy'|'ambiguous'|'no_match', circuitRefs: number[]}}
  */
+// §C1 (field-feedback-2026-07-14) — normalise a designation token stream for
+// the fuzzy pass: lowercase (already), then singularise trailing plurals so
+// "upstairs light" matches "Upstairs Lights". Deliberately crude (strip one
+// trailing 's' per word, keep 'ss' words like "glass") — designations are
+// short noun phrases, not prose.
+function normaliseDesignationForFuzzy(text) {
+  return String(text ?? '')
+    .split(/\s+/)
+    .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
+    .join(' ')
+    .trim();
+}
+
+// §C1 — length-aware Levenshtein budget. A flat <=2 is NOT conservative for
+// short designations, and <=1 at length <=4 still cross-matches EV<->EM — so:
+// distance 0 (exact after normalisation) for normalised length <= 3;
+// distance <= 1 for length 4; distance <= 2 only above 4. Decided by Derek
+// 2026-07-14 (Q1: "prompt + conservative fuzzy matcher").
+function fuzzyBudgetForLength(len) {
+  if (len <= 3) return 0;
+  if (len === 4) return 1;
+  return 2;
+}
+
 function matchDesignation(cleaned, circuits) {
   if (!cleaned) return { kind: 'no_match', circuitRefs: [] };
   if (!Array.isArray(circuits) || circuits.length === 0) {
@@ -303,6 +327,51 @@ function matchDesignation(cleaned, circuits) {
   if (exact.length > 1) return { kind: 'ambiguous', circuitRefs: exact };
   if (substr.length === 1) return { kind: 'unique_substring', circuitRefs: substr };
   if (substr.length > 1) return { kind: 'ambiguous', circuitRefs: substr };
+
+  // §C1 (field-feedback-2026-07-14, F4-class + "ref method 101" C61473FD) —
+  // CONSERVATIVE fuzzy pass, exact+substring having both missed. Runs ONLY in
+  // the ask-ANSWER resolution path (this function is never consulted on the
+  // primary transcript→record_reading route — F4's primary-turn defence is
+  // the prompt rule + the exactly-once read-back). Normalise case/plurals
+  // FIRST, then length-aware Levenshtein with a strict best-match margin:
+  // the second-best must be STRICTLY worse, tie or margin-fail → no_match
+  // (never guess between near-equals). Phonetic garbles ("auto feature" →
+  // "water heater") stay deterministically unresolvable and fall to the ask.
+  // Scope note: circuit designations ONLY — select_board board designations
+  // stay id-only (the deferred-fuzzy comment at stage6-tool-schemas.js
+  // ~:1025 is NOT flipped by this).
+  const replyNorm = normaliseDesignationForFuzzy(lc);
+  if (replyNorm) {
+    const budget = fuzzyBudgetForLength(replyNorm.length);
+    let best = null; // {ref, dist}
+    let secondBestDist = Infinity;
+    for (const c of circuits) {
+      const desig = (c.circuit_designation ?? c.designation ?? '').toLowerCase().trim();
+      if (!desig) continue;
+      const ref =
+        typeof c.circuit_ref === 'number'
+          ? c.circuit_ref
+          : Number.parseInt(String(c.circuit_ref), 10);
+      if (!Number.isFinite(ref)) continue;
+      const desigNorm = normaliseDesignationForFuzzy(desig);
+      if (!desigNorm) continue;
+      // Both sides constrain the budget — matching a 2-char reply against a
+      // 20-char designation at distance 2 is meaningless; use the SHORTER
+      // normalised length so short labels (EV/EM/AC) always demand exactness.
+      const pairBudget = fuzzyBudgetForLength(Math.min(replyNorm.length, desigNorm.length));
+      const dist = levenshteinDistance(replyNorm, desigNorm);
+      if (dist > pairBudget) continue;
+      if (best === null || dist < best.dist) {
+        secondBestDist = best ? best.dist : Infinity;
+        best = { ref, dist };
+      } else {
+        secondBestDist = Math.min(secondBestDist, dist);
+      }
+    }
+    if (best && best.dist < secondBestDist) {
+      return { kind: 'fuzzy', circuitRefs: [best.ref] };
+    }
+  }
   return { kind: 'no_match', circuitRefs: [] };
 }
 
@@ -440,7 +509,10 @@ export function resolveCircuitAnswer({
     };
   }
   const match = matchDesignation(cleaned, availableCircuits ?? []);
-  if (match.kind === 'exact' || match.kind === 'unique_substring') {
+  // §C1 — 'fuzzy' is the new conservative Levenshtein verdict (plural/typo
+  // variants of a real designation, strict margin). Treated exactly like the
+  // deterministic matches: the write auto-resolves to that circuit.
+  if (match.kind === 'exact' || match.kind === 'unique_substring' || match.kind === 'fuzzy') {
     return {
       kind: 'auto_resolve',
       writes: [buildWrite(pendingWrite, match.circuitRefs[0], contextBoardId)],

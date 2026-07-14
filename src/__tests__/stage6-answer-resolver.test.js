@@ -539,3 +539,94 @@ describe('resolveCircuitAnswer — P3-A two-letter designation match', () => {
     expect(r.parsed_hint).toBe('reply_too_short_for_designation_match');
   });
 });
+
+// §C1 (field-feedback-2026-07-14, Derek Q1 decision: prompt + conservative
+// fuzzy matcher) — length-aware Levenshtein pass in matchDesignation, exact +
+// substring having both missed. Budget: d0 for normalised length <=3, d<=1 at
+// length 4, d<=2 above 4 (BOTH sides constrain via the shorter length), plus
+// a STRICT best-match margin (tie → no match). Ask-ANSWER path only.
+describe('resolveCircuitAnswer — §C1 conservative fuzzy designation match', () => {
+  const CIRCUITS = [
+    { circuit_ref: 1, circuit_designation: 'Upstairs Lights' },
+    { circuit_ref: 2, circuit_designation: 'Cooker' },
+    { circuit_ref: 3, circuit_designation: 'Water Heater' },
+  ];
+
+  test('plural variant matches ("upstairs light" → Upstairs Lights)', () => {
+    const r = resolveCircuitAnswer({
+      userText: 'the upstairs light',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(1);
+  });
+
+  test('one-typo variant matches ("upstars lights")', () => {
+    const r = resolveCircuitAnswer({
+      userText: 'upstars lights',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: CIRCUITS,
+    });
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(1);
+  });
+
+  test('NEGATIVE: unrelated short labels never cross-match (EV vs EM vs AC)', () => {
+    const shortCircuits = [
+      { circuit_ref: 1, circuit_designation: 'EV' },
+      { circuit_ref: 2, circuit_designation: 'EM' },
+      { circuit_ref: 3, circuit_designation: 'AC' },
+    ];
+    // "EM" must match ONLY circuit 2 (exact), never fuzzy onto EV/AC…
+    const exact = resolveCircuitAnswer({
+      userText: 'EM',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: shortCircuits,
+    });
+    expect(exact.kind).toBe('auto_resolve');
+    expect(exact.writes[0].circuit).toBe(2);
+    // …and a near-miss short token ("EB" — distance 1 from both EV and EM)
+    // stays unmatched: length <=3 demands distance 0.
+    const nearMiss = resolveCircuitAnswer({
+      userText: 'EB',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: shortCircuits,
+    });
+    expect(nearMiss.kind).toBe('escalate');
+  });
+
+  test('phonetic garbles stay unresolvable ("auto feature" vs Water Heater) → escalate, never guess', () => {
+    const r = resolveCircuitAnswer({
+      userText: 'auto feature',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: CIRCUITS,
+    });
+    expect(r.kind).toBe('escalate');
+  });
+
+  test('margin rule: two designations equally close → no fuzzy match (tie loses)', () => {
+    const r = resolveCircuitAnswer({
+      userText: 'heater',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: [
+        { circuit_ref: 1, circuit_designation: 'Heaters' }, // d1 after normalise → d0… exact via plural
+        { circuit_ref: 2, circuit_designation: 'Heated' },
+      ],
+    });
+    // "heater" normalises; "Heaters" singularises to "heater" (d0) while
+    // "Heated" is d1 — margin holds, best wins.
+    expect(r.kind).toBe('auto_resolve');
+    expect(r.writes[0].circuit).toBe(1);
+    const tie = resolveCircuitAnswer({
+      userText: 'heatex',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: [
+        { circuit_ref: 1, circuit_designation: 'Heater' },
+        { circuit_ref: 2, circuit_designation: 'Heated' },
+      ],
+    });
+    // "heatex" is d1 from BOTH → strict-margin fail → escalate.
+    expect(tie.kind).toBe('escalate');
+  });
+});
