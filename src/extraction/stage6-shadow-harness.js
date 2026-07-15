@@ -1871,9 +1871,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                 // whose ws.send was swallowed (closed socket / throwing send)
                 // stayed registered and later reported `timeout` ∈
                 // AUDIBLE_NON_ANSWER_REASONS, but was never SPOKEN. Require the
-                // continuation's tool_call_id to be in emittedAskToolCallIds
-                // (an ask_user_started that actually crossed the wire).
-                emittedAskToolCallIds.has(c?.tool_call_id)
+                // continuation's id to be in emittedAskToolCallIds (an
+                // ask_user_started that actually crossed the wire). Extract the
+                // id with anchorToolCallId — real runToolLoop entries carry it
+                // at result.tool_use_id (== rec.tool_call_id == the id
+                // onAskUserStarted recorded), so a top-level-only check would
+                // read undefined on live rows and never qualify.
+                emittedAskToolCallIds.has(anchorToolCallId(c))
               ) {
                 if (i < bestIdx) {
                   bestIdx = i;

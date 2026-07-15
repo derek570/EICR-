@@ -604,7 +604,11 @@ describe('§D2 Group B (2026-07-15) — mutation-to-chain correlation', () => {
       answeredChain('toolu_b', 'B'),
       timedOutChain('toolu_a2', 'A'),
     ]);
-    const opts = baseOpts();
+    // F7 Item 2 — the same-chain continuation qualifies A only because it was
+    // audibly SPOKEN; seed its emission (a timed-out continuation really
+    // crossed the wire). The tightened D2 check keys audibility on emission,
+    // not the reason name.
+    const opts = baseOpts({ _seedEmittedAskToolCallIds: ['toolu_a2'] });
     const result = await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
     const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
     expect(net).toBeDefined(); // B fell back

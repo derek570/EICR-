@@ -342,7 +342,11 @@ describe('F7 matrix — scenario family: D2 observation_clarify post-answer net'
         input: { context_field: 'observation_clarify', clarification_chain_id: 'obsclr-1' },
         result: { is_error: false, content: JSON.stringify({ answered: true }) },
       },
-      { name: 'record_observation', input: {}, result: { is_error: false, content: '{}' } },
+      // D2 mutation-to-chain correlation (2026-07-15): a "successful"
+      // record_observation requires a parsed body with ok===true (is_error
+      // false alone is not enough), so the net can distinguish a real write
+      // from a failed/malformed one.
+      { name: 'record_observation', input: {}, result: { is_error: false, content: JSON.stringify({ ok: true }) } },
     ];
     const result = await runShadowHarness(makeSession(), 'crack is cosmetic', [], baseOpts());
     const apologies = (result.confirmations ?? []).filter(
