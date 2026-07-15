@@ -214,6 +214,12 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // on the wrong turn.
   const generationId = opts?.generationId ?? null;
   return async function dispatchAskUser(call, ctx) {
+    // F7 Item 3 — a cancellation can land while this ask sits in the gate
+    // debounce delay (createAskGateWrapper fires the inner dispatcher on a
+    // timer, AFTER runToolLoop's pre-dispatch signal check). Guard the VERY
+    // START so a cancelled generation never validates, registers, or emits a
+    // fresh ask_user_started after the watchdog already aborted + rejectAll'd.
+    throwIfStage6Cancelled(signal);
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
     const input = call.input ?? {};
@@ -1363,9 +1369,14 @@ async function brokerDeterministicAsk({
   pendingValue,
   onAskUserStarted = null,
   onAskRegistered = null,
+  signal = null,
 }) {
   const pvrId = `pvr-${randomUUID().slice(0, 13)}`;
   const askStartedAt = Date.now();
+  // F7 Item 3 — never broker a NEW registration on a cancelled generation
+  // (belt-and-suspenders alongside the chain-loop-top guard). The throw
+  // propagates to the harness cancellation-finalization boundary.
+  throwIfStage6Cancelled(signal);
   // F7 Item 3 — a stored ask-registration hook error, thrown after the await.
   let hookError = null;
   const outcome = await new Promise((resolve) => {
@@ -1644,6 +1655,7 @@ async function runPendingValueChain(args) {
           ws,
           onAskUserStarted,
           onAskRegistered,
+          signal,
           logger,
           sessionId,
           turnId,
@@ -1724,6 +1736,7 @@ async function runPendingValueChain(args) {
         ws,
         onAskUserStarted,
         onAskRegistered,
+        signal,
         logger,
         sessionId,
         turnId,
@@ -1761,6 +1774,7 @@ async function runPendingValueChain(args) {
         ws,
         onAskUserStarted,
         onAskRegistered,
+        signal,
         logger,
         sessionId,
         turnId,

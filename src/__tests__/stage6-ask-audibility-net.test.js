@@ -20,6 +20,10 @@ import { jest } from '@jest/globals';
 import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 import { ExtractionCancelledError } from '../extraction/stage6-control-flow-errors.js';
+import {
+  createAskGateWrapper,
+  wrapAskDispatcherWithGates,
+} from '../extraction/stage6-ask-gate-wrapper.js';
 import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
 import { ASK_USER_TIMEOUT_MS } from '../extraction/stage6-dispatcher-ask.js';
 import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
@@ -164,6 +168,50 @@ describe('F7 Item 2 A — dispatcher emission hook (onAskUserStarted)', () => {
     await expect(p).rejects.toBeInstanceOf(ExtractionCancelledError);
     // No write was auto-resolved on the cancelled generation.
     expect(autoResolveWrite).not.toHaveBeenCalled();
+  });
+
+  test('F7 Item 3 (cycle-2) — a gated ask whose signal aborts DURING the debounce delay never registers or emits', async () => {
+    jest.useFakeTimers();
+    try {
+      const logger = makeLogger();
+      const pending = createPendingAsksRegistry();
+      const ws = makeOpenWs();
+      const ac = new AbortController();
+      const inner = createAskDispatcher(
+        { sessionId: 's', toolCallsMode: 'live' },
+        logger,
+        'turn-1',
+        pending,
+        ws,
+        { signal: ac.signal }
+      );
+      const gate = createAskGateWrapper({
+        delayMs: QUESTION_GATE_DELAY_MS,
+        logger,
+        sessionId: 's',
+      });
+      const dispatch = wrapAskDispatcherWithGates(inner, {
+        askBudget: { isExhausted: () => false, increment: () => {} },
+        restrainedMode: { isActive: () => false, recordAsk: () => {} },
+        gate,
+        logger,
+        sessionId: 's',
+      });
+      const p = dispatch(
+        { tool_call_id: 'toolu_g', name: 'ask_user', input: VALID_ASK },
+        { turnId: 't1' }
+      );
+      const assertion = expect(p).rejects.toBeInstanceOf(ExtractionCancelledError);
+      // Abort WHILE the gate debounce is still pending, then fire the timer.
+      ac.abort(new ExtractionCancelledError('ceiling'));
+      await jest.advanceTimersByTimeAsync(QUESTION_GATE_DELAY_MS);
+      await assertion;
+      // The inner dispatcher's start-of-function guard tripped BEFORE register/send.
+      expect(pending.size).toBe(0);
+      expect(ws.sent).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('a CLOSED-ws fast-fail never fires the hook', async () => {

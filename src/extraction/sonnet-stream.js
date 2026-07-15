@@ -3635,7 +3635,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Returns false for a released/cancelled generation so a stale ask
     // registered by the old loop resolves immediately with `timeout`.
     const onAskRegistered = () => {
-      if (generationReleased) return false;
+      // F7 Item 3 — a generation that has been RELEASED (finally ran) or whose
+      // signal is already ABORTED (the watchdog fired but the finally hasn't
+      // run yet) does NOT own a fresh registration: return false so the
+      // dispatcher resolves the new entry with `timeout` + skips the send.
+      if (generationReleased || extractionAbort.signal.aborted) return false;
       if (!askChainObserved) {
         askChainObserved = true;
         try {
