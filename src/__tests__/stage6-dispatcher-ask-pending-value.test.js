@@ -70,7 +70,18 @@ describe('§A4 — pendingValue capture at ask registration', () => {
       activeTurnTranscript: 'ICD trip time for circuit 2 is 26 milliseconds.',
     });
     const pendingAsks = createPendingAsksRegistry();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-24', pendingAsks, null, {});
+    // F7 Item 2 step 3b — a closed/null ws now FAST-FAILS the ask (register +
+    // immediate resolve), so use an OPEN ws to keep the entry pending long
+    // enough to inspect its captured pendingValue.
+    const openWs = { readyState: 1, OPEN: 1, send() {} };
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-24',
+      pendingAsks,
+      openWs,
+      {}
+    );
     const p = dispatcher({ tool_call_id: 'toolu_f8', name: 'ask_user', input: noneAsk() }, {});
     await tick();
     // The registry entry carries the captured pendingValue.
@@ -84,7 +95,16 @@ describe('§A4 — pendingValue capture at ask registration', () => {
   test('concrete-context asks capture NOTHING (pendingWrite territory)', async () => {
     const session = buildSession({ activeTurnTranscript: 'Zs is 0.3 ohms' });
     const pendingAsks = createPendingAsksRegistry();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {});
+    // F7 Item 2 step 3b — open ws so the ask stays pending for inspection.
+    const openWs = { readyState: 1, OPEN: 1, send() {} };
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      openWs,
+      {}
+    );
     const p = dispatcher(
       {
         tool_call_id: 'toolu_c',
@@ -399,9 +419,22 @@ describe('§A4 Codex r3-#1/#3 — shape-2 reachability + pre-emit broker failure
   test('r3-#3: broker with a CLOSED socket → question never emitted → terminal apology, never a silent move-on', async () => {
     const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
     const pendingAsks = createPendingAsksRegistry();
-    const closedWs = { readyState: 3, OPEN: 1, sent: [], send() {} };
+    // F7 Item 2 step 3b — the INITIAL ask on a closed socket now fast-fails
+    // before the pending-value flow can engage. To still exercise the BROKER's
+    // closed-socket path, the socket is OPEN for the initial send and CLOSES
+    // right after (send flips readyState), so the initial ask emits + is
+    // answered, then the broker FIELD ask hits the now-closed socket →
+    // broker_emit_failed → terminal apology.
+    const closingWs = {
+      readyState: 1,
+      OPEN: 1,
+      sent: [],
+      send() {
+        this.readyState = 3;
+      },
+    };
     const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
-    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, closedWs, {
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, closingWs, {
       autoResolveWrite,
     });
     const p = dispatcher({ tool_call_id: 'toolu_c3', name: 'ask_user', input: noneAsk() }, {});

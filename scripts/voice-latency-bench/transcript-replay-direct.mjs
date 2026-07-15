@@ -685,6 +685,10 @@ async function runScenario(scenarioPath, apiKey) {
         pendingAsks,
         ws,
         logger: makeCapturingLogger(buckets),
+        // F7 Item 2 — a caller that omits generationId emits uncorrelated
+        // telemetry rows. Mint one per turn so the replay harness's captured
+        // ask-emission / fallback / ios_send_attempt rows all carry it.
+        generationId: randomUUID(),
       });
     } catch (err) {
       process.stderr.write(`    ERR: ${err.message}\n`);

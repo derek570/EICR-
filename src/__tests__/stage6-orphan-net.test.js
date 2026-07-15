@@ -192,14 +192,21 @@ describe('orphan net — does NOT fire', () => {
     runToolLoopSpy.mockImplementation(async () => ({
       stop_reason: 'tool_use',
       rounds: 1,
-      tool_calls: [{ name: 'ask_user', input: {} }],
+      tool_calls: [{ name: 'ask_user', tool_call_id: 'toolu_ask', input: {} }],
       aborted: false,
       messages_final: [],
       usage: {},
       terminal_reason: 'end_turn',
     }));
     const session = makeSession();
-    const result = await runShadowHarness(session, 'EFC is 0.86.', [], baseOpts());
+    // F7 Item 2 — the ask_user was spoken over WS; seed its emission so the
+    // pre-emission audibility net treats it as audible (no fallback).
+    const result = await runShadowHarness(
+      session,
+      'EFC is 0.86.',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['toolu_ask'] })
+    );
     const prompt = (result.confirmations ?? []).find((c) =>
       /(catch|repeat|say it)/i.test(c.text || '')
     );
@@ -294,17 +301,26 @@ describe('orphan net — all-rejected branch (M1 Defect B)', () => {
   });
 
   test('rejected calls + a real ask_user (is_error:false) → NO prompt (ask_user already spoken over WS)', async () => {
+    const spokenAsk = okCall('ask_user');
+    spokenAsk.tool_call_id = 'toolu_ask';
     runToolLoopSpy.mockImplementation(async () => ({
       stop_reason: 'tool_use',
       rounds: 1,
-      tool_calls: [rejectedCall('create_circuit'), okCall('ask_user')],
+      tool_calls: [rejectedCall('create_circuit'), spokenAsk],
       aborted: false,
       messages_final: [],
       usage: {},
       terminal_reason: 'end_turn',
     }));
     const session = makeSession();
-    const result = await runShadowHarness(session, 'Circuit 5 is spare.', [], baseOpts());
+    // F7 Item 2 — the ask_user was already spoken over WS; seed its emission so
+    // the pre-emission audibility net does not add a redundant fallback.
+    const result = await runShadowHarness(
+      session,
+      'Circuit 5 is spare.',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['toolu_ask'] })
+    );
     const prompt = (result.confirmations ?? []).find((c) =>
       /(couldn't action|able to apply|didn't go through|catch|repeat|say it)/i.test(c.text || '')
     );

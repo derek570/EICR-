@@ -124,9 +124,9 @@ describe('deriveAskKey', () => {
   describe('context_board_id board scope (readback-correction-optionb §6)', () => {
     test('null / missing / empty board_id leaves the key byte-identical (back-compat)', () => {
       expect(deriveAskKey({ context_field: 'ze', context_circuit: 0 })).toBe('ze:0');
-      expect(deriveAskKey({ context_field: 'ze', context_circuit: 0, context_board_id: null })).toBe(
-        'ze:0'
-      );
+      expect(
+        deriveAskKey({ context_field: 'ze', context_circuit: 0, context_board_id: null })
+      ).toBe('ze:0');
       expect(deriveAskKey({ context_field: 'ze', context_circuit: 0, context_board_id: '' })).toBe(
         'ze:0'
       );
@@ -134,7 +134,11 @@ describe('deriveAskKey', () => {
 
     test('a non-null board_id appends a @<board> segment', () => {
       expect(
-        deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 3, context_board_id: 'sub-1' })
+        deriveAskKey({
+          context_field: 'measured_zs_ohm',
+          context_circuit: 3,
+          context_board_id: 'sub-1',
+        })
       ).toBe('measured_zs_ohm:3@sub-1');
     });
 
@@ -155,9 +159,17 @@ describe('deriveAskKey', () => {
 
     test('same field+circuit+board derive the SAME key (still dedupes)', () => {
       expect(
-        deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 3, context_board_id: 'A' })
+        deriveAskKey({
+          context_field: 'measured_zs_ohm',
+          context_circuit: 3,
+          context_board_id: 'A',
+        })
       ).toBe(
-        deriveAskKey({ context_field: 'measured_zs_ohm', context_circuit: 3, context_board_id: 'A' })
+        deriveAskKey({
+          context_field: 'measured_zs_ohm',
+          context_circuit: 3,
+          context_board_id: 'A',
+        })
       );
     });
   });
@@ -2052,5 +2064,43 @@ describe('Plan 05-15 r9-#3 — innerAlreadyLogs flag for inner-throw logging', (
     });
 
     gate.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F7 Item 3 — gateOrFire rejects on a fatal control-flow error.
+// ---------------------------------------------------------------------------
+import { ExtractionCancelledError } from '../extraction/stage6-control-flow-errors.js';
+
+describe('F7 Item 3 — gateOrFire propagates fatal control-flow errors by REJECTING', () => {
+  test('an inner dispatcher that throws ExtractionCancelledError rejects the composed gate Promise (no pending timer/entry)', async () => {
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const gate = createAskGateWrapper({ delayMs: QUESTION_GATE_DELAY_MS, logger, sessionId: 's' });
+    const inner = jest.fn(async () => {
+      throw new ExtractionCancelledError('ceiling');
+    });
+    const call = { tool_call_id: 'toolu_1', input: { context_field: 'ze', context_circuit: 1 } };
+    const p = gate.gateOrFire(call, { turnId: 't1' }, inner);
+    // Attach the rejection expectation BEFORE firing the timer so the
+    // rejection isn't momentarily unhandled during the tick.
+    const assertion = expect(p).rejects.toBeInstanceOf(ExtractionCancelledError);
+    await jest.advanceTimersByTimeAsync(QUESTION_GATE_DELAY_MS);
+    await assertion;
+    // No pending timer/entry left behind — destroy() is a no-op with nothing to
+    // resolve (would throw if it tried to resolve a settled Promise).
+    expect(() => gate.destroy()).not.toThrow();
+  });
+
+  test('an ordinary inner error still resolves as a dispatcher_error envelope (unchanged)', async () => {
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const gate = createAskGateWrapper({ delayMs: QUESTION_GATE_DELAY_MS, logger, sessionId: 's' });
+    const inner = jest.fn(async () => {
+      throw new Error('ordinary boom');
+    });
+    const call = { tool_call_id: 'toolu_2', input: { context_field: 'ze', context_circuit: 1 } };
+    const p = gate.gateOrFire(call, { turnId: 't1' }, inner);
+    await jest.advanceTimersByTimeAsync(QUESTION_GATE_DELAY_MS);
+    const res = await p;
+    expect(JSON.parse(res.content).reason).toBe('dispatcher_error');
   });
 });

@@ -309,7 +309,15 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
 
   test('NEGATIVE: answered clarify followed by an UNANSWERED continuation → no net (the question was audible)', async () => {
     toolLoopResult = loopOut([answeredClarify('toolu_c1'), unansweredClarify('toolu_c2')]);
-    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    // F7 Item 2 — the continuation's audibility is now proven by EMISSION, not
+    // outcome name (a swallowed send also reports `timeout`). Seed the
+    // continuation's tool_call_id as emitted (it really crossed the wire).
+    const result = await runShadowHarness(
+      makeSession(),
+      'just cosmetic',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['toolu_c2'] })
+    );
     const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
     expect(net).toBeUndefined();
   });
@@ -347,7 +355,14 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     const continuationA = unansweredClarify('toolu_a2');
     continuationA.input.clarification_chain_id = 'chain_a';
     toolLoopResult = loopOut([answeredA, continuationA]);
-    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    // F7 Item 2 — the same-chain continuation was audibly spoken; seed its
+    // emission so the tightened D2 check qualifies it (emission, not reason).
+    const result = await runShadowHarness(
+      makeSession(),
+      'just cosmetic',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['toolu_a2'] })
+    );
     const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
     expect(net).toBeUndefined();
   });
@@ -589,7 +604,11 @@ describe('§D2 Group B (2026-07-15) — mutation-to-chain correlation', () => {
       answeredChain('toolu_b', 'B'),
       timedOutChain('toolu_a2', 'A'),
     ]);
-    const opts = baseOpts();
+    // F7 Item 2 — the same-chain continuation qualifies A only because it was
+    // audibly SPOKEN; seed its emission (a timed-out continuation really
+    // crossed the wire). The tightened D2 check keys audibility on emission,
+    // not the reason name.
+    const opts = baseOpts({ _seedEmittedAskToolCallIds: ['toolu_a2'] });
     const result = await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
     const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
     expect(net).toBeDefined(); // B fell back

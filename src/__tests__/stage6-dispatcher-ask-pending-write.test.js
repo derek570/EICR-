@@ -15,6 +15,10 @@
 
 import { jest } from '@jest/globals';
 import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
+// F7 Item 2 step 3b — a null/closed ws now fast-fails the initial ask, so
+// these resolution-logic tests use an OPEN ws to keep the ask pending until
+// the external resolve drives buildResolvedBody.
+const F7_OPEN_WS = { readyState: 1, OPEN: 1, send() {} };
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 
 const validInput = (overrides = {}) => ({
@@ -58,7 +62,7 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true, body: { ok: true } });
 
-    const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, null, {
+    const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, F7_OPEN_WS, {
       autoResolveWrite,
     });
 
@@ -116,7 +120,7 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
 
-    const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, null, {
+    const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, F7_OPEN_WS, {
       autoResolveWrite,
     });
 
@@ -156,9 +160,16 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
     const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const callPromise = dispatcher(
       {
@@ -191,9 +202,16 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
 
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const callPromise = dispatcher(
       {
@@ -225,9 +243,16 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
 
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const callPromise = dispatcher(
       {
@@ -252,7 +277,13 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
 
     // Create dispatcher WITHOUT the autoResolveWrite opt — mirrors a legacy
     // call site that hasn't migrated yet.
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null);
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS
+    );
 
     const callPromise = dispatcher(
       {
@@ -275,9 +306,16 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
 
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const callPromise = dispatcher(
       {
@@ -302,7 +340,7 @@ describe('createAskDispatcher — pending_write resolution (bug-1B fix)', () => 
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn().mockRejectedValue(new Error('write_failed_kapow'));
 
-    const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, null, {
+    const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, F7_OPEN_WS, {
       autoResolveWrite,
     });
 
@@ -336,9 +374,16 @@ describe('createAskDispatcher — pending_write validation', () => {
     const session = buildSession([]);
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const env = await dispatcher(
       {
@@ -360,9 +405,16 @@ describe('createAskDispatcher — pending_write validation', () => {
     const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const callPromise = dispatcher(
       {
@@ -392,9 +444,16 @@ describe('createAskDispatcher — pending_write validation', () => {
     const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const env = await dispatcher(
       {
@@ -419,9 +478,16 @@ describe('createAskDispatcher — pending_write validation', () => {
     const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const env = await dispatcher(
       {
@@ -448,9 +514,16 @@ describe('createAskDispatcher — pending_write validation', () => {
     const session = buildSession([{ circuit_ref: 1, circuit_designation: 'Cooker' }]);
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn();
-    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      session,
+      noopLogger(),
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
 
     const callPromise = dispatcher(
       {

@@ -250,7 +250,12 @@ describe('createAskDispatcher — live happy path', () => {
     }
   });
 
-  test('ws.readyState not OPEN: does not call send, still registers + awaits + resolves', async () => {
+  // F7 Item 2 step 3b — no 45s dead-air on a known-dead send. A closed socket
+  // (or ws=null) now FAST-FAILS the ask immediately as a pre-emission failure
+  // (reason:'dispatcher_error', lifecycle:'pre_emit', dispatcher_error:'closed_ws')
+  // WITHOUT registering-and-awaiting the 45s timeout. Pin the exact outcome +
+  // an empty registry, reached WITHOUT advancing timers.
+  test('ws.readyState not OPEN: does not call send, fast-fails pre-emission, leaves an empty registry', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick'] });
     try {
       const session = makeSession('live');
@@ -259,26 +264,28 @@ describe('createAskDispatcher — live happy path', () => {
       const ws = makeWs({ open: false });
       const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, ws);
 
-      const p = dispatch(makeCall('toolu_h2'), {
+      // No external resolve, no timer advance — the fast-fail resolves it.
+      const res = await dispatch(makeCall('toolu_h2'), {
         sessionId: 'sess-1',
         turnId: 'turn-1',
       });
-      await Promise.resolve();
-      await Promise.resolve();
 
       expect(ws.send).not.toHaveBeenCalled();
-      expect(pending.size).toBe(1);
-
-      pending.resolve('toolu_h2', { answered: true, user_text: 'ok' });
-      const res = await p;
+      expect(pending.size).toBe(0); // fast-fail cleared the entry + timer
       expect(res.is_error).toBe(false);
-      expect(JSON.parse(res.content).answered).toBe(true);
+      expect(JSON.parse(res.content).reason).toBe('dispatcher_error');
+      const askRow = logger.info.mock.calls.find((c) => c[0] === 'stage6.ask_user');
+      expect(askRow[1]).toMatchObject({
+        answer_outcome: 'dispatcher_error',
+        lifecycle: 'pre_emit',
+        dispatcher_error: 'closed_ws',
+      });
     } finally {
       jest.useRealTimers();
     }
   });
 
-  test('ws=null: does not throw, registers + awaits normally', async () => {
+  test('ws=null: does not throw, fast-fails pre-emission (closed_ws), empty registry', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick'] });
     try {
       const session = makeSession('live');
@@ -286,19 +293,20 @@ describe('createAskDispatcher — live happy path', () => {
       const pending = createPendingAsksRegistry();
       const dispatch = createAskDispatcher(session, logger, 'turn-1', pending, null);
 
-      const p = dispatch(makeCall('toolu_h3'), {
+      const res = await dispatch(makeCall('toolu_h3'), {
         sessionId: 'sess-1',
         turnId: 'turn-1',
       });
-      await Promise.resolve();
-      await Promise.resolve();
 
-      expect(pending.size).toBe(1);
-      pending.resolve('toolu_h3', { answered: true, user_text: 'yes' });
-
-      const res = await p;
+      expect(pending.size).toBe(0);
       expect(res.is_error).toBe(false);
-      expect(JSON.parse(res.content)).toEqual({ answered: true, untrusted_user_text: 'yes' });
+      expect(JSON.parse(res.content).reason).toBe('dispatcher_error');
+      const askRow = logger.info.mock.calls.find((c) => c[0] === 'stage6.ask_user');
+      expect(askRow[1]).toMatchObject({
+        answer_outcome: 'dispatcher_error',
+        lifecycle: 'pre_emit',
+        dispatcher_error: 'closed_ws',
+      });
     } finally {
       jest.useRealTimers();
     }

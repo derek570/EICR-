@@ -12,6 +12,7 @@
 //   (no audio for 60s) and reconnects when speech resumes.
 
 import { WebSocketServer } from 'ws';
+import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
@@ -107,7 +108,18 @@ import {
 // utterance drains stale asks (rejectAll 'user_moved_on') rather than
 // poisoning the slot map.
 import { createPendingAsksRegistry } from './stage6-pending-asks-registry.js';
+import { ASK_USER_TIMEOUT_MS } from './stage6-dispatcher-ask.js';
+import { ExtractionCancelledError } from './stage6-control-flow-errors.js';
 import { classifyOvertake } from './stage6-overtake-classifier.js';
+
+// F7 Item 3 — extraction-watchdog constants, DERIVED (never hardcoded). The
+// no-ask deadline stays 30s; the absolute ceiling is sized for the longest
+// SANCTIONED A4 flow (one initial + two pvr-* brokered asks) plus slack:
+// (3 * ASK_USER_TIMEOUT_MS) + (2 * EXTRACTION_WATCHDOG_MS) = 195000ms today. A
+// longer schema-legal sequence CAN exist and is DELIBERATELY cancelled at the
+// ceiling — bounded recovery beats an unbounded wedge.
+export const EXTRACTION_WATCHDOG_MS = 30000;
+export const EXTRACTION_WATCHDOG_ABSOLUTE_MS = 3 * ASK_USER_TIMEOUT_MS + 2 * EXTRACTION_WATCHDOG_MS;
 // §A4 (field-feedback-2026-07-14, F8) — typed structurally-complete-reading
 // detector + recordable-field set, used by (a) the direct ask_user_answered
 // gate (a fresh reading must be re-injected, never consumed as an answer)
@@ -3549,12 +3561,116 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     entry.isExtracting = true;
-    const extractionWatchdog = setTimeout(() => {
-      if (entry.isExtracting) {
-        console.warn('[Watchdog] isExtracting stuck for 30s, force-resetting');
-        entry.isExtracting = false;
+    // F7 Item 2 — mint ONE generation id per extraction invocation. Threaded
+    // via runShadowHarness options to the emission / fallback / ios_send_attempt
+    // telemetry sites so the ship-gate join keys on the EXACT triple
+    // sessionId + turnId + generationId — turnId alone is NOT unique after a
+    // watchdog cancellation (turnCount only advances near successful
+    // completion). Item 3's per-turn watchdog controller REUSES this id.
+    const generationId = randomUUID();
+
+    // ── F7 Item 3 — per-turn extraction-watchdog controller ─────────────
+    // PRE-FIX: a single `setTimeout(() => { if (isExtracting) isExtracting =
+    // false }, 30000)` FORCE-CLEARED isExtracting after 30s, letting ANOTHER
+    // transcript start a CONCURRENT extraction against the same session while
+    // an ask chain was still legitimately active. A single 45s ask already
+    // outlives 30s; an A4 two-brokered-ask chain reaches ~90s+.
+    //
+    // NOW: an `askChainObserved` LATCH (armed on every successful initial /
+    // pvr-* register via onAskRegistered) extends the deadline through
+    // inter-ask empty-registry gaps to the absolute ceiling. At the deadline
+    // (no ask observed by 30s) OR the ceiling, we do REAL cancellation for
+    // LIVE mode — abort the per-generation AbortController (so the loop stops
+    // streaming / registering / mutating) + reject pending asks with the legal
+    // `timeout` terminal — and NEVER force-clear isExtracting: the aborted
+    // invocation's generation-guarded `finally` (below) clears it, so no newer
+    // generation starts until it settles. For off/shadow (legacy, no signal)
+    // the deadline likewise no longer force-clears — isExtracting stays true
+    // until the legacy invocation actually settles (concurrent stale execution
+    // is intentionally removed).
+    const isLiveExtraction = (entry.session?.toolCallsMode ?? 'off') === 'live';
+    const extractionAbort = new AbortController();
+    const watchdogTurnId = `${sessionId}-turn-${(entry.session?.turnCount ?? 0) + 1}`;
+    let askChainObserved = false;
+    let generationReleased = false;
+
+    const cancelExtraction = (kind, extra) => {
+      if (generationReleased) return; // generation already settled — no-op
+      try {
+        logger.info(
+          kind === 'absolute_ceiling'
+            ? 'extraction_watchdog_absolute_ceiling_fired'
+            : 'extraction_watchdog_no_ask_deadline_fired',
+          {
+            sessionId,
+            turnId: watchdogTurnId,
+            generationId,
+            ...extra,
+          }
+        );
+      } catch {
+        // swallow logger failure — cancellation must proceed
       }
-    }, 30000);
+      if (isLiveExtraction) {
+        // Real cancellation: mark generation cancelled → abort its signal →
+        // reject still-pending asks with the legal terminal `timeout`. The
+        // aborted runToolLoop throws ExtractionCancelledError → runLiveMode
+        // finalizes a PARTIAL result → this generation's finally clears
+        // isExtracting. Do NOT force-clear isExtracting here.
+        try {
+          extractionAbort.abort(new ExtractionCancelledError(`extraction_watchdog_${kind}`));
+        } catch {
+          // AbortController.abort never throws in supported runtimes
+        }
+        try {
+          entry.pendingAsks?.rejectAll?.('timeout');
+        } catch {
+          // registry may be absent on a partial session
+        }
+      }
+    };
+
+    // The CONTROL hook (scalar) — arms the ask-chain latch on the FIRST
+    // successful register, extending the deadline to the absolute ceiling.
+    // Returns false for a released/cancelled generation so a stale ask
+    // registered by the old loop resolves immediately with `timeout`.
+    const onAskRegistered = () => {
+      // F7 Item 3 — a generation that has been RELEASED (finally ran) or whose
+      // signal is already ABORTED (the watchdog fired but the finally hasn't
+      // run yet) does NOT own a fresh registration: return false so the
+      // dispatcher resolves the new entry with `timeout` + skips the send.
+      if (generationReleased || extractionAbort.signal.aborted) return false;
+      if (!askChainObserved) {
+        askChainObserved = true;
+        try {
+          logger.info('extraction_watchdog_extended_for_ask', {
+            sessionId,
+            turnId: watchdogTurnId,
+            generationId,
+            deadline: EXTRACTION_WATCHDOG_ABSOLUTE_MS,
+            pending_count: entry.pendingAsks?.size ?? 0,
+          });
+        } catch {
+          // swallow logger failure
+        }
+      }
+      return true;
+    };
+
+    // No-ask deadline: fires ONLY when the ask-chain latch never armed.
+    const extractionWatchdog = setTimeout(() => {
+      if (!askChainObserved) {
+        cancelExtraction('no_ask_deadline', { deadline: EXTRACTION_WATCHDOG_MS });
+      }
+    }, EXTRACTION_WATCHDOG_MS);
+    // Absolute ceiling: the safety/SLA backstop for a truly-wedged (or
+    // longer-than-sanctioned) chain. Fires regardless of the latch.
+    const extractionCeiling = setTimeout(() => {
+      cancelExtraction('absolute_ceiling', {
+        elapsed: EXTRACTION_WATCHDOG_ABSOLUTE_MS,
+        pending_count: entry.pendingAsks?.size ?? 0,
+      });
+    }, EXTRACTION_WATCHDOG_ABSOLUTE_MS);
 
     try {
       // If the iOS client tagged this transcript with `in_response_to`, prepend
@@ -4043,9 +4159,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // normally serialise these, BUT it only holds if the prior
           // turn is still mid-await. Two paths can sneak a resolvable
           // ask into pendingAsks past isExtracting=false:
-          //   (a) the 30s watchdog force-reset at line 1570 flipped
+          //   (a) PRE-F7-Item-3: the 30s watchdog force-reset flipped
           //       isExtracting=false while the prior runToolLoop was
-          //       still mid-await on its ask Promise, and
+          //       still mid-await on its ask Promise. The F7 Item 3
+          //       controller REMOVED that force-reset (it re-arms via the
+          //       ask-chain latch and only aborts+finalizes at the ceiling,
+          //       never force-clearing isExtracting), so this concurrency
+          //       window is closed for live mode; the guard stays as
+          //       defence-in-depth for the reconnect/termination path (b), and
           //   (b) a reconnect/termination path left an orphan entry in
           //       pendingAsks that rejectAll must still drain.
           // In (a) the old tool loop resumes when we reject, and in (b)
@@ -4125,6 +4246,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         null;
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
+        // F7 Item 2 — the per-invocation generation id (minted above). Item 3's
+        // watchdog controller reuses it; every new telemetry row carries it.
+        generationId,
+        // F7 Item 3 — the per-generation abort signal + the ask-chain-latch
+        // CONTROL hook. The signal fires on watchdog cancellation; the hook
+        // arms the latch on each successful register and rejects a stale
+        // generation's late registration.
+        signal: extractionAbort.signal,
+        onAskRegistered,
         // item #10 orphan net — the harness skips its clarifying prompt when
         // the utterance is an answer to a TTS question (the ask-resolution
         // path owns those). Mirror the gate's own in_response_to read.
@@ -4481,18 +4611,40 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }
       }
     } catch (error) {
-      logger.error('Extraction error', { sessionId, error: error.message });
-      if (ws.readyState === ws.OPEN) {
-        ws.send(
-          JSON.stringify({
-            type: 'error',
-            message: `Extraction failed: ${error.message}`,
-            recoverable: true,
-          })
-        );
+      // F7 Item 3 — defence-in-depth. The LIVE path finalizes a fatal
+      // cancellation at runLiveMode and returns normally, so a fatal
+      // control-flow error should NOT reach here. If one still escapes,
+      // SUPPRESS the generic recoverable error frame (a client must never
+      // surface a normal error for a watchdog cancellation) and proceed only to
+      // the generation-guarded cleanup in the finally.
+      if (error instanceof ExtractionCancelledError || error?.isStage6FatalControlFlow === true) {
+        logger.warn('Extraction cancelled (fatal control-flow reached generic catch)', {
+          sessionId,
+          generationId,
+          error: error?.message,
+        });
+      } else {
+        logger.error('Extraction error', { sessionId, error: error.message });
+        if (ws.readyState === ws.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              message: `Extraction failed: ${error.message}`,
+              recoverable: true,
+            })
+          );
+        }
       }
     } finally {
+      // F7 Item 3 — generation-guarded release: mark this generation released
+      // FIRST (so a stale timer / late onAskRegistered becomes a no-op), clear
+      // BOTH watchdog timers, then clear isExtracting. This is the phase-2 the
+      // watchdog controller waits for: only now does the next queued transcript
+      // drain (below), so a cancelled/settled generation never overlaps its
+      // successor.
+      generationReleased = true;
       clearTimeout(extractionWatchdog);
+      clearTimeout(extractionCeiling);
       entry.isExtracting = false;
 
       // Plan 03-12 r12 BLOCK remediation — drain MUST sit inside finally.

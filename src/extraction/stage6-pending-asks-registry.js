@@ -93,7 +93,7 @@ export function createPendingAsksRegistry() {
     },
 
     // Strict ordering (Codex STG #3):
-    //   1. clearTimeout — stop the 20s STA-03 timer firing into a deleted entry.
+    //   1. clearTimeout — stop the 45s STA-03 timer firing into a deleted entry.
     //   2. Map.delete   — make subsequent resolve() calls return false
     //                     (Pitfall 2: answer-vs-timeout double-resolve race).
     //   3. user resolve — only NOW wake the awaiting dispatcher.

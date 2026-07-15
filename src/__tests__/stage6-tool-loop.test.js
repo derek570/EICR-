@@ -180,6 +180,18 @@ describe('stage6-tool-loop', () => {
     });
     // Round-2 end_turn assistant message present (the model's final text reply).
     expect(messages[3].role).toBe('assistant');
+
+    // F7 Item 2 — the authoritative assembler tool_call_id survives into
+    // toolLoopOut.tool_calls. The D2 qualification tightening + the
+    // pre-emission audibility fallback (stage6-shadow-harness.js) check a
+    // continuation's tool_call_id against emittedAskToolCallIds; a missing id
+    // would make every emitted continuation look inaudible and double-fire the
+    // fallback.
+    expect(result.tool_calls).toHaveLength(1);
+    expect(result.tool_calls[0]).toMatchObject({
+      name: 'record_reading',
+      tool_call_id: 'toolu_1',
+    });
   });
 
   test('end_turn assistant message persisted to messages_final (Codex STG MAJOR — no dropped final turn)', async () => {
@@ -1292,5 +1304,146 @@ describe('stage6-tool-loop', () => {
       })
     );
   });
+});
 
+// ---------------------------------------------------------------------------
+// F7 Item 3 — AbortController signal-consumer proofs.
+// ---------------------------------------------------------------------------
+
+import {
+  ExtractionCancelledError,
+  isStage6FatalControlFlowError,
+} from '../extraction/stage6-control-flow-errors.js';
+
+/** A client that records the request-options (2nd arg) of every stream call. */
+function recordingClient(streamResponses) {
+  let callCount = 0;
+  const optionsSeen = [];
+  return {
+    optionsSeen,
+    messages: {
+      stream(args, options) {
+        optionsSeen.push(options);
+        const events = streamResponses[callCount] ?? [];
+        callCount += 1;
+        return mockStream(events);
+      },
+    },
+  };
+}
+
+describe('stage6-tool-loop — F7 Item 3 cancellation signal', () => {
+  test('the exact signal is passed to EVERY client.messages.stream call', async () => {
+    const client = recordingClient([
+      toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]),
+      endTurnRound('ok'),
+    ]);
+    const ac = new AbortController();
+    await runToolLoop({
+      client,
+      model: 'm',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+      signal: ac.signal,
+    });
+    // Two rounds → two stream calls, each carrying { signal }.
+    expect(client.optionsSeen).toHaveLength(2);
+    for (const opt of client.optionsSeen) expect(opt.signal).toBe(ac.signal);
+  });
+
+  test('an already-aborted signal prevents any new round (stream never called)', async () => {
+    const client = recordingClient([endTurnRound('ok')]);
+    const ac = new AbortController();
+    ac.abort(new ExtractionCancelledError('pre-aborted'));
+    await expect(
+      runToolLoop({
+        client,
+        model: 'm',
+        system: 's',
+        messages: [{ role: 'user', content: 'go' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher: jest.fn(NOOP_DISPATCHER),
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        signal: ac.signal,
+      })
+    ).rejects.toBeInstanceOf(ExtractionCancelledError);
+    expect(client.optionsSeen).toHaveLength(0); // never entered a round
+  });
+
+  test('a fatal control-flow error thrown from a dispatcher is RETHROWN, not converted to a dispatcher_error tool result', async () => {
+    const client = mockClient([
+      toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]),
+      endTurnRound('ok'),
+    ]);
+    const dispatcher = jest.fn(async () => {
+      throw new ExtractionCancelledError('cancelled mid-dispatch');
+    });
+    let caught;
+    try {
+      await runToolLoop({
+        client,
+        model: 'm',
+        system: 's',
+        messages: [{ role: 'user', content: 'go' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher,
+        ctx: baseCtx(),
+        logger: makeLogger(),
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(isStage6FatalControlFlowError(caught)).toBe(true);
+    expect(caught).toBeInstanceOf(ExtractionCancelledError);
+  });
+
+  test('an APIUserAbortError-shaped stream rejection while aborted is canonicalised to ExtractionCancelledError', async () => {
+    const ac = new AbortController();
+    // A client whose stream rejects on iteration (simulating the SDK's
+    // APIUserAbortError) AFTER the signal is aborted.
+    const client = {
+      messages: {
+        stream() {
+          ac.abort(new ExtractionCancelledError('ceiling'));
+          return {
+            [Symbol.asyncIterator]() {
+              return {
+                next() {
+                  // The SDK rejects iteration with APIUserAbortError post-abort.
+                  return Promise.reject(
+                    Object.assign(new Error('Request was aborted.'), { name: 'APIUserAbortError' })
+                  );
+                },
+              };
+            },
+            async finalMessage() {
+              throw new Error('unused');
+            },
+          };
+        },
+      },
+    };
+    let caught;
+    try {
+      await runToolLoop({
+        client,
+        model: 'm',
+        system: 's',
+        messages: [{ role: 'user', content: 'go' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher: jest.fn(NOOP_DISPATCHER),
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        signal: ac.signal,
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ExtractionCancelledError);
+  });
 });
