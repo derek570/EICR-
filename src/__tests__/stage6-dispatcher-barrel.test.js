@@ -95,20 +95,20 @@ describe('barrel re-exports', () => {
     // (is_error:false, JSON content with ok:true + noop:true).
     const session = {
       sessionId: 's1',
-      stateSnapshot: { circuits: { 3: { Ze_ohms: '0.35' } } },
+      stateSnapshot: { circuits: { 3: { measured_zs_ohm: '0.35' } } },
       extractedObservations: [],
     };
     const logger = mockLogger();
     const ctx = { session, logger, turnId: 't1', perTurnWrites: createPerTurnWrites(), round: 1 };
     const validInputs = {
       record_reading: {
-        field: 'Zs_ohms',
+        field: 'r1_r2_ohm',
         circuit: 3,
         value: '0.5',
         confidence: 1.0,
         source_turn_id: 't1',
       },
-      clear_reading: { field: 'Ze_ohms', circuit: 3, reason: 'user_correction' },
+      clear_reading: { field: 'measured_zs_ohm', circuit: 3, reason: 'user_correction' },
       // circuit_ref 4 (not 99): the seed has only circuit 3, and the #5.2
       // implausible_circuit_ref guard now rejects a ref >20 above the
       // board max — 4 is the next free plausible ref and doesn't collide.
@@ -157,7 +157,7 @@ describe('barrel re-exports', () => {
       // circuit 3 (no spare designation) so applied=[{circuit:3,...}], skipped=[].
       // Uses a REAL circuit_fields key (`measured_zs_ohm`, type:text) because
       // the dispatcher's defence-in-depth validator rejects unknown fields —
-      // the barrel test seeded `Ze_ohms` / `Zs_ohms` as scratch field names
+      // the barrel test seeded `measured_zs_ohm` / `r1_r2_ohm` as scratch field names
       // which the other dispatchers tolerate but bulk does not.
       set_field_for_all_circuits: {
         field: 'measured_zs_ohm',
@@ -192,7 +192,7 @@ describe('barrel re-exports', () => {
       // Fresh session per call so create_circuit(4) etc don't collide.
       const localSession = {
         sessionId: 's1',
-        stateSnapshot: { circuits: { 3: { Ze_ohms: '0.35' } } },
+        stateSnapshot: { circuits: { 3: { measured_zs_ohm: '0.35' } } },
         extractedObservations: [],
       };
       const localCtx = { ...ctx, session: localSession };

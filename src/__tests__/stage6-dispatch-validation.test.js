@@ -103,17 +103,37 @@ describe('validateRecordReading', () => {
 });
 
 describe('validateClearReading', () => {
+  // Codex r6-#1 — fixtures must use a REAL clearable circuit_fields key:
+  // the old 'Ze_ohms' fixture was itself off-schema (a supply field), which
+  // only passed because the validator never checked field membership.
   test('valid when circuit exists (field_not_set is a dispatcher-level noop, NOT a validator rejection)', () => {
     expect(
-      validateClearReading({ circuit: 3, field: 'Ze_ohms' }, { circuits: { 3: {} } })
+      validateClearReading({ circuit: 3, field: 'measured_zs_ohm' }, { circuits: { 3: {} } })
     ).toBeNull();
   });
   test('rejects when circuit is absent', () => {
     expect(
-      validateClearReading({ circuit: 99, field: 'Ze_ohms' }, { circuits: { 3: {} } })
+      validateClearReading({ circuit: 99, field: 'measured_zs_ohm' }, { circuits: { 3: {} } })
     ).toEqual({
       code: 'circuit_not_found',
       field: 'circuit',
+    });
+  });
+  test.each(['circuit_ref', 'is_distribution_circuit', 'feeds_board_id'])(
+    'Codex r6-#1 — excluded field %s is rejected at RUNTIME (schema enum alone is not enforced)',
+    (field) => {
+      expect(validateClearReading({ circuit: 3, field }, { circuits: { 3: {} } })).toEqual({
+        code: 'field_not_clearable',
+        field: 'field',
+        value: field,
+      });
+    }
+  );
+  test('Codex r6-#1 — unknown off-schema field is rejected, and BEFORE circuit existence', () => {
+    expect(validateClearReading({ circuit: 99, field: 'Ze_ohms' }, { circuits: {} })).toEqual({
+      code: 'field_not_clearable',
+      field: 'field',
+      value: 'Ze_ohms',
     });
   });
 });
@@ -157,14 +177,14 @@ describe('validateCreateCircuit', () => {
   });
 
   test('rejects a ref far above the current max (> maxExistingRef + 20)', () => {
-    expect(validateCreateCircuit({ circuit_ref: 30 }, { circuits: { 1: {}, 2: {}, 3: {} } })).toEqual(
-      {
-        code: 'implausible_circuit_ref',
-        field: 'circuit_ref',
-        max_existing_ref: 3,
-        hint: 'Do not create scratch/temp circuits for swaps; update existing circuit designations with rename_circuit.',
-      }
-    );
+    expect(
+      validateCreateCircuit({ circuit_ref: 30 }, { circuits: { 1: {}, 2: {}, 3: {} } })
+    ).toEqual({
+      code: 'implausible_circuit_ref',
+      field: 'circuit_ref',
+      max_existing_ref: 3,
+      hint: 'Do not create scratch/temp circuits for swaps; update existing circuit designations with rename_circuit.',
+    });
   });
 
   test('accepts the next normal ref just above the current max', () => {

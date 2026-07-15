@@ -457,8 +457,11 @@ describe('dispatchers against a sub-board target', () => {
   });
 
   test('clear_reading clears composite-key field', async () => {
+    // Codex r6-#1 — clear_reading now enforces the circuit_fields clear
+    // enum at runtime; earth_loop_impedance_ze is a BOARD field, so this
+    // fixture must use a real clearable circuit field.
     const session = makeSubBoardSession({
-      'sub-1::3': { circuit: 3, board_id: 'sub-1', earth_loop_impedance_ze: '0.42' },
+      'sub-1::3': { circuit: 3, board_id: 'sub-1', measured_zs_ohm: '0.42' },
     });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -468,13 +471,13 @@ describe('dispatchers against a sub-board target', () => {
       {
         tool_call_id: 'tu_5',
         name: 'clear_reading',
-        input: { field: 'earth_loop_impedance_ze', circuit: 3, reason: 'cleared by inspector' },
+        input: { field: 'measured_zs_ohm', circuit: 3, reason: 'cleared by inspector' },
       },
       {}
     );
 
     expect(result.is_error).toBe(false);
-    expect(session.stateSnapshot.circuits['sub-1::3'].earth_loop_impedance_ze).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-1::3'].measured_zs_ohm).toBeUndefined();
   });
 
   test('rename_circuit rekeys within the composite namespace', async () => {

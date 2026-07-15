@@ -53,7 +53,12 @@
  */
 
 import { createRequire } from 'node:module';
-import { CONTEXT_FIELD_ENUM, BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from './stage6-tool-schemas.js';
+import {
+  CONTEXT_FIELD_ENUM,
+  BOARD_FIELD_ENUM,
+  CIRCUIT_FIELD_ENUM,
+  CLEAR_READING_FIELD_ENUM,
+} from './stage6-tool-schemas.js';
 import {
   circuitExistsInSnapshot,
   getMainBoardId,
@@ -138,6 +143,13 @@ export const BOARD_FIELD_VALUE_ENUMS = (() => {
 // boundaries.
 const RECORD_READING_FIELDS = new Set(CIRCUIT_FIELD_ENUM);
 const RECORD_BOARD_READING_FIELDS = new Set(BOARD_FIELD_ENUM);
+// §A2 Codex r6-#1 — the clear_reading field exclusions (circuit_ref,
+// is_distribution_circuit, feeds_board_id) lived ONLY in the tool schema's
+// enum, and the Anthropic tool definitions are not strictly enforced at
+// runtime — an off-schema field reached dispatchClearReading and could
+// clear row identity or silently break the board hierarchy. Same source of
+// truth as the schema (CLEAR_READING_FIELD_ENUM), enforced here at runtime.
+const CLEAR_READING_FIELDS = new Set(CLEAR_READING_FIELD_ENUM);
 
 /**
  * record_reading: circuit must exist; confidence (when present) must be a
@@ -229,6 +241,12 @@ export function validateRecordReading(input, snapshot) {
  * §Q8.
  */
 export function validateClearReading(input, snapshot) {
+  // Codex r6-#1 — runtime enforcement of the schema enum. Checked BEFORE
+  // circuit existence so an excluded/unknown field is named as the error
+  // even when the circuit is also wrong.
+  if (!CLEAR_READING_FIELDS.has(input.field)) {
+    return { code: 'field_not_clearable', field: 'field', value: input.field };
+  }
   if (!circuitExistsInSnapshot(snapshot, input.circuit, input.board_id)) {
     return { code: 'circuit_not_found', field: 'circuit' };
   }

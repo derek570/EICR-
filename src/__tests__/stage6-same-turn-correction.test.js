@@ -7,22 +7,22 @@
  * undoes the first two.
  *
  * Scenario:
- *   Call 1: record_reading(volts, C1, '230', turn='t1')
- *   Call 2: record_reading(volts, C1, '240', turn='t1')   ← corrects call 1
- *   Call 3: clear_reading (volts, C1, reason='user_correction') ← undoes both
+ *   Call 1: record_reading(measured_zs_ohm, C1, '0.23', turn='t1')
+ *   Call 2: record_reading(measured_zs_ohm, C1, '0.24', turn='t1')   ← corrects call 1
+ *   Call 3: clear_reading (measured_zs_ohm, C1, reason='user_correction') ← undoes both
  *
  * Why this matters (REQUIREMENTS.md STT-09): the real-world trigger is the
- * inspector saying "volts on circuit one is two thirty... sorry, two forty...
+ * inspector saying "measured_zs_ohm on circuit one is two thirty... sorry, two forty...
  * actually skip that, the test wasn't complete". Sonnet is instructed to emit
  * these as separate tool calls rather than a single "final value" reading so
  * the audit log captures every state change. BUT iOS must only see the NET
- * effect — no reading, plus a clear marker — otherwise the UI flashes 230,
- * then 240, then nothing.
+ * effect — no reading, plus a clear marker — otherwise the UI flashes 0.23,
+ * then 0.24, then nothing.
  *
  * The mechanism is the Map-keyed readings accumulator (Plan 02-02):
- *   - Call 2's `readings.set('volts::1', {value:'240',...})` OVERWRITES
+ *   - Call 2's `readings.set('measured_zs_ohm::1', {value:'0.24',...})` OVERWRITES
  *     call 1's entry (last-write-wins, Map semantics).
- *   - Call 3's `readings.delete('volts::1')` removes it entirely.
+ *   - Call 3's `readings.delete('measured_zs_ohm::1')` removes it entirely.
  *   - Call 3 pushes `{field, circuit, reason}` into `cleared[]`.
  *
  * Post-state guarantees tested:
@@ -32,7 +32,7 @@
  *     BUT emits `cleared_readings` with the single clear entry (Plan 02-05
  *     omission rule: new slots omitted ONLY when empty; extracted_readings
  *     is a legacy slot so it's always present, empty or not).
- *   - session.stateSnapshot.circuits[1].volts is undefined (snapshot cleared)
+ *   - session.stateSnapshot.circuits[1].measured_zs_ohm is undefined (snapshot cleared)
  *
  * This is a direct dispatcher test — it does NOT go through runShadowHarness
  * or runToolLoop. The Phase 2 contract is:
@@ -82,15 +82,15 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     const perTurnWrites = createPerTurnWrites();
     const dispatch = createWriteDispatcher(session, logger, 't1', perTurnWrites);
 
-    // Call 1: record_reading(volts, C1, 230). Populates Map + snapshot.
+    // Call 1: record_reading(measured_zs_ohm, C1, 0.23). Populates Map + snapshot.
     const out1 = await dispatch(
       {
         tool_call_id: 'toolu_1',
         name: 'record_reading',
         input: {
-          field: 'volts',
+          field: 'measured_zs_ohm',
           circuit: 1,
-          value: '230',
+          value: '0.23',
           confidence: 1.0,
           source_turn_id: 't1',
         },
@@ -102,19 +102,19 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     // Hotfix slice 1.1c — readings Map keyed by encodeReadingKey, not bare
     // `${field}::${circuit}`. No board_id passed → encoder uses null/empty
     // boardId tag, decoder treats it as null on the wire (legacy single-board).
-    expect(perTurnWrites.readings.get(encodeReadingKey('volts', 1)).value).toBe('230');
-    expect(session.stateSnapshot.circuits[1].volts).toBe('230');
+    expect(perTurnWrites.readings.get(encodeReadingKey('measured_zs_ohm', 1)).value).toBe('0.23');
+    expect(session.stateSnapshot.circuits[1].measured_zs_ohm).toBe('0.23');
 
-    // Call 2: record_reading(volts, C1, 240). OVERWRITES call 1 on the Map
+    // Call 2: record_reading(measured_zs_ohm, C1, 0.24). OVERWRITES call 1 on the Map
     // (last-write-wins), snapshot also updated.
     const out2 = await dispatch(
       {
         tool_call_id: 'toolu_2',
         name: 'record_reading',
         input: {
-          field: 'volts',
+          field: 'measured_zs_ohm',
           circuit: 1,
-          value: '240',
+          value: '0.24',
           confidence: 1.0,
           source_turn_id: 't1',
         },
@@ -123,17 +123,17 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     );
     expect(out2.is_error).toBe(false);
     expect(perTurnWrites.readings.size).toBe(1); // still 1 — same key, overwritten
-    expect(perTurnWrites.readings.get(encodeReadingKey('volts', 1)).value).toBe('240');
-    expect(session.stateSnapshot.circuits[1].volts).toBe('240');
+    expect(perTurnWrites.readings.get(encodeReadingKey('measured_zs_ohm', 1)).value).toBe('0.24');
+    expect(session.stateSnapshot.circuits[1].measured_zs_ohm).toBe('0.24');
 
-    // Call 3: clear_reading(volts, C1). Removes from Map + snapshot, pushes to
+    // Call 3: clear_reading(measured_zs_ohm, C1). Removes from Map + snapshot, pushes to
     // cleared[]. No extracted_readings should survive into the bundler.
     const out3 = await dispatch(
       {
         tool_call_id: 'toolu_3',
         name: 'clear_reading',
         input: {
-          field: 'volts',
+          field: 'measured_zs_ohm',
           circuit: 1,
           reason: 'user_correction',
         },
@@ -146,13 +146,13 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     expect(perTurnWrites.readings.size).toBe(0);
     expect(perTurnWrites.cleared).toHaveLength(1);
     expect(perTurnWrites.cleared[0]).toEqual({
-      field: 'volts',
+      field: 'measured_zs_ohm',
       circuit: 1,
       reason: 'user_correction',
     });
 
-    // Session snapshot: volts field cleared.
-    expect(session.stateSnapshot.circuits[1].volts).toBeUndefined();
+    // Session snapshot: measured_zs_ohm field cleared.
+    expect(session.stateSnapshot.circuits[1].measured_zs_ohm).toBeUndefined();
 
     // Bundler output (Plan 02-05): extracted_readings is a LEGACY slot so it's
     // present but empty; cleared_readings is a new Phase 2 slot emitted ONLY
@@ -160,7 +160,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     const bundled = bundleToolCallsIntoResult(perTurnWrites, { questions: [] });
     expect(bundled.extracted_readings).toEqual([]);
     expect(bundled.cleared_readings).toEqual([
-      { field: 'volts', circuit: 1, reason: 'user_correction' },
+      { field: 'measured_zs_ohm', circuit: 1, reason: 'user_correction' },
     ]);
     expect(bundled.observations).toEqual([]);
     expect(bundled.questions).toEqual([]);
@@ -180,7 +180,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
 
   test('Map insertion-order preservation: record-different-slot + correction leaves the other slot intact', async () => {
     // Guard against a refactor that swaps Map for an object or non-ordered
-    // structure: clearing volts::1 must not touch amps::1.
+    // structure: clearing measured_zs_ohm::1 must not touch amps::1.
     const session = makeSession();
     const logger = makeLogger();
     const perTurnWrites = createPerTurnWrites();
@@ -198,7 +198,13 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
       {
         tool_call_id: 'toolu_b',
         name: 'record_reading',
-        input: { field: 'volts', circuit: 1, value: '230', confidence: 1.0, source_turn_id: 't2' },
+        input: {
+          field: 'measured_zs_ohm',
+          circuit: 1,
+          value: '0.23',
+          confidence: 1.0,
+          source_turn_id: 't2',
+        },
       },
       {}
     );
@@ -206,14 +212,14 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
       {
         tool_call_id: 'toolu_c',
         name: 'clear_reading',
-        input: { field: 'volts', circuit: 1, reason: 'retest_needed' },
+        input: { field: 'measured_zs_ohm', circuit: 1, reason: 'retest_needed' },
       },
       {}
     );
 
     expect(perTurnWrites.readings.size).toBe(1);
     expect(perTurnWrites.readings.has(encodeReadingKey('amps', 1))).toBe(true);
-    expect(perTurnWrites.readings.has(encodeReadingKey('volts', 1))).toBe(false);
+    expect(perTurnWrites.readings.has(encodeReadingKey('measured_zs_ohm', 1))).toBe(false);
     expect(perTurnWrites.cleared).toHaveLength(1);
 
     const bundled = bundleToolCallsIntoResult(perTurnWrites, { questions: [] });
@@ -227,7 +233,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
       source: 'tool_call',
     });
     expect(bundled.cleared_readings).toEqual([
-      { field: 'volts', circuit: 1, reason: 'retest_needed' },
+      { field: 'measured_zs_ohm', circuit: 1, reason: 'retest_needed' },
     ]);
   });
 });
