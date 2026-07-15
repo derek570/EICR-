@@ -548,6 +548,9 @@
   "web/src/lib/recording/confirmation-dedupe-key.ts": [
     "recording/readback-dedup-rekey"
   ],
+  "web/src/lib/recording/confirmation-dedupe-store.ts": [
+    "recording/confirmation-dedupe-ttl"
+  ],
   "web/src/lib/recording/deepgram-service.ts": [
     "recording/flux-kill-switch",
     "recording/flux-migration"
@@ -562,6 +565,9 @@
   "web/src/lib/recording/keyword-boosts.ts": [
     "recording/flux-migration"
   ],
+  "web/src/lib/recording/number-normaliser.ts": [
+    "recording/garble-aliases-f8-f10"
+  ],
   "web/src/lib/recording/observation-photo.ts": [
     "observations/obs-photo-autolink"
   ],
@@ -575,6 +581,9 @@
   "web/src/lib/recording/tones.ts": [
     "recording/gate-pass-chime"
   ],
+  "web/src/lib/recording/transcript-field-matcher.ts": [
+    "recording/garble-aliases-f8-f10"
+  ],
   "web/src/lib/recording/transcript-gate.ts": [
     "recording/transcript-gate"
   ],
@@ -583,6 +592,7 @@
     "recording/tts-fifo"
   ],
   "web/src/lib/recording/tts-queue.ts": [
+    "recording/confirmation-dedupe-ttl",
     "recording/tts-fifo"
   ],
   "web/src/lib/recording/tts.ts": [
