@@ -290,6 +290,12 @@ const SPOKEN_ABBREVIATIONS: Array<readonly [RegExp, string]> = [
   [/\bz\s+s\b/gi, 'Zs'],
   [/\bzed\s+e\b/gi, 'Ze'],
   [/\bzed(?:dy|d?e(?:e)?)\b/gi, 'Ze'],
+  // field-feedback-2026-07-14 F10: "Zedi" is a live Deepgram garble of "Ze"
+  // (session 6B6FE011 06:27 — beep then silence because nothing downstream
+  // recognised the token). Canonical zed-garble table entry; the Ze pattern
+  // consumes the normalised form. iOS canon: TranscriptFieldMatcher.swift
+  // spokenAbbreviations (commit 67ffb9d).
+  [/\bzedi\b/gi, 'Ze'],
   [/\bzee\b/gi, 'Ze'],
   [/\bz\s+e\b/gi, 'Ze'],
   [/\bp\s+f\s+c\b/gi, 'PFC'],
@@ -470,10 +476,15 @@ const IR_LL_LIM =
 const TEST_VOLTAGE_PATTERN = /\b(?:test\s+)?voltage\s+(?:is\s+|of\s+|=\s*)?(\d+)/gi;
 
 // RCD / OCPD
+// field-feedback-2026-07-14 F8: "ICD" is a live Deepgram garble of "RCD"
+// ("ICD trip time" — session 6B6FE011 06:24). Enumerated alias with field
+// evidence, same class as lim/tryptoid; NO broad fuzzy correction
+// (parity-program §3E stands). iOS canon: rcdTimePattern /
+// rcdTimeFlexPattern (commit 67ffb9d).
 const RCD_TIME_PATTERN =
-  /\brcd\s+(?:trip\s+(?:time\s+)?)?(?:is\s+)?(\d+\.?\d*)\s*(?:ms|milliseconds?)?/gi;
+  /\b(?:rcd|icd)\s+(?:trip\s+(?:time\s+)?)?(?:is\s+)?(\d+\.?\d*)\s*(?:ms|milliseconds?)?/gi;
 const RCD_TIME_FLEX =
-  /\b(?:rcd\s+)?trip\s+time\s+(?:for\s+|on\s+)?(?:\w+\s+){0,5}(?:is\s+)?(\d+\.?\d*)\s*(?:ms|milliseconds?)?/gi;
+  /\b(?:(?:rcd|icd)\s+)?trip\s+time\s+(?:for\s+|on\s+)?(?:\w+\s+){0,5}(?:is\s+)?(\d+\.?\d*)\s*(?:ms|milliseconds?)?/gi;
 const OCPD_RATING_BEFORE =
   /\b(\d+)\s*(?:amp|amber|a)\s+(?:mcb|rcbo|rccb|breaker|circuit\s+breaker|miniature\s+circuit\s+breaker)/gi;
 const OCPD_RATING_AFTER =

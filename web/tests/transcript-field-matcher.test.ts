@@ -60,6 +60,17 @@ describe('TranscriptFieldMatcher', () => {
     expect(result).toContain('0.34');
   });
 
+  // field-feedback-2026-07-14 F10 (session 6B6FE011 06:27): "Zedi" is a
+  // live Deepgram garble of "Ze" — beep then silence pre-fix because
+  // nothing downstream recognised the token. iOS canon:
+  // TranscriptFieldMatcher.swift spokenAbbreviations (commit 67ffb9d).
+  it('normalizeSpokenZedi (F10 garble alias)', () => {
+    const result = normalizeTranscript('zedi nought point three four');
+    expect(result).toContain('Ze');
+    expect(result).toContain('0.34');
+    expect(result.toLowerCase()).not.toContain('zedi');
+  });
+
   it('normalizeSpokenPFC', () => {
     const result = normalizeTranscript('p f c is two point five');
     expect(result).toContain('PFC');
@@ -195,6 +206,27 @@ describe('TranscriptFieldMatcher', () => {
       makeJob([{ ref: '1', designation: 'Lights' }])
     );
     expect(result.circuit_updates['1']?.rcd_time_ms).toBe('20');
+  });
+
+  // field-feedback-2026-07-14 F8 (session 6B6FE011 06:24): "ICD trip
+  // time" is a live Deepgram garble of "RCD trip time" — Derek explicitly
+  // asked for it to be accepted rather than asked about. Enumerated alias
+  // (lim/tryptoid class), NO broad fuzzy correction. iOS canon:
+  // rcdTimePattern/rcdTimeFlexPattern accept (?:rcd|icd) (commit 67ffb9d).
+  it('matchCircuitRCDTime — ICD garble alias (F8)', () => {
+    const result = matcher.match(
+      'circuit 2 ICD trip time is 26 ms',
+      makeJob([{ ref: '2', designation: 'Sockets' }])
+    );
+    expect(result.circuit_updates['2']?.rcd_time_ms).toBe('26');
+  });
+
+  it('matchCircuitRCDTime — bare ICD prefix form (F8)', () => {
+    const result = matcher.match(
+      'circuit 2 icd 26 milliseconds',
+      makeJob([{ ref: '2', designation: 'Sockets' }])
+    );
+    expect(result.circuit_updates['2']?.rcd_time_ms).toBe('26');
   });
 
   // MARK: - Board Field Matching
