@@ -99,6 +99,40 @@ describe('dispatchRecordObservation', () => {
     expect(row.input_summary).toEqual({ observation_id: body.observation_id, code: 'C3' });
   });
 
+  test('§D2 zero-client: clarification_chain_id in input NEVER enters the result body, extractedObservations, or perTurnWrites', async () => {
+    const session = makeSession();
+    const logger = makeLogger();
+    const perTurnWrites = createPerTurnWrites();
+    const call = {
+      tool_call_id: 'tu_obs_zc',
+      name: 'record_observation',
+      input: {
+        text: 'Cracked socket-outlet front',
+        code: 'C2',
+        suggested_regulation: '531.3.3',
+        clarification_chain_id: 'obsclr-1', // D2 correlation id — server-internal
+      },
+    };
+
+    const result = await WRITE_DISPATCHERS.record_observation(
+      call,
+      makeCtx({ session, logger, perTurnWrites })
+    );
+
+    // Tool-result body stays exactly {ok:true, observation_id} — no chain field.
+    const body = JSON.parse(result.content);
+    expect(body.ok).toBe(true);
+    expect(Object.keys(body).sort()).toEqual(['observation_id', 'ok']);
+    expect('clarification_chain_id' in body).toBe(false);
+
+    // Persisted + per-turn wire records never carry the chain id.
+    expect('clarification_chain_id' in session.extractedObservations[0]).toBe(false);
+    expect('clarification_chain_id' in perTurnWrites.observations[0]).toBe(false);
+    // And it never leaks into any log row.
+    const row = logger.info.mock.calls[0][1];
+    expect(JSON.stringify(row)).not.toContain('obsclr-1');
+  });
+
   test('BLOCK-1 regression guard: id returned in envelope === session.extractedObservations[0].id', async () => {
     const session = makeSession();
     const logger = makeLogger();
