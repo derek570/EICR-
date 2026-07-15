@@ -106,8 +106,14 @@ function classifyNumbers(text) {
       continue;
     }
     const value = m[1];
-    const isScope = scopeRun;
-    // Unit binding: the FOLLOWING one or two tokens name a unit.
+    // Unit binding: the FOLLOWING one or two tokens name a unit. Determined
+    // BEFORE scope classification (Codex r7-#1): in telegraphic dictation
+    // ("RCD trip time circuit 2 26 milliseconds") the unit-bound value sits
+    // inside the still-open scope run, and marking it scope both missed the
+    // capture AND made the fresh-reading detector call the utterance
+    // incomplete. §A4 rule: a number directly bound to a recognised unit is
+    // ALWAYS a value candidate; explicit unit binding also terminates the
+    // run so scope inheritance never crosses a spoken measurement.
     let unit = null;
     for (const span of [tokens[i + 1] ?? '', `${tokens[i + 1] ?? ''} ${tokens[i + 2] ?? ''}`]) {
       const cleaned = span
@@ -119,6 +125,8 @@ function classifyNumbers(text) {
         break;
       }
     }
+    const isScope = scopeRun && unit == null;
+    if (unit != null) scopeRun = false;
     out.push({ value, unit, isScope });
   }
   return out;

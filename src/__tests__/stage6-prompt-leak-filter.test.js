@@ -2760,12 +2760,33 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       expect(sanitizeObservationRegulation(value)).toBeNull();
     });
 
-    test('documented trade-off: a dotted number inside a bare-modifier phrase extracts as a bare-numeric token', () => {
-      // "Table 41.1" is NOT extracted as a modifier form (BARE_MODIFIER is
-      // deliberately unscanned — r24-#1 standalone-invalid), but the "41.1"
-      // inside it matches the bare-numeric fully-qualified shape. Pinned so
-      // the trade-off documented on the helper stays a conscious choice.
-      expect(sanitizeObservationRegulation('as shown in Table 41.1 of the document')).toBe('41.1');
+    test('Codex r7-#2 SUPERSEDES the old trade-off: a 2-digit-led dotted number ("Table 41.1") no longer extracts', () => {
+      // Previously pinned as extracting '41.1'. The r7-#2 bare-fallback
+      // shape rule (unkeyworded candidates must look like a BS 7671 ref:
+      // 3-4 digit leading group) rejects it — returning null and letting
+      // validation reject beats persisting a bogus citation.
+      expect(sanitizeObservationRegulation('as shown in Table 41.1 of the document')).toBeNull();
+    });
+
+    test.each([
+      ['Maximum permitted Zs is 1.20 ohms'],
+      ['conductor is 2.5 mm'],
+      ['reading was 1.20'],
+    ])('Codex r7-#2: uncited MEASUREMENT never becomes a regulation: %s → null', (value) => {
+      expect(sanitizeObservationRegulation(value)).toBeNull();
+    });
+
+    test.each([
+      ['132.15 applies to the inspection interval here', '132.15'],
+      ['see 411.3.3 for the requirement', '411.3.3'],
+    ])('Codex r7-#2: bare true-shape refs still survive: %s → %s', (value, expected) => {
+      expect(sanitizeObservationRegulation(value)).toBe(expected);
+    });
+
+    test('Codex r7-#2: keyword-introduced candidates keep the WIDER path ("Regulation 41.1" extracts)', () => {
+      expect(sanitizeObservationRegulation('per Regulation 41.1 of the standard')).toBe(
+        'Regulation 41.1'
+      );
     });
 
     test('non-string input returns null (defensive)', () => {

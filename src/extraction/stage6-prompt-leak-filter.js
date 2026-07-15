@@ -749,11 +749,21 @@ export function sanitizeObservationRegulation(value) {
   // ohms under Regulation 411.4.4" must sanitise to "Regulation 411.4.4",
   // never "0.35"). Tier 1: candidates explicitly introduced by a citation
   // keyword (Regulation/Reg/BS/IET/HSE — either inside the candidate or as
-  // the immediately preceding word). Tier 2: bare tokens, EXCLUDING
-  // leading-zero decimals ("0.35", "0.4") — regulation refs never start
-  // "0."; those are measurements.
+  // the immediately preceding word). Tier 2: bare tokens that LOOK like a
+  // regulation reference (see BARE_REGULATION_SHAPE_RE below) — plain
+  // decimals ("0.35", "1.20", "2.5") are measurements, never citations.
   const KEYWORD_RE = /\b(?:regulation|reg\.?|bs|iet|hse)\b/i;
-  const LEADING_ZERO_DECIMAL_RE = /^0\.\d+$/;
+  // Codex r7-#2 — the leading-zero exclusion alone still let unkeyworded
+  // MEASUREMENTS through the bare fallback ("Maximum permitted Zs is 1.20
+  // ohms" sanitised to the invented regulation "1.20"). An UNKEYWORDED
+  // bare candidate must additionally LOOK like a BS 7671 regulation ref:
+  // 3-4 digit leading group (chapters run 100-999, appendix refs to 4
+  // digits) + 1-4 dotted groups + optional trailing letter ("411.3.3",
+  // "132.15", "522.6.202"). Measurements ("1.20", "2.5") have a 1-2 digit
+  // leading group and never match. Keyword-introduced candidates keep the
+  // existing wider path — "Regulation 1.2" is the model citing, not
+  // measuring.
+  const BARE_REGULATION_SHAPE_RE = /^[1-9]\d{2,3}(?:\.\d{1,3}){1,4}[a-z]?$/i;
   let bareFallback = null;
   for (let start = 0; start < words.length; start++) {
     const maxSize = Math.min(SANITISE_MAX_WINDOW_WORDS, words.length - start);
@@ -776,7 +786,7 @@ export function sanitizeObservationRegulation(value) {
       if (KEYWORD_RE.test(candidate) || KEYWORD_RE.test(prevWord)) {
         return candidate; // tier 1 — earliest keyword-introduced match wins
       }
-      if (bareFallback === null && !LEADING_ZERO_DECIMAL_RE.test(candidate)) {
+      if (bareFallback === null && BARE_REGULATION_SHAPE_RE.test(candidate)) {
         bareFallback = candidate; // tier 2 — remembered, keep scanning for tier 1
       }
     }

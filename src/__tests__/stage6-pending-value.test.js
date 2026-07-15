@@ -128,6 +128,19 @@ describe('extractPendingValue — F8 capture rules', () => {
     });
     expect(out).toMatchObject({ value: '0.5', unit: null, source: 'question' });
   });
+
+  test('Codex r7-#1: telegraphic dictation — a UNIT-BOUND value inside a scope run is still a value ("RCD trip time circuit 2 26 milliseconds")', () => {
+    const out = extractPendingValue({
+      transcript: 'RCD trip time circuit 2 26 milliseconds',
+      question: null,
+    });
+    expect(out).toMatchObject({ value: '26', unit: 'ms', source: 'transcript' });
+  });
+
+  test('Codex r7-#1: "Zs circuit 4 0.30 ohms" captures 0.30, not scope', () => {
+    const out = extractPendingValue({ transcript: 'Zs circuit 4 0.30 ohms', question: null });
+    expect(out).toMatchObject({ value: '0.30', unit: 'ohm', source: 'transcript' });
+  });
 });
 
 describe('resolveFieldNameAnswer — field-name replies', () => {
@@ -219,5 +232,18 @@ describe('detectStructuredReading — typed, schema-aware completeness', () => {
   test('sentinel value counts for a numeric circuit field ("R1 plus R2 on circuit 3 is a limitation")', () => {
     const d = detectStructuredReading('R1 plus R2 on circuit 3 is a limitation');
     expect(d).toMatchObject({ fieldKey: 'r1_r2_ohm', circuit: 3, complete: true });
+  });
+
+  test('Codex r7-#1: telegraphic complete reading is COMPLETE ("Zs circuit 4 0.30 ohms")', () => {
+    // The unit-bound 0.30 must not inherit scope from the open "circuit 4"
+    // run — an incomplete verdict here would let this fresh reading be
+    // consumed as the answer to an unrelated pending ask.
+    const d = detectStructuredReading('Zs circuit 4 0.30 ohms');
+    expect(d).toMatchObject({ fieldKey: 'measured_zs_ohm', circuit: 4, complete: true });
+  });
+
+  test('Codex r7-#1: "RCD trip time circuit 2 26 milliseconds" is COMPLETE', () => {
+    const d = detectStructuredReading('RCD trip time circuit 2 26 milliseconds');
+    expect(d).toMatchObject({ fieldKey: 'rcd_time_ms', circuit: 2, complete: true });
   });
 });
