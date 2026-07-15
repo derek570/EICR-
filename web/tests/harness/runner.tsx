@@ -297,5 +297,11 @@ function emitFrame(
       question_type: frame.question_type ?? 'clarification',
       tool_call_id: frame.tool_call_id ?? null,
     });
+  } else if (frame.type === 'field_corrected') {
+    // Stage 6 STI-05 clear_reading wire — A2 canonicalised-key pin.
+    sonnet.emitFieldCorrected({
+      circuit: frame.circuit ?? 0,
+      field: frame.field ?? '',
+    });
   }
 }
