@@ -41,6 +41,7 @@
  */
 
 import { QUESTION_GATE_DELAY_MS } from './question-gate.js';
+import { isStage6FatalControlFlowError } from './stage6-control-flow-errors.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
 
 /**
@@ -416,7 +417,14 @@ export function createAskGateWrapper({
 
   function gateOrFire(call, ctx, innerDispatcher) {
     const key = deriveAskKey(call.input);
-    return new Promise((resolve) => {
+    // F7 Item 3 — the constructor now takes a `reject` too: a fatal
+    // control-flow error (cancellation / ask-registration hook) thrown by the
+    // inner dispatcher inside the async setTimeout callback CANNOT reject this
+    // outer Promise with a bare rethrow (it would strand the gate pending
+    // forever as an unhandled rejection). We call reject(err) for the fatal
+    // discriminator while keeping the synthesized dispatcher_error resolution
+    // for ordinary errors.
+    return new Promise((resolve, reject) => {
       const existing = pending.get(key);
       if (existing) {
         // Scenario 3 (Research §Q10) — replace. Resolve the FIRST call's
@@ -440,7 +448,15 @@ export function createAskGateWrapper({
         try {
           const result = await innerDispatcher(call, ctx);
           resolve(result);
-        } catch {
+        } catch (err) {
+          // F7 Item 3 — a FATAL control-flow error (ExtractionCancelledError /
+          // AskRegistrationHookError) must propagate unchanged: reject the
+          // composed gate Promise instead of masking it as a dispatcher_error
+          // envelope. Everything below stays the ordinary-error recovery.
+          if (isStage6FatalControlFlowError(err)) {
+            reject(err);
+            return;
+          }
           // Inner dispatcher should never throw (its own outer try/catch in
           // dispatchAskUser rolls every error into a logged envelope), but
           // we guard the wrapper anyway — a runtime quirk inside the

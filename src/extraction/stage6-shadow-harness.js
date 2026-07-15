@@ -128,6 +128,11 @@ import { extractNamedFieldValues } from './dialogue-engine/helpers/extraction.js
 // F7 Item 2 — the single dialogue-engine send choke point fires the ask
 // emission observer attached to the live WS under this Symbol.
 import { ASK_STARTED_OBSERVER } from './dialogue-engine/helpers/wire-emit.js';
+// F7 Item 3 — shared fatal control-flow discriminator + cancellation guard.
+import {
+  isStage6FatalControlFlowError,
+  throwIfStage6Cancelled,
+} from './stage6-control-flow-errors.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
@@ -678,6 +683,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         chitchatNotifier: options.chitchatNotifier,
         // F7 Item 2 — the emission audit hook (initial + pvr broker sends).
         onAskUserStarted,
+        // F7 Item 3 — the CONTROL hook (arms the watchdog latch on register)
+        // + the per-generation abort signal so a ceiling-cancelled generation's
+        // awaiting dispatcher throws instead of registering another ask.
+        onAskRegistered: options.onAskRegistered,
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -869,8 +878,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // force to disable, the bespoke negation gate is moot; the rolling-window
     // injection above is the load-bearing part of resolving a bare "no".
 
+    // F7 Item 3 — per-generation cancellation. `signal` fires when the
+    // extraction watchdog's absolute ceiling (or a no-ask 30s deadline) aborts
+    // this generation. `cancelled` is latched in the runToolLoop catch below so
+    // the post-loop finalization runs its REDUCED, toolLoopOut-independent path
+    // (bundler + designation maps + generation-owned drain + fallback +
+    // ios_send_attempt) instead of crashing on an undefined toolLoopOut — every
+    // applied write is still read back once and the queued apology still speaks.
+    const signal = options.signal ?? null;
+    let cancelled = false;
     let toolLoopOut;
     try {
+      // Do not enter the tool loop on a generation cancelled during the
+      // pre-loop postcode await (guards the snapshot from post-abort mutation).
+      throwIfStage6Cancelled(signal);
       toolLoopOut = await runToolLoop({
         client: session.client,
         model: SHADOW_MODEL,
@@ -881,6 +902,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         ctx: { sessionId: session.sessionId, turnId },
         logger: log,
         sortRecords,
+        // F7 Item 3 — thread the abort signal into the loop.
+        signal,
         // Loaded Barrel hooks — onSnapshotPatch / onLoopComplete are
         // passed only when the speculator exists, so a flag-off prod
         // session has zero overhead. The wrapper checks function-ness
@@ -906,24 +929,47 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     } catch (err) {
       askGateForTurn?.destroy();
-      try {
-        log.error?.('stage6_live_error', {
-          sessionId: session.sessionId,
-          turnId,
-          phase: 'live',
-          error: err?.message ?? String(err),
-        });
-      } catch {
-        // swallow logger failure — never break extraction
+      // F7 Item 3 — a FATAL control-flow error (watchdog ceiling cancellation /
+      // ask-registration hook) does NOT early-return an empty extraction: it
+      // FALLS THROUGH to the post-loop finalization with `cancelled = true` so
+      // writes already applied before the wedged ask are still read back and
+      // the queued apology still speaks (Audio-First invariants a + c). Only
+      // NEW model rounds / ask registrations / certificate mutations are
+      // suppressed post-abort; toolLoopOut stays undefined and the
+      // toolLoopOut-dependent blocks below are skipped.
+      if (isStage6FatalControlFlowError(err)) {
+        cancelled = true;
+        try {
+          log.info?.('stage6_live_cancelled', {
+            sessionId: session.sessionId,
+            turnId,
+            generationId,
+            reason: err?.name ?? 'ExtractionCancelledError',
+          });
+        } catch {
+          // swallow logger failure — never break finalization
+        }
+        // fall through to the finalization below
+      } else {
+        try {
+          log.error?.('stage6_live_error', {
+            sessionId: session.sessionId,
+            turnId,
+            phase: 'live',
+            error: err?.message ?? String(err),
+          });
+        } catch {
+          // swallow logger failure — never break extraction
+        }
+        // No legacy fallback in live mode. Return an empty extraction so
+        // iOS sees "no readings this turn" rather than crashing on undefined.
+        // The error is in CloudWatch for diagnosis; rollback path is env-flip.
+        return {
+          extracted_readings: [],
+          observations: [],
+          questions: [],
+        };
       }
-      // No legacy fallback in live mode. Return an empty extraction so
-      // iOS sees "no readings this turn" rather than crashing on undefined.
-      // The error is in CloudWatch for diagnosis; rollback path is env-flip.
-      return {
-        extracted_readings: [],
-        observations: [],
-        questions: [],
-      };
     }
 
     askGateForTurn?.destroy();
@@ -1152,7 +1198,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // ref came from THIS turn's create/rename op (not an unrelated
     // pre-existing circuit). Errors in the resume path are caught and
     // logged so iOS still gets the result envelope.
-    if (Array.isArray(result.circuit_updates) && result.circuit_updates.length > 0) {
+    // F7 Item 3 — SKIP the dialogue-resume/entry hooks on a cancelled
+    // generation: they can create NEW asks / mutations post-abort, which the
+    // cancellation contract forbids.
+    if (!cancelled && Array.isArray(result.circuit_updates) && result.circuit_updates.length > 0) {
       try {
         tryResumePausedScript({
           session,
@@ -1187,7 +1236,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // No-op when the script is already active (don't disturb mid-
     // walk-through) or when no extracted reading matches any
     // schema's slots — common case in non-protective-device turns.
-    if (Array.isArray(result.extracted_readings) && result.extracted_readings.length > 0) {
+    if (
+      !cancelled &&
+      Array.isArray(result.extracted_readings) &&
+      result.extracted_readings.length > 0
+    ) {
       try {
         const entryResult = tryEnterScriptFromWrites({
           session,
@@ -1461,7 +1514,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the speculator's own try/catch; never throws.
     if (speculator && typeof speculator.validateAgainstConfirmations === 'function') {
       speculator.validateAgainstConfirmations(turnId, result.confirmations, {
-        aborted: toolLoopOut.aborted === true || toolLoopOut.terminal_reason === 'tool_use_cap_hit',
+        // F7 Item 3 — on cancellation there is no toolLoopOut; a cancelled turn
+        // is aborted by definition (opts object, no toolLoopOut deref).
+        aborted:
+          cancelled ||
+          toolLoopOut?.aborted === true ||
+          toolLoopOut?.terminal_reason === 'tool_use_cap_hit',
       });
     }
 
@@ -1497,124 +1555,129 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // writes the wrong field); deferred deliberately. This net NEVER writes
     // data — zero corruption risk; worst case is a spurious prompt on numeric
     // chitchat (mitigated by VOICE_ORPHAN_PROMPT=false + chitchat-pause).
-    try {
-      const toolCalls = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
-      const orphanToolCalls = toolCalls.length;
-      // M1 Defect B (silent-drop hole): a turn whose tool calls were ALL
-      // rejected (every dispatcher envelope is_error===true) ends with
-      // zero readings/confirmations/questions and emits ZERO TTS — exactly
-      // the "circuits 5,6,7,8 are spare" all-duplicate-rejected case
-      // (field session 6674E8C5 turn-11). The existing orphan net gates on
-      // orphanToolCalls===0 so it misses this. Broaden: ALSO fire when every
-      // tool call this turn was rejected. is_error is the ONLY top-level
-      // envelope signal — ok/error/reason live INSIDE the stringified
-      // result.content, so do NOT check result.ok (no such field). A real
-      // ask_user returns is_error:false (so the every() test already excludes
-      // it — the inspector hears that question over WS via ask_user_started);
-      // the explicit name guard is belt-and-suspenders against double-speak.
-      const allRejected =
-        orphanToolCalls > 0 &&
-        toolCalls.every((c) => c?.result?.is_error === true) &&
-        !toolCalls.some((c) => c?.name === 'ask_user');
-      const producedNothing =
-        (orphanToolCalls === 0 || allRejected) &&
-        (result.extracted_readings?.length ?? 0) === 0 &&
-        (result.observations?.length ?? 0) === 0 &&
-        (result.confirmations?.length ?? 0) === 0;
-      // An answer turn is owned by the ask-resolution path — never second-guess
-      // it. (A tool call of ANY kind, including a real ask_user, also trips
-      // orphanToolCalls > 0 and skips the net, covering the "Haiku asked but
-      // wrote nothing" negative case.)
-      const isAnswerTurn = options.inResponseTo === true || (options.pendingAsks?.size ?? 0) > 0;
-      // Require a numeric value so a bare field-only fragment ("Zs") still
-      // WAITS on the existing incomplete-reading path rather than prompting.
-      const carriesValue = /\d/.test(transcriptText || '');
-      // A3 — digit-less observations ("observation that the water bond is not
-      // connected", F9 turn-28) carry no digit, so the /\d/ gate alone let
-      // them vanish without ANY spoken response when the model no-opped.
-      // OBSERVATION_PATTERN is the same fuzzy "observation"+garbles trigger
-      // the pre-LLM gate uses to FORWARD these turns — so anything it
-      // forwarded on that basis gets the same silent-drop protection here.
-      const carriesObservation = OBSERVATION_PATTERN.test(transcriptText || '');
-      if (
-        ORPHAN_PROMPT_ENABLED &&
-        options.confirmationsEnabled === true &&
-        producedNothing &&
-        !isAnswerTurn &&
-        (carriesValue || carriesObservation)
-      ) {
-        // #5a apply-complete guard (PR #68) — before emitting a contentless
-        // clarifying prompt, try a deterministic re-parse of transcriptText
-        // (result is EMPTY here by definition of producedNothing). If it yields
-        // EXACTLY one complete (field, circuit, value), apply + read it back
-        // instead of orphaning it. This removes BOTH #4's contentless local-apply
-        // fallback and #5's next-turn duplicate at the source. Runs for the
-        // all-rejected case too — recovering a real reading beats any prompt.
-        let recovered = null;
-        if (ORPHAN_APPLY_COMPLETE_ENABLED) {
-          const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
-          if (tuple) {
-            recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
-            log.info?.('stage6.orphan_apply_complete', {
+    // F7 Item 3 — SKIP the A3 orphan net on a cancelled generation (it derefs
+    // toolLoopOut.tool_calls / .rounds and could stash orphanContext for a
+    // turn that never completed). The cancellation-specific fallback below
+    // covers the "nothing audible survived" case.
+    if (!cancelled)
+      try {
+        const toolCalls = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
+        const orphanToolCalls = toolCalls.length;
+        // M1 Defect B (silent-drop hole): a turn whose tool calls were ALL
+        // rejected (every dispatcher envelope is_error===true) ends with
+        // zero readings/confirmations/questions and emits ZERO TTS — exactly
+        // the "circuits 5,6,7,8 are spare" all-duplicate-rejected case
+        // (field session 6674E8C5 turn-11). The existing orphan net gates on
+        // orphanToolCalls===0 so it misses this. Broaden: ALSO fire when every
+        // tool call this turn was rejected. is_error is the ONLY top-level
+        // envelope signal — ok/error/reason live INSIDE the stringified
+        // result.content, so do NOT check result.ok (no such field). A real
+        // ask_user returns is_error:false (so the every() test already excludes
+        // it — the inspector hears that question over WS via ask_user_started);
+        // the explicit name guard is belt-and-suspenders against double-speak.
+        const allRejected =
+          orphanToolCalls > 0 &&
+          toolCalls.every((c) => c?.result?.is_error === true) &&
+          !toolCalls.some((c) => c?.name === 'ask_user');
+        const producedNothing =
+          (orphanToolCalls === 0 || allRejected) &&
+          (result.extracted_readings?.length ?? 0) === 0 &&
+          (result.observations?.length ?? 0) === 0 &&
+          (result.confirmations?.length ?? 0) === 0;
+        // An answer turn is owned by the ask-resolution path — never second-guess
+        // it. (A tool call of ANY kind, including a real ask_user, also trips
+        // orphanToolCalls > 0 and skips the net, covering the "Haiku asked but
+        // wrote nothing" negative case.)
+        const isAnswerTurn = options.inResponseTo === true || (options.pendingAsks?.size ?? 0) > 0;
+        // Require a numeric value so a bare field-only fragment ("Zs") still
+        // WAITS on the existing incomplete-reading path rather than prompting.
+        const carriesValue = /\d/.test(transcriptText || '');
+        // A3 — digit-less observations ("observation that the water bond is not
+        // connected", F9 turn-28) carry no digit, so the /\d/ gate alone let
+        // them vanish without ANY spoken response when the model no-opped.
+        // OBSERVATION_PATTERN is the same fuzzy "observation"+garbles trigger
+        // the pre-LLM gate uses to FORWARD these turns — so anything it
+        // forwarded on that basis gets the same silent-drop protection here.
+        const carriesObservation = OBSERVATION_PATTERN.test(transcriptText || '');
+        if (
+          ORPHAN_PROMPT_ENABLED &&
+          options.confirmationsEnabled === true &&
+          producedNothing &&
+          !isAnswerTurn &&
+          (carriesValue || carriesObservation)
+        ) {
+          // #5a apply-complete guard (PR #68) — before emitting a contentless
+          // clarifying prompt, try a deterministic re-parse of transcriptText
+          // (result is EMPTY here by definition of producedNothing). If it yields
+          // EXACTLY one complete (field, circuit, value), apply + read it back
+          // instead of orphaning it. This removes BOTH #4's contentless local-apply
+          // fallback and #5's next-turn duplicate at the source. Runs for the
+          // all-rejected case too — recovering a real reading beats any prompt.
+          let recovered = null;
+          if (ORPHAN_APPLY_COMPLETE_ENABLED) {
+            const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
+            if (tuple) {
+              recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
+              log.info?.('stage6.orphan_apply_complete', {
+                sessionId: session.sessionId,
+                turnId,
+                field: recovered.field,
+                circuit: recovered.circuit,
+                value: recovered.value,
+                textPreview: String(transcriptText || '').slice(0, 80),
+              });
+            }
+          }
+          if (!recovered) {
+            // M1 Defect B: all-rejected turns get an "I couldn't action that"
+            // message (the action WAS understood but rejected); the zero-tool-call
+            // orphan case keeps the "didn't catch what that was for" wording.
+            // A3: an observation-shaped zero-tool-call turn gets the observation
+            // flavour instead — including the dual-match case where the
+            // transcript ALSO carries a digit ("observation that socket on
+            // circuit 3 is cracked"): the #5a re-parse above has already run and
+            // recovered nothing, so the observation lead-in is the stronger
+            // signal for what the utterance WAS. allRejected keeps precedence:
+            // there the tool call happened and was rejected, and "couldn't
+            // action that" is the accurate story regardless of shape.
+            const prompt = allRejected
+              ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
+              : carriesObservation
+                ? OBSERVATION_ORPHAN_PROMPT
+                : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
+            if (!Array.isArray(result.confirmations)) result.confirmations = [];
+            result.confirmations.push({
+              text: prompt,
+              field: null,
+              circuit: null,
+              // Keep out of the audio-finalizer expected-ACK accounting — this is
+              // a clarifying prompt, not a value read-back to reconcile against a
+              // fast-path POST.
+              expects_ios_ack: false,
+            });
+            session.orphanContext = { transcript: transcriptText, turnNum };
+            log.info?.('stage6.orphan_prompt_emitted', {
               sessionId: session.sessionId,
               turnId,
-              field: recovered.field,
-              circuit: recovered.circuit,
-              value: recovered.value,
+              rounds: toolLoopOut.rounds,
+              // A3: the observation shape gets its own cause for forensics;
+              // the two pre-existing reading causes are unchanged.
+              cause: allRejected
+                ? 'all_rejected'
+                : carriesObservation
+                  ? 'observation_no_tool_calls'
+                  : 'zero_tool_calls',
               textPreview: String(transcriptText || '').slice(0, 80),
             });
           }
         }
-        if (!recovered) {
-          // M1 Defect B: all-rejected turns get an "I couldn't action that"
-          // message (the action WAS understood but rejected); the zero-tool-call
-          // orphan case keeps the "didn't catch what that was for" wording.
-          // A3: an observation-shaped zero-tool-call turn gets the observation
-          // flavour instead — including the dual-match case where the
-          // transcript ALSO carries a digit ("observation that socket on
-          // circuit 3 is cracked"): the #5a re-parse above has already run and
-          // recovered nothing, so the observation lead-in is the stronger
-          // signal for what the utterance WAS. allRejected keeps precedence:
-          // there the tool call happened and was rejected, and "couldn't
-          // action that" is the accurate story regardless of shape.
-          const prompt = allRejected
-            ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
-            : carriesObservation
-              ? OBSERVATION_ORPHAN_PROMPT
-              : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
-          if (!Array.isArray(result.confirmations)) result.confirmations = [];
-          result.confirmations.push({
-            text: prompt,
-            field: null,
-            circuit: null,
-            // Keep out of the audio-finalizer expected-ACK accounting — this is
-            // a clarifying prompt, not a value read-back to reconcile against a
-            // fast-path POST.
-            expects_ios_ack: false,
-          });
-          session.orphanContext = { transcript: transcriptText, turnNum };
-          log.info?.('stage6.orphan_prompt_emitted', {
-            sessionId: session.sessionId,
-            turnId,
-            rounds: toolLoopOut.rounds,
-            // A3: the observation shape gets its own cause for forensics;
-            // the two pre-existing reading causes are unchanged.
-            cause: allRejected
-              ? 'all_rejected'
-              : carriesObservation
-                ? 'observation_no_tool_calls'
-                : 'zero_tool_calls',
-            textPreview: String(transcriptText || '').slice(0, 80),
-          });
-        }
+      } catch (orphanErr) {
+        log.warn?.('stage6.orphan_net_error', {
+          sessionId: session.sessionId,
+          turnId,
+          error: orphanErr?.message ?? String(orphanErr),
+        });
       }
-    } catch (orphanErr) {
-      log.warn?.('stage6.orphan_net_error', {
-        sessionId: session.sessionId,
-        turnId,
-        error: orphanErr?.message ?? String(orphanErr),
-      });
-    }
 
     // ── F7 Item 2 — shared post-loop ask-outcome classification ─────────
     // Both the §D2 net and the NEW pre-emission audibility net need to read a
@@ -1665,98 +1728,100 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // recording an unrelated reading while dropping the observation still
     // triggers the net. Failure → ONE deterministic apology/re-ask through
     // the same A1(b)-exempt field-nil confirmation channel as A4's fallback.
-    try {
-      const seq = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
-      let anchorIdx = -1;
-      for (let i = 0; i < seq.length; i += 1) {
-        const c = seq[i];
-        if (
-          c?.name === 'ask_user' &&
-          c?.input?.context_field === 'observation_clarify' &&
-          parseAskOutcome(c).answered
-        ) {
-          anchorIdx = i;
-        }
-      }
-      if (anchorIdx >= 0) {
-        // Codex r1-#3 — qualification is DELIBERATELY narrow:
-        //   - only a successful record_observation counts as the observation
-        //     WRITE (delete_observation removes a different observation and
-        //     records nothing — the clarified defect is still lost);
-        //   - an unanswered continuation counts ONLY when its outcome proves
-        //     the question was actually EMITTED/audible. Pre-fire outcomes
-        //     (ask_budget_exhausted / restrained_mode / gated /
-        //     validation_error / prompt_leak_blocked / shadow_mode /
-        //     duplicate_tool_call_id / dispatcher_error*) were never spoken,
-        //     so counting them would preserve the beep-then-silence failure.
-        //   AUDIBLE_NON_ANSWER_REASONS + parseAskOutcome are the shared
-        //   hoisted helpers above.
-        // Codex r4-#5 — a qualifying CONTINUATION must belong to the SAME
-        // clarification chain as the answered anchor. Without the chain
-        // check, an audibly-terminated ask about a DIFFERENT observation
-        // (chain B times out) would suppress observation A's deterministic
-        // fallback — A's answered clarification silently dropped. Legacy
-        // asks without a chain id compare null === null and keep today's
-        // behaviour.
-        const anchorChainId = seq[anchorIdx]?.input?.clarification_chain_id ?? null;
-        let qualified = false;
-        for (let i = anchorIdx + 1; i < seq.length; i += 1) {
+    // F7 Item 3 — SKIP on a cancelled generation (derefs toolLoopOut.tool_calls).
+    if (!cancelled)
+      try {
+        const seq = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
+        let anchorIdx = -1;
+        for (let i = 0; i < seq.length; i += 1) {
           const c = seq[i];
-          if (c?.name === 'record_observation' && c?.result?.is_error !== true) {
-            qualified = true;
-            break;
-          }
           if (
             c?.name === 'ask_user' &&
             c?.input?.context_field === 'observation_clarify' &&
-            (c?.input?.clarification_chain_id ?? null) === anchorChainId &&
-            !parseAskOutcome(c).answered &&
-            AUDIBLE_NON_ANSWER_REASONS.has(parseAskOutcome(c).reason) &&
-            // F7 Item 2 — the SAME swallowed-send hole D2 had: an audible
-            // non-answer REASON alone is not proof of speech. A continuation
-            // whose ws.send was swallowed (closed socket / throwing send)
-            // stayed registered and later reported `timeout` ∈
-            // AUDIBLE_NON_ANSWER_REASONS, but was never SPOKEN. Require the
-            // continuation's tool_call_id to be in emittedAskToolCallIds
-            // (an ask_user_started that actually crossed the wire).
-            emittedAskToolCallIds.has(c.tool_call_id)
+            parseAskOutcome(c).answered
           ) {
-            // Audibly-terminated SAME-CHAIN continuation (question spoken).
-            qualified = true;
-            break;
+            anchorIdx = i;
           }
         }
-        // §D2 Codex r1-#4 — retire the chain when the observation resolved
-        // (success) OR when the deterministic terminal fallback fires below:
-        // in both cases the clarification is OVER, and a later
-        // observation_clarify ask (a NEW ambiguous observation) must get a
-        // fresh budget bucket rather than joining this chain's.
-        if (anchorChainId && session.obsClarifyChains?.retire) {
-          session.obsClarifyChains.retire(anchorChainId);
+        if (anchorIdx >= 0) {
+          // Codex r1-#3 — qualification is DELIBERATELY narrow:
+          //   - only a successful record_observation counts as the observation
+          //     WRITE (delete_observation removes a different observation and
+          //     records nothing — the clarified defect is still lost);
+          //   - an unanswered continuation counts ONLY when its outcome proves
+          //     the question was actually EMITTED/audible. Pre-fire outcomes
+          //     (ask_budget_exhausted / restrained_mode / gated /
+          //     validation_error / prompt_leak_blocked / shadow_mode /
+          //     duplicate_tool_call_id / dispatcher_error*) were never spoken,
+          //     so counting them would preserve the beep-then-silence failure.
+          //   AUDIBLE_NON_ANSWER_REASONS + parseAskOutcome are the shared
+          //   hoisted helpers above.
+          // Codex r4-#5 — a qualifying CONTINUATION must belong to the SAME
+          // clarification chain as the answered anchor. Without the chain
+          // check, an audibly-terminated ask about a DIFFERENT observation
+          // (chain B times out) would suppress observation A's deterministic
+          // fallback — A's answered clarification silently dropped. Legacy
+          // asks without a chain id compare null === null and keep today's
+          // behaviour.
+          const anchorChainId = seq[anchorIdx]?.input?.clarification_chain_id ?? null;
+          let qualified = false;
+          for (let i = anchorIdx + 1; i < seq.length; i += 1) {
+            const c = seq[i];
+            if (c?.name === 'record_observation' && c?.result?.is_error !== true) {
+              qualified = true;
+              break;
+            }
+            if (
+              c?.name === 'ask_user' &&
+              c?.input?.context_field === 'observation_clarify' &&
+              (c?.input?.clarification_chain_id ?? null) === anchorChainId &&
+              !parseAskOutcome(c).answered &&
+              AUDIBLE_NON_ANSWER_REASONS.has(parseAskOutcome(c).reason) &&
+              // F7 Item 2 — the SAME swallowed-send hole D2 had: an audible
+              // non-answer REASON alone is not proof of speech. A continuation
+              // whose ws.send was swallowed (closed socket / throwing send)
+              // stayed registered and later reported `timeout` ∈
+              // AUDIBLE_NON_ANSWER_REASONS, but was never SPOKEN. Require the
+              // continuation's tool_call_id to be in emittedAskToolCallIds
+              // (an ask_user_started that actually crossed the wire).
+              emittedAskToolCallIds.has(c.tool_call_id)
+            ) {
+              // Audibly-terminated SAME-CHAIN continuation (question spoken).
+              qualified = true;
+              break;
+            }
+          }
+          // §D2 Codex r1-#4 — retire the chain when the observation resolved
+          // (success) OR when the deterministic terminal fallback fires below:
+          // in both cases the clarification is OVER, and a later
+          // observation_clarify ask (a NEW ambiguous observation) must get a
+          // fresh budget bucket rather than joining this chain's.
+          if (anchorChainId && session.obsClarifyChains?.retire) {
+            session.obsClarifyChains.retire(anchorChainId);
+          }
+          if (!qualified) {
+            if (!Array.isArray(result.confirmations)) result.confirmations = [];
+            result.confirmations.push({
+              text: "Sorry — I didn't record that observation. Could you give it to me again?",
+              field: null,
+              circuit: null,
+              expects_ios_ack: false,
+            });
+            log.info?.('stage6.observation_clarify_dropped_net', {
+              sessionId: session.sessionId,
+              turnId,
+              anchor_tool_call_id: seq[anchorIdx]?.tool_call_id ?? null,
+              tool_calls: seq.length,
+            });
+          }
         }
-        if (!qualified) {
-          if (!Array.isArray(result.confirmations)) result.confirmations = [];
-          result.confirmations.push({
-            text: "Sorry — I didn't record that observation. Could you give it to me again?",
-            field: null,
-            circuit: null,
-            expects_ios_ack: false,
-          });
-          log.info?.('stage6.observation_clarify_dropped_net', {
-            sessionId: session.sessionId,
-            turnId,
-            anchor_tool_call_id: seq[anchorIdx]?.tool_call_id ?? null,
-            tool_calls: seq.length,
-          });
-        }
+      } catch (obsNetErr) {
+        log.warn?.('stage6.observation_clarify_net_error', {
+          sessionId: session.sessionId,
+          turnId,
+          error: obsNetErr?.message ?? String(obsNetErr),
+        });
       }
-    } catch (obsNetErr) {
-      log.warn?.('stage6.observation_clarify_net_error', {
-        sessionId: session.sessionId,
-        turnId,
-        error: obsNetErr?.message ?? String(obsNetErr),
-      });
-    }
 
     // ── F7 Item 2 (task #16) — pre-emission ask-audibility net ───────────
     // Codex cycle-6 finding: A3/D2/A4 all MISS the case where Sonnet emitted
@@ -1777,7 +1842,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     try {
       if (options.confirmationsEnabled === true) {
         const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
-        const calls = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
+        // toolLoopOut is undefined on a cancelled generation → no attempted
+        // asks are recoverable; the cancellation predicate (below) does not
+        // require any.
+        const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
         const attemptedAskCalls = calls.filter((c) => c?.name === 'ask_user');
         const survivingConfCount = Array.isArray(result.confirmations)
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
@@ -1785,16 +1853,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
           ? session.pendingVoicePrompts.filter((p) => isAudibleText(p?.text)).length
           : 0;
-        // Exact predicate (no vacuous firing on empty turns): an ask was
-        // ATTEMPTED, none was actually emitted, and nothing else audible
-        // survives (confirmation text OR a queued A4 prompt with real text —
-        // count what the drain will actually convert, not array length).
-        if (
-          attemptedAskCalls.length > 0 &&
-          emittedAskToolCallIds.size === 0 &&
-          survivingConfCount === 0 &&
-          survivingPromptCount === 0
-        ) {
+        // F7 Item 3 — the cancellation branch uses ONLY a "nothing audible
+        // survived" predicate (a ceiling-cancelled generation may have no
+        // tool_calls at all): fire the fallback whenever the generation ends
+        // with no surviving confirmation/prompt and no positively-emitted ask,
+        // so a wedged-then-cancelled turn is never silent. The normal branch
+        // keeps the exact "ask ATTEMPTED but never emitted" predicate (no
+        // vacuous firing on empty turns).
+        const shouldFire = cancelled
+          ? survivingConfCount === 0 &&
+            survivingPromptCount === 0 &&
+            emittedAskToolCallIds.size === 0
+          : attemptedAskCalls.length > 0 &&
+            emittedAskToolCallIds.size === 0 &&
+            survivingConfCount === 0 &&
+            survivingPromptCount === 0;
+        if (shouldFire) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           // Queue on the A4 FIFO channel; the drain below moves it onto the
           // wire this turn. `fallbackToLegacy` is pre-emission/non-audible in
@@ -1943,10 +2017,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // sometimes pass partial sessions); skip if usage is all zeros (mock
     // streams without usage events) so test assertions on turn counts
     // stay stable when fixtures don't carry usage.
+    // F7 Item 3 — null-safe on cancellation (toolLoopOut undefined → no usage
+    // to bill; the `?.` short-circuits the whole condition).
     if (
       session.costTracker &&
       typeof session.costTracker.addSonnetUsage === 'function' &&
-      toolLoopOut.usage &&
+      toolLoopOut?.usage &&
       (toolLoopOut.usage.input_tokens > 0 ||
         toolLoopOut.usage.output_tokens > 0 ||
         toolLoopOut.usage.cache_read_input_tokens > 0 ||
@@ -1968,19 +2044,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     log.info('stage6_live_extraction', {
       sessionId: session.sessionId,
       turnId,
-      rounds: toolLoopOut.rounds,
-      aborted: toolLoopOut.aborted ?? false,
-      abort_reason: toolLoopOut.aborted && toolLoopOut.rounds >= 8 ? 'loop_cap' : null,
+      // F7 Item 3 — null-safe: a cancelled generation has no toolLoopOut. The
+      // cancellation is reflected by `cancelled: true`.
+      cancelled,
+      rounds: toolLoopOut?.rounds ?? 0,
+      aborted: cancelled || (toolLoopOut?.aborted ?? false),
+      abort_reason: toolLoopOut?.aborted && toolLoopOut?.rounds >= 8 ? 'loop_cap' : null,
       readings: result.extracted_readings.length,
       observations: result.observations.length,
       // Token usage logged here for per-turn CloudWatch visibility (mirrors
       // the legacy off-mode "Turn cost" log at eicr-extraction-session.js:1618).
       // Cumulative session totals live on session.costTracker and ride out
       // via cost_summary.json at session end.
-      usage_input: toolLoopOut.usage?.input_tokens ?? 0,
-      usage_output: toolLoopOut.usage?.output_tokens ?? 0,
-      usage_cache_read: toolLoopOut.usage?.cache_read_input_tokens ?? 0,
-      usage_cache_write: toolLoopOut.usage?.cache_creation_input_tokens ?? 0,
+      usage_input: toolLoopOut?.usage?.input_tokens ?? 0,
+      usage_output: toolLoopOut?.usage?.output_tokens ?? 0,
+      usage_cache_read: toolLoopOut?.usage?.cache_read_input_tokens ?? 0,
+      usage_cache_write: toolLoopOut?.usage?.cache_creation_input_tokens ?? 0,
     });
 
     // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8).
@@ -1991,91 +2070,97 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // its 8s timeout) and shares `{sessionId, turnId}` keys for downstream
     // CloudWatch JOIN. Wrapped via the emitter's own try/catch so telemetry
     // failures never break extraction.
-    try {
-      // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: filter by
-      // `expects_ios_ack` so the audio finalizer only arms for bundler
-      // confirmations whose iOS speak site can actually fire a playback-
-      // ack. Synthesised state-change / observation / cleared confirmations
-      // set `expects_ios_ack: false` (see stage6-event-bundler.js) because
-      // they route through iOS speakBriefConfirmation sites that lack a
-      // per-confirmation turnId today. Canonical extracted-value
-      // confirmations omit the field and default to ACK-eligible for
-      // back-compat with pre-Tier-1.1 emit code.
-      const bundlerEmittedCount = Array.isArray(result.confirmations)
-        ? result.confirmations.filter((c) => c?.expects_ios_ack !== false).length
-        : 0;
-      const runLiveDurationMs = Number((process.hrtime.bigint() - runLiveStartNs) / 1000000n);
-      // Plan B (2026-06-17) B3 — turn_shape dimension. Classifies the turn so
-      // dashboards can split Loaded Barrel HIT/MISS/drift + perceived latency by
-      // shape (and verify the trade-off: single-call HIT rate stays high while
-      // multi-call/round MISSes are expected & visible, not a silent regression).
-      //   multi_round → the agentic loop ran >= 2 rounds (the Plan A restoration
-      //                 in action — model reasoned/acted across rounds).
-      //   multi_call  → one round but >= 2 tool calls (batch emit / broadcast).
-      //   single_call → one round, <= 1 tool call (the clean fast path).
-      // Correlate to loaded_barrel.* outcome rows via {sessionId, turnId}.
-      const totalToolCalls = Array.isArray(toolLoopOut.tool_calls)
-        ? toolLoopOut.tool_calls.length
-        : 0;
-      const turnShape =
-        (toolLoopOut.rounds ?? 1) >= 2
-          ? 'multi_round'
-          : totalToolCalls >= 2
-            ? 'multi_call'
-            : 'single_call';
-      emitTurnCoreSummary({
-        sessionId: session.sessionId,
-        turnId,
-        rounds: toolLoopOut.rounds,
-        turn_shape: turnShape,
-        tool_call_count_total: totalToolCalls,
-        // Phase 2 protocol-truth split: terminal_reason carries the
-        // server-side classification (end_turn / tool_use_cap_hit /
-        // aborted); actual_stop_reason_per_round preserves Anthropic's
-        // stop_reason verbatim per round.
-        terminal_reason: toolLoopOut.terminal_reason ?? null,
-        actual_stop_reason_per_round: toolLoopOut.actual_stop_reason_per_round ?? [],
-        tool_names_per_round: toolLoopOut.tool_names_per_round ?? [],
-        tool_call_count_per_round: toolLoopOut.tool_call_count_per_round ?? [],
-        tool_error_count_per_round: toolLoopOut.tool_error_count_per_round ?? [],
-        round_timings: toolLoopOut.round_timings ?? [],
-        run_live_duration_ms: runLiveDurationMs,
-        bundler_emitted_count: bundlerEmittedCount,
-        readings_count: result.extracted_readings.length,
-        observations_count: result.observations.length,
-        // Server-side audible-first-byte is null in this path — fast-path
-        // audio is iOS-driven; the bundler emits text-only confirmations
-        // here. The audio_summary row will carry the iOS-side timestamps.
-        audible_first_byte_ms: null,
-        audible_first_byte_source: null,
-        // Path classification: defaults to 'bundler_only' unless iOS
-        // attached a fast-path correlation, in which case 'fast_path_attempted'
-        // is more informative for dashboards (the audio summary then
-        // tells us whether the fast-path actually delivered audio).
-        path_classification:
-          (entry?.fastPathCorrelationIdByTurn?.get(turnId)?.size ?? 0) > 0
-            ? 'fast_path_attempted'
-            : 'bundler_only',
-      });
+    //
+    // F7 Item 3 — SKIP the entire core-summary + audio-finalizer block on a
+    // cancelled generation: it derefs toolLoopOut.usage / .rounds /
+    // .terminal_reason and reads runLiveStartNs for the perceived-latency
+    // clock, none of which are meaningful for a wedged-then-cancelled turn.
+    if (!cancelled)
+      try {
+        // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: filter by
+        // `expects_ios_ack` so the audio finalizer only arms for bundler
+        // confirmations whose iOS speak site can actually fire a playback-
+        // ack. Synthesised state-change / observation / cleared confirmations
+        // set `expects_ios_ack: false` (see stage6-event-bundler.js) because
+        // they route through iOS speakBriefConfirmation sites that lack a
+        // per-confirmation turnId today. Canonical extracted-value
+        // confirmations omit the field and default to ACK-eligible for
+        // back-compat with pre-Tier-1.1 emit code.
+        const bundlerEmittedCount = Array.isArray(result.confirmations)
+          ? result.confirmations.filter((c) => c?.expects_ios_ack !== false).length
+          : 0;
+        const runLiveDurationMs = Number((process.hrtime.bigint() - runLiveStartNs) / 1000000n);
+        // Plan B (2026-06-17) B3 — turn_shape dimension. Classifies the turn so
+        // dashboards can split Loaded Barrel HIT/MISS/drift + perceived latency by
+        // shape (and verify the trade-off: single-call HIT rate stays high while
+        // multi-call/round MISSes are expected & visible, not a silent regression).
+        //   multi_round → the agentic loop ran >= 2 rounds (the Plan A restoration
+        //                 in action — model reasoned/acted across rounds).
+        //   multi_call  → one round but >= 2 tool calls (batch emit / broadcast).
+        //   single_call → one round, <= 1 tool call (the clean fast path).
+        // Correlate to loaded_barrel.* outcome rows via {sessionId, turnId}.
+        const totalToolCalls = Array.isArray(toolLoopOut.tool_calls)
+          ? toolLoopOut.tool_calls.length
+          : 0;
+        const turnShape =
+          (toolLoopOut.rounds ?? 1) >= 2
+            ? 'multi_round'
+            : totalToolCalls >= 2
+              ? 'multi_call'
+              : 'single_call';
+        emitTurnCoreSummary({
+          sessionId: session.sessionId,
+          turnId,
+          rounds: toolLoopOut.rounds,
+          turn_shape: turnShape,
+          tool_call_count_total: totalToolCalls,
+          // Phase 2 protocol-truth split: terminal_reason carries the
+          // server-side classification (end_turn / tool_use_cap_hit /
+          // aborted); actual_stop_reason_per_round preserves Anthropic's
+          // stop_reason verbatim per round.
+          terminal_reason: toolLoopOut.terminal_reason ?? null,
+          actual_stop_reason_per_round: toolLoopOut.actual_stop_reason_per_round ?? [],
+          tool_names_per_round: toolLoopOut.tool_names_per_round ?? [],
+          tool_call_count_per_round: toolLoopOut.tool_call_count_per_round ?? [],
+          tool_error_count_per_round: toolLoopOut.tool_error_count_per_round ?? [],
+          round_timings: toolLoopOut.round_timings ?? [],
+          run_live_duration_ms: runLiveDurationMs,
+          bundler_emitted_count: bundlerEmittedCount,
+          readings_count: result.extracted_readings.length,
+          observations_count: result.observations.length,
+          // Server-side audible-first-byte is null in this path — fast-path
+          // audio is iOS-driven; the bundler emits text-only confirmations
+          // here. The audio_summary row will carry the iOS-side timestamps.
+          audible_first_byte_ms: null,
+          audible_first_byte_source: null,
+          // Path classification: defaults to 'bundler_only' unless iOS
+          // attached a fast-path correlation, in which case 'fast_path_attempted'
+          // is more informative for dashboards (the audio summary then
+          // tells us whether the fast-path actually delivered audio).
+          path_classification:
+            (entry?.fastPathCorrelationIdByTurn?.get(turnId)?.size ?? 0) > 0
+              ? 'fast_path_attempted'
+              : 'bundler_only',
+        });
 
-      // Arm the audio finalizer. expected_acks =
-      //   (bundler confirmations) + (fast-TTS POSTs attempted this turn)
-      // minus any pre-finalizer decrements stashed by the fast-TTS route
-      // when it 4xx'd before runLiveMode minted this turnId. The drain is
-      // done inside startAudioFinalizer; we just supply the two counts.
-      const attemptedFastTtsCount = entry?.fastPathCorrelationIdByTurn?.get(turnId)?.size ?? 0;
-      startAudioFinalizer(session.sessionId, turnId, {
-        bundlerEmittedCount,
-        attemptedFastTtsCount,
-      });
-    } catch (telemetryErr) {
-      log?.warn?.('voice_latency.turn_summary_emit_error', {
-        sessionId: session.sessionId,
-        turnId,
-        stage: 'live_mode_emit',
-        error: telemetryErr?.message || String(telemetryErr),
-      });
-    }
+        // Arm the audio finalizer. expected_acks =
+        //   (bundler confirmations) + (fast-TTS POSTs attempted this turn)
+        // minus any pre-finalizer decrements stashed by the fast-TTS route
+        // when it 4xx'd before runLiveMode minted this turnId. The drain is
+        // done inside startAudioFinalizer; we just supply the two counts.
+        const attemptedFastTtsCount = entry?.fastPathCorrelationIdByTurn?.get(turnId)?.size ?? 0;
+        startAudioFinalizer(session.sessionId, turnId, {
+          bundlerEmittedCount,
+          attemptedFastTtsCount,
+        });
+      } catch (telemetryErr) {
+        log?.warn?.('voice_latency.turn_summary_emit_error', {
+          sessionId: session.sessionId,
+          turnId,
+          stage: 'live_mode_emit',
+          error: telemetryErr?.message || String(telemetryErr),
+        });
+      }
 
     return result;
   } finally {
@@ -2468,6 +2553,11 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       }
     }
   } catch (err) {
+    // F7 Item 3 — defence-in-depth: cancellation is live-mode only (shadow
+    // threads no signal), but if a fatal control-flow error ever reaches the
+    // shadow-mode catch, rethrow it unchanged rather than silently returning
+    // the legacy result.
+    if (isStage6FatalControlFlowError(err)) throw err;
     try {
       log.warn?.('stage6_shadow_error', {
         sessionId: session.sessionId,

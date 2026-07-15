@@ -45,6 +45,11 @@
  */
 
 import { createAssembler } from './stage6-stream-assembler.js';
+import {
+  ExtractionCancelledError,
+  isStage6FatalControlFlowError,
+  throwIfStage6Cancelled,
+} from './stage6-control-flow-errors.js';
 
 // ---------------------------------------------------------------------------
 // Loaded Barrel Phase 2.C — perTurnWrites snapshot/diff helpers (plan v10 §C)
@@ -335,6 +340,17 @@ export async function runToolLoop({
    * to pre-Phase-2.D behaviour.
    */
   onToolUseStreamed,
+  /**
+   * F7 Item 3 — per-generation AbortController signal. When the extraction
+   * watchdog's absolute ceiling (or a no-ask 30s deadline) fires, sonnet-stream
+   * aborts this signal. The loop passes it to every client.messages.stream
+   * call, canonicalises the SDK's APIUserAbortError into ExtractionCancelledError
+   * while aborted, and checks throwIfStage6Cancelled at each round boundary +
+   * around each dispatcher await, so a cancelled generation cannot enter another
+   * Anthropic round, register another ask, or mutate state. Omitted (undefined)
+   * → no cancellation checks (back-compat with every non-live caller / test).
+   */
+  signal,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -374,6 +390,9 @@ export async function runToolLoop({
   while (rounds < maxRounds) {
     rounds += 1;
 
+    // F7 Item 3 — do not enter a new Anthropic round on a cancelled generation.
+    throwIfStage6Cancelled(signal);
+
     // Per-round stream. The SDK helper returns both an async-iterable AND a
     // .finalMessage() promise — we consume both for different purposes:
     //   - iteration drives the assembler (records + stop_reason)
@@ -412,7 +431,11 @@ export async function runToolLoop({
         round1_model: effectiveModel,
       });
     }
-    const stream = client.messages.stream(streamArgs);
+    // F7 Item 3 — pass the per-generation abort signal so the SDK aborts an
+    // in-flight stream when the watchdog ceiling fires. Passed as the SDK's
+    // request-options bag (2nd arg); undefined-safe for callers/tests that pass
+    // no signal.
+    const stream = client.messages.stream(streamArgs, signal ? { signal } : undefined);
 
     // Loaded Barrel Phase 2.D (2026-05-25) — pipe each finalised
     // tool_use record into the speculator's streamed hook the moment
@@ -443,10 +466,31 @@ export async function runToolLoop({
           }
         : undefined;
     const asm = createAssembler({ logger, onRecordComplete: streamedHook });
-    for await (const ev of stream) {
-      asm.handle(ev);
+    // F7 Item 3 — SDK abort canonicalisation. The installed Anthropic SDK does
+    // NOT preserve custom cancellation types: an external `signal` abort
+    // surfaces from MessageStream as APIUserAbortError, and the `for await` /
+    // finalMessage() can REJECT before any post-await signal check runs. Wrap
+    // BOTH stream iteration AND finalMessage() so any error caught while
+    // signal.aborted === true is rethrown as the shared fatal
+    // ExtractionCancelledError (SDK error as cause) — every recovery layer
+    // below rethrows on the discriminator rather than swallowing it.
+    let records;
+    let stop_reason;
+    let assistantMsg;
+    try {
+      for await (const ev of stream) {
+        asm.handle(ev);
+      }
+      ({ records, stop_reason } = asm.finalize());
+      // finalMessage() is consumed here (moved up from below) so it lives
+      // inside the same abort-canonicalisation try as the iteration.
+      assistantMsg = await stream.finalMessage();
+    } catch (err) {
+      if (signal?.aborted) {
+        throw new ExtractionCancelledError('extraction cancelled during stream', { cause: err });
+      }
+      throw err;
     }
-    const { records, stop_reason } = asm.finalize();
     stopReason = stop_reason;
     // Phase 0 — round-level stream complete time (post-finalize).
     const roundStreamCompleteNs = process.hrtime.bigint();
@@ -466,7 +510,7 @@ export async function runToolLoop({
     // push) meant messages_final lost the model's last turn and any caller
     // building multi-turn history from it would lose context for the next
     // user turn. Codex's Phase-1 STG review flagged this as MAJOR.
-    const assistantMsg = await stream.finalMessage();
+    // (finalMessage() was awaited inside the abort-canonicalisation try above.)
     messages.push({ role: 'assistant', content: assistantMsg.content });
 
     // Sum this round's token usage into the loop accumulator. Defensive
@@ -656,11 +700,16 @@ export async function runToolLoop({
         snapshotPtw = perTurnWritesRef();
         snapshotBefore = captureSnapshot(snapshotPtw);
       }
+      // F7 Item 3 — do not dispatch on a cancelled generation.
+      throwIfStage6Cancelled(signal);
       try {
         const res = await dispatcher(
           { tool_call_id: rec.tool_call_id, name: rec.name, input: rec.input },
           ctx
         );
+        // F7 Item 3 — an abort landing during the dispatcher await must stop
+        // the loop before it records/appends anything for this call.
+        throwIfStage6Cancelled(signal);
         const duration_ms = Date.now() - started;
         // Loaded Barrel Phase 2.C — diff + emit. The hook MUST NOT
         // affect dispatch outcome — wrap in try/catch and never
@@ -742,6 +791,12 @@ export async function runToolLoop({
           tool_call_id: rec.tool_call_id,
         });
       } catch (err) {
+        // F7 Item 3 — a FATAL control-flow error (ExtractionCancelledError /
+        // AskRegistrationHookError) must NOT be converted into a
+        // dispatcher_error tool_result and swallowed: rethrow it unchanged so
+        // the shadow-harness cancellation-finalization path can run. Test the
+        // discriminator BEFORE the generic recovery below.
+        if (isStage6FatalControlFlowError(err)) throw err;
         const duration_ms = Date.now() - started;
         logger?.error?.('stage6.tool_call', {
           sessionId: ctx?.sessionId,

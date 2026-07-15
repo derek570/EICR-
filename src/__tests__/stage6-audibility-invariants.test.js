@@ -80,6 +80,7 @@ import {
 } from './helpers/f7-audibility-matrix.js';
 
 import { mockClient } from './helpers/mockStream.js';
+import { ExtractionCancelledError } from '../extraction/stage6-control-flow-errors.js';
 
 const SESSION_ID = 'sess-f7-integration';
 
@@ -374,6 +375,43 @@ describe('F7 integration lane — invariant (a): chime-producing confirmation-mo
     // suppresses its fallback → silence. Post-fix the emission check fails
     // the qualification → the deterministic fallback fires.
     expect(turnIsAudible(result, ws)).toBe(true);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// F7 Item 3 — real-harness plumbing: a pre-aborted signal propagates through
+// the REAL runToolLoop → runLiveMode catch → finalized partial (no mock of
+// runToolLoop, so this proves the loop actually consumes the signal).
+// ───────────────────────────────────────────────────────────────────────────
+describe('F7 Item 3 — cancellation propagates through the real runToolLoop', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    registerEntry();
+  });
+  afterEach(() => {
+    activeSessions.delete(SESSION_ID);
+    jest.useRealTimers();
+  });
+
+  test('a pre-aborted signal prevents any stream and finalizes a partial with the deterministic fallback', async () => {
+    const ac = new AbortController();
+    ac.abort(new ExtractionCancelledError('watchdog ceiling'));
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      // The mock client would emit an ask; the aborted signal makes runToolLoop
+      // throw at the first round boundary before consuming it.
+      client: mockClient([
+        toolUseRound([{ id: 'toolu_a', name: 'ask_user', input: VALID_ASK }]),
+        endTurnRound('ok'),
+      ]),
+    });
+    const result = await driveLiveTurn(session, 'wedged turn', baseOpts({ signal: ac.signal }));
+    // Finalized partial (never a throw past runLiveMode) + the fallback fired.
+    expect(result).toBeDefined();
+    const fallback = (result.confirmations ?? []).filter(
+      (c) => c.field == null && /couldn.t action that/i.test(c.text || '')
+    );
+    expect(fallback).toHaveLength(1);
   });
 });
 

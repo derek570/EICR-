@@ -11,7 +11,7 @@
  * fundamentally different lifecycle from the six write tools. Writes are
  * fire-and-forget state mutations + log rows. Asks are BLOCKING round-trips
  * — the model must be paused until the inspector speaks the answer (or the
- * 20s timeout fires). That requires a per-session Promise registry
+ * 45s timeout fires). That requires a per-session Promise registry
  * (pendingAsks) plus a handle to emit `ask_user_started` on the iOS WS.
  * Research §Q7 justifies the shape divergence; Plan 03-06's composer joins
  * both factories into one dispatcher table.
@@ -29,7 +29,7 @@
  *    reflects wall-clock user wait, not microtask latency.
  *
  * 3. Construct the awaited Promise. Inside the executor:
- *      a. Start the 20000ms timeout timer — when it fires it calls
+ *      a. Start the 45000ms timeout timer — when it fires it calls
  *         pendingAsks.resolve(id, {answered:false, reason:'timeout'}).
  *         The registry's resolve() then enforces the strict ordering
  *         (clearTimeout → delete → user resolve) and injects
@@ -88,12 +88,16 @@
  * Keeping shadow runs non-blocking is REQUIREMENT STR-02.
  *
  * Requirements: STS-07 (validation), STD-02 (blocking contract),
- * STA-01 (serialisation via one awaited Promise), STA-03 (20s timeout),
+ * STA-01 (serialisation via one awaited Promise), STA-03 (45s timeout),
  * STO-02 (one log row per call with correct answer_outcome).
  */
 
 import { validateAskUser } from './stage6-dispatch-validation.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
+import {
+  AskRegistrationHookError,
+  isStage6FatalControlFlowError,
+} from './stage6-control-flow-errors.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
@@ -129,7 +133,7 @@ const FIELD_SCHEMA = require('../../config/field_schema.json');
  * which mic noise floor (HVAC hum, mic self-noise, body sounds) can
  * indefinitely block in supposedly-quiet rooms — see Deepgram discussion
  * https://github.com/orgs/deepgram/discussions/409. iOS only fires
- * ask_user_answered on Deepgram's final, so the 20s timeout was tripping
+ * ask_user_answered on Deepgram's final, so the 45s timeout was tripping
  * on perfectly normal short answers ("2", "yes") whenever Deepgram took
  * its time finalising. 45s is generous enough that legitimate slow finals
  * still resolve. Long-term fix is iOS firing on settled interims (next
@@ -189,6 +193,13 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // Never alters registration / questionEmitted / send classification.
   const onAskUserStarted =
     typeof opts?.onAskUserStarted === 'function' ? opts.onAskUserStarted : null;
+  // F7 Item 3 — CONTROL hook (distinct from Item 2's OBSERVATION hook). Fired
+  // scalar with (toolCallId) IMMEDIATELY after each successful register and
+  // BEFORE any send. Returns true while the generation still owns the
+  // registration, false once released (a newer generation took over). Cannot
+  // be swallowed — a swallowed failure reopens the concurrency bug; a throw is
+  // fail-closed as AskRegistrationHookError (fatal control-flow).
+  const onAskRegistered = typeof opts?.onAskRegistered === 'function' ? opts.onAskRegistered : null;
   return async function dispatchAskUser(call, ctx) {
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
@@ -234,7 +245,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     //
     // Runs AFTER validation (payload is well-formed) but BEFORE shadow-mode
     // short-circuit + registry.register + ws ask_user_started. On a leak:
-    //   - DO NOT register (prevents 20s STA-03 wait on a refused ask).
+    //   - DO NOT register (prevents 45s STA-03 wait on a refused ask).
     //   - DO NOT emit ask_user_started (iOS TTS would speak the leak text
     //     otherwise — the whole reason the filter is pre-dispatch).
     //   - Emit a stage6.prompt_leak_blocked warn row (defence-in-depth
@@ -326,9 +337,14 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // produce its own error envelope — the log is additive.
     const askStartedAt = Date.now();
     let outcome;
+    // F7 Item 3 — a stored ask-registration hook error. Set inside the Promise
+    // executor (a throw there after resolve() is a no-op), thrown AFTER the
+    // await returns so it reaches the harness boundary as a fatal control-flow
+    // error.
+    let hookError = null;
     try {
       outcome = await new Promise((resolve) => {
-        // (3a) 20s timeout self-resolves via registry.resolve, which enforces
+        // (3a) 45s (ASK_USER_TIMEOUT_MS) timeout self-resolves via registry.resolve, which enforces
         // strict clearTimeout → delete → resolve ordering and injects
         // wait_duration_ms.
         const timer = setTimeout(() => {
@@ -419,6 +435,40 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
           // duplicate. Clear the timer to avoid a ghost fire, then rethrow.
           clearTimeout(timer);
           throw err;
+        }
+
+        // F7 Item 3 — CONTROL hook, fired immediately after a successful
+        // register and BEFORE any send. Its verdict decides whether this
+        // generation still owns the registration.
+        if (onAskRegistered) {
+          let owns;
+          try {
+            owns = onAskRegistered(toolCallId);
+          } catch (hookErr) {
+            // Fail-closed: resolve the entry with timeout (clears its timer +
+            // map entry), log once, and STORE a fatal AskRegistrationHookError
+            // to throw AFTER the await returns (a throw here after resolve() is
+            // ignored). No send occurs.
+            hookError = new AskRegistrationHookError('onAskRegistered threw', { cause: hookErr });
+            pendingAsks.resolve(toolCallId, { answered: false, reason: 'timeout' });
+            try {
+              logger?.info?.('stage6.ask_registration_hook_error', {
+                sessionId,
+                turnId,
+                tool_call_id: toolCallId,
+              });
+            } catch {
+              // swallow logger failure — the fatal error still propagates
+            }
+            return;
+          }
+          if (owns === false) {
+            // A newer generation took over — resolve with timeout, skip the
+            // send, terminate this stale dispatch. No fatal throw (the
+            // generation guard already owns cleanup).
+            pendingAsks.resolve(toolCallId, { answered: false, reason: 'timeout' });
+            return;
+          }
         }
 
         // (3c) Emit ask_user_started to iOS. Guarded on ws presence + OPEN
@@ -525,6 +575,10 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         }
       });
     } catch (err) {
+      // F7 Item 3 — a FATAL control-flow error (cancellation / ask-registration
+      // hook) must NOT be masked as a dispatcher_error row: rethrow it unchanged
+      // so it reaches the harness cancellation-finalization boundary.
+      if (isStage6FatalControlFlowError(err)) throw err;
       // Unexpected — the executor above handles the two legitimate live-path
       // exits (duplicate_tool_call_id → synchronous resolve, real throw →
       // clearTimeout + rethrow). Anything hitting this outer catch is a
@@ -596,6 +650,13 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       }
       throw err;
     }
+
+    // F7 Item 3 — fail-closed: a stored ask-registration hook error propagates
+    // as a FATAL control-flow error to the harness boundary (never masked as a
+    // timeout/dispatcher_error row). Thrown OUTSIDE the outer try/catch so it
+    // does not add a spurious dispatcher_error row; the single
+    // stage6.ask_registration_hook_error row was already emitted in the executor.
+    if (hookError) throw hookError;
 
     // Step 5: log final outcome.
     const answerOutcome = outcome.answered ? 'answered' : outcome.reason;
@@ -688,6 +749,8 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // F7 Item 2 — the broker fires this on a SUCCESSFUL pvr-* send
       // (source:'pvr') so the post-loop audibility net counts brokered asks.
       onAskUserStarted,
+      // F7 Item 3 — the broker fires this after each successful pvr-* register.
+      onAskRegistered,
     });
 
     // §D2 (field-feedback-2026-07-14) — echo the server-assigned
@@ -736,6 +799,7 @@ async function buildResolvedBody({
   pendingAsks = null,
   ws = null,
   onAskUserStarted = null,
+  onAskRegistered = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
@@ -782,6 +846,7 @@ async function buildResolvedBody({
       pendingAsks,
       ws,
       onAskUserStarted,
+      onAskRegistered,
     });
     if (pvBody) return pvBody;
     // null → not engaged; fall through to the existing resolvers/legacy body.
@@ -1262,9 +1327,12 @@ async function brokerDeterministicAsk({
   expectedAnswerShape,
   pendingValue,
   onAskUserStarted = null,
+  onAskRegistered = null,
 }) {
   const pvrId = `pvr-${randomUUID().slice(0, 13)}`;
   const askStartedAt = Date.now();
+  // F7 Item 3 — a stored ask-registration hook error, thrown after the await.
+  let hookError = null;
   const outcome = await new Promise((resolve) => {
     const timer = setTimeout(() => {
       pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
@@ -1286,6 +1354,32 @@ async function brokerDeterministicAsk({
       clearTimeout(timer);
       resolve({ answered: false, reason: 'broker_register_failed', error: err?.message });
       return;
+    }
+    // F7 Item 3 — CONTROL hook, fired immediately after a successful pvr-*
+    // register and BEFORE the emit. Same fail-closed / stale-generation
+    // contract as the initial dispatch.
+    if (onAskRegistered) {
+      let owns;
+      try {
+        owns = onAskRegistered(pvrId);
+      } catch (hookErr) {
+        hookError = new AskRegistrationHookError('onAskRegistered threw', { cause: hookErr });
+        pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+        try {
+          logger?.info?.('stage6.ask_registration_hook_error', {
+            sessionId,
+            turnId,
+            tool_call_id: pvrId,
+          });
+        } catch {
+          // swallow logger failure — the fatal error still propagates
+        }
+        return;
+      }
+      if (owns === false) {
+        pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+        return;
+      }
     }
     // Emit AFTER registration (the load-bearing ordering — see block comment).
     // Codex r3-#3 — pre-emit failures must NOT masquerade as audible
@@ -1336,6 +1430,9 @@ async function brokerDeterministicAsk({
       has_pending_value: pendingValue != null,
     });
   });
+  // F7 Item 3 — fail-closed: a stored ask-registration hook error propagates as
+  // a FATAL control-flow error (never masked as a broker outcome).
+  if (hookError) throw hookError;
   return { pvrId, outcome };
 }
 
@@ -1450,6 +1547,7 @@ async function runPendingValueChain(args) {
     pendingAsks,
     ws,
     onAskUserStarted,
+    onAskRegistered,
   } = args;
   let fieldKey = args.fieldKey ?? null;
   let value = args.value ?? null;
@@ -1502,6 +1600,7 @@ async function runPendingValueChain(args) {
           pendingAsks,
           ws,
           onAskUserStarted,
+          onAskRegistered,
           logger,
           sessionId,
           turnId,
@@ -1577,6 +1676,7 @@ async function runPendingValueChain(args) {
         pendingAsks,
         ws,
         onAskUserStarted,
+        onAskRegistered,
         logger,
         sessionId,
         turnId,
@@ -1612,6 +1712,7 @@ async function runPendingValueChain(args) {
         pendingAsks,
         ws,
         onAskUserStarted,
+        onAskRegistered,
         logger,
         sessionId,
         turnId,
