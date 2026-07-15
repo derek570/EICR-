@@ -5,8 +5,14 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# Install system dependencies for sharp image processing, health checks, and Playwright
-RUN apt-get update && apt-get install -y \
+# Install system dependencies for sharp image processing, health checks, and Playwright.
+# `apt-get upgrade -y` pulls Debian security patches for base-image packages — the
+# Trivy CRITICAL gate blocks on FIXED-available CVEs (ignore-unfixed:true), and a
+# cached apt layer otherwise pins whatever package versions existed when the layer
+# was last built (2026-07-15: imagemagick CVE-2026-56367 + mesa/libgbm CVE-2026-40393
+# blocked every deploy this way). Editing this RUN also busts the buildx layer cache
+# so the fix takes effect on the next CI build.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     libvips-dev \
     libheif-dev \
     imagemagick \
