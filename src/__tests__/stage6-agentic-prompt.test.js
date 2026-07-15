@@ -307,8 +307,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // factual ask + three-way crack outcomes + clear-cut guards + chain-id
       // echo + Example 13, with RULE 1/1a/3, FI and RESTRAINT reconciled).
       // Measured ~19970; cap 20100 leaves ~130-token headroom.
+      //
+      // 2026-07-15 (D2 mutation-to-chain correlation): bumped to 20200 to
+      // absorb the CHAIN ID echo bullet + Example 13 expanded to THREE COMPLETE
+      // record_observation outcomes (C1/C2/C3) each echoing clarification_chain_id
+      // (Codex diff-review required complete, non-ellipsised worked examples —
+      // the wave's core model-facing contract). Legitimate feature growth of the
+      // canonical example, not bloat.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20100);
+      expect(estimate).toBeLessThanOrEqual(20200);
     });
   });
 
@@ -990,8 +997,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     outcomes, clear-cut guards, chain-id echo) + Example 13, with
       //     RULE 1/1a/3, FI and RESTRAINT reconciled. Measured ~14731;
       //     cap 14850 leaves ~119-token headroom.
+      //   - 14950 (2026-07-15 D2 mutation-to-chain correlation): CHAIN ID echo
+      //     bullet (echo on the continuation AND the resolving record_observation;
+      //     null for direct) + Example 13 expanded from one C1 call + C2/C3
+      //     shorthand to THREE COMPLETE record_observation outcomes each echoing
+      //     clarification_chain_id, + Examples 11/12 null. Codex diff-review
+      //     required complete (non-ellipsised) worked examples for the wave's
+      //     core model-facing contract — legitimate example growth, not bloat.
+      //     Measured ~14909; cap 14950 leaves ~41-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14850);
+      expect(estimate).toBeLessThanOrEqual(14950);
     });
   });
 

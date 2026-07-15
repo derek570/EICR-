@@ -18,15 +18,15 @@
  *   - strict:true's grammar compilation intermittently 503'd under our
  *     ~150-enum-value schema surface, hanging the turn ~30s. It was removed.
  *   - Without strict, the API does NOT grammar-constrain sampling, so
- *     additionalProperties:false and the required list document the closed
- *     schema shape but are not enforced against model output. Validity is
- *     therefore enforced SERVER-SIDE: the dispatcher layer
+ *     additionalProperties:false and the required list are model GUIDANCE that
+ *     documents the closed schema shape — they are not enforced against model
+ *     output. What protects data integrity is server-side handling: each
+ *     dispatcher hand-picks the specific fields it persists/wires (ignoring
+ *     anything else the model emits), and the dispatch-validation layer
  *     (stage6-dispatch-validation.js + stage6-dispatchers-circuit.js)
- *     range/enum-checks the values it consumes and returns a structured
- *     validation_error the model can self-correct on, and each dispatcher
- *     hand-picks the fields it persists/wires (ignoring anything else).
- *     Invalid values surface as a visible tool-call error, never a silent
- *     bad write.
+ *     range/enum-checks the fields it validates and returns a structured
+ *     validation_error the model can self-correct on. This is tool-specific,
+ *     not blanket validation of every property.
  *
  * Why JSON imports via createRequire (not import-attributes `with { type: 'json' }`):
  *   - Jest's experimental-vm-modules loader does not yet support JSON import
@@ -173,14 +173,16 @@ export const CIRCUIT_FIELD_ENUM = (() => {
  * Trade-off: without strict, Anthropic does NOT grammar-constrain sampling.
  * The model can emit off-enum values (e.g. a misspelled circuit_fields
  * key). Mitigation: the dispatcher (stage6-dispatch-validation.js +
- * stage6-dispatchers-circuit.js) already validates every field server-side
- * with KNOWN_FIELDS / enum / range checks and returns a structured
- * validation_error in the tool_result. So invalid values surface as a
- * tool-call error visible to the model (which can self-correct in a
- * follow-up round) rather than a silent write of bad data.
+ * stage6-dispatchers-circuit.js) validates the fields it consumes
+ * server-side with KNOWN_FIELDS / enum / range checks and returns a
+ * structured validation_error in the tool_result. So a validated invalid
+ * value surfaces as a tool-call error visible to the model (which can
+ * self-correct in a follow-up round) rather than a silent write of bad data.
+ * This is tool-specific validation, not a blanket check of every property.
  *
- * additionalProperties: false is preserved — the model can't sneak extra
- * keys past the schema, even without strict.
+ * additionalProperties: false is preserved in the schema as model guidance,
+ * but without strict mode the API does not enforce it — a dispatcher never
+ * consumes unexpected keys anyway (it hand-picks the fields it reads).
  */
 function makeTool({ name, description, properties, required }) {
   return {

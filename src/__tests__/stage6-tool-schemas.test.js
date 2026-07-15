@@ -95,9 +95,12 @@ describe('stage6-tool-schemas', () => {
     // the tool set (now 16 tools) whose enums total ~150+ values, Anthropic's
     // grammar-compilation step intermittently returns
     // `503 overloaded_error: "Grammar compilation is temporarily unavailable"`
-    // — the call hangs ~30s then 503s. Server-side dispatcher validators
-    // (stage6-dispatch-validation.js) catch invalid values with structured
-    // validation_error tool_results so the model can self-correct.
+    // — the call hangs ~30s then 503s. Data integrity is protected server-side
+    // instead: dispatchers hand-pick the fields they consume and the
+    // dispatch-validation layer (stage6-dispatch-validation.js) range/enum-
+    // checks the fields it validates, returning structured validation_error
+    // tool_results the model can self-correct on (tool-specific, not a blanket
+    // check of every property).
     for (const tool of TOOL_SCHEMAS) {
       expect(tool.strict).toBeUndefined();
     }

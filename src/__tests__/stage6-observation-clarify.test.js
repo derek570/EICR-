@@ -205,10 +205,14 @@ function baseOpts(overrides = {}) {
 }
 
 // Real runToolLoop entry shape: the tool id lives at result.tool_use_id (cf.
-// stage6-tool-loop.js), NOT a synthetic top-level tool_call_id. All Group-B
-// fixtures use this shape so the anchor-id telemetry is exercised on the same
-// shape production carries (a synthetic top-level id could pass in tests while
-// live CloudWatch rows went null).
+// stage6-tool-loop.js), NOT a synthetic top-level tool_call_id. The shared
+// observation_clarify ASK fixtures below (answeredClarify / unansweredClarify,
+// and answeredChain / timedOutChain derived from them) use this production
+// shape, because it is the ANCHOR asks whose ids feed anchor_tool_call_ids
+// telemetry — a synthetic top-level id could pass in tests while live
+// CloudWatch rows went null. Mutation fixtures (okObservation / okReading /
+// okObsChain) do not feed anchor telemetry, so their id placement is not
+// load-bearing.
 const answeredClarify = (id) => ({
   name: 'ask_user',
   input: { context_field: 'observation_clarify', question: 'crack question' },
