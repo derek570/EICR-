@@ -101,6 +101,7 @@ import {
   createAskGateWrapper,
   wrapAskDispatcherWithGates,
   createObsClarifyChainBroker,
+  normaliseObsClarifyChainId,
 } from './stage6-ask-gate-wrapper.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
 // readback-correction-optionb §3.3a/b — rolling conversational window so the
@@ -1538,27 +1539,35 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
-    // ── §D2 (field-feedback-2026-07-14) — post-answer write-or-reask net
-    // for observation_clarify chains. A D2 clarification ask that gets
-    // ANSWERED and is then followed by a zero-tool (or unrelated-tool) model
-    // turn would go silent, and the A3 orphan net CANNOT catch it: on the
-    // resumed invocation the registry deleted the ask before the post-loop
-    // check (isAnswerTurn reads false) while the accumulated successful
-    // ask_user tool call makes producedNothing false. So this net keys
-    // INDEPENDENTLY of both: scan the accumulated tool-call sequence for the
-    // LATEST ANSWERED observation_clarify ask (advancing the anchor through
-    // each answered continuation — an earlier ask must not be satisfied by a
-    // later continuation whose own answer went nowhere), then require a
-    // qualifying success AFTER that anchor:
-    //   - a successful observation mutation (record_observation /
-    //     delete_observation with is_error false), OR
-    //   - a LATER observation_clarify continuation ask that is UNANSWERED /
-    //     timed out (its question was audible — the chain terminated out
-    //     loud; the answered case advances the anchor instead).
-    // An arbitrary confirmation or unrelated ask does NOT count — Haiku
-    // recording an unrelated reading while dropping the observation still
-    // triggers the net. Failure → ONE deterministic apology/re-ask through
-    // the same A1(b)-exempt field-nil confirmation channel as A4's fallback.
+    // ── §D2 (field-feedback-2026-07-14, mutation-to-chain correlation
+    // 2026-07-15) — post-answer write-or-reask net for observation_clarify
+    // chains. A D2 clarification ask that gets ANSWERED and is then followed
+    // by a zero-tool (or unrelated-tool) model turn would go silent, and the
+    // A3 orphan net CANNOT catch it (registry deleted the ask; the successful
+    // ask_user makes producedNothing false). This net keys INDEPENDENTLY of
+    // both.
+    //
+    // The 2026-07-15 rework fixes the multi-observation bug: the old net
+    // evaluated only the globally-latest answered chain and let ANY later
+    // successful record_observation qualify it, so in a turn with TWO answered
+    // chains + ONE record_observation, the single write suppressed the whole
+    // fallback even though one clarified observation was necessarily dropped —
+    // and the earlier chain was never retired. Now we GROUP answered
+    // observation_clarify asks by chain id, evaluate each chain once against
+    // events after ITS anchor, correlate each successful record_observation to
+    // the chain it clarifies (via the echoed clarification_chain_id), COLLAPSE
+    // all unqualified chains into ONE count-aware fallback, and retire every
+    // evaluated chain exactly once.
+    //
+    // Mutation-id resolution is LENIENT on both edge cases (Derek 2026-07-15):
+    // an id-less mutation (D-1a) or an unknown/invented non-null id (D-1b) on
+    // a SUCCESSFUL record_observation qualifies EVERY evaluated chain whose
+    // anchor precedes it — literally today's suppression outcome, so older /
+    // id-omitting sessions cannot emit new (possibly misattributed) apologies,
+    // and a garbled echo never triggers a false "I didn't record that" when
+    // the write demonstrably succeeded (a false apology → re-dictation →
+    // duplicate observation is the worse field failure). Only a NON-NULL id
+    // that matches a DIFFERENT evaluated chain fails to qualify this one.
     try {
       const seq = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
       const parseAnswered = (c) => {
@@ -1569,7 +1578,50 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           return false;
         }
       };
-      let anchorIdx = -1;
+      // §D2 Codex r2 — "successful" record_observation is is_error !== true
+      // AND a parsed tool-result body with ok === true. A malformed/unparseable
+      // body, a missing `ok`, or ok:false never qualifies. The parser catches
+      // parse failures INTERNALLY and returns false — it must never throw into
+      // the outer catch (which would emit only observation_clarify_net_error
+      // and reproduce the exact silence path this net exists to close).
+      const parseMutationSuccess = (c) => {
+        if (c?.result?.is_error === true) return false;
+        try {
+          const body = JSON.parse(c?.result?.content ?? 'null');
+          return !!(body && body.ok === true);
+        } catch {
+          return false;
+        }
+      };
+      const AUDIBLE_NON_ANSWER_REASONS = new Set([
+        'timeout',
+        'user_moved_on',
+        'transcript_already_extracted',
+        'session_stopped',
+        'session_reconnected',
+        'session_terminated',
+      ]);
+      const parseReason = (c) => {
+        try {
+          const body = JSON.parse(c?.result?.content ?? 'null');
+          return body && body.answered === false ? (body.reason ?? null) : null;
+        } catch {
+          return null;
+        }
+      };
+      // Anchor tool_use_id extraction: real runToolLoop entries carry the id
+      // at result.tool_use_id (cf. stage6-tool-loop.js); tolerate a synthetic
+      // top-level tool_call_id for hand-authored fixtures.
+      const anchorToolCallId = (c) => c?.result?.tool_use_id ?? c?.tool_call_id ?? null;
+
+      // (1) GROUP answered observation_clarify asks by normalised chain id,
+      // retaining the LATEST answered call index per chain (an answered initial
+      // ask + an answered continuation in the same chain collapse to ONE
+      // anchor — the continuation). Chain id is read from call.input
+      // (the ask-gate wrapper stamps the server-minted id there); never parse
+      // the tool_result body for it. A null/empty id groups under the legacy
+      // null bucket (has no budget bucket → retirement is a no-op for it).
+      const anchorByChain = new Map(); // cid(string|null) -> anchor index (latest)
       for (let i = 0; i < seq.length; i += 1) {
         const c = seq[i];
         if (
@@ -1577,75 +1629,137 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           c?.input?.context_field === 'observation_clarify' &&
           parseAnswered(c)
         ) {
-          anchorIdx = i;
+          const cid = normaliseObsClarifyChainId(c?.input?.clarification_chain_id);
+          anchorByChain.set(cid, i);
         }
       }
-      if (anchorIdx >= 0) {
-        // Codex r1-#3 — qualification is DELIBERATELY narrow:
-        //   - only a successful record_observation counts as the observation
-        //     WRITE (delete_observation removes a different observation and
-        //     records nothing — the clarified defect is still lost);
-        //   - an unanswered continuation counts ONLY when its outcome proves
-        //     the question was actually EMITTED/audible. Pre-fire outcomes
-        //     (ask_budget_exhausted / restrained_mode / gated /
-        //     validation_error / prompt_leak_blocked / shadow_mode /
-        //     duplicate_tool_call_id / dispatcher_error*) were never spoken,
-        //     so counting them would preserve the beep-then-silence failure.
-        const AUDIBLE_NON_ANSWER_REASONS = new Set([
-          'timeout',
-          'user_moved_on',
-          'transcript_already_extracted',
-          'session_stopped',
-          'session_reconnected',
-          'session_terminated',
-        ]);
-        const parseReason = (c) => {
-          try {
-            const body = JSON.parse(c?.result?.content ?? 'null');
-            return body && body.answered === false ? (body.reason ?? null) : null;
-          } catch {
-            return null;
-          }
-        };
-        // Codex r4-#5 — a qualifying CONTINUATION must belong to the SAME
-        // clarification chain as the answered anchor. Without the chain
-        // check, an audibly-terminated ask about a DIFFERENT observation
-        // (chain B times out) would suppress observation A's deterministic
-        // fallback — A's answered clarification silently dropped. Legacy
-        // asks without a chain id compare null === null and keep today's
-        // behaviour.
-        const anchorChainId = seq[anchorIdx]?.input?.clarification_chain_id ?? null;
-        let qualified = false;
-        for (let i = anchorIdx + 1; i < seq.length; i += 1) {
+
+      if (anchorByChain.size > 0) {
+        // Evaluated chains in anchor-index order (telemetry contract).
+        const evaluatedChains = [...anchorByChain.entries()]
+          .map(([cid, aIdx]) => ({ cid, aIdx }))
+          .sort((a, b) => a.aIdx - b.aIdx);
+        const evaluatedCids = new Set(
+          evaluatedChains.map((ch) => ch.cid).filter((cid) => cid !== null)
+        );
+
+        // (2) Build the successful-mutation list ONCE, in tool-call-index
+        // order — exactly one record per successful record_observation. kind:
+        //   'null'    → id-less (D-1a lenient)
+        //   'unknown' → non-null id matching NO evaluated chain (D-1b lenient)
+        //   'matched' → non-null id equal to an evaluated chain id
+        const successfulMutations = [];
+        for (let i = 0; i < seq.length; i += 1) {
           const c = seq[i];
-          if (c?.name === 'record_observation' && c?.result?.is_error !== true) {
-            qualified = true;
-            break;
-          }
-          if (
-            c?.name === 'ask_user' &&
-            c?.input?.context_field === 'observation_clarify' &&
-            (c?.input?.clarification_chain_id ?? null) === anchorChainId &&
-            !parseAnswered(c) &&
-            AUDIBLE_NON_ANSWER_REASONS.has(parseReason(c))
-          ) {
-            // Audibly-terminated SAME-CHAIN continuation (question spoken).
-            qualified = true;
-            break;
+          if (c?.name === 'record_observation' && parseMutationSuccess(c)) {
+            const rawCid = normaliseObsClarifyChainId(c?.input?.clarification_chain_id);
+            let kind;
+            let matchedChainId = null;
+            if (rawCid === null) {
+              kind = 'null';
+            } else if (evaluatedCids.has(rawCid)) {
+              kind = 'matched';
+              matchedChainId = rawCid;
+            } else {
+              kind = 'unknown';
+            }
+            successfulMutations.push({ index: i, kind, matchedChainId });
           }
         }
-        // §D2 Codex r1-#4 — retire the chain when the observation resolved
-        // (success) OR when the deterministic terminal fallback fires below:
-        // in both cases the clarification is OVER, and a later
-        // observation_clarify ask (a NEW ambiguous observation) must get a
-        // fresh budget bucket rather than joining this chain's.
-        if (anchorChainId && session.obsClarifyChains?.retire) {
-          session.obsClarifyChains.retire(anchorChainId);
+
+        // For each chain find the EARLIEST qualifying event (a mutation or a
+        // same-chain audibly-terminated continuation) strictly after its
+        // anchor. Attributing to the earliest event keeps the lenient
+        // telemetry rows honest ("newly qualified BY that mutation").
+        const qualifiedInfo = new Map(); // cid -> { type:'mutation'|'continuation', mutation }
+        for (const ch of evaluatedChains) {
+          let bestIdx = Infinity;
+          let bestType = null;
+          let bestMutation = null;
+          for (const m of successfulMutations) {
+            if (m.index <= ch.aIdx) continue;
+            // 'matched' qualifies ONLY its own chain; null/unknown are lenient
+            // and qualify any chain whose anchor precedes the mutation.
+            const qualifies = m.kind === 'matched' ? m.matchedChainId === ch.cid : true;
+            if (qualifies && m.index < bestIdx) {
+              bestIdx = m.index;
+              bestType = 'mutation';
+              bestMutation = m;
+            }
+          }
+          for (let i = ch.aIdx + 1; i < seq.length; i += 1) {
+            const c = seq[i];
+            if (
+              c?.name === 'ask_user' &&
+              c?.input?.context_field === 'observation_clarify' &&
+              normaliseObsClarifyChainId(c?.input?.clarification_chain_id) === ch.cid &&
+              !parseAnswered(c) &&
+              AUDIBLE_NON_ANSWER_REASONS.has(parseReason(c))
+            ) {
+              if (i < bestIdx) {
+                bestIdx = i;
+                bestType = 'continuation';
+                bestMutation = null;
+              }
+              break; // earliest same-chain continuation
+            }
+          }
+          if (bestType) qualifiedInfo.set(ch.cid, { type: bestType, mutation: bestMutation });
         }
-        if (!qualified) {
+
+        const unqualifiedChains = evaluatedChains.filter((ch) => !qualifiedInfo.has(ch.cid));
+        const qualifiedChainIds = evaluatedChains
+          .filter((ch) => qualifiedInfo.has(ch.cid))
+          .map((ch) => ch.cid);
+
+        // (3) Emit ONE lenient_qualification INFO row PER successful lenient
+        // mutation that NEWLY qualified >= 1 chain (a lenient mutation that
+        // newly qualifies zero chains emits no row — its kind still lands in
+        // dropped_net.mutation_id_kinds if a fallback fires). NEVER log the raw
+        // model-controlled chain id — only the kind, plus the server-minted
+        // chain ids it newly qualified.
+        let anyLenientFired = false;
+        for (const m of successfulMutations) {
+          if (m.kind === 'matched') continue;
+          const newlyQualified = evaluatedChains
+            .filter(
+              (ch) =>
+                qualifiedInfo.get(ch.cid)?.type === 'mutation' &&
+                qualifiedInfo.get(ch.cid)?.mutation === m
+            )
+            .map((ch) => ch.cid);
+          if (newlyQualified.length === 0) continue;
+          anyLenientFired = true;
+          log.info?.('stage6.observation_clarify_lenient_qualification', {
+            sessionId: session.sessionId,
+            turnId,
+            lenient_qualification: true,
+            mutation_id_kind: m.kind, // 'null' | 'unknown' — never the raw id
+            qualified_chain_ids: newlyQualified,
+          });
+        }
+
+        // (4) Retire every evaluated chain exactly once — AFTER all
+        // qualification decisions, so retirement can't affect same-turn
+        // matching. Non-null ids only (the null legacy group has no bucket).
+        if (session.obsClarifyChains?.retire) {
+          for (const ch of evaluatedChains) {
+            if (ch.cid !== null) session.obsClarifyChains.retire(ch.cid);
+          }
+        }
+
+        // (5) COLLAPSED fallback — all unqualified chains this turn produce ONE
+        // combined field-nil confirmation with count-aware wording. Per-chain
+        // apologies with identical text would be client-swallowed by the A1(b)
+        // 30s field-nil TTL (field:null is outside DEDUPE_TOKEN_FIELDS, so a
+        // dedupe_token cannot rescue them) — reintroducing beep-then-silence.
+        if (unqualifiedChains.length > 0) {
           if (!Array.isArray(result.confirmations)) result.confirmations = [];
+          const plural = unqualifiedChains.length > 1;
           result.confirmations.push({
-            text: "Sorry — I didn't record that observation. Could you give it to me again?",
+            text: plural
+              ? "Sorry — I didn't record those observations. Could you give them to me again?"
+              : "Sorry — I didn't record that observation. Could you give it to me again?",
             field: null,
             circuit: null,
             expects_ios_ack: false,
@@ -1653,7 +1767,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           log.info?.('stage6.observation_clarify_dropped_net', {
             sessionId: session.sessionId,
             turnId,
-            anchor_tool_call_id: seq[anchorIdx]?.tool_call_id ?? null,
+            unqualified_chain_ids: unqualifiedChains.map((ch) => ch.cid),
+            qualified_chain_ids: qualifiedChainIds,
+            anchor_tool_call_ids: evaluatedChains.map((ch) => ({
+              clarification_chain_id: ch.cid,
+              anchor_tool_call_id: anchorToolCallId(seq[ch.aIdx]),
+            })),
+            lenient_qualification: anyLenientFired,
+            mutation_id_kinds: successfulMutations.map((m) => m.kind),
             tool_calls: seq.length,
           });
         }
