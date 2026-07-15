@@ -1679,10 +1679,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(bullet).toMatch(/clarification_chain_id: null/);
     });
 
-    test('Example 13 shows the chain id echoed on EACH post-answer record_observation (C1/C2/C3)', () => {
+    test('Example 13 shows the chain id echoed on EACH post-answer record_observation (C1/C2/C3), each a valid coded write', () => {
       const idx = prompt.indexOf('Example 13 —');
       expect(idx).toBeGreaterThanOrEqual(0);
-      const ex13 = prompt.slice(idx, idx + 1400);
+      const ex13 = prompt.slice(idx, idx + 1600);
       // The ask's tool_result carries the id.
       expect(ex13).toMatch(/tool_result returns `clarification_chain_id:"obsclr-1"`/);
       // ALL THREE severity outcomes are explicit record_observation calls that
@@ -1690,20 +1690,34 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       const writeIds = ex13.match(/record_observation\(\{[^)]*clarification_chain_id:"obsclr-1"/g) || [];
       expect(writeIds.length).toBe(3);
       for (const code of ['C1', 'C2', 'C3']) {
-        expect(ex13).toMatch(
-          new RegExp(`record_observation\\(\\{code:"${code}"[^)]*clarification_chain_id:"obsclr-1"`)
-        );
+        // Each coded call carries a non-empty suggested_regulation AND the id,
+        // so validateRecordObservation would ACCEPT it (a coded observation
+        // with null/empty regulation is rejected → the exact fallback this wave
+        // prevents). Order-independent on the two fields.
+        const call = new RegExp(`record_observation\\(\\{code:"${code}"[^)]*\\)`).exec(ex13);
+        expect(call).not.toBeNull();
+        expect(call[0]).toMatch(/suggested_regulation:"[^"]+"/);
+        expect(call[0]).toMatch(/clarification_chain_id:"obsclr-1"/);
       }
     });
 
-    test('Examples 11 and 12 (direct observations) explicitly pass clarification_chain_id:null', () => {
+    test('Examples 11 and 12 (direct observations) are valid coded writes with clarification_chain_id:null and no stray source_turn_id', () => {
       const idx11 = prompt.indexOf('Example 11 —');
       const idx12 = prompt.indexOf('Example 12 —');
       const idx13 = prompt.indexOf('Example 13 —');
       const ex11 = prompt.slice(idx11, idx12);
       const ex12 = prompt.slice(idx12, idx13);
-      expect(ex11).toMatch(/clarification_chain_id:null/);
-      expect(ex12).toMatch(/clarification_chain_id:null/);
+      for (const ex of [ex11, ex12]) {
+        const call = /record_observation\(\{[^)]*\)/.exec(ex);
+        expect(call).not.toBeNull();
+        expect(call[0]).toMatch(/clarification_chain_id:null/);
+        // Coded (C1/C2/C3/FI) observation → non-empty suggested_regulation so
+        // the example would not be rejected at dispatch.
+        expect(call[0]).toMatch(/suggested_regulation:"[^"]+"/);
+        // source_turn_id is a record_reading field, NOT record_observation —
+        // it must not appear on these observation examples.
+        expect(call[0]).not.toContain('source_turn_id');
+      }
     });
   });
 });
