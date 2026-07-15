@@ -91,9 +91,9 @@ describe('stage6-tool-schemas', () => {
   });
 
   test('no tool sets strict:true (Bug-E fix — Anthropic 503s on grammar compilation)', () => {
-    // Bug-E fix (2026-04-26): strict:true was removed from every tool. With
-    // 8 tools whose enums total ~150+ values, Anthropic's grammar-compilation
-    // step intermittently returns
+    // Bug-E fix (2026-04-26): strict:true was removed from every tool. Across
+    // the tool set (now 16 tools) whose enums total ~150+ values, Anthropic's
+    // grammar-compilation step intermittently returns
     // `503 overloaded_error: "Grammar compilation is temporarily unavailable"`
     // — the call hangs ~30s then 503s. Server-side dispatcher validators
     // (stage6-dispatch-validation.js) catch invalid values with structured
@@ -275,6 +275,12 @@ describe('stage6-tool-schemas', () => {
     expect(askToolDesc).toMatch(/record_observation/);
     expect(askProp).toMatch(/record_observation/);
     expect(recProp).toMatch(/observation_clarify/);
+
+    // All three carry the "never on an unrelated observation" prohibition — a
+    // reused id would falsely qualify a chain whose observation was dropped.
+    expect(askToolDesc).toMatch(/unrelated observation/);
+    expect(askProp).toMatch(/unrelated observation/);
+    expect(recProp).toMatch(/unrelated observation/);
 
     // The stale "and nowhere else" confinement is gone from the property
     // description (it contradicted the new mutation echo).

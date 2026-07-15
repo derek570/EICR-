@@ -1664,13 +1664,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(bullet).toMatch(/clarification_chain_id: null/);
     });
 
-    test('Example 13 shows the chain id echoed on the resolving record_observation', () => {
+    test('Example 13 shows the chain id echoed on EACH post-answer record_observation (C1/C2/C3)', () => {
       const idx = prompt.indexOf('Example 13 —');
       expect(idx).toBeGreaterThanOrEqual(0);
       const ex13 = prompt.slice(idx, idx + 1400);
-      // The ask's tool_result carries the id and the write echoes the SAME id.
-      expect(ex13).toMatch(/clarification_chain_id:"obsclr-1"/);
-      expect(ex13).toMatch(/record_observation\(\{[^}]*clarification_chain_id:"obsclr-1"/);
+      // The ask's tool_result carries the id.
+      expect(ex13).toMatch(/tool_result returns `clarification_chain_id:"obsclr-1"`/);
+      // ALL THREE severity outcomes are explicit record_observation calls that
+      // echo the SAME id (not shorthand) — each of C1/C2/C3.
+      const writeIds = ex13.match(/record_observation\(\{[^)]*clarification_chain_id:"obsclr-1"/g) || [];
+      expect(writeIds.length).toBe(3);
+      for (const code of ['C1', 'C2', 'C3']) {
+        expect(ex13).toMatch(
+          new RegExp(`record_observation\\(\\{code:"${code}"[^)]*clarification_chain_id:"obsclr-1"`)
+        );
+      }
     });
 
     test('Examples 11 and 12 (direct observations) explicitly pass clarification_chain_id:null', () => {

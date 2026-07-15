@@ -204,20 +204,28 @@ function baseOpts(overrides = {}) {
   };
 }
 
+// Real runToolLoop entry shape: the tool id lives at result.tool_use_id (cf.
+// stage6-tool-loop.js), NOT a synthetic top-level tool_call_id. All Group-B
+// fixtures use this shape so the anchor-id telemetry is exercised on the same
+// shape production carries (a synthetic top-level id could pass in tests while
+// live CloudWatch rows went null).
 const answeredClarify = (id) => ({
   name: 'ask_user',
-  tool_call_id: id,
   input: { context_field: 'observation_clarify', question: 'crack question' },
   result: {
     is_error: false,
+    tool_use_id: id,
     content: JSON.stringify({ answered: true, untrusted_user_text: 'just cosmetic' }),
   },
 });
 const unansweredClarify = (id) => ({
   name: 'ask_user',
-  tool_call_id: id,
   input: { context_field: 'observation_clarify', question: 'follow-up' },
-  result: { is_error: false, content: JSON.stringify({ answered: false, reason: 'timeout' }) },
+  result: {
+    is_error: false,
+    tool_use_id: id,
+    content: JSON.stringify({ answered: false, reason: 'timeout' }),
+  },
 });
 const okObservation = () => ({
   name: 'record_observation',
@@ -713,9 +721,14 @@ describe('§D2 Group B (2026-07-15) — mutation-to-chain correlation', () => {
     expect(lenient[0].mutation_id_kind).toBe('unknown');
     expect(lenient[0].qualified_chain_ids).toEqual(['A']);
     expect(infoRows(opts, DROPPED)).toHaveLength(0);
-    // EVERY emitted info row's JSON must not contain the raw id.
-    for (const call of opts.logger.info.mock.calls) {
-      expect(JSON.stringify(call[1] ?? null)).not.toContain(RAW);
+    // EVERY emitted row across ALL log sinks — event name AND serialised
+    // payload — must not contain the raw model-controlled id (a future leak
+    // through warn/error/debug would violate the no-raw-id contract too).
+    for (const sink of ['info', 'warn', 'error', 'debug']) {
+      for (const call of opts.logger[sink].mock.calls) {
+        expect(String(call[0] ?? '')).not.toContain(RAW);
+        expect(JSON.stringify(call[1] ?? null)).not.toContain(RAW);
+      }
     }
   });
 });
