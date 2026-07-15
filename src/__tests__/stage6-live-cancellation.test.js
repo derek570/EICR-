@@ -203,6 +203,22 @@ describe('F7 Item 3 — cancellation-finalization contract', () => {
     expect(sendRows.every((r) => r.generationId === 'gen-cancel')).toBe(true);
   });
 
+  test('generation-owned drain: an OTHER-generation queued prompt is PRESERVED (not spoken this turn) and does not suppress the current fallback', async () => {
+    throwOnLoop = true; // cancellation, nothing audible from the current gen
+    const session = makeSession();
+    // A stale prompt from a DIFFERENT generation is already queued.
+    session.pendingVoicePrompts = [
+      { text: 'stale apology from a prior generation', generationId: 'gen-OTHER' },
+    ];
+    const result = await runShadowHarness(session, 'wedged', [], baseOpts());
+    // Exactly ONE current-generation fallback reached the wire (the stale one did NOT).
+    const fieldNull = (result.confirmations ?? []).filter((c) => c.field == null);
+    expect(fieldNull).toHaveLength(1);
+    expect(/couldn.t action that/i.test(fieldNull[0].text)).toBe(true);
+    // The other-generation prompt is PRESERVED on the session (never drained here).
+    expect(session.pendingVoicePrompts.some((p) => p.generationId === 'gen-OTHER')).toBe(true);
+  });
+
   test('the NORMAL path (no cancellation) still runs the full pipeline (no regression)', async () => {
     throwOnLoop = false;
     populateWrites = (w) => {

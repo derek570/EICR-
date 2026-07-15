@@ -19,6 +19,7 @@ import { jest } from '@jest/globals';
 
 import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
+import { ExtractionCancelledError } from '../extraction/stage6-control-flow-errors.js';
 import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
 import { ASK_USER_TIMEOUT_MS } from '../extraction/stage6-dispatcher-ask.js';
 import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
@@ -125,6 +126,44 @@ describe('F7 Item 2 A — dispatcher emission hook (onAskUserStarted)', () => {
     expect(res.is_error).toBe(true);
     expect(fired).toEqual([]);
     expect(ws.sent).toEqual([]);
+  });
+
+  test('F7 Item 3 — a cancellation that lands while the ask is resolving THROWS the fatal error and does NOT auto-resolve a write', async () => {
+    const logger = makeLogger();
+    const pending = createPendingAsksRegistry();
+    const ws = makeOpenWs();
+    const ac = new AbortController();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatch = createAskDispatcher(
+      { sessionId: 's', toolCallsMode: 'live', stateSnapshot: { circuits: {} } },
+      logger,
+      'turn-1',
+      pending,
+      ws,
+      { autoResolveWrite, signal: ac.signal }
+    );
+    const p = dispatch(
+      {
+        tool_call_id: 'toolu_c',
+        name: 'ask_user',
+        input: {
+          question: 'Which circuit was that reading for?',
+          reason: 'missing_field',
+          context_field: 'none',
+          context_circuit: null,
+          expected_answer_shape: 'free_text',
+        },
+      },
+      {}
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    // The watchdog aborts, THEN the inspector's answer arrives.
+    ac.abort(new ExtractionCancelledError('ceiling'));
+    pending.resolve('toolu_c', { answered: true, user_text: 'measured Zs' });
+    await expect(p).rejects.toBeInstanceOf(ExtractionCancelledError);
+    // No write was auto-resolved on the cancelled generation.
+    expect(autoResolveWrite).not.toHaveBeenCalled();
   });
 
   test('a CLOSED-ws fast-fail never fires the hook', async () => {

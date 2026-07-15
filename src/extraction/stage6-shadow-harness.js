@@ -685,8 +685,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         onAskUserStarted,
         // F7 Item 3 — the CONTROL hook (arms the watchdog latch on register)
         // + the per-generation abort signal so a ceiling-cancelled generation's
-        // awaiting dispatcher throws instead of registering another ask.
+        // awaiting dispatcher throws (after each pending-ask await, before any
+        // auto-resolve write / apology / new registration) instead of mutating
+        // state; generationId stamps queued apologies for generation-owned drain.
         onAskRegistered: options.onAskRegistered,
+        signal: options.signal ?? null,
+        generationId,
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -1842,6 +1846,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     try {
       if (options.confirmationsEnabled === true) {
         const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
+        // F7 Item 3 — a queued prompt counts toward THIS turn's audibility only
+        // if it belongs to the current generation (or is untracked). A preserved
+        // OTHER-generation prompt must NOT suppress the current fallback (else
+        // beep-then-silence recurs behind a stale prompt that also never drains).
+        const isCurrentGenPrompt = (p) =>
+          generationId == null || p?.generationId == null || p.generationId === generationId;
         // toolLoopOut is undefined on a cancelled generation → no attempted
         // asks are recoverable; the cancellation predicate (below) does not
         // require any.
@@ -1851,7 +1861,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
         const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-          ? session.pendingVoicePrompts.filter((p) => isAudibleText(p?.text)).length
+          ? session.pendingVoicePrompts.filter(
+              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
+            ).length
           : 0;
         // F7 Item 3 — the cancellation branch uses ONLY a "nothing audible
         // survived" predicate (a ceiling-cancelled generation may have no
@@ -1874,7 +1886,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // wire this turn. `fallbackToLegacy` is pre-emission/non-audible in
           // live mode (no independent legacy emission signal), so it too
           // triggers this net when no other audible output survives.
-          session.pendingVoicePrompts.push({ text: ASK_AUDIBILITY_FALLBACK_TEXT });
+          session.pendingVoicePrompts.push({
+            text: ASK_AUDIBILITY_FALLBACK_TEXT,
+            generationId,
+          });
           log.info?.('stage6.ask_audibility_fallback_emitted', {
             sessionId: session.sessionId,
             turnId,
@@ -1905,7 +1920,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // two nets stay independent (the orphan net can't fire on an ask-bearing
     // turn anyway — tool_calls > 0).
     if (Array.isArray(session.pendingVoicePrompts) && session.pendingVoicePrompts.length > 0) {
-      const prompts = session.pendingVoicePrompts.splice(0);
+      // F7 Item 3 — drain ONLY the current generation's prompts (replacing the
+      // blanket splice(0)); PRESERVE other generations' entries so a cancelled
+      // generation's stale apology never leaks onto a later turn and a later
+      // generation never speaks a prior generation's prompt.
+      const isCurrentGenPrompt = (p) =>
+        generationId == null || p?.generationId == null || p.generationId === generationId;
+      const prompts = [];
+      const preserved = [];
+      for (const p of session.pendingVoicePrompts) {
+        if (isCurrentGenPrompt(p)) prompts.push(p);
+        else preserved.push(p);
+      }
+      session.pendingVoicePrompts = preserved;
       if (!Array.isArray(result.confirmations)) result.confirmations = [];
       for (const p of prompts) {
         // F7 Item 2 — trimmed-non-empty predicate (web trims before speaking):

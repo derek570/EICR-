@@ -97,6 +97,7 @@ import { logAskUser } from './stage6-dispatcher-logger.js';
 import {
   AskRegistrationHookError,
   isStage6FatalControlFlowError,
+  throwIfStage6Cancelled,
 } from './stage6-control-flow-errors.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { createRequire } from 'node:module';
@@ -200,6 +201,18 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // be swallowed — a swallowed failure reopens the concurrency bug; a throw is
   // fail-closed as AskRegistrationHookError (fatal control-flow).
   const onAskRegistered = typeof opts?.onAskRegistered === 'function' ? opts.onAskRegistered : null;
+  // F7 Item 3 — the per-generation abort signal. Checked immediately after
+  // EVERY awaited pending-ask outcome and before any auto-resolve write /
+  // terminal apology / new pvr-* registration, so a ceiling cancellation that
+  // lands while the dispatcher is mid-resolution cannot mutate state or
+  // register another ask.
+  const signal = opts?.signal ?? null;
+  // F7 Item 3 — the per-generation id, stamped onto every queued voice prompt
+  // (queuePendingValueApology / the Item-2 fallback) so the harness drains +
+  // counts ONLY the current generation's prompts and a stale prompt from
+  // another generation can neither suppress the current fallback nor be spoken
+  // on the wrong turn.
+  const generationId = opts?.generationId ?? null;
   return async function dispatchAskUser(call, ctx) {
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
@@ -658,6 +671,13 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // stage6.ask_registration_hook_error row was already emitted in the executor.
     if (hookError) throw hookError;
 
+    // F7 Item 3 — the awaited ask outcome just returned. If the watchdog
+    // aborted this generation while we were blocked, STOP here — before
+    // buildResolvedBody runs any auto-resolve write / apology enqueue /
+    // pvr-* re-ask. The throw propagates as a fatal control-flow error to
+    // the harness cancellation-finalization boundary.
+    throwIfStage6Cancelled(signal);
+
     // Step 5: log final outcome.
     const answerOutcome = outcome.answered ? 'answered' : outcome.reason;
     const logPayload = {
@@ -751,6 +771,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       onAskUserStarted,
       // F7 Item 3 — the broker fires this after each successful pvr-* register.
       onAskRegistered,
+      // F7 Item 3 — cancellation signal (checked after each broker await +
+      // before every auto-resolve write / apology) + the generation id stamped
+      // onto queued apologies.
+      signal,
+      generationId,
     });
 
     // §D2 (field-feedback-2026-07-14) — echo the server-assigned
@@ -800,6 +825,8 @@ async function buildResolvedBody({
   ws = null,
   onAskUserStarted = null,
   onAskRegistered = null,
+  signal = null,
+  generationId = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
@@ -847,6 +874,8 @@ async function buildResolvedBody({
       ws,
       onAskUserStarted,
       onAskRegistered,
+      signal,
+      generationId,
     });
     if (pvBody) return pvBody;
     // null → not engaged; fall through to the existing resolvers/legacy body.
@@ -984,6 +1013,8 @@ async function buildResolvedBody({
       const dispatched = [];
       for (const write of enumVerdict.writes) {
         try {
+          // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
+          throwIfStage6Cancelled(signal);
           const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
           dispatched.push({
             tool: write.tool,
@@ -1072,6 +1103,8 @@ async function buildResolvedBody({
       const dispatched = [];
       for (const write of valueVerdict.writes) {
         try {
+          // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
+          throwIfStage6Cancelled(signal);
           const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
           dispatched.push({
             tool: write.tool,
@@ -1177,6 +1210,8 @@ async function buildResolvedBody({
     const dispatched = [];
     for (const write of verdict.writes) {
       try {
+        // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
+        throwIfStage6Cancelled(signal);
         const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
         dispatched.push({
           tool: write.tool,
@@ -1445,10 +1480,13 @@ async function brokerDeterministicAsk({
  * handed back to Haiku would be the same compliance dependency that
  * produced the original F8 silence.
  */
-function queuePendingValueApology(session, text) {
+function queuePendingValueApology(session, text, generationId = null) {
   if (!session) return;
   if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-  session.pendingVoicePrompts.push({ text });
+  // F7 Item 3 — stamp the generation id so the harness drains ONLY the current
+  // generation's prompts (a stale prompt from another generation must never
+  // suppress the current fallback or be spoken on the wrong turn).
+  session.pendingVoicePrompts.push({ text, generationId });
 }
 
 /**
@@ -1548,6 +1586,8 @@ async function runPendingValueChain(args) {
     ws,
     onAskUserStarted,
     onAskRegistered,
+    signal,
+    generationId,
   } = args;
   let fieldKey = args.fieldKey ?? null;
   let value = args.value ?? null;
@@ -1557,7 +1597,7 @@ async function runPendingValueChain(args) {
   const brokered = [];
 
   const terminalApology = () => {
-    queuePendingValueApology(session, PENDING_VALUE_APOLOGY);
+    queuePendingValueApology(session, PENDING_VALUE_APOLOGY, generationId);
     logger?.info?.('stage6.pending_value_failed', {
       sessionId,
       turnId,
@@ -1586,6 +1626,9 @@ async function runPendingValueChain(args) {
 
   // Bounded loop: at most 3 broker rounds (one per shape) + the dispatch.
   for (let round = 0; round < 4; round += 1) {
+    // F7 Item 3 — do not start another broker round (a NEW registration) on a
+    // cancelled generation. The throw propagates to the harness boundary.
+    throwIfStage6Cancelled(signal);
     if (fieldKey && value != null) {
       if (circuit == null) {
         // Shape (3) — field AND value but no circuit scope. Board-scoped
@@ -1610,6 +1653,8 @@ async function runPendingValueChain(args) {
           expectedAnswerShape: 'circuit_ref',
           pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
         });
+        // F7 Item 3 — cancellation may have landed while the broker awaited.
+        throwIfStage6Cancelled(signal);
         brokered.push({ id: pvrId, shape: 'circuit_ref', answered: circOutcome.answered });
         if (!circOutcome.answered) {
           if (String(circOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
@@ -1636,6 +1681,8 @@ async function runPendingValueChain(args) {
       };
       let dispatched;
       try {
+        // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
+        throwIfStage6Cancelled(signal);
         const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
         dispatched = { ...write, ok: result?.ok !== false };
       } catch (err) {
@@ -1689,6 +1736,7 @@ async function runPendingValueChain(args) {
         // reply (classifyOvertake requires non-null pendingValue there).
         pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
       });
+      throwIfStage6Cancelled(signal);
       brokered.push({ id: pvrId, shape: 'field_name', answered: fieldOutcome.answered });
       if (!fieldOutcome.answered) {
         if (String(fieldOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
@@ -1722,6 +1770,7 @@ async function runPendingValueChain(args) {
         expectedAnswerShape: 'number',
         pendingValue: null,
       });
+      throwIfStage6Cancelled(signal);
       brokered.push({ id: pvrId, shape: 'value', answered: valueOutcome.answered });
       if (!valueOutcome.answered) {
         if (String(valueOutcome.reason ?? '').startsWith('broker_')) return terminalApology();

@@ -58,6 +58,7 @@ const {
   EXTRACTION_WATCHDOG_MS,
   EXTRACTION_WATCHDOG_ABSOLUTE_MS,
 } = await import('../extraction/sonnet-stream.js');
+const { ASK_USER_TIMEOUT_MS } = await import('../extraction/stage6-dispatcher-ask.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
 
 function makeFakeWs() {
@@ -279,7 +280,7 @@ describe('F7 Item 3 — extraction-watchdog controller', () => {
 
   test('(a3 arithmetic) the sanctioned A4 timeline sums below the ceiling', () => {
     const eps = 1;
-    const threeAsks = 3 * (45000 - eps); // ASK_USER_TIMEOUT_MS − ε, ×3
+    const threeAsks = 3 * (ASK_USER_TIMEOUT_MS - eps); // ASK_USER_TIMEOUT_MS − ε, ×3
     const twoGaps = 2 * 1000; // two inter-ask empty-registry gap advances
     expect(threeAsks + twoGaps).toBeLessThan(EXTRACTION_WATCHDOG_ABSOLUTE_MS);
   });
