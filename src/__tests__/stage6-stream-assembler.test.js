@@ -89,11 +89,15 @@ describe('stage6-stream-assembler', () => {
 
       expect(records[1].name).toBe('record_observation');
       expect(records[1].tool_call_id).toBe('toolu_01observation');
-      // Schema-valid record_observation shape per
-      // src/extraction/stage6-tool-schemas.js §recordObservation:
-      // required [code, location, text]; optional [circuit, suggested_regulation].
+      // PARTIAL assembler-only payload — this test exercises the stream
+      // assembler's block-parsing, NOT schema validity. The real
+      // record_observation required list is EIGHT fields (code, location,
+      // text, circuit, suggested_regulation, schedule_item, rationale,
+      // clarification_chain_id per src/extraction/stage6-tool-schemas.js
+      // §recordObservation); this fixture carries only a subset because the
+      // assembler passes tool input through verbatim and never checks required.
       // NO description or source_turn_id on this tool (those are record_reading
-      // fields). strict:true on the API would reject either at the model call.
+      // fields).
       expect(records[1].input).toEqual({
         code: 'C2',
         location: 'Main distribution board',

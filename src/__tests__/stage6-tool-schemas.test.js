@@ -2,10 +2,12 @@
  * Tests for src/extraction/stage6-tool-schemas.js — Stage 6 agentic extraction
  * tool definitions.
  *
- * Coverage per Phase 1 Plan 01-01 success criteria:
- *  - 7 tools exported with exact expected names
- *  - every tool has strict: true on input_schema
- *  - every tool's input_schema is a strict JSON-Schema object
+ * Coverage per Phase 1 Plan 01-01 success criteria (tool count grown to 16
+ * across the multi-board + calc-tool sprints; strict:true removed globally by
+ * the Bug-E fix 2026-04-26 — assertions below pin both):
+ *  - 16 tools exported with exact expected names
+ *  - no tool has strict: true on input_schema (server-side validation instead)
+ *  - every tool's input_schema is a JSON-Schema object
  *    (type:'object', additionalProperties:false, required:[])
  *  - record_reading.field enum matches Object.keys(field_schema.circuit_fields)
  *  - every other enum is sourced verbatim from stage6-enumerations.json
@@ -212,17 +214,20 @@ describe('stage6-tool-schemas', () => {
     expect(recordObs.input_schema.properties.code.enum).toEqual(enumerations.observation_code);
   });
 
-  test('record_observation requires all 7 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required under strict:true)', () => {
-    // Under strict:true, non-required fields may be omitted entirely. A
-    // nullable field like `circuit: integer | null` or `suggested_regulation:
-    // string | null` that the dispatcher needs to interpret unambiguously
-    // MUST be required, with null as a valid value for "not applicable" —
-    // otherwise "installation-wide" (explicit null) and "model forgot"
-    // (key absent) collapse into the same undefined-key state.
+  test('record_observation requires all 8 STS-05 fields (Codex round-4 STG MAJOR — nullables must be required; additionalProperties:false, not strict:true)', () => {
+    // The tool is NOT strict:true (Bug-E fix 2026-04-26 removed strict mode)
+    // but additionalProperties:false is preserved, so a nullable field like
+    // `circuit: integer | null` or `suggested_regulation: string | null` that
+    // the dispatcher needs to interpret unambiguously MUST be required, with
+    // null as a valid value for "not applicable" — otherwise "installation-
+    // wide" (explicit null) and "model forgot" (key absent) collapse into the
+    // same undefined-key state.
     // schedule_item added 2026-05-01 with the same nullable-but-required
     // contract — null when no Schedule of Inspection section applies.
     // rationale added 2026-06-23 (Plan obs-#51) — same nullable-but-required
     // contract; null when the observation text alone explains the coding.
+    // clarification_chain_id added 2026-07-15 (D2 chain-correlation) — same
+    // nullable-but-required contract; null for a direct/unclarified observation.
     const recordObs = byName('record_observation');
     expect(recordObs.input_schema.required.sort()).toEqual(
       [
@@ -233,6 +238,7 @@ describe('stage6-tool-schemas', () => {
         'suggested_regulation',
         'schedule_item',
         'rationale',
+        'clarification_chain_id',
       ].sort()
     );
   });
@@ -243,6 +249,40 @@ describe('stage6-tool-schemas', () => {
     expect(prop).toBeDefined();
     // anyOf: [{type:'string'}, {type:'null'}] — same shape as suggested_regulation.
     expect(prop.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
+  });
+
+  // Test-matrix item 10 (D2 chain-correlation) — the new
+  // record_observation.clarification_chain_id field + all THREE model-facing
+  // descriptions carrying the mutation-echo instruction, plus the conditional
+  // tool-result shape documented on the ask_user tool description.
+  test('record_observation.clarification_chain_id is nullable string, in required, additionalProperties intact (D2)', () => {
+    const recordObs = byName('record_observation');
+    const prop = recordObs.input_schema.properties.clarification_chain_id;
+    expect(prop).toBeDefined();
+    expect(prop.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
+    expect(recordObs.input_schema.required).toContain('clarification_chain_id');
+    expect(recordObs.input_schema.additionalProperties).toBe(false);
+  });
+
+  test('all three model-facing chain-id descriptions mention the mutation echo and drop "and nowhere else" (D2)', () => {
+    const askUser = byName('ask_user');
+    const recordObs = byName('record_observation');
+    const askToolDesc = askUser.description;
+    const askProp = askUser.input_schema.properties.clarification_chain_id.description;
+    const recProp = recordObs.input_schema.properties.clarification_chain_id.description;
+
+    // Mutation echo present on all three.
+    expect(askToolDesc).toMatch(/record_observation/);
+    expect(askProp).toMatch(/record_observation/);
+    expect(recProp).toMatch(/observation_clarify/);
+
+    // The stale "and nowhere else" confinement is gone from the property
+    // description (it contradicted the new mutation echo).
+    expect(askProp).not.toContain('and nowhere else');
+
+    // ask_user tool description documents the conditional result shape carrying
+    // the chain id (present for observation_clarify asks).
+    expect(askToolDesc).toContain('clarification_chain_id?:string');
   });
 
   test('delete_observation.reason enum sourced from stage6-enumerations.json', () => {
@@ -403,9 +443,11 @@ describe('stage6-tool-schemas', () => {
     // STS-05 record_observation (Phase 1 round-4 MAJOR #3 — re-asserted)
     // schedule_item added 2026-05-01 (BPG4 pipeline restoration).
     // rationale added 2026-06-23 (Plan obs-#51 — required-with-null).
+    // clarification_chain_id added 2026-07-15 (D2 chain-correlation — required-with-null).
     expect(byName('record_observation').input_schema.required.sort()).toEqual(
       [
         'circuit',
+        'clarification_chain_id',
         'code',
         'location',
         'rationale',
