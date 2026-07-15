@@ -56,6 +56,23 @@ describe('renameObservationsForLegacyWire', () => {
     ]);
   });
 
+  test('§D2 zero-client: a stray clarification_chain_id never appears on the legacy wire shape', () => {
+    // The record_observation dispatcher already excludes the chain id from
+    // extractedObservations, so it never reaches here — but the rename
+    // hand-picks a fixed key set, so even a defensively-present chain id is
+    // dropped. This pins that the wire shape can never gain the field.
+    const renamed = renameObservationsForLegacyWire([
+      {
+        id: 'obs-uuid-9',
+        code: 'C2',
+        text: 'Cracked socket-outlet front',
+        clarification_chain_id: 'obsclr-1', // must NOT survive the rename
+      },
+    ]);
+    expect('clarification_chain_id' in renamed[0]).toBe(false);
+    expect(JSON.stringify(renamed[0])).not.toContain('obsclr-1');
+  });
+
   test('Plan 06-23 obs-#52 Fix B: regulation_title/description carry through (and fall back to null)', () => {
     // The record_observation dispatcher looks up the canonical BS 7671 wording
     // and stamps `regulation_title`/`regulation_description` on the observation
