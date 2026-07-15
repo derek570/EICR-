@@ -51,6 +51,10 @@ jest.unstable_mockModule('../extraction/stage6-ask-gate-wrapper.js', () => ({
   // §D2 (2026-07-14) — the harness lazily creates the observation_clarify
   // chain broker; the mock must provide the export or module linking fails.
   createObsClarifyChainBroker: jest.fn(() => ({ known: new Set(), mint: () => 'obsclr-1' })),
+  // §D2 mutation-to-chain correlation (2026-07-15) — the harness now imports
+  // the pure id-normaliser; the mock must export it or module linking fails.
+  normaliseObsClarifyChainId: (value) =>
+    typeof value === 'string' && value.length > 0 ? value : null,
 }));
 
 const { runShadowHarness } = await import('../extraction/stage6-shadow-harness.js');

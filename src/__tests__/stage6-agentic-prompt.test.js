@@ -307,8 +307,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // factual ask + three-way crack outcomes + clear-cut guards + chain-id
       // echo + Example 13, with RULE 1/1a/3, FI and RESTRAINT reconciled).
       // Measured ~19970; cap 20100 leaves ~130-token headroom.
+      //
+      // 2026-07-15 (D2 mutation-to-chain correlation): bumped to 20200 to
+      // absorb the CHAIN ID echo bullet + Example 13 expanded to THREE COMPLETE
+      // record_observation outcomes (C1/C2/C3) each echoing clarification_chain_id
+      // (Codex diff-review required complete, non-ellipsised worked examples —
+      // the wave's core model-facing contract). Legitimate feature growth of the
+      // canonical example, not bloat.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20100);
+      expect(estimate).toBeLessThanOrEqual(20200);
     });
   });
 
@@ -990,8 +997,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     outcomes, clear-cut guards, chain-id echo) + Example 13, with
       //     RULE 1/1a/3, FI and RESTRAINT reconciled. Measured ~14731;
       //     cap 14850 leaves ~119-token headroom.
+      //   - 14950 (2026-07-15 D2 mutation-to-chain correlation): CHAIN ID echo
+      //     bullet (echo on the continuation AND the resolving record_observation;
+      //     null for direct) + Example 13 expanded from one C1 call + C2/C3
+      //     shorthand to THREE COMPLETE record_observation outcomes each echoing
+      //     clarification_chain_id, + Examples 11/12 null. Codex diff-review
+      //     required complete (non-ellipsised) worked examples for the wave's
+      //     core model-facing contract — legitimate example growth, not bloat.
+      //     Measured ~14909; cap 14950 leaves ~41-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14850);
+      expect(estimate).toBeLessThanOrEqual(14950);
     });
   });
 
@@ -1645,6 +1660,64 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       const block = prompt.slice(idx, idx + 2000);
       expect(block).toMatch(/AUTHORITATIVE/);
       expect(block).toMatch(/NOT subsumed/);
+    });
+  });
+
+  describe('Group 19 — 2026-07-15 D2 mutation-to-chain correlation (chain-id echo on record_observation)', () => {
+    // Test-matrix item 11: the CHAIN ID bullet now requires the same
+    // server-issued clarification_chain_id echoed on BOTH the continuation ask
+    // AND the eventual record_observation; direct observations pass null.
+    test('CHAIN ID bullet requires the mutation echo AND the continuation echo AND null-for-direct', () => {
+      const idx = prompt.indexOf('- CHAIN ID:');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const bullet = prompt.slice(idx, prompt.indexOf('\n', idx));
+      // continuation echo preserved
+      expect(bullet).toMatch(/continuation ask/);
+      // mutation echo (the new requirement)
+      expect(bullet).toMatch(/record_observation/);
+      // direct/unclarified observation → null
+      expect(bullet).toMatch(/clarification_chain_id: null/);
+    });
+
+    test('Example 13 shows the chain id echoed on EACH post-answer record_observation (C1/C2/C3), each a valid coded write', () => {
+      const idx = prompt.indexOf('Example 13 —');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const ex13 = prompt.slice(idx, idx + 1600);
+      // The ask's tool_result carries the id.
+      expect(ex13).toMatch(/tool_result returns `clarification_chain_id:"obsclr-1"`/);
+      // ALL THREE severity outcomes are explicit record_observation calls that
+      // echo the SAME id (not shorthand) — each of C1/C2/C3.
+      const writeIds = ex13.match(/record_observation\(\{[^)]*clarification_chain_id:"obsclr-1"/g) || [];
+      expect(writeIds.length).toBe(3);
+      for (const code of ['C1', 'C2', 'C3']) {
+        // Each coded call carries a non-empty suggested_regulation AND the id,
+        // so validateRecordObservation would ACCEPT it (a coded observation
+        // with null/empty regulation is rejected → the exact fallback this wave
+        // prevents). Order-independent on the two fields.
+        const call = new RegExp(`record_observation\\(\\{code:"${code}"[^)]*\\)`).exec(ex13);
+        expect(call).not.toBeNull();
+        expect(call[0]).toMatch(/suggested_regulation:"[^"]+"/);
+        expect(call[0]).toMatch(/clarification_chain_id:"obsclr-1"/);
+      }
+    });
+
+    test('Examples 11 and 12 (direct observations) are valid coded writes with clarification_chain_id:null and no stray source_turn_id', () => {
+      const idx11 = prompt.indexOf('Example 11 —');
+      const idx12 = prompt.indexOf('Example 12 —');
+      const idx13 = prompt.indexOf('Example 13 —');
+      const ex11 = prompt.slice(idx11, idx12);
+      const ex12 = prompt.slice(idx12, idx13);
+      for (const ex of [ex11, ex12]) {
+        const call = /record_observation\(\{[^)]*\)/.exec(ex);
+        expect(call).not.toBeNull();
+        expect(call[0]).toMatch(/clarification_chain_id:null/);
+        // Coded (C1/C2/C3/FI) observation → non-empty suggested_regulation so
+        // the example would not be rejected at dispatch.
+        expect(call[0]).toMatch(/suggested_regulation:"[^"]+"/);
+        // source_turn_id is a record_reading field, NOT record_observation —
+        // it must not appear on these observation examples.
+        expect(call[0]).not.toContain('source_turn_id');
+      }
     });
   });
 });

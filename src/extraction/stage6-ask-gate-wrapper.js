@@ -309,6 +309,25 @@ function synthResultWithoutLog(call, reason) {
 }
 
 /**
+ * Pure normalisation of a model-supplied clarification_chain_id. Returns the
+ * unchanged non-empty string, or null for anything else (empty string,
+ * non-string, null, undefined). Performs NO minting and consults NO broker
+ * state — it is deliberately side-effect-free and shared between two callers:
+ *   - wrapAskDispatcherWithGates (below), which runs it BEFORE its own
+ *     known-or-mint policy on observation_clarify asks; and
+ *   - the D2 dropped-net in stage6-shadow-harness.js, which runs it on the
+ *     mutation ids it correlates. The net resolves against the current turn's
+ *     answered-anchor map only — never broker membership (`known` is mutable,
+ *     capped/evicting and changed by retirement, so consulting it would make
+ *     the net's results eviction- and order-dependent).
+ *
+ * §D2 mutation-to-chain correlation (2026-07-15).
+ */
+export function normaliseObsClarifyChainId(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
  * §D2 (field-feedback-2026-07-14) — per-session observation_clarify chain
  * broker. Mints server-assigned chain ids (unique per OBSERVATION) that key
  * the ask budget for severity-clarification chains; see the stamping site in
@@ -617,10 +636,7 @@ export function wrapAskDispatcherWithGates(
     // blocked. An unknown/invented id mints a fresh chain (defensive —
     // never lets a wrong echo join another observation's bucket).
     if (call.input?.context_field === 'observation_clarify' && obsClarifyChains) {
-      const provided =
-        typeof call.input.clarification_chain_id === 'string' && call.input.clarification_chain_id
-          ? call.input.clarification_chain_id
-          : null;
+      const provided = normaliseObsClarifyChainId(call.input.clarification_chain_id);
       const chainId =
         provided && obsClarifyChains.known.has(provided) ? provided : obsClarifyChains.mint();
       call.input.clarification_chain_id = chainId;

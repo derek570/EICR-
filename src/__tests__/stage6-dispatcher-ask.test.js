@@ -497,6 +497,69 @@ describe('createAskDispatcher — askStartedAt captured before Promise construct
   });
 });
 
+// --- Group 6b: §D2 real-dispatcher chain-id echo (test-matrix item 11b) ----
+//
+// The Group-A/B chain tests use a fake inner dispatcher that manufactures the
+// id, so without exercising the REAL createAskDispatcher the production echo
+// could silently break while every chain test still passes. This pins the
+// conditional shape: an observation_clarify ask carrying a chain id echoes it
+// in the tool_result; an ordinary ask_user does NOT.
+
+describe('createAskDispatcher — §D2 clarification_chain_id echo', () => {
+  test('observation_clarify ask carrying a chain id → tool_result CONTAINS clarification_chain_id', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick'] });
+    try {
+      const session = makeSession('live');
+      const pending = createPendingAsksRegistry();
+      const ws = makeWs();
+      const dispatch = createAskDispatcher(session, makeLogger(), 'turn-1', pending, ws);
+      const call = makeCall('toolu_oc', {
+        question: 'Does the crack expose live parts?',
+        reason: 'observation_confirmation',
+        context_field: 'observation_clarify',
+        expected_answer_shape: 'free_text',
+        clarification_chain_id: 'obsclr-1', // gate wrapper stamps this in prod
+      });
+      const p = dispatch(call, { sessionId: 'sess-1', turnId: 'turn-1' });
+      await Promise.resolve();
+      await Promise.resolve();
+      pending.resolve('toolu_oc', { answered: true, user_text: 'just cosmetic' });
+      const res = await p;
+      const body = JSON.parse(res.content);
+      expect(body.answered).toBe(true);
+      expect(body.clarification_chain_id).toBe('obsclr-1');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('ordinary ask_user (no observation_clarify) → clarification_chain_id ABSENT', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick'] });
+    try {
+      const session = makeSession('live');
+      const pending = createPendingAsksRegistry();
+      const ws = makeWs();
+      const dispatch = createAskDispatcher(session, makeLogger(), 'turn-1', pending, ws);
+      const call = makeCall('toolu_plain', {
+        question: 'Which circuit were you referring to?',
+        reason: 'ambiguous_circuit',
+        context_field: 'circuit_designation',
+        expected_answer_shape: 'circuit_ref',
+      });
+      const p = dispatch(call, { sessionId: 'sess-1', turnId: 'turn-1' });
+      await Promise.resolve();
+      await Promise.resolve();
+      pending.resolve('toolu_plain', { answered: true, user_text: 'Circuit 5' });
+      const res = await p;
+      const body = JSON.parse(res.content);
+      expect(body.answered).toBe(true);
+      expect('clarification_chain_id' in body).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
 // --- Group 7: Exported constant -------------------------------------------
 
 describe('createAskDispatcher — exports', () => {

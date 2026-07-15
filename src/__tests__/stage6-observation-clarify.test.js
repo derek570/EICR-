@@ -204,20 +204,32 @@ function baseOpts(overrides = {}) {
   };
 }
 
+// Real runToolLoop entry shape: the tool id lives at result.tool_use_id (cf.
+// stage6-tool-loop.js), NOT a synthetic top-level tool_call_id. The shared
+// observation_clarify ASK fixtures below (answeredClarify / unansweredClarify,
+// and answeredChain / timedOutChain derived from them) use this production
+// shape, because it is the ANCHOR asks whose ids feed anchor_tool_call_ids
+// telemetry — a synthetic top-level id could pass in tests while live
+// CloudWatch rows went null. Mutation fixtures (okObservation / okReading /
+// okObsChain) do not feed anchor telemetry, so their id placement is not
+// load-bearing.
 const answeredClarify = (id) => ({
   name: 'ask_user',
-  tool_call_id: id,
   input: { context_field: 'observation_clarify', question: 'crack question' },
   result: {
     is_error: false,
+    tool_use_id: id,
     content: JSON.stringify({ answered: true, untrusted_user_text: 'just cosmetic' }),
   },
 });
 const unansweredClarify = (id) => ({
   name: 'ask_user',
-  tool_call_id: id,
   input: { context_field: 'observation_clarify', question: 'follow-up' },
-  result: { is_error: false, content: JSON.stringify({ answered: false, reason: 'timeout' }) },
+  result: {
+    is_error: false,
+    tool_use_id: id,
+    content: JSON.stringify({ answered: false, reason: 'timeout' }),
+  },
 });
 const okObservation = () => ({
   name: 'record_observation',
@@ -400,5 +412,342 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     const result = await runShadowHarness(makeSession(), 'Zs circuit 1 0.3', [], baseOpts());
     const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
     expect(net).toBeUndefined();
+  });
+});
+
+// ── Group B (2026-07-15) — mutation-to-chain correlation (multi-chain) ──────
+
+const netTextPlural = /didn't record those observations/i;
+
+// answered clarify carrying a specific chain id.
+const answeredChain = (id, chainId) => {
+  const c = answeredClarify(id);
+  if (chainId != null) c.input.clarification_chain_id = chainId;
+  return c;
+};
+// audibly-terminated (timeout) continuation carrying a chain id.
+const timedOutChain = (id, chainId) => {
+  const c = unansweredClarify(id);
+  if (chainId != null) c.input.clarification_chain_id = chainId;
+  return c;
+};
+// successful record_observation carrying (or omitting) a chain id.
+const okObsChain = (toolCallId, chainId) => ({
+  name: 'record_observation',
+  tool_call_id: toolCallId,
+  input: {
+    code: 'C3',
+    text: 'Cracked socket',
+    ...(chainId != null ? { clarification_chain_id: chainId } : {}),
+  },
+  result: { is_error: false, content: JSON.stringify({ ok: true, observation_id: toolCallId }) },
+});
+// answered clarify in the REAL runToolLoop shape: id at result.tool_use_id,
+// NO synthetic top-level tool_call_id (test 15 asserts non-null anchor ids).
+const answeredChainRealShape = (tuid, chainId) => ({
+  name: 'ask_user',
+  input: {
+    context_field: 'observation_clarify',
+    question: 'crack question',
+    ...(chainId != null ? { clarification_chain_id: chainId } : {}),
+  },
+  result: {
+    is_error: false,
+    tool_use_id: tuid,
+    content: JSON.stringify({ answered: true, untrusted_user_text: 'just cosmetic' }),
+  },
+});
+const infoRows = (opts, name) =>
+  opts.logger.info.mock.calls.filter((c) => c[0] === name).map((c) => c[1]);
+const DROPPED = 'stage6.observation_clarify_dropped_net';
+const LENIENT = 'stage6.observation_clarify_lenient_qualification';
+
+describe('§D2 Group B (2026-07-15) — mutation-to-chain correlation', () => {
+  test('(1) correlated A+B, one record carrying A id → exactly ONE fallback (for B), both chains retired once', async () => {
+    const retire = jest.fn();
+    const session = makeSession();
+    session.obsClarifyChains = { known: new Set(['A', 'B']), mint: () => 'z', retire };
+    const opts = baseOpts();
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      answeredChain('toolu_b', 'B'),
+      okObsChain('obs_a', 'A'),
+    ]);
+    const result = await runShadowHarness(session, 'just cosmetic', [], opts);
+    const singular = (result.confirmations ?? []).filter((c) => netText.test(c.text || ''));
+    const plural = (result.confirmations ?? []).filter((c) => netTextPlural.test(c.text || ''));
+    expect(singular).toHaveLength(1); // only chain B fell back
+    expect(plural).toHaveLength(0);
+    expect(retire).toHaveBeenCalledWith('A');
+    expect(retire).toHaveBeenCalledWith('B');
+    expect(retire).toHaveBeenCalledTimes(2);
+    const dropped = infoRows(opts, DROPPED);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].unqualified_chain_ids).toEqual(['B']);
+    expect(dropped[0].qualified_chain_ids).toEqual(['A']);
+    expect(dropped[0].mutation_id_kinds).toEqual(['matched']);
+    expect(dropped[0].lenient_qualification).toBe(false);
+  });
+
+  test('(2) correlated A+B, two records carrying A and B ids → zero fallbacks, both retired', async () => {
+    const retire = jest.fn();
+    const session = makeSession();
+    session.obsClarifyChains = { known: new Set(['A', 'B']), mint: () => 'z', retire };
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      answeredChain('toolu_b', 'B'),
+      okObsChain('obs_a', 'A'),
+      okObsChain('obs_b', 'B'),
+    ]);
+    const result = await runShadowHarness(session, 'just cosmetic', [], baseOpts());
+    const nets = (result.confirmations ?? []).filter(
+      (c) => netText.test(c.text || '') || netTextPlural.test(c.text || '')
+    );
+    expect(nets).toHaveLength(0);
+    expect(retire).toHaveBeenCalledWith('A');
+    expect(retire).toHaveBeenCalledWith('B');
+  });
+
+  describe('(3) failed record_observation never qualifies → chain falls back', () => {
+    const cases = [
+      ['(a) is_error:false + {ok:false}', { is_error: false, content: JSON.stringify({ ok: false }) }],
+      ['(b) is_error:false + malformed content', { is_error: false, content: '{not json' }],
+      ['(c) is_error:false + JSON missing ok', { is_error: false, content: JSON.stringify({ observation_id: 'x' }) }],
+      ['(d) is_error:true + {ok:true}', { is_error: true, content: JSON.stringify({ ok: true }) }],
+    ];
+    for (const [label, res] of cases) {
+      test(label, async () => {
+        const failObs = {
+          name: 'record_observation',
+          tool_call_id: 'obs_fail',
+          input: { code: 'C3', text: 'x', clarification_chain_id: 'A' },
+          result: res,
+        };
+        toolLoopResult = loopOut([answeredChain('toolu_a', 'A'), failObs]);
+        const opts = baseOpts();
+        const result = await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+        const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+        expect(net).toBeDefined();
+        // The parser must catch malformed bodies internally — NEVER throw into
+        // the outer catch (which would emit only net_error and re-open the
+        // silence path). So no net_error row must be logged.
+        expect(
+          opts.logger.warn.mock.calls.filter(
+            (c) => c[0] === 'stage6.observation_clarify_net_error'
+          )
+        ).toHaveLength(0);
+      });
+    }
+  });
+
+  test('(4) unknown id "obsclr-999" with answered chain A → LENIENT: A qualified, zero fallbacks, retired', async () => {
+    const retire = jest.fn();
+    const session = makeSession();
+    session.obsClarifyChains = { known: new Set(['A']), mint: () => 'z', retire };
+    const opts = baseOpts();
+    toolLoopResult = loopOut([answeredChain('toolu_a', 'A'), okObsChain('obs_x', 'obsclr-999')]);
+    const result = await runShadowHarness(session, 'just cosmetic', [], opts);
+    const net = (result.confirmations ?? []).find(
+      (c) => netText.test(c.text || '') || netTextPlural.test(c.text || '')
+    );
+    expect(net).toBeUndefined();
+    expect(retire).toHaveBeenCalledWith('A');
+    const lenient = infoRows(opts, LENIENT);
+    expect(lenient).toHaveLength(1);
+    expect(lenient[0].mutation_id_kind).toBe('unknown');
+    expect(lenient[0].qualified_chain_ids).toEqual(['A']);
+    expect(infoRows(opts, DROPPED)).toHaveLength(0);
+  });
+
+  test('(5) id-less mutation, single chain → qualifies (today\'s behaviour preserved)', async () => {
+    toolLoopResult = loopOut([answeredChain('toolu_a', 'A'), okObsChain('obs_x', null)]);
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    const net = (result.confirmations ?? []).find(
+      (c) => netText.test(c.text || '') || netTextPlural.test(c.text || '')
+    );
+    expect(net).toBeUndefined();
+  });
+
+  test('(6) id-less mutation, two chains → zero fallbacks (D-1a lenient), BOTH retired', async () => {
+    const retire = jest.fn();
+    const session = makeSession();
+    session.obsClarifyChains = { known: new Set(['A', 'B']), mint: () => 'z', retire };
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      answeredChain('toolu_b', 'B'),
+      okObsChain('obs_x', null),
+    ]);
+    const result = await runShadowHarness(session, 'just cosmetic', [], baseOpts());
+    const net = (result.confirmations ?? []).find(
+      (c) => netText.test(c.text || '') || netTextPlural.test(c.text || '')
+    );
+    expect(net).toBeUndefined();
+    expect(retire).toHaveBeenCalledWith('A');
+    expect(retire).toHaveBeenCalledWith('B');
+  });
+
+  test('(7) same chain: answered initial + answered continuation, no mutation → exactly ONE fallback, ONE retire', async () => {
+    const retire = jest.fn();
+    const session = makeSession();
+    session.obsClarifyChains = { known: new Set(['A']), mint: () => 'z', retire };
+    toolLoopResult = loopOut([answeredChain('toolu_a1', 'A'), answeredChain('toolu_a2', 'A')]);
+    const result = await runShadowHarness(session, 'still not sure', [], baseOpts());
+    const nets = (result.confirmations ?? []).filter((c) => netText.test(c.text || ''));
+    expect(nets).toHaveLength(1); // one chain, singular wording
+    expect(retire).toHaveBeenCalledTimes(1);
+    expect(retire).toHaveBeenCalledWith('A');
+  });
+
+  test('(8) same-chain audible continuation qualifies ONLY its own chain (B still falls back)', async () => {
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      answeredChain('toolu_b', 'B'),
+      timedOutChain('toolu_a2', 'A'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeDefined(); // B fell back
+    const dropped = infoRows(opts, DROPPED);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].unqualified_chain_ids).toEqual(['B']);
+    expect(dropped[0].qualified_chain_ids).toEqual(['A']);
+  });
+
+  test('(9) two unqualified chains, same turn → ONE combined PLURAL fallback; dropped_net mutation_id_kinds:[]', async () => {
+    toolLoopResult = loopOut([answeredChain('toolu_a', 'A'), answeredChain('toolu_b', 'B')]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'still not sure', [], opts);
+    const plural = (result.confirmations ?? []).filter((c) => netTextPlural.test(c.text || ''));
+    const singular = (result.confirmations ?? []).filter((c) => netText.test(c.text || ''));
+    expect(plural).toHaveLength(1); // ONE combined, plural wording
+    expect(singular).toHaveLength(0); // distinct from single-chain text
+    const dropped = infoRows(opts, DROPPED);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].mutation_id_kinds).toEqual([]); // zero-mutation payload
+    expect(dropped[0].unqualified_chain_ids).toEqual(['A', 'B']);
+  });
+
+  test('(12) ordering: record carrying A id BEFORE A anchor does NOT qualify → A falls back', async () => {
+    toolLoopResult = loopOut([okObsChain('obs_a', 'A'), answeredChain('toolu_a', 'A')]);
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeDefined();
+  });
+
+  test('(13) ordering + lenient: id-less mutation BETWEEN anchors A and B qualifies A only', async () => {
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      okObsChain('obs_x', null),
+      answeredChain('toolu_b', 'B'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeDefined(); // B fell back
+    const dropped = infoRows(opts, DROPPED);
+    expect(dropped[0].unqualified_chain_ids).toEqual(['B']);
+    expect(dropped[0].qualified_chain_ids).toEqual(['A']);
+    const lenient = infoRows(opts, LENIENT);
+    expect(lenient).toHaveLength(1);
+    expect(lenient[0].qualified_chain_ids).toEqual(['A']);
+  });
+
+  test('(14) telemetry lenient: id-less mutation qualifying two chains → one lenient row, no dropped_net', async () => {
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      answeredChain('toolu_b', 'B'),
+      okObsChain('obs_x', null),
+    ]);
+    const opts = baseOpts();
+    await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const lenient = infoRows(opts, LENIENT);
+    expect(lenient).toHaveLength(1);
+    expect(lenient[0].lenient_qualification).toBe(true);
+    expect(lenient[0].mutation_id_kind).toBe('null');
+    expect(lenient[0].qualified_chain_ids.sort()).toEqual(['A', 'B']);
+    expect(infoRows(opts, DROPPED)).toHaveLength(0);
+  });
+
+  test('(14b) telemetry lenient: [A, null M1, B, unknown M2] → TWO lenient rows [A] then [B]', async () => {
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      okObsChain('obs_1', null),
+      answeredChain('toolu_b', 'B'),
+      okObsChain('obs_2', 'obsclr-zzz'),
+    ]);
+    const opts = baseOpts();
+    await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const lenient = infoRows(opts, LENIENT);
+    expect(lenient).toHaveLength(2);
+    expect(lenient[0].qualified_chain_ids).toEqual(['A']);
+    expect(lenient[0].mutation_id_kind).toBe('null');
+    expect(lenient[1].qualified_chain_ids).toEqual(['B']);
+    expect(lenient[1].mutation_id_kind).toBe('unknown');
+    expect(infoRows(opts, DROPPED)).toHaveLength(0);
+  });
+
+  test('(15) telemetry payload: A+B/record-A partial → complete dropped_net with NON-NULL anchor ids', async () => {
+    toolLoopResult = loopOut([
+      answeredChainRealShape('tuid_a', 'A'),
+      answeredChainRealShape('tuid_b', 'B'),
+      okObsChain('obs_a', 'A'),
+    ]);
+    const opts = baseOpts();
+    await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const dropped = infoRows(opts, DROPPED);
+    expect(dropped).toHaveLength(1);
+    const row = dropped[0];
+    expect(row.unqualified_chain_ids).toEqual(['B']);
+    expect(row.qualified_chain_ids).toEqual(['A']);
+    expect(row.lenient_qualification).toBe(false);
+    expect(row.mutation_id_kinds).toEqual(['matched']);
+    // anchor_tool_call_ids: TWO entries, anchor order, NON-NULL ids.
+    expect(row.anchor_tool_call_ids).toEqual([
+      { clarification_chain_id: 'A', anchor_tool_call_id: 'tuid_a' },
+      { clarification_chain_id: 'B', anchor_tool_call_id: 'tuid_b' },
+    ]);
+  });
+
+  test('(15b) telemetry payload mixed: [A, matched-A, B, null, C] → mutation_id_kinds:[matched,null], C unqualified', async () => {
+    toolLoopResult = loopOut([
+      answeredChain('toolu_a', 'A'),
+      okObsChain('obs_a', 'A'),
+      answeredChain('toolu_b', 'B'),
+      okObsChain('obs_null', null),
+      answeredChain('toolu_c', 'C'),
+    ]);
+    const opts = baseOpts();
+    await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const dropped = infoRows(opts, DROPPED);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].unqualified_chain_ids).toEqual(['C']);
+    expect(dropped[0].mutation_id_kinds).toEqual(['matched', 'null']);
+    expect(dropped[0].lenient_qualification).toBe(true); // null mutation newly qualified B
+  });
+
+  test('(16) no-raw-id: unknown id "MODEL-CONTROLLED-DO-NOT-LOG" never appears in ANY emitted row', async () => {
+    const RAW = 'MODEL-CONTROLLED-DO-NOT-LOG';
+    toolLoopResult = loopOut([answeredChain('toolu_a', 'A'), okObsChain('obs_x', RAW)]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const net = (result.confirmations ?? []).find(
+      (c) => netText.test(c.text || '') || netTextPlural.test(c.text || '')
+    );
+    expect(net).toBeUndefined(); // lenient — qualifies the only chain
+    const lenient = infoRows(opts, LENIENT);
+    expect(lenient).toHaveLength(1);
+    expect(lenient[0].mutation_id_kind).toBe('unknown');
+    expect(lenient[0].qualified_chain_ids).toEqual(['A']);
+    expect(infoRows(opts, DROPPED)).toHaveLength(0);
+    // EVERY emitted row across ALL log sinks — event name AND serialised
+    // payload — must not contain the raw model-controlled id (a future leak
+    // through warn/error/debug would violate the no-raw-id contract too).
+    for (const sink of ['info', 'warn', 'error', 'debug']) {
+      for (const call of opts.logger[sink].mock.calls) {
+        expect(String(call[0] ?? '')).not.toContain(RAW);
+        expect(JSON.stringify(call[1] ?? null)).not.toContain(RAW);
+      }
+    }
   });
 });
