@@ -33,7 +33,39 @@
  * mirror's parity expectations — the backend `ios_send_attempt`
  * telemetry computes `expected_dedupe_key` with the same algorithm and
  * reconciles byte-for-byte against client reality.
+ *
+ * ── Operation dedupe tokens (field-feedback-2026-07-14 §A1a) ──
+ * Five TEXT-OP confirmation fields collide under ALL of the positional
+ * shapes above: every "Observation deleted" is circuit:null +
+ * byte-identical text (the degenerate branch hashes identically), and a
+ * repeated legitimate field_cleared / rename on the same slot speaks
+ * byte-identical text too — so text hashing cannot separate
+ * identical-text REPEATS of DISTINCT operations (field session 6B6FE011:
+ * the F2 correction read-back and the F7/F10 apologies were all
+ * client-swallowed on colliding keys). For those fields the backend
+ * stamps a `dedupe_token` on the wire confirmation entry (replay-stable
+ * operation identity — see `stage6-event-bundler.js`) and the token key
+ * `${field}_${dedupe_token}` takes precedence in EVERY branch the
+ * confirmation can reach. Measured-value fields IGNORE the token — the
+ * bare `${field}_${circuit}` single-circuit shape is load-bearing for
+ * the iOS correction-TTS cross-match, mirrored here. Token absent
+ * (pre-token backend) → the legacy shapes, byte-unchanged.
  */
+
+/**
+ * The exact synchronized allowlist of text-op confirmation fields that
+ * carry a backend-emitted `dedupe_token`. Mirrors
+ * `src/extraction/ios-dedupe-key.js` `DEDUPE_TOKEN_FIELDS` and iOS
+ * `DeepgramRecordingViewModel.dedupeTokenFields`; the drift tests on all
+ * three sides pin membership + per-op token composition.
+ */
+export const DEDUPE_TOKEN_FIELDS: ReadonlySet<string> = new Set([
+  'circuit_op',
+  'observation',
+  'observation_deletion',
+  'field_cleared',
+  'circuit_designation',
+]);
 
 // BigInt() constructor calls (not `5381n` literals) — the web tsconfig
 // targets ES2017 where BigInt LITERALS are a syntax error, but the
@@ -65,14 +97,24 @@ export interface DedupeKeySource {
   circuit?: number | null;
   circuits?: number[] | null;
   board_id?: string | null;
+  /** §A1a backend-stamped operation token (five text-op fields only). */
+  dedupe_token?: string | null;
 }
 
 /**
  * Literal port of iOS `buildConfirmationDedupeKey` branch selection:
+ * token precedence for allowlisted text-op fields (every branch), then
  * single-circuit wins, then multi-circuit broadcast, then degenerate.
  */
 export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
   const field = conf.field ?? 'unknown';
+  // §A1a — token precedence for the allowlisted text-op fields, in every
+  // branch (single-circuit, multi-circuit AND degenerate). Empty-string
+  // token treated as absent (mirrors the JS `opToken &&` falsiness in
+  // ios-dedupe-key.js and the Swift `!token.isEmpty` guard).
+  if (conf.dedupe_token && conf.field && DEDUPE_TOKEN_FIELDS.has(conf.field)) {
+    return `${conf.field}_${conf.dedupe_token}`;
+  }
   if (conf.circuit != null) {
     // Single-circuit: historical "{field}_{circuit}" shape so
     // correction-TTS dedupe entries still cross-match (iOS Bug A fix).

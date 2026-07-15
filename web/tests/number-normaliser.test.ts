@@ -175,6 +175,18 @@ describe('NumberNormaliser', () => {
     expect(result).toContain('0.34');
   });
 
+  // field-feedback-2026-07-14 F10 (session 6B6FE011 06:27): "Zedi" is a
+  // live Deepgram garble of "Ze". The pre-existing zed regex
+  // (\bzed(?:dy|d?e(?:e)?)\b) does NOT match it, and normalise() output is
+  // what the backend receives — without the alias the server still sees
+  // raw "zedi". iOS canon: NumberNormaliser.swift (commit 67ffb9d).
+  it('zedi → Ze (F10 garble alias)', () => {
+    const result = normalise('zedi is nought point three four');
+    expect(result).toContain('Ze');
+    expect(result).toContain('0.34');
+    expect(result.toLowerCase()).not.toContain('zedi');
+  });
+
   it('PFC', () => {
     const result = normalise('p f c is two point five');
     expect(result).toContain('PFC');

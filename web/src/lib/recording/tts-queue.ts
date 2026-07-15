@@ -124,6 +124,13 @@ let shouldDeferPlayback: () => boolean = () => false;
 /** Un-record hook. Null until recording-context registers it; `reset()` clears
  *  it so a later tour (no session) runs against no callback. */
 let onDiscarded: ((dedupeKey: string) => void) | null = null;
+/** Playback-start hook (§A1b, field-feedback-2026-07-14). Fired once per
+ *  head, at the moment real audio begins, with the head's dedupeKey —
+ *  recording-context converts the key's RESERVATION into its heard state
+ *  (permanent for field read-backs, 30 s TTL stamp for field-nil
+ *  apologies). Same lifecycle as `onDiscarded`: null until registered,
+ *  cleared by `reset()`. */
+let onPlaybackStarted: ((dedupeKey: string) => void) | null = null;
 
 export function setShouldDeferPlayback(fn: () => boolean): void {
   shouldDeferPlayback = fn;
@@ -131,6 +138,10 @@ export function setShouldDeferPlayback(fn: () => boolean): void {
 
 export function setOnDiscarded(fn: (dedupeKey: string) => void): void {
   onDiscarded = fn;
+}
+
+export function setOnPlaybackStarted(fn: (dedupeKey: string) => void): void {
+  onPlaybackStarted = fn;
 }
 
 /** Fire the un-record hook synchronously for a never-played item. No-op when
@@ -194,6 +205,17 @@ function pumpIfIdle(): void {
     onStart: () => {
       if (currentHeadId !== myId) return; // superseded
       startedPlayback = true;
+      // §A1b — convert the head's dedupe-key reservation to its heard
+      // state (30 s TTL for field-nil apologies). Fired exactly once per
+      // head: startedPlayback guards every later discard path from
+      // un-recording a heard key, and this hook is its mirror image.
+      if (next.dedupeKey && onPlaybackStarted) {
+        try {
+          onPlaybackStarted(next.dedupeKey);
+        } catch {
+          /* swallow — a bad consumer must not wedge the queue */
+        }
+      }
     },
     onEnd: () => completeHead(myId),
     onError: () => completeHead(myId),
@@ -384,6 +406,7 @@ export function reset(): void {
   clientDiagnostic('tts_queue_reset', { discardedQueued: discarded });
   shouldDeferPlayback = () => false;
   onDiscarded = null;
+  onPlaybackStarted = null;
 }
 
 /** Test-only — wipe ALL module state including the id counter + wiring. */
@@ -398,6 +421,7 @@ export function __resetForTests(): void {
   idCounter = 0;
   shouldDeferPlayback = () => false;
   onDiscarded = null;
+  onPlaybackStarted = null;
 }
 
 /** Read-only introspection for diagnostics / tests. */

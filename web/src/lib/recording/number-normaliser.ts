@@ -94,6 +94,12 @@ const SPOKEN_ABBREVIATIONS: Array<readonly [RegExp, string]> = [
   [/\bzed\s+s(?:s|ess)?\b/gi, 'Zs'],
   [/\bzed\s+e\b/gi, 'Ze'],
   [/\bzed(?:dy|d?e(?:e)?)\b/gi, 'Ze'],
+  // field-feedback-2026-07-14 F10: "Zedi" garble of "Ze". This table feeds
+  // the BACKEND-facing normalised text (recording-context sends
+  // normalise(text)), so without this entry the server still receives raw
+  // "zedi" and recovery depends on the prompt alone. iOS canon:
+  // NumberNormaliser.swift spokenAbbreviations (commit 67ffb9d).
+  [/\bzedi\b/gi, 'Ze'],
   [/\bp\s+f\s+c\b/gi, 'PFC'],
   [/\bm\s+c\s+b\b/gi, 'MCB'],
   [/\br\s+c\s+b\s+o\b/gi, 'RCBO'],

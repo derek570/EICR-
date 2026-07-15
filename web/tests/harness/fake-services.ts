@@ -154,6 +154,7 @@ export interface FakeSonnetCallbacks {
   onSessionAck?: (status: string, sessionId: string | null) => void;
   onExtraction?: (result: unknown) => void;
   onQuestion?: (q: unknown) => void;
+  onFieldCorrected?: (msg: unknown) => void;
   [key: string]: unknown;
 }
 
@@ -225,6 +226,12 @@ export class FakeSonnetSession implements SonnetSessionLike {
   }
   emitQuestion(q: unknown): void {
     this.callbacks.onQuestion?.(q);
+  }
+  /** Stage 6 STI-05 `field_corrected` frame (clear_reading wire). Drives
+   *  the REAL recording-context onFieldCorrected → field_clears apply
+   *  path — the A2 canonicalised-clear-key mock-lane pin rides this. */
+  emitFieldCorrected(msg: { circuit: number; field: string }): void {
+    this.callbacks.onFieldCorrected?.(msg);
   }
 }
 

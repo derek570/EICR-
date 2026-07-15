@@ -85,8 +85,10 @@ import {
   purge as ttsQueuePurge,
   resumeIfDeferred as ttsQueueResumeIfDeferred,
   setOnDiscarded as ttsQueueSetOnDiscarded,
+  setOnPlaybackStarted as ttsQueueSetOnPlaybackStarted,
   setShouldDeferPlayback as ttsQueueSetShouldDeferPlayback,
 } from './recording/tts-queue';
+import { ConfirmationDedupeStore } from './recording/confirmation-dedupe-store';
 import {
   handleCancelPendingTts,
   handleInspectorStoppedSpeaking,
@@ -1275,14 +1277,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // a follow-up — for MVP the standard Sonnet round-trip with
   // in_response_to context lands the answer.
   const pendingReadingsBufferRef = React.useRef<PendingReadingsBuffer | null>(null);
-  // D6 — per-session dedup set for Sonnet confirmations. iOS canon
-  // `DeepgramRecordingViewModel.swift:303` `confirmedFieldKeys: Set<String>`
-  // reset at line 799 on session start. Keyed by `<field>_<circuit>` so a
-  // repeated overwrite of the same field+circuit pair doesn't re-announce
-  // (a turn that re-extracts the same Zs reading on the same circuit
-  // shouldn't TTS "Updated Zs to 0.42" twice). Field/circuit nulls fold
-  // into the key as 'unknown'/'none' to match iOS line 3307.
-  const confirmedFieldKeysRef = React.useRef<Set<string>>(new Set());
+  // D6 — per-session dedup store for Sonnet confirmations. iOS canon
+  // `DeepgramRecordingViewModel.swift` `confirmedFieldKeys` + the A1(b)
+  // field-feedback-2026-07-14 twin stores: field read-back keys keep the
+  // session-permanent Set semantics (a turn that re-extracts the same Zs
+  // reading on the same circuit shouldn't TTS "Updated Zs to 0.42"
+  // twice), while FIELD-NIL confirmations (apologies / system prompts —
+  // conf.field == null) dedupe on a 30 s TTL from audible playback start
+  // so a swallowed-apology class (session 6B6FE011 F7/F10) can't recur;
+  // queued-but-unplayed keys are held as AGELESS reservations. See
+  // confirmation-dedupe-store.ts for the full three-store contract.
+  const confirmationDedupeStoreRef = React.useRef<ConfirmationDedupeStore>(
+    new ConfirmationDedupeStore()
+  );
   // A4 (Wave 6) — voice feedback marker capture. iOS canon:
   // TranscriptProcessor.swift HEAD (state machine + 30s rolling window) +
   // DeepgramRecordingViewModel.performStopCleanup auto-close. The
@@ -2396,7 +2403,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         schedulePushJobState();
       }
       // D6 — speak every confirmation through the confirmation-mode-
-      // gated path, deduped per session via confirmedFieldKeysRef so a
+      // gated path, deduped per session via confirmationDedupeStoreRef so a
       // re-extraction of the same field+circuit doesn't TTS twice.
       // Mirrors iOS `flushPendingConfirmations`
       // (DeepgramRecordingViewModel.swift:3290-3317): iterate the
@@ -2420,16 +2427,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       for (const conf of confirmations) {
         if (!conf || typeof conf.text !== 'string' || conf.text.trim().length === 0) continue;
         const dedupeKey = buildConfirmationDedupeKey(conf);
-        if (confirmedFieldKeysRef.current.has(dedupeKey)) {
+        // §A1b — field-nil confirmations (apologies / system prompts)
+        // dedupe on the 30 s TTL store, not the permanent set. iOS canon:
+        // `isConfirmationKeyLive(key, fieldIsNil:)`.
+        const fieldIsNil = conf.field == null;
+        if (confirmationDedupeStoreRef.current.isLive(dedupeKey, fieldIsNil)) {
           clientDiagnostic('onExtraction_confirmation_deduped', {
             dedupeKey,
+            fieldIsNil,
             sentencePreview: conf.text.slice(0, 80),
           });
           continue;
         }
         const sentence = confirmationToSentence(conf);
         if (!sentence) continue;
-        confirmedFieldKeysRef.current.add(dedupeKey);
+        // RESERVE (ageless while queued) — converts to heard state at
+        // playback start via the queue's onPlaybackStarted hook; any
+        // pre-play discard forgets it via onDiscarded.
+        confirmationDedupeStoreRef.current.reserve(dedupeKey, fieldIsNil);
         clientDiagnostic('onExtraction_speaking_confirmation', {
           dedupeKey,
           sentencePreview: sentence.slice(0, 80),
@@ -2489,8 +2504,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // are restored to defaults by `ttsQueue.reset()` (run inside the
     // `cancelSpeech({resetQueue:true})` at stop/unmount).
     ttsQueueSetShouldDeferPlayback(() => isInspectorSpeakingRef.current || isDirectAudioActive());
+    // §A1b — the shared forget helper clears ALL dedupe stores (permanent
+    // set + field-nil TTL map + ageless reservation) so a confirmation
+    // discarded before it ever played is immediately re-speakable; a
+    // TTL stamp left behind here would suppress a re-emitted apology for
+    // up to 30 s despite it never being heard.
     ttsQueueSetOnDiscarded((dedupeKey) => {
-      confirmedFieldKeysRef.current.delete(dedupeKey);
+      confirmationDedupeStoreRef.current.forget(dedupeKey);
+    });
+    // §A1b — audible playback started: the reservation converts (field-nil
+    // keys start their 30 s TTL; field keys are already permanent).
+    ttsQueueSetOnPlaybackStarted((dedupeKey) => {
+      confirmationDedupeStoreRef.current.markPlaybackStarted(dedupeKey);
     });
 
     // B1 seam — the harness injects a scripted fake session (mock backend
@@ -3454,9 +3479,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // A4 — fresh feedback state per session (no cross-session window leak).
     feedbackCaptureRef.current?.reset();
     pendingFeedbackContextRef.current = null;
-    // D6 — clear the per-field confirmation dedup set. Same iOS
-    // canon as line 799 (`confirmedFieldKeys = []`).
-    confirmedFieldKeysRef.current.clear();
+    // D6 + §A1b — session-boundary reset of ALL confirmation-dedupe
+    // stores together (permanent set + field-nil TTL map + reservations).
+    // iOS canon `resetConfirmationDedupeStores` — a TTL stamp surviving
+    // into a new recording started within 30 s would suppress that
+    // session's first apology.
+    confirmationDedupeStoreRef.current.reset();
     liveFill.reset();
     // Capture the new session id synchronously and snapshot it locally so
     // that any async handler resolving below (mic permission prompt, WS
@@ -3671,9 +3699,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // D4 — release the orphan buffer + cancel any armed timer so a
     // post-stop fire doesn't speak into a torn-down TTS pipeline.
     pendingReadingsBufferRef.current?.reset();
-    // D6 — drop the per-field confirmation dedup set so the next
-    // session starts with a clean slate.
-    confirmedFieldKeysRef.current.clear();
+    // D6 + §A1b — drop ALL confirmation-dedupe stores (permanent set +
+    // field-nil TTL map + reservations) so the next session starts with
+    // a clean slate.
+    confirmationDedupeStoreRef.current.reset();
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 

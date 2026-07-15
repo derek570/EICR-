@@ -28,12 +28,19 @@ export interface ScenarioTranscriptEntry {
 }
 
 export interface MockFrame {
-  type: 'extraction' | 'question';
+  type: 'extraction' | 'question' | 'field_corrected';
   readings?: Array<{ field: string; value: unknown; circuit: number | null }>;
   confirmations?: Array<{ field: string; circuit: number | null; text: string }>;
   question?: string;
   question_type?: string;
   tool_call_id?: string;
+  /** field_corrected (Stage 6 STI-05 clear_reading wire) — the WIRE field
+   *  key + circuit scope. A2 field-feedback-2026-07-14: the backend now
+   *  canonicalises the outbound key (r1_r2_ohm → r1_plus_r2) except for
+   *  the CLEAR_WIRE_EXEMPT set (r2_ohm stays raw); the mock lane pins
+   *  that web's apply path maps both onto the right PWA column. */
+  circuit?: number;
+  field?: string;
 }
 
 export interface MockFrameEntry {
