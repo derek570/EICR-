@@ -928,6 +928,24 @@ describe('classifyOvertake — §A4 pendingValue continuation + pvr-* value asks
     });
   });
 
+  test('Codex r4-#2: NULL contextField is equivalent to the literal "none" — field-name reply still answers', () => {
+    // The ask schema treats null/absent context_field the same as 'none'
+    // (isPendingValueAsk accepts both), so a null-context inverted ask
+    // must not strand its transcript-only reply as user_moved_on.
+    for (const ctx of [null, undefined]) {
+      const verdict = classifyOvertake(
+        'RCD trip time.',
+        [],
+        mockPending([['toolu_pv_null', { ...pendingValueEntry(), contextField: ctx }]])
+      );
+      expect(verdict).toEqual({
+        kind: 'answers',
+        toolCallId: 'toolu_pv_null',
+        userText: 'RCD trip time.',
+      });
+    }
+  });
+
   test("round-13 guard: detector-complete NO-regex reading 'earthing arrangement is TT' → user_moved_on", () => {
     // Zero digits, zero regex hits — only the TYPED detector can tell this
     // apart from a field-name answer. It must be classified as an overtake

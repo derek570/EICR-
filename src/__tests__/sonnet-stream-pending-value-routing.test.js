@@ -434,4 +434,54 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
     // runShadowHarness(session, transcriptText, regexResults, options)
     expect(lastCall[1]).toContain('Ze is 0.22');
   });
+
+  test('Codex r4-#1: ELIGIBLE ask with NULL pendingValue (capture correctly declined) — fresh reading still overtakes on the direct channel', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-pv-5');
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+
+    // Shape (2): the ask is pending-value ELIGIBLE but extractPendingValue
+    // returned null (ambiguous source). Without pendingValueEligible in the
+    // direct-channel guard, "Ze is 0.22" would be CONSUMED as the old ask's
+    // answer instead of overtaking + reinjecting.
+    let resolvedPayload = null;
+    entry.pendingAsks.register('toolu_pv_5', {
+      contextField: 'none',
+      contextCircuit: null,
+      expectedAnswerShape: 'free_text',
+      pendingValue: null,
+      pendingValueEligible: true,
+      resolve: (payload) => {
+        resolvedPayload = payload;
+      },
+      timer: makeAskTimer(),
+      askStartedAt: Date.now(),
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_pv_5',
+      user_text: 'Ze is 0.22',
+      consumed_utterance_id: 'u-pv-5',
+    });
+
+    // Stale ask resolves user_moved_on — the fresh reading is never burned
+    // as the answer.
+    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(entry.pendingAsks.size).toBe(0);
+    const rejectedRows = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_rejected_new_command'
+    );
+    expect(rejectedRows).toHaveLength(1);
+    expect(rejectedRows[0][1]).toMatchObject({
+      tool_call_id: 'toolu_pv_5',
+      matched_structured_reading: true,
+    });
+
+    // Reinjected exactly once through the normal transcript path.
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
+  });
 });

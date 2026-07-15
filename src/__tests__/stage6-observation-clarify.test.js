@@ -302,6 +302,32 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     expect(net).toBeUndefined();
   });
 
+  test('Codex r4-#5: an audibly-terminated ask on a DIFFERENT chain does NOT qualify — chain A still gets the net', async () => {
+    // Answered clarify on chain A, then a NEW ambiguous observation B whose
+    // initial ask times out. B's audible ask must not suppress A's
+    // deterministic fallback — A's answered clarification would be
+    // silently dropped.
+    const answeredA = answeredClarify('toolu_a');
+    answeredA.input.clarification_chain_id = 'chain_a';
+    const timedOutB = unansweredClarify('toolu_b');
+    timedOutB.input.clarification_chain_id = 'chain_b';
+    toolLoopResult = loopOut([answeredA, timedOutB]);
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeDefined();
+  });
+
+  test('Codex r4-#5: a SAME-CHAIN audibly-terminated continuation still qualifies → no net', async () => {
+    const answeredA = answeredClarify('toolu_a');
+    answeredA.input.clarification_chain_id = 'chain_a';
+    const continuationA = unansweredClarify('toolu_a2');
+    continuationA.input.clarification_chain_id = 'chain_a';
+    toolLoopResult = loopOut([answeredA, continuationA]);
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeUndefined();
+  });
+
   test('Codex r1-#3: a PRE-FIRE continuation outcome (ask_budget_exhausted — never spoken) does NOT qualify → net fires', async () => {
     const preFireContinuation = {
       name: 'ask_user',

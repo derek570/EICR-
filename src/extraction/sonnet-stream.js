@@ -1768,6 +1768,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 // asks keep today's behaviour byte-for-byte.
                 const pendingValueClassAsk =
                   askEntry?.pendingValue != null ||
+                  // Codex r4-#1 — an ELIGIBLE original ask whose capture
+                  // correctly returned null (ambiguous/no numeric) is still
+                  // pending-value-class: without this, a structurally
+                  // complete fresh reading ("Ze is 0.22") arriving on the
+                  // DIRECT channel would be consumed as the old ask's
+                  // answer instead of overtaking + reinjecting.
+                  askEntry?.pendingValueEligible === true ||
                   (typeof msg.tool_call_id === 'string' && msg.tool_call_id.startsWith('pvr-'));
                 const structuredAnswer = pendingValueClassAsk
                   ? detectStructuredReading(sanitised.text)

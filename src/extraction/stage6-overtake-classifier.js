@@ -247,7 +247,11 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     // (Detector-complete utterances already returned user_moved_on above.)
     for (const [id, entry] of pendingAsks.entries()) {
       if (
-        entry.contextField === 'none' &&
+        // Codex r4-#2 — the ask schema treats a null/absent context_field
+        // as equivalent to the literal 'none' (isPendingValueAsk accepts
+        // both), so a null-context inverted ask must also match here or
+        // its transcript-only field-name reply dies as user_moved_on.
+        (entry.contextField == null || entry.contextField === 'none') &&
         entry.pendingValue != null &&
         entry.expectedAnswerShape === 'free_text' &&
         typeof newText === 'string' &&

@@ -66,6 +66,68 @@ describe('extractPendingValue — F8 capture rules', () => {
     const out = extractPendingValue({ transcript: 'reading was 26 milliseconds', question: null });
     expect(out.sourceText).toBe('reading was 26 milliseconds');
   });
+
+  test('Codex r4-#3: ambiguous transcript NEVER falls through to a single-valued question (unbound)', () => {
+    const out = extractPendingValue({
+      transcript: 'it was 0.3 or 0.4 on circuit 2',
+      question: 'Which reading was that 0.4 for?',
+    });
+    expect(out).toBeNull();
+  });
+
+  test('Codex r4-#3: ambiguous unit-bound transcript also stops — no question fallback', () => {
+    const out = extractPendingValue({
+      transcript: 'it was 0.3 ohms or 0.4 ohms',
+      question: 'Which reading was that 0.4 for?',
+    });
+    expect(out).toBeNull();
+  });
+
+  test('Codex r4-#3: question fallback still works when the transcript has ZERO candidates', () => {
+    const out = extractPendingValue({
+      transcript: 'erm on circuit 2 please',
+      question: 'I heard 26 milliseconds for circuit 2 — which reading was that for?',
+    });
+    expect(out).toMatchObject({ value: '26', unit: 'ms', source: 'question' });
+  });
+
+  test('Codex r4-#4: coordinated scope list — "circuits 5 and 6" contributes NO value candidates', () => {
+    expect(
+      extractPendingValue({
+        transcript: null,
+        question: 'Which reading was that for circuits 5 and 6?',
+      })
+    ).toBeNull();
+  });
+
+  test('Codex r4-#4: comma list "circuits 5, 6 and 7" — all scope', () => {
+    expect(
+      extractPendingValue({
+        transcript: null,
+        question: 'Was that on circuits 5, 6 and 7?',
+      })
+    ).toBeNull();
+  });
+
+  test('Codex r4-#4: range "circuits 5 to 7" — all scope', () => {
+    expect(
+      extractPendingValue({ transcript: null, question: 'Was that circuits 5 to 7?' })
+    ).toBeNull();
+  });
+
+  test('Codex r4-#4: "circuit number 2" — connector keeps the run alive', () => {
+    expect(
+      extractPendingValue({ transcript: null, question: 'Which reading on circuit number 2?' })
+    ).toBeNull();
+  });
+
+  test('Codex r4-#4: a real value OUTSIDE the scope run still captures', () => {
+    const out = extractPendingValue({
+      transcript: null,
+      question: 'I heard 0.5 for circuits 5 and 6 — which reading was that?',
+    });
+    expect(out).toMatchObject({ value: '0.5', unit: null, source: 'question' });
+  });
 });
 
 describe('resolveFieldNameAnswer — field-name replies', () => {

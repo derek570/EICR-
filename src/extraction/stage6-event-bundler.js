@@ -1049,6 +1049,29 @@ export function applyConfirmationDebounce(newConfirmations, debounceState, optio
   for (const c of newConfirmations) {
     const field = c?.field ?? null;
     const key = confirmationDebounceKey(c);
+    // Codex r4-#6 — token-keyed confirmations get a windowed MAP of
+    // recently emitted keys, not the single lastKey slot: with lastKey
+    // alone, a replay of token A after a distinct token B inside the
+    // window survived (A, B, A emitted all three), defeating §A1a's
+    // replay suppression. Token entries do NOT touch lastKey/lastEmittedAt,
+    // so measured-value debounce keeps its existing single-slot contract
+    // (and a token confirmation no longer evicts a measured reading's key).
+    const isTokenKey =
+      c?.dedupe_token != null && DEDUPE_TOKEN_FIELDS.has(c?.field ?? '') && key !== '';
+    if (isTokenKey) {
+      if (!(debounceState.tokenKeysMs instanceof Map)) debounceState.tokenKeysMs = new Map();
+      for (const [k, ts] of debounceState.tokenKeysMs) {
+        if (now - ts >= windowMs) debounceState.tokenKeysMs.delete(k);
+      }
+      const seenAt = debounceState.tokenKeysMs.get(key);
+      if (seenAt != null && now - seenAt < windowMs) {
+        suppressedCount += 1;
+        continue;
+      }
+      debounceState.tokenKeysMs.set(key, now);
+      out.push(c);
+      continue;
+    }
     const elapsed = now - (debounceState.lastEmittedAt || 0);
     // Coalesce only a genuine duplicate of the SAME reading within the
     // window (same field+circuit+board+value). Distinct readings — even

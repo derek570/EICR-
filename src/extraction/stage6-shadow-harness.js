@@ -1662,6 +1662,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             return null;
           }
         };
+        // Codex r4-#5 — a qualifying CONTINUATION must belong to the SAME
+        // clarification chain as the answered anchor. Without the chain
+        // check, an audibly-terminated ask about a DIFFERENT observation
+        // (chain B times out) would suppress observation A's deterministic
+        // fallback — A's answered clarification silently dropped. Legacy
+        // asks without a chain id compare null === null and keep today's
+        // behaviour.
+        const anchorChainId = seq[anchorIdx]?.input?.clarification_chain_id ?? null;
         let qualified = false;
         for (let i = anchorIdx + 1; i < seq.length; i += 1) {
           const c = seq[i];
@@ -1672,10 +1680,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           if (
             c?.name === 'ask_user' &&
             c?.input?.context_field === 'observation_clarify' &&
+            (c?.input?.clarification_chain_id ?? null) === anchorChainId &&
             !parseAnswered(c) &&
             AUDIBLE_NON_ANSWER_REASONS.has(parseReason(c))
           ) {
-            // Audibly-terminated continuation (the question was spoken).
+            // Audibly-terminated SAME-CHAIN continuation (question spoken).
             qualified = true;
             break;
           }
@@ -1685,7 +1694,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // in both cases the clarification is OVER, and a later
         // observation_clarify ask (a NEW ambiguous observation) must get a
         // fresh budget bucket rather than joining this chain's.
-        const anchorChainId = seq[anchorIdx]?.input?.clarification_chain_id ?? null;
         if (anchorChainId && session.obsClarifyChains?.retire) {
           session.obsClarifyChains.retire(anchorChainId);
         }

@@ -73,6 +73,14 @@ const UNIT_NORMALISE = new Map([
 // "circuit 2" / "circuits 5 and 6" / "board 2" / "way 4".
 const SCOPE_TOKEN_RE = /^(?:circuits?|boards?|ways?)$/i;
 
+// Codex r4-#4 — connectors that keep a scope RUN alive across coordinated
+// lists and ranges: "circuits 5 and 6", "circuits 5, 6 and 7",
+// "circuits 5 to 7", "circuit number 2". Without run tracking, only the
+// number IMMEDIATELY after the scope token was classified scope, so the
+// trailing 6 in "circuits 5 and 6" looked like a reading value and could
+// be captured as pendingValue from an ask question containing only scope.
+const SCOPE_CONNECTOR_RE = /^(?:and|to|through|&|numbers?|nos?)$/i;
+
 /**
  * Find number spans with their neighbouring tokens classified.
  * Returns [{value, unit|null, isScope}] in text order.
@@ -82,13 +90,23 @@ function classifyNumbers(text) {
   if (typeof text !== 'string' || !text) return out;
   // Tokenise keeping order; numbers may carry decimals.
   const tokens = text.split(/\s+/).filter(Boolean);
+  // Span-aware scope tracking: a scope token opens a run; numbers and
+  // connectors sustain it; any other token closes it. Every number inside
+  // a run is a scope reference, not a candidate value.
+  let scopeRun = false;
   for (let i = 0; i < tokens.length; i += 1) {
     const m = tokens[i].match(/^(\d+(?:\.\d+)?)[.,;:!?]*$/);
-    if (!m) continue;
+    if (!m) {
+      const bare = tokens[i].replace(/[.,;:!?]+$/, '');
+      if (SCOPE_TOKEN_RE.test(bare)) {
+        scopeRun = true;
+      } else if (!(scopeRun && SCOPE_CONNECTOR_RE.test(bare))) {
+        scopeRun = false;
+      }
+      continue;
+    }
     const value = m[1];
-    // Scope classification: the PRECEDING token names a scope container.
-    const prev = (tokens[i - 1] ?? '').replace(/[.,;:!?]+$/, '');
-    const isScope = SCOPE_TOKEN_RE.test(prev);
+    const isScope = scopeRun;
     // Unit binding: the FOLLOWING one or two tokens name a unit.
     let unit = null;
     for (const span of [tokens[i + 1] ?? '', `${tokens[i + 1] ?? ''} ${tokens[i + 2] ?? ''}`]) {
@@ -128,16 +146,23 @@ export function extractPendingValue({ transcript, question }) {
   ]) {
     if (typeof text !== 'string' || !text.trim()) continue;
     const numbers = classifyNumbers(text).filter((n) => !n.isScope);
+    // Zero candidates in this source → genuinely nothing here; consult
+    // the next source (the question fallback exists for exactly this).
     if (numbers.length === 0) continue;
     const unitBound = numbers.filter((n) => n.unit != null);
     if (unitBound.length === 1) {
       return { value: unitBound[0].value, unit: unitBound[0].unit, sourceText: text, source };
     }
-    if (unitBound.length > 1) continue; // ambiguous — never guess
-    if (numbers.length === 1) {
+    if (unitBound.length === 0 && numbers.length === 1) {
       return { value: numbers[0].value, unit: null, sourceText: text, source };
     }
-    // >1 unbound spans — ambiguous, try the next source / give up.
+    // Codex r4-#3 — this source HAS candidates but they are ambiguous.
+    // STOP here rather than falling through: the generated question often
+    // quotes ONE of the ambiguous numbers ("Which reading was that 0.4
+    // for?" after "it was 0.3 or 0.4"), so a question fallback would
+    // deterministically guess. Ambiguity means register the ask with NO
+    // pendingValue — a re-ask beats a wrong join.
+    return null;
   }
   return null;
 }
