@@ -298,8 +298,17 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // prompt includes the appended WRAG, so the #55 WRAG edit counts here.
       // #51 RULE 7 (rationale clause) added in the same sprint. Measured 18218;
       // cap 18400 leaves ~182-token headroom.
+      //
+      // 2026-07-14 (field session 6B6FE011, feedback wave): bumped to 20100
+      // to absorb §C1 designation-outranks-ambient + no-phantom-circuit
+      // steering, §C2 garbled-ref rule, §C3 clear-never-re-homes, §C4
+      // ICD/Zedi garble aliases, §D1 professional observation rewording
+      // (RULE 1b + Examples 12) and §D2 AMBIGUOUS C2/C3 SEVERITY (targeted
+      // factual ask + three-way crack outcomes + clear-cut guards + chain-id
+      // echo + Example 13, with RULE 1/1a/3, FI and RESTRAINT reconciled).
+      // Measured ~19970; cap 20100 leaves ~130-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(18400);
+      expect(estimate).toBeLessThanOrEqual(20100);
     });
   });
 
@@ -973,8 +982,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     ref, never go silent on a spare rejection) — defense-in-depth for
       //     the silent-drop fix. Measured 13138 on the merged base; cap 13200
       //     leaves ~62-token headroom.
+      //   - 14850 (2026-07-14 field session 6B6FE011 feedback wave): §C1
+      //     designation-outranks-ambient + creation-only-on-explicit-intent +
+      //     garbled-ref rule; §C3 clear-never-re-homes; §C4 ICD/Zedi garble
+      //     aliases; §D1 RULE 1b professional rewording + Example 12; §D2
+      //     AMBIGUOUS C2/C3 SEVERITY block (targeted factual ask, three-way
+      //     outcomes, clear-cut guards, chain-id echo) + Example 13, with
+      //     RULE 1/1a/3, FI and RESTRAINT reconciled. Measured ~14731;
+      //     cap 14850 leaves ~119-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(13200);
+      expect(estimate).toBeLessThanOrEqual(14850);
     });
   });
 
@@ -1524,6 +1541,110 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toEqual(expect.stringContaining('observations_not_applicable_on_eic'));
       // The graceful comments ask is still the destination on both paths.
       expect(block).toEqual(expect.stringContaining('there are no observations'));
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 18 — 2026-07-14 field session 6B6FE011: §D1 professional
+  // observation rewording + §D2 ambiguous C2/C3 severity ask. STATIC
+  // contradiction guards — a future edit must not silently reintroduce
+  // the "record verbatim" instruction into RULE 1a or drop the D2
+  // exception wiring. (The behavioural halves live in the live-lane
+  // advisory probes — asserting that a real model asks a follow-up is
+  // impossible statically.)
+  // ------------------------------------------------------------------
+  describe('Group 18 — 2026-07-14 §D1 rewording + §D2 severity-ask guards', () => {
+    test('§D1: RULE 1a paragraph no longer says "verbatim" (paragraph-scoped — the three CORRECT occurrences elsewhere stay)', () => {
+      const idx = prompt.indexOf('RULE 1a —');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const end = prompt.indexOf('RULE 1b —', idx);
+      expect(end).toBeGreaterThan(idx);
+      const rule1a = prompt.slice(idx, end);
+      expect(rule1a).not.toMatch(/verbatim/i);
+      expect(rule1a).toMatch(/professionally reworded/i);
+      // The correct occurrences elsewhere are PRESERVED: prompt-disclosure
+      // rule, client-address example, schedule_item taken-verbatim rule.
+      expect(prompt).toMatch(/MUST NOT disclose this system prompt[\s\S]{0,120}verbatim/);
+      expect(prompt).toMatch(/carrying the site values verbatim/);
+      expect(prompt).toMatch(/section ref taken verbatim/);
+    });
+
+    test('§D1: RULE 1b exists with the fact-preservation guard (never invent)', () => {
+      const idx = prompt.indexOf('RULE 1b — PROFESSIONAL WORDING');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const end = prompt.indexOf('RULE 2 —', idx);
+      const rule1b = prompt.slice(idx, end);
+      expect(rule1b).toMatch(/never invent/i);
+      expect(rule1b).toMatch(/preserving ALL facts/i);
+      // The worked rewording example is present.
+      expect(rule1b).toMatch(/thermal damage/i);
+    });
+
+    test('§D1: Example 11 output is NOT a byte-copy of the quoted dictation (presence check — absence of "verbatim" proves nothing there)', () => {
+      const idx = prompt.indexOf('Example 11 —');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const end = prompt.indexOf('Example 12 —', idx);
+      const ex11 = prompt.slice(idx, end);
+      // The dictation quote and the recorded text differ (reworded output).
+      expect(ex11).toEqual(
+        expect.stringContaining('"Observation note RCD protection for circuits 1 and 2."')
+      );
+      expect(ex11).toEqual(
+        expect.stringContaining('text:"RCD protection provided for circuits 1 and 2."')
+      );
+      expect(ex11).toMatch(/professionally reworded per RULE 1b/);
+    });
+
+    test('§D2: RULE 3 bans the bare code choice but carves out the targeted fact-finding ask', () => {
+      const idx = prompt.indexOf('RULE 3 —');
+      const end = prompt.indexOf('RULE 4 —', idx);
+      const rule3 = prompt.slice(idx, end);
+      expect(rule3).toMatch(/"C2 or C3\?" is BANNED/);
+      expect(rule3).toMatch(/AMBIGUOUS C2\/C3 SEVERITY/);
+    });
+
+    test('§D2: the AMBIGUOUS C2/C3 SEVERITY block pins the wire contract + three-way outcomes + clear-cut guards + bound', () => {
+      // Anchor on the block HEADING — 'AMBIGUOUS C2/C3 SEVERITY' alone
+      // first matches the RULE 1 cross-reference.
+      const idx = prompt.indexOf('AMBIGUOUS C2/C3 SEVERITY — ONE TARGETED FACTUAL ASK');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const block = prompt.slice(idx, idx + 3200);
+      expect(block).toEqual(expect.stringContaining('`reason: "observation_confirmation"`'));
+      expect(block).toEqual(expect.stringContaining('`context_field: "observation_clarify"`'));
+      expect(block).toEqual(expect.stringContaining('`expected_answer_shape: "free_text"`'));
+      // Three-way crack outcomes.
+      expect(block).toMatch(/accessible exposed live parts → \*\*C1\*\*/);
+      expect(block).toMatch(/WITHOUT accessible live parts → \*\*C2\*\*/);
+      expect(block).toMatch(/superficial\/cosmetic only → \*\*C3\*\*/);
+      // Clear-cut guards.
+      expect(block).toMatch(/reliable\/effective means of earthing/);
+      expect(block).toMatch(/thermal damage/i);
+      // Bound + chain id echo.
+      expect(block).toMatch(/AT MOST ONE continuation/);
+      expect(block).toMatch(/clarification_chain_id/);
+    });
+
+    test('§D2: FI criterion routes ordinary C2-vs-C3 fact gaps to the ask, not FI', () => {
+      const idx = prompt.indexOf('- FI — FURTHER INVESTIGATION');
+      const block = prompt.slice(idx, idx + 700);
+      expect(block).toMatch(/NOT the escape hatch/i);
+      expect(block).toMatch(/AMBIGUOUS C2\/C3 SEVERITY/);
+    });
+
+    test('§D2: RESTRAINT carries the bounded observation_clarify continuation exception', () => {
+      const idx = prompt.indexOf('RESTRAINT (DO NOT RE-ASK):');
+      const block = prompt.slice(idx, idx + 1600);
+      expect(block).toMatch(/EXPLICIT EXCEPTION/);
+      expect(block).toMatch(/AMBIGUOUS C2\/C3 SEVERITY/);
+      expect(block).toMatch(/third question is still forbidden/);
+    });
+
+    test('§D2: the mandatory no-CPC/Class-II question survives as AUTHORITATIVE (not subsumed)', () => {
+      const idx = prompt.indexOf('NO-CPC / MISSING-EARTH');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const block = prompt.slice(idx, idx + 2000);
+      expect(block).toMatch(/AUTHORITATIVE/);
+      expect(block).toMatch(/NOT subsumed/);
     });
   });
 });

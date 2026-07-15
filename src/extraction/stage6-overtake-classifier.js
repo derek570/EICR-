@@ -75,6 +75,12 @@
 
 import { extractCircuitRef } from './stage6-answer-resolver.js';
 import { RECORDABLE_READING_FIELDS } from './recordable-reading-fields.js';
+// §A4 (field-feedback-2026-07-14, F8) — typed structurally-complete-reading
+// detector. Pure import; guards the pendingValue free-text acceptance below
+// so a complete fresh reading ("earthing arrangement is TT", "customer name
+// is David" — zero regex hits) is classified as an OVERTAKE, never consumed
+// as the ask's answer (audio-first invariant 2).
+import { detectStructuredReading } from './stage6-pending-value.js';
 
 // Plan 03-11 Task 2 — yes/no vocabulary. Lowercased, trailing punctuation
 // stripped by the caller before matching. Kept inline (not a config export)
@@ -201,6 +207,18 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     (r) =>
       r && typeof r.field === 'string' && RECORDABLE_READING_FIELDS.has(r.field) && r.value != null
   );
+  // Codex r2-#3 — the typed-detector guard runs BEFORE the
+  // observation_clarify continuation AND before the step-3 shape branches:
+  // a structurally complete fresh reading is an OVERTAKE no matter which
+  // pending ask shape might otherwise claim it (a detector-complete
+  // utterance consumed as a circuit_ref/free-text answer loses the reading).
+  const structuredEarly = !hasRecordableRegex
+    ? detectStructuredReading(typeof newText === 'string' ? newText : '')
+    : null;
+  if (structuredEarly && structuredEarly.complete === true) {
+    return { kind: 'user_moved_on' };
+  }
+
   if (!hasRecordableRegex) {
     for (const [id, entry] of pendingAsks.entries()) {
       if (
@@ -209,6 +227,63 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
         newText.trim().length > 0
       ) {
         return { kind: 'answers', toolCallId: id, userText: newText };
+      }
+    }
+
+    // §A4 (field-feedback-2026-07-14, F8) — pendingValue continuation branch.
+    // The INVERTED ask shape (`context_field:"none"` + a captured
+    // pendingValue + free_text): the expected reply is a FIELD NAME ("RCD
+    // trip time."), which never produces a recordable regex hit, so without
+    // this branch the transcript channel classifies it `user_moved_on` and
+    // the ask dies before the direct ask_user_answered frame can resolve it
+    // (the F8 silence). Mirrors the observation_clarify continuation above.
+    //
+    // Round-13 typed-detector guard: regex ABSENCE is not evidence of an
+    // answer — a structurally complete NO-regex reading ("earthing
+    // arrangement is TT", "customer name is David") arriving transcript-
+    // first must be an OVERTAKE (fall through to user_moved_on so the
+    // fresh reading is processed normally), never consumed as the field
+    // answer with the stale pendingValue joined to it.
+    // (Detector-complete utterances already returned user_moved_on above.)
+    for (const [id, entry] of pendingAsks.entries()) {
+      if (
+        // Codex r4-#2 — the ask schema treats a null/absent context_field
+        // as equivalent to the literal 'none' (isPendingValueAsk accepts
+        // both), so a null-context inverted ask must also match here or
+        // its transcript-only field-name reply dies as user_moved_on.
+        (entry.contextField == null || entry.contextField === 'none') &&
+        entry.pendingValue != null &&
+        entry.expectedAnswerShape === 'free_text' &&
+        typeof newText === 'string' &&
+        newText.trim().length > 0
+      ) {
+        return { kind: 'answers', toolCallId: id, userText: newText };
+      }
+    }
+
+    // §A4 round-10 — brokered pvr-* VALUE asks (concrete context_field,
+    // numeric/sentinel reply expected). classifyOvertake only accepted
+    // yes/no + circuit-ref no-regex shapes, so a transcript-first numeric
+    // reply ("26 milliseconds") to a pvr value ask would be classified
+    // user_moved_on and delete the registry entry BEFORE the duplicate
+    // direct ask_user_answered frame arrived — beep-then-no-write again.
+    // Narrowly scoped: only pvr-* ids (server-brokered), only a concrete
+    // context_field, only a numeric or sentinel-shaped reply.
+    const trimmed = typeof newText === 'string' ? newText.trim() : '';
+    const looksLikeValue =
+      /\d/.test(trimmed) ||
+      /\b(?:lim|limitation|discontinuous|open circuit|infinity)\b/i.test(trimmed);
+    if (trimmed && looksLikeValue) {
+      for (const [id, entry] of pendingAsks.entries()) {
+        if (
+          typeof id === 'string' &&
+          id.startsWith('pvr-') &&
+          typeof entry.contextField === 'string' &&
+          entry.contextField !== 'none' &&
+          entry.contextField !== 'observation_clarify'
+        ) {
+          return { kind: 'answers', toolCallId: id, userText: newText };
+        }
       }
     }
   }

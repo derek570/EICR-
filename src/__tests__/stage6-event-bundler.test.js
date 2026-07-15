@@ -403,12 +403,14 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'Circuit 1, zed S zero point six two',
         field: 'measured_zs_ohm',
         circuit: 1,
+        _confidence: 1,
       },
       {
         text: 'Circuit 2, R1 plus R2 0.6',
         expanded_text: 'Circuit 2, R 1 plus R 2 zero point six',
         field: 'r1_r2_ohm',
         circuit: 2,
+        _confidence: 1,
       },
     ]);
   });
@@ -432,12 +434,14 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'zed E zero point two five',
         field: 'earth_loop_impedance_ze',
         circuit: null,
+        _confidence: 1,
       },
       {
         text: 'PFC 1.5',
         expanded_text: 'PFC one point five',
         field: 'prospective_fault_current',
         circuit: null,
+        _confidence: 1,
       },
     ]);
   });
@@ -500,12 +504,14 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'Circuit 1, zed S zero point six two',
         field: 'measured_zs_ohm',
         circuit: 1,
+        _confidence: 1,
       },
       {
         text: 'Circuit 2, R1 plus R2 0.6',
         expanded_text: 'Circuit 2, R 1 plus R 2 zero point six',
         field: 'r1_r2_ohm',
         circuit: 2,
+        _confidence: 0.5,
       },
     ]);
   });
@@ -528,6 +534,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'Circuit 1, polarity confirmed',
         field: 'polarity_confirmed',
         circuit: 1,
+        _confidence: 1,
       },
     ]);
 
@@ -581,6 +588,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'Circuit 1, R 1 plus R 2 zero point three zero',
         field: 'r1_r2_ohm',
         circuit: 1,
+        _confidence: 1,
       },
     ]);
   });
@@ -624,6 +632,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'Circuit 1, zed S zero point six two',
         field: 'measured_zs_ohm',
         circuit: 1,
+        _confidence: 1,
       },
     ]);
   });
@@ -662,6 +671,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         field: 'measured_zs_ohm',
         circuit: 1,
         board_id: 'sub-1',
+        _confidence: 1,
       },
     ]);
   });
@@ -682,6 +692,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         field: 'earth_loop_impedance_ze',
         circuit: null,
         board_id: 'sub-2',
+        _confidence: 1,
       },
     ]);
   });
@@ -726,6 +737,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         expanded_text: 'Circuit 1, zed S zero point six two',
         field: 'measured_zs_ohm',
         circuit: 1,
+        _confidence: 1,
       },
     ]);
   });
@@ -758,19 +770,11 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     }
   });
 
-  test('PLAN voice-feedback-2026-06-05 W1.4 — ios_send_attempt emits one row per confirmation, with byte-equal-to-iOS expected_dedupe_key + confidence + circuit/board metadata', () => {
+  test('§A1a (field-feedback-2026-07-14) — telemetry MOVED to the harness: bundler emits NO ios_send_attempt and keeps the _confidence sidecar intact on reading entries', () => {
     const readings = new Map([
       [
         encodeReadingKey('measured_zs_ohm', 1),
         { value: '0.62', confidence: 0.92, source_turn_id: 't1' },
-      ],
-      [
-        encodeReadingKey('ir_live_live_mohm', 1),
-        { value: '299', confidence: 0.9, source_turn_id: 't1' },
-      ],
-      [
-        encodeReadingKey('ir_live_live_mohm', 2),
-        { value: '299', confidence: 0.88, source_turn_id: 't1' },
       ],
     ]);
     const writes = makePerTurnWrites({ readings });
@@ -797,64 +801,328 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       }
     );
 
-    // Confirmations land on the wire (no _confidence sidecar leaked).
-    expect(r.confirmations.length).toBeGreaterThan(0);
-    for (const c of r.confirmations) {
-      expect(c).not.toHaveProperty('_confidence');
-    }
-
-    // One ios_send_attempt row per confirmation entry.
+    // The bundler is once again a pure projection: even WITH a logger in
+    // options, no telemetry rows are emitted here. The harness owns the
+    // ios_send_attempt loop (post-filter, post-debounce — see
+    // stage6-shadow-harness.js) so rows cover the SURVIVING wire list
+    // including circuit_op / observation / field_cleared entries.
     const attempts = infoCalls.filter((c) => c[0] === 'ios_send_attempt');
-    expect(attempts.length).toBe(r.confirmations.length);
+    expect(attempts).toHaveLength(0);
 
-    // Per-circuit branch — measured_zs_ohm on circuit 1: key shape "<field>_<circuit>".
-    const zsRow = attempts.find((c) => c[1].field === 'measured_zs_ohm');
-    expect(zsRow).toBeDefined();
-    expect(zsRow[1].expected_dedupe_key).toBe('measured_zs_ohm_1');
-    expect(zsRow[1].confidence).toBe(0.92);
-    expect(zsRow[1].circuit).toBe(1);
-    expect(zsRow[1].turnId).toBe('sess-X-turn-1');
-    expect(zsRow[1].sessionId).toBe('sess-X');
-
-    // Multi-circuit broadcast branch — IR L to L bucket [1,2] same value
-    // grouped into ONE confirmation; key shape "<field>_<sortedCircuits>_<djb2(text)>".
-    const irRow = attempts.find(
-      (c) => c[1].field === 'ir_live_live_mohm' && Array.isArray(c[1].circuits)
-    );
-    expect(irRow).toBeDefined();
-    expect(irRow[1].circuits).toEqual([1, 2]);
-    expect(irRow[1].circuit).toBeNull();
-    expect(irRow[1].expected_dedupe_key).toMatch(/^ir_live_live_mohm_1-2_\d+$/);
-    // Bucket confidence is the MIN across the bucket (lowest source).
-    expect(irRow[1].confidence).toBe(0.88);
-
-    // Degenerate / board-level branch — spd_bs_en (board, no circuit info);
-    // key shape "<field>_<djb2(text+boardId)>".
-    const spdRow = attempts.find((c) => c[1].field === 'spd_bs_en');
-    expect(spdRow).toBeDefined();
-    expect(spdRow[1].circuit).toBeNull();
-    expect(spdRow[1].circuits).toBeNull();
-    expect(spdRow[1].expected_dedupe_key).toMatch(/^spd_bs_en_\d+$/);
-    expect(spdRow[1].confidence).toBe(0.95);
+    // The transient _confidence sidecar stays INTACT on reading entries so
+    // the harness telemetry can read it; the harness strips it before the
+    // wire (pinned in stage6-shadow-harness-telemetry tests).
+    expect(r.confirmations.length).toBeGreaterThan(0);
+    const zs = r.confirmations.find((c) => c.field === 'measured_zs_ohm');
+    expect(zs._confidence).toBe(0.92);
+    const spd = r.confirmations.find((c) => c.field === 'spd_bs_en');
+    expect(spd._confidence).toBe(0.95);
   });
 
-  test('PLAN voice-feedback-2026-06-05 W1.4 — bundler is silent when options.logger is absent (back-compat with test fixtures)', () => {
+  test('§A1a — dedupe_token stamped on the five allowlisted text-op confirmations, absent on measured-value ones', () => {
     const readings = new Map([
       [
         encodeReadingKey('measured_zs_ohm', 1),
-        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+        { value: '0.62', confidence: 0.92, source_turn_id: 't1' },
+      ],
+      [
+        encodeReadingKey('circuit_designation', 2),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
       ],
     ]);
     const writes = makePerTurnWrites({ readings });
-    // No logger in options — bundler must not throw, and confirmation
-    // wire shape stays unchanged.
+    writes.circuitOps = [
+      { op: 'rename', circuit_ref: 4, from_ref: 3, meta: { designation: 'Lights' } },
+    ];
+    writes.observations = [
+      { id: 'obs-1', code: 'C2', text: 'Cracked socket front upstairs bedroom', circuit: 3 },
+      { id: 'obs-2', code: 'C3', text: 'Water bond requires re-termination', circuit: null },
+    ];
+    writes.deletedObservations = [
+      { id: 'obs-old-1', reason: 'user_request' },
+      { id: 'obs-old-2', reason: 'user_request' },
+    ];
+    writes.cleared = [{ field: 'r1_r2_ohm', circuit: '3', reason: 'clear_reading' }];
+    writes.fieldCorrections = [
+      { field: 'r1_r2_ohm', circuit: 3, previous_value: '0.86', reason: 'clear_reading' },
+    ];
     const r = bundleToolCallsIntoResult(
       writes,
       { questions: [] },
-      { confirmationsEnabled: true, turnId: 'sess-Y-turn-1' }
+      { confirmationsEnabled: true, turnId: 'turn-9', sessionId: 'sess-X' }
     );
-    expect(r.confirmations).toHaveLength(1);
-    expect(r.confirmations[0]).not.toHaveProperty('_confidence');
+
+    // circuit_op → turn + operation identity.
+    const opConf = r.confirmations.find((c) => c.field === 'circuit_op');
+    expect(opConf.dedupe_token).toBe('circop_turn-9_0_rename_4');
+
+    // observation → observation ID.
+    const obs1 = r.confirmations.find((c) => c.field === 'observation' && c.circuit === 3);
+    expect(obs1.dedupe_token).toBe('obs_obs-1');
+
+    // Two same-text deletions in one turn → DISTINCT tokens (obs IDs).
+    const dels = r.confirmations.filter((c) => c.field === 'observation_deletion');
+    expect(dels).toHaveLength(2);
+    expect(dels[0].dedupe_token).toBe('obsdel_obs-old-1');
+    expect(dels[1].dedupe_token).toBe('obsdel_obs-old-2');
+    expect(dels[0].text).toBe(dels[1].text); // identical text — the collision the token fixes
+
+    // field_cleared → {field, circuit, turn}.
+    const clr = r.confirmations.find((c) => c.field === 'field_cleared');
+    expect(clr.dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9_ord0');
+
+    // circuit_designation → turn + operation identity (stamped in the bundle
+    // function — it arrives via synthesiseConfirmations, not the state-change
+    // synthesiser).
+    const desig = r.confirmations.find((c) => c.field === 'circuit_designation');
+    expect(desig.dedupe_token).toBe('desig_2_turn-9');
+
+    // NEGATIVE: measured-value reading confirmations carry NO token.
+    const zs = r.confirmations.find((c) => c.field === 'measured_zs_ohm');
+    expect(zs).not.toHaveProperty('dedupe_token');
+  });
+
+  test('§A2 — outbound field_corrected wire copy is canonicalised (r1_r2_ohm → r1_plus_r2) while perTurnWrites stays RAW', () => {
+    const writes = makePerTurnWrites();
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 3,
+        field: 'r1_r2_ohm',
+        previous_value: '0.86',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-5' }
+    );
+    // Wire copy speaks the record-APPLY dialect the iOS/web clients map.
+    expect(r.field_corrections[0].field).toBe('r1_plus_r2');
+    // NEW objects — the internal accumulator keeps the raw dispatcher key
+    // (consumed by the same-turn clear+write suppression compare below).
+    expect(writes.fieldCorrections[0].field).toBe('r1_r2_ohm');
+  });
+
+  test('§A2 — CLEAR_WIRE_EXEMPT: r2_ohm stays RAW on the wire (canonical r2 would mis-clear R1+R2 on build-418)', () => {
+    const writes = makePerTurnWrites();
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 2,
+        field: 'r2_ohm',
+        previous_value: '0.41',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    expect(r.field_corrections[0].field).toBe('r2_ohm');
+  });
+
+  test('§A2 — same-turn clear+record of the same slot still emits ONLY the replacement read-back (suppression regression)', () => {
+    // The wire canonicalisation must not break the raw-key suppression
+    // compare in synthesiseObservationAndClearedConfirmations: a value
+    // REPLACEMENT (clear + record in one turn) speaks the new value once,
+    // never "<field> cleared" on top (exactly-once invariant, #31).
+    const readings = new Map([
+      [encodeReadingKey('r1_r2_ohm', 3), { value: '0.30', confidence: 1.0, source_turn_id: 't1' }],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.fieldCorrections = [
+      {
+        type: 'field_corrected',
+        circuit: 3,
+        field: 'r1_r2_ohm',
+        previous_value: '0.86',
+        reason: 'clear_reading',
+        board_id: null,
+      },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-6' }
+    );
+    const cleared = r.confirmations.filter((c) => c.field === 'field_cleared');
+    expect(cleared).toHaveLength(0); // suppressed — the write speaks instead
+    const replacement = r.confirmations.filter((c) => c.field === 'r1_r2_ohm');
+    expect(replacement).toHaveLength(1);
+    // The wire copy is still canonicalised even when the TTS is suppressed.
+    expect(r.field_corrections[0].field).toBe('r1_plus_r2');
+  });
+
+  test('§A1a Codex r3-#2 — two DISTINCT same-turn designation ops BOTH speak, with distinct ordinal tokens', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 2),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 2, boardId: null, value: 'Lights', confidence: 0.9 },
+      { circuit: 2, boardId: null, value: 'Sockets', confidence: 0.95 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    expect(desigs).toHaveLength(2);
+    expect(desigs[0].dedupe_token).toBe('desig_2_turn-9_ord0');
+    expect(desigs[1].dedupe_token).toBe('desig_2_turn-9_ord1');
+    expect(desigs[0].text).not.toBe(desigs[1].text);
+    // Wire state stays last-write-wins — only the read-backs expand.
+    expect(r.extracted_readings.filter((e) => e.field === 'circuit_designation')).toHaveLength(1);
+  });
+
+  test('§A1a Codex r5-#2 — same circuit ref on TWO boards: distinct board-scoped tokens, both speak', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-A'),
+        { value: 'Kitchen', confidence: 0.9, source_turn_id: 't1', boardId: 'board-A' },
+      ],
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-B'),
+        { value: 'Garage', confidence: 0.9, source_turn_id: 't1', boardId: 'board-B' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 1, boardId: 'board-A', value: 'Kitchen', confidence: 0.9 },
+      { circuit: 1, boardId: 'board-B', value: 'Garage', confidence: 0.9 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    expect(desigs).toHaveLength(2);
+    const tokens = desigs.map((c) => c.dedupe_token).sort();
+    // Board discriminator in the token — identical tokens here meant the
+    // client debounce swallowed the second board's read-back.
+    expect(tokens).toEqual(['desig_1_board-A_turn-9', 'desig_1_board-B_turn-9']);
+  });
+
+  test('§A1a Codex r5-#2 — repeated writes on ONLY board B: board A single entry intact, B expands per-op', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-A'),
+        { value: 'Kitchen', confidence: 0.9, source_turn_id: 't1', boardId: 'board-A' },
+      ],
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-B'),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1', boardId: 'board-B' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 1, boardId: 'board-A', value: 'Kitchen', confidence: 0.9 },
+      { circuit: 1, boardId: 'board-B', value: 'Lights', confidence: 0.9 },
+      { circuit: 1, boardId: 'board-B', value: 'Sockets', confidence: 0.95 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    expect(desigs).toHaveLength(3);
+    // Board A's Map-derived entry survives untouched — the board-matched
+    // findIndex must NOT let board B's expansion replace it.
+    const boardA = desigs.filter((c) => c.board_id === 'board-A');
+    expect(boardA).toHaveLength(1);
+    expect(boardA[0].dedupe_token).toBe('desig_1_board-A_turn-9');
+    // Board B expands to one entry per op with board-scoped ordinal tokens.
+    const boardB = desigs.filter((c) => c.board_id === 'board-B');
+    expect(boardB.map((c) => c.dedupe_token)).toEqual([
+      'desig_1_board-B_turn-9_ord0',
+      'desig_1_board-B_turn-9_ord1',
+    ]);
+  });
+
+  test('§A1a Codex r5-#3 — designation value colliding with another circuit does NOT group: per-circuit entries survive, no __DESIGNATION__ leak', () => {
+    // Circuit 1 rewritten Kitchen → Sockets while circuit 2 is also written
+    // "Sockets" this turn. Grouping would collapse the two final "Sockets"
+    // into a circuit:null roll-up (breaking the per-op expansion lookup so
+    // Kitchen never speaks) whose text leaks the '__DESIGNATION__' sentinel.
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 1),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
+      ],
+      [
+        encodeReadingKey('circuit_designation', 2),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 1, boardId: null, value: 'Kitchen', confidence: 0.9 },
+      { circuit: 1, boardId: null, value: 'Sockets', confidence: 0.95 },
+      { circuit: 2, boardId: null, value: 'Sockets', confidence: 0.95 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    // Never a grouped circuit:null roll-up for designations.
+    expect(desigs.every((c) => Number.isInteger(c.circuit))).toBe(true);
+    expect(desigs).toHaveLength(3);
+    const c1 = desigs.filter((c) => c.circuit === 1);
+    expect(c1.map((c) => c.dedupe_token)).toEqual(['desig_1_turn-9_ord0', 'desig_1_turn-9_ord1']);
+    expect(c1[0].text).toContain('Kitchen'); // the overwritten op still speaks
+    const c2 = desigs.filter((c) => c.circuit === 2);
+    expect(c2).toHaveLength(1);
+    expect(c2[0].dedupe_token).toBe('desig_2_turn-9');
+    for (const c of r.confirmations) {
+      expect(c.text).not.toContain('__DESIGNATION__');
+      expect(c.expanded_text ?? '').not.toContain('__DESIGNATION__');
+    }
+  });
+
+  test('§A1a Codex r1-#5 — two DISTINCT same-slot clears in ONE turn get DISTINCT tokens (turn AND ordinal)', () => {
+    const writes = makePerTurnWrites();
+    writes.fieldCorrections = [
+      { field: 'r1_r2_ohm', circuit: 3, previous_value: '0.86', reason: 'clear_reading' },
+      { field: 'r1_r2_ohm', circuit: 3, previous_value: '0.90', reason: 'clear_reading' },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const clears = r.confirmations.filter((c) => c.field === 'field_cleared');
+    expect(clears).toHaveLength(2);
+    expect(clears[0].dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9_ord0');
+    expect(clears[1].dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9_ord1');
+    expect(clears[0].dedupe_token).not.toBe(clears[1].dedupe_token);
+  });
+
+  test('§A1a — no turnId (legacy caller): designation gets NO token; ops/clears fall back to ordinal identity', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 2),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.fieldCorrections = [
+      { field: 'measured_zs_ohm', circuit: 1, previous_value: '0.6', reason: 'clear_reading' },
+    ];
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const desig = r.confirmations.find((c) => c.field === 'circuit_designation');
+    // No stable turn identity → no token; clients fall back to the bare key.
+    expect(desig).not.toHaveProperty('dedupe_token');
+    const clr = r.confirmations.find((c) => c.field === 'field_cleared');
+    expect(clr.dedupe_token).toBe('clear_measured_zs_ohm_1_legacy_ord0');
   });
 });
 

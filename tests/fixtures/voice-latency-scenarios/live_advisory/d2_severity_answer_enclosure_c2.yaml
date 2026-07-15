@@ -1,0 +1,57 @@
+# ============================================================================
+# LIVE-LANE ADVISORY PROBE — NOT part of the deterministic mock/CI lane.
+# Needs a real Anthropic model (Stage 6 live tool loop) and is ADVISORY:
+# it pins prompt BEHAVIOUR (D2 ambiguous C2/C3 severity clarification,
+# field-feedback-2026-07-14), so a failure is a prompt regression signal,
+# not a hard gate. The `lane: live-advisory` tag makes --scenario-dir
+# discovery skip this file unless --lane=live-advisory is passed.
+#
+# Run with:
+#   node scripts/voice-latency-bench/transcript-replay-direct.mjs --loaded-barrel=off \
+#     --scenario-dir=tests/fixtures/voice-latency-scenarios/live_advisory --lane=live-advisory
+# ============================================================================
+name: d2_severity_answer_enclosure_c2
+suite: live_advisory
+lane: live-advisory
+description: |
+  D2 three-way outcome probe (Codex r1-#6): the answer establishes the
+  enclosure is COMPROMISED but no live parts are accessible — post-answer
+  code must be C2.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Upstairs sockets
+
+transcript:
+  - at_ms: 0
+    text: "Observation that the socket in the upstairs bedroom is cracked."
+    isFinal: true
+
+ask_user_responses:
+  - matches: "crack"
+    text: "The front's split open but nothing live is showing."
+    at_ms_after_ask: 100
+
+expect:
+  ask_user_count: { min: 1, max: 1 }
+  ask_user:
+    - reason: observation_confirmation
+      context_field: observation_clarify
+  forbid_ask_question_fragments:
+    - "C2 or C3"
+  tool_call_sequence:
+    - tool: record_observation
+  observations:
+    - final: true
+      code: C2
+
+config:
+  timeout_ms: 60000
+  drain_ms: 15000
+  fetch_tts: false

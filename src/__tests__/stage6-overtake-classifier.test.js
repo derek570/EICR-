@@ -874,3 +874,167 @@ describe('classifyOvertake — Bug 1b step 1.5 (observation_clarify)', () => {
     expect(verdict.toolCallId).toBe('obs_first');
   });
 });
+
+// -----------------------------------------------------------------------------
+// §A4 (field-feedback-2026-07-14, F8) — pendingValue continuation + brokered
+// pvr-* value asks.
+//
+// Repro (session 6B6FE011 06:24): "ICD trip time … 26 milliseconds" garbled
+// the FIELD, so the model asked "which reading was that for?" with
+// context_field:"none". The inspector's reply "RCD trip time." is a FIELD
+// NAME — it never produces a recordable regex hit, so pre-A4 the classifier's
+// r6 free_text removal routed it user_moved_on, the ask died, and the 26 ms
+// was written nowhere (beep-then-silence).
+//
+// Two new no-regex branches, both inside the !hasRecordableRegex step 1.5:
+//   (a) contextField 'none' + pendingValue != null + free_text + non-empty
+//       reply → answers — UNLESS the typed detector says the reply is itself
+//       a structurally complete FRESH reading (round-13 guard: regex ABSENCE
+//       is not evidence of an answer; "earthing arrangement is TT" has zero
+//       digits and zero regex hits but must be an overtake).
+//   (b) pvr-* id (server-brokered) + CONCRETE contextField + numeric/sentinel
+//       reply → answers — round-10: a transcript-first "26 milliseconds"
+//       reply to a pvr value ask must not delete the registry entry before
+//       the duplicate direct ask_user_answered frame arrives.
+// Ordinary toolu_* number asks keep the Open Question #4 conservative
+// default byte-for-byte.
+// -----------------------------------------------------------------------------
+
+describe('classifyOvertake — §A4 pendingValue continuation + pvr-* value asks', () => {
+  // The F8 inverted-ask entry shape: value captured at registration, field
+  // name expected in the reply.
+  const pendingValueEntry = () => ({
+    contextField: 'none',
+    contextCircuit: null,
+    expectedAnswerShape: 'free_text',
+    pendingValue: {
+      value: '26',
+      unit: 'ms',
+      sourceText: 'ICD trip time for circuit 2 is 26 milliseconds.',
+      source: 'transcript',
+    },
+  });
+
+  test("F8 repro: 'none'+pendingValue+free_text ask + field-name reply 'RCD trip time.' + no regex → answers", () => {
+    const verdict = classifyOvertake(
+      'RCD trip time.',
+      [],
+      mockPending([['toolu_pv', pendingValueEntry()]])
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'toolu_pv',
+      userText: 'RCD trip time.',
+    });
+  });
+
+  test('Codex r4-#2: NULL contextField is equivalent to the literal "none" — field-name reply still answers', () => {
+    // The ask schema treats null/absent context_field the same as 'none'
+    // (isPendingValueAsk accepts both), so a null-context inverted ask
+    // must not strand its transcript-only reply as user_moved_on.
+    for (const ctx of [null, undefined]) {
+      const verdict = classifyOvertake(
+        'RCD trip time.',
+        [],
+        mockPending([['toolu_pv_null', { ...pendingValueEntry(), contextField: ctx }]])
+      );
+      expect(verdict).toEqual({
+        kind: 'answers',
+        toolCallId: 'toolu_pv_null',
+        userText: 'RCD trip time.',
+      });
+    }
+  });
+
+  test("round-13 guard: detector-complete NO-regex reading 'earthing arrangement is TT' → user_moved_on", () => {
+    // Zero digits, zero regex hits — only the TYPED detector can tell this
+    // apart from a field-name answer. It must be classified as an overtake
+    // so the fresh select-field reading is processed by normal dispatch,
+    // never joined to the stale pendingValue.
+    const verdict = classifyOvertake(
+      'earthing arrangement is TT',
+      [],
+      mockPending([['toolu_pv', pendingValueEntry()]])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test("round-13 guard: detector-complete circuit reading 'Zs circuit 4 is 0.30' (no regex) → user_moved_on", () => {
+    // Structurally complete circuit reading (field + explicit circuit ref +
+    // value) arriving transcript-first with no regex hit — an overtake, not
+    // the field-name answer.
+    const verdict = classifyOvertake(
+      'Zs circuit 4 is 0.30',
+      [],
+      mockPending([['toolu_pv', pendingValueEntry()]])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test("round-10: pvr-* id + concrete contextField + numeric reply '26 milliseconds' + no regex → answers", () => {
+    const verdict = classifyOvertake(
+      '26 milliseconds',
+      [],
+      mockPending([
+        [
+          'pvr-sess-A-rcd_time_ms-1',
+          {
+            contextField: 'rcd_time_ms',
+            contextCircuit: 2,
+            expectedAnswerShape: 'number',
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'pvr-sess-A-rcd_time_ms-1',
+      userText: '26 milliseconds',
+    });
+  });
+
+  test('toolu_* id (NOT pvr) + concrete contextField + bare numeric reply → user_moved_on (conservative default preserved)', () => {
+    // Locks the pvr-* scoping: an ordinary Sonnet-emitted number ask keeps
+    // the Open Question #4 conservative default — a bare numeric through the
+    // transcript channel is genuinely ambiguous, and the direct
+    // ask_user_answered channel remains the authoritative route.
+    const verdict = classifyOvertake(
+      '26 milliseconds',
+      [],
+      mockPending([
+        [
+          'toolu_value_ask',
+          {
+            contextField: 'rcd_time_ms',
+            contextCircuit: 2,
+            expectedAnswerShape: 'number',
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test("'none' ask WITHOUT pendingValue + free-text reply → user_moved_on (r6 free_text removal stays; no-CPC-class safety)", () => {
+    // A context_field:"none" ask that captured NO pendingValue (ambiguous /
+    // multi-number turn) must NOT accept arbitrary free text — that would
+    // resurrect the r6 filler-speech bug ("hold on a second" consumed as an
+    // answer). Only the value-captured inverted shape gets the continuation.
+    const verdict = classifyOvertake(
+      'RCD trip time.',
+      [],
+      mockPending([
+        [
+          'toolu_none_no_pv',
+          {
+            contextField: 'none',
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+            pendingValue: null,
+          },
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+});

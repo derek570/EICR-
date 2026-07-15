@@ -37,25 +37,25 @@ function makeCtx(snapshot, overrides = {}) {
 
 describe('1a.6 dispatchClearReading → perTurnWrites.fieldCorrections', () => {
   test('successful clear pushes a wire-shaped field_corrected entry with previous_value', async () => {
-    const snapshot = { circuits: { 3: { Ze_ohms: '0.42', Zs_ohms: '0.31' } } };
+    const snapshot = { circuits: { 3: { measured_zs_ohm: '0.42', r1_r2_ohm: '0.31' } } };
     const ctx = makeCtx(snapshot);
     const call = {
       tool_call_id: 'tc_1',
       name: 'clear_reading',
-      input: { circuit: 3, field: 'Ze_ohms', reason: 'wrong_value' },
+      input: { circuit: 3, field: 'measured_zs_ohm', reason: 'wrong_value' },
     };
     const env = await dispatchClearReading(call, ctx);
     // Envelope shape preserved.
     const parsed = JSON.parse(env.content ?? '{}');
     expect(parsed.ok).toBe(true);
     // Slot actually cleared.
-    expect(snapshot.circuits[3]).toEqual({ Zs_ohms: '0.31' });
+    expect(snapshot.circuits[3]).toEqual({ r1_r2_ohm: '0.31' });
     // 1a.6: field_correction enqueued with pinned wire shape.
     expect(ctx.perTurnWrites.fieldCorrections).toEqual([
       {
         type: 'field_corrected',
         circuit: 3,
-        field: 'Ze_ohms',
+        field: 'measured_zs_ohm',
         previous_value: '0.42',
         reason: 'clear_reading',
         board_id: null,
@@ -64,31 +64,31 @@ describe('1a.6 dispatchClearReading → perTurnWrites.fieldCorrections', () => {
   });
 
   test('noop clear (field not set) does NOT push a field_corrected entry', async () => {
-    const snapshot = { circuits: { 3: { Zs_ohms: '0.43' } } };
+    const snapshot = { circuits: { 3: { r1_r2_ohm: '0.43' } } };
     const ctx = makeCtx(snapshot);
     const call = {
       tool_call_id: 'tc_noop',
       name: 'clear_reading',
-      input: { circuit: 3, field: 'Ze_ohms', reason: 'wrong_value' },
+      input: { circuit: 3, field: 'measured_zs_ohm', reason: 'wrong_value' },
     };
     await dispatchClearReading(call, ctx);
     expect(ctx.perTurnWrites.fieldCorrections).toEqual([]);
   });
 
   test('rejected clear (validation error) does NOT push a field_corrected entry', async () => {
-    const snapshot = { circuits: { 3: { Zs_ohms: '0.43' } } };
+    const snapshot = { circuits: { 3: { r1_r2_ohm: '0.43' } } };
     const ctx = makeCtx(snapshot);
     const call = {
       tool_call_id: 'tc_rej',
       name: 'clear_reading',
-      input: { circuit: 'not-a-number', field: 'Zs_ohms', reason: 'wrong_value' },
+      input: { circuit: 'not-a-number', field: 'r1_r2_ohm', reason: 'wrong_value' },
     };
     await dispatchClearReading(call, ctx);
     expect(ctx.perTurnWrites.fieldCorrections).toEqual([]);
   });
 
   test('stringifies non-string previous values (numeric, boolean)', async () => {
-    const snapshot = { circuits: { 1: { polarity_confirmed: true, npts: 5 } } };
+    const snapshot = { circuits: { 1: { polarity_confirmed: true, number_of_points: 5 } } };
     const ctx = makeCtx(snapshot);
     await dispatchClearReading(
       {
@@ -102,7 +102,7 @@ describe('1a.6 dispatchClearReading → perTurnWrites.fieldCorrections', () => {
       {
         tool_call_id: 'tc_b',
         name: 'clear_reading',
-        input: { circuit: 1, field: 'npts', reason: 'wrong_value' },
+        input: { circuit: 1, field: 'number_of_points', reason: 'wrong_value' },
       },
       ctx
     );
@@ -116,7 +116,7 @@ describe('1a.6 bundleToolCallsIntoResult surfaces field_corrections', () => {
     perTurnWrites.fieldCorrections.push({
       type: 'field_corrected',
       circuit: 3,
-      field: 'Ze_ohms',
+      field: 'measured_zs_ohm',
       previous_value: '0.42',
       reason: 'clear_reading',
       board_id: null,
@@ -126,12 +126,16 @@ describe('1a.6 bundleToolCallsIntoResult surfaces field_corrections', () => {
       {
         type: 'field_corrected',
         circuit: 3,
-        field: 'Ze_ohms',
+        // §A2 wire canonicalisation: the outbound copy speaks the
+        // record-APPLY dialect (measured_zs_ohm → zs); the accumulator
+        // keeps the raw dispatcher key (asserted below).
+        field: 'zs',
         previous_value: '0.42',
         reason: 'clear_reading',
         board_id: null,
       },
     ]);
+    expect(perTurnWrites.fieldCorrections[0].field).toBe('measured_zs_ohm');
   });
 
   test('result.field_corrections OMITTED when accumulator empty (back-compat)', () => {

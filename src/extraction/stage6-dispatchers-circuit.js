@@ -198,11 +198,7 @@ export async function dispatchRecordReading(call, ctx) {
   // model does NOT retry or ask. A reading with NO numeric confidence
   // (undefined → treated as 1.0 downstream) applies normally. Once the
   // client advertises the capability, every reading applies + reads back.
-  if (
-    !hasLowConfReadbackV1 &&
-    typeof input.confidence === 'number' &&
-    input.confidence < 0.5
-  ) {
+  if (!hasLowConfReadbackV1 && typeof input.confidence === 'number' && input.confidence < 0.5) {
     logToolCall(logger, {
       sessionId: session.sessionId,
       turnId,
@@ -262,6 +258,17 @@ export async function dispatchRecordReading(call, ctx) {
     auto_resolved: autoResolved || undefined,
     boardId: input.board_id ?? undefined,
   });
+  // Codex r3-#2 — designation ops are ALSO appended to an append-only log
+  // (the Map above is last-write-wins) so two distinct same-turn
+  // designation changes each get their own read-back + dedupe token.
+  if (input.field === 'circuit_designation' && Array.isArray(perTurnWrites.designationOps)) {
+    perTurnWrites.designationOps.push({
+      circuit: input.circuit,
+      boardId: input.board_id ?? null,
+      value: input.value,
+      confidence: input.confidence ?? 1.0,
+    });
+  }
 
   // Ring continuity tracking — stamp the circuit's last-write timestamp
   // on every record_reading hitting one of the three ring fields. The

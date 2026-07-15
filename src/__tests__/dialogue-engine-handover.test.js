@@ -24,6 +24,14 @@
  * bare entry phrases without a value should still enter the script,
  * and an active script must not be disturbed by a post-dispatch hook
  * fire.
+ *
+ * C4 (field session 6B6FE011 F8, 2026-07-14): "triptan" was promoted
+ * to an enumerated namedExtractor alias in rcd.js — the exact garble
+ * that pinned this file now takes the deterministic happy path, no
+ * handover. The handover-MECHANISM tests below therefore use a
+ * still-unenumerated garble ("trip tone") so the bail behaviour stays
+ * pinned for the open-ended garble class, and a dedicated test pins
+ * triptan's new deterministic capture.
  */
 
 import {
@@ -102,7 +110,36 @@ describe('hasNumericValueWithUnit', () => {
 });
 
 describe('runEntry — handover-to-Sonnet bail', () => {
-  test('garbled "RCD triptan… 25 ms" — engine bails so Sonnet sees the utterance', () => {
+  test('unenumerated garble "RCD trip tone… 25 ms" — engine bails so Sonnet sees the utterance', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: { circuit_designation: 'Upstairs Lighting' } });
+    const logger = makeLogger();
+
+    const out = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCD trip tone for upstairs lighting is 25 ms.',
+      logger,
+      now: 1000,
+    });
+
+    expect(out).toEqual({ handled: false });
+    expect(session.dialogueScriptState).toBeFalsy();
+    expect(ws.sent).toHaveLength(0);
+    const handover = logger.events.find(
+      (e) => e.name === 'stage6.rcd_script_entry_handover_to_sonnet'
+    );
+    expect(handover).toBeDefined();
+    expect(handover.payload.circuit_ref).toBe(2);
+    expect(handover.payload.textPreview).toBe('RCD trip tone for upstairs lighting is 25 ms.');
+  });
+
+  test('C4: "RCD triptan… 25 ms" is now an enumerated alias — captured deterministically, no handover', () => {
+    // The session 87856B72 garble that originally motivated the bail is
+    // enumerated in rcd.js as of C4 (6B6FE011 F8) — the extractor now
+    // harvests the value at entry, so the engine applies + walks through
+    // exactly like the clean "trip time" phrasing. Sonnet never sees it.
     const ws = new FakeWS();
     const session = buildSession({ 2: { circuit_designation: 'Upstairs Lighting' } });
     const logger = makeLogger();
@@ -116,15 +153,17 @@ describe('runEntry — handover-to-Sonnet bail', () => {
       now: 1000,
     });
 
-    expect(out).toEqual({ handled: false });
-    expect(session.dialogueScriptState).toBeFalsy();
-    expect(ws.sent).toHaveLength(0);
-    const handover = logger.events.find(
-      (e) => e.name === 'stage6.rcd_script_entry_handover_to_sonnet'
-    );
-    expect(handover).toBeDefined();
-    expect(handover.payload.circuit_ref).toBe(2);
-    expect(handover.payload.textPreview).toBe('RCD triptan for upstairs lighting is 25 ms.');
+    expect(out.handled).toBe(true);
+    expect(session.stateSnapshot.circuits[2].rcd_trip_time).toBe('25');
+    expect(session.dialogueScriptState).toMatchObject({
+      active: true,
+      schemaName: 'rcd',
+      circuit_ref: 2,
+    });
+    expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    expect(
+      logger.events.find((e) => e.name === 'stage6.rcd_script_entry_handover_to_sonnet')
+    ).toBeUndefined();
   });
 
   test('bare entry without a value still enters the script (regression guard)', () => {
@@ -180,7 +219,8 @@ describe('runEntry — handover-to-Sonnet bail', () => {
       },
     });
 
-    // Garble-with-number still present; but existing has rcd_trip_time
+    // Garble-with-number still present ("trip tone" — unenumerated, so
+    // the extractor harvests nothing); but existing has rcd_trip_time
     // already, so the bail's "no snapshot context" precondition fails
     // and the script enters as before to ask the next missing slot.
     // Use the full designation in the text so findCircuitsByDesignation's
@@ -189,7 +229,7 @@ describe('runEntry — handover-to-Sonnet bail', () => {
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'RCD triptan upstairs lighting is 25 ms.',
+      transcriptText: 'RCD trip tone upstairs lighting is 25 ms.',
       now: 1000,
     });
 
@@ -244,12 +284,14 @@ describe('tryEnterScriptFromWrites — post-Sonnet re-entry', () => {
     const ws = new FakeWS();
     const session = buildSession({ 2: { circuit_designation: 'Upstairs Lighting' } });
 
-    // 1. Inspector says the garbled utterance. Engine bails to Sonnet.
+    // 1. Inspector says a garbled utterance the extractor does NOT
+    // enumerate ("trip tone" — "triptan" is deterministic since C4).
+    // Engine bails to Sonnet.
     const entry = processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'RCD triptan for upstairs lighting is 25 ms.',
+      transcriptText: 'RCD trip tone for upstairs lighting is 25 ms.',
       now: 1000,
     });
     expect(entry).toEqual({ handled: false });

@@ -1,0 +1,77 @@
+# ============================================================================
+# LIVE-LANE ADVISORY PROBE — NOT part of the deterministic mock/CI lane.
+# Needs a real Anthropic model (Stage 6 live tool loop) and is ADVISORY:
+# it pins prompt BEHAVIOUR (D1 professional observation rewording,
+# field-feedback-2026-07-14), so a failure is a prompt regression signal,
+# not a hard gate. The `lane: live-advisory` tag makes --scenario-dir
+# discovery skip this file unless --lane=live-advisory is passed.
+#
+# Run with:
+#   node scripts/voice-latency-bench/transcript-replay-direct.mjs --loaded-barrel=off \
+#     --scenario=tests/fixtures/voice-latency-scenarios/live_advisory/d1_observation_professional_rewording.yaml
+#
+# Or the whole advisory lane:
+#   node scripts/voice-latency-bench/transcript-replay-direct.mjs --loaded-barrel=off \
+#     --scenario-dir=tests/fixtures/voice-latency-scenarios/live_advisory --lane=live-advisory
+#
+# (--loaded-barrel=off: these probes assert prompt behaviour, not the
+# speculator; leaving the speculator off avoids the ElevenLabs dependency
+# and keeps the run fast/deterministic.)
+# ============================================================================
+name: d1_observation_professional_rewording
+suite: live_advisory
+lane: live-advisory
+description: |
+  D1 probe (field-feedback-2026-07-14, F6): the inspector dictates a
+  colloquial observation — "the switch fuse spur for the water heater
+  looks overheated" (prompt Example 12's exact input). RULE 1b requires
+  the recorded observation_text to be a fact-preserving PROFESSIONAL
+  rewording in BS 7671 report tone, never the dictation verbatim, and
+  the thermal-damage clear-cut guard (AMBIGUOUS C2/C3 SEVERITY) requires
+  code C2 with NO clarification ask.
+
+  Asserted: an observation is recorded whose text (a) is not
+  byte-identical to the dictated remainder, (b) contains at least one
+  professional thermal-damage marker, (c) does not carry the colloquial
+  "looks overheated" verbatim; code is C2; zero ask_user.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Water heater
+
+transcript:
+  - at_ms: 0
+    text: "Observation that the switch fuse spur for the water heater looks overheated."
+    isFinal: true
+
+expect:
+  extraction_count: { min: 1 }
+  tool_call_sequence:
+    - tool: record_observation
+  # Thermal damage is a clear-cut C2 guard — the model must NOT ask.
+  ask_user_count: { max: 0 }
+  observations:
+    - code: C2
+      # (a) must differ from the dictated remainder (case-insensitive
+      # trimmed byte-inequality — a verbatim copy fails).
+      text_not_equals: "The switch fuse spur for the water heater looks overheated."
+      # (b) at least one professional thermal-damage marker.
+      text_contains_any:
+        - "thermal"
+        - "signs of overheating"
+        - "heat damage"
+        - "overheating"
+      # (c) the colloquial phrasing must not survive verbatim.
+      text_not_contains:
+        - "looks overheated"
+
+config:
+  timeout_ms: 30000
+  drain_ms: 15000
+  fetch_tts: false

@@ -48,6 +48,9 @@ jest.unstable_mockModule('../extraction/stage6-ask-gate-wrapper.js', () => ({
   createAskGateWrapper: createAskGateWrapperSpy,
   wrapAskDispatcherWithGates: wrapAskDispatcherWithGatesSpy,
   deriveAskKey: deriveAskKeySpy,
+  // §D2 (2026-07-14) — the harness lazily creates the observation_clarify
+  // chain broker; the mock must provide the export or module linking fails.
+  createObsClarifyChainBroker: jest.fn(() => ({ known: new Set(), mint: () => 'obsclr-1' })),
 }));
 
 const { runShadowHarness } = await import('../extraction/stage6-shadow-harness.js');

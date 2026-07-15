@@ -26,7 +26,51 @@
  * Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift.
  * The Swift uses UInt64 with overflow operators (&*, &+); JS uses BigInt to
  * preserve the same 64-bit wrap arithmetic.
+ *
+ * ── Operation dedupe tokens (field-feedback-2026-07-14 §A1a) ──
+ * Five TEXT-OP confirmation fields collide under the positional key shapes:
+ * every "Observation deleted" is circuit:null + byte-identical text (the
+ * DEGENERATE branch computes identical keys), and a repeated legitimate
+ * field_cleared / rename on the same slot speaks byte-identical text too —
+ * so text hashing alone cannot separate identical-text REPEATS of DISTINCT
+ * operations (field session 6B6FE011: F2 correction read-back and F7/F10
+ * apologies were all client-swallowed on colliding keys). For those fields
+ * the bundler stamps a `dedupe_token` on the wire confirmation entry —
+ * replay-stable operation identity — and every key builder here PREFERS
+ * `{field}_{dedupe_token}` when the token is present, in EVERY branch the
+ * confirmation can reach. Token composition (pinned by the drift test in
+ * src/__tests__/ios-dedupe-key.test.js):
+ *   - observation           → `obs_<observation id>`
+ *   - observation_deletion  → `obsdel_<observation id>`
+ *   - field_cleared         → `clear_<field>_<circuit|board>_<turnId|legacy>_ord<N>`
+ *   - circuit_op            → `circop_<turnId|noturn>_<ordinal>_<op>_<ref>`
+ *   - circuit_designation   → `desig_<circuit(s)>_<turnId>`
+ * Measured-value fields NEVER carry a token — their bare `{field}_{circuit}`
+ * shape is load-bearing for the iOS correction-TTS cross-match (~:7751).
+ *
+ * Rollout window: `expected_dedupe_key` telemetry is forward-looking during
+ * the backend→TestFlight/web window — build-418 (and pre-sweep web) clients
+ * still dedupe on the bare key, so mismatched telemetry rows in that window
+ * are expected, not a regression.
+ *
+ * A1(b)'s 30 s field-nil TTL is CLIENT-LOCAL state (iOS + web) and needs no
+ * mirror here — the key SHAPE is unchanged by it.
  */
+
+/**
+ * The exact synchronized allowlist of text-op confirmation fields that carry
+ * a backend-emitted `dedupe_token`. Derived from bundler output — the
+ * collision-prone text operations. Mirrored in iOS
+ * `buildConfirmationDedupeKey` and web `confirmation-dedupe-key.ts`; the
+ * drift test pins membership.
+ */
+export const DEDUPE_TOKEN_FIELDS = new Set([
+  'circuit_op',
+  'observation',
+  'observation_deletion',
+  'field_cleared',
+  'circuit_designation',
+]);
 
 const DJB2_INIT = 5381n;
 const DJB2_MULT = 33n;
@@ -59,11 +103,20 @@ export function djb2UInt64Decimal(text) {
  * Per-circuit dedupe key. Preserves the legacy "{field}_{circuit}" shape so
  * correction-TTS dedupe at iOS line 6845 continues to cross-match.
  *
+ * §A1a: when the confirmation carries a `dedupe_token` AND the field is on
+ * the text-op allowlist, the token key takes precedence — `{field}_{token}`.
+ * Measured-value fields ignore the token (bare shape is load-bearing for the
+ * correction cross-match).
+ *
  * @param {string} field
  * @param {number} circuit
+ * @param {string|null|undefined} opToken — the wire `dedupe_token`, if any
  * @returns {string}
  */
-export function buildPerCircuitDedupeKey(field, circuit) {
+export function buildPerCircuitDedupeKey(field, circuit, opToken) {
+  if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
+    return `${field}_${opToken}`;
+  }
   return `${field ?? 'unknown'}_${circuit}`;
 }
 
@@ -75,7 +128,13 @@ export function buildPerCircuitDedupeKey(field, circuit) {
  * @param {string} text  — the final TTS-line text the bundler emitted
  * @returns {string}
  */
-export function buildMultiCircuitDedupeKey(field, circuits, text) {
+export function buildMultiCircuitDedupeKey(field, circuits, text, opToken) {
+  // §A1a: token takes precedence in EVERY branch an allowlisted text-op
+  // confirmation can reach (a grouped circuit_designation broadcast lands
+  // here, not in the per-circuit branch).
+  if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
+    return `${field}_${opToken}`;
+  }
   const sorted = [...(circuits ?? [])].sort((a, b) => a - b);
   const circuitKey = sorted.join('-');
   return `${field ?? 'unknown'}_${circuitKey}_${djb2UInt64Decimal(text ?? '')}`;
@@ -103,7 +162,13 @@ export function buildMultiCircuitDedupeKey(field, circuits, text) {
  * @param {string|null|undefined} boardId
  * @returns {string}
  */
-export function buildDegenerateDedupeKey(field, text, boardId) {
+export function buildDegenerateDedupeKey(field, text, boardId, opToken) {
+  // §A1a: token takes precedence — this is the branch EVERY observation
+  // deletion reaches (circuit:null + constant "Observation deleted" text →
+  // identical hashed keys without the token).
+  if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
+    return `${field}_${opToken}`;
+  }
   const composite = `${text ?? ''}${boardId ?? ''}`;
   return `${field ?? 'unknown'}_${djb2UInt64Decimal(composite)}`;
 }

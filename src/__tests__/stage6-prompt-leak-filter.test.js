@@ -25,7 +25,10 @@
  *   Group 7 — false-positive guard (20 normal utterances).
  */
 
-import { checkForPromptLeak } from '../extraction/stage6-prompt-leak-filter.js';
+import {
+  checkForPromptLeak,
+  sanitizeObservationRegulation,
+} from '../extraction/stage6-prompt-leak-filter.js';
 
 describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () => {
   // ------------------------------------------------------------------
@@ -2701,6 +2704,95 @@ describe('checkForPromptLeak() — Layer 2 output-side prompt-leak filter', () =
       });
       expect(result.safe).toBe(false);
       expect(result.reason).toMatch(/^marker:/);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 15 — Plan 07-14 B3 sanitise-to-token helper
+  // ------------------------------------------------------------------
+  describe('Group 15 — sanitizeObservationRegulation() (B3 sanitise-to-token)', () => {
+    // The helper only ever runs on values the shape gate has ALREADY
+    // rejected as non-regulation-shape; each positive fixture here is
+    // probe-verified to reject today (leading ref + prose with NO spaced
+    // delimiter, so the obs-#52 prose branch does not accept it).
+    test.each([
+      [
+        'Regulation 411.3.4 requires additional protection by a 30 mA RCD for socket outlets rated up to 32 A',
+        'Regulation 411.3.4',
+      ],
+      [
+        '411.3.3 requires all socket outlets to have additional RCD protection in domestic premises',
+        '411.3.3',
+      ],
+      // Longest-window-first at the earliest matching start: the 4-word
+      // "BS 7671 Regulation 411.3.3" beats its "BS 7671" prefix.
+      [
+        'See BS 7671 Regulation 411.3.3 for additional protection requirements',
+        'BS 7671 Regulation 411.3.3',
+      ],
+      // Edge punctuation is stripped before pattern-matching.
+      ['(Regulation 522.6.201.) applies here', 'Regulation 522.6.201'],
+      ['Regulation 411.3.3, which requires RCD protection', 'Regulation 411.3.3'],
+    ])('extracts the fully-qualified token: %s → %s', (value, expected) => {
+      // Precondition pin: the input IS rejected by the shape gate today —
+      // the sanitiser's contract is defined over exactly these values.
+      expect(checkForPromptLeak(value, { field: 'observation_regulation' })).toEqual({
+        safe: false,
+        reason: 'non-regulation-shape',
+        sanitised: expect.anything(),
+      });
+      expect(sanitizeObservationRegulation(value)).toBe(expected);
+
+      // The extracted token itself passes the shape gate (safe by
+      // construction — it matched FULLY_QUALIFIED_PATTERNS).
+      expect(checkForPromptLeak(expected, { field: 'observation_regulation' }).safe).toBe(true);
+    });
+
+    test.each([
+      ['The installation lacks additional protection for socket outlets'],
+      ['no specific regulation applies to this note'],
+      // Bare modifier keywords without a dotted section number are
+      // standalone-invalid (r24-#1) — nothing to extract.
+      ['as shown in the relevant Table of the document'],
+      [''],
+      ['   '],
+    ])('returns null when no fully-qualified token exists: %s', (value) => {
+      expect(sanitizeObservationRegulation(value)).toBeNull();
+    });
+
+    test('Codex r7-#2 SUPERSEDES the old trade-off: a 2-digit-led dotted number ("Table 41.1") no longer extracts', () => {
+      // Previously pinned as extracting '41.1'. The r7-#2 bare-fallback
+      // shape rule (unkeyworded candidates must look like a BS 7671 ref:
+      // 3-4 digit leading group) rejects it — returning null and letting
+      // validation reject beats persisting a bogus citation.
+      expect(sanitizeObservationRegulation('as shown in Table 41.1 of the document')).toBeNull();
+    });
+
+    test.each([
+      ['Maximum permitted Zs is 1.20 ohms'],
+      ['conductor is 2.5 mm'],
+      ['reading was 1.20'],
+    ])('Codex r7-#2: uncited MEASUREMENT never becomes a regulation: %s → null', (value) => {
+      expect(sanitizeObservationRegulation(value)).toBeNull();
+    });
+
+    test.each([
+      ['132.15 applies to the inspection interval here', '132.15'],
+      ['see 411.3.3 for the requirement', '411.3.3'],
+    ])('Codex r7-#2: bare true-shape refs still survive: %s → %s', (value, expected) => {
+      expect(sanitizeObservationRegulation(value)).toBe(expected);
+    });
+
+    test('Codex r7-#2: keyword-introduced candidates keep the WIDER path ("Regulation 41.1" extracts)', () => {
+      expect(sanitizeObservationRegulation('per Regulation 41.1 of the standard')).toBe(
+        'Regulation 41.1'
+      );
+    });
+
+    test('non-string input returns null (defensive)', () => {
+      expect(sanitizeObservationRegulation(null)).toBeNull();
+      expect(sanitizeObservationRegulation(undefined)).toBeNull();
+      expect(sanitizeObservationRegulation(42)).toBeNull();
     });
   });
 

@@ -108,6 +108,13 @@ import {
 // poisoning the slot map.
 import { createPendingAsksRegistry } from './stage6-pending-asks-registry.js';
 import { classifyOvertake } from './stage6-overtake-classifier.js';
+// §A4 (field-feedback-2026-07-14, F8) — typed structurally-complete-reading
+// detector + recordable-field set, used by (a) the direct ask_user_answered
+// gate (a fresh reading must be re-injected, never consumed as an answer)
+// and (b) the pre-queue evidence check while a blocking ask holds
+// isExtracting.
+import { detectStructuredReading } from './stage6-pending-value.js';
+import { RECORDABLE_READING_FIELDS } from './recordable-reading-fields.js';
 // Plan 03-10 Task 2 — bound + scrub user_text before it touches CloudWatch
 // logs OR the Anthropic tool_result body. Pure function; throws on abusive
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
@@ -1743,10 +1750,43 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 const matchedImperative =
                   wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(sanitised.text);
                 const matchedBulkScope = BULK_SCOPE_RE.test(sanitised.text);
-                if (matchedImperative || matchedBulkScope) {
+                // §A4 (F8) round-8 channel separation — the direct
+                // ask_user_answered handler skips the new-command gate
+                // whenever the classifier returns "answers", so an
+                // UNGUARDED free-text acceptance for a pendingValue-class
+                // ask would consume ANY structurally complete fresh reading
+                // as the field answer (losing the reading, or joining the
+                // stale value to the wrong field). Run the TYPED
+                // schema-aware detector — all field families, not just the
+                // numeric parser — and treat a complete fresh reading
+                // exactly like an imperative: resolve user_moved_on +
+                // re-inject through the normal transcript path ("Ze is
+                // 0.22", "earthing arrangement is TT", "customer name is
+                // David" all get WRITTEN, never burned — audio-first
+                // invariant 2). Scoped to pendingValue-class asks + the
+                // brokered pvr-* asks so ordinary toolu_* concrete-field
+                // asks keep today's behaviour byte-for-byte.
+                const pendingValueClassAsk =
+                  askEntry?.pendingValue != null ||
+                  // Codex r4-#1 — an ELIGIBLE original ask whose capture
+                  // correctly returned null (ambiguous/no numeric) is still
+                  // pending-value-class: without this, a structurally
+                  // complete fresh reading ("Ze is 0.22") arriving on the
+                  // DIRECT channel would be consumed as the old ask's
+                  // answer instead of overtaking + reinjecting.
+                  askEntry?.pendingValueEligible === true ||
+                  (typeof msg.tool_call_id === 'string' && msg.tool_call_id.startsWith('pvr-'));
+                const structuredAnswer = pendingValueClassAsk
+                  ? detectStructuredReading(sanitised.text)
+                  : null;
+                const matchedStructuredReading =
+                  structuredAnswer != null && structuredAnswer.complete === true;
+                if (matchedImperative || matchedBulkScope || matchedStructuredReading) {
                   logger.warn('stage6.ask_user_answered_rejected_new_command', {
                     sessionId: currentSessionId,
                     tool_call_id: msg.tool_call_id,
+                    matched_structured_reading: matchedStructuredReading,
+                    structured_field: structuredAnswer?.fieldKey ?? null,
                     user_text_preview: sanitised.text.slice(0, 80),
                     matched_imperative: matchedImperative,
                     matched_bulk_scope: matchedBulkScope,
@@ -3421,6 +3461,88 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Spread the full msg so the replay re-runs handleTranscript with
     // the original metadata; the regexResults || lastRegexResults
     // fallback is re-applied inside that re-entry.
+    // §A4 (F8) round-11 — pre-queue pending-ask classification. A BLOCKING
+    // ask is exactly when isExtracting is true (the tool loop is suspended
+    // awaiting the answer), so a transcript-only reply used to queue here
+    // and never reach classifyOvertake (~L3767) until the ask timed out.
+    // Run classification BEFORE the queue-return, with ASYMMETRIC verdict
+    // scoping (round-12 — an unscoped version regresses ordinary asks):
+    //   - 'answers'      → resolve immediately AND CONSUME the transcript
+    //                      (early-return; never ALSO queued, else a bare-
+    //                      numeric answer would re-process as a normal turn
+    //                      and trigger the digit-carrying orphan apology on
+    //                      top of the successful write).
+    //   - 'user_moved_on' → reject pre-queue ONLY when evidence-backed: a
+    //                      recordable field+value regex hit, or (round-13)
+    //                      the typed detector confirming a structurally
+    //                      complete no-regex reading ("earthing arrangement
+    //                      is TT"). classifyOvertake's fail-safe default is
+    //                      user_moved_on, so bare numerics/garbles/chitchat
+    //                      with NO evidence fall through to the queue
+    //                      UNCHANGED — the direct ask_user_answered channel
+    //                      keeps answering ordinary toolu_* asks exactly as
+    //                      today.
+    if (entry.isExtracting && entry.pendingAsks && entry.pendingAsks.size > 0) {
+      const preQueueRegex = Array.isArray(msg.regexResults) ? msg.regexResults : [];
+      const preVerdict = classifyOvertake(msg.text, preQueueRegex, entry.pendingAsks);
+      if (preVerdict.kind === 'answers') {
+        let sanitisedPre = null;
+        try {
+          sanitisedPre = sanitiseUserText(preVerdict.userText);
+        } catch (sanErr) {
+          logger.warn('stage6.user_text_rejected', {
+            sessionId,
+            tool_call_id: preVerdict.toolCallId,
+            source: 'transcript_pre_queue',
+            code: sanErr.code || 'sanitisation_error',
+            message: sanErr.message,
+          });
+          entry.pendingAsks.resolve(preVerdict.toolCallId, {
+            answered: false,
+            reason: 'validation_error',
+          });
+          return;
+        }
+        const preResolvePayload = { answered: true, user_text: sanitisedPre.text };
+        if (sanitisedPre.truncated || sanitisedPre.stripped) {
+          preResolvePayload.sanitisation = {
+            truncated: sanitisedPre.truncated,
+            stripped: sanitisedPre.stripped,
+          };
+        }
+        const preResolved = entry.pendingAsks.resolve(preVerdict.toolCallId, preResolvePayload);
+        if (preResolved) {
+          stampSeenTranscript();
+          logger.info('stage6.transcript_pre_queue_answered', {
+            sessionId,
+            tool_call_id: preVerdict.toolCallId,
+            textPreview: String(msg.text || '').slice(0, 80),
+          });
+          return; // consumed by the ask channel — never queued
+        }
+        // Stale resolve (raced a timeout/direct frame) — queue as normal.
+      } else if (preVerdict.kind === 'user_moved_on') {
+        const hasRecordablePre = preQueueRegex.some(
+          (r) =>
+            r &&
+            typeof r.field === 'string' &&
+            RECORDABLE_READING_FIELDS.has(r.field) &&
+            r.value != null
+        );
+        const structuredPre = hasRecordablePre ? null : detectStructuredReading(msg.text);
+        if (hasRecordablePre || (structuredPre && structuredPre.complete === true)) {
+          entry.pendingAsks.rejectAll('user_moved_on');
+          logger.info('stage6.transcript_pre_queue_moved_on', {
+            sessionId,
+            evidence: hasRecordablePre ? 'recordable_regex' : 'structured_reading',
+            textPreview: String(msg.text || '').slice(0, 80),
+          });
+        }
+        // Fall through to the queue either way — the transcript itself is a
+        // fresh command and processes once the in-flight turn completes.
+      }
+    }
+
     if (entry.isExtracting) {
       entry.pendingTranscripts.push({ ...msg });
       return;

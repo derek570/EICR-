@@ -97,7 +97,11 @@ import { createAskDispatcher } from './stage6-dispatcher-ask.js';
 // options.askBudget AND options.restrainedMode through (Plans 05-03 +
 // 05-04 wire the activeSessions entry); without both, runShadowHarness
 // reverts to the Phase 3/4 dispatcher shape unchanged.
-import { createAskGateWrapper, wrapAskDispatcherWithGates } from './stage6-ask-gate-wrapper.js';
+import {
+  createAskGateWrapper,
+  wrapAskDispatcherWithGates,
+  createObsClarifyChainBroker,
+} from './stage6-ask-gate-wrapper.js';
 import { createPerTurnWrites } from './stage6-per-turn-writes.js';
 // readback-correction-optionb §3.3a/b — rolling conversational window so the
 // live model can resolve a bare "no" against the read-backs it spoke.
@@ -121,10 +125,20 @@ import {
   ALL_DIALOGUE_SCHEMAS,
 } from './dialogue-engine/index.js';
 import { extractNamedFieldValues } from './dialogue-engine/helpers/extraction.js';
+import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { buildConfirmationText } from './confirmation-text.js';
 import { expandForTTS } from './tts-text-expander.js';
+// §A1a (field-feedback-2026-07-14) — the ios_send_attempt telemetry loop
+// moved here from stage6-event-bundler.js so it emits one row per SURVIVING
+// wire confirmation (after the mid-stream-canonical filter AND the token-
+// aware debounce), covering all five allowlisted text-op fields.
+import {
+  buildPerCircuitDedupeKey,
+  buildMultiCircuitDedupeKey,
+  buildDegenerateDedupeKey,
+} from './ios-dedupe-key.js';
 
 /**
  * Sonnet model literal used by shadow-mode tool loop. Mirrors the literal at
@@ -273,6 +287,16 @@ const REJECTED_PROMPTS = Object.freeze([
   "I wasn't able to apply that one. Could you repeat it?",
   "Sorry, that didn't go through. Could you say it once more?",
 ]);
+
+// A3 (sessions F3 turn-16 / F9 turn-28) — observation-flavoured apology for
+// the digit-less-observation silent-drop class ("observation that the water
+// bond is not connected"). The reading nets above gate on /\d/, so a spoken
+// observation with no number produced ZERO TTS when the model no-opped.
+// Deliberately a SINGLE text distinct from every ORPHAN_/REJECTED_ phrasing:
+// the iOS A1(b) apology dedupe keys on text, so sharing wording with the
+// reading apology would cross-dedupe the two channels — and naming the
+// "observation" channel tells the inspector WHICH kind of utterance was lost.
+const OBSERVATION_ORPHAN_PROMPT = 'Sorry, I missed that observation — could you say it again?';
 
 // item #10 — default ON (the inspector explicitly asked for a spoken ASK
 // instead of a silent drop). Set VOICE_ORPHAN_PROMPT=false to disable
@@ -583,6 +607,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           sessionId: liveSession.sessionId,
           mode: 'live',
         });
+        // §D2 (field-feedback-2026-07-14) — per-session observation_clarify
+        // chain broker. Lazy on the session (like confirmationDebounceState)
+        // so chain ids survive across turns; the wrapper mints/stamps chain
+        // ids and keys the ask budget per OBSERVATION instead of per scope.
+        if (!liveSession.obsClarifyChains) {
+          liveSession.obsClarifyChains = createObsClarifyChainBroker();
+        }
         asks = wrapAskDispatcherWithGates(asks, {
           askBudget: options.askBudget,
           restrainedMode: options.restrainedMode,
@@ -591,6 +622,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           logger: log,
           sessionId: liveSession.sessionId,
           mode: 'live',
+          obsClarifyChains: liveSession.obsClarifyChains,
         });
       }
       dispatcher = createToolDispatcher(writes, asks);
@@ -1314,6 +1346,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
+    // §A1a ios_send_attempt telemetry + `_confidence` strip: MOVED below
+    // the A3 orphan net / D2 clarification fallback / A4 voice-prompt drain
+    // (Codex r8-#2) — those appenders run later in this function and their
+    // confirmations reach the wire too, so emitting here missed them.
+
     // readback-correction-optionb §3.3a — add the FINAL post-debounce/post-
     // filter READING confirmations to the per-turn accumulator (state-change /
     // observation / deletion / clear confirmations are excluded so a bare "no"
@@ -1414,12 +1451,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // Require a numeric value so a bare field-only fragment ("Zs") still
       // WAITS on the existing incomplete-reading path rather than prompting.
       const carriesValue = /\d/.test(transcriptText || '');
+      // A3 — digit-less observations ("observation that the water bond is not
+      // connected", F9 turn-28) carry no digit, so the /\d/ gate alone let
+      // them vanish without ANY spoken response when the model no-opped.
+      // OBSERVATION_PATTERN is the same fuzzy "observation"+garbles trigger
+      // the pre-LLM gate uses to FORWARD these turns — so anything it
+      // forwarded on that basis gets the same silent-drop protection here.
+      const carriesObservation = OBSERVATION_PATTERN.test(transcriptText || '');
       if (
         ORPHAN_PROMPT_ENABLED &&
         options.confirmationsEnabled === true &&
         producedNothing &&
         !isAnswerTurn &&
-        carriesValue
+        (carriesValue || carriesObservation)
       ) {
         // #5a apply-complete guard (PR #68) — before emitting a contentless
         // clarifying prompt, try a deterministic re-parse of transcriptText
@@ -1447,9 +1491,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // M1 Defect B: all-rejected turns get an "I couldn't action that"
           // message (the action WAS understood but rejected); the zero-tool-call
           // orphan case keeps the "didn't catch what that was for" wording.
+          // A3: an observation-shaped zero-tool-call turn gets the observation
+          // flavour instead — including the dual-match case where the
+          // transcript ALSO carries a digit ("observation that socket on
+          // circuit 3 is cracked"): the #5a re-parse above has already run and
+          // recovered nothing, so the observation lead-in is the stronger
+          // signal for what the utterance WAS. allRejected keeps precedence:
+          // there the tool call happened and was rejected, and "couldn't
+          // action that" is the accurate story regardless of shape.
           const prompt = allRejected
             ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
-            : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
+            : carriesObservation
+              ? OBSERVATION_ORPHAN_PROMPT
+              : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
           if (!Array.isArray(result.confirmations)) result.confirmations = [];
           result.confirmations.push({
             text: prompt,
@@ -1465,7 +1519,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             sessionId: session.sessionId,
             turnId,
             rounds: toolLoopOut.rounds,
-            cause: allRejected ? 'all_rejected' : 'zero_tool_calls',
+            // A3: the observation shape gets its own cause for forensics;
+            // the two pre-existing reading causes are unchanged.
+            cause: allRejected
+              ? 'all_rejected'
+              : carriesObservation
+                ? 'observation_no_tool_calls'
+                : 'zero_tool_calls',
             textPreview: String(transcriptText || '').slice(0, 80),
           });
         }
@@ -1476,6 +1536,225 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         turnId,
         error: orphanErr?.message ?? String(orphanErr),
       });
+    }
+
+    // ── §D2 (field-feedback-2026-07-14) — post-answer write-or-reask net
+    // for observation_clarify chains. A D2 clarification ask that gets
+    // ANSWERED and is then followed by a zero-tool (or unrelated-tool) model
+    // turn would go silent, and the A3 orphan net CANNOT catch it: on the
+    // resumed invocation the registry deleted the ask before the post-loop
+    // check (isAnswerTurn reads false) while the accumulated successful
+    // ask_user tool call makes producedNothing false. So this net keys
+    // INDEPENDENTLY of both: scan the accumulated tool-call sequence for the
+    // LATEST ANSWERED observation_clarify ask (advancing the anchor through
+    // each answered continuation — an earlier ask must not be satisfied by a
+    // later continuation whose own answer went nowhere), then require a
+    // qualifying success AFTER that anchor:
+    //   - a successful observation mutation (record_observation /
+    //     delete_observation with is_error false), OR
+    //   - a LATER observation_clarify continuation ask that is UNANSWERED /
+    //     timed out (its question was audible — the chain terminated out
+    //     loud; the answered case advances the anchor instead).
+    // An arbitrary confirmation or unrelated ask does NOT count — Haiku
+    // recording an unrelated reading while dropping the observation still
+    // triggers the net. Failure → ONE deterministic apology/re-ask through
+    // the same A1(b)-exempt field-nil confirmation channel as A4's fallback.
+    try {
+      const seq = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
+      const parseAnswered = (c) => {
+        try {
+          const body = JSON.parse(c?.result?.content ?? 'null');
+          return body && body.answered === true;
+        } catch {
+          return false;
+        }
+      };
+      let anchorIdx = -1;
+      for (let i = 0; i < seq.length; i += 1) {
+        const c = seq[i];
+        if (
+          c?.name === 'ask_user' &&
+          c?.input?.context_field === 'observation_clarify' &&
+          parseAnswered(c)
+        ) {
+          anchorIdx = i;
+        }
+      }
+      if (anchorIdx >= 0) {
+        // Codex r1-#3 — qualification is DELIBERATELY narrow:
+        //   - only a successful record_observation counts as the observation
+        //     WRITE (delete_observation removes a different observation and
+        //     records nothing — the clarified defect is still lost);
+        //   - an unanswered continuation counts ONLY when its outcome proves
+        //     the question was actually EMITTED/audible. Pre-fire outcomes
+        //     (ask_budget_exhausted / restrained_mode / gated /
+        //     validation_error / prompt_leak_blocked / shadow_mode /
+        //     duplicate_tool_call_id / dispatcher_error*) were never spoken,
+        //     so counting them would preserve the beep-then-silence failure.
+        const AUDIBLE_NON_ANSWER_REASONS = new Set([
+          'timeout',
+          'user_moved_on',
+          'transcript_already_extracted',
+          'session_stopped',
+          'session_reconnected',
+          'session_terminated',
+        ]);
+        const parseReason = (c) => {
+          try {
+            const body = JSON.parse(c?.result?.content ?? 'null');
+            return body && body.answered === false ? (body.reason ?? null) : null;
+          } catch {
+            return null;
+          }
+        };
+        // Codex r4-#5 — a qualifying CONTINUATION must belong to the SAME
+        // clarification chain as the answered anchor. Without the chain
+        // check, an audibly-terminated ask about a DIFFERENT observation
+        // (chain B times out) would suppress observation A's deterministic
+        // fallback — A's answered clarification silently dropped. Legacy
+        // asks without a chain id compare null === null and keep today's
+        // behaviour.
+        const anchorChainId = seq[anchorIdx]?.input?.clarification_chain_id ?? null;
+        let qualified = false;
+        for (let i = anchorIdx + 1; i < seq.length; i += 1) {
+          const c = seq[i];
+          if (c?.name === 'record_observation' && c?.result?.is_error !== true) {
+            qualified = true;
+            break;
+          }
+          if (
+            c?.name === 'ask_user' &&
+            c?.input?.context_field === 'observation_clarify' &&
+            (c?.input?.clarification_chain_id ?? null) === anchorChainId &&
+            !parseAnswered(c) &&
+            AUDIBLE_NON_ANSWER_REASONS.has(parseReason(c))
+          ) {
+            // Audibly-terminated SAME-CHAIN continuation (question spoken).
+            qualified = true;
+            break;
+          }
+        }
+        // §D2 Codex r1-#4 — retire the chain when the observation resolved
+        // (success) OR when the deterministic terminal fallback fires below:
+        // in both cases the clarification is OVER, and a later
+        // observation_clarify ask (a NEW ambiguous observation) must get a
+        // fresh budget bucket rather than joining this chain's.
+        if (anchorChainId && session.obsClarifyChains?.retire) {
+          session.obsClarifyChains.retire(anchorChainId);
+        }
+        if (!qualified) {
+          if (!Array.isArray(result.confirmations)) result.confirmations = [];
+          result.confirmations.push({
+            text: "Sorry — I didn't record that observation. Could you give it to me again?",
+            field: null,
+            circuit: null,
+            expects_ios_ack: false,
+          });
+          log.info?.('stage6.observation_clarify_dropped_net', {
+            sessionId: session.sessionId,
+            turnId,
+            anchor_tool_call_id: seq[anchorIdx]?.tool_call_id ?? null,
+            tool_calls: seq.length,
+          });
+        }
+      }
+    } catch (obsNetErr) {
+      log.warn?.('stage6.observation_clarify_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: obsNetErr?.message ?? String(obsNetErr),
+      });
+    }
+
+    // §A4 (field-feedback-2026-07-14) — drain deterministic voice prompts
+    // queued during the turn (the pending-value chain's terminal apology,
+    // stage6-dispatcher-ask.js queuePendingValueApology). Same non-blocking
+    // FIFO channel as the orphan net: field:null so the client's A1(b)
+    // 30 s field-nil TTL (not the permanent set) governs its dedupe, and
+    // expects_ios_ack:false so the audio finalizer never arms for it.
+    // Runs AFTER the orphan net so the two nets stay independent (the
+    // orphan net can't fire on an ask-bearing turn anyway — tool_calls > 0).
+    if (Array.isArray(session.pendingVoicePrompts) && session.pendingVoicePrompts.length > 0) {
+      const prompts = session.pendingVoicePrompts.splice(0);
+      if (!Array.isArray(result.confirmations)) result.confirmations = [];
+      for (const p of prompts) {
+        if (!p || typeof p.text !== 'string' || !p.text) continue;
+        result.confirmations.push({
+          text: p.text,
+          field: null,
+          circuit: null,
+          expects_ios_ack: false,
+        });
+        log.info?.('stage6.pending_value_apology_emitted', {
+          sessionId: session.sessionId,
+          turnId,
+          textPreview: p.text.slice(0, 80),
+        });
+      }
+    }
+
+    // §A1a (field-feedback-2026-07-14) — ios_send_attempt telemetry, MOVED
+    // here from the bundler. One row per confirmation that SURVIVED the
+    // mid-stream-canonical filter + the token-aware debounce — i.e. exactly
+    // the entries about to reach the wire. This closes the two holes in the
+    // old bundler-internal placement: (1) stateChanges/obsAndClears merged
+    // AFTER the loop, so circuit_op / observation / field_cleared
+    // confirmations never got a row (the forensic contract this wave's
+    // F2/F7/F10 diagnosis depended on was silently false for exactly those
+    // ops); (2) a debounce-suppressed confirmation still produced a row.
+    // Codex r8-#2 — the block sits AFTER the A3 orphan net, the D2
+    // clarification fallback, and the A4 voice-prompt drain (the LAST
+    // confirmation appenders), so their field-null prompts get rows too:
+    // one telemetry row per surviving wire confirmation, no exceptions.
+    // `expected_dedupe_key` is computed via the token-aware mirror using
+    // the entry's stamped `dedupe_token` — byte-equal to what a token-aware
+    // client computes (forward-looking during the backend→TestFlight/web
+    // rollout window; see ios-dedupe-key.js).
+    //
+    // The `_confidence` strip runs UNCONDITIONALLY on every surviving entry
+    // (NOT inside the debounce's length>0 guard) — reading entries carry
+    // the transient sidecar from synthesiseConfirmations; state-change/obs/
+    // clear entries have none and the telemetry row emits null confidence
+    // for them. Strip AFTER telemetry so the row can read it, BEFORE the
+    // wire so no WS frame ever carries `_confidence`.
+    if (Array.isArray(result.confirmations)) {
+      for (const entry of result.confirmations) {
+        let expectedDedupeKey;
+        if (Number.isInteger(entry.circuit)) {
+          expectedDedupeKey = buildPerCircuitDedupeKey(
+            entry.field,
+            entry.circuit,
+            entry.dedupe_token
+          );
+        } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {
+          expectedDedupeKey = buildMultiCircuitDedupeKey(
+            entry.field,
+            entry.circuits,
+            entry.text,
+            entry.dedupe_token
+          );
+        } else {
+          expectedDedupeKey = buildDegenerateDedupeKey(
+            entry.field,
+            entry.text,
+            entry.board_id,
+            entry.dedupe_token
+          );
+        }
+        log?.info?.('ios_send_attempt', {
+          sessionId: session.sessionId ?? null,
+          turnId,
+          field: entry.field ?? null,
+          circuit: Number.isInteger(entry.circuit) ? entry.circuit : null,
+          circuits: Array.isArray(entry.circuits) ? entry.circuits : null,
+          board_id: entry.board_id ?? null,
+          confidence: typeof entry._confidence === 'number' ? entry._confidence : null,
+          expected_dedupe_key: expectedDedupeKey,
+        });
+      }
+      for (const entry of result.confirmations) {
+        if ('_confidence' in entry) delete entry._confidence;
+      }
     }
 
     // Increment turn count to match legacy's contract

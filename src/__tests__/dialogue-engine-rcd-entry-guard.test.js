@@ -63,6 +63,11 @@ describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
       'stop asking about the RCD',
       'remove the RCD',
       'clear the RCD details',
+      // C4 — the "ICD" garble alias must compose with this guard: an
+      // imperative alongside the garble spelling falls through to
+      // Sonnet exactly like the clean spelling (the guard keys on the
+      // schema's trigger having matched, not on the literal "RCD").
+      'please delete the ICD',
     ])('does not enter RCD script for %p', (transcriptText) => {
       const ws = new FakeWS();
       const logger = new RecordingLogger();
@@ -122,6 +127,11 @@ describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
       'RCD trip time for circuit 5 is 25 ms',
       'check the RCD on circuit 2',
       'the RCD is type A',
+      // C4 (field session 6B6FE011 F8) — "ICD" garble of "RCD" and the
+      // "triptan" garble of "trip time" enter the schema like their
+      // clean spellings (enumerated aliases in rcd.js).
+      'ICD trip time for circuit 5 is 26 milliseconds',
+      'RCD triptan for circuit 2 is 28 ms',
     ])('enters RCD script for %p (or surfaces an ask)', (transcriptText) => {
       const ws = new FakeWS();
       const logger = new RecordingLogger();

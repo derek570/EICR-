@@ -15,6 +15,7 @@
 
 import {
   applyConfirmationDebounce,
+  confirmationDebounceKey,
   CONFIRMATION_DEBOUNCE_WINDOW_MS,
 } from '../extraction/stage6-event-bundler.js';
 
@@ -168,5 +169,89 @@ describe('applyConfirmationDebounce', () => {
     applyConfirmationDebounce([reading('measured_zs_ohm', '0.62', 1)], state, { now: t0 + 300 });
 
     expect(state.lastSuppressedCount).toBe(3);
+  });
+});
+
+// ── §A1a (field-feedback-2026-07-14) — token-aware debounce key ──
+// Deletions have null value so the composite key falls to text, and EVERY
+// deletion speaks the constant "Observation deleted" — two distinct same-turn
+// deletions were collapsed server-side before any client saw them. With the
+// dedupe_token in the key: distinct operations survive; a REPLAY carrying the
+// SAME token is still suppressed.
+describe('§A1a — token-aware confirmationDebounceKey / applyConfirmationDebounce', () => {
+  const deletion = (token) => ({
+    text: 'Observation deleted',
+    expanded_text: 'Observation deleted',
+    field: 'observation_deletion',
+    circuit: null,
+    dedupe_token: token,
+    expects_ios_ack: false,
+  });
+
+  test('two same-text deletions with DISTINCT tokens in one burst → both survive', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const out = applyConfirmationDebounce([deletion('obsdel_a'), deletion('obsdel_b')], state, {
+      now: 1000,
+    });
+    expect(out).toHaveLength(2);
+  });
+
+  test('a replay carrying the SAME token within the window → suppressed (speaks once)', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([deletion('obsdel_a')], state, { now: t0 });
+    expect(first).toHaveLength(1);
+    const replay = applyConfirmationDebounce([deletion('obsdel_a')], state, { now: t0 + 200 });
+    expect(replay).toHaveLength(0);
+    expect(state.lastSuppressedCount).toBe(1);
+  });
+
+  test('allowlisted field WITHOUT a token keeps the composite key (backward-compatible fallback)', () => {
+    const noToken = {
+      text: 'Observation deleted',
+      field: 'observation_deletion',
+      circuit: null,
+    };
+    expect(confirmationDebounceKey(noToken)).not.toContain('tok:');
+  });
+
+  test('measured-value field with a spurious token is IGNORED (composite key preserved)', () => {
+    const r = { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1, value: '0.62' };
+    const withSpurious = { ...r, dedupe_token: 'spurious' };
+    expect(confirmationDebounceKey(withSpurious)).toBe(confirmationDebounceKey(r));
+  });
+
+  test('Codex r4-#6: A, B, A replay pattern — the second A is suppressed (windowed token map, not lastKey)', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const a1 = applyConfirmationDebounce([deletion('obsdel_a')], state, { now: t0 });
+    const b = applyConfirmationDebounce([deletion('obsdel_b')], state, { now: t0 + 200 });
+    const a2 = applyConfirmationDebounce([deletion('obsdel_a')], state, { now: t0 + 400 });
+    expect(a1).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(a2).toHaveLength(0);
+    expect(state.lastSuppressedCount).toBe(1);
+  });
+
+  test('Codex r4-#6: same-token replay OUTSIDE the window survives (map is pruned)', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    applyConfirmationDebounce([deletion('obsdel_a')], state, { now: t0 });
+    const late = applyConfirmationDebounce([deletion('obsdel_a')], state, {
+      now: t0 + CONFIRMATION_DEBOUNCE_WINDOW_MS + 10,
+    });
+    expect(late).toHaveLength(1);
+  });
+
+  test('Codex r4-#6: a token confirmation does NOT evict a measured reading from lastKey', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const zs = { text: 'Circuit 1, Zs 0.62', field: 'measured_zs_ohm', circuit: 1, value: '0.62' };
+    const first = applyConfirmationDebounce([zs], state, { now: t0 });
+    const tokenConf = applyConfirmationDebounce([deletion('obsdel_x')], state, { now: t0 + 100 });
+    const zsReplay = applyConfirmationDebounce([{ ...zs }], state, { now: t0 + 300 });
+    expect(first).toHaveLength(1);
+    expect(tokenConf).toHaveLength(1);
+    expect(zsReplay).toHaveLength(0); // still coalesced despite the interleaved token entry
   });
 });

@@ -36,6 +36,45 @@ describe('reparseSingleCompleteReading', () => {
     expect(t).toEqual({ slotField: 'rcd_trip_time', circuit: 5, value: '24' });
   });
 
+  // C4 (field session 6B6FE011 F8) — "ICD" garble of "RCD". The alias
+  // lives in the ENTRY TRIGGER (the extractor's `trip time` anchor is
+  // prefix-agnostic); without it the ICD form never matched any schema
+  // and the net produced nothing.
+  test('recovers the "ICD" garble of RCD identically to the clean form', () => {
+    const icd = reparseSingleCompleteReading(
+      'ICD trip time for circuit 5 is 26 milliseconds',
+      ALL_DIALOGUE_SCHEMAS
+    );
+    expect(icd).toEqual({ slotField: 'rcd_trip_time', circuit: 5, value: '26' });
+    // Byte-for-byte parity with the RCD spelling of the same utterance.
+    expect(icd).toEqual(
+      reparseSingleCompleteReading(
+        'RCD trip time for circuit 5 is 26 milliseconds',
+        ALL_DIALOGUE_SCHEMAS
+      )
+    );
+  });
+
+  // C4 — "triptan" garble of "trip time" (same session). Previously it
+  // relied on the Sonnet handover; the enumerated extractor alias makes
+  // it deterministic like "tryptoid".
+  test('recovers the "triptan" garble as a trip-time tuple', () => {
+    const t = reparseSingleCompleteReading(
+      'RCD triptan of circuit 2 is 26 ms',
+      ALL_DIALOGUE_SCHEMAS
+    );
+    expect(t).toEqual({ slotField: 'rcd_trip_time', circuit: 2, value: '26' });
+  });
+
+  // C4 — the fully garbled form as heard in the field: both aliases at once.
+  test('recovers the doubly-garbled "ICD triptan" form', () => {
+    const t = reparseSingleCompleteReading(
+      'ICD triptan for circuit 3 is 30 ms',
+      ALL_DIALOGUE_SCHEMAS
+    );
+    expect(t).toEqual({ slotField: 'rcd_trip_time', circuit: 3, value: '30' });
+  });
+
   test('no explicit circuit digit → null (no fuzzy designation in the net)', () => {
     expect(reparseSingleCompleteReading('RCD tryptoid is 28 ms', ALL_DIALOGUE_SCHEMAS)).toBeNull();
   });

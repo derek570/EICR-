@@ -1,0 +1,60 @@
+# ============================================================================
+# LIVE-LANE ADVISORY PROBE — NOT part of the deterministic mock/CI lane.
+# Needs a real Anthropic model (Stage 6 live tool loop) and is ADVISORY:
+# it pins prompt BEHAVIOUR (D2 ambiguous C2/C3 severity clarification,
+# field-feedback-2026-07-14), so a failure is a prompt regression signal,
+# not a hard gate. The `lane: live-advisory` tag makes --scenario-dir
+# discovery skip this file unless --lane=live-advisory is passed.
+#
+# Run with:
+#   node scripts/voice-latency-bench/transcript-replay-direct.mjs --loaded-barrel=off \
+#     --scenario-dir=tests/fixtures/voice-latency-scenarios/live_advisory --lane=live-advisory
+# ============================================================================
+name: d2_no_cpc_exception_still_asks
+suite: live_advisory
+lane: live-advisory
+description: |
+  D2 preservation probe (Codex r1-#6): the mandatory no-CPC/Class-II
+  final-circuit question is AUTHORITATIVE and NOT subsumed by the
+  AMBIGUOUS C2/C3 SEVERITY rule — a no-earth observation must still ask
+  its own option-shaped question (Class II + warning notice vs Class I /
+  missing notice) before coding. Reply picks the Class II option → C3.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Upstairs sockets
+
+transcript:
+  - at_ms: 0
+    text: "Observation that there's no earth at the lighting circuit."
+    isFinal: true
+
+ask_user_responses:
+  - matches: "Class II"
+    text: "All the fittings are Class II with the warning notices fitted."
+    at_ms_after_ask: 100
+
+expect:
+  ask_user_count: { min: 1 }
+  ask_user:
+    - question_contains_any:
+        - "Class II"
+        - "warning notice"
+  forbid_ask_question_fragments:
+    - "C2 or C3"
+  tool_call_sequence:
+    - tool: record_observation
+  observations:
+    - final: true
+      code: C3
+
+config:
+  timeout_ms: 60000
+  drain_ms: 15000
+  fetch_tts: false
