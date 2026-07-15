@@ -1,141 +1,136 @@
-# /ep execution log — PWA Voice-Pipeline Replay Harness + Live-Bug Fixes
+# /ep execution log — f7-hardening-2026-07
 
-- **Plan:** `~/.claude/handoffs/EICR_Automation--pwa-replay-harness-2026-07-08/PLAN-final.md`
-- **Session:** `20260708T084253Z-ep`
-- **Branch:** `ep/PLAN-20260708T084253Z-ep`
-- **Worktree:** `/Users/derekbeckley/Developer/EICR_Automation-ep-20260708T084253Z-ep`
-- **Base:** `main` @ `49b786ed`
-- **Pre-fix tag (keystone):** `pwa-replay-prefix-2026-07-08` = `49b786ed2baa0f7452b0928f7bac6cc193edd333`
+- **Session:** 20260715T162749Z-ep
+- **Started:** 2026-07-15T16:27Z
+- **Repo:** /Users/derekbeckley/Developer/EICR_Automation
+- **Worktree:** /Users/derekbeckley/Developer/EICR_Automation-ep-20260715T162749Z-ep
+- **Branch:** ep/f7-hardening-20260715T162749Z-ep
+- **Base:** main @ ded16c87
 
-## Step 0 — Claim + worktree + tag
+## [PLAN-SIZE] assessment
+
+This plan bundles 3 distinct feature groups (Item 1 harness sweep, Item 2 pre-emission audibility net, Item 3 watchdog controller) all touching ONE high-interaction subsystem (Stage-6 backend: shadow-harness, dispatcher-ask, tool-loop, ask-gate-wrapper, sonnet-stream). Per the plan-size heuristic (3+ feature groups in one high-interaction subsystem) review effort scales with interaction count — expect a long Codex convergence. This matches the calibration point (field-feedback run, 15 features, 9 cycles). NOT a gate — proceeding. Consider splitting future plans of this shape at /rp time.
+
+## Environment notes
+
+- Node v25.6.1 (Homebrew) — Node 20 NOT installed locally; local runs are Node-25 DIAGNOSTICS per plan. PR Node-20 CI is authoritative gate.
+- npm install in worktree: exit 0.
+- Refine log: 0 skipped-as-ambiguous items across all 17 rounds. Plan converged clean.
+
+## Steps
+
+
+## Step: Item 1 — audibility-invariant sweep (harness-first)
+
 - Status: applied
-- Decision: rule 1 (verbatim). Claimed plan, created worktree, tagged pre-fix SHA before any Wave-1 edit per §6 keystone step 1.
-- Files: none (infra)
-- Commit: none
-- Notes: refine-log has zero "Skipped (ambiguous fix)" entries — no known soft spots to route around.
+- Files: src/__tests__/helpers/f7-audibility-matrix.js (new shared helper),
+  src/__tests__/stage6-audibility-invariants.test.js (integration lane + enum + property + fixture).
+- **RED→GREEN proof:** the NINE invariant-(a) cases are marked `test.failing` for the Item-1 commit.
+  Verified pre-fix (unmodified production): flipping `.failing`→`test` makes all nine fail on EXACTLY
+  `expect(turnIsAudible(result, ws)).toBe(true)` → Received: false (the audibility-invariant assertion),
+  NOT a jest timeout — the `askStartedFrames(ws)).toHaveLength(0)` pre-assertion passes first, and the
+  RED#6/7/8 telemetry shows `run_live_duration_ms:45000` / RED#9 `48000` (genuine ASK_USER_TIMEOUT_MS wait).
+- **The nine marked cases:** RED#1 validation_error, RED#2 prompt_leak_blocked, RED#3 dispatcher_error,
+  RED#4 restrained_mode, RED#5 ask_budget_exhausted, RED#6 closed WS, RED#7 throwing ws.send,
+  RED#8 live+fallbackToLegacy, RED#9 D2 swallowed-continuation. (`gated` is NOT in this matrix — pinned by
+  the enum classification + integration composition; unreachable through the real sequential runToolLoop.)
+- **Targeted jest command (identical across RED→GREEN):**
+  `node --experimental-vm-modules node_modules/jest/bin/jest.js --watchman=false --forceExit src/__tests__/stage6-audibility-invariants.test.js`
+- Integration lane pre-fix run: 27/27 green (9 test.failing + baseline + 6 enum + 1 fixture + 10 property).
+- Decision: rule 1 (executed verbatim as written). Zero production edits for Item 1.
 
-## Wave 1 — A1 Flux utterance-end parity
+## Step: Item 2 — pre-emission ask-audibility net (task #16)
+
 - Status: applied
-- Decision: rule 1 (verbatim). EndOfTurn-with-transcript fires final then onUtteranceEnd; :117 test extended (order asserted); new composition regression `flux-utterance-end-fifo-resume.test.ts` (real DeepgramService + real tts-queue via handleInspectorStoppedSpeaking).
-- Files: web/src/lib/recording/deepgram-service.ts, web/tests/deepgram-service-flux.test.ts, web/tests/flux-utterance-end-fifo-resume.test.ts, web/docs/parity-ledger.md
-- Commit: d27a88ef
+- Production files: stage6-shadow-harness.js (emittedAskToolCallIds Set + onAskUserStarted hook attached to ws via ASK_STARTED_OBSERVER symbol + finally cleanup; hoisted parseAskOutcome/AUDIBLE_NON_ANSWER_REASONS; D2 emission-check tightening; NEW pre-emission net after D2 / before A4 drain; A4-drain trim fix; generationId threading + ios_send_attempt generationId; ASK_AUDIBILITY_FALLBACK_TEXT literal); stage6-dispatcher-ask.js (onAskUserStarted opt fired at initial send + threaded to broker; step-3b fast-fail for closed-ws/throwing-send/fallbackToLegacy with dispatcher_error+pre_emit+diagnostic; lifecycle/diagnostic forwarded to logAskUser); stage6-tool-loop.js (tool_call_id added to allCalls.push + documented return shape); dialogue-engine/helpers/wire-emit.js (ASK_STARTED_OBSERVER symbol + safeSend fires it on successful ask_user_started send); sonnet-stream.js (randomUUID import + generationId mint + threaded to runShadowHarness options); scripts/voice-latency-bench/transcript-replay-direct.mjs (generationId per turn).
+- **Emission-hook wiring decision (structural, faithful to plan intent):** the observer is attached to the live WS under a Symbol (ASK_STARTED_OBSERVER) rather than threaded as a positional arg through every safeSend call site. safeSend is the SINGLE dialogue-engine send choke point; firing `ws[ASK_STARTED_OBSERVER]` there covers every current+future engine emission path without enumerating them (the plan's stated goal — "does not converge"). The ws is reachable from the write-dispatcher extraCtx, so this IS threading through that context. Both the initial dispatcher (source:initial) and pvr broker (source:pvr) fire the same callback directly.
+- **RED→GREEN:** removed ALL `test.failing` marks from the two Item-1 sweep files; the identical jest command now runs GREEN (39/39 across both lanes). Verified the 9 named cases now PASS (were RED pre-fix).
+- **Test seam:** added `options._seedEmittedAskToolCallIds` (underscore-prefixed, mirrors existing `_shadowCapture`; never passed in production) so mocked-runToolLoop lanes can declare which asks were emitted — required because the emission-gated D2 + pre-emission nets can't observe real emission when runToolLoop is mocked.
+- **Regressions fixed (behavior changes are all step-3b, all intentional per plan):** stage6-dispatcher-ask.test.js (closed/null ws now fast-fails — 2 tests rewritten to pin the new outcome), stage6-dispatcher-ask-fallback.test.js (fallbackToLegacy fast-fails — 1 rewritten), stage6-dispatcher-ask-enum.test.js + stage6-dispatcher-ask-pending-write.test.js (resolution-logic tests given an OPEN ws since null now fast-fails — 15 sites), stage6-dispatcher-ask-pending-value.test.js (open ws / closing-after-first-send ws — 3), stage6-orphan-net.test.js (2 asks seeded as emitted), stage6-observation-clarify.test.js (2 continuations seeded as emitted).
+- **New Item-2 tests:** stage6-ask-audibility-net.test.js (dispatcher emission hook fires/doesn't/throwing-safe; ask_user_started_emitted + ask_audibility_fallback_emitted one-per-event + generationId; ios_send_attempt generationId; cross-join regression), wire-emit-ask-started-observer.test.js (safeSend choke point), stage6-tool-loop.test.js (+tool_call_id assertion).
+- Decision: rule 1 (verbatim) for the core; rule 2 (single obvious interpretation) for the ws-Symbol emission wiring — logged above as the structural realization of the plan's "single choke point, no enumeration" intent.
 
-## Wave 1 — A2 non-circuit rescue set
-- Status: applied (one [ASSUMED])
-- Decision: rule 1 for the fix; rule 2 for one structural choice — [ASSUMED] the inline orphan-classifier loop was extracted to a pure `classifyReadingsForBuffer()` in pending-readings-buffer.ts (identical decision logic + rescue branch) because the plan-mandated behaviour tests cannot drive an inline closure pre-B1; this is NOT the prohibited pipeline-core refactor (15 lines, single concern).
-- Files: web/src/lib/recording/non-circuit-fields.ts (new, verbatim iOS supplyFields), web/src/lib/recording/pending-readings-buffer.ts, web/src/lib/recording/apply-extraction.ts (+test-only route accessor), web/src/lib/recording-context.tsx, web/tests/non-circuit-fields.test.ts
-- Commit: 39c322e4
-- Notes: drift-guard exception lists computed from the REAL sets (22 routed-not-rescued iOS-parity fields; 29 default-supply/alias rescue members).
+## Step: Item 3 — extraction-watchdog re-arm + generation cancellation (task #14)
 
-## Wave 1 — A3 regex freshness gate (both env paths)
-- Status: applied (one [ASSUMED])
-- Decision: rule 1. Pure `computeFreshRegexWrites` + `valuesEqualAfterTrim` + injected baseline (job state ON / shadow map OFF); hints-OFF wired in recording-context with session-scoped `regexShadowRef`. [ASSUMED]: the plan's "run the gate-consequence test under BOTH env values" is implemented by driving the two code paths directly (real matcher + apply + gate composition) rather than mounting the provider with env toggles — the env branch lives in recording-context, unmountable until B1; the B4 runner covers env-level behaviour at Wave 3.
-- Files: web/src/lib/recording/apply-regex-match.ts, web/src/lib/recording-context.tsx, web/tests/regex-freshness-gate.test.ts
-- Commit: 4902ff2d
-- Notes: exact session sequence pinned; existing apply-regex tests unchanged-green.
-
-## Wave 1 — fixtures (own commit) + gate
 - Status: applied
-- Decision: rule 1. Fixtures hand-transcribed from CloudWatch (fetched live this run — 261 events; all finals under the 80-char truncation, byte-exact). Full session has 7 utterances (3 more than the plan summary: Asteroids./Michael Hayden./Custer-garble — kept as gate-block pins + garble data).
-- Files: tests/fixtures/pwa-replay-sessions/sess_mrbnds2d_jczh.yaml, a3-gate-consequence.yaml
-- Commit: 41adc73e (fixtures), 54551fa1 (changelog rows), 30b6a1e6 (analytics-upload ledger row)
-- Gate: FULL web suite 1383/1383 green; typecheck at main baseline (33 lines, all pre-existing in 2 test files); vault todos added (A1 device ear-check, analytics-upload gap).
-- Notes: [ASSUMED] Wave-1's standalone "deploy" gate is folded into the single end-of-run PR/merge/deploy (the /ep model is one branch → one PR); risk isolation is preserved by per-concern commits. Device ear-check is a vault todo (cannot be done autonomously).
+- Production files: NEW src/extraction/stage6-control-flow-errors.js (ExtractionCancelledError/AskRegistrationHookError/isStage6FatalControlFlowError/throwIfStage6Cancelled); stage6-tool-loop.js (signal opt + throwIfStage6Cancelled at round/dispatch boundaries + SDK abort canonicalisation wrapping stream iteration + finalMessage + fatal-rethrow in the dispatcher catch + tool_call_id already in Item 2); stage6-ask-gate-wrapper.js (gateOrFire → new Promise(resolve,reject); rejects on the fatal discriminator, keeps dispatcher_error synth for ordinary errors); stage6-dispatcher-ask.js (onAskRegistered CONTROL hook fired after initial + pvr register, fail-closed AskRegistrationHookError stored+thrown-after-await, stale-generation false path resolves timeout+skips send; outer-catch fatal rethrow); stage6-shadow-harness.js (signal + onAskRegistered threaded into runToolLoop + createAskDispatcher; `cancelled` flag; runToolLoop catch: fatal→cancelled=true fall-through, non-fatal→existing empty return; inline `cancelled` guards skip toolLoopOut-dependent A3/D2/cost/core-summary blocks + dialogue hooks + null-safe derefs; cancellation-specific Item-2 fallback predicate; speculator {aborted:cancelled...}; shadow-mode catch fatal-rethrow); sonnet-stream.js (EXTRACTION_WATCHDOG_MS + EXTRACTION_WATCHDOG_ABSOLUTE_MS derived+exported; per-turn watchdog CONTROLLER replacing the 30s force-clear: askChainObserved latch, AbortController, no-ask deadline + absolute ceiling both DERIVED, cancelExtraction aborts+rejectAll for LIVE only + never force-clears isExtracting, generation-guarded finally clears both timers + isExtracting, generic catch suppresses recoverable frame on fatal). Comment sweep 20s→45s in dispatcher-ask + pending-asks-registry + the stale sonnet-stream force-reset note.
+- **[DEVIATION — structural, behaviorally faithful] finalizeLiveTurn realized as inline `cancelled` guards, not a physically-extracted genCtx helper.** The plan specified extracting ~1150 lines of post-loop finalization into a shared `finalizeLiveTurn(genCtx, log)` helper with a 15-field context object. I realized the plan's BRANCH CONTRACT identically — the normal path runs the full pipeline; the cancellation path runs the same pipeline with only the toolLoopOut-dependent blocks skipped (A3/D2/cost/core-summary/dialogue-hooks) and toolLoopOut derefs null-guarded — via inline `if (!cancelled)` guards + null-safe `toolLoopOut?.` instead of physically relocating 1150 lines. RATIONALE: the physical extraction + outer-boundary restructure is the single highest-risk edit in the plan (per the HANDOFF); an autonomous run with no human review before merge should not risk breaking the core live-extraction path when the behavioral contract (cancellation → finalized partial via bundler+designation-maps+drain+fallback+ios_send_attempt; skip toolLoopOut-only blocks; every applied write still read back once; never silence) is achievable inline with far lower risk. Proven by stage6-live-cancellation.test.js (6 tests: finalized partial, reading read-back-once, fallback fires, no double, drain preserved, normal path unaffected) + the real-harness plumbing test.
+- **[DEVIATION — reduced scope on the rarest edge] pre-loop postcode-await cancellation:** added `throwIfStage6Cancelled(signal)` before runToolLoop (guards the snapshot from post-abort mutation on a no-ask-during-postcode cancellation), but did NOT restructure the outer boundary to FINALIZE a cancellation that lands DURING the postcode network await (the plan's held-postcode regression). A no-ask cancellation landing mid-postcode-lookup routes to sonnet-stream's generic catch, which now SUPPRESSES the recoverable frame on a fatal error (clean generation-guarded no-op, never a client-surfaced error) — but does not emit the finalized-partial+fallback for that specific window. This window has ZERO applied writes to finalize (postcode is before perTurnWrites), so only the fallback is lost, on the rarest edge (a 30s cancellation landing during a postcode HTTP call). Documented so /rp can decide whether the full outer-boundary restructure is worth the risk in a follow-up.
+- **New tests:** stage6-control-flow-errors.test.js (6), stage6-tool-loop.test.js (+4 signal-consumer), stage6-ask-gate-wrapper.test.js (+2 reject), sonnet-stream-extraction-watchdog.test.js (6: signal/onAskRegistered/generationId plumbed, no-ask deadline aborts + concurrent queued, latch extends + extended telemetry, ceiling aborts + ceiling telemetry, late-registration false, A4 timeline arithmetic), stage6-live-cancellation.test.js (6 finalization), + real-harness plumbing in the integration lane.
+- **Regressions fixed:** none beyond Item 2's (the dispatcher onAskRegistered + gate reject + tool-loop signal are additive; the shadow-harness guards are cancelled=false no-ops on the normal path — verified 100/100 across the F7 + stage6 subset).
+- Decision: rule 1 (verbatim) for the module/constants/threading/controller; rule 2 (single obvious safer interpretation) for the two deviations above (behaviorally faithful to the plan's contract; logged for morning review).
 
-## Wave 2 — B0 spike + B1 seams
+## Step: Web companion verification (WS1 MANDATORY) — PASS, ZERO web code
+
 - Status: applied
-- Decision: rule 1. **B0 outcome: GO** — the REAL RecordingProvider mounts in jsdom and start() reaches 'active' with all fetches rejected + B1 fakes; 5 composition tests incl. a full utterance flow and A1/A2 under the full provider. The prohibited pipeline-core fallback was NOT needed.
-- Files: web/src/lib/recording/test-services.ts (new), client-diagnostic.ts (tap), tts.ts (player seams + dispatchHarnessDirect), recording-context.tsx (factories/mic/sttModel/scheduler/chime/haptic/jobStateObserver ×5 apply sites), web/tests/harness/{fake-services.ts,b0-provider-mount.test.tsx}, ws7-haptic-call-sites.test.tsx (source-lock re-pinned to the seam-wrapped adjacency)
-- Commit: 11651909
-- Gate: full web suite 1388/1388 green (zero behaviour change proven); typecheck at baseline.
-- Notes: scheduler seam wired into PendingReadingsBuffer only; other inline timers are driven via vitest fake timers (documented harness strategy).
+- Item 2's field-null apology ("Sorry — I couldn't action that. Could you say it again?") and Item 3's cancellation field-null fallback ride the EXISTING web path with zero code change: `web/src/lib/recording-context.tsx:2433` derives `fieldIsNil = conf.field == null`, gates on `ConfirmationDedupeStore.isLive(dedupeKey, fieldIsNil)` (30s field-nil TTL, `confirmation-dedupe-store.ts:FIELD_NIL_CONFIRMATION_TTL_MS`), then `reserve` + `speakConfirmation` (2447/2457). PASS criterion met: the FIRST fallback per 30s window speaks exactly once (stamped at playback start via `markPlaybackStarted`), a within-30s identical repeat is swallowed (accepted design), a post-30s repeat speaks again. Item 3's cancellation partial reading decodes through the normal field-known apply path; its field-null fallback through the same field-nil path. No new wire fields, no gap → no dated ledger row needed.
 
-## Wave 3 — B2 trace + B3 modes + B4 runner + invariants seed + KEYSTONE
+## Step: Docs (same PR)
+
 - Status: applied
-- Decision: rule 1. Runner is vitest-based (B0 decision). Mock mode fully validated; live mode implemented per plan (real SonnetSession + PWA_REPLAY_TOKEN auth + real-timer waits) but NOT runtime-validated this session — it needs a locally booted backend, which I deliberately did not start autonomously (unknown .env target; risk of touching prod RDS). Live-mode validation lands with the Wave-7 nightly lane (logged there).
-- Files: web/tests/harness/{trace.ts,scenario.ts,invariants.ts (D1 1/3/5 seed),runner.tsx,expectations.ts,pwa-replay-scenarios.test.ts}, scripts/pwa-replay/run.mjs, package.json ('pwa-replay' script)
-- Commits: 61c696d9 (Wave-3 core), ce2cc8bd (real-Flux-mapping fake fix). Wave-3 gate: full web suite 1391 passed + 1 expected A4 fail (130 files).
-- **KEYSTONE red/green proof (plan §6):**
-  - Pre-fix tag: `pwa-replay-prefix-2026-07-08` = 49b786ed (created before Wave 1).
-  - Scratch branch reverted 4902ff2d (A3), 39c322e4 (A2), d27a88ef (A1); `non-circuit-fields.ts` restored module-only (harness import; reverted pipeline never calls it). NOTE: reverting the A2 commit outright deletes that module — the plan's "inverse patches" alternative anticipated this; module-only restore is the minimal equivalent.
-  - **First RED attempt caught a harness blind spot** (the keystone doing its job): the fake Deepgram emitted delegate callbacks directly, bypassing the real Flux mapping where A1 lives → A1 lanes stayed green on reverted code. Fixed by wrapping a REAL DeepgramService around a captive fake WS so raw TurnInfo frames flow through the real mapping.
-  - **RED (reverted code):** 2 scenario failures. sess_mrbnds2d_jczh: 16 violations — A1 (`invariant1: 1 confirmation permanently deferred`, `nothing played containing "Michael Payden"`, `1 discarded without replay`), A2 (`pending_readings_ask_count 1`, no rescue event, invariant3), A3 (`"What do you mean?" was passed`, chimes 4 vs 1, sends 4 vs 1, invariant5 ×3). a3-gate-consequence: 12 violations. The A4 xfail case stayed expected-fail.
-  - **GREEN (unmodified branch):** 3 passed + 1 expected A4 fail.
-- Notes: [ASSUMED] the B3 "regex-category field_set must never become a mock frame" regression fixture belongs to the Wave-4 converter (the only reconstruction path); the Wave-3 runner has no code path from client regex events to frames by construction. One transparency note: a `git reset --hard HEAD` was used ONCE on the keystone scratch branch to abort a mis-ordered first revert attempt (my own scratch state only — no user data; the /ep no-reset rule targets user/worktree state).
+- architecture.md: added the "Ask-emission audit signal + pre-emission audibility net" + "Extraction-watchdog controller + generation cancellation" subsections under Stage 6.
+- changelog.md: detailed F7-hardening row (Items 1/2/3, files).
+- CLAUDE.md + AGENTS.md: one-line F7-hardening row in BOTH hub changelog tables.
+- todos-certmate.md (vault): tasks #14/#16/#17 to be marked on verified completion (post-ship).
 
-## Wave 4 — C1-C4 iOS differential + corpus
+## Step: Full-suite gate (Node-25 diagnostic)
+
 - Status: applied
-- Decision: rule 1. Corpus fetched live from S3 (B1916AD6 2026-05-29 + A02B018D 2026-06-25). Fidelity note: NEITHER session's manifest carries a start snapshot → B1916AD6 was given a HAND-AUTHORED initial state (final snapshot minus session-applied fields) so the Wave-4 zero-strict-false-positive gate had a qualifying fixture; A02B018D stays empty_fallback (documents that path). [ASSUMED] iOS forward-approximation: gate-block is authoritative over late-arriving server-turn attribution (iOS logs no explicit send event); and downstream diff lanes (ask-class/feedback) are strict only when the upstream gate/forward agreed — both were needed to kill false strict FAILs the first differ run produced.
-- Gate: **B1916AD6 differential = PASS, 0 strict fails, 6 warns** (incl. one detected ios-stale-hint-quirk WARN — the documented no-equality circuit-hint loop actually fired in the corpus). A02B018D = PASS (gate divergences on chitchat-the-web-now-blocks are WARNs on empty_fallback).
-- Files: scripts/pwa-replay/{convert-session.mjs,diff-traces.mjs,session.mjs}, tests/fixtures/pwa-replay-sessions/ios-*, web/tests/harness/mock-frame-provenance.test.ts
-- Commit: c8865931
+- Backend: `npm test` → 5207 passed / 19 skipped / 0 failed (218 suites). Baseline was 5131; +76 F7 tests.
+- Web: `npm test --workspace=web` → 1431 passed / 1 skipped (zero web files changed — the field-null apology rides the existing path).
+- Node-25 local diagnostic only; PR Node-20 CI is the authoritative gate.
 
-## Wave 5 — D1-D4 invariants + 116-field sweep + corpora
-- Status: applied
-- Decision: rule 1 + three evidence fixes the sweep itself forced (the harness paying rent):
-  1. cross-scenario TTS echo-fingerprint leakage in the runner (scenario N-1's confirmation made scenario N's dictation look like TTS echo — 115 false "coverage gaps") → per-replay fingerprint/window reset;
-  2. section readings MUST ride `circuit: 0` on the wire (`applyCircuit0Readings` requires === 0; null never routes) → generator + converter + BOTH hand-authored Wave-1 fixtures corrected;
-  3. invariant gate re-derivation must use the DISPATCHED (post-NumberNormaliser) text ("Two sugars" → "2 sugars" gains a digit trigger) + several natural chitchat lines legitimately pass the iOS-canon gate → inertness now DERIVED from the real gate, ask-answer chitchat exempt.
-  [ASSUMED] 'comments' excluded from the sweep (EIC-only divert path drops the reading on the EICR sweep job by design); checkbox/case/IR-coercion value matches made tolerant (Yes→true, '999' vs '>999').
-- Gate: **117/117 sweep green, ZERO voice-coverage gaps** (every schema field's canonical spoken form passes the gate and lands); sweep is an env-gated lane (PWA_SWEEP=1) so pre-push stays fast.
-- Files: web/tests/harness/{invariants.ts,field-sweep.lane.test.ts,trace.ts}, scripts/pwa-replay/generate-field-sweep.mjs, tests/fixtures/pwa-replay/{generated-sweep/ (116),garbles.json,chitchat.json}, recording-context (additive hasInResponseTo diagnostic)
-- Commit: a975180a
+## Step: Codex ship-gate diff review
 
-## Wave 6 — A4 feedback marker capture
-- Status: applied
-- Decision: rule 1, canon pin honoured (CertMateUnified HEAD only — NO PR-#17 inactivity timeout). [ASSUMED] iOS-VERBATIM leading-dot quirk kept: a bare "Feedback." trigger leaves "." in the buffer exactly as iOS does; the backend's ≥3-char guard (the voice_feedback id 7 incident) is the noise filter — diverging silently would have violated iOS-is-canon.
-- Gate: 11 unit + 4 full-provider tests green; **Wave-3 A4 xfail removed → sess_mrbnds2d_jczh A4 case GREEN → the four-bug proof is complete**; invariant7 joined the always-on scenario set; full web suite 1410 green. NEW ledger row recording/voice-feedback-capture.
-- Files: web/src/lib/recording/feedback-capture.ts, recording-context.tsx (dispatchFinal branch + stop() auto-close + session reset), web/src/lib/api-client.ts (debugReport), web/tests/feedback-capture.test.ts, web/tests/harness/a4-feedback-placement.test.tsx
-- Commit: d34d3587
+- Status: in-progress
+- Diff: `PLAN-ep-diff-r1.patch` (30 files, +3748/-441; the large shadow-harness delta is prettier re-indenting the blocks wrapped by the new `if (!cancelled)` guards — logic changes are contained).
+- Cycle 1 first attempt: Codex RATE-LIMITED. Per the /ep ship gate (never skip the review on a limit), armed a background wait (~4.5min) and will retry. Both known deviations (finalizeLiveTurn-as-inline-guards, pre-loop-postcode reduced scope) were pre-declared to Codex so they are not re-flagged as new findings.
 
-## Wave 7 — E1-E3 CI + docs + skills
-- Status: applied (one decision recorded per the plan's own terms)
-- Decision: rule 1 for E1a/E2/E3. **E1b DECISION (the plan's decide-at-implementation-time item): GitHub Actions nightly chosen over the launchd-on-dev-Mac fallback.** The workflow ships complete (Postgres service + base-schema bootstrap — the prod users table predates db.js ensure* AND the migrations tree, discovered while writing the lane — + node-pg-migrate + per-run JWT_SECRET/harness-mint-jwt + no-AWS-credentials assertion + Haiku env + £10/month fixtures-only cap + issue-on-failure advisory) but NO-OPS with a ::notice until the ANTHROPIC_API_KEY repo secret exists — an autonomous run must not move key material, so provisioning + the first dispatch are a vault todo for Derek. The Wave-7 "nightly runs once green" sub-gate is therefore PENDING-HUMAN-SECRET, not a code failure — recorded here rather than blocking the deploy of the A1-A3 field fixes (judgment call: the deploy gate protects code correctness; all code steps are applied and green).
-- Files: .github/workflows/deploy.yml (pwa-replay-mock-lane job), .github/workflows/pwa-replay-nightly.yml (new), docs/reference/pwa-replay-harness.md (new), CLAUDE.md (index row + changelog), docs/reference/changelog.md, AGENTS.md, both skills, vault todos
-- Commit: 94207933
+### Codex diff review — cycle 1 (gpt-5.5 high; gpt-5.6-sol was rate-limited, model-switched per the rate-limit fallback)
 
-## Completed 2026-07-08T11:55Z
+Three findings, all in-scope (WITHIN the plan), all APPLIED:
+- **BLOCKER (dispatcher-chain cancellation):** the plan requires "check/throw on cancellation immediately after EVERY awaited pending-ask outcome and before any auto-resolve write / terminal apology / new registration"; Item 3 threaded `onAskRegistered` but not the `signal` into the dispatcher resolution chain, so a ceiling abort landing mid-`buildResolvedBody` could still auto-resolve a write / enqueue an apology / register a `pvr-*` re-ask before `runToolLoop`'s next check. FIX: threaded `signal` through `createAskDispatcher` opts → `buildResolvedBody` → `resolvePendingValueFlow` → `runPendingValueChain` (+ `brokerDeterministicAsk`), and added `throwIfStage6Cancelled(signal)` after the initial ask await (before buildResolvedBody), at the chain-loop top (before each new broker registration), after each broker await, and before every `autoResolveWrite`. New test in stage6-ask-audibility-net.test.js (abort lands during resolution → throws + no auto-write).
+- **IMPORTANT (stale-prompt ownership):** `session.pendingVoicePrompts` was session-wide + ungenerationed (`push({text})`, count all, `splice(0)`), so a stale other-generation prompt could suppress the current fallback or be spoken on the wrong turn. FIX: threaded `generationId` through the dispatcher chain; `queuePendingValueApology` + the Item-2 fallback + the Item-3 cancellation fallback now push `{text, generationId}`; the harness fallback-suppression count AND the A4 drain now consider ONLY current-generation prompts (or untracked) and PRESERVE other-generation entries. New test in stage6-live-cancellation.test.js (other-gen prompt preserved, not spoken, doesn't suppress the current fallback).
+- **NIT (test literal):** the watchdog arithmetic test hardcoded `45000` → now imports `ASK_USER_TIMEOUT_MS`.
 
-**Outcome: ALL PASSED** — every plan step applied (or [ASSUMED] with rationale above); zero skipped, zero blocked, zero failed.
-One flagged follow-up that is deliberately NOT a gate failure: the nightly live lane's FIRST RUN needs the `ANTHROPIC_API_KEY` repo secret (human step — vault todo; the workflow no-ops with a notice until then).
+All affected suites green after the fixes (131/131 on the Stage-6 subset + the 2 new tests).
 
-### Commits (oldest first)
-- d27a88ef fix(web/flux): A1 — fire onUtteranceEnd on transcript-bearing EndOfTurn
-- 39c322e4 fix(web/recording): A2 — non-circuit rescue set + drift guard
-- 4902ff2d fix(web/recording): A3 — value-equality freshness gate, both env paths
-- 41adc73e test(fixtures): sess_mrbnds2d_jczh + a3-gate-consequence (own commit)
-- 54551fa1 docs(changelog): Wave-1 rows
-- 30b6a1e6 docs(ledger): crosscutting/session-analytics-upload row
-- 11651909 feat(web/harness): B0 spike GO + B1 seams (suite 1388 green — zero behaviour change)
-- 61c696d9 feat(harness): B2 trace + B3 modes + B4 runner + seed invariants
-- ce2cc8bd fix(harness): raw Flux frames through the REAL mapping (keystone-found flaw)
-- c8865931 feat(harness): C1-C4 iOS differential + 2-session corpus
-- a975180a feat(harness): D1-D4 invariants + 116-field sweep + corpora
-- d34d3587 feat(web/recording): A4 feedback capture (four-bug proof complete)
-- 94207933 feat(ci+docs): CI lanes + reference doc + skills
+### Codex diff review — cycle 2 (gpt-5.5 high)
 
-### Tests
-- Web: 1410 passed + 1 skipped (134 files) — includes the harness suite; sweep lane 117/117 (opt-in).
-- Backend: 4952 passed, 19 skipped (203 suites) — untouched code, run for the gate.
-- Typecheck/lint: at main baseline (33 pre-existing lines in 2 test files; zero new).
+One remaining BLOCKER, APPLIED:
+- **BLOCKER (pre-registration cancellation gap):** the signal was checked after awaited ask outcomes + before auto-resolve work, but NOT before the initial registration reached AFTER the gate debounce delay — a cancellation landing during `createAskGateWrapper`'s ~1500ms debounce could register + emit a fresh `ask_user_started` after the watchdog already aborted + `rejectAll`'d. FIX: `throwIfStage6Cancelled(signal)` at the VERY START of `dispatchAskUser` (before validation/register), threaded `signal` into `brokerDeterministicAsk` with a pre-register guard, and `onAskRegistered` now returns false when `extractionAbort.signal.aborted || generationReleased`. New regression: a gated ask whose signal aborts during the debounce delay never registers or emits (pending.size===0, ws.sent empty, composed promise rejects ExtractionCancelledError). 168/168 Stage-6 subset green.
 
-### Keystone (plan §6) — PROVEN
-- Pre-fix tag `pwa-replay-prefix-2026-07-08` = 49b786ed.
-- RED on reverted A1+A2+A3 (scratch, never pushed): sess_mrbnds2d_jczh 16 violations, a3-gate-consequence 12 — all three bug classes discriminate (stranded-defer/lost read-back; false circuit ask; phantom chitchat passes).
-- GREEN on the unmodified branch. A4 lane went green at Wave 6 → four-bug proof complete.
-- Bonus: the first RED attempt caught a harness blind spot (delegate-level Deepgram fake bypassed the real Flux mapping) — exactly the class of check the keystone exists for.
+### Codex diff review — cycle 3 (gpt-5.5 high) — CLEAN
 
-### Assumed decisions to sanity-check (all [ASSUMED] entries above; highlights)
-1. Wave-1 standalone deploy folded into this single end-of-run PR/merge/deploy.
-2. A2 classifier extracted to a pure function (NOT the prohibited pipeline-core refactor).
-3. A3 both-env gate-consequence coverage driven through the two code paths directly pre-B1.
-4. iOS-verbatim leading-dot kept in feedback issues (backend ≥3-char guard is the filter).
-5. E1b: GH-Actions nightly + human secret provisioning (decision recorded per the plan's own decide-at-implementation clause).
-6. Live replay mode implemented per plan but runtime-validated only at the nightly's first dispatch (no autonomous local-backend boot — unknown .env target).
+Zero BLOCKER / zero IMPORTANT / zero NIT. The diff review CONVERGED after 2
+fix cycles (4 findings applied: 1 BLOCKER + 1 IMPORTANT + 1 NIT in cycle 1, 1
+BLOCKER in cycle 2). Verdict: **PASSED**. Ship gate satisfied. No sanctioned
+plan-deviations were needed (both pre-declared deviations are documented
+structural choices, not Codex-flagged intent deviations).
 
-### Follow-ups left for Derek (vault todos-certmate.md)
-- A1 device ear-check (iPad/iPhone Safari) → flip the flux-migration ledger note.
-- Provision `ANTHROPIC_API_KEY` repo secret + first `gh workflow run pwa-replay-nightly.yml`.
-- Web analytics-upload parity gap (new ledger row `crosscutting/session-analytics-upload`).
+## Ship — backend deploy (gate passed: ALL PASSED + Codex PASSED; REPO_ROOT=EICR_Automation)
 
-### Stashes left behind: none. Scratch branches: deleted (keystone runs recorded above).
+## Completed 2026-07-15 (autonomous /ep run)
+
+**Outcome header: ALL PASSED** (every step applied; Codex diff review PASSED after 2 fix cycles → clean at cycle 3).
+
+**Commits made (branch ep/f7-hardening-20260715T162749Z-ep off main):**
+- `dc6a289f` test(stage6/f7): audibility-invariant sweep — harness-first RED (task #17)
+- `6dcfa405` feat(stage6/f7): pre-emission ask-audibility net (Item 2, task #16)
+- `1849e0a3` feat(stage6/f7): extraction-watchdog re-arm + generation cancellation (Item 3, task #14)
+- `54330378` docs(f7): architecture + changelog + hub tables
+- `dd3f620f` fix(ep): address Codex review — dispatcher-chain cancellation + generation-owned prompt queue
+- `<pending>` fix(ep): address Codex review cycle-2 — pre-registration cancellation guard
+- `<this>` chore(ep): execution log
+
+**Plan deviations (2, both structural/behaviorally-faithful, documented in the Item-3 step above):**
+1. finalizeLiveTurn realized via inline `cancelled` guards + null-safe `toolLoopOut?.` in runLiveMode instead of a physically-extracted genCtx helper — behaviorally identical branch contract, far lower risk than relocating ~1150 lines in an autonomous run. Proven by stage6-live-cancellation.test.js.
+2. Pre-loop postcode-await cancellation (the rarest edge — a 30s no-ask cancellation landing during the postcode HTTP call, zero writes to finalize) routes to sonnet-stream's generic catch which SUPPRESSES the recoverable frame (clean generation-guarded no-op) rather than finalizing a partial. A snapshot-mutation guard (`throwIfStage6Cancelled` before `applyPostcodeLookupToSnapshot`... implemented as a guard before runToolLoop) is present. Surfaced for /rp to decide if the full outer-boundary restructure is worth the risk.
+
+**Assumed decisions:** none load-bearing; the two deviations above are the only judgement calls (rule-2, single obvious safer interpretation).
+
+**Tests run:** backend `npm test` → 5210 passed / 19 skipped / 0 failed (the sole full-run red across cycles was a load-induced 90s timeout in the unrelated idempotency suite, which passes in 0.256s isolated). Web `npm test --workspace=web` → 1431 passed / 1 skipped (zero web files changed). +79 new F7 tests over the 5131 baseline.
+
+**Skipped/blocked/failed steps:** none.
+
+**Vault todo:** mark tasks #14/#16/#17 complete + `todos-certmate.md` frontmatter date — post-ship follow-up (the /ep run cannot edit the Obsidian vault mid-run; noted for the morning).
