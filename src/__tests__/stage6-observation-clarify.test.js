@@ -317,6 +317,18 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     expect(net).toBeDefined();
   });
 
+  test('Codex r8-#2: the D2 net confirmation gets exactly one ios_send_attempt telemetry row', async () => {
+    toolLoopResult = loopOut([answeredClarify('toolu_c1')]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'just cosmetic', [], opts);
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeDefined();
+    const rows = opts.logger.info.mock.calls
+      .filter((c) => c[0] === 'ios_send_attempt')
+      .map((c) => c[1]);
+    expect(rows.filter((r) => r.field == null)).toHaveLength(1);
+  });
+
   test('Codex r4-#5: a SAME-CHAIN audibly-terminated continuation still qualifies → no net', async () => {
     const answeredA = answeredClarify('toolu_a');
     answeredA.input.clarification_chain_id = 'chain_a';

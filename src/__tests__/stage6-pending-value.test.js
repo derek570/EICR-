@@ -246,4 +246,18 @@ describe('detectStructuredReading — typed, schema-aware completeness', () => {
     const d = detectStructuredReading('RCD trip time circuit 2 26 milliseconds');
     expect(d).toMatchObject({ fieldKey: 'rcd_time_ms', circuit: 2, complete: true });
   });
+
+  test('Codex r8-#1: schema-declared BOOLEAN whose key lacks the name hints — "means earthing distributor yes" is COMPLETE', () => {
+    // means_earthing_distributor is type:'boolean' in the schema but its key
+    // contains none of confirmed/_present/polarity — pre-fix it fell to the
+    // free-text branch and "… yes" came back incomplete, consumable as a
+    // stale pending ask's answer.
+    const d = detectStructuredReading('means earthing distributor yes');
+    expect(d).toMatchObject({ fieldKey: 'means_earthing_distributor', complete: true });
+  });
+
+  test('Codex r8-#1: literal true/false joins the boolean vocabulary ("means earthing electrode is true")', () => {
+    const d = detectStructuredReading('means earthing electrode is true');
+    expect(d).toMatchObject({ fieldKey: 'means_earthing_electrode', complete: true });
+  });
 });

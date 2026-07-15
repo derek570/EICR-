@@ -293,6 +293,9 @@ const BOOLEAN_VOCAB = new Set([
   'ticked',
   'ok',
   'satisfactory',
+  // Codex r8-#1 — literal spoken booleans ("… is true" / "… is false").
+  'true',
+  'false',
 ]);
 
 // Sentinel value vocabulary (LIM family + discontinuous/open + greater-than).
@@ -441,8 +444,12 @@ export function detectStructuredReading(text, fieldSchema = FIELD_SCHEMA) {
     // Numeric-ish — a non-scope number or a sentinel.
     const numbers = classifyNumbers(lower).filter((n) => !n.isScope);
     hasValue = numbers.length > 0 || SENTINEL_VALUE_RE.test(lower);
-  } else if (/confirmed|_present|polarity/.test(hit.key)) {
-    // Boolean-ish.
+  } else if (type === 'boolean' || /confirmed|_present|polarity/.test(hit.key)) {
+    // Boolean — Codex r8-#1: honour the SCHEMA's declared type, not just
+    // key-name substrings. Schema booleans whose keys lack those substrings
+    // (means_earthing_distributor, bonding_other_na, …) previously fell to
+    // the free-text branch and "…distributor yes" came back incomplete —
+    // consumable as a stale ask's answer instead of overtaking + writing.
     const words = lower.split(/\s+/);
     hasValue = words.some((w) => BOOLEAN_VOCAB.has(w.replace(/[.]+$/, '')));
   } else {

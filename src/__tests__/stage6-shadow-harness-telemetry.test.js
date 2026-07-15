@@ -315,3 +315,41 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
     expect(rows).toHaveLength(1);
   });
 });
+
+describe('Codex r8-#2 — safety-net confirmations get telemetry rows (emission runs AFTER all appenders)', () => {
+  test('A4 terminal-apology drain: the field-null prompt reaches the wire WITH exactly one ios_send_attempt row', async () => {
+    const session = makeSession();
+    session.pendingVoicePrompts = [
+      {
+        text: "Sorry — I couldn't place that reading — could you say the field and value together again?",
+      },
+    ];
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'okay then', [], opts);
+    const apologies = (result.confirmations ?? []).filter((c) => c.field == null);
+    expect(apologies).toHaveLength(1);
+    const rows = attemptsOf(opts.logger).filter((a) => a.field == null);
+    expect(rows).toHaveLength(1);
+    for (const c of result.confirmations ?? []) {
+      expect('_confidence' in c).toBe(false); // the strip moved with the block
+    }
+  });
+
+  test('A3 orphan net: the orphan prompt on a digit-bearing zero-output turn gets a row', async () => {
+    runToolLoopSpy.mockImplementationOnce(async () => ({
+      stop_reason: 'end_turn',
+      rounds: 1,
+      tool_calls: [], // zero output → orphan net fires
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const session = makeSession();
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+    const orphan = (result.confirmations ?? []).filter((c) => c.field == null);
+    expect(orphan).toHaveLength(1);
+    expect(attemptsOf(opts.logger).filter((a) => a.field == null)).toHaveLength(1);
+  });
+});
