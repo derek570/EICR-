@@ -980,6 +980,114 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(r.extracted_readings.filter((e) => e.field === 'circuit_designation')).toHaveLength(1);
   });
 
+  test('§A1a Codex r5-#2 — same circuit ref on TWO boards: distinct board-scoped tokens, both speak', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-A'),
+        { value: 'Kitchen', confidence: 0.9, source_turn_id: 't1', boardId: 'board-A' },
+      ],
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-B'),
+        { value: 'Garage', confidence: 0.9, source_turn_id: 't1', boardId: 'board-B' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 1, boardId: 'board-A', value: 'Kitchen', confidence: 0.9 },
+      { circuit: 1, boardId: 'board-B', value: 'Garage', confidence: 0.9 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    expect(desigs).toHaveLength(2);
+    const tokens = desigs.map((c) => c.dedupe_token).sort();
+    // Board discriminator in the token — identical tokens here meant the
+    // client debounce swallowed the second board's read-back.
+    expect(tokens).toEqual(['desig_1_board-A_turn-9', 'desig_1_board-B_turn-9']);
+  });
+
+  test('§A1a Codex r5-#2 — repeated writes on ONLY board B: board A single entry intact, B expands per-op', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-A'),
+        { value: 'Kitchen', confidence: 0.9, source_turn_id: 't1', boardId: 'board-A' },
+      ],
+      [
+        encodeReadingKey('circuit_designation', 1, 'board-B'),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1', boardId: 'board-B' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 1, boardId: 'board-A', value: 'Kitchen', confidence: 0.9 },
+      { circuit: 1, boardId: 'board-B', value: 'Lights', confidence: 0.9 },
+      { circuit: 1, boardId: 'board-B', value: 'Sockets', confidence: 0.95 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    expect(desigs).toHaveLength(3);
+    // Board A's Map-derived entry survives untouched — the board-matched
+    // findIndex must NOT let board B's expansion replace it.
+    const boardA = desigs.filter((c) => c.board_id === 'board-A');
+    expect(boardA).toHaveLength(1);
+    expect(boardA[0].dedupe_token).toBe('desig_1_board-A_turn-9');
+    // Board B expands to one entry per op with board-scoped ordinal tokens.
+    const boardB = desigs.filter((c) => c.board_id === 'board-B');
+    expect(boardB.map((c) => c.dedupe_token)).toEqual([
+      'desig_1_board-B_turn-9_ord0',
+      'desig_1_board-B_turn-9_ord1',
+    ]);
+  });
+
+  test('§A1a Codex r5-#3 — designation value colliding with another circuit does NOT group: per-circuit entries survive, no __DESIGNATION__ leak', () => {
+    // Circuit 1 rewritten Kitchen → Sockets while circuit 2 is also written
+    // "Sockets" this turn. Grouping would collapse the two final "Sockets"
+    // into a circuit:null roll-up (breaking the per-op expansion lookup so
+    // Kitchen never speaks) whose text leaks the '__DESIGNATION__' sentinel.
+    const readings = new Map([
+      [
+        encodeReadingKey('circuit_designation', 1),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
+      ],
+      [
+        encodeReadingKey('circuit_designation', 2),
+        { value: 'Sockets', confidence: 0.95, source_turn_id: 't1' },
+      ],
+    ]);
+    const writes = makePerTurnWrites({ readings });
+    writes.designationOps = [
+      { circuit: 1, boardId: null, value: 'Kitchen', confidence: 0.9 },
+      { circuit: 1, boardId: null, value: 'Sockets', confidence: 0.95 },
+      { circuit: 2, boardId: null, value: 'Sockets', confidence: 0.95 },
+    ];
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-9' }
+    );
+    const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
+    // Never a grouped circuit:null roll-up for designations.
+    expect(desigs.every((c) => Number.isInteger(c.circuit))).toBe(true);
+    expect(desigs).toHaveLength(3);
+    const c1 = desigs.filter((c) => c.circuit === 1);
+    expect(c1.map((c) => c.dedupe_token)).toEqual(['desig_1_turn-9_ord0', 'desig_1_turn-9_ord1']);
+    expect(c1[0].text).toContain('Kitchen'); // the overwritten op still speaks
+    const c2 = desigs.filter((c) => c.circuit === 2);
+    expect(c2).toHaveLength(1);
+    expect(c2[0].dedupe_token).toBe('desig_2_turn-9');
+    for (const c of r.confirmations) {
+      expect(c.text).not.toContain('__DESIGNATION__');
+      expect(c.expanded_text ?? '').not.toContain('__DESIGNATION__');
+    }
+  });
+
   test('§A1a Codex r1-#5 — two DISTINCT same-slot clears in ONE turn get DISTINCT tokens (turn AND ordinal)', () => {
     const writes = makePerTurnWrites();
     writes.fieldCorrections = [

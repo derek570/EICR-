@@ -436,6 +436,14 @@ function synthesiseConfirmations(
 
   for (const bucket of groups.values()) {
     if (bucket.items.length < 2) continue;
+    // Codex r5-#3 — circuit_designation NEVER groups. If circuit 1's new
+    // designation happens to equal circuit 2's same-turn value ("Sockets"),
+    // grouping would collapse them into a circuit:null roll-up whose text
+    // exposes the '__DESIGNATION__' friendly-name sentinel AND whose shape
+    // breaks the per-op ordinal expansion's per-circuit lookup (an earlier
+    // designation op would never be read back). Designations stay
+    // per-circuit; each speaks its own line.
+    if (bucket.field === 'circuit_designation') continue;
     // Only attempt the grouped form for circuit-level readings (the
     // helper rejects circuit:0/null entries by returning null).
     const circuits = bucket.items.map((r) => r.circuit).filter((c) => Number.isInteger(c) && c > 0);
@@ -883,7 +891,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           : Array.isArray(entry.circuits)
             ? entry.circuits.join('-')
             : 'board';
-        entry.dedupe_token = `desig_${scope}_${_turnId}`;
+        // Codex r5-#2 — board discriminator in the token. Without it, two
+        // valid designation writes for the SAME circuit ref on DIFFERENT
+        // boards minted identical tokens and the client debounce swallowed
+        // the second read-back. Suffix only when a board is present so
+        // every existing single-board token (and its pinned iOS/backend
+        // hash vector) stays byte-identical.
+        const boardPart = entry.board_id != null ? `_${entry.board_id}` : '';
+        entry.dedupe_token = `desig_${scope}${boardPart}_${_turnId}`;
       }
     }
     // Codex r3-#2 — when the per-turn designation-op LOG shows more ops than
@@ -902,18 +917,25 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       }
       for (const [k, ops] of opsByScope) {
         if (ops.length < 2) continue; // single op — the Map-derived entry is exact
+        // Codex r5-#2 — the lookup must match BOARD as well as circuit:
+        // without it, repeated writes on board B could replace board A's
+        // confirmation for the same circuit ref (A omitted, B duplicated).
         const idx = confirmations.findIndex(
-          (c) => c.field === 'circuit_designation' && c.circuit === ops[0].circuit
+          (c) =>
+            c.field === 'circuit_designation' &&
+            c.circuit === ops[0].circuit &&
+            (c.board_id ?? null) === (ops[0].boardId ?? null)
         );
         if (idx < 0) continue;
         const replacement = ops.map((op, i) => {
           const text = buildConfirmationText('circuit_designation', op.value, op.circuit, op.value);
+          const boardPart = op.boardId != null ? `_${op.boardId}` : '';
           const entry = {
             text,
             expanded_text: expandForTTS(text),
             field: 'circuit_designation',
             circuit: op.circuit,
-            dedupe_token: `desig_${op.circuit}_${_turnId ?? 'noturn'}_ord${i}`,
+            dedupe_token: `desig_${op.circuit}${boardPart}_${_turnId ?? 'noturn'}_ord${i}`,
             _confidence: typeof op.confidence === 'number' ? op.confidence : null,
           };
           if (op.boardId != null) entry.board_id = op.boardId;

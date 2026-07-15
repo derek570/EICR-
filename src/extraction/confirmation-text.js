@@ -299,6 +299,12 @@ const COUNT_STYLE_FIELDS = Object.freeze(new Set(['number_of_points']));
 export function buildGroupedConfirmationText(field, value, circuits, totalCircuitsInJob = null) {
   if (SUPPRESSED_TTS_FIELDS.has(field)) return null;
   if (typeof field === 'string' && field.endsWith('_id')) return null;
+  // Codex r5-#3 — designation never groups: its friendly-name slot holds
+  // the '__DESIGNATION__' sentinel (special-cased in the per-circuit
+  // builder only), so a grouped line would speak the sentinel verbatim.
+  // The bundler skips designation buckets; this guard is defence-in-depth
+  // for any other caller.
+  if (field === 'circuit_designation') return null;
   if (!Array.isArray(circuits) || circuits.length === 0) return null;
   const valueStr = String(value ?? '').trim();
   if (!valueStr) return null;

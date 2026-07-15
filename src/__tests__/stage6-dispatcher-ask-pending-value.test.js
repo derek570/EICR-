@@ -363,6 +363,39 @@ describe('§A4 Codex r3-#1/#3 — shape-2 reachability + pre-emit broker failure
     );
   });
 
+  test('r5-#1 shape (4): ELIGIBLE ask, NULL capture, unrecognisable reply → terminal apology, never the legacy resolver', async () => {
+    // Transcript has no numeric (capture correctly declined) and the reply
+    // resolves no field name. Before r5-#1 the engagement guard returned
+    // null here and the answer fell to the model-dependent legacy body —
+    // recreating beep-then-silence for exactly the "neither value nor
+    // field" case the plan pins to the mandatory apology.
+    const session = buildSession({ activeTurnTranscript: 'something garbled entirely' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher(
+      {
+        tool_call_id: 'toolu_s4',
+        name: 'ask_user',
+        // Numeric-free question — the default fixture question carries
+        // "26 milliseconds", which the question-fallback capture would
+        // pick up and turn this into shape (1) instead of shape (4).
+        input: noneAsk({ question: 'Which reading was that for?' }),
+      },
+      {}
+    );
+    await tick();
+    pendingAsks.resolve('toolu_s4', { answered: true, user_text: 'erm not sure honestly' });
+    const env = await p;
+    const body = JSON.parse(env.content);
+    expect(body.match_status).toBe('pending_value_failed');
+    expect(session.pendingVoicePrompts).toHaveLength(1); // ONE terminal voice prompt
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+  });
+
   test('r3-#3: broker with a CLOSED socket → question never emitted → terminal apology, never a silent move-on', async () => {
     const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
     const pendingAsks = createPendingAsksRegistry();
@@ -399,6 +432,13 @@ describe('§A4 — regressions: flows that must NOT engage', () => {
         name: 'ask_user',
         input: noneAsk({
           question: 'Is there no CPC at this final circuit, or is it a Class II installation?',
+          // The REAL no-CPC ask is prompt-mandated `reason: missing_context`
+          // (sonnet_agentic_system.md NO-CPC rule) — NOT the missing_field
+          // family — so it is not pending-value ELIGIBLE. Codex r5-#1 made
+          // eligible+unrecognisable asks terminal-apologise, so this fixture
+          // must carry the accurate wire shape to keep pinning the legacy
+          // fall-through.
+          reason: 'missing_context',
         }),
       },
       {}

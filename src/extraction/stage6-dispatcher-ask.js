@@ -1302,10 +1302,20 @@ async function resolvePendingValueFlow(args) {
   const { outcome, logger, sessionId, turnId, toolCallId } = args;
   const pendingValue = outcome.pendingValue ?? null;
   const fieldKey = resolveFieldNameAnswer(outcome.user_text);
-  // Not the inverted shape at all (no captured value, reply isn't a field
-  // name) → not engaged. Preserves the no-CPC/Class-II mandatory question
-  // and every other legacy 'none' ask verbatim.
-  if (!fieldKey && !pendingValue) return null;
+  // No captured value AND the reply isn't a field name. For a NON-eligible
+  // ask that means "not the inverted shape at all" → not engaged (preserves
+  // the no-CPC/Class-II mandatory question and every other legacy 'none'
+  // ask verbatim). Codex r5-#1 — an ELIGIBLE ask (missing_field family, or
+  // a brokered pvr-* ask) with an unrecognisable reply is A4 shape (4):
+  // falling back to the model-dependent legacy resolver here recreates
+  // beep-then-silence, so the flow stays engaged and runPendingValueChain
+  // queues the mandatory terminal apology.
+  if (!fieldKey && !pendingValue) {
+    const eligible =
+      outcome.pendingValueEligible === true ||
+      (typeof toolCallId === 'string' && toolCallId.startsWith('pvr-'));
+    if (!eligible) return null;
+  }
   // Belt-and-braces overtake guard (the primary gate lives in the
   // sonnet-stream direct-answer handler, which re-injects): a structurally
   // complete FRESH reading must never be consumed as the answer. Refusing
@@ -1561,9 +1571,10 @@ async function runPendingValueChain(args) {
       continue;
     }
 
-    // Neither field nor value — shape (4): unreachable from the engagement
-    // guard on the first round; on later rounds every branch either set a
-    // piece or returned. Terminal apology as the safe default.
+    // Neither field nor value — shape (4). Reachable on round 0 for an
+    // ELIGIBLE ask whose capture returned null and whose reply resolved no
+    // field name (Codex r5-#1); on later rounds every branch either set a
+    // piece or returned. Terminal apology — never a silent fall-through.
     return terminalApology();
   }
   return terminalApology();
