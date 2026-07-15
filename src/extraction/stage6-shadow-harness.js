@@ -125,6 +125,9 @@ import {
   ALL_DIALOGUE_SCHEMAS,
 } from './dialogue-engine/index.js';
 import { extractNamedFieldValues } from './dialogue-engine/helpers/extraction.js';
+// F7 Item 2 — the single dialogue-engine send choke point fires the ask
+// emission observer attached to the live WS under this Symbol.
+import { ASK_STARTED_OBSERVER } from './dialogue-engine/helpers/wire-emit.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
@@ -297,6 +300,15 @@ const REJECTED_PROMPTS = Object.freeze([
 // reading apology would cross-dedupe the two channels — and naming the
 // "observation" channel tells the inspector WHICH kind of utterance was lost.
 const OBSERVATION_ORPHAN_PROMPT = 'Sorry, I missed that observation — could you say it again?';
+
+// F7 Item 2 (task #16) — the deterministic pre-emission audibility fallback.
+// A fixed literal so tests, telemetry, and the client field-nil dedupe share
+// one value. Rides the A4 field-nil confirmation channel (field:null,
+// expects_ios_ack:false), governed on the client by the A1(b) 30 s field-nil
+// TTL (the FIRST fallback per 30 s window speaks; an identical within-30 s
+// repeat is swallowed — the accepted, Derek-approved design for this
+// backend-only wave).
+const ASK_AUDIBILITY_FALLBACK_TEXT = "Sorry — I couldn't action that. Could you say it again?";
 
 // item #10 — default ON (the inspector explicitly asked for a spoken ASK
 // instead of a silent drop). Set VOICE_ORPHAN_PROMPT=false to disable
@@ -528,6 +540,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // clears the field so cross-turn reads are impossible.
   session.activeTurnTranscript = transcriptText;
 
+  // F7 Item 2 — function-scoped mirrors of the live WS + its ask-emission
+  // observer so the `finally` below can detach the observer (both `ws` and
+  // `onAskUserStarted` are declared inside the try). Assigned once the
+  // observer is attached; the finally only removes OUR own observer.
+  let f7EmissionWs = null;
+  let f7EmissionObserver = null;
+
   // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 12.2). Wrap the
   // body in try/finally so the per-turn entry maps are always torn down
   // even if the runToolLoop / bundler / observation refinement path
@@ -562,6 +581,63 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // thread pendingAsks through (Phase 3/4 back-compat).
     const pendingAsks = options.pendingAsks ?? null;
     const ws = options.ws ?? null;
+
+    // ── F7 Item 2 — per-turn ask-emission audit ──────────────────────────
+    // The pre-emission audibility net (below, before the A4 drain) must
+    // distinguish "emitted then timed out" from "swallowed/closed send, ask
+    // stayed registered, later reported timeout" — a post-loop parse of
+    // outcome text CANNOT. So we capture POSITIVE emission at the SOURCE:
+    // this Set holds the tool_call_id of every ask_user_started that actually
+    // crossed the wire. onAskUserStarted is fired ONLY on a successful send
+    // by (a) the initial ask dispatcher (source:'initial'), (b) the pvr-*
+    // broker (source:'pvr'), and (c) the dialogue engine's single send choke
+    // point safeSend (source:'dialogue_script', via the ws-attached observer
+    // below). Best-effort OBSERVATION hook — it never alters registration,
+    // questionEmitted, send classification, or the pending Promise.
+    // generationId (minted in sonnet-stream, threaded via options) correlates
+    // the emission/fallback/ios_send_attempt rows across the ship-gate join.
+    const emittedAskToolCallIds = new Set();
+    // Test-only seam (mirrors options._shadowCapture — underscore-prefixed,
+    // never passed in production): a mocked-runToolLoop lane has no real
+    // dispatcher / safeSend to populate emission evidence, so a test that
+    // needs to simulate a SUCCESSFULLY-emitted ask (spoken over WS) declares
+    // those tool_call_ids here. This keeps the emission-gated D2 + pre-emission
+    // nets exercisable in the fast/mocked lanes.
+    if (Array.isArray(options._seedEmittedAskToolCallIds)) {
+      for (const id of options._seedEmittedAskToolCallIds) {
+        if (id != null) emittedAskToolCallIds.add(id);
+      }
+    }
+    const generationId = options.generationId ?? null;
+    const VALID_EMISSION_SOURCES = new Set(['initial', 'pvr', 'dialogue_script']);
+    const onAskUserStarted = ({ toolCallId, source } = {}) => {
+      if (toolCallId == null) return;
+      // Record emission evidence FIRST so a logger throw below cannot erase
+      // it — else an emitted question is misclassified silent and the
+      // fallback double-speaks. The telemetry emit is a SEPARATE try/catch.
+      emittedAskToolCallIds.add(toolCallId);
+      try {
+        log?.info?.('stage6.ask_user_started_emitted', {
+          sessionId: session.sessionId,
+          turnId,
+          generationId,
+          tool_call_id: toolCallId,
+          // The three call sites always pass a valid source; guard defensively
+          // so a future caller's typo surfaces as null rather than corrupting
+          // the source split.
+          source: VALID_EMISSION_SOURCES.has(source) ? source : null,
+        });
+      } catch {
+        // never let a telemetry failure erase emission evidence
+      }
+    };
+    // Attach to the live WS so the dialogue engine's safeSend choke point
+    // reports its ask_user_started emissions through the same observer. Torn
+    // down in the finally block so it never leaks across turns.
+    if (ws) ws[ASK_STARTED_OBSERVER] = onAskUserStarted;
+    f7EmissionWs = ws;
+    f7EmissionObserver = onAskUserStarted;
+
     // Pass `ws` through createWriteDispatcher's extraCtx so the
     // start_dialogue_script dispatcher (added 2026-04-30 Silvertown
     // follow-up) can hand it to enterScriptByName for first-ask emission.
@@ -600,6 +676,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // activeSessions. Optional — when omitted, the dispatcher
         // no-ops the notify step.
         chitchatNotifier: options.chitchatNotifier,
+        // F7 Item 2 — the emission audit hook (initial + pvr broker sends).
+        onAskUserStarted,
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -1538,6 +1616,34 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
+    // ── F7 Item 2 — shared post-loop ask-outcome classification ─────────
+    // Both the §D2 net and the NEW pre-emission audibility net need to read a
+    // tool call's answered/reason outcome and know which non-answer reasons
+    // prove the question was actually SPOKEN. Hoisted here (was block-scoped
+    // inside the D2 `if (anchorIdx >= 0)` block, so a net placed AFTER D2
+    // could not reference it as written). Extraction only — the D2 logic is
+    // byte-identical except the emission-check tightening noted below.
+    const AUDIBLE_NON_ANSWER_REASONS = new Set([
+      'timeout',
+      'user_moved_on',
+      'transcript_already_extracted',
+      'session_stopped',
+      'session_reconnected',
+      'session_terminated',
+    ]);
+    const parseAskOutcome = (c) => {
+      try {
+        const body = JSON.parse(c?.result?.content ?? 'null');
+        if (!body || typeof body !== 'object') return { answered: false, reason: null };
+        return {
+          answered: body.answered === true,
+          reason: body.answered === false ? (body.reason ?? null) : null,
+        };
+      } catch {
+        return { answered: false, reason: null };
+      }
+    };
+
     // ── §D2 (field-feedback-2026-07-14) — post-answer write-or-reask net
     // for observation_clarify chains. A D2 clarification ask that gets
     // ANSWERED and is then followed by a zero-tool (or unrelated-tool) model
@@ -1561,21 +1667,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the same A1(b)-exempt field-nil confirmation channel as A4's fallback.
     try {
       const seq = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
-      const parseAnswered = (c) => {
-        try {
-          const body = JSON.parse(c?.result?.content ?? 'null');
-          return body && body.answered === true;
-        } catch {
-          return false;
-        }
-      };
       let anchorIdx = -1;
       for (let i = 0; i < seq.length; i += 1) {
         const c = seq[i];
         if (
           c?.name === 'ask_user' &&
           c?.input?.context_field === 'observation_clarify' &&
-          parseAnswered(c)
+          parseAskOutcome(c).answered
         ) {
           anchorIdx = i;
         }
@@ -1591,22 +1689,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         //     validation_error / prompt_leak_blocked / shadow_mode /
         //     duplicate_tool_call_id / dispatcher_error*) were never spoken,
         //     so counting them would preserve the beep-then-silence failure.
-        const AUDIBLE_NON_ANSWER_REASONS = new Set([
-          'timeout',
-          'user_moved_on',
-          'transcript_already_extracted',
-          'session_stopped',
-          'session_reconnected',
-          'session_terminated',
-        ]);
-        const parseReason = (c) => {
-          try {
-            const body = JSON.parse(c?.result?.content ?? 'null');
-            return body && body.answered === false ? (body.reason ?? null) : null;
-          } catch {
-            return null;
-          }
-        };
+        //   AUDIBLE_NON_ANSWER_REASONS + parseAskOutcome are the shared
+        //   hoisted helpers above.
         // Codex r4-#5 — a qualifying CONTINUATION must belong to the SAME
         // clarification chain as the answered anchor. Without the chain
         // check, an audibly-terminated ask about a DIFFERENT observation
@@ -1626,8 +1710,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             c?.name === 'ask_user' &&
             c?.input?.context_field === 'observation_clarify' &&
             (c?.input?.clarification_chain_id ?? null) === anchorChainId &&
-            !parseAnswered(c) &&
-            AUDIBLE_NON_ANSWER_REASONS.has(parseReason(c))
+            !parseAskOutcome(c).answered &&
+            AUDIBLE_NON_ANSWER_REASONS.has(parseAskOutcome(c).reason) &&
+            // F7 Item 2 — the SAME swallowed-send hole D2 had: an audible
+            // non-answer REASON alone is not proof of speech. A continuation
+            // whose ws.send was swallowed (closed socket / throwing send)
+            // stayed registered and later reported `timeout` ∈
+            // AUDIBLE_NON_ANSWER_REASONS, but was never SPOKEN. Require the
+            // continuation's tool_call_id to be in emittedAskToolCallIds
+            // (an ask_user_started that actually crossed the wire).
+            emittedAskToolCallIds.has(c.tool_call_id)
           ) {
             // Audibly-terminated SAME-CHAIN continuation (question spoken).
             qualified = true;
@@ -1666,19 +1758,86 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
+    // ── F7 Item 2 (task #16) — pre-emission ask-audibility net ───────────
+    // Codex cycle-6 finding: A3/D2/A4 all MISS the case where Sonnet emitted
+    // an ask_user that was SUPPRESSED before ask_user_started crossed the wire
+    // (restrained_mode / ask_budget_exhausted / validation_error / prompt-leak
+    // / dispatcher_error / closed-WS / throwing-send / fallbackToLegacy). A
+    // transcript-gate chime is then followed by SILENCE. Decide audibility
+    // from POSITIVELY recorded emission (emittedAskToolCallIds) plus surviving
+    // SPOKEN outputs only — successful writes are UI state, not audible output,
+    // and counting them would preserve the exact chime-then-silence defect.
+    //
+    // PLACEMENT: AFTER the D2 net and immediately BEFORE the A4 drain —
+    // queueing after the drain defers the apology to the next turn
+    // (reproducing the bug); queueing before it lets the existing A4 drain
+    // move the apology into result.confirmations THIS turn. The
+    // confirmationsEnabled gate mirrors A3 (a mode-off user opted out of the
+    // whole spoken channel). Audible text is trimmed-non-empty EVERYWHERE.
+    try {
+      if (options.confirmationsEnabled === true) {
+        const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
+        const calls = Array.isArray(toolLoopOut.tool_calls) ? toolLoopOut.tool_calls : [];
+        const attemptedAskCalls = calls.filter((c) => c?.name === 'ask_user');
+        const survivingConfCount = Array.isArray(result.confirmations)
+          ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
+          : 0;
+        const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
+          ? session.pendingVoicePrompts.filter((p) => isAudibleText(p?.text)).length
+          : 0;
+        // Exact predicate (no vacuous firing on empty turns): an ask was
+        // ATTEMPTED, none was actually emitted, and nothing else audible
+        // survives (confirmation text OR a queued A4 prompt with real text —
+        // count what the drain will actually convert, not array length).
+        if (
+          attemptedAskCalls.length > 0 &&
+          emittedAskToolCallIds.size === 0 &&
+          survivingConfCount === 0 &&
+          survivingPromptCount === 0
+        ) {
+          if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
+          // Queue on the A4 FIFO channel; the drain below moves it onto the
+          // wire this turn. `fallbackToLegacy` is pre-emission/non-audible in
+          // live mode (no independent legacy emission signal), so it too
+          // triggers this net when no other audible output survives.
+          session.pendingVoicePrompts.push({ text: ASK_AUDIBILITY_FALLBACK_TEXT });
+          log.info?.('stage6.ask_audibility_fallback_emitted', {
+            sessionId: session.sessionId,
+            turnId,
+            generationId,
+            attempted_ask_tool_call_ids: attemptedAskCalls.map((c) => c?.tool_call_id ?? null),
+            attempted_ask_reasons: attemptedAskCalls.map((c) => parseAskOutcome(c).reason),
+            emitted_ask_count: emittedAskToolCallIds.size,
+            surviving_confirmation_count: survivingConfCount,
+            surviving_prompt_count: survivingPromptCount,
+          });
+        }
+      }
+    } catch (fallbackErr) {
+      log.warn?.('stage6.ask_audibility_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: fallbackErr?.message ?? String(fallbackErr),
+      });
+    }
+
     // §A4 (field-feedback-2026-07-14) — drain deterministic voice prompts
     // queued during the turn (the pending-value chain's terminal apology,
-    // stage6-dispatcher-ask.js queuePendingValueApology). Same non-blocking
-    // FIFO channel as the orphan net: field:null so the client's A1(b)
-    // 30 s field-nil TTL (not the permanent set) governs its dedupe, and
-    // expects_ios_ack:false so the audio finalizer never arms for it.
-    // Runs AFTER the orphan net so the two nets stay independent (the
-    // orphan net can't fire on an ask-bearing turn anyway — tool_calls > 0).
+    // stage6-dispatcher-ask.js queuePendingValueApology, AND the F7 Item-2
+    // pre-emission fallback queued just above). Same non-blocking FIFO channel
+    // as the orphan net: field:null so the client's A1(b) 30 s field-nil TTL
+    // (not the permanent set) governs its dedupe, and expects_ios_ack:false so
+    // the audio finalizer never arms for it. Runs AFTER the orphan net so the
+    // two nets stay independent (the orphan net can't fire on an ask-bearing
+    // turn anyway — tool_calls > 0).
     if (Array.isArray(session.pendingVoicePrompts) && session.pendingVoicePrompts.length > 0) {
       const prompts = session.pendingVoicePrompts.splice(0);
       if (!Array.isArray(result.confirmations)) result.confirmations = [];
       for (const p of prompts) {
-        if (!p || typeof p.text !== 'string' || !p.text) continue;
+        // F7 Item 2 — trimmed-non-empty predicate (web trims before speaking):
+        // a whitespace-only prompt must NOT reach the wire. Pre-fix this guard
+        // only checked `!p.text`, so "   " slipped through.
+        if (!p || typeof p.text !== 'string' || p.text.trim().length === 0) continue;
         result.confirmations.push({
           text: p.text,
           field: null,
@@ -1744,6 +1903,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         log?.info?.('ios_send_attempt', {
           sessionId: session.sessionId ?? null,
           turnId,
+          // F7 Item 2 — the ship-gate join is on the EXACT triple
+          // sessionId + turnId + generationId (turnId alone is not unique
+          // after a watchdog cancellation; Item 3 composition tests require
+          // this field).
+          generationId,
           field: entry.field ?? null,
           circuit: Number.isInteger(entry.circuit) ? entry.circuit : null,
           circuits: Array.isArray(entry.circuits) ? entry.circuits : null,
@@ -1932,6 +2096,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // Drop the per-turn transcript pointer so a dispatcher firing on
     // the next turn can't accidentally reuse this turn's text.
     session.activeTurnTranscript = null;
+    // F7 Item 2 — detach the per-turn ask-emission observer so it never leaks
+    // across turns (the ws is session-scoped). Only remove OUR observer.
+    if (f7EmissionWs && f7EmissionWs[ASK_STARTED_OBSERVER] === f7EmissionObserver) {
+      delete f7EmissionWs[ASK_STARTED_OBSERVER];
+    }
   }
 }
 

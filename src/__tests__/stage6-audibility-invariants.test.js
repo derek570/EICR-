@@ -207,21 +207,18 @@ describe('F7 integration lane — invariant (a): chime-producing confirmation-mo
 
   // ── the NINE pre-Item-2 RED cases (test.failing until Item 2 lands) ──
 
-  test.failing(
-    'RED#1 validation_error: invalid ask reason is suppressed → silence (no fallback pre-fix)',
-    async () => {
-      const session = makeLiveSession({
-        sessionId: SESSION_ID,
-        client: mockAskThenEnd({ ...VALID_ASK, reason: 'not_a_real_reason' }),
-      });
-      const ws = makeOpenWs();
-      const result = await driveLiveTurn(session, 'which circuit was that', baseOpts({ ws }));
-      expect(askStartedFrames(ws)).toHaveLength(0); // never emitted
-      expect(turnIsAudible(result, ws)).toBe(true); // FAILS pre-fix (silence)
-    }
-  );
+  test('RED#1 validation_error: invalid ask reason is suppressed → silence (no fallback pre-fix)', async () => {
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client: mockAskThenEnd({ ...VALID_ASK, reason: 'not_a_real_reason' }),
+    });
+    const ws = makeOpenWs();
+    const result = await driveLiveTurn(session, 'which circuit was that', baseOpts({ ws }));
+    expect(askStartedFrames(ws)).toHaveLength(0); // never emitted
+    expect(turnIsAudible(result, ws)).toBe(true); // FAILS pre-fix (silence)
+  });
 
-  test.failing('RED#2 prompt_leak_blocked: leak question is suppressed → silence', async () => {
+  test('RED#2 prompt_leak_blocked: leak question is suppressed → silence', async () => {
     const session = makeLiveSession({
       sessionId: SESSION_ID,
       client: mockAskThenEnd({ ...VALID_ASK, question: 'What about the TRUST BOUNDARY here?' }),
@@ -232,37 +229,45 @@ describe('F7 integration lane — invariant (a): chime-producing confirmation-mo
     expect(turnIsAudible(result, ws)).toBe(true);
   });
 
-  test.failing(
-    'RED#3 dispatcher_error: a non-duplicate register throw is suppressed → silence',
-    async () => {
-      const pendingAsks = createPendingAsksRegistry();
-      // Force the real dispatcher's outer catch: make register throw a
-      // NON-duplicate error exactly once (no DUPLICATE_TOOL_CALL_ID code).
-      const realRegister = pendingAsks.register.bind(pendingAsks);
-      let thrown = false;
-      pendingAsks.register = (id, entry) => {
-        if (!thrown) {
-          thrown = true;
-          throw new Error('synthetic dispatcher failure');
-        }
-        return realRegister(id, entry);
-      };
-      const session = makeLiveSession({
-        sessionId: SESSION_ID,
-        client: mockAskThenEnd(VALID_ASK),
-      });
-      const ws = makeOpenWs();
-      const result = await driveLiveTurn(
-        session,
-        'which circuit was that',
-        baseOpts({ ws, pendingAsks })
-      );
-      expect(askStartedFrames(ws)).toHaveLength(0);
-      expect(turnIsAudible(result, ws)).toBe(true);
-    }
-  );
+  test('RED#3 dispatcher_error: a non-duplicate register throw is suppressed → silence', async () => {
+    const pendingAsks = createPendingAsksRegistry();
+    // Force the real dispatcher's outer catch: make register throw a
+    // NON-duplicate error exactly once (no DUPLICATE_TOOL_CALL_ID code).
+    const realRegister = pendingAsks.register.bind(pendingAsks);
+    let thrown = false;
+    pendingAsks.register = (id, entry) => {
+      if (!thrown) {
+        thrown = true;
+        throw new Error('synthetic dispatcher failure');
+      }
+      return realRegister(id, entry);
+    };
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client: mockAskThenEnd(VALID_ASK),
+    });
+    const ws = makeOpenWs();
+    // Compose the real gate (production always does — sonnet-stream threads
+    // askBudget + restrainedMode). With the gate, the inner dispatcher's
+    // rethrow is caught by gateOrFire's timer-catch and synthesised into a
+    // dispatcher_error ENVELOPE (returned, not thrown), so the ask_user call
+    // lands in toolLoopOut.tool_calls — the net can then see it was attempted
+    // but never emitted. A bare dispatcher rethrow skips allCalls.push.
+    const result = await driveLiveTurn(
+      session,
+      'which circuit was that',
+      baseOpts({
+        ws,
+        pendingAsks,
+        restrainedMode: { isActive: () => false, recordAsk: () => {} },
+        askBudget: { isExhausted: () => false, increment: () => {} },
+      })
+    );
+    expect(askStartedFrames(ws)).toHaveLength(0);
+    expect(turnIsAudible(result, ws)).toBe(true);
+  });
 
-  test.failing('RED#4 restrained_mode: gate short-circuit is suppressed → silence', async () => {
+  test('RED#4 restrained_mode: gate short-circuit is suppressed → silence', async () => {
     const session = makeLiveSession({
       sessionId: SESSION_ID,
       client: mockAskThenEnd(VALID_ASK),
@@ -278,26 +283,23 @@ describe('F7 integration lane — invariant (a): chime-producing confirmation-mo
     expect(turnIsAudible(result, ws)).toBe(true);
   });
 
-  test.failing(
-    'RED#5 ask_budget_exhausted: gate short-circuit is suppressed → silence',
-    async () => {
-      const session = makeLiveSession({
-        sessionId: SESSION_ID,
-        client: mockAskThenEnd(VALID_ASK),
-      });
-      const ws = makeOpenWs();
-      const opts = baseOpts({
-        ws,
-        restrainedMode: { isActive: () => false, recordAsk: () => {} },
-        askBudget: { isExhausted: () => true, increment: () => {} },
-      });
-      const result = await driveLiveTurn(session, 'which circuit was that', opts);
-      expect(askStartedFrames(ws)).toHaveLength(0);
-      expect(turnIsAudible(result, ws)).toBe(true);
-    }
-  );
+  test('RED#5 ask_budget_exhausted: gate short-circuit is suppressed → silence', async () => {
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client: mockAskThenEnd(VALID_ASK),
+    });
+    const ws = makeOpenWs();
+    const opts = baseOpts({
+      ws,
+      restrainedMode: { isActive: () => false, recordAsk: () => {} },
+      askBudget: { isExhausted: () => true, increment: () => {} },
+    });
+    const result = await driveLiveTurn(session, 'which circuit was that', opts);
+    expect(askStartedFrames(ws)).toHaveLength(0);
+    expect(turnIsAudible(result, ws)).toBe(true);
+  });
 
-  test.failing('RED#6 closed WS: ask registers, never emits, times out → silence', async () => {
+  test('RED#6 closed WS: ask registers, never emits, times out → silence', async () => {
     const session = makeLiveSession({
       sessionId: SESSION_ID,
       client: mockAskThenEnd(VALID_ASK),
@@ -308,80 +310,71 @@ describe('F7 integration lane — invariant (a): chime-producing confirmation-mo
     expect(turnIsAudible(result, ws)).toBe(true);
   });
 
-  test.failing(
-    'RED#7 throwing ws.send: ask registers, send throws (swallowed), times out → silence',
-    async () => {
-      const session = makeLiveSession({
-        sessionId: SESSION_ID,
-        client: mockAskThenEnd(VALID_ASK),
-      });
-      const ws = makeThrowingWs();
-      const result = await driveLiveTurn(session, 'which circuit was that', baseOpts({ ws }));
-      expect(askStartedFrames(ws)).toHaveLength(0);
-      expect(turnIsAudible(result, ws)).toBe(true);
-    }
-  );
+  test('RED#7 throwing ws.send: ask registers, send throws (swallowed), times out → silence', async () => {
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client: mockAskThenEnd(VALID_ASK),
+    });
+    const ws = makeThrowingWs();
+    const result = await driveLiveTurn(session, 'which circuit was that', baseOpts({ ws }));
+    expect(askStartedFrames(ws)).toHaveLength(0);
+    expect(turnIsAudible(result, ws)).toBe(true);
+  });
 
-  test.failing(
-    'RED#8 live + fallbackToLegacy: ask_user_started suppressed, no legacy emit → silence',
-    async () => {
-      const session = makeLiveSession({
-        sessionId: SESSION_ID,
-        client: mockAskThenEnd(VALID_ASK),
-      });
-      const ws = makeOpenWs();
-      const result = await driveLiveTurn(
-        session,
-        'which circuit was that',
-        baseOpts({ ws, fallbackToLegacy: true })
-      );
-      expect(askStartedFrames(ws)).toHaveLength(0);
-      expect(turnIsAudible(result, ws)).toBe(true);
-    }
-  );
+  test('RED#8 live + fallbackToLegacy: ask_user_started suppressed, no legacy emit → silence', async () => {
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client: mockAskThenEnd(VALID_ASK),
+    });
+    const ws = makeOpenWs();
+    const result = await driveLiveTurn(
+      session,
+      'which circuit was that',
+      baseOpts({ ws, fallbackToLegacy: true })
+    );
+    expect(askStartedFrames(ws)).toHaveLength(0);
+    expect(turnIsAudible(result, ws)).toBe(true);
+  });
 
-  test.failing(
-    'RED#9 D2 swallowed continuation: answered anchor + same-chain swallowed continuation → silence',
-    async () => {
-      // Pre-seed the chain broker + mint one chain id so BOTH asks key to it.
-      const obsClarifyChains = createObsClarifyChainBroker();
-      const chainId = obsClarifyChains.mint();
-      const session = makeLiveSession({
-        sessionId: SESSION_ID,
-        obsClarifyChains,
-      });
-      const clarifyInput = (extra) => ({
-        question: 'Does the crack expose live parts or is it cosmetic?',
-        reason: 'observation_confirmation',
-        context_field: 'observation_clarify',
-        context_circuit: 3,
-        expected_answer_shape: 'free_text',
-        clarification_chain_id: chainId,
-        ...extra,
-      });
-      session.client = mockClient([
-        toolUseRound([{ id: 'toolu_anchor', name: 'ask_user', input: clarifyInput() }]),
-        toolUseRound([{ id: 'toolu_cont', name: 'ask_user', input: clarifyInput() }]),
-        endTurnRound('ok'),
-      ]);
-      // Throwing ws → both asks' emissions swallowed this turn. Anchor is
-      // answered externally; the continuation times out.
-      const ws = makeAllSwallowedWs();
-      const opts = baseOpts({
-        ws,
-        restrainedMode: { isActive: () => false, recordAsk: () => {} },
-        askBudget: { isExhausted: () => false, increment: () => {} },
-      });
-      const result = await driveLiveTurn(session, 'observation about the crack', opts, {
-        answers: { toolu_anchor: { answered: true, user_text: 'cosmetic' } },
-      });
-      expect(askStartedFrames(ws)).toHaveLength(0); // both swallowed
-      // Pre-fix D2 counts the timed-out continuation audible-by-reason and
-      // suppresses its fallback → silence. Post-fix the emission check fails
-      // the qualification → the deterministic fallback fires.
-      expect(turnIsAudible(result, ws)).toBe(true);
-    }
-  );
+  test('RED#9 D2 swallowed continuation: answered anchor + same-chain swallowed continuation → silence', async () => {
+    // Pre-seed the chain broker + mint one chain id so BOTH asks key to it.
+    const obsClarifyChains = createObsClarifyChainBroker();
+    const chainId = obsClarifyChains.mint();
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      obsClarifyChains,
+    });
+    const clarifyInput = (extra) => ({
+      question: 'Does the crack expose live parts or is it cosmetic?',
+      reason: 'observation_confirmation',
+      context_field: 'observation_clarify',
+      context_circuit: 3,
+      expected_answer_shape: 'free_text',
+      clarification_chain_id: chainId,
+      ...extra,
+    });
+    session.client = mockClient([
+      toolUseRound([{ id: 'toolu_anchor', name: 'ask_user', input: clarifyInput() }]),
+      toolUseRound([{ id: 'toolu_cont', name: 'ask_user', input: clarifyInput() }]),
+      endTurnRound('ok'),
+    ]);
+    // Throwing ws → both asks' emissions swallowed this turn. Anchor is
+    // answered externally; the continuation times out.
+    const ws = makeAllSwallowedWs();
+    const opts = baseOpts({
+      ws,
+      restrainedMode: { isActive: () => false, recordAsk: () => {} },
+      askBudget: { isExhausted: () => false, increment: () => {} },
+    });
+    const result = await driveLiveTurn(session, 'observation about the crack', opts, {
+      answers: { toolu_anchor: { answered: true, user_text: 'cosmetic' } },
+    });
+    expect(askStartedFrames(ws)).toHaveLength(0); // both swallowed
+    // Pre-fix D2 counts the timed-out continuation audible-by-reason and
+    // suppresses its fallback → silence. Post-fix the emission check fails
+    // the qualification → the deterministic fallback fires.
+    expect(turnIsAudible(result, ws)).toBe(true);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -211,6 +211,20 @@ export function buildExtractionPayload(circuit_ref, writes, source) {
 }
 
 /**
+ * F7 Item 2 — best-effort emission observer key. `runLiveMode`
+ * (stage6-shadow-harness.js) attaches an `onAskUserStarted({toolCallId,
+ * source})` callback to the live WS under this Symbol so `safeSend` can fire
+ * it whenever it SUCCESSFULLY sends an `ask_user_started` frame from the
+ * dialogue engine — the SINGLE choke point for every engine emission path
+ * (enterScriptByName, tryResumePausedScript, tryEnterScriptFromWrites, and
+ * their nested runPivot / disambiguation / askNextOrFinish sends). Firing here
+ * structurally captures current AND future engine emission paths without
+ * enumerating them (which does not converge — see the plan). Best-effort: the
+ * observer runs AFTER the send returns and never alters send behaviour.
+ */
+export const ASK_STARTED_OBSERVER = Symbol('f7.askStartedObserver');
+
+/**
  * Send a JSON payload over the WS, swallowing send errors. The script's
  * persistent state is the source of truth, not the wire.
  */
@@ -219,6 +233,20 @@ export function safeSend(ws, payload) {
   try {
     if (ws.readyState !== undefined && ws.readyState !== ws.OPEN) return;
     ws.send(JSON.stringify(payload));
+    // F7 Item 2 — report a SUCCESSFUL ask_user_started emission to the
+    // per-turn audit observer (attached by runLiveMode). Runs only after
+    // ws.send returns, so a swallowed/closed send never reports. Own
+    // try/catch: an observer bug must never tear down the script.
+    if (payload && payload.type === 'ask_user_started') {
+      try {
+        ws[ASK_STARTED_OBSERVER]?.({
+          toolCallId: payload.tool_call_id,
+          source: 'dialogue_script',
+        });
+      } catch {
+        // best-effort observer — never propagate
+      }
+    }
   } catch {
     // Intentional: WS send failures must not tear down the script.
   }

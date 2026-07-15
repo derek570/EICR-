@@ -180,6 +180,18 @@ describe('stage6-tool-loop', () => {
     });
     // Round-2 end_turn assistant message present (the model's final text reply).
     expect(messages[3].role).toBe('assistant');
+
+    // F7 Item 2 — the authoritative assembler tool_call_id survives into
+    // toolLoopOut.tool_calls. The D2 qualification tightening + the
+    // pre-emission audibility fallback (stage6-shadow-harness.js) check a
+    // continuation's tool_call_id against emittedAskToolCallIds; a missing id
+    // would make every emitted continuation look inaudible and double-fire the
+    // fallback.
+    expect(result.tool_calls).toHaveLength(1);
+    expect(result.tool_calls[0]).toMatchObject({
+      name: 'record_reading',
+      tool_call_id: 'toolu_1',
+    });
   });
 
   test('end_turn assistant message persisted to messages_final (Codex STG MAJOR — no dropped final turn)', async () => {
@@ -1292,5 +1304,4 @@ describe('stage6-tool-loop', () => {
       })
     );
   });
-
 });

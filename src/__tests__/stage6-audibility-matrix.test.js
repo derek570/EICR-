@@ -318,20 +318,20 @@ describe('F7 matrix — scenario family: A4 pending-voice-prompt drain', () => {
     expect(prompts.length).toBeGreaterThanOrEqual(1);
   });
 
-  // RED pre-Item-2: the A4 drain currently admits whitespace-only `p.text`
-  // (it guards only on `!p.text`, not on a trim). Item 2 applies the
-  // trimmed-non-empty predicate to the drain; remove `.failing` then.
-  test.failing(
-    'a WHITESPACE-ONLY queued prompt does NOT reach the wire (trim predicate)',
-    async () => {
-      const session = makeSession();
-      session.pendingVoicePrompts = [{ text: '   ' }];
-      toolCallsForTurn = [{ name: 'ask_user', input: {}, result: { is_error: false } }];
-      const result = await runShadowHarness(session, 'okay then', [], baseOpts());
-      const prompts = (result.confirmations ?? []).filter((c) => c.field == null);
-      expect(prompts).toHaveLength(0);
-    }
-  );
+  // Item 2 applies the trimmed-non-empty predicate to the A4 drain (pre-fix it
+  // guarded only on `!p.text`, so "   " slipped through). Use a NON-ask turn
+  // (default record_reading tool calls) so the pre-emission net does not fire
+  // — this isolates the drain's trim: a whitespace-only queued prompt is
+  // dropped entirely, leaving zero field-null confirmations.
+  test('a WHITESPACE-ONLY queued prompt does NOT reach the wire (trim predicate)', async () => {
+    const session = makeSession();
+    session.pendingVoicePrompts = [{ text: '   ' }];
+    // default toolCallsForTurn = [record_reading] — no attempted ask_user, so
+    // the pre-emission audibility net stays out of the way.
+    const result = await runShadowHarness(session, 'okay then', [], baseOpts());
+    const prompts = (result.confirmations ?? []).filter((c) => c.field == null);
+    expect(prompts).toHaveLength(0);
+  });
 });
 
 describe('F7 matrix — scenario family: D2 observation_clarify post-answer net', () => {

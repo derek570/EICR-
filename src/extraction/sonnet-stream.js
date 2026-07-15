@@ -12,6 +12,7 @@
 //   (no audio for 60s) and reconnects when speech resumes.
 
 import { WebSocketServer } from 'ws';
+import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
@@ -3549,6 +3550,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     entry.isExtracting = true;
+    // F7 Item 2 — mint ONE generation id per extraction invocation. Threaded
+    // via runShadowHarness options to the emission / fallback / ios_send_attempt
+    // telemetry sites so the ship-gate join keys on the EXACT triple
+    // sessionId + turnId + generationId — turnId alone is NOT unique after a
+    // watchdog cancellation (turnCount only advances near successful
+    // completion). Item 3's per-turn watchdog controller REUSES this id.
+    const generationId = randomUUID();
     const extractionWatchdog = setTimeout(() => {
       if (entry.isExtracting) {
         console.warn('[Watchdog] isExtracting stuck for 30s, force-resetting');
@@ -4125,6 +4133,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         null;
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
+        // F7 Item 2 — the per-invocation generation id (minted above). Item 3's
+        // watchdog controller reuses it; every new telemetry row carries it.
+        generationId,
         // item #10 orphan net — the harness skips its clarifying prompt when
         // the utterance is an answer to a TTS question (the ask-resolution
         // path owns those). Mirror the gate's own in_response_to read.

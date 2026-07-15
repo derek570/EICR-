@@ -233,7 +233,7 @@ function assistantToolUseIds(assistantMsg) {
  * @returns {Promise<{
  *   stop_reason: string | null,
  *   rounds: number,
- *   tool_calls: Array<{name: string, input: any, result: any}>,
+ *   tool_calls: Array<{name: string, input: any, result: any, tool_call_id: string}>,
  *   aborted: boolean,
  *   messages_final: Array,
  *   usage: {
@@ -728,7 +728,19 @@ export async function runToolLoop({
           content: res.content,
           is_error: res.is_error,
         });
-        allCalls.push({ name: rec.name, input: rec.input, result: res });
+        // F7 Item 2 — carry the authoritative assembler tool_call_id onto the
+        // accumulated call record. The post-loop D2 qualification tightening
+        // and the pre-emission audibility fallback (stage6-shadow-harness.js)
+        // check the continuation's tool_call_id against emittedAskToolCallIds;
+        // checking membership against `undefined` would treat every
+        // actually-emitted continuation as inaudible and double-fire the
+        // fallback. Pinned by stage6-tool-loop.test.js.
+        allCalls.push({
+          name: rec.name,
+          input: rec.input,
+          result: res,
+          tool_call_id: rec.tool_call_id,
+        });
       } catch (err) {
         const duration_ms = Date.now() - started;
         logger?.error?.('stage6.tool_call', {

@@ -67,7 +67,13 @@ function makeCall(id = 'toolu_1', overrides = {}) {
 // --- Group 1: fallbackToLegacy=true suppresses iOS emit --------------------
 
 describe('createAskDispatcher — fallbackToLegacy gate (r1-#1 BLOCK)', () => {
-  test('live + fallbackToLegacy=true: registers, NO ws.send, suppression log fires', async () => {
+  // F7 Item 2 step 3b — fallbackToLegacy is pre-emission/non-audible in live
+  // tool-call mode (no independent legacy emission signal), so it now FAST-FAILS
+  // the ask immediately (no 45s dead-air) rather than registering-and-awaiting.
+  // ws.send is still suppressed and the suppression log still fires, but the
+  // registry is left EMPTY and the outcome is dispatcher_error/pre_emit with a
+  // fallback_to_legacy diagnostic.
+  test('live + fallbackToLegacy=true: NO ws.send, suppression log fires, fast-fails pre-emission', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick'] });
     try {
       const session = makeSession('live');
@@ -78,25 +84,19 @@ describe('createAskDispatcher — fallbackToLegacy gate (r1-#1 BLOCK)', () => {
         fallbackToLegacy: true,
       });
 
-      const promise = dispatch(makeCall('toolu_fb1'), {
+      // No external resolve, no timer advance — the fast-fail resolves it.
+      const res = await dispatch(makeCall('toolu_fb1'), {
         sessionId: 'sess-1',
         turnId: 'turn-1',
       });
 
-      // Microtask flush so register() runs.
-      await Promise.resolve();
-      await Promise.resolve();
+      // The registry is empty — the fast-fail cleared the entry + timer.
+      expect(pending.size).toBe(0);
 
-      // The pendingAsks entry exists — Sonnet's tool loop is awaiting the
-      // answer regardless of whether iOS heard about it via stage6 emit.
-      expect(pending.size).toBe(1);
-
-      // CRITICAL: ws.send must NOT have been called for this dispatcher
-      // (and therefore not for ask_user_started either).
+      // ws.send must NOT have been called (ask_user_started suppressed).
       expect(ws.send).not.toHaveBeenCalled();
 
-      // Suppression visibility: a logger.info row tags the suppression
-      // so Phase 8 dashboards can count.
+      // Suppression visibility log still fires.
       expect(logger.info).toHaveBeenCalledWith(
         'stage6.ask_user_started_suppressed_fallback',
         expect.objectContaining({
@@ -105,16 +105,13 @@ describe('createAskDispatcher — fallbackToLegacy gate (r1-#1 BLOCK)', () => {
         })
       );
 
-      // Resolve the awaiting registry entry so the test's promise can complete.
-      pending.resolve('toolu_fb1', { answered: true, user_text: 'circuit 3' });
-      const res = await promise;
       expect(res.is_error).toBe(false);
-      // Note: live happy-path body uses `untrusted_user_text` per
-      // stage6-dispatcher-ask.js Plan 04-26 prompt-leak hardening.
-      // Test pins the actual production shape rather than masking it.
-      expect(JSON.parse(res.content)).toMatchObject({
-        answered: true,
-        untrusted_user_text: 'circuit 3',
+      expect(JSON.parse(res.content).reason).toBe('dispatcher_error');
+      const askRow = logger.info.mock.calls.find((c) => c[0] === 'stage6.ask_user');
+      expect(askRow[1]).toMatchObject({
+        answer_outcome: 'dispatcher_error',
+        lifecycle: 'pre_emit',
+        dispatcher_error: 'fallback_to_legacy',
       });
     } finally {
       jest.useRealTimers();

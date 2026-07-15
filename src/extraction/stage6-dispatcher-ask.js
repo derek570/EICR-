@@ -181,6 +181,14 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // chitchat machinery. See chitchat-pause.js → noteMissingContextAsk.
   const chitchatNotifier =
     typeof opts?.chitchatNotifier === 'function' ? opts.chitchatNotifier : null;
+  // F7 Item 2 — best-effort emission OBSERVATION hook. Fired with
+  // {toolCallId, source:'initial'} at the initial-ask ws.send SUCCESS site and
+  // threaded to brokerDeterministicAsk (source:'pvr'). Wrapper-suppressed,
+  // validation-failure, register-failure, closed-WS, and throwing-send paths
+  // MUST NOT fire it — the post-loop audibility net keys off actual emission.
+  // Never alters registration / questionEmitted / send classification.
+  const onAskUserStarted =
+    typeof opts?.onAskUserStarted === 'function' ? opts.onAskUserStarted : null;
   return async function dispatchAskUser(call, ctx) {
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
@@ -428,6 +436,12 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         // tool loop will resolve via the legacy `in_response_to` answer
         // path that the legacy questions_for_user roundtrip already
         // wires up.
+        // F7 Item 2 — track whether the ask was ACTUALLY emitted, and if not,
+        // WHY (closed_ws / send_threw / fallback_to_legacy). Only a successful
+        // send fires onAskUserStarted; every non-emit path takes the step-3b
+        // fast-fail below (no 45s dead-air) instead of the timeout.
+        let emitted = false;
+        let preEmitFailDiag = null;
         if (fallbackToLegacy) {
           logger.info('stage6.ask_user_started_suppressed_fallback', {
             sessionId,
@@ -435,6 +449,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
             tool_call_id: toolCallId,
             reason: 'protocol_version_mismatch_shadow',
           });
+          preEmitFailDiag = 'fallback_to_legacy';
         } else if (ws && ws.readyState === ws.OPEN) {
           try {
             ws.send(
@@ -448,8 +463,26 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
                 expected_answer_shape: input.expected_answer_shape,
               })
             );
+            emitted = true;
           } catch {
             // Intentional: WS send failures must not tear down the ask.
+            preEmitFailDiag = 'send_threw';
+          }
+        } else {
+          // ws missing or not in the OPEN state — the question never crossed
+          // the wire.
+          preEmitFailDiag = 'closed_ws';
+        }
+
+        // F7 Item 2 — best-effort emission audit. Fires ONLY on a successful
+        // send. Own try/catch: never alters dispatch. The observer records the
+        // toolCallId in emittedAskToolCallIds FIRST (in the harness), then
+        // emits telemetry separately, so a logger throw can't erase evidence.
+        if (emitted && onAskUserStarted) {
+          try {
+            onAskUserStarted({ toolCallId, source: 'initial' });
+          } catch {
+            // best-effort observer — never propagate
           }
         }
 
@@ -469,6 +502,26 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
               error: err?.message,
             });
           }
+        }
+
+        // F7 Item 2 step 3b — no 45s dead-air on a known-dead send. A closed
+        // socket, a throwing ws.send, or a fallbackToLegacy client leaves the
+        // ask REGISTERED until the 45s ASK_USER_TIMEOUT_MS today, so the
+        // audibility fallback would arrive only after 45s + another
+        // chime-then-silence round. Resolve the registry entry IMMEDIATELY as
+        // a pre-emission failure (registry.resolve clears the timer + deletes
+        // the entry), leaving no timer behind. `logAskUser` THROWS on any
+        // non-enum answer_outcome, so we reuse the existing `dispatcher_error`
+        // reason + `lifecycle:'pre_emit'` and carry the specific cause in a
+        // diagnostic field (timeout was rejected — it would misrecord an
+        // instant fast-fail as a 45s wait and muddy the post-deploy join).
+        if (!emitted) {
+          pendingAsks.resolve(toolCallId, {
+            answered: false,
+            reason: 'dispatcher_error',
+            lifecycle: 'pre_emit',
+            dispatcher_error_diag: preEmitFailDiag,
+          });
         }
       });
     } catch (err) {
@@ -564,6 +617,16 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // payload when sanitiseUserText() stripped controls or truncated the
     // answer. Forward it verbatim; absence is the common clean-path case.
     if (outcome.sanitisation !== undefined) logPayload.sanitisation = outcome.sanitisation;
+    // F7 Item 2 step 3b — the fast-fail pre-emission resolution carries the
+    // lifecycle position + a specific cause (closed_ws / send_threw /
+    // fallback_to_legacy). Forward both onto the single canonical
+    // `stage6.ask_user` row: `lifecycle:'pre_emit'` (already enum-gated) and
+    // the cause via the free `dispatcher_error` diagnostic field. The
+    // tool-result `reason` stays the canonical `dispatcher_error`.
+    if (outcome.lifecycle !== undefined) logPayload.lifecycle = outcome.lifecycle;
+    if (outcome.dispatcher_error_diag !== undefined) {
+      logPayload.dispatcher_error = outcome.dispatcher_error_diag;
+    }
     logAskUser(logger, logPayload);
 
     // Step 6: return tool_result envelope. Body is a JSON string per the
@@ -622,6 +685,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // send and resolves through the same channels as any other ask.
       pendingAsks,
       ws,
+      // F7 Item 2 — the broker fires this on a SUCCESSFUL pvr-* send
+      // (source:'pvr') so the post-loop audibility net counts brokered asks.
+      onAskUserStarted,
     });
 
     // §D2 (field-feedback-2026-07-14) — echo the server-assigned
@@ -669,6 +735,7 @@ async function buildResolvedBody({
   toolCallId,
   pendingAsks = null,
   ws = null,
+  onAskUserStarted = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
@@ -714,6 +781,7 @@ async function buildResolvedBody({
       toolCallId,
       pendingAsks,
       ws,
+      onAskUserStarted,
     });
     if (pvBody) return pvBody;
     // null → not engaged; fall through to the existing resolvers/legacy body.
@@ -1193,6 +1261,7 @@ async function brokerDeterministicAsk({
   contextCircuit,
   expectedAnswerShape,
   pendingValue,
+  onAskUserStarted = null,
 }) {
   const pvrId = `pvr-${randomUUID().slice(0, 13)}`;
   const askStartedAt = Date.now();
@@ -1246,6 +1315,16 @@ async function brokerDeterministicAsk({
     if (!questionEmitted) {
       pendingAsks.resolve(pvrId, { answered: false, reason: 'broker_emit_failed' });
       return;
+    }
+    // F7 Item 2 — the brokered pvr-* question really crossed the wire. Report
+    // it to the per-turn emission audit (source:'pvr'). Best-effort: own
+    // try/catch, never alters the questionEmitted classification or dispatch.
+    if (onAskUserStarted) {
+      try {
+        onAskUserStarted({ toolCallId: pvrId, source: 'pvr' });
+      } catch {
+        // best-effort observer — never propagate
+      }
     }
     logger?.info?.('stage6.pending_value_reask_sent', {
       sessionId,
@@ -1370,6 +1449,7 @@ async function runPendingValueChain(args) {
     toolCallId,
     pendingAsks,
     ws,
+    onAskUserStarted,
   } = args;
   let fieldKey = args.fieldKey ?? null;
   let value = args.value ?? null;
@@ -1421,6 +1501,7 @@ async function runPendingValueChain(args) {
         const { pvrId, outcome: circOutcome } = await brokerDeterministicAsk({
           pendingAsks,
           ws,
+          onAskUserStarted,
           logger,
           sessionId,
           turnId,
@@ -1495,6 +1576,7 @@ async function runPendingValueChain(args) {
       const { pvrId, outcome: fieldOutcome } = await brokerDeterministicAsk({
         pendingAsks,
         ws,
+        onAskUserStarted,
         logger,
         sessionId,
         turnId,
@@ -1529,6 +1611,7 @@ async function runPendingValueChain(args) {
       const { pvrId, outcome: valueOutcome } = await brokerDeterministicAsk({
         pendingAsks,
         ws,
+        onAskUserStarted,
         logger,
         sessionId,
         turnId,

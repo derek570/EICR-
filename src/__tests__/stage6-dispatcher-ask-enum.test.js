@@ -20,6 +20,10 @@
 
 import { jest } from '@jest/globals';
 import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
+// F7 Item 2 step 3b — a null/closed ws now fast-fails the initial ask, so
+// these resolution-logic tests use an OPEN ws to keep the ask pending until
+// the external resolve drives buildResolvedBody.
+const F7_OPEN_WS = { readyState: 1, OPEN: 1, send() {} };
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 
 const validInput = (overrides = {}) => ({
@@ -59,7 +63,7 @@ async function runDispatcher({ userText, input = validInput(), session = buildSe
   const logger = noopLogger();
   const pendingAsks = createPendingAsksRegistry();
   const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true, body: { ok: true } });
-  const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, null, {
+  const dispatcher = createAskDispatcher(session, logger, 'turn-1', pendingAsks, F7_OPEN_WS, {
     autoResolveWrite,
   });
 
@@ -236,9 +240,16 @@ describe('dispatcher enum-resolve — multi-circuit fan-out (session C0C21546 20
     const logger = noopLogger();
     const pendingAsks = createPendingAsksRegistry();
     const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true, body: { ok: true } });
-    const dispatcher = createAskDispatcher(buildSession(), logger, 'turn-1', pendingAsks, null, {
-      autoResolveWrite,
-    });
+    const dispatcher = createAskDispatcher(
+      buildSession(),
+      logger,
+      'turn-1',
+      pendingAsks,
+      F7_OPEN_WS,
+      {
+        autoResolveWrite,
+      }
+    );
     const env = await dispatcher(
       {
         tool_call_id: 'toolu_bad',
