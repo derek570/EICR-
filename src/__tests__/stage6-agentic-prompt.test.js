@@ -1647,4 +1647,40 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(block).toMatch(/NOT subsumed/);
     });
   });
+
+  describe('Group 19 — 2026-07-15 D2 mutation-to-chain correlation (chain-id echo on record_observation)', () => {
+    // Test-matrix item 11: the CHAIN ID bullet now requires the same
+    // server-issued clarification_chain_id echoed on BOTH the continuation ask
+    // AND the eventual record_observation; direct observations pass null.
+    test('CHAIN ID bullet requires the mutation echo AND the continuation echo AND null-for-direct', () => {
+      const idx = prompt.indexOf('- CHAIN ID:');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const bullet = prompt.slice(idx, prompt.indexOf('\n', idx));
+      // continuation echo preserved
+      expect(bullet).toMatch(/continuation ask/);
+      // mutation echo (the new requirement)
+      expect(bullet).toMatch(/record_observation/);
+      // direct/unclarified observation → null
+      expect(bullet).toMatch(/clarification_chain_id: null/);
+    });
+
+    test('Example 13 shows the chain id echoed on the resolving record_observation', () => {
+      const idx = prompt.indexOf('Example 13 —');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const ex13 = prompt.slice(idx, idx + 1400);
+      // The ask's tool_result carries the id and the write echoes the SAME id.
+      expect(ex13).toMatch(/clarification_chain_id:"obsclr-1"/);
+      expect(ex13).toMatch(/record_observation\(\{[^}]*clarification_chain_id:"obsclr-1"/);
+    });
+
+    test('Examples 11 and 12 (direct observations) explicitly pass clarification_chain_id:null', () => {
+      const idx11 = prompt.indexOf('Example 11 —');
+      const idx12 = prompt.indexOf('Example 12 —');
+      const idx13 = prompt.indexOf('Example 13 —');
+      const ex11 = prompt.slice(idx11, idx12);
+      const ex12 = prompt.slice(idx12, idx13);
+      expect(ex11).toMatch(/clarification_chain_id:null/);
+      expect(ex12).toMatch(/clarification_chain_id:null/);
+    });
+  });
 });
