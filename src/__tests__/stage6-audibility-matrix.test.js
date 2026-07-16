@@ -276,9 +276,12 @@ describe('F7 matrix — invariants (d)+(e): no _confidence on the wire, no __-se
         source_turn_id: 't1',
       });
     };
-    const result = await runShadowHarness(makeSession(), 'multi write turn', [], baseOpts());
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'multi write turn', [], opts);
     expect(anyConfidenceKeyOnWire(result)).toBe(false);
-    expect(anySentinelInSpokenText(result)).toBe(false);
+    // Pass the WS stub so emitted ask questions join the sentinel scan
+    // (the pre-refactor helper was blind to them).
+    expect(anySentinelInSpokenText(result, opts.ws)).toBe(false);
   });
 });
 
