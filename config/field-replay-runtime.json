@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "comment": "The ONE version-controlled replay-runtime definition (plan replay-corpus-gate-2026-07 Item 4). Consumed by the deterministic-evidence workflow, test-backend, and the live nightly workflow so trusted evidence and the merge gate never evaluate identical fixtures under different Node patches (fake-timer/scheduler behaviour is patch-sensitive). The container digest is the AUTHORITATIVE deterministic-evidence + live-lane environment; test-backend's corpus step runs the same exact Node via setup-node on the floating ubuntu-latest runner — the documented accident-grade OS-parity residual (a blocking-lane failure that does not reproduce in the pinned container is triaged as environment drift, not fixture regression). A Node-patch or container-digest change resets advisory GREEN chains (behaviour_fingerprint component).",
+  "node_version": "20.20.2",
+  "container_image": "node:20.20.2",
+  "container_digest": "sha256:8f693eaa7e0a8e71560c9a82b55fd54c2ae920a2ba5d2cde28bac7d1c01c9ba5",
+  "pinned_at": "2026-07-16"
+}
