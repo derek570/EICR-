@@ -143,6 +143,8 @@ export function installReplayClock(FakeTimers, { startMs, allowlist = DEFAULT_CA
   return {
     clock,
     ledger,
+    /** Scenario epoch — turn at_ms offsets are relative to this. */
+    startMs: startMs ?? 0,
 
     /**
      * POST-REGISTRATION ask-timeout binding: given the REAL registry entry's

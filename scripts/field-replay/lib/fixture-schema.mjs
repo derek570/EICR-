@@ -559,7 +559,11 @@ export async function validateFixtureDocument(doc, opts = {}) {
   const provenanceMap = doc.input_provenance ?? {};
   const opIds = new Set();
   const outIds = new Set();
-  const jobCircuits = new Set((doc.job_state?.circuits ?? []).map((c) => String(c.circuit_ref ?? c.ref ?? c.id ?? '')));
+  // Production jobState circuits use `number` (voice-latency scenario
+  // schema); accept the legacy aliases too.
+  const jobCircuits = new Set(
+    (doc.job_state?.circuits ?? []).map((c) => String(c.number ?? c.circuit_ref ?? c.ref ?? c.id ?? '')),
+  );
   const jobBoards = new Set((doc.job_state?.boards ?? []).map((b) => String(b.board_id ?? b.id ?? '')));
   const jobObservations = new Set((doc.job_state?.observations ?? []).map((o) => String(o.observation_id ?? o.id ?? '')));
   const emptyFallback = doc.initial_state_fidelity === 'empty_fallback';
