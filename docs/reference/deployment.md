@@ -63,6 +63,15 @@ aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m
 - **Never blocks anything:** the script always exits 0, the job has `continue-on-error: true`, and no other job `needs:` it. Touched files with no map entry are silently ignored by design.
 - To silence a warning properly: re-verify the row against current iOS source and update its `last-verified` date in `web/docs/parity-ledger.md`.
 
+### Field-replay corpus gate (blocking + advisory; 2026-07-17)
+
+Two new CI surfaces from the field-replay correctness gate — full detail in [field-replay-corpus.md](field-replay-corpus.md):
+
+- **Blocking (per-PR):** `npm run replay:field-corpus` runs as a step INSIDE `Test Backend (Node.js)` (so it rides the merge-blocking required check), followed by `scripts/field-replay/ci-history-checks.mjs`. `test-backend` now checks out `fetch-depth: 0` (history-anchored merge-base comparison) on the pinned Node `20.20.2`. An empty corpus exits 0. A `manual-deploy-gate` job closes the old `workflow_dispatch` bypass: a production dispatch requires `refs/heads/main` and runs the corpus before `build-images`.
+- **Advisory (nightly + manual):** `field-replay-nightly.yml` — split scheduled (default-branch) and manual (`workflow_dispatch` on main, gated by the `field-replay-vendor-manual` protected environment) live lanes. Reports model-behaviour/routing drift; NEVER blocks a merge. Under a £10/month pre-run budget envelope. **Provisioning is a human step** — until the `ANTHROPIC_API_KEY` repo secret + the protected environment exist, the vendor step no-ops (a skipping workflow is not a delivered lane).
+- **Evidence (immutable):** `field-replay-evidence.yml` — the trusted deterministic-evidence workflow the Keystone/fixing PRs dispatch to obtain RED/GREEN evidence; SHA-pinned actions, target-branch trusted-harness-manifest verification before any branch import.
+- **Delivery is PR-only** — `main` is PR-protected once the ruleset activates; the hub auto-push rule is rewritten to auto-PR-then-`gh pr merge` (Derek's repo-wide decision, 2026-07-16).
+
 ## Deployment State (Jan 2026)
 
 - PWA Frontend: `eicr-pwa` service running on ECS Fargate
