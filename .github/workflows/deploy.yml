@@ -159,15 +159,36 @@ jobs:
     name: Test Backend (Node.js)
     runs-on: ubuntu-latest
     if: github.event_name != 'workflow_dispatch'
+    # Least-privilege token for the field-replay trusted-retrieval steps
+    # (evidence re-fetch / target-branch blob / ruleset lookup). The gh CLI
+    # in Actions does NOT authenticate from the ambient token, so every gh
+    # step below sets GH_TOKEN explicitly (see field-replay corpus step).
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
 
     steps:
       - name: Checkout code
+        # fetch-depth: 0 — the field-replay history checks compare against
+        # the merge-base (PR) / github.event.before (push); a shallow
+        # checkout leaves those commits unavailable and an unavailable base
+        # is a FAILURE, never "all fixtures are new".
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Pinned EXACT Node from the ONE replay-runtime definition — trusted
+          # evidence and the merge gate must not evaluate identical fixtures
+          # under different Node patches (fake-timer/scheduler behaviour is
+          # patch-sensitive). node-version-file reads config/field-replay-runtime
+          # indirectly via .nvmrc is not enough (it floats the patch), so the
+          # exact version is pinned here and recorded in evidence.
+          node-version: '20.20.2'
           cache: 'npm'
           cache-dependency-path: package-lock.json
 
@@ -187,6 +208,23 @@ jobs:
         run: npm test -- --coverage --ci
         env:
           CI: true
+
+      - name: Field-replay corpus gate (deterministic, blocking)
+        # Runs INSIDE test-backend so it rides the `Test Backend (Node.js)`
+        # required check — the merge-blocking guarantee under the Threat-model
+        # scope decision. Deterministic + no network + fast; an empty corpus
+        # exits 0 by design (Foundation ships ZERO fixtures).
+        run: npm run replay:field-corpus
+        env:
+          CI: true
+
+      - name: Field-replay history-anchored checks (immutability, closure, manifest lock, ruleset guard)
+        run: node scripts/field-replay/ci-history-checks.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -360,13 +398,55 @@ jobs:
           PWA_SWEEP: '1'
 
   # ============================================
+  # Manual-dispatch corpus gate (field-replay)
+  # ============================================
+  # The prior workflow_dispatch bypass let a manual dispatch skip
+  # test-backend entirely (build-images proceeded for ANY manual dispatch),
+  # so feature-branch or corpus-failing code could reach production around
+  # the gate. This job closes that: a production workflow_dispatch requires
+  # refs/heads/main AND runs the field-replay corpus as a REQUIRED manual
+  # gate before build-images. Mechanism is LOCKED (not selected ad hoc at
+  # implementation time — a load-bearing production gate).
+  manual-deploy-gate:
+    name: Manual Deploy Gate (field-replay corpus)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+    steps:
+      - name: Reject non-main manual dispatch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::production workflow_dispatch is restricted to refs/heads/main (got ${{ github.ref }})"
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.20.2'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Field-replay corpus gate (blocks the manual build)
+        run: npm run replay:field-corpus
+        env:
+          CI: true
+
+  # ============================================
   # Job 3: Build, Scan & Cache Docker Images
   # ============================================
   build-images:
     name: Build & Scan Docker Images
     runs-on: ubuntu-24.04-arm
-    needs: [detect-changes, test-backend, test-frontend, security-audit]
-    if: always() && (github.event_name == 'workflow_dispatch' || (needs.test-backend.result == 'success' && needs.test-frontend.result == 'success'))
+    needs: [detect-changes, test-backend, test-frontend, security-audit, manual-deploy-gate]
+    # Push/PR: gate on the test suite. Manual dispatch: gate on the
+    # main-restricted corpus gate (never a bare event-name bypass).
+    if: always() && (
+      (github.event_name == 'workflow_dispatch' && needs.manual-deploy-gate.result == 'success')
+      || (github.event_name != 'workflow_dispatch' && needs.test-backend.result == 'success' && needs.test-frontend.result == 'success')
+      )
 
     steps:
       - name: Checkout code

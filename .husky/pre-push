@@ -17,7 +17,16 @@
 #   - We run BOTH backend Jest (`npm test`) AND the web vitest suite
 #     (`npm test --workspace=web`). The old hook ran ONLY backend Jest, so the
 #     web suite that broke in WS7 was never gated locally at all.
+#   - The field-replay corpus gate runs via `replay:field-corpus:prepush`
+#     (NOT the ordinary command): at a fix commit F, fixed expected_red
+#     fixtures intentionally XPASS and the ordinary gate exits non-zero — an
+#     `npm test &&`-structured hook would reject the very push that triggers
+#     the GREEN evidence workflow, while `--no-verify` stays prohibited. On
+#     non-main refs the prepush variant accepts an XPASS-only failure and
+#     re-verifies those fixtures in proof mode (permission to push, never
+#     trusted evidence). Local diagnostics only — the Node-20 CI job is
+#     authoritative.
 export PATH="/opt/homebrew/bin:$PATH"
 [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" && nvm use --silent 2>/dev/null || true
 node web/scripts/check-node.mjs
-npm test && npm test --workspace=web
+npm test && npm test --workspace=web && npm run replay:field-corpus:prepush
