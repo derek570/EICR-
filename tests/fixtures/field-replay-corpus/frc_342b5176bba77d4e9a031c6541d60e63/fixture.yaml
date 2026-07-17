@@ -1,0 +1,92 @@
+# Green guard — "a dictated reading is written AND read back aloud exactly once".
+#
+# Field capture, build 419 (2026-07-16), a HEALTHY turn: the inspector said
+# "R1 plus R2 for upstairs sockets is 0.32", the live model recorded it, and
+# the backend spoke the read-back confirmation (Audio-First #1 working). This
+# is a required_green REGRESSION GUARD (the complement of the RED keystone ①):
+# it replays the healthy turn through the real runShadowHarness and asserts the
+# universal read-back stays working — exactly the integration behaviour that
+# silently broke on web at the 2026-07-03 Flux flip (utterance-end lost → every
+# confirmation deferred forever) and that unit tests, which don't drive the
+# real pipeline end-to-end, did not catch. If the read-back ever regresses,
+# this fixture goes RED and blocks the merge.
+#
+# Recorded-lane: the model response is frozen (record_reading), and the
+# backend's read-back confirmation is the deterministic output under test. The
+# raw session id ↔ opaque corpus id mapping lives in the private archive.
+schema_version: 1
+corpus_id: frc_342b5176bba77d4e9a031c6541d60e63
+purpose: regression
+gate_state: required_green
+# The assertion that goes RED if the guarded read-back regresses (the audible
+# read-back for this reading is no longer emitted) — the dual-proof anchor for
+# a regression fixture admitted directly as required_green.
+red_proof_failure_id: audibility.output.out_r1r2
+owner: Derek Beckley
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  Healthy-turn read-back guard (session 36731498 turn 8). Complements keystone
+  ① (the beep-then-silence RED) by locking the universal read-back on the happy
+  path — a real end-to-end integration guard for Audio-First invariant #1.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 4
+      designation: Upstairs Sockets
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: R1 plus R2 for upstairs sockets is 0.32.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_r1r2
+            name: record_reading
+            input:
+              field: r1_r2_ohm
+              circuit: 4
+              value: '0.32'
+              confidence: 0.9
+              source_turn_id: turn-1
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations:
+      - operation_id: op_r1r2
+        kind: reading
+        field: r1_r2_ohm
+        circuit: 4
+        value: '0.32'
+        audibility: exactly_once
+    expected_audible_outputs:
+      - output_id: out_r1r2
+        kind: reading_confirmation
+        operation_ref: op_r1r2
+        count: 1
+        match:
+          field: r1_r2_ohm
+          circuit: 4
