@@ -52,7 +52,11 @@ function greenFixture() {
     gate_state: 'required_green',
     owner: 'Derek Beckley',
     initial_state_fidelity: 'hand_authored',
-    job_state: { certificateType: 'eicr', boards: [{ id: 'main', board_type: 'main' }], circuits: [{ number: 2 }] },
+    job_state: {
+      certificateType: 'eicr',
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: [{ number: 2 }],
+    },
     client_capabilities: { value: ['low_conf_readback_v1'], provenance: 'recorded_full' },
     fallback_to_legacy: { value: false, provenance: 'recorded_full' },
     turns: [
@@ -75,7 +79,13 @@ function greenFixture() {
                 // Schema-faithful: record_reading REQUIRES source_turn_id (the
                 // real model always emits it) — matchToolExpectations validates
                 // the declared schema_expectation against the REAL tool schema.
-                input: { field: 'measured_zs_ohm', circuit: 2, value: '0.35', confidence: 0.9, source_turn_id: 'sym_turn_1' },
+                input: {
+                  field: 'measured_zs_ohm',
+                  circuit: 2,
+                  value: '0.35',
+                  confidence: 0.9,
+                  source_turn_id: 'sym_turn_1',
+                },
                 schema_expectation: 'accept',
                 dispatcher_expectation: 'accept',
               },
@@ -109,9 +119,20 @@ function greenFixture() {
 }
 
 function redFixture() {
-  // Marker-①-shaped: a garbled chime-producing turn where the model emits
-  // NOTHING (end_turn only) — on current main the turn ends silent, so the
-  // generic audibility.turn assertion is the ONE expected failure.
+  // A chime-producing ANSWER turn (in_response_to:true) where the model emits
+  // NOTHING (end_turn only): the ask-resolution path was supposed to speak the
+  // resolved answer and didn't, so the turn ends silent and the generic
+  // audibility.turn assertion is the ONE expected failure.
+  //
+  // NB — this used to be a NON-answer no-op (the raw marker-① shape). The
+  // marker-① no-op audibility net (stage6-shadow-harness.js, shipped 2026-07-17)
+  // now HEALS that shape (emits a spoken apology → audible → no RED), so it can
+  // no longer serve as a controlled RED. The net is deliberately gated on
+  // `!isAnswerTurn` (answer turns are owned by the ask-resolution path), so a
+  // chimed answer-turn no-op is STILL a real beep-then-silence and remains a
+  // stable audibility.turn RED — a more faithful vehicle for the machinery
+  // tests below. The frc_c55c996… on-disk keystone owns the real-capture,
+  // now-required_green version of the original shape.
   return {
     schema_version: 1,
     corpus_id: CID_RED,
@@ -124,7 +145,11 @@ function redFixture() {
     fix_reference: 'fix_00000000000000000000000000000001',
     expires_at: '2099-01-01T00:00:00.000Z',
     initial_state_fidelity: 'hand_authored',
-    job_state: { certificateType: 'eicr', boards: [{ id: 'main', board_type: 'main' }], circuits: [{ number: 2 }] },
+    job_state: {
+      certificateType: 'eicr',
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: [{ number: 2 }],
+    },
     client_capabilities: { value: ['low_conf_readback_v1'], provenance: 'recorded_full' },
     fallback_to_legacy: { value: false, provenance: 'recorded_full' },
     is_keystone: true,
@@ -135,7 +160,9 @@ function redFixture() {
         transcript: 'the garbled thing by the whatsit needs doing over',
         regex_results: [],
         confirmations_enabled: { value: true, provenance: 'reconstructed_reviewed' },
-        in_response_to: { value: false, provenance: 'reconstructed_reviewed' },
+        // Answer turn — the marker-① no-op net skips these (the ask-resolution
+        // path owns answer turns), so this chimed no-op stays silent → RED.
+        in_response_to: { value: true, provenance: 'reconstructed_reviewed' },
         ws_mode: 'open',
         chime_observed: true,
         model_rounds: [{ stop_reason: 'end_turn', text: '' }],
@@ -166,7 +193,9 @@ describe('runFixture through the REAL harness (no fake clock — fixtures avoid 
     expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('pass'); // RED confirmed
     // Proof mode (GREEN evidence at subject F) bypasses ONLY the XPASS
     // inversion — a still-failing assertion FAILS the proof run.
-    expect(evaluateGateState(fixture, run.allFailures, { proofState: 'required_green' }).verdict).toBe('fail');
+    expect(
+      evaluateGateState(fixture, run.allFailures, { proofState: 'required_green' }).verdict
+    ).toBe('fail');
   });
 
   test('XPASS fails the gate: an expected_red whose assertion passes cannot merge', async () => {
@@ -178,13 +207,19 @@ describe('runFixture through the REAL harness (no fake clock — fixtures avoid 
     const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
     expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('xpass');
     // The evidence proof mode ACCEPTS the same run (the fixing PR's GREEN).
-    expect(evaluateGateState(fixture, run.allFailures, { proofState: 'required_green' }).verdict).toBe('pass');
+    expect(
+      evaluateGateState(fixture, run.allFailures, { proofState: 'required_green' }).verdict
+    ).toBe('pass');
   });
 
   test('an expired expected_red fails the gate (deliberate pipeline freeze)', async () => {
     const fixture = redFixture();
     fixture.expires_at = '2026-01-01T00:00:00.000Z';
-    const run = await runFixture({ fixture, modules, wallClockNowMs: Date.parse('2026-02-01T00:00:00Z') });
+    const run = await runFixture({
+      fixture,
+      modules,
+      wallClockNowMs: Date.parse('2026-02-01T00:00:00Z'),
+    });
     expect(run.verdict).toBe('fail');
     expect(run.detail).toMatch(/EXPIRED/);
   });
@@ -218,7 +253,11 @@ describe('runCorpus orchestration', () => {
   const loadFixture = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 
   test('EMPTY corpus is a PASS with the explicit 0-fixtures summary (exit 0)', async () => {
-    const summary = await runCorpus({ corpusRoot: path.join(tmp, 'missing'), modules, loadFixture });
+    const summary = await runCorpus({
+      corpusRoot: path.join(tmp, 'missing'),
+      modules,
+      loadFixture,
+    });
     expect(summary.exitCode).toBe(0);
     expect(summary.discovered).toBe(0);
     expect(summary.message).toMatch(/0 fixtures discovered/);
@@ -243,9 +282,14 @@ describe('runCorpus orchestration', () => {
         named_followup: 'field-replay-hardening-followups',
         sanitized_transcript: ['synthetic'],
         human_expectations: 'read back once when Loaded Barrel replay exists',
-      }),
+      })
     );
-    const summary = await runCorpus({ corpusRoot: tmp, modules, loadFixture, wallClockNowMs: Date.now() });
+    const summary = await runCorpus({
+      corpusRoot: tmp,
+      modules,
+      loadFixture,
+      wallClockNowMs: Date.now(),
+    });
     expect(summary.discovered).toBe(3);
     expect(summary.executed).toBe(2);
     expect(summary.unsupported).toBe(1);
@@ -260,7 +304,12 @@ describe('runCorpus orchestration', () => {
     bad.corpus_id = 'frc_00000000000000000000000000000004';
     bad.turns[0].regex_results = [{ field: 'install.postcode', value: 'ZZ99 9ZZ' }]; // v1 prohibition
     fs.writeFileSync(path.join(d, 'fixture.yaml'), JSON.stringify(bad));
-    const summary = await runCorpus({ corpusRoot: tmp, modules, loadFixture, wallClockNowMs: Date.now() });
+    const summary = await runCorpus({
+      corpusRoot: tmp,
+      modules,
+      loadFixture,
+      wallClockNowMs: Date.now(),
+    });
     expect(summary.failed).toBe(1);
     expect(summary.exitCode).toBe(1);
     expect(summary.results[0].detail).toMatch(/postcode_hint_forbidden/);
