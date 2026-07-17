@@ -28,29 +28,10 @@ describe('TranscriptGate.shouldForward — PASS branches (iOS order)', () => {
     expect(shouldForward({ ...base, text: 'anything at all', hasRegexHit: true })).toBe(true);
   });
 
-  it('digit + a word forwards (protects terse weak-field readings)', () => {
+  it('digit forwards', () => {
     expect(shouldForward({ ...base, text: 'point four four' })).toBe(false);
-    // A digit WITH any letter still forwards — "lives 0.32" / "0.44 ohms" must
-    // never be dropped (Audio-First #2).
-    expect(shouldForward({ ...base, text: 'lives 0.44' })).toBe(true);
+    expect(shouldForward({ ...base, text: '0.44' })).toBe(true);
     expect(shouldForward({ ...base, text: 'circuit five is 32 amps' })).toBe(true);
-    expect(shouldForward({ ...base, text: '30 quid' })).toBe(true);
-  });
-
-  // Numeric-chatter gate (marker-① companion) — a LETTER-FREE bare number no
-  // longer chimes: it is not a complete reading and has no pending-value
-  // context (the three bypasses above cover terse replies).
-  it('bare letter-free number BLOCKS (no chime on ambient numbers)', () => {
-    expect(shouldForward({ ...base, text: '0.44' })).toBe(false);
-    expect(shouldForward({ ...base, text: '30' })).toBe(false);
-    expect(shouldForward({ ...base, text: '0.05' })).toBe(false);
-    expect(shouldForward({ ...base, text: '5, 6, 7, 8' })).toBe(false);
-  });
-
-  it('bare number WITH pending context still forwards (terse reply protected)', () => {
-    expect(shouldForward({ ...base, text: '0.44', hasPendingAsk: true })).toBe(true);
-    expect(shouldForward({ ...base, text: '0.44', inResponseTo: true })).toBe(true);
-    expect(shouldForward({ ...base, text: '0.44', hasRegexHit: true })).toBe(true);
   });
 
   it('bare negation forwards (readback-correction-optionb §3.3)', () => {

@@ -326,10 +326,23 @@ const OBSERVATION_ORPHAN_PROMPT = 'Sorry, I missed that observation — could yo
 // than going silent. Distinct from every ORPHAN_/REJECTED_/OBSERVATION_ text so
 // the two channels never cross-dedupe. Wording carries NO "reading" noun: we do
 // not know the utterance was a reading, only that a beep went unanswered.
+//
+// FIVE phrasings (not three like ORPHAN_PROMPTS): the wording only wraps every
+// 5 turns, so the collision that could re-silence a repeat (turnNum ≡ mod len
+// within the 30 s text-keyed dedupe window) bites no earlier than the SIXTH
+// consecutive no-op garble in 30 s — a shape no real session produces. Known,
+// accepted limitation shared by every field-nil apology net (the F7 pre-emission
+// net uses a single fixed text and collides on the 2nd repeat): a 30 s EXACT-
+// wording repeat is swallowed; the rotation pushes that boundary far past any
+// realistic garble burst. A fully collision-free guarantee would need the
+// apology to bypass the dedupe entirely, which would spam "sorry" on a garble
+// storm — deliberately not done.
 const NOOP_AUDIBILITY_PROMPTS = Object.freeze([
   "Sorry, I didn't catch that — could you say it again?",
   "I didn't quite get that — could you repeat it?",
   "Sorry, that didn't come through — could you say it once more?",
+  'Sorry, I missed that one — could you say it again?',
+  "I didn't get that — could you repeat that for me?",
 ]);
 
 // F7 Item 2 (task #16) — the deterministic pre-emission audibility fallback.

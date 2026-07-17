@@ -290,23 +290,7 @@ export function shouldForward(input: {
   const trimmed = text.trim();
   if (trimmed.length === 0) return false;
 
-  // Numeric-chatter gate (marker-① companion, 2026-07-17). A LETTER-FREE digit
-  // string ("30", "0.05", "5, 6, 7, 8") is not a complete reading (no field)
-  // and, reaching this branch, has NO pending-value context — hasPendingAsk /
-  // inResponseTo / hasRegexHit all forwarded ABOVE, and THOSE are how the
-  // client knows a field is awaiting a value. Blocking it here suppresses the
-  // "sent for processing" chime this gate-pass anchors, so ambient numbers
-  // never beep (and never draw the backend's marker-① no-op apology). This is
-  // the PRIMARY chime-suppression lever — the chime is client-side, so the
-  // backend deliberately keeps FORWARDING bare numbers (its marker-① net
-  // apologises rather than going silent if an un-updated client forwards one).
-  // Deliberately CONSERVATIVE: any letter keeps the digit forward, so terse
-  // weak-field readings ("lives 0.32") and filler chatter ("30 quid") are NOT
-  // dropped. iOS TranscriptGate carries the byte-identical branch (canon).
-  if (/\d/.test(trimmed)) {
-    if (/[A-Za-z]/.test(trimmed)) return true;
-    return false;
-  }
+  if (/\d/.test(trimmed)) return true;
 
   const lower = trimmed.toLowerCase();
 

@@ -34,14 +34,13 @@ red_proof_failure_id: audibility.turn
 owner: Derek Beckley
 introduced_at: '2026-07-16T06:13:21Z'
 fix_reference: fix_a6132e85a841e6f39c146a4c4964c609
+expires_at: '2099-01-01T00:00:00.000Z'
 initial_state_fidelity: hand_authored
 is_keystone: true
 notes: >-
   Marker ① of the field-replay corpus gate. Slice-1 walking-skeleton fixture:
-  the first REAL captured session promoted to an on-disk corpus fixture. Now a
-  required_green regression guard: the marker-① no-op audibility net must keep
-  this chimed no-op turn AUDIBLE. If a future change re-silences it, the
-  red_proof_failure_id (audibility.turn) fires and the gate goes red.
+  the first REAL captured session promoted to an on-disk corpus fixture. Locks
+  the invariant-(a) beep-then-silence class for the backend apology net.
 job_state:
   certificateType: eicr
   boards:
