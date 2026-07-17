@@ -131,7 +131,13 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
                 {
                   id: 'sym_tc_zs2',
                   name: 'record_reading',
-                  input: { field: 'measured_zs_ohm', circuit: 2, value: '0.35', confidence: 0.9, source_turn_id: 'sym_turn_1' },
+                  input: {
+                    field: 'measured_zs_ohm',
+                    circuit: 2,
+                    value: '0.35',
+                    confidence: 0.9,
+                    source_turn_id: 'sym_turn_1',
+                  },
                   schema_expectation: 'accept',
                   dispatcher_expectation: 'accept',
                 },
@@ -174,7 +180,13 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
                 {
                   id: 'sym_tc_zs3',
                   name: 'record_reading',
-                  input: { field: 'measured_zs_ohm', circuit: 3, value: '0.41', confidence: 0.9, source_turn_id: 'sym_turn_2' },
+                  input: {
+                    field: 'measured_zs_ohm',
+                    circuit: 3,
+                    value: '0.41',
+                    confidence: 0.9,
+                    source_turn_id: 'sym_turn_2',
+                  },
                   schema_expectation: 'accept',
                   dispatcher_expectation: 'accept',
                 },
@@ -231,7 +243,11 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
       expires_at: '2099-01-01T00:00:00.000Z',
       initial_state_fidelity: 'hand_authored',
       is_keystone: true,
-      job_state: { certificateType: 'eicr', boards: [{ id: 'main', board_type: 'main' }], circuits: [{ number: 2 }] },
+      job_state: {
+        certificateType: 'eicr',
+        boards: [{ id: 'main', board_type: 'main' }],
+        circuits: [{ number: 2 }],
+      },
       client_capabilities: { value: [], provenance: 'recorded_full' },
       fallback_to_legacy: { value: false, provenance: 'recorded_full' },
       turns: [
@@ -241,7 +257,12 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
           transcript: 'garbled whatsit doing over',
           regex_results: [],
           confirmations_enabled: { value: true, provenance: 'reconstructed_reviewed' },
-          in_response_to: { value: false, provenance: 'reconstructed_reviewed' },
+          // Answer turn — the marker-① no-op audibility net (shipped 2026-07-17)
+          // skips answer turns (the ask-resolution path owns them), so this
+          // chimed no-op stays silent → a stable audibility.turn RED. A NON-answer
+          // no-op would now be HEALED by the net (spoken apology) and could no
+          // longer serve as a controlled RED for this CLI machinery test.
+          in_response_to: { value: true, provenance: 'reconstructed_reviewed' },
           ws_mode: 'open',
           chime_observed: true,
           model_rounds: [{ stop_reason: 'end_turn', text: '' }],
@@ -249,12 +270,21 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
       ],
     });
     // Blocking lane: the RED is EXPECTED → exit 0.
-    const blocking = runCli(['--model-lane=recorded', `--corpus=${tmp}`, '--proof-state=required_green']);
+    const blocking = runCli([
+      '--model-lane=recorded',
+      `--corpus=${tmp}`,
+      '--proof-state=required_green',
+    ]);
     expect(blocking.code).toBe(0);
     const s1 = JSON.parse(blocking.stdout);
     expect(s1.results[0].verdict).toBe('pass'); // expected RED confirmed — proof-state ignored
     // Evidence mode honours it: the still-failing assertion FAILS the proof.
-    const proof = runCli(['--model-lane=recorded', `--corpus=${tmp}`, '--evidence-mode', '--proof-state=required_green']);
+    const proof = runCli([
+      '--model-lane=recorded',
+      `--corpus=${tmp}`,
+      '--evidence-mode',
+      '--proof-state=required_green',
+    ]);
     expect(proof.code).toBe(1);
     const s2 = JSON.parse(proof.stdout);
     expect(s2.results[0].verdict).toBe('fail');

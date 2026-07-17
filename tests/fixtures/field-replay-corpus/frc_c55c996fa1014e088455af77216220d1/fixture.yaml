@@ -9,11 +9,15 @@
 # speakable output), reached via model-no-op rather than suppression.
 #
 # RECORDED-lane semantics: the model response is frozen to the faithful capture
-# (end_turn no-op). This fixture therefore locks the BACKEND fix — the
-# pre-emission fallback net that must emit ONE audible apology when a chime
-# fired and nothing audible survived. When that net ships, this turn goes
-# audible and the fixture XPASSes → flip gate_state to required_green in the
-# fixing PR. A pure model/prompt fix is caught by the LIVE lane instead.
+# (end_turn no-op). This fixture locks the BACKEND fix — the harness no-op
+# audibility net (stage6-shadow-harness.js) that emits ONE audible apology when
+# a chime fired and the model produced zero tools / nothing audible. That net
+# SHIPPED (marker-① wave, 2026-07-17): the A3 orphan net's content gate was
+# loosened from (carriesValue || carriesObservation) to also fire on a chimed
+# no-content turn (options.chimeObserved), so this turn now goes audible and the
+# gate_state is flipped expected_red → required_green (red_proof_failure_id
+# retained as the dual-proof of what RED it guards). A pure model/prompt fix
+# would instead be caught by the LIVE lane.
 #
 # Provenance: transcript + model behaviour + chime are recorded_full from the
 # CloudWatch capture. The raw session id ↔ this opaque corpus id mapping and
@@ -25,8 +29,7 @@
 schema_version: 1
 corpus_id: frc_c55c996fa1014e088455af77216220d1
 purpose: regression
-gate_state: expected_red
-expected_failure_id: audibility.turn
+gate_state: required_green
 red_proof_failure_id: audibility.turn
 owner: Derek Beckley
 introduced_at: '2026-07-16T06:13:21Z'

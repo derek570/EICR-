@@ -307,6 +307,44 @@ const REJECTED_PROMPTS = Object.freeze([
 // "observation" channel tells the inspector WHICH kind of utterance was lost.
 const OBSERVATION_ORPHAN_PROMPT = 'Sorry, I missed that observation — could you say it again?';
 
+// Marker ① (frc_c55c996fa1014e088455af77216220d1) — the model-NO-OP audibility
+// net. Field session 36731498 turn 4: "Circuit 2 is upstairs lights" was Flux-
+// garbled to "Chuck it too is upstairs lights"; the live model treated the
+// garble as a NO-OP (one end_turn round, zero tools) so NOTHING audible
+// followed the chime (beep-then-silence). The reading/observation orphan
+// branches above miss it: the garble carries no digit (carriesValue=false) and
+// no observation lead-in (carriesObservation=false), so their content gate
+// never fires. But a chime DID fire — and the backend gate-pass is coupled to
+// the client chime (chime only if we will respond), so reaching extraction at
+// all means the inspector heard a beep. The beep is a PROMISE (Audio-First #1 /
+// F7 headline): a chimed turn that produces zero audible output must ALWAYS
+// speak. This net closes the no-content case, gated on chimeObserved so the
+// recorded lane (which bypasses the ingress gate) fires it only for turns whose
+// fixture recorded a real chime. ROTATING wording (turnNum % len) like
+// ORPHAN_PROMPTS so a second garble on a later turn is NOT client-deduped by
+// the A1(b) 30 s field-nil TTL — a genuine repeat garble re-apologises rather
+// than going silent. Distinct from every ORPHAN_/REJECTED_/OBSERVATION_ text so
+// the two channels never cross-dedupe. Wording carries NO "reading" noun: we do
+// not know the utterance was a reading, only that a beep went unanswered.
+//
+// FIVE phrasings (not three like ORPHAN_PROMPTS): the wording only wraps every
+// 5 turns, so the collision that could re-silence a repeat (turnNum ≡ mod len
+// within the 30 s text-keyed dedupe window) bites no earlier than the SIXTH
+// consecutive no-op garble in 30 s — a shape no real session produces. Known,
+// accepted limitation shared by every field-nil apology net (the F7 pre-emission
+// net uses a single fixed text and collides on the 2nd repeat): a 30 s EXACT-
+// wording repeat is swallowed; the rotation pushes that boundary far past any
+// realistic garble burst. A fully collision-free guarantee would need the
+// apology to bypass the dedupe entirely, which would spam "sorry" on a garble
+// storm — deliberately not done.
+const NOOP_AUDIBILITY_PROMPTS = Object.freeze([
+  "Sorry, I didn't catch that — could you say it again?",
+  "I didn't quite get that — could you repeat it?",
+  "Sorry, that didn't come through — could you say it once more?",
+  'Sorry, I missed that one — could you say it again?',
+  "I didn't get that — could you repeat that for me?",
+]);
+
 // F7 Item 2 (task #16) — the deterministic pre-emission audibility fallback.
 // A fixed literal so tests, telemetry, and the client field-nil dedupe share
 // one value. Rides the A4 field-nil confirmation channel (field:null,
@@ -1598,12 +1636,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // the pre-LLM gate uses to FORWARD these turns — so anything it
         // forwarded on that basis gets the same silent-drop protection here.
         const carriesObservation = OBSERVATION_PATTERN.test(transcriptText || '');
+        // Marker ① — a chime fired but the utterance carried no digit and no
+        // observation lead-in (a Flux garble the model no-opped on). The
+        // reading/observation branches gate on content; this covers the
+        // no-content case so a chimed no-op is never silent. chimeObserved is
+        // TRUE for every production turn that reached extraction (gate-pass ⟺
+        // chime) and, in the recorded lane, only for turns whose fixture
+        // recorded chime_observed:true — so a fixture with no chime never
+        // triggers a false apology.
+        const chimeFired = options.chimeObserved === true;
         if (
           ORPHAN_PROMPT_ENABLED &&
           options.confirmationsEnabled === true &&
           producedNothing &&
           !isAnswerTurn &&
-          (carriesValue || carriesObservation)
+          (carriesValue || carriesObservation || chimeFired)
         ) {
           // #5a apply-complete guard (PR #68) — before emitting a contentless
           // clarifying prompt, try a deterministic re-parse of transcriptText
@@ -1639,11 +1686,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // signal for what the utterance WAS. allRejected keeps precedence:
             // there the tool call happened and was rejected, and "couldn't
             // action that" is the accurate story regardless of shape.
+            // Marker ① — a chimed no-op with NEITHER a digit NOR an observation
+            // lead-in gets the generic "didn't catch that" wording (no "reading"
+            // noun; we only know a beep went unanswered). The three specific
+            // branches keep precedence: allRejected (a call happened + was
+            // rejected), observation-shaped, then reading-shaped (carriesValue).
             const prompt = allRejected
               ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
               : carriesObservation
                 ? OBSERVATION_ORPHAN_PROMPT
-                : ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length];
+                : carriesValue
+                  ? ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length]
+                  : NOOP_AUDIBILITY_PROMPTS[turnNum % NOOP_AUDIBILITY_PROMPTS.length];
             if (!Array.isArray(result.confirmations)) result.confirmations = [];
             result.confirmations.push({
               text: prompt,
@@ -1654,7 +1708,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               // fast-path POST.
               expects_ios_ack: false,
             });
-            session.orphanContext = { transcript: transcriptText, turnNum };
+            // Carry the raw transcript forward ONLY when we have positive
+            // evidence it was a reading/observation/action (carriesValue,
+            // carriesObservation, or a rejected tool call). The next-turn
+            // injection (see :~898) tells the model "I'm repeating that reading
+            // now — work out the field, circuit and value", which is only true
+            // for those shapes. The pure chime-only marker-① case fires on a
+            // garble we CANNOT classify (no digit, no observation lead-in, e.g.
+            // "move to the next board please" that the model no-op'd), so
+            // carrying it forward as "that reading" would mislabel a command and
+            // risk a phantom write next turn — we apologise and let the inspector
+            // re-dictate as a fresh turn instead. (Codex review, marker-① wave.)
+            if (allRejected || carriesObservation || carriesValue) {
+              session.orphanContext = { transcript: transcriptText, turnNum };
+            }
             log.info?.('stage6.orphan_prompt_emitted', {
               sessionId: session.sessionId,
               turnId,
@@ -1665,7 +1732,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                 ? 'all_rejected'
                 : carriesObservation
                   ? 'observation_no_tool_calls'
-                  : 'zero_tool_calls',
+                  : carriesValue
+                    ? 'zero_tool_calls'
+                    : 'chimed_noop_no_content',
               textPreview: String(transcriptText || '').slice(0, 80),
             });
           }
