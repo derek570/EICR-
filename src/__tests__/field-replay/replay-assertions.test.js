@@ -47,7 +47,7 @@ describe('matchToolExpectations', () => {
       validateToolInput: acceptValidator,
       logRows: [
         { name: 'stage6.tool_call', meta: { tool_call_id: 'toolu_1', outcome: 'stub_ok' } },
-        { name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_1', is_error: true, validation_error: 'boom' } },
+        { name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_1', tool: 'record_reading', is_error: true, validation_error: 'boom' } },
       ],
     };
     const fails = matchToolExpectations(turnWith(tc), captured);
@@ -59,7 +59,7 @@ describe('matchToolExpectations', () => {
     const tc = { id: 'toolu_2', name: 'record_reading', input: {}, schema_expectation: 'reject', dispatcher_expectation: 'reject', dispatcher_reject_code: 'circuit_not_found' };
     const captured = {
       validateToolInput: rejectValidator, // schema:reject satisfied
-      logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_2', is_error: true, validation_error: { code: 'circuit_not_found' } } }],
+      logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_2', tool: 'record_reading', is_error: true, validation_error: { code: 'circuit_not_found' } } }],
     };
     const fails = matchToolExpectations(turnWith(tc), captured);
     expect(fails).toHaveLength(0); // both schema:reject and dispatcher:reject(+code) satisfied
@@ -102,14 +102,14 @@ describe('matchToolExpectations', () => {
 
   test('reject with a MISSING validation_error but a declared reject_code FAILS (cannot confirm)', () => {
     const tc = { id: 'toolu_8', name: 'record_reading', input: {}, dispatcher_expectation: 'reject', dispatcher_reject_code: 'circuit_not_found' };
-    const captured = { validateToolInput: acceptValidator, logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_8', is_error: true, validation_error: null } }] };
+    const captured = { validateToolInput: acceptValidator, logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_8', tool: 'record_reading', is_error: true, validation_error: null } }] };
     const fails = matchToolExpectations(turnWith(tc), captured);
     expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_8' && f.outcome === OUTCOME.FAIL)).toBe(true);
   });
 
   test('reject_code compares EXACTLY (no substring collision)', () => {
     const tc = { id: 'toolu_9', name: 'record_reading', input: {}, dispatcher_expectation: 'reject', dispatcher_reject_code: 'not_found' };
-    const captured = { validateToolInput: acceptValidator, logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_9', is_error: true, validation_error: { code: 'circuit_not_found' } } }] };
+    const captured = { validateToolInput: acceptValidator, logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_9', tool: 'record_reading', is_error: true, validation_error: { code: 'circuit_not_found' } } }] };
     const fails = matchToolExpectations(turnWith(tc), captured);
     // 'not_found' is a SUBSTRING of 'circuit_not_found' but not equal → must FAIL.
     expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_9' && f.outcome === OUTCOME.FAIL)).toBe(true);
@@ -146,5 +146,46 @@ describe('matchToolExpectations', () => {
     const captured = { validateToolInput: acceptValidator, wsFrames: [], logRows: [{ name: 'stage6.ask_user', meta: { tool_call_id: 'toolu_ask5', answer_outcome: 'ask_budget_exhausted' } }] };
     const fails = matchToolExpectations(turnWith(tc), captured);
     expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_ask5' && f.outcome === OUTCOME.FAIL)).toBe(true);
+  });
+
+  test('EMISSION is authoritative: emitted + reject-listed terminal row → reject still FAILS', () => {
+    const tc = { id: 'toolu_ask6', name: 'ask_user', input: {}, dispatcher_expectation: 'reject' };
+    const captured = {
+      validateToolInput: acceptValidator,
+      wsFrames: [{ type: 'ask_user_started', tool_call_id: 'toolu_ask6' }],
+      logRows: [{ name: 'stage6.ask_user', meta: { tool_call_id: 'toolu_ask6', answer_outcome: 'gated' } }],
+    };
+    expect(matchToolExpectations(turnWith(tc), captured).some((f) => f.outcome === OUTCOME.FAIL)).toBe(true);
+  });
+
+  test('EMISSION is authoritative: emitted + post-emission outcome → accept PASSES', () => {
+    const tc = { id: 'toolu_ask7', name: 'ask_user', input: {}, dispatcher_expectation: 'accept' };
+    const captured = {
+      validateToolInput: acceptValidator,
+      wsFrames: [{ type: 'ask_user_started', tool_call_id: 'toolu_ask7' }],
+      logRows: [{ name: 'stage6.ask_user', meta: { tool_call_id: 'toolu_ask7', answer_outcome: 'transcript_already_extracted' } }],
+    };
+    expect(matchToolExpectations(turnWith(tc), captured)).toHaveLength(0);
+  });
+
+  test('non-ask: DUPLICATE authoritative rows → infrastructure (no silent first-match)', () => {
+    const tc = { id: 'toolu_d', name: 'record_reading', input: {}, dispatcher_expectation: 'accept' };
+    const captured = {
+      validateToolInput: acceptValidator,
+      logRows: [
+        { name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_d', tool: 'record_reading', is_error: false } },
+        { name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_d', tool: 'record_reading', is_error: true } },
+      ],
+    };
+    expect(matchToolExpectations(turnWith(tc), captured).some((f) => f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
+  });
+
+  test('non-ask: a same-id row for a DIFFERENT tool → infrastructure (identity enforced)', () => {
+    const tc = { id: 'toolu_x', name: 'record_reading', input: {}, dispatcher_expectation: 'accept' };
+    const captured = {
+      validateToolInput: acceptValidator,
+      logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_x', tool: 'record_observation', is_error: false } }],
+    };
+    expect(matchToolExpectations(turnWith(tc), captured).some((f) => f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
   });
 });

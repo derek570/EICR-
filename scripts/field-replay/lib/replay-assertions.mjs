@@ -46,7 +46,6 @@ const ASK_DISPATCH_REJECT_OUTCOMES = new Set([
   'shadow_mode',
   'validation_error',
   'duplicate_tool_call_id',
-  'transcript_already_extracted',
   'dispatcher_error',
   'prompt_leak_blocked',
 ]);
@@ -248,10 +247,8 @@ export function matchToolExpectations(turn, captured) {
   const rows = captured.logRows ?? [];
   // ONLY the authoritative `stage6_tool_call` rows carry the real dispatch
   // outcome (is_error + validation_error). The thin `stage6.tool_call`
-  // (outcome:'stub_ok') rows do NOT carry is_error, so an errored call logged
-  // there must never satisfy dispatcher_expectation:accept — exclude them.
-  const dispatchRow = (id) =>
-    rows.find((r) => r.name === 'stage6_tool_call' && (r.meta?.tool_use_id === id || r.meta?.tool_call_id === id));
+  // (outcome:'stub_ok') rows do NOT carry is_error and are never consulted for
+  // a dispatch outcome, so an errored call logged there cannot satisfy accept.
   // Normalise a validation_error that may be a string OR a structured object
   // ({code}) — String(obj) would collapse to "[object Object]" and never match.
   const errCode = (ve) => (ve == null ? '' : typeof ve === 'string' ? ve : String(ve.code ?? JSON.stringify(ve)));
@@ -282,34 +279,45 @@ export function matchToolExpectations(turn, captured) {
       // stage6_tool_call row — they are verified through the ask lifecycle /
       // expected_asks, so their absence is not asserted here.
       if (tc.dispatcher_expectation && tc.name === 'ask_user') {
-        // ask_user has NO stage6_tool_call row — it is verified through its
-        // own lifecycle: emission (an ask_user_started frame) = the dispatcher
-        // POSED the ask (accept); a terminal `stage6.ask_user` row whose
-        // answer_outcome is a gate/reject outcome = the dispatcher REJECTED it.
-        // Neither present → unverifiable → infrastructure (no vacuous pass).
+        // ask_user has NO stage6_tool_call row — verified through its lifecycle
+        // with EMISSION as the authoritative signal: an ask_user_started frame
+        // means the dispatcher POSED the ask (accept-satisfied, reject-violated),
+        // REGARDLESS of any later terminal outcome (answered / timeout /
+        // transcript_already_extracted / session_terminated are all
+        // post-emission and must not flip a posed ask to "rejected"). ONLY when
+        // the ask was NOT emitted does a pre-emission decline outcome satisfy a
+        // declared reject; anything else is unverifiable → infrastructure.
         const id = `tool.dispatcher.${tc.id}`;
-        const askRow = rows.find((r) => r.name === 'stage6.ask_user' && r.meta?.tool_call_id === tc.id);
         const emitted = askStartedFrames(captured.wsFrames ?? []).some((f) => f.tool_call_id === tc.id);
-        const outcome = askRow?.meta?.answer_outcome;
-        const rejectedOutcome = outcome != null && ASK_DISPATCH_REJECT_OUTCOMES.has(outcome);
-        if (!askRow && !emitted) {
-          failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `ask_user (${tc.id}) declared dispatcher_expectation:${tc.dispatcher_expectation} but was neither emitted nor logged a terminal outcome — unverifiable` });
-        } else if (tc.dispatcher_expectation === 'accept') {
-          if (rejectedOutcome) {
-            failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user declared dispatcher_expectation:accept but was gated/rejected (answer_outcome '${outcome}')` });
+        if (emitted) {
+          if (tc.dispatcher_expectation === 'reject') {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user (${tc.id}) declared dispatcher_expectation:reject but the dispatcher POSED it (emitted)` });
           }
-        } else if (tc.dispatcher_expectation === 'reject') {
-          if (!rejectedOutcome) {
-            failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user declared dispatcher_expectation:reject but the dispatcher POSED it (answer_outcome '${outcome ?? 'emitted'}')` });
+        } else {
+          const askRow = rows.find((r) => r.name === 'stage6.ask_user' && r.meta?.tool_call_id === tc.id);
+          const outcome = askRow?.meta?.answer_outcome;
+          const declinedPreEmit = outcome != null && ASK_DISPATCH_REJECT_OUTCOMES.has(outcome);
+          if (!declinedPreEmit) {
+            failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `ask_user (${tc.id}) was not emitted and has no pre-emission decline outcome — unverifiable (outcome '${outcome ?? 'none'}')` });
+          } else if (tc.dispatcher_expectation === 'accept') {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user declared dispatcher_expectation:accept but was declined pre-emission (answer_outcome '${outcome}')` });
           } else if (tc.dispatcher_reject_code && outcome !== tc.dispatcher_reject_code) {
             failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user rejected as '${outcome}', not the declared '${tc.dispatcher_reject_code}'` });
           }
         }
       } else if (tc.dispatcher_expectation) {
+        // Non-ask: require EXACTLY ONE authoritative stage6_tool_call row for
+        // THIS tool id AND tool name. Zero / multiple / wrong-tool rows are
+        // unverifiable → infrastructure (a duplicate or same-id-different-tool
+        // row must never silently satisfy the expectation via first-match).
         const id = `tool.dispatcher.${tc.id}`;
-        const row = dispatchRow(tc.id);
+        const matching = rows.filter(
+          (r) => r.name === 'stage6_tool_call' && (r.meta?.tool_use_id === tc.id || r.meta?.tool_call_id === tc.id),
+        );
+        const row = matching.length === 1 && matching[0].meta?.tool === tc.name ? matching[0] : null;
         if (!row) {
-          failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `tool '${tc.name}' (${tc.id}) declared dispatcher_expectation:${tc.dispatcher_expectation} but left NO authoritative stage6_tool_call row — outcome unverifiable` });
+          const detail = matching.length !== 1 ? `${matching.length} rows` : `tool '${matching[0].meta?.tool}' ≠ '${tc.name}'`;
+          failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `tool '${tc.name}' (${tc.id}) declared dispatcher_expectation:${tc.dispatcher_expectation} but has no single authoritative stage6_tool_call row (${detail}) — unverifiable` });
         } else if (tc.dispatcher_expectation === 'accept') {
           if (row.meta?.is_error === true) {
             failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:accept but the REAL dispatcher REJECTED it (${errCode(row.meta?.validation_error) || 'is_error'})` });
