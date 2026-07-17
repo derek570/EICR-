@@ -211,20 +211,16 @@ jobs:
 
       - name: Field-replay corpus gate (deterministic, blocking)
         # Runs INSIDE test-backend so it rides the `Test Backend (Node.js)`
-        # required check — the merge-blocking guarantee under the Threat-model
-        # scope decision. Deterministic + no network + fast; an empty corpus
-        # exits 0 by design (Foundation ships ZERO fixtures).
+        # required check — the merge-blocking guarantee under the accident-class
+        # scope. Deterministic + no network + fast; an empty corpus exits 0 by
+        # design. This is the WHOLE blocking gate: each expected_red fixture
+        # must fail with exactly its target id, each required_green must pass.
+        # The signed-commit governance / trusted-evidence / history-anchored
+        # closure checks are DEFERRED to field-replay-hardening-followups (they
+        # are the malice-hardening the threat model defers).
         run: npm run replay:field-corpus
         env:
           CI: true
-
-      - name: Field-replay history-anchored checks (immutability, closure, manifest lock, ruleset guard)
-        run: node scripts/field-replay/ci-history-checks.mjs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

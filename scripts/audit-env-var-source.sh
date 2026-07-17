@@ -128,13 +128,8 @@ AWS_CONTAINER_CREDENTIALS_FULL_URI      # cleared by aws-credential-deny
 AWS_SHARED_CREDENTIALS_FILE        # pointed at an empty file by aws-credential-deny
 AWS_CONFIG_FILE                    # pointed at an empty file by aws-credential-deny
 AWS_EC2_METADATA_DISABLED          # set true by aws-credential-deny
-FIELD_REPLAY_ASSERT_SUBJECT_SHA    # evidence-mode subject pin (subject-projection.test.js); unset in the ordinary suite
-FRC_VENDOR_ACK                     # nightly-live manual-dispatch acknowledgement flag (workflow input)
-GITHUB_EVENT_NAME                  # ci-history-checks base-ref resolution (CI only)
-GITHUB_BASE_REF                    # ci-history-checks merge-base (CI only)
-GITHUB_EVENT_BEFORE                # ci-history-checks push base (CI only)
-GITHUB_TOKEN                       # trusted-run retrieval (gh) in the evidence/governance CLIs
-GH_TOKEN                           # trusted-run retrieval (gh) in the evidence/governance CLIs
+GITHUB_TOKEN                       # gh auth for CI tooling
+GH_TOKEN                           # gh auth for CI tooling
 
 # --- Pre-existing unsourced vars (allowlisted 2026-05-27 as part of
 # Phase 0 of the snapshot-restructure sprint). Each was added to code

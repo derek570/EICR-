@@ -1,13 +1,12 @@
 # Keystone ① — "chime-then-silence via model no-op on a Flux garble".
 #
-# Captured session 36731498-3FA2-4AA6-A80A-7F610F4DE808, turn 4 (2026-07-16
-# 06:13:21 UTC, build 419). The inspector said "Circuit 2 is upstairs lights";
-# Deepgram Flux garbled it to "Chuck it too is upstairs lights." (conf 0.705).
-# The live model treated the garble as a NO-OP (single end_turn round, zero
-# tools) → the backend classified it zero-engagement chitchat → a chime fired
-# with ZERO audible follow-up. This is the F7 invariant-(a) class (Audio-First
-# #1: every chime must be followed by speakable output), reached via
-# model-no-op rather than suppression.
+# Field capture, build 419 (2026-07-16). The inspector said "Circuit 2 is
+# upstairs lights"; Deepgram Flux garbled it to "Chuck it too is upstairs
+# lights." (conf 0.705). The live model treated the garble as a NO-OP (single
+# end_turn round, zero tools) → the backend classified it zero-engagement
+# chitchat → a chime fired with ZERO audible follow-up. This is the F7
+# invariant-(a) class (Audio-First #1: every chime must be followed by
+# speakable output), reached via model-no-op rather than suppression.
 #
 # RECORDED-lane semantics: the model response is frozen to the faithful capture
 # (end_turn no-op). This fixture therefore locks the BACKEND fix — the
@@ -17,10 +16,12 @@
 # fixing PR. A pure model/prompt fix is caught by the LIVE lane instead.
 #
 # Provenance: transcript + model behaviour + chime are recorded_full from the
-# CloudWatch capture (see ~/.field-replay-archive/sources/, NOT committed).
-# Fidelity gap (accepted): client name/address fields present in the real
-# session are omitted from job_state — they do not affect the audibility
-# assertion; only the two circuits + board are seeded.
+# CloudWatch capture. The raw session id ↔ this opaque corpus id mapping and
+# the raw bytes live in the private field-replay archive (governance layer,
+# deferred), NEVER in the committed corpus. Fidelity gap (accepted): client
+# name/address fields present in the real session are omitted from job_state —
+# they do not affect the audibility assertion; only the two circuits + board
+# are seeded.
 schema_version: 1
 corpus_id: frc_c55c996fa1014e088455af77216220d1
 purpose: regression

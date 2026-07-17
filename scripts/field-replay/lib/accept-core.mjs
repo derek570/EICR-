@@ -169,19 +169,24 @@ export async function acceptFixture({
  */
 export async function validateCommittedFixture({ fixtureDoc, fixtureRawBytes, attestation, relPath = '', previousVersion = null }) {
   const errors = [];
-  if (!attestation) {
-    errors.push(fail('attestation_missing', 'committed fixture has no public review attestation'));
-    return { ok: false, errors };
-  }
   const docCheck = await validateFixtureDocument(fixtureDoc);
   for (const e of docCheck.errors) errors.push(fail(e.code, `${e.path}: ${e.message}`));
 
+  // Governance attestation is OPTIONAL under the accident-class scope: a
+  // committed fixture is validated STRUCTURALLY (schema + cross-field) and for
+  // PRIVACY, but a signed review attestation is NOT required. When an
+  // attestation IS supplied it is still verified (hash + corpus_id binding).
+  // The signed-attestation REQUIREMENT — and the trusted-evidence / signed
+  // governance layer generally — is deferred to field-replay-hardening-followups
+  // (it is the malice-hardening the threat model defers).
   const recomputed = attestationPayloadHash(immutableProjection(fixtureDoc));
-  if (recomputed !== attestation.immutable_payload_hash) {
-    errors.push(fail('attestation_hash_mismatch', 'immutable payload hash does not match the attestation (tampered fixture or regenerated hash)'));
-  }
-  if (attestation.corpus_id !== fixtureDoc.corpus_id) {
-    errors.push(fail('attestation_mismatch', 'attestation corpus_id differs from the fixture'));
+  if (attestation) {
+    if (recomputed !== attestation.immutable_payload_hash) {
+      errors.push(fail('attestation_hash_mismatch', 'immutable payload hash does not match the attestation (tampered fixture or regenerated hash)'));
+    }
+    if (attestation.corpus_id !== fixtureDoc.corpus_id) {
+      errors.push(fail('attestation_mismatch', 'attestation corpus_id differs from the fixture'));
+    }
   }
 
   // Generic privacy scans (no manifest in CI).
