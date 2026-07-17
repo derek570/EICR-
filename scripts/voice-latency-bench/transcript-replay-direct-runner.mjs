@@ -1025,12 +1025,17 @@ export async function runFieldCorpusCli({ lane, argv }) {
       return 2;
     }
     const { installLiveFetchPolicy } = await import('../field-replay/lib/network-guard.mjs');
-    const budget = JSON.parse(fs.readFileSync('config/field-replay-budget.json', 'utf8'));
+    // The live advisory lane (and its budget config / nightly workflow) is
+    // DEFERRED to field-replay-hardening-followups; `config/field-replay-budget.json`
+    // no longer ships. Keep the local `--model-lane=live` path runnable with a
+    // conservative inline vendor-call ceiling so it fails safe rather than
+    // crashing on a missing file. The full budget envelope returns with the lane.
+    const DEFAULT_HARD_MAX_VENDOR_CALLS = 200;
     // Installed BEFORE any session construction — the Anthropic SDK
     // snapshots global fetch into client.fetch at construction.
     const policy = installLiveFetchPolicy({
       allowedHosts: ['api.anthropic.com'],
-      hardMaxVendorCalls: budget.hard_max_vendor_calls,
+      hardMaxVendorCalls: DEFAULT_HARD_MAX_VENDOR_CALLS,
     });
     try {
       const modules = await importExtractionModules();

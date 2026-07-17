@@ -74,7 +74,10 @@ function greenFixture() {
               {
                 id: 'sym_tc_zs',
                 name: 'record_reading',
-                input: { field: 'measured_zs_ohm', circuit: 2, value: '0.35', confidence: 0.9 },
+                // Schema-faithful: record_reading REQUIRES source_turn_id (the
+                // real model always emits it) — matchToolExpectations validates
+                // the declared schema_expectation against the REAL tool schema.
+                input: { field: 'measured_zs_ohm', circuit: 2, value: '0.35', confidence: 0.9, source_turn_id: 'sym_turn_1' },
                 schema_expectation: 'accept',
                 dispatcher_expectation: 'accept',
               },

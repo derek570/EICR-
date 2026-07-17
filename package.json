@@ -24,7 +24,6 @@
     "pwa-replay:session": "node scripts/pwa-replay/session.mjs",
     "pwa-replay:sweep": "PWA_SWEEP=1 npm run --workspace=web test -- tests/harness/field-sweep.lane.test.ts",
     "replay:field-corpus": "node scripts/voice-latency-bench/transcript-replay-direct.mjs --model-lane=recorded",
-    "replay:field-corpus:live": "node scripts/voice-latency-bench/transcript-replay-direct.mjs --model-lane=live",
     "replay:field-corpus:evidence": "node scripts/voice-latency-bench/transcript-replay-direct.mjs --model-lane=recorded --evidence-mode",
     "replay:field-corpus:prepush": "node scripts/field-replay/prepush-gate.mjs"
   },

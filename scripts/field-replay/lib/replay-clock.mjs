@@ -223,10 +223,26 @@ export function installReplayClock(FakeTimers, { startMs, allowlist = DEFAULT_CA
       await clock.tickAsync(0);
     },
 
-    /** Reset ledger state between fixtures (corpus-lifetime clock). */
+    /** Reset ledger state between fixtures (corpus-lifetime clock). Clears
+     *  every still-pending fake timer FIRST so a delayed callback from one
+     *  fixture can never fire inside the next (cross-fixture contamination,
+     *  Codex #4), then drops any remaining scheduled work (e.g. intervals not
+     *  tracked by the setTimeout ledger) via the fake clock's own reset. */
     resetLedger() {
+      let leaked = 0;
+      for (const e of ledger.entries) {
+        if (!e.fired && !e.cleared && e.handle != null) {
+          e.cleared = true;
+          fakedClearTimeout(e.handle);
+          leaked += 1;
+        }
+      }
+      // Belt-and-suspenders: drop any timer/interval the ledger didn't wrap
+      // and reset the fake clock's queue. Guarded — older FakeTimers lack it.
+      if (typeof clock.reset === 'function') clock.reset();
       ledger.entries = [];
       ledger.violations = [];
+      return { clearedPending: leaked };
     },
 
     /** Restore real timers + unwrap. Outermost finally only. */

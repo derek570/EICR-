@@ -37,9 +37,41 @@ import { buildReplaySession } from './session-builder.mjs';
 import { evaluateTurn, evaluateGateState, OUTCOME } from './replay-assertions.mjs';
 import { mockStream } from '../../../src/__tests__/helpers/mockStream.js';
 import { toolUseRound, endTurnRound } from '../../../src/__tests__/helpers/f7-audibility-core.js';
+import fs from 'node:fs';
 import { discoverFixtures, assertUniqueCorpusIds, FIXTURE_BASENAME } from './discovery.mjs';
 import { validateFixtureDocument } from './fixture-schema.mjs';
+import { scanRawContent, scanParsedFixture } from './pii-scanner.mjs';
 import { resolveExpiryChain, isExpired } from './evidence-events.mjs';
+
+/**
+ * Build a `validateToolInput(name, input) -> {ok, errors}` closure over the
+ * REAL production tool schemas compiled with the shared Ajv config. Dynamic
+ * imports keep this off the module-eval path (the env loader must run before
+ * any extraction static import) and memoise the compiled validators.
+ */
+async function buildToolInputValidator() {
+  let getToolByName, AjvClass, AJV_OPTIONS;
+  try {
+    ({ getToolByName } = await import('../../../src/extraction/stage6-tool-schemas.js'));
+    ({ AJV_OPTIONS } = await import('./fixture-schema.mjs'));
+    const mod = await import('ajv');
+    AjvClass = mod.default?.default ?? mod.default ?? mod.Ajv;
+  } catch {
+    return null; // tool schemas unavailable → validator absent (skip schema check)
+  }
+  const ajv = new AjvClass({ ...AJV_OPTIONS });
+  const cache = new Map();
+  return (name, input) => {
+    if (!cache.has(name)) {
+      const tool = getToolByName(name);
+      cache.set(name, tool?.input_schema ? ajv.compile(tool.input_schema) : null);
+    }
+    const validate = cache.get(name);
+    if (!validate) return { ok: false, errors: `unknown tool '${name}'` };
+    const ok = validate(input);
+    return { ok, errors: ok ? '' : ajv.errorsText(validate.errors) };
+  };
+}
 
 function roundToEvents(round) {
   if (round.stop_reason === 'tool_use') {
@@ -194,6 +226,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
   const logger = { info: sink('info'), warn: sink('warn'), error: sink('error'), debug: sink('debug') };
 
   const built = buildReplaySession({ modules, fixture, logger, apiKey });
+  const validateToolInput = await buildToolInputValidator();
   const allFailures = [];
   const turnResults = [];
   const branchLog = [];
@@ -206,10 +239,20 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
       built.teardown();
       return {
         corpusId: fixture.corpus_id,
+        // TERMINAL verdict: runCorpus must consume this directly and NOT call
+        // evaluateGateState (which would `.filter()` a missing allFailures and
+        // crash the whole corpus on the first expired fixture). allFailures is
+        // still present + empty so any direct caller stays uniform.
+        terminal: {
+          verdict: 'fail',
+          detail: `expected_red EXPIRED at ${effective} without becoming required_green or a reviewed extension — the deliberate pipeline freeze applies`,
+        },
         verdict: 'fail',
         detail: `expected_red EXPIRED at ${effective} without becoming required_green or a reviewed extension — the deliberate pipeline freeze applies`,
+        allFailures: [],
         turnResults: [],
         branchLog: [],
+        logRows: [],
       };
     }
   }
@@ -468,6 +511,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         logRows: rows.slice(rowStart),
         askOrigins,
         infrastructureViolations: violations,
+        validateToolInput,
       };
       const failures = evaluateTurn(turn, captured);
       turnResults.push({ turn: turn.turn_index, failures, frames: ws.sent.length });
@@ -476,6 +520,14 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
   } finally {
     built.teardown();
     if (clockCtl) clockCtl.resetLedger();
+    // Reset module-level voice-latency finalizer/ack state so a pending
+    // finalizer from this fixture cannot bleed into the next (Codex #4).
+    try {
+      const vl = await import('../../../src/extraction/voice-latency-turn-summary.js');
+      vl._resetForTests?.();
+    } catch {
+      /* module unavailable → nothing to reset */
+    }
   }
 
   return { corpusId: fixture.corpus_id, allFailures, turnResults, branchLog, logRows: rows };
@@ -510,6 +562,25 @@ export async function runCorpus({ corpusRoot, modules, clockCtl, loadFixture, pr
       });
       continue;
     }
+    // PII scan (raw bytes + parsed) on EVERY blocking invocation — the gate
+    // must never merge a fixture leaking a raw session id / private path / real
+    // postcode in comments, keys, or values (Codex #5: the blocking runner
+    // previously ran ONLY structural validation, so the retained PII scans were
+    // absent from CI). Attestation stays optional; PII/structural always block.
+    const rawBytes = fs.readFileSync(f.fixturePath);
+    const piiFindings = [
+      ...scanRawContent(rawBytes, f.fixturePath).findings,
+      ...scanParsedFixture(f.doc, f.fixturePath).findings,
+    ];
+    if (piiFindings.length > 0) {
+      summary.failed += 1;
+      summary.results.push({
+        corpusId: f.doc.corpus_id ?? f.fixturePath,
+        verdict: 'fail',
+        detail: `PII scan: ${piiFindings.map((x) => `${x.code} "${x.match}"`).join('; ')}`,
+      });
+      continue;
+    }
     if (['unsupported_pending', 'superseded', 'privacy_quarantined'].includes(f.doc.gate_state)) {
       // Validate-but-never-execute states: REPORTED every run.
       summary.unsupported += 1;
@@ -518,7 +589,9 @@ export async function runCorpus({ corpusRoot, modules, clockCtl, loadFixture, pr
     }
     summary.executed += 1;
     const run = await runFixture({ fixture: f.doc, modules, clockCtl, wallClockNowMs });
-    const gate = evaluateGateState(f.doc, run.allFailures, { proofState });
+    // A terminal verdict (e.g. an expired expected_red freeze) short-circuits
+    // gate evaluation — it never produced an allFailures set to evaluate.
+    const gate = run.terminal ?? evaluateGateState(f.doc, run.allFailures, { proofState });
     const pass = gate.verdict === 'pass';
     if (pass) summary.passed += 1;
     else summary.failed += 1;

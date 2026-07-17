@@ -341,17 +341,21 @@ describe('capability exclusions + fidelity rules', () => {
     expect(keystone.errors).toEqual([]);
   });
 
-  test('mid-session fixture with unknown prestate fails CLOSED; warm-up turns satisfy it', async () => {
-    const turn = baseTurn({ turn_index: 9 });
-    const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN)).toBe(true);
+  test('executable fixture fails CLOSED on mid-session start OR any prestate block (prestate/warm-up are NOT applied)', async () => {
+    // A mid-session first turn needs state the runner never fast-forwards.
+    const midSession = await validateFixtureDocument(baseFixture({ turns: [baseTurn({ turn_index: 9 })] }));
+    expect(midSession.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN)).toBe(true);
 
-    const withWarmup = baseFixture({
-      turns: [turn],
-      prestate: { warm_up_turns: [{ transcript: 'warm up', at_ms: 0 }] },
-    });
-    const r2 = await validateFixtureDocument(withWarmup);
-    expect(r2.errors).toEqual([]);
+    // A prestate block — including warm_up_turns — is REJECTED, not satisfied:
+    // the runner applies neither, so admitting it would replay against wrong
+    // state. Seed via job_state + real preceding turns instead.
+    const withPrestate = await validateFixtureDocument(
+      baseFixture({
+        turns: [baseTurn({ turn_index: 1 })],
+        prestate: { warm_up_turns: [{ transcript: 'warm up', at_ms: 0 }] },
+      }),
+    );
+    expect(withPrestate.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN)).toBe(true);
   });
 
   test('>3 circuits requires provenance-backed recent order or warm-up turns', async () => {

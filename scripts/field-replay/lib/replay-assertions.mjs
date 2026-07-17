@@ -129,24 +129,36 @@ export function matchAudibleOutputs(expectedOutputs, { result, wsFrames }) {
   return { failures, claims };
 }
 
-/** Reading/observation write assertions from expected_operations[]. */
+/** Reading/observation write assertions from expected_operations[].
+ *  Fail-closed: an operation kind the oracle cannot faithfully verify latches
+ *  an INFRASTRUCTURE outcome (which can never satisfy required_green OR an
+ *  expected_red) rather than silently passing an un-checked expectation. */
 export function matchOperations(expectedOps, { result }) {
   const failures = [];
   const readings = result?.extracted_readings ?? [];
   const observations = [...(result?.observations ?? []), ...(result?.observationUpdates ?? [])];
+  const matchReading = (op, c) =>
+    readings.filter((r) => {
+      if (op.field !== undefined && norm(r.field) !== norm(op.field)) return false;
+      if (c != null && norm(r.circuit) !== norm(c)) return false;
+      if (op.board_id !== undefined && op.board_id !== null && norm(r.board_id) !== norm(op.board_id)) return false;
+      if (op.value !== undefined && norm(r.value) !== norm(op.value)) return false;
+      return true;
+    });
   for (const op of expectedOps) {
-    if (op.kind === 'reading' || op.kind === 'board_reading' || op.kind === 'clear' || op.kind === 'rename') {
+    if (op.kind === 'reading' || op.kind === 'board_reading') {
       const id = `reading.${op.operation_id}`;
-      const hits = readings.filter((r) => {
-        if (op.field !== undefined && norm(r.field) !== norm(op.field)) return false;
-        const circuits = op.circuits ?? (op.circuit != null ? [op.circuit] : []);
-        if (circuits.length > 0 && !circuits.some((c) => norm(r.circuit) === norm(c))) return false;
-        if (op.board_id !== undefined && op.board_id !== null && norm(r.board_id) !== norm(op.board_id)) return false;
-        if (op.value !== undefined && norm(r.value) !== norm(op.value)) return false;
-        return true;
-      });
-      if (hits.length === 0) {
-        failures.push({ id, outcome: OUTCOME.FAIL, message: `expected ${op.kind} ${op.field ?? ''} c${op.circuit ?? op.circuits ?? '?'} not written` });
+      // Grouped ops carry `circuits[]` — EVERY declared circuit must have its
+      // write, not just one (the any-one-match bug). A single-circuit op uses
+      // `circuit`. exactly_once additionally requires no duplicate write.
+      const circuits = op.circuits ?? (op.circuit != null ? [op.circuit] : [null]);
+      for (const c of circuits) {
+        const hits = matchReading(op, c);
+        if (hits.length === 0) {
+          failures.push({ id, outcome: OUTCOME.FAIL, message: `expected ${op.kind} ${op.field ?? ''} c${c ?? '?'} not written` });
+        } else if (hits.length > 1 && op.audibility === 'exactly_once') {
+          failures.push({ id, outcome: OUTCOME.FAIL, message: `expected exactly one ${op.kind} ${op.field ?? ''} c${c ?? '?'}, found ${hits.length}` });
+        }
       }
     } else if (op.kind === 'observation' || op.kind === 'observation_update') {
       const id = `observation.${op.operation_id}`;
@@ -160,6 +172,18 @@ export function matchOperations(expectedOps, { result }) {
       } else if (hits.length > 1 && op.audibility === 'exactly_once') {
         failures.push({ id, outcome: OUTCOME.FAIL, message: `expected exactly one ${op.kind}, found ${hits.length}` });
       }
+    } else {
+      // FAIL-CLOSED: clear / rename / create_circuit (and any future kind)
+      // cannot yet be faithfully verified against post-turn state via the
+      // harness result. Latch INFRASTRUCTURE so a fixture declaring one can
+      // NEVER spuriously satisfy required_green or an expected_red — implement
+      // the oracle before admitting the assertion (see fixture-schema.mjs
+      // which also rejects these kinds at validation time).
+      failures.push({
+        id: `operation.unverifiable.${op.operation_id}`,
+        outcome: OUTCOME.INFRASTRUCTURE,
+        message: `operation kind '${op.kind}' has no faithful oracle yet — refusing to assert (infrastructure)`,
+      });
     }
   }
   return failures;
@@ -190,10 +214,68 @@ export function matchExpectedAsks(expectedAsks, { wsFrames, askOrigins }) {
 }
 
 /**
+ * Verify each declared tool call's `schema_expectation` / `dispatcher_expectation`
+ * against what ACTUALLY happened, so a fixture cannot pass while exercising a
+ * materially different path (declared accept but the real schema/dispatcher
+ * rejected, or vice-versa).
+ *   - schema_expectation: validated deterministically via `captured.validateToolInput`
+ *     (the REAL production tool schema compiled with the shared Ajv config) when
+ *     the runner injects it. A mismatch is an assertion FAILURE.
+ *   - dispatcher_expectation: cross-checked against the REAL dispatch log rows
+ *     (`stage6_tool_call` / `stage6.tool_call`) by tool id. A row that
+ *     CONTRADICTS the declaration FAILS; an ABSENT row (accept declared, no
+ *     dispatch row found) latches INFRASTRUCTURE — the call never reached the
+ *     real dispatcher, so no assertion about it can be trusted.
+ */
+export function matchToolExpectations(turn, captured) {
+  const failures = [];
+  const rows = captured.logRows ?? [];
+  const dispatchRow = (id) =>
+    rows.find(
+      (r) =>
+        (r.name === 'stage6_tool_call' || r.name === 'stage6.tool_call') &&
+        (r.meta?.tool_use_id === id || r.meta?.tool_call_id === id),
+    );
+  for (const round of turn.model_rounds ?? []) {
+    if (round.stop_reason !== 'tool_use') continue;
+    for (const tc of round.tool_calls ?? []) {
+      const id = `tool.${tc.id}`;
+      // (1) schema_expectation — deterministic, when the validator is injected.
+      if (captured.validateToolInput && tc.schema_expectation) {
+        const v = captured.validateToolInput(tc.name, tc.input);
+        if (tc.schema_expectation === 'accept' && !v.ok) {
+          failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared schema_expectation:accept but the REAL schema REJECTS its input (${v.errors})` });
+        } else if (tc.schema_expectation === 'reject' && v.ok) {
+          failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared schema_expectation:reject but the REAL schema ACCEPTS its input` });
+        }
+      }
+      // (2) dispatcher_expectation — against the real dispatch log.
+      if (tc.dispatcher_expectation) {
+        const row = dispatchRow(tc.id);
+        if (tc.dispatcher_expectation === 'accept') {
+          if (!row) {
+            failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `tool '${tc.name}' (${tc.id}) declared dispatcher_expectation:accept but never appears in the dispatch log — it did not reach the real dispatcher` });
+          } else if (row.meta?.is_error === true) {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:accept but the REAL dispatcher REJECTED it (${row.meta?.validation_error ?? 'is_error'})` });
+          }
+        } else if (tc.dispatcher_expectation === 'reject') {
+          if (row && row.meta?.is_error !== true) {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:reject but the REAL dispatcher ACCEPTED it` });
+          } else if (row && tc.dispatcher_reject_code && row.meta?.validation_error && !String(row.meta.validation_error).includes(tc.dispatcher_reject_code)) {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' rejected for '${row.meta.validation_error}', not the declared '${tc.dispatcher_reject_code}'` });
+          }
+        }
+      }
+    }
+  }
+  return failures;
+}
+
+/**
  * Evaluate ONE turn. `captured` = { result, wsFrames, logRows,
- * chimeObserved, askOrigins, infrastructureViolations }. Returns the list
- * of failures (possibly empty). Infrastructure violations are returned as
- * a DISTINCT outcome class that can never satisfy expected_red.
+ * chimeObserved, askOrigins, infrastructureViolations, validateToolInput }.
+ * Returns the list of failures (possibly empty). Infrastructure violations
+ * are returned as a DISTINCT outcome class that can never satisfy expected_red.
  */
 export function evaluateTurn(turn, captured) {
   const failures = [];
@@ -239,6 +321,10 @@ export function evaluateTurn(turn, captured) {
 
   // (d) clarification follow-ups — only when declared.
   failures.push(...matchExpectedAsks(turn.expected_asks ?? [], captured));
+
+  // (f) tool-call schema/dispatcher expectations — the fixture's declared
+  // accept/reject verified against the REAL schema + dispatcher outcome.
+  failures.push(...matchToolExpectations(turn, captured));
 
   // (e) F7 wire invariants — HARNESS-OWNED outputs only.
   if (anyConfidenceKeyOnWire(captured.result)) {

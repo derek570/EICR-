@@ -717,15 +717,22 @@ export async function validateFixtureDocument(doc, opts = {}) {
     }
   }
 
-  // Prestate: fail CLOSED when a mid-session fixture has unknown prestate.
+  // Prestate: FAIL CLOSED. The schema admits a `prestate` block and
+  // `warm_up_turns`, but the runner applies NEITHER — the session always
+  // starts fresh and only `job_state` is seeded (Codex #3). Rather than run a
+  // fixture against silently-wrong mid-session state (ask budget, clarify
+  // chains, turn count, dialogue state), an EXECUTABLE fixture may not declare
+  // a prestate block or start mid-session. Seed prior state via `job_state`
+  // plus REAL preceding turns in `turns` (which DO execute), then assert the
+  // target on the final turn. This support lands with the deferred prestate
+  // work in field-replay-hardening-followups.
   const firstTurnIndex = turns[0]?.turn_index ?? 1;
-  if (firstTurnIndex > 1) {
-    const ps = doc.prestate ?? {};
-    const required = ['turn_count', 'ask_budget', 'confirmation_debounce_state', 'obs_clarify_chains', 'readback_window', 'orphan_context', 'dialogue_state'];
-    const hasWarmup = Array.isArray(ps.warm_up_turns) && ps.warm_up_turns.length > 0;
-    const missing = required.filter((k) => ps[k] == null);
-    if (missing.length > 0 && !hasWarmup) {
-      errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/prestate', `mid-session fixture (first turn_index ${firstTurnIndex}) with unknown prestate: ${missing.join(', ')} — supply provenance-backed values or deterministic warm-up turns`));
+  if (EXECUTABLE_STATES.has(doc.gate_state)) {
+    if (doc.prestate && Object.keys(doc.prestate).length > 0) {
+      errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/prestate', `prestate is accepted by the schema but NOT applied by the runner — remove it and seed via job_state + real preceding turns (mid-session helper state is unsupported in v1)`));
+    }
+    if (firstTurnIndex > 1) {
+      errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/turns/0/turn_index', `executable fixture must start at turn_index 1 — the runner never fast-forwards mid-session; seed prior state with real preceding turns instead`));
     }
   }
 

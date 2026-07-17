@@ -131,7 +131,7 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
                 {
                   id: 'sym_tc_zs2',
                   name: 'record_reading',
-                  input: { field: 'measured_zs_ohm', circuit: 2, value: '0.35', confidence: 0.9 },
+                  input: { field: 'measured_zs_ohm', circuit: 2, value: '0.35', confidence: 0.9, source_turn_id: 'sym_turn_1' },
                   schema_expectation: 'accept',
                   dispatcher_expectation: 'accept',
                 },
@@ -174,7 +174,7 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
                 {
                   id: 'sym_tc_zs3',
                   name: 'record_reading',
-                  input: { field: 'measured_zs_ohm', circuit: 3, value: '0.41', confidence: 0.9 },
+                  input: { field: 'measured_zs_ohm', circuit: 3, value: '0.41', confidence: 0.9, source_turn_id: 'sym_turn_2' },
                   schema_expectation: 'accept',
                   dispatcher_expectation: 'accept',
                 },
