@@ -375,6 +375,18 @@ describe('capability exclusions + fidelity rules', () => {
     expect(withOrder.errors).toEqual([]);
   });
 
+  test('duplicate tool_call ids across rounds are rejected (unique-id invariant)', async () => {
+    const turn = baseTurn();
+    // A second round reusing the SAME tool_call id — the real model never does
+    // this, and the matcher correlates evidence by id.
+    turn.model_rounds.unshift({
+      stop_reason: 'tool_use',
+      tool_calls: [{ id: 'sym_tc_1', name: 'record_reading', input: {}, schema_expectation: 'accept', dispatcher_expectation: 'accept' }],
+    });
+    const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
+    expect(r.errors.some((e) => /duplicate tool_call id/.test(e.message))).toBe(true);
+  });
+
   test('schema/dispatcher reject expectations require bounded error codes', async () => {
     const turn = baseTurn();
     turn.model_rounds[0].tool_calls[0].schema_expectation = 'reject';

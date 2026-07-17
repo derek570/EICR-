@@ -768,6 +768,31 @@ export async function validateFixtureDocument(doc, opts = {}) {
     }
   }
 
+  // Tool-call ids must be UNIQUE across every model_round AND branch round.
+  // The real model never reuses a tool_use_id, and the replay matcher
+  // correlates dispatch/emission evidence by id — a duplicate id would let one
+  // invocation's evidence (e.g. one emitted ask_user) satisfy another
+  // invocation's expectation (Codex ask-branch false-pass). Fail closed.
+  const seenToolIds = new Set();
+  const collectRoundIds = (rounds, where) => {
+    for (const r of rounds ?? []) {
+      for (const tc of r.tool_calls ?? []) {
+        if (tc?.id == null) continue;
+        if (seenToolIds.has(tc.id)) {
+          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, where, `duplicate tool_call id '${tc.id}' — ids must be unique across all rounds`));
+        } else {
+          seenToolIds.add(tc.id);
+        }
+      }
+    }
+  };
+  for (const [ti, t] of turns.entries()) {
+    collectRoundIds(t.model_rounds, `/turns/${ti}/model_rounds`);
+    for (const [bi, b] of (t.branches ?? []).entries()) {
+      collectRoundIds(b.rounds, `/turns/${ti}/branches/${bi}/rounds`);
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
