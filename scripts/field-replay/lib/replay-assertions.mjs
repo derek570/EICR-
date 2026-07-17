@@ -35,6 +35,22 @@ export const OUTCOME = Object.freeze({
   INFRASTRUCTURE: 'infrastructure_error',
 });
 
+// ask_user answer_outcomes that mean the dispatcher DECLINED to pose the ask
+// (a "reject" for dispatcher_expectation purposes) — the ask never reached the
+// user. The complement (answered/timeout/user_moved_on/session_*) means the
+// ask WAS posed (an "accept"). Mirrors ASK_USER_ANSWER_OUTCOMES.
+const ASK_DISPATCH_REJECT_OUTCOMES = new Set([
+  'restrained_mode',
+  'ask_budget_exhausted',
+  'gated',
+  'shadow_mode',
+  'validation_error',
+  'duplicate_tool_call_id',
+  'transcript_already_extracted',
+  'dispatcher_error',
+  'prompt_leak_blocked',
+]);
+
 function norm(v) {
   return v == null ? null : String(v);
 }
@@ -265,14 +281,35 @@ export function matchToolExpectations(turn, captured) {
       // row cannot vacuously pass either). ask-like tools have no
       // stage6_tool_call row — they are verified through the ask lifecycle /
       // expected_asks, so their absence is not asserted here.
-      if (tc.dispatcher_expectation) {
+      if (tc.dispatcher_expectation && tc.name === 'ask_user') {
+        // ask_user has NO stage6_tool_call row — it is verified through its
+        // own lifecycle: emission (an ask_user_started frame) = the dispatcher
+        // POSED the ask (accept); a terminal `stage6.ask_user` row whose
+        // answer_outcome is a gate/reject outcome = the dispatcher REJECTED it.
+        // Neither present → unverifiable → infrastructure (no vacuous pass).
+        const id = `tool.dispatcher.${tc.id}`;
+        const askRow = rows.find((r) => r.name === 'stage6.ask_user' && r.meta?.tool_call_id === tc.id);
+        const emitted = askStartedFrames(captured.wsFrames ?? []).some((f) => f.tool_call_id === tc.id);
+        const outcome = askRow?.meta?.answer_outcome;
+        const rejectedOutcome = outcome != null && ASK_DISPATCH_REJECT_OUTCOMES.has(outcome);
+        if (!askRow && !emitted) {
+          failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `ask_user (${tc.id}) declared dispatcher_expectation:${tc.dispatcher_expectation} but was neither emitted nor logged a terminal outcome — unverifiable` });
+        } else if (tc.dispatcher_expectation === 'accept') {
+          if (rejectedOutcome) {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user declared dispatcher_expectation:accept but was gated/rejected (answer_outcome '${outcome}')` });
+          }
+        } else if (tc.dispatcher_expectation === 'reject') {
+          if (!rejectedOutcome) {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user declared dispatcher_expectation:reject but the dispatcher POSED it (answer_outcome '${outcome ?? 'emitted'}')` });
+          } else if (tc.dispatcher_reject_code && outcome !== tc.dispatcher_reject_code) {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `ask_user rejected as '${outcome}', not the declared '${tc.dispatcher_reject_code}'` });
+          }
+        }
+      } else if (tc.dispatcher_expectation) {
         const id = `tool.dispatcher.${tc.id}`;
         const row = dispatchRow(tc.id);
-        const askLike = tc.name === 'ask_user' || tc.name === 'start_dialogue_script';
         if (!row) {
-          if (!askLike) {
-            failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `tool '${tc.name}' (${tc.id}) declared dispatcher_expectation:${tc.dispatcher_expectation} but left NO authoritative stage6_tool_call row — outcome unverifiable` });
-          }
+          failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `tool '${tc.name}' (${tc.id}) declared dispatcher_expectation:${tc.dispatcher_expectation} but left NO authoritative stage6_tool_call row — outcome unverifiable` });
         } else if (tc.dispatcher_expectation === 'accept') {
           if (row.meta?.is_error === true) {
             failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:accept but the REAL dispatcher REJECTED it (${errCode(row.meta?.validation_error) || 'is_error'})` });

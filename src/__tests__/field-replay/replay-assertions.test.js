@@ -115,9 +115,36 @@ describe('matchToolExpectations', () => {
     expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_9' && f.outcome === OUTCOME.FAIL)).toBe(true);
   });
 
-  test('an ask_user tool call with no authoritative row is NOT asserted (lifecycle-verified)', () => {
+  test('ask_user with NO lifecycle evidence (not emitted, no terminal row) → infrastructure', () => {
     const tc = { id: 'toolu_ask', name: 'ask_user', input: {}, dispatcher_expectation: 'accept' };
-    const fails = matchToolExpectations(turnWith(tc), { validateToolInput: acceptValidator, logRows: [] });
-    expect(fails.filter((f) => f.id.startsWith('tool.dispatcher'))).toHaveLength(0);
+    const fails = matchToolExpectations(turnWith(tc), { validateToolInput: acceptValidator, logRows: [], wsFrames: [] });
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_ask' && f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
+  });
+
+  test('ask_user accept SATISFIED when the ask was emitted', () => {
+    const tc = { id: 'toolu_ask2', name: 'ask_user', input: {}, dispatcher_expectation: 'accept' };
+    const captured = { validateToolInput: acceptValidator, logRows: [], wsFrames: [{ type: 'ask_user_started', tool_call_id: 'toolu_ask2' }] };
+    expect(matchToolExpectations(turnWith(tc), captured)).toHaveLength(0);
+  });
+
+  test('ask_user declared accept but GATED (answer_outcome ask_budget_exhausted) FAILS', () => {
+    const tc = { id: 'toolu_ask3', name: 'ask_user', input: {}, dispatcher_expectation: 'accept' };
+    const captured = { validateToolInput: acceptValidator, wsFrames: [], logRows: [{ name: 'stage6.ask_user', meta: { tool_call_id: 'toolu_ask3', answer_outcome: 'ask_budget_exhausted' } }] };
+    const fails = matchToolExpectations(turnWith(tc), captured);
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_ask3' && f.outcome === OUTCOME.FAIL)).toBe(true);
+  });
+
+  test('ask_user declared reject but POSED (emitted) FAILS', () => {
+    const tc = { id: 'toolu_ask4', name: 'ask_user', input: {}, dispatcher_expectation: 'reject' };
+    const captured = { validateToolInput: acceptValidator, logRows: [], wsFrames: [{ type: 'ask_user_started', tool_call_id: 'toolu_ask4' }] };
+    const fails = matchToolExpectations(turnWith(tc), captured);
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_ask4' && f.outcome === OUTCOME.FAIL)).toBe(true);
+  });
+
+  test('ask_user reject with the WRONG declared reject code FAILS', () => {
+    const tc = { id: 'toolu_ask5', name: 'ask_user', input: {}, dispatcher_expectation: 'reject', dispatcher_reject_code: 'gated' };
+    const captured = { validateToolInput: acceptValidator, wsFrames: [], logRows: [{ name: 'stage6.ask_user', meta: { tool_call_id: 'toolu_ask5', answer_outcome: 'ask_budget_exhausted' } }] };
+    const fails = matchToolExpectations(turnWith(tc), captured);
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_ask5' && f.outcome === OUTCOME.FAIL)).toBe(true);
   });
 });
