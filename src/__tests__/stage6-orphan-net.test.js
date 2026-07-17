@@ -451,7 +451,7 @@ describe('orphan net — chimed no-content no-op branch (marker ①)', () => {
   const GARBLE = 'Chuck it too is upstairs lights.';
   const NOOP_RE = /(catch|repeat|come through|say it|once more)/i;
 
-  test('chimed garble no-op → exactly ONE generic apology (no "reading" noun), non-blocking, orphanContext armed', async () => {
+  test('chimed garble no-op → exactly ONE generic apology (no "reading" noun), non-blocking, orphanContext NOT armed', async () => {
     const session = makeSession();
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session, GARBLE, [], opts);
@@ -465,7 +465,11 @@ describe('orphan net — chimed no-content no-op branch (marker ①)', () => {
     expect(prompts[0].text).not.toMatch(/reading|observation/i);
     expect(prompts[0].circuit).toBeNull();
     expect(prompts[0].expects_ios_ack).toBe(false);
-    expect(session.orphanContext).toMatchObject({ transcript: GARBLE, turnNum: 1 });
+    // Codex review (marker-① wave): a pure chime-only garble is NOT carried
+    // forward as orphanContext — we can't classify it, and the next-turn
+    // injection would mislabel it as "that reading" and risk a phantom write.
+    // Only carriesValue/carriesObservation/allRejected shapes arm the context.
+    expect(session.orphanContext == null).toBe(true);
     // Distinct forensic cause.
     const row = opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_prompt_emitted');
     expect(row).toBeDefined();

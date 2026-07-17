@@ -1708,7 +1708,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               // fast-path POST.
               expects_ios_ack: false,
             });
-            session.orphanContext = { transcript: transcriptText, turnNum };
+            // Carry the raw transcript forward ONLY when we have positive
+            // evidence it was a reading/observation/action (carriesValue,
+            // carriesObservation, or a rejected tool call). The next-turn
+            // injection (see :~898) tells the model "I'm repeating that reading
+            // now — work out the field, circuit and value", which is only true
+            // for those shapes. The pure chime-only marker-① case fires on a
+            // garble we CANNOT classify (no digit, no observation lead-in, e.g.
+            // "move to the next board please" that the model no-op'd), so
+            // carrying it forward as "that reading" would mislabel a command and
+            // risk a phantom write next turn — we apologise and let the inspector
+            // re-dictate as a fresh turn instead. (Codex review, marker-① wave.)
+            if (allRejected || carriesObservation || carriesValue) {
+              session.orphanContext = { transcript: transcriptText, turnNum };
+            }
             log.info?.('stage6.orphan_prompt_emitted', {
               sessionId: session.sessionId,
               turnId,
