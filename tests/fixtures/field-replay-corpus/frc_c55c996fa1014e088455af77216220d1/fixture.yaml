@@ -1,0 +1,78 @@
+# Keystone ① — "chime-then-silence via model no-op on a Flux garble".
+#
+# Captured session 36731498-3FA2-4AA6-A80A-7F610F4DE808, turn 4 (2026-07-16
+# 06:13:21 UTC, build 419). The inspector said "Circuit 2 is upstairs lights";
+# Deepgram Flux garbled it to "Chuck it too is upstairs lights." (conf 0.705).
+# The live model treated the garble as a NO-OP (single end_turn round, zero
+# tools) → the backend classified it zero-engagement chitchat → a chime fired
+# with ZERO audible follow-up. This is the F7 invariant-(a) class (Audio-First
+# #1: every chime must be followed by speakable output), reached via
+# model-no-op rather than suppression.
+#
+# RECORDED-lane semantics: the model response is frozen to the faithful capture
+# (end_turn no-op). This fixture therefore locks the BACKEND fix — the
+# pre-emission fallback net that must emit ONE audible apology when a chime
+# fired and nothing audible survived. When that net ships, this turn goes
+# audible and the fixture XPASSes → flip gate_state to required_green in the
+# fixing PR. A pure model/prompt fix is caught by the LIVE lane instead.
+#
+# Provenance: transcript + model behaviour + chime are recorded_full from the
+# CloudWatch capture (see ~/.field-replay-archive/sources/, NOT committed).
+# Fidelity gap (accepted): client name/address fields present in the real
+# session are omitted from job_state — they do not affect the audibility
+# assertion; only the two circuits + board are seeded.
+schema_version: 1
+corpus_id: frc_c55c996fa1014e088455af77216220d1
+purpose: regression
+gate_state: expected_red
+expected_failure_id: audibility.turn
+red_proof_failure_id: audibility.turn
+owner: Derek Beckley
+introduced_at: '2026-07-16T06:13:21Z'
+fix_reference: fix_a6132e85a841e6f39c146a4c4964c609
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: true
+notes: >-
+  Marker ① of the field-replay corpus gate. Slice-1 walking-skeleton fixture:
+  the first REAL captured session promoted to an on-disk corpus fixture. Locks
+  the invariant-(a) beep-then-silence class for the backend apology net.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 1
+      designation: Cooker
+    - number: 2
+      designation: Upstairs Night
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: Chuck it too is upstairs lights.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    chime_provenance_ref: 'chime_invoke ln345 (branch legacy_free_text)'
+    # Faithful capture: rounds:1, tool_call_count_total:0, stop end_turn
+    # (stage6_live_extraction turn-4 readings:0/observations:0; usage 416/83).
+    model_rounds:
+      - stop_reason: end_turn
+        text: ''
