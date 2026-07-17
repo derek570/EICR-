@@ -7,7 +7,7 @@ description: >
   WebSocket: session_start/session_ack/session_resume, transcript,
   extraction + confirmations[], question / ask_user_started /
   ask_user_answered, observation_update, board frames, voice_command_response,
-  cancel_pending_tts, cost_update, chitchat pause/resume, heartbeat, error —
+  cancel_pending_tts, cost_update, heartbeat, error —
   or the client-side gates (TranscriptGate, pre-LLM gate) and the web TTS FIFO.
   Also load it before adding ANY new wire field. Do NOT load for CCU photo
   extraction (certmate-ccu-pipeline), REST endpoints (openapi.yaml /api/docs),
@@ -35,7 +35,7 @@ section gives grep commands instead of trusting them.
 | Role | Files |
 |---|---|
 | Mount point | `src/server.js` — HTTP upgrade routes `url.pathname === '/api/sonnet-stream'` to `initSonnetStream` |
-| Backend (authority) | `src/extraction/sonnet-stream.js` (~4570 lines: WS switch, session lifecycle, emit sites) · `src/extraction/stage6-event-bundler.js` (bundles tool calls into the `extraction` result + synthesises `confirmations[]`) · `src/extraction/stage6-shadow-harness.js` (projects Stage-6 shapes onto the legacy wire before emit) · `src/extraction/dialogue-engine/helpers/wire-emit.js` (script asks) · `src/extraction/chitchat-pause.js` · `src/extraction/cost-tracker.js` (`toCostUpdate()`) |
+| Backend (authority) | `src/extraction/sonnet-stream.js` (~4570 lines: WS switch, session lifecycle, emit sites) · `src/extraction/stage6-event-bundler.js` (bundles tool calls into the `extraction` result + synthesises `confirmations[]`) · `src/extraction/stage6-shadow-harness.js` (projects Stage-6 shapes onto the legacy wire before emit) · `src/extraction/dialogue-engine/helpers/wire-emit.js` (script asks) · `src/extraction/cost-tracker.js` (`toCostUpdate()`) |
 | Web decode/apply | `web/src/lib/recording/sonnet-session.ts` (frame switch in `handleMessage`, all outbound sends) · `web/src/lib/recording/apply-extraction.ts` · `web/src/lib/recording-context.tsx` (orchestration, gate + chime + TTS wiring) |
 | iOS (canon for the data contract) | `CertMateUnified/Sources/Services/ServerWebSocketService.swift` (send/decode) + `DeepgramRecordingViewModel.swift` (apply) — CertMateUnified is a **separate nested git repo** |
 
@@ -150,7 +150,6 @@ ledgers.
 | `correction` | `{field, circuit, value}` | Manual UI edit forwarded as a pseudo-transcript so Sonnet state stays consistent. |
 | `job_state_update` | `{...jobState}` (circuits or boards[]) | Refreshes the server StateSnapshot; if missing after a CCU extraction, Sonnet asks about circuits already on screen. |
 | `select_board` | `{board_id}` | Client-initiated board switch; mutates the snapshot directly (no Sonnet round-trip); server replies `select_board_ack`. Web currently never sends it (decode only). |
-| `chitchat_resume` | `{}` | Manual wake from chitchat pause. |
 | `tts_cancelled_by_user` | `{reason, vad_probability?}` | Barge-in telemetry; log-only server-side. |
 | `heartbeat` | `{}` | §2. |
 | `client_diagnostic` / `client_log_batch` | envelopes | Client debug telemetry → CloudWatch/S3; buffered while disconnected and drained after reconnect. |
@@ -276,8 +275,6 @@ client must CLEAR stale wording, not keep it** (obs-#52 Fix B). Row matching:
 | `voice_command_response` | `{understood, spoken_response, action\|null}` | Sonnet's `spoken_response`/`action` are STRIPPED from `extraction.result` and sent separately. Web plays `spoken_response` via the confirmation FIFO (deliberate divergence, low stakes). |
 | `cancel_pending_tts` | `{prefix, sessionId}` | See §5 — the only frame whose whole point is client-side audio state. |
 | `cost_update` | `{sonnet:{turns,cacheReads,cacheWrites,input,output,compactions,cost}, deepgram:{minutes,cost}, elevenlabs:{characters,cost}, gptVision:{photos,inputTokens,outputTokens,cost}, totalJobCost}` | `cost-tracker.js toCostUpdate()`; sent after each extraction turn. |
-| `chitchat_paused` | `{threshold, reason}` | §6. |
-| `chitchat_resumed` | `{reason}` | wake reason: `wake_word`/`regex_hint`/`observation_prefix`/`negation`/`manual...`. |
 | `field_corrected` | `{circuit, field, previous_value\|null, reason\|null}` | Stage-6 `clear_reading`; emitted per-event AFTER the extraction envelope. |
 | `error` | `{message, recoverable}` | `recoverable:false` + WS close 1008 on transcript rate-limit. |
 | `tool_call_started` / `tool_call_completed` / `circuit_created` / `circuit_updated` / `observation_deleted` | decoded by web (and iOS stubs) | **No backend emit site exists as of 2026-07-06** — reserved for the Phase-6/7 protocol cutover. Don't document them as live; don't delete the decoders. |
@@ -314,17 +311,13 @@ trigger (~20 domain words) → weak trigger (~75) → **block LOW_CONTENT**.
 Blocks emit `voice_latency.gate_blocked` to CloudWatch; UX is deliberate
 silence. Bare negations (`no`/`nope`/`nah`) forward (Option-B correction flow).
 
-**Chitchat pause** (`chitchat-pause.js`). After
-`CHITCHAT_PAUSE_THRESHOLD = 8` consecutive zero-engagement turns (or 3
-consecutive `missing_context` panic-asks, env-tunable) the server emits
-`chitchat_paused` and stops forwarding transcripts to Sonnet — Deepgram and
-client regex keep running; only the paid Sonnet leg stops. Wake triggers, all
-semantic: wake-word regex ("resume", "carry on", "CertMate resume", ...),
-non-empty `regexResults`, observation-prefix match, forwarded negation, or a
-manual `chitchat_resume` frame. **`session_resume` is deliberately NOT a wake
-trigger** (doze cycles defeated the pause — session D8E51F51). On wake, up to
-30 s of suppressed transcripts (`CHITCHAT_REPLAY_HORIZON_MS`) is drained and
-prepended to the wake utterance.
+**Chitchat pause — RETIRED 2026-07-17** (Derek). The `chitchat-pause.js` state
+machine, the `chitchat_paused`/`chitchat_resumed`/`chitchat_resume` frames, the
+`CHITCHAT_*` thresholds, and the client banner/Resume are ALL removed. The
+electrical-term forward-gate (below) is now the sole engagement decision —
+non-electrical chat is filtered at the gate (no chime, no forward), so the
+separate streak-based pause was redundant (and split-brain vs the chime). See
+`docs/reference/changelog.md` (2026-07-17).
 
 **Client-side TranscriptGate** (web `web/src/lib/recording/transcript-gate.ts`,
 literal port of iOS `DeepgramRecordingViewModel.swift` TranscriptGate; both

@@ -56,13 +56,7 @@ import {
 // trigger-free / ≤2-content-word text) and bypasses pending asks,
 // in_response_to replies, and drained-retry replays. Telemetry:
 // voice_latency.gate_blocked. Kill-switch: VOICE_PRE_LLM_GATE=false.
-import {
-  shouldForwardToSonnet,
-  GATE_REASONS,
-  OBSERVATION_PATTERN,
-  COMPLAINT_OR_NEGATION_PATTERN,
-  STANDALONE_NEGATION_PATTERN,
-} from './pre-llm-gate.js';
+import { shouldForwardToSonnet, GATE_REASONS } from './pre-llm-gate.js';
 
 const PRE_LLM_GATE_ENABLED = process.env.VOICE_PRE_LLM_GATE !== 'false';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
