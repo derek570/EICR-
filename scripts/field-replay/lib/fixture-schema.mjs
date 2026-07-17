@@ -734,6 +734,27 @@ export async function validateFixtureDocument(doc, opts = {}) {
     if (firstTurnIndex > 1) {
       errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/turns/0/turn_index', `executable fixture must start at turn_index 1 — the runner never fast-forwards mid-session; seed prior state with real preceding turns instead`));
     }
+    // turn_index must be EXACTLY 1..N (sorted, unique, contiguous): the runner
+    // executes turns in sorted order as session turns 1..N, so a gap like
+    // [1,9] would silently run turn "9" as the 2nd session turn and mislabel
+    // the state it represents (Codex #3 follow-up).
+    if (turns.length > 0) {
+      const idxs = turns.map((t) => t.turn_index).slice().sort((a, b) => a - b);
+      if (!idxs.every((v, i) => v === i + 1)) {
+        errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/turns', `turn_index values must be exactly 1..N (unique, contiguous); got [${turns.map((t) => t.turn_index).join(', ')}]`));
+      }
+    }
+    // Unsupported expected_operations kinds: clear / rename / create_circuit
+    // have no faithful post-state oracle yet, so the runtime latches
+    // infrastructure — reject them at validation too, for a clear author error
+    // (Codex #1). Support returns with field-replay-hardening-followups.
+    for (const [ti, t] of turns.entries()) {
+      for (const [oi, op] of (t.expected_operations ?? []).entries()) {
+        if (op.kind === 'clear' || op.kind === 'rename' || op.kind === 'create_circuit') {
+          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, `/turns/${ti}/expected_operations/${oi}`, `operation kind '${op.kind}' has no faithful oracle yet — unsupported in v1`));
+        }
+      }
+    }
   }
 
   // recentCircuitOrder: >3 circuits requires a complete provenance-backed

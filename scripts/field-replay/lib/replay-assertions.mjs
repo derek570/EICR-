@@ -230,39 +230,50 @@ export function matchExpectedAsks(expectedAsks, { wsFrames, askOrigins }) {
 export function matchToolExpectations(turn, captured) {
   const failures = [];
   const rows = captured.logRows ?? [];
+  // ONLY the authoritative `stage6_tool_call` rows carry the real dispatch
+  // outcome (is_error + validation_error). The thin `stage6.tool_call`
+  // (outcome:'stub_ok') rows do NOT carry is_error, so an errored call logged
+  // there must never satisfy dispatcher_expectation:accept — exclude them.
   const dispatchRow = (id) =>
-    rows.find(
-      (r) =>
-        (r.name === 'stage6_tool_call' || r.name === 'stage6.tool_call') &&
-        (r.meta?.tool_use_id === id || r.meta?.tool_call_id === id),
-    );
+    rows.find((r) => r.name === 'stage6_tool_call' && (r.meta?.tool_use_id === id || r.meta?.tool_call_id === id));
+  // Normalise a validation_error that may be a string OR a structured object
+  // ({code}) — String(obj) would collapse to "[object Object]" and never match.
+  const errCode = (ve) => (ve == null ? '' : typeof ve === 'string' ? ve : String(ve.code ?? JSON.stringify(ve)));
   for (const round of turn.model_rounds ?? []) {
     if (round.stop_reason !== 'tool_use') continue;
     for (const tc of round.tool_calls ?? []) {
-      const id = `tool.${tc.id}`;
-      // (1) schema_expectation — deterministic, when the validator is injected.
-      if (captured.validateToolInput && tc.schema_expectation) {
-        const v = captured.validateToolInput(tc.name, tc.input);
-        if (tc.schema_expectation === 'accept' && !v.ok) {
-          failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared schema_expectation:accept but the REAL schema REJECTS its input (${v.errors})` });
-        } else if (tc.schema_expectation === 'reject' && v.ok) {
-          failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared schema_expectation:reject but the REAL schema ACCEPTS its input` });
+      // (1) schema_expectation — deterministic Ajv against the REAL tool schema.
+      // Distinct id from the dispatcher assertion so two independent failures
+      // never collapse into one (an expected_red requires EXACTLY one failure).
+      if (tc.schema_expectation) {
+        if (!captured.validateToolInput) {
+          failures.push({ id: `tool.schema.${tc.id}`, outcome: OUTCOME.INFRASTRUCTURE, message: `cannot verify schema_expectation for '${tc.name}' — tool-schema validator unavailable` });
+        } else {
+          const v = captured.validateToolInput(tc.name, tc.input);
+          if (tc.schema_expectation === 'accept' && !v.ok) {
+            failures.push({ id: `tool.schema.${tc.id}`, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared schema_expectation:accept but the REAL schema REJECTS its input (${v.errors})` });
+          } else if (tc.schema_expectation === 'reject' && v.ok) {
+            failures.push({ id: `tool.schema.${tc.id}`, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared schema_expectation:reject but the REAL schema ACCEPTS its input` });
+          }
         }
       }
-      // (2) dispatcher_expectation — against the real dispatch log.
+      // (2) dispatcher_expectation — CONTRADICTION-only against the real
+      // dispatch log (a found row that disagrees FAILS). An absent row is not
+      // asserted here (a model-emitted ask_user leaves no stage6_tool_call
+      // row); the operation oracle covers the accept EFFECT (did the write land).
       if (tc.dispatcher_expectation) {
         const row = dispatchRow(tc.id);
-        if (tc.dispatcher_expectation === 'accept') {
-          if (!row) {
-            failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `tool '${tc.name}' (${tc.id}) declared dispatcher_expectation:accept but never appears in the dispatch log — it did not reach the real dispatcher` });
-          } else if (row.meta?.is_error === true) {
-            failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:accept but the REAL dispatcher REJECTED it (${row.meta?.validation_error ?? 'is_error'})` });
-          }
-        } else if (tc.dispatcher_expectation === 'reject') {
-          if (row && row.meta?.is_error !== true) {
+        const id = `tool.dispatcher.${tc.id}`;
+        if (row && tc.dispatcher_expectation === 'accept' && row.meta?.is_error === true) {
+          failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:accept but the REAL dispatcher REJECTED it (${errCode(row.meta?.validation_error) || 'is_error'})` });
+        } else if (row && tc.dispatcher_expectation === 'reject') {
+          if (row.meta?.is_error !== true) {
             failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:reject but the REAL dispatcher ACCEPTED it` });
-          } else if (row && tc.dispatcher_reject_code && row.meta?.validation_error && !String(row.meta.validation_error).includes(tc.dispatcher_reject_code)) {
-            failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' rejected for '${row.meta.validation_error}', not the declared '${tc.dispatcher_reject_code}'` });
+          } else if (tc.dispatcher_reject_code) {
+            const actual = errCode(row.meta?.validation_error);
+            if (actual && !actual.includes(tc.dispatcher_reject_code)) {
+              failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' rejected for '${actual}', not the declared '${tc.dispatcher_reject_code}'` });
+            }
           }
         }
       }
