@@ -1,0 +1,156 @@
+# Keystone ⑤ — "an ambiguous C2/C3 observation coded outright with NO clarify ask".
+#
+# Field capture, build 419 (2026-07-16). A prior turn recorded a C3 observation
+# for a small hole in the SIDE of the consumer unit (after a clarify ask — the
+# good twin). Then the inspector reported "a small hole in the TOP of the
+# consumer unit" — a location that compromises the enclosure IP rating, i.e.
+# genuinely C2-vs-C3 ambiguous. The live model coded it C3 OUTRIGHT and never
+# opened a clarification chain. The confirmation WAS spoken (Audio-First held),
+# but the coding decision needed a follow-up question that never came.
+#
+# This fixture reproduces that: turn 1 seeds the prior side-hole C3 observation
+# (a real preceding turn — job_state.observations is NOT applied by the runner);
+# turn 2 replays the frozen top-hole record_observation and asserts, via
+# expected_asks, that a clarification ask MUST accompany the coding of an
+# ambiguous observation. On main that ask does not occur → the ONE expected
+# failure is `clarification.ask_0` (RED).
+#
+# RECORDED-lane semantics (like keystone ①): the model response is frozen, so
+# this fixture locks a BACKEND clarify-net — a net that detects an ambiguous
+# C-code observation recorded WITHOUT a preceding clarify and forces the ask
+# (analogous to the F7 no-op apology net). When that net ships, a clarify ask
+# appears in the replay → the fixture XPASSes → flip gate_state to
+# required_green in the fixing PR. A pure model/prompt fix (the model itself
+# learning to ask) is caught by the deferred LIVE lane instead; until either
+# ships this fixture correctly stays RED (and the 30-day expiry freeze forces a
+# decision). The raw session id ↔ opaque corpus id mapping lives in the private
+# archive, never here.
+schema_version: 1
+corpus_id: frc_603514c7831bfb0a936fa280171fe8a0
+purpose: regression
+gate_state: expected_red
+expected_failure_id: clarification.ask_0
+red_proof_failure_id: clarification.ask_0
+owner: Derek Beckley
+introduced_at: '2026-07-16T06:19:07Z'
+fix_reference: fix_a0fcf45a46b3873fd8504f5e66c1a532
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: true
+notes: >-
+  Marker ⑤ of the field-replay corpus gate. Slice-2 fixture: an ambiguous
+  C2/C3 observation coded without the required clarification ask. Turn 1 seeds
+  the prior C3 side-hole observation via a real preceding turn (fidelity note:
+  turn 1 is a simplified state-seeding turn — the real prior turn also asked a
+  clarify; only the resulting C3 observation matters here).
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 1
+      designation: Cooker
+    - number: 2
+      designation: Upstairs Lights
+    - number: 3
+      designation: Downstairs Socket
+    - number: 4
+      designation: Upstairs Sockets
+recent_circuit_order:
+  value: [2, 3, 4]
+  provenance: reconstructed_reviewed
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  # Turn 1 — SEED: record the prior side-hole C3 observation. Must produce ZERO
+  # failures (it just establishes state for turn 2).
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: reconstructed_reviewed
+    transcript: Observation, the fuse board has a small hole in the side.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_obs_side
+            name: record_observation
+            input:
+              code: C3
+              location: consumer unit
+              text: Small hole in the side of the consumer unit enclosure.
+              circuit: null
+              suggested_regulation: '522.6.201'
+              schedule_item: '5.12.1'
+              rationale: Minor enclosure penetration not exposing live parts.
+              clarification_chain_id: null
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations:
+      - operation_id: op_obs_side
+        kind: observation
+        value:
+          code: C3
+          text_contains: side
+        audibility: exactly_once
+  # Turn 2 — TARGET: the ambiguous top-hole coded C3 with NO clarify ask. The
+  # observation DOES land (the bug); the RED is the MISSING clarification ask.
+  - turn_index: 2
+    at_ms: 30000
+    at_ms_provenance: reconstructed_reviewed
+    transcript: Observation, there is a small hole in the top of the consumer unit.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_obs_top
+            name: record_observation
+            input:
+              code: C3
+              location: top of consumer unit
+              text: Small hole in the top of the consumer unit enclosure.
+              circuit: null
+              suggested_regulation: '522.6.201'
+              schedule_item: '5.12.1'
+              rationale: Hole in the top of the enclosure may compromise the IP rating.
+              clarification_chain_id: null
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations:
+      - operation_id: op_obs_top
+        kind: observation
+        value:
+          code: C3
+          text_contains: top
+        audibility: exactly_once
+    # The RED: a top-of-CU hole is C2-vs-C3 ambiguous (IP-rating relevant), so
+    # the coding MUST be preceded/accompanied by a clarification ask. On main
+    # the model codes it outright → this ask is absent → clarification.ask_0.
+    expected_asks:
+      - origin: model
+        reason: observation_confirmation
