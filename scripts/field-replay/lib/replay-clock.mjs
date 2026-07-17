@@ -59,8 +59,11 @@ export const TIMER_CLASSES = Object.freeze({
  * extend; tests supply fabricated callsites.
  */
 export const DEFAULT_CALLSITE_ALLOWLIST = Object.freeze([
-  { class: TIMER_CLASSES.QUESTION_GATE, callsite: /stage6-dispatcher-ask/, delay: QUESTION_GATE_DELAY_MS },
-  { class: TIMER_CLASSES.ASK_TIMEOUT, callsite: /stage6-dispatcher-ask/, delay: ASK_USER_TIMEOUT_MS },
+  // The 1.5s QUESTION_GATE debounce is armed by the gate WRAPPER
+  // (stage6-ask-gate-wrapper.js:465 — verified against the live turn);
+  // the dispatcher pattern is retained for legacy callsites.
+  { class: TIMER_CLASSES.QUESTION_GATE, callsite: /stage6-ask-gate-wrapper|stage6-dispatcher-ask/, delay: QUESTION_GATE_DELAY_MS },
+  { class: TIMER_CLASSES.ASK_TIMEOUT, callsite: /stage6-dispatcher-ask|stage6-ask-gate-wrapper/, delay: ASK_USER_TIMEOUT_MS },
   { class: TIMER_CLASSES.VOICE_FINALIZER, callsite: /voice-latency|finalizer/ },
 ]);
 
