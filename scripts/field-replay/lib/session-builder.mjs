@@ -77,7 +77,6 @@ export const HARNESS_OPTION_TABLE = Object.freeze({
   filledSlotsShadow: { source: 'entry.filledSlotsShadow' },
   fallbackToLegacy: { source: 'fixture field (=== true semantics preserved)' },
   ws: { source: 'the replay WS stub for the turn' },
-  chitchatNotifier: { source: 'production-equivalent closure over chitchat-pause.js noteMissingContextAsk + ensureChitchatState (it mutates missing-context streak state and can emit chitchat_paused — silent omission would diverge repeated missing-context scenarios)' },
   regexFastCorrelationId: { source: 'SINGULAR production option (sonnet-stream.js:4343; a plural property would be silently ignored) — fixture may store array-valued regex_fast_correlation_ids; the builder passes per-turn through the singular option; absence passed only when evidence-backed', capability_exclusion: 'fast_path_finalizer' },
   logger: { source: 'the replay capturing logger (harness-supported option; production omits it and uses the module logger — the replay supplies it to capture rows per turn)' },
 });
@@ -87,8 +86,7 @@ export const HARNESS_OPTION_TABLE = Object.freeze({
  * carries the dynamically imported production factories:
  * { EICRExtractionSession, activeSessions, createPendingAsksRegistry,
  *   createAskBudget, snapshotFlagsForSession, parseVoiceLatencyCapabilities,
- *   createFilledSlotsShadowLogger, chitchat: {ensureChitchatState,
- *   noteMissingContextAsk} }.
+ *   createFilledSlotsShadowLogger }.
  */
 export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay-recorded-dummy', logger, toolCallsMode = 'live' }) {
   const {
@@ -99,7 +97,6 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
     snapshotFlagsForSession,
     parseVoiceLatencyCapabilities,
     createFilledSlotsShadowLogger,
-    chitchat,
   } = modules;
 
   const corpusId = fixture.corpus_id;
@@ -114,7 +111,6 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
     voice_latency: { version: 1, supports: Array.isArray(capsList) ? capsList : [] },
   };
 
-  const chitchatEmissions = [];
   const entry = {
     session,
     questionGate: null, // deliberately_excluded — see ACTIVE_ENTRY_CLASSIFICATION
@@ -155,29 +151,10 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
   });
   activeSessions.set(sessionId, entry);
 
-  // Production-equivalent chitchat notifier (mirrors sonnet-stream.js:4320).
-  const chitchatNotifier = (askReason) => {
-    const ccState = chitchat.ensureChitchatState(entry);
-    chitchat.noteMissingContextAsk({
-      state: ccState,
-      askReason,
-      sendEnvelope: (env) => {
-        chitchatEmissions.push(env);
-        if (entry.ws && entry.ws.readyState === entry.ws.OPEN) {
-          entry.ws.send(JSON.stringify(env));
-        }
-      },
-      logger,
-      sessionId,
-    });
-  };
-
   return {
     sessionId,
     session,
     entry,
-    chitchatNotifier,
-    chitchatEmissions,
     /** The fixture's seeded job state — the runner passes it to session.start(). */
     fixtureJobState: fixture.job_state ?? { boards: [], circuits: [] },
     /** Build the per-turn harness options (mirrors sonnet-stream.js:4247). */
@@ -202,7 +179,6 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
         filledSlotsShadow: entry.filledSlotsShadow,
         fallbackToLegacy: entry.fallbackToLegacy === true,
         ws,
-        chitchatNotifier,
         ...(regexFastCorrelationId !== undefined ? { regexFastCorrelationId } : {}),
         logger,
       };

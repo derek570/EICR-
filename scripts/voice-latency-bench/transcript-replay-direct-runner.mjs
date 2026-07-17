@@ -1081,7 +1081,6 @@ async function importExtractionModules() {
     { createAskBudget },
     vlc,
     { createFilledSlotsShadowLogger },
-    chitchat,
     { runShadowHarness },
   ] = await Promise.all([
     import('../../src/extraction/eicr-extraction-session.js'),
@@ -1090,7 +1089,6 @@ async function importExtractionModules() {
     import('../../src/extraction/stage6-ask-budget.js'),
     import('../../src/extraction/voice-latency-config.js'),
     import('../../src/extraction/stage6-filled-slots-shadow.js'),
-    import('../../src/extraction/chitchat-pause.js'),
     import('../../src/extraction/stage6-shadow-harness.js'),
   ]);
   return {
@@ -1101,10 +1099,6 @@ async function importExtractionModules() {
     snapshotFlagsForSession: vlc.snapshotFlagsForSession,
     parseVoiceLatencyCapabilities: vlc.parseVoiceLatencyCapabilities,
     createFilledSlotsShadowLogger,
-    chitchat: {
-      ensureChitchatState: chitchat.ensureChitchatState,
-      noteMissingContextAsk: chitchat.noteMissingContextAsk,
-    },
     runShadowHarness,
   };
 }
