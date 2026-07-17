@@ -123,3 +123,8 @@ ehthumbs.db
 .planning-stage6-agentic/handoffs/voice-latency-2026-05-23/stage0-results/voice-ab-samples/
 
 voice-regression-report.md
+
+# field-replay corpus: drafts + private review manifests are NEVER committed
+.field-replay-drafts/
+tests/fixtures/field-replay-corpus/**/*.review.json
+*.manifest.json

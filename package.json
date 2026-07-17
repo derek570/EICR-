@@ -22,7 +22,10 @@
     "migrate:up": "node-pg-migrate up",
     "pwa-replay": "node scripts/pwa-replay/run.mjs",
     "pwa-replay:session": "node scripts/pwa-replay/session.mjs",
-    "pwa-replay:sweep": "PWA_SWEEP=1 npm run --workspace=web test -- tests/harness/field-sweep.lane.test.ts"
+    "pwa-replay:sweep": "PWA_SWEEP=1 npm run --workspace=web test -- tests/harness/field-sweep.lane.test.ts",
+    "replay:field-corpus": "node scripts/voice-latency-bench/transcript-replay-direct.mjs --model-lane=recorded",
+    "replay:field-corpus:evidence": "node scripts/voice-latency-bench/transcript-replay-direct.mjs --model-lane=recorded --evidence-mode",
+    "replay:field-corpus:prepush": "node scripts/field-replay/prepush-gate.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
@@ -83,8 +86,11 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.14.0",
+    "@sinonjs/fake-timers": "^13.0.5",
     "@typescript-eslint/eslint-plugin": "^8.56.0",
     "@typescript-eslint/parser": "^8.56.0",
+    "ajv": "^8.20.0",
+    "canonicalize": "2.1.0",
     "eslint": "^9.39.3",
     "globals": "^17.3.0",
     "husky": "^9.1.7",

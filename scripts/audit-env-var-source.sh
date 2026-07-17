@@ -110,6 +110,27 @@ JEST_WORKER_ID
 NODE_OPTIONS
 CI
 
+# --- Field-replay corpus gate (test-infra only; plan replay-corpus-gate-2026-07) ---
+# Read ONLY by the field-replay tooling under scripts/field-replay/** and its
+# src/__tests__/field-replay/** tests — never by any production extraction path.
+# The recorded lane SETS these to deny AWS credential acquisition (the aws-
+# credential-deny module); the evidence gate reads the subject SHA. None is a
+# production knob, so an in-code/test default is correct and a task-def write
+# would be wrong.
+AWS_ACCESS_KEY_ID                   # cleared/asserted by aws-credential-deny (recorded lane)
+AWS_SECRET_ACCESS_KEY              # cleared/asserted by aws-credential-deny
+AWS_SESSION_TOKEN                  # cleared by aws-credential-deny
+AWS_PROFILE                        # cleared by aws-credential-deny
+AWS_ROLE_ARN                       # cleared by aws-credential-deny
+AWS_WEB_IDENTITY_TOKEN_FILE        # cleared by aws-credential-deny
+AWS_CONTAINER_CREDENTIALS_RELATIVE_URI  # cleared by aws-credential-deny
+AWS_CONTAINER_CREDENTIALS_FULL_URI      # cleared by aws-credential-deny
+AWS_SHARED_CREDENTIALS_FILE        # pointed at an empty file by aws-credential-deny
+AWS_CONFIG_FILE                    # pointed at an empty file by aws-credential-deny
+AWS_EC2_METADATA_DISABLED          # set true by aws-credential-deny
+GITHUB_TOKEN                       # gh auth for CI tooling
+GH_TOKEN                           # gh auth for CI tooling
+
 # --- Pre-existing unsourced vars (allowlisted 2026-05-27 as part of
 # Phase 0 of the snapshot-restructure sprint). Each was added to code
 # before this audit existed; the entries below capture the existing
