@@ -178,14 +178,6 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // pre-2026-04-27 behaviour (just echo untrusted_user_text).
   const autoResolveWrite =
     typeof opts?.autoResolveWrite === 'function' ? opts.autoResolveWrite : null;
-  // 2026-05-26 — chitchat panic-ask streak notifier. Called once per
-  // EMITTED ask_user (after validation + prompt-leak filter, after the
-  // registry.register succeeds), passing input.reason verbatim. The
-  // notifier is the only callable that knows about the WS-entry's
-  // chitchatState; the dispatcher itself stays state-free w.r.t. the
-  // chitchat machinery. See chitchat-pause.js → noteMissingContextAsk.
-  const chitchatNotifier =
-    typeof opts?.chitchatNotifier === 'function' ? opts.chitchatNotifier : null;
   // F7 Item 2 — best-effort emission OBSERVATION hook. Fired with
   // {toolCallId, source:'initial'} at the initial-ask ws.send SUCCESS site and
   // threaded to brokerDeterministicAsk (source:'pvr'). Wrapper-suppressed,
@@ -552,24 +544,6 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
             onAskUserStarted({ toolCallId, source: 'initial' });
           } catch {
             // best-effort observer — never propagate
-          }
-        }
-
-        // 2026-05-26 — notify the chitchat-pause panic-ask counter. Runs
-        // regardless of fallbackToLegacy because the cost we want to bound
-        // (consecutive Sonnet turns burning $0.027 on missing_context asks
-        // the inspector ignores) is independent of which wire shape iOS
-        // sees. Wrapped in its own try/catch — a notifier bug must not
-        // tear down the ask emission.
-        if (chitchatNotifier) {
-          try {
-            chitchatNotifier(input.reason);
-          } catch (err) {
-            logger.warn?.('chitchat.notifier_threw', {
-              sessionId,
-              tool_call_id: toolCallId,
-              error: err?.message,
-            });
           }
         }
 

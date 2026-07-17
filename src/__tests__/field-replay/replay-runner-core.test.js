@@ -28,7 +28,6 @@ import {
   parseVoiceLatencyCapabilities,
 } from '../../extraction/voice-latency-config.js';
 import { createFilledSlotsShadowLogger } from '../../extraction/stage6-filled-slots-shadow.js';
-import { ensureChitchatState, noteMissingContextAsk } from '../../extraction/chitchat-pause.js';
 import { runShadowHarness } from '../../extraction/stage6-shadow-harness.js';
 
 const modules = {
@@ -39,7 +38,6 @@ const modules = {
   snapshotFlagsForSession,
   parseVoiceLatencyCapabilities,
   createFilledSlotsShadowLogger,
-  chitchat: { ensureChitchatState, noteMissingContextAsk },
   runShadowHarness,
 };
 

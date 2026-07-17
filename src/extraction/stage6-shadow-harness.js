@@ -676,12 +676,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       let asks = createAskDispatcher(liveSession, log, turnId, pendingAsks, ws, {
         fallbackToLegacy: options.fallbackToLegacy === true,
         autoResolveWrite: liveAutoResolveWrite,
-        // 2026-05-26 — chitchat panic-ask streak notifier. Forwarded
-        // verbatim from sonnet-stream.js's runShadowHarness call site;
-        // closes over the WS-entry chitchatState that lives in
-        // activeSessions. Optional — when omitted, the dispatcher
-        // no-ops the notify step.
-        chitchatNotifier: options.chitchatNotifier,
         // F7 Item 2 — the emission audit hook (initial + pvr broker sends).
         onAskUserStarted,
         // F7 Item 3 — the CONTROL hook (arms the watchdog latch on register)
