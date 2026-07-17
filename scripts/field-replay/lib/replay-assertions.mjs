@@ -257,22 +257,35 @@ export function matchToolExpectations(turn, captured) {
           }
         }
       }
-      // (2) dispatcher_expectation — CONTRADICTION-only against the real
-      // dispatch log (a found row that disagrees FAILS). An absent row is not
-      // asserted here (a model-emitted ask_user leaves no stage6_tool_call
-      // row); the operation oracle covers the accept EFFECT (did the write land).
+      // (2) dispatcher_expectation — verified against the ONE authoritative
+      // stage6_tool_call row. Every non-ask tool call MUST leave exactly one;
+      // its absence (including a dispatcher-exception that logs only the thin
+      // stub_ok/dispatcher_error row) means the outcome is UNVERIFIABLE →
+      // infrastructure, which can never satisfy accept OR reject (so a missing
+      // row cannot vacuously pass either). ask-like tools have no
+      // stage6_tool_call row — they are verified through the ask lifecycle /
+      // expected_asks, so their absence is not asserted here.
       if (tc.dispatcher_expectation) {
-        const row = dispatchRow(tc.id);
         const id = `tool.dispatcher.${tc.id}`;
-        if (row && tc.dispatcher_expectation === 'accept' && row.meta?.is_error === true) {
-          failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:accept but the REAL dispatcher REJECTED it (${errCode(row.meta?.validation_error) || 'is_error'})` });
-        } else if (row && tc.dispatcher_expectation === 'reject') {
+        const row = dispatchRow(tc.id);
+        const askLike = tc.name === 'ask_user' || tc.name === 'start_dialogue_script';
+        if (!row) {
+          if (!askLike) {
+            failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `tool '${tc.name}' (${tc.id}) declared dispatcher_expectation:${tc.dispatcher_expectation} but left NO authoritative stage6_tool_call row — outcome unverifiable` });
+          }
+        } else if (tc.dispatcher_expectation === 'accept') {
+          if (row.meta?.is_error === true) {
+            failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:accept but the REAL dispatcher REJECTED it (${errCode(row.meta?.validation_error) || 'is_error'})` });
+          }
+        } else if (tc.dispatcher_expectation === 'reject') {
           if (row.meta?.is_error !== true) {
             failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' declared dispatcher_expectation:reject but the REAL dispatcher ACCEPTED it` });
           } else if (tc.dispatcher_reject_code) {
+            // Require a non-empty code and compare EXACTLY (no substring
+            // collision between distinct codes; a missing code cannot confirm).
             const actual = errCode(row.meta?.validation_error);
-            if (actual && !actual.includes(tc.dispatcher_reject_code)) {
-              failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' rejected for '${actual}', not the declared '${tc.dispatcher_reject_code}'` });
+            if (actual !== tc.dispatcher_reject_code) {
+              failures.push({ id, outcome: OUTCOME.FAIL, message: `tool '${tc.name}' rejected for '${actual || '(no code)'}', not the declared '${tc.dispatcher_reject_code}'` });
             }
           }
         }

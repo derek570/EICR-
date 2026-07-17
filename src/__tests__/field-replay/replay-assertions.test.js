@@ -80,4 +80,44 @@ describe('matchToolExpectations', () => {
     const fails = matchToolExpectations(turnWith(tc), { logRows: [] });
     expect(fails.some((f) => f.id === 'tool.schema.toolu_4' && f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
   });
+
+  test('an ABSENT authoritative row → infrastructure for accept (never a vacuous pass)', () => {
+    const tc = { id: 'toolu_5', name: 'record_reading', input: {}, dispatcher_expectation: 'accept' };
+    const fails = matchToolExpectations(turnWith(tc), { validateToolInput: acceptValidator, logRows: [] });
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_5' && f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
+  });
+
+  test('an ABSENT authoritative row → infrastructure for reject too (missing ≠ satisfied)', () => {
+    const tc = { id: 'toolu_6', name: 'record_reading', input: {}, dispatcher_expectation: 'reject' };
+    const fails = matchToolExpectations(turnWith(tc), { validateToolInput: acceptValidator, logRows: [] });
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_6' && f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
+  });
+
+  test('a dispatcher-error-only thin row (no authoritative row) → infrastructure', () => {
+    const tc = { id: 'toolu_7', name: 'record_reading', input: {}, dispatcher_expectation: 'accept' };
+    const captured = { validateToolInput: acceptValidator, logRows: [{ name: 'stage6.tool_call', meta: { tool_call_id: 'toolu_7', outcome: 'dispatcher_error' } }] };
+    const fails = matchToolExpectations(turnWith(tc), captured);
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_7' && f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
+  });
+
+  test('reject with a MISSING validation_error but a declared reject_code FAILS (cannot confirm)', () => {
+    const tc = { id: 'toolu_8', name: 'record_reading', input: {}, dispatcher_expectation: 'reject', dispatcher_reject_code: 'circuit_not_found' };
+    const captured = { validateToolInput: acceptValidator, logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_8', is_error: true, validation_error: null } }] };
+    const fails = matchToolExpectations(turnWith(tc), captured);
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_8' && f.outcome === OUTCOME.FAIL)).toBe(true);
+  });
+
+  test('reject_code compares EXACTLY (no substring collision)', () => {
+    const tc = { id: 'toolu_9', name: 'record_reading', input: {}, dispatcher_expectation: 'reject', dispatcher_reject_code: 'not_found' };
+    const captured = { validateToolInput: acceptValidator, logRows: [{ name: 'stage6_tool_call', meta: { tool_use_id: 'toolu_9', is_error: true, validation_error: { code: 'circuit_not_found' } } }] };
+    const fails = matchToolExpectations(turnWith(tc), captured);
+    // 'not_found' is a SUBSTRING of 'circuit_not_found' but not equal → must FAIL.
+    expect(fails.some((f) => f.id === 'tool.dispatcher.toolu_9' && f.outcome === OUTCOME.FAIL)).toBe(true);
+  });
+
+  test('an ask_user tool call with no authoritative row is NOT asserted (lifecycle-verified)', () => {
+    const tc = { id: 'toolu_ask', name: 'ask_user', input: {}, dispatcher_expectation: 'accept' };
+    const fails = matchToolExpectations(turnWith(tc), { validateToolInput: acceptValidator, logRows: [] });
+    expect(fails.filter((f) => f.id.startsWith('tool.dispatcher'))).toHaveLength(0);
+  });
 });
