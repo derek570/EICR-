@@ -196,7 +196,6 @@ export class FakeSonnetSession implements SonnetSessionLike {
   sendAskUserAnswered(toolCallId: string, text: string): void {
     this.sentAskAnswers.push({ toolCallId, text });
   }
-  sendChitchatResume(): void {}
   sendCompactRequest(): void {}
   sendJobStateUpdate(): void {}
   peekInFlightToolCallId(): string | null {

@@ -56,7 +56,6 @@ export interface SonnetSessionLike {
   resume(): void;
   sendTranscript(text: string, options?: unknown): void;
   sendAskUserAnswered(toolCallId: string, text: string, utteranceId?: string): void;
-  sendChitchatResume(): void;
   sendCompactRequest(): void;
   sendJobStateUpdate(job: unknown): void;
   peekInFlightToolCallId(): string | null;
