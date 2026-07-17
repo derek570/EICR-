@@ -68,9 +68,23 @@ if (onMain) {
   process.exit(strict.code || 1);
 }
 
+// Fail CLOSED if we cannot even parse the strict runner's summary. A crash,
+// an OOM, or non-JSON stdout leaves `strict.summary === null`; without a
+// parsed result set we cannot prove the failure is a benign expected_red
+// XPASS, so an infrastructure failure must NEVER be silently downgraded to
+// permission-to-push. (Previously `results` defaulted to [], every filter
+// was empty, and the hook exited 0 — a silent local bypass on any crash.)
+if (!strict.summary || !Array.isArray(strict.summary.results)) {
+  process.stderr.write(
+    'field-replay prepush: strict gate failed and produced no parseable summary ' +
+      '(crash / non-JSON output) — failing closed, cannot bypass.\n',
+  );
+  process.exit(strict.code || 1);
+}
+
 // Non-main: the ONLY acceptable failure is an unexpired expected_red whose
 // SOLE outcome is the XPASS (or the not-yet-evidenced expected_red at F).
-const results = strict.summary?.results ?? [];
+const results = strict.summary.results;
 const nonXpass = results.filter(
   (r) => r.verdict !== 'pass' && r.verdict !== 'reported' && r.verdict !== 'xpass',
 );
@@ -86,6 +100,15 @@ if (nonXpass.length > 0) {
 // Every failure is an XPASS: rerun those fixtures in proof mode and require
 // zero assertion/infrastructure failures (permission to push, not evidence).
 const xpassIds = results.filter((r) => r.verdict === 'xpass').map((r) => r.corpusId);
+if (xpassIds.length === 0) {
+  // The strict gate exited non-zero but no fixture is an expected_red XPASS —
+  // there is nothing to justify a bypass (e.g. empty result set on a runner
+  // fault). Fail closed rather than exit 0 on an unexplained non-zero gate.
+  process.stderr.write(
+    'field-replay prepush: strict gate failed with no expected_red XPASS to bypass — failing closed.\n',
+  );
+  process.exit(strict.code || 1);
+}
 process.stderr.write(
   `field-replay prepush (non-main '${branch}'): ${xpassIds.length} expected_red XPASS — verifying in proof mode…\n`,
 );

@@ -114,7 +114,12 @@ export function isAudibleText(text) {
 export function turnIsAudible(result, sentFrames) {
   const confs = Array.isArray(result?.confirmations) ? result.confirmations : [];
   const spoke = confs.some((c) => isAudibleText(c?.text));
-  const emitted = askStartedFrames(sentFrames).length > 0;
+  // An emitted ask counts as audible ONLY if it carries speakable question
+  // text. A chime followed by an empty/whitespace-only ask frame is silence
+  // to a hands-free inspector — counting the bare frame would let the
+  // beep-to-speech invariant pass with nothing spoken (see the line-100
+  // invariant: a whitespace-only prompt must NOT count).
+  const emitted = askStartedFrames(sentFrames).some((f) => isAudibleText(f?.question));
   return spoke || emitted;
 }
 

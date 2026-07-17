@@ -409,6 +409,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
             } catch (err) {
               if (err.infrastructure) {
                 violations.push(err.message);
+                process.stderr.write(`field-replay infrastructure: ${err.message}\n`);
                 break;
               }
               throw err;
@@ -418,13 +419,47 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           }
         }
       }
-      await harnessPromise;
+      if (!settled) {
+        // The pump broke on a violation (already latched — the fixture can
+        // only resolve infrastructure_error now). UNBLOCK the harness so
+        // the run can report instead of deadlocking: reject pending asks,
+        // then let production's own timers fire under the fake clock.
+        try {
+          built.entry.pendingAsks.rejectAll('test_teardown');
+        } catch {
+          /* documented-safe on empty registry */
+        }
+        for (let i = 0; i < 50 && !settled; i++) {
+          if (clockCtl) {
+            try {
+              await clockCtl.clock.tickAsync(60_000);
+            } catch (err) {
+              violations.push(`recovery tick threw: ${err.message}`);
+              break;
+            }
+          }
+          await new Promise((res) => setImmediate(res));
+        }
+        if (!settled) {
+          violations.push('harness promise never settled even after recovery — abandoning the turn (infrastructure)');
+        }
+      }
+      if (settled) await harnessPromise;
       if (harnessError) {
         violations.push(`runShadowHarness threw: ${harnessError.message}`);
       }
-      client.assertFullyConsumed();
-      if (client._branchTaken) {
-        branchLog.push({ turn: turn.turn_index, branch: client._branchTaken });
+      // Only assert full round consumption / read the branch marker when the
+      // harness actually settled. On the never-settled recovery path a
+      // violation is already latched; `assertFullyConsumed()` would THROW on
+      // the unconsumed rounds and escape as an uncaught error, discarding the
+      // infrastructure_error classification. Skipping it here lets the latched
+      // violation flow into `captured.infrastructureViolations` below so the
+      // turn resolves as infrastructure_error, never a crash.
+      if (settled) {
+        client.assertFullyConsumed();
+        if (client._branchTaken) {
+          branchLog.push({ turn: turn.turn_index, branch: client._branchTaken });
+        }
       }
 
       const captured = {
