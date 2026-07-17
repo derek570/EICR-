@@ -436,3 +436,102 @@ describe('orphan net — digit-less observation branch (A3)', () => {
     expect(session.orphanContext == null).toBe(true);
   });
 });
+
+// Marker ① (frc_c55c996fa1014e088455af77216220d1) — the chimed NO-CONTENT
+// no-op branch. Field session 36731498 turn 4: "Circuit 2 is upstairs lights"
+// Flux-garbled to "Chuck it too is upstairs lights" — no digit, no observation
+// lead-in — and the model no-opped. A chime had fired, so beep-then-silence.
+// The reading/observation branches gate on content and MISS it; this branch
+// fires the generic "didn't catch that" apology gated ONLY on chimeObserved
+// (the coupling: gate-pass ⟺ chime). The apology carries NO "reading" noun and
+// is distinct wording so the client A1(b) text-keyed dedupe never cross-dedupes
+// it against the reading/observation channels.
+describe('orphan net — chimed no-content no-op branch (marker ①)', () => {
+  // "Chuck it too is upstairs lights." — no /\d/, no OBSERVATION_PATTERN match.
+  const GARBLE = 'Chuck it too is upstairs lights.';
+  const NOOP_RE = /(catch|repeat|come through|say it|once more)/i;
+
+  test('chimed garble no-op → exactly ONE generic apology (no "reading" noun), non-blocking, orphanContext armed', async () => {
+    const session = makeSession();
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session, GARBLE, [], opts);
+
+    const prompts = (result.confirmations ?? []).filter(
+      (c) => c.field == null && NOOP_RE.test(c.text || '')
+    );
+    expect(prompts).toHaveLength(1);
+    // Generic wording — we don't know it was a reading, only that a beep went
+    // unanswered. Must NOT claim "reading"/"observation".
+    expect(prompts[0].text).not.toMatch(/reading|observation/i);
+    expect(prompts[0].circuit).toBeNull();
+    expect(prompts[0].expects_ios_ack).toBe(false);
+    expect(session.orphanContext).toMatchObject({ transcript: GARBLE, turnNum: 1 });
+    // Distinct forensic cause.
+    const row = opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_prompt_emitted');
+    expect(row).toBeDefined();
+    expect(row[1].cause).toBe('chimed_noop_no_content');
+  });
+
+  test('the chime gate is load-bearing: SAME garble WITHOUT chimeObserved → NO prompt (no false apology)', async () => {
+    const session = makeSession();
+    // baseOpts() omits chimeObserved → chimeFired=false → the content gate
+    // (carriesValue || carriesObservation) is the only path, and this garble
+    // satisfies neither.
+    const result = await runShadowHarness(session, GARBLE, [], baseOpts());
+    const prompt = (result.confirmations ?? []).find(
+      (c) => c.field == null && NOOP_RE.test(c.text || '')
+    );
+    expect(prompt).toBeUndefined();
+    expect(session.orphanContext == null).toBe(true);
+  });
+
+  test('a chimed turn that DOES carry a digit but no-ops → keeps the READING wording (carriesValue precedence)', async () => {
+    const session = makeSession();
+    const result = await runShadowHarness(
+      session,
+      'EFC is 0.86.',
+      [],
+      baseOpts({ chimeObserved: true })
+    );
+    const prompt = (result.confirmations ?? []).find((c) => c.field == null && c.text);
+    expect(prompt).toBeDefined();
+    // The reading-orphan rotation mentions "reading"; the generic branch never
+    // does. carriesValue must win over the chime-only fallback.
+    expect(prompt.text).toMatch(/reading/i);
+  });
+
+  test('an answer turn (inResponseTo) that chimed → NO apology (the ask path owns answers)', async () => {
+    const session = makeSession();
+    const result = await runShadowHarness(
+      session,
+      GARBLE,
+      [],
+      baseOpts({ chimeObserved: true, inResponseTo: true })
+    );
+    const prompt = (result.confirmations ?? []).find(
+      (c) => c.field == null && NOOP_RE.test(c.text || '')
+    );
+    expect(prompt).toBeUndefined();
+  });
+
+  test('rotation: two chimed no-content no-ops speak DIFFERENT wording (defeats the 30s field-nil dedupe)', async () => {
+    const session = makeSession();
+    const r1 = await runShadowHarness(session, GARBLE, [], baseOpts({ chimeObserved: true }));
+    // turnCount advances on the session; second no-op picks a different index.
+    const r2 = await runShadowHarness(
+      session,
+      'Bramble it too is downstairs sockets.',
+      [],
+      baseOpts({ chimeObserved: true })
+    );
+    const t1 = (r1.confirmations ?? []).find(
+      (c) => c.field == null && NOOP_RE.test(c.text || '')
+    )?.text;
+    const t2 = (r2.confirmations ?? []).find(
+      (c) => c.field == null && NOOP_RE.test(c.text || '')
+    )?.text;
+    expect(t1).toBeDefined();
+    expect(t2).toBeDefined();
+    expect(t1).not.toBe(t2);
+  });
+});

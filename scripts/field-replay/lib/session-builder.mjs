@@ -70,6 +70,7 @@ export const HARNESS_OPTION_TABLE = Object.freeze({
   signal: { source: 'per-turn AbortController().signal — production supplies one per generation; the shipped F7 watchdog/cancellation lifecycle depends on it. Fixture-CONTROLLED cancellation triggers do NOT exist in v1', capability_exclusion: 'watchdog_cancellation' },
   onAskRegistered: { source: 'generation-OWNING replay implementation: records the ask, binds the ledger ask-timeout via the registry entry timer handle, schedules the reconciliation microtask' },
   inResponseTo: { source: 'fixture turn (provenance-backed; the orphan-audibility net depends on it)' },
+  chimeObserved: { source: 'fixture turn chime_observed (provenance-backed; the marker-① no-op audibility net fires only for a recorded-chime turn — production sets it true unconditionally at the post-gate call site)' },
   utteranceId: { source: 'deterministic mint (own per-turn domain)' },
   pendingAsks: { source: 'entry.pendingAsks (the REAL registry, same identity)' },
   restrainedMode: { source: 'entry.restrainedMode (production stub shape)' },
@@ -172,6 +173,11 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
         signal,
         onAskRegistered,
         inResponseTo: turn.in_response_to?.value === true,
+        // Marker ① — the harness no-op audibility net fires only for a chimed
+        // turn (gate-pass ⟺ chime in production). The recorded lane bypasses
+        // the ingress gate, so chime state comes from the fixture's recorded
+        // chime_observed: a turn with no recorded chime must NOT get an apology.
+        chimeObserved: turn.chime_observed === true,
         utteranceId: mintUtteranceId(corpusId, turnIndex),
         pendingAsks: entry.pendingAsks,
         restrainedMode: entry.restrainedMode,

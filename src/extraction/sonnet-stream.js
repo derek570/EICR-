@@ -1271,7 +1271,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             break;
           }
 
-
           // Compaction removed — sliding window keeps context at ~14K tokens, well under
           // the old 60K threshold. Respond with ack so iOS clients don't hang.
           case 'session_compact':
@@ -4081,6 +4080,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // the utterance is an answer to a TTS question (the ask-resolution
         // path owns those). Mirror the gate's own in_response_to read.
         inResponseTo: !!(msg.in_response_to && typeof msg.in_response_to === 'object'),
+        // Marker ① — reaching this call means the pre-LLM gate FORWARDED this
+        // utterance (the early `if (!gateDecision.forward) return;` above), and
+        // the client chime is coupled to that same gate decision (chime only if
+        // we will respond). So a chime fired: the harness's no-op audibility net
+        // uses this to guarantee a spoken apology on a chimed turn the model
+        // no-opped (beep-then-silence, Audio-First #1). The recorded replay lane
+        // sets this per-turn from the fixture's chime_observed instead.
+        chimeObserved: true,
         // Voice-latency plan 2026-06-05 Phase 2.1 — see comment above.
         utteranceId: consumedUtteranceId,
         // Stage 6 Phase 3 Plan 03-08: activate Plan 03-07's dispatcher
