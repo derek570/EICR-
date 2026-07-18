@@ -98,24 +98,27 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   // rule — a contradiction the model resolves unpredictably.
   // ------------------------------------------------------------------
   describe('Group 0b — calculate_zs intent steer consistency (marker-② Phase 4)', () => {
-    test('the old unconditional WAIT-on-value-less-reading rule is GONE', () => {
+    test('the old unconditional WAIT-on-value-less-reading rules are GONE (all sites)', () => {
       expect(prompt).not.toContain(
         'If a reading is incomplete ("Zs..." with no value), WAIT for the next utterance.'
       );
+      expect(prompt).not.toContain('If a reading looks partial, wait for the next turn.');
+      // No stray WAIT-for-utterance phrasing survives anywhere — ORPHANED
+      // VALUES' "ask, don't wait" is the single contract for missing values.
+      expect(prompt).not.toMatch(/WAIT for the next utterance/);
     });
-    test('the field+circuit-no-value shape asks once (all three sites agree)', () => {
-      // CORE DIRECTIVE 4 carve-out.
-      expect(prompt).toContain(
-        'A field+circuit mention with NO value ("Zs for circuit 4.") is a FINISHED utterance'
-      );
-      // EXTRACTION RULES carve-out — field-only fragments still WAIT.
-      expect(prompt).toContain('If a reading is incomplete with FIELD ONLY');
-      expect(prompt).toContain(
-        'Field AND circuit present but NO value ("Zs for circuit 4.") is NOT a wait'
-      );
-      // Example 8 ask contract with real enum members.
+    test('the value-missing shape asks once (all sites agree with ORPHANED VALUES)', () => {
+      // CORE DIRECTIVE 4 defers to ORPHANED VALUES / Example 8.
+      expect(prompt).toContain('handle it per ORPHANED VALUES / Example 8 (ask once)');
+      // EXTRACTION RULES defers likewise and bans the speculative calc call.
+      expect(prompt).toContain('A reading missing its VALUE is never a wait');
+      expect(prompt).toContain('NEVER a speculative calculator call');
+      // ORPHANED VALUES keeps the pre-existing ask-don't-wait contract.
+      expect(prompt).toContain("ask, don't wait");
+      // Example 8 ask contract with real enum members + board-scope note.
       expect(prompt).toContain('reason:"missing_value"');
       expect(prompt).toContain('expected_answer_shape:"number"');
+      expect(prompt).toContain('include `context_board_id` when working on a sub-board');
       // The explicit-compute path is preserved.
       expect(prompt).toContain('calculate_zs({circuit_ref:2, all:false})');
     });
@@ -1099,7 +1102,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     });
 
     test('ORPHANED VALUES section exists and prohibits silent drops', () => {
-      const idx = prompt.search(/ORPHANED VALUES/);
+      // Match the section HEADING (with its em-dash tail), not the first
+      // textual mention — CORE DIRECTIVE 4 / EXTRACTION RULES now REFERENCE
+      // the section by name earlier in the file (marker-② Phase-4
+      // consistency fix), and indexing the bare name landed the window there.
+      const idx = prompt.search(/ORPHANED VALUES — never/);
       expect(idx).toBeGreaterThanOrEqual(0);
       const window = prompt.slice(idx, idx + 800);
       expect(window.toLowerCase()).toMatch(/never\s+silently\s+drop/);
