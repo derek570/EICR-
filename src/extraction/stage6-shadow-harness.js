@@ -2244,11 +2244,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // ZERO errors across all rounds, and attempted-call count equal to
         // the accumulated list. Missing ledger arrays (legacy shapes) fail
         // CLOSED — the apology fires (annoying-but-safe).
-        // Every ledger element must be a non-negative integer — a malformed
-        // element invalidates the WHOLE ledger (null sentinel → not clean),
-        // it is never silently counted as zero (fail-closed).
+        // Every ledger element must be a non-negative integer AND the array
+        // must be COMPLETE — non-empty with exactly one entry per loop round
+        // (an empty/truncated ledger lacks evidence for the missing rounds
+        // and sums to a fake zero). Any malformation invalidates the WHOLE
+        // ledger (null sentinel → not clean); nothing is silently counted as
+        // zero (fail-closed).
+        const expectedRounds = Number.isInteger(toolLoopOut?.rounds) ? toolLoopOut.rounds : null;
         const sumRounds = (a) => {
-          if (!Array.isArray(a)) return null;
+          if (!Array.isArray(a) || a.length === 0) return null;
+          if (expectedRounds == null || a.length !== expectedRounds) return null;
           let total = 0;
           for (const n of a) {
             if (!Number.isInteger(n) || n < 0) return null;
@@ -2258,12 +2263,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         };
         const totalAttempted = sumRounds(toolLoopOut?.tool_call_count_per_round);
         const totalErrors = sumRounds(toolLoopOut?.tool_error_count_per_round);
-        // POSITIVE clean-termination evidence required: aborted must be
-        // exactly false and the terminal reason exactly 'end_turn' — a
-        // missing/unknown value never passes.
+        // POSITIVE clean-termination evidence required: aborted exactly
+        // false, terminal_reason exactly 'end_turn', AND the RAW final
+        // stop_reason exactly 'end_turn' — the loop maps every non-tool_use
+        // stop (max_tokens etc.) to terminal_reason 'end_turn', so the
+        // terminal reason alone cannot prove a clean model termination.
         const loopLedgerClean =
           toolLoopOut?.aborted === false &&
           toolLoopOut?.terminal_reason === 'end_turn' &&
+          toolLoopOut?.stop_reason === 'end_turn' &&
           totalErrors === 0 &&
           totalAttempted === calls.length;
         // WHOLE-TURN classification (Codex diff-review cycle 1): the exemption

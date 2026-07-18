@@ -790,6 +790,95 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     }
   });
 
+  test('ABNORMAL stop: computed calc, clean counts, but stop_reason max_tokens → catch-all FIRES (terminal_reason alone is not proof)', async () => {
+    // The loop maps every non-tool_use stop to terminal_reason 'end_turn',
+    // so a max_tokens-truncated turn would look "clean" without the raw
+    // stop_reason check.
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+        value: '1.10',
+        confidence: 1.0,
+        source_turn_id: '::calc::calculate_zs',
+      });
+      return {
+        stop_reason: 'max_tokens',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_mt',
+            name: 'calculate_zs',
+            input: { circuit_ref: 2, all: false },
+            result: {
+              tool_use_id: 'toolu_mt',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                skipped: [],
+              }),
+            },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+        tool_call_count_per_round: [1, 0],
+        tool_error_count_per_round: [0, 0],
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calc truncated', [], opts);
+    expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
+  test('TRUNCATED / empty ledgers fail closed → catch-all FIRES (length must equal rounds; empty is not zero)', async () => {
+    for (const [callCounts, errCounts] of [
+      [[1], [0]], // truncated: 2 rounds, 1 entry each
+      [[], []], // empty arrays masquerading as zero
+      [[1, 0], [0]], // mismatched lengths
+    ]) {
+      runToolLoopSpy.mockImplementation(async (opts) => {
+        const ptw = opts.perTurnWritesRef();
+        ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+          value: '1.10',
+          confidence: 1.0,
+          source_turn_id: '::calc::calculate_zs',
+        });
+        return {
+          stop_reason: 'end_turn',
+          rounds: 2,
+          tool_calls: [
+            {
+              tool_call_id: 'toolu_tr',
+              name: 'calculate_zs',
+              input: { circuit_ref: 2, all: false },
+              result: {
+                tool_use_id: 'toolu_tr',
+                is_error: false,
+                content: JSON.stringify({
+                  ok: true,
+                  computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                  skipped: [],
+                }),
+              },
+            },
+          ],
+          aborted: false,
+          messages_final: [],
+          usage: {},
+          terminal_reason: 'end_turn',
+          tool_call_count_per_round: callCounts,
+          tool_error_count_per_round: errCounts,
+        };
+      });
+      const opts = baseOpts({ chimeObserved: true });
+      const result = await runShadowHarness(session4(), 'calc odd ledger', [], opts);
+      expect(catchallPrompts(result)).toHaveLength(1);
+    }
+  });
+
   test('(h) no double-fire with marker-①: a chimed no-content no-op → exactly ONE apology, from marker-① not marker-②', async () => {
     // Default mock = zero tool calls; garble has no digit / observation lead-in.
     const opts = baseOpts({ chimeObserved: true });
