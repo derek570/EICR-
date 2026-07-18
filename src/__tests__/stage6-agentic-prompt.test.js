@@ -314,8 +314,18 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (Codex diff-review required complete, non-ellipsised worked examples —
       // the wave's core model-facing contract). Legitimate feature growth of the
       // canonical example, not bloat.
+      //
+      // 2026-07-18 (marker-② Phase-4 steer, numeric-gate-redesign): bumped to
+      // 20420 to absorb the calculate_zs intent guard (tool blurb: explicit
+      // compute intent only) + Example 8 rewritten as the intent split — bare
+      // value-less "Zs for circuit 4." is an incomplete READING → ONE
+      // ask_user (missing_value/number) even with inputs present (meter
+      // wins); explicit-compute path preserved; rule extended to
+      // calculate_r1_plus_r2. Closes the live 8/8 beep-then-silence repro at
+      // the model layer (the marker-② net is the deterministic backstop).
+      // Measured ~20378; cap 20420 leaves ~42-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20200);
+      expect(estimate).toBeLessThanOrEqual(20420);
     });
   });
 
@@ -1005,8 +1015,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     required complete (non-ellipsised) worked examples for the wave's
       //     core model-facing contract — legitimate example growth, not bloat.
       //     Measured ~14909; cap 14950 leaves ~41-token headroom.
+      //   - 15180 (2026-07-18 marker-② Phase-4 steer): calculate_zs intent
+      //     guard in the tool blurb + Example 8 intent split (bare value-less
+      //     field+circuit → ask_user for the value, even with inputs present;
+      //     explicit compute preserved; extended to calculate_r1_plus_r2).
+      //     Closes the live "Zs for circuit 4." beep-then-silence repro at the
+      //     model layer. Measured ~15141; cap 15180 leaves ~39-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14950);
+      expect(estimate).toBeLessThanOrEqual(15180);
     });
   });
 
@@ -1687,7 +1703,8 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(ex13).toMatch(/tool_result returns `clarification_chain_id:"obsclr-1"`/);
       // ALL THREE severity outcomes are explicit record_observation calls that
       // echo the SAME id (not shorthand) — each of C1/C2/C3.
-      const writeIds = ex13.match(/record_observation\(\{[^)]*clarification_chain_id:"obsclr-1"/g) || [];
+      const writeIds =
+        ex13.match(/record_observation\(\{[^)]*clarification_chain_id:"obsclr-1"/g) || [];
       expect(writeIds.length).toBe(3);
       for (const code of ['C1', 'C2', 'C3']) {
         // Each coded call carries a non-empty suggested_regulation AND the id,
