@@ -530,9 +530,17 @@ jobs:
     name: Deploy to Staging
     runs-on: ubuntu-24.04-arm
     needs: [detect-changes, build-images]
-    if: |
-      (github.ref == 'refs/heads/develop' && github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+    # Same skipped-transitive-dependency guard as the production deploy job
+    # above (see the note there) — `build-images` always carries a skipped
+    # upstream, which would otherwise poison this job's implicit success().
+    if: >-
+      always()
+      && needs.detect-changes.result == 'success'
+      && needs.build-images.result == 'success'
+      && (
+        (github.ref == 'refs/heads/develop' && github.event_name == 'push')
+        || (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+      )
     environment: staging
 
     steps:
@@ -652,9 +660,27 @@ jobs:
     name: Deploy to AWS ECS (Production)
     runs-on: ubuntu-24.04-arm
     needs: [detect-changes, build-images]
-    if: |
-      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+    # NOTE (2026-07-18): the `always() && result == 'success'` guard is
+    # LOAD-BEARING, not defensive. `build-images` gained `manual-deploy-gate`
+    # in its `needs` (field-replay gate wave), and that job is skipped on push
+    # (it is workflow_dispatch-only); `test-backend`/`test-frontend` are
+    # skipped on workflow_dispatch. So `build-images` ALWAYS has a skipped
+    # upstream, and GitHub propagates that "skipped" through `build-images`
+    # (despite its own `always()`) into THIS job's IMPLICIT `success()` check —
+    # which silently skipped every production deploy from 2026-07-15 (F7, the
+    # last green push-deploy) onward (chitchat #96 + marker-① #97 merged but
+    # never reached ECS; task def stuck at :325). Taking explicit control with
+    # `always()` + per-need `result == 'success'` breaks that propagation while
+    # still deploying ONLY on a main push or a production dispatch (a PR never
+    # matches the trigger clause, so it can never deploy).
+    if: >-
+      always()
+      && needs.detect-changes.result == 'success'
+      && needs.build-images.result == 'success'
+      && (
+        (github.ref == 'refs/heads/main' && github.event_name == 'push')
+        || (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+      )
     environment: production
 
     steps:
