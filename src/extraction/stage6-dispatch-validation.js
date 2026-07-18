@@ -462,7 +462,11 @@ export function validateCalculateR1PlusR2(input, snapshot) {
  * (no boards[]) accept the main id.
  */
 export function validateCalculateBoardTarget(input, snapshot) {
-  const bid = input?.board_id;
+  // Codex r4 — validate the RESOLVED target, not just an explicit
+  // input.board_id: a stale/'*' snapshot.currentBoardId would otherwise
+  // bypass validation and silently compute against orphan buckets with the
+  // origin Ze. The getMainBoardId fallback is always valid by construction.
+  const bid = input?.board_id ?? snapshot?.currentBoardId;
   if (bid == null) return null;
   // Codex r3 — errors use the established {code, field} validator envelope
   // (the shape validateCalculateSelector / invalid_method already emit).

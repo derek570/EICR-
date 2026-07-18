@@ -640,11 +640,27 @@ export function isPlainRecord(v) {
  * supply_characteristics → supply.
  */
 export function selectSupplyContainer(jobState) {
-  for (const key of ['supplyCharacteristics', 'supply_characteristics', 'supply']) {
-    const v = jobState?.[key];
-    if (isPlainRecord(v) && Object.keys(v).length > 0) return v;
+  // Codex r4 — merge PER FIELD across ALL plain-record containers (an
+  // earlier container carrying only an unrelated fact must not shadow Ze/PFC
+  // in a later one). Precedence per key: supplyCharacteristics →
+  // supply_characteristics → supply (assign in reverse so the
+  // earliest-precedence container wins each key).
+  const containers = ['supplyCharacteristics', 'supply_characteristics', 'supply']
+    .map((key) => jobState?.[key])
+    .filter((v) => isPlainRecord(v) && Object.keys(v).length > 0);
+  if (containers.length === 0) return null;
+  // Manual key-filtered copy, NOT Object.assign: an own '__proto__' data
+  // property (JSON payloads) would hit the prototype SETTER under assign and
+  // poison the merged record's prototype (making it fail the plain-record
+  // check and silently discard the whole container).
+  const merged = {};
+  for (const c of [...containers].reverse()) {
+    for (const k of Object.keys(c)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      merged[k] = c[k];
+    }
   }
-  return null;
+  return merged;
 }
 
 export function normaliseSupplyIngest(supply) {

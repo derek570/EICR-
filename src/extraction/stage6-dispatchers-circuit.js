@@ -952,39 +952,42 @@ function applyCalculatedReading(session, perTurnWrites, { circuit, field, value,
 function resolveBoardAwareZe(snapshot, inputBoardId) {
   const mainId = getMainBoardId(snapshot);
   const targetId = inputBoardId ?? snapshot?.currentBoardId ?? mainId;
-  const boardLocal =
-    targetId === mainId
-      ? snapshot?.circuits?.[0]
-      : Array.isArray(snapshot?.boards)
-        ? snapshot.boards.find((b) => b && b.id === targetId)
-        : null;
-  // Codex r2: precedence FIRST, parse ONCE. The first PRESENT board-local
-  // candidate wins; a present-but-INVALID value (e.g. 'N/A', 'LIM') is a
-  // terminal no_ze — never silently fall through to a DIFFERENT measurement
-  // (using the origin Ze when the board recorded its own unusable one would
-  // put the wrong number on a certificate). "Present" = trimmed-non-empty,
-  // so a whitespace-only value can never coerce to numeric 0. Board-local
-  // key order mirrors shared-utils resolveZe / iOS canon, extended with the
-  // backend's own dictated board key: ze → ze_at_db (backend board_fields)
-  // → zs_at_db (the PWA board-record spelling).
+  const isMain = targetId === mainId;
+  const boardRecord = Array.isArray(snapshot?.boards)
+    ? snapshot.boards.find((b) => b && b.id === targetId)
+    : null;
+  const circuits0 = snapshot?.circuits?.[0];
+  // Codex r4 BLOCKER — board-local sources and key order. The target board's
+  // boards[] RECORD is board-local for EVERY board (a hydrated main record
+  // can carry ze / PWA zs_at_db too); circuits[0] is ADDITIONALLY board-local
+  // for the MAIN board (dictated main board fields land there) — EXCEPT its
+  // earth_loop_impedance_ze, which is the ORIGIN SUPPLY value (the fallback
+  // tier), never a main board-local. On SUB-board records the canonical key
+  // IS board-local (a dictated bare Ze while a sub-board is current lands
+  // there under it). Key order per shared-utils resolveZe / iOS canon:
+  // ze → (canonical alias) → ze_at_db → zs_at_db, each key checked across
+  // the board-local sources before the next key.
   const present = (v) => {
     if (v == null) return null;
     const str = String(v).trim();
     return str === '' ? null : str;
   };
-  // Codex r3 BLOCKER — a DICTATED bare Ze while a sub-board is current is
-  // stored on the sub-board record under the CANONICAL key
-  // (record_board_reading flag-aware mutator), so the board-local chain must
-  // include earth_loop_impedance_ze at the same precedence as `ze` — else
-  // the resolver silently falls through to the ORIGIN supply Ze.
+  const sources = isMain ? [boardRecord, circuits0] : [boardRecord];
   for (const key of ['ze', 'earth_loop_impedance_ze', 'ze_at_db', 'zs_at_db']) {
-    const str = present(boardLocal?.[key]);
-    if (str != null) {
-      const n = Number(str);
-      return Number.isFinite(n) ? n : null;
+    for (const src of sources) {
+      if (!src) continue;
+      if (key === 'earth_loop_impedance_ze' && src === circuits0) continue; // origin supply, not board-local
+      const str = present(src[key]);
+      if (str != null) {
+        const n = Number(str);
+        // Precedence-first, parse-once: a present-but-invalid board-local
+        // value is a terminal no_ze (never fall through to a DIFFERENT
+        // measurement).
+        return Number.isFinite(n) ? n : null;
+      }
     }
   }
-  const str = present(snapshot?.circuits?.[0]?.earth_loop_impedance_ze);
+  const str = present(circuits0?.earth_loop_impedance_ze);
   if (str == null) return null;
   const n = Number(str);
   return Number.isFinite(n) ? n : null;

@@ -25,12 +25,33 @@ function isPlainRecord(v) {
  * CLEARS the existing circuit schedule (probed). The handler skips the
  * update (with a warn log) on null.
  */
+/** The job-state fields updateJobState actually consumes. A payload with
+ *  NONE of them own-present is envelope noise, not a job state — passing it
+ *  through would rebuild (i.e. CLEAR) the circuit schedule from nothing.
+ *  An explicit own `circuits: []` remains the valid way to clear. */
+const JOB_STATE_FIELDS = [
+  'circuits',
+  'boards',
+  'supply',
+  'supply_characteristics',
+  'supplyCharacteristics',
+];
+
+function carriesJobStateFields(payload) {
+  return JOB_STATE_FIELDS.some((k) => Object.hasOwn(payload, k));
+}
+
 export function unwrapJobStateFrame(msg) {
   // Codex r3 — the plain-record contract applies to the OUTER frame too
   // (an array/Date/custom-prototype envelope is malformed, not a flat job).
   if (!isPlainRecord(msg)) return null;
   if (Object.hasOwn(msg, 'jobState')) {
-    return isPlainRecord(msg.jobState) ? msg.jobState : null;
+    const js = msg.jobState;
+    // Codex r4 — {jobState:{}} (and any nested payload with no recognized
+    // job-state field) must be SKIPPED, not passed through: updateJobState
+    // on a field-less object clears the existing circuit schedule.
+    return isPlainRecord(js) && carriesJobStateFields(js) ? js : null;
   }
-  return msg;
+  // Flat iOS shape: same guard — an envelope-only frame carries no job.
+  return carriesJobStateFields(msg) ? msg : null;
 }

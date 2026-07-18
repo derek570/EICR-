@@ -501,3 +501,127 @@ describe('F/U-4 review r3 — scalar-only ingestion values', () => {
     );
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Codex review round 4.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('F/U-4 review r4 — main-board board-local Ze precedence', () => {
+  function makeDispatcherSession(snapshot) {
+    return { sessionId: 'fu4-r4', toolCallsMode: 'live', stateSnapshot: snapshot };
+  }
+  async function calcZs(session, input) {
+    const res = await dispatchCalculateZs(
+      { tool_call_id: 'tu_r4', name: 'calculate_zs', input },
+      {
+        session,
+        logger: mockLogger(),
+        turnId: 't1',
+        perTurnWrites: createPerTurnWrites(),
+        round: 0,
+      }
+    );
+    return res.is_error ? { res } : { res, body: JSON.parse(res.content) };
+  }
+
+  test('main-board ze_at_db (dictated, circuits[0]) outranks the origin supply Ze', async () => {
+    const session = makeDispatcherSession({
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30', ze_at_db: '0.55' },
+        4: { r1_r2_ohm: '0.20' },
+      },
+    });
+    const { body } = await calcZs(session, { circuit_ref: 4, all: false });
+    expect(body.computed).toEqual([{ circuit_ref: 4, field: 'measured_zs_ohm', value: '0.75' }]);
+  });
+
+  test('a hydrated MAIN boards[] record ze outranks the origin supply Ze', async () => {
+    const session = makeDispatcherSession({
+      boards: [{ id: 'main', board_type: 'main', ze: '0.55' }],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30' },
+        4: { r1_r2_ohm: '0.20' },
+      },
+    });
+    const { body } = await calcZs(session, { circuit_ref: 4, all: false });
+    expect(body.computed).toEqual([{ circuit_ref: 4, field: 'measured_zs_ohm', value: '0.75' }]);
+  });
+
+  test('calculate_r1_plus_r2 honours main-board ze_at_db too', async () => {
+    const session = makeDispatcherSession({
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30', ze_at_db: '0.55' },
+        4: { measured_zs_ohm: '0.75' },
+      },
+    });
+    const res = await dispatchCalculateR1PlusR2(
+      {
+        tool_call_id: 'tu_r4b',
+        name: 'calculate_r1_plus_r2',
+        input: { circuit_ref: 4, all: false, method: 'zs_minus_ze' },
+      },
+      {
+        session,
+        logger: mockLogger(),
+        turnId: 't1',
+        perTurnWrites: createPerTurnWrites(),
+        round: 0,
+      }
+    );
+    const body = JSON.parse(res.content);
+    expect(body.computed).toEqual([
+      { circuit_ref: 4, field: 'r1_r2_ohm', value: '0.20', method: 'zs_minus_ze' },
+    ]);
+  });
+
+  test('a stale/unknown currentBoardId (no explicit board_id) is rejected board_not_found', async () => {
+    const session = makeDispatcherSession({
+      currentBoardId: 'ghost',
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30' },
+        'ghost::4': { circuit: 4, board_id: 'ghost', r1_r2_ohm: '0.20' },
+      },
+    });
+    const { res } = await calcZs(session, { circuit_ref: 4, all: false });
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content).error).toEqual({ code: 'board_not_found', field: 'board_id' });
+  });
+
+  test("currentBoardId '*' is rejected (no silent orphan-bucket compute)", async () => {
+    const session = makeDispatcherSession({
+      currentBoardId: '*',
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: { 0: { earth_loop_impedance_ze: '0.30' }, 4: { r1_r2_ohm: '0.20' } },
+    });
+    const { res } = await calcZs(session, { circuit_ref: 4, all: false });
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content).error).toEqual({
+      code: 'board_id_star_unsupported',
+      field: 'board_id',
+    });
+  });
+});
+
+describe('F/U-4 review r4 — per-field container resolution + envelope guards', () => {
+  test('an earlier container with only unrelated facts does NOT shadow Ze in a later container', () => {
+    const s = makeSession();
+    s.updateJobState({
+      supplyCharacteristics: { earthingArrangement: 'TN-S' },
+      supply: { ze: '0.35' },
+    });
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.35');
+  });
+
+  test('conflicting values: the higher-precedence container wins per key', () => {
+    const s = makeSession();
+    s.start({
+      circuits: [],
+      supplyCharacteristics: { earthLoopImpedanceZe: '0.28' },
+      supply: { ze: '0.99' },
+    });
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.28');
+  });
+});

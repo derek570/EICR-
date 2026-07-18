@@ -32,6 +32,16 @@ describe('unwrapJobStateFrame', () => {
     expect(unwrapJobStateFrame('x')).toBe(null);
   });
 
+  test('an EMPTY or envelope-only payload returns the null sentinel (never the schedule-clearing passthrough)', () => {
+    // {jobState:{}} — no recognized job-state field → skip.
+    expect(unwrapJobStateFrame({ type: 'job_state_update', jobState: {} })).toBe(null);
+    // Envelope-only flat frame (e.g. just type/reason) → skip.
+    expect(unwrapJobStateFrame({ type: 'job_state_update', reason: 'x' })).toBe(null);
+    // An explicit own circuits:[] REMAINS the valid way to clear.
+    const clear = { circuits: [] };
+    expect(unwrapJobStateFrame({ type: 'job_state_update', jobState: clear })).toBe(clear);
+  });
+
   test('a non-plain-record OUTER frame returns the null sentinel too', () => {
     expect(unwrapJobStateFrame([])).toBe(null);
     expect(unwrapJobStateFrame(new Date())).toBe(null);
