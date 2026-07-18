@@ -2208,11 +2208,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           if (c?.result?.is_error === true) return false;
           try {
             const body = JSON.parse(c?.result?.content ?? 'null');
+            // FULLY-computed only (Codex cycle 1): a batch envelope can carry
+            // computed:[…] AND skipped:[…] in ONE call ("calculate Zs for all
+            // circuits" → 5 computed, 3 skipped). A partial success is NOT
+            // wholly designed-silent — the skipped circuits went silent for a
+            // non-designed reason, so the apology must fire.
             return !!(
               body &&
               body.ok === true &&
               Array.isArray(body.computed) &&
-              body.computed.length > 0
+              body.computed.length > 0 &&
+              (!Array.isArray(body.skipped) || body.skipped.length === 0)
             );
           } catch {
             return false;

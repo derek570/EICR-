@@ -602,6 +602,49 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     expect(catchallPrompts(result)).toHaveLength(1);
   });
 
+  test('PARTIAL batch: ONE board-scoped calculate_zs call with computed AND skipped circuits → catch-all FIRES', async () => {
+    // Codex diff-review cycle 1: a single batch envelope can be partially
+    // successful ("calculate Zs for all circuits" → some computed, some
+    // skipped). The skipped circuits went silent for a non-designed reason,
+    // so the call is NOT wholly designed-silent.
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, 'board-b'), {
+        value: '1.10',
+        confidence: 1.0,
+        source_turn_id: '::calc::calculate_zs',
+        boardId: 'board-b',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_p1',
+            name: 'calculate_zs',
+            input: { all: true, board_id: 'board-b' },
+            result: {
+              tool_use_id: 'toolu_p1',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                skipped: [{ circuit_ref: 4, reason: 'no_r1_r2' }],
+              }),
+            },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calculate Zs for all circuits', [], opts);
+    expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
   test('(h) no double-fire with marker-①: a chimed no-content no-op → exactly ONE apology, from marker-① not marker-②', async () => {
     // Default mock = zero tool calls; garble has no digit / observation lead-in.
     const opts = baseOpts({ chimeObserved: true });
