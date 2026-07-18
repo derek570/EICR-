@@ -256,13 +256,15 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
           at_ms: 0,
           transcript: 'garbled whatsit doing over',
           regex_results: [],
-          confirmations_enabled: { value: true, provenance: 'reconstructed_reviewed' },
-          // Answer turn — the marker-① no-op audibility net (shipped 2026-07-17)
-          // skips answer turns (the ask-resolution path owns them), so this
-          // chimed no-op stays silent → a stable audibility.turn RED. A NON-answer
-          // no-op would now be HEALED by the net (spoken apology) and could no
-          // longer serve as a controlled RED for this CLI machinery test.
-          in_response_to: { value: true, provenance: 'reconstructed_reviewed' },
+          // Mode-off vehicle — the marker-② catch-all net (numeric-gate-
+          // redesign 2026-07-18) healed the previous ANSWER-turn no-op vehicle
+          // (it has no answer-turn gate), just as marker-① healed the original
+          // non-answer no-op. Every audibility net honours
+          // confirmationsEnabled by design (mode-off = user opted out of the
+          // spoken channel), so a chimed mode-off no-op is the PERMANENTLY
+          // stable audibility.turn RED for this CLI machinery test.
+          confirmations_enabled: { value: false, provenance: 'reconstructed_reviewed' },
+          in_response_to: { value: false, provenance: 'reconstructed_reviewed' },
           ws_mode: 'open',
           chime_observed: true,
           model_rounds: [{ stop_reason: 'end_turn', text: '' }],
