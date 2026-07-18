@@ -288,7 +288,9 @@ describe('Commit 2 — schedule facts-only + buildSystemBlocks split', () => {
   test('case 22 — supply E2E EXTRACTED visibility under split_blocks', () => {
     const s = makeSession({ snapshotFormat: 'split_blocks' });
     s.updateJobState({ supply: { ze: 0.4 } });
-    expect(s.stateSnapshot.circuits[0].ze).toBe(0.4);
+    // F/U-4 (2026-07-18): the supply merge canonicalises the short `ze`
+    // alias to earth_loop_impedance_ze (the key the calculators read).
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe(0.4);
     const tail = s.buildVolatileSnapshotTail();
     // Supply lives on the line prefixed `0:` in the EXTRACTED block
     expect(tail).toContain('EXTRACTED');

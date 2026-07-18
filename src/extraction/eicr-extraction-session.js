@@ -494,9 +494,13 @@ const WRAP_POLICY = {
 
   // Supply ze/pfc are numeric-coerced in the current seed path but
   // classify explicitly in case they arrive as strings from some
-  // future producer.
+  // future producer. F/U-4 (2026-07-18): the seed/merge paths now store
+  // the CANONICAL supply keys — classify those identically; the short
+  // aliases stay listed for any legacy bucket that still carries them.
   ze: 'server_canonical',
   pfc: 'server_canonical',
+  earth_loop_impedance_ze: 'server_canonical',
+  prospective_fault_current: 'server_canonical',
 
   // Plan 04-22 r16-#3 — the 4 newly-canonicalised non-reading
   // schema fields. All numeric / closed-enum values, not user-
@@ -585,6 +589,31 @@ export const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
   cable_size: 'live_csa_mm2',
   cable_size_earth: 'cpc_csa_mm2',
 };
+
+/**
+ * F/U-4 (2026-07-18) — SUPPLY-scope-only key aliases for the updateJobState
+ * merge path. Applied EXCLUSIVELY when `_mergeCircuitOrBoardFields` runs with
+ * kind='supply' (i.e. the value arrived inside `jobState.supply`, so it is
+ * unambiguously the supply-level reading). The canonical names are the
+ * `config/field_schema.json` supply_characteristics_fields keys — the same
+ * keys a DICTATED supply reading lands under via record_board_reading and
+ * that `dispatchCalculateZs`/`dispatchCalculateR1PlusR2` read
+ * (`circuits[0].earth_loop_impedance_ze`).
+ *
+ * Deliberately NOT added to LEGACY_TO_CANONICAL_CIRCUIT_KEYS: that map drives
+ * a bucket-wide normalisation pass over ALL circuit buckets, and bare `ze` is
+ * ALSO a legitimate, DISTINCT board_fields key (a dictated board-level Ze on
+ * the main board also lives at circuits[0]) — a blanket rename would corrupt
+ * real board readings. Scope-aware mapping at the two supply ingestion sites
+ * (the seeder + this merge) is the only place the rename is unambiguous.
+ * Exported for the F/U-4 unit tests.
+ */
+export const SUPPLY_MERGE_KEY_ALIASES = Object.freeze({
+  earthLoopImpedanceZe: 'earth_loop_impedance_ze',
+  ze: 'earth_loop_impedance_ze',
+  prospectiveFaultCurrent: 'prospective_fault_current',
+  pfc: 'prospective_fault_current',
+});
 
 /**
  * Plan 04-19 r13-#3 — known canonical `type` values for validation_alerts.
@@ -1539,15 +1568,32 @@ export class EICRExtractionSession {
       if (!this.recentCircuitOrder.includes(num)) this.recentCircuitOrder.push(num);
       seeded++;
     }
-    // Supply-level fields (circuit 0)
+    // Supply-level fields (circuit 0).
+    //
+    // F/U-4 fix (2026-07-18, numeric-gate-redesign follow-up): store under the
+    // CANONICAL supply keys from config/field_schema.json
+    // (`earth_loop_impedance_ze`, `prospective_fault_current`) — the keys a
+    // DICTATED supply reading lands under via record_board_reading and the
+    // keys `dispatchCalculateZs`/`dispatchCalculateR1PlusR2` READ. The seeder
+    // previously stored the LEGACY WIRE aliases (`ze`, `pfc` — the
+    // field-name-corrections.js iOS wire shape), so a job-seeded supply Ze was
+    // INVISIBLE to the calculators (every calculate_zs on a seeded job skipped
+    // `no_ze`) and the model-facing snapshot showed `ze` while the dispatcher
+    // demanded `earth_loop_impedance_ze` — a split brain surfaced by the live
+    // marker-② repro. Do NOT "fix" this via LEGACY_TO_CANONICAL_CIRCUIT_KEYS:
+    // bare `ze` is ALSO a legitimate DISTINCT board_fields key that can live
+    // at circuits[0] for the main board (a dictated board-level Ze), so a
+    // blanket circuits-bucket rename would corrupt real board readings. Only
+    // HERE — where the value provably comes from the job's SUPPLY section — is
+    // the canonicalisation unambiguous.
     const supply =
       jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
     if (supply) {
       const fields = {};
       if (supply.earthLoopImpedanceZe || supply.ze)
-        fields.ze = supply.earthLoopImpedanceZe || supply.ze;
+        fields.earth_loop_impedance_ze = supply.earthLoopImpedanceZe || supply.ze;
       if (supply.prospectiveFaultCurrent || supply.pfc)
-        fields.pfc = supply.prospectiveFaultCurrent || supply.pfc;
+        fields.prospective_fault_current = supply.prospectiveFaultCurrent || supply.pfc;
       if (Object.keys(fields).length > 0) {
         this.stateSnapshot.circuits[0] = { ...fields };
         seeded++;
@@ -1980,8 +2026,16 @@ export class EICRExtractionSession {
     for (const [rawField, value] of Object.entries(incoming)) {
       if (MERGE_SKIP_KEYS.has(rawField)) continue;
       // #3.4.4 — circuit-only legacy→canonical designation key normalisation.
+      // F/U-4 (2026-07-18) — SUPPLY-only Ze/PFC alias normalisation: a key
+      // arriving inside jobState.supply is unambiguously the SUPPLY reading,
+      // so the iOS camelCase wire shape and the legacy short aliases map to
+      // the canonical field_schema keys the calculators + record_board_reading
+      // use. (Deliberately NOT a circuits-bucket-wide rename: bare `ze` is a
+      // distinct board_fields key when dictated — see _seedStateFromJobState.)
+      const supplyAlias = kind === 'supply' ? SUPPLY_MERGE_KEY_ALIASES[rawField] : undefined;
       const field =
-        kind === 'circuit' && rawField === 'designation' ? 'circuit_designation' : rawField;
+        supplyAlias ??
+        (kind === 'circuit' && rawField === 'designation' ? 'circuit_designation' : rawField);
       if (FACT_FIELDS.has(field)) {
         target[field] = value;
         // Having just authoritatively written the canonical key from an
