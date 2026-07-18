@@ -449,6 +449,159 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     expect(catchallRows(opts.logger)).toHaveLength(0);
   });
 
+  test('MIXED turn: computed calc + EMPTY calc → catch-all FIRES (exemption is every-call, not any-call)', async () => {
+    // Codex diff-review cycle 1: a legitimate computed write must not mask a
+    // sibling silent failure in the same turn.
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+        value: '1.10',
+        confidence: 1.0,
+        source_turn_id: '::calc::calculate_zs',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_m1',
+            name: 'calculate_zs',
+            input: { circuit_ref: 2, all: false },
+            result: {
+              tool_use_id: 'toolu_m1',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                skipped: [],
+              }),
+            },
+          },
+          {
+            tool_call_id: 'toolu_m2',
+            name: 'calculate_r1_plus_r2',
+            input: { circuit_ref: 4, all: false, method: 'zs_minus_ze' },
+            result: {
+              tool_use_id: 'toolu_m2',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [],
+                skipped: [{ circuit_ref: 4, reason: 'no_zs' }],
+              }),
+            },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calc both', [], opts);
+    expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
+  test('MIXED turn: computed calc + REJECTED call → catch-all FIRES (mixed rejection defeats both M1 and the exemption)', async () => {
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+        value: '1.10',
+        confidence: 1.0,
+        source_turn_id: '::calc::calculate_zs',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_x1',
+            name: 'calculate_zs',
+            input: { circuit_ref: 2, all: false },
+            result: {
+              tool_use_id: 'toolu_x1',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                skipped: [],
+              }),
+            },
+          },
+          {
+            tool_call_id: 'toolu_x2',
+            name: 'record_reading',
+            input: { field: 'measured_zs_ohm', circuit: 99, value: '0.5' },
+            result: {
+              tool_use_id: 'toolu_x2',
+              is_error: true,
+              content: JSON.stringify({ ok: false, error: 'source_not_found' }),
+            },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calc and a bad write', [], opts);
+    // The M1 all-rejected net cannot fire (not ALL rejected) — marker-② must.
+    expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
+  test('MIXED turn: computed calc + a silent non-calc op (derived write, ok body without computed[]) → catch-all FIRES', async () => {
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+        value: '1.10',
+        confidence: 1.0,
+        source_turn_id: '::calc::calculate_zs',
+      });
+      ptw.readings.set(encodeReadingKey('bonding_conductor_continuity', 0, undefined), {
+        value: 'OK',
+        confidence: 1.0,
+        source_turn_id: 'turn-1',
+        derived: true,
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_y1',
+            name: 'calculate_zs',
+            input: { circuit_ref: 2, all: false },
+            result: {
+              tool_use_id: 'toolu_y1',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                skipped: [],
+              }),
+            },
+          },
+          {
+            tool_call_id: 'toolu_y2',
+            name: 'record_reading',
+            input: {},
+            result: { tool_use_id: 'toolu_y2', is_error: false, content: '{"ok":true}' },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calc and a silent op', [], opts);
+    expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
   test('(h) no double-fire with marker-①: a chimed no-content no-op → exactly ONE apology, from marker-① not marker-②', async () => {
     // Default mock = zero tool calls; garble has no digit / observation lead-in.
     const opts = baseOpts({ chimeObserved: true });

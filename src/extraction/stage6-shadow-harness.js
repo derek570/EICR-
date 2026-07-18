@@ -2204,7 +2204,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // Outcome-based designed-silent exemption (predicate 5). The parser
         // catches internally — a malformed body never throws into the outer
         // catch (which would reproduce the silence this net exists to close).
-        const hasDesignedSilentWrite = calls.some((c) => {
+        const isDesignedSilentSuccess = (c) => {
           if (c?.result?.is_error === true) return false;
           try {
             const body = JSON.parse(c?.result?.content ?? 'null');
@@ -2217,7 +2217,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           } catch {
             return false;
           }
-        });
+        };
+        // WHOLE-TURN classification (Codex diff-review cycle 1): the exemption
+        // is `every`, not `some`. This branch is only reached when ZERO speech
+        // survived, so any call that is NOT a computed>0 calculator success
+        // went silent for some OTHER reason (empty calc, rejected call, silent
+        // op) — one legitimate computed write must not mask a sibling silent
+        // failure in the same turn ("never exempt into silence"). Calls whose
+        // success IS audible (record_reading etc.) never reach here with
+        // surviving speech, and the produced-then-debounced case is already
+        // predicate 4's already-heard evidence.
+        const hasDesignedSilentWrite = calls.length > 0 && calls.every(isDesignedSilentSuccess);
         const survivingConfCount = Array.isArray(result.confirmations)
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
