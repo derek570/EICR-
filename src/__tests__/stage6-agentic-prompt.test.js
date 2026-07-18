@@ -90,6 +90,38 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   });
 
   // ------------------------------------------------------------------
+  // Group 0b — marker-② Phase-4 steer consistency (2026-07-18).
+  // The bare value-less "Zs for circuit N" contract must be INTERNALLY
+  // consistent: cycle-2 Codex review found CORE DIRECTIVE 4 + the
+  // EXTRACTION RULES incomplete-reading line both said WAIT on a
+  // value-less "Zs...", directly contradicting the new Example 8 ask
+  // rule — a contradiction the model resolves unpredictably.
+  // ------------------------------------------------------------------
+  describe('Group 0b — calculate_zs intent steer consistency (marker-② Phase 4)', () => {
+    test('the old unconditional WAIT-on-value-less-reading rule is GONE', () => {
+      expect(prompt).not.toContain(
+        'If a reading is incomplete ("Zs..." with no value), WAIT for the next utterance.'
+      );
+    });
+    test('the field+circuit-no-value shape asks once (all three sites agree)', () => {
+      // CORE DIRECTIVE 4 carve-out.
+      expect(prompt).toContain(
+        'A field+circuit mention with NO value ("Zs for circuit 4.") is a FINISHED utterance'
+      );
+      // EXTRACTION RULES carve-out — field-only fragments still WAIT.
+      expect(prompt).toContain('If a reading is incomplete with FIELD ONLY');
+      expect(prompt).toContain(
+        'Field AND circuit present but NO value ("Zs for circuit 4.") is NOT a wait'
+      );
+      // Example 8 ask contract with real enum members.
+      expect(prompt).toContain('reason:"missing_value"');
+      expect(prompt).toContain('expected_answer_shape:"number"');
+      // The explicit-compute path is preserved.
+      expect(prompt).toContain('calculate_zs({circuit_ref:2, all:false})');
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Group 1: file existence + token budget
   // ------------------------------------------------------------------
   describe('Group 1 — file + token budget', () => {
@@ -324,8 +356,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // calculate_r1_plus_r2. Closes the live 8/8 beep-then-silence repro at
       // the model layer (the marker-② net is the deterministic backstop).
       // Measured ~20378; cap 20420 leaves ~42-token headroom.
+      //
+      // 2026-07-18 (marker-② cycle-2 consistency fix): bumped to 20480 —
+      // CORE DIRECTIVE 4 + the EXTRACTION RULES incomplete-reading line were
+      // CONTRADICTING the new Example 8 (both said WAIT on a value-less
+      // "Zs..."), which would make the steer unreliable; both now carve out
+      // the field+circuit-no-value shape as ask-once. Measured ~20445; cap
+      // 20480 leaves ~35-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20420);
+      expect(estimate).toBeLessThanOrEqual(20480);
     });
   });
 
@@ -1021,8 +1060,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     explicit compute preserved; extended to calculate_r1_plus_r2).
       //     Closes the live "Zs for circuit 4." beep-then-silence repro at the
       //     model layer. Measured ~15141; cap 15180 leaves ~39-token headroom.
+      //   - 15240 (2026-07-18 marker-② cycle-2 consistency fix): CORE
+      //     DIRECTIVE 4 + the EXTRACTION RULES incomplete-reading line
+      //     carved out the field+circuit-no-value shape (ask once, Example
+      //     8) — they previously said WAIT, contradicting the steer.
+      //     Measured ~15208; cap 15240 leaves ~32-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(15180);
+      expect(estimate).toBeLessThanOrEqual(15240);
     });
   });
 

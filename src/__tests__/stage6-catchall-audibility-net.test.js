@@ -830,6 +830,32 @@ describe('marker-② — hoisted-helper semantics', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+describe('marker-② wave — generic tool-loop failure is never silent (Codex cycle 2)', () => {
+  test('a GENERIC runToolLoop rejection (network/API error) → finalization still runs and exactly ONE apology speaks', async () => {
+    // Pre-fix, a non-fatal loop error early-returned an EMPTY extraction
+    // before A3/D2/F7/marker-②/A4 ever ran — a chimed turn died
+    // beep-then-silence on any transport error. Now it takes the F7 Item-3
+    // reduced-finalization path (cancelled latch), whose nothing-audible
+    // fallback guarantees one spoken apology.
+    runToolLoopSpy.mockImplementation(async () => {
+      throw new Error('stream disconnected');
+    });
+    const opts = baseOpts({ chimeObserved: true, generationId: 'gen-err' });
+    const result = await runShadowHarness(session4(), 'Zs for circuit 4.', [], opts);
+    // Well-formed result (iOS never sees undefined)…
+    expect(Array.isArray(result.extracted_readings)).toBe(true);
+    // …and exactly ONE field-nil apology survived to the wire (the F7
+    // cancellation-branch fallback text — marker-② itself is cancelled-gated).
+    const fieldNil = (result.confirmations ?? []).filter((c) => c.field == null);
+    expect(fieldNil).toHaveLength(1);
+    expect(fieldNil[0].text).toBe(ASK_AUDIBILITY_FALLBACK_TEXT);
+    // The error is still in CloudWatch for diagnosis.
+    const errRows = opts.logger.error.mock.calls.filter(([ev]) => ev === 'stage6_live_error');
+    expect(errRows).toHaveLength(1);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 describe('marker-② — apology-text distinctness (client dedupe channels never collide)', () => {
   test('CATCHALL_AUDIBILITY_PROMPTS shares no text with ANY other apology family', () => {
     const others = new Set([

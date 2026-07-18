@@ -1046,14 +1046,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         } catch {
           // swallow logger failure — never break extraction
         }
-        // No legacy fallback in live mode. Return an empty extraction so
-        // iOS sees "no readings this turn" rather than crashing on undefined.
-        // The error is in CloudWatch for diagnosis; rollback path is env-flip.
-        return {
-          extracted_readings: [],
-          observations: [],
-          questions: [],
-        };
+        // marker-② wave (Codex diff-review cycle 2) — a GENERIC live failure
+        // (network/API/stream error) used to early-return an EMPTY extraction
+        // HERE, before A3/D2/F7/marker-②/A4 ever ran: a forwarded, chimed
+        // turn died beep-then-silence on any transport error. Route it
+        // through the SAME reduced finalization the F7 Item-3 cancellation
+        // path uses (toolLoopOut stays undefined; every deref below is
+        // guarded): applied pre-crash writes are still read back once, and
+        // the F7 cancellation-branch fallback ("nothing audible survived")
+        // guarantees ONE spoken apology. iOS still receives a well-formed
+        // (partial) result. The error stays in CloudWatch via the
+        // stage6_live_error row above.
+        cancelled = true;
+        // fall through to the finalization below
       }
     }
 
