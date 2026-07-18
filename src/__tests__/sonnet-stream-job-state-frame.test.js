@@ -49,6 +49,22 @@ describe('unwrapJobStateFrame', () => {
   });
 });
 
+describe('element-level validation (Codex r6)', () => {
+  test('non-record elements reject the whole frame atomically', () => {
+    for (const bad of [
+      { circuits: [null] },
+      { circuits: [[]] },
+      { circuits: [{ ref: 1 }, 42] },
+      { boards: [null] },
+      { boards: [{ id: 'main' }, 'x'] },
+    ]) {
+      expect(unwrapJobStateFrame({ type: 'job_state_update', jobState: bad })).toBe(null);
+    }
+    const ok = { circuits: [{ ref: 1 }], boards: [{ id: 'main' }] };
+    expect(unwrapJobStateFrame({ type: 'job_state_update', jobState: ok })).toBe(ok);
+  });
+});
+
 describe('structural field validation (Codex r5)', () => {
   test('malformed recognized fields return the null sentinel', () => {
     for (const bad of [

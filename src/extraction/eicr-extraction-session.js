@@ -1577,22 +1577,41 @@ export class EICRExtractionSession {
       );
       if (isNaN(num)) continue;
       const fields = {};
-      // Test readings (existing behaviour)
-      if (circuit.measuredZsOhm || circuit.zs)
-        fields.measured_zs_ohm = circuit.measuredZsOhm || circuit.zs;
-      if (circuit.r1R2Ohm || circuit.r1_plus_r2)
-        fields.r1_r2_ohm = circuit.r1R2Ohm || circuit.r1_plus_r2;
-      if (circuit.r2Ohm || circuit.r2) fields.r2_ohm = circuit.r2Ohm || circuit.r2;
-      if (circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e)
-        fields.ir_live_earth_mohm = circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e;
-      if (circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l)
-        fields.ir_live_live_mohm = circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l;
-      if (circuit.ringR1Ohm) fields.ring_r1_ohm = circuit.ringR1Ohm;
-      if (circuit.ringRnOhm) fields.ring_rn_ohm = circuit.ringRnOhm;
-      if (circuit.ringR2Ohm) fields.ring_r2_ohm = circuit.ringR2Ohm;
-      if (circuit.rcdTimeMs) fields.rcd_time_ms = circuit.rcdTimeMs;
-      if (circuit.polarityConfirmed || circuit.polarity)
-        fields.polarity_confirmed = circuit.polarityConfirmed || circuit.polarity;
+      // Test readings. F/U-4 r6 (Codex): the CANONICAL snake-case key leads
+      // every chain — the PWA session_start sends its raw JobDetail whose
+      // reading keys ARE the canonical names, and pre-fix the seeder read
+      // only the iOS camelCase / legacy aliases, so a web session started
+      // with every existing reading invisible to the snapshot (calculators
+      // and dedup blind at start).
+      if (circuit.measured_zs_ohm || circuit.measuredZsOhm || circuit.zs)
+        fields.measured_zs_ohm = circuit.measured_zs_ohm || circuit.measuredZsOhm || circuit.zs;
+      if (circuit.r1_r2_ohm || circuit.r1R2Ohm || circuit.r1_plus_r2)
+        fields.r1_r2_ohm = circuit.r1_r2_ohm || circuit.r1R2Ohm || circuit.r1_plus_r2;
+      if (circuit.r2_ohm || circuit.r2Ohm || circuit.r2)
+        fields.r2_ohm = circuit.r2_ohm || circuit.r2Ohm || circuit.r2;
+      if (
+        circuit.ir_live_earth_mohm ||
+        circuit.irLiveEarthMohm ||
+        circuit.insulation_resistance_l_e
+      )
+        fields.ir_live_earth_mohm =
+          circuit.ir_live_earth_mohm ||
+          circuit.irLiveEarthMohm ||
+          circuit.insulation_resistance_l_e;
+      if (circuit.ir_live_live_mohm || circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l)
+        fields.ir_live_live_mohm =
+          circuit.ir_live_live_mohm || circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l;
+      if (circuit.ring_r1_ohm || circuit.ringR1Ohm)
+        fields.ring_r1_ohm = circuit.ring_r1_ohm || circuit.ringR1Ohm;
+      if (circuit.ring_rn_ohm || circuit.ringRnOhm)
+        fields.ring_rn_ohm = circuit.ring_rn_ohm || circuit.ringRnOhm;
+      if (circuit.ring_r2_ohm || circuit.ringR2Ohm)
+        fields.ring_r2_ohm = circuit.ring_r2_ohm || circuit.ringR2Ohm;
+      if (circuit.rcd_time_ms || circuit.rcdTimeMs)
+        fields.rcd_time_ms = circuit.rcd_time_ms || circuit.rcdTimeMs;
+      if (circuit.polarity_confirmed || circuit.polarityConfirmed || circuit.polarity)
+        fields.polarity_confirmed =
+          circuit.polarity_confirmed || circuit.polarityConfirmed || circuit.polarity;
       // Circuit metadata (CCU-imported, manually entered, or restored from
       // persistence). Without these the dispatcher cannot resolve circuits the
       // inspector hasn't yet dictated readings for. Source attribute names

@@ -46,9 +46,18 @@ function carriesJobStateFields(payload) {
  *  throw in buildCircuitSchedule; boards must be an array (or the production
  *  null sentinel); supply containers must be plain records (or null). */
 function jobStateFieldsValid(payload) {
-  if (Object.hasOwn(payload, 'circuits') && !Array.isArray(payload.circuits)) return false;
-  if (Object.hasOwn(payload, 'boards') && payload.boards != null && !Array.isArray(payload.boards))
-    return false;
+  // Codex r6 — element-level validation: circuits/boards must contain PLAIN
+  // RECORDS only (a circuits:[null] frame would throw in
+  // buildCircuitSchedule after merging had already begun — reject the whole
+  // frame atomically before any mutation).
+  if (Object.hasOwn(payload, 'circuits')) {
+    if (!Array.isArray(payload.circuits)) return false;
+    if (!payload.circuits.every((c) => isPlainRecord(c))) return false;
+  }
+  if (Object.hasOwn(payload, 'boards') && payload.boards != null) {
+    if (!Array.isArray(payload.boards)) return false;
+    if (!payload.boards.every((b) => isPlainRecord(b))) return false;
+  }
   for (const k of ['supply', 'supply_characteristics', 'supplyCharacteristics']) {
     if (Object.hasOwn(payload, k) && payload[k] != null && !isPlainRecord(payload[k])) return false;
   }

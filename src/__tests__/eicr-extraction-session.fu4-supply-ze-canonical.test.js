@@ -654,3 +654,92 @@ describe('F/U-4 review r5 — PWA JobDetail shape actually consumed', () => {
     expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.35');
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Codex review round 6.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('F/U-4 review r6 — PWA canonical reading keys at session_start', () => {
+  test('start() with a raw web JobDetail row seeds the canonical readings (calculators + dedup see them)', () => {
+    const s = makeSession();
+    s.start({
+      circuits: [
+        {
+          circuit_ref: 4,
+          circuit_designation: 'Upstairs Sockets',
+          measured_zs_ohm: '0.86',
+          r1_r2_ohm: '0.42',
+          ring_r1_ohm: '0.30',
+          rcd_time_ms: '24',
+          polarity_confirmed: 'OK',
+        },
+      ],
+      supply_characteristics: { earth_loop_impedance_ze: '0.30' },
+    });
+    const c = s.stateSnapshot.circuits[4];
+    expect(c.measured_zs_ohm).toBe('0.86');
+    expect(c.r1_r2_ohm).toBe('0.42');
+    expect(c.ring_r1_ohm).toBe('0.30');
+    expect(c.rcd_time_ms).toBe('24');
+    expect(c.polarity_confirmed).toBe('OK');
+    expect(c.circuit_designation).toBe('Upstairs Sockets');
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.30');
+  });
+
+  test('a seeded canonical Zs blocks calculate_zs overwrite (already_set, meter wins)', async () => {
+    const s = makeSession();
+    s.start({
+      circuits: [{ circuit_ref: 4, measured_zs_ohm: '0.86', r1_r2_ohm: '0.42' }],
+      supply: { ze: '0.30' },
+    });
+    const res = await dispatchCalculateZs(
+      { tool_call_id: 'tu_r6', name: 'calculate_zs', input: { circuit_ref: 4, all: false } },
+      {
+        session: s,
+        logger: mockLogger(),
+        turnId: 't1',
+        perTurnWrites: createPerTurnWrites(),
+        round: 0,
+      }
+    );
+    const body = JSON.parse(res.content);
+    expect(body.skipped).toEqual([{ circuit_ref: 4, reason: 'already_set' }]);
+  });
+});
+
+describe('F/U-4 review r6 — resolver scalar-only board values', () => {
+  test('an ARRAY board Ze is present-but-invalid → terminal no_ze (never a computed write)', async () => {
+    const session = {
+      sessionId: 'r6',
+      toolCallsMode: 'live',
+      stateSnapshot: {
+        currentBoardId: 'b2',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'b2', board_type: 'sub', ze: [0.55] },
+        ],
+        circuits: {
+          0: { earth_loop_impedance_ze: '0.30' },
+          'b2::4': { circuit: 4, board_id: 'b2', r1_r2_ohm: '0.20' },
+        },
+      },
+    };
+    const res = await dispatchCalculateZs(
+      {
+        tool_call_id: 'tu_arr',
+        name: 'calculate_zs',
+        input: { circuit_ref: 4, all: false, board_id: 'b2' },
+      },
+      {
+        session,
+        logger: mockLogger(),
+        turnId: 't1',
+        perTurnWrites: createPerTurnWrites(),
+        round: 0,
+      }
+    );
+    const body = JSON.parse(res.content);
+    expect(body.computed).toEqual([]);
+    expect(body.skipped).toEqual([{ circuit_ref: 4, reason: 'no_ze' }]);
+  });
+});

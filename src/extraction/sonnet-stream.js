@@ -936,7 +936,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               const circuitCount = Array.isArray(jobStatePayload.circuits)
                 ? jobStatePayload.circuits.length
                 : Array.isArray(jobStatePayload?.boards)
-                  ? jobStatePayload.boards.reduce((n, b) => n + (b.circuits?.length || 0), 0)
+                  ? jobStatePayload.boards.reduce((n, b) => n + (b?.circuits?.length || 0), 0)
                   : 0;
               logger.info('StateSnapshot refreshed', {
                 sessionId: currentSessionId,

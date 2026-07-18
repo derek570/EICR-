@@ -967,8 +967,13 @@ function resolveBoardAwareZe(snapshot, inputBoardId) {
   // there under it). Key order per shared-utils resolveZe / iOS canon:
   // ze → (canonical alias) → ze_at_db → zs_at_db, each key checked across
   // the board-local sources before the next key.
+  // Codex r6 — SCALARS only, mirroring the supply-ingestion hardening:
+  // String([0.55]) === '0.55' would let a malformed array value become a
+  // calculated certificate reading. A present NON-scalar is treated as a
+  // present-but-invalid value (terminal no_ze via the NaN path below).
   const present = (v) => {
     if (v == null) return null;
+    if (typeof v !== 'string' && typeof v !== 'number') return 'INVALID_NON_SCALAR';
     const str = String(v).trim();
     return str === '' ? null : str;
   };
