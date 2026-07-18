@@ -54,7 +54,11 @@ import {
   deleteCircuitFlagAware,
 } from './stage6-snapshot-mutators.js';
 import { encodeReadingKey } from './stage6-per-turn-writes.js';
-import { getCircuitBucket, listCircuitRefsInBoard } from './stage6-multi-board-shape.js';
+import {
+  getCircuitBucket,
+  listCircuitRefsInBoard,
+  getMainBoardId,
+} from './stage6-multi-board-shape.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
 import {
@@ -863,7 +867,7 @@ export async function dispatchDeleteCircuit(call, ctx) {
  * @param {{circuits: Object}} snapshot
  * @returns {number[]}
  */
-function selectorRefs(input, snapshot) {
+function selectorRefs(input, snapshot, targetBoardId) {
   if (Number.isInteger(input.circuit_ref) && input.circuit_ref >= 1) {
     return [input.circuit_ref];
   }
@@ -872,11 +876,10 @@ function selectorRefs(input, snapshot) {
       (a, b) => a - b
     );
   }
-  // all: walk every non-supply circuit in the snapshot. Under flag-on, this
-  // walks composite-key buckets scoped to (input.board_id ?? currentBoardId);
-  // under flag-off, numeric keys >= 1 (legacy behaviour, board_id ignored).
-  // Phase 6.5 — board_id thread-through.
-  return listCircuitRefsInBoard(snapshot, input.board_id);
+  // all: walk every non-supply circuit in the snapshot, scoped to the
+  // caller-resolved target board (Codex r2 — the resolved id carries the
+  // getMainBoardId fallback so custom-main-id snapshots stay consistent).
+  return listCircuitRefsInBoard(snapshot, targetBoardId ?? input.board_id);
 }
 
 /**
@@ -927,13 +930,83 @@ function applyCalculatedReading(session, perTurnWrites, { circuit, field, value,
 }
 
 /**
+ * F/U-4 (2026-07-18, Codex review) — BOARD-AWARE Ze resolution for the two
+ * calculators, mirroring the iOS-canon priority chain documented in
+ * `packages/shared-utils/src/circuit-derivations.ts` (`resolveZe`, lock-step
+ * with iOS `CircuitDerivations.swift` since the 2026-05-08 multi-board
+ * sprint):  board.ze → board.ze_at_db → supply earth_loop_impedance_ze.
+ *
+ * Pre-fix the dispatchers read ONLY `circuits[0].earth_loop_impedance_ze`.
+ * While the seeder stored supply Ze under the legacy `ze` alias that mostly
+ * meant a `no_ze` skip; once F/U-4 made the seeded ORIGIN Ze visible, a
+ * sub-board calculation would have silently used the origin Ze even when the
+ * target board has its own (a WRONG Zs on a certificate — worse than the
+ * skip). Board-local storage shapes: the MAIN board's dictated board-level
+ * fields live at `circuits[0]` (record_board_reading main-target branch), so
+ * main board-ze = `circuits[0].ze` / `.ze_at_db` — the legacy seeded-`ze`
+ * key is deliberately NOT renamed and slots into this chain exactly where
+ * iOS would read it; a SUB-board's live on its `boards[n]` record.
+ *
+ * @returns {number|null} finite Ze for the target board, or null (→ no_ze).
+ */
+function resolveBoardAwareZe(snapshot, inputBoardId) {
+  const mainId = getMainBoardId(snapshot);
+  const targetId = inputBoardId ?? snapshot?.currentBoardId ?? mainId;
+  const isMain = targetId === mainId;
+  const boardRecord = Array.isArray(snapshot?.boards)
+    ? snapshot.boards.find((b) => b && b.id === targetId)
+    : null;
+  const circuits0 = snapshot?.circuits?.[0];
+  // Codex r4 BLOCKER — board-local sources and key order. The target board's
+  // boards[] RECORD is board-local for EVERY board (a hydrated main record
+  // can carry ze / PWA zs_at_db too); circuits[0] is ADDITIONALLY board-local
+  // for the MAIN board (dictated main board fields land there) — EXCEPT its
+  // earth_loop_impedance_ze, which is the ORIGIN SUPPLY value (the fallback
+  // tier), never a main board-local. On SUB-board records the canonical key
+  // IS board-local (a dictated bare Ze while a sub-board is current lands
+  // there under it). Key order per shared-utils resolveZe / iOS canon:
+  // ze → (canonical alias) → ze_at_db → zs_at_db, each key checked across
+  // the board-local sources before the next key.
+  // Codex r6 — SCALARS only, mirroring the supply-ingestion hardening:
+  // String([0.55]) === '0.55' would let a malformed array value become a
+  // calculated certificate reading. A present NON-scalar is treated as a
+  // present-but-invalid value (terminal no_ze via the NaN path below).
+  const present = (v) => {
+    if (v == null) return null;
+    if (typeof v !== 'string' && typeof v !== 'number') return 'INVALID_NON_SCALAR';
+    const str = String(v).trim();
+    return str === '' ? null : str;
+  };
+  const sources = isMain ? [boardRecord, circuits0] : [boardRecord];
+  for (const key of ['ze', 'earth_loop_impedance_ze', 'ze_at_db', 'zs_at_db']) {
+    for (const src of sources) {
+      if (!src) continue;
+      if (key === 'earth_loop_impedance_ze' && src === circuits0) continue; // origin supply, not board-local
+      const str = present(src[key]);
+      if (str != null) {
+        const n = Number(str);
+        // Precedence-first, parse-once: a present-but-invalid board-local
+        // value is a terminal no_ze (never fall through to a DIFFERENT
+        // measurement).
+        return Number.isFinite(n) ? n : null;
+      }
+    }
+  }
+  const str = present(circuits0?.earth_loop_impedance_ze);
+  if (str == null) return null;
+  const n = Number(str);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * dispatchCalculateZs — Zs = Ze + (R1+R2) per circuit.
  *
  * Skip rules (per-circuit, no error envelope — circuits drop into the
  * `skipped` array of the tool result so Sonnet can read back what was and
  * wasn't computed):
  *   - reason='already_set'  : measured_zs_ohm exists (NEVER overwrite).
- *   - reason='no_ze'        : circuits[0].earth_loop_impedance_ze is missing.
+ *   - reason='no_ze'        : board-aware Ze resolution found none (board.ze →
+ *                             board.ze_at_db → supply earth_loop_impedance_ze).
  *   - reason='no_r1_r2'     : the circuit has no r1_r2_ohm value.
  *   - reason='circuit_missing' : the ref doesn't exist in the schedule
  *                                 (only possible via circuit_ref / circuit_refs;
@@ -959,14 +1032,24 @@ export async function dispatchCalculateZs(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  const ze = parseFiniteNumber(session.stateSnapshot.circuits?.[0]?.earth_loop_impedance_ze);
-  const refs = selectorRefs(input, session.stateSnapshot);
+  // Codex r2 — resolve the target board ONCE with the getMainBoardId
+  // fallback and thread it through Ze resolution + selector + bucket lookup,
+  // so a custom-main-id snapshot with no currentBoardId cannot diverge
+  // between the resolver and the bucket helpers. The WRITE path keeps the
+  // raw input.board_id (emitting a synthesised main id would add board_id to
+  // wire frames that never carried it).
+  const targetBoardId =
+    input.board_id ??
+    session.stateSnapshot?.currentBoardId ??
+    getMainBoardId(session.stateSnapshot);
+  const ze = resolveBoardAwareZe(session.stateSnapshot, input.board_id);
+  const refs = selectorRefs(input, session.stateSnapshot, targetBoardId);
 
   const computed = [];
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = getCircuitBucket(session.stateSnapshot, ref, input.board_id);
+    const bucket = getCircuitBucket(session.stateSnapshot, ref, targetBoardId);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;
@@ -1055,15 +1138,19 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  const ze = parseFiniteNumber(session.stateSnapshot.circuits?.[0]?.earth_loop_impedance_ze);
-  const refs = selectorRefs(input, session.stateSnapshot);
+  const targetBoardId =
+    input.board_id ??
+    session.stateSnapshot?.currentBoardId ??
+    getMainBoardId(session.stateSnapshot);
+  const ze = resolveBoardAwareZe(session.stateSnapshot, input.board_id);
+  const refs = selectorRefs(input, session.stateSnapshot, targetBoardId);
   const method = input.method;
 
   const computed = [];
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = getCircuitBucket(session.stateSnapshot, ref, input.board_id);
+    const bucket = getCircuitBucket(session.stateSnapshot, ref, targetBoardId);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;

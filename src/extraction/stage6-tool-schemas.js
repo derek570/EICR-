@@ -819,7 +819,8 @@ const deleteCircuit = makeTool({
 // Selector contract (shared with calculate_r1_plus_r2 — see
 // validateCalculateSelector): EXACTLY ONE of circuit_ref / circuit_refs / all
 // must be provided. The dispatcher walks the chosen circuits, applies the
-// formula where both Ze (from circuits[0].earth_loop_impedance_ze) and the
+// formula where both Ze (BOARD-AWARE since F/U-4: board.ze → board.ze_at_db →
+// supply earth_loop_impedance_ze, mirroring shared-utils resolveZe) and the
 // circuit's r1_r2_ohm are present, skips circuits missing either input, and
 // NEVER overwrites an existing measured_zs_ohm (a meter reading always wins).
 // ---------------------------------------------------------------------------

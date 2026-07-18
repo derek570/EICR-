@@ -440,20 +440,45 @@ export function validateCalculateSelector(input) {
  * Method must be 'zs_minus_ze' (default radial backout) or 'ring_continuity'
  * (the (R1+R2)/4 ring-final formula).
  */
-export function validateCalculateR1PlusR2(input, _snapshot) {
+export function validateCalculateR1PlusR2(input, snapshot) {
   const selErr = validateCalculateSelector(input);
   if (selErr) return selErr;
   if (input.method !== 'zs_minus_ze' && input.method !== 'ring_continuity') {
     return { code: 'invalid_method', field: 'method' };
   }
-  return null;
+  // Codex r2 — same board-target validation as calculate_zs.
+  return validateCalculateBoardTarget(input, snapshot);
 }
 
 /**
  * calculate_zs: selector check only (single formula: Zs = Ze + R1+R2).
  */
-export function validateCalculateZs(input, _snapshot) {
-  return validateCalculateSelector(input);
+/**
+ * Codex r2 (F/U-4 wave) — validate the calculator's board TARGET before any
+ * Ze resolution or selector walk. `board_id:'*'` is documented as
+ * unsupported on the calc tools (forward-safe key encoding only) but
+ * previously returned ok:true with empty results; an unknown board id
+ * produced misleading circuit_missing skips. Legacy single-board snapshots
+ * (no boards[]) accept the main id.
+ */
+export function validateCalculateBoardTarget(input, snapshot) {
+  // Codex r4 — validate the RESOLVED target, not just an explicit
+  // input.board_id: a stale/'*' snapshot.currentBoardId would otherwise
+  // bypass validation and silently compute against orphan buckets with the
+  // origin Ze. The getMainBoardId fallback is always valid by construction.
+  const bid = input?.board_id ?? snapshot?.currentBoardId;
+  if (bid == null) return null;
+  // Codex r3 — errors use the established {code, field} validator envelope
+  // (the shape validateCalculateSelector / invalid_method already emit).
+  if (bid === '*') return { code: 'board_id_star_unsupported', field: 'board_id' };
+  const boards = Array.isArray(snapshot?.boards) ? snapshot.boards : [];
+  if (boards.some((b) => b && b.id === bid)) return null;
+  if (boards.length === 0 && bid === getMainBoardId(snapshot)) return null;
+  return { code: 'board_not_found', field: 'board_id' };
+}
+
+export function validateCalculateZs(input, snapshot) {
+  return validateCalculateSelector(input) ?? validateCalculateBoardTarget(input, snapshot);
 }
 
 // ---------------------------------------------------------------------------

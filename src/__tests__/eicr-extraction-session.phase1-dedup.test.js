@@ -70,10 +70,17 @@ describe('Phase 0 — schedule_block_rebuild identity counter', () => {
     expect(s._scheduleRebuildStats.identical).toBe(0);
   });
 
-  test('empty job → empty job still counts as identical after the first', () => {
+  test('a circuits-less job never rebuilds (F/U-4 r5 contract); explicit circuits:[] does', () => {
     const s = makeSession();
+    // Circuits-less updates (empty {} / supply-only) must never touch the
+    // schedule OR the rebuild counters — pre-fix an empty mid-session update
+    // CLEARED the schedule.
     s.updateJobState({});
     s.updateJobState({});
+    expect(s._scheduleRebuildStats.total).toBe(0);
+    // An explicit circuits: [] remains the counted, valid way to clear.
+    s.updateJobState({ circuits: [] });
+    s.updateJobState({ circuits: [] });
     expect(s._scheduleRebuildStats.total).toBe(2);
     expect(s._scheduleRebuildStats.identical).toBe(1);
   });
@@ -288,7 +295,9 @@ describe('Commit 2 — schedule facts-only + buildSystemBlocks split', () => {
   test('case 22 — supply E2E EXTRACTED visibility under split_blocks', () => {
     const s = makeSession({ snapshotFormat: 'split_blocks' });
     s.updateJobState({ supply: { ze: 0.4 } });
-    expect(s.stateSnapshot.circuits[0].ze).toBe(0.4);
+    // F/U-4 (2026-07-18): the supply merge canonicalises the short `ze`
+    // alias to earth_loop_impedance_ze (the key the calculators read).
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe(0.4);
     const tail = s.buildVolatileSnapshotTail();
     // Supply lives on the line prefixed `0:` in the EXTRACTED block
     expect(tail).toContain('EXTRACTED');

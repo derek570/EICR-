@@ -494,9 +494,13 @@ const WRAP_POLICY = {
 
   // Supply ze/pfc are numeric-coerced in the current seed path but
   // classify explicitly in case they arrive as strings from some
-  // future producer.
+  // future producer. F/U-4 (2026-07-18): the seed/merge paths now store
+  // the CANONICAL supply keys — classify those identically; the short
+  // aliases stay listed for any legacy bucket that still carries them.
   ze: 'server_canonical',
   pfc: 'server_canonical',
+  earth_loop_impedance_ze: 'server_canonical',
+  prospective_fault_current: 'server_canonical',
 
   // Plan 04-22 r16-#3 — the 4 newly-canonicalised non-reading
   // schema fields. All numeric / closed-enum values, not user-
@@ -585,6 +589,119 @@ export const LEGACY_TO_CANONICAL_CIRCUIT_KEYS = {
   cable_size: 'live_csa_mm2',
   cable_size_earth: 'cpc_csa_mm2',
 };
+
+/**
+ * F/U-4 (2026-07-18) — SUPPLY-scope-only key aliases for the updateJobState
+ * merge path. Applied EXCLUSIVELY when `_mergeCircuitOrBoardFields` runs with
+ * kind='supply' (i.e. the value arrived inside `jobState.supply`, so it is
+ * unambiguously the supply-level reading). The canonical names are the
+ * `config/field_schema.json` supply_characteristics_fields keys — the same
+ * keys a DICTATED supply reading lands under via record_board_reading and
+ * that `dispatchCalculateZs`/`dispatchCalculateR1PlusR2` read
+ * (`circuits[0].earth_loop_impedance_ze`).
+ *
+ * Deliberately NOT added to LEGACY_TO_CANONICAL_CIRCUIT_KEYS: that map drives
+ * a bucket-wide normalisation pass over ALL circuit buckets, and bare `ze` is
+ * ALSO a legitimate, DISTINCT board_fields key (a dictated board-level Ze on
+ * the main board also lives at circuits[0]) — a blanket rename would corrupt
+ * real board readings. Scope-aware mapping at the two supply ingestion sites
+ * (the seeder + this merge) is the only place the rename is unambiguous.
+ * Exported for the F/U-4 unit tests.
+ */
+export const SUPPLY_MERGE_KEY_ALIASES = Object.freeze({
+  earthLoopImpedanceZe: 'earth_loop_impedance_ze',
+  ze: 'earth_loop_impedance_ze',
+  prospectiveFaultCurrent: 'prospective_fault_current',
+  pfc: 'prospective_fault_current',
+});
+
+/**
+ * F/U-4 (Codex review) — deterministic Ze/PFC spelling precedence for a
+ * supply payload: canonical snake_case first (the PWA JobDetail contract),
+ * iOS camelCase second, legacy short alias last. Returns a copy of the
+ * payload with the six spellings collapsed onto the two canonical keys, so
+ * a mixed-spelling object can never have iteration-order-dependent merge
+ * outcomes. Empty-string/null values are skipped in the precedence walk
+ * (functionally absent, matching the merge's own null/empty contract).
+ * Non-Ze/PFC keys pass through untouched. Shared by the seeder and the
+ * updateJobState supply merge; exported for tests.
+ */
+export function isPlainRecord(v) {
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Codex r2 — pick the FIRST supply container spelling that is a plain record
+ * with at least one own enumerable key (an empty object in an earlier
+ * spelling must not shadow a populated later one; arrays/primitives are
+ * never containers). Documented deterministic order: supplyCharacteristics →
+ * supply_characteristics → supply.
+ */
+export function selectSupplyContainer(jobState) {
+  // Codex r4 — merge PER FIELD across ALL plain-record containers (an
+  // earlier container carrying only an unrelated fact must not shadow Ze/PFC
+  // in a later one). Precedence per key: supplyCharacteristics →
+  // supply_characteristics → supply (assign in reverse so the
+  // earliest-precedence container wins each key).
+  const containers = ['supplyCharacteristics', 'supply_characteristics', 'supply']
+    .map((key) => jobState?.[key])
+    .filter((v) => isPlainRecord(v) && Object.keys(v).length > 0);
+  if (containers.length === 0) return null;
+  // Manual key-filtered copy, NOT Object.assign: an own '__proto__' data
+  // property (JSON payloads) would hit the prototype SETTER under assign and
+  // poison the merged record's prototype (making it fail the plain-record
+  // check and silently discard the whole container).
+  const merged = {};
+  for (const c of [...containers].reverse()) {
+    for (const k of Object.keys(c)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      merged[k] = c[k];
+    }
+  }
+  return merged;
+}
+
+export function normaliseSupplyIngest(supply) {
+  if (!isPlainRecord(supply)) return {};
+  const out = { ...supply };
+  for (const k of [
+    'earth_loop_impedance_ze',
+    'earthLoopImpedanceZe',
+    'ze',
+    'prospective_fault_current',
+    'prospectiveFaultCurrent',
+    'pfc',
+  ]) {
+    delete out[k];
+  }
+  // Codex r2 — OWN keys only (a JSON __proto__ payload or inherited `ze`
+  // must never resolve), and STRICT finite-numeric validation: Ze/PFC are
+  // measured electrical values classified server_canonical for the trusted
+  // snapshot block, so a non-numeric string (including prompt-injection
+  // text) is dropped at ingestion, never serialized raw. The stored value is
+  // the trimmed original spelling (string or number) — parse proves
+  // validity; it does not reformat.
+  const pick = (...keys) => {
+    for (const k of keys) {
+      if (!Object.hasOwn(supply, k)) continue;
+      const v = supply[k];
+      // Codex r3 — SCALARS only: String([0.42]) === '0.42' would let a
+      // malformed array value cross into the trusted snapshot.
+      if (typeof v !== 'string' && typeof v !== 'number') continue;
+      const str = String(v).trim();
+      if (str === '' || !Number.isFinite(Number(str))) continue;
+      return typeof v === 'number' ? v : str;
+    }
+    return undefined;
+  };
+  const zeVal = pick('earth_loop_impedance_ze', 'earthLoopImpedanceZe', 'ze');
+  if (zeVal !== undefined) out.earth_loop_impedance_ze = zeVal;
+  const pfcVal = pick('prospective_fault_current', 'prospectiveFaultCurrent', 'pfc');
+  if (pfcVal !== undefined) out.prospective_fault_current = pfcVal;
+  return out;
+}
 
 /**
  * Plan 04-19 r13-#3 — known canonical `type` values for validation_alerts.
@@ -828,6 +945,12 @@ const FACT_FIELDS = new Set([
  * helper is a tight loop without a long `if` chain.
  */
 const MERGE_SKIP_KEYS = new Set([
+  // Codex r2 (F/U-4 wave) — prototype-dangerous keys: a JSON payload can
+  // carry an OWN '__proto__' key (Object.entries yields it) and
+  // `target['__proto__'] = value` on a plain object mutates its prototype.
+  '__proto__',
+  'constructor',
+  'prototype',
   'id',
   'ref',
   'circuit_ref',
@@ -1448,25 +1571,47 @@ export class EICRExtractionSession {
     const knownBoardIds = new Set((this.stateSnapshot.boards ?? []).map((b) => b?.id));
     let seeded = 0;
     for (const circuit of jobState.circuits) {
-      const num = parseInt(circuit.ref || circuit.circuitNumber || circuit.number);
+      // F/U-4 r5 — circuit_ref is the canonical shared-type key (PWA JobDetail).
+      const num = parseInt(
+        circuit.ref || circuit.circuit_ref || circuit.circuitNumber || circuit.number
+      );
       if (isNaN(num)) continue;
       const fields = {};
-      // Test readings (existing behaviour)
-      if (circuit.measuredZsOhm || circuit.zs)
-        fields.measured_zs_ohm = circuit.measuredZsOhm || circuit.zs;
-      if (circuit.r1R2Ohm || circuit.r1_plus_r2)
-        fields.r1_r2_ohm = circuit.r1R2Ohm || circuit.r1_plus_r2;
-      if (circuit.r2Ohm || circuit.r2) fields.r2_ohm = circuit.r2Ohm || circuit.r2;
-      if (circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e)
-        fields.ir_live_earth_mohm = circuit.irLiveEarthMohm || circuit.insulation_resistance_l_e;
-      if (circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l)
-        fields.ir_live_live_mohm = circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l;
-      if (circuit.ringR1Ohm) fields.ring_r1_ohm = circuit.ringR1Ohm;
-      if (circuit.ringRnOhm) fields.ring_rn_ohm = circuit.ringRnOhm;
-      if (circuit.ringR2Ohm) fields.ring_r2_ohm = circuit.ringR2Ohm;
-      if (circuit.rcdTimeMs) fields.rcd_time_ms = circuit.rcdTimeMs;
-      if (circuit.polarityConfirmed || circuit.polarity)
-        fields.polarity_confirmed = circuit.polarityConfirmed || circuit.polarity;
+      // Test readings. F/U-4 r6 (Codex): the CANONICAL snake-case key leads
+      // every chain — the PWA session_start sends its raw JobDetail whose
+      // reading keys ARE the canonical names, and pre-fix the seeder read
+      // only the iOS camelCase / legacy aliases, so a web session started
+      // with every existing reading invisible to the snapshot (calculators
+      // and dedup blind at start).
+      if (circuit.measured_zs_ohm || circuit.measuredZsOhm || circuit.zs)
+        fields.measured_zs_ohm = circuit.measured_zs_ohm || circuit.measuredZsOhm || circuit.zs;
+      if (circuit.r1_r2_ohm || circuit.r1R2Ohm || circuit.r1_plus_r2)
+        fields.r1_r2_ohm = circuit.r1_r2_ohm || circuit.r1R2Ohm || circuit.r1_plus_r2;
+      if (circuit.r2_ohm || circuit.r2Ohm || circuit.r2)
+        fields.r2_ohm = circuit.r2_ohm || circuit.r2Ohm || circuit.r2;
+      if (
+        circuit.ir_live_earth_mohm ||
+        circuit.irLiveEarthMohm ||
+        circuit.insulation_resistance_l_e
+      )
+        fields.ir_live_earth_mohm =
+          circuit.ir_live_earth_mohm ||
+          circuit.irLiveEarthMohm ||
+          circuit.insulation_resistance_l_e;
+      if (circuit.ir_live_live_mohm || circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l)
+        fields.ir_live_live_mohm =
+          circuit.ir_live_live_mohm || circuit.irLiveLiveMohm || circuit.insulation_resistance_l_l;
+      if (circuit.ring_r1_ohm || circuit.ringR1Ohm)
+        fields.ring_r1_ohm = circuit.ring_r1_ohm || circuit.ringR1Ohm;
+      if (circuit.ring_rn_ohm || circuit.ringRnOhm)
+        fields.ring_rn_ohm = circuit.ring_rn_ohm || circuit.ringRnOhm;
+      if (circuit.ring_r2_ohm || circuit.ringR2Ohm)
+        fields.ring_r2_ohm = circuit.ring_r2_ohm || circuit.ringR2Ohm;
+      if (circuit.rcd_time_ms || circuit.rcdTimeMs)
+        fields.rcd_time_ms = circuit.rcd_time_ms || circuit.rcdTimeMs;
+      if (circuit.polarity_confirmed || circuit.polarityConfirmed || circuit.polarity)
+        fields.polarity_confirmed =
+          circuit.polarity_confirmed || circuit.polarityConfirmed || circuit.polarity;
       // Circuit metadata (CCU-imported, manually entered, or restored from
       // persistence). Without these the dispatcher cannot resolve circuits the
       // inspector hasn't yet dictated readings for. Source attribute names
@@ -1539,15 +1684,37 @@ export class EICRExtractionSession {
       if (!this.recentCircuitOrder.includes(num)) this.recentCircuitOrder.push(num);
       seeded++;
     }
-    // Supply-level fields (circuit 0)
-    const supply =
-      jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
+    // Supply-level fields (circuit 0).
+    //
+    // F/U-4 fix (2026-07-18, numeric-gate-redesign follow-up): store under the
+    // CANONICAL supply keys from config/field_schema.json
+    // (`earth_loop_impedance_ze`, `prospective_fault_current`) — the keys a
+    // DICTATED supply reading lands under via record_board_reading and the
+    // keys `dispatchCalculateZs`/`dispatchCalculateR1PlusR2` READ. The seeder
+    // previously stored the LEGACY WIRE aliases (`ze`, `pfc` — the
+    // field-name-corrections.js iOS wire shape), so a job-seeded supply Ze was
+    // INVISIBLE to the calculators (every calculate_zs on a seeded job skipped
+    // `no_ze`) and the model-facing snapshot showed `ze` while the dispatcher
+    // demanded `earth_loop_impedance_ze` — a split brain surfaced by the live
+    // marker-② repro. Do NOT "fix" this via LEGACY_TO_CANONICAL_CIRCUIT_KEYS:
+    // bare `ze` is ALSO a legitimate DISTINCT board_fields key that can live
+    // at circuits[0] for the main board (a dictated board-level Ze), so a
+    // blanket circuits-bucket rename would corrupt real board readings. Only
+    // HERE — where the value provably comes from the job's SUPPLY section — is
+    // the canonicalisation unambiguous.
+    // Codex review: resolution goes through the shared normaliseSupplyIngest
+    // helper (canonical snake_case FIRST — the PWA JobDetail contract sends
+    // supply_characteristics with `earth_loop_impedance_ze` — then iOS
+    // camelCase, then the legacy short alias). The seeder still deliberately
+    // seeds ONLY Ze/PFC (its narrow historical scope).
+    const supply = selectSupplyContainer(jobState);
     if (supply) {
+      const resolved = normaliseSupplyIngest(supply);
       const fields = {};
-      if (supply.earthLoopImpedanceZe || supply.ze)
-        fields.ze = supply.earthLoopImpedanceZe || supply.ze;
-      if (supply.prospectiveFaultCurrent || supply.pfc)
-        fields.pfc = supply.prospectiveFaultCurrent || supply.pfc;
+      if (resolved.earth_loop_impedance_ze !== undefined)
+        fields.earth_loop_impedance_ze = resolved.earth_loop_impedance_ze;
+      if (resolved.prospective_fault_current !== undefined)
+        fields.prospective_fault_current = resolved.prospective_fault_current;
       if (Object.keys(fields).length > 0) {
         this.stateSnapshot.circuits[0] = { ...fields };
         seeded++;
@@ -1834,6 +2001,11 @@ export class EICRExtractionSession {
     // missing input) so the contract is one-line for the caller.
     this._mergeIncomingJobStateIntoSnapshot(jobState);
 
+    // F/U-4 r5 — rebuild the schedule ONLY from an ARRAY circuits value: a
+    // supply/boards-only update (or a malformed circuits shape) must never
+    // clear the existing schedule. An explicit circuits:[] remains the valid
+    // clear.
+    if (!Array.isArray(jobState?.circuits)) return;
     const nextSchedule = this.buildCircuitSchedule(jobState);
     // Phase 0 — schedule_block_rebuild identity counter (snapshot-restructure
     // sprint, 2026-05-27). `_lastScheduleText` starts as `null` so the very
@@ -1888,7 +2060,8 @@ export class EICRExtractionSession {
       const knownBoardIds = new Set((this.stateSnapshot.boards ?? []).map((b) => b?.id));
       for (const incoming of jobState.circuits) {
         if (!incoming || typeof incoming !== 'object') continue;
-        const ref = incoming.ref ?? incoming.circuitNumber ?? incoming.number;
+        const ref =
+          incoming.ref ?? incoming.circuit_ref ?? incoming.circuitNumber ?? incoming.number;
         if (ref == null) continue;
         // Round-trip through Number() only when the raw ref is a numeric-looking
         // string so we don't break existing numeric-key semantics.
@@ -1920,9 +2093,17 @@ export class EICRExtractionSession {
     }
 
     // --- SUPPLY (lives at circuits[0] per the supply-bucket convention) ---
-    if (jobState.supply && typeof jobState.supply === 'object') {
+    // F/U-4 (Codex review): accept ALL THREE container spellings (the PWA
+    // JobDetail contract nests canonical snake-case fields under
+    // supply_characteristics; iOS sends `supply` with camelCase) and collapse
+    // the Ze/PFC spellings through normaliseSupplyIngest BEFORE the per-key
+    // merge, so a mixed-spelling payload can never have iteration-order-
+    // dependent outcomes (SUPPLY_MERGE_KEY_ALIASES in the merge itself stays
+    // as defence in depth).
+    const supplyIncoming = selectSupplyContainer(jobState);
+    if (supplyIncoming) {
       const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
-      this._mergeCircuitOrBoardFields(target, jobState.supply, 'supply');
+      this._mergeCircuitOrBoardFields(target, normaliseSupplyIngest(supplyIncoming), 'supply');
     }
 
     // --- BOARDS — match by id, not by index (Codex v5 F2) ---
@@ -1980,8 +2161,21 @@ export class EICRExtractionSession {
     for (const [rawField, value] of Object.entries(incoming)) {
       if (MERGE_SKIP_KEYS.has(rawField)) continue;
       // #3.4.4 — circuit-only legacy→canonical designation key normalisation.
+      // F/U-4 (2026-07-18) — SUPPLY-only Ze/PFC alias normalisation: a key
+      // arriving inside jobState.supply is unambiguously the SUPPLY reading,
+      // so the iOS camelCase wire shape and the legacy short aliases map to
+      // the canonical field_schema keys the calculators + record_board_reading
+      // use. (Deliberately NOT a circuits-bucket-wide rename: bare `ze` is a
+      // distinct board_fields key when dictated — see _seedStateFromJobState.)
+      // Codex r2 — hasOwn: rawField 'constructor'/'toString' must not
+      // resolve inherited properties of the (frozen, plain) alias map.
+      const supplyAlias =
+        kind === 'supply' && Object.hasOwn(SUPPLY_MERGE_KEY_ALIASES, rawField)
+          ? SUPPLY_MERGE_KEY_ALIASES[rawField]
+          : undefined;
       const field =
-        kind === 'circuit' && rawField === 'designation' ? 'circuit_designation' : rawField;
+        supplyAlias ??
+        (kind === 'circuit' && rawField === 'designation' ? 'circuit_designation' : rawField);
       if (FACT_FIELDS.has(field)) {
         target[field] = value;
         // Having just authoritatively written the canonical key from an
@@ -3686,12 +3880,22 @@ export class EICRExtractionSession {
    * both surfaces use the same set so they cannot drift apart.
    */
   buildCircuitSchedule(jobState) {
-    if (!jobState || !jobState.circuits) return '';
+    // F/U-4 r5 — fail closed on a non-array circuits value (null/{}/42
+    // must never iterate or clear the schedule).
+    if (!jobState || !Array.isArray(jobState.circuits)) return '';
     const lines = [];
     for (const circuit of jobState.circuits) {
-      const num = circuit.ref || circuit.circuitNumber || circuit.number || '?';
+      // F/U-4 r5 — canonical shared-type keys (PWA JobDetail: circuit_ref /
+      // circuit_designation) join the alias chains so a web job-state update
+      // rebuilds a REAL schedule instead of "Circuit ?: unnamed".
+      const num =
+        circuit.ref || circuit.circuit_ref || circuit.circuitNumber || circuit.number || '?';
       const desc =
-        circuit.designation || circuit.description || circuit.circuit_description || 'unnamed';
+        circuit.designation ||
+        circuit.circuit_designation ||
+        circuit.description ||
+        circuit.circuit_description ||
+        'unnamed';
       const fields = [];
 
       // FACT — derive circuit type from designation when not set explicitly

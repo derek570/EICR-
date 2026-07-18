@@ -1,0 +1,117 @@
+# F/U-4 — "a job-seeded supply Ze is invisible to calculate_zs".
+#
+# Regression lock for the supply-key contract drift found during the
+# marker-② live investigation (2026-07-18): `_seedStateFromJobState` stored
+# supply Ze under the legacy wire alias `circuits[0].ze`, while
+# `dispatchCalculateZs` reads `circuits[0].earth_loop_impedance_ze` (the
+# canonical field_schema key a DICTATED Ze lands under). Consequence: on any
+# job-seeded session, EVERY explicit "calculate Zs" skipped with
+# reason:'no_ze' even though the job carried a supply Ze — and the
+# model-facing snapshot SHOWED the Ze (under `ze`), so the model reasonably
+# kept calling the tool the dispatcher would refuse (split brain).
+#
+# RECORDED-lane semantics: the model response is frozen (one explicit-intent
+# calculate_zs call, then an empty end_turn — the model's side of the
+# explicit-compute contract, unchanged by the fix). The fix under lock is
+# BACKEND-deterministic: the seeder/merge canonicalisation
+# (SUPPLY_MERGE_KEY_ALIASES) that makes the seeded Ze visible so the REAL
+# dispatcher computes measured_zs_ohm = Ze + R1+R2 = 0.35 + 0.86 = 1.21
+# against this fixture's job_state. Pre-fix replay fails EXACTLY
+# `reading.op_zs_calc` (the computed write never lands).
+#
+# audibility note (deliberate): chime_observed is FALSE, so the generic
+# audibility.turn oracle does not run. A fully-computed calculate_zs turn is
+# currently SILENT BY DESIGN (`::calc::` writes are read-back-exempt per the
+# 2026-06-18 Audio-First auto-derivation exception, and marker-② deliberately
+# exempts the fully-computed clean turn) — the spoken contract for
+# explicitly-requested calculations is the OPEN follow-up F/U-1. When F/U-1
+# ships a deterministic calc read-back, flip this note by authoring a NEW
+# fixture asserting it (this fixture's payload is immutable); this one locks
+# the WRITE contract only, via the derived_exempt audibility class.
+#
+# Provenance (Codex review r1 correction): this is a HAND-AUTHORED regression
+# fixture built from the F/U-4 reproduction (unit-test twin:
+# eicr-extraction-session.fu4-supply-ze-canonical.test.js), NOT a converted
+# capture. The RED proof ran against the true pre-fix base — main @ 38781f55
+# — via a file overlay (`git checkout 38781f55 -- src/extraction/
+# eicr-extraction-session.js` + `npm run replay:field-corpus`), which failed
+# EXACTLY `reading.op_zs_calc` ("expected RED confirmed"); the fix commit was
+# then restored and the corpus went 4/4. The `recorded_full` provenance
+# labels on confirmations_enabled / in_response_to are SCHEMA-MANDATED for
+# non-keystone fixtures (reconstructed_reviewed is keystone-only); they model
+# the product defaults this synthetic turn assumes (confirmations on; not an
+# answer turn). chime_observed:false is likewise a deliberate synthetic
+# write-only qualification (see the audibility note above), not a claim about
+# production chime behaviour. No captured PII.
+schema_version: 1
+corpus_id: frc_a5f8cfebcb5cd7749412d09d984ebf09
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: reading.op_zs_calc
+owner: Derek Beckley
+introduced_at: '2026-07-18T16:30:00Z'
+fix_reference: fix_62b2aeb3668fe6051a4b8e78ca3b8955
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  F/U-4 supply-Ze canonical-key regression: an explicit "calculate Zs for
+  circuit 4" on a job seeded with supply Ze 0.35 and circuit-4 R1+R2 0.86
+  must WRITE measured_zs_ohm 1.21 through the real seeder + dispatcher
+  (audibility class derived_exempt — calc writes are read-back-exempt by
+  design; the spoken contract is follow-up F/U-1).
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  supply:
+    ze: '0.35'
+  circuits:
+    - number: 1
+      designation: Cooker
+    - number: 4
+      designation: Upstairs Sockets
+      r1R2Ohm: '0.86'
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: Calculate Zs for circuit 4.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: false
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_fu4calc
+            name: calculate_zs
+            input:
+              circuit_ref: 4
+              all: false
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations:
+      - operation_id: op_zs_calc
+        kind: reading
+        field: measured_zs_ohm
+        circuit: 4
+        value: '1.21'
+        audibility: derived_exempt
