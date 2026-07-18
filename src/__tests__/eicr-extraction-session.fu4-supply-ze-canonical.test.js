@@ -22,8 +22,12 @@ import { jest } from '@jest/globals';
 import {
   EICRExtractionSession,
   SUPPLY_MERGE_KEY_ALIASES,
+  normaliseSupplyIngest,
 } from '../extraction/eicr-extraction-session.js';
-import { dispatchCalculateZs } from '../extraction/stage6-dispatchers-circuit.js';
+import {
+  dispatchCalculateZs,
+  dispatchCalculateR1PlusR2,
+} from '../extraction/stage6-dispatchers-circuit.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 
 // start() arms a REAL cache-keepalive timer (which would fire a real HTTP
@@ -134,6 +138,155 @@ describe('F/U-4 — the repro: calculate_zs SEES a job-seeded supply Ze', () => 
     expect(body.skipped).toEqual([]);
     expect(body.computed).toEqual([
       { circuit_ref: 4, field: 'measured_zs_ohm', value: '1.21' }, // 0.35 + 0.86
+    ]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Codex review round 1 — the three verified gaps.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('F/U-4 review — PWA-shaped supply_characteristics with canonical snake-case keys', () => {
+  test('start() seeds from supply_characteristics.earth_loop_impedance_ze (the PWA JobDetail shape)', () => {
+    const s = makeSession();
+    s.start({ circuits: [], supply_characteristics: { earth_loop_impedance_ze: '0.29' } });
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.29');
+  });
+
+  test('updateJobState accepts the supply_characteristics container (previously only jobState.supply)', () => {
+    const s = makeSession();
+    s.updateJobState({ supply_characteristics: { earth_loop_impedance_ze: '0.33' } });
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.33');
+  });
+
+  test('precedence is deterministic: canonical snake beats a stale short alias in the SAME payload', () => {
+    const s = makeSession();
+    s.start({
+      circuits: [],
+      supply: { earth_loop_impedance_ze: '0.30', ze: '0.99' },
+    });
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.30');
+  });
+
+  test('normaliseSupplyIngest collapses all six spellings and passes other keys through', () => {
+    const out = normaliseSupplyIngest({
+      ze: '0.9',
+      earthLoopImpedanceZe: '0.5',
+      earth_loop_impedance_ze: '0.3',
+      pfc: '2.0',
+      earthing_arrangement: 'TN-S',
+    });
+    expect(out).toEqual({
+      earth_loop_impedance_ze: '0.3',
+      prospective_fault_current: '2.0',
+      earthing_arrangement: 'TN-S',
+    });
+  });
+});
+
+describe('F/U-4 review — board-aware Ze resolution (iOS-canon resolveZe order)', () => {
+  // Snapshot shapes mirror stage6-multi-board-shape: main-board circuits at
+  // bare-numeric keys; sub-board circuits at composite `boardId::ref` keys;
+  // board records on snapshot.boards.
+  function makeDispatcherSession(snapshot) {
+    return { sessionId: 'fu4-board-ze', toolCallsMode: 'live', stateSnapshot: snapshot };
+  }
+
+  test('a sub-board circuit uses the SUB-BOARD Ze, not the origin supply Ze', async () => {
+    const session = makeDispatcherSession({
+      currentBoardId: 'b2',
+      boards: [
+        { id: 'main', board_type: 'main' },
+        { id: 'b2', board_type: 'sub', ze: '0.55' },
+      ],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30' },
+        'b2::4': { circuit: 4, board_id: 'b2', r1_r2_ohm: '0.20' },
+      },
+    });
+    const perTurnWrites = createPerTurnWrites();
+    const res = await dispatchCalculateZs(
+      {
+        tool_call_id: 'tu_sub',
+        name: 'calculate_zs',
+        input: { circuit_ref: 4, all: false, board_id: 'b2' },
+      },
+      { session, logger: mockLogger(), turnId: 't1', perTurnWrites, round: 0 }
+    );
+    const body = JSON.parse(res.content);
+    // 0.55 + 0.20 = 0.75 — NOT 0.30 + 0.20 = 0.50 (the silent-wrong-write the
+    // review caught: origin Ze must never leak into a sub-board calculation).
+    expect(body.computed).toEqual([{ circuit_ref: 4, field: 'measured_zs_ohm', value: '0.75' }]);
+  });
+
+  test('a sub-board WITHOUT its own Ze falls back to the origin supply Ze', async () => {
+    const session = makeDispatcherSession({
+      currentBoardId: 'b2',
+      boards: [
+        { id: 'main', board_type: 'main' },
+        { id: 'b2', board_type: 'sub' },
+      ],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30' },
+        'b2::4': { circuit: 4, board_id: 'b2', r1_r2_ohm: '0.20' },
+      },
+    });
+    const perTurnWrites = createPerTurnWrites();
+    const res = await dispatchCalculateZs(
+      {
+        tool_call_id: 'tu_fb',
+        name: 'calculate_zs',
+        input: { circuit_ref: 4, all: false, board_id: 'b2' },
+      },
+      { session, logger: mockLogger(), turnId: 't1', perTurnWrites, round: 0 }
+    );
+    const body = JSON.parse(res.content);
+    expect(body.computed).toEqual([{ circuit_ref: 4, field: 'measured_zs_ohm', value: '0.50' }]);
+  });
+
+  test('a dictated MAIN-board ze (circuits[0].ze — board_fields key) outranks the seeded supply Ze', async () => {
+    const session = makeDispatcherSession({
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30', ze: '0.25' },
+        4: { r1_r2_ohm: '0.20' },
+      },
+    });
+    const perTurnWrites = createPerTurnWrites();
+    const res = await dispatchCalculateZs(
+      { tool_call_id: 'tu_main', name: 'calculate_zs', input: { circuit_ref: 4, all: false } },
+      { session, logger: mockLogger(), turnId: 't1', perTurnWrites, round: 0 }
+    );
+    const body = JSON.parse(res.content);
+    // board.ze → board.ze_at_db → supply canonical (shared-utils resolveZe).
+    expect(body.computed).toEqual([{ circuit_ref: 4, field: 'measured_zs_ohm', value: '0.45' }]);
+  });
+
+  test('calculate_r1_plus_r2 zs_minus_ze uses the board-aware Ze too', async () => {
+    const session = makeDispatcherSession({
+      currentBoardId: 'b2',
+      boards: [
+        { id: 'main', board_type: 'main' },
+        { id: 'b2', board_type: 'sub', ze: '0.55' },
+      ],
+      circuits: {
+        0: { earth_loop_impedance_ze: '0.30' },
+        'b2::4': { circuit: 4, board_id: 'b2', measured_zs_ohm: '0.75' },
+      },
+    });
+    const perTurnWrites = createPerTurnWrites();
+    const res = await dispatchCalculateR1PlusR2(
+      {
+        tool_call_id: 'tu_r1r2',
+        name: 'calculate_r1_plus_r2',
+        input: { circuit_ref: 4, all: false, board_id: 'b2', method: 'zs_minus_ze' },
+      },
+      { session, logger: mockLogger(), turnId: 't1', perTurnWrites, round: 0 }
+    );
+    const body = JSON.parse(res.content);
+    // 0.75 - 0.55 = 0.20 (origin Ze would wrongly give 0.45).
+    expect(body.computed).toEqual([
+      { circuit_ref: 4, field: 'r1_r2_ohm', value: '0.20', method: 'zs_minus_ze' },
     ]);
   });
 });

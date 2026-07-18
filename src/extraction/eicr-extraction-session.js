@@ -616,6 +616,43 @@ export const SUPPLY_MERGE_KEY_ALIASES = Object.freeze({
 });
 
 /**
+ * F/U-4 (Codex review) — deterministic Ze/PFC spelling precedence for a
+ * supply payload: canonical snake_case first (the PWA JobDetail contract),
+ * iOS camelCase second, legacy short alias last. Returns a copy of the
+ * payload with the six spellings collapsed onto the two canonical keys, so
+ * a mixed-spelling object can never have iteration-order-dependent merge
+ * outcomes. Empty-string/null values are skipped in the precedence walk
+ * (functionally absent, matching the merge's own null/empty contract).
+ * Non-Ze/PFC keys pass through untouched. Shared by the seeder and the
+ * updateJobState supply merge; exported for tests.
+ */
+export function normaliseSupplyIngest(supply) {
+  const out = { ...supply };
+  for (const k of [
+    'earth_loop_impedance_ze',
+    'earthLoopImpedanceZe',
+    'ze',
+    'prospective_fault_current',
+    'prospectiveFaultCurrent',
+    'pfc',
+  ]) {
+    delete out[k];
+  }
+  const pick = (...keys) => {
+    for (const k of keys) {
+      const v = supply?.[k];
+      if (v != null && v !== '') return v;
+    }
+    return undefined;
+  };
+  const zeVal = pick('earth_loop_impedance_ze', 'earthLoopImpedanceZe', 'ze');
+  if (zeVal !== undefined) out.earth_loop_impedance_ze = zeVal;
+  const pfcVal = pick('prospective_fault_current', 'prospectiveFaultCurrent', 'pfc');
+  if (pfcVal !== undefined) out.prospective_fault_current = pfcVal;
+  return out;
+}
+
+/**
  * Plan 04-19 r13-#3 — known canonical `type` values for validation_alerts.
  * Sourced from `config/prompts/sonnet_extraction_system.md` instructions
  * (lines 482-483: `myth_rejected`, `nc_only`) + prior Codex review
@@ -1586,14 +1623,20 @@ export class EICRExtractionSession {
     // blanket circuits-bucket rename would corrupt real board readings. Only
     // HERE — where the value provably comes from the job's SUPPLY section — is
     // the canonicalisation unambiguous.
+    // Codex review: resolution goes through the shared normaliseSupplyIngest
+    // helper (canonical snake_case FIRST — the PWA JobDetail contract sends
+    // supply_characteristics with `earth_loop_impedance_ze` — then iOS
+    // camelCase, then the legacy short alias). The seeder still deliberately
+    // seeds ONLY Ze/PFC (its narrow historical scope).
     const supply =
       jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
     if (supply) {
+      const resolved = normaliseSupplyIngest(supply);
       const fields = {};
-      if (supply.earthLoopImpedanceZe || supply.ze)
-        fields.earth_loop_impedance_ze = supply.earthLoopImpedanceZe || supply.ze;
-      if (supply.prospectiveFaultCurrent || supply.pfc)
-        fields.prospective_fault_current = supply.prospectiveFaultCurrent || supply.pfc;
+      if (resolved.earth_loop_impedance_ze !== undefined)
+        fields.earth_loop_impedance_ze = resolved.earth_loop_impedance_ze;
+      if (resolved.prospective_fault_current !== undefined)
+        fields.prospective_fault_current = resolved.prospective_fault_current;
       if (Object.keys(fields).length > 0) {
         this.stateSnapshot.circuits[0] = { ...fields };
         seeded++;
@@ -1966,9 +2009,18 @@ export class EICRExtractionSession {
     }
 
     // --- SUPPLY (lives at circuits[0] per the supply-bucket convention) ---
-    if (jobState.supply && typeof jobState.supply === 'object') {
+    // F/U-4 (Codex review): accept ALL THREE container spellings (the PWA
+    // JobDetail contract nests canonical snake-case fields under
+    // supply_characteristics; iOS sends `supply` with camelCase) and collapse
+    // the Ze/PFC spellings through normaliseSupplyIngest BEFORE the per-key
+    // merge, so a mixed-spelling payload can never have iteration-order-
+    // dependent outcomes (SUPPLY_MERGE_KEY_ALIASES in the merge itself stays
+    // as defence in depth).
+    const supplyIncoming =
+      jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
+    if (supplyIncoming && typeof supplyIncoming === 'object') {
       const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
-      this._mergeCircuitOrBoardFields(target, jobState.supply, 'supply');
+      this._mergeCircuitOrBoardFields(target, normaliseSupplyIngest(supplyIncoming), 'supply');
     }
 
     // --- BOARDS — match by id, not by index (Codex v5 F2) ---

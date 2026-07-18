@@ -29,8 +29,20 @@
 # fixture asserting it (this fixture's payload is immutable); this one locks
 # the WRITE contract only, via the derived_exempt audibility class.
 #
-# Provenance: hand-authored from the F/U-4 reproduction (unit-test twin:
-# eicr-extraction-session.fu4-supply-ze-canonical.test.js). No captured PII.
+# Provenance (Codex review r1 correction): this is a HAND-AUTHORED regression
+# fixture built from the F/U-4 reproduction (unit-test twin:
+# eicr-extraction-session.fu4-supply-ze-canonical.test.js), NOT a converted
+# capture. The RED proof ran against the true pre-fix base — main @ 38781f55
+# — via a file overlay (`git checkout 38781f55 -- src/extraction/
+# eicr-extraction-session.js` + `npm run replay:field-corpus`), which failed
+# EXACTLY `reading.op_zs_calc` ("expected RED confirmed"); the fix commit was
+# then restored and the corpus went 4/4. The `recorded_full` provenance
+# labels on confirmations_enabled / in_response_to are SCHEMA-MANDATED for
+# non-keystone fixtures (reconstructed_reviewed is keystone-only); they model
+# the product defaults this synthetic turn assumes (confirmations on; not an
+# answer turn). chime_observed:false is likewise a deliberate synthetic
+# write-only qualification (see the audibility note above), not a claim about
+# production chime behaviour. No captured PII.
 schema_version: 1
 corpus_id: frc_a5f8cfebcb5cd7749412d09d984ebf09
 purpose: regression

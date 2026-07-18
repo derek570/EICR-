@@ -692,6 +692,7 @@ function createMessageRateLimiter(maxMessages, windowMs) {
 // and unit tests can attribute ElevenLabs TTS cost without dragging the full
 // WS-handler import graph into their context. See `active-sessions.js`.
 import { activeSessions } from './active-sessions.js';
+import { unwrapJobStateFrame } from './job-state-frame.js';
 
 // Phase 1.3 (PLAN-backend-final.md) — per-session buffer + flush primitives
 // for the `client_log_batch` WS channel iOS streams over the Sonnet socket.
@@ -917,21 +918,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
           case 'job_state_update':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
-              activeSessions.get(currentSessionId).session.updateJobState(msg);
+              const jobStatePayload = unwrapJobStateFrame(msg);
+              activeSessions.get(currentSessionId).session.updateJobState(jobStatePayload);
               // Trace which StateSnapshot the next Sonnet turn will see. Critical when
               // debugging "Sonnet asked about a circuit that's already on-screen" —
               // absence of this log after a CCU extraction means the iOS side never
               // fired `notifyJobStateChanged`.
-              const circuitCount = Array.isArray(msg.circuits)
-                ? msg.circuits.length
-                : Array.isArray(msg?.boards)
-                  ? msg.boards.reduce((n, b) => n + (b.circuits?.length || 0), 0)
+              const circuitCount = Array.isArray(jobStatePayload.circuits)
+                ? jobStatePayload.circuits.length
+                : Array.isArray(jobStatePayload?.boards)
+                  ? jobStatePayload.boards.reduce((n, b) => n + (b.circuits?.length || 0), 0)
                   : 0;
               logger.info('StateSnapshot refreshed', {
                 sessionId: currentSessionId,
                 reason: msg.reason || 'unspecified',
                 circuitCount,
-                boardCount: Array.isArray(msg?.boards) ? msg.boards.length : 0,
+                boardCount: Array.isArray(jobStatePayload?.boards)
+                  ? jobStatePayload.boards.length
+                  : 0,
               });
             }
             break;

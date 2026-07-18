@@ -54,7 +54,11 @@ import {
   deleteCircuitFlagAware,
 } from './stage6-snapshot-mutators.js';
 import { encodeReadingKey } from './stage6-per-turn-writes.js';
-import { getCircuitBucket, listCircuitRefsInBoard } from './stage6-multi-board-shape.js';
+import {
+  getCircuitBucket,
+  listCircuitRefsInBoard,
+  getMainBoardId,
+} from './stage6-multi-board-shape.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
 import {
@@ -927,13 +931,50 @@ function applyCalculatedReading(session, perTurnWrites, { circuit, field, value,
 }
 
 /**
+ * F/U-4 (2026-07-18, Codex review) — BOARD-AWARE Ze resolution for the two
+ * calculators, mirroring the iOS-canon priority chain documented in
+ * `packages/shared-utils/src/circuit-derivations.ts` (`resolveZe`, lock-step
+ * with iOS `CircuitDerivations.swift` since the 2026-05-08 multi-board
+ * sprint):  board.ze → board.ze_at_db → supply earth_loop_impedance_ze.
+ *
+ * Pre-fix the dispatchers read ONLY `circuits[0].earth_loop_impedance_ze`.
+ * While the seeder stored supply Ze under the legacy `ze` alias that mostly
+ * meant a `no_ze` skip; once F/U-4 made the seeded ORIGIN Ze visible, a
+ * sub-board calculation would have silently used the origin Ze even when the
+ * target board has its own (a WRONG Zs on a certificate — worse than the
+ * skip). Board-local storage shapes: the MAIN board's dictated board-level
+ * fields live at `circuits[0]` (record_board_reading main-target branch), so
+ * main board-ze = `circuits[0].ze` / `.ze_at_db` — the legacy seeded-`ze`
+ * key is deliberately NOT renamed and slots into this chain exactly where
+ * iOS would read it; a SUB-board's live on its `boards[n]` record.
+ *
+ * @returns {number|null} finite Ze for the target board, or null (→ no_ze).
+ */
+function resolveBoardAwareZe(snapshot, inputBoardId) {
+  const mainId = getMainBoardId(snapshot);
+  const targetId = inputBoardId ?? snapshot?.currentBoardId ?? mainId;
+  const boardLocal =
+    targetId === mainId
+      ? snapshot?.circuits?.[0]
+      : Array.isArray(snapshot?.boards)
+        ? snapshot.boards.find((b) => b && b.id === targetId)
+        : null;
+  return (
+    parseFiniteNumber(boardLocal?.ze) ??
+    parseFiniteNumber(boardLocal?.ze_at_db) ??
+    parseFiniteNumber(snapshot?.circuits?.[0]?.earth_loop_impedance_ze)
+  );
+}
+
+/**
  * dispatchCalculateZs — Zs = Ze + (R1+R2) per circuit.
  *
  * Skip rules (per-circuit, no error envelope — circuits drop into the
  * `skipped` array of the tool result so Sonnet can read back what was and
  * wasn't computed):
  *   - reason='already_set'  : measured_zs_ohm exists (NEVER overwrite).
- *   - reason='no_ze'        : circuits[0].earth_loop_impedance_ze is missing.
+ *   - reason='no_ze'        : board-aware Ze resolution found none (board.ze →
+ *                             board.ze_at_db → supply earth_loop_impedance_ze).
  *   - reason='no_r1_r2'     : the circuit has no r1_r2_ohm value.
  *   - reason='circuit_missing' : the ref doesn't exist in the schedule
  *                                 (only possible via circuit_ref / circuit_refs;
@@ -959,7 +1000,7 @@ export async function dispatchCalculateZs(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  const ze = parseFiniteNumber(session.stateSnapshot.circuits?.[0]?.earth_loop_impedance_ze);
+  const ze = resolveBoardAwareZe(session.stateSnapshot, input.board_id);
   const refs = selectorRefs(input, session.stateSnapshot);
 
   const computed = [];
@@ -1055,7 +1096,7 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  const ze = parseFiniteNumber(session.stateSnapshot.circuits?.[0]?.earth_loop_impedance_ze);
+  const ze = resolveBoardAwareZe(session.stateSnapshot, input.board_id);
   const refs = selectorRefs(input, session.stateSnapshot);
   const method = input.method;
 
