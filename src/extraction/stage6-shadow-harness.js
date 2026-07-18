@@ -2213,17 +2213,39 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // circuits" → 5 computed, 3 skipped). A partial success is NOT
             // wholly designed-silent — the skipped circuits went silent for a
             // non-designed reason, so the apology must fire.
+            // skipped must be a REAL empty array (Codex cycle-1 mini-review):
+            // a missing/null/non-array skipped is shape drift and must fail
+            // CLOSED (fire the apology), never open (exempt into silence).
             return !!(
               body &&
               body.ok === true &&
               Array.isArray(body.computed) &&
               body.computed.length > 0 &&
-              (!Array.isArray(body.skipped) || body.skipped.length === 0)
+              Array.isArray(body.skipped) &&
+              body.skipped.length === 0
             );
           } catch {
             return false;
           }
         };
+        // Loop-ledger exhaustiveness guard (Codex cycle-1 mini-review):
+        // `tool_calls` is NOT exhaustive — a thrown dispatcher, a padded
+        // internal_no_result, and cap-hit synthetics land in toolResults (and
+        // the per-round error counts) but NOT in allCalls, so `every()` over
+        // the visible subset could exempt a turn with an INVISIBLE failure.
+        // The exemption therefore also requires: not aborted, not cap-hit,
+        // ZERO errors across all rounds, and attempted-call count equal to
+        // the accumulated list. Missing ledger arrays (legacy shapes) fail
+        // CLOSED — the apology fires (annoying-but-safe).
+        const sumRounds = (a) =>
+          Array.isArray(a) ? a.reduce((acc, n) => acc + (Number.isFinite(n) ? n : 0), 0) : null;
+        const totalAttempted = sumRounds(toolLoopOut?.tool_call_count_per_round);
+        const totalErrors = sumRounds(toolLoopOut?.tool_error_count_per_round);
+        const loopLedgerClean =
+          toolLoopOut?.aborted !== true &&
+          toolLoopOut?.terminal_reason !== 'tool_use_cap_hit' &&
+          totalErrors === 0 &&
+          totalAttempted === calls.length;
         // WHOLE-TURN classification (Codex diff-review cycle 1): the exemption
         // is `every`, not `some`. This branch is only reached when ZERO speech
         // survived, so any call that is NOT a computed>0 calculator success
@@ -2233,7 +2255,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // success IS audible (record_reading etc.) never reach here with
         // surviving speech, and the produced-then-debounced case is already
         // predicate 4's already-heard evidence.
-        const hasDesignedSilentWrite = calls.length > 0 && calls.every(isDesignedSilentSuccess);
+        const hasDesignedSilentWrite =
+          loopLedgerClean && calls.length > 0 && calls.every(isDesignedSilentSuccess);
         const survivingConfCount = Array.isArray(result.confirmations)
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;

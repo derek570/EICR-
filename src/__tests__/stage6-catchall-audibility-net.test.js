@@ -437,6 +437,10 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
         messages_final: [],
         usage: {},
         terminal_reason: 'end_turn',
+        // The exemption requires an EXHAUSTIVE clean loop ledger — attempted
+        // count equals the accumulated list and zero errors in any round.
+        tool_call_count_per_round: [1, 0],
+        tool_error_count_per_round: [0, 0],
       };
     });
     const opts = baseOpts({ chimeObserved: true });
@@ -643,6 +647,131 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session4(), 'calculate Zs for all circuits', [], opts);
     expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
+  test('INVISIBLE failure: computed calc visible + a thrown-dispatcher error NOT in tool_calls → catch-all FIRES (ledger guard)', async () => {
+    // Codex cycle-1 mini-review: runToolLoop omits thrown dispatchers /
+    // padded internal_no_result from tool_calls (they land only in the
+    // per-round error counts), so every() over the visible subset would
+    // exempt a turn with an invisible failure. The loop-ledger guard
+    // (attempted==accumulated, zero errors) must defeat the exemption.
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+        value: '1.10',
+        confidence: 1.0,
+        source_turn_id: '::calc::calculate_zs',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_v1',
+            name: 'calculate_zs',
+            input: { circuit_ref: 2, all: false },
+            result: {
+              tool_use_id: 'toolu_v1',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                skipped: [],
+              }),
+            },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+        // TWO attempted in round 0 but only one accumulated; one error row.
+        tool_call_count_per_round: [2, 0],
+        tool_error_count_per_round: [1, 0],
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calc plus a crash', [], opts);
+    expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
+  test('CAP-HIT turn: computed calc + tool_use_cap_hit terminal → catch-all FIRES (never exempt an aborted/capped loop)', async () => {
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+        value: '1.10',
+        confidence: 1.0,
+        source_turn_id: '::calc::calculate_zs',
+      });
+      return {
+        stop_reason: 'tool_use',
+        rounds: 8,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_cap',
+            name: 'calculate_zs',
+            input: { circuit_ref: 2, all: false },
+            result: {
+              tool_use_id: 'toolu_cap',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+                skipped: [],
+              }),
+            },
+          },
+        ],
+        aborted: true,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'tool_use_cap_hit',
+        tool_call_count_per_round: [1],
+        tool_error_count_per_round: [0],
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calc then wedge', [], opts);
+    expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
+  test('MALFORMED skipped (missing / null / non-array) fails CLOSED → catch-all FIRES for each variant', async () => {
+    for (const skippedVariant of [undefined, null, 'none']) {
+      const body = {
+        ok: true,
+        computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
+      };
+      if (skippedVariant !== undefined) body.skipped = skippedVariant;
+      runToolLoopSpy.mockImplementation(async (opts) => {
+        const ptw = opts.perTurnWritesRef();
+        ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
+          value: '1.10',
+          confidence: 1.0,
+          source_turn_id: '::calc::calculate_zs',
+        });
+        return {
+          stop_reason: 'end_turn',
+          rounds: 2,
+          tool_calls: [
+            {
+              tool_call_id: 'toolu_s',
+              name: 'calculate_zs',
+              input: { circuit_ref: 2, all: false },
+              result: { tool_use_id: 'toolu_s', is_error: false, content: JSON.stringify(body) },
+            },
+          ],
+          aborted: false,
+          messages_final: [],
+          usage: {},
+          terminal_reason: 'end_turn',
+          tool_call_count_per_round: [1, 0],
+          tool_error_count_per_round: [0, 0],
+        };
+      });
+      const opts = baseOpts({ chimeObserved: true });
+      const result = await runShadowHarness(session4(), 'calc odd shape', [], opts);
+      expect(catchallPrompts(result)).toHaveLength(1);
+    }
   });
 
   test('(h) no double-fire with marker-①: a chimed no-content no-op → exactly ONE apology, from marker-① not marker-②', async () => {
