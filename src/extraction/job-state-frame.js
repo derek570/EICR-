@@ -41,6 +41,20 @@ function carriesJobStateFields(payload) {
   return JOB_STATE_FIELDS.some((k) => Object.hasOwn(payload, k));
 }
 
+/** Codex r5 — recognized fields must also be STRUCTURALLY valid when
+ *  present: a non-array circuits (null/{}/42) would clear the schedule or
+ *  throw in buildCircuitSchedule; boards must be an array (or the production
+ *  null sentinel); supply containers must be plain records (or null). */
+function jobStateFieldsValid(payload) {
+  if (Object.hasOwn(payload, 'circuits') && !Array.isArray(payload.circuits)) return false;
+  if (Object.hasOwn(payload, 'boards') && payload.boards != null && !Array.isArray(payload.boards))
+    return false;
+  for (const k of ['supply', 'supply_characteristics', 'supplyCharacteristics']) {
+    if (Object.hasOwn(payload, k) && payload[k] != null && !isPlainRecord(payload[k])) return false;
+  }
+  return true;
+}
+
 export function unwrapJobStateFrame(msg) {
   // Codex r3 — the plain-record contract applies to the OUTER frame too
   // (an array/Date/custom-prototype envelope is malformed, not a flat job).
@@ -50,8 +64,8 @@ export function unwrapJobStateFrame(msg) {
     // Codex r4 — {jobState:{}} (and any nested payload with no recognized
     // job-state field) must be SKIPPED, not passed through: updateJobState
     // on a field-less object clears the existing circuit schedule.
-    return isPlainRecord(js) && carriesJobStateFields(js) ? js : null;
+    return isPlainRecord(js) && carriesJobStateFields(js) && jobStateFieldsValid(js) ? js : null;
   }
-  // Flat iOS shape: same guard — an envelope-only frame carries no job.
-  return carriesJobStateFields(msg) ? msg : null;
+  // Flat iOS shape: same guards — an envelope-only frame carries no job.
+  return carriesJobStateFields(msg) && jobStateFieldsValid(msg) ? msg : null;
 }

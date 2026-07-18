@@ -625,3 +625,32 @@ describe('F/U-4 review r4 — per-field container resolution + envelope guards',
     expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.28');
   });
 });
+
+describe('F/U-4 review r5 — PWA JobDetail shape actually consumed', () => {
+  test('a web-shaped circuits row (circuit_ref/circuit_designation, snake readings) merges AND builds a real schedule', () => {
+    const s = makeSession();
+    s.updateJobState({
+      circuits: [{ circuit_ref: 1, circuit_designation: 'Kitchen Ring', measured_zs_ohm: '0.42' }],
+      supply_characteristics: { earth_loop_impedance_ze: '0.30' },
+    });
+    // Snapshot merged under the numeric bucket with canonical field keys…
+    expect(s.stateSnapshot.circuits[1].circuit_designation).toBe('Kitchen Ring');
+    expect(s.stateSnapshot.circuits[1].measured_zs_ohm).toBe('0.42');
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.30');
+    // …and the schedule names the circuit instead of "Circuit ?: unnamed".
+    expect(s.circuitSchedule).toContain('Circuit 1');
+    expect(s.circuitSchedule).toContain('Kitchen Ring');
+    expect(s.circuitSchedule).not.toContain('Circuit ?');
+  });
+
+  test('a supply-only update never clears an existing schedule (rebuild is circuits-array-gated)', () => {
+    const s = makeSession();
+    s.updateJobState({ circuits: [{ ref: 1, designation: 'Cooker' }] });
+    const before = s.circuitSchedule;
+    expect(before).toContain('Cooker');
+    s.updateJobState({ supply: { ze: '0.35' } });
+    expect(s.circuitSchedule).toBe(before);
+    // The supply merge still landed.
+    expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.35');
+  });
+});

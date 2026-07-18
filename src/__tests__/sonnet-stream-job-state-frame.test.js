@@ -48,3 +48,20 @@ describe('unwrapJobStateFrame', () => {
     expect(unwrapJobStateFrame(Object.create({ circuits: [] }))).toBe(null);
   });
 });
+
+describe('structural field validation (Codex r5)', () => {
+  test('malformed recognized fields return the null sentinel', () => {
+    for (const bad of [
+      { circuits: null },
+      { circuits: {} },
+      { circuits: 42 },
+      { boards: 'x' },
+      { supply: [] },
+    ]) {
+      expect(unwrapJobStateFrame({ type: 'job_state_update', jobState: bad })).toBe(null);
+    }
+    // Production null boards sentinel + explicit clear stay valid.
+    const ok = { circuits: [], boards: null };
+    expect(unwrapJobStateFrame({ type: 'job_state_update', jobState: ok })).toBe(ok);
+  });
+});

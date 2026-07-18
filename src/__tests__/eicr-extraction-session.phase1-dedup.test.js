@@ -70,10 +70,17 @@ describe('Phase 0 — schedule_block_rebuild identity counter', () => {
     expect(s._scheduleRebuildStats.identical).toBe(0);
   });
 
-  test('empty job → empty job still counts as identical after the first', () => {
+  test('a circuits-less job never rebuilds (F/U-4 r5 contract); explicit circuits:[] does', () => {
     const s = makeSession();
+    // Circuits-less updates (empty {} / supply-only) must never touch the
+    // schedule OR the rebuild counters — pre-fix an empty mid-session update
+    // CLEARED the schedule.
     s.updateJobState({});
     s.updateJobState({});
+    expect(s._scheduleRebuildStats.total).toBe(0);
+    // An explicit circuits: [] remains the counted, valid way to clear.
+    s.updateJobState({ circuits: [] });
+    s.updateJobState({ circuits: [] });
     expect(s._scheduleRebuildStats.total).toBe(2);
     expect(s._scheduleRebuildStats.identical).toBe(1);
   });

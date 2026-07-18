@@ -1571,7 +1571,10 @@ export class EICRExtractionSession {
     const knownBoardIds = new Set((this.stateSnapshot.boards ?? []).map((b) => b?.id));
     let seeded = 0;
     for (const circuit of jobState.circuits) {
-      const num = parseInt(circuit.ref || circuit.circuitNumber || circuit.number);
+      // F/U-4 r5 — circuit_ref is the canonical shared-type key (PWA JobDetail).
+      const num = parseInt(
+        circuit.ref || circuit.circuit_ref || circuit.circuitNumber || circuit.number
+      );
       if (isNaN(num)) continue;
       const fields = {};
       // Test readings (existing behaviour)
@@ -1979,6 +1982,11 @@ export class EICRExtractionSession {
     // missing input) so the contract is one-line for the caller.
     this._mergeIncomingJobStateIntoSnapshot(jobState);
 
+    // F/U-4 r5 — rebuild the schedule ONLY from an ARRAY circuits value: a
+    // supply/boards-only update (or a malformed circuits shape) must never
+    // clear the existing schedule. An explicit circuits:[] remains the valid
+    // clear.
+    if (!Array.isArray(jobState?.circuits)) return;
     const nextSchedule = this.buildCircuitSchedule(jobState);
     // Phase 0 — schedule_block_rebuild identity counter (snapshot-restructure
     // sprint, 2026-05-27). `_lastScheduleText` starts as `null` so the very
@@ -2033,7 +2041,8 @@ export class EICRExtractionSession {
       const knownBoardIds = new Set((this.stateSnapshot.boards ?? []).map((b) => b?.id));
       for (const incoming of jobState.circuits) {
         if (!incoming || typeof incoming !== 'object') continue;
-        const ref = incoming.ref ?? incoming.circuitNumber ?? incoming.number;
+        const ref =
+          incoming.ref ?? incoming.circuit_ref ?? incoming.circuitNumber ?? incoming.number;
         if (ref == null) continue;
         // Round-trip through Number() only when the raw ref is a numeric-looking
         // string so we don't break existing numeric-key semantics.
@@ -3852,12 +3861,22 @@ export class EICRExtractionSession {
    * both surfaces use the same set so they cannot drift apart.
    */
   buildCircuitSchedule(jobState) {
-    if (!jobState || !jobState.circuits) return '';
+    // F/U-4 r5 — fail closed on a non-array circuits value (null/{}/42
+    // must never iterate or clear the schedule).
+    if (!jobState || !Array.isArray(jobState.circuits)) return '';
     const lines = [];
     for (const circuit of jobState.circuits) {
-      const num = circuit.ref || circuit.circuitNumber || circuit.number || '?';
+      // F/U-4 r5 — canonical shared-type keys (PWA JobDetail: circuit_ref /
+      // circuit_designation) join the alias chains so a web job-state update
+      // rebuilds a REAL schedule instead of "Circuit ?: unnamed".
+      const num =
+        circuit.ref || circuit.circuit_ref || circuit.circuitNumber || circuit.number || '?';
       const desc =
-        circuit.designation || circuit.description || circuit.circuit_description || 'unnamed';
+        circuit.designation ||
+        circuit.circuit_designation ||
+        circuit.description ||
+        circuit.circuit_description ||
+        'unnamed';
       const fields = [];
 
       // FACT — derive circuit type from designation when not set explicitly
