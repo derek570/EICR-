@@ -626,7 +626,29 @@ export const SUPPLY_MERGE_KEY_ALIASES = Object.freeze({
  * Non-Ze/PFC keys pass through untouched. Shared by the seeder and the
  * updateJobState supply merge; exported for tests.
  */
+export function isPlainRecord(v) {
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Codex r2 — pick the FIRST supply container spelling that is a plain record
+ * with at least one own enumerable key (an empty object in an earlier
+ * spelling must not shadow a populated later one; arrays/primitives are
+ * never containers). Documented deterministic order: supplyCharacteristics →
+ * supply_characteristics → supply.
+ */
+export function selectSupplyContainer(jobState) {
+  for (const key of ['supplyCharacteristics', 'supply_characteristics', 'supply']) {
+    const v = jobState?.[key];
+    if (isPlainRecord(v) && Object.keys(v).length > 0) return v;
+  }
+  return null;
+}
+
 export function normaliseSupplyIngest(supply) {
+  if (!isPlainRecord(supply)) return {};
   const out = { ...supply };
   for (const k of [
     'earth_loop_impedance_ze',
@@ -638,10 +660,21 @@ export function normaliseSupplyIngest(supply) {
   ]) {
     delete out[k];
   }
+  // Codex r2 — OWN keys only (a JSON __proto__ payload or inherited `ze`
+  // must never resolve), and STRICT finite-numeric validation: Ze/PFC are
+  // measured electrical values classified server_canonical for the trusted
+  // snapshot block, so a non-numeric string (including prompt-injection
+  // text) is dropped at ingestion, never serialized raw. The stored value is
+  // the trimmed original spelling (string or number) — parse proves
+  // validity; it does not reformat.
   const pick = (...keys) => {
     for (const k of keys) {
-      const v = supply?.[k];
-      if (v != null && v !== '') return v;
+      if (!Object.hasOwn(supply, k)) continue;
+      const v = supply[k];
+      if (v == null) continue;
+      const str = String(v).trim();
+      if (str === '' || !Number.isFinite(Number(str))) continue;
+      return typeof v === 'number' ? v : str;
     }
     return undefined;
   };
@@ -894,6 +927,12 @@ const FACT_FIELDS = new Set([
  * helper is a tight loop without a long `if` chain.
  */
 const MERGE_SKIP_KEYS = new Set([
+  // Codex r2 (F/U-4 wave) — prototype-dangerous keys: a JSON payload can
+  // carry an OWN '__proto__' key (Object.entries yields it) and
+  // `target['__proto__'] = value` on a plain object mutates its prototype.
+  '__proto__',
+  'constructor',
+  'prototype',
   'id',
   'ref',
   'circuit_ref',
@@ -1628,8 +1667,7 @@ export class EICRExtractionSession {
     // supply_characteristics with `earth_loop_impedance_ze` — then iOS
     // camelCase, then the legacy short alias). The seeder still deliberately
     // seeds ONLY Ze/PFC (its narrow historical scope).
-    const supply =
-      jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
+    const supply = selectSupplyContainer(jobState);
     if (supply) {
       const resolved = normaliseSupplyIngest(supply);
       const fields = {};
@@ -2016,9 +2054,8 @@ export class EICRExtractionSession {
     // merge, so a mixed-spelling payload can never have iteration-order-
     // dependent outcomes (SUPPLY_MERGE_KEY_ALIASES in the merge itself stays
     // as defence in depth).
-    const supplyIncoming =
-      jobState.supplyCharacteristics || jobState.supply_characteristics || jobState.supply;
-    if (supplyIncoming && typeof supplyIncoming === 'object') {
+    const supplyIncoming = selectSupplyContainer(jobState);
+    if (supplyIncoming) {
       const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
       this._mergeCircuitOrBoardFields(target, normaliseSupplyIngest(supplyIncoming), 'supply');
     }
@@ -2084,7 +2121,12 @@ export class EICRExtractionSession {
       // the canonical field_schema keys the calculators + record_board_reading
       // use. (Deliberately NOT a circuits-bucket-wide rename: bare `ze` is a
       // distinct board_fields key when dictated — see _seedStateFromJobState.)
-      const supplyAlias = kind === 'supply' ? SUPPLY_MERGE_KEY_ALIASES[rawField] : undefined;
+      // Codex r2 — hasOwn: rawField 'constructor'/'toString' must not
+      // resolve inherited properties of the (frozen, plain) alias map.
+      const supplyAlias =
+        kind === 'supply' && Object.hasOwn(SUPPLY_MERGE_KEY_ALIASES, rawField)
+          ? SUPPLY_MERGE_KEY_ALIASES[rawField]
+          : undefined;
       const field =
         supplyAlias ??
         (kind === 'circuit' && rawField === 'designation' ? 'circuit_designation' : rawField);

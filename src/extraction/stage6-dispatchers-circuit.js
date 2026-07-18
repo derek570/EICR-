@@ -867,7 +867,7 @@ export async function dispatchDeleteCircuit(call, ctx) {
  * @param {{circuits: Object}} snapshot
  * @returns {number[]}
  */
-function selectorRefs(input, snapshot) {
+function selectorRefs(input, snapshot, targetBoardId) {
   if (Number.isInteger(input.circuit_ref) && input.circuit_ref >= 1) {
     return [input.circuit_ref];
   }
@@ -876,11 +876,10 @@ function selectorRefs(input, snapshot) {
       (a, b) => a - b
     );
   }
-  // all: walk every non-supply circuit in the snapshot. Under flag-on, this
-  // walks composite-key buckets scoped to (input.board_id ?? currentBoardId);
-  // under flag-off, numeric keys >= 1 (legacy behaviour, board_id ignored).
-  // Phase 6.5 — board_id thread-through.
-  return listCircuitRefsInBoard(snapshot, input.board_id);
+  // all: walk every non-supply circuit in the snapshot, scoped to the
+  // caller-resolved target board (Codex r2 — the resolved id carries the
+  // getMainBoardId fallback so custom-main-id snapshots stay consistent).
+  return listCircuitRefsInBoard(snapshot, targetBoardId ?? input.board_id);
 }
 
 /**
@@ -959,11 +958,31 @@ function resolveBoardAwareZe(snapshot, inputBoardId) {
       : Array.isArray(snapshot?.boards)
         ? snapshot.boards.find((b) => b && b.id === targetId)
         : null;
-  return (
-    parseFiniteNumber(boardLocal?.ze) ??
-    parseFiniteNumber(boardLocal?.ze_at_db) ??
-    parseFiniteNumber(snapshot?.circuits?.[0]?.earth_loop_impedance_ze)
-  );
+  // Codex r2: precedence FIRST, parse ONCE. The first PRESENT board-local
+  // candidate wins; a present-but-INVALID value (e.g. 'N/A', 'LIM') is a
+  // terminal no_ze — never silently fall through to a DIFFERENT measurement
+  // (using the origin Ze when the board recorded its own unusable one would
+  // put the wrong number on a certificate). "Present" = trimmed-non-empty,
+  // so a whitespace-only value can never coerce to numeric 0. Board-local
+  // key order mirrors shared-utils resolveZe / iOS canon, extended with the
+  // backend's own dictated board key: ze → ze_at_db (backend board_fields)
+  // → zs_at_db (the PWA board-record spelling).
+  const present = (v) => {
+    if (v == null) return null;
+    const str = String(v).trim();
+    return str === '' ? null : str;
+  };
+  for (const key of ['ze', 'ze_at_db', 'zs_at_db']) {
+    const str = present(boardLocal?.[key]);
+    if (str != null) {
+      const n = Number(str);
+      return Number.isFinite(n) ? n : null;
+    }
+  }
+  const str = present(snapshot?.circuits?.[0]?.earth_loop_impedance_ze);
+  if (str == null) return null;
+  const n = Number(str);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -1000,14 +1019,24 @@ export async function dispatchCalculateZs(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
+  // Codex r2 — resolve the target board ONCE with the getMainBoardId
+  // fallback and thread it through Ze resolution + selector + bucket lookup,
+  // so a custom-main-id snapshot with no currentBoardId cannot diverge
+  // between the resolver and the bucket helpers. The WRITE path keeps the
+  // raw input.board_id (emitting a synthesised main id would add board_id to
+  // wire frames that never carried it).
+  const targetBoardId =
+    input.board_id ??
+    session.stateSnapshot?.currentBoardId ??
+    getMainBoardId(session.stateSnapshot);
   const ze = resolveBoardAwareZe(session.stateSnapshot, input.board_id);
-  const refs = selectorRefs(input, session.stateSnapshot);
+  const refs = selectorRefs(input, session.stateSnapshot, targetBoardId);
 
   const computed = [];
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = getCircuitBucket(session.stateSnapshot, ref, input.board_id);
+    const bucket = getCircuitBucket(session.stateSnapshot, ref, targetBoardId);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;
@@ -1096,15 +1125,19 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
+  const targetBoardId =
+    input.board_id ??
+    session.stateSnapshot?.currentBoardId ??
+    getMainBoardId(session.stateSnapshot);
   const ze = resolveBoardAwareZe(session.stateSnapshot, input.board_id);
-  const refs = selectorRefs(input, session.stateSnapshot);
+  const refs = selectorRefs(input, session.stateSnapshot, targetBoardId);
   const method = input.method;
 
   const computed = [];
   const skipped = [];
 
   for (const ref of refs) {
-    const bucket = getCircuitBucket(session.stateSnapshot, ref, input.board_id);
+    const bucket = getCircuitBucket(session.stateSnapshot, ref, targetBoardId);
     if (!bucket) {
       skipped.push({ circuit_ref: ref, reason: 'circuit_missing' });
       continue;

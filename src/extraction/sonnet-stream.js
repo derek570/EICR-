@@ -919,6 +919,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           case 'job_state_update':
             if (currentSessionId && activeSessions.has(currentSessionId)) {
               const jobStatePayload = unwrapJobStateFrame(msg);
+              if (jobStatePayload == null) {
+                // Malformed nested jobState (array/null/primitive) — do NOT
+                // fall back to the envelope: updateJobState on a job-field-
+                // less object clears the existing circuit schedule.
+                logger.warn('job_state_update ignored: malformed jobState frame', {
+                  sessionId: currentSessionId,
+                });
+                break;
+              }
               activeSessions.get(currentSessionId).session.updateJobState(jobStatePayload);
               // Trace which StateSnapshot the next Sonnet turn will see. Critical when
               // debugging "Sonnet asked about a circuit that's already on-screen" —

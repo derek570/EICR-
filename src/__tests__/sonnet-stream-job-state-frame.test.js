@@ -17,8 +17,18 @@ describe('unwrapJobStateFrame', () => {
     expect(unwrapJobStateFrame(msg)).toBe(msg);
   });
 
-  test('a non-object jobState property does not unwrap', () => {
-    const msg = { type: 'job_state_update', jobState: 'oops', circuits: [] };
-    expect(unwrapJobStateFrame(msg)).toBe(msg);
+  test('a PRESENT-but-malformed jobState returns the null sentinel (handler skips — never the envelope)', () => {
+    // Falling back to the envelope would hand updateJobState a job-field-less
+    // object whose schedule rebuild CLEARS the existing circuit schedule.
+    for (const bad of ['oops', null, 42, [], [{ circuits: [] }]]) {
+      expect(unwrapJobStateFrame({ type: 'job_state_update', jobState: bad, circuits: [] })).toBe(
+        null
+      );
+    }
+  });
+
+  test('a non-object frame returns the null sentinel', () => {
+    expect(unwrapJobStateFrame(null)).toBe(null);
+    expect(unwrapJobStateFrame('x')).toBe(null);
   });
 });
