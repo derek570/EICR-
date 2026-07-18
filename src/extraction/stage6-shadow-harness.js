@@ -2210,7 +2210,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // catches internally — a malformed body never throws into the outer
         // catch (which would reproduce the silence this net exists to close).
         const isDesignedSilentSuccess = (c) => {
-          if (c?.result?.is_error === true) return false;
+          // POSITIVE success required (fail-closed): a missing/undefined
+          // is_error is a malformed envelope, not a success.
+          if (c?.result?.is_error !== false) return false;
           try {
             const body = JSON.parse(c?.result?.content ?? 'null');
             // FULLY-computed only (Codex cycle 1): a batch envelope can carry
@@ -2242,13 +2244,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // ZERO errors across all rounds, and attempted-call count equal to
         // the accumulated list. Missing ledger arrays (legacy shapes) fail
         // CLOSED — the apology fires (annoying-but-safe).
-        const sumRounds = (a) =>
-          Array.isArray(a) ? a.reduce((acc, n) => acc + (Number.isFinite(n) ? n : 0), 0) : null;
+        // Every ledger element must be a non-negative integer — a malformed
+        // element invalidates the WHOLE ledger (null sentinel → not clean),
+        // it is never silently counted as zero (fail-closed).
+        const sumRounds = (a) => {
+          if (!Array.isArray(a)) return null;
+          let total = 0;
+          for (const n of a) {
+            if (!Number.isInteger(n) || n < 0) return null;
+            total += n;
+          }
+          return total;
+        };
         const totalAttempted = sumRounds(toolLoopOut?.tool_call_count_per_round);
         const totalErrors = sumRounds(toolLoopOut?.tool_error_count_per_round);
+        // POSITIVE clean-termination evidence required: aborted must be
+        // exactly false and the terminal reason exactly 'end_turn' — a
+        // missing/unknown value never passes.
         const loopLedgerClean =
-          toolLoopOut?.aborted !== true &&
-          toolLoopOut?.terminal_reason !== 'tool_use_cap_hit' &&
+          toolLoopOut?.aborted === false &&
+          toolLoopOut?.terminal_reason === 'end_turn' &&
           totalErrors === 0 &&
           totalAttempted === calls.length;
         // WHOLE-TURN classification (Codex diff-review cycle 1): the exemption

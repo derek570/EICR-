@@ -500,6 +500,11 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
         messages_final: [],
         usage: {},
         terminal_reason: 'end_turn',
+        // CLEAN ledger — makes the whole-turn every() classification the
+        // deciding factor (a missing ledger would fail the exemption anyway
+        // and mask a regression of the every()/skipped protections).
+        tool_call_count_per_round: [2, 0],
+        tool_error_count_per_round: [0, 0],
       };
     });
     const opts = baseOpts({ chimeObserved: true });
@@ -548,6 +553,10 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
         messages_final: [],
         usage: {},
         terminal_reason: 'end_turn',
+        // Realistic ledger: the rejection is a visible error row — BOTH the
+        // ledger guard and the every() classification defeat the exemption.
+        tool_call_count_per_round: [2, 0],
+        tool_error_count_per_round: [1, 0],
       };
     });
     const opts = baseOpts({ chimeObserved: true });
@@ -599,6 +608,9 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
         messages_final: [],
         usage: {},
         terminal_reason: 'end_turn',
+        // CLEAN ledger — the every() classification is the deciding factor.
+        tool_call_count_per_round: [2, 0],
+        tool_error_count_per_round: [0, 0],
       };
     });
     const opts = baseOpts({ chimeObserved: true });
@@ -642,6 +654,10 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
         messages_final: [],
         usage: {},
         terminal_reason: 'end_turn',
+        // CLEAN ledger — the skipped.length===0 requirement is the deciding
+        // factor for the partial-batch fire.
+        tool_call_count_per_round: [1, 0],
+        tool_error_count_per_round: [0, 0],
       };
     });
     const opts = baseOpts({ chimeObserved: true });
