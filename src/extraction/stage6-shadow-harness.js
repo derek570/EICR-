@@ -281,7 +281,7 @@ function estimateShadowCost(/* toolLoopOut */) {
 // then be silently deduped). Phrasings are interchangeable; the rotation is
 // purely to vary the dedupe key, and reads more naturally than a robotic
 // repeat besides.
-const ORPHAN_PROMPTS = Object.freeze([
+export const ORPHAN_PROMPTS = Object.freeze([
   "Sorry, I didn't catch what that reading was for. Could you say it again?",
   "I didn't quite get that — could you repeat the reading?",
   "Sorry, I'm not sure where that reading goes. Could you say it once more?",
@@ -291,7 +291,7 @@ const ORPHAN_PROMPTS = Object.freeze([
 // WAS understood (a tool call was made) but every call was rejected, so the
 // turn would otherwise emit zero TTS. The inspector's strongest ask: "if it
 // beeps for processing there should ALWAYS be a TTS — never silently dropped."
-const REJECTED_PROMPTS = Object.freeze([
+export const REJECTED_PROMPTS = Object.freeze([
   "Sorry, I couldn't action that — could you say it again?",
   "I wasn't able to apply that one. Could you repeat it?",
   "Sorry, that didn't go through. Could you say it once more?",
@@ -305,7 +305,8 @@ const REJECTED_PROMPTS = Object.freeze([
 // the iOS A1(b) apology dedupe keys on text, so sharing wording with the
 // reading apology would cross-dedupe the two channels — and naming the
 // "observation" channel tells the inspector WHICH kind of utterance was lost.
-const OBSERVATION_ORPHAN_PROMPT = 'Sorry, I missed that observation — could you say it again?';
+export const OBSERVATION_ORPHAN_PROMPT =
+  'Sorry, I missed that observation — could you say it again?';
 
 // Marker ① (frc_c55c996fa1014e088455af77216220d1) — the model-NO-OP audibility
 // net. Field session 36731498 turn 4: "Circuit 2 is upstairs lights" was Flux-
@@ -337,7 +338,7 @@ const OBSERVATION_ORPHAN_PROMPT = 'Sorry, I missed that observation — could yo
 // realistic garble burst. A fully collision-free guarantee would need the
 // apology to bypass the dedupe entirely, which would spam "sorry" on a garble
 // storm — deliberately not done.
-const NOOP_AUDIBILITY_PROMPTS = Object.freeze([
+export const NOOP_AUDIBILITY_PROMPTS = Object.freeze([
   "Sorry, I didn't catch that — could you say it again?",
   "I didn't quite get that — could you repeat it?",
   "Sorry, that didn't come through — could you say it once more?",
@@ -352,7 +353,31 @@ const NOOP_AUDIBILITY_PROMPTS = Object.freeze([
 // TTL (the FIRST fallback per 30 s window speaks; an identical within-30 s
 // repeat is swallowed — the accepted, Derek-approved design for this
 // backend-only wave).
-const ASK_AUDIBILITY_FALLBACK_TEXT = "Sorry — I couldn't action that. Could you say it again?";
+export const ASK_AUDIBILITY_FALLBACK_TEXT =
+  "Sorry — I couldn't action that. Could you say it again?";
+
+// marker-② (numeric-gate-redesign 2026-07-18) — the FINAL catch-all audibility
+// net's apology family. Fires when a chime was heard but the turn produced
+// ZERO speech-intent of any kind — the "a tool ran, didn't error, but emitted
+// nothing audible" class the earlier nets structurally miss (live prod repro:
+// "Zs for circuit 4." → the model calls calculate_zs, which succeeds with
+// computed:[] because the circuit has no R1+R2 — not producedNothing, not
+// allRejected, no attempted ask → beep-then-silence, 8/8 reproducible).
+// ROTATING (turnNum % len) with FIVE phrasings for the same burst margin as
+// NOOP_AUDIBILITY_PROMPTS. Wording is a deliberately DIFFERENT construction
+// from every other apology family (ORPHAN_/REJECTED_/OBSERVATION_/NOOP_/
+// ASK_AUDIBILITY_FALLBACK_TEXT/D2) so the client A1(b) text-keyed field-nil
+// dedupe can never cross-dedupe the channels — pinned by the string-inequality
+// assertion in stage6-catchall-audibility-net.test.js. No "reading" noun (we
+// only know a beep went unanswered) and no "couldn't action / didn't catch /
+// didn't get" stems (taken by the other families).
+export const CATCHALL_AUDIBILITY_PROMPTS = Object.freeze([
+  "Hmm, that didn't give me anything to work with — could you try it again?",
+  'I heard you, but nothing came of that — could you give it to me again?',
+  "That didn't produce anything I could use — mind trying it once more?",
+  'Nothing came out of that one — could you run it past me again?',
+  "I couldn't make anything of that — would you give it another go?",
+]);
 
 // item #10 — default ON (the inspector explicitly asked for a spoken ASK
 // instead of a silent drop). Set VOICE_ORPHAN_PROMPT=false to disable
@@ -653,6 +678,29 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
     const generationId = options.generationId ?? null;
+    // marker-② hoist (numeric-gate-redesign 2026-07-18) — ONE definition of
+    // the two audibility helpers, shared by the F7 pre-emission net, the
+    // marker-② catch-all net, and the §A4 generation-owned drain (they were
+    // previously re-declared block-scoped inside F7 and A4, so a net added
+    // after them could not reference them).
+    //   isAudibleText — trimmed-non-empty (web trims before speaking; a
+    //   whitespace-only text is NOT audible).
+    //   isCurrentGenPrompt — a queued prompt counts toward THIS turn's
+    //   audibility only if it belongs to the current generation (or is
+    //   untracked); a preserved OTHER-generation prompt must not suppress a
+    //   fallback (else beep-then-silence recurs behind a stale prompt that
+    //   also never drains).
+    const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
+    const isCurrentGenPrompt = (p) =>
+      generationId == null || p?.generationId == null || p.generationId === generationId;
+    // marker-② predicate-4 "already-spoken evidence": count of confirmations
+    // PRODUCED this turn but suppressed by the backend applyConfirmationDebounce
+    // (the inspector heard the same reading on a recent turn). Captured from
+    // the debounce block's before/after lengths below; per-turn (NOT the
+    // cumulative session lastSuppressedCount, which would falsely exempt later
+    // silent turns). CLIENT-side dedupe is deliberately invisible here — that
+    // case belongs to the PLAN-C client watchdog.
+    let debouncedConfirmationCountThisTurn = 0;
     const VALID_EMISSION_SOURCES = new Set(['initial', 'pvr', 'dialogue_script']);
     const onAskUserStarted = ({ toolCallId, source } = {}) => {
       if (toolCallId == null) return;
@@ -1503,6 +1551,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         session.confirmationDebounceState
       );
       const suppressed = before - result.confirmations.length;
+      // marker-② — per-turn capture of the produced-then-debounced count
+      // (already-spoken evidence for the catch-all audibility net below).
+      debouncedConfirmationCountThisTurn = suppressed;
       if (suppressed > 0) {
         log?.info?.('voice_latency.confirmation_debounced', {
           sessionId: session.sessionId,
@@ -2051,13 +2102,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // whole spoken channel). Audible text is trimmed-non-empty EVERYWHERE.
     try {
       if (options.confirmationsEnabled === true) {
-        const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
-        // F7 Item 3 — a queued prompt counts toward THIS turn's audibility only
-        // if it belongs to the current generation (or is untracked). A preserved
-        // OTHER-generation prompt must NOT suppress the current fallback (else
-        // beep-then-silence recurs behind a stale prompt that also never drains).
-        const isCurrentGenPrompt = (p) =>
-          generationId == null || p?.generationId == null || p.generationId === generationId;
+        // isAudibleText / isCurrentGenPrompt are the runLiveMode-scoped shared
+        // helpers (hoisted for marker-② — see their declaration next to
+        // generationId above).
         // toolLoopOut is undefined on a cancelled generation → no attempted
         // asks are recoverable; the cancellation predicate (below) does not
         // require any.
@@ -2116,6 +2163,100 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
+    // ── marker-② (numeric-gate-redesign 2026-07-18) — catch-all audibility
+    // net. The FINAL net: fires when a chime fired and the turn produced ZERO
+    // speech-intent of any kind, REGARDLESS of tool calls — the class the
+    // earlier nets structurally miss ("a tool ran, didn't error, but emitted
+    // nothing audible"; live prod repro "Zs for circuit 4." → calculate_zs
+    // succeeds with computed:[] because the circuit has no R1+R2 → not
+    // producedNothing, not allRejected, no attempted ask → beep-then-silence).
+    // Placed AFTER A3/D2/F7 so those keep first crack with their class-specific
+    // wording (their outputs land in result.confirmations or
+    // session.pendingVoicePrompts, which predicate 4 counts — mutual exclusion
+    // is structural), and BEFORE the §A4 drain so the apology reaches
+    // result.confirmations THIS turn.
+    //
+    // Predicate — apologise only when ALL hold:
+    //   1. confirmationsEnabled (mode-off users opted out of the spoken channel)
+    //   2. chimeObserved (gate-pass ⟺ chime; recorded lane sets it from the
+    //      fixture's chime_observed)
+    //   3. NOT cancelled (the F7 Item-3 cancellation branch above owns that)
+    //   4. zero SPEECH-INTENT survived: no audible confirmation, no emitted
+    //      ask, no current-generation queued prompt, AND no produced-then-
+    //      DEBOUNCED confirmation this turn (the inspector already heard that
+    //      reading on a recent turn — apologising after a heard reading would
+    //      invite a duplicate re-dictation). Readings/observations counts are
+    //      deliberately NOT audibility — successful writes are UI state, not
+    //      speech (counting them is exactly what preserved beep-then-silence).
+    //   5. NOT a designed-silent side-effect turn. Classified by dispatcher
+    //      OUTCOME, never tool name (one tool has many outcomes): the ONLY
+    //      Phase-0-verified designed-silent success is a calculator write —
+    //      body {ok:true, computed:[…]} with computed.length > 0 — whose
+    //      readings carry ::calc:: and are excluded from spoken read-back BY
+    //      DESIGN (stage6-event-bundler.js:625-636, the 2026-06-18 Audio-First
+    //      auto-derivation exemption). computed:[] (missing-input OR
+    //      already_set skips) is NOT exempt — both fire per the pinned
+    //      never-silent decision; the specific "already recorded" wording is a
+    //      logged dispatcher follow-up, not this net's job.
+    try {
+      if (options.confirmationsEnabled === true && options.chimeObserved === true && !cancelled) {
+        const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
+        // Outcome-based designed-silent exemption (predicate 5). The parser
+        // catches internally — a malformed body never throws into the outer
+        // catch (which would reproduce the silence this net exists to close).
+        const hasDesignedSilentWrite = calls.some((c) => {
+          if (c?.result?.is_error === true) return false;
+          try {
+            const body = JSON.parse(c?.result?.content ?? 'null');
+            return !!(
+              body &&
+              body.ok === true &&
+              Array.isArray(body.computed) &&
+              body.computed.length > 0
+            );
+          } catch {
+            return false;
+          }
+        });
+        const survivingConfCount = Array.isArray(result.confirmations)
+          ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
+          : 0;
+        const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
+          ? session.pendingVoicePrompts.filter(
+              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
+            ).length
+          : 0;
+        const noSpeechIntent =
+          survivingConfCount === 0 &&
+          survivingPromptCount === 0 &&
+          emittedAskToolCallIds.size === 0 &&
+          debouncedConfirmationCountThisTurn === 0;
+        if (noSpeechIntent && !hasDesignedSilentWrite) {
+          if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
+          // Queue on the A4 FIFO channel (field-null / expects_ios_ack:false —
+          // the drain below stamps those); the drain moves it onto the wire
+          // THIS turn. generationId keeps it generation-owned.
+          session.pendingVoicePrompts.push({
+            text: CATCHALL_AUDIBILITY_PROMPTS[turnNum % CATCHALL_AUDIBILITY_PROMPTS.length],
+            generationId,
+          });
+          log.info?.('stage6.catchall_audibility_fallback_emitted', {
+            sessionId: session.sessionId,
+            turnId,
+            generationId,
+            tool_names: calls.map((c) => c?.name ?? null),
+            reason: 'no_speech_intent_survived',
+          });
+        }
+      }
+    } catch (catchallErr) {
+      log.warn?.('stage6.catchall_audibility_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: catchallErr?.message ?? String(catchallErr),
+      });
+    }
+
     // §A4 (field-feedback-2026-07-14) — drain deterministic voice prompts
     // queued during the turn (the pending-value chain's terminal apology,
     // stage6-dispatcher-ask.js queuePendingValueApology, AND the F7 Item-2
@@ -2129,9 +2270,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // F7 Item 3 — drain ONLY the current generation's prompts (replacing the
       // blanket splice(0)); PRESERVE other generations' entries so a cancelled
       // generation's stale apology never leaks onto a later turn and a later
-      // generation never speaks a prior generation's prompt.
-      const isCurrentGenPrompt = (p) =>
-        generationId == null || p?.generationId == null || p.generationId === generationId;
+      // generation never speaks a prior generation's prompt. isCurrentGenPrompt
+      // is the runLiveMode-scoped shared helper (marker-② hoist).
       const prompts = [];
       const preserved = [];
       for (const p of session.pendingVoicePrompts) {
