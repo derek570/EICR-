@@ -371,7 +371,10 @@ describe('F/U-4 review r2 — resolver value + alias edges', () => {
     });
     const { res } = await calc(session, { all: true, board_id: '*' });
     expect(res.is_error).toBe(true);
-    expect(JSON.parse(res.content).error).toBe('board_id_star_unsupported');
+    expect(JSON.parse(res.content).error).toEqual({
+      code: 'board_id_star_unsupported',
+      field: 'board_id',
+    });
   });
 
   test('an UNKNOWN board_id is rejected board_not_found (was misleading circuit_missing)', async () => {
@@ -381,7 +384,7 @@ describe('F/U-4 review r2 — resolver value + alias edges', () => {
     });
     const { res } = await calc(session, { circuit_ref: 4, all: false, board_id: 'nope' });
     expect(res.is_error).toBe(true);
-    expect(JSON.parse(res.content).error).toBe('board_not_found');
+    expect(JSON.parse(res.content).error).toEqual({ code: 'board_not_found', field: 'board_id' });
   });
 
   test('custom main-board id WITHOUT currentBoardId still finds main circuits (resolved-id threading)', async () => {
@@ -436,5 +439,65 @@ describe('F/U-4 review r2 — ingestion hardening', () => {
     expect({}.polluted).toBeUndefined();
     expect(s.stateSnapshot.circuits[0].polluted).toBeUndefined();
     expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.4');
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Codex review round 3.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('F/U-4 review r3 — dictated sub-board Ze under the CANONICAL key', () => {
+  test('integration: record_board_reading writes Ze on a sub-board → both calculators use IT, not origin', async () => {
+    const { dispatchRecordBoardReading } =
+      await import('../extraction/stage6-dispatchers-board.js');
+    const session = {
+      sessionId: 'fu4-r3',
+      toolCallsMode: 'live',
+      stateSnapshot: {
+        currentBoardId: 'b2',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'b2', board_type: 'sub' },
+        ],
+        circuits: {
+          0: { earth_loop_impedance_ze: '0.30' },
+          'b2::4': { circuit: 4, board_id: 'b2', r1_r2_ohm: '0.20' },
+        },
+      },
+    };
+    const perTurnWrites = createPerTurnWrites();
+    const wr = await dispatchRecordBoardReading(
+      {
+        tool_call_id: 'tu_bw',
+        name: 'record_board_reading',
+        input: { field: 'earth_loop_impedance_ze', value: '0.55', confidence: 0.9 },
+      },
+      { session, logger: mockLogger(), turnId: 't1', perTurnWrites, round: 0 }
+    );
+    expect(wr.is_error).toBe(false);
+    const res = await dispatchCalculateZs(
+      {
+        tool_call_id: 'tu_bc',
+        name: 'calculate_zs',
+        input: { circuit_ref: 4, all: false, board_id: 'b2' },
+      },
+      { session, logger: mockLogger(), turnId: 't1', perTurnWrites, round: 0 }
+    );
+    const body = JSON.parse(res.content);
+    // The dictated sub-board Ze (0.55) must win over origin (0.30):
+    // 0.55 + 0.20 = 0.75.
+    expect(body.computed).toEqual([{ circuit_ref: 4, field: 'measured_zs_ohm', value: '0.75' }]);
+  });
+});
+
+describe('F/U-4 review r3 — scalar-only ingestion values', () => {
+  test('array/boolean/object Ze values are dropped (String([0.42]) must not slip through)', () => {
+    for (const bad of [[0.42], true, { v: 0.42 }]) {
+      const out = normaliseSupplyIngest({ earth_loop_impedance_ze: bad });
+      expect('earth_loop_impedance_ze' in out).toBe(false);
+    }
+    expect(normaliseSupplyIngest({ earth_loop_impedance_ze: 0.42 }).earth_loop_impedance_ze).toBe(
+      0.42
+    );
   });
 });

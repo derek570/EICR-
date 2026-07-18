@@ -972,7 +972,12 @@ function resolveBoardAwareZe(snapshot, inputBoardId) {
     const str = String(v).trim();
     return str === '' ? null : str;
   };
-  for (const key of ['ze', 'ze_at_db', 'zs_at_db']) {
+  // Codex r3 BLOCKER — a DICTATED bare Ze while a sub-board is current is
+  // stored on the sub-board record under the CANONICAL key
+  // (record_board_reading flag-aware mutator), so the board-local chain must
+  // include earth_loop_impedance_ze at the same precedence as `ze` — else
+  // the resolver silently falls through to the ORIGIN supply Ze.
+  for (const key of ['ze', 'earth_loop_impedance_ze', 'ze_at_db', 'zs_at_db']) {
     const str = present(boardLocal?.[key]);
     if (str != null) {
       const n = Number(str);

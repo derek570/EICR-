@@ -464,11 +464,13 @@ export function validateCalculateR1PlusR2(input, snapshot) {
 export function validateCalculateBoardTarget(input, snapshot) {
   const bid = input?.board_id;
   if (bid == null) return null;
-  if (bid === '*') return 'board_id_star_unsupported';
+  // Codex r3 — errors use the established {code, field} validator envelope
+  // (the shape validateCalculateSelector / invalid_method already emit).
+  if (bid === '*') return { code: 'board_id_star_unsupported', field: 'board_id' };
   const boards = Array.isArray(snapshot?.boards) ? snapshot.boards : [];
   if (boards.some((b) => b && b.id === bid)) return null;
   if (boards.length === 0 && bid === getMainBoardId(snapshot)) return null;
-  return 'board_not_found';
+  return { code: 'board_not_found', field: 'board_id' };
 }
 
 export function validateCalculateZs(input, snapshot) {

@@ -26,7 +26,9 @@ function isPlainRecord(v) {
  * update (with a warn log) on null.
  */
 export function unwrapJobStateFrame(msg) {
-  if (msg == null || typeof msg !== 'object') return null;
+  // Codex r3 — the plain-record contract applies to the OUTER frame too
+  // (an array/Date/custom-prototype envelope is malformed, not a flat job).
+  if (!isPlainRecord(msg)) return null;
   if (Object.hasOwn(msg, 'jobState')) {
     return isPlainRecord(msg.jobState) ? msg.jobState : null;
   }

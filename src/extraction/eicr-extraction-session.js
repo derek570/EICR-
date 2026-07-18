@@ -671,7 +671,9 @@ export function normaliseSupplyIngest(supply) {
     for (const k of keys) {
       if (!Object.hasOwn(supply, k)) continue;
       const v = supply[k];
-      if (v == null) continue;
+      // Codex r3 — SCALARS only: String([0.42]) === '0.42' would let a
+      // malformed array value cross into the trusted snapshot.
+      if (typeof v !== 'string' && typeof v !== 'number') continue;
       const str = String(v).trim();
       if (str === '' || !Number.isFinite(Number(str))) continue;
       return typeof v === 'number' ? v : str;

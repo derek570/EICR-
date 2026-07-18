@@ -31,4 +31,10 @@ describe('unwrapJobStateFrame', () => {
     expect(unwrapJobStateFrame(null)).toBe(null);
     expect(unwrapJobStateFrame('x')).toBe(null);
   });
+
+  test('a non-plain-record OUTER frame returns the null sentinel too', () => {
+    expect(unwrapJobStateFrame([])).toBe(null);
+    expect(unwrapJobStateFrame(new Date())).toBe(null);
+    expect(unwrapJobStateFrame(Object.create({ circuits: [] }))).toBe(null);
+  });
 });
