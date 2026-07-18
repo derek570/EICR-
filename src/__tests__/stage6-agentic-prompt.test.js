@@ -90,6 +90,41 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   });
 
   // ------------------------------------------------------------------
+  // Group 0b — marker-② Phase-4 steer consistency (2026-07-18).
+  // The bare value-less "Zs for circuit N" contract must be INTERNALLY
+  // consistent: cycle-2 Codex review found CORE DIRECTIVE 4 + the
+  // EXTRACTION RULES incomplete-reading line both said WAIT on a
+  // value-less "Zs...", directly contradicting the new Example 8 ask
+  // rule — a contradiction the model resolves unpredictably.
+  // ------------------------------------------------------------------
+  describe('Group 0b — calculate_zs intent steer consistency (marker-② Phase 4)', () => {
+    test('the old unconditional WAIT-on-value-less-reading rules are GONE (all sites)', () => {
+      expect(prompt).not.toContain(
+        'If a reading is incomplete ("Zs..." with no value), WAIT for the next utterance.'
+      );
+      expect(prompt).not.toContain('If a reading looks partial, wait for the next turn.');
+      // No stray WAIT-for-utterance phrasing survives anywhere — ORPHANED
+      // VALUES' "ask, don't wait" is the single contract for missing values.
+      expect(prompt).not.toMatch(/WAIT for the next utterance/);
+    });
+    test('the value-missing shape asks once (all sites agree with ORPHANED VALUES)', () => {
+      // CORE DIRECTIVE 4 defers to ORPHANED VALUES / Example 8.
+      expect(prompt).toContain('handle it per ORPHANED VALUES / Example 8 (ask once)');
+      // EXTRACTION RULES defers likewise and bans the speculative calc call.
+      expect(prompt).toContain('A reading missing its VALUE is never a wait');
+      expect(prompt).toContain('NEVER a speculative calculator call');
+      // ORPHANED VALUES keeps the pre-existing ask-don't-wait contract.
+      expect(prompt).toContain("ask, don't wait");
+      // Example 8 ask contract with real enum members + board-scope note.
+      expect(prompt).toContain('reason:"missing_value"');
+      expect(prompt).toContain('expected_answer_shape:"number"');
+      expect(prompt).toContain('include `context_board_id` when working on a sub-board');
+      // The explicit-compute path is preserved.
+      expect(prompt).toContain('calculate_zs({circuit_ref:2, all:false})');
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Group 1: file existence + token budget
   // ------------------------------------------------------------------
   describe('Group 1 — file + token budget', () => {
@@ -314,8 +349,25 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (Codex diff-review required complete, non-ellipsised worked examples —
       // the wave's core model-facing contract). Legitimate feature growth of the
       // canonical example, not bloat.
+      //
+      // 2026-07-18 (marker-② Phase-4 steer, numeric-gate-redesign): bumped to
+      // 20420 to absorb the calculate_zs intent guard (tool blurb: explicit
+      // compute intent only) + Example 8 rewritten as the intent split — bare
+      // value-less "Zs for circuit 4." is an incomplete READING → ONE
+      // ask_user (missing_value/number) even with inputs present (meter
+      // wins); explicit-compute path preserved; rule extended to
+      // calculate_r1_plus_r2. Closes the live 8/8 beep-then-silence repro at
+      // the model layer (the marker-② net is the deterministic backstop).
+      // Measured ~20378; cap 20420 leaves ~42-token headroom.
+      //
+      // 2026-07-18 (marker-② cycle-2 consistency fix): bumped to 20480 —
+      // CORE DIRECTIVE 4 + the EXTRACTION RULES incomplete-reading line were
+      // CONTRADICTING the new Example 8 (both said WAIT on a value-less
+      // "Zs..."), which would make the steer unreliable; both now carve out
+      // the field+circuit-no-value shape as ask-once. Measured ~20445; cap
+      // 20480 leaves ~35-token headroom.
       const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20200);
+      expect(estimate).toBeLessThanOrEqual(20480);
     });
   });
 
@@ -1005,8 +1057,19 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     required complete (non-ellipsised) worked examples for the wave's
       //     core model-facing contract — legitimate example growth, not bloat.
       //     Measured ~14909; cap 14950 leaves ~41-token headroom.
+      //   - 15180 (2026-07-18 marker-② Phase-4 steer): calculate_zs intent
+      //     guard in the tool blurb + Example 8 intent split (bare value-less
+      //     field+circuit → ask_user for the value, even with inputs present;
+      //     explicit compute preserved; extended to calculate_r1_plus_r2).
+      //     Closes the live "Zs for circuit 4." beep-then-silence repro at the
+      //     model layer. Measured ~15141; cap 15180 leaves ~39-token headroom.
+      //   - 15240 (2026-07-18 marker-② cycle-2 consistency fix): CORE
+      //     DIRECTIVE 4 + the EXTRACTION RULES incomplete-reading line
+      //     carved out the field+circuit-no-value shape (ask once, Example
+      //     8) — they previously said WAIT, contradicting the steer.
+      //     Measured ~15208; cap 15240 leaves ~32-token headroom.
       const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(14950);
+      expect(estimate).toBeLessThanOrEqual(15240);
     });
   });
 
@@ -1039,7 +1102,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     });
 
     test('ORPHANED VALUES section exists and prohibits silent drops', () => {
-      const idx = prompt.search(/ORPHANED VALUES/);
+      // Match the section HEADING (with its em-dash tail), not the first
+      // textual mention — CORE DIRECTIVE 4 / EXTRACTION RULES now REFERENCE
+      // the section by name earlier in the file (marker-② Phase-4
+      // consistency fix), and indexing the bare name landed the window there.
+      const idx = prompt.search(/ORPHANED VALUES — never/);
       expect(idx).toBeGreaterThanOrEqual(0);
       const window = prompt.slice(idx, idx + 800);
       expect(window.toLowerCase()).toMatch(/never\s+silently\s+drop/);
@@ -1687,7 +1754,8 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(ex13).toMatch(/tool_result returns `clarification_chain_id:"obsclr-1"`/);
       // ALL THREE severity outcomes are explicit record_observation calls that
       // echo the SAME id (not shorthand) — each of C1/C2/C3.
-      const writeIds = ex13.match(/record_observation\(\{[^)]*clarification_chain_id:"obsclr-1"/g) || [];
+      const writeIds =
+        ex13.match(/record_observation\(\{[^)]*clarification_chain_id:"obsclr-1"/g) || [];
       expect(writeIds.length).toBe(3);
       for (const code of ['C1', 'C2', 'C3']) {
         // Each coded call carries a non-empty suggested_regulation AND the id,

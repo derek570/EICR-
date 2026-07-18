@@ -1,0 +1,109 @@
+# marker-② — "chime-then-silence via a tool that ran, didn't error, and
+# emitted nothing audible".
+#
+# Live prod capture (2026-07-18, real Haiku, marker-① already deployed on
+# eicr-backend:326). The inspector dictated a field+circuit with NO value in
+# the utterance — "Zs for circuit 4." — and the model called calculate_zs
+# (CloudWatch voice_latency.turn_core_summary: tool_names_per_round =
+# [["calculate_zs"],[]], tool_error=0, readings_count=0,
+# bundler_emitted_count=0). The tool SUCCEEDED structurally but produced
+# nothing (no inputs to calculate from: {ok:true, computed:[], skipped:[…]}),
+# so the turn ended with zero audible output after a chime had fired.
+# Reproducible 8/8. No existing net catches it: A3/marker-① need
+# producedNothing (zero tool calls or all-rejected — a successful tool call
+# defeats both), the M1 net needs every call is_error:true, and the F7
+# pre-emission net needs an ATTEMPTED ask_user. This is the distinct class
+# marker-② (the catch-all audibility net) closes.
+#
+# RECORDED-lane semantics: the model response is frozen to the faithful
+# capture (one calculate_zs call, then an empty end_turn). The fix under lock
+# is BACKEND-deterministic given that frozen response — the marker-② net in
+# stage6-shadow-harness.js that speaks ONE apology when a chimed turn ends
+# with zero speech-intent. A prompt/model fix (the Phase-4 steer) is
+# live-lane, not this fixture's job.
+#
+# Seeded-state note (deliberate, so the fixture does not lie): the job_state
+# seeder (_seedStateFromJobState) can only express supply Ze under the short
+# `ze` key on circuits[0], never `earth_loop_impedance_ze` — the key
+# dispatchCalculateZs actually reads. So the replayed dispatcher skip reason
+# here is 'no_ze' (the first missing-input check to fire). The net ignores the
+# reason — any computed:[] outcome is the silent class — and the
+# 'no_r1_r2'-reason variant (Ze present, R1+R2 absent) is pinned by the
+# marker-② unit suite (stage6-catchall-audibility-net.test.js case a), which
+# builds the snapshot directly and CAN set earth_loop_impedance_ze.
+#
+# Provenance: transcript + model behaviour + chime are recorded_full from the
+# CloudWatch capture. The raw session id ↔ this opaque corpus id mapping
+# lives in the private field-replay archive, never in the committed corpus.
+# Fidelity gap (accepted): client/address fields from the real session are
+# omitted — they do not affect the audibility assertion.
+schema_version: 1
+corpus_id: frc_b6ec5356f67d8655db214b4f16ae8d83
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: audibility.turn
+owner: Derek Beckley
+introduced_at: '2026-07-18T10:45:00Z'
+fix_reference: fix_e514571c1d7ebf1fee18ddb9f3d8ef24
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  Marker ② of the field-replay corpus gate: the tool-ran-but-nothing-audible
+  beep-then-silence class ("Zs for circuit 4." → calculate_zs succeeds with
+  computed:[]). Locks the catch-all audibility net (the FINAL net after
+  A3/D2/F7) for Audio-First invariant #1 / the F7 chime-is-a-promise headline.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 1
+      designation: Cooker
+    - number: 4
+      designation: Upstairs Sockets
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: Zs for circuit 4.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    chime_provenance_ref: 'chime_invoke (gate-pass; turn_core_summary capture 2026-07-18)'
+    # Faithful capture: rounds:2, one calculate_zs call round 0 (tool_error=0),
+    # empty end_turn round 1. Tool input authored to the real schema —
+    # `all` is REQUIRED (stage6-tool-schemas.js:854), circuit_ref:4 from the
+    # utterance. The dispatcher EXECUTES against the seeded job_state above:
+    # circuit 4 exists (not circuit_missing), has no measured_zs_ohm (not
+    # already_set), and circuits[0].earth_loop_impedance_ze is absent → skip
+    # reason 'no_ze', result {ok:true, computed:[], skipped:[…]},
+    # is_error:false — the exact zero-audible non-error shape under test.
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_calczs
+            name: calculate_zs
+            input:
+              circuit_ref: 4
+              all: false
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''

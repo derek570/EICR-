@@ -119,20 +119,25 @@ function greenFixture() {
 }
 
 function redFixture() {
-  // A chime-producing ANSWER turn (in_response_to:true) where the model emits
-  // NOTHING (end_turn only): the ask-resolution path was supposed to speak the
-  // resolved answer and didn't, so the turn ends silent and the generic
-  // audibility.turn assertion is the ONE expected failure.
+  // A chime-producing MODE-OFF turn (confirmations_enabled:false) where the
+  // model emits NOTHING (end_turn only): with the spoken-confirmation channel
+  // disabled, EVERY audibility net declines by design, so the turn ends
+  // silent and the generic audibility.turn assertion is the ONE expected
+  // failure. (The runner's audibility.turn oracle deliberately does not gate
+  // on confirmations_enabled — it asserts what the recorded session's user
+  // EXPERIENCED after a chime.)
   //
-  // NB — this used to be a NON-answer no-op (the raw marker-① shape). The
-  // marker-① no-op audibility net (stage6-shadow-harness.js, shipped 2026-07-17)
-  // now HEALS that shape (emits a spoken apology → audible → no RED), so it can
-  // no longer serve as a controlled RED. The net is deliberately gated on
-  // `!isAnswerTurn` (answer turns are owned by the ask-resolution path), so a
-  // chimed answer-turn no-op is STILL a real beep-then-silence and remains a
-  // stable audibility.turn RED — a more faithful vehicle for the machinery
-  // tests below. The frc_c55c996… on-disk keystone owns the real-capture,
-  // now-required_green version of the original shape.
+  // NB — vehicle migration history: this was originally a NON-answer no-op
+  // (the raw marker-① shape) — healed by the marker-① net (2026-07-17); then
+  // an ANSWER-turn no-op — healed by the marker-② catch-all net
+  // (numeric-gate-redesign 2026-07-18), which has NO answer-turn gate (a
+  // truly-silent answer turn is still beep-then-silence, and its predicate 4
+  // already defers to any audible ask-resolution output). The mode-off shape
+  // is the PERMANENTLY stable RED vehicle: every current and future net is
+  // gated on confirmationsEnabled by design (a mode-off user opted out of
+  // the spoken channel), so no net can ever heal it. The frc_c55c996… /
+  // frc_b6ec5356… on-disk fixtures own the real-capture, now-required_green
+  // versions of the healed shapes.
   return {
     schema_version: 1,
     corpus_id: CID_RED,
@@ -159,10 +164,10 @@ function redFixture() {
         at_ms: 0,
         transcript: 'the garbled thing by the whatsit needs doing over',
         regex_results: [],
-        confirmations_enabled: { value: true, provenance: 'reconstructed_reviewed' },
-        // Answer turn — the marker-① no-op net skips these (the ask-resolution
-        // path owns answer turns), so this chimed no-op stays silent → RED.
-        in_response_to: { value: true, provenance: 'reconstructed_reviewed' },
+        // Mode-off — every audibility net honours confirmationsEnabled, so
+        // this chimed no-op stays silent → a permanently stable RED.
+        confirmations_enabled: { value: false, provenance: 'reconstructed_reviewed' },
+        in_response_to: { value: false, provenance: 'reconstructed_reviewed' },
         ws_mode: 'open',
         chime_observed: true,
         model_rounds: [{ stop_reason: 'end_turn', text: '' }],
