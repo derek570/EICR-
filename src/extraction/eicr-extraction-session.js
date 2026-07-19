@@ -704,6 +704,44 @@ export function normaliseSupplyIngest(supply) {
 }
 
 /**
+ * F/U-5 (2026-07-19) — flatten a `board_info` nesting on a board record.
+ *
+ * The PWA JobDetail type documents boards[] entries as "each entry nests its
+ * own `board_info`" (web/src/lib/types.ts). Today's web Board tab actually
+ * writes board fields FLAT on the entries, but the nested shape is the
+ * documented contract and cheap to accept defensively — pre-fix a nested
+ * blob rode the shallow board copy into the snapshot as an unreadable
+ * sub-object (the board-local Ze resolver and prompt rendering read FLAT
+ * board keys only) and was then serialized as noise.
+ *
+ * Semantics: own keys of a plain-record `board_info` are hoisted onto the
+ * record; existing FLAT keys always win (an explicit flat field must never
+ * be shadowed by a nested duplicate); addressing/prototype keys
+ * (MERGE_SKIP_KEYS) never hoist; the nested key itself is STRIPPED even when
+ * malformed (a junk blob must not reach the model-facing snapshot). Non-
+ * record input passes through untouched. Exported for tests.
+ */
+export function flattenBoardRecord(record) {
+  if (!isPlainRecord(record)) return record;
+  if (!Object.hasOwn(record, 'board_info')) return record;
+  const nested = record.board_info;
+  const out = {};
+  for (const k of Object.keys(record)) {
+    if (k === 'board_info') continue;
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    out[k] = record[k];
+  }
+  if (isPlainRecord(nested)) {
+    for (const k of Object.keys(nested)) {
+      if (MERGE_SKIP_KEYS.has(k)) continue;
+      if (Object.hasOwn(out, k)) continue; // flat wins
+      out[k] = nested[k];
+    }
+  }
+  return out;
+}
+
+/**
  * Plan 04-19 r13-#3 — known canonical `type` values for validation_alerts.
  * Sourced from `config/prompts/sonnet_extraction_system.md` instructions
  * (lines 482-483: `myth_rejected`, `nc_only`) + prior Codex review
@@ -860,6 +898,37 @@ const FACT_FIELDS = new Set([
   'phase',
   'circuit_type',
 
+  // --- Board-level facts (F/U-5, 2026-07-19 — Codex r1 IMPORTANT) ---
+  // The PWA Board tab's device/installation PROPERTY keys (verified against
+  // web/src/app/job/[id]/board/page.tsx patchActive calls). These are
+  // manual-entry facts, not measurements — without them a mid-recording web
+  // edit to an already-populated cell was silently dropped by the fill-only
+  // reading branch. Measurements deliberately NOT here (fill-only stands):
+  // ze, ze_at_db, zs_at_db, ipf_at_db, rcd_trip_time, polarity_confirmed,
+  // phases_confirmed.
+  'name',
+  'manufacturer',
+  'model',
+  'location',
+  'supplied_from',
+  'phases',
+  'voltage_rating',
+  'rated_current',
+  'ipf_rating',
+  'rcd_rating_ma',
+  'overcurrent_bs_en',
+  'overcurrent_voltage',
+  'overcurrent_current',
+  'spd_type',
+  'spd_status',
+  'sub_main_cable_material',
+  'sub_main_cable_csa',
+  'sub_main_cable_length',
+  'sub_main_cpc_csa',
+  'feed_circuit_ref',
+  'notes',
+  'board_type',
+
   // --- Supply-level facts (from config/field_schema.json supply_characteristics_fields) ---
   'earthing_arrangement',
   'earthingArrangement',
@@ -964,6 +1033,13 @@ const MERGE_SKIP_KEYS = new Set([
   // stray reading field — that would pollute the snapshot/prompt and never
   // match the canonical `board_id` the dual-shape readers key on.
   'boardId',
+  // F/U-5 (2026-07-19) — `board_info` is a CONTAINER, never a field. The
+  // flatten/merge sites consume it explicitly (flattenBoardRecord + the
+  // top-level board_info branches); any path that reaches the generic field
+  // merge with it still attached must drop it rather than write a nested
+  // blob into the snapshot (which the flat-key readers can't see and the
+  // prompt serialiser would emit as noise).
+  'board_info',
 ]);
 
 /**
@@ -1558,11 +1634,59 @@ export class EICRExtractionSession {
     // Q0.1 (locked): on session start, currentBoardId is ALWAYS the main
     // board id — predictable focus, no stale "last active" restored across
     // sessions.
-    if (Array.isArray(jobState.boards) && jobState.boards.length > 0) {
-      this.stateSnapshot.boards = jobState.boards.map((b) => ({ ...b }));
+    {
+      // F/U-5 — hydrate from the payload's USABLE (id-bearing plain-record)
+      // entries only, flattening any nested `board_info` (documented PWA
+      // shape) so board-level fields land FLAT where the board-local Ze
+      // resolver and prompt rendering read them. Codex r3: an id-less/junk
+      // boards[] (e.g. `[{}]`) previously REPLACED the synthesised
+      // `[{id:'main', …}]` default wholesale, destroying the main record
+      // that _applyTopLevelBoardInfo's full-consumption branch and the
+      // resolver key on — junk entries are now dropped, and when NOTHING
+      // usable arrived the synth default survives (same usability predicate
+      // as _applyTopLevelBoardInfo's classification).
+      const usableBoards = Array.isArray(jobState.boards)
+        ? jobState.boards.filter((b) => isPlainRecord(b) && b.id)
+        : [];
+      if (usableBoards.length > 0) {
+        const hydrated = usableBoards.map((b) => flattenBoardRecord({ ...b }));
+        // Codex r4 — if NO usable entry is main-typed (a junk-plus-sub-board
+        // payload), keep the existing main record at the head. Without it
+        // getMainBoardId's boards[0] fallback would crown the SUB-board as
+        // main, collapsing its composite circuit keys onto the bare-numeric
+        // main namespace (a sub circuit would overwrite the main circuit
+        // with the same ref). Pre-r3 the junk {} record incidentally kept
+        // 'main' resolving; this preserves that routing deliberately.
+        const hasMainTyped = hydrated.some((b) => !b.board_type || b.board_type === 'main');
+        if (!hasMainTyped) {
+          const existingMain = (this.stateSnapshot.boards ?? []).find(
+            (b) => b && (!b.board_type || b.board_type === 'main')
+          );
+          hydrated.unshift(existingMain ?? { id: 'main', designation: 'DB-1', board_type: 'main' });
+        }
+        this.stateSnapshot.boards = hydrated;
+      }
     }
     this.stateSnapshot.currentBoardId = getMainBoardId(this.stateSnapshot);
     const mainBoardId = this.stateSnapshot.currentBoardId;
+    // F/U-5 — consume the TOP-LEVEL `board_info` container. It is the
+    // PRIMARY board-fields carrier for single-board PWA jobs (`boards:
+    // null`, everything under `board_info` — the regex apply layer writes it
+    // and blank-slate jobs carry it) and iOS's legacy single-board bag.
+    // Pre-fix it was never read at all: on a single-board web job EVERY
+    // board-level field (designation, Ze at board, main-switch details…)
+    // was invisible to the snapshot from turn 1.
+    //
+    // Codex F/U-5 r1+r2 (see _applyTopLevelBoardInfo for the full rules):
+    // the accompanying boards[] payload is CLASSIFIED (multi-board / sole
+    // sub-board mirrors are skipped; a sole MAIN board keeps its record
+    // identity but still takes board_info fields — the web regex layer
+    // writes voice board fields to board_info ONLY), and main-board FIELDS
+    // route to circuits[0] (the record_board_reading / serialiser /
+    // resolver bucket) rather than the boards[] record (where a stale
+    // seeded `ze` would SHADOW a later dictated correction — the
+    // board-aware resolver checks the record before circuits[0]).
+    this._applyTopLevelBoardInfo(jobState, mainBoardId);
     // Pre-compute the set of known board ids so we can detect (and silently
     // fall back to the legacy bucket for) any circuit whose `board_id` points
     // at a board that isn't in `boards[]` — defensive against partially-
@@ -2120,8 +2244,114 @@ export class EICRExtractionSession {
         }
         // kind: 'board' — do NOT apply the #3.4.4 circuit designation→
         // circuit_designation alias here; boards carry their own `designation`.
-        this._mergeCircuitOrBoardFields(target, incoming, 'board');
+        // F/U-5 — flatten a nested `board_info` first (documented PWA shape)
+        // so its fields participate in the fact-vs-reading precedence as
+        // flat board fields instead of riding through as an unreadable blob.
+        this._mergeCircuitOrBoardFields(target, flattenBoardRecord(incoming), 'board');
       }
+    }
+
+    // --- TOP-LEVEL board_info (F/U-5, 2026-07-19) ---
+    // The primary board-fields carrier for single-board PWA jobs (`boards:
+    // null` on the wire) and iOS's legacy single-board bag. Pre-fix a
+    // mid-recording web edit to any board-level field arrived in
+    // `job_state_update` and was silently dropped — the model kept working
+    // from the stale (usually empty) board state. The accompanying boards[]
+    // payload is classified (multi-board / sub-board mirrors skipped; a sole
+    // MAIN board still takes fields) and main-fields route to circuits[0] /
+    // identity to the main record (Codex F/U-5 r1+r2; see
+    // _applyTopLevelBoardInfo).
+    this._applyTopLevelBoardInfo(jobState, getMainBoardId(this.stateSnapshot));
+  }
+
+  /**
+   * F/U-5 (2026-07-19, shaped by Codex r1) — consume a top-level
+   * `jobState.board_info` container. Shared by the seeder and
+   * `_mergeIncomingJobStateIntoSnapshot` so the two ingestion sites cannot
+   * drift.
+   *
+   * Preconditions enforced here:
+   *   - `board_info` must be a plain record (malformed shapes ignored).
+   *   - The accompanying boards[] payload is CLASSIFIED (r1 BLOCKER + r2):
+   *     ≥2 usable id-bearing boards, or a sole SUB-board mirror → skip
+   *     entirely (the web mirrors boards[0] — after a reorder possibly a
+   *     SUB-board — into `board_info`; it must never stamp a sub-board onto
+   *     MAIN); a sole MAIN-typed board → FIELDS still merge but identity
+   *     stays with the authoritative record; no usable boards → full
+   *     consumption (identity + fields).
+   *
+   * Routing (Codex r1 BLOCKER — bucket unification):
+   *   - Identity keys (`designation`, `board_type`) → the MAIN board
+   *     record, where the synth scaffold and the prompt board-list live.
+   *   - EVERY other field → `circuits[0]`, the canonical main-board
+   *     board-fields bucket: `record_board_reading` writes there (main
+   *     target), the legacy serialiser reads there, and the board-aware Ze
+   *     resolver's circuits[0] source covers it. Landing them on the
+   *     boards[] RECORD instead would hide them from the serialiser AND let
+   *     a stale seeded `ze` shadow a later DICTATED correction (the
+   *     resolver checks the record before circuits[0]).
+   *
+   * Precedence is the shared fact-vs-reading merge: facts (designation,
+   * device/installation properties) are client-authoritative and overwrite;
+   * measurements (`ze`, `zs_at_db`, `ipf_at_db`, `rcd_trip_time`…) fill
+   * EMPTY cells only, so a dictated value is never clobbered by a stale
+   * container replay.
+   */
+  _applyTopLevelBoardInfo(jobState, mainBoardId) {
+    if (!isPlainRecord(jobState?.board_info)) return;
+    // Codex r2 — classify the accompanying boards[] payload rather than a
+    // blanket length check. The web regex-apply layer writes voice board
+    // fields to board_info ONLY (boards[] rides along stale in the same
+    // job_state_update), so "any non-empty boards[] suppresses board_info"
+    // dropped fresh values on the most common single-board web shape (a job
+    // whose Board tab has ever been used carries a sole main-typed boards[0]
+    // forever). Rules:
+    //   - ≥2 usable (id-bearing plain-record) boards → genuinely multi-board:
+    //     SKIP entirely (the boards[0] mirror may describe a reordered
+    //     SUB-board — the r1 BLOCKER; the mirror is ambiguous).
+    //   - exactly 1 usable board that is NOT main-typed → a sub-board mirror:
+    //     SKIP.
+    //   - exactly 1 usable MAIN board → merge board_info FIELDS (circuits[0],
+    //     fill-only for measurements) but NOT identity — the boards[] record
+    //     is the authoritative identity carrier in that payload.
+    //   - no usable boards (absent / junk entries) → full consumption:
+    //     identity → main record, fields → circuits[0].
+    const usable = Array.isArray(jobState.boards)
+      ? jobState.boards.filter((b) => isPlainRecord(b) && b.id)
+      : [];
+    if (usable.length >= 2) return;
+    let mergeIdentity = true;
+    if (usable.length === 1) {
+      const sole = usable[0];
+      const isMain = !sole.board_type || sole.board_type === 'main';
+      if (!isMain) return;
+      mergeIdentity = false;
+    }
+    const info = jobState.board_info;
+
+    const identity = {};
+    const fields = {};
+    for (const k of Object.keys(info)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      if (k === 'designation' || k === 'board_type') {
+        identity[k] = info[k];
+      } else {
+        fields[k] = info[k];
+      }
+    }
+
+    if (mergeIdentity && Object.keys(identity).length > 0) {
+      const mainRecord = (this.stateSnapshot.boards ?? []).find((b) => b && b.id === mainBoardId);
+      if (mainRecord) {
+        this._mergeCircuitOrBoardFields(mainRecord, identity, 'board');
+      }
+    }
+    if (Object.keys(fields).length > 0) {
+      const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
+      // kind 'board' — no supply Ze/PFC aliasing (a board_info `ze` IS the
+      // board-local Ze, the distinct board_fields key the F/U-4 scope guard
+      // protects) and no circuit designation aliasing.
+      this._mergeCircuitOrBoardFields(target, fields, 'board');
     }
   }
 
