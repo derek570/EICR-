@@ -296,7 +296,29 @@ const COUNT_STYLE_FIELDS = Object.freeze(new Set(['number_of_points']));
  * Returns null when the field is suppressed or the value renders
  * empty (same gating as buildConfirmationText).
  */
-export function buildGroupedConfirmationText(field, value, circuits, totalCircuitsInJob = null) {
+/**
+ * F/U-1 r3 (2026-07-19) — ONE fan-out identity for the bundler's confirmation
+ * grouping AND the speculator's broadcast-bucket suppression. The two sides
+ * previously hand-rolled the same key and normalised values differently
+ * (the speculator trimmed, the bundler didn't) — the exact identity-drift
+ * class that broke the bucket back-link in r2. Trimmed is the correct form:
+ * buildConfirmationText/buildGroupedConfirmationText trim the value before
+ * speaking, so " 0.5" and "0.5" produce IDENTICAL spoken text and must share
+ * one identity. calculated is part of the key: a calculated and a dictated
+ * same-field/same-value write speak with different phrasing and never group.
+ */
+export function buildFanoutGroupKey({ field, value, boardId, calculated }) {
+  const valueStr = String(value ?? '').trim();
+  return `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
+}
+
+export function buildGroupedConfirmationText(
+  field,
+  value,
+  circuits,
+  totalCircuitsInJob = null,
+  options = {}
+) {
   if (SUPPRESSED_TTS_FIELDS.has(field)) return null;
   if (typeof field === 'string' && field.endsWith('_id')) return null;
   // Codex r5-#3 — designation never groups: its friendly-name slot holds
@@ -344,6 +366,14 @@ export function buildGroupedConfirmationText(field, value, circuits, totalCircui
   } else if (COUNT_STYLE_FIELDS.has(field)) {
     // Count before noun — see buildConfirmationText (item #7).
     tail = `${valueStr} ${friendly}`;
+  } else if (options.calculated === true) {
+    // F/U-1 (2026-07-19) — server-derived calculator results speak with a
+    // "calculated as" marker so the inspector can tell a derived value from
+    // a measured one by ear (a calculated Zs on a certificate is a
+    // different evidentiary claim than a meter reading). Only the two
+    // numeric calc fields ever take this branch; the special-case fields
+    // above are never calculator outputs.
+    tail = `${friendly} calculated as ${valueStr}`;
   } else {
     tail = `${friendly} ${valueStr}`;
   }
@@ -371,7 +401,7 @@ export function buildGroupedConfirmationText(field, value, circuits, totalCircui
   return `Circuits ${ints.join(', ')}, ${tail}`;
 }
 
-export function buildConfirmationText(field, value, circuit, designation = null) {
+export function buildConfirmationText(field, value, circuit, designation = null, options = {}) {
   // 2026-05-29 — deny-list policy. Speak every field with a value
   // unless explicitly suppressed (internal IDs / metadata).
   if (SUPPRESSED_TTS_FIELDS.has(field)) return null;
@@ -427,9 +457,15 @@ export function buildConfirmationText(field, value, circuit, designation = null)
   }
   // Count-style fields read "<N> <noun>" (count before noun) so the
   // utterance ends on the noun, not a bare terminal numeral (item #7).
+  // F/U-1 (2026-07-19) — options.calculated marks a server-derived
+  // calculator result: speak "calculated as" so the inspector can tell a
+  // derived value from a measured one by ear. Only the generic numeric
+  // branch — the special-case fields above are never calculator outputs.
   const body = COUNT_STYLE_FIELDS.has(field)
     ? `${valueStr} ${friendly}`
-    : `${friendly} ${valueStr}`;
+    : options.calculated === true
+      ? `${friendly} calculated as ${valueStr}`
+      : `${friendly} ${valueStr}`;
 
   // Board-level readings (circuit 0 or absent) skip the prefix — "Ze
   // 0.25" is a complete sentence in inspector parlance, "Circuit 0, Ze"

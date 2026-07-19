@@ -100,14 +100,28 @@ function makeSpeculator({ factory, logger = null } = {}) {
  * Helper to build the onSnapshotPatch event shape for a single
  * record_reading mutation.
  */
-function patchForAdded({ field, circuit, boardId, value, confidence = 1.0, turnId = 'T1' }) {
+function patchForAdded({
+  field,
+  circuit,
+  boardId,
+  value,
+  confidence = 1.0,
+  turnId = 'T1',
+  source_turn_id = undefined,
+  derived = undefined,
+}) {
   return {
     patch: {
       readings: {
         added: [
           {
             key: encodeReadingKey(field, circuit, boardId),
-            value: { value, confidence, source_turn_id: turnId },
+            value: {
+              value,
+              confidence,
+              source_turn_id: source_turn_id ?? turnId,
+              ...(derived !== undefined ? { derived } : {}),
+            },
           },
         ],
         overwritten: [],
@@ -227,6 +241,121 @@ describe('speculate — happy path', () => {
     );
     await flush();
     expect(factory).toHaveBeenCalledTimes(0);
+  });
+
+  test('F/U-1: a ::calc:: write speculates with the bundler-identical "calculated as" text (servable, not drift)', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onSnapshotPatch(
+      patchForAdded({
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        value: '0.5',
+        source_turn_id: '::calc::calculate_zs',
+      })
+    );
+    await flush();
+    expect(synths).toHaveLength(1);
+    // Byte-identical to the bundler's final expanded_text for the same write
+    // (bundleToolCallsIntoResult → "Circuit 4, Zs calculated as 0.5" →
+    // expandForTTS). Without the calculated flag the speculated text would
+    // read "Circuit 4, zed S zero point five" and could only DRIFT at
+    // validateAgainstConfirmations — wasted synth, no latency win.
+    expect(synths[0].text).toBe('Circuit 4, zed S calculated as zero point five');
+  });
+
+  test('F/U-1: a derived (mirror) write does NOT speculate — no final confirmation can ever match it', async () => {
+    const { factory } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onSnapshotPatch(
+      patchForAdded({
+        field: 'measured_zs_ohm',
+        circuit: 2,
+        boardId: null,
+        value: '0.5',
+        derived: true,
+      })
+    );
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(0);
+  });
+
+  test('F/U-1 r2: dictated→dictated fan-out ABORTS the first speculation (bucket back-link uses the shared key)', async () => {
+    // Regression pin for the Codex r2 catch: the correlationId back-link
+    // rebuilt the bucket key by hand and diverged from the lookup key when
+    // the calc component was added — every bucket lost its correlationId and
+    // broadcast detection could suppress but never abort the first in-flight
+    // synth. No prior test exercised the abort path, so it broke green.
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'ir_live_earth_mohm', circuit: 1, boardId: null, value: '299' })
+    );
+    await flush();
+    expect(synths).toHaveLength(1);
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'ir_live_earth_mohm', circuit: 2, boardId: null, value: '299' })
+    );
+    await flush();
+    // Broadcast detected on the second circuit: the FIRST synth's abort
+    // signal must have fired (its per-circuit text is wrong for a fan-out).
+    expect(synths[0].opts.signal.aborted).toBe(true);
+    // And the second circuit did not open a synth of its own.
+    expect(synths).toHaveLength(1);
+  });
+
+  test('F/U-1 r2: calc→calc fan-out ABORTS the first speculation too (calc bucket carries its own back-link)', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onSnapshotPatch(
+      patchForAdded({
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        boardId: null,
+        value: '0.5',
+        source_turn_id: '::calc::calculate_zs',
+      })
+    );
+    await flush();
+    expect(synths).toHaveLength(1);
+    spec.onSnapshotPatch(
+      patchForAdded({
+        field: 'measured_zs_ohm',
+        circuit: 2,
+        boardId: null,
+        value: '0.5',
+        source_turn_id: '::calc::calculate_zs',
+      })
+    );
+    await flush();
+    expect(synths[0].opts.signal.aborted).toBe(true);
+    expect(synths).toHaveLength(1);
+  });
+
+  test('F/U-1: calc-ness separates broadcast buckets — a dictated and a calc same-field/same-value write both speculate', async () => {
+    // The bundler emits TWO spoken lines for this pair (different phrasing,
+    // never grouped), so broadcast suppression must not treat them as a
+    // fan-out of one value.
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'measured_zs_ohm', circuit: 1, boardId: null, value: '0.5' })
+    );
+    spec.onSnapshotPatch(
+      patchForAdded({
+        field: 'measured_zs_ohm',
+        circuit: 2,
+        boardId: null,
+        value: '0.5',
+        source_turn_id: '::calc::calculate_zs',
+      })
+    );
+    await flush();
+    expect(synths.map((s) => s.text)).toEqual([
+      'Circuit 1, zed S zero point five',
+      'Circuit 2, zed S calculated as zero point five',
+    ]);
   });
 });
 

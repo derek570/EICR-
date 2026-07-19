@@ -2193,98 +2193,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     //      invite a duplicate re-dictation). Readings/observations counts are
     //      deliberately NOT audibility — successful writes are UI state, not
     //      speech (counting them is exactly what preserved beep-then-silence).
-    //   5. NOT a designed-silent side-effect turn. Classified by dispatcher
-    //      OUTCOME, never tool name (one tool has many outcomes): the ONLY
-    //      Phase-0-verified designed-silent success is a calculator write —
-    //      body {ok:true, computed:[…]} with computed.length > 0 — whose
-    //      readings carry ::calc:: and are excluded from spoken read-back BY
-    //      DESIGN (stage6-event-bundler.js:625-636, the 2026-06-18 Audio-First
-    //      auto-derivation exemption). computed:[] (missing-input OR
-    //      already_set skips) is NOT exempt — both fire per the pinned
-    //      never-silent decision; the specific "already recorded" wording is a
-    //      logged dispatcher follow-up, not this net's job.
+    //
+    // F/U-1 (2026-07-19) — the former predicate 5 (designed-silent exemption
+    // for a FULLY-computed calculator success, with its outcome parser +
+    // loop-ledger exhaustiveness guard) is REMOVED. It existed solely because
+    // ::calc:: writes were read-back-exempt; the bundler now speaks every
+    // calculator result ("calculated as" phrasing), so a clean computed turn
+    // carries speech-intent and never reaches this net. Keeping the exemption
+    // would MASK a calc read-back regression as designed silence — with it
+    // gone, a computed turn whose confirmation is lost anywhere downstream
+    // draws the apology instead of going silent (fail-audible, chime-is-a-
+    // promise). A legitimately debounced calc read-back is predicate 4's
+    // already-heard evidence, exactly like any other reading.
     try {
       if (options.confirmationsEnabled === true && options.chimeObserved === true && !cancelled) {
-        const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
-        // Outcome-based designed-silent exemption (predicate 5). The parser
-        // catches internally — a malformed body never throws into the outer
-        // catch (which would reproduce the silence this net exists to close).
-        const isDesignedSilentSuccess = (c) => {
-          // POSITIVE success required (fail-closed): a missing/undefined
-          // is_error is a malformed envelope, not a success.
-          if (c?.result?.is_error !== false) return false;
-          try {
-            const body = JSON.parse(c?.result?.content ?? 'null');
-            // FULLY-computed only (Codex cycle 1): a batch envelope can carry
-            // computed:[…] AND skipped:[…] in ONE call ("calculate Zs for all
-            // circuits" → 5 computed, 3 skipped). A partial success is NOT
-            // wholly designed-silent — the skipped circuits went silent for a
-            // non-designed reason, so the apology must fire.
-            // skipped must be a REAL empty array (Codex cycle-1 mini-review):
-            // a missing/null/non-array skipped is shape drift and must fail
-            // CLOSED (fire the apology), never open (exempt into silence).
-            return !!(
-              body &&
-              body.ok === true &&
-              Array.isArray(body.computed) &&
-              body.computed.length > 0 &&
-              Array.isArray(body.skipped) &&
-              body.skipped.length === 0
-            );
-          } catch {
-            return false;
-          }
-        };
-        // Loop-ledger exhaustiveness guard (Codex cycle-1 mini-review):
-        // `tool_calls` is NOT exhaustive — a thrown dispatcher, a padded
-        // internal_no_result, and cap-hit synthetics land in toolResults (and
-        // the per-round error counts) but NOT in allCalls, so `every()` over
-        // the visible subset could exempt a turn with an INVISIBLE failure.
-        // The exemption therefore also requires: not aborted, not cap-hit,
-        // ZERO errors across all rounds, and attempted-call count equal to
-        // the accumulated list. Missing ledger arrays (legacy shapes) fail
-        // CLOSED — the apology fires (annoying-but-safe).
-        // Every ledger element must be a non-negative integer AND the array
-        // must be COMPLETE — non-empty with exactly one entry per loop round
-        // (an empty/truncated ledger lacks evidence for the missing rounds
-        // and sums to a fake zero). Any malformation invalidates the WHOLE
-        // ledger (null sentinel → not clean); nothing is silently counted as
-        // zero (fail-closed).
-        const expectedRounds = Number.isInteger(toolLoopOut?.rounds) ? toolLoopOut.rounds : null;
-        const sumRounds = (a) => {
-          if (!Array.isArray(a) || a.length === 0) return null;
-          if (expectedRounds == null || a.length !== expectedRounds) return null;
-          let total = 0;
-          for (const n of a) {
-            if (!Number.isInteger(n) || n < 0) return null;
-            total += n;
-          }
-          return total;
-        };
-        const totalAttempted = sumRounds(toolLoopOut?.tool_call_count_per_round);
-        const totalErrors = sumRounds(toolLoopOut?.tool_error_count_per_round);
-        // POSITIVE clean-termination evidence required: aborted exactly
-        // false, terminal_reason exactly 'end_turn', AND the RAW final
-        // stop_reason exactly 'end_turn' — the loop maps every non-tool_use
-        // stop (max_tokens etc.) to terminal_reason 'end_turn', so the
-        // terminal reason alone cannot prove a clean model termination.
-        const loopLedgerClean =
-          toolLoopOut?.aborted === false &&
-          toolLoopOut?.terminal_reason === 'end_turn' &&
-          toolLoopOut?.stop_reason === 'end_turn' &&
-          totalErrors === 0 &&
-          totalAttempted === calls.length;
-        // WHOLE-TURN classification (Codex diff-review cycle 1): the exemption
-        // is `every`, not `some`. This branch is only reached when ZERO speech
-        // survived, so any call that is NOT a computed>0 calculator success
-        // went silent for some OTHER reason (empty calc, rejected call, silent
-        // op) — one legitimate computed write must not mask a sibling silent
-        // failure in the same turn ("never exempt into silence"). Calls whose
-        // success IS audible (record_reading etc.) never reach here with
-        // surviving speech, and the produced-then-debounced case is already
-        // predicate 4's already-heard evidence.
-        const hasDesignedSilentWrite =
-          loopLedgerClean && calls.length > 0 && calls.every(isDesignedSilentSuccess);
         const survivingConfCount = Array.isArray(result.confirmations)
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
@@ -2298,7 +2220,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           survivingPromptCount === 0 &&
           emittedAskToolCallIds.size === 0 &&
           debouncedConfirmationCountThisTurn === 0;
-        if (noSpeechIntent && !hasDesignedSilentWrite) {
+        if (noSpeechIntent) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           // Queue on the A4 FIFO channel (field-null / expects_ios_ack:false —
           // the drain below stamps those); the drain moves it onto the wire
@@ -2307,6 +2229,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             text: CATCHALL_AUDIBILITY_PROMPTS[turnNum % CATCHALL_AUDIBILITY_PROMPTS.length],
             generationId,
           });
+          const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
           log.info?.('stage6.catchall_audibility_fallback_emitted', {
             sessionId: session.sessionId,
             turnId,

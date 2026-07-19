@@ -84,7 +84,11 @@
  */
 
 import { ElevenLabsStreamClient } from './elevenlabs-stream-client.js';
-import { shouldGenerateConfirmation, buildConfirmationText } from './confirmation-text.js';
+import {
+  shouldGenerateConfirmation,
+  buildConfirmationText,
+  buildFanoutGroupKey,
+} from './confirmation-text.js';
 import { expandForTTS } from './tts-text-expander.js';
 import {
   buildCacheKey,
@@ -147,6 +151,13 @@ function buildSlotKey({ field, circuit, boardId }) {
   const normBoardId = typeof boardId === 'string' && boardId.length > 0 ? boardId : '';
   return `${field}::${circuit ?? 'null'}::${normBoardId}`;
 }
+
+// Broadcast-bucket identity — the SHARED buildFanoutGroupKey from
+// confirmation-text.js, used by both this module's suppression lookup +
+// correlationId back-link AND the bundler's confirmation grouping. History:
+// Codex F/U-1 r2 caught the back-link hand-rolling a diverged key (bucket
+// never found → suppress-but-never-abort); r3 unified the bundler's twin
+// into the same builder so the identity cannot drift across modules either.
 
 /**
  * slotMatches predicate for abortBySlot. The fast-TTS route passes
@@ -286,7 +297,7 @@ export function createSpeculator({
   // bundler instead, ~1-2s later. Acceptable trade because the
   // pre-fix audio was wrong.
   //
-  // broadcastBuckets keys: `${field}|${valueStr}|${boardId ?? ''}`.
+  // broadcastBuckets keys: buildFanoutGroupKey (confirmation-text.js) — `${field}|${valueStr}|${boardId ?? ''}|${calc}`.
   // Value: { firstCircuit: int|null, correlationId: string|null,
   //          suppressed: bool }. Reset alongside perTurnCount when
   // turnId changes.
@@ -408,7 +419,21 @@ export function createSpeculator({
     return false;
   }
 
-  async function _speculate({ field, circuit, boardId, value, confidence, turnId }) {
+  async function _speculate({
+    field,
+    circuit,
+    boardId,
+    value,
+    confidence,
+    turnId,
+    calculated = false,
+    derived = false,
+  }) {
+    // F/U-1 (2026-07-19) — mirror/polarity derivations (derived: true) never
+    // produce a final confirmation (the bundler's designed-silent exception),
+    // so speculating on them is pure ElevenLabs waste: the entry could only
+    // ever drift at validate. Skip before opening a cost ledger.
+    if (derived === true) return;
     // Confidence + friendly-name gate. shouldGenerateConfirmation is
     // a fast-path skip that doesn't touch buildConfirmationText.
     if (!shouldGenerateConfirmation({ field, confidence })) return;
@@ -454,8 +479,10 @@ export function createSpeculator({
     // can't broadcast across circuits.
     _resetTurnCapIfNew(turnId);
     if (Number.isInteger(circuit) && circuit > 0) {
-      const valueStr = String(value ?? '').trim();
-      const bucketKey = `${field}|${valueStr}|${boardId ?? ''}`;
+      // F/U-1 — shared builder (see buildFanoutGroupKey): calc-ness is
+      // part of the bucket identity so calc-vs-dictated same-value writes
+      // never trip broadcast suppression against each other.
+      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket) {
         if (bucket.suppressed) {
@@ -521,7 +548,12 @@ export function createSpeculator({
     // never a stale serve.
     const designation =
       Number.isInteger(circuit) && circuit > 0 ? (perTurnDesignations.get(circuit) ?? null) : null;
-    const text = buildConfirmationText(field, value, circuit, designation);
+    // F/U-1 — calculated flag keeps the speculated text byte-identical to the
+    // bundler's final "calculated as" phrasing; without it every calculator
+    // write would open a speculation that can only drift at validate (wasted
+    // synth, no latency win). The cacheKey embeds expandedText, so identity
+    // stays consistent automatically.
+    const text = buildConfirmationText(field, value, circuit, designation, { calculated });
     if (!text) return;
     const expandedText = expandForTTS(text);
     if (!expandedText) return;
@@ -586,13 +618,14 @@ export function createSpeculator({
       cacheKey,
     });
     // Back-link the correlationId onto the broadcast bucket so a
-    // subsequent record_reading on the same (field, value, boardId)
-    // but a different circuit can abort this speculation. Bucket
-    // may be absent for board-level readings (circuit:0/null path
-    // skips the bucket lookup above).
+    // subsequent record_reading on the same (field, value, boardId,
+    // calc-ness) but a different circuit can abort this speculation.
+    // Bucket may be absent for board-level readings (circuit:0/null path
+    // skips the bucket lookup above). MUST use the shared key builder —
+    // a hand-rolled key here silently diverged when the calc component
+    // was added (Codex F/U-1 r2).
     if (Number.isInteger(circuit) && circuit > 0) {
-      const valueStr = String(value ?? '').trim();
-      const bucketKey = `${field}|${valueStr}|${boardId ?? ''}`;
+      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket && !bucket.correlationId) {
         bucket.correlationId = correlationId;
@@ -947,6 +980,14 @@ export function createSpeculator({
       }
 
       // 3. Speculate on added + overwritten (the new value, not the old).
+      // F/U-1 (2026-07-19) — thread write provenance so the speculated text
+      // matches the bundler: ::calc:: writes speculate with "calculated as"
+      // phrasing; derived (mirror) writes are skipped inside _speculate.
+      const writeProvenance = (entry) => ({
+        calculated:
+          typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::'),
+        derived: entry?.derived === true,
+      });
       for (const added of patch.readings.added) {
         const slot = decodeReadingKey(added.key);
         const entry = added.value;
@@ -957,6 +998,7 @@ export function createSpeculator({
           value: entry.value,
           confidence: entry.confidence,
           turnId,
+          ...writeProvenance(entry),
         });
       }
       for (const overwritten of patch.readings.overwritten) {
@@ -969,6 +1011,7 @@ export function createSpeculator({
           value: entry.value,
           confidence: entry.confidence,
           turnId,
+          ...writeProvenance(entry),
         });
       }
       for (const added of patch.boardReadings.added) {
@@ -981,6 +1024,7 @@ export function createSpeculator({
           value: entry.value,
           confidence: entry.confidence,
           turnId,
+          ...writeProvenance(entry),
         });
       }
       for (const overwritten of patch.boardReadings.overwritten) {
@@ -993,6 +1037,7 @@ export function createSpeculator({
           value: entry.value,
           confidence: entry.confidence,
           turnId,
+          ...writeProvenance(entry),
         });
       }
     } catch (err) {
