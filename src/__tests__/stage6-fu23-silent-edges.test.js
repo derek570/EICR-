@@ -163,8 +163,52 @@ describe('F/U-3 — wholly-already_set calculator calls record a specific notice
       ctx(lots, ptw2)
     );
     expect(ptw2.voiceNotices).toEqual([
-      { text: 'Zs for those circuits is already recorded — say new readings to replace them.' },
+      // Codex r1 — the >4 scope carries the COUNT so two different large
+      // batches never produce byte-identical texts for the client's 30 s
+      // text-keyed field-nil dedupe.
+      { text: 'Zs for those 5 circuits is already recorded — say new readings to replace them.' },
     ]);
+  });
+
+  test('Codex r1 — wording ROTATES by turn (turnId-derived variant) so consecutive identical outcomes differ textually', async () => {
+    const mk = async (turnId) => {
+      const session = makeSession({
+        0: { earth_loop_impedance_ze: '0.35' },
+        4: { measured_zs_ohm: '1.10' },
+      });
+      const ptw = createPerTurnWrites();
+      await dispatchCalculateZs(
+        { tool_call_id: 'tu_rot', name: 'calculate_zs', input: { circuit_ref: 4, all: false } },
+        { session, logger: mockLogger(), turnId, perTurnWrites: ptw, round: 0 }
+      );
+      return ptw.voiceNotices[0].text;
+    };
+    // djb2('t1') % 2 === 0, djb2('t2') % 2 === 1 — two adjacent turns pick
+    // different variants, so a repeat within the client TTL still speaks.
+    const a = await mk('t1');
+    const b = await mk('t2');
+    expect(a).toBe('Zs for circuit 4 is already recorded — say a new reading to replace it.');
+    expect(b).toBe(
+      "There's already a Zs recorded for circuit 4 — dictate a new value to replace it."
+    );
+    expect(a).not.toBe(b);
+
+    // The rename notice rotates on the same mechanism.
+    const renameText = async (turnId) => {
+      const session = makeSession({ 4: {} });
+      const ptw = createPerTurnWrites();
+      await dispatchRenameCircuit(
+        { tool_call_id: 'tu_rr', name: 'rename_circuit', input: { from_ref: 4, circuit_ref: 4 } },
+        { session, logger: mockLogger(), turnId, perTurnWrites: ptw, round: 0 }
+      );
+      return ptw.voiceNotices[0].text;
+    };
+    expect(await renameText('t1')).toBe(
+      "Circuit 4 is unchanged — I didn't catch a new name or number for it."
+    );
+    expect(await renameText('t2')).toBe(
+      'Nothing changed for circuit 4 — say the new name or number again.'
+    );
   });
 
   test('MIXED skip reasons (already_set + no_r1_r2) → NO notice (generic catch-all owns that turn)', async () => {

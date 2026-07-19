@@ -2168,48 +2168,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
-    // ── F/U-2/3 (2026-07-19) — dispatcher voice-notice drain. Dispatchers
-    // record deterministic spoken lines for successful-but-writeless
-    // outcomes (rename-to-same noop, calculate wholly already_set) on
-    // perTurnWrites.voiceNotices — they cannot stamp a generationId
-    // themselves (ctx doesn't carry it, and an unstamped
-    // pendingVoicePrompts entry counts as CURRENT-generation, so a
-    // cancellation would leak it onto the next turn). The harness stamps +
-    // queues them here, BEFORE the marker-② net evaluates (a queued
-    // current-generation prompt is speech-intent, so the specific notice
-    // REPLACES the generic apology rather than stacking on it), and the §A4
-    // drain below moves them onto the wire this turn (field:null channel).
-    // confirmationsEnabled-gated like every net: mode-off users opted out
-    // of the spoken channel. Cancelled turns skip the queue entirely.
-    try {
-      if (
-        options.confirmationsEnabled === true &&
-        !cancelled &&
-        Array.isArray(perTurnWrites?.voiceNotices) &&
-        perTurnWrites.voiceNotices.length > 0
-      ) {
-        if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-        for (const notice of perTurnWrites.voiceNotices) {
-          if (!notice || typeof notice.text !== 'string' || notice.text.trim().length === 0) {
-            continue;
-          }
-          session.pendingVoicePrompts.push({ text: notice.text, generationId });
-          log.info?.('stage6.dispatcher_voice_notice_emitted', {
-            sessionId: session.sessionId,
-            turnId,
-            generationId,
-            textPreview: notice.text.slice(0, 80),
-          });
-        }
-      }
-    } catch (noticeErr) {
-      log.warn?.('stage6.dispatcher_voice_notice_error', {
-        sessionId: session.sessionId,
-        turnId,
-        error: noticeErr?.message ?? String(noticeErr),
-      });
-    }
-
     // ── marker-② (numeric-gate-redesign 2026-07-18) — catch-all audibility
     // net. The FINAL net: fires when a chime fired and the turn produced ZERO
     // speech-intent of any kind, REGARDLESS of tool calls — the class the
@@ -2264,21 +2222,53 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           debouncedConfirmationCountThisTurn === 0;
         if (noSpeechIntent) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-          // Queue on the A4 FIFO channel (field-null / expects_ios_ack:false —
-          // the drain below stamps those); the drain moves it onto the wire
-          // THIS turn. generationId keeps it generation-owned.
-          session.pendingVoicePrompts.push({
-            text: CATCHALL_AUDIBILITY_PROMPTS[turnNum % CATCHALL_AUDIBILITY_PROMPTS.length],
-            generationId,
-          });
+          // F/U-2/3 (2026-07-19, Codex r1) — SPECIFIC-FIRST branch: when a
+          // dispatcher recorded voice notices for this turn's successful-but-
+          // writeless outcomes (rename-to-same noop, calculate wholly
+          // already_set), speak THOSE instead of the generic apology. Notices
+          // are turn-final FALLBACK candidates, not additive speech: a turn
+          // that already produced ANY speech-intent (a corrected rename's
+          // state-change TTS, an F/U-1 calc read-back for a sibling call, a
+          // D2/F7 prompt, a debounced already-heard reading) never reaches
+          // this branch, so a stale notice can never contradict or stack on
+          // the operation that superseded it. Dispatchers cannot queue
+          // prompts directly — an unstamped pendingVoicePrompts entry counts
+          // as CURRENT-generation and a cancelled generation would leak it
+          // onto the next turn; the accumulator dies with the turn instead.
+          const notices = Array.isArray(perTurnWrites?.voiceNotices)
+            ? perTurnWrites.voiceNotices.filter(
+                (n) => n && typeof n.text === 'string' && n.text.trim().length > 0
+              )
+            : [];
           const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
-          log.info?.('stage6.catchall_audibility_fallback_emitted', {
-            sessionId: session.sessionId,
-            turnId,
-            generationId,
-            tool_names: calls.map((c) => c?.name ?? null),
-            reason: 'no_speech_intent_survived',
-          });
+          if (notices.length > 0) {
+            for (const notice of notices) {
+              session.pendingVoicePrompts.push({ text: notice.text, generationId });
+            }
+            log.info?.('stage6.dispatcher_voice_notice_emitted', {
+              sessionId: session.sessionId,
+              turnId,
+              generationId,
+              notice_count: notices.length,
+              tool_names: calls.map((c) => c?.name ?? null),
+              textPreview: notices[0].text.slice(0, 80),
+            });
+          } else {
+            // Queue on the A4 FIFO channel (field-null / expects_ios_ack:false —
+            // the drain below stamps those); the drain moves it onto the wire
+            // THIS turn. generationId keeps it generation-owned.
+            session.pendingVoicePrompts.push({
+              text: CATCHALL_AUDIBILITY_PROMPTS[turnNum % CATCHALL_AUDIBILITY_PROMPTS.length],
+              generationId,
+            });
+            log.info?.('stage6.catchall_audibility_fallback_emitted', {
+              sessionId: session.sessionId,
+              turnId,
+              generationId,
+              tool_names: calls.map((c) => c?.name ?? null),
+              reason: 'no_speech_intent_survived',
+            });
+          }
         }
       }
     } catch (catchallErr) {

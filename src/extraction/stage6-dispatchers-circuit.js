@@ -707,8 +707,14 @@ export async function dispatchRenameCircuit(call, ctx) {
     // the generation id (see perTurnWrites.voiceNotices), which also
     // counts as speech-intent so the catch-all stays quiet.
     if (Array.isArray(perTurnWrites.voiceNotices)) {
+      // Per-turn wording rotation — see noticeVariantIndex (client 30 s
+      // text-keyed field-nil dedupe would swallow an identical repeat).
+      const variants = [
+        `Circuit ${input.circuit_ref} is unchanged — I didn't catch a new name or number for it.`,
+        `Nothing changed for circuit ${input.circuit_ref} — say the new name or number again.`,
+      ];
       perTurnWrites.voiceNotices.push({
-        text: `Circuit ${input.circuit_ref} is unchanged — I didn't catch a new name or number for it.`,
+        text: variants[noticeVariantIndex(turnId, variants.length)],
       });
     }
     logToolCall(logger, {
@@ -1023,24 +1029,53 @@ function resolveBoardAwareZe(snapshot, inputBoardId) {
  * and the Phase-4 steer makes bare mentions ask instead of compute anyway.
  * The notice ALSO counts as speech-intent, so the catch-all stays quiet.
  */
-function noteAlreadyRecordedIfWhollySkipped(perTurnWrites, { computed, skipped, friendly }) {
+/**
+ * F/U-2/3 Codex r1 — per-turn wording rotation. Voice notices ride the
+ * field-null confirmation channel, whose CLIENT dedupe is a 30 s text-keyed
+ * TTL (A1(b)) with no operation token — two DISTINCT notices with identical
+ * text within the window would client-swallow the second (a chime with no
+ * TTS). Rotating the phrasing by a turn-derived index makes consecutive
+ * turns produce different byte strings; the scope always carries ref/count
+ * identity so different batches differ textually too. Residual (accepted,
+ * D-2 class): the SAME variant + identical scope repeated within 30 s still
+ * dedupes client-side — that repeat carries no new information.
+ */
+function noticeVariantIndex(turnId, count) {
+  let h = 5381;
+  const str = String(turnId ?? '');
+  for (let i = 0; i < str.length; i += 1) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  return h % count;
+}
+
+function noteAlreadyRecordedIfWhollySkipped(
+  perTurnWrites,
+  { computed, skipped, friendly, turnId }
+) {
   if (computed.length > 0 || skipped.length === 0) return;
   if (!skipped.every((s) => s.reason === 'already_set')) return;
   if (!Array.isArray(perTurnWrites.voiceNotices)) return;
   const refs = skipped.map((s) => s.circuit_ref);
+  // Scope always carries identity: explicit refs up to 4, then the COUNT
+  // (Codex r1 — a bare "those circuits" made every >4 batch byte-identical).
   let scope;
   if (refs.length === 1) {
     scope = `circuit ${refs[0]}`;
   } else if (refs.length <= 4) {
     scope = `circuits ${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
   } else {
-    scope = 'those circuits';
+    scope = `those ${refs.length} circuits`;
   }
-  const tail =
-    refs.length === 1 ? 'say a new reading to replace it' : 'say new readings to replace them';
-  perTurnWrites.voiceNotices.push({
-    text: `${friendly} for ${scope} is already recorded — ${tail}.`,
-  });
+  const single = refs.length === 1;
+  const variants = single
+    ? [
+        `${friendly} for ${scope} is already recorded — say a new reading to replace it.`,
+        `There's already a ${friendly} recorded for ${scope} — dictate a new value to replace it.`,
+      ]
+    : [
+        `${friendly} for ${scope} is already recorded — say new readings to replace them.`,
+        `There are already ${friendly} readings recorded for ${scope} — dictate new values to replace them.`,
+      ];
+  perTurnWrites.voiceNotices.push({ text: variants[noticeVariantIndex(turnId, variants.length)] });
 }
 
 /**
@@ -1126,7 +1161,7 @@ export async function dispatchCalculateZs(call, ctx) {
     computed.push({ circuit_ref: ref, field: 'measured_zs_ohm', value });
   }
 
-  noteAlreadyRecordedIfWhollySkipped(perTurnWrites, { computed, skipped, friendly: 'Zs' });
+  noteAlreadyRecordedIfWhollySkipped(perTurnWrites, { computed, skipped, friendly: 'Zs', turnId });
 
   logToolCall(logger, {
     sessionId: session.sessionId,
@@ -1258,6 +1293,7 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
     computed,
     skipped,
     friendly: 'R1 plus R2',
+    turnId,
   });
 
   logToolCall(logger, {

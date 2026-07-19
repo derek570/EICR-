@@ -286,6 +286,49 @@ describe('marker-② — fires on the tool-ran-but-nothing-audible class', () =>
     expect(catchallRows(opts.logger)).toHaveLength(0);
   });
 
+  test('F/U-2/3 Codex r1: a notice is DROPPED when other speech owns the turn (corrected rename / F/U-1 calc read-back)', async () => {
+    // Notices are turn-final FALLBACK candidates, not additive speech. A
+    // multi-round loop that first noops rename-to-same (notice recorded)
+    // and then corrects itself produces state-change TTS — speaking the
+    // stale "Circuit 4 is unchanged" alongside "Circuit 4 is now the
+    // Cooker" would be a contradiction. Same for a wholly-already_set calc
+    // call alongside a sibling call whose computed read-back speaks.
+    const STALE_NOTICE = "Circuit 4 is unchanged — I didn't catch a new name or number for it.";
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.voiceNotices.push({ text: STALE_NOTICE });
+      // The correcting operation: a designation write that produces a real
+      // audible confirmation this turn.
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 4, undefined), {
+        value: '0.86',
+        confidence: 1.0,
+        source_turn_id: 'turn-x',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_rw',
+            name: 'record_reading',
+            input: { field: 'measured_zs_ohm', circuit: 4, value: '0.86' },
+            result: { tool_use_id: 'toolu_rw', is_error: false, content: '{"ok":true}' },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'corrected turn', [], opts);
+    // The real confirmation speaks; the stale notice does NOT.
+    expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(true);
+    expect((result.confirmations ?? []).some((c) => c.text === STALE_NOTICE)).toBe(false);
+    expect(catchallPrompts(result)).toHaveLength(0);
+  });
+
   test('F/U-2/3: notices are dropped for mode-off users (confirmationsEnabled:false) — no wire leak', async () => {
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
