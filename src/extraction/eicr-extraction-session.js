@@ -1649,7 +1649,22 @@ export class EICRExtractionSession {
         ? jobState.boards.filter((b) => isPlainRecord(b) && b.id)
         : [];
       if (usableBoards.length > 0) {
-        this.stateSnapshot.boards = usableBoards.map((b) => flattenBoardRecord({ ...b }));
+        const hydrated = usableBoards.map((b) => flattenBoardRecord({ ...b }));
+        // Codex r4 — if NO usable entry is main-typed (a junk-plus-sub-board
+        // payload), keep the existing main record at the head. Without it
+        // getMainBoardId's boards[0] fallback would crown the SUB-board as
+        // main, collapsing its composite circuit keys onto the bare-numeric
+        // main namespace (a sub circuit would overwrite the main circuit
+        // with the same ref). Pre-r3 the junk {} record incidentally kept
+        // 'main' resolving; this preserves that routing deliberately.
+        const hasMainTyped = hydrated.some((b) => !b.board_type || b.board_type === 'main');
+        if (!hasMainTyped) {
+          const existingMain = (this.stateSnapshot.boards ?? []).find(
+            (b) => b && (!b.board_type || b.board_type === 'main')
+          );
+          hydrated.unshift(existingMain ?? { id: 'main', designation: 'DB-1', board_type: 'main' });
+        }
+        this.stateSnapshot.boards = hydrated;
       }
     }
     this.stateSnapshot.currentBoardId = getMainBoardId(this.stateSnapshot);

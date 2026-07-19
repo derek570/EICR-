@@ -196,6 +196,24 @@ describe('F/U-5 seeder — single-board PWA job (boards:null, top-level board_in
     expect(s.stateSnapshot.boards.some((b) => !b || !b.id)).toBe(false); // junk dropped
   });
 
+  test('Codex r4 pin: junk + sole SUB-board payload keeps the main record — sub circuits stay on composite keys', () => {
+    // Post-r3 the junk {} entry is dropped; without main-preservation the
+    // surviving sub-board would be crowned main by getMainBoardId's
+    // boards[0] fallback and a sub circuit would collapse onto the bare
+    // numeric bucket, overwriting the main circuit with the same ref.
+    const s = makeSession();
+    s.start({
+      circuits: [
+        { ref: 1, designation: 'Main Cooker' },
+        { ref: 1, board_id: 'sub-1', designation: 'Loft Lights' },
+      ],
+      boards: [{}, { id: 'sub-1', board_type: 'sub_distribution', designation: 'Loft DB' }],
+    });
+    expect(s.stateSnapshot.currentBoardId).toBe('main'); // main preserved, not sub-1
+    expect(s.stateSnapshot.circuits[1].circuit_designation).toBe('Main Cooker');
+    expect(s.stateSnapshot.circuits['sub-1::1'].circuit_designation).toBe('Loft Lights');
+  });
+
   test('malformed top-level board_info (array / string / null) is ignored without throwing', () => {
     for (const bad of [['x'], 'junk', null, 7]) {
       const s = makeSession();
