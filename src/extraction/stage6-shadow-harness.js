@@ -2168,6 +2168,48 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
+    // ── F/U-2/3 (2026-07-19) — dispatcher voice-notice drain. Dispatchers
+    // record deterministic spoken lines for successful-but-writeless
+    // outcomes (rename-to-same noop, calculate wholly already_set) on
+    // perTurnWrites.voiceNotices — they cannot stamp a generationId
+    // themselves (ctx doesn't carry it, and an unstamped
+    // pendingVoicePrompts entry counts as CURRENT-generation, so a
+    // cancellation would leak it onto the next turn). The harness stamps +
+    // queues them here, BEFORE the marker-② net evaluates (a queued
+    // current-generation prompt is speech-intent, so the specific notice
+    // REPLACES the generic apology rather than stacking on it), and the §A4
+    // drain below moves them onto the wire this turn (field:null channel).
+    // confirmationsEnabled-gated like every net: mode-off users opted out
+    // of the spoken channel. Cancelled turns skip the queue entirely.
+    try {
+      if (
+        options.confirmationsEnabled === true &&
+        !cancelled &&
+        Array.isArray(perTurnWrites?.voiceNotices) &&
+        perTurnWrites.voiceNotices.length > 0
+      ) {
+        if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
+        for (const notice of perTurnWrites.voiceNotices) {
+          if (!notice || typeof notice.text !== 'string' || notice.text.trim().length === 0) {
+            continue;
+          }
+          session.pendingVoicePrompts.push({ text: notice.text, generationId });
+          log.info?.('stage6.dispatcher_voice_notice_emitted', {
+            sessionId: session.sessionId,
+            turnId,
+            generationId,
+            textPreview: notice.text.slice(0, 80),
+          });
+        }
+      }
+    } catch (noticeErr) {
+      log.warn?.('stage6.dispatcher_voice_notice_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: noticeErr?.message ?? String(noticeErr),
+      });
+    }
+
     // ── marker-② (numeric-gate-redesign 2026-07-18) — catch-all audibility
     // net. The FINAL net: fires when a chime fired and the turn produced ZERO
     // speech-intent of any kind, REGARDLESS of tool calls — the class the
