@@ -28,6 +28,7 @@ import {
   // 2026-06-18). The threshold survives in confirmation-text.js purely as
   // the loaded-barrel speculator's pre-synth cost gate.
   buildConfirmationText,
+  buildFanoutGroupKey,
   buildGroupedConfirmationText,
   deriveFriendlyName,
 } from './confirmation-text.js';
@@ -427,12 +428,17 @@ function synthesiseConfirmations(
     // Group key excludes circuit on purpose — that's the dimension we
     // want to collapse across. Board scope still matters (the same
     // field+value on board A vs board B is two distinct broadcasts).
-    // Normalise undefined/null board_id to '' so single-board sessions
-    // bucket together cleanly.
-    // F/U-1 — calc-ness is a group dimension: a calculated Zs and a dictated
-    // Zs that happen to share a value must NOT collapse into one line (they
-    // speak with different phrasing and are different evidentiary claims).
-    const groupKey = `${r.field}|${String(r.value ?? '')}|${r.board_id ?? ''}|${isCalc(r) ? 'calc' : ''}`;
+    // F/U-1 r3 — SHARED builder with the speculator's broadcast buckets
+    // (buildFanoutGroupKey): calc-ness is a group dimension (a calculated
+    // and a dictated same-value Zs speak with different phrasing and never
+    // collapse), and the value is trimmed to match the spoken text the
+    // builders produce.
+    const groupKey = buildFanoutGroupKey({
+      field: r.field,
+      value: r.value,
+      boardId: r.board_id,
+      calculated: isCalc(r),
+    });
     let bucket = groups.get(groupKey);
     if (!bucket) {
       bucket = {

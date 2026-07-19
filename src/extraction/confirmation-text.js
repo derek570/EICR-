@@ -296,6 +296,22 @@ const COUNT_STYLE_FIELDS = Object.freeze(new Set(['number_of_points']));
  * Returns null when the field is suppressed or the value renders
  * empty (same gating as buildConfirmationText).
  */
+/**
+ * F/U-1 r3 (2026-07-19) — ONE fan-out identity for the bundler's confirmation
+ * grouping AND the speculator's broadcast-bucket suppression. The two sides
+ * previously hand-rolled the same key and normalised values differently
+ * (the speculator trimmed, the bundler didn't) — the exact identity-drift
+ * class that broke the bucket back-link in r2. Trimmed is the correct form:
+ * buildConfirmationText/buildGroupedConfirmationText trim the value before
+ * speaking, so " 0.5" and "0.5" produce IDENTICAL spoken text and must share
+ * one identity. calculated is part of the key: a calculated and a dictated
+ * same-field/same-value write speak with different phrasing and never group.
+ */
+export function buildFanoutGroupKey({ field, value, boardId, calculated }) {
+  const valueStr = String(value ?? '').trim();
+  return `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
+}
+
 export function buildGroupedConfirmationText(
   field,
   value,

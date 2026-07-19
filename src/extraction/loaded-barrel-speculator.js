@@ -84,7 +84,11 @@
  */
 
 import { ElevenLabsStreamClient } from './elevenlabs-stream-client.js';
-import { shouldGenerateConfirmation, buildConfirmationText } from './confirmation-text.js';
+import {
+  shouldGenerateConfirmation,
+  buildConfirmationText,
+  buildFanoutGroupKey,
+} from './confirmation-text.js';
 import { expandForTTS } from './tts-text-expander.js';
 import {
   buildCacheKey,
@@ -148,19 +152,12 @@ function buildSlotKey({ field, circuit, boardId }) {
   return `${field}::${circuit ?? 'null'}::${normBoardId}`;
 }
 
-/**
- * Broadcast-bucket identity — ONE builder for both the suppression lookup
- * and the correlationId back-link (Codex F/U-1 r2: the back-link rebuilt the
- * key by hand and silently diverged when the calc component was added,
- * leaving every bucket without a correlationId and defeating the abort-on-
- * broadcast fallback). calc-ness is part of the identity, mirroring the
- * bundler's group key: a calculated and a dictated same-field/same-value
- * write are TWO spoken lines and must not suppress each other.
- */
-function buildBroadcastBucketKey({ field, value, boardId, calculated }) {
-  const valueStr = String(value ?? '').trim();
-  return `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
-}
+// Broadcast-bucket identity — the SHARED buildFanoutGroupKey from
+// confirmation-text.js, used by both this module's suppression lookup +
+// correlationId back-link AND the bundler's confirmation grouping. History:
+// Codex F/U-1 r2 caught the back-link hand-rolling a diverged key (bucket
+// never found → suppress-but-never-abort); r3 unified the bundler's twin
+// into the same builder so the identity cannot drift across modules either.
 
 /**
  * slotMatches predicate for abortBySlot. The fast-TTS route passes
@@ -300,7 +297,7 @@ export function createSpeculator({
   // bundler instead, ~1-2s later. Acceptable trade because the
   // pre-fix audio was wrong.
   //
-  // broadcastBuckets keys: buildBroadcastBucketKey — `${field}|${valueStr}|${boardId ?? ''}|${calc}`.
+  // broadcastBuckets keys: buildFanoutGroupKey (confirmation-text.js) — `${field}|${valueStr}|${boardId ?? ''}|${calc}`.
   // Value: { firstCircuit: int|null, correlationId: string|null,
   //          suppressed: bool }. Reset alongside perTurnCount when
   // turnId changes.
@@ -482,10 +479,10 @@ export function createSpeculator({
     // can't broadcast across circuits.
     _resetTurnCapIfNew(turnId);
     if (Number.isInteger(circuit) && circuit > 0) {
-      // F/U-1 — shared builder (see buildBroadcastBucketKey): calc-ness is
+      // F/U-1 — shared builder (see buildFanoutGroupKey): calc-ness is
       // part of the bucket identity so calc-vs-dictated same-value writes
       // never trip broadcast suppression against each other.
-      const bucketKey = buildBroadcastBucketKey({ field, value, boardId, calculated });
+      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket) {
         if (bucket.suppressed) {
@@ -628,7 +625,7 @@ export function createSpeculator({
     // a hand-rolled key here silently diverged when the calc component
     // was added (Codex F/U-1 r2).
     if (Number.isInteger(circuit) && circuit > 0) {
-      const bucketKey = buildBroadcastBucketKey({ field, value, boardId, calculated });
+      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket && !bucket.correlationId) {
         bucket.correlationId = correlationId;

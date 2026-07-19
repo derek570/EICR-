@@ -15,6 +15,7 @@ import {
   CONFIRMATION_FRIENDLY_NAMES,
   CONFIRMATION_MIN_CONFIDENCE,
   buildConfirmationText,
+  buildFanoutGroupKey,
   buildGroupedConfirmationText,
   shouldGenerateConfirmation,
 } from '../extraction/confirmation-text.js';
@@ -365,5 +366,33 @@ describe('confirmation-text — buildGroupedConfirmationText (Issue 10)', () => 
   test('B95B2EE1 field-test repro: [4, 5, 1, 3] / total 4 → "All circuits"', () => {
     const text = buildGroupedConfirmationText('ir_live_live_mohm', '>299', [4, 5, 1, 3], 4);
     expect(text).toBe('All circuits, IR L to L >299');
+  });
+});
+
+describe('buildFanoutGroupKey — F/U-1 r3 shared fan-out identity (bundler grouping + speculator broadcast buckets)', () => {
+  test('pinned vectors — dictated vs calculated never share a key; board scope and value are dimensions', () => {
+    const base = { field: 'measured_zs_ohm', value: '0.5', boardId: null, calculated: false };
+    expect(buildFanoutGroupKey(base)).toBe('measured_zs_ohm|0.5||');
+    expect(buildFanoutGroupKey({ ...base, calculated: true })).toBe('measured_zs_ohm|0.5||calc');
+    expect(buildFanoutGroupKey({ ...base, boardId: 'board-b' })).toBe(
+      'measured_zs_ohm|0.5|board-b|'
+    );
+    expect(buildFanoutGroupKey({ ...base, value: '0.6' })).toBe('measured_zs_ohm|0.6||');
+  });
+
+  test('value is TRIMMED — whitespace forms share the identity of their spoken text', () => {
+    // buildConfirmationText trims the value before speaking, so " 0.5" and
+    // "0.5" produce IDENTICAL spoken lines and must share one fan-out key
+    // (pre-r3 the bundler keyed the raw value while the speculator trimmed —
+    // the identity-drift class the r2 back-link bug came from).
+    const a = buildFanoutGroupKey({ field: 'f', value: ' 0.5 ', boardId: null, calculated: false });
+    const b = buildFanoutGroupKey({ field: 'f', value: '0.5', boardId: null, calculated: false });
+    expect(a).toBe(b);
+  });
+
+  test('null/undefined value and boardId normalise like the spoken-text path', () => {
+    expect(
+      buildFanoutGroupKey({ field: 'f', value: null, boardId: undefined, calculated: false })
+    ).toBe('f|||');
   });
 });
