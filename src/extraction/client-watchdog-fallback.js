@@ -28,3 +28,21 @@
  */
 export const CLIENT_CHIME_WATCHDOG_FALLBACK_TEXT =
   "Sorry, I didn't come back to you on that — could you say it again?";
+
+/**
+ * PLAN-C Phase 4 — the `session_ack` capability advert. The backend stamps
+ * `speech_epochs: <this>` on every SESSION-ESTABLISHING ack (started /
+ * reconnected / resumed / a rehydrate spread-ack whose status is 'resumed').
+ * It signals "this backend stamps a stable utterance epoch on every speech
+ * frame", which the clients require before ARMING the watchdog: against an
+ * old / rolled-back / not-yet-deployed backend the field is absent, the
+ * client latch clears, and the watchdog never arms (so it can never false-
+ * fire against a backend whose frames it cannot epoch-correlate).
+ *
+ * A NUMBER (not a boolean) so the capability can version forward if the epoch
+ * contract ever changes shape; clients accept the capability only for the
+ * strict value `1`. NOT stamped on non-establishing acks (paused /
+ * compact_skipped / stopped) or a rehydrate 'new'/'rejected' — those do not
+ * (re)establish a session the client can arm against.
+ */
+export const SPEECH_EPOCHS_CAPABILITY = 1;

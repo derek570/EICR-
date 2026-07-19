@@ -320,6 +320,80 @@ describe('legacy session_resume (sleep/wake) is untouched', () => {
   });
 });
 
+// PLAN-C P4b — the `speech_epochs` watchdog-capability advert. Stamped on
+// every SESSION-ESTABLISHING ack (started / reconnected / resumed / a
+// rehydrate spread-ack whose status is 'resumed'), WITHHELD on a rehydrate
+// miss (status 'new') and on non-establishing acks. It is a WIRE-frame field
+// only — never the voice_latency.startup_log logger row (a CloudWatch-only
+// row the client never sees). Clients arm the watchdog only when the current
+// connection's establishing ack advertised it.
+describe('PLAN-C session_ack speech_epochs capability', () => {
+  test('started ack advertises speech_epochs:1', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(lastAck(ws).speech_epochs).toBe(1);
+  });
+
+  test('rehydrate spread-ack (status resumed) advertises speech_epochs:1', async () => {
+    const wsA = connect(wss, 'user-1');
+    await sendFrame(wsA, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    const minted = lastAck(wsA).sessionId;
+    const wsB = connect(wss, 'user-1');
+    await sendFrame(wsB, { type: 'session_resume', sessionId: minted });
+    const ack = lastAck(wsB);
+    expect(ack.status).toBe('resumed');
+    expect(ack.speech_epochs).toBe(1);
+  });
+
+  test('NEGATIVE — a rehydrate MISS (status new) WITHHOLDS the capability', async () => {
+    // Unknown token → status 'new', activeEntryKey null: not an established
+    // session, so the client must NOT latch the capability (matrix m3).
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, { type: 'session_resume', sessionId: 'no-such-token' });
+    const ack = lastAck(ws);
+    expect(ack.status).toBe('new');
+    expect(ack.speech_epochs).toBeUndefined();
+  });
+
+  test('legacy sleep/wake resume (status resumed, no sessionId) advertises speech_epochs:1', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    await sendFrame(ws, { type: 'session_pause' });
+    await sendFrame(ws, { type: 'session_resume' }); // no sessionId → legacy path
+    const resumeAck = [...ws._sent].reverse().find((m) => m.status === 'resumed');
+    expect(resumeAck.speech_epochs).toBe(1);
+  });
+
+  test('NEGATIVE — the stopped ack does NOT advertise the capability', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    await sendFrame(ws, { type: 'session_stop' });
+    const stopAck = [...ws._sent].reverse().find((m) => m.status === 'stopped');
+    expect(stopAck).toBeDefined();
+    expect(stopAck.speech_epochs).toBeUndefined();
+  });
+});
+
 describe('session_stop invalidates the rehydration token', () => {
   test('a stopped session cannot be rehydrated', async () => {
     const wsA = connect(wss, 'user-1');
