@@ -26,6 +26,7 @@ import {
   flattenBoardRecord,
 } from '../extraction/eicr-extraction-session.js';
 import { dispatchCalculateZs } from '../extraction/stage6-dispatchers-circuit.js';
+import { dispatchRecordBoardReading } from '../extraction/stage6-dispatchers-board.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 
 const liveSessions = [];
@@ -102,24 +103,29 @@ describe('flattenBoardRecord — pure helper', () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 describe('F/U-5 seeder — single-board PWA job (boards:null, top-level board_info)', () => {
-  test('board_info fields land FLAT on the synth main record; designation overrides the DB-1 scaffold', () => {
+  test('identity → main record (designation overrides the DB-1 scaffold); FIELDS → circuits[0] (the record_board_reading bucket)', () => {
     const s = makeSession();
     s.start({
       circuits: [{ ref: 1, designation: 'Cooker' }],
-      board_info: { designation: 'Garage CU', ze_at_db: '0.30', main_switch_bs_en: 'EN 60947-3' },
+      board_info: { designation: 'Garage CU', ze: '0.30', main_switch_bs_en: 'EN 60947-3' },
     });
     const main = mainRecordOf(s);
     expect(main.designation).toBe('Garage CU'); // fact overwrites synth 'DB-1'
-    expect(main.ze_at_db).toBe('0.30');
-    expect(main.main_switch_bs_en).toBe('EN 60947-3');
     expect('board_info' in main).toBe(false);
+    // Codex r1 BLOCKER — fields must land at circuits[0] (where dictation
+    // writes and the serialiser reads), NOT on the boards[] record (where a
+    // seeded ze would shadow a later dictated correction in the resolver).
+    expect('ze' in main).toBe(false);
+    expect('main_switch_bs_en' in main).toBe(false);
+    expect(s.stateSnapshot.circuits[0].ze).toBe('0.30');
+    expect(s.stateSnapshot.circuits[0].main_switch_bs_en).toBe('EN 60947-3');
   });
 
-  test('THE CONSEQUENCE: a board_info-seeded Ze-at-DB is visible to calculate_zs (board-aware chain)', async () => {
+  test('THE CONSEQUENCE: a board_info-seeded board Ze is visible to calculate_zs (board-aware chain, circuits[0] source)', async () => {
     const s = makeSession();
     s.start({
       circuits: [{ ref: 4, designation: 'Upstairs Sockets', r1R2Ohm: '0.86' }],
-      board_info: { ze_at_db: '0.35' },
+      board_info: { ze: '0.35' },
     });
     const perTurnWrites = createPerTurnWrites();
     const res = await dispatchCalculateZs(
@@ -135,16 +141,23 @@ describe('F/U-5 seeder — single-board PWA job (boards:null, top-level board_in
     ]);
   });
 
-  test('explicit boards[] main-record reading is NOT clobbered by its board_info mirror (fill-only)', () => {
+  test('Codex r1 BLOCKER pin: when the SAME payload carries boards[], the board_info mirror is NOT applied', () => {
+    // Web mirrors boards[0] — the PRIMARY board, which after a reorder may
+    // be a SUB-board — into board_info. boards[] is authoritative; the
+    // mirror must never stamp a sub-board's identity/readings onto main.
     const s = makeSession();
     s.start({
       circuits: [{ ref: 1 }],
-      boards: [{ id: 'main', board_type: 'main', designation: 'CU-A', ze_at_db: '0.25' }],
-      board_info: { designation: 'CU-A', ze_at_db: '0.99' },
+      boards: [
+        { id: 'sub-1', board_type: 'sub_distribution', designation: 'Loft DB', ze: '0.55' },
+        { id: 'main', board_type: 'main', designation: 'CU-A' },
+      ],
+      board_info: { designation: 'Loft DB', ze: '0.55' }, // stale mirror of boards[0] (a SUB-board)
     });
     const main = mainRecordOf(s);
-    expect(main.ze_at_db).toBe('0.25'); // reading: first (authoritative) writer wins
-    expect(main.designation).toBe('CU-A');
+    expect(main.id).toBe('main');
+    expect(main.designation).toBe('CU-A'); // NOT 'Loft DB'
+    expect(s.stateSnapshot.circuits[0]?.ze).toBeUndefined(); // sub-board Ze never lands on main's bucket
   });
 
   test('boards[] entries with NESTED board_info (documented PWA shape) are flattened at seed', () => {
@@ -172,29 +185,77 @@ describe('F/U-5 seeder — single-board PWA job (boards:null, top-level board_in
       const main = mainRecordOf(s);
       expect(main.designation).toBe('DB-1'); // synth scaffold untouched
       expect('0' in main).toBe(false); // no index-spread pollution
+      expect('0' in (s.stateSnapshot.circuits[0] ?? {})).toBe(false);
     }
   });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
 describe('F/U-5 updateJobState — mid-recording web board edits reach the snapshot', () => {
-  test('top-level board_info fills empty cells on the main record (the job_state_update path)', () => {
+  test('top-level board_info fields fill empty circuits[0] cells; facts land too (the job_state_update path)', () => {
     const s = makeSession();
     s.start({ circuits: [{ ref: 1 }] });
-    s.updateJobState({ board_info: { ze_at_db: '0.31', main_switch_rating_a: '100' } });
-    const main = mainRecordOf(s);
-    expect(main.ze_at_db).toBe('0.31');
-    expect(main.main_switch_rating_a).toBe('100');
+    // Real Board-tab keys (board/page.tsx patchActive): zs_at_db is a
+    // measurement, rated_current a device property.
+    s.updateJobState({ board_info: { zs_at_db: '0.31', rated_current: '100' } });
+    expect(s.stateSnapshot.circuits[0].zs_at_db).toBe('0.31');
+    expect(s.stateSnapshot.circuits[0].rated_current).toBe('100');
   });
 
-  test('a dictated (Sonnet-written) board READING survives a stale board_info mirror; a FACT is refreshed', () => {
+  test('DICTATED-WINS end-to-end: record_board_reading ze → stale board_info replay → calculate_zs uses the DICTATED value', async () => {
+    // The exact shadow scenario the r1 bucket fix exists for: had board_info
+    // fields landed on the boards[] record, the stale seeded ze would have
+    // outranked the dictated circuits[0] correction in the board-aware
+    // resolver (record checked first).
+    const s = makeSession();
+    s.start({
+      circuits: [{ ref: 4, r1R2Ohm: '0.80' }],
+      board_info: { ze: '0.35' },
+    });
+    // Inspector dictates a corrected board Ze mid-session.
+    const ptw1 = createPerTurnWrites();
+    const dictated = await dispatchRecordBoardReading(
+      {
+        tool_call_id: 'tu_rbr',
+        name: 'record_board_reading',
+        input: { field: 'ze', value: '0.20', confidence: 1.0, source_turn_id: 't1' },
+      },
+      { session: s, logger: mockLogger(), turnId: 't1', perTurnWrites: ptw1, round: 0 }
+    );
+    expect(dictated.is_error).toBe(false);
+    // A stale web job_state_update replays the OLD board_info.
+    s.updateJobState({ board_info: { ze: '0.35' } });
+    expect(s.stateSnapshot.circuits[0].ze).toBe('0.20'); // fill-only: dictated survives
+    const ptw2 = createPerTurnWrites();
+    const res = await dispatchCalculateZs(
+      { tool_call_id: 'tu_calc', name: 'calculate_zs', input: { circuit_ref: 4, all: false } },
+      { session: s, logger: mockLogger(), turnId: 't2', perTurnWrites: ptw2, round: 0 }
+    );
+    const body = JSON.parse(res.content);
+    expect(body.computed).toEqual([
+      { circuit_ref: 4, field: 'measured_zs_ohm', value: '1.00' }, // 0.20 + 0.80, NOT 1.15
+    ]);
+  });
+
+  test('a populated device-property FACT is refreshed by a web edit (Codex r1 IMPORTANT — real Board-tab keys)', () => {
+    const s = makeSession();
+    s.start({ circuits: [{ ref: 1 }], board_info: { rated_current: '80', manufacturer: 'Hager' } });
+    expect(s.stateSnapshot.circuits[0].rated_current).toBe('80');
+    // Mid-recording the inspector corrects the device rating on the web form.
+    s.updateJobState({ board_info: { rated_current: '100', manufacturer: 'Hager' } });
+    expect(s.stateSnapshot.circuits[0].rated_current).toBe('100'); // fact: client-authoritative
+    expect(s.stateSnapshot.circuits[0].manufacturer).toBe('Hager');
+  });
+
+  test('updater skip pin: board_info is ignored when the same payload carries boards[]', () => {
     const s = makeSession();
     s.start({ circuits: [{ ref: 1 }] });
-    const main = mainRecordOf(s);
-    main.ze_at_db = '0.22'; // dictated mid-session
-    s.updateJobState({ board_info: { ze_at_db: '0.99', designation: 'Renamed CU' } });
-    expect(main.ze_at_db).toBe('0.22'); // reading: fill-only, never clobbered
-    expect(main.designation).toBe('Renamed CU'); // fact: client-authoritative
+    s.updateJobState({
+      boards: [{ id: 'sub-1', board_type: 'sub_distribution', designation: 'Loft DB' }],
+      board_info: { designation: 'Loft DB', ze: '0.55' }, // mirror of a non-main primary
+    });
+    expect(s.stateSnapshot.circuits[0]?.ze).toBeUndefined();
+    expect(mainRecordOf(s).designation).toBe('DB-1'); // untouched
   });
 
   test('boards[] entries with nested board_info are flattened through the shared precedence merge', () => {
@@ -229,6 +290,6 @@ describe('F/U-5 updateJobState — mid-recording web board edits reach the snaps
     for (const bad of [['x'], 'junk', 7]) {
       s.updateJobState({ board_info: bad });
     }
-    expect(mainRecordOf(s).ze_at_db).toBe('0.30');
+    expect(s.stateSnapshot.circuits[0].ze_at_db).toBe('0.30');
   });
 });
