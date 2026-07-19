@@ -281,6 +281,58 @@ describe('speculate — happy path', () => {
     expect(factory).toHaveBeenCalledTimes(0);
   });
 
+  test('F/U-1 r2: dictated→dictated fan-out ABORTS the first speculation (bucket back-link uses the shared key)', async () => {
+    // Regression pin for the Codex r2 catch: the correlationId back-link
+    // rebuilt the bucket key by hand and diverged from the lookup key when
+    // the calc component was added — every bucket lost its correlationId and
+    // broadcast detection could suppress but never abort the first in-flight
+    // synth. No prior test exercised the abort path, so it broke green.
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'ir_live_earth_mohm', circuit: 1, boardId: null, value: '299' })
+    );
+    await flush();
+    expect(synths).toHaveLength(1);
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'ir_live_earth_mohm', circuit: 2, boardId: null, value: '299' })
+    );
+    await flush();
+    // Broadcast detected on the second circuit: the FIRST synth's abort
+    // signal must have fired (its per-circuit text is wrong for a fan-out).
+    expect(synths[0].opts.signal.aborted).toBe(true);
+    // And the second circuit did not open a synth of its own.
+    expect(synths).toHaveLength(1);
+  });
+
+  test('F/U-1 r2: calc→calc fan-out ABORTS the first speculation too (calc bucket carries its own back-link)', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    spec.onSnapshotPatch(
+      patchForAdded({
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        boardId: null,
+        value: '0.5',
+        source_turn_id: '::calc::calculate_zs',
+      })
+    );
+    await flush();
+    expect(synths).toHaveLength(1);
+    spec.onSnapshotPatch(
+      patchForAdded({
+        field: 'measured_zs_ohm',
+        circuit: 2,
+        boardId: null,
+        value: '0.5',
+        source_turn_id: '::calc::calculate_zs',
+      })
+    );
+    await flush();
+    expect(synths[0].opts.signal.aborted).toBe(true);
+    expect(synths).toHaveLength(1);
+  });
+
   test('F/U-1: calc-ness separates broadcast buckets — a dictated and a calc same-field/same-value write both speculate', async () => {
     // The bundler emits TWO spoken lines for this pair (different phrasing,
     // never grouped), so broadcast suppression must not treat them as a

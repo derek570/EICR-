@@ -149,6 +149,20 @@ function buildSlotKey({ field, circuit, boardId }) {
 }
 
 /**
+ * Broadcast-bucket identity — ONE builder for both the suppression lookup
+ * and the correlationId back-link (Codex F/U-1 r2: the back-link rebuilt the
+ * key by hand and silently diverged when the calc component was added,
+ * leaving every bucket without a correlationId and defeating the abort-on-
+ * broadcast fallback). calc-ness is part of the identity, mirroring the
+ * bundler's group key: a calculated and a dictated same-field/same-value
+ * write are TWO spoken lines and must not suppress each other.
+ */
+function buildBroadcastBucketKey({ field, value, boardId, calculated }) {
+  const valueStr = String(value ?? '').trim();
+  return `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
+}
+
+/**
  * slotMatches predicate for abortBySlot. The fast-TTS route passes
  * loose-typed input (boardId may be empty string for single-board,
  * circuit may be a number or numeric string). Normalise into the
@@ -286,7 +300,7 @@ export function createSpeculator({
   // bundler instead, ~1-2s later. Acceptable trade because the
   // pre-fix audio was wrong.
   //
-  // broadcastBuckets keys: `${field}|${valueStr}|${boardId ?? ''}`.
+  // broadcastBuckets keys: buildBroadcastBucketKey — `${field}|${valueStr}|${boardId ?? ''}|${calc}`.
   // Value: { firstCircuit: int|null, correlationId: string|null,
   //          suppressed: bool }. Reset alongside perTurnCount when
   // turnId changes.
@@ -468,12 +482,10 @@ export function createSpeculator({
     // can't broadcast across circuits.
     _resetTurnCapIfNew(turnId);
     if (Number.isInteger(circuit) && circuit > 0) {
-      const valueStr = String(value ?? '').trim();
-      // F/U-1 — calc-ness is part of the broadcast-bucket identity, mirroring
-      // the bundler's group key: a calculated and a dictated same-field/
-      // same-value write are TWO spoken lines (different phrasing), so they
-      // must not trip broadcast suppression against each other.
-      const bucketKey = `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
+      // F/U-1 — shared builder (see buildBroadcastBucketKey): calc-ness is
+      // part of the bucket identity so calc-vs-dictated same-value writes
+      // never trip broadcast suppression against each other.
+      const bucketKey = buildBroadcastBucketKey({ field, value, boardId, calculated });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket) {
         if (bucket.suppressed) {
@@ -609,13 +621,14 @@ export function createSpeculator({
       cacheKey,
     });
     // Back-link the correlationId onto the broadcast bucket so a
-    // subsequent record_reading on the same (field, value, boardId)
-    // but a different circuit can abort this speculation. Bucket
-    // may be absent for board-level readings (circuit:0/null path
-    // skips the bucket lookup above).
+    // subsequent record_reading on the same (field, value, boardId,
+    // calc-ness) but a different circuit can abort this speculation.
+    // Bucket may be absent for board-level readings (circuit:0/null path
+    // skips the bucket lookup above). MUST use the shared key builder —
+    // a hand-rolled key here silently diverged when the calc component
+    // was added (Codex F/U-1 r2).
     if (Number.isInteger(circuit) && circuit > 0) {
-      const valueStr = String(value ?? '').trim();
-      const bucketKey = `${field}|${valueStr}|${boardId ?? ''}`;
+      const bucketKey = buildBroadcastBucketKey({ field, value, boardId, calculated });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket && !bucket.correlationId) {
         bucket.correlationId = correlationId;
