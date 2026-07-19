@@ -383,9 +383,16 @@ function synthesiseConfirmations(
   readings,
   boardReadings,
   designations = null,
-  totalCircuitsInJob = null
+  totalCircuitsInJob = null,
+  calcReadings = null
 ) {
   const out = [];
+  // F/U-1 (2026-07-19) — identity Set of projected reading objects that came
+  // from a calculator write (::calc:: source). These speak with "calculated
+  // as" phrasing so the inspector can ear-distinguish a derived value from a
+  // meter reading. Null/absent (legacy callers, board readings) → nothing is
+  // treated as calculated.
+  const isCalc = (r) => calcReadings instanceof Set && calcReadings.has(r);
   const lookupDesignation = (circuit) => {
     if (!designations) return null;
     if (designations instanceof Map) {
@@ -422,10 +429,20 @@ function synthesiseConfirmations(
     // field+value on board A vs board B is two distinct broadcasts).
     // Normalise undefined/null board_id to '' so single-board sessions
     // bucket together cleanly.
-    const groupKey = `${r.field}|${String(r.value ?? '')}|${r.board_id ?? ''}`;
+    // F/U-1 — calc-ness is a group dimension: a calculated Zs and a dictated
+    // Zs that happen to share a value must NOT collapse into one line (they
+    // speak with different phrasing and are different evidentiary claims).
+    const groupKey = `${r.field}|${String(r.value ?? '')}|${r.board_id ?? ''}|${isCalc(r) ? 'calc' : ''}`;
     let bucket = groups.get(groupKey);
     if (!bucket) {
-      bucket = { field: r.field, value: r.value, board_id: r.board_id, items: [], indices: [] };
+      bucket = {
+        field: r.field,
+        value: r.value,
+        board_id: r.board_id,
+        calculated: isCalc(r),
+        items: [],
+        indices: [],
+      };
       groups.set(groupKey, bucket);
     }
     bucket.items.push(r);
@@ -452,7 +469,8 @@ function synthesiseConfirmations(
       bucket.field,
       bucket.value,
       circuits,
-      totalCircuitsInJob
+      totalCircuitsInJob,
+      { calculated: bucket.calculated }
     );
     if (!grouped) continue;
     const entry = {
@@ -497,7 +515,9 @@ function synthesiseConfirmations(
     // SAME turn (Sonnet: create_circuit + record_reading) speaks with
     // its name immediately.
     const designation = lookupDesignation(r.circuit);
-    const text = buildConfirmationText(r.field, r.value, r.circuit, designation);
+    const text = buildConfirmationText(r.field, r.value, r.circuit, designation, {
+      calculated: isCalc(r),
+    });
     if (!text) continue;
     const entry = {
       text,
@@ -625,15 +645,24 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // Audio-first read-back exemption (2026-06-18): automatic derivations and
   // side-effect ticks are computed consequences, NOT dictated readings, and
   // must NOT produce a spoken confirmation (Audio-First invariant 1
-  // exception). Calculator writes carry a `::calc::<tool>` source_turn_id
-  // (applyCalculatedReading); polarity/mirror derivations carry `derived:
-  // true` (e.g. the bonding-continuity mirror in stage6-dispatchers-board).
-  // We still emit them on the wire (iOS needs the value) but exclude their
-  // projected reading objects from synthesiseConfirmations via this Set.
+  // exception). Polarity/mirror derivations carry `derived: true` (e.g. the
+  // bonding-continuity mirror in stage6-dispatchers-board) and stay silent.
+  //
+  // F/U-1 (2026-07-19) — calculator writes (`::calc::<tool>` source_turn_id,
+  // applyCalculatedReading) are NO LONGER read-back-exempt. The Phase-4
+  // prompt steer (marker-②, PR #99) reserves calculate_zs /
+  // calculate_r1_plus_r2 for EXPLICIT compute intent, so every ::calc::
+  // write is an explicitly-requested result the hands-free inspector must
+  // hear — pre-fix an explicit "calculate Zs" computed + wrote SILENTLY
+  // (beep-then-silence on a successful turn). They speak with distinct
+  // "calculated as" phrasing so a derived value is ear-distinguishable from
+  // a meter reading. Mirror/polarity ticks (`derived: true`) remain the
+  // designed-silent exception.
   const suppressConfirmationReadings = new Set();
-  const isDerivedWrite = (entry) =>
-    entry?.derived === true ||
-    (typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::'));
+  const calcConfirmationReadings = new Set();
+  const isDerivedWrite = (entry) => entry?.derived === true;
+  const isCalcWrite = (entry) =>
+    typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::');
   for (const [key, entry] of perTurnWrites.readings) {
     // Slice 1.1c — decodeReadingKey handles BOTH the new boardId-tagged
     // shape `${field}::${circuit}<NUL>__board__<NUL>${boardId}<NUL>` and
@@ -673,6 +702,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     }
     if (isDerivedWrite(entry)) {
       suppressConfirmationReadings.add(reading);
+    } else if (isCalcWrite(entry)) {
+      calcConfirmationReadings.add(reading);
     }
     extracted_readings.push(reading);
   }
@@ -848,8 +879,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // the current target so a fan-out on board B doesn't count board
     // A's circuits toward the total). Null means "I don't know" → the
     // helper falls through to range/list phrasing.
-    // Audio-first: exclude auto-derivations (::calc:: / mirror) from the
-    // spoken read-back while keeping them on the extracted_readings wire.
+    // Audio-first: exclude mirror/polarity auto-derivations (derived: true)
+    // from the spoken read-back while keeping them on the extracted_readings
+    // wire. F/U-1: calculator writes are NOT excluded — they speak with
+    // "calculated as" phrasing (see calcConfirmationReadings above).
     const confirmableReadings = extracted_readings.filter(
       (r) => !suppressConfirmationReadings.has(r)
     );
@@ -860,7 +893,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       confirmableReadings,
       confirmableBoardReadings,
       options.circuitDesignations,
-      options.totalCircuitsInJob ?? null
+      options.totalCircuitsInJob ?? null,
+      calcConfirmationReadings
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
     // loop and the `_confidence` strip MOVED to stage6-shadow-harness.js,

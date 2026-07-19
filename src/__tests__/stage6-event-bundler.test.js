@@ -552,15 +552,18 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(r2).not.toHaveProperty('confirmations');
   });
 
-  test('audio-first: auto-derivations (::calc:: + derived) are NOT read back but DO appear on the wire', () => {
-    // Audio-First invariant 1 exception: computed consequences (calc-
-    // derived Zs, mirror-derived fields) are not dictated readings and get
-    // no spoken confirmation. They still ride on extracted_readings /
-    // extracted_board_readings so iOS lands the value.
+  test('audio-first: mirror derivations stay silent; calc writes SPEAK with "calculated as" (F/U-1); all ride the wire', () => {
+    // Audio-First invariant 1 exception NARROWED by F/U-1 (2026-07-19):
+    // mirror/polarity derivations (derived: true) remain unspoken computed
+    // consequences, but calculator writes (::calc::) are explicitly-requested
+    // results (the Phase-4 steer reserves the calc tools for explicit compute
+    // intent) and now read back with distinct "calculated as" phrasing.
+    // Everything still rides extracted_readings / extracted_board_readings
+    // so iOS lands the values.
     const readings = new Map([
-      // A genuine dictated reading → read back.
+      // A genuine dictated reading → read back with standard phrasing.
       [encodeReadingKey('r1_r2_ohm', 1), { value: '0.30', confidence: 1.0, source_turn_id: 't1' }],
-      // A calc-derived Zs (source_turn_id ::calc::) → NOT read back.
+      // A calc-derived Zs (source_turn_id ::calc::) → read back as calculated.
       [
         encodeReadingKey('measured_zs_ohm', 1),
         { value: '0.55', confidence: 1.0, source_turn_id: '::calc::calculate_zs' },
@@ -575,13 +578,13 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       ],
     ]);
     const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
-    // Both derived writes are on the wire.
+    // All three writes are on the wire.
     const wireFields = new Set(r.extracted_readings.map((e) => e.field));
     expect(wireFields).toEqual(new Set(['r1_r2_ohm', 'measured_zs_ohm']));
     expect(r.extracted_board_readings.map((e) => e.field)).toEqual([
       'bonding_conductor_continuity',
     ]);
-    // Only the dictated reading is read back.
+    // The dictated reading AND the calc write are read back; the mirror is not.
     expect(r.confirmations).toEqual([
       {
         text: 'Circuit 1, R1 plus R2 0.30',
@@ -590,6 +593,71 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         circuit: 1,
         _confidence: 1,
       },
+      {
+        text: 'Circuit 1, Zs calculated as 0.55',
+        expanded_text: 'Circuit 1, zed S calculated as zero point five five',
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        _confidence: 1,
+      },
+    ]);
+  });
+
+  test('F/U-1: a calculated and a dictated same-field same-value reading do NOT group into one line', () => {
+    // Calc-ness is a grouping dimension — a derived value and a meter
+    // reading that happen to share a value are different evidentiary claims
+    // and must speak separately (with different phrasing).
+    const readings = new Map([
+      [
+        encodeReadingKey('measured_zs_ohm', 1),
+        { value: '0.55', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      [
+        encodeReadingKey('measured_zs_ohm', 2),
+        { value: '0.55', confidence: 1.0, source_turn_id: '::calc::calculate_zs' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations.map((c) => c.text)).toEqual([
+      'Circuit 1, Zs 0.55',
+      'Circuit 2, Zs calculated as 0.55',
+    ]);
+  });
+
+  test('F/U-1: a multi-circuit calc fan-out with one shared value groups into ONE calculated line', () => {
+    const readings = new Map(
+      [1, 2, 3].map((c) => [
+        encodeReadingKey('measured_zs_ohm', c),
+        { value: '0.55', confidence: 1.0, source_turn_id: '::calc::calculate_zs' },
+      ])
+    );
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations.map((c) => c.text)).toEqual(['Circuits 1 to 3, Zs calculated as 0.55']);
+    expect(r.confirmations[0].circuits).toEqual([1, 2, 3]);
+  });
+
+  test('F/U-1: calculate_r1_plus_r2 results speak with the R1 plus R2 friendly name', () => {
+    const readings = new Map([
+      [
+        encodeReadingKey('r1_r2_ohm', 3),
+        { value: '0.42', confidence: 1.0, source_turn_id: '::calc::calculate_r1_plus_r2' },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      makePerTurnWrites({ readings }),
+      { questions: [] },
+      { confirmationsEnabled: true }
+    );
+    expect(r.confirmations.map((c) => c.text)).toEqual([
+      'Circuit 3, R1 plus R2 calculated as 0.42',
     ]);
   });
 

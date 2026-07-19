@@ -7,9 +7,10 @@
  * computed:[] → beep-then-silence). Audibility is SPEECH-INTENT only
  * (surviving audible confirmations, emitted asks, current-generation queued
  * prompts, produced-then-DEBOUNCED confirmations) — never readings/observation
- * counts. The designed-silent exemption is classified by dispatcher OUTCOME
- * (body ok:true + computed.length>0 — the ::calc:: read-back-exempt write),
- * never by tool name.
+ * counts. F/U-1 (2026-07-19): calculator writes now SPEAK ("calculated as"
+ * read-back), so the former outcome-based designed-silent exemption is
+ * removed — a computed calc turn whose read-back is lost fires the apology
+ * (fail-audible), and a debounced calc read-back is predicate-4 evidence.
  *
  * Mock pattern mirrors stage6-orphan-net.test.js (mocked runToolLoop authors
  * toolLoopOut.tool_calls result envelopes directly; perTurnWrites is mutated
@@ -403,10 +404,13 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     expect(catchallPrompts(result)).toHaveLength(0);
   });
 
-  test('a successful calculate_zs that COMPUTED values (designed-silent ::calc:: write) → no catch-all', async () => {
-    // Phase-0 verified: computed writes carry ::calc:: and are EXCLUDED from
-    // spoken read-back by design (the 2026-06-18 Audio-First auto-derivation
-    // exemption) — a correct silent write must not draw a "say that again".
+  test('F/U-1: a successful calculate_zs that COMPUTED values SPEAKS a "calculated as" read-back → no catch-all', async () => {
+    // F/U-1 (2026-07-19): calculator writes are no longer read-back-exempt.
+    // An explicit "calculate Zs" speaks its result ("Circuit N, Zs calculated
+    // as X"), so the turn carries speech-intent and the net never fires. The
+    // former outcome-based designed-silent exemption (with its body parser +
+    // loop-ledger guard) is REMOVED — see the fail-audible test below for the
+    // regression pin.
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 4, undefined), {
@@ -445,17 +449,23 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     });
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session4(), 'calculate Zs for circuit 4', [], opts);
-    // The ::calc:: write is on the wire but NOT spoken…
+    // The ::calc:: write is on the wire AND spoken with calculated phrasing…
     expect((result.extracted_readings ?? []).some((r) => r.field === 'measured_zs_ohm')).toBe(true);
-    expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(false);
-    // …and the outcome-based exemption keeps the catch-all quiet.
+    const calcConfs = (result.confirmations ?? []).filter((c) => c.field === 'measured_zs_ohm');
+    expect(calcConfs).toHaveLength(1);
+    expect(calcConfs[0].text).toMatch(/calculated as 1\.21/);
+    // …so the turn carries speech-intent and the catch-all stays quiet.
     expect(catchallPrompts(result)).toHaveLength(0);
     expect(catchallRows(opts.logger)).toHaveLength(0);
   });
 
-  test('MIXED turn: computed calc + EMPTY calc → catch-all FIRES (exemption is every-call, not any-call)', async () => {
-    // Codex diff-review cycle 1: a legitimate computed write must not mask a
-    // sibling silent failure in the same turn.
+  test('MIXED turn: computed calc + EMPTY calc → computed value SPEAKS, no catch-all (skip wording is F/U-3)', async () => {
+    // F/U-1: the computed circuit's read-back carries the turn's speech-
+    // intent, so the net does not fire. The EMPTY sibling's skip stays
+    // unspoken this wave — per-reason skip wording (already_set / no_zs…)
+    // is the batched F/U-3 dispatcher follow-up, and a wholly-empty calc
+    // turn (no computed circuits at all) still draws the catch-all apology
+    // (tests (a)/(f) above).
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
@@ -509,10 +519,14 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     });
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session4(), 'calc both', [], opts);
-    expect(catchallPrompts(result)).toHaveLength(1);
+    const calcConfs = (result.confirmations ?? []).filter(
+      (c) => c.field === 'measured_zs_ohm' && /calculated as/.test(c.text ?? '')
+    );
+    expect(calcConfs).toHaveLength(1);
+    expect(catchallPrompts(result)).toHaveLength(0);
   });
 
-  test('MIXED turn: computed calc + REJECTED call → catch-all FIRES (mixed rejection defeats both M1 and the exemption)', async () => {
+  test('MIXED turn: computed calc + REJECTED sibling → the calc read-back still speaks, no catch-all', async () => {
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
@@ -561,11 +575,18 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     });
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session4(), 'calc and a bad write', [], opts);
-    // The M1 all-rejected net cannot fire (not ALL rejected) — marker-② must.
-    expect(catchallPrompts(result)).toHaveLength(1);
+    // F/U-1: the computed calc's read-back IS the turn's audible output — the
+    // M1 all-rejected net can't fire (not ALL rejected) and marker-② doesn't
+    // need to (speech survived).
+    expect(
+      (result.confirmations ?? []).some(
+        (c) => c.field === 'measured_zs_ohm' && /calculated as/.test(c.text ?? '')
+      )
+    ).toBe(true);
+    expect(catchallPrompts(result)).toHaveLength(0);
   });
 
-  test('MIXED turn: computed calc + a silent non-calc op (derived write, ok body without computed[]) → catch-all FIRES', async () => {
+  test('MIXED turn: computed calc + a silent derived write → calc speaks, mirror stays silent, no catch-all', async () => {
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
@@ -615,14 +636,21 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     });
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session4(), 'calc and a silent op', [], opts);
-    expect(catchallPrompts(result)).toHaveLength(1);
+    // The calc result speaks; the derived (mirror) write stays silent by
+    // design — Audio-First auto-derivation exception, unchanged by F/U-1.
+    const confs = result.confirmations ?? [];
+    expect(
+      confs.some((c) => c.field === 'measured_zs_ohm' && /calculated as/.test(c.text ?? ''))
+    ).toBe(true);
+    expect(confs.some((c) => c.field === 'bonding_conductor_continuity')).toBe(false);
+    expect(catchallPrompts(result)).toHaveLength(0);
   });
 
-  test('PARTIAL batch: ONE board-scoped calculate_zs call with computed AND skipped circuits → catch-all FIRES', async () => {
-    // Codex diff-review cycle 1: a single batch envelope can be partially
-    // successful ("calculate Zs for all circuits" → some computed, some
-    // skipped). The skipped circuits went silent for a non-designed reason,
-    // so the call is NOT wholly designed-silent.
+  test('PARTIAL batch: ONE board-scoped calculate_zs call with computed AND skipped circuits → computed speaks, no catch-all', async () => {
+    // F/U-1: a partially-successful batch ("calculate Zs for all circuits" →
+    // some computed, some skipped) speaks the computed circuits — the board-
+    // scoped write keeps its board_id on the spoken entry. Per-reason skip
+    // wording is the F/U-3 follow-up.
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, 'board-b'), {
@@ -662,19 +690,27 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     });
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session4(), 'calculate Zs for all circuits', [], opts);
-    expect(catchallPrompts(result)).toHaveLength(1);
+    const calcConfs = (result.confirmations ?? []).filter(
+      (c) => c.field === 'measured_zs_ohm' && /calculated as/.test(c.text ?? '')
+    );
+    expect(calcConfs).toHaveLength(1);
+    expect(calcConfs[0].board_id).toBe('board-b');
+    expect(catchallPrompts(result)).toHaveLength(0);
   });
 
-  test('INVISIBLE failure: computed calc visible + a thrown-dispatcher error NOT in tool_calls → catch-all FIRES (ledger guard)', async () => {
-    // Codex cycle-1 mini-review: runToolLoop omits thrown dispatchers /
-    // padded internal_no_result from tool_calls (they land only in the
-    // per-round error counts), so every() over the visible subset would
-    // exempt a turn with an invisible failure. The loop-ledger guard
-    // (attempted==accumulated, zero errors) must defeat the exemption.
+  test('F/U-1 regression pin: a computed calc whose read-back is LOST renders the turn silent → catch-all FIRES (exemption removed)', async () => {
+    // THE fail-audible pin for the exemption removal. Pre-F/U-1 the outcome-
+    // based designed-silent exemption (body ok:true ∧ computed>0 ∧ skipped:[]
+    // ∧ clean loop ledger) would classify this turn as designed-silent and
+    // keep the net quiet — masking a calc read-back regression as design.
+    // Post-F/U-1 a computed calc turn is expected to SPEAK; if its
+    // confirmation is lost anywhere downstream (here: a value that renders
+    // to empty text, so buildConfirmationText returns null), the turn ends
+    // with zero speech-intent and the apology MUST fire. Never silent.
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
-        value: '1.10',
+        value: '', // renders to empty text → confirmation lost
         confidence: 1.0,
         source_turn_id: '::calc::calculate_zs',
       });
@@ -701,17 +737,22 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
         messages_final: [],
         usage: {},
         terminal_reason: 'end_turn',
-        // TWO attempted in round 0 but only one accumulated; one error row.
-        tool_call_count_per_round: [2, 0],
-        tool_error_count_per_round: [1, 0],
+        // A ledger the old exemption would have accepted as CLEAN — proving
+        // the fire below comes from the removal, not a ledger technicality.
+        tool_call_count_per_round: [1, 0],
+        tool_error_count_per_round: [0, 0],
       };
     });
     const opts = baseOpts({ chimeObserved: true });
-    const result = await runShadowHarness(session4(), 'calc plus a crash', [], opts);
+    const result = await runShadowHarness(session4(), 'calc lost readback', [], opts);
     expect(catchallPrompts(result)).toHaveLength(1);
+    expect(catchallRows(opts.logger)).toHaveLength(1);
   });
 
-  test('CAP-HIT turn: computed calc + tool_use_cap_hit terminal → catch-all FIRES (never exempt an aborted/capped loop)', async () => {
+  test('CAP-HIT turn: computed calc + tool_use_cap_hit terminal → the calc read-back still speaks, no catch-all', async () => {
+    // F/U-1: the abnormal loop termination no longer matters to the net —
+    // speech-intent (the spoken calc result) is the only currency. An
+    // aborted/capped loop with zero speech still fires via predicate 4.
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
@@ -748,20 +789,24 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     });
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session4(), 'calc then wedge', [], opts);
-    expect(catchallPrompts(result)).toHaveLength(1);
+    expect(
+      (result.confirmations ?? []).some(
+        (c) => c.field === 'measured_zs_ohm' && /calculated as/.test(c.text ?? '')
+      )
+    ).toBe(true);
+    expect(catchallPrompts(result)).toHaveLength(0);
   });
 
-  test('MALFORMED skipped (missing / null / non-array) fails CLOSED → catch-all FIRES for each variant', async () => {
-    for (const skippedVariant of [undefined, null, 'none']) {
-      const body = {
-        ok: true,
-        computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
-      };
-      if (skippedVariant !== undefined) body.skipped = skippedVariant;
+  test('F/U-1: a DEBOUNCED calc read-back is already-heard evidence → no catch-all (predicate 4 covers calcs too)', async () => {
+    // The debounce path replaces the old exemption for the legitimate-silence
+    // case: an identical calc read-back within the 1500 ms window is
+    // produced-then-suppressed, and the per-turn debounce evidence keeps the
+    // net quiet — exactly the record_reading (e1) contract, now for calcs.
+    const mkLoop = () =>
       runToolLoopSpy.mockImplementation(async (opts) => {
         const ptw = opts.perTurnWritesRef();
-        ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
-          value: '1.10',
+        ptw.readings.set(encodeReadingKey('measured_zs_ohm', 4, undefined), {
+          value: '1.21',
           confidence: 1.0,
           source_turn_id: '::calc::calculate_zs',
         });
@@ -770,10 +815,18 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
           rounds: 2,
           tool_calls: [
             {
-              tool_call_id: 'toolu_s',
+              tool_call_id: 'toolu_dc',
               name: 'calculate_zs',
-              input: { circuit_ref: 2, all: false },
-              result: { tool_use_id: 'toolu_s', is_error: false, content: JSON.stringify(body) },
+              input: { circuit_ref: 4, all: false },
+              result: {
+                tool_use_id: 'toolu_dc',
+                is_error: false,
+                content: JSON.stringify({
+                  ok: true,
+                  computed: [{ circuit_ref: 4, field: 'measured_zs_ohm', value: '1.21' }],
+                  skipped: [],
+                }),
+              },
             },
           ],
           aborted: false,
@@ -784,99 +837,22 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
           tool_error_count_per_round: [0, 0],
         };
       });
-      const opts = baseOpts({ chimeObserved: true });
-      const result = await runShadowHarness(session4(), 'calc odd shape', [], opts);
-      expect(catchallPrompts(result)).toHaveLength(1);
-    }
-  });
+    const session = session4();
+    mkLoop();
+    const opts1 = baseOpts({ chimeObserved: true });
+    const r1 = await runShadowHarness(session, 'calculate Zs for circuit 4', [], opts1);
+    expect(
+      (r1.confirmations ?? []).some(
+        (c) => c.field === 'measured_zs_ohm' && /calculated as/.test(c.text ?? '')
+      )
+    ).toBe(true);
 
-  test('ABNORMAL stop: computed calc, clean counts, but stop_reason max_tokens → catch-all FIRES (terminal_reason alone is not proof)', async () => {
-    // The loop maps every non-tool_use stop to terminal_reason 'end_turn',
-    // so a max_tokens-truncated turn would look "clean" without the raw
-    // stop_reason check.
-    runToolLoopSpy.mockImplementation(async (opts) => {
-      const ptw = opts.perTurnWritesRef();
-      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
-        value: '1.10',
-        confidence: 1.0,
-        source_turn_id: '::calc::calculate_zs',
-      });
-      return {
-        stop_reason: 'max_tokens',
-        rounds: 2,
-        tool_calls: [
-          {
-            tool_call_id: 'toolu_mt',
-            name: 'calculate_zs',
-            input: { circuit_ref: 2, all: false },
-            result: {
-              tool_use_id: 'toolu_mt',
-              is_error: false,
-              content: JSON.stringify({
-                ok: true,
-                computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
-                skipped: [],
-              }),
-            },
-          },
-        ],
-        aborted: false,
-        messages_final: [],
-        usage: {},
-        terminal_reason: 'end_turn',
-        tool_call_count_per_round: [1, 0],
-        tool_error_count_per_round: [0, 0],
-      };
-    });
-    const opts = baseOpts({ chimeObserved: true });
-    const result = await runShadowHarness(session4(), 'calc truncated', [], opts);
-    expect(catchallPrompts(result)).toHaveLength(1);
-  });
-
-  test('TRUNCATED / empty ledgers fail closed → catch-all FIRES (length must equal rounds; empty is not zero)', async () => {
-    for (const [callCounts, errCounts] of [
-      [[1], [0]], // truncated: 2 rounds, 1 entry each
-      [[], []], // empty arrays masquerading as zero
-      [[1, 0], [0]], // mismatched lengths
-    ]) {
-      runToolLoopSpy.mockImplementation(async (opts) => {
-        const ptw = opts.perTurnWritesRef();
-        ptw.readings.set(encodeReadingKey('measured_zs_ohm', 2, undefined), {
-          value: '1.10',
-          confidence: 1.0,
-          source_turn_id: '::calc::calculate_zs',
-        });
-        return {
-          stop_reason: 'end_turn',
-          rounds: 2,
-          tool_calls: [
-            {
-              tool_call_id: 'toolu_tr',
-              name: 'calculate_zs',
-              input: { circuit_ref: 2, all: false },
-              result: {
-                tool_use_id: 'toolu_tr',
-                is_error: false,
-                content: JSON.stringify({
-                  ok: true,
-                  computed: [{ circuit_ref: 2, field: 'measured_zs_ohm', value: '1.10' }],
-                  skipped: [],
-                }),
-              },
-            },
-          ],
-          aborted: false,
-          messages_final: [],
-          usage: {},
-          terminal_reason: 'end_turn',
-          tool_call_count_per_round: callCounts,
-          tool_error_count_per_round: errCounts,
-        };
-      });
-      const opts = baseOpts({ chimeObserved: true });
-      const result = await runShadowHarness(session4(), 'calc odd ledger', [], opts);
-      expect(catchallPrompts(result)).toHaveLength(1);
-    }
+    mkLoop();
+    const opts2 = baseOpts({ chimeObserved: true });
+    const r2 = await runShadowHarness(session, 'calculate Zs for circuit 4', [], opts2);
+    expect((r2.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(false);
+    expect(catchallPrompts(r2)).toHaveLength(0);
+    expect(catchallRows(opts2.logger)).toHaveLength(0);
   });
 
   test('(h) no double-fire with marker-①: a chimed no-content no-op → exactly ONE apology, from marker-① not marker-②', async () => {
