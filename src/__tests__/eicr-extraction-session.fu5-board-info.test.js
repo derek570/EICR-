@@ -247,7 +247,7 @@ describe('F/U-5 updateJobState — mid-recording web board edits reach the snaps
     expect(s.stateSnapshot.circuits[0].manufacturer).toBe('Hager');
   });
 
-  test('updater skip pin: board_info is ignored when the same payload carries boards[]', () => {
+  test('updater skip pin: board_info is ignored when the sole boards[] entry is a SUB-board mirror', () => {
     const s = makeSession();
     s.start({ circuits: [{ ref: 1 }] });
     s.updateJobState({
@@ -256,6 +256,62 @@ describe('F/U-5 updateJobState — mid-recording web board edits reach the snaps
     });
     expect(s.stateSnapshot.circuits[0]?.ze).toBeUndefined();
     expect(mainRecordOf(s).designation).toBe('DB-1'); // untouched
+  });
+
+  test('Codex r2 IMPORTANT pin: a sole MAIN board does NOT suppress board_info fields (the regex-apply shape)', () => {
+    // The web regex layer writes voice board fields to board_info ONLY —
+    // boards[] rides along stale in the same job_state_update. A job whose
+    // Board tab has ever been used carries a sole main-typed boards[0]
+    // (with a synthesised UUID id) forever, so a blanket boards-present
+    // skip would drop every subsequent regex board write.
+    const s = makeSession();
+    s.start({ circuits: [{ ref: 1 }] });
+    s.updateJobState({
+      boards: [{ id: 'board-abc123', board_type: 'main', designation: 'Garage CU' }],
+      board_info: { designation: 'Garage CU', ze: '0.35', rated_current: '100' },
+    });
+    // Fields land at circuits[0]…
+    expect(s.stateSnapshot.circuits[0].ze).toBe('0.35');
+    expect(s.stateSnapshot.circuits[0].rated_current).toBe('100');
+    // …but identity stays with the authoritative boards[] record (no mirror
+    // overwrite of the record designation via the board_info branch).
+    const uuidRecord = s.stateSnapshot.boards.find((b) => b.id === 'board-abc123');
+    expect(uuidRecord.designation).toBe('Garage CU');
+  });
+
+  test('Codex r2: sole-main fields still respect fill-only — a dictated ze survives the stale sole-main mirror', () => {
+    const s = makeSession();
+    s.start({ circuits: [{ ref: 1 }], board_info: { ze: '0.35' } });
+    s.stateSnapshot.circuits[0].ze = '0.20'; // dictated correction
+    s.updateJobState({
+      boards: [{ id: 'board-abc123', board_type: 'main' }],
+      board_info: { ze: '0.35' }, // stale mirror
+    });
+    expect(s.stateSnapshot.circuits[0].ze).toBe('0.20');
+  });
+
+  test('Codex r2: a boards[] array with NO usable (id-bearing) entries does not suppress full consumption', () => {
+    const s = makeSession();
+    s.start({ circuits: [{ ref: 1 }] });
+    s.updateJobState({
+      boards: [null, 'junk', { designation: 'no id here' }],
+      board_info: { designation: 'Garage CU', ze: '0.35' },
+    });
+    expect(s.stateSnapshot.circuits[0].ze).toBe('0.35');
+    expect(mainRecordOf(s).designation).toBe('Garage CU'); // identity applied (no authoritative record)
+  });
+
+  test('Codex r2: TWO usable boards → genuinely multi-board → board_info skipped entirely', () => {
+    const s = makeSession();
+    s.start({ circuits: [{ ref: 1 }] });
+    s.updateJobState({
+      boards: [
+        { id: 'sub-1', board_type: 'sub_distribution', designation: 'Loft DB' },
+        { id: 'main', board_type: 'main', designation: 'CU-A' },
+      ],
+      board_info: { designation: 'Loft DB', ze: '0.55' },
+    });
+    expect(s.stateSnapshot.circuits[0]?.ze).toBeUndefined();
   });
 
   test('boards[] entries with nested board_info are flattened through the shared precedence merge', () => {

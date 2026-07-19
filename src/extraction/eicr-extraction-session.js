@@ -1651,15 +1651,15 @@ export class EICRExtractionSession {
     // board-level field (designation, Ze at board, main-switch details…)
     // was invisible to the snapshot from turn 1.
     //
-    // Codex F/U-5 r1 (two BLOCKERs shaped this — see _applyTopLevelBoardInfo):
-    // consumed ONLY when the payload carries no usable boards[] (the web
-    // mirrors boards[0] — after reordering possibly a SUB-board — into
-    // board_info, so a present boards[] is authoritative and the mirror is
-    // never re-applied), and main-board FIELDS route to circuits[0] (the
-    // record_board_reading / serialiser / resolver bucket) rather than the
-    // boards[] record (where a stale seeded `ze` would SHADOW a later
-    // dictated correction — the board-aware resolver checks the record
-    // before circuits[0]).
+    // Codex F/U-5 r1+r2 (see _applyTopLevelBoardInfo for the full rules):
+    // the accompanying boards[] payload is CLASSIFIED (multi-board / sole
+    // sub-board mirrors are skipped; a sole MAIN board keeps its record
+    // identity but still takes board_info fields — the web regex layer
+    // writes voice board fields to board_info ONLY), and main-board FIELDS
+    // route to circuits[0] (the record_board_reading / serialiser /
+    // resolver bucket) rather than the boards[] record (where a stale
+    // seeded `ze` would SHADOW a later dictated correction — the
+    // board-aware resolver checks the record before circuits[0]).
     this._applyTopLevelBoardInfo(jobState, mainBoardId);
     // Pre-compute the set of known board ids so we can detect (and silently
     // fall back to the legacy bucket for) any circuit whose `board_id` points
@@ -2230,9 +2230,10 @@ export class EICRExtractionSession {
     // null` on the wire) and iOS's legacy single-board bag. Pre-fix a
     // mid-recording web edit to any board-level field arrived in
     // `job_state_update` and was silently dropped — the model kept working
-    // from the stale (usually empty) board state. Consumed only when the
-    // SAME payload carries no usable boards[] and routed main-fields →
-    // circuits[0] / identity → main record (Codex F/U-5 r1; see
+    // from the stale (usually empty) board state. The accompanying boards[]
+    // payload is classified (multi-board / sub-board mirrors skipped; a sole
+    // MAIN board still takes fields) and main-fields route to circuits[0] /
+    // identity to the main record (Codex F/U-5 r1+r2; see
     // _applyTopLevelBoardInfo).
     this._applyTopLevelBoardInfo(jobState, getMainBoardId(this.stateSnapshot));
   }
@@ -2270,7 +2271,34 @@ export class EICRExtractionSession {
    */
   _applyTopLevelBoardInfo(jobState, mainBoardId) {
     if (!isPlainRecord(jobState?.board_info)) return;
-    if (Array.isArray(jobState.boards) && jobState.boards.length > 0) return;
+    // Codex r2 — classify the accompanying boards[] payload rather than a
+    // blanket length check. The web regex-apply layer writes voice board
+    // fields to board_info ONLY (boards[] rides along stale in the same
+    // job_state_update), so "any non-empty boards[] suppresses board_info"
+    // dropped fresh values on the most common single-board web shape (a job
+    // whose Board tab has ever been used carries a sole main-typed boards[0]
+    // forever). Rules:
+    //   - ≥2 usable (id-bearing plain-record) boards → genuinely multi-board:
+    //     SKIP entirely (the boards[0] mirror may describe a reordered
+    //     SUB-board — the r1 BLOCKER; the mirror is ambiguous).
+    //   - exactly 1 usable board that is NOT main-typed → a sub-board mirror:
+    //     SKIP.
+    //   - exactly 1 usable MAIN board → merge board_info FIELDS (circuits[0],
+    //     fill-only for measurements) but NOT identity — the boards[] record
+    //     is the authoritative identity carrier in that payload.
+    //   - no usable boards (absent / junk entries) → full consumption:
+    //     identity → main record, fields → circuits[0].
+    const usable = Array.isArray(jobState.boards)
+      ? jobState.boards.filter((b) => isPlainRecord(b) && b.id)
+      : [];
+    if (usable.length >= 2) return;
+    let mergeIdentity = true;
+    if (usable.length === 1) {
+      const sole = usable[0];
+      const isMain = !sole.board_type || sole.board_type === 'main';
+      if (!isMain) return;
+      mergeIdentity = false;
+    }
     const info = jobState.board_info;
 
     const identity = {};
@@ -2284,7 +2312,7 @@ export class EICRExtractionSession {
       }
     }
 
-    if (Object.keys(identity).length > 0) {
+    if (mergeIdentity && Object.keys(identity).length > 0) {
       const mainRecord = (this.stateSnapshot.boards ?? []).find((b) => b && b.id === mainBoardId);
       if (mainRecord) {
         this._mergeCircuitOrBoardFields(mainRecord, identity, 'board');
