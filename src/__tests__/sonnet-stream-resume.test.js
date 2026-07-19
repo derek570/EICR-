@@ -77,6 +77,9 @@ jest.unstable_mockModule('../storage.js', () => ({
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+// PLAN-C P4b — access the mocked logger to prove the capability rides the WIRE
+// frame only, never the voice_latency.startup_log CloudWatch row.
+const { default: mockLoggerHandle } = await import('../logger.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -379,6 +382,46 @@ describe('PLAN-C session_ack speech_epochs capability', () => {
     expect(resumeAck.speech_epochs).toBe(1);
   });
 
+  test('reconnected ack (2nd session_start, same sessionId) advertises speech_epochs:1', async () => {
+    // A second session_start for a sessionId already in activeSessions takes
+    // handleSessionStart's reconnect branch → status 'reconnected'.
+    const ws1 = connect(wss, 'user-1');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    const ws2 = connect(wss, 'user-1');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    const ack = [...ws2._sent].reverse().find((m) => m.type === 'session_ack');
+    expect(ack.status).toBe('reconnected');
+    expect(ack.speech_epochs).toBe(1);
+  });
+
+  test('NEGATIVE — paused and compact_skipped acks do NOT advertise the capability', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    await sendFrame(ws, { type: 'session_pause' });
+    await sendFrame(ws, { type: 'session_compact' });
+    const pausedAck = [...ws._sent].reverse().find((m) => m.status === 'paused');
+    const compactAck = [...ws._sent].reverse().find((m) => m.status === 'compact_skipped');
+    expect(pausedAck).toBeDefined();
+    expect(pausedAck.speech_epochs).toBeUndefined();
+    expect(compactAck).toBeDefined();
+    expect(compactAck.speech_epochs).toBeUndefined();
+  });
+
   test('NEGATIVE — the stopped ack does NOT advertise the capability', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
@@ -391,6 +434,24 @@ describe('PLAN-C session_ack speech_epochs capability', () => {
     const stopAck = [...ws._sent].reverse().find((m) => m.status === 'stopped');
     expect(stopAck).toBeDefined();
     expect(stopAck.speech_epochs).toBeUndefined();
+  });
+
+  test('WIRE-ONLY — the voice_latency.startup_log logger row carries NO speech_epochs', async () => {
+    mockLoggerHandle.info.mockClear();
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'client-session-A',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    const startupRows = mockLoggerHandle.info.mock.calls.filter(
+      ([ev]) => ev === 'voice_latency.startup_log'
+    );
+    expect(startupRows.length).toBeGreaterThan(0);
+    for (const [, payload] of startupRows) {
+      expect(payload).not.toHaveProperty('speech_epochs');
+    }
   });
 });
 
