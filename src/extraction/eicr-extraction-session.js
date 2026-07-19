@@ -704,6 +704,44 @@ export function normaliseSupplyIngest(supply) {
 }
 
 /**
+ * F/U-5 (2026-07-19) — flatten a `board_info` nesting on a board record.
+ *
+ * The PWA JobDetail type documents boards[] entries as "each entry nests its
+ * own `board_info`" (web/src/lib/types.ts). Today's web Board tab actually
+ * writes board fields FLAT on the entries, but the nested shape is the
+ * documented contract and cheap to accept defensively — pre-fix a nested
+ * blob rode the shallow board copy into the snapshot as an unreadable
+ * sub-object (the board-local Ze resolver and prompt rendering read FLAT
+ * board keys only) and was then serialized as noise.
+ *
+ * Semantics: own keys of a plain-record `board_info` are hoisted onto the
+ * record; existing FLAT keys always win (an explicit flat field must never
+ * be shadowed by a nested duplicate); addressing/prototype keys
+ * (MERGE_SKIP_KEYS) never hoist; the nested key itself is STRIPPED even when
+ * malformed (a junk blob must not reach the model-facing snapshot). Non-
+ * record input passes through untouched. Exported for tests.
+ */
+export function flattenBoardRecord(record) {
+  if (!isPlainRecord(record)) return record;
+  if (!Object.hasOwn(record, 'board_info')) return record;
+  const nested = record.board_info;
+  const out = {};
+  for (const k of Object.keys(record)) {
+    if (k === 'board_info') continue;
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+    out[k] = record[k];
+  }
+  if (isPlainRecord(nested)) {
+    for (const k of Object.keys(nested)) {
+      if (MERGE_SKIP_KEYS.has(k)) continue;
+      if (Object.hasOwn(out, k)) continue; // flat wins
+      out[k] = nested[k];
+    }
+  }
+  return out;
+}
+
+/**
  * Plan 04-19 r13-#3 — known canonical `type` values for validation_alerts.
  * Sourced from `config/prompts/sonnet_extraction_system.md` instructions
  * (lines 482-483: `myth_rejected`, `nc_only`) + prior Codex review
@@ -964,6 +1002,13 @@ const MERGE_SKIP_KEYS = new Set([
   // stray reading field — that would pollute the snapshot/prompt and never
   // match the canonical `board_id` the dual-shape readers key on.
   'boardId',
+  // F/U-5 (2026-07-19) — `board_info` is a CONTAINER, never a field. The
+  // flatten/merge sites consume it explicitly (flattenBoardRecord + the
+  // top-level board_info branches); any path that reaches the generic field
+  // merge with it still attached must drop it rather than write a nested
+  // blob into the snapshot (which the flat-key readers can't see and the
+  // prompt serialiser would emit as noise).
+  'board_info',
 ]);
 
 /**
@@ -1559,10 +1604,31 @@ export class EICRExtractionSession {
     // board id — predictable focus, no stale "last active" restored across
     // sessions.
     if (Array.isArray(jobState.boards) && jobState.boards.length > 0) {
-      this.stateSnapshot.boards = jobState.boards.map((b) => ({ ...b }));
+      // F/U-5 — flatten any nested `board_info` on each entry (documented
+      // PWA shape) so board-level fields land FLAT where the board-local Ze
+      // resolver and prompt rendering read them. `{ ...b }` first preserves
+      // the legacy null/primitive → `{}` coercion byte-for-byte.
+      this.stateSnapshot.boards = jobState.boards.map((b) => flattenBoardRecord({ ...b }));
     }
     this.stateSnapshot.currentBoardId = getMainBoardId(this.stateSnapshot);
     const mainBoardId = this.stateSnapshot.currentBoardId;
+    // F/U-5 — consume the TOP-LEVEL `board_info` container. It is the
+    // PRIMARY board-fields carrier for single-board PWA jobs (`boards:
+    // null`, everything under `board_info` — the Board tab and the regex
+    // apply layer both write it) and iOS's legacy single-board bag. Pre-fix
+    // it was never read at all: on a single-board web job EVERY board-level
+    // field (designation, ze_at_db, main switch details…) was invisible to
+    // the snapshot from turn 1. Merge onto the MAIN board record with the
+    // shared fact-vs-reading precedence: facts (designation…) overwrite the
+    // synth `DB-1` scaffold; readings fill empty cells only, so an explicit
+    // jobState.boards main record (web mirrors board_info FROM boards[0])
+    // is never clobbered by its own mirror.
+    if (isPlainRecord(jobState.board_info)) {
+      const mainRecord = (this.stateSnapshot.boards ?? []).find((b) => b && b.id === mainBoardId);
+      if (mainRecord) {
+        this._mergeCircuitOrBoardFields(mainRecord, jobState.board_info, 'board');
+      }
+    }
     // Pre-compute the set of known board ids so we can detect (and silently
     // fall back to the legacy bucket for) any circuit whose `board_id` points
     // at a board that isn't in `boards[]` — defensive against partially-
@@ -2120,8 +2186,34 @@ export class EICRExtractionSession {
         }
         // kind: 'board' — do NOT apply the #3.4.4 circuit designation→
         // circuit_designation alias here; boards carry their own `designation`.
-        this._mergeCircuitOrBoardFields(target, incoming, 'board');
+        // F/U-5 — flatten a nested `board_info` first (documented PWA shape)
+        // so its fields participate in the fact-vs-reading precedence as
+        // flat board fields instead of riding through as an unreadable blob.
+        this._mergeCircuitOrBoardFields(target, flattenBoardRecord(incoming), 'board');
       }
+    }
+
+    // --- TOP-LEVEL board_info → MAIN board record (F/U-5, 2026-07-19) ---
+    // The primary board-fields carrier for single-board PWA jobs (`boards:
+    // null` on the wire) and the mirrored primary-board summary on
+    // multi-board saves. Pre-fix a mid-recording web edit to any board-level
+    // field arrived in `job_state_update` and was silently dropped — the
+    // model kept working from the stale (usually empty) board record.
+    // Applied AFTER the boards[] branch so the authoritative per-board
+    // records land first; the mirror then only fills reading cells they
+    // left empty (facts converge to the same values — web builds board_info
+    // FROM boards[0]).
+    if (isPlainRecord(jobState.board_info)) {
+      const mainId = getMainBoardId(this.stateSnapshot);
+      if (!Array.isArray(this.stateSnapshot.boards)) {
+        this.stateSnapshot.boards = [];
+      }
+      let mainRecord = this.stateSnapshot.boards.find((b) => b && b.id === mainId);
+      if (!mainRecord) {
+        mainRecord = { id: mainId };
+        this.stateSnapshot.boards.push(mainRecord);
+      }
+      this._mergeCircuitOrBoardFields(mainRecord, jobState.board_info, 'board');
     }
   }
 
