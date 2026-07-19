@@ -1634,12 +1634,23 @@ export class EICRExtractionSession {
     // Q0.1 (locked): on session start, currentBoardId is ALWAYS the main
     // board id — predictable focus, no stale "last active" restored across
     // sessions.
-    if (Array.isArray(jobState.boards) && jobState.boards.length > 0) {
-      // F/U-5 — flatten any nested `board_info` on each entry (documented
-      // PWA shape) so board-level fields land FLAT where the board-local Ze
-      // resolver and prompt rendering read them. `{ ...b }` first preserves
-      // the legacy null/primitive → `{}` coercion byte-for-byte.
-      this.stateSnapshot.boards = jobState.boards.map((b) => flattenBoardRecord({ ...b }));
+    {
+      // F/U-5 — hydrate from the payload's USABLE (id-bearing plain-record)
+      // entries only, flattening any nested `board_info` (documented PWA
+      // shape) so board-level fields land FLAT where the board-local Ze
+      // resolver and prompt rendering read them. Codex r3: an id-less/junk
+      // boards[] (e.g. `[{}]`) previously REPLACED the synthesised
+      // `[{id:'main', …}]` default wholesale, destroying the main record
+      // that _applyTopLevelBoardInfo's full-consumption branch and the
+      // resolver key on — junk entries are now dropped, and when NOTHING
+      // usable arrived the synth default survives (same usability predicate
+      // as _applyTopLevelBoardInfo's classification).
+      const usableBoards = Array.isArray(jobState.boards)
+        ? jobState.boards.filter((b) => isPlainRecord(b) && b.id)
+        : [];
+      if (usableBoards.length > 0) {
+        this.stateSnapshot.boards = usableBoards.map((b) => flattenBoardRecord({ ...b }));
+      }
     }
     this.stateSnapshot.currentBoardId = getMainBoardId(this.stateSnapshot);
     const mainBoardId = this.stateSnapshot.currentBoardId;
@@ -2246,11 +2257,13 @@ export class EICRExtractionSession {
    *
    * Preconditions enforced here:
    *   - `board_info` must be a plain record (malformed shapes ignored).
-   *   - The payload must NOT carry a usable boards[] array (Codex r1
-   *     BLOCKER: the web mirrors boards[0] — the PRIMARY board, which after
-   *     a reorder may be a SUB-board — into `board_info`; re-applying the
-   *     mirror when boards[] is present could stamp a sub-board's identity
-   *     and readings onto the MAIN board. boards[] is authoritative.)
+   *   - The accompanying boards[] payload is CLASSIFIED (r1 BLOCKER + r2):
+   *     ≥2 usable id-bearing boards, or a sole SUB-board mirror → skip
+   *     entirely (the web mirrors boards[0] — after a reorder possibly a
+   *     SUB-board — into `board_info`; it must never stamp a sub-board onto
+   *     MAIN); a sole MAIN-typed board → FIELDS still merge but identity
+   *     stays with the authoritative record; no usable boards → full
+   *     consumption (identity + fields).
    *
    * Routing (Codex r1 BLOCKER — bucket unification):
    *   - Identity keys (`designation`, `board_type`) → the MAIN board

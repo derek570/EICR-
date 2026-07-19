@@ -178,6 +178,24 @@ describe('F/U-5 seeder — single-board PWA job (boards:null, top-level board_in
     expect('board_info' in sub).toBe(false);
   });
 
+  test('Codex r3 pin: an id-less/junk boards[] at seed does NOT destroy the synth main record — board_info identity still lands', () => {
+    // Pre-r3 `boards: [{}]` replaced the synthesised [{id:'main', …}] array
+    // wholesale; classification then chose full consumption (zero usable
+    // boards) but no record with id 'main' existed, so the identity merge
+    // silently no-opped and the snapshot was left with a junk {} record.
+    const s = makeSession();
+    s.start({
+      circuits: [{ ref: 1 }],
+      boards: [{}, null, 'junk'],
+      board_info: { designation: 'Garage CU', ze: '0.35' },
+    });
+    const main = mainRecordOf(s);
+    expect(main.id).toBe('main'); // synth default survived
+    expect(main.designation).toBe('Garage CU'); // identity applied
+    expect(s.stateSnapshot.circuits[0].ze).toBe('0.35');
+    expect(s.stateSnapshot.boards.some((b) => !b || !b.id)).toBe(false); // junk dropped
+  });
+
   test('malformed top-level board_info (array / string / null) is ignored without throwing', () => {
     for (const bad of [['x'], 'junk', null, 7]) {
       const s = makeSession();
