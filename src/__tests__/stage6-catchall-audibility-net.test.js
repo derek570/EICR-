@@ -233,12 +233,119 @@ describe('marker-② — fires on the tool-ran-but-nothing-audible class', () =>
     mockCalcZsEmptyLoop('already_set');
     const opts = baseOpts({ chimeObserved: true });
     const result = await runShadowHarness(session, 'Zs for circuit 4.', [], opts);
-    // Pinned decision (plan Open-q1): the already-recorded empty outcome gets
-    // the GENERIC apology this wave — never-silent wins over perfect wording.
-    // A specific "those are already recorded" message is a calculate_zs-
-    // dispatcher follow-up, not this net's job. A future change here must be
-    // deliberate.
+    // F/U-3 (2026-07-19) update to the original pinned decision: the REAL
+    // calculate dispatcher now records a SPECIFIC "already recorded" voice
+    // notice for this outcome (see the F/U-2/3 tests below and
+    // stage6-fu23-silent-edges.test.js), which replaces the generic apology
+    // via speech-intent. THIS test mocks the tool loop without the notice,
+    // so it keeps pinning the net MACHINERY: zero speech-intent → the
+    // generic apology still fires (never silent, fail-closed).
     expect(catchallPrompts(result)).toHaveLength(1);
+  });
+
+  test('F/U-2/3: a dispatcher voice NOTICE (rename-to-same / already_set) reaches the wire and REPLACES the generic apology', async () => {
+    // Simulates the real dispatcher contract: a successful-but-writeless
+    // outcome records perTurnWrites.voiceNotices; the harness stamps the
+    // generation id, queues it before the net evaluates (speech-intent →
+    // no generic apology), and the §A4 drain emits it field:null this turn.
+    const NOTICE = 'Zs for circuit 4 is already recorded — say a new reading to replace it.';
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.voiceNotices.push({ text: NOTICE });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_n1',
+            name: 'calculate_zs',
+            input: { circuit_ref: 4, all: false },
+            result: {
+              tool_use_id: 'toolu_n1',
+              is_error: false,
+              content: JSON.stringify({
+                ok: true,
+                computed: [],
+                skipped: [{ circuit_ref: 4, reason: 'already_set' }],
+              }),
+            },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'calculate Zs for circuit 4', [], opts);
+    const noticeConfs = (result.confirmations ?? []).filter((c) => c.text === NOTICE);
+    expect(noticeConfs).toHaveLength(1);
+    expect(noticeConfs[0].field).toBeNull();
+    expect(catchallPrompts(result)).toHaveLength(0);
+    expect(catchallRows(opts.logger)).toHaveLength(0);
+  });
+
+  test('F/U-2/3 Codex r1: a notice is DROPPED when other speech owns the turn (corrected rename / F/U-1 calc read-back)', async () => {
+    // Notices are turn-final FALLBACK candidates, not additive speech. A
+    // multi-round loop that first noops rename-to-same (notice recorded)
+    // and then corrects itself produces state-change TTS — speaking the
+    // stale "Circuit 4 is unchanged" alongside "Circuit 4 is now the
+    // Cooker" would be a contradiction. Same for a wholly-already_set calc
+    // call alongside a sibling call whose computed read-back speaks.
+    const STALE_NOTICE = "Circuit 4 is unchanged — I didn't catch a new name or number for it.";
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.voiceNotices.push({ text: STALE_NOTICE });
+      // The correcting operation: a designation write that produces a real
+      // audible confirmation this turn.
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 4, undefined), {
+        value: '0.86',
+        confidence: 1.0,
+        source_turn_id: 'turn-x',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_rw',
+            name: 'record_reading',
+            input: { field: 'measured_zs_ohm', circuit: 4, value: '0.86' },
+            result: { tool_use_id: 'toolu_rw', is_error: false, content: '{"ok":true}' },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session4(), 'corrected turn', [], opts);
+    // The real confirmation speaks; the stale notice does NOT.
+    expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(true);
+    expect((result.confirmations ?? []).some((c) => c.text === STALE_NOTICE)).toBe(false);
+    expect(catchallPrompts(result)).toHaveLength(0);
+  });
+
+  test('F/U-2/3: notices are dropped for mode-off users (confirmationsEnabled:false) — no wire leak', async () => {
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      const ptw = opts.perTurnWritesRef();
+      ptw.voiceNotices.push({ text: 'Circuit 4 is unchanged — I did not catch a new name.' });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 1,
+        tool_calls: [],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ chimeObserved: true, confirmationsEnabled: false });
+    const result = await runShadowHarness(session4(), 'rename attempt', [], opts);
+    expect((result.confirmations ?? []).some((c) => /unchanged/.test(c.text ?? ''))).toBe(false);
   });
 
   test('(e2) a write with NO confirmation produced and no dedupe evidence → catch-all fires (a silent write IS beep-then-silence)', async () => {
