@@ -33,6 +33,7 @@ import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
 import { runShadowHarness } from './stage6-shadow-harness.js';
+import { SPEECH_EPOCHS_CAPABILITY } from './client-watchdog-fallback.js';
 // Plan 06-23 obs-#52 Fix B — canonical BS 7671 regulation lookup. The
 // `record_observation` dispatcher (stage6-dispatchers-observation.js) already
 // imports this for INITIAL extraction; the refinement (BPG4) + RULE-6 edit
@@ -1140,7 +1141,22 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               // resume (live-mode mismatch). The ws is already closed (1002)
               // and a post-close send would log noise.
               if (ack.status !== 'rejected') {
-                ws.send(JSON.stringify({ type: 'session_ack', ...ack, sessionId: newSessionId }));
+                ws.send(
+                  JSON.stringify({
+                    type: 'session_ack',
+                    ...ack,
+                    sessionId: newSessionId,
+                    // PLAN-C P4b — the rehydrate spread-ack establishes a
+                    // session ONLY when the resume HIT (status 'resumed'). A
+                    // token miss returns status 'new' with activeEntryKey null
+                    // — that is NOT an established session (no epoch stream to
+                    // arm against), so the capability is withheld and the
+                    // client latch clears until the subsequent 'started' ack.
+                    ...(ack.status === 'resumed'
+                      ? { speech_epochs: SPEECH_EPOCHS_CAPABILITY }
+                      : {}),
+                  })
+                );
 
                 // Hotfix slice 2.3 — emit initial current_board_changed
                 // AFTER the rehydrate ack so iOS's WS dispatch is in steady
@@ -1177,7 +1193,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 pauseDurationSec: pauseDurationMs ? Math.round(pauseDurationMs / 1000) : null,
                 turns: resumeEntry.session.turnCount,
               });
-              ws.send(JSON.stringify({ type: 'session_ack', status: 'resumed' }));
+              ws.send(
+                JSON.stringify({
+                  type: 'session_ack',
+                  status: 'resumed',
+                  // PLAN-C P4b — establishing ack → advertise the capability.
+                  speech_epochs: SPEECH_EPOCHS_CAPABILITY,
+                })
+              );
             }
             break;
 
@@ -2200,6 +2223,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           type: 'session_ack',
           status: 'reconnected',
           sessionId: existing.rehydrateSessionId || null,
+          // PLAN-C P4b — establishing ack → advertise the watchdog capability.
+          speech_epochs: SPEECH_EPOCHS_CAPABILITY,
         })
       );
 
@@ -2676,7 +2701,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     ws.send(
-      JSON.stringify({ type: 'session_ack', status: 'started', sessionId: rehydrateSessionId })
+      JSON.stringify({
+        type: 'session_ack',
+        status: 'started',
+        sessionId: rehydrateSessionId,
+        // PLAN-C P4b — advertise the watchdog epoch capability on every
+        // session-ESTABLISHING ack so clients can arm; absent on old backends.
+        speech_epochs: SPEECH_EPOCHS_CAPABILITY,
+      })
     );
 
     // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
