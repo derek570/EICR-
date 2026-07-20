@@ -71,6 +71,7 @@ jobs:
   detect-changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       target: ${{ steps.compute.outputs.target }}
     steps:
@@ -158,6 +159,7 @@ jobs:
   test-backend:
     name: Test Backend (Node.js)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name != 'workflow_dispatch'
     # Least-privilege token for the field-replay trusted-retrieval steps
     # (evidence re-fetch / target-branch blob / ruleset lookup). The gh CLI
@@ -234,6 +236,7 @@ jobs:
   test-frontend:
     name: Test Frontend (Next.js)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name != 'workflow_dispatch'
 
     steps:
@@ -276,6 +279,7 @@ jobs:
   security-audit:
     name: npm Audit Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name != 'workflow_dispatch'
 
     steps:
@@ -308,6 +312,7 @@ jobs:
   parity-ledger-warn:
     name: Parity Ledger Staleness (warn-only)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # pull_request ONLY: on push/workflow_dispatch `github.base_ref` is empty
     # and the diff below would error-annotate every production deploy run.
     if: github.event_name == 'pull_request'
@@ -343,6 +348,7 @@ jobs:
   pwa-replay-mock-lane:
     name: PWA Replay (mock lane)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event_name == 'pull_request'
 
     steps:
@@ -406,6 +412,7 @@ jobs:
   manual-deploy-gate:
     name: Manual Deploy Gate (field-replay corpus)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
@@ -436,6 +443,7 @@ jobs:
   build-images:
     name: Build & Scan Docker Images
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
     needs: [detect-changes, test-backend, test-frontend, security-audit, manual-deploy-gate]
     # Push/PR: gate on the test suite. Manual dispatch: gate on the
     # main-restricted corpus gate (never a bare event-name bypass).
@@ -529,6 +537,7 @@ jobs:
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     needs: [detect-changes, build-images]
     # Same skipped-transitive-dependency guard as the production deploy job
     # above (see the note there) — `build-images` always carries a skipped
@@ -659,6 +668,7 @@ jobs:
   deploy:
     name: Deploy to AWS ECS (Production)
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
     needs: [detect-changes, build-images]
     # NOTE (2026-07-18): the `always() && result == 'success'` guard is
     # LOAD-BEARING, not defensive. `build-images` gained `manual-deploy-gate`
