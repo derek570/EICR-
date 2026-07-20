@@ -27,7 +27,22 @@ test('fires the observer with source:dialogue_script on a successful ask_user_st
   ws[ASK_STARTED_OBSERVER] = (e) => fired.push(e);
   safeSend(ws, { type: 'ask_user_started', tool_call_id: 'toolu_ds', question: 'q' });
   expect(ws.sent).toHaveLength(1);
-  expect(fired).toEqual([{ toolCallId: 'toolu_ds', source: 'dialogue_script' }]);
+  // PLAN-C P4d — the observer now also reports the stamped response epoch
+  // (send-time backstop); null when the frame carried no creation-time epoch.
+  expect(fired).toEqual([{ toolCallId: 'toolu_ds', source: 'dialogue_script', utteranceId: null }]);
+});
+
+test('PLAN-C P4d — observer reports the stamped utterance_id when the ask frame carries one', () => {
+  const ws = openWs();
+  const fired = [];
+  ws[ASK_STARTED_OBSERVER] = (e) => fired.push(e);
+  safeSend(ws, {
+    type: 'ask_user_started',
+    tool_call_id: 'toolu_ds',
+    question: 'q',
+    utterance_id: 'utt-E',
+  });
+  expect(fired).toEqual([{ toolCallId: 'toolu_ds', source: 'dialogue_script', utteranceId: 'utt-E' }]);
 });
 
 test('does NOT fire the observer for non-ask frames', () => {
