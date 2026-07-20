@@ -205,6 +205,14 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // another generation can neither suppress the current fallback nor be spoken
   // on the wrong turn.
   const generationId = opts?.generationId ?? null;
+  // PLAN-C P4c — the per-runLiveMode response-epoch reference (or null for
+  // legacy callers). Advanced after each initial/pvr await from the resolved
+  // outcome's epoch (see advanceResponseEpoch), so post-answer confirmations
+  // carry the ANSWERING utterance's id rather than the id that opened the loop.
+  const responseEpochRef =
+    opts?.responseEpochRef && typeof opts.responseEpochRef === 'object'
+      ? opts.responseEpochRef
+      : null;
   return async function dispatchAskUser(call, ctx) {
     // F7 Item 3 — a cancellation can land while this ask sits in the gate
     // debounce delay (createAskGateWrapper fires the inner dispatcher on a
@@ -658,6 +666,16 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // the harness cancellation-finalization boundary.
     throwIfStage6Cancelled(signal);
 
+    // PLAN-C P4c — advance the response epoch from the INITIAL ask outcome
+    // BEFORE buildResolvedBody (which may create a pvr-* re-ask or dispatch a
+    // continuation). If this ask (raised on the loop-opening utterance) was
+    // answered by a LATER chimed utterance, the outcome carries that
+    // utterance's id; the read-backs/pvr that follow now inherit it so the
+    // client watchdog armed by that later chime disarms on the speech. A
+    // timeout / user-moved-on-without-id / teardown carries no epoch and leaves
+    // the reference untouched.
+    advanceResponseEpoch(responseEpochRef, outcome);
+
     // Step 5: log final outcome.
     const answerOutcome = outcome.answered ? 'answered' : outcome.reason;
     const logPayload = {
@@ -856,6 +874,9 @@ async function buildResolvedBody({
       onAskRegistered,
       signal,
       generationId,
+      // PLAN-C P4c — thread the epoch ref so a pvr re-ask answered by a later
+      // utterance advances it (resolvePendingValueFlow spreads it to the chain).
+      responseEpochRef,
     });
     if (pvBody) return pvBody;
     // null → not engaged; fall through to the existing resolvers/legacy body.
@@ -1329,6 +1350,25 @@ function collectAvailableCircuits(session) {
 // classifier (which has a narrow pvr numeric branch — §A4 round-10).
 // ─────────────────────────────────────────────────────────────────────────────
 
+// PLAN-C P4c — advance a per-runLiveMode response-epoch reference from a
+// resolved ask outcome. The epoch is the id of the utterance that ANSWERED the
+// ask, carried on the outcome by the registry resolution sites:
+//   - direct `ask_user_answered` frames → `utterance_id` (= consumed_utterance_id)
+//   - transcript-origin answers / `user_moved_on` → `response_utterance_id`
+// Advance ONLY on a non-empty string epoch: a timeout / teardown / stale
+// resolve carries none, and MUST leave the reference pointing at the
+// loop-opening utterance so this turn's confirmations still correlate to a
+// real epoch. Null-safe + idempotent; a legacy caller with no ref is a no-op.
+export function advanceResponseEpoch(responseEpochRef, outcome) {
+  if (!responseEpochRef || typeof responseEpochRef !== 'object') return;
+  if (!outcome || typeof outcome !== 'object') return;
+  const epoch =
+    (typeof outcome.utterance_id === 'string' && outcome.utterance_id) ||
+    (typeof outcome.response_utterance_id === 'string' && outcome.response_utterance_id) ||
+    null;
+  if (epoch) responseEpochRef.current = epoch;
+}
+
 /** One brokered server ask. Registers FIRST, then emits, then awaits. */
 async function brokerDeterministicAsk({
   pendingAsks,
@@ -1344,6 +1384,7 @@ async function brokerDeterministicAsk({
   onAskUserStarted = null,
   onAskRegistered = null,
   signal = null,
+  responseEpochRef = null,
 }) {
   const pvrId = `pvr-${randomUUID().slice(0, 13)}`;
   const askStartedAt = Date.now();
@@ -1453,6 +1494,12 @@ async function brokerDeterministicAsk({
   // F7 Item 3 — fail-closed: a stored ask-registration hook error propagates as
   // a FATAL control-flow error (never masked as a broker outcome).
   if (hookError) throw hookError;
+  // PLAN-C P4c — advance the response epoch from the PVR outcome. If this
+  // re-ask was answered by a later chimed utterance, the read-back the chain
+  // then dispatches inherits that utterance's id (same rule as the initial
+  // await). A timeout / broker_emit_failed / user_moved_on-without-id leaves
+  // the reference untouched.
+  advanceResponseEpoch(responseEpochRef, outcome);
   return { pvrId, outcome };
 }
 
@@ -1573,6 +1620,9 @@ async function runPendingValueChain(args) {
     onAskRegistered,
     signal,
     generationId,
+    // PLAN-C P4c — threaded from the dispatcher via resolvePendingValueFlow's
+    // `...args` spread; passed to each broker so a pvr answer advances the epoch.
+    responseEpochRef,
   } = args;
   let fieldKey = args.fieldKey ?? null;
   let value = args.value ?? null;
@@ -1630,6 +1680,7 @@ async function runPendingValueChain(args) {
           onAskUserStarted,
           onAskRegistered,
           signal,
+          responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
           logger,
           sessionId,
           turnId,
@@ -1711,6 +1762,7 @@ async function runPendingValueChain(args) {
         onAskUserStarted,
         onAskRegistered,
         signal,
+        responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
         logger,
         sessionId,
         turnId,
@@ -1749,6 +1801,7 @@ async function runPendingValueChain(args) {
         onAskUserStarted,
         onAskRegistered,
         signal,
+        responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
         logger,
         sessionId,
         turnId,

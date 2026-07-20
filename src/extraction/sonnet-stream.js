@@ -3378,10 +3378,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           entry.pendingAsks.resolve(preVerdict.toolCallId, {
             answered: false,
             reason: 'validation_error',
+            // PLAN-C P4c — this transcript answered the ask (even invalidly),
+            // so it IS the response epoch; carry its id so runLiveMode advances
+            // responseEpochRef and residual speech disarms the client watchdog.
+            response_utterance_id:
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
           });
           return;
         }
-        const preResolvePayload = { answered: true, user_text: sanitisedPre.text };
+        const preResolvePayload = {
+          answered: true,
+          user_text: sanitisedPre.text,
+          // PLAN-C P4c — transcript-origin answer: the answering utterance is
+          // this transcript (msg.utterance_id, NOT consumed_utterance_id which
+          // is the direct-frame path); becomes the response epoch.
+          response_utterance_id:
+            typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+        };
         if (sanitisedPre.truncated || sanitisedPre.stripped) {
           preResolvePayload.sanitisation = {
             truncated: sanitisedPre.truncated,
@@ -3409,7 +3422,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         );
         const structuredPre = hasRecordablePre ? null : detectStructuredReading(msg.text);
         if (hasRecordablePre || (structuredPre && structuredPre.complete === true)) {
-          entry.pendingAsks.rejectAll('user_moved_on');
+          // PLAN-C P4c — this fresh transcript SUPERSEDES the pending ask, so
+          // it is now the response epoch: any residual speech the awoken
+          // dispatcher emits belongs to THIS utterance. Carry its id into the
+          // resolved outcome so runLiveMode advances `responseEpochRef` (the
+          // client watchdog armed by this utterance's chime disarms on it).
+          entry.pendingAsks.rejectAll('user_moved_on', {
+            response_utterance_id:
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
           logger.info('stage6.transcript_pre_queue_moved_on', {
             sessionId,
             evidence: hasRecordablePre ? 'recordable_regex' : 'structured_reading',
@@ -3897,6 +3918,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             const resolvedValidationError = entry.pendingAsks.resolve(verdict.toolCallId, {
               answered: false,
               reason: 'validation_error',
+              // PLAN-C P4c — in-flight overtake answer (invalid text): the
+              // answering utterance is this transcript; carry it as the
+              // response epoch (see the pre-queue sibling above).
+              response_utterance_id:
+                typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
             });
             if (!resolvedValidationError) {
               // Plan 03-12 r7 MAJOR remediation — resolve() returns false
@@ -3944,6 +3970,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             const resolvePayload = {
               answered: true,
               user_text: sanitised.text,
+              // PLAN-C P4c — in-flight overtake answer: this transcript is the
+              // response epoch (msg.utterance_id, transcript-origin family).
+              response_utterance_id:
+                typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
             };
             if (sanitised.truncated || sanitised.stripped) {
               resolvePayload.sanitisation = {
@@ -4050,7 +4080,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // and the prior turn has completed. `lastRegexResults` is
           // deliberately NOT cleared — the queued re-entry will use
           // the same regex hits that led to this user_moved_on verdict.
-          entry.pendingAsks.rejectAll('user_moved_on');
+          // PLAN-C P4c — in-flight overtake: this transcript supersedes the
+          // still-awaiting ask and becomes the response epoch. Carry its id so
+          // the awoken dispatcher's residual speech is stamped with THIS
+          // utterance (client watchdog disarm), mirroring the pre-queue site.
+          entry.pendingAsks.rejectAll('user_moved_on', {
+            response_utterance_id:
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
           // Plan 03-12 r13 Codex MAJOR#2 — push the RESOLVED `regexResults`
           // (not raw `msg.regexResults`), so the drained retry uses the
           // exact parse context the verdict was based on. Relying on the

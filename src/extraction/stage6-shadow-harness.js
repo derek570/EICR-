@@ -491,6 +491,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   const turnNum = (session.turnCount ?? 0) + 1;
   const turnId = `${session.sessionId}-turn-${turnNum}`;
 
+  // PLAN-C P4c — response-epoch ownership. The epoch stamped on every OUTBOUND
+  // speech frame must be the RESPONSE epoch — the id of the utterance that
+  // PRODUCED the speech — NOT `options.utteranceId` (the id that OPENED this
+  // tool loop). When an ask raised on utterance A is answered by chimed
+  // utterance B, B's confirmations/pvr re-ask must carry B's id so the client
+  // watchdog B's chime armed disarms on the speech it hears. Seed from the
+  // inbound transcript; the ask dispatcher advances `.current` after each
+  // await ONLY when the resolved outcome carries a non-empty epoch (see
+  // stage6-dispatcher-ask.js). `bundleToolCallsIntoResult` snapshots `.current`
+  // at frame-construction time instead of reading `options.utteranceId`.
+  const responseEpochRef = {
+    current: typeof options.utteranceId === 'string' ? options.utteranceId : null,
+  };
+
   // ───────────────────────────────────────────────────────────────
   // Postcode lookup → snapshot apply. 2026-06-02 — Codex round 5
   // empirical finding (matrix harness vs prod 2026-06-01): commit
@@ -772,6 +786,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         onAskRegistered: options.onAskRegistered,
         signal: options.signal ?? null,
         generationId,
+        // PLAN-C P4c — the dispatcher advances this ref's `.current` after each
+        // initial/pvr await when the resolved outcome carries a non-empty epoch
+        // (direct-frame `utterance_id` OR transcript-origin `response_utterance_id`).
+        responseEpochRef,
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -1171,7 +1189,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // single transcript per harness call so this is exactly the
       // consumedUtteranceId from the handleTranscript call site
       // (sonnet-stream.js threads it through options).
-      utteranceId: options.utteranceId,
+      //
+      // PLAN-C P4c — SNAPSHOT the response epoch at frame-construction time,
+      // NOT `options.utteranceId`. When an in-flight ask was answered by a
+      // LATER chimed utterance, the dispatcher advanced `responseEpochRef` to
+      // that utterance's id; these confirmations belong to it, so the client
+      // watchdog it armed disarms on them. Falls back to the seed
+      // (options.utteranceId) when no ask advanced the epoch this turn.
+      utteranceId: responseEpochRef.current,
       circuitDesignations,
       boardDesignations,
       totalCircuitsInJob,
