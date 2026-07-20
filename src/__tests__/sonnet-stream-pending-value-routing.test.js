@@ -253,9 +253,12 @@ describe('§A4 (1) — transcript-only reply to a pendingValue ask resolves PRE-
     });
 
     // Resolved BEFORE any queueing, with the reply text as the answer.
+    // PLAN-C P4c — the answering transcript (utterance_id 'u-pv-1') is stamped
+    // as the response epoch on the resolve payload.
     expect(resolveSpy).toHaveBeenCalledWith('toolu_pv_1', {
       answered: true,
       user_text: 'RCD trip time.',
+      response_utterance_id: 'u-pv-1',
     });
     // The awaited dispatcher receives the answer AND the registry-copied
     // pendingValue (the write-or-reask join input).
@@ -357,7 +360,12 @@ describe('§A4 (3) — recordable regex hit while blocked → pre-queue rejectAl
 
     // Evidence-backed movement: the ask dies pre-queue so the tool loop
     // unblocks immediately instead of waiting for the 20s timeout.
-    expect(rejectAllSpy).toHaveBeenCalledWith('user_moved_on');
+    // PLAN-C P4c — the superseding transcript (utterance_id 'u-pv-3') is now
+    // the response epoch; its id rides the rejectAll patch so runLiveMode
+    // advances responseEpochRef to it.
+    expect(rejectAllSpy).toHaveBeenCalledWith('user_moved_on', {
+      response_utterance_id: 'u-pv-3',
+    });
     expect(rejectAllSpy).toHaveBeenCalledTimes(1);
     expect(rejectedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
     expect(entry.pendingAsks.size).toBe(0);

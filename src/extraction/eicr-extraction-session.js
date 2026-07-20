@@ -2484,9 +2484,26 @@ export class EICRExtractionSession {
     // Merge all regex results
     const combinedRegex = batch.flatMap((b) => b.regexResults || []);
 
-    // Merge options: confirmations enabled if any item had it
+    // Merge options: confirmations enabled if any item had it.
+    //
+    // PLAN-C P4d (row 8) — carry the response epoch through the batch. The
+    // pre-fix combinedOptions dropped every buffered options.utteranceId, so a
+    // batched extraction (and the question / voice_command_response /
+    // reconnect-replay frames derived from it) crossed the wire with no
+    // utterance_id and the client chime watchdog could not correlate them.
+    // Use the LAST non-empty buffered id: a batch collapses several utterances
+    // into one API call, and the response is spoken in reply to the most
+    // recent one, so the newest id is the correct arming epoch to disarm on.
+    const lastBufferedUtteranceId = (() => {
+      for (let i = batch.length - 1; i >= 0; i--) {
+        const id = batch[i]?.options?.utteranceId;
+        if (typeof id === 'string' && id) return id;
+      }
+      return null;
+    })();
     const combinedOptions = {
       confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
+      utteranceId: lastBufferedUtteranceId,
     };
 
     logger.info(
@@ -2842,6 +2859,19 @@ export class EICRExtractionSession {
       totalCostUsd: parseFloat(this.costTracker.totalCost.toFixed(6)),
       readings: result.extracted_readings?.length || 0,
     });
+
+    // PLAN-C P4d (row 8) — preserve the response epoch on the extraction result
+    // so the legacy sonnet-stream frames derived from it (question /
+    // voice_command_response / reconnect-replay) can stamp utterance_id.
+    // Covers BOTH the synchronous path (options.utteranceId from the single
+    // call) and the batched path (combinedOptions.utteranceId = last buffered
+    // id). Stamp the KEY only for a non-empty string epoch — never write
+    // `utterance_id: null`: the result is spread into the `extraction` frame via
+    // `...rest`, so a null would make a no-epoch extraction frame NOT
+    // byte-identical to pre-P4d (Codex diff-review r1). Absent key == no epoch.
+    if (typeof options?.utteranceId === 'string' && options.utteranceId) {
+      result.utterance_id = options.utteranceId;
+    }
 
     return result;
   }

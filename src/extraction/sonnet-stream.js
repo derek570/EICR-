@@ -175,6 +175,25 @@ function consumeLegacyQuestionsForUser(entry) {
 }
 
 /**
+ * PLAN-C P4d (row 5) — stamp the creation-time response epoch onto legacy
+ * `question` frames BEFORE they enter the QuestionGate, so the frame the gate
+ * later flushes (via `...rest`) carries `utterance_id` and the client
+ * chime-silence watchdog disarms on the spoken question.
+ *
+ * Clones each question (never mutates the caller's array — the same objects are
+ * also referenced by resolveByFields) and stamps `utterance_id` ONLY for a
+ * non-empty string epoch; a null/empty epoch returns the array unchanged so the
+ * wire shape stays byte-identical to pre-P4d. Stamping at ENQUEUE (creation
+ * time) rather than at gate-flush time avoids the mutable-at-emit trap: the
+ * epoch is snapshotted with the question that produced it, not re-read from
+ * mutable session state whenever the gate happens to flush.
+ */
+function stampQuestionsWithUtteranceId(questions, utteranceId) {
+  if (typeof utteranceId !== 'string' || !utteranceId) return questions;
+  return questions.map((q) => ({ ...q, utterance_id: utteranceId }));
+}
+
+/**
  * 2026-05-08 multi-board sprint Phase E — unified `current_board_changed`
  * broadcast for the Sonnet-initiated path.
  *
@@ -567,7 +586,7 @@ async function replayPendingRefinements(entry, sessionId) {
  * sees the code change (e.g. "make that a C2") without waiting for the web
  * search.
  */
-function dispatchObservationUpdates(ws, sessionId, updates) {
+function dispatchObservationUpdates(ws, sessionId, updates, { failFast = false } = {}) {
   if (!Array.isArray(updates) || updates.length === 0) return;
   if (ws.readyState !== ws.OPEN) return;
   for (const u of updates) {
@@ -602,6 +621,12 @@ function dispatchObservationUpdates(ws, sessionId, updates) {
         sessionId,
         error: err.message,
       });
+      // PLAN-C P4d (row 7, Codex r2) — in the reconnect-flush context the caller
+      // needs this failure to propagate so it can re-queue the whole entry (the
+      // obs-update replays next reconnect) instead of best-effort-swallowing it
+      // while the later voice_command_response still sends. Live callers keep the
+      // default best-effort behaviour (failFast omitted).
+      if (failFast) throw err;
     }
   }
 }
@@ -2329,6 +2354,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 understood: true,
                 spoken_response: spoken_response || '',
                 action: action || null,
+                // PLAN-C P4d (row 6) — carry the batch result's response epoch so
+                // the client chime watchdog disarms on the spoken command reply.
+                // Non-empty string only, else omitted (byte-identical pre-P4d).
+                ...(typeof result.utterance_id === 'string' && result.utterance_id
+                  ? { utterance_id: result.utterance_id }
+                  : {}),
               })
             );
           }
@@ -2437,7 +2468,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             sessionId
           );
           if (filteredBatch.length > 0) {
-            questionGate.enqueue(filteredBatch);
+            // PLAN-C P4d (row 5) — carry the batch result's response epoch onto
+            // each question so the flushed `question` frame disarms the watchdog.
+            questionGate.enqueue(stampQuestionsWithUtteranceId(filteredBatch, result.utterance_id));
           }
         } else if (
           !consumeLegacyQuestionsForUser(entryRef) &&
@@ -3037,9 +3070,47 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         count: buffered.length,
       });
+      // PLAN-C P4d (row 7, Codex diff-review r1) — never silently DROP a
+      // buffered spoken_response. Row 7 split the reconnect replay into two
+      // sends (extraction + a separate voice_command_response); if the socket
+      // drops again mid-flush or a send throws, the buffered result is
+      // RE-QUEUED for the next reconnect instead of being lost with the
+      // zeroed buffer. A re-queued entry may re-send its extraction frame on the
+      // next reconnect (idempotent iOS writes — benign) but the audible reply is
+      // never lost — the whole point of the row-7 "now actually speaks" change.
+      // FIFO + exactly-once-audible (Codex diff-review r1 mini-review): on the
+      // FIRST closed socket or send failure, STOP and re-queue the current entry
+      // plus the entire untouched suffix IN ORDER — never deliver a later entry
+      // ahead of an earlier failed one. The audible voice_command_response is
+      // sent LAST (after the extraction + board + observation-update replays), so
+      // if any earlier send throws, the VCR has NOT yet gone out and the
+      // re-queued entry replays it EXACTLY ONCE next reconnect (a re-sent
+      // extraction/board/obs frame is idempotent-benign; the spoken reply must
+      // never double-speak — Audio-First #1).
+      const requeue = [];
+      let halted = false;
       for (const result of buffered) {
+        if (halted || !ws || ws.readyState !== ws.OPEN) {
+          requeue.push(result);
+          halted = true;
+          continue;
+        }
         try {
-          const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
+          // PLAN-C P4d (row 7) — strip spoken_response/action from the extraction
+          // REPLAY and canonicalise them onto the SAME voice_command_response
+          // channel the live sync/batch paths use (see the live-path strip at the
+          // sync send below) — carrying the buffered result's response epoch.
+          // SANCTIONED behaviour change (per the plan a buffered spoken_response
+          // was effectively dropped on reconnect): the spoken reply now rides the
+          // canonical channel and disarms the client chime watchdog via utterance_id.
+          const {
+            questions_for_user,
+            extracted_readings,
+            observationUpdates,
+            spoken_response,
+            action,
+            ...rest
+          } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
           // Hotfix slice 2.2 — replay any select_board / add_board boardOps
@@ -3053,10 +3124,40 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           emitCurrentBoardChangedFromBoardOps(ws, entry.session?.stateSnapshot, result.board_ops);
           // Phase A: if the buffered extraction carried RULE 6 correction edits,
           // replay them on the restored socket so iOS doesn't miss the patch.
-          dispatchObservationUpdates(ws, sessionId, observationUpdates);
+          // failFast so a swallowed obs-update send failure re-queues the entry
+          // (Codex r2) instead of losing the correction while the VCR still sends.
+          dispatchObservationUpdates(ws, sessionId, observationUpdates, { failFast: true });
+          // The audible reply is the LAST fallible send (exactly-once contract).
+          if (spoken_response || action) {
+            ws.send(
+              JSON.stringify({
+                type: 'voice_command_response',
+                understood: true,
+                spoken_response: spoken_response || '',
+                action: action || null,
+                // Matches the sync/batch voice_command_response shape (row 6).
+                ...(typeof result.utterance_id === 'string' && result.utterance_id
+                  ? { utterance_id: result.utterance_id }
+                  : {}),
+              })
+            );
+          }
         } catch (err) {
           logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+          // Re-queue this entry AND halt so nothing after it is delivered
+          // out of order; the buffered spoken_response replays next reconnect
+          // (row 7 audible-replay guarantee).
+          requeue.push(result);
+          halted = true;
         }
+      }
+      if (requeue.length) {
+        // Preserve original order at the head of the buffer for the next flush.
+        entry.pendingExtractions.unshift(...requeue);
+        logger.info('Re-queued undelivered pending extractions', {
+          sessionId,
+          count: requeue.length,
+        });
       }
       // Send current cost update after flushing all buffered extractions
       try {
@@ -3378,10 +3479,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           entry.pendingAsks.resolve(preVerdict.toolCallId, {
             answered: false,
             reason: 'validation_error',
+            // PLAN-C P4c — this transcript answered the ask (even invalidly),
+            // so it IS the response epoch; carry its id so runLiveMode advances
+            // responseEpochRef and residual speech disarms the client watchdog.
+            response_utterance_id:
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
           });
           return;
         }
-        const preResolvePayload = { answered: true, user_text: sanitisedPre.text };
+        const preResolvePayload = {
+          answered: true,
+          user_text: sanitisedPre.text,
+          // PLAN-C P4c — transcript-origin answer: the answering utterance is
+          // this transcript (msg.utterance_id, NOT consumed_utterance_id which
+          // is the direct-frame path); becomes the response epoch.
+          response_utterance_id:
+            typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+        };
         if (sanitisedPre.truncated || sanitisedPre.stripped) {
           preResolvePayload.sanitisation = {
             truncated: sanitisedPre.truncated,
@@ -3409,7 +3523,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         );
         const structuredPre = hasRecordablePre ? null : detectStructuredReading(msg.text);
         if (hasRecordablePre || (structuredPre && structuredPre.complete === true)) {
-          entry.pendingAsks.rejectAll('user_moved_on');
+          // PLAN-C P4c — this fresh transcript SUPERSEDES the pending ask, so
+          // it is now the response epoch: any residual speech the awoken
+          // dispatcher emits belongs to THIS utterance. Carry its id into the
+          // resolved outcome so runLiveMode advances `responseEpochRef` (the
+          // client watchdog armed by this utterance's chime disarms on it).
+          entry.pendingAsks.rejectAll('user_moved_on', {
+            response_utterance_id:
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
           logger.info('stage6.transcript_pre_queue_moved_on', {
             sessionId,
             evidence: hasRecordablePre ? 'recordable_regex' : 'structured_reading',
@@ -3626,6 +3748,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         transcriptText,
         logger,
+        // PLAN-C P4d (row 1) — the creation-time response epoch for any
+        // ask_user_started this active-path turn emits is THIS transcript's
+        // utterance id, so the client chime watchdog disarms on the spoken ask.
+        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
       });
       if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
         // Script handled the turn end-to-end. Return — the finally block
@@ -3663,6 +3789,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         transcriptText,
         logger,
+        // PLAN-C P4d (row 1) — see the ring-script call above.
+        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
       });
       if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
         return;
@@ -3686,6 +3814,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         transcriptText,
         logger,
+        // PLAN-C P4d (row 1) — see the ring-script call above.
+        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
       });
       if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
         return;
@@ -3897,6 +4027,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             const resolvedValidationError = entry.pendingAsks.resolve(verdict.toolCallId, {
               answered: false,
               reason: 'validation_error',
+              // PLAN-C P4c — in-flight overtake answer (invalid text): the
+              // answering utterance is this transcript; carry it as the
+              // response epoch (see the pre-queue sibling above).
+              response_utterance_id:
+                typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
             });
             if (!resolvedValidationError) {
               // Plan 03-12 r7 MAJOR remediation — resolve() returns false
@@ -3944,6 +4079,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             const resolvePayload = {
               answered: true,
               user_text: sanitised.text,
+              // PLAN-C P4c — in-flight overtake answer: this transcript is the
+              // response epoch (msg.utterance_id, transcript-origin family).
+              response_utterance_id:
+                typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
             };
             if (sanitised.truncated || sanitised.stripped) {
               resolvePayload.sanitisation = {
@@ -4050,7 +4189,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // and the prior turn has completed. `lastRegexResults` is
           // deliberately NOT cleared — the queued re-entry will use
           // the same regex hits that led to this user_moved_on verdict.
-          entry.pendingAsks.rejectAll('user_moved_on');
+          // PLAN-C P4c — in-flight overtake: this transcript supersedes the
+          // still-awaiting ask and becomes the response epoch. Carry its id so
+          // the awoken dispatcher's residual speech is stamped with THIS
+          // utterance (client watchdog disarm), mirroring the pre-queue site.
+          entry.pendingAsks.rejectAll('user_moved_on', {
+            response_utterance_id:
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
           // Plan 03-12 r13 Codex MAJOR#2 — push the RESOLVED `regexResults`
           // (not raw `msg.regexResults`), so the drained retry uses the
           // exact parse context the verdict was based on. Relying on the
@@ -4330,6 +4476,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               understood: true,
               spoken_response: spoken_response || '',
               action: action || null,
+              // PLAN-C P4d (row 6) — carry the sync result's response epoch so the
+              // client chime watchdog disarms on the spoken command reply.
+              ...(typeof result.utterance_id === 'string' && result.utterance_id
+                ? { utterance_id: result.utterance_id }
+                : {}),
             })
           );
           logger.info('Voice command from extraction', {
@@ -4385,7 +4536,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           sessionId
         );
         if (filteredSync.length > 0) {
-          entry.questionGate.enqueue(filteredSync);
+          // PLAN-C P4d (row 5) — carry the sync result's response epoch onto
+          // each question (creation-time stamp; see stampQuestionsWithUtteranceId).
+          entry.questionGate.enqueue(stampQuestionsWithUtteranceId(filteredSync, result.utterance_id));
         }
       } else if (
         !consumeLegacyQuestionsForUser(entry) &&
@@ -4440,7 +4593,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               sessionId
             );
             if (filteredReview.length > 0) {
-              entry.questionGate.enqueue(filteredReview);
+              // PLAN-C P4d (row 5) — orphan review is a standalone Sonnet call
+              // with no result.utterance_id of its own, so stamp the questions
+              // with THIS turn's consumed utterance id (the current epoch the
+              // inspector is on) so they still disarm the watchdog.
+              entry.questionGate.enqueue(
+                stampQuestionsWithUtteranceId(filteredReview, consumedUtteranceId)
+              );
             }
           }
         } catch (reviewErr) {
@@ -4679,3 +4838,11 @@ export { activeSessions };
 // tests (mocking the async gpt-5-search refiner to reach them directly would
 // add a heavy harness for no extra idiom coverage).
 export { dispatchObservationUpdates as _test_dispatchObservationUpdates };
+
+// PLAN-C P4d (row 5) — test seam for the pure question-epoch stamper. All three
+// QuestionGate enqueue sites (onBatchResult, sync handleTranscript, and the
+// periodic reviewForOrphanedValues path) route through this helper before
+// enqueue — onBatchResult/sync pass result.utterance_id, orphan-review passes
+// the turn's consumedUtteranceId — so a unit test of the stamper covers the
+// creation-time-clone contract for every site without standing up the WS closure.
+export { stampQuestionsWithUtteranceId as _test_stampQuestionsWithUtteranceId };

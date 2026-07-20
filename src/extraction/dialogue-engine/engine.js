@@ -42,6 +42,7 @@ import {
   buildExtractionPayload,
   buildDisambiguationQuestion,
   safeSend,
+  RESPONSE_EPOCH_REQUIRED,
 } from './helpers/wire-emit.js';
 import { applyDerivations } from './helpers/derivations.js';
 import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
@@ -83,6 +84,13 @@ export function processDialogueTurn(ctx) {
     // by the IR voltage-phase escape hatch's reprocess, so a same-circuit
     // correction overwrites the stale seeded value instead of being dropped.
     overwriteVolunteered = false,
+    // PLAN-C P4d (row 1) — the creation-time response epoch for every
+    // ask_user_started this turn emits. Snapshotted by the caller from the
+    // arming utterance's id (sonnet-stream passes msg.utterance_id; the
+    // start-of-turn shadow-harness hooks pass responseEpochRef.current) and
+    // threaded UNCHANGED through every nested engine fn to the builders. null
+    // when there is no live arming utterance (test paths / legacy callers).
+    responseEpoch = null,
   } = ctx;
   if (!session) return { handled: false };
   if (!Array.isArray(schemas) || schemas.length === 0) return { handled: false };
@@ -189,6 +197,7 @@ export function processDialogueTurn(ctx) {
           schemas,
           logger,
           now,
+          responseEpoch,
         });
       }
     }
@@ -237,6 +246,7 @@ export function processDialogueTurn(ctx) {
                 kind: 'correction',
                 text: `Got it, ${label} ${corrected}.`,
                 now,
+                responseEpoch,
               })
             );
             logger?.info?.(`${crumbSchema.logEventPrefix}_post_completion_correction`, {
@@ -319,6 +329,7 @@ export function processDialogueTurn(ctx) {
       logger,
       now,
       overwriteVolunteered,
+      responseEpoch,
     });
   }
 
@@ -594,7 +605,15 @@ function initScriptState(session, schema, circuit_ref, now) {
  * `ring-continuity-script.js#transitionToConfirmation` shape exactly so
  * the byte-identical replay tests stay green.
  */
-function transitionToConfirmation({ ws, session, sessionId, schema, logger, now }) {
+function transitionToConfirmation({
+  ws,
+  session,
+  sessionId,
+  schema,
+  logger,
+  now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
+}) {
   const state = session.dialogueScriptState;
   if (!state || !schema?.confirmation?.buildMessage) return;
   state.awaiting_confirmation = true;
@@ -607,6 +626,7 @@ function transitionToConfirmation({ ws, session, sessionId, schema, logger, now 
       question: schema.confirmation.buildMessage({ values: state.values }),
       reason: schema.confirmation.reason,
       now,
+      responseEpoch,
     })
   );
   logger?.info?.(`${schema.logEventPrefix}_awaiting_confirmation`, {
@@ -634,6 +654,7 @@ function runEntry({
   logger,
   now,
   overwriteVolunteered = false,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
   let circuitRef = entry.circuit_ref;
   let entryDesignationMatched = false;
@@ -826,6 +847,7 @@ function runEntry({
         slotQuestion: null,
         now,
         kind: 'which_circuit',
+        responseEpoch,
       })
     );
     return { handled: true, fallthrough: false };
@@ -842,10 +864,11 @@ function runEntry({
       toSchemaName: pivotTo,
       logger,
       now,
+      responseEpoch,
     });
   }
 
-  return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+  return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
 }
 
 /**
@@ -874,6 +897,7 @@ function runActivePath({
   schemas,
   logger,
   now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
   const state = session.dialogueScriptState;
   state.last_turn_at = now;
@@ -896,6 +920,7 @@ function runActivePath({
       schema,
       logger,
       now,
+      responseEpoch,
     });
   }
 
@@ -936,7 +961,7 @@ function runActivePath({
       });
       state.awaiting_disambiguation = null;
       state.disambiguation_retry_attempted = false;
-      return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+      return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
     }
     if (verdict && verdict.discard) {
       logger?.info?.(`${schema.logEventPrefix}_disambiguation_discarded_by_user`, {
@@ -947,7 +972,7 @@ function runActivePath({
       });
       state.awaiting_disambiguation = null;
       state.disambiguation_retry_attempted = false;
-      return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+      return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
     }
     // Unparseable. Re-ask once, then drop the bare value on a second
     // miss so the script doesn't loop forever.
@@ -972,6 +997,7 @@ function runActivePath({
               : `Live-to-live or live-to-earth?`,
           now,
           kind: 'value',
+          responseEpoch,
         })
       );
       return { handled: true, fallthrough: false };
@@ -985,7 +1011,7 @@ function runActivePath({
     });
     state.awaiting_disambiguation = null;
     state.disambiguation_retry_attempted = false;
-    return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+    return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
   }
 
   // 1. Cancel — preserve writes, clear state, announce.
@@ -1005,6 +1031,7 @@ function runActivePath({
         kind: 'cancel',
         text: filled > 0 ? schema.cancelMessage({ filled, total }) : schema.cancelMessageEmpty,
         now,
+        responseEpoch,
       })
     );
     // PLAN-backend-final.md Phase 6.3 — generalised cancel-drain.
@@ -1047,6 +1074,7 @@ function runActivePath({
       schemas: [schema],
       logger,
       now,
+      responseEpoch,
     });
   }
 
@@ -1085,7 +1113,7 @@ function runActivePath({
         schema.onExclusiveSlotAbandoned(session, state.circuit_ref, now);
       }
       // finishScript reads back the captured readings AND clears state.
-      finishScript({ ws, session, sessionId, schema, logger, now });
+      finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: true, transcriptText };
     }
     logger?.info?.(`${schema.logEventPrefix}_topic_switch`, {
@@ -1138,7 +1166,7 @@ function runActivePath({
           buildExtractionPayload(state.circuit_ref, overwrites, schema.extractionSource)
         );
       }
-      transitionToConfirmation({ ws, session, sessionId, schema, logger, now });
+      transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
       logger?.info?.(`${schema.logEventPrefix}_confirmation_amended`, {
         sessionId,
         circuit_ref: state.circuit_ref,
@@ -1150,11 +1178,11 @@ function runActivePath({
       typeof schema.confirmation.detectPositive === 'function' &&
       schema.confirmation.detectPositive(text)
     ) {
-      finishScript({ ws, session, sessionId, schema, logger, now });
+      finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
     }
     if (detectEntry(text, schema).matched) {
-      transitionToConfirmation({ ws, session, sessionId, schema, logger, now });
+      transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
     }
     logger?.info?.(`${schema.logEventPrefix}_confirmation_idle`, {
@@ -1375,6 +1403,7 @@ function runActivePath({
             slotQuestion: null,
             now,
             kind: 'which_circuit',
+            responseEpoch,
           })
         );
         return { handled: true, fallthrough: false };
@@ -1473,7 +1502,7 @@ function runActivePath({
       field: currentSlot.field,
       textPreview: text.slice(0, 80),
     });
-    return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+    return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
   }
 
   // 5b. Defer answer — when the current slot opts in via
@@ -1517,6 +1546,7 @@ function runActivePath({
         kind: 'defer',
         text: schema.deferMessage ?? "Okay, I'll come back to that later.",
         now,
+        responseEpoch,
       })
     );
     clearScriptState(session);
@@ -1542,7 +1572,7 @@ function runActivePath({
       if (writes.length > 0) {
         safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
       }
-      finishScript({ ws, session, sessionId, schema, logger, now });
+      finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
     };
 
@@ -1581,7 +1611,7 @@ function runActivePath({
           readings_captured: readingsCaptured,
           textPreview: text.slice(0, 80),
         });
-        finishScript({ ws, session, sessionId, schema, logger, now });
+        finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
         return processDialogueTurn({
           ws,
           session,
@@ -1591,6 +1621,7 @@ function runActivePath({
           logger,
           now,
           overwriteVolunteered: true,
+          responseEpoch,
         });
       }
       if (
@@ -1616,11 +1647,12 @@ function runActivePath({
             slotQuestion: currentSlot.question,
             now,
             kind: 'value',
+            responseEpoch,
           })
         );
         return { handled: true, fallthrough: false };
       }
-      finishScript({ ws, session, sessionId, schema, logger, now });
+      finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
     };
 
@@ -1666,6 +1698,7 @@ function runActivePath({
               slotQuestion: currentSlot.question,
               now,
               kind: 'value',
+              responseEpoch,
             })
           );
           return { handled: true, fallthrough: false };
@@ -1695,6 +1728,7 @@ function runActivePath({
                 : currentSlot.question,
             now,
             kind: 'value',
+            responseEpoch,
           })
         );
         logger?.info?.(`${schema.logEventPrefix}_value_confirm_prompted`, {
@@ -1836,6 +1870,7 @@ function runActivePath({
       toSchemaName: pivotTo,
       logger,
       now,
+      responseEpoch,
     });
   }
 
@@ -1889,12 +1924,13 @@ function runActivePath({
             schema.noProgressHint ??
             "Sorry, I didn't catch that. Say a number, 'greater than X', or 'LIM' — or say 'skip' to move on.",
           now,
+          responseEpoch,
         })
       );
     }
   }
 
-  return askNextOrFinish({ ws, session, sessionId, schema, logger, now });
+  return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
 }
 
 /**
@@ -1905,7 +1941,17 @@ function runActivePath({
  * up automatically). Then asks the next missing slot for the new
  * schema.
  */
-function runPivot({ ws, session, sessionId, schemas, fromSchema, toSchemaName, logger, now }) {
+function runPivot({
+  ws,
+  session,
+  sessionId,
+  schemas,
+  fromSchema,
+  toSchemaName,
+  logger,
+  now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
+}) {
   const target = schemas.find((s) => s.name === toSchemaName);
   if (!target) {
     logger?.warn?.(`${fromSchema.logEventPrefix}_pivot_target_missing`, {
@@ -1915,7 +1961,15 @@ function runPivot({ ws, session, sessionId, schemas, fromSchema, toSchemaName, l
     });
     // Defensive — caller's schemas list missing the pivot target.
     // Fall through to ask the next missing on the source schema.
-    return askNextOrFinish({ ws, session, sessionId, schema: fromSchema, logger, now });
+    return askNextOrFinish({
+      ws,
+      session,
+      sessionId,
+      schema: fromSchema,
+      logger,
+      now,
+      responseEpoch,
+    });
   }
   const previous = session.dialogueScriptState;
   const circuit_ref = previous?.circuit_ref ?? null;
@@ -1945,14 +1999,27 @@ function runPivot({ ws, session, sessionId, schemas, fromSchema, toSchemaName, l
       state.values[f] = v;
     }
   }
-  return askNextOrFinish({ ws, session, sessionId, schema: target, logger, now });
+  return askNextOrFinish({ ws, session, sessionId, schema: target, logger, now, responseEpoch });
 }
 
 /**
  * After any writes have landed, ask for the next missing slot or
  * finish the script. Shared between entry-path and active-path.
  */
-function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
+function askNextOrFinish({
+  ws,
+  session,
+  sessionId,
+  schema,
+  logger,
+  now,
+  // PLAN-C P4d — sentinel default (NOT null): a caller that forgets to thread
+  // the epoch propagates the sentinel to the builder, which THROWS (a loud test
+  // failure), instead of silently emitting an unstamped live ask. Entry points
+  // (processDialogueTurn/enterScriptByName/tryResume*/tryEnter*) keep the null
+  // default — a legacy caller with no arming utterance legitimately passes null.
+  responseEpoch = RESPONSE_EPOCH_REQUIRED,
+}) {
   const state = session.dialogueScriptState;
   const nextSlot = nextMissingSlot(
     state.values,
@@ -1980,6 +2047,7 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
           now,
           kind: 'bulk_apply',
           slotQuestion: schema.postCompletionAsk.question,
+          responseEpoch,
         })
       );
       logger?.info?.(`${schema.logEventPrefix}_bulk_apply_prompted`, {
@@ -1997,10 +2065,10 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
     // reply on the next turn. Mutually exclusive with bulk-apply in
     // practice (ring-continuity has confirmation; RCD has bulk-apply).
     if (schema.confirmation?.buildMessage && !state.awaiting_confirmation) {
-      transitionToConfirmation({ ws, session, sessionId, schema, logger, now });
+      transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
     }
-    finishScript({ ws, session, sessionId, schema, logger, now });
+    finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
     return { handled: true, fallthrough: false };
   }
   // M4 — stamp the moment the exclusive (IR voltage) slot ask is first
@@ -2022,6 +2090,7 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
       slotQuestion: nextSlot.question,
       now,
       kind: 'value',
+      responseEpoch,
     })
   );
   return { handled: true, fallthrough: false };
@@ -2049,7 +2118,16 @@ function askNextOrFinish({ ws, session, sessionId, schema, logger, now }) {
  * `postCompletionAsk.fields` — per-circuit reading, not a shared
  * device property.
  */
-function handleBulkApplyReply({ ws, session, sessionId, text, schema, logger, now }) {
+function handleBulkApplyReply({
+  ws,
+  session,
+  sessionId,
+  text,
+  schema,
+  logger,
+  now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
+}) {
   const state = session.dialogueScriptState;
   const ask = schema.postCompletionAsk;
   const fieldsToPropagate = Array.isArray(ask.fields) ? ask.fields : [];
@@ -2116,6 +2194,7 @@ function handleBulkApplyReply({ ws, session, sessionId, text, schema, logger, no
           kind: 'bulk_apply_done',
           text: confirm,
           now,
+          responseEpoch,
         })
       );
     }
@@ -2133,7 +2212,7 @@ function handleBulkApplyReply({ ws, session, sessionId, text, schema, logger, no
   // standard completion TTS. The user got asked, said no (or
   // mumbled), so the script wraps up the original circuit's RCD
   // read-out and exits.
-  finishScript({ ws, session, sessionId, schema, logger, now });
+  finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
   return { handled: true, fallthrough: false };
 }
 
@@ -2141,7 +2220,15 @@ function handleBulkApplyReply({ ws, session, sessionId, text, schema, logger, no
  * Emit the schema's completion TTS, log, and clear state. The schema
  * supplies its own `finishMessage(values)` for byte-identical output.
  */
-function finishScript({ ws, session, sessionId, schema, logger, now }) {
+function finishScript({
+  ws,
+  session,
+  sessionId,
+  schema,
+  logger,
+  now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
+}) {
   const state = session.dialogueScriptState;
   if (!state) return;
   const { circuit_ref, values } = state;
@@ -2153,6 +2240,7 @@ function finishScript({ ws, session, sessionId, schema, logger, now }) {
       kind: 'done',
       text: schema.finishMessage({ values }),
       now,
+      responseEpoch,
     })
   );
   logger?.info?.(`${schema.logEventPrefix}_completed`, {
@@ -2261,6 +2349,10 @@ export function enterScriptByName({
   ws = null,
   logger = null,
   now = Date.now(),
+  // PLAN-C P4d (row 1) — creation-time response epoch for the first ask this
+  // server-driven entry emits. The dispatcher (stage6-dispatchers-script.js)
+  // threads responseEpochRef.current from the live shadow-harness turn.
+  responseEpoch = null,
 }) {
   if (!session) return { ok: false, error: { code: 'no_session' } };
   if (!Array.isArray(schemas) || schemas.length === 0) {
@@ -2478,6 +2570,7 @@ export function enterScriptByName({
       toSchemaName: pivotTo,
       logger,
       now,
+      responseEpoch,
     });
     return {
       ok: true,
@@ -2522,6 +2615,7 @@ export function enterScriptByName({
         slotQuestion: null,
         now,
         kind: 'which_circuit',
+        responseEpoch,
       })
     );
   } else {
@@ -2543,6 +2637,7 @@ export function enterScriptByName({
           slotQuestion: nextSlot.question,
           now,
           kind: 'value',
+          responseEpoch,
         })
       );
     } else {
@@ -2551,7 +2646,7 @@ export function enterScriptByName({
       // an already-partial snapshot, or when an inspector dictates a
       // full reading family in one breath ("ring continuity for circuit
       // 4 lives 0.32 neutrals 0.31 cpc 0.55") and all three slots seed.
-      finishScript({ ws, session, sessionId, schema, logger, now });
+      finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
     }
   }
 
@@ -2598,6 +2693,10 @@ export function tryResumePausedScript({
   circuitUpdates,
   logger,
   now = Date.now(),
+  // PLAN-C P4d (row 1) — creation-time response epoch for the resume-time
+  // disambiguation / next-slot ask. Threaded from responseEpochRef.current at
+  // the shadow-harness resume hook.
+  responseEpoch = null,
 }) {
   const state = session?.dialogueScriptState;
   if (!state || !state.paused) return { resumed: false, reason: 'no_paused_script' };
@@ -2746,6 +2845,7 @@ export function tryResumePausedScript({
           slotQuestion: question,
           now,
           kind: 'value',
+          responseEpoch,
         })
       );
       return { resumed: true, circuit_ref: matchedRef };
@@ -2773,7 +2873,7 @@ export function tryResumePausedScript({
           schema.extractionSource
         )
       );
-      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
+      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now, responseEpoch });
       return { resumed: true, circuit_ref: matchedRef };
     }
 
@@ -2788,7 +2888,7 @@ export function tryResumePausedScript({
     state.ambiguous_bare_value = null;
   }
 
-  askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
+  askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now, responseEpoch });
 
   return { resumed: true, circuit_ref: matchedRef };
 }
@@ -2832,6 +2932,10 @@ export function tryEnterScriptFromWrites({
   fieldAliases,
   logger,
   now = Date.now(),
+  // PLAN-C P4d (row 1) — creation-time response epoch for the first ask this
+  // Sonnet-write-triggered entry emits. Threaded from responseEpochRef.current
+  // at the shadow-harness entry hook.
+  responseEpoch = null,
 }) {
   if (!session) return { entered: false, reason: 'no_session' };
   if (!Array.isArray(schemas) || schemas.length === 0) {
@@ -3087,7 +3191,7 @@ export function tryEnterScriptFromWrites({
         };
       }
 
-      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now });
+      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now, responseEpoch });
       return {
         entered: true,
         schemaName: schema.name,

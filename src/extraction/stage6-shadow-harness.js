@@ -491,6 +491,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   const turnNum = (session.turnCount ?? 0) + 1;
   const turnId = `${session.sessionId}-turn-${turnNum}`;
 
+  // PLAN-C P4c — response-epoch ownership. The epoch stamped on every OUTBOUND
+  // speech frame must be the RESPONSE epoch — the id of the utterance that
+  // PRODUCED the speech — NOT `options.utteranceId` (the id that OPENED this
+  // tool loop). When an ask raised on utterance A is answered by chimed
+  // utterance B, B's confirmations/pvr re-ask must carry B's id so the client
+  // watchdog B's chime armed disarms on the speech it hears. Seed from the
+  // inbound transcript; the ask dispatcher advances `.current` after each
+  // await ONLY when the resolved outcome carries a non-empty epoch (see
+  // stage6-dispatcher-ask.js). `bundleToolCallsIntoResult` snapshots `.current`
+  // at frame-construction time instead of reading `options.utteranceId`.
+  const responseEpochRef = {
+    current: typeof options.utteranceId === 'string' ? options.utteranceId : null,
+  };
+
   // ───────────────────────────────────────────────────────────────
   // Postcode lookup → snapshot apply. 2026-06-02 — Codex round 5
   // empirical finding (matrix harness vs prod 2026-06-01): commit
@@ -608,6 +622,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // ask "Which circuit?" with no broadcast guard. The finally below
   // clears the field so cross-turn reads are impossible.
   session.activeTurnTranscript = transcriptText;
+
+  // PLAN-C P4d (row 1) — stash the LIVE response-epoch ref so the
+  // start_dialogue_script dispatcher (dispatchStartDialogueScript) can stamp
+  // its first ask_user_started with the current response epoch at emit time.
+  // The ref (not a snapshotted value) is stashed because responseEpochRef
+  // advances mid-turn as asks resolve; the dispatcher reads `.current` at the
+  // moment enterScriptByName emits. Cleared in the finally below, same as
+  // activeTurnTranscript, so a cross-turn read is impossible.
+  session.activeResponseEpochRef = responseEpochRef;
 
   // F7 Item 2 — function-scoped mirrors of the live WS + its ask-emission
   // observer so the `finally` below can detach the observer (both `ws` and
@@ -772,6 +795,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         onAskRegistered: options.onAskRegistered,
         signal: options.signal ?? null,
         generationId,
+        // PLAN-C P4c — the dispatcher advances this ref's `.current` after each
+        // initial/pvr await when the resolved outcome carries a non-empty epoch
+        // (direct-frame `utterance_id` OR transcript-origin `response_utterance_id`).
+        responseEpochRef,
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -1171,7 +1198,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // single transcript per harness call so this is exactly the
       // consumedUtteranceId from the handleTranscript call site
       // (sonnet-stream.js threads it through options).
-      utteranceId: options.utteranceId,
+      //
+      // PLAN-C P4c — SNAPSHOT the response epoch at frame-construction time,
+      // NOT `options.utteranceId`. When an in-flight ask was answered by a
+      // LATER chimed utterance, the dispatcher advanced `responseEpochRef` to
+      // that utterance's id; these confirmations belong to it, so the client
+      // watchdog it armed disarms on them. Falls back to the seed
+      // (options.utteranceId) when no ask advanced the epoch this turn.
+      utteranceId: responseEpochRef.current,
       circuitDesignations,
       boardDesignations,
       totalCircuitsInJob,
@@ -1299,6 +1333,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           schemas: ALL_DIALOGUE_SCHEMAS,
           circuitUpdates: result.circuit_updates,
           logger: log,
+          // PLAN-C P4d (row 1) — the resume-time disambiguation / next-slot ask
+          // is emitted in response to THIS turn's utterance; stamp it with the
+          // current response epoch so the client chime watchdog disarms on it.
+          responseEpoch: responseEpochRef.current,
         });
       } catch (e) {
         log.warn('stage6.dialogue_resume_error', {
@@ -1337,6 +1375,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ws,
           schemas: ALL_DIALOGUE_SCHEMAS,
           readings: result.extracted_readings,
+          // PLAN-C P4d (row 1) — the first ask this Sonnet-write-triggered entry
+          // emits is a response to THIS turn's utterance; stamp it with the
+          // current response epoch (chime-watchdog disarm source).
+          responseEpoch: responseEpochRef.current,
           // FIELD_CORRECTIONS lets the hook resolve Sonnet's canonical
           // names (e.g. `rcd_time_ms`) to schema slot names (e.g.
           // `rcd_trip_time`). validateAndCorrectFields rewrites the
@@ -2576,6 +2618,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // Drop the per-turn transcript pointer so a dispatcher firing on
     // the next turn can't accidentally reuse this turn's text.
     session.activeTurnTranscript = null;
+    // PLAN-C P4d (row 1) — drop the per-turn response-epoch ref pointer too, so
+    // a later turn's dispatcher can't stamp an ask with a stale epoch ref.
+    session.activeResponseEpochRef = null;
     // F7 Item 2 — detach the per-turn ask-emission observer so it never leaks
     // across turns (the ws is session-scoped). Only remove OUR observer.
     if (f7EmissionWs && f7EmissionWs[ASK_STARTED_OBSERVER] === f7EmissionObserver) {

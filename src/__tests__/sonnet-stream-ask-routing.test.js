@@ -886,6 +886,9 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
     expect(resolveSpy).toHaveBeenCalledWith('toolu_ze_c5', {
       answered: true,
       user_text: 'Circuit 5 ze is 0.25',
+      // PLAN-C P4c — transcript-origin answer stamps the answering utterance's
+      // id; this frame carries no utterance_id so it resolves to null.
+      response_utterance_id: null,
     });
     // Task 3: shadow harness MUST NOT be invoked for an answers verdict.
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
@@ -931,7 +934,12 @@ describe('Group D — handleTranscript invokes classifyOvertake only when asks p
     // classifier entirely. rejectAll called exactly once, harness
     // runs exactly once (on the drain re-entry).
     expect(classifyOvertakeSpy).toHaveBeenCalledTimes(1);
-    expect(rejectAllSpy).toHaveBeenCalledWith('user_moved_on');
+    // PLAN-C P4c — the overtaking transcript carries no utterance_id, so the
+    // rejectAll patch stamps response_utterance_id:null (nothing to advance to;
+    // runLiveMode keeps the loop-opening epoch).
+    expect(rejectAllSpy).toHaveBeenCalledWith('user_moved_on', {
+      response_utterance_id: null,
+    });
     expect(rejectAllSpy).toHaveBeenCalledTimes(1);
     expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
     // Drain should have emptied pendingTranscripts.

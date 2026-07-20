@@ -147,7 +147,19 @@ export function createPendingAsksRegistry() {
     // ordering as resolve()), THEN invoke resolvers. Any re-entry now
     // sees an empty registry — the second rejectAll is the documented
     // no-op, any resolve() returns false (unknown id).
-    rejectAll(reason) {
+    //
+    // PLAN-C P4c — `outcomePatch` (default {}) is spread into every resolved
+    // outcome so a transcript-origin sweep can carry the ANSWERING utterance's
+    // id into the resolution. `user_moved_on` fired from a NEW inbound
+    // transcript means that transcript is now the response epoch; the caller
+    // passes `{ response_utterance_id: msg.utterance_id }` so runLiveMode can
+    // advance `responseEpochRef` to the utterance that superseded the ask.
+    // Session-lifecycle sweeps (terminated/stopped/reconnected) pass no patch
+    // — there is no answering utterance, so the epoch must not advance. The
+    // reserved keys below (answered/reason/wait_duration_ms) always win over
+    // the patch: a caller can add correlation fields but never forge the
+    // resolution verdict.
+    rejectAll(reason, outcomePatch = {}) {
       const snapshot = [];
       for (const [, entry] of asks) {
         snapshot.push(entry);
@@ -155,11 +167,14 @@ export function createPendingAsksRegistry() {
       }
       asks.clear(); // 2 — make re-entrant reads see an empty registry
       const now = Date.now();
+      const patch =
+        outcomePatch && typeof outcomePatch === 'object' ? outcomePatch : {};
       for (const entry of snapshot) {
         // 3 — wake awaiting dispatchers. A throw here must NOT leave the
         // registry inconsistent (it's already cleared), so we let the
         // throw propagate and document that resolvers should be pure.
         entry.resolve({
+          ...patch,
           answered: false,
           reason,
           wait_duration_ms: now - entry.askStartedAt,

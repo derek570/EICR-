@@ -66,6 +66,17 @@ iOS (16kHz PCM audio)
 
 ---
 
+## Wire contract — response epoch (PLAN-C chime-silence watchdog)
+
+The client chime-silence watchdog (Phases 5/6) arms a timer when a processing chime fires for an utterance and disarms it when a matching spoken output plays back. To correlate the two, server-emitted **speech** frames carry an **optional `utterance_id`** — the *response epoch*: the id of the utterance the spoken output is a reply to.
+
+- **P4c (answer side):** post-answer `confirmations[]` carry the epoch of the utterance that *answered* an open ask (advance-only-on-non-empty).
+- **P4d (question side):** `ask_user_started` (dialogue-engine + dispatcher initial/pvr), legacy `question`, and `voice_command_response` frames carry the **creation-time** epoch of the arming utterance. Also carried on the reconnect-replay `voice_command_response` (a buffered `spoken_response` now replays as a separate frame, stripped from the extraction replay).
+
+Rules: the epoch is snapshotted at frame **creation** (never re-read from mutable session state at emit time); `utterance_id` is stamped **only for a non-empty string** epoch, so a no-epoch frame is byte-identical to the pre-P4c/P4d wire. `turn_id` remains a reserved/optional telemetry field (not populated by P4d). All fields are additive-optional — clients that ignore them behave exactly as before; the client watchdog is gated behind the P4b `session_ack speech_epochs: 1` capability. THE doc of record for the full frame catalogue is the `certmate-voice-wire-protocol` skill.
+
+---
+
 ## Auto-Sleep (Deepgram Power Saving)
 
 Prevents wasted Deepgram billing when the inspector stops speaking. Three-tier state machine:
