@@ -2865,9 +2865,13 @@ export class EICRExtractionSession {
     // voice_command_response / reconnect-replay) can stamp utterance_id.
     // Covers BOTH the synchronous path (options.utteranceId from the single
     // call) and the batched path (combinedOptions.utteranceId = last buffered
-    // id). Non-empty string only, else null — never fabricate an epoch.
-    result.utterance_id =
-      typeof options?.utteranceId === 'string' && options.utteranceId ? options.utteranceId : null;
+    // id). Stamp the KEY only for a non-empty string epoch — never write
+    // `utterance_id: null`: the result is spread into the `extraction` frame via
+    // `...rest`, so a null would make a no-epoch extraction frame NOT
+    // byte-identical to pre-P4d (Codex diff-review r1). Absent key == no epoch.
+    if (typeof options?.utteranceId === 'string' && options.utteranceId) {
+      result.utterance_id = options.utteranceId;
+    }
 
     return result;
   }

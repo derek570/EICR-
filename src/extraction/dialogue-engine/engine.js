@@ -42,6 +42,7 @@ import {
   buildExtractionPayload,
   buildDisambiguationQuestion,
   safeSend,
+  RESPONSE_EPOCH_REQUIRED,
 } from './helpers/wire-emit.js';
 import { applyDerivations } from './helpers/derivations.js';
 import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
@@ -604,7 +605,15 @@ function initScriptState(session, schema, circuit_ref, now) {
  * `ring-continuity-script.js#transitionToConfirmation` shape exactly so
  * the byte-identical replay tests stay green.
  */
-function transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch }) {
+function transitionToConfirmation({
+  ws,
+  session,
+  sessionId,
+  schema,
+  logger,
+  now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
+}) {
   const state = session.dialogueScriptState;
   if (!state || !schema?.confirmation?.buildMessage) return;
   state.awaiting_confirmation = true;
@@ -645,7 +654,7 @@ function runEntry({
   logger,
   now,
   overwriteVolunteered = false,
-  responseEpoch = null,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
   let circuitRef = entry.circuit_ref;
   let entryDesignationMatched = false;
@@ -888,7 +897,7 @@ function runActivePath({
   schemas,
   logger,
   now,
-  responseEpoch = null,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
   const state = session.dialogueScriptState;
   state.last_turn_at = now;
@@ -911,6 +920,7 @@ function runActivePath({
       schema,
       logger,
       now,
+      responseEpoch,
     });
   }
 
@@ -1940,7 +1950,7 @@ function runPivot({
   toSchemaName,
   logger,
   now,
-  responseEpoch = null,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
   const target = schemas.find((s) => s.name === toSchemaName);
   if (!target) {
@@ -1996,7 +2006,20 @@ function runPivot({
  * After any writes have landed, ask for the next missing slot or
  * finish the script. Shared between entry-path and active-path.
  */
-function askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch = null }) {
+function askNextOrFinish({
+  ws,
+  session,
+  sessionId,
+  schema,
+  logger,
+  now,
+  // PLAN-C P4d — sentinel default (NOT null): a caller that forgets to thread
+  // the epoch propagates the sentinel to the builder, which THROWS (a loud test
+  // failure), instead of silently emitting an unstamped live ask. Entry points
+  // (processDialogueTurn/enterScriptByName/tryResume*/tryEnter*) keep the null
+  // default — a legacy caller with no arming utterance legitimately passes null.
+  responseEpoch = RESPONSE_EPOCH_REQUIRED,
+}) {
   const state = session.dialogueScriptState;
   const nextSlot = nextMissingSlot(
     state.values,
@@ -2103,7 +2126,7 @@ function handleBulkApplyReply({
   schema,
   logger,
   now,
-  responseEpoch = null,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
   const state = session.dialogueScriptState;
   const ask = schema.postCompletionAsk;
@@ -2197,7 +2220,15 @@ function handleBulkApplyReply({
  * Emit the schema's completion TTS, log, and clear state. The schema
  * supplies its own `finishMessage(values)` for byte-identical output.
  */
-function finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch = null }) {
+function finishScript({
+  ws,
+  session,
+  sessionId,
+  schema,
+  logger,
+  now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
+}) {
   const state = session.dialogueScriptState;
   if (!state) return;
   const { circuit_ref, values } = state;

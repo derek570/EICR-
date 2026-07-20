@@ -3064,7 +3064,20 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         count: buffered.length,
       });
+      // PLAN-C P4d (row 7, Codex diff-review r1) — never silently DROP a
+      // buffered spoken_response. Row 7 split the reconnect replay into two
+      // sends (extraction + a separate voice_command_response); if the socket
+      // drops again mid-flush or a send throws, the buffered result is
+      // RE-QUEUED for the next reconnect instead of being lost with the
+      // zeroed buffer. A re-queued entry may re-send its extraction frame on the
+      // next reconnect (idempotent iOS writes — benign) but the audible reply is
+      // never lost — the whole point of the row-7 "now actually speaks" change.
+      const requeue = [];
       for (const result of buffered) {
+        if (!ws || ws.readyState !== ws.OPEN) {
+          requeue.push(result);
+          continue;
+        }
         try {
           // PLAN-C P4d (row 7) — strip spoken_response/action from the extraction
           // REPLAY (iOS plays spoken text only from voice_command_response, never
@@ -3112,7 +3125,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           dispatchObservationUpdates(ws, sessionId, observationUpdates);
         } catch (err) {
           logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+          // Re-queue so a buffered spoken_response is replayed on the next
+          // reconnect rather than lost (row 7 audible-replay guarantee).
+          requeue.push(result);
         }
+      }
+      if (requeue.length) {
+        // Preserve original order at the head of the buffer for the next flush.
+        entry.pendingExtractions.unshift(...requeue);
+        logger.info('Re-queued undelivered pending extractions', {
+          sessionId,
+          count: requeue.length,
+        });
       }
       // Send current cost update after flushing all buffered extractions
       try {

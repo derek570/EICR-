@@ -55,13 +55,15 @@ jest.unstable_mockModule('../logger.js', () => ({
 
 jest.unstable_mockModule('../storage.js', () => ({ uploadJson: jest.fn(async () => {}) }));
 
+const runShadowHarnessSpy = jest.fn(async () => ({
+  extracted_readings: [],
+  questions_for_user: [],
+  observations: [],
+  confirmations: [],
+}));
+
 jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
-  runShadowHarness: jest.fn(async () => ({
-    extracted_readings: [],
-    questions_for_user: [],
-    observations: [],
-    confirmations: [],
-  })),
+  runShadowHarness: runShadowHarnessSpy,
 }));
 
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
@@ -119,10 +121,23 @@ const getKey = async () => 'fake-key';
 
 let wss;
 beforeEach(() => {
+  runShadowHarnessSpy.mockClear();
+  runShadowHarnessSpy.mockImplementation(async () => ({
+    extracted_readings: [],
+    questions_for_user: [],
+    observations: [],
+    confirmations: [],
+  }));
   activeSessions.clear();
   sonnetSessionStore.clear();
   wss = initSonnetStream(null, getKey, jest.fn());
 });
+
+async function startSession(sessionId = 'sess-p4d') {
+  const ws = connect(wss);
+  await sendFrame(ws, { type: 'session_start', sessionId, jobState: { certificateType: 'eicr' } });
+  return { ws, entry: activeSessions.get(sessionId) };
+}
 afterEach(() => {
   activeSessions.clear();
   sonnetSessionStore.clear();
@@ -255,5 +270,111 @@ describe('P4d row 7 — flushPendingExtractions replay', () => {
     expect(extraction.result).not.toHaveProperty('action');
     // Readings still replay.
     expect(extraction.result.readings).toHaveLength(1);
+  });
+
+  test('Codex r1 — a send failure RE-QUEUES the buffered result (spoken_response never lost)', async () => {
+    const { entry } = await startSession();
+    entry.pendingExtractions.push({
+      extracted_readings: [],
+      questions_for_user: [],
+      observations: [],
+      confirmations: [],
+      spoken_response: 'Recorded on reconnect.',
+      action: null,
+      utterance_id: 'utt-B',
+    });
+
+    // Reconnect on a socket whose FIRST send throws → the flush must re-queue.
+    const wsFail = makeFakeWs();
+    let firstSend = true;
+    wsFail.send.mockImplementation(() => {
+      if (firstSend) {
+        firstSend = false;
+        throw new Error('socket blew up mid-flush');
+      }
+    });
+    wss.emit('connection', wsFail, { headers: {} }, 'user-1');
+    await sendFrame(wsFail, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
+
+    // The buffered result is preserved for the next reconnect, not dropped.
+    expect(entry.pendingExtractions.length).toBe(1);
+    expect(entry.pendingExtractions[0].utterance_id).toBe('utt-B');
+  });
+});
+
+// ── Rows 5/6 (sync transcript path) + orphan review ─────────────────────────
+
+describe('P4d rows 5/6 — sync handleTranscript path carries the epoch', () => {
+  test('sync voice_command_response carries result.utterance_id', async () => {
+    const { ws, entry } = await startSession();
+    entry.session.turnCount = 1;
+    runShadowHarnessSpy.mockImplementationOnce(async () => ({
+      extracted_readings: [],
+      questions_for_user: [],
+      observations: [],
+      confirmations: [],
+      spoken_response: 'Zs recorded.',
+      action: null,
+      utterance_id: 'utt-B',
+    }));
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'circuit 2 r1 plus r2 is 0.64',
+      regexResults: [],
+      utterance_id: 'utt-B',
+    });
+    const vcr = ws._sent.find((m) => m.type === 'voice_command_response');
+    expect(vcr).toBeDefined();
+    expect(vcr.utterance_id).toBe('utt-B');
+  });
+
+  test('sync question is stamped with result.utterance_id before enqueue', async () => {
+    const { ws, entry } = await startSession();
+    const enqueueSpy = jest.spyOn(entry.questionGate, 'enqueue');
+    runShadowHarnessSpy.mockImplementationOnce(async () => ({
+      extracted_readings: [],
+      questions_for_user: [{ field: 'r1_r2', circuit: 2, type: 'unclear', question: 'Repeat?' }],
+      observations: [],
+      confirmations: [],
+      utterance_id: 'utt-B',
+    }));
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'circuit 2 r1 plus r2 is 0.64',
+      regexResults: [],
+      utterance_id: 'utt-B',
+    });
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    expect(enqueueSpy.mock.calls[0][0][0].utterance_id).toBe('utt-B');
+  });
+
+  test('periodic orphan review stamps the question with the turn consumedUtteranceId', async () => {
+    const { ws, entry } = await startSession();
+    // Gate: turnCount > 0 && turnCount % 10 === 0.
+    entry.session.turnCount = 10;
+    entry.session.reviewForOrphanedValues = jest.fn(async () => ({
+      questions_for_user: [{ field: 'zs', circuit: 3, type: 'orphaned', question: 'Which circuit was Zs 0.4 for?' }],
+    }));
+    const enqueueSpy = jest.spyOn(entry.questionGate, 'enqueue');
+    runShadowHarnessSpy.mockImplementationOnce(async () => ({
+      extracted_readings: [],
+      questions_for_user: [],
+      observations: [],
+      confirmations: [],
+    }));
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'circuit 2 r1 plus r2 is 0.64',
+      regexResults: [],
+      utterance_id: 'utt-C',
+    });
+    // The orphan-review question the gate received carries THIS turn's epoch.
+    const orphanCall = enqueueSpy.mock.calls.find((c) => c[0]?.[0]?.type === 'orphaned');
+    expect(orphanCall).toBeDefined();
+    expect(orphanCall[0][0].utterance_id).toBe('utt-C');
   });
 });

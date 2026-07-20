@@ -22,6 +22,7 @@ import {
 import {
   processRingContinuityTurn,
   processInsulationResistanceTurn,
+  processProtectiveDeviceTurn,
   enterScriptByName,
   ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
@@ -204,6 +205,47 @@ describe('P4d row 1 — dialogue engine ask_user_started carries the epoch', () 
     });
     expect(observed.length).toBeGreaterThan(0);
     expect(observed[0].utteranceId).toBe(EPOCH);
+  });
+});
+
+// ── Row 1 regression — the RCD bulk-apply reply path (Codex r1 BLOCKER) ─────
+
+describe('P4d row 1 — RCD bulk-apply reply frame carries the epoch (regression: missed thread)', () => {
+  function driveRcdToBulkPrompt(session, ws) {
+    const steps = ['RCD on circuit 1.', 'BS EN 61008', 'AC', '30'];
+    steps.forEach((t, i) =>
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: 'sess_p4d',
+        transcriptText: t,
+        logger: null,
+        now: 1000 * (i + 1),
+        responseEpoch: EPOCH,
+      })
+    );
+  }
+
+  test("the bulk_apply_done ask_user_started (reply 'all') carries utterance_id", () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: {}, 2: {}, 3: {} });
+    driveRcdToBulkPrompt(session, ws);
+    expect(session.dialogueScriptState.bulkApplyPending).toBe(true);
+    ws.sent.length = 0;
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: 'sess_p4d',
+      transcriptText: 'all',
+      logger: null,
+      now: 5000,
+      responseEpoch: EPOCH,
+    });
+    // Every ask_user_started emitted on the bulk-apply reply turn carries the id
+    // (pre-fix the handleBulkApplyReply call dropped responseEpoch → null).
+    const asks = ws.sent.filter((m) => m.type === 'ask_user_started');
+    expect(asks.length).toBeGreaterThan(0);
+    for (const a of asks) expect(a.utterance_id).toBe(EPOCH);
   });
 });
 

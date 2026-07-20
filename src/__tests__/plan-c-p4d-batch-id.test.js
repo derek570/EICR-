@@ -89,10 +89,12 @@ describe('P4d row 8 — batched extraction carries the last non-empty buffered u
     expect(result.utterance_id).toBe('utt-A');
   });
 
-  test('no buffered id at all → result.utterance_id === null (never fabricated)', async () => {
+  test('no buffered id at all → result OMITS utterance_id (byte-identical extraction frame, never null)', async () => {
     await session.extractFromUtterance('Zs is 0.35', [], {});
     const result = await session.extractFromUtterance('on circuit 1', [], {});
-    expect(result.utterance_id).toBeNull();
+    // Key ABSENT, not null — the result is spread into the extraction frame, so a
+    // null would break the byte-identical-when-absent wire contract.
+    expect(result).not.toHaveProperty('utterance_id');
   });
 
   test('single flushed utterance also carries its id (sync-shape parity)', async () => {
