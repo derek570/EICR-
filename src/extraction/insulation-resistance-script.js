@@ -433,50 +433,77 @@ function safeSend(ws, payload) {
   }
 }
 
-function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind }) {
-  if (kind === 'which_circuit') {
-    return {
-      type: 'ask_user_started',
-      tool_call_id: `srv-irs-${sessionId}-which-${now}`,
-      question: 'Which circuit is the insulation resistance for?',
-      reason: 'missing_context',
-      context_field: null,
-      context_circuit: null,
-      expected_answer_shape: 'value',
-    };
+/**
+ * PLAN-C P4d (row 3) — stamp the creation-time response epoch onto an
+ * ask_user_started frame (as `utterance_id`) so the client chime-silence
+ * watchdog disarms on the spoken question. Non-empty string only, mirroring
+ * the live dialogue-engine helper. This legacy IR script is no longer on the
+ * live path (sonnet-stream drives the dialogue-engine wrappers) — see the ring
+ * script's stampResponseEpoch note for the null-default (vs REQUIRED) rationale.
+ */
+function stampResponseEpoch(payload, responseEpoch) {
+  if (typeof responseEpoch === 'string' && responseEpoch) {
+    payload.utterance_id = responseEpoch;
   }
-  if (kind === 'voltage') {
-    return {
-      type: 'ask_user_started',
-      tool_call_id: `srv-irs-${sessionId}-${circuit_ref}-${VOLTAGE_FIELD}-${now}`,
-      question: VOLTAGE_PROMPT,
-      reason: 'missing_value',
-      context_field: VOLTAGE_FIELD,
-      context_circuit: circuit_ref,
-      expected_answer_shape: 'value',
-    };
-  }
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `srv-irs-${sessionId}-${circuit_ref}-${missing_field}-${now}`,
-    question: FIELD_PROMPTS[missing_field]?.tts ?? `What's the ${missing_field}?`,
-    reason: 'missing_value',
-    context_field: missing_field,
-    context_circuit: circuit_ref,
-    expected_answer_shape: 'value',
-  };
+  return payload;
 }
 
-function buildScriptInfo({ sessionId, kind, text, now }) {
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `srv-irs-${sessionId}-${kind}-${now}`,
-    question: text,
-    reason: 'info',
-    context_field: null,
-    context_circuit: null,
-    expected_answer_shape: 'none',
-  };
+function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind, responseEpoch = null }) {
+  if (kind === 'which_circuit') {
+    return stampResponseEpoch(
+      {
+        type: 'ask_user_started',
+        tool_call_id: `srv-irs-${sessionId}-which-${now}`,
+        question: 'Which circuit is the insulation resistance for?',
+        reason: 'missing_context',
+        context_field: null,
+        context_circuit: null,
+        expected_answer_shape: 'value',
+      },
+      responseEpoch
+    );
+  }
+  if (kind === 'voltage') {
+    return stampResponseEpoch(
+      {
+        type: 'ask_user_started',
+        tool_call_id: `srv-irs-${sessionId}-${circuit_ref}-${VOLTAGE_FIELD}-${now}`,
+        question: VOLTAGE_PROMPT,
+        reason: 'missing_value',
+        context_field: VOLTAGE_FIELD,
+        context_circuit: circuit_ref,
+        expected_answer_shape: 'value',
+      },
+      responseEpoch
+    );
+  }
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `srv-irs-${sessionId}-${circuit_ref}-${missing_field}-${now}`,
+      question: FIELD_PROMPTS[missing_field]?.tts ?? `What's the ${missing_field}?`,
+      reason: 'missing_value',
+      context_field: missing_field,
+      context_circuit: circuit_ref,
+      expected_answer_shape: 'value',
+    },
+    responseEpoch
+  );
+}
+
+function buildScriptInfo({ sessionId, kind, text, now, responseEpoch = null }) {
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `srv-irs-${sessionId}-${kind}-${now}`,
+      question: text,
+      reason: 'info',
+      context_field: null,
+      context_circuit: null,
+      expected_answer_shape: 'none',
+    },
+    responseEpoch
+  );
 }
 
 function buildExtractionPayload(circuit_ref, writes) {
@@ -614,7 +641,7 @@ function nextScriptStep(session, circuit_ref) {
 /**
  * Emit completion TTS and clear state.
  */
-function finishScript(ws, session, sessionId, now, logger) {
+function finishScript(ws, session, sessionId, now, logger, responseEpoch = null) {
   const state = session.insulationResistanceScript;
   if (!state) return;
   const { circuit_ref, values } = state;
@@ -629,6 +656,7 @@ function finishScript(ws, session, sessionId, now, logger) {
       kind: 'done',
       text: `Got it. L-L ${ll}, L-E ${le}${voltageClause}.`,
       now,
+      responseEpoch,
     })
   );
   logger?.info?.('stage6.insulation_resistance_script_completed', {
@@ -673,7 +701,17 @@ function finishScript(ws, session, sessionId, now, logger) {
  *                                                            same transcript
  */
 export function processInsulationResistanceTurn(ctx) {
-  const { ws, session, sessionId, transcriptText, logger, now = Date.now() } = ctx;
+  const {
+    ws,
+    session,
+    sessionId,
+    transcriptText,
+    logger,
+    now = Date.now(),
+    // PLAN-C P4d (row 3) — creation-time response epoch threaded to every ask
+    // this turn emits (null on the dead legacy path; see stampResponseEpoch).
+    responseEpoch = null,
+  } = ctx;
   if (!session) return { handled: false };
 
   const state = session.insulationResistanceScript;
@@ -739,6 +777,7 @@ export function processInsulationResistanceTurn(ctx) {
               kind: 'correction',
               text: `Got it, ${label} ${corrected}.`,
               now,
+              responseEpoch,
             })
           );
           logger?.info?.('stage6.insulation_resistance_post_completion_correction', {
@@ -823,6 +862,7 @@ export function processInsulationResistanceTurn(ctx) {
           missing_field: null,
           now,
           kind: 'which_circuit',
+          responseEpoch,
         })
       );
       return { handled: true, fallthrough: false };
@@ -830,7 +870,7 @@ export function processInsulationResistanceTurn(ctx) {
 
     const step = nextScriptStep(session, circuitRef);
     if (step.kind === 'done') {
-      finishScript(ws, session, sessionId, now, logger);
+      finishScript(ws, session, sessionId, now, logger, responseEpoch);
       return { handled: true, fallthrough: false };
     }
     if (step.kind === 'ask_voltage') {
@@ -843,6 +883,7 @@ export function processInsulationResistanceTurn(ctx) {
           missing_field: VOLTAGE_FIELD,
           now,
           kind: 'voltage',
+          responseEpoch,
         })
       );
       return { handled: true, fallthrough: false };
@@ -855,6 +896,7 @@ export function processInsulationResistanceTurn(ctx) {
         missing_field: step.field,
         now,
         kind: 'value',
+        responseEpoch,
       })
     );
     return { handled: true, fallthrough: false };
@@ -882,6 +924,7 @@ export function processInsulationResistanceTurn(ctx) {
             ? `Insulation resistance cancelled. ${filled} of 2 saved.`
             : 'Insulation resistance cancelled.',
         now,
+        responseEpoch,
       })
     );
     clearScript(session);
@@ -1012,7 +1055,7 @@ export function processInsulationResistanceTurn(ctx) {
       applyWrite(session, state.circuit_ref, VOLTAGE_FIELD, String(v), now);
       writes.push({ field: VOLTAGE_FIELD, value: String(v) });
       safeSend(ws, buildExtractionPayload(state.circuit_ref, writes));
-      finishScript(ws, session, sessionId, now, logger);
+      finishScript(ws, session, sessionId, now, logger, responseEpoch);
     };
 
     // 5a. Replying to a "Did you say <N> volts?" non-standard confirmation.
@@ -1050,6 +1093,7 @@ export function processInsulationResistanceTurn(ctx) {
             missing_field: VOLTAGE_FIELD,
             now,
             kind: 'voltage',
+            responseEpoch,
           })
         );
         return { handled: true, fallthrough: false };
@@ -1057,7 +1101,7 @@ export function processInsulationResistanceTurn(ctx) {
         // Unrecognised reply to the confirm — finish rather than loop
         // forever (the 60s timeout doesn't track voltage).
         state.voltagePendingConfirm = null;
-        finishScript(ws, session, sessionId, now, logger);
+        finishScript(ws, session, sessionId, now, logger, responseEpoch);
         return { handled: true, fallthrough: false };
       }
     }
@@ -1069,15 +1113,21 @@ export function processInsulationResistanceTurn(ctx) {
     if (voltage !== null && !STANDARD_IR_VOLTAGES.has(Number(voltage))) {
       state.voltagePendingConfirm = Number(voltage);
       state.last_turn_at = now;
-      safeSend(ws, {
-        type: 'ask_user_started',
-        tool_call_id: `srv-irs-${sessionId}-${state.circuit_ref}-${VOLTAGE_FIELD}-confirm-${now}`,
-        question: `Did you say ${voltage} volts? The usual is 250 or 500 — if that's right, just say it again.`,
-        reason: 'missing_value',
-        context_field: VOLTAGE_FIELD,
-        context_circuit: state.circuit_ref,
-        expected_answer_shape: 'value',
-      });
+      safeSend(
+        ws,
+        stampResponseEpoch(
+          {
+            type: 'ask_user_started',
+            tool_call_id: `srv-irs-${sessionId}-${state.circuit_ref}-${VOLTAGE_FIELD}-confirm-${now}`,
+            question: `Did you say ${voltage} volts? The usual is 250 or 500 — if that's right, just say it again.`,
+            reason: 'missing_value',
+            context_field: VOLTAGE_FIELD,
+            context_circuit: state.circuit_ref,
+            expected_answer_shape: 'value',
+          },
+          responseEpoch
+        )
+      );
       return { handled: true, fallthrough: false };
     }
 
@@ -1093,7 +1143,7 @@ export function processInsulationResistanceTurn(ctx) {
     // something we don't recognise as a voltage; we still finish (the
     // 60s timeout module will not re-ask voltage — voltage is not in
     // IR_FIELDS). The next turn would have run through Sonnet anyway.
-    finishScript(ws, session, sessionId, now, logger);
+    finishScript(ws, session, sessionId, now, logger, responseEpoch);
     return { handled: true, fallthrough: false };
   }
 
@@ -1133,7 +1183,7 @@ export function processInsulationResistanceTurn(ctx) {
   // 8. What's next?
   const step = nextScriptStep(session, state.circuit_ref);
   if (step.kind === 'done') {
-    finishScript(ws, session, sessionId, now, logger);
+    finishScript(ws, session, sessionId, now, logger, responseEpoch);
     return { handled: true, fallthrough: false };
   }
   if (step.kind === 'ask_voltage') {
@@ -1146,6 +1196,7 @@ export function processInsulationResistanceTurn(ctx) {
         missing_field: VOLTAGE_FIELD,
         now,
         kind: 'voltage',
+        responseEpoch,
       })
     );
     return { handled: true, fallthrough: false };
@@ -1158,6 +1209,7 @@ export function processInsulationResistanceTurn(ctx) {
       missing_field: step.field,
       now,
       kind: 'value',
+      responseEpoch,
     })
   );
   return { handled: true, fallthrough: false };

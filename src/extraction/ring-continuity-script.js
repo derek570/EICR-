@@ -394,12 +394,30 @@ function safeSend(ws, payload) {
 }
 
 /**
+ * PLAN-C P4d (row 2) — stamp the creation-time response epoch onto an
+ * ask_user_started frame (as `utterance_id`) so the client chime-silence
+ * watchdog disarms on the spoken question. Non-empty string only, mirroring
+ * the live dialogue-engine helper (helpers/wire-emit.js) and P4c's
+ * advance-only-on-non-empty rule. NOTE: this legacy script is no longer on the
+ * live path (sonnet-stream drives the dialogue-engine wrappers) — the epoch is
+ * threaded here for wire-contract completeness / future re-wiring, with a null
+ * default rather than the engine's REQUIRED sentinel (no live caller to
+ * enforce, and a throw would add abort risk with no runtime benefit).
+ */
+function stampResponseEpoch(payload, responseEpoch) {
+  if (typeof responseEpoch === 'string' && responseEpoch) {
+    payload.utterance_id = responseEpoch;
+  }
+  return payload;
+}
+
+/**
  * Build an ask_user_started wire payload for the next missing field.
  * Synthetic tool_call_id so the iOS side's dedupe doesn't collide with a
  * Sonnet-emitted ask. Marker `srv-rcs` distinguishes the script from the
  * 60s timeout module's `srv-ring` namespace.
  */
-function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind }) {
+function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind, responseEpoch = null }) {
   // kind:
   //   'which_circuit' → entry without a circuit number; question asks
   //                     for the circuit, not a value. context_field/circuit
@@ -407,25 +425,31 @@ function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind }) {
   //                     via Sonnet (see fallthrough on circuit answer below).
   //   'value'         → standard "what's the next reading?" prompt.
   if (kind === 'which_circuit') {
-    return {
-      type: 'ask_user_started',
-      tool_call_id: `srv-rcs-${sessionId}-which-${now}`,
-      question: 'Which circuit is the ring continuity for?',
-      reason: 'missing_context',
-      context_field: null,
-      context_circuit: null,
-      expected_answer_shape: 'value',
-    };
+    return stampResponseEpoch(
+      {
+        type: 'ask_user_started',
+        tool_call_id: `srv-rcs-${sessionId}-which-${now}`,
+        question: 'Which circuit is the ring continuity for?',
+        reason: 'missing_context',
+        context_field: null,
+        context_circuit: null,
+        expected_answer_shape: 'value',
+      },
+      responseEpoch
+    );
   }
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `srv-rcs-${sessionId}-${circuit_ref}-${missing_field}-${now}`,
-    question: FIELD_PROMPTS[missing_field]?.tts ?? `What's the ${missing_field}?`,
-    reason: 'missing_value',
-    context_field: missing_field,
-    context_circuit: circuit_ref,
-    expected_answer_shape: 'value',
-  };
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `srv-rcs-${sessionId}-${circuit_ref}-${missing_field}-${now}`,
+      question: FIELD_PROMPTS[missing_field]?.tts ?? `What's the ${missing_field}?`,
+      reason: 'missing_value',
+      context_field: missing_field,
+      context_circuit: circuit_ref,
+      expected_answer_shape: 'value',
+    },
+    responseEpoch
+  );
 }
 
 /**
@@ -440,19 +464,22 @@ function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind }) {
  * need a new payload type; the distinguishing marker is the `confirm`
  * tool_call_id suffix and `reason: 'confirm_ring_continuity'`.
  */
-function buildScriptConfirm({ sessionId, circuit_ref, values, now }) {
+function buildScriptConfirm({ sessionId, circuit_ref, values, now, responseEpoch = null }) {
   const r1 = values.ring_r1_ohm ?? '?';
   const rn = values.ring_rn_ohm ?? '?';
   const r2 = values.ring_r2_ohm ?? '?';
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `srv-rcs-${sessionId}-${circuit_ref}-confirm-${now}`,
-    question: `R1 ${r1}, Rn ${rn}, R2 ${r2}. All correct?`,
-    reason: 'confirm_ring_continuity',
-    context_field: null,
-    context_circuit: circuit_ref,
-    expected_answer_shape: 'value',
-  };
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `srv-rcs-${sessionId}-${circuit_ref}-confirm-${now}`,
+      question: `R1 ${r1}, Rn ${rn}, R2 ${r2}. All correct?`,
+      reason: 'confirm_ring_continuity',
+      context_field: null,
+      context_circuit: circuit_ref,
+      expected_answer_shape: 'value',
+    },
+    responseEpoch
+  );
 }
 
 /**
@@ -475,7 +502,7 @@ function detectConfirmationPositive(text) {
  * entry path (all 3 already filled at entry) and the active path
  * (all 3 just became filled after a write).
  */
-function transitionToConfirmation(ws, session, sessionId, now, logger) {
+function transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch = null) {
   const state = session.ringContinuityScript;
   if (!state) return;
   state.awaiting_confirmation = true;
@@ -486,6 +513,7 @@ function transitionToConfirmation(ws, session, sessionId, now, logger) {
       circuit_ref: state.circuit_ref,
       values: state.values,
       now,
+      responseEpoch,
     })
   );
   logger?.info?.('stage6.ring_continuity_script_awaiting_confirmation', {
@@ -503,16 +531,19 @@ function transitionToConfirmation(ws, session, sessionId, now, logger) {
  * that no reply is wanted; iOS treats this as a brief informational
  * announcement.
  */
-function buildScriptInfo({ sessionId, kind, text, now }) {
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `srv-rcs-${sessionId}-${kind}-${now}`,
-    question: text,
-    reason: 'info',
-    context_field: null,
-    context_circuit: null,
-    expected_answer_shape: 'none',
-  };
+function buildScriptInfo({ sessionId, kind, text, now, responseEpoch = null }) {
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `srv-rcs-${sessionId}-${kind}-${now}`,
+      question: text,
+      reason: 'info',
+      context_field: null,
+      context_circuit: null,
+      expected_answer_shape: 'none',
+    },
+    responseEpoch
+  );
 }
 
 /**
@@ -602,7 +633,17 @@ function applyWrite(session, circuit_ref, field, value, now) {
  * @param {number} [ctx.now]      Override for test determinism
  */
 export function processRingContinuityTurn(ctx) {
-  const { ws, session, sessionId, transcriptText, logger, now = Date.now() } = ctx;
+  const {
+    ws,
+    session,
+    sessionId,
+    transcriptText,
+    logger,
+    now = Date.now(),
+    // PLAN-C P4d (row 2) — creation-time response epoch threaded to every ask
+    // this turn emits (null on the dead legacy path; see stampResponseEpoch).
+    responseEpoch = null,
+  } = ctx;
   if (!session) return { handled: false };
 
   const state = session.ringContinuityScript;
@@ -719,6 +760,7 @@ export function processRingContinuityTurn(ctx) {
           missing_field: null,
           now,
           kind: 'which_circuit',
+          responseEpoch,
         })
       );
       return { handled: true, fallthrough: false };
@@ -731,7 +773,7 @@ export function processRingContinuityTurn(ctx) {
       // Was finishScript(); replaced 2026-05-26 to close the "stuck
       // with whatever Deepgram heard first" trap. See
       // `buildScriptConfirm` doc for the wire-shape choice.
-      transitionToConfirmation(ws, session, sessionId, now, logger);
+      transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
       return { handled: true, fallthrough: false };
     }
     safeSend(
@@ -742,6 +784,7 @@ export function processRingContinuityTurn(ctx) {
         missing_field: nextField,
         now,
         kind: 'value',
+        responseEpoch,
       })
     );
     return { handled: true, fallthrough: false };
@@ -769,6 +812,7 @@ export function processRingContinuityTurn(ctx) {
             ? `Ring continuity cancelled. ${filled} of 3 saved.`
             : 'Ring continuity cancelled.',
         now,
+        responseEpoch,
       })
     );
     clearScript(session);
@@ -835,7 +879,7 @@ export function processRingContinuityTurn(ctx) {
       if (overwrites.length > 0) {
         safeSend(ws, buildExtractionPayload(state.circuit_ref, overwrites));
       }
-      transitionToConfirmation(ws, session, sessionId, now, logger);
+      transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
       logger?.info?.('stage6.ring_continuity_script_confirmation_amended', {
         sessionId,
         circuit_ref: state.circuit_ref,
@@ -844,11 +888,11 @@ export function processRingContinuityTurn(ctx) {
       return { handled: true, fallthrough: false };
     }
     if (detectConfirmationPositive(text)) {
-      finishScript(ws, session, sessionId, now, logger);
+      finishScript(ws, session, sessionId, now, logger, responseEpoch);
       return { handled: true, fallthrough: false };
     }
     if (detectEntry(text).matched) {
-      transitionToConfirmation(ws, session, sessionId, now, logger);
+      transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
       return { handled: true, fallthrough: false };
     }
     logger?.info?.('stage6.ring_continuity_script_confirmation_idle', {
@@ -1044,7 +1088,7 @@ export function processRingContinuityTurn(ctx) {
   //    Deepgram garbled before we finalise. See `buildScriptConfirm`.
   const nextField = nextMissingField(state.values);
   if (!nextField) {
-    transitionToConfirmation(ws, session, sessionId, now, logger);
+    transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
     return { handled: true, fallthrough: false };
   }
 
@@ -1057,6 +1101,7 @@ export function processRingContinuityTurn(ctx) {
       missing_field: nextField,
       now,
       kind: 'value',
+      responseEpoch,
     })
   );
   return { handled: true, fallthrough: false };
@@ -1175,7 +1220,7 @@ function readExistingRingValues(session, circuit_ref) {
  * module's per-circuit timestamp because the bucket is full and there's
  * nothing to ask about later.
  */
-function finishScript(ws, session, sessionId, now, logger) {
+function finishScript(ws, session, sessionId, now, logger, responseEpoch = null) {
   const state = session.ringContinuityScript;
   if (!state) return;
   const { circuit_ref, values } = state;
@@ -1190,6 +1235,7 @@ function finishScript(ws, session, sessionId, now, logger) {
       kind: 'done',
       text: 'Got it.',
       now,
+      responseEpoch,
     })
   );
   logger?.info?.('stage6.ring_continuity_script_completed', {
