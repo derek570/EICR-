@@ -175,6 +175,25 @@ function consumeLegacyQuestionsForUser(entry) {
 }
 
 /**
+ * PLAN-C P4d (row 5) — stamp the creation-time response epoch onto legacy
+ * `question` frames BEFORE they enter the QuestionGate, so the frame the gate
+ * later flushes (via `...rest`) carries `utterance_id` and the client
+ * chime-silence watchdog disarms on the spoken question.
+ *
+ * Clones each question (never mutates the caller's array — the same objects are
+ * also referenced by resolveByFields) and stamps `utterance_id` ONLY for a
+ * non-empty string epoch; a null/empty epoch returns the array unchanged so the
+ * wire shape stays byte-identical to pre-P4d. Stamping at ENQUEUE (creation
+ * time) rather than at gate-flush time avoids the mutable-at-emit trap: the
+ * epoch is snapshotted with the question that produced it, not re-read from
+ * mutable session state whenever the gate happens to flush.
+ */
+function stampQuestionsWithUtteranceId(questions, utteranceId) {
+  if (typeof utteranceId !== 'string' || !utteranceId) return questions;
+  return questions.map((q) => ({ ...q, utterance_id: utteranceId }));
+}
+
+/**
  * 2026-05-08 multi-board sprint Phase E — unified `current_board_changed`
  * broadcast for the Sonnet-initiated path.
  *
@@ -2329,6 +2348,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 understood: true,
                 spoken_response: spoken_response || '',
                 action: action || null,
+                // PLAN-C P4d (row 6) — carry the batch result's response epoch so
+                // the client chime watchdog disarms on the spoken command reply.
+                // Non-empty string only, else omitted (byte-identical pre-P4d).
+                ...(typeof result.utterance_id === 'string' && result.utterance_id
+                  ? { utterance_id: result.utterance_id }
+                  : {}),
               })
             );
           }
@@ -2437,7 +2462,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             sessionId
           );
           if (filteredBatch.length > 0) {
-            questionGate.enqueue(filteredBatch);
+            // PLAN-C P4d (row 5) — carry the batch result's response epoch onto
+            // each question so the flushed `question` frame disarms the watchdog.
+            questionGate.enqueue(stampQuestionsWithUtteranceId(filteredBatch, result.utterance_id));
           }
         } else if (
           !consumeLegacyQuestionsForUser(entryRef) &&
@@ -3039,9 +3066,38 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       });
       for (const result of buffered) {
         try {
-          const { questions_for_user, extracted_readings, observationUpdates, ...rest } = result;
+          // PLAN-C P4d (row 7) — strip spoken_response/action from the extraction
+          // REPLAY (iOS plays spoken text only from voice_command_response, never
+          // from an extraction frame — see the live-path strip at the sync send
+          // below), then emit them as a SEPARATE voice_command_response carrying
+          // the buffered result's response epoch. SANCTIONED behaviour change: a
+          // buffered spoken_response that previously rode inside the (ignored)
+          // extraction replay — i.e. was effectively dropped on reconnect — now
+          // actually speaks, and disarms the client chime watchdog via utterance_id.
+          const {
+            questions_for_user,
+            extracted_readings,
+            observationUpdates,
+            spoken_response,
+            action,
+            ...rest
+          } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          if (spoken_response || action) {
+            ws.send(
+              JSON.stringify({
+                type: 'voice_command_response',
+                understood: true,
+                spoken_response: spoken_response || '',
+                action: action || null,
+                // Matches the sync/batch voice_command_response shape (row 6).
+                ...(typeof result.utterance_id === 'string' && result.utterance_id
+                  ? { utterance_id: result.utterance_id }
+                  : {}),
+              })
+            );
+          }
           // Hotfix slice 2.2 — replay any select_board / add_board boardOps
           // through the same broadcast scan the live tool-loop turn would
           // have used. Reconnect-during-board-switch was a silent banner
@@ -4375,6 +4431,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               understood: true,
               spoken_response: spoken_response || '',
               action: action || null,
+              // PLAN-C P4d (row 6) — carry the sync result's response epoch so the
+              // client chime watchdog disarms on the spoken command reply.
+              ...(typeof result.utterance_id === 'string' && result.utterance_id
+                ? { utterance_id: result.utterance_id }
+                : {}),
             })
           );
           logger.info('Voice command from extraction', {
@@ -4430,7 +4491,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           sessionId
         );
         if (filteredSync.length > 0) {
-          entry.questionGate.enqueue(filteredSync);
+          // PLAN-C P4d (row 5) — carry the sync result's response epoch onto
+          // each question (creation-time stamp; see stampQuestionsWithUtteranceId).
+          entry.questionGate.enqueue(stampQuestionsWithUtteranceId(filteredSync, result.utterance_id));
         }
       } else if (
         !consumeLegacyQuestionsForUser(entry) &&
@@ -4485,7 +4548,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               sessionId
             );
             if (filteredReview.length > 0) {
-              entry.questionGate.enqueue(filteredReview);
+              // PLAN-C P4d (row 5) — orphan review is a standalone Sonnet call
+              // with no result.utterance_id of its own, so stamp the questions
+              // with THIS turn's consumed utterance id (the current epoch the
+              // inspector is on) so they still disarm the watchdog.
+              entry.questionGate.enqueue(
+                stampQuestionsWithUtteranceId(filteredReview, consumedUtteranceId)
+              );
             }
           }
         } catch (reviewErr) {
