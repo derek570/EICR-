@@ -586,7 +586,7 @@ async function replayPendingRefinements(entry, sessionId) {
  * sees the code change (e.g. "make that a C2") without waiting for the web
  * search.
  */
-function dispatchObservationUpdates(ws, sessionId, updates) {
+function dispatchObservationUpdates(ws, sessionId, updates, { failFast = false } = {}) {
   if (!Array.isArray(updates) || updates.length === 0) return;
   if (ws.readyState !== ws.OPEN) return;
   for (const u of updates) {
@@ -621,6 +621,12 @@ function dispatchObservationUpdates(ws, sessionId, updates) {
         sessionId,
         error: err.message,
       });
+      // PLAN-C P4d (row 7, Codex r2) — in the reconnect-flush context the caller
+      // needs this failure to propagate so it can re-queue the whole entry (the
+      // obs-update replays next reconnect) instead of best-effort-swallowing it
+      // while the later voice_command_response still sends. Live callers keep the
+      // default best-effort behaviour (failFast omitted).
+      if (failFast) throw err;
     }
   }
 }
@@ -3091,13 +3097,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }
         try {
           // PLAN-C P4d (row 7) — strip spoken_response/action from the extraction
-          // REPLAY (iOS plays spoken text only from voice_command_response, never
-          // from an extraction frame — see the live-path strip at the sync send
-          // below); emit them as a SEPARATE voice_command_response carrying the
-          // buffered result's response epoch. SANCTIONED behaviour change: a
-          // buffered spoken_response that previously rode inside the (ignored)
-          // extraction replay — i.e. was effectively dropped on reconnect — now
-          // actually speaks, and disarms the client chime watchdog via utterance_id.
+          // REPLAY and canonicalise them onto the SAME voice_command_response
+          // channel the live sync/batch paths use (see the live-path strip at the
+          // sync send below) — carrying the buffered result's response epoch.
+          // SANCTIONED behaviour change (per the plan a buffered spoken_response
+          // was effectively dropped on reconnect): the spoken reply now rides the
+          // canonical channel and disarms the client chime watchdog via utterance_id.
           const {
             questions_for_user,
             extracted_readings,
@@ -3119,7 +3124,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           emitCurrentBoardChangedFromBoardOps(ws, entry.session?.stateSnapshot, result.board_ops);
           // Phase A: if the buffered extraction carried RULE 6 correction edits,
           // replay them on the restored socket so iOS doesn't miss the patch.
-          dispatchObservationUpdates(ws, sessionId, observationUpdates);
+          // failFast so a swallowed obs-update send failure re-queues the entry
+          // (Codex r2) instead of losing the correction while the VCR still sends.
+          dispatchObservationUpdates(ws, sessionId, observationUpdates, { failFast: true });
           // The audible reply is the LAST fallible send (exactly-once contract).
           if (spoken_response || action) {
             ws.send(

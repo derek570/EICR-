@@ -332,6 +332,47 @@ describe('P4d row 7 — flushPendingExtractions replay', () => {
     expect(vcrs[0].utterance_id).toBe('utt-B');
   });
 
+  test('Codex r2 — a failed observation_update replay re-queues the entry; VCR not spoken', async () => {
+    const { entry } = await startSession();
+    entry.pendingExtractions.push({
+      extracted_readings: [],
+      questions_for_user: [],
+      observations: [],
+      confirmations: [],
+      observationUpdates: [{ observation_id: 'o1', code: 'C2', observation_text: 'x' }],
+      spoken_response: 'Recorded.',
+      action: null,
+      utterance_id: 'utt-B',
+    });
+
+    const wsFail = makeFakeWs();
+    wsFail.send.mockImplementation((payload) => {
+      let msg;
+      try {
+        msg = JSON.parse(payload);
+      } catch {
+        msg = null;
+      }
+      // Extraction + board sends succeed; the observation_update replay throws.
+      if (msg?.type === 'observation_update') {
+        throw new Error('obs-update send failed mid-flush');
+      }
+      wsFail._sent.push(msg ?? payload);
+    });
+    wss.emit('connection', wsFail, { headers: {} }, 'user-1');
+    await sendFrame(wsFail, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
+
+    // failFast propagated the obs-update failure → entry re-queued, VCR (which is
+    // the LAST send) never went out, so nothing double-speaks next reconnect.
+    expect(entry.pendingExtractions.length).toBe(1);
+    expect(entry.pendingExtractions[0].utterance_id).toBe('utt-B');
+    expect(wsFail._sent.find((m) => m?.type === 'voice_command_response')).toBeUndefined();
+  });
+
   test('Codex r1 mini-review — FIFO: a first-entry failure holds back the second (no reordering)', async () => {
     const { entry } = await startSession();
     entry.pendingExtractions.push(
