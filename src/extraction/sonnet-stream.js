@@ -4793,3 +4793,11 @@ export { activeSessions };
 // tests (mocking the async gpt-5-search refiner to reach them directly would
 // add a heavy harness for no extra idiom coverage).
 export { dispatchObservationUpdates as _test_dispatchObservationUpdates };
+
+// PLAN-C P4d (row 5) — test seam for the pure question-epoch stamper. All three
+// QuestionGate enqueue sites (onBatchResult, sync handleTranscript, and the
+// periodic reviewForOrphanedValues path) route through this helper before
+// enqueue — onBatchResult/sync pass result.utterance_id, orphan-review passes
+// the turn's consumedUtteranceId — so a unit test of the stamper covers the
+// creation-time-clone contract for every site without standing up the WS closure.
+export { stampQuestionsWithUtteranceId as _test_stampQuestionsWithUtteranceId };
