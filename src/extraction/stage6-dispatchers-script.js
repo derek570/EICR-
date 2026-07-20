@@ -84,6 +84,12 @@ export async function dispatchStartDialogueScript(call, ctx) {
     ws: targetWs,
     logger,
     now: Date.now(),
+    // PLAN-C P4d (row 1) — stamp the engine's first ask_user_started with the
+    // live response epoch. The harness stashes the live responseEpochRef on the
+    // session at the top of runLiveMode (cleared in its finally); read `.current`
+    // here so the frame carries the arming utterance's id and the client chime
+    // watchdog disarms on the spoken question. Null on test paths / no live turn.
+    responseEpoch: session.activeResponseEpochRef?.current ?? null,
   });
 
   if (!result.ok) {

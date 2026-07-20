@@ -8,6 +8,44 @@
 import { applyFieldNameCorrection } from '../../field-name-corrections.js';
 
 /**
+ * PLAN-C P4d (row 1) — the response-epoch stamping primitives for the
+ * dialogue-engine ask CREATION paths.
+ *
+ * Every `ask_user_started` frame the engine emits in response to a chimed
+ * utterance must carry that utterance's response epoch (`utterance_id`) so the
+ * client chime-silence watchdog disarms on the spoken question instead of
+ * false-firing a 20s native apology over an ask the inspector already heard.
+ *
+ * `RESPONSE_EPOCH_REQUIRED` is a sentinel default on all three builders. A
+ * builder called WITHOUT threading the argument (a missed nested-fn thread)
+ * hits the sentinel and THROWS — turning a silent-null epoch leak into a loud
+ * test/lint failure (the plan's REQUIRED contract). An explicit `null` (there
+ * is genuinely no arming utterance — e.g. a test path or a script entered
+ * outside a live turn) is allowed and simply omits the wire field.
+ *
+ * `stampResponseEpoch` adds `utterance_id` ONLY for a non-empty string epoch,
+ * so the no-epoch case stays byte-identical to the pre-P4d wire shape and the
+ * `advanceResponseEpoch` "non-empty only" rule (P4c) is mirrored here.
+ */
+export const RESPONSE_EPOCH_REQUIRED = Symbol('dialogue.responseEpoch.required');
+
+function requireResponseEpoch(fnName, responseEpoch) {
+  if (responseEpoch === RESPONSE_EPOCH_REQUIRED) {
+    throw new Error(
+      `${fnName}: responseEpoch is required — thread the creation-time response ` +
+        `epoch through, or pass null explicitly when there is no arming utterance.`
+    );
+  }
+}
+
+function stampResponseEpoch(payload, responseEpoch) {
+  if (typeof responseEpoch === 'string' && responseEpoch) {
+    payload.utterance_id = responseEpoch;
+  }
+  return payload;
+}
+
+/**
  * Build an ask_user_started payload for a missing slot. Three flavours:
  *   - 'which_circuit' → entry without a circuit number; question asks
  *                       for the circuit, not a value. context_field /
@@ -31,17 +69,22 @@ export function buildScriptAsk({
   slotQuestion,
   now,
   kind,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED,
 }) {
+  requireResponseEpoch('buildScriptAsk', responseEpoch);
   if (kind === 'which_circuit') {
-    return {
-      type: 'ask_user_started',
-      tool_call_id: `${toolCallIdPrefix}-${sessionId}-which-${now}`,
-      question: whichCircuitQuestion,
-      reason: 'missing_context',
-      context_field: null,
-      context_circuit: null,
-      expected_answer_shape: 'value',
-    };
+    return stampResponseEpoch(
+      {
+        type: 'ask_user_started',
+        tool_call_id: `${toolCallIdPrefix}-${sessionId}-which-${now}`,
+        question: whichCircuitQuestion,
+        reason: 'missing_context',
+        context_field: null,
+        context_circuit: null,
+        expected_answer_shape: 'value',
+      },
+      responseEpoch
+    );
   }
   // Post-completion bulk-apply prompt (RCD, 2026-05-21). Acts like
   // 'which_circuit' on the wire (null context_field/circuit, value
@@ -50,25 +93,31 @@ export function buildScriptAsk({
   // the call stays distinct from the slot asks the engine just
   // emitted.
   if (kind === 'bulk_apply') {
-    return {
-      type: 'ask_user_started',
-      tool_call_id: `${toolCallIdPrefix}-${sessionId}-bulk-apply-${now}`,
-      question: slotQuestion,
-      reason: 'missing_context',
-      context_field: null,
-      context_circuit: null,
-      expected_answer_shape: 'value',
-    };
+    return stampResponseEpoch(
+      {
+        type: 'ask_user_started',
+        tool_call_id: `${toolCallIdPrefix}-${sessionId}-bulk-apply-${now}`,
+        question: slotQuestion,
+        reason: 'missing_context',
+        context_field: null,
+        context_circuit: null,
+        expected_answer_shape: 'value',
+      },
+      responseEpoch
+    );
   }
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `${toolCallIdPrefix}-${sessionId}-${circuit_ref}-${missing_field}-${now}`,
-    question: slotQuestion,
-    reason: 'missing_value',
-    context_field: missing_field,
-    context_circuit: circuit_ref,
-    expected_answer_shape: 'value',
-  };
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `${toolCallIdPrefix}-${sessionId}-${circuit_ref}-${missing_field}-${now}`,
+      question: slotQuestion,
+      reason: 'missing_value',
+      context_field: missing_field,
+      context_circuit: circuit_ref,
+      expected_answer_shape: 'value',
+    },
+    responseEpoch
+  );
 }
 
 /**
@@ -127,16 +176,21 @@ export function buildScriptConfirm({
   question,
   reason,
   now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED,
 }) {
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `${toolCallIdPrefix}-${sessionId}-${circuit_ref}-confirm-${now}`,
-    question,
-    reason,
-    context_field: null,
-    context_circuit: circuit_ref,
-    expected_answer_shape: 'value',
-  };
+  requireResponseEpoch('buildScriptConfirm', responseEpoch);
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `${toolCallIdPrefix}-${sessionId}-${circuit_ref}-confirm-${now}`,
+      question,
+      reason,
+      context_field: null,
+      context_circuit: circuit_ref,
+      expected_answer_shape: 'value',
+    },
+    responseEpoch
+  );
 }
 
 /**
@@ -145,16 +199,27 @@ export function buildScriptConfirm({
  * the wire shape iOS already plays through ElevenLabs; iOS treats the
  * 'none' shape as a brief informational announcement.
  */
-export function buildScriptInfo({ toolCallIdPrefix, sessionId, kind, text, now }) {
-  return {
-    type: 'ask_user_started',
-    tool_call_id: `${toolCallIdPrefix}-${sessionId}-${kind}-${now}`,
-    question: text,
-    reason: 'info',
-    context_field: null,
-    context_circuit: null,
-    expected_answer_shape: 'none',
-  };
+export function buildScriptInfo({
+  toolCallIdPrefix,
+  sessionId,
+  kind,
+  text,
+  now,
+  responseEpoch = RESPONSE_EPOCH_REQUIRED,
+}) {
+  requireResponseEpoch('buildScriptInfo', responseEpoch);
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `${toolCallIdPrefix}-${sessionId}-${kind}-${now}`,
+      question: text,
+      reason: 'info',
+      context_field: null,
+      context_circuit: null,
+      expected_answer_shape: 'none',
+    },
+    responseEpoch
+  );
 }
 
 /**
@@ -242,6 +307,13 @@ export function safeSend(ws, payload) {
         ws[ASK_STARTED_OBSERVER]?.({
           toolCallId: payload.tool_call_id,
           source: 'dialogue_script',
+          // PLAN-C P4d (row 1) — the SEND-TIME stamped-id backstop. The
+          // response epoch is snapshotted at frame CREATION by each builder
+          // (never derived here — safeSend must NOT attach the epoch), so this
+          // is a pure read of what already crossed the wire. `null` when the
+          // creation-time epoch was empty/absent; a test asserts every engine
+          // ask that armed a chime carried a non-null id.
+          utteranceId: typeof payload.utterance_id === 'string' ? payload.utterance_id : null,
         });
       } catch {
         // best-effort observer — never propagate

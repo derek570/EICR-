@@ -3647,6 +3647,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         transcriptText,
         logger,
+        // PLAN-C P4d (row 1) — the creation-time response epoch for any
+        // ask_user_started this active-path turn emits is THIS transcript's
+        // utterance id, so the client chime watchdog disarms on the spoken ask.
+        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
       });
       if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
         // Script handled the turn end-to-end. Return — the finally block
@@ -3684,6 +3688,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         transcriptText,
         logger,
+        // PLAN-C P4d (row 1) — see the ring-script call above.
+        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
       });
       if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
         return;
@@ -3707,6 +3713,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         sessionId,
         transcriptText,
         logger,
+        // PLAN-C P4d (row 1) — see the ring-script call above.
+        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
       });
       if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
         return;
