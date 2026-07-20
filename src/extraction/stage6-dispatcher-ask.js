@@ -774,6 +774,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // onto queued apologies.
       signal,
       generationId,
+      // PLAN-C P4c — the pvr broker inside buildResolvedBody advances this ref
+      // when a re-ask is answered by a later utterance (see resolvePendingValueFlow).
+      responseEpochRef,
     });
 
     // §D2 (field-feedback-2026-07-14) — echo the server-assigned
@@ -825,6 +828,7 @@ async function buildResolvedBody({
   onAskRegistered = null,
   signal = null,
   generationId = null,
+  responseEpochRef = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
