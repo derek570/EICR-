@@ -530,6 +530,14 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
                 context_field: input.context_field,
                 context_circuit: input.context_circuit,
                 expected_answer_shape: input.expected_answer_shape,
+                // PLAN-C P4d (row 4) — stamp the QUESTION frame with the
+                // response epoch at emit time (creation == emit for the
+                // dispatcher ask; the ref is not yet advanced for the initial
+                // ask, so this is the arming utterance's id). Non-empty only,
+                // so a null epoch keeps the frame byte-identical to pre-P4d.
+                ...(typeof responseEpochRef?.current === 'string' && responseEpochRef.current
+                  ? { utterance_id: responseEpochRef.current }
+                  : {}),
               })
             );
             emitted = true;
@@ -1464,6 +1472,13 @@ async function brokerDeterministicAsk({
             context_field: contextField,
             context_circuit: contextCircuit,
             expected_answer_shape: expectedAnswerShape,
+            // PLAN-C P4d (row 4) — stamp the brokered pvr re-ask QUESTION frame
+            // with the current response epoch at emit time (P4c already advanced
+            // the ref after the initial await, so this carries whichever
+            // utterance owns the loop now). Non-empty only.
+            ...(typeof responseEpochRef?.current === 'string' && responseEpochRef.current
+              ? { utterance_id: responseEpochRef.current }
+              : {}),
           })
         );
         questionEmitted = true;
