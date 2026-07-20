@@ -3072,18 +3072,29 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // zeroed buffer. A re-queued entry may re-send its extraction frame on the
       // next reconnect (idempotent iOS writes — benign) but the audible reply is
       // never lost — the whole point of the row-7 "now actually speaks" change.
+      // FIFO + exactly-once-audible (Codex diff-review r1 mini-review): on the
+      // FIRST closed socket or send failure, STOP and re-queue the current entry
+      // plus the entire untouched suffix IN ORDER — never deliver a later entry
+      // ahead of an earlier failed one. The audible voice_command_response is
+      // sent LAST (after the extraction + board + observation-update replays), so
+      // if any earlier send throws, the VCR has NOT yet gone out and the
+      // re-queued entry replays it EXACTLY ONCE next reconnect (a re-sent
+      // extraction/board/obs frame is idempotent-benign; the spoken reply must
+      // never double-speak — Audio-First #1).
       const requeue = [];
+      let halted = false;
       for (const result of buffered) {
-        if (!ws || ws.readyState !== ws.OPEN) {
+        if (halted || !ws || ws.readyState !== ws.OPEN) {
           requeue.push(result);
+          halted = true;
           continue;
         }
         try {
           // PLAN-C P4d (row 7) — strip spoken_response/action from the extraction
           // REPLAY (iOS plays spoken text only from voice_command_response, never
           // from an extraction frame — see the live-path strip at the sync send
-          // below), then emit them as a SEPARATE voice_command_response carrying
-          // the buffered result's response epoch. SANCTIONED behaviour change: a
+          // below); emit them as a SEPARATE voice_command_response carrying the
+          // buffered result's response epoch. SANCTIONED behaviour change: a
           // buffered spoken_response that previously rode inside the (ignored)
           // extraction replay — i.e. was effectively dropped on reconnect — now
           // actually speaks, and disarms the client chime watchdog via utterance_id.
@@ -3097,6 +3108,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           } = result;
           const resultWithoutQuestions = { readings: extracted_readings, ...rest };
           ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+          // Hotfix slice 2.2 — replay any select_board / add_board boardOps
+          // through the same broadcast scan the live tool-loop turn would
+          // have used. Reconnect-during-board-switch was a silent banner
+          // miss pre-hotfix: the buffered extraction reaches iOS but the
+          // current_board_changed envelope was never re-emitted, so iOS
+          // jobVM.currentBoardId stayed stale until the next live op.
+          // The snapshot is the post-flip state at flush time, so
+          // designations resolve correctly inside the helper.
+          emitCurrentBoardChangedFromBoardOps(ws, entry.session?.stateSnapshot, result.board_ops);
+          // Phase A: if the buffered extraction carried RULE 6 correction edits,
+          // replay them on the restored socket so iOS doesn't miss the patch.
+          dispatchObservationUpdates(ws, sessionId, observationUpdates);
+          // The audible reply is the LAST fallible send (exactly-once contract).
           if (spoken_response || action) {
             ws.send(
               JSON.stringify({
@@ -3111,23 +3135,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               })
             );
           }
-          // Hotfix slice 2.2 — replay any select_board / add_board boardOps
-          // through the same broadcast scan the live tool-loop turn would
-          // have used. Reconnect-during-board-switch was a silent banner
-          // miss pre-hotfix: the buffered extraction reaches iOS but the
-          // current_board_changed envelope was never re-emitted, so iOS
-          // jobVM.currentBoardId stayed stale until the next live op.
-          // The snapshot is the post-flip state at flush time, so
-          // designations resolve correctly inside the helper.
-          emitCurrentBoardChangedFromBoardOps(ws, entry.session?.stateSnapshot, result.board_ops);
-          // Phase A: if the buffered extraction carried RULE 6 correction edits,
-          // replay them on the restored socket so iOS doesn't miss the patch.
-          dispatchObservationUpdates(ws, sessionId, observationUpdates);
         } catch (err) {
           logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
-          // Re-queue so a buffered spoken_response is replayed on the next
-          // reconnect rather than lost (row 7 audible-replay guarantee).
+          // Re-queue this entry AND halt so nothing after it is delivered
+          // out of order; the buffered spoken_response replays next reconnect
+          // (row 7 audible-replay guarantee).
           requeue.push(result);
+          halted = true;
         }
       }
       if (requeue.length) {

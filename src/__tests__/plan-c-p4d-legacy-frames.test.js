@@ -272,7 +272,7 @@ describe('P4d row 7 — flushPendingExtractions replay', () => {
     expect(extraction.result.readings).toHaveLength(1);
   });
 
-  test('Codex r1 — a send failure RE-QUEUES the buffered result (spoken_response never lost)', async () => {
+  test('Codex r1 mini-review — a throw ON THE EXTRACTION SEND re-queues the entry; next reconnect drains it in order', async () => {
     const { entry } = await startSession();
     entry.pendingExtractions.push({
       extracted_readings: [],
@@ -284,14 +284,24 @@ describe('P4d row 7 — flushPendingExtractions replay', () => {
       utterance_id: 'utt-B',
     });
 
-    // Reconnect on a socket whose FIRST send throws → the flush must re-queue.
+    // Reconnect on a socket that lets session_ack etc. through but throws
+    // SPECIFICALLY on the extraction replay inside flushPendingExtractions —
+    // otherwise the throw would land on session_ack (before the flush) and the
+    // test would pass without exercising the re-queue at all.
     const wsFail = makeFakeWs();
-    let firstSend = true;
-    wsFail.send.mockImplementation(() => {
-      if (firstSend) {
-        firstSend = false;
-        throw new Error('socket blew up mid-flush');
+    let extractionAttempted = false;
+    wsFail.send.mockImplementation((payload) => {
+      let msg;
+      try {
+        msg = JSON.parse(payload);
+      } catch {
+        msg = null;
       }
+      if (msg?.type === 'extraction') {
+        extractionAttempted = true;
+        throw new Error('socket blew up on the extraction replay');
+      }
+      wsFail._sent.push(msg ?? payload);
     });
     wss.emit('connection', wsFail, { headers: {} }, 'user-1');
     await sendFrame(wsFail, {
@@ -300,9 +310,58 @@ describe('P4d row 7 — flushPendingExtractions replay', () => {
       jobState: { certificateType: 'eicr' },
     });
 
-    // The buffered result is preserved for the next reconnect, not dropped.
+    // The flush REACHED the extraction send (not blocked earlier) and re-queued.
+    expect(extractionAttempted).toBe(true);
     expect(entry.pendingExtractions.length).toBe(1);
     expect(entry.pendingExtractions[0].utterance_id).toBe('utt-B');
+    // The VCR was NEVER emitted on the failed attempt (it is the last send) — so
+    // the next reconnect speaks it EXACTLY once.
+    expect(wsFail._sent.find((m) => m?.type === 'voice_command_response')).toBeUndefined();
+
+    // Second reconnect on a healthy socket drains the buffer and speaks once.
+    const wsOk = makeFakeWs();
+    wss.emit('connection', wsOk, { headers: {} }, 'user-1');
+    await sendFrame(wsOk, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
+    expect(entry.pendingExtractions.length).toBe(0);
+    const vcrs = wsOk._sent.filter((m) => m?.type === 'voice_command_response');
+    expect(vcrs).toHaveLength(1);
+    expect(vcrs[0].utterance_id).toBe('utt-B');
+  });
+
+  test('Codex r1 mini-review — FIFO: a first-entry failure holds back the second (no reordering)', async () => {
+    const { entry } = await startSession();
+    entry.pendingExtractions.push(
+      { extracted_readings: [{ circuit: 1, field: 'zs', value: 0.1 }], utterance_id: 'utt-A' },
+      { extracted_readings: [{ circuit: 2, field: 'zs', value: 0.2 }], utterance_id: 'utt-B' }
+    );
+
+    const wsFail = makeFakeWs();
+    wsFail.send.mockImplementation((payload) => {
+      let msg;
+      try {
+        msg = JSON.parse(payload);
+      } catch {
+        msg = null;
+      }
+      if (msg?.type === 'extraction') {
+        throw new Error('extraction send fails for both entries this flush');
+      }
+      wsFail._sent.push(msg ?? payload);
+    });
+    wss.emit('connection', wsFail, { headers: {} }, 'user-1');
+    await sendFrame(wsFail, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
+
+    // Both entries re-queued in ORIGINAL order (A before B) — the halt stops the
+    // loop at the first failure so B is never delivered ahead of A.
+    expect(entry.pendingExtractions.map((r) => r.utterance_id)).toEqual(['utt-A', 'utt-B']);
   });
 });
 
