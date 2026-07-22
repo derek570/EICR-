@@ -54,6 +54,10 @@ import {
 } from './parsers/circuit-range.js';
 import { OBSERVATION_PATTERN } from '../pre-llm-gate.js';
 import { coerceRecordReadingValue } from '../record-reading-coercion.js';
+// P1 ring-script-hardening — "reading-like" classification for the
+// confirmation branch's 5h idle rule (never consume a dictated reading into
+// the miss counter). Leaf module (imports only node:module), no cycle.
+import { detectStructuredReading } from '../stage6-pending-value.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -91,10 +95,21 @@ export function processDialogueTurn(ctx) {
     // threaded UNCHANGED through every nested engine fn to the builders. null
     // when there is no live arming utterance (test paths / legacy callers).
     responseEpoch = null,
+    // P1 ring-script-hardening (Fix 4) — the RAW client reply, un-annotated.
+    // sonnet-stream prepends the `[In response to TTS question…]` bracket to
+    // transcriptText BEFORE invoking the engine; parsing that annotated
+    // string in the confirmation branch lets extractNamedFieldValues read
+    // R1/Rn/R2 out of the QUOTED question and lets detectPositive match
+    // "correct" inside "All correct?" even when the reply is "No.". Every
+    // confirmation-branch decision parses `replyText` (raw with annotated
+    // fallback for direct callers); transcriptText stays the model-bound
+    // fallthrough text.
+    rawReplyText = null,
   } = ctx;
   if (!session) return { handled: false };
   if (!Array.isArray(schemas) || schemas.length === 0) return { handled: false };
   const text = typeof transcriptText === 'string' ? transcriptText : '';
+  const replyText = typeof rawReplyText === 'string' ? rawReplyText : text;
 
   const state = session.dialogueScriptState;
 
@@ -121,22 +136,69 @@ export function processDialogueTurn(ctx) {
       return { handled: false };
     }
     if (state.active && !state.bulkApplyPending) {
-      // Abort the active script: the inspector's broadcast intent
-      // supersedes the partial single-circuit walk-through. Already-
-      // committed snapshot writes (applyWrite calls earlier in this
-      // session) are NOT rolled back — they're the inspector's confirmed
-      // single-circuit readings. We only discard the in-memory working
-      // copy and any pending_writes that hadn't been drained yet.
-      logger?.info?.('dialogue_broadcast_aborted_mid_script', {
-        sessionId,
-        schemaName: state.schemaName,
-        circuit_ref: state.circuit_ref,
-        filled_keys: Object.keys(state.values ?? {}),
-        pending_writes_count: Array.isArray(state.pending_writes) ? state.pending_writes.length : 0,
-        textPreview: text.slice(0, 80),
-      });
-      clearScriptState(session);
-      return { handled: false };
+      // P1 ring-script-hardening — canonical position 0: NARROW
+      // destructive-broadcast exemption during awaiting_confirmation.
+      // "Clear the ring readings for ALL circuits" is a delete intent that
+      // must reach the position-1 clearIntent preflight (server-note delete
+      // exit), not be consumed here. The exemption is ONLY for replies that
+      // ALSO match the schema's confirmationClearIntentPattern — a blanket
+      // exemption would let "earths are 1.19 for all circuits" hit the 5b
+      // named-amend, write ONLY the current circuit, and silently drop the
+      // all-circuits scope. Non-matching broadcast replies keep today's
+      // pre-filter behaviour (clear + fall through to Sonnet's
+      // set_field_for_all_circuits).
+      const preFilterSchema = schemas.find((s) => s.name === state.schemaName);
+      const destructiveBroadcastBypass =
+        state.awaiting_confirmation === true &&
+        preFilterSchema?.confirmationClearIntentPattern &&
+        preFilterSchema.confirmationClearIntentPattern.test(replyText);
+      // Codex diff-review r1 — false comma-LIST exemption during
+      // confirmation: the broadcast list regex misreads a single
+      // circuit-scoped decimal reading ("Zs on circuit 17, 0.62" →
+      // "circuit 17, 0") as a two-circuit list. Such a reply is a READING,
+      // owned by the confirmation branch's 5h reading-like rule (the plan's
+      // pinned exemplar). Bypass the pre-filter ONLY when neutralising the
+      // false `circuit N, <decimal>` pair kills the broadcast signal
+      // entirely — a reply with a genuine all/range/multi-circuit scope
+      // keeps today's pre-filter behaviour. Confirmation-only: mid-collection
+      // pre-filter behaviour is unchanged.
+      const falseListDecimalBypass =
+        state.awaiting_confirmation === true &&
+        !destructiveBroadcastBypass &&
+        /\bcircuits?\s+\d{1,3}\s*(?:,|and)\s*\d{1,3}\.\d/i.test(text) &&
+        !detectBroadcastIntent(
+          text.replace(/(\bcircuits?\s+\d{1,3}\s*)(?:,|and)(\s*\d{1,3}\.\d)/gi, '$1;$2')
+        );
+      if (!destructiveBroadcastBypass && !falseListDecimalBypass) {
+        // Abort the active script: the inspector's broadcast intent
+        // supersedes the partial single-circuit walk-through. Already-
+        // committed snapshot writes (applyWrite calls earlier in this
+        // session) are NOT rolled back — they're the inspector's confirmed
+        // single-circuit readings. We only discard the in-memory working
+        // copy and any pending_writes that hadn't been drained yet.
+        //
+        // Audio-First purge contract: when this clear abandons an
+        // in-flight CONFIRMATION, the queued "All correct?" prompt is now
+        // stale — purge it before the silent fallthrough (a state-clearing
+        // silent fallthrough is a covered confirmation-abandonment exit).
+        if (state.awaiting_confirmation === true && preFilterSchema) {
+          sendScriptPurge(ws, preFilterSchema, sessionId);
+        }
+        logger?.info?.('dialogue_broadcast_aborted_mid_script', {
+          sessionId,
+          schemaName: state.schemaName,
+          circuit_ref: state.circuit_ref,
+          filled_keys: Object.keys(state.values ?? {}),
+          pending_writes_count: Array.isArray(state.pending_writes)
+            ? state.pending_writes.length
+            : 0,
+          textPreview: text.slice(0, 80),
+        });
+        clearScriptState(session);
+        return { handled: false };
+      }
+      // Destructive broadcast during confirmation → fall through to the
+      // active path; position 1 owns the turn.
     }
     // bulkApplyPending === true → fall through to the active-path
     // handler below; handleBulkApplyReply takes the turn via the
@@ -184,6 +246,15 @@ export function processDialogueTurn(ctx) {
           filled: Object.keys(state.values).length,
           ms_since_last_turn: now - state.last_turn_at,
         });
+        // Audio-First purge contract (P1): a hard timeout by definition
+        // means script prompts may be dangling unanswered — purge the
+        // schema's queued TTS namespace before the silent clear. SCOPED to
+        // schemas with a confirmation block (ring only today): the P1 purge
+        // contract covers the ring confirmation machinery; IR/OCPD/RCBO/RCD
+        // timeout wire behaviour stays unchanged (Codex diff-review r1).
+        if (schema.confirmation?.buildMessage) {
+          sendScriptPurge(ws, schema, sessionId);
+        }
         clearScriptState(session);
         // Fall through to entry detection below.
       } else {
@@ -193,6 +264,7 @@ export function processDialogueTurn(ctx) {
           sessionId,
           text,
           transcriptText,
+          replyText,
           schema,
           schemas,
           logger,
@@ -283,32 +355,68 @@ export function processDialogueTurn(ctx) {
     return { handled: false };
   }
 
+  // [DEVIATION — Codex diff-review r1, WITHIN_INTENT] Cross-wrapper
+  // terminal entry-guard veto. sonnet-stream invokes the ring, IR, and
+  // protective-device wrappers SEQUENTIALLY on the same transcript; a
+  // multi-scope destructive request ("delete the ring continuity and
+  // insulation resistance readings for circuit 13") would be correctly
+  // guard-skipped by the ring wrapper only to be hijacked by the IR
+  // wrapper's unguarded trigger — the delete request still never reaches
+  // the model. When ANY schema's entryExclusionPattern fires, the engine
+  // records a short-lived per-session veto keyed on the EXACT transcript;
+  // subsequent processDialogueTurn calls for the same text within the
+  // window skip entry detection entirely (fall through to Sonnet). Checked
+  // at CALL start only, so the within-call `continue` semantics of the
+  // guard (a different schema in the SAME call may still enter) are
+  // unchanged. Engine-only; no wire change.
+  {
+    // Keyed on the RAW reply (mini-review r1): the confirmation delete exit
+    // REPLACES transcriptText with the server note before later wrappers
+    // run, so the annotated text is not stable across wrappers — the raw
+    // reply is (sonnet-stream passes the same msg.text to all three).
+    const veto = session.dialogueEntryGuardVeto;
+    if (veto && veto.text === replyText && Math.abs(now - veto.at) < ENTRY_GUARD_VETO_WINDOW_MS) {
+      logger?.info?.('dialogue_entry_guard_veto_honoured', {
+        sessionId,
+        textPreview: text.slice(0, 80),
+      });
+      return { handled: false };
+    }
+  }
+
   // Entry detection — first matching schema wins.
   for (const schema of schemas) {
     const entry = detectEntry(text, schema);
     if (!entry.matched) continue;
 
-    // PLAN-backend-final.md Phase 6.1 — RCD entry guard. Field repro:
-    // session 60754E4D had the inspector say *"please delete RCD"* and
-    // *"why haven't you deleted the RCD trip time"* six times in two
-    // minutes; the RCD schema's `\bRCD\b` trigger matched each time
-    // and the script re-asked the deferred `rcd_bs_en` slot — an
-    // unwanted re-entry loop. Sonnet already has the right tools
-    // (`clear_reading` / `delete_circuit` / `record_reading`) to
-    // handle these utterances; we just need to keep the dialogue
-    // engine out of the way.
+    // Entry-exclusion guard — OPT-IN per schema (P1 ring-script-hardening,
+    // 2026-07-22, generalising the Phase 6.1 RCD-only guard). Field repro for
+    // the original RCD guard: session 60754E4D ("please delete RCD" ×6
+    // re-entered the script). Field repro for ring: session B4C45F25 —
+    // "Can you delete the readings for the ring continuity on circuit 13"
+    // trigger-matched the ring schema, jumped straight to the all-filled
+    // confirmation, and the delete intent never reached the model.
     //
-    // The exclusion pass fires ONLY for the RCD schema (the loop above
-    // applies the same script-entry logic to ring-continuity /
-    // insulation-resistance / OCPD / RCBO, but those have neither the
-    // re-entry pattern nor the deferred-slot loop that motivated this
-    // guard). When the imperative or denial markers appear alongside
-    // \bRCD\b, fall through to Sonnet rather than entering the script.
-    if (schema.name === 'rcd' && RCD_ENTRY_EXCLUSION_PATTERN.test(text)) {
-      logger?.info?.('rcd_entry_guard_skipped', {
+    // A schema that supplies `entryExclusionPattern` (an object with a
+    // `test(text)` method — RegExp or composite) opts in: when the pattern
+    // matches, the engine falls through to Sonnet instead of entering.
+    // Schemas WITHOUT the property keep today's behaviour unchanged
+    // (IR/OCPD/RCBO). RCD's pattern preserves its combined
+    // imperative+denial behaviour verbatim (moved to schemas/rcd.js); ring
+    // supplies destructive/corrective verbs ONLY — question-form entries
+    // ("Why haven't you added the ring continuity to circuit 17?") must
+    // keep entering, because field evidence shows they usefully recover
+    // the user. Sonnet has the right tools (`clear_reading` /
+    // `delete_circuit` / `record_reading`) for the excluded utterances.
+    if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(text)) {
+      logger?.info?.(`${schema.name}_entry_guard_skipped`, {
         sessionId,
         textPreview: text.slice(0, 80),
       });
+      // Arm the cross-wrapper veto (see the check above the loop) so a
+      // LATER wrapper's unguarded schema cannot capture this guarded
+      // destructive utterance in the same turn. Keyed on the raw reply.
+      session.dialogueEntryGuardVeto = { text: replyText, at: now };
       // Continue the loop in case a DIFFERENT schema also matched —
       // unlikely in practice (only RCD triggers on \bRCD\b alone) but
       // the structural guarantee is "fall through to Sonnet", not
@@ -336,30 +444,176 @@ export function processDialogueTurn(ctx) {
   return { handled: false };
 }
 
-// PLAN-backend-final.md Phase 6.1 — exclusion patterns that gate RCD
-// script entry. Two patterns rather than one alternation so a future
-// addition (e.g. a third class of phrases) can land without re-
-// untangling a long alternation chain. Both are case-insensitive.
-//
-// Pattern A — corrective imperatives ("delete RCD" / "undo RCD" / etc.).
-// Pattern B — denial / interrogative-complaint phrases ("what are you
-// doing" / "I didn't" / "that's wrong" / "that's not").
-//
-// The two are combined with an OR in the test below to keep the
-// matcher cheap (one short-circuiting test per inbound transcript).
-const RCD_ENTRY_EXCLUSION_IMPERATIVE = /\b(delete|undo|cancel|fix|why|stop|remove|clear)\b/i;
-const RCD_ENTRY_EXCLUSION_DENIAL = /\b(what are you|i didn't|that's wrong|that's not)\b/i;
-const RCD_ENTRY_EXCLUSION_PATTERN = {
-  test(text) {
-    return RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) || RCD_ENTRY_EXCLUSION_DENIAL.test(text);
-  },
-};
-
 // Bare yes/no replies to a slot confirm gate (#1 IR voltage). Kept deliberately
 // tight — a value-bearing reply ("no, 250") is handled by re-parsing the slot,
 // not by these, so a stray "no" never strands the value.
 const AFFIRMATIVE_RE = /^\s*(?:yes|yeah|yep|yup|correct|that'?s right|aye)\b/i;
 const NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
+
+// Cross-wrapper entry-guard veto window (see the veto block in
+// processDialogueTurn). Generous enough to cover the ms-apart sequential
+// wrapper calls within one transcript turn; short enough that a genuine
+// later re-dictation of the same words re-evaluates from scratch.
+const ENTRY_GUARD_VETO_WINDOW_MS = 5000;
+
+// ── P1 ring-script-hardening (2026-07-22) — confirmation-branch helpers. ──
+
+// Negated-positive guard: ring's detectPositive matches `correct`/`ok(ay)`
+// ANYWHERE while NEGATIVE_RE only matches reply-INITIAL no/nope/nah — so
+// "That's not correct" / "Not okay" would bypass the negation branch and
+// false-finish the script. A negation token preceding the positive token
+// within the clause ⇒ treat as a negation, never a confirm. Clause-bounded
+// (`[^.?!]*?`), NOT a fixed character window, and `n't` may sit words away
+// from the positive token — "It isn't actually correct" must never finish
+// (Codex diff-review r1).
+// Apostrophe variants (per-fix mini-review r1): ASCII n't, smart-quote
+// n't, AND the ASR apostrophe-stripped auxiliary forms (isnt/wasnt/…,
+// enumerated — a bare `nt\b` would false-match "current is correct").
+const NEGATED_POSITIVE_RE =
+  /(?:\b(?:not|never|no)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
+
+// Correction-cue veto for the 5f positive finish (Codex diff-review r2 +
+// per-fix mini-review): detectPositive matches positive vocabulary
+// ANYWHERE, so a reply pairing a positive token with an explicit
+// correction cue ("Okay, R1 is wrong", "All good except R2", "All correct
+// apart from R2", "That cannot be correct", "Yes, there is a mistake in
+// R1" — the negation may sit in a LATER clause than the positive) would
+// false-finish. A cue routes to the 5e negation flow instead — an
+// unnecessary re-ask is always safer than accepting rejected readings.
+// `cannot` is predicate-bound (cannot be correct / cannot confirm), never
+// a bare token — "I cannot see anything wrong, so yes" must finish.
+const CONFIRMATION_CORRECTION_CUE_RE =
+  /(?:\b(?:wrong|incorrect|except|mistakes?)\b|\bapart\s+from\b|\bneeds?\s+(?:changing|correcting|redoing)\b|\b(?:cannot|can['\u2019]?t)\s+be\s+(?:correct|right)\b|\bcannot\s+confirm\b)/i;
+
+// Polarity exemption for the cue veto: a cue governed by an emptiness
+// quantifier is a CONFIRMATION, not a correction — "Yes, nothing is
+// wrong" / "none of those are incorrect" / "cannot see anything wrong, so
+// yes" must finish. Bare "no" is deliberately NOT in the quantifier set:
+// "Actually no, R1 is wrong" is a genuine correction.
+const CONFIRMATION_CUE_EXEMPT_RE =
+  /\b(?:nothing|none|anything)\b[^.?!]{0,20}?\b(?:wrong|incorrect)\b/i;
+
+// Composite 5f veto (shared with the legacy twin's mirror).
+function isVetoedPositive(reply) {
+  if (NEGATED_POSITIVE_RE.test(reply)) return true;
+  if (CONFIRMATION_CORRECTION_CUE_RE.test(reply) && !CONFIRMATION_CUE_EXEMPT_RE.test(reply)) {
+    return true;
+  }
+  return false;
+}
+
+// Non-ring contexts that must REJECT the ring named-extractors during a
+// confirmation (extraction-safety qualification). The ring extractors
+// capture the first digit within ~30 chars after CPC/earth/R1/R2, so
+// "CPC size for circuit 17 is 2.5" would extract ring_r2_ohm=17 and
+// "earth fault loop impedance is 0.62" would write ring_r2_ohm=0.62.
+// Bare "earth(s) <value>" ring amendments stay valid — only the compounds
+// below reject.
+const RING_ANCHOR_SRC = '(?:cpc|c\\s*p\\s*c|earths?|lives?|neutrals?|r\\s*(?:1|2|n))';
+const NON_RING_ADJ_SRC = '(?:sizes?|csa|mm2?|millimetre?s?|conductors?|cables?)';
+const NON_RING_ADJACENT_RE = new RegExp(
+  `\\b${RING_ANCHOR_SRC}\\b(?:[^.?!]|(?<=\\d)\\.(?=\\d)){0,30}?\\b${NON_RING_ADJ_SRC}\\b|\\b${NON_RING_ADJ_SRC}\\b(?:[^.?!]|(?<=\\d)\\.(?=\\d)){0,30}?\\b${RING_ANCHOR_SRC}\\b`,
+  'i'
+);
+const R1_PLUS_R2_COMPOUND_RE = /\bR\s*1\s*(?:\+|\s+plus\s+)\s*R\s*2\b/i;
+const NON_RING_EARTH_COMPOUND_RE =
+  /\b(?:earth\s+fault\s+loop|loop\s+impedance|earth\s+electrode|electrode\s+resistance|earth\s+leakage)\b/i;
+
+/**
+ * Mask `circuit N` spans out of a reply so a circuit ref can never be
+ * captured as a reading value by the named extractors (or by runEntry's own
+ * internal extraction when the 5a preflight seeds a different circuit —
+ * "ring continuity earths for circuit 17 are 1.19" must never write 17).
+ * Length-preserving so proximity windows in the extractors stay honest.
+ */
+function maskCircuitSpans(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/\bcircuit\s*\d{1,3}\b/gi, (m) => ' '.repeat(m.length));
+}
+
+/**
+ * Masked-and-qualified named extraction for confirmation-mode replies
+ * (canonical positions 5a evidence + 5b named-amend). Returns
+ * `{rejected, values}` — `rejected: true` means the reply carries an
+ * explicit NON-ring context and must fall through to the model untouched
+ * (reading-like at 5h), never amend either circuit.
+ */
+function extractRingSafeNamedValues(replyText, schema) {
+  if (
+    NON_RING_ADJACENT_RE.test(replyText) ||
+    R1_PLUS_R2_COMPOUND_RE.test(replyText) ||
+    NON_RING_EARTH_COMPOUND_RE.test(replyText)
+  ) {
+    return { rejected: true, values: [] };
+  }
+  return {
+    rejected: false,
+    values: extractNamedFieldValues(maskCircuitSpans(replyText), schema.slots),
+  };
+}
+
+/**
+ * Collect every `circuit N` ref in a reply with NEGATION POLARITY: a ref is
+ * negated when immediately preceded (whitespace only — a comma breaks the
+ * clause, so a leading "No, circuit 17 …" does NOT negate 17) by
+ * not/no/never. "No, not circuit 17 — circuit 13 …" → [{17, negated},
+ * {13, unnegated}]. The `circuit N` form ONLY — never the bare
+ * whole-utterance digit (`parseCircuitDigit` also matches a lone "1",
+ * which is a legitimate ohms value when answering a pending-slot ask).
+ */
+function collectCircuitRefsWithPolarity(replyText) {
+  const out = [];
+  if (typeof replyText !== 'string' || !replyText) return out;
+  for (const m of replyText.matchAll(/\bcircuit\s*(\d{1,3})\b/gi)) {
+    const ref = Number(m[1]);
+    if (!Number.isInteger(ref) || ref <= 0) continue;
+    const before = replyText.slice(0, m.index);
+    const negated = /\b(?:not|no|never)\s*$/i.test(before);
+    out.push({ ref, negated });
+  }
+  return out;
+}
+
+// Enumerated non-ring field anchors for the reading-like classifier — a
+// unit-less circuit-less anchored reading ("Zs was 0.62") must classify
+// reading-like, never junk (a junk classification would consume a dictated
+// reading into the miss counter — write-complete-readings invariant).
+const READING_FIELD_ANCHOR_RE =
+  /\b(?:zs|ze|pfc|pscc|efli|insulation|polarity|rcd|trip\s*time|r\s*1\s*(?:\+|plus)\s*r\s*2)\b/i;
+
+/**
+ * "Reading-like" classification for confirmation-position 5h (transition
+ * table). PINNED mechanism: detectStructuredReading(...)?.complete === true
+ * (covers NON-numeric complete readings like "earthing arrangement is
+ * TN-C-S") OR hasNumericValueWithUnit OR a `circuit N` mention OR an
+ * enumerated non-ring field anchor co-occurring with a number.
+ */
+function isReadingLikeReply(replyText) {
+  if (typeof replyText !== 'string' || !replyText.trim()) return false;
+  try {
+    if (detectStructuredReading(replyText)?.complete === true) return true;
+  } catch {
+    // classifier must never take down the confirmation branch
+  }
+  if (hasNumericValueWithUnit(replyText)) return true;
+  if (/\bcircuit\s*\d{1,3}\b/i.test(replyText)) return true;
+  if (READING_FIELD_ANCHOR_RE.test(replyText) && /\d/.test(replyText)) return true;
+  return false;
+}
+
+/**
+ * Emit the schema-namespace TTS purge frame (`cancel_pending_tts`) — the
+ * Audio-First purge contract for confirmation-abandonment exits. Always
+ * purge BEFORE any replacement speech: the replacement shares the same
+ * `srv-…` prefix and must not be swallowed by its own purge frame.
+ */
+function sendScriptPurge(ws, schema, sessionId) {
+  safeSend(ws, {
+    type: 'cancel_pending_tts',
+    prefix: `${schema.toolCallIdPrefix}-`,
+    sessionId,
+  });
+}
 
 /**
  * Test if a transcript matches a schema's entry triggers. Returns
@@ -585,6 +839,20 @@ function initScriptState(session, schema, circuit_ref, now) {
     // positive replies call finishScript, anything else falls
     // through to Sonnet without clearing state.
     awaiting_confirmation: false,
+    // ── P1 ring-script-hardening (2026-07-22) confirmation-correction
+    // episode state. `confirmation_no_progress` counts CONSECUTIVE
+    // confirmation-directed misses (negations, same-slot repeats, junk
+    // while a pending slot is set — NEVER unrelated readings); the second
+    // consecutive miss takes the audible cap exit. `confirmation_pending_slot`
+    // remembers which slot a slot-name-only reply ("R1.") selected so the
+    // next bare value writes it. `confirmation_negation_reask_emitted` is
+    // the per-EPISODE at-most-once latch for the negation re-ask — a
+    // counter-based rule would re-emit the byte-identical re-ask after a
+    // slot-selection reset (No. → R1. → No.) straight into the client's
+    // 30s text-keyed dedupe window (the feedback-91 silence class).
+    confirmation_no_progress: 0,
+    confirmation_pending_slot: null,
+    confirmation_negation_reask_emitted: false,
     // M4 (2026-06-25, field session 6674E8C5): IR voltage-phase tracking.
     // `voltage_phase_entered_at` is stamped (once) by askNextOrFinish the
     // first time it emits the exclusive voltage ask; the step-6 voltage block
@@ -893,6 +1161,12 @@ function runActivePath({
   sessionId,
   text,
   transcriptText,
+  // P1 Fix 4 — the raw un-annotated reply (fallback: the annotated text).
+  // EVERY confirmation-branch decision parses this; positions 2 and 4
+  // (cancel + topic-switch) deliberately continue to parse the annotated
+  // `text` unchanged — benign, the ring confirm question text contains no
+  // cancel or topic-switch trigger; do NOT "fix" them to replyText.
+  replyText = undefined,
   schema,
   schemas,
   logger,
@@ -901,6 +1175,7 @@ function runActivePath({
 }) {
   const state = session.dialogueScriptState;
   state.last_turn_at = now;
+  const reply = typeof replyText === 'string' ? replyText : text;
 
   // 0a. Bulk-apply reply (RCD, 2026-05-21 fix B slice 3). When the
   //     schema declared a `postCompletionAsk` and the engine emitted
@@ -1014,6 +1289,58 @@ function runActivePath({
     return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
   }
 
+  // P1 canonical position 1 — delete/clear-intent PREFLIGHT. Evaluated ONLY
+  // when awaiting_confirmation===true (mid-collection destructive phrases
+  // keep today's behaviour — the composed server note asserts a read-back +
+  // "All correct?" that has not happened, a false antecedent; delete-at-entry
+  // is owned by the Fix-1 entry guard). Runs BEFORE the generic cancel
+  // branch so "clear/cancel the readings" takes the delete exit while bare
+  // "cancel that" (no object noun) still falls to the preserve-and-exit
+  // cancel path (ring's bare /\bcancel\b/ trigger would otherwise consume
+  // it first). Position 1 also guarantees delete runs before bare-negation:
+  // "No. Please delete them all." matches BOTH and MUST take the delete
+  // exit (field session B4C45F25 feedback 90/91).
+  //
+  // The engine exits the script and falls through to the model with a
+  // FIXED, server-controlled antecedent — no reading values interpolated
+  // (stored values can be client-seeded text; interpolating them into the
+  // trusted bracket is an injection risk). The model keeps clear_reading
+  // ownership; the note supplies the read-back antecedent its bare-negation
+  // rule needs. The delete exit deliberately REPLACES the client's
+  // in_response_to annotation (the server-controlled antecedent supersedes
+  // the client's quoted "All correct?" — two bracketed contexts would
+  // confuse the model).
+  if (
+    state.awaiting_confirmation === true &&
+    schema.confirmationClearIntentPattern &&
+    schema.confirmationClearIntentPattern.test(reply)
+  ) {
+    // Purge the stale confirm prompt BEFORE the silent exit (the model's
+    // reply owns this turn's audibility).
+    sendScriptPurge(ws, schema, sessionId);
+    const circuitN =
+      Number.isInteger(state.circuit_ref) && state.circuit_ref > 0
+        ? String(state.circuit_ref)
+        : 'the current circuit';
+    const serverNote =
+      `[Server note: The assistant just read back the complete ring-continuity set ` +
+      `(R1, Rn and R2) for circuit ${circuitN} and asked "All correct?". ` +
+      `The user's reply follows.] `;
+    logger?.info?.(`${schema.logEventPrefix}_confirmation_delete_exit`, {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      textPreview: reply.slice(0, 80),
+    });
+    // Arm the cross-wrapper veto (mini-review r1): a multi-scope destructive
+    // reply ("delete the ring continuity and insulation resistance
+    // readings") would otherwise be captured by a LATER wrapper's unguarded
+    // trigger — the note-prefixed fallthrough transcript still contains the
+    // sibling scope's trigger words. Keyed on the raw reply.
+    session.dialogueEntryGuardVeto = { text: reply, at: now };
+    clearScriptState(session);
+    return { handled: true, fallthrough: true, transcriptText: `${serverNote}${reply}` };
+  }
+
   // 1. Cancel — preserve writes, clear state, announce.
   if (matchesAny(text, schema.cancelTriggers)) {
     const { filled, total } = countFilledForCancel(state.values, schema.slots);
@@ -1023,6 +1350,18 @@ function runActivePath({
       filled,
       textPreview: text.slice(0, 80),
     });
+    // PLAN-backend-final.md Phase 6.3 — generalised cancel-drain: on any
+    // *_script_cancelled, tell iOS to purge queued TTS in the script's
+    // `srv-{script}-` namespace (AlertManager.purge(prefix:)). Repro:
+    // session 60754E4D 14:17:58 — a stale "BS number?" surfaced with
+    // queueDelayMs=18078 ms because the queued TTS outlived the cancel.
+    //
+    // ORDER (P1 Audio-First purge contract): in CONFIRMATION mode the purge
+    // goes FIRST so the cancel acknowledgement (same `srv-…` prefix) cannot
+    // be swallowed by its own purge frame. The generic non-confirmation
+    // cancel keeps today's speak-then-purge order unchanged.
+    const purgeFirst = state.awaiting_confirmation === true;
+    if (purgeFirst) sendScriptPurge(ws, schema, sessionId);
     safeSend(
       ws,
       buildScriptInfo({
@@ -1034,27 +1373,20 @@ function runActivePath({
         responseEpoch,
       })
     );
-    // PLAN-backend-final.md Phase 6.3 — generalised cancel-drain.
-    // On any *_script_cancelled, tell iOS to purge any queued TTS
-    // whose toolCallId carries the `srv-{script}-` prefix (e.g.
-    // `srv-rcd-`, `srv-ocpd-`, `srv-rcbo-`, `srv-irs-`, `srv-rcs-`).
-    // iOS slice 7.1 (AlertManager queue) is the consumer; iOS slice
-    // 6.3 wires `cancel_pending_tts` to AlertManager.purge(prefix:)
-    // so the in-flight script TTS dies in the same script namespace.
-    // Repro: session 60754E4D 14:17:58 had a stale "BS number?"
-    // surfacing with queueDelayMs=18078 ms because the queued TTS
-    // outlived the cancel that should have killed it.
-    safeSend(ws, {
-      type: 'cancel_pending_tts',
-      prefix: `${schema.toolCallIdPrefix}-`,
-      sessionId,
-    });
+    if (!purgeFirst) sendScriptPurge(ws, schema, sessionId);
     clearScriptState(session);
     return { handled: true, fallthrough: false };
   }
 
   // 2. Different entry on a NEW circuit — seamlessly switch.
-  const newRef = detectDifferentEntry(text, schema, state.circuit_ref);
+  // P1 canonical position 3 GATE: generic detectDifferentEntry must NOT
+  // consume confirmation-mode replies — the confirmation branch's 5a
+  // preflight owns different-circuit routing there (with masking, negation
+  // polarity and overwriteVolunteered semantics the generic recursion
+  // lacks).
+  const newRef = state.awaiting_confirmation
+    ? null
+    : detectDifferentEntry(text, schema, state.circuit_ref);
   if (newRef !== null) {
     const { filled } = countFilledForCancel(state.values, schema.slots);
     logger?.info?.(`${schema.logEventPrefix}_switched_circuit`, {
@@ -1122,6 +1454,22 @@ function runActivePath({
       filled,
       textPreview: text.slice(0, 80),
     });
+    // P1 Audio-First purge contract: a topic switch OUT OF a confirmation
+    // is a state-clearing silent fallthrough — the queued "All correct?"
+    // prompt is stale; purge before the clear. Non-confirmation topic
+    // switches keep today's behaviour (no purge).
+    if (state.awaiting_confirmation === true) {
+      sendScriptPurge(ws, schema, sessionId);
+      // Mini-review r1: a DESTRUCTIVE multi-scope reply ("delete the ring
+      // continuity and insulation resistance readings…") exits here via the
+      // sibling scope's topic-switch trigger (the clearIntent proximity
+      // bound cannot span two scope names) — arm the cross-wrapper veto so
+      // the LATER wrapper's unguarded trigger cannot hijack the delete
+      // request the model now owns. Keyed on the raw reply.
+      if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(reply)) {
+        session.dialogueEntryGuardVeto = { text: reply, at: now };
+      }
+    }
     clearScriptState(session);
     return { handled: true, fallthrough: true, transcriptText };
   }
@@ -1145,10 +1493,257 @@ function runActivePath({
   //           confirm on a later turn. Hard timeout eventually clears
   //           stale awaiting_confirmation state.
   if (state.awaiting_confirmation && schema.confirmation?.buildMessage) {
-    const named = extractNamedFieldValues(text, schema.slots);
-    if (named.length > 0) {
+    const confirmCfg = schema.confirmation;
+
+    // P1 ring-script-hardening — canonical confirmation order 5a–5h. Every
+    // decision parses `reply` (the Fix-4 raw text with annotated fallback);
+    // `transcriptText` (annotated) is reserved for model fallthroughs. The
+    // normative counter/speech/state semantics live in the plan's
+    // transition table and are pinned by dialogue-engine-ring-confirmation
+    // tests.
+
+    // Masked-and-qualified named extraction, shared by 5a evidence + 5b.
+    const ringSafe = extractRingSafeNamedValues(reply, schema);
+
+    // Clear + purge + fall through with the UNTOUCHED annotated transcript.
+    // Used by the 5a guarded rejections, the 5b non-ring-context rejection,
+    // and the 5h reading-like / plain-idle clears. NEVER counts toward the
+    // cap — the cap must never consume an unrelated reading (the turn's
+    // audibility is owned by the model's handling of the fallthrough; the
+    // values the confirm was guarding are already written, so silently
+    // closing the formality loses nothing audible).
+    const clearAndFallThrough = (logEvent, extra = {}, { armVeto = false } = {}) => {
+      logger?.info?.(`${schema.logEventPrefix}_${logEvent}`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        textPreview: reply.slice(0, 80),
+        ...extra,
+      });
+      // Destructive-intent fallthroughs arm the cross-wrapper veto so a
+      // later wrapper's unguarded trigger cannot capture the same guarded
+      // utterance (mini-review r1). Keyed on the raw reply.
+      if (armVeto) session.dialogueEntryGuardVeto = { text: reply, at: now };
+      sendScriptPurge(ws, schema, sessionId);
+      clearScriptState(session);
+      return { handled: true, fallthrough: true, transcriptText };
+    };
+
+    // Audible cap exit — purge FIRST (the replacement line shares the
+    // `srv-…` prefix and must not be swallowed by its own purge), then the
+    // schema's cap-exit wording, then full clear. The cap turn speaks ONLY
+    // this line.
+    const takeNegationCapExit = () => {
+      sendScriptPurge(ws, schema, sessionId);
+      safeSend(
+        ws,
+        buildScriptInfo({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          kind: 'confirmation_cap_exit',
+          text: confirmCfg.negationCapExit({ circuit_ref: state.circuit_ref }),
+          now,
+          responseEpoch,
+        })
+      );
+      logger?.info?.(`${schema.logEventPrefix}_confirmation_cap_exit`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        textPreview: reply.slice(0, 80),
+      });
+      clearScriptState(session);
+      return { handled: true, fallthrough: false };
+    };
+
+    const slotLabel = (field) =>
+      confirmCfg.slotSelectors?.find((s) => s.field === field)?.label ?? field;
+
+    const emitValueAsk = (field, questionText) => {
+      safeSend(
+        ws,
+        buildScriptAsk({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          missing_field: field,
+          whichCircuitQuestion: null,
+          slotQuestion: questionText,
+          now,
+          kind: 'value',
+          responseEpoch,
+        })
+      );
+    };
+
+    // The full-string-distinct alternate value request (same-slot repeats,
+    // junk-while-pending, and the pending-slot post-reset negation all
+    // speak this instead of a byte-identical repeat the client 30s
+    // text-keyed dedupe would swallow).
+    const emitPendingSlotAlternate = () => {
+      const field = state.confirmation_pending_slot;
+      emitValueAsk(field, `I still need a number for ${slotLabel(field)} — what should it be?`);
+    };
+
+    // Shared negation transitions (position 5e; also reached from 5f via
+    // the negated-positive guard). Table rows: counter 0 + flag unset →
+    // counter→1 + negationReask + set flag; counter 0 + flag SET
+    // (post-reset re-negation) → counter→1 + a full-string-distinct
+    // alternate; counter ≥1 → cap exit.
+    const handleNegation = () => {
+      if (state.confirmation_no_progress >= 1) {
+        state.confirmation_no_progress = 2;
+        return takeNegationCapExit();
+      }
+      state.confirmation_no_progress = 1;
+      if (!state.confirmation_negation_reask_emitted) {
+        state.confirmation_negation_reask_emitted = true;
+        safeSend(
+          ws,
+          buildScriptConfirm({
+            toolCallIdPrefix: schema.toolCallIdPrefix,
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            question: confirmCfg.negationReask,
+            reason: confirmCfg.negationReason,
+            now,
+            responseEpoch,
+          })
+        );
+        logger?.info?.(`${schema.logEventPrefix}_confirmation_negation_reask`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          textPreview: reply.slice(0, 80),
+        });
+        return { handled: true, fallthrough: false };
+      }
+      if (state.confirmation_pending_slot) {
+        emitPendingSlotAlternate();
+      } else {
+        safeSend(
+          ws,
+          buildScriptConfirm({
+            toolCallIdPrefix: schema.toolCallIdPrefix,
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            question: confirmCfg.negationReaskAlternate,
+            reason: confirmCfg.negationReason,
+            now,
+            responseEpoch,
+          })
+        );
+      }
+      logger?.info?.(`${schema.logEventPrefix}_confirmation_negation_reask_alternate`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        pending_slot: state.confirmation_pending_slot,
+        textPreview: reply.slice(0, 80),
+      });
+      return { handled: true, fallthrough: false };
+    };
+
+    // Non-ring-context rejection runs BEFORE the 5a preflight (Codex
+    // diff-review r1): a reply carrying BOTH a ring trigger and an excluded
+    // context ("ring continuity CPC size for circuit 17 is 2.5") must never
+    // seed — the trigger would satisfy ringEvidence and runEntry's internal
+    // extraction would re-capture the non-ring number as a ring value,
+    // reopening the exact corruption class the qualification closes.
+    // Rejected replies fall through to the model (reading-like handling).
+    if (ringSafe.rejected) {
+      return clearAndFallThrough('confirmation_non_ring_context_fallthrough');
+    }
+
+    // ── 5a. Different-circuit preflight (Fix 3). Runs AFTER the position-4
+    // topic-switch check (which keeps FIRST claim on "circuit N is …"), so
+    // only replies that dodge every topic-switch trigger reach here.
+    const polarityRefs = collectCircuitRefsWithPolarity(reply);
+    if (polarityRefs.length > 0) {
+      const unnegated = [...new Set(polarityRefs.filter((r) => !r.negated).map((r) => r.ref))];
+      const targets = unnegated.filter((ref) => ref !== state.circuit_ref);
+      const allNegated = polarityRefs.every((r) => r.negated);
+      if (targets.length >= 2 || allNegated) {
+        // Multiple distinct unnegated targets, or every ref explicitly
+        // negated — never guess a destination circuit (without polarity,
+        // "No, not circuit 17 — circuit 13 …" would seed the explicitly
+        // REJECTED circuit 17 with overwrite semantics).
+        return clearAndFallThrough('confirmation_multi_ref_fallthrough', {
+          unnegated_targets: targets,
+          all_negated: allNegated,
+        });
+      }
+      if (targets.length === 1) {
+        const targetRef = targets[0];
+        // ringSafe.rejected already exited above, so both evidence signals
+        // here are extraction-safe.
+        const ringEvidence = detectEntry(reply, schema).matched || ringSafe.values.length > 0;
+        if (ringEvidence) {
+          // Defence-in-depth: position 1 already intercepts any clearIntent
+          // match before the confirmation branch — keep a cheap invariant
+          // guard here.
+          if (
+            schema.confirmationClearIntentPattern &&
+            schema.confirmationClearIntentPattern.test(reply)
+          ) {
+            return clearAndFallThrough(
+              'confirmation_clear_intent_guarded',
+              { target_ref: targetRef },
+              { armVeto: true }
+            );
+          }
+          // Object-less destructive forms ("fix/delete/clear ring
+          // continuity for circuit 17") carry a trigger + a different ref
+          // but not the object-qualified clearIntent shape — reject the
+          // seed (5g-style guarded fallthrough) so they can never seed or
+          // overwrite the named circuit.
+          if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(reply)) {
+            return clearAndFallThrough(
+              'confirmation_destructive_seed_rejected',
+              { target_ref: targetRef },
+              { armVeto: true }
+            );
+          }
+          // Seed the NEW circuit: purge the stale confirm prompt, clear the
+          // old episode, and run a synthetic entry. The extraction text is
+          // the circuit-span-MASKED reply — passing the RAW reply would let
+          // runEntry's own internal extractNamedFieldValues re-run unmasked
+          // ("ring continuity earths for circuit 17 are 1.19" would capture
+          // 17 as the earth value). `entry` carries the parsed ref (the
+          // trigger patterns cannot bind a LEADING "Circuit 17 …" ref);
+          // overwriteVolunteered so the dictated triple OVERWRITES a
+          // pre-filled destination instead of being seed-skipped.
+          logger?.info?.(`${schema.logEventPrefix}_confirmation_circuit_switch`, {
+            sessionId,
+            from_ref: state.circuit_ref,
+            to_ref: targetRef,
+            textPreview: reply.slice(0, 80),
+          });
+          sendScriptPurge(ws, schema, sessionId);
+          clearScriptState(session);
+          return runEntry({
+            ws,
+            session,
+            sessionId,
+            text: maskCircuitSpans(reply),
+            schema,
+            schemas,
+            entry: { matched: true, circuit_ref: targetRef },
+            logger,
+            now,
+            overwriteVolunteered: true,
+            responseEpoch,
+          });
+        }
+        // A bare different-circuit mention with NO ring content ("Zs on
+        // circuit 17, 0.62") is NOT a ring circuit switch — it classifies
+        // reading-like at 5h below and falls through to the model.
+      }
+      // targets.length === 0 → the only unnegated ref IS the current
+      // circuit → stay (amend the current circuit at 5b).
+    }
+
+    // ── 5b. Named amend (masked + qualified extraction; the rejected case
+    // exited before 5a).
+    if (ringSafe.values.length > 0) {
       const overwrites = [];
-      for (const w of named) {
+      for (const w of ringSafe.values) {
         const slot = schema.slots.find((s) => s.field === w.field);
         const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
         state.values[w.field] = w.value;
@@ -1166,6 +1761,10 @@ function runActivePath({
           buildExtractionPayload(state.circuit_ref, overwrites, schema.extractionSource)
         );
       }
+      // Genuine progress — reset the miss machinery; an explicit named
+      // amend also satisfies any pending slot.
+      state.confirmation_no_progress = 0;
+      state.confirmation_pending_slot = null;
       transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
       logger?.info?.(`${schema.logEventPrefix}_confirmation_amended`, {
         sessionId,
@@ -1174,23 +1773,144 @@ function runActivePath({
       });
       return { handled: true, fallthrough: false };
     }
-    if (
-      typeof schema.confirmation.detectPositive === 'function' &&
-      schema.confirmation.detectPositive(text)
-    ) {
+
+    // ── 5c. Pending-slot anchored value. ONLY the schema's whole-reply
+    // anchored matcher may trigger a write — never the unrestricted slot
+    // parser (parseOhms returns the first numeric token ANYWHERE:
+    // "R1." → 1, "circuit 13" → 13 — silent corruption).
+    if (state.confirmation_pending_slot && confirmCfg.pendingValuePattern) {
+      const pv = reply.match(confirmCfg.pendingValuePattern);
+      if (pv) {
+        const slot = schema.slots.find((s) => s.field === state.confirmation_pending_slot);
+        const parsed = slot && typeof slot.parser === 'function' ? slot.parser(pv[1]) : null;
+        if (parsed !== null && parsed !== undefined) {
+          const r = applyWriteWithDerivations(
+            session,
+            schema,
+            slot,
+            state.circuit_ref,
+            parsed,
+            now
+          );
+          state.values[slot.field] = parsed;
+          const writes = [{ field: slot.field, value: parsed }];
+          for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
+          for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
+          safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
+          logger?.info?.(`${schema.logEventPrefix}_confirmation_pending_slot_amended`, {
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            field: slot.field,
+            value: parsed,
+          });
+          state.confirmation_no_progress = 0;
+          state.confirmation_pending_slot = null;
+          transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
+          return { handled: true, fallthrough: false };
+        }
+      }
+    }
+
+    // ── 5d. Slot-name-only selector — UNCONDITIONAL within the branch (a
+    // slot name without a value is correction intent whether or not the
+    // negation re-ask was emitted).
+    const selected = Array.isArray(confirmCfg.slotSelectors)
+      ? confirmCfg.slotSelectors.find((s) => s.selector.test(reply))
+      : null;
+    if (selected) {
+      if (state.confirmation_pending_slot === selected.field) {
+        // Repeated selection of the ALREADY-pending slot: a counted miss.
+        // Re-emitting the byte-identical "What should R1 be?" would be
+        // client-deduped (30s text-keyed window) — speak the alternate.
+        state.confirmation_no_progress += 1;
+        if (state.confirmation_no_progress >= 2) return takeNegationCapExit();
+        emitPendingSlotAlternate();
+        logger?.info?.(`${schema.logEventPrefix}_confirmation_same_slot_repeat`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          field: selected.field,
+        });
+        return { handled: true, fallthrough: false };
+      }
+      // First-time (or different-slot) selection — genuine progress.
+      state.confirmation_pending_slot = selected.field;
+      state.confirmation_no_progress = 0;
+      emitValueAsk(selected.field, `What should ${selected.label} be?`);
+      logger?.info?.(`${schema.logEventPrefix}_confirmation_slot_selected`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        field: selected.field,
+      });
+      return { handled: true, fallthrough: false };
+    }
+
+    // ── 5e. Bare negation (reply-initial NEGATIVE_RE).
+    if (NEGATIVE_RE.test(reply)) {
+      return handleNegation();
+    }
+
+    // ── 5f. Positive finish — guarded against negated positives: ring's
+    // detectPositive matches `correct`/`ok(ay)` ANYWHERE, so "That's not
+    // correct" / "Not okay" would false-finish without the guard (they are
+    // negations that dodge the reply-initial NEGATIVE_RE).
+    if (typeof confirmCfg.detectPositive === 'function' && confirmCfg.detectPositive(reply)) {
+      if (isVetoedPositive(reply)) {
+        return handleNegation();
+      }
+      // Deliberately NO purge on the positive finish (Audio-First purge
+      // contract exemption): the only queued `srv-…` prompt here is the
+      // just-ANSWERED confirm ask, already played — purging would risk
+      // cancelling the "Got it." acknowledgement path. Today's finishScript
+      // behaviour is preserved unchanged.
       finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
     }
-    if (detectEntry(text, schema).matched) {
+
+    // ── 5g. Guarded re-entry. An object-qualified delete already exited at
+    // position 1; an object-less destructive trigger-bearing phrase for the
+    // SAME circuit is rejected here (a different circuit was rejected at
+    // the 5a exclusion check) and takes the guarded fallthrough — no
+    // confirmation re-emit, stale state cleared, untouched transcript to
+    // the model.
+    if (detectEntry(reply, schema).matched) {
+      if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(reply)) {
+        return clearAndFallThrough('confirmation_reentry_guarded', {}, { armVeto: true });
+      }
+      state.confirmation_pending_slot = null;
+      state.confirmation_negation_reask_emitted = false;
+      state.confirmation_no_progress = 0;
       transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
     }
-    logger?.info?.(`${schema.logEventPrefix}_confirmation_idle`, {
-      sessionId,
-      circuit_ref: state.circuit_ref,
-      textPreview: text.slice(0, 80),
-    });
-    return { handled: true, fallthrough: true, transcriptText };
+
+    // ── 5h. Idle — two sub-cases (the cap must never consume a reading).
+    if (isReadingLikeReply(reply)) {
+      // A reading-like reply that survived 5a–5g (e.g. "Zs on circuit 17,
+      // 0.62", "PFC is 1.2 kA", "earthing arrangement is TN-C-S" — incl.
+      // while a pending slot is set): the MODEL's handling of the reading
+      // owns the turn's audibility. Not counted.
+      return clearAndFallThrough('confirmation_reading_fallthrough');
+    }
+    if (state.confirmation_pending_slot) {
+      // Non-reading junk while a value is pending — a confirmation-directed
+      // miss. The FIRST miss always speaks (never silent); the second takes
+      // the cap exit.
+      state.confirmation_no_progress += 1;
+      if (state.confirmation_no_progress >= 2) return takeNegationCapExit();
+      emitPendingSlotAlternate();
+      logger?.info?.(`${schema.logEventPrefix}_confirmation_pending_junk_miss`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        field: state.confirmation_pending_slot,
+        textPreview: reply.slice(0, 80),
+      });
+      return { handled: true, fallthrough: false };
+    }
+    // Plain unclassified idle, no pending slot — clear the stale formality
+    // and fall through untouched (replaces the old keep-state
+    // `confirmation_idle` fallthrough, whose immortal awaiting_confirmation
+    // state was the feedback-90/91 dead-end).
+    return clearAndFallThrough('confirmation_idle_cleared');
   }
 
   // 4. Resolve circuit FIRST if pending. Digit answer preferred,
@@ -2873,7 +3593,15 @@ export function tryResumePausedScript({
           schema.extractionSource
         )
       );
-      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now, responseEpoch });
+      askNextOrFinish({
+        ws,
+        session,
+        sessionId: session.sessionId,
+        schema,
+        logger,
+        now,
+        responseEpoch,
+      });
       return { resumed: true, circuit_ref: matchedRef };
     }
 
@@ -2888,7 +3616,15 @@ export function tryResumePausedScript({
     state.ambiguous_bare_value = null;
   }
 
-  askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now, responseEpoch });
+  askNextOrFinish({
+    ws,
+    session,
+    sessionId: session.sessionId,
+    schema,
+    logger,
+    now,
+    responseEpoch,
+  });
 
   return { resumed: true, circuit_ref: matchedRef };
 }
@@ -3191,7 +3927,15 @@ export function tryEnterScriptFromWrites({
         };
       }
 
-      askNextOrFinish({ ws, session, sessionId: session.sessionId, schema, logger, now, responseEpoch });
+      askNextOrFinish({
+        ws,
+        session,
+        sessionId: session.sessionId,
+        schema,
+        logger,
+        now,
+        responseEpoch,
+      });
       return {
         entered: true,
         schemaName: schema.name,
@@ -3215,4 +3959,9 @@ export const __testing__ = {
   initScriptState,
   clearScriptState,
   hasNumericValueWithUnit,
+  // P1 ring-script-hardening confirmation helpers.
+  maskCircuitSpans,
+  collectCircuitRefsWithPolarity,
+  extractRingSafeNamedValues,
+  isReadingLikeReply,
 };

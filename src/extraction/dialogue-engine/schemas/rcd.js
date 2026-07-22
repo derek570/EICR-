@@ -150,6 +150,29 @@ const cancelTriggers = [
   /\b(?:cancel|stop(?:\s+(?:that|this))?|scrap(?:\s+(?:that|this))?|forget\s+(?:it|that|this)|never\s+mind|abort)\b/i,
 ];
 
+// PLAN-backend-final.md Phase 6.1 — exclusion patterns that gate RCD script
+// entry, moved VERBATIM from engine.js when the guard became per-schema
+// opt-in (P1 ring-script-hardening, 2026-07-22). Two patterns rather than
+// one alternation so a future addition can land without re-untangling a
+// long alternation chain. Both are case-insensitive.
+//
+// Pattern A — corrective imperatives ("delete RCD" / "undo RCD" / etc.).
+// Pattern B — denial / interrogative-complaint phrases ("what are you
+// doing" / "I didn't" / "that's wrong" / "that's not").
+//
+// The two are combined with an OR in the composite `test` below to keep the
+// matcher cheap (one short-circuiting test per inbound transcript). The
+// engine calls `schema.entryExclusionPattern.test(text)` — behaviour and
+// telemetry (`rcd_entry_guard_skipped`) are byte-identical to the old
+// RCD-only gate.
+const RCD_ENTRY_EXCLUSION_IMPERATIVE = /\b(delete|undo|cancel|fix|why|stop|remove|clear)\b/i;
+const RCD_ENTRY_EXCLUSION_DENIAL = /\b(what are you|i didn't|that's wrong|that's not)\b/i;
+const entryExclusionPattern = {
+  test(text) {
+    return RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) || RCD_ENTRY_EXCLUSION_DENIAL.test(text);
+  },
+};
+
 const skipSlotTriggers = [
   /\b(?:don'?t\s+know|no\s+idea|leave\s+(?:it\s+)?blank|blank|pass|next\s+one|skip\s+(?:this|that|it|one))\b/i,
 ];
@@ -229,6 +252,7 @@ const topicSwitchTriggers = [
 export const rcdSchema = {
   name: 'rcd',
   triggers,
+  entryExclusionPattern,
   cancelTriggers,
   skipSlotTriggers,
   deferTriggers,

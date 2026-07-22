@@ -137,3 +137,64 @@ describe('CLIENT_CHIME_WATCHDOG_FALLBACK_TEXT — cross-family distinctness', ()
     }
   });
 });
+
+// ── P1 ring-script-hardening (2026-07-22) — the ring confirmation-correction
+// wordings ride the same spoken channel; every rendered string must be
+// full-string distinct from ALL existing families AND from each other, or
+// the client 30 s text-keyed dedupe can swallow one of them (the
+// feedback-91 silence class).
+describe('P1 ring confirmation-correction wordings — cross-family distinctness', () => {
+  let ALL_BACKEND_LINES;
+  let RING_LINES;
+
+  beforeAll(async () => {
+    ALL_BACKEND_LINES = [
+      ...NOOP_AUDIBILITY_PROMPTS,
+      ...CATCHALL_AUDIBILITY_PROMPTS,
+      ASK_AUDIBILITY_FALLBACK_TEXT,
+      "Sorry, I couldn't place that reading — could you say the field and value together again?",
+      CLIENT_CHIME_WATCHDOG_FALLBACK_TEXT,
+      ...(await realNoticeSweep()),
+    ];
+    // Render from the PRODUCTION schema so template drift can't silently pass.
+    const { ringContinuitySchema } =
+      await import('../extraction/dialogue-engine/schemas/ring-continuity.js');
+    const confirm = ringContinuitySchema.confirmation;
+    RING_LINES = [
+      confirm.negationReask,
+      confirm.negationReaskAlternate,
+      // Cap exit interpolates the circuit — sweep a representative range.
+      ...[1, 2, 3, 4, 13, 17].map((c) => confirm.negationCapExit({ circuit_ref: c })),
+      // The generated slot value asks + alternates for every selector label.
+      ...confirm.slotSelectors.map((s) => `What should ${s.label} be?`),
+      ...confirm.slotSelectors.map(
+        (s) => `I still need a number for ${s.label} — what should it be?`
+      ),
+    ];
+  });
+
+  test('the ring wording set is non-empty and fully rendered', () => {
+    expect(RING_LINES.length).toBeGreaterThanOrEqual(10);
+    for (const line of RING_LINES) {
+      expect(typeof line).toBe('string');
+      expect(line.trim().length).toBeGreaterThan(0);
+      expect(line).not.toContain('undefined');
+    }
+  });
+
+  test('every ring wording differs (full-string) from every existing family line', () => {
+    for (const ringLine of RING_LINES) {
+      for (const line of ALL_BACKEND_LINES) {
+        expect(ringLine).not.toBe(line);
+      }
+    }
+  });
+
+  test('the ring wordings are pairwise distinct from each other', () => {
+    const seen = new Set();
+    for (const line of RING_LINES) {
+      expect(seen.has(line)).toBe(false);
+      seen.add(line);
+    }
+  });
+});

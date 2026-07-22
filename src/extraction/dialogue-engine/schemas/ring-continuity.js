@@ -85,10 +85,40 @@ const triggers = [
   // 2801896A ("Bring continuity for upstairs sockets") and BD8AB009 ("Wing
   // continuity for upstairs sockets"). Same garble class as the
   // (?:insulation|installation) alternation in the IR schema.
-  /\b(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  //
+  // `re-?continuity` (P1 ring-script-hardening, 2026-07-22, session
+  // B4C45F25): Flux renders "ring continuity" as "recontinuity" /
+  // "re-continuity". A SEPARATE EXACT alternative — deliberately NOT
+  // `re-?continuit\w*` (an open suffix would exceed the enumerated-garbles
+  // scope; §3E bans fuzzy widening). Circuit stays capture group 1.
+  /\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 ("terse") matches "ring on circuit N" with optional leading filler.
   /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\b(?:ring|bring|wing)\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
+
+// P1 ring-script-hardening (2026-07-22, session B4C45F25 feedback 90):
+// destructive/corrective verbs ONLY. The engine's per-schema entry guard
+// skips script entry when this matches, so "Can you delete the readings for
+// the ring continuity on circuit 13" falls through to Sonnet (which owns
+// clear_reading) instead of being hijacked into an all-filled confirmation.
+// Explicitly NO `why`/`didn't`/`haven't`/`stop` and NO denial phrases —
+// question-form entries must keep working: field evidence shows "Why
+// haven't you added the ring continuity to circuit 17?" usefully entered
+// the script and recovered the user. (Decision confirmed by Derek
+// 2026-07-22: destructive verbs only.)
+const entryExclusionPattern = /\b(delete|undo|remove|clear|cancel|fix)\b/i;
+
+// Confirmation-mode delete/clear INTENT (distinct from entryExclusionPattern
+// — do NOT merge them: this one requires an OBJECT so bare "cancel that"
+// still routes to the preserve-and-exit cancel path, and `fix` stays
+// available for amendment fallthrough). Ordered proximity: the destructive
+// verb must PRECEDE the object within the same clause — bare co-occurrence
+// must NOT match, otherwise the natural positive confirm "Yeah, all clear."
+// (verb "clear" + object "all", wrong order) would hijack into a delete
+// exit. Evaluated at position 1 of the engine's canonical
+// awaiting_confirmation decision order.
+const confirmationClearIntentPattern =
+  /\b(delete|remove|clear|undo|cancel)\b[^.?!]{0,40}?\b(readings?|values?|them|all)\b/i;
 
 const cancelTriggers = [
   /\b(?:cancel|stop(?:\s+(?:that|this))?|skip(?:\s+(?:this|that|ring|continuity))?|scrap(?:\s+(?:that|this|ring|continuity))?|forget\s+(?:it|that|this)|never\s+mind|abort|ignore\s+(?:that|this))\b/i,
@@ -142,6 +172,8 @@ function detectRingContinuityPositive(text) {
 export const ringContinuitySchema = {
   name: 'ring_continuity',
   triggers,
+  entryExclusionPattern,
+  confirmationClearIntentPattern,
   cancelTriggers,
   topicSwitchTriggers,
   slots,
@@ -171,6 +203,54 @@ export const ringContinuitySchema = {
     reason: 'confirm_ring_continuity',
     buildMessage: buildRingContinuityConfirmation,
     detectPositive: detectRingContinuityPositive,
+    // ── P1 ring-script-hardening (2026-07-22) confirmation-correction API.
+    // The engine's confirmation branch stays schema-generic; ring supplies
+    // the wordings + matchers. Every rendered prompt string is pinned in
+    // tests and must stay full-string distinct from the four apology/notice
+    // families (client 30s text-keyed dedupe — see Audio-First check).
+    negationReason: 'confirm_ring_continuity_correction',
+    negationReask: 'Which value is wrong — R1, Rn or R2?',
+    // The no-pending post-reset negation alternate: spoken when a SECOND
+    // negation arrives after slot-selection reset the counter but the
+    // per-episode reask flag is already set — a byte-identical repeat of
+    // negationReask would be swallowed by the client dedupe (feedback 91).
+    negationReaskAlternate: 'Sorry — tell me which reading to change, or say the corrected value.',
+    // Cap exit is a function, not a literal — it interpolates the circuit.
+    negationCapExit: ({ circuit_ref }) =>
+      `Okay — leaving the ring readings for circuit ${circuit_ref} as they are; say the correction when ready.`,
+    // Slot-name-only selectors: anchored to the WHOLE reply modulo an
+    // optional leading affirmation/negation token, so "R1.", "No, R1" and
+    // "Okay, R1" all select while "circuit 13" and value-bearing replies
+    // never do. The labels drive the generated "What should <label> be?" /
+    // "I still need a number for <label> — what should it be?" prompts.
+    slotSelectors: [
+      {
+        field: 'ring_r1_ohm',
+        selector: /^\s*(?:(?:no|nope|nah|okay|ok)[,.\s]+)?(?:r\s*1|lives?)\s*[.!?]?\s*$/i,
+        label: 'R1',
+      },
+      {
+        field: 'ring_rn_ohm',
+        selector: /^\s*(?:(?:no|nope|nah|okay|ok)[,.\s]+)?(?:r\s*n|neutrals?)\s*[.!?]?\s*$/i,
+        label: 'Rn',
+      },
+      {
+        field: 'ring_r2_ohm',
+        selector:
+          /^\s*(?:(?:no|nope|nah|okay|ok)[,.\s]+)?(?:r\s*2|earths?|cpc|c\s*p\s*c)\s*[.!?]?\s*$/i,
+        label: 'R2',
+      },
+    ],
+    // Anchored pending-slot VALUE matcher — the pending-slot write fires
+    // ONLY on this whole-reply shape (never the unrestricted slot parser:
+    // parseOhms returns the first numeric token ANYWHERE — "R1."→1,
+    // "circuit 13"→13 — silent corruption). Tightly-bounded answer fillers
+    // (repeats {0,2} so the compound "No, it's 0.85" writes) + optional ohm
+    // unit; leading-dot form included because Deepgram renders spoken
+    // "point four three" as ".43" and parseOhms zero-normalises it.
+    // Sentinel spellings deliberately NOT added (future wave owns that).
+    pendingValuePattern:
+      /^\s*(?:(?:no|nope|nah|it's|its|it\s+is)[,.\s]+){0,2}(\d{1,3}(?:\.\d{1,3})?|\.\d{1,3})\s*(?:ohms?)?\s*\.?\s*$/i,
   },
   // Sync the 60s timeout module's per-circuit timestamp on every write
   // so its findExpiredPartial sees an up-to-date last-turn-at.

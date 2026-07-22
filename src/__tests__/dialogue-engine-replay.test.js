@@ -243,6 +243,162 @@ describe('replay — ring continuity', () => {
     const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
     expectIdentical(engineRun, legacyRun);
   });
+
+  // ── P1 ring-script-hardening (2026-07-22, session B4C45F25) — the new
+  // confirmation-correction behaviours must stay byte-parity between engine
+  // and legacy twin. (cancel_pending_tts purge frames are engine-only and
+  // filtered by normaliseEmits, per the existing convention.)
+
+  test('P1: negative confirmation — No → targeted re-ask → R1 → value → yes', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'No.', now: 5000 },
+      { text: 'R1.', now: 6000 },
+      { text: '0.85', now: 7000 },
+      { text: 'yes', now: 8000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('P1: cap exit — No → re-ask → No → audible cap exit', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'No.', now: 5000 },
+      { text: 'No.', now: 6000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('P1: enumerated garble circuit switch — "Circuit 17 recontinuity …" amends the NAMED circuit from a c13 confirmation', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.77', now: 2000 },
+      { text: '0.78', now: 3000 },
+      { text: '1.19', now: 4000 },
+      {
+        text: 'Circuit 17 recontinuity lives are 0.77. Neutrals are 0.78, and earths are 1.19.',
+        now: 5000,
+      },
+    ];
+    const initialCircuits = { 13: {}, 17: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('P1: different-circuit amendment overwrites a PRE-FILLED destination', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      {
+        text: 'Circuit 17 recontinuity lives are 0.77. Neutrals are 0.78, and earths are 1.19.',
+        now: 5000,
+      },
+    ];
+    const initialCircuits = {
+      13: {},
+      17: { ring_r1_ohm: '9.99', ring_rn_ohm: '9.98', ring_r2_ohm: '9.97' },
+    };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+    // Both paths must actually OVERWRITE the destination.
+    expect(engineRun.snapshot.circuits[17]).toMatchObject({
+      ring_r1_ohm: '0.77',
+      ring_rn_ohm: '0.78',
+      ring_r2_ohm: '1.19',
+    });
+  });
+
+  test('P1: "recontinuity" garble entry walks the script like the clean trigger', () => {
+    const transcripts = [
+      { text: 'Recontinuity for circuit 5.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'yes', now: 5000 },
+    ];
+    const initialCircuits = { 5: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('P1: delete-at-entry falls through on BOTH paths (entry-guard parity)', () => {
+    const transcripts = [
+      {
+        text: 'Can you delete the readings for the ring continuity on circuit 13, please?',
+        now: 1000,
+      },
+    ];
+    const initialCircuits = { 13: { ring_r1_ohm: '0.77' } };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+    // Both paths must emit NOTHING (no script entry, no ask) — the model
+    // owns the delete request.
+    expect(normaliseEmits(engineRun.sent)).toEqual([]);
+  });
+
+  test('P1: "CPC is 2.5 mm2" during confirmation is rejected on BOTH paths (no ring write)', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'CPC is 2.5 mm2', now: 5000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+    expect(engineRun.snapshot.circuits[13].ring_r2_ohm).toBe('0.45');
+  });
+
+  test('P1: non-destructive broadcast during confirmation clears on BOTH paths (position-0 parity; never a single-circuit amend)', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'earths are 1.19 for all circuits', now: 5000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+    // Neither path may have amended R2 to 1.19.
+    expect(engineRun.snapshot.circuits[13].ring_r2_ohm).toBe('0.45');
+    expect(legacyRun.snapshot.circuits[13].ring_r2_ohm).toBe('0.45');
+  });
+
+  test('P1: confirmation delete exit — server-note fallthrough parity (state + emits)', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'No. Please delete them all.', now: 5000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
 });
 
 // ---------------------------------------------------------------------------
