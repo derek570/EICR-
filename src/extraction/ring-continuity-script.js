@@ -161,11 +161,24 @@ const RING_NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 // correct" / "Not okay" must never false-finish via detectConfirmationPositive,
 // which matches `correct`/`ok(ay)` anywhere).
 const RING_NEGATED_POSITIVE_RE =
-  /(?:\b(?:not|never|no|cannot)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
+  /(?:\b(?:not|never|no)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
 
-// Correction-cue veto for the 5f positive finish — mirrors the engine
-// (Codex diff-review r2).
-const RING_CONFIRMATION_CORRECTION_CUE_RE = /\b(?:wrong|incorrect|except)\b/i;
+// Correction-cue veto + polarity exemption for the 5f positive finish —
+// mirrors the engine (Codex diff-review r2 + mini-review).
+const RING_CONFIRMATION_CORRECTION_CUE_RE =
+  /(?:\b(?:wrong|incorrect|except|mistakes?)\b|\bapart\s+from\b|\bneeds?\s+(?:changing|correcting|redoing)\b|\b(?:cannot|can['\u2019]?t)\s+be\s+(?:correct|right)\b|\bcannot\s+confirm\b)/i;
+const RING_CONFIRMATION_CUE_EXEMPT_RE =
+  /\b(?:nothing|none|anything)\b[^.?!]{0,20}?\b(?:wrong|incorrect)\b/i;
+function ringIsVetoedPositive(reply) {
+  if (RING_NEGATED_POSITIVE_RE.test(reply)) return true;
+  if (
+    RING_CONFIRMATION_CORRECTION_CUE_RE.test(reply) &&
+    !RING_CONFIRMATION_CUE_EXEMPT_RE.test(reply)
+  ) {
+    return true;
+  }
+  return false;
+}
 
 // Non-ring context rejection + circuit-span masking — mirrors the engine's
 // extraction-safety qualification (the ring extractors capture the first
@@ -850,19 +863,6 @@ export function processRingContinuityTurn(ctx) {
   const text = typeof transcriptText === 'string' ? transcriptText : '';
   const reply = typeof rawReplyText === 'string' ? rawReplyText : text;
 
-  // ───────────────────────────────────────────── Hard timeout sweep ──
-  if (state?.active && now - state.last_turn_at > RING_SCRIPT_HARD_TIMEOUT_MS) {
-    logger?.info?.('stage6.ring_continuity_script_hard_timeout', {
-      sessionId,
-      circuit_ref: state.circuit_ref,
-      filled: Object.keys(state.values).length,
-      ms_since_last_turn: now - state.last_turn_at,
-    });
-    clearScript(session);
-    // Fall through to entry detection on this turn — the user might be
-    // starting a fresh ring continuity script after stepping away.
-  }
-
   // ─────────────────────────────── Position 0: broadcast pre-filter ──
   // Mirrors the engine's processDialogueTurn pre-filter (P1 Codex r2): a
   // broadcast-intent reply ("earths are 1.19 for all circuits") must never
@@ -897,6 +897,19 @@ export function processRingContinuityTurn(ctx) {
         return { handled: false };
       }
     }
+  }
+
+  // ───────────────────────────────────────────── Hard timeout sweep ──
+  if (state?.active && now - state.last_turn_at > RING_SCRIPT_HARD_TIMEOUT_MS) {
+    logger?.info?.('stage6.ring_continuity_script_hard_timeout', {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      filled: Object.keys(state.values).length,
+      ms_since_last_turn: now - state.last_turn_at,
+    });
+    clearScript(session);
+    // Fall through to entry detection on this turn — the user might be
+    // starting a fresh ring continuity script after stepping away.
   }
 
   // ───────────────────────────────────────────── Inactive: detect entry ──
@@ -1430,7 +1443,7 @@ export function processRingContinuityTurn(ctx) {
 
     // 5f. Positive finish, guarded against negated positives.
     if (detectConfirmationPositive(reply)) {
-      if (RING_NEGATED_POSITIVE_RE.test(reply) || RING_CONFIRMATION_CORRECTION_CUE_RE.test(reply)) {
+      if (ringIsVetoedPositive(reply)) {
         return handleNegation();
       }
       finishScript(ws, session, sessionId, now, logger, responseEpoch);

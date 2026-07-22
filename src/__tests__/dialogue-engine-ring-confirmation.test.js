@@ -144,6 +144,33 @@ describe('Fix 1 — ring entryExclusionPattern (destructive verbs only)', () => 
     expect(session.dialogueScriptState?.schemaName).toBe('insulation_resistance');
   });
 
+  test.each([
+    'All correct apart from R2',
+    'Yes, R1 needs changing',
+    'Yes, there is a mistake in R1',
+  ])('explicit-correction reply "%s" routes to the negation flow (mini-review r2)', (replyForm) => {
+    const { ws, session } = walkToConfirmation();
+    const out = turn(ws, session, replyForm, 5000);
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState).not.toBeNull();
+    expect(ws.sent.at(-1).question).toBe('Which value is wrong — R1, Rn or R2?');
+  });
+
+  test.each([
+    'Yes, nothing is wrong',
+    'Okay, none of those are incorrect',
+    'I cannot see anything wrong, so yes',
+  ])(
+    'genuine confirm "%s" is NOT vetoed by the cue guard — finishes (mini-review r2)',
+    (replyForm) => {
+      const { ws, session } = walkToConfirmation();
+      const out = turn(ws, session, replyForm, 5000);
+      expect(out).toEqual({ handled: true, fallthrough: false });
+      expect(ws.sent.at(-1).question).toBe('Got it.');
+      expect(session.dialogueScriptState ?? null).toBeNull();
+    }
+  );
+
   test('the negation guard does NOT false-fire on "nt"-ending words: "Yes, the current reading is correct" still finishes', () => {
     const ws = new FakeWS();
     const session = buildSession({

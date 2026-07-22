@@ -470,17 +470,37 @@ const ENTRY_GUARD_VETO_WINDOW_MS = 5000;
 // n't, AND the ASR apostrophe-stripped auxiliary forms (isnt/wasnt/…,
 // enumerated — a bare `nt\b` would false-match "current is correct").
 const NEGATED_POSITIVE_RE =
-  /(?:\b(?:not|never|no|cannot)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
+  /(?:\b(?:not|never|no)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
 
-// Correction-cue veto for the 5f positive finish (Codex diff-review r2):
-// detectPositive matches positive vocabulary ANYWHERE, so a reply that
-// pairs a positive token with an explicit correction cue ("Okay, R1 is
-// wrong", "All good except R2", "Okay. Actually no, R1 is wrong" — the
-// negation sits in a LATER clause than the positive) would false-finish.
-// A cue routes to the 5e negation flow instead — an unnecessary re-ask is
-// always safer than accepting rejected readings. Deliberately TIGHT
-// (wrong/incorrect/except): broad verbs would veto genuine confirms.
-const CONFIRMATION_CORRECTION_CUE_RE = /\b(?:wrong|incorrect|except)\b/i;
+// Correction-cue veto for the 5f positive finish (Codex diff-review r2 +
+// per-fix mini-review): detectPositive matches positive vocabulary
+// ANYWHERE, so a reply pairing a positive token with an explicit
+// correction cue ("Okay, R1 is wrong", "All good except R2", "All correct
+// apart from R2", "That cannot be correct", "Yes, there is a mistake in
+// R1" — the negation may sit in a LATER clause than the positive) would
+// false-finish. A cue routes to the 5e negation flow instead — an
+// unnecessary re-ask is always safer than accepting rejected readings.
+// `cannot` is predicate-bound (cannot be correct / cannot confirm), never
+// a bare token — "I cannot see anything wrong, so yes" must finish.
+const CONFIRMATION_CORRECTION_CUE_RE =
+  /(?:\b(?:wrong|incorrect|except|mistakes?)\b|\bapart\s+from\b|\bneeds?\s+(?:changing|correcting|redoing)\b|\b(?:cannot|can['\u2019]?t)\s+be\s+(?:correct|right)\b|\bcannot\s+confirm\b)/i;
+
+// Polarity exemption for the cue veto: a cue governed by an emptiness
+// quantifier is a CONFIRMATION, not a correction — "Yes, nothing is
+// wrong" / "none of those are incorrect" / "cannot see anything wrong, so
+// yes" must finish. Bare "no" is deliberately NOT in the quantifier set:
+// "Actually no, R1 is wrong" is a genuine correction.
+const CONFIRMATION_CUE_EXEMPT_RE =
+  /\b(?:nothing|none|anything)\b[^.?!]{0,20}?\b(?:wrong|incorrect)\b/i;
+
+// Composite 5f veto (shared with the legacy twin's mirror).
+function isVetoedPositive(reply) {
+  if (NEGATED_POSITIVE_RE.test(reply)) return true;
+  if (CONFIRMATION_CORRECTION_CUE_RE.test(reply) && !CONFIRMATION_CUE_EXEMPT_RE.test(reply)) {
+    return true;
+  }
+  return false;
+}
 
 // Non-ring contexts that must REJECT the ring named-extractors during a
 // confirmation (extraction-safety qualification). The ring extractors
@@ -1834,7 +1854,7 @@ function runActivePath({
     // correct" / "Not okay" would false-finish without the guard (they are
     // negations that dodge the reply-initial NEGATIVE_RE).
     if (typeof confirmCfg.detectPositive === 'function' && confirmCfg.detectPositive(reply)) {
-      if (NEGATED_POSITIVE_RE.test(reply) || CONFIRMATION_CORRECTION_CUE_RE.test(reply)) {
+      if (isVetoedPositive(reply)) {
         return handleNegation();
       }
       // Deliberately NO purge on the positive finish (Audio-First purge
