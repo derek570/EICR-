@@ -3,6 +3,17 @@
 
 FROM node:20-slim
 
+# Upgrade the image's npm to the 11.x line (2026-07-22). node:20-slim bundles
+# npm 10.x, whose vendored `tar` 6.2.1 trips the Trivy CRITICAL gate on
+# CVE-2026-59873 (gzip-bomb DoS; fixed in tar 7.5.19) at
+# usr/local/lib/node_modules/npm/node_modules/tar — blocking EVERY deploy
+# regardless of app code (same class as the 2026-07-15 imagemagick/mesa apt
+# CVEs documented below). npm 11.18+ vendors tar ^7.5.19. npm 11 is also
+# what the dev box runs (11.9.0), and the migrate one-off task's
+# `npx --no-install node-pg-migrate` invocation is verified working under
+# npm 11. Placed BEFORE any npm usage so the whole build runs one npm.
+RUN npm install -g npm@11
+
 WORKDIR /app
 
 # Install system dependencies for sharp image processing, health checks, and Playwright.
