@@ -512,7 +512,7 @@ function isVetoedPositive(reply) {
 const RING_ANCHOR_SRC = '(?:cpc|c\\s*p\\s*c|earths?|lives?|neutrals?|r\\s*(?:1|2|n))';
 const NON_RING_ADJ_SRC = '(?:sizes?|csa|mm2?|millimetre?s?|conductors?|cables?)';
 const NON_RING_ADJACENT_RE = new RegExp(
-  `\\b${RING_ANCHOR_SRC}\\b[^.?!]{0,30}?\\b${NON_RING_ADJ_SRC}\\b|\\b${NON_RING_ADJ_SRC}\\b[^.?!]{0,30}?\\b${RING_ANCHOR_SRC}\\b`,
+  `\\b${RING_ANCHOR_SRC}\\b(?:[^.?!]|(?<=\\d)\\.(?=\\d)){0,30}?\\b${NON_RING_ADJ_SRC}\\b|\\b${NON_RING_ADJ_SRC}\\b(?:[^.?!]|(?<=\\d)\\.(?=\\d)){0,30}?\\b${RING_ANCHOR_SRC}\\b`,
   'i'
 );
 const R1_PLUS_R2_COMPOUND_RE = /\bR\s*1\s*(?:\+|\s+plus\s+)\s*R\s*2\b/i;

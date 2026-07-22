@@ -1076,6 +1076,15 @@ describe('position 5b — masked + qualified named extraction', () => {
     expect(purgeFrames(ws)).toHaveLength(1);
   });
 
+  test('"CPC is 2.5 mm2" (cue AFTER a decimal value) is rejected — the filler crosses digit-bounded dots (Codex r4)', () => {
+    const { ws, session } = walkToConfirmation({ 13: {}, 17: {} });
+    const out = turn(ws, session, 'CPC is 2.5 mm2', 5000);
+    expect(out.fallthrough).toBe(true);
+    expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('0.78');
+    expect(session.dialogueScriptState ?? null).toBeNull();
+    expect(purgeFrames(ws)).toHaveLength(1);
+  });
+
   test('bare "earths 1.19" ring amendment stays VALID (only compounds reject)', () => {
     const { session } = walkToConfirmation();
     const ws2 = new FakeWS();

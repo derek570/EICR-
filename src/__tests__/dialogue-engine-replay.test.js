@@ -354,6 +354,21 @@ describe('replay — ring continuity', () => {
     expect(normaliseEmits(engineRun.sent)).toEqual([]);
   });
 
+  test('P1: "CPC is 2.5 mm2" during confirmation is rejected on BOTH paths (no ring write)', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'CPC is 2.5 mm2', now: 5000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+    expect(engineRun.snapshot.circuits[13].ring_r2_ohm).toBe('0.45');
+  });
+
   test('P1: non-destructive broadcast during confirmation clears on BOTH paths (position-0 parity; never a single-circuit amend)', () => {
     const transcripts = [
       { text: 'Ring continuity for circuit 13.', now: 1000 },
