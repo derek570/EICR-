@@ -3482,8 +3482,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // PLAN-C P4c — this transcript answered the ask (even invalidly),
             // so it IS the response epoch; carry its id so runLiveMode advances
             // responseEpochRef and residual speech disarms the client watchdog.
-            response_utterance_id:
-              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+            response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
           });
           return;
         }
@@ -3493,8 +3492,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // PLAN-C P4c — transcript-origin answer: the answering utterance is
           // this transcript (msg.utterance_id, NOT consumed_utterance_id which
           // is the direct-frame path); becomes the response epoch.
-          response_utterance_id:
-            typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
         };
         if (sanitisedPre.truncated || sanitisedPre.stripped) {
           preResolvePayload.sanitisation = {
@@ -3529,8 +3527,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // resolved outcome so runLiveMode advances `responseEpochRef` (the
           // client watchdog armed by this utterance's chime disarms on it).
           entry.pendingAsks.rejectAll('user_moved_on', {
-            response_utterance_id:
-              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+            response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
           });
           logger.info('stage6.transcript_pre_queue_moved_on', {
             sessionId,
@@ -3747,6 +3744,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         session: entry.session,
         sessionId,
         transcriptText,
+        // P1 ring-script-hardening (Fix 4) — the RAW client reply. The
+        // in_response_to annotation above prepends the quoted TTS question
+        // onto transcriptText; the engine's confirmation branch must parse
+        // the un-annotated reply (otherwise extractNamedFieldValues reads
+        // R1/Rn/R2 out of the QUOTED "All correct?" question and
+        // detectPositive matches "correct" inside it even when the reply is
+        // "No."). transcriptText stays the model-bound fallthrough text.
+        rawReplyText: msg.text,
         logger,
         // PLAN-C P4d (row 1) — the creation-time response epoch for any
         // ask_user_started this active-path turn emits is THIS transcript's
@@ -3788,6 +3793,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         session: entry.session,
         sessionId,
         transcriptText,
+        // P1 Fix 4 — raw reply (see the ring-script call above). Inert for
+        // IR today (no confirmation block) but keeps the engine contract
+        // uniform across the three wrapper call sites.
+        rawReplyText: msg.text,
         logger,
         // PLAN-C P4d (row 1) — see the ring-script call above.
         responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -3813,6 +3822,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         session: entry.session,
         sessionId,
         transcriptText,
+        // P1 Fix 4 — raw reply (see the ring-script call above). Inert for
+        // the protective-device family today (no confirmation block).
+        rawReplyText: msg.text,
         logger,
         // PLAN-C P4d (row 1) — see the ring-script call above.
         responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -4030,8 +4042,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               // PLAN-C P4c — in-flight overtake answer (invalid text): the
               // answering utterance is this transcript; carry it as the
               // response epoch (see the pre-queue sibling above).
-              response_utterance_id:
-                typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
             });
             if (!resolvedValidationError) {
               // Plan 03-12 r7 MAJOR remediation — resolve() returns false
@@ -4081,8 +4092,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               user_text: sanitised.text,
               // PLAN-C P4c — in-flight overtake answer: this transcript is the
               // response epoch (msg.utterance_id, transcript-origin family).
-              response_utterance_id:
-                typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
             };
             if (sanitised.truncated || sanitised.stripped) {
               resolvePayload.sanitisation = {
@@ -4194,8 +4204,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // the awoken dispatcher's residual speech is stamped with THIS
           // utterance (client watchdog disarm), mirroring the pre-queue site.
           entry.pendingAsks.rejectAll('user_moved_on', {
-            response_utterance_id:
-              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+            response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
           });
           // Plan 03-12 r13 Codex MAJOR#2 — push the RESOLVED `regexResults`
           // (not raw `msg.regexResults`), so the drained retry uses the
@@ -4538,7 +4547,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         if (filteredSync.length > 0) {
           // PLAN-C P4d (row 5) — carry the sync result's response epoch onto
           // each question (creation-time stamp; see stampQuestionsWithUtteranceId).
-          entry.questionGate.enqueue(stampQuestionsWithUtteranceId(filteredSync, result.utterance_id));
+          entry.questionGate.enqueue(
+            stampQuestionsWithUtteranceId(filteredSync, result.utterance_id)
+          );
         }
       } else if (
         !consumeLegacyQuestionsForUser(entry) &&
