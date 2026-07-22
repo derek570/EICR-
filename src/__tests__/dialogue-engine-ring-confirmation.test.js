@@ -10,7 +10,11 @@
  * (~/.claude/handoffs/EICR_Automation--ring-script-hardening-2026-07-22).
  */
 
-import { processRingContinuityTurn } from '../extraction/dialogue-engine/index.js';
+import {
+  processRingContinuityTurn,
+  processInsulationResistanceTurn,
+  ringContinuitySchema,
+} from '../extraction/dialogue-engine/index.js';
 import { __testing__ } from '../extraction/dialogue-engine/engine.js';
 
 const SESSION_ID = 'sess_ring_confirm';
@@ -99,6 +103,47 @@ describe('Fix 1 — ring entryExclusionPattern (destructive verbs only)', () => 
     }
   );
 
+  test('[deviation r1] cross-wrapper veto: a multi-scope destructive request guard-skipped by ring is NOT captured by the IR wrapper on the same turn', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: { ring_r1_ohm: '0.77', ir_live_live_mohm: '200' } });
+    const utterance =
+      'delete the ring continuity and insulation resistance readings for circuit 13';
+    // sonnet-stream calls the wrappers sequentially on the same transcript.
+    const ringOut = turn(ws, session, utterance, 1000);
+    expect(ringOut).toEqual({ handled: false });
+    const irOut = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: utterance,
+      rawReplyText: utterance,
+      logger: null,
+      now: 1003,
+    });
+    // Without the veto the IR wrapper's unguarded trigger would hijack the
+    // delete request into an IR walk-through.
+    expect(irOut).toEqual({ handled: false });
+    expect(session.dialogueScriptState ?? null).toBeNull();
+    expect(ws.sent).toEqual([]);
+  });
+
+  test('[deviation r1] the veto is text-keyed: a fresh non-destructive IR entry on a LATER turn still enters', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {}, 13: {} });
+    turn(ws, session, 'delete the ring continuity readings for circuit 13', 1000);
+    const irOut = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 5.',
+      rawReplyText: 'Insulation resistance for circuit 5.',
+      logger: null,
+      now: 2000,
+    });
+    expect(irOut).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState?.schemaName).toBe('insulation_resistance');
+  });
+
   test('question-form entry still enters ("Why haven\'t you added the ring continuity to circuit 17?")', () => {
     const ws = new FakeWS();
     const session = buildSession({ 17: {} });
@@ -139,7 +184,15 @@ describe('Fix 3 — enumerated "recontinuity" garble trigger', () => {
   });
 
   test('"recontinuous" open-suffix form does NOT match (enumerated exact garble only)', () => {
-    expect(__testing__.detectEntry('recontinuous circuit 4', { triggers: [] }).matched).toBe(false);
+    // Against the REAL production schema triggers (Codex diff-review r1: a
+    // stub schema made this vacuous).
+    expect(__testing__.detectEntry('recontinuous circuit 4', ringContinuitySchema).matched).toBe(
+      false
+    );
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    expect(turn(ws, session, 'recontinuous circuit 4', 1000)).toEqual({ handled: false });
+    expect(ws.sent).toEqual([]);
   });
 });
 
@@ -531,16 +584,18 @@ describe('confirmation-miss transition machine (positions 5c/5d/5e + cap)', () =
     expect(ws.sent.at(-1).question).toBe('Which value is wrong — R1, Rn or R2?');
   });
 
-  test.each(["That's not correct", 'Not okay'])(
-    'negated positive "%s" takes the 5e path, never finishes (plain form)',
-    (replyForm) => {
-      const { ws, session } = walkToConfirmation();
-      const out = turn(ws, session, replyForm, 5000);
-      expect(out).toEqual({ handled: true, fallthrough: false });
-      expect(session.dialogueScriptState).not.toBeNull();
-      expect(ws.sent.at(-1).question).toBe('Which value is wrong — R1, Rn or R2?');
-    }
-  );
+  test.each([
+    "That's not correct",
+    'Not okay',
+    "It isn't actually correct",
+    'That is definitely not what I would ever call a correct reading',
+  ])('negated positive "%s" takes the 5e path, never finishes (plain form)', (replyForm) => {
+    const { ws, session } = walkToConfirmation();
+    const out = turn(ws, session, replyForm, 5000);
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState).not.toBeNull();
+    expect(ws.sent.at(-1).question).toBe('Which value is wrong — R1, Rn or R2?');
+  });
 
   test.each(["That's not correct", 'Not okay'])(
     'negated positive "%s" takes the 5e path with an ANNOTATED transcript too',
@@ -585,11 +640,29 @@ describe('position 5h — reading-like replies clear + fall through untouched', 
     }
   );
 
-  test('No. → R1. → "Zs on circuit 17 is 0.62" — the reading reaches the model via 5h, confirm+pending cleared, no cap speech', () => {
-    // Phrasing chosen to genuinely REACH the confirmation branch: the
-    // comma form "Zs on circuit 17, 0.62" is claimed earlier by the
-    // broadcast pre-filter's comma-list regex ("circuit 17, 0") — see the
-    // dedicated pre-filter test below.
+  test('No. → R1. → "Zs on circuit 17, 0.62" — the reading reaches the model via 5h, confirm+pending cleared, no cap speech', () => {
+    // The plan's pinned exemplar: the broadcast pre-filter's comma-list
+    // regex would misread "circuit 17, 0" as a two-circuit list; the
+    // confirmation-only false-list exemption routes it to the confirmation
+    // branch where 5h reading-like handling owns it.
+    const { ws, session } = walkToConfirmation({ 13: {}, 17: {} });
+    turn(ws, session, 'No.', 5000);
+    turn(ws, session, 'R1.', 6000);
+    ws.sent.length = 0;
+    const out = turn(ws, session, 'Zs on circuit 17, 0.62', 7000);
+    expect(out).toEqual({
+      handled: true,
+      fallthrough: true,
+      transcriptText: 'Zs on circuit 17, 0.62',
+    });
+    expect(session.dialogueScriptState ?? null).toBeNull();
+    expect(audibleFrames(ws)).toHaveLength(0);
+    expect(purgeFrames(ws)).toHaveLength(1);
+    // No ring fields written anywhere.
+    expect(session.stateSnapshot.circuits[17]).toEqual({});
+  });
+
+  test('the "is" variant "Zs on circuit 17 is 0.62" takes the same 5h route', () => {
     const { ws, session } = walkToConfirmation({ 13: {}, 17: {} });
     turn(ws, session, 'No.', 5000);
     turn(ws, session, 'R1.', 6000);
@@ -601,8 +674,6 @@ describe('position 5h — reading-like replies clear + fall through untouched', 
       transcriptText: 'Zs on circuit 17 is 0.62',
     });
     expect(session.dialogueScriptState ?? null).toBeNull();
-    expect(audibleFrames(ws)).toHaveLength(0);
-    // No ring fields written anywhere.
     expect(session.stateSnapshot.circuits[17]).toEqual({});
   });
 
@@ -818,23 +889,40 @@ describe('position 5a — explicit-circuit amend routing', () => {
     expect(session.stateSnapshot.circuits[12]).toEqual({});
   });
 
-  test('bare different-circuit mention with NO ring content ("Zs on circuit 17 is 0.62") falls through to Sonnet via 5h, never seeds', () => {
-    const { ws, session } = walkC13Filled({ 13: {}, 17: {} });
-    const out = turn(ws, session, 'Zs on circuit 17 is 0.62', 5000);
-    expect(out.fallthrough).toBe(true);
-    expect(session.dialogueScriptState ?? null).toBeNull();
-    expect(session.stateSnapshot.circuits[17]).toEqual({});
-    expect(audibleFrames(ws)).toHaveLength(0);
-  });
-
-  test('the comma form "Zs on circuit 17, 0.62" is consumed by the broadcast pre-filter (pre-existing comma-list regex): cleared + purged + handled:false — never seeds, never amends, reaches the model', () => {
+  test('bare different-circuit mention with NO ring content ("Zs on circuit 17, 0.62") falls through to Sonnet via 5h, never seeds', () => {
     const { ws, session } = walkC13Filled({ 13: {}, 17: {} });
     const out = turn(ws, session, 'Zs on circuit 17, 0.62', 5000);
-    expect(out).toEqual({ handled: false });
+    expect(out).toEqual({
+      handled: true,
+      fallthrough: true,
+      transcriptText: 'Zs on circuit 17, 0.62',
+    });
     expect(session.dialogueScriptState ?? null).toBeNull();
     expect(session.stateSnapshot.circuits[17]).toEqual({});
     expect(purgeFrames(ws)).toHaveLength(1);
     expect(audibleFrames(ws)).toHaveLength(0);
+  });
+
+  test('the false-list exemption is CONFIRMATION-ONLY: mid-collection "Zs on circuit 17, 0.62" keeps the pre-existing broadcast pre-filter path', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {}, 17: {} });
+    turn(ws, session, 'Ring continuity for circuit 13.', 1000);
+    turn(ws, session, 'Lives are 0.43.', 2000); // mid-collection, not confirming
+    ws.sent.length = 0;
+    const out = turn(ws, session, 'Zs on circuit 17, 0.62', 3000);
+    expect(out).toEqual({ handled: false });
+    expect(session.dialogueScriptState ?? null).toBeNull();
+    // No purge outside confirmation; no seeds.
+    expect(purgeFrames(ws)).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[17]).toEqual({});
+  });
+
+  test('a GENUINE broadcast with a decimal elsewhere still takes the pre-filter during confirmation ("earths are 1.19 for all circuits, circuit 3, 0.5 too")', () => {
+    const { ws, session } = walkC13Filled({ 3: {}, 13: {} });
+    const out = turn(ws, session, 'earths are 1.19 for all circuits, circuit 3, 0.5 too', 5000);
+    expect(out).toEqual({ handled: false });
+    expect(session.dialogueScriptState ?? null).toBeNull();
+    expect(purgeFrames(ws)).toHaveLength(1);
   });
 
   test('generic detectDifferentEntry no longer consumes confirmation-mode replies — "ring continuity for circuit 17" routes via the 5a seed', () => {
@@ -894,6 +982,25 @@ describe('position 5b — masked + qualified named extraction', () => {
     expect(purgeFrames(ws)).toHaveLength(1);
   });
 
+  test.each([
+    'ring continuity CPC size for circuit 17 is 2.5',
+    'ring continuity earth fault loop impedance 0.62 for circuit 17',
+  ])(
+    'trigger-bearing non-ring reply "%s" NEVER seeds via ringEvidence — rejection runs before 5a (Codex r1)',
+    (replyForm) => {
+      const { ws, session } = walkToConfirmation({ 13: {}, 17: {} });
+      const out = turn(ws, session, replyForm, 5000);
+      expect(out.handled).toBe(true);
+      expect(out.fallthrough).toBe(true);
+      // No ring writes on EITHER circuit.
+      expect(session.stateSnapshot.circuits[17]).toEqual({});
+      expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('0.78');
+      expect(session.dialogueScriptState ?? null).toBeNull();
+      expect(purgeFrames(ws)).toHaveLength(1);
+      expect(audibleFrames(ws)).toHaveLength(0);
+    }
+  );
+
   test('bare "earths 1.19" ring amendment stays VALID (only compounds reject)', () => {
     const { session } = walkToConfirmation();
     const ws2 = new FakeWS();
@@ -951,6 +1058,34 @@ describe('Audio-First purge — 180s hard-timeout sweep', () => {
     const out = turn(ws, session, 'hello there', 1000 + 180_001);
     expect(out).toEqual({ handled: false });
     expect(purgeFrames(ws)).toHaveLength(1);
+    expect(session.dialogueScriptState ?? null).toBeNull();
+  });
+
+  test('the timeout purge is SCOPED to confirmation-bearing schemas: an IR timeout clears state with NO new purge frame (Codex r1)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for circuit 5.',
+      rawReplyText: 'Insulation resistance for circuit 5.',
+      logger: null,
+      now: 1000,
+    });
+    expect(session.dialogueScriptState?.active).toBe(true);
+    ws.sent.length = 0;
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'hello there',
+      rawReplyText: 'hello there',
+      logger: null,
+      now: 1000 + 180_001,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(purgeFrames(ws)).toHaveLength(0);
     expect(session.dialogueScriptState ?? null).toBeNull();
   });
 });

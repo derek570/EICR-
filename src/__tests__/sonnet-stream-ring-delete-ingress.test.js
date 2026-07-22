@@ -185,6 +185,47 @@ describe('P1 delete ingress — real sonnet-stream → engine → model-bound tr
     expect(harnessCalls[0]).not.toContain('In response to');
   });
 
+  test('bare "No." during confirmation is engine-handled BEFORE the model — runShadowHarness (and therefore the marker-①/② nets) is never reached; ONE correction re-ask speaks (Codex r1)', async () => {
+    const { ws } = await startLiveSession(wss, 'sess-ingress-bare-no');
+    await ws._emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'transcript',
+          text: 'Ring continuity for circuit 13.',
+          utterance_id: 'u1',
+          regexResults: [],
+        })
+      )
+    );
+    await ws._emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'transcript',
+          text: 'No.',
+          utterance_id: 'u2',
+          regexResults: [],
+          in_response_to: {
+            type: 'stage6_ask_user',
+            question: 'R1 0.77, Rn 0.78, R2 1.19. All correct?',
+          },
+        })
+      )
+    );
+    // The engine consumed the turn — the model (and every audibility net
+    // inside runLiveMode) is structurally unreachable. This is the
+    // feedback-91 turn that used to no-op into rotating marker-① apologies.
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    const reasks = ws._sent.filter(
+      (f) => f.type === 'ask_user_started' && f.reason === 'confirm_ring_continuity_correction'
+    );
+    expect(reasks).toHaveLength(1);
+    expect(reasks[0].question).toBe('Which value is wrong — R1, Rn or R2?');
+    // The re-ask carries the answering utterance's response epoch (P4d).
+    expect(reasks[0].utterance_id).toBe('u2');
+  });
+
   test('delete-at-ENTRY: the entry guard falls through with the RAW transcript and NO note', async () => {
     const { ws } = await startLiveSession(wss, 'sess-ingress-entry');
     await ws._emit(

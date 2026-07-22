@@ -157,7 +157,7 @@ const RING_NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 // correct" / "Not okay" must never false-finish via detectConfirmationPositive,
 // which matches `correct`/`ok(ay)` anywhere).
 const RING_NEGATED_POSITIVE_RE =
-  /(?:\b(?:not|never|no)\b[^.?!]{0,25}?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b|n't\s+(?:correct|ok(?:ay)?|right|good))/i;
+  /(?:\b(?:not|never|no)\b|n't)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
 
 // Non-ring context rejection + circuit-span masking — mirrors the engine's
 // extraction-safety qualification (the ring extractors capture the first
@@ -861,6 +861,18 @@ export function processRingContinuityTurn(ctx) {
     const entry = detectEntry(text);
     if (!entry.matched) return { handled: false };
 
+    // P1 — destructive/corrective-verb entry guard, mirroring the live
+    // engine's per-schema `entryExclusionPattern` (Codex diff-review r1:
+    // without it a delete-at-entry replay scenario diverges — the engine
+    // falls through to Sonnet while the twin would enter the script).
+    if (RING_ENTRY_EXCLUSION_PATTERN.test(text)) {
+      logger?.info?.('ring_continuity_entry_guard_skipped', {
+        sessionId,
+        textPreview: text.slice(0, 80),
+      });
+      return { handled: false };
+    }
+
     // Honour any pre-existing partial fill on this circuit (e.g. R1
     // already written from a prior turn) so the script picks up where
     // the inspector left off rather than overwriting.
@@ -1204,6 +1216,13 @@ export function processRingContinuityTurn(ctx) {
       return { handled: true, fallthrough: false };
     };
 
+    // Non-ring-context rejection runs BEFORE the 5a preflight (mirrors the
+    // engine; Codex diff-review r1): a trigger-bearing non-ring reply must
+    // never seed via ringEvidence.
+    if (ringSafe.rejected) {
+      return clearAndFallThrough('confirmation_non_ring_context_fallthrough');
+    }
+
     // 5a. Different-circuit preflight.
     const polarityRefs = collectCircuitRefsWithPolarity(reply);
     if (polarityRefs.length > 0) {
@@ -1218,8 +1237,7 @@ export function processRingContinuityTurn(ctx) {
       }
       if (targets.length === 1) {
         const targetRef = targets[0];
-        const ringEvidence =
-          detectEntry(reply).matched || (!ringSafe.rejected && ringSafe.values.length > 0);
+        const ringEvidence = detectEntry(reply).matched || ringSafe.values.length > 0;
         if (ringEvidence) {
           if (RING_CONFIRMATION_CLEAR_INTENT_PATTERN.test(reply)) {
             return clearAndFallThrough('confirmation_clear_intent_guarded', {
@@ -1290,10 +1308,7 @@ export function processRingContinuityTurn(ctx) {
       }
     }
 
-    // 5b. Named amend (masked + qualified).
-    if (ringSafe.rejected) {
-      return clearAndFallThrough('confirmation_non_ring_context_fallthrough');
-    }
+    // 5b. Named amend (masked + qualified; the rejected case exited before 5a).
     if (ringSafe.values.length > 0) {
       // Overwrite is intentional during confirmation — bypasses the
       // "skip if already set" guard the normal value loop applies.

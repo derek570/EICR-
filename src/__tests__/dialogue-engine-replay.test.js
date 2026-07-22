@@ -338,6 +338,22 @@ describe('replay — ring continuity', () => {
     expectIdentical(engineRun, legacyRun);
   });
 
+  test('P1: delete-at-entry falls through on BOTH paths (entry-guard parity)', () => {
+    const transcripts = [
+      {
+        text: 'Can you delete the readings for the ring continuity on circuit 13, please?',
+        now: 1000,
+      },
+    ];
+    const initialCircuits = { 13: { ring_r1_ohm: '0.77' } };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+    // Both paths must emit NOTHING (no script entry, no ask) — the model
+    // owns the delete request.
+    expect(normaliseEmits(engineRun.sent)).toEqual([]);
+  });
+
   test('P1: confirmation delete exit — server-note fallthrough parity (state + emits)', () => {
     const transcripts = [
       { text: 'Ring continuity for circuit 13.', now: 1000 },

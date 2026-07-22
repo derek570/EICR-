@@ -152,7 +152,24 @@ export function processDialogueTurn(ctx) {
         state.awaiting_confirmation === true &&
         preFilterSchema?.confirmationClearIntentPattern &&
         preFilterSchema.confirmationClearIntentPattern.test(replyText);
-      if (!destructiveBroadcastBypass) {
+      // Codex diff-review r1 — false comma-LIST exemption during
+      // confirmation: the broadcast list regex misreads a single
+      // circuit-scoped decimal reading ("Zs on circuit 17, 0.62" →
+      // "circuit 17, 0") as a two-circuit list. Such a reply is a READING,
+      // owned by the confirmation branch's 5h reading-like rule (the plan's
+      // pinned exemplar). Bypass the pre-filter ONLY when neutralising the
+      // false `circuit N, <decimal>` pair kills the broadcast signal
+      // entirely — a reply with a genuine all/range/multi-circuit scope
+      // keeps today's pre-filter behaviour. Confirmation-only: mid-collection
+      // pre-filter behaviour is unchanged.
+      const falseListDecimalBypass =
+        state.awaiting_confirmation === true &&
+        !destructiveBroadcastBypass &&
+        /\bcircuits?\s+\d{1,3}\s*(?:,|and)\s*\d{1,3}\.\d/i.test(text) &&
+        !detectBroadcastIntent(
+          text.replace(/(\bcircuits?\s+\d{1,3}\s*)(?:,|and)(\s*\d{1,3}\.\d)/gi, '$1;$2')
+        );
+      if (!destructiveBroadcastBypass && !falseListDecimalBypass) {
         // Abort the active script: the inspector's broadcast intent
         // supersedes the partial single-circuit walk-through. Already-
         // committed snapshot writes (applyWrite calls earlier in this
@@ -231,8 +248,13 @@ export function processDialogueTurn(ctx) {
         });
         // Audio-First purge contract (P1): a hard timeout by definition
         // means script prompts may be dangling unanswered — purge the
-        // schema's queued TTS namespace before the silent clear.
-        sendScriptPurge(ws, schema, sessionId);
+        // schema's queued TTS namespace before the silent clear. SCOPED to
+        // schemas with a confirmation block (ring only today): the P1 purge
+        // contract covers the ring confirmation machinery; IR/OCPD/RCBO/RCD
+        // timeout wire behaviour stays unchanged (Codex diff-review r1).
+        if (schema.confirmation?.buildMessage) {
+          sendScriptPurge(ws, schema, sessionId);
+        }
         clearScriptState(session);
         // Fall through to entry detection below.
       } else {
@@ -333,6 +355,31 @@ export function processDialogueTurn(ctx) {
     return { handled: false };
   }
 
+  // [DEVIATION — Codex diff-review r1, WITHIN_INTENT] Cross-wrapper
+  // terminal entry-guard veto. sonnet-stream invokes the ring, IR, and
+  // protective-device wrappers SEQUENTIALLY on the same transcript; a
+  // multi-scope destructive request ("delete the ring continuity and
+  // insulation resistance readings for circuit 13") would be correctly
+  // guard-skipped by the ring wrapper only to be hijacked by the IR
+  // wrapper's unguarded trigger — the delete request still never reaches
+  // the model. When ANY schema's entryExclusionPattern fires, the engine
+  // records a short-lived per-session veto keyed on the EXACT transcript;
+  // subsequent processDialogueTurn calls for the same text within the
+  // window skip entry detection entirely (fall through to Sonnet). Checked
+  // at CALL start only, so the within-call `continue` semantics of the
+  // guard (a different schema in the SAME call may still enter) are
+  // unchanged. Engine-only; no wire change.
+  {
+    const veto = session.dialogueEntryGuardVeto;
+    if (veto && veto.text === text && Math.abs(now - veto.at) < ENTRY_GUARD_VETO_WINDOW_MS) {
+      logger?.info?.('dialogue_entry_guard_veto_honoured', {
+        sessionId,
+        textPreview: text.slice(0, 80),
+      });
+      return { handled: false };
+    }
+  }
+
   // Entry detection — first matching schema wins.
   for (const schema of schemas) {
     const entry = detectEntry(text, schema);
@@ -362,6 +409,10 @@ export function processDialogueTurn(ctx) {
         sessionId,
         textPreview: text.slice(0, 80),
       });
+      // Arm the cross-wrapper veto (see the check above the loop) so a
+      // LATER wrapper's unguarded schema cannot capture this guarded
+      // destructive utterance in the same turn.
+      session.dialogueEntryGuardVeto = { text, at: now };
       // Continue the loop in case a DIFFERENT schema also matched —
       // unlikely in practice (only RCD triggers on \bRCD\b alone) but
       // the structural guarantee is "fall through to Sonnet", not
@@ -395,15 +446,24 @@ export function processDialogueTurn(ctx) {
 const AFFIRMATIVE_RE = /^\s*(?:yes|yeah|yep|yup|correct|that'?s right|aye)\b/i;
 const NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 
+// Cross-wrapper entry-guard veto window (see the veto block in
+// processDialogueTurn). Generous enough to cover the ms-apart sequential
+// wrapper calls within one transcript turn; short enough that a genuine
+// later re-dictation of the same words re-evaluates from scratch.
+const ENTRY_GUARD_VETO_WINDOW_MS = 5000;
+
 // ── P1 ring-script-hardening (2026-07-22) — confirmation-branch helpers. ──
 
 // Negated-positive guard: ring's detectPositive matches `correct`/`ok(ay)`
 // ANYWHERE while NEGATIVE_RE only matches reply-INITIAL no/nope/nah — so
 // "That's not correct" / "Not okay" would bypass the negation branch and
 // false-finish the script. A negation token preceding the positive token
-// within the clause ⇒ treat as a negation, never a confirm.
+// within the clause ⇒ treat as a negation, never a confirm. Clause-bounded
+// (`[^.?!]*?`), NOT a fixed character window, and `n't` may sit words away
+// from the positive token — "It isn't actually correct" must never finish
+// (Codex diff-review r1).
 const NEGATED_POSITIVE_RE =
-  /(?:\b(?:not|never|no)\b[^.?!]{0,25}?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b|n't\s+(?:correct|ok(?:ay)?|right|good))/i;
+  /(?:\b(?:not|never|no)\b|n't)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
 
 // Non-ring contexts that must REJECT the ring named-extractors during a
 // confirmation (extraction-safety qualification). The ring extractors
@@ -1522,6 +1582,17 @@ function runActivePath({
       return { handled: true, fallthrough: false };
     };
 
+    // Non-ring-context rejection runs BEFORE the 5a preflight (Codex
+    // diff-review r1): a reply carrying BOTH a ring trigger and an excluded
+    // context ("ring continuity CPC size for circuit 17 is 2.5") must never
+    // seed — the trigger would satisfy ringEvidence and runEntry's internal
+    // extraction would re-capture the non-ring number as a ring value,
+    // reopening the exact corruption class the qualification closes.
+    // Rejected replies fall through to the model (reading-like handling).
+    if (ringSafe.rejected) {
+      return clearAndFallThrough('confirmation_non_ring_context_fallthrough');
+    }
+
     // ── 5a. Different-circuit preflight (Fix 3). Runs AFTER the position-4
     // topic-switch check (which keeps FIRST claim on "circuit N is …"), so
     // only replies that dodge every topic-switch trigger reach here.
@@ -1542,8 +1613,9 @@ function runActivePath({
       }
       if (targets.length === 1) {
         const targetRef = targets[0];
-        const ringEvidence =
-          detectEntry(reply, schema).matched || (!ringSafe.rejected && ringSafe.values.length > 0);
+        // ringSafe.rejected already exited above, so both evidence signals
+        // here are extraction-safe.
+        const ringEvidence = detectEntry(reply, schema).matched || ringSafe.values.length > 0;
         if (ringEvidence) {
           // Defence-in-depth: position 1 already intercepts any clearIntent
           // match before the confirmation branch — keep a cheap invariant
@@ -1605,13 +1677,8 @@ function runActivePath({
       // circuit → stay (amend the current circuit at 5b).
     }
 
-    // ── 5b. Named amend (masked + qualified extraction).
-    if (ringSafe.rejected) {
-      // Explicit non-ring context ("CPC size … is 2.5", "earth fault loop
-      // impedance is 0.62") — never amend EITHER circuit; the model owns
-      // the reading (reading-like handling per 5h).
-      return clearAndFallThrough('confirmation_non_ring_context_fallthrough');
-    }
+    // ── 5b. Named amend (masked + qualified extraction; the rejected case
+    // exited before 5a).
     if (ringSafe.values.length > 0) {
       const overwrites = [];
       for (const w of ringSafe.values) {
