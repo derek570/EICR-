@@ -1765,7 +1765,7 @@ describe('processRingContinuityTurn — confirmation phase (2026-05-26)', () => 
     expect(session.ringContinuityScript).toBeFalsy();
   });
 
-  test('off-topic chatter falls through without clearing state', () => {
+  test('off-topic chatter clears the stale confirmation and falls through (P1 position 5h)', () => {
     const session = buildSession();
     const ws = new MockWS();
     driveToConfirmation(session, ws);
@@ -1782,10 +1782,14 @@ describe('processRingContinuityTurn — confirmation phase (2026-05-26)', () => 
 
     expect(out.handled).toBe(true);
     expect(out.fallthrough).toBe(true);
-    // State survives — inspector can amend or confirm later.
-    expect(session.ringContinuityScript.awaiting_confirmation).toBe(true);
-    // No new wire emit during fall-through.
-    expect(ws.sent).toEqual([]);
+    // P1 ring-script-hardening (2026-07-22, session B4C45F25): the old
+    // keep-state idle made awaiting_confirmation effectively immortal
+    // during active dictation (the 180s timeout resets every turn) — the
+    // feedback-90/91 dead-end. A plain unclassified idle now CLEARS the
+    // stale formality; the values it was guarding are already written.
+    expect(session.ringContinuityScript).toBeFalsy();
+    // No audible emit during the fall-through (the model owns the turn).
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toEqual([]);
   });
 
   test('re-entry with all three already in snapshot goes straight to confirmation', () => {
