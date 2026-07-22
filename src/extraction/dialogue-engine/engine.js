@@ -370,8 +370,12 @@ export function processDialogueTurn(ctx) {
   // guard (a different schema in the SAME call may still enter) are
   // unchanged. Engine-only; no wire change.
   {
+    // Keyed on the RAW reply (mini-review r1): the confirmation delete exit
+    // REPLACES transcriptText with the server note before later wrappers
+    // run, so the annotated text is not stable across wrappers — the raw
+    // reply is (sonnet-stream passes the same msg.text to all three).
     const veto = session.dialogueEntryGuardVeto;
-    if (veto && veto.text === text && Math.abs(now - veto.at) < ENTRY_GUARD_VETO_WINDOW_MS) {
+    if (veto && veto.text === replyText && Math.abs(now - veto.at) < ENTRY_GUARD_VETO_WINDOW_MS) {
       logger?.info?.('dialogue_entry_guard_veto_honoured', {
         sessionId,
         textPreview: text.slice(0, 80),
@@ -411,8 +415,8 @@ export function processDialogueTurn(ctx) {
       });
       // Arm the cross-wrapper veto (see the check above the loop) so a
       // LATER wrapper's unguarded schema cannot capture this guarded
-      // destructive utterance in the same turn.
-      session.dialogueEntryGuardVeto = { text, at: now };
+      // destructive utterance in the same turn. Keyed on the raw reply.
+      session.dialogueEntryGuardVeto = { text: replyText, at: now };
       // Continue the loop in case a DIFFERENT schema also matched —
       // unlikely in practice (only RCD triggers on \bRCD\b alone) but
       // the structural guarantee is "fall through to Sonnet", not
@@ -462,8 +466,11 @@ const ENTRY_GUARD_VETO_WINDOW_MS = 5000;
 // (`[^.?!]*?`), NOT a fixed character window, and `n't` may sit words away
 // from the positive token — "It isn't actually correct" must never finish
 // (Codex diff-review r1).
+// Apostrophe variants (per-fix mini-review r1): ASCII n't, smart-quote
+// n't, AND the ASR apostrophe-stripped auxiliary forms (isnt/wasnt/…,
+// enumerated — a bare `nt\b` would false-match "current is correct").
 const NEGATED_POSITIVE_RE =
-  /(?:\b(?:not|never|no)\b|n't)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
+  /(?:\b(?:not|never|no)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
 
 // Non-ring contexts that must REJECT the ring named-extractors during a
 // confirmation (extraction-safety qualification). The ring extractors
@@ -1294,6 +1301,12 @@ function runActivePath({
       circuit_ref: state.circuit_ref,
       textPreview: reply.slice(0, 80),
     });
+    // Arm the cross-wrapper veto (mini-review r1): a multi-scope destructive
+    // reply ("delete the ring continuity and insulation resistance
+    // readings") would otherwise be captured by a LATER wrapper's unguarded
+    // trigger — the note-prefixed fallthrough transcript still contains the
+    // sibling scope's trigger words. Keyed on the raw reply.
+    session.dialogueEntryGuardVeto = { text: reply, at: now };
     clearScriptState(session);
     return { handled: true, fallthrough: true, transcriptText: `${serverNote}${reply}` };
   }
@@ -1415,7 +1428,18 @@ function runActivePath({
     // is a state-clearing silent fallthrough — the queued "All correct?"
     // prompt is stale; purge before the clear. Non-confirmation topic
     // switches keep today's behaviour (no purge).
-    if (state.awaiting_confirmation === true) sendScriptPurge(ws, schema, sessionId);
+    if (state.awaiting_confirmation === true) {
+      sendScriptPurge(ws, schema, sessionId);
+      // Mini-review r1: a DESTRUCTIVE multi-scope reply ("delete the ring
+      // continuity and insulation resistance readings…") exits here via the
+      // sibling scope's topic-switch trigger (the clearIntent proximity
+      // bound cannot span two scope names) — arm the cross-wrapper veto so
+      // the LATER wrapper's unguarded trigger cannot hijack the delete
+      // request the model now owns. Keyed on the raw reply.
+      if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(reply)) {
+        session.dialogueEntryGuardVeto = { text: reply, at: now };
+      }
+    }
     clearScriptState(session);
     return { handled: true, fallthrough: true, transcriptText };
   }
@@ -1458,13 +1482,17 @@ function runActivePath({
     // audibility is owned by the model's handling of the fallthrough; the
     // values the confirm was guarding are already written, so silently
     // closing the formality loses nothing audible).
-    const clearAndFallThrough = (logEvent, extra = {}) => {
+    const clearAndFallThrough = (logEvent, extra = {}, { armVeto = false } = {}) => {
       logger?.info?.(`${schema.logEventPrefix}_${logEvent}`, {
         sessionId,
         circuit_ref: state.circuit_ref,
         textPreview: reply.slice(0, 80),
         ...extra,
       });
+      // Destructive-intent fallthroughs arm the cross-wrapper veto so a
+      // later wrapper's unguarded trigger cannot capture the same guarded
+      // utterance (mini-review r1). Keyed on the raw reply.
+      if (armVeto) session.dialogueEntryGuardVeto = { text: reply, at: now };
       sendScriptPurge(ws, schema, sessionId);
       clearScriptState(session);
       return { handled: true, fallthrough: true, transcriptText };
@@ -1624,9 +1652,11 @@ function runActivePath({
             schema.confirmationClearIntentPattern &&
             schema.confirmationClearIntentPattern.test(reply)
           ) {
-            return clearAndFallThrough('confirmation_clear_intent_guarded', {
-              target_ref: targetRef,
-            });
+            return clearAndFallThrough(
+              'confirmation_clear_intent_guarded',
+              { target_ref: targetRef },
+              { armVeto: true }
+            );
           }
           // Object-less destructive forms ("fix/delete/clear ring
           // continuity for circuit 17") carry a trigger + a different ref
@@ -1634,9 +1664,11 @@ function runActivePath({
           // seed (5g-style guarded fallthrough) so they can never seed or
           // overwrite the named circuit.
           if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(reply)) {
-            return clearAndFallThrough('confirmation_destructive_seed_rejected', {
-              target_ref: targetRef,
-            });
+            return clearAndFallThrough(
+              'confirmation_destructive_seed_rejected',
+              { target_ref: targetRef },
+              { armVeto: true }
+            );
           }
           // Seed the NEW circuit: purge the stale confirm prompt, clear the
           // old episode, and run a synthetic entry. The extraction text is
@@ -1812,7 +1844,7 @@ function runActivePath({
     // the model.
     if (detectEntry(reply, schema).matched) {
       if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(reply)) {
-        return clearAndFallThrough('confirmation_reentry_guarded');
+        return clearAndFallThrough('confirmation_reentry_guarded', {}, { armVeto: true });
       }
       state.confirmation_pending_slot = null;
       state.confirmation_negation_reask_emitted = false;

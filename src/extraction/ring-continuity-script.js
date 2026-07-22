@@ -157,7 +157,7 @@ const RING_NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 // correct" / "Not okay" must never false-finish via detectConfirmationPositive,
 // which matches `correct`/`ok(ay)` anywhere).
 const RING_NEGATED_POSITIVE_RE =
-  /(?:\b(?:not|never|no)\b|n't)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
+  /(?:\b(?:not|never|no)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
 
 // Non-ring context rejection + circuit-span masking — mirrors the engine's
 // extraction-safety qualification (the ring extractors capture the first

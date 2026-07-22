@@ -144,6 +144,43 @@ describe('Fix 1 — ring entryExclusionPattern (destructive verbs only)', () => 
     expect(session.dialogueScriptState?.schemaName).toBe('insulation_resistance');
   });
 
+  test('the negation guard does NOT false-fire on "nt"-ending words: "Yes, the current reading is correct" still finishes', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      13: { ring_r1_ohm: '0.43', ring_rn_ohm: '0.43', ring_r2_ohm: '0.78' },
+    });
+    turn(ws, session, 'Ring continuity for circuit 13.', 1000);
+    const out = turn(ws, session, 'Yes, the current reading is correct', 2000);
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(ws.sent.at(-1).question).toBe('Got it.');
+    expect(session.dialogueScriptState ?? null).toBeNull();
+  });
+
+  test('[deviation r1] veto also arms on the ACTIVE-confirmation delete exit: the note-prefixed fallthrough cannot be captured by the IR wrapper', () => {
+    const { ws, session } = walkToConfirmation();
+    const utterance =
+      'delete the ring continuity and insulation resistance readings for circuit 13';
+    const ringOut = turn(ws, session, utterance, 5000);
+    // The sibling scope's words trip the position-4 topic switch (the
+    // clearIntent proximity bound cannot span two scope names), so the exit
+    // is an UNTOUCHED-transcript fallthrough — the model sees the raw
+    // delete request directly; no server note on this path.
+    expect(ringOut).toEqual({ handled: true, fallthrough: true, transcriptText: utterance });
+    // sonnet-stream then invokes the IR wrapper with the same transcript —
+    // the raw-keyed veto must stop the IR entry.
+    const irOut = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: ringOut.transcriptText,
+      rawReplyText: utterance,
+      logger: null,
+      now: 5003,
+    });
+    expect(irOut).toEqual({ handled: false });
+    expect(session.dialogueScriptState ?? null).toBeNull();
+  });
+
   test('question-form entry still enters ("Why haven\'t you added the ring continuity to circuit 17?")', () => {
     const ws = new FakeWS();
     const session = buildSession({ 17: {} });
@@ -588,6 +625,8 @@ describe('confirmation-miss transition machine (positions 5c/5d/5e + cap)', () =
     "That's not correct",
     'Not okay',
     "It isn't actually correct",
+    'It isn\u2019t actually correct', // smart apostrophe (mini-review r1)
+    'It isnt actually correct', // ASR apostrophe-stripped (mini-review r1)
     'That is definitely not what I would ever call a correct reading',
   ])('negated positive "%s" takes the 5e path, never finishes (plain form)', (replyForm) => {
     const { ws, session } = walkToConfirmation();
