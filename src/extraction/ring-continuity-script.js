@@ -65,6 +65,9 @@ import {
   clearRingContinuityState,
 } from './ring-continuity-timeout.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
+// P1 ring-script-hardening — reading-like classification mirror (leaf
+// module, no cycle). Kept in sync with the live engine's import.
+import { detectStructuredReading } from './stage6-pending-value.js';
 
 /**
  * Hard cap on script duration. If the inspector enters the script, walks
@@ -111,14 +114,153 @@ const FIELD_PROMPTS = {
  * the circuit capture group undefined, which the caller treats as null.
  */
 const RING_ENTRY_PATTERNS = [
-  // 1. Full: "ring continuity/final" + optional "circuit N" within 50 chars.
-  //    Allows filler ("for, uh,"), any preposition ("for"/"on"), or none.
-  /\bring\s+(?:continu(?:ity|ance|ancy|ed|e)|final)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  // 1. Full: "ring/bring/wing continuity/final" + optional "circuit N"
+  //    within 50 chars. Allows filler ("for, uh,"), any preposition, or none.
+  //
+  //    P1 ring-script-hardening (2026-07-22): updated to the COMPLETE
+  //    dialogue-engine schema pattern (schemas/ring-continuity.js). This is
+  //    a DELIBERATE legacy behaviour widening: Pattern 1 here historically
+  //    LACKED the `bring|wing` alternation the live schema has carried
+  //    since 2026-04-30 (pre-existing divergence), and both now gain the
+  //    enumerated `re-?continuity` Flux garble (session B4C45F25). Exact
+  //    alternative only — no open suffix (§3E enumerated-garbles scope).
+  //    Circuit stays capture group 1 so twin and schema converge and the
+  //    replay garble scenarios are parity-green.
+  /\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // 2. Terse: clause-start "ring ... circuit N" — no "continuity"/"final"
   //    word required, but the "circuit N" trailer is mandatory to block
   //    "ringing"/"ring main" false positives.
   /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?ring\b[^.?!]{0,20}?\bcircuit\s*(\d{1,3})\b/i,
 ];
+
+// ── P1 ring-script-hardening (2026-07-22) — confirmation-correction
+// machinery, mirrored from the live dialogue engine (engine.js + the
+// ring-continuity schema) per this file's keep-in-sync contract. The
+// wordings/matchers are byte-identical to the schema's confirmation API so
+// dialogue-engine-replay.test.js parity holds for the new scenarios.
+
+// Destructive/corrective verbs only — mirrors schemas/ring-continuity.js
+// `entryExclusionPattern` (used HERE only for the confirmation-mode guarded
+// re-entry / seed rejection; the twin has no engine-level entry guard).
+const RING_ENTRY_EXCLUSION_PATTERN = /\b(delete|undo|remove|clear|cancel|fix)\b/i;
+
+// Confirmation-mode delete/clear INTENT — ordered proximity (verb precedes
+// object within the clause) so "Yeah, all clear." can never hijack into a
+// delete exit. Mirrors schema `confirmationClearIntentPattern`.
+const RING_CONFIRMATION_CLEAR_INTENT_PATTERN =
+  /\b(delete|remove|clear|undo|cancel)\b[^.?!]{0,40}?\b(readings?|values?|them|all)\b/i;
+
+// Reply-initial bare negation — mirrors engine NEGATIVE_RE.
+const RING_NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
+
+// Negated-positive guard — mirrors engine NEGATED_POSITIVE_RE ("That's not
+// correct" / "Not okay" must never false-finish via detectConfirmationPositive,
+// which matches `correct`/`ok(ay)` anywhere).
+const RING_NEGATED_POSITIVE_RE =
+  /(?:\b(?:not|never|no)\b[^.?!]{0,25}?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b|n't\s+(?:correct|ok(?:ay)?|right|good))/i;
+
+// Non-ring context rejection + circuit-span masking — mirrors the engine's
+// extraction-safety qualification (the ring extractors capture the first
+// digit near CPC/earth/R1/R2, so "CPC size for circuit 17 is 2.5" would
+// extract ring_r2_ohm=17 and "earth fault loop impedance is 0.62" would
+// write ring_r2_ohm=0.62).
+const RING_ANCHOR_SRC = '(?:cpc|c\\s*p\\s*c|earths?|lives?|neutrals?|r\\s*(?:1|2|n))';
+const NON_RING_ADJ_SRC = '(?:sizes?|csa|mm2?|millimetre?s?|conductors?|cables?)';
+const RING_NON_RING_ADJACENT_RE = new RegExp(
+  `\\b${RING_ANCHOR_SRC}\\b[^.?!]{0,20}?\\b${NON_RING_ADJ_SRC}\\b|\\b${NON_RING_ADJ_SRC}\\b[^.?!]{0,20}?\\b${RING_ANCHOR_SRC}\\b`,
+  'i'
+);
+const RING_R1_PLUS_R2_COMPOUND_RE = /\bR\s*1\s*(?:\+|\s+plus\s+)\s*R\s*2\b/i;
+const RING_NON_RING_EARTH_COMPOUND_RE =
+  /\b(?:earth\s+fault\s+loop|loop\s+impedance|earth\s+electrode|electrode\s+resistance|earth\s+leakage)\b/i;
+
+function maskCircuitSpans(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/\bcircuit\s*\d{1,3}\b/gi, (m) => ' '.repeat(m.length));
+}
+
+function extractRingSafeNamedValues(replyText) {
+  if (
+    RING_NON_RING_ADJACENT_RE.test(replyText) ||
+    RING_R1_PLUS_R2_COMPOUND_RE.test(replyText) ||
+    RING_NON_RING_EARTH_COMPOUND_RE.test(replyText)
+  ) {
+    return { rejected: true, values: [] };
+  }
+  return { rejected: false, values: extractNamedFieldValues(maskCircuitSpans(replyText)) };
+}
+
+// Multi-ref collection with negation polarity — mirrors engine
+// collectCircuitRefsWithPolarity (`circuit N` form ONLY, never the bare
+// whole-utterance digit; whitespace-adjacent not/no/never negates).
+function collectCircuitRefsWithPolarity(replyText) {
+  const out = [];
+  if (typeof replyText !== 'string' || !replyText) return out;
+  for (const m of replyText.matchAll(/\bcircuit\s*(\d{1,3})\b/gi)) {
+    const ref = Number(m[1]);
+    if (!Number.isInteger(ref) || ref <= 0) continue;
+    const before = replyText.slice(0, m.index);
+    const negated = /\b(?:not|no|never)\s*$/i.test(before);
+    out.push({ ref, negated });
+  }
+  return out;
+}
+
+// Reading-like classifier — mirrors engine isReadingLikeReply (pinned
+// mechanism: detectStructuredReading(...)?.complete === true OR a
+// number+unit OR a `circuit N` mention OR an enumerated non-ring field
+// anchor co-occurring with a number).
+const RING_READING_FIELD_ANCHOR_RE =
+  /\b(?:zs|ze|pfc|pscc|efli|insulation|polarity|rcd|trip\s*time|r\s*1\s*(?:\+|plus)\s*r\s*2)\b/i;
+
+function hasNumericValueWithUnit(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return /\d+(?:\.\d+)?\s*(?:m\s*s\b|millisecond|milliseconds|ohm|ohms|m\s*Ω|kΩ|MΩ|mega\s*ohms?|kilo\s*ohms?|mA\b|milli\s*amps?|amps?\b|kA\b|kilo\s*amps?|volts?\b|kV\b|kilo\s*volts?)/i.test(
+    text
+  );
+}
+
+function isReadingLikeReply(replyText) {
+  if (typeof replyText !== 'string' || !replyText.trim()) return false;
+  try {
+    if (detectStructuredReading(replyText)?.complete === true) return true;
+  } catch {
+    // classifier must never take down the confirmation branch
+  }
+  if (hasNumericValueWithUnit(replyText)) return true;
+  if (/\bcircuit\s*\d{1,3}\b/i.test(replyText)) return true;
+  if (RING_READING_FIELD_ANCHOR_RE.test(replyText) && /\d/.test(replyText)) return true;
+  return false;
+}
+
+// Confirmation-correction wordings + matchers — byte-identical mirrors of
+// the schema confirmation API (every rendered string is pinned in tests).
+const RING_CONFIRMATION_NEGATION_REASON = 'confirm_ring_continuity_correction';
+const RING_CONFIRMATION_NEGATION_REASK = 'Which value is wrong — R1, Rn or R2?';
+const RING_CONFIRMATION_NEGATION_REASK_ALTERNATE =
+  'Sorry — tell me which reading to change, or say the corrected value.';
+const ringConfirmationNegationCapExit = ({ circuit_ref }) =>
+  `Okay — leaving the ring readings for circuit ${circuit_ref} as they are; say the correction when ready.`;
+const RING_CONFIRMATION_SLOT_SELECTORS = [
+  {
+    field: 'ring_r1_ohm',
+    selector: /^\s*(?:(?:no|nope|nah|okay|ok)[,.\s]+)?(?:r\s*1|lives?)\s*[.!?]?\s*$/i,
+    label: 'R1',
+  },
+  {
+    field: 'ring_rn_ohm',
+    selector: /^\s*(?:(?:no|nope|nah|okay|ok)[,.\s]+)?(?:r\s*n|neutrals?)\s*[.!?]?\s*$/i,
+    label: 'Rn',
+  },
+  {
+    field: 'ring_r2_ohm',
+    selector:
+      /^\s*(?:(?:no|nope|nah|okay|ok)[,.\s]+)?(?:r\s*2|earths?|cpc|c\s*p\s*c)\s*[.!?]?\s*$/i,
+    label: 'R2',
+  },
+];
+const RING_CONFIRMATION_PENDING_VALUE_PATTERN =
+  /^\s*(?:(?:no|nope|nah|it's|its|it\s+is)[,.\s]+){0,2}(\d{1,3}(?:\.\d{1,3})?|\.\d{1,3})\s*(?:ohms?)?\s*\.?\s*$/i;
 
 /**
  * Cancel triggers — exit the script and preserve whatever's been written
@@ -356,6 +498,12 @@ function initScript(session, circuit_ref, now) {
     pending_writes: [],
     entered_at: now,
     last_turn_at: now,
+    // P1 ring-script-hardening — confirmation-correction episode state,
+    // mirrored from the live engine's initScriptState (see engine.js for
+    // the full rationale on each field).
+    confirmation_no_progress: 0,
+    confirmation_pending_slot: null,
+    confirmation_negation_reask_emitted: false,
   };
 }
 
@@ -417,7 +565,19 @@ function stampResponseEpoch(payload, responseEpoch) {
  * Sonnet-emitted ask. Marker `srv-rcs` distinguishes the script from the
  * 60s timeout module's `srv-ring` namespace.
  */
-function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind, responseEpoch = null }) {
+function buildScriptAsk({
+  sessionId,
+  circuit_ref,
+  missing_field,
+  now,
+  kind,
+  responseEpoch = null,
+  // P1 — optional question override for the confirmation-correction value
+  // asks ("What should R1 be?" / the distinct alternate). Mirrors the live
+  // engine's buildScriptAsk `slotQuestion` parameter; the default keeps the
+  // legacy FIELD_PROMPTS lookup byte-identical.
+  slotQuestion = null,
+}) {
   // kind:
   //   'which_circuit' → entry without a circuit number; question asks
   //                     for the circuit, not a value. context_field/circuit
@@ -442,9 +602,37 @@ function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind, resp
     {
       type: 'ask_user_started',
       tool_call_id: `srv-rcs-${sessionId}-${circuit_ref}-${missing_field}-${now}`,
-      question: FIELD_PROMPTS[missing_field]?.tts ?? `What's the ${missing_field}?`,
+      question: slotQuestion ?? FIELD_PROMPTS[missing_field]?.tts ?? `What's the ${missing_field}?`,
       reason: 'missing_value',
       context_field: missing_field,
+      context_circuit: circuit_ref,
+      expected_answer_shape: 'value',
+    },
+    responseEpoch
+  );
+}
+
+/**
+ * P1 — confirmation-correction ask with an arbitrary question + reason.
+ * Mirrors the live engine's generic buildScriptConfirm shape (same
+ * `-confirm-` tool_call_id segment) for the negation re-ask and its
+ * alternate; the standard readback confirm keeps using buildScriptConfirm.
+ */
+function buildScriptCorrectionConfirm({
+  sessionId,
+  circuit_ref,
+  question,
+  reason,
+  now,
+  responseEpoch = null,
+}) {
+  return stampResponseEpoch(
+    {
+      type: 'ask_user_started',
+      tool_call_id: `srv-rcs-${sessionId}-${circuit_ref}-confirm-${now}`,
+      question,
+      reason,
+      context_field: null,
       context_circuit: circuit_ref,
       expected_answer_shape: 'value',
     },
@@ -643,11 +831,16 @@ export function processRingContinuityTurn(ctx) {
     // PLAN-C P4d (row 2) — creation-time response epoch threaded to every ask
     // this turn emits (null on the dead legacy path; see stampResponseEpoch).
     responseEpoch = null,
+    // P1 Fix 4 — the raw un-annotated reply; every confirmation-branch
+    // decision parses this (annotated fallback for direct callers). Mirrors
+    // the live engine's contract.
+    rawReplyText = null,
   } = ctx;
   if (!session) return { handled: false };
 
   const state = session.ringContinuityScript;
   const text = typeof transcriptText === 'string' ? transcriptText : '';
+  const reply = typeof rawReplyText === 'string' ? rawReplyText : text;
 
   // ───────────────────────────────────────────── Hard timeout sweep ──
   if (state?.active && now - state.last_turn_at > RING_SCRIPT_HARD_TIMEOUT_MS) {
@@ -793,6 +986,32 @@ export function processRingContinuityTurn(ctx) {
   // ───────────────────────────────────────────── Active: handle turn ──
   state.last_turn_at = now;
 
+  // P1 canonical position 1 — delete/clear-intent preflight, evaluated ONLY
+  // during awaiting_confirmation (mirrors the live engine; see engine.js for
+  // the full rationale). Runs BEFORE the cancel branch so "clear/cancel the
+  // readings" takes the delete exit while bare "cancel that" still falls to
+  // the preserve-and-exit cancel path. The engine exits the script and
+  // falls through to the model with a FIXED server-controlled antecedent
+  // (no reading values interpolated); the note REPLACES any client
+  // annotation.
+  if (state.awaiting_confirmation && RING_CONFIRMATION_CLEAR_INTENT_PATTERN.test(reply)) {
+    const circuitN =
+      Number.isInteger(state.circuit_ref) && state.circuit_ref > 0
+        ? String(state.circuit_ref)
+        : 'the current circuit';
+    const serverNote =
+      `[Server note: The assistant just read back the complete ring-continuity set ` +
+      `(R1, Rn and R2) for circuit ${circuitN} and asked "All correct?". ` +
+      `The user's reply follows.] `;
+    logger?.info?.('stage6.ring_continuity_script_confirmation_delete_exit', {
+      sessionId,
+      circuit_ref: state.circuit_ref,
+      textPreview: reply.slice(0, 80),
+    });
+    clearScript(session);
+    return { handled: true, fallthrough: true, transcriptText: `${serverNote}${reply}` };
+  }
+
   // 1. Cancel — preserve writes, clear state, announce.
   if (detectCancel(text)) {
     const filled = Object.keys(state.values).length;
@@ -820,7 +1039,12 @@ export function processRingContinuityTurn(ctx) {
   }
 
   // 2. Different ring entry on a NEW circuit — seamlessly switch.
-  const newRef = detectDifferentRingEntry(text, state.circuit_ref);
+  //    P1 canonical position 3 GATE: generic different-entry detection must
+  //    NOT consume confirmation-mode replies — the confirmation branch's 5a
+  //    preflight owns different-circuit routing there (mirrors the engine).
+  const newRef = state.awaiting_confirmation
+    ? null
+    : detectDifferentRingEntry(text, state.circuit_ref);
   if (newRef !== null) {
     logger?.info?.('stage6.ring_continuity_script_switched_circuit', {
       sessionId,
@@ -867,18 +1091,222 @@ export function processRingContinuityTurn(ctx) {
   //           State survives so a follow-up amend or confirm can land.
   //           Hard timeout (180s) eventually clears stale state.
   if (state.awaiting_confirmation) {
-    const named = extractNamedFieldValues(text);
-    if (named.length > 0) {
+    // P1 ring-script-hardening — canonical confirmation order 5a–5h,
+    // mirrored from the live engine's confirmation branch (engine.js). All
+    // decisions parse `reply` (raw with annotated fallback); the annotated
+    // `transcriptText` is reserved for model fallthroughs. See engine.js
+    // for the per-position rationale; this mirror exists so the replay
+    // corpus (dialogue-engine-replay.test.js) stays byte-parity green for
+    // the new confirmation scenarios.
+    const ringSafe = extractRingSafeNamedValues(reply);
+
+    const clearAndFallThrough = (logEvent, extra = {}) => {
+      logger?.info?.(`stage6.ring_continuity_script_${logEvent}`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        textPreview: reply.slice(0, 80),
+        ...extra,
+      });
+      clearScript(session);
+      return { handled: true, fallthrough: true, transcriptText };
+    };
+
+    const takeNegationCapExit = () => {
+      safeSend(
+        ws,
+        buildScriptInfo({
+          sessionId,
+          kind: 'confirmation_cap_exit',
+          text: ringConfirmationNegationCapExit({ circuit_ref: state.circuit_ref }),
+          now,
+          responseEpoch,
+        })
+      );
+      logger?.info?.('stage6.ring_continuity_script_confirmation_cap_exit', {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        textPreview: reply.slice(0, 80),
+      });
+      clearScript(session);
+      return { handled: true, fallthrough: false };
+    };
+
+    const slotLabel = (field) =>
+      RING_CONFIRMATION_SLOT_SELECTORS.find((s) => s.field === field)?.label ?? field;
+
+    const emitValueAsk = (field, questionText) => {
+      safeSend(
+        ws,
+        buildScriptAsk({
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          missing_field: field,
+          now,
+          kind: 'value',
+          responseEpoch,
+          slotQuestion: questionText,
+        })
+      );
+    };
+
+    const emitPendingSlotAlternate = () => {
+      const field = state.confirmation_pending_slot;
+      emitValueAsk(field, `I still need a number for ${slotLabel(field)} — what should it be?`);
+    };
+
+    const handleNegation = () => {
+      if (state.confirmation_no_progress >= 1) {
+        state.confirmation_no_progress = 2;
+        return takeNegationCapExit();
+      }
+      state.confirmation_no_progress = 1;
+      if (!state.confirmation_negation_reask_emitted) {
+        state.confirmation_negation_reask_emitted = true;
+        safeSend(
+          ws,
+          buildScriptCorrectionConfirm({
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            question: RING_CONFIRMATION_NEGATION_REASK,
+            reason: RING_CONFIRMATION_NEGATION_REASON,
+            now,
+            responseEpoch,
+          })
+        );
+        logger?.info?.('stage6.ring_continuity_script_confirmation_negation_reask', {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          textPreview: reply.slice(0, 80),
+        });
+        return { handled: true, fallthrough: false };
+      }
+      if (state.confirmation_pending_slot) {
+        emitPendingSlotAlternate();
+      } else {
+        safeSend(
+          ws,
+          buildScriptCorrectionConfirm({
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            question: RING_CONFIRMATION_NEGATION_REASK_ALTERNATE,
+            reason: RING_CONFIRMATION_NEGATION_REASON,
+            now,
+            responseEpoch,
+          })
+        );
+      }
+      logger?.info?.('stage6.ring_continuity_script_confirmation_negation_reask_alternate', {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        pending_slot: state.confirmation_pending_slot,
+        textPreview: reply.slice(0, 80),
+      });
+      return { handled: true, fallthrough: false };
+    };
+
+    // 5a. Different-circuit preflight.
+    const polarityRefs = collectCircuitRefsWithPolarity(reply);
+    if (polarityRefs.length > 0) {
+      const unnegated = [...new Set(polarityRefs.filter((r) => !r.negated).map((r) => r.ref))];
+      const targets = unnegated.filter((ref) => ref !== state.circuit_ref);
+      const allNegated = polarityRefs.every((r) => r.negated);
+      if (targets.length >= 2 || allNegated) {
+        return clearAndFallThrough('confirmation_multi_ref_fallthrough', {
+          unnegated_targets: targets,
+          all_negated: allNegated,
+        });
+      }
+      if (targets.length === 1) {
+        const targetRef = targets[0];
+        const ringEvidence =
+          detectEntry(reply).matched || (!ringSafe.rejected && ringSafe.values.length > 0);
+        if (ringEvidence) {
+          if (RING_CONFIRMATION_CLEAR_INTENT_PATTERN.test(reply)) {
+            return clearAndFallThrough('confirmation_clear_intent_guarded', {
+              target_ref: targetRef,
+            });
+          }
+          if (RING_ENTRY_EXCLUSION_PATTERN.test(reply)) {
+            return clearAndFallThrough('confirmation_destructive_seed_rejected', {
+              target_ref: targetRef,
+            });
+          }
+          // Seed the NEW circuit with the circuit-span-MASKED reply as the
+          // extraction text and OVERWRITE semantics (mirrors the engine's
+          // runEntry seed). Emit only the NEW circuit's grouped confirm.
+          logger?.info?.('stage6.ring_continuity_script_confirmation_circuit_switch', {
+            sessionId,
+            from_ref: state.circuit_ref,
+            to_ref: targetRef,
+            textPreview: reply.slice(0, 80),
+          });
+          const maskedText = maskCircuitSpans(reply);
+          clearScript(session);
+          const volunteered = extractNamedFieldValues(maskedText);
+          const existingOnTarget = readExistingRingValues(session, targetRef);
+          if (
+            volunteered.length === 0 &&
+            Object.keys(existingOnTarget).length === 0 &&
+            hasNumericValueWithUnit(maskedText)
+          ) {
+            // Mirror of the engine runEntry handover-to-Sonnet bail.
+            return { handled: false };
+          }
+          initScript(session, targetRef, now);
+          const freshState = session.ringContinuityScript;
+          for (const [f, v] of Object.entries(existingOnTarget)) {
+            if (RING_FIELDS.includes(f) && v !== '' && v !== null && v !== undefined) {
+              freshState.values[f] = v;
+            }
+          }
+          const writes = [];
+          for (const w of volunteered) {
+            // OVERWRITE: dictated values replace pre-filled destination
+            // readings (a skip would silently retain stale readings).
+            applyWrite(session, targetRef, w.field, w.value, now);
+            writes.push(w);
+          }
+          if (writes.length > 0) {
+            safeSend(ws, buildExtractionPayload(targetRef, writes));
+          }
+          const nextField = nextMissingField(freshState.values);
+          if (!nextField) {
+            transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
+            return { handled: true, fallthrough: false };
+          }
+          safeSend(
+            ws,
+            buildScriptAsk({
+              sessionId,
+              circuit_ref: targetRef,
+              missing_field: nextField,
+              now,
+              kind: 'value',
+              responseEpoch,
+            })
+          );
+          return { handled: true, fallthrough: false };
+        }
+      }
+    }
+
+    // 5b. Named amend (masked + qualified).
+    if (ringSafe.rejected) {
+      return clearAndFallThrough('confirmation_non_ring_context_fallthrough');
+    }
+    if (ringSafe.values.length > 0) {
       // Overwrite is intentional during confirmation — bypasses the
       // "skip if already set" guard the normal value loop applies.
       const overwrites = [];
-      for (const w of named) {
+      for (const w of ringSafe.values) {
         applyWrite(session, state.circuit_ref, w.field, w.value, now);
         overwrites.push(w);
       }
       if (overwrites.length > 0) {
         safeSend(ws, buildExtractionPayload(state.circuit_ref, overwrites));
       }
+      state.confirmation_no_progress = 0;
+      state.confirmation_pending_slot = null;
       transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
       logger?.info?.('stage6.ring_continuity_script_confirmation_amended', {
         sessionId,
@@ -887,20 +1315,100 @@ export function processRingContinuityTurn(ctx) {
       });
       return { handled: true, fallthrough: false };
     }
-    if (detectConfirmationPositive(text)) {
+
+    // 5c. Pending-slot anchored value.
+    if (state.confirmation_pending_slot) {
+      const pv = reply.match(RING_CONFIRMATION_PENDING_VALUE_PATTERN);
+      if (pv) {
+        const parsed = parseValue(pv[1]);
+        if (parsed !== null && parsed !== undefined) {
+          const field = state.confirmation_pending_slot;
+          applyWrite(session, state.circuit_ref, field, parsed, now);
+          safeSend(ws, buildExtractionPayload(state.circuit_ref, [{ field, value: parsed }]));
+          logger?.info?.('stage6.ring_continuity_script_confirmation_pending_slot_amended', {
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            field,
+            value: parsed,
+          });
+          state.confirmation_no_progress = 0;
+          state.confirmation_pending_slot = null;
+          transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
+          return { handled: true, fallthrough: false };
+        }
+      }
+    }
+
+    // 5d. Slot-name-only selector.
+    const selected = RING_CONFIRMATION_SLOT_SELECTORS.find((s) => s.selector.test(reply));
+    if (selected) {
+      if (state.confirmation_pending_slot === selected.field) {
+        state.confirmation_no_progress += 1;
+        if (state.confirmation_no_progress >= 2) return takeNegationCapExit();
+        emitPendingSlotAlternate();
+        logger?.info?.('stage6.ring_continuity_script_confirmation_same_slot_repeat', {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          field: selected.field,
+        });
+        return { handled: true, fallthrough: false };
+      }
+      state.confirmation_pending_slot = selected.field;
+      state.confirmation_no_progress = 0;
+      emitValueAsk(selected.field, `What should ${selected.label} be?`);
+      logger?.info?.('stage6.ring_continuity_script_confirmation_slot_selected', {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        field: selected.field,
+      });
+      return { handled: true, fallthrough: false };
+    }
+
+    // 5e. Bare negation.
+    if (RING_NEGATIVE_RE.test(reply)) {
+      return handleNegation();
+    }
+
+    // 5f. Positive finish, guarded against negated positives.
+    if (detectConfirmationPositive(reply)) {
+      if (RING_NEGATED_POSITIVE_RE.test(reply)) {
+        return handleNegation();
+      }
       finishScript(ws, session, sessionId, now, logger, responseEpoch);
       return { handled: true, fallthrough: false };
     }
-    if (detectEntry(text).matched) {
+
+    // 5g. Guarded re-entry.
+    if (detectEntry(reply).matched) {
+      if (RING_ENTRY_EXCLUSION_PATTERN.test(reply)) {
+        return clearAndFallThrough('confirmation_reentry_guarded');
+      }
+      state.confirmation_pending_slot = null;
+      state.confirmation_negation_reask_emitted = false;
+      state.confirmation_no_progress = 0;
       transitionToConfirmation(ws, session, sessionId, now, logger, responseEpoch);
       return { handled: true, fallthrough: false };
     }
-    logger?.info?.('stage6.ring_continuity_script_confirmation_idle', {
-      sessionId,
-      circuit_ref: state.circuit_ref,
-      textPreview: text.slice(0, 80),
-    });
-    return { handled: true, fallthrough: true, transcriptText };
+
+    // 5h. Idle — reading-like clears + falls through untouched; junk while
+    // a slot is pending is a counted miss (first miss always speaks);
+    // plain idle clears + falls through.
+    if (isReadingLikeReply(reply)) {
+      return clearAndFallThrough('confirmation_reading_fallthrough');
+    }
+    if (state.confirmation_pending_slot) {
+      state.confirmation_no_progress += 1;
+      if (state.confirmation_no_progress >= 2) return takeNegationCapExit();
+      emitPendingSlotAlternate();
+      logger?.info?.('stage6.ring_continuity_script_confirmation_pending_junk_miss', {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        field: state.confirmation_pending_slot,
+        textPreview: reply.slice(0, 80),
+      });
+      return { handled: true, fallthrough: false };
+    }
+    return clearAndFallThrough('confirmation_idle_cleared');
   }
 
   // 4. Resolve circuit FIRST if pending. Digit answer ("circuit 1" /
