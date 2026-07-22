@@ -68,6 +68,10 @@ import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 // P1 ring-script-hardening — reading-like classification mirror (leaf
 // module, no cycle). Kept in sync with the live engine's import.
 import { detectStructuredReading } from './stage6-pending-value.js';
+// P1 Codex r2 — the twin mirrors the engine's position-0 broadcast
+// pre-filter (a non-destructive broadcast during confirmation must clear
+// and fall through, never become a single-circuit amend).
+import { detectBroadcastIntent } from './dialogue-engine/parsers/circuit-range.js';
 
 /**
  * Hard cap on script duration. If the inspector enters the script, walks
@@ -157,7 +161,11 @@ const RING_NEGATIVE_RE = /^\s*(?:no|nope|nah|negative)\b/i;
 // correct" / "Not okay" must never false-finish via detectConfirmationPositive,
 // which matches `correct`/`ok(ay)` anywhere).
 const RING_NEGATED_POSITIVE_RE =
-  /(?:\b(?:not|never|no)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
+  /(?:\b(?:not|never|no|cannot)\b|n['\u2019]t\b|\b(?:is|was|are|were|does|do|did|has|have|had|would|should|could|ca|ai|wo)nt\b)[^.?!]*?\b(?:correct|ok(?:ay)?|right|good|yes|confirm(?:ed)?)\b/i;
+
+// Correction-cue veto for the 5f positive finish — mirrors the engine
+// (Codex diff-review r2).
+const RING_CONFIRMATION_CORRECTION_CUE_RE = /\b(?:wrong|incorrect|except)\b/i;
 
 // Non-ring context rejection + circuit-span masking — mirrors the engine's
 // extraction-safety qualification (the ring extractors capture the first
@@ -855,6 +863,42 @@ export function processRingContinuityTurn(ctx) {
     // starting a fresh ring continuity script after stepping away.
   }
 
+  // ─────────────────────────────── Position 0: broadcast pre-filter ──
+  // Mirrors the engine's processDialogueTurn pre-filter (P1 Codex r2): a
+  // broadcast-intent reply ("earths are 1.19 for all circuits") must never
+  // become a single-circuit amend — it clears state and falls through to
+  // Sonnet's set_field_for_all_circuits. Destructive broadcasts during
+  // confirmation bypass to the position-1 delete exit; the false comma-LIST
+  // decimal shape ("Zs on circuit 17, 0.62") bypasses to the confirmation
+  // branch's 5h reading-like rule. No cancel_pending_tts frames in the twin
+  // (engine-only convention; filtered from replay parity).
+  {
+    const bState = session.ringContinuityScript;
+    if (detectBroadcastIntent(text)) {
+      if (!bState?.active) {
+        return { handled: false };
+      }
+      const destructiveBypass =
+        bState.awaiting_confirmation === true && RING_CONFIRMATION_CLEAR_INTENT_PATTERN.test(reply);
+      const falseListDecimalBypass =
+        bState.awaiting_confirmation === true &&
+        !destructiveBypass &&
+        /\bcircuits?\s+\d{1,3}\s*(?:,|and)\s*\d{1,3}\.\d/i.test(text) &&
+        !detectBroadcastIntent(
+          text.replace(/(\bcircuits?\s+\d{1,3}\s*)(?:,|and)(\s*\d{1,3}\.\d)/gi, '$1;$2')
+        );
+      if (!destructiveBypass && !falseListDecimalBypass) {
+        logger?.info?.('stage6.ring_continuity_script_broadcast_aborted_mid_script', {
+          sessionId,
+          circuit_ref: bState.circuit_ref,
+          textPreview: text.slice(0, 80),
+        });
+        clearScript(session);
+        return { handled: false };
+      }
+    }
+  }
+
   // ───────────────────────────────────────────── Inactive: detect entry ──
   const stateAfterSweep = session.ringContinuityScript;
   if (!stateAfterSweep?.active) {
@@ -1386,7 +1430,7 @@ export function processRingContinuityTurn(ctx) {
 
     // 5f. Positive finish, guarded against negated positives.
     if (detectConfirmationPositive(reply)) {
-      if (RING_NEGATED_POSITIVE_RE.test(reply)) {
+      if (RING_NEGATED_POSITIVE_RE.test(reply) || RING_CONFIRMATION_CORRECTION_CUE_RE.test(reply)) {
         return handleNegation();
       }
       finishScript(ws, session, sessionId, now, logger, responseEpoch);

@@ -354,6 +354,23 @@ describe('replay — ring continuity', () => {
     expect(normaliseEmits(engineRun.sent)).toEqual([]);
   });
 
+  test('P1: non-destructive broadcast during confirmation clears on BOTH paths (position-0 parity; never a single-circuit amend)', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      { text: 'earths are 1.19 for all circuits', now: 5000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+    // Neither path may have amended R2 to 1.19.
+    expect(engineRun.snapshot.circuits[13].ring_r2_ohm).toBe('0.45');
+    expect(legacyRun.snapshot.circuits[13].ring_r2_ohm).toBe('0.45');
+  });
+
   test('P1: confirmation delete exit — server-note fallthrough parity (state + emits)', () => {
     const transcripts = [
       { text: 'Ring continuity for circuit 13.', now: 1000 },
