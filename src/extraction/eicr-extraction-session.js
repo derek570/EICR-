@@ -998,12 +998,52 @@ const _WRAG_BS7671_EICR = fssync.readFileSync(
   path.join(__dirname, '..', '..', 'config', 'prompts', 'wrag-bs7671-eicr.md'),
   'utf8'
 );
-export const EICR_AGENTIC_SYSTEM_PROMPT =
-  _AGENTIC_BASE_PROMPT.trimEnd() +
-  '\n\n' +
-  _SCHEDULE_OF_INSPECTION_EICR.trimEnd() +
-  '\n\n' +
-  _WRAG_BS7671_EICR;
+// A1 agentic-voice (2026-07-23) — deterministic conditional-prompt render.
+// The base .md carries marker-delimited blocks (`<!--A1:ON-->` /
+// `<!--A1:OFF-->`, full-line markers): OFF blocks hold the ORIGINAL pre-A1
+// lines byte-for-byte; ON blocks hold the answer-feature rewrites (TOOLS(18)
+// inventory, the inspect_session_state steer replacing "There are NO query_*
+// tools", the ANSWERING QUESTIONS section, the YOU-ARE-DONE-WHEN question
+// carve-out). Marker lines are never emitted, so the flag-off render is
+// BYTE-IDENTICAL to the pre-A1 prompt — zero cache invalidation while the
+// prod task-def pins VOICE_AGENTIC_ANSWERS=false. Pure and deterministic;
+// pinned by the flag-off byte-identity + mode-change survival tests.
+export function renderAgenticSystemPrompt(agenticAnswersEnabled) {
+  const enabled = agenticAnswersEnabled === true;
+  const out = [];
+  let block = 'common';
+  for (const line of _AGENTIC_BASE_PROMPT.split('\n')) {
+    const t = line.trim();
+    if (t === '<!--A1:ON-->') {
+      block = 'on';
+      continue;
+    }
+    if (t === '<!--A1:OFF-->') {
+      block = 'off';
+      continue;
+    }
+    if (t === '<!--/A1:ON-->' || t === '<!--/A1:OFF-->') {
+      block = 'common';
+      continue;
+    }
+    if (block === 'on' && !enabled) continue;
+    if (block === 'off' && enabled) continue;
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
+function _composeAgenticPrompt(base) {
+  return base.trimEnd() + '\n\n' + _SCHEDULE_OF_INSPECTION_EICR.trimEnd() + '\n\n' + _WRAG_BS7671_EICR;
+}
+
+// Flag-off variant keeps the historical export name — byte-identical to the
+// pre-A1 prompt so every existing consumer/test and the prod prompt cache are
+// untouched while the flag is off.
+export const EICR_AGENTIC_SYSTEM_PROMPT = _composeAgenticPrompt(renderAgenticSystemPrompt(false));
+export const EICR_AGENTIC_SYSTEM_PROMPT_ANSWERS = _composeAgenticPrompt(
+  renderAgenticSystemPrompt(true)
+);
 
 export class EICRExtractionSession {
   constructor(apiKey, sessionId, certType = 'eicr', options = {}) {
@@ -1041,18 +1081,27 @@ export class EICRExtractionSession {
     // the array is cheap); only the renderer's consumption differs.
     this.circuitOrder = this._resolveCircuitOrder(options.circuitOrder);
 
+    // A1 agentic-voice (2026-07-23) — ONE master flag VOICE_AGENTIC_ANSWERS,
+    // read ONCE here and LATCHED. The conditional prompt render (below),
+    // buildSessionTools (harness), and the pre-LLM gate's borderline-forward
+    // all derive from this latched value — never an independent env read
+    // (independent reads could produce the expressly-forbidden split state
+    // where tools and prompt/gate disagree, and would make rollback
+    // non-atomic). Default TRUE unless the env is exactly 'false' (the prod
+    // task-def pins it explicitly either way).
+    this.agenticAnswersEnabled = this._resolveAgenticAnswers(options.agenticAnswersEnabled);
+
     // Stage 6 Phase 4: mode-gated prompt selection.
     //   off         → legacy cert-specific prompt (STR-01 rollback path).
     //   shadow/live → cert-agnostic agentic prompt; cert-specific facts
     //                 flow in via the cached state snapshot (jobState +
     //                 circuitSchedule), so we don't fork the prompt by
     //                 cert type. Keeps cache reuse high across EIC/EICR.
-    this.systemPrompt =
-      this.toolCallsMode === 'off'
-        ? certType === 'eic'
-          ? EIC_SYSTEM_PROMPT
-          : EICR_SYSTEM_PROMPT
-        : EICR_AGENTIC_SYSTEM_PROMPT;
+    // A1: selection goes through _resolveSystemPromptForMode so BOTH
+    // assignment sites (here + applyModeChange) pick the same
+    // agenticAnswersEnabled-aware render — a constructor-only variant would
+    // be undone by a mid-session mode flip.
+    this.systemPrompt = this._resolveSystemPromptForMode();
     this.conversationHistory = []; // Array of { role, content } messages
     this.costTracker = new CostTracker();
     this.extractedReadingsCount = 0;
@@ -1161,6 +1210,33 @@ export class EICRExtractionSession {
    * no longer being maintained. The off path stays available — set
    * SONNET_TOOL_CALLS=off explicitly if rollback is needed.
    */
+  /**
+   * A1 agentic-voice — resolve the master VOICE_AGENTIC_ANSWERS flag ONCE at
+   * construction (same constructor-locked pattern as toolCallsMode: mid-
+   * session env mutation must NOT drift the feature — Research §Pitfall 4).
+   * Default TRUE unless the env is exactly the string 'false'. The options
+   * override exists for tests (boolean only).
+   */
+  _resolveAgenticAnswers(override) {
+    if (typeof override === 'boolean') return override;
+    return process.env.VOICE_AGENTIC_ANSWERS !== 'false';
+  }
+
+  /**
+   * A1 agentic-voice — the ONE prompt-selection helper used by BOTH
+   * assignment sites (constructor + applyModeChange). off-mode keeps the
+   * legacy cert-specific prompts; agentic modes pick the flag-conditional
+   * render from the latched agenticAnswersEnabled.
+   */
+  _resolveSystemPromptForMode() {
+    if (this.toolCallsMode === 'off') {
+      return this.certType === 'eic' ? EIC_SYSTEM_PROMPT : EICR_SYSTEM_PROMPT;
+    }
+    return this.agenticAnswersEnabled === true
+      ? EICR_AGENTIC_SYSTEM_PROMPT_ANSWERS
+      : EICR_AGENTIC_SYSTEM_PROMPT;
+  }
+
   _resolveToolCallsMode(override) {
     const raw = override ?? process.env.SONNET_TOOL_CALLS ?? 'live';
     if (raw === 'off' || raw === 'shadow' || raw === 'live') return raw;
@@ -1340,12 +1416,9 @@ export class EICRExtractionSession {
     // `stage6-off-mode-snapshot-canary.test.js` already pins the
     // off-mode behaviour at CI; if that file changes its
     // expectations we update both sites in lock-step.
-    this.systemPrompt =
-      this.toolCallsMode === 'off'
-        ? this.certType === 'eic'
-          ? EIC_SYSTEM_PROMPT
-          : EICR_SYSTEM_PROMPT
-        : EICR_AGENTIC_SYSTEM_PROMPT;
+    // A1: same helper as the constructor — the selected render (incl. the
+    // agenticAnswersEnabled-aware variant) survives a mode change.
+    this.systemPrompt = this._resolveSystemPromptForMode();
     logger.info('stage6.apply_mode_change', {
       sessionId: this.sessionId,
       fromMode,

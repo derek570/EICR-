@@ -759,6 +759,16 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       value: _answerState.stagedMeta?.fallback === true ? 'answer_fallback' : 'answer_user',
       enumerable: false,
     });
+    // Same non-enumerable treatment for the emit-site telemetry meta
+    // (chars/truncated) — readable at sonnet-stream's redacted-logging
+    // branch, never on the wire.
+    Object.defineProperty(result, 'answer_meta', {
+      value: {
+        truncated: _answerState.stagedMeta?.truncated === true,
+        chars: _answerState.stagedText.length,
+      },
+      enumerable: false,
+    });
   }
 
   // 4-6. New Phase 2 slots — OMITTED when empty so iOS decoders unaware of

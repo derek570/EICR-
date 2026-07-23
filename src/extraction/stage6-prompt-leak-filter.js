@@ -209,18 +209,31 @@ const STRUCTURAL_PHRASES = [
   // ID kept for back-compat with CloudWatch dashboards filtering on
   // filter_reason='seven-tools'.
   { id: 'nine-tools', value: 'You have 9 tools' },
+  // A1 agentic-voice (2026-07-23) — per the nine-tools precedent, cover
+  // EVERY retained tool-count literal + rendered header form the prompt
+  // still contains. answer_user speech passes this filter, and the filter
+  // demonstrably treated the legacy literals as safe — an answer could
+  // otherwise speak prompt-count text straight past the output filter.
+  { id: 'eight-tools', value: 'You have 8 tools' },
+  { id: 'twelve-tools', value: 'You have 12 tools' },
+  { id: 'eighteen-tools', value: 'You have 18 tools' },
+  { id: 'tools-header-twelve', value: 'TOOLS (12)' },
+  { id: 'tools-header-eighteen', value: 'TOOLS (18)' },
   { id: 'no-free-text-json', value: 'Do not emit free-text JSON' },
   { id: 'silent-writes', value: 'Prefer silent writes' },
   { id: 'corrections-are-writes', value: 'Corrections are writes' },
 ];
 
 /**
- * Tool-call keyword regex — any of the 7 tool names. Used to
- * context-gate worked-example detection (see MARKER_EXAMPLE
- * handling in checkForPromptLeak).
+ * Tool-call keyword regex — the COMPLETE advertised tool-name set (A1
+ * agentic-voice, 2026-07-23: previously covered only the original 7; the
+ * server now advertises 18, including four that had been omitted from the
+ * prompt inventory and the two new answer-feature tools). Used to
+ * context-gate worked-example detection (see MARKER_EXAMPLE handling in
+ * checkForPromptLeak).
  */
 const TOOL_KEYWORD_RE =
-  /\b(record_reading|clear_reading|create_circuit|rename_circuit|record_observation|delete_observation|ask_user)\b/;
+  /\b(record_reading|clear_reading|create_circuit|rename_circuit|record_observation|delete_observation|ask_user|record_board_reading|start_dialogue_script|delete_circuit|calculate_zs|calculate_r1_plus_r2|set_field_for_all_circuits|add_board|select_board|mark_distribution_circuit|answer_user|inspect_session_state)\b/;
 
 /**
  * Worked-example header regex: "Example 1:", "Example 2:", ...,

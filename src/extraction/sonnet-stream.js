@@ -12,7 +12,7 @@
 //   (no audio for 60s) and reconnects when speech resumes.
 
 import { WebSocketServer } from 'ws';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { EICRExtractionSession } from './eicr-extraction-session.js';
 import { QuestionGate } from './question-gate.js';
@@ -3359,6 +3359,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // fill that in later?", gate blocks LOW_CONTENT (1 content word, no
     // weak trigger), engine never sees the reply, RCD focus persists.
     const hasActiveDialogueScript = entry.session?.dialogueScriptState?.active === true;
+    // A1 agentic-voice — the session-latched master flag (never a fresh env
+    // read; the session is the single authoritative resolution). Optional
+    // chaining + === true keeps session-absent turns fail-closed on legacy
+    // LOW_CONTENT routing, never throwing.
+    const agenticAnswersEnabled = entry.session?.agenticAnswersEnabled === true;
     const gateDecision = shouldForwardToSonnet(msg.text, {
       regexResults: Array.isArray(msg.regexResults) ? msg.regexResults : null,
       hasPendingAsk: entry.pendingAsks && entry.pendingAsks.size > 0,
@@ -3366,7 +3371,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       inResponseTo: !!(msg.in_response_to && typeof msg.in_response_to === 'object'),
       drainedRetry: !!msg._drainedRetry,
       gateEnabled: PRE_LLM_GATE_ENABLED,
+      agenticAnswersEnabled,
     });
+    // A1 — borderline-forward telemetry. textPreview here is gate-input
+    // TRANSCRIPT text (user speech), NOT model output, so the no-raw-model-
+    // text leak rule does not apply (same stance as gate_blocked below).
+    if (gateDecision.borderline === true) {
+      logger.info('voice_latency.gate_borderline_forwarded', {
+        sessionId,
+        textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
+        distinct_content_words: gateDecision.distinctContentWords ?? null,
+      });
+    }
     if (!gateDecision.forward) {
       logger.info('voice_latency.gate_blocked', {
         sessionId,
@@ -4492,11 +4508,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 : {}),
             })
           );
-          logger.info('Voice command from extraction', {
-            sessionId,
-            action: action?.type || 'query',
-            response: (spoken_response || '').substring(0, 80),
-          });
+          // A1 agentic-voice — LEAK-RULE branch on the internal answer-source
+          // marker (non-enumerable, bundler-attached). The legacy substring(0,80)
+          // preview was fine for legacy voice-command text, but for MODEL-
+          // GENERATED answers raw text is never logged: source + char count +
+          // truncation flag + hash only.
+          if (result.answer_source) {
+            logger.info('voice_latency.answer_user_emitted', {
+              sessionId,
+              source: result.answer_source,
+              chars: result.answer_meta?.chars ?? (spoken_response || '').length,
+              truncated: result.answer_meta?.truncated === true,
+              utterance_id_kind:
+                typeof result.utterance_id === 'string' && result.utterance_id
+                  ? 'present'
+                  : 'absent',
+              answer_hash: createHash('sha256')
+                .update(spoken_response || '', 'utf8')
+                .digest('hex')
+                .slice(0, 16),
+            });
+          } else {
+            logger.info('Voice command from extraction', {
+              sessionId,
+              action: action?.type || 'query',
+              response: (spoken_response || '').substring(0, 80),
+            });
+          }
         }
 
         // Send cost update
