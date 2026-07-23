@@ -67,13 +67,13 @@ const slots = [
     label: 'rating',
     question: 'What rating in amps?',
     parser: parseAmps,
-    // P3 — the LIM alternation lets a fuller utterance ("the rating is a
-    // limitation") capture the LIM token; parseAmps canonicalises it to "LIM".
-    // ANCHORED to a rating/amps phrase so a "limitation" answer for a DIFFERENT
-    // slot (kA / mA) doesn't also write LIM here — extractNamedFieldValues runs
-    // EVERY slot's extractor per turn.
-    namedExtractor:
-      /\b(\d{1,4})\s*(?:amps?|A)\b|\b(?:rating|amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+    // P3 — numeric-only named extractor. A LIM answer for this slot arrives via
+    // the ACTIVE-SLOT parser (parseAmps recognises the four LIM forms) or the
+    // pending_writes normaliser — NOT via named extraction. A named LIM
+    // alternation here can't be anchored tightly enough to avoid cross-writing
+    // LIM to sibling slots (kilo/milli "amps" collisions), so it is deliberately
+    // omitted; the parser path covers the reachable dialogue LIM answer.
+    namedExtractor: /\b(\d{1,4})\s*(?:amps?|A)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -81,10 +81,10 @@ const slots = [
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,
-    // P3 — LIM alternation ANCHORED to a breaking-capacity/kA phrase (see
-    // ocpd_rating_a) so it doesn't cross-write from a rating/mA "limitation".
-    namedExtractor:
-      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kA|kilo\s*amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+    // P3 — numeric-only named extractor (see ocpd_rating_a). LIM arrives via the
+    // active-slot parser (parseKa) / normaliser; "LIM" is in allowedValues so
+    // the parser + bare-value paths accept it.
+    namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b/i,
     acceptsBareValue: true,
     // 2026-05-04 (field test 07635782): the inspector said "six" for
     // breaking capacity, the engine accepted it as the rating answer

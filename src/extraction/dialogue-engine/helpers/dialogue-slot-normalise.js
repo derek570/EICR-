@@ -28,7 +28,9 @@ import {
   NUMERIC_READING_FIELDS,
   canonicaliseNumericReadingField,
   validateNumericReadingValue,
+  isCapabilityGatedLimWrite,
 } from '../../value-enum-validator.js';
+import { isLimRangedWriteKilled } from '../../voice-latency-config.js';
 
 /**
  * @param {object} schema — the dialogue schema (for slot.allowedValues lookup)
@@ -48,39 +50,29 @@ export function normaliseDialogueSlotWrite(schema, field, value) {
   const coerced = coerceRecordReadingValue(canonicalField, value);
   // Exact LIM forms accepted first (canonical "LIM").
   if (typeof coerced === 'string' && coerced.trim().toLowerCase() === 'lim') {
+    // SERVER kill-switch (LIM_RANGED_WRITE_DISABLED) is the rollback boundary —
+    // it must cover the dialogue-engine LIM writes too, not just the direct /
+    // bulk / speculator gates. Reject a capability-gated LIM when the switch is
+    // on (the IR fields stay exempt — pre-P3 behaviour).
+    if (isLimRangedWriteKilled() && isCapabilityGatedLimWrite(canonicalField, 'LIM')) {
+      return { ok: false, reason: 'lim_ranged_write_killed' };
+    }
     return { ok: true, value: 'LIM' };
   }
-  // "Coercion is NOT validation" — ELSE run the slot's own parser (which
-  // enforces the slot's specific numeric range + rejects garble/near-matches),
-  // then the slot's allowedValues. A parser-rejected value (incl. a non-string
-  // that isn't a finite number, a near-match, or an out-of-range numeric) is
-  // REJECTED so the drain drops it instead of persisting a wrong write.
-  const slot = Array.isArray(schema?.slots) ? schema.slots.find((s) => s.field === field) : null;
-  // A finite-number seed is stringified so the parser can validate it; any
-  // other non-string (array/object/null/NaN/Infinity) becomes '' and is
-  // rejected by the parser.
-  const parseInput =
-    typeof coerced === 'string'
-      ? coerced
-      : typeof coerced === 'number' && Number.isFinite(coerced)
-        ? String(coerced)
-        : '';
-  if (slot && typeof slot.parser === 'function') {
-    const parsed = slot.parser(parseInput);
-    if (parsed === null || parsed === undefined) {
-      return { ok: false, reason: 'slot_parser_rejected' };
-    }
-    if (Array.isArray(slot.allowedValues) && !slot.allowedValues.includes(parsed)) {
-      return { ok: false, reason: 'not_in_allowed_values' };
-    }
-    return { ok: true, value: parsed };
-  }
-  // No slot parser in this schema (a cross-schema seed) → fall back to the
-  // canonical numeric validator. A finite-number seed is accepted; any other
-  // non-string / invalid string is rejected.
+  // "Coercion is NOT validation" — ELSE validate the value STRICTLY (whole-value
+  // grammar), NOT via the slot's natural-language parser (which is a lenient
+  // extractor that would truncate "32.5" → "32" or extract a substring from
+  // "32 bananas"). validateNumericReadingValue enforces the canonical numeric
+  // bounds / field-appropriate sentinels; the slot's `allowedValues` ladder
+  // (e.g. OCPD-kA) is then applied on the coerced whole value. A near-match /
+  // out-of-range / non-string non-number / off-ladder value is REJECTED.
   const verdict = validateNumericReadingValue(canonicalField, coerced);
   if (!verdict.ok) {
     return { ok: false, reason: verdict.code || 'invalid_numeric_reading' };
+  }
+  const slot = Array.isArray(schema?.slots) ? schema.slots.find((s) => s.field === field) : null;
+  if (slot && Array.isArray(slot.allowedValues) && !slot.allowedValues.includes(coerced)) {
+    return { ok: false, reason: 'not_in_allowed_values' };
   }
   return { ok: true, value: coerced };
 }

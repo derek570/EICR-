@@ -181,7 +181,12 @@ describe('apply-extraction H3 wiring — Fix 6 does not spuriously clear', () =>
   // board's max-Zs is never spuriously touched. (Web's per-circuit reading apply
   // is ref-only/last-wins — a pre-existing single-board limitation — so the LIM
   // lands on the sub row; the point of this test is that main is untouched.)
-  it('multi-board same-ref: a LIM rating does not spuriously clear the OTHER board', () => {
+  it('multi-board same-ref: an AMBIGUOUS LIM rating does NOT overwrite either board (no corruption)', () => {
+    // Web's per-circuit reading apply is ref-only; when two boards share
+    // circuit 1 the target is ambiguous, so the LIM-overwrite exception is
+    // SUPPRESSED (F6) — neither rating becomes LIM and neither max-Zs is
+    // touched. This is the pre-existing multi-board reading limitation, NOT a
+    // wrong-board corruption.
     const main: CircuitRow = {
       id: 'm-1',
       circuit_ref: '1',
@@ -196,24 +201,37 @@ describe('apply-extraction H3 wiring — Fix 6 does not spuriously clear', () =>
       circuit_ref: '1',
       board_id: 'sub',
       ocpd_type: 'B',
-      ocpd_rating_a: '32',
+      ocpd_rating_a: '16',
       max_disconnect_time_s: '0.4',
-      ocpd_max_zs_ohm: '1.44',
+      ocpd_max_zs_ohm: '2.87',
     };
     const applied = applyExtractionToJob(
       makeJob({ circuits: [main, sub] }),
-      makeResult({
-        readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' } as never],
-      })
+      makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' } as never] })
     );
-    const out = applied!.patch.circuits!;
+    const out = applied?.patch.circuits ?? [main, sub];
     const mainOut = out.find((c) => c.id === 'm-1')!;
     const subOut = out.find((c) => c.id === 's-1')!;
-    // Exactly one board's max-Zs cleared (the one the ref-only apply hit); the
-    // other stays 1.44 — never both, never the wrong one.
-    const cleared = [mainOut.ocpd_max_zs_ohm, subOut.ocpd_max_zs_ohm].filter((v) => v === '');
-    const kept = [mainOut.ocpd_max_zs_ohm, subOut.ocpd_max_zs_ohm].filter((v) => v === '1.44');
-    expect(cleared.length).toBe(1);
-    expect(kept.length).toBe(1);
+    // Neither board corrupted: ratings and max-Zs unchanged.
+    expect(mainOut.ocpd_rating_a).toBe('32');
+    expect(subOut.ocpd_rating_a).toBe('16');
+    expect(mainOut.ocpd_max_zs_ohm).toBe('1.44');
+    expect(subOut.ocpd_max_zs_ohm).toBe('2.87');
+  });
+
+  it('F4: a LIM reading does NOT overwrite a populated free-text designation', () => {
+    const row: CircuitRow = {
+      id: 'c-1',
+      circuit_ref: '1',
+      circuit_designation: 'Cooker',
+    };
+    const applied = applyExtractionToJob(
+      makeJob({ circuits: [row] }),
+      makeResult({
+        readings: [{ circuit: 1, field: 'circuit_designation', value: 'LIM' } as never],
+      })
+    );
+    // The designation must be preserved — LIM is not a reading here.
+    expect(applied?.patch.circuits?.[0]?.circuit_designation ?? 'Cooker').toBe('Cooker');
   });
 });

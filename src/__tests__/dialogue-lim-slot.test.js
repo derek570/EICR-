@@ -102,33 +102,36 @@ describe('normaliseDialogueSlotWrite — seeded pending_writes gate', () => {
 import { extractNamedFieldValues } from '../extraction/dialogue-engine/helpers/extraction.js';
 import { rcboSchema } from '../extraction/dialogue-engine/schemas/rcbo.js';
 
-describe('namedExtractor LIM alternatives are field-anchored (F2)', () => {
+describe('named extraction never CROSS-WRITES LIM (F2 — numeric-only extractors)', () => {
   function fieldsFrom(text, slots) {
     return extractNamedFieldValues(text, slots);
   }
 
-  test('"the rating is a limitation" → ONLY ocpd_rating_a = LIM', () => {
-    const out = fieldsFrom('the rating is a limitation', ocpdSchema.slots);
-    expect(out.find((o) => o.field === 'ocpd_rating_a')?.value).toBe('LIM');
-    expect(out.map((o) => o.field)).not.toContain('ocpd_breaking_capacity_ka');
-  });
-
-  test('"breaking capacity is a limitation" → ONLY ocpd_breaking_capacity_ka = LIM', () => {
-    const out = fieldsFrom('breaking capacity is a limitation', ocpdSchema.slots);
-    expect(out.find((o) => o.field === 'ocpd_breaking_capacity_ka')?.value).toBe('LIM');
-    expect(out.map((o) => o.field)).not.toContain('ocpd_rating_a');
-  });
-
-  test('RCBO "operating current is a limitation" → ONLY rcd_operating_current_ma = LIM', () => {
-    const out = fieldsFrom('operating current is a limitation', rcboSchema.slots);
-    expect(out.find((o) => o.field === 'rcd_operating_current_ma')?.value).toBe('LIM');
-    expect(out.map((o) => o.field)).not.toContain('ocpd_rating_a');
-    expect(out.map((o) => o.field)).not.toContain('ocpd_breaking_capacity_ka');
+  // The ocpd rating/kA and rcd mA namedExtractors are numeric-only — a LIM
+  // answer for one slot must NEVER write LIM to a sibling slot via named
+  // extraction (that class of cross-write is the reason the LIM alternatives
+  // were removed). A LIM answer arrives via the ACTIVE-SLOT parser instead.
+  test.each([
+    'the rating is a limitation',
+    'breaking capacity is a limitation',
+    'kilo amps is a limitation',
+    'milli amps is a limitation',
+  ])('"%s" writes LIM to NO ocpd/rcbo slot via named extraction', (text) => {
+    for (const slots of [ocpdSchema.slots, rcboSchema.slots]) {
+      const out = fieldsFrom(text, slots);
+      for (const o of out) expect(o.value).not.toBe('LIM');
+    }
   });
 
   test('a plain numeric utterance still writes only the numeric field', () => {
     const out = fieldsFrom('the rating is 32 amps', ocpdSchema.slots);
     expect(out.find((o) => o.field === 'ocpd_rating_a')?.value).toBe('32');
     expect(out.map((o) => o.field)).not.toContain('ocpd_breaking_capacity_ka');
+  });
+
+  test('the ACTIVE-SLOT parser is the LIM path: parseAmps/parseKa/parseMa("limitation") → LIM', () => {
+    expect(parseAmps('limitation')).toBe('LIM');
+    expect(parseKa('limitation')).toBe('LIM');
+    expect(parseMa('limitation')).toBe('LIM');
   });
 });

@@ -342,13 +342,19 @@ export function validateNumericReadingValue(field, value) {
   const v = value.trim();
   if (v === '') return { ok: true };
   if (v.toLowerCase() === 'lim') return { ok: true }; // canonical LIM (post-coercion)
+  // ocpd_max_zs_ohm is a COMPUTED ceiling — only a finite numeric or "LIM" is
+  // meaningful. Reject the off-scale (>N/<N) and discontinuous/N-A sentinels
+  // that ARE legitimate on a measured continuity / IR reading.
+  if (field === 'ocpd_max_zs_ohm') {
+    return Number.isFinite(Number(v))
+      ? { ok: true }
+      : { ok: false, code: 'value_invalid_numeric_reading', field, value };
+  }
   if (/^[<>]\s*\d+(?:\.\d+)?$/.test(v)) return { ok: true }; // off-scale sentinel form
   if (Number.isFinite(Number(v))) return { ok: true }; // numeric string
   // Field-appropriate NON-LIM sentinels: the discontinuous/not-applicable
   // markers (n/a, na, ∞, inf, infinity) are legitimate on a real measured
-  // reading (continuity / IR), but NOT on ocpd_max_zs_ohm — a COMPUTED ceiling,
-  // for which only a finite numeric or "LIM" makes sense. So restrict the
-  // blanket sentinel acceptance to fields OTHER than ocpd_max_zs_ohm.
-  if (field !== 'ocpd_max_zs_ohm' && isValidSentinel(v)) return { ok: true };
+  // reading (continuity / IR).
+  if (isValidSentinel(v)) return { ok: true };
   return { ok: false, code: 'value_invalid_numeric_reading', field, value };
 }

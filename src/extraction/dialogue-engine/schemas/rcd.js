@@ -126,10 +126,8 @@ const slots = [
     label: 'operating current',
     question: "What's the operating current in mA?",
     parser: parseMa,
-    // P3 — LIM alternation ANCHORED to an operating-current/mA phrase so it
-    // doesn't cross-write from a sibling slot's "limitation" answer.
-    namedExtractor:
-      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|mA|milli\s*amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+    // P3 — numeric-only named extractor. LIM via active-slot parser / normaliser.
+    namedExtractor: /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b/i,
     acceptsBareValue: true,
   },
 ];
