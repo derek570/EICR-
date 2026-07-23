@@ -204,7 +204,7 @@ describe('encodeReadingKey / decodeReadingKey — boardId-bearing Map keys', () 
   });
 
   test('rejects boardId containing NUL with TypeError', () => {
-    expect(() => encodeReadingKey('Ze_ohms', 1, 'bad id')).toThrow(TypeError);
+    expect(() => encodeReadingKey('Ze_ohms', 1, 'bad\u0000id')).toThrow(TypeError);
   });
 
   test('decodes a legacy 2-part key (no BOARD_TAG_SEP) with boardId=null', () => {

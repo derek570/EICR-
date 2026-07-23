@@ -506,6 +506,102 @@ describe('P5 — non-collapse guards', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Slot-identity defensive contract: the Map key is authoritative over
+// value.boardId, and a one-sided-Symbol pair NEVER infers ordering (Fix spec 2)
+// ---------------------------------------------------------------------------
+
+describe('P5 — slot-identity fallback contract', () => {
+  test('Symbol-less raw fallback: the decoded Map key is authoritative, NOT value.boardId', () => {
+    // A Symbol-less readings entry whose Map key encodes board A but whose
+    // enumerable value.boardId is board B. Both compared sides lack the Symbol,
+    // so the raw fallback runs — and it must derive the readings identity from
+    // decodeReadingKey(mapKey) (board A), NEVER value.boardId (board B).
+    const makeWrites = (clearBoard) => {
+      const p = createPerTurnWrites();
+      // key board = 'boardA'; value.boardId = 'boardB' (deliberate mismatch); no Symbol.
+      p.readings.set(encodeReadingKey('measured_zs_ohm', 1, 'boardA'), {
+        value: '0.42',
+        confidence: 1,
+        source_turn_id: 't1',
+        boardId: 'boardB',
+      });
+      // Symbol-less clear (raw board_id only).
+      p.fieldCorrections.push({
+        type: 'field_corrected',
+        circuit: 1,
+        field: 'measured_zs_ohm',
+        previous_value: '1.0',
+        reason: 'clear_reading',
+        board_id: clearBoard,
+      });
+      return p;
+    };
+    // clear on the KEY board (A) → collapses (proves the key controls matching).
+    const rA = bundle(makeWrites('boardA'));
+    expect('field_corrections' in rA).toBe(false);
+    expect(rA[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toHaveLength(1);
+    // clear on the VALUE board (B) → does NOT collapse (value.boardId is ignored).
+    const rB = bundle(makeWrites('boardB'));
+    expect(rB.field_corrections).toHaveLength(1);
+    expect(rB[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toBeUndefined();
+  });
+
+  test('one-sided Symbol (marked write + Symbol-less clear) → no collapse', () => {
+    const p = createPerTurnWrites();
+    // Marked write (effective set), Symbol-less clear (raw set) → the sets never
+    // intersect, so no ordering is inferred.
+    p.readings.set(
+      encodeReadingKey('measured_zs_ohm', 1, null),
+      attachEffectiveSlot(
+        { value: '0.42', confidence: 1, source_turn_id: 't1' },
+        'measured_zs_ohm',
+        1,
+        'main'
+      )
+    );
+    p.fieldCorrections.push({
+      type: 'field_corrected',
+      circuit: 1,
+      field: 'measured_zs_ohm',
+      previous_value: '1.0',
+      reason: 'clear_reading',
+      board_id: null,
+    });
+    const r = bundle(p);
+    expect(r.field_corrections).toHaveLength(1); // clear survives
+    expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toBeUndefined();
+  });
+
+  test('one-sided Symbol (Symbol-less write + marked clear) → no collapse', () => {
+    const p = createPerTurnWrites();
+    // Symbol-less write (raw set), marked clear (effective set) → no intersection.
+    p.readings.set(encodeReadingKey('measured_zs_ohm', 1, null), {
+      value: '0.42',
+      confidence: 1,
+      source_turn_id: 't1',
+    });
+    p.fieldCorrections.push(
+      attachEffectiveSlot(
+        {
+          type: 'field_corrected',
+          circuit: 1,
+          field: 'measured_zs_ohm',
+          previous_value: '1.0',
+          reason: 'clear_reading',
+          board_id: null,
+        },
+        'measured_zs_ohm',
+        1,
+        'main'
+      )
+    );
+    const r = bundle(p);
+    expect(r.field_corrections).toHaveLength(1); // clear survives
+    expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 9. A2 wire-dialect: r2_ohm exemption + A2-mapped fields match on RAW keys
 // ---------------------------------------------------------------------------
 
@@ -647,13 +743,25 @@ describe('P5 — A1 agentic-voice regressions', () => {
     expect('field_corrections' in r).toBe(false);
   });
 
-  test('neither ordering starves the hadSuccessfulWrite gate (its inputs are the accumulator, not the projection)', async () => {
-    // stage6-shadow-harness.js:1160 reads perTurnWrites (readings/cleared/…),
-    // NOT the bundled result — so the ANSWER_FALLBACK gate is untouched by the
-    // projection-time collapse. Prove both orderings keep a "successful write".
+  test('neither ordering stages ANSWER_FALLBACK_TEXT: the harness gate (verbatim expression) sees a successful write', async () => {
+    // The A1 answer-fallback gate lives inline in stage6-shadow-harness.js
+    // (runLiveMode post-loop finalization): when a turn TOUCHED the answer
+    // feature (answer.featureTouched) but staged NOTHING (stagedText == null),
+    // it stages ANSWER_FALLBACK_TEXT ONLY IF `!hadSuccessfulWrite && !hadEmittedAsk`.
+    // `hadSuccessfulWrite` is a pure function of `perTurnWrites` (readings /
+    // boardReadings / cleared / observations / deletedObservations / circuitOps
+    // / boardOps sizes) — the accumulator the projection-time collapse NEVER
+    // mutates (pinned by the purity test above). So the fix cannot flip the gate.
+    // Mirror the EXACT gate expression against the REAL post-dispatch accumulator
+    // for both orderings, with the gate's own precondition set, and prove the
+    // fallback branch is not entered.
     for (const order of ['clear_then_write', 'write_then_clear']) {
       const session = makeSession({ 3: { ir_live_live_mohm: 'LIM' } });
       const p = createPerTurnWrites();
+      // Precondition the gate requires: the answer feature was touched but
+      // nothing was staged (an emptied/filtered answer_user this turn).
+      p.answer.featureTouched = true;
+      p.answer.stagedText = null;
       const doClear = () =>
         dispatchClearReading(clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }), ctx(session, p));
       const doWrite = () =>
@@ -668,9 +776,45 @@ describe('P5 — A1 agentic-voice regressions', () => {
         await doWrite();
         await doClear();
       }
+      // VERBATIM from stage6-shadow-harness.js (the gate expression under lock).
       const hadSuccessfulWrite =
-        (p.readings?.size ?? 0) > 0 || (p.cleared?.length ?? 0) > 0;
+        (p.readings?.size ?? 0) > 0 ||
+        (p.boardReadings?.size ?? 0) > 0 ||
+        (p.cleared?.length ?? 0) > 0 ||
+        (p.observations?.length ?? 0) > 0 ||
+        (p.deletedObservations?.length ?? 0) > 0 ||
+        (p.circuitOps?.length ?? 0) > 0 ||
+        (p.boardOps?.length ?? 0) > 0;
+      const hadEmittedAsk = false; // no ask emitted in these frozen turns
+      // The gate's fallback-staging branch: `!hadSuccessfulWrite && !hadEmittedAsk`.
+      const wouldStageFallback =
+        p.answer.featureTouched === true &&
+        p.answer.stagedText == null &&
+        !hadSuccessfulWrite &&
+        !hadEmittedAsk;
       expect(hadSuccessfulWrite).toBe(true);
+      expect(wouldStageFallback).toBe(false); // ANSWER_FALLBACK_TEXT never staged
     }
+  });
+
+  test('collapse never mutates the answer accumulator: bundling leaves answer state intact', async () => {
+    // Belt-and-braces: prove the bundler (which projects spoken_response and is
+    // where the collapse runs) does not touch perTurnWrites.answer — so the
+    // downstream harness gate reads exactly what the dispatchers left.
+    const session = makeSession({ 3: { ir_live_live_mohm: 'LIM' } });
+    const p = createPerTurnWrites();
+    p.answer.featureTouched = true;
+    p.answer.stagedText = null;
+    await dispatchClearReading(
+      clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }),
+      ctx(session, p)
+    );
+    await dispatchRecordReading(
+      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      ctx(session, p)
+    );
+    bundle(p);
+    expect(p.answer.featureTouched).toBe(true);
+    expect(p.answer.stagedText).toBeNull(); // bundler never staged a fallback
   });
 });
