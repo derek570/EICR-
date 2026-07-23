@@ -130,6 +130,20 @@
 | `rcd_button_confirmed` | "OK" or "Y" if test button works |
 | `afdd_button_confirmed` | "OK" if AFDD fitted and tested |
 
+> **LIM on numeric reading fields (P3, 2026-07-23, feedback id 86):** "LIM"
+> (limitation — the reading could not be obtained) is an accepted value on the
+> numeric READING fields — the six ranged fields (`measured_zs_ohm`,
+> `rcd_time_ms`, `rcd_operating_current_ma`, `ocpd_rating_a`,
+> `ocpd_breaking_capacity_ka`, `ir_test_voltage_v`) and the ungated numerics
+> (`r1_r2_ohm`, `r2_ohm`, the ring legs, `ocpd_max_zs_ohm`, the two IR mohm
+> fields). Only the four spoken forms `LIM`/`limb`/`limp`/`limitation` are
+> accepted (near-matches like `limit`/`limited` are rejected). It reads back as
+> "…recorded as LIM — limitation". Closed-enum classification fields
+> (`ocpd_bs_en`/`ocpd_type`/`rcd_*`/`wiring_type`/`ref_method`/polarity/button
+> results) do **not** accept LIM — a limitation is a missing *reading*, not a
+> classification. Voice acceptance of LIM on the ranged fields is gated behind
+> the `lim_ranged_write_v1` client capability (sentinel-safe derivation guards).
+
 ## Observations Tab (`/job/[id]/observations`)
 
 | Field | Type | Options | AI Extraction Guidance |

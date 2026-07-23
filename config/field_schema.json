@@ -121,7 +121,7 @@
       "label": "OCPD Rating (A)",
       "type": "text",
       "description": "OCPD current rating in amps",
-      "ai_guidance": "Breaker/fuse rating. Common: 6A (lighting), 16A (radial), 20A (radial), 32A (ring/cooker), 40A (shower), 45A (shower)",
+      "ai_guidance": "Breaker/fuse rating. Common: 6A (lighting), 16A (radial), 20A (radial), 32A (ring/cooker), 40A (shower), 45A (shower) 'LIM' (limitation) is an accepted value when the reading cannot be obtained due to an access or safety limitation.",
       "pdf_column": "Rating A",
       "group": "OCPD",
       "defaults_by_circuit": {
@@ -136,7 +136,7 @@
       "label": "Breaking Capacity (kA)",
       "type": "text",
       "description": "OCPD fault current breaking capacity",
-      "ai_guidance": "Breaking capacity in kA. Typical domestic: 6kA or 10kA. Check consumer unit label.",
+      "ai_guidance": "Breaking capacity in kA. Typical domestic: 6kA or 10kA. Check consumer unit label. 'LIM' (limitation) is an accepted value when the reading cannot be obtained due to an access or safety limitation.",
       "pdf_column": "Breaking cap kA",
       "group": "OCPD",
       "default": "6"
@@ -171,7 +171,7 @@
       "label": "RCD Operating Current (mA)",
       "type": "text",
       "description": "RCD trip current in milliamps",
-      "ai_guidance": "RCD sensitivity. Usually 30mA for socket circuits (additional protection). 100mA or 300mA for fire protection.",
+      "ai_guidance": "RCD sensitivity. Usually 30mA for socket circuits (additional protection). 100mA or 300mA for fire protection. 'LIM' (limitation) is an accepted value when the reading cannot be obtained due to an access or safety limitation.",
       "pdf_column": "IΔn mA",
       "group": "RCD",
       "default": "30"
@@ -220,7 +220,7 @@
       "label": "IR Test Voltage (V)",
       "type": "text",
       "description": "Insulation resistance test voltage",
-      "ai_guidance": "Test voltage used. Usually 500V for circuits over 50V. Use 250V for electronic equipment.",
+      "ai_guidance": "Test voltage used. Usually 500V for circuits over 50V. Use 250V for electronic equipment. 'LIM' (limitation) is an accepted value when the reading cannot be obtained due to an access or safety limitation.",
       "pdf_column": "Test V",
       "group": "Insulation Resistance",
       "default": "500"
@@ -254,7 +254,7 @@
       "label": "Measured Zs (ohm)",
       "type": "text",
       "description": "Measured earth fault loop impedance",
-      "ai_guidance": "Zs reading from loop impedance test. Must be less than max Zs for the OCPD. Typical domestic range 0.3-1.5 ohm.",
+      "ai_guidance": "Zs reading from loop impedance test. Must be less than max Zs for the OCPD. Typical domestic range 0.3-1.5 ohm. 'LIM' (limitation) is an accepted value when the reading cannot be obtained due to an access or safety limitation.",
       "pdf_column": "Zs",
       "group": "Test Results"
     },
@@ -262,7 +262,7 @@
       "label": "RCD Time (ms)",
       "type": "text",
       "description": "RCD trip time in milliseconds",
-      "ai_guidance": "RCD trip time at rated current (1x IΔn). Must be <300ms for general RCDs, <40ms for S-type at 5x. Typical values 15-30ms.",
+      "ai_guidance": "RCD trip time at rated current (1x IΔn). Must be <300ms for general RCDs, <40ms for S-type at 5x. Typical values 15-30ms. 'LIM' (limitation) is an accepted value when the reading cannot be obtained due to an access or safety limitation.",
       "pdf_column": "RCD time ms",
       "group": "Test Results"
     },
