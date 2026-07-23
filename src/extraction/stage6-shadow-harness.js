@@ -117,6 +117,7 @@ import {
   bundleToolCallsIntoResult,
   BUNDLER_PHASE,
   applyConfirmationDebounce,
+  SAME_TURN_CLEAR_WRITE_COLLAPSED,
 } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { buildSessionTools } from './stage6-tool-schemas.js';
@@ -236,6 +237,32 @@ function serialiseSlots(slots) {
     circuit_ops: [...slots.circuit_ops],
     observation_deletions: [...slots.observation_deletions],
   };
+}
+
+/**
+ * P5 (2026-07-23) — emit one `stage6.same_turn_clear_write_collapsed` INFO row
+ * per collapsed circuit slot. The bundler stays pure and attaches the collapse
+ * metadata non-enumerably under SAME_TURN_CLEAR_WRITE_COLLAPSED; this is the
+ * single choke point that turns it into telemetry. board_id is server-derived
+ * (effective slot) — no model-controlled string, so no leak-filter concern.
+ */
+function emitClearWriteCollapseTelemetry(log, session, turnId, result) {
+  const collapsed = result?.[SAME_TURN_CLEAR_WRITE_COLLAPSED];
+  if (!Array.isArray(collapsed) || collapsed.length === 0) return;
+  for (const slot of collapsed) {
+    try {
+      log?.info?.('stage6.same_turn_clear_write_collapsed', {
+        sessionId: session?.sessionId,
+        turnId,
+        field: slot.field,
+        circuit: slot.circuit,
+        board_id: slot.board_id ?? null,
+        final_effect: slot.final_effect,
+      });
+    } catch {
+      // Telemetry must never break extraction.
+    }
+  }
 }
 
 /**
@@ -1289,6 +1316,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       logger: log,
       sessionId: session.sessionId,
     });
+
+    // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
+    emitClearWriteCollapseTelemetry(log, session, turnId, result);
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
     // readings (record_board_reading dispatches) into extracted_readings with
@@ -3173,6 +3203,9 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy, {
     confirmationsEnabled: options.confirmationsEnabled === true,
   });
+
+  // P5 (2026-07-23) — emit clear→write collapse telemetry (shadow path).
+  emitClearWriteCollapseTelemetry(log, session, turnId, toolResult);
 
   // Step 6: slot-diff the two result shapes.
   const divergence = compareSlots(legacy, toolResult);
