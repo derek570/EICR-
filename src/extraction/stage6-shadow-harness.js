@@ -814,7 +814,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       liveSession,
       log,
       turnId,
-      perTurnWrites
+      perTurnWrites,
+      // P3 Codex-r4 — a LIM/value answer to an ask_user / pending-value question
+      // resolves through record_reading, so carry the same capability context.
+      { hasLimRangedWriteV1 }
     );
     // A1 agentic-voice (2026-07-23) — the two read-only answer-feature
     // dispatchers. Constructed INDEPENDENTLY of pendingAsks (both composition

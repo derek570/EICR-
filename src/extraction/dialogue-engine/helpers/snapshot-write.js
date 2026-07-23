@@ -9,28 +9,19 @@
  * hook.
  */
 import { applyReadingToSnapshot } from '../../stage6-snapshot-mutators.js';
-import {
-  isCapabilityGatedLimWrite,
-  canonicaliseNumericReadingField,
-} from '../../value-enum-validator.js';
-import { isLimRangedWriteKilled } from '../../voice-latency-config.js';
 
+// P3 (2026-07-23) NOTE — the DIALOGUE-engine LIM writes (active-slot, named
+// ring/trip-time, seeded pending_writes) are a documented follow-up for BOTH
+// the per-client `lim_ranged_write_v1` capability gate AND the server
+// `LIM_RANGED_WRITE_DISABLED` kill-switch. Gating them here (the write choke
+// point) drops the snapshot mutation but NOT the extraction-payload wire emit
+// the callers still perform, so a partial gate here would be a confusing
+// half-cover. The rollout gate + kill-switch fully cover the MODEL-driven paths
+// (record_reading + set_field_for_all_circuits + the speculator) — the
+// feedback-86 Zs vector; the dialogue scripts write non-Zs OCPD/RCD/ring fields.
+// Closing the dialogue paths cleanly needs the round-5 session-threading +
+// caller return-value propagation (a bounded follow-up), not a low-level guard.
 export function applyWrite(session, schema, circuit_ref, field, value, now) {
-  // P3 Fix 8 — the SERVER kill-switch (LIM_RANGED_WRITE_DISABLED) is the
-  // rollback boundary and must cover EVERY dialogue LIM write (active-slot,
-  // named ring/trip-time, seeded drain) — the single choke point every dialogue
-  // write funnels through. When the switch is on, a canonical LIM on a
-  // capability-gated numeric reading field is dropped (not written), so a
-  // rollback denies dialogue LIM too. The IR fields stay exempt (pre-P3
-  // behaviour) via isCapabilityGatedLimWrite. (The per-CLIENT capability gate
-  // for the dialogue paths remains a documented follow-up — the round-5
-  // session-threading item; the model-driven Zs vector is fully capability-gated.)
-  if (
-    isLimRangedWriteKilled() &&
-    isCapabilityGatedLimWrite(canonicaliseNumericReadingField(field), value)
-  ) {
-    return;
-  }
   applyReadingToSnapshot(session.stateSnapshot, {
     circuit: circuit_ref,
     field,

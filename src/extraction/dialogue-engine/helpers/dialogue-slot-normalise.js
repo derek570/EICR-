@@ -28,9 +28,7 @@ import {
   NUMERIC_READING_FIELDS,
   canonicaliseNumericReadingField,
   validateNumericReadingValue,
-  isCapabilityGatedLimWrite,
 } from '../../value-enum-validator.js';
-import { isLimRangedWriteKilled } from '../../voice-latency-config.js';
 
 /**
  * @param {object} schema — the dialogue schema (for slot.allowedValues lookup)
@@ -48,15 +46,11 @@ export function normaliseDialogueSlotWrite(schema, field, value) {
   // still canonicalises its LIM garbles (coerceRecordReadingValue keys on
   // NUMERIC_READING_FIELDS membership, which the raw alias name misses).
   const coerced = coerceRecordReadingValue(canonicalField, value);
-  // Exact LIM forms accepted first (canonical "LIM").
+  // Exact LIM forms accepted first (canonical "LIM"). NOTE: the dialogue LIM
+  // paths' capability/kill-switch gate is a documented follow-up (see
+  // snapshot-write.js) — not enforced here; this helper's job is value
+  // normalisation/validation, not rollout gating.
   if (typeof coerced === 'string' && coerced.trim().toLowerCase() === 'lim') {
-    // SERVER kill-switch (LIM_RANGED_WRITE_DISABLED) is the rollback boundary —
-    // it must cover the dialogue-engine LIM writes too, not just the direct /
-    // bulk / speculator gates. Reject a capability-gated LIM when the switch is
-    // on (the IR fields stay exempt — pre-P3 behaviour).
-    if (isLimRangedWriteKilled() && isCapabilityGatedLimWrite(canonicalField, 'LIM')) {
-      return { ok: false, reason: 'lim_ranged_write_killed' };
-    }
     return { ok: true, value: 'LIM' };
   }
   // "Coercion is NOT validation" — ELSE validate the value STRICTLY (whole-value

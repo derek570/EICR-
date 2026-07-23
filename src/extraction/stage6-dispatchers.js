@@ -240,8 +240,15 @@ export function createToolDispatcher(writes, asks, { answers, inspects } = {}) {
  * @param {object} perTurnWrites
  * @returns {(write: {tool, field, circuit, value, confidence, source_turn_id}, ctx?: object) => Promise<{ok: boolean, body?: object, error?: string}>}
  */
-export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrites) {
+export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrites, extraCtx = {}) {
   let round = 0;
+  // P3 Codex-r4 — the auto-resolve path (a LIM/value answer to an ask_user /
+  // pending-value question) dispatches through the SAME record_reading
+  // dispatcher, so it must carry the SAME capability context; otherwise a
+  // capable client's LIM answer to a pending question is denied as
+  // capability-missing (and the resolver would report auto_resolved with no
+  // write).
+  const safeExtra = { ...extraCtx };
   return async function autoResolveWrite(write, callCtx = {}) {
     const fn = WRITE_DISPATCHERS[write.tool];
     if (!fn) {
@@ -284,6 +291,7 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
       input: synthInput,
     };
     const env = await fn(synthCall, {
+      ...safeExtra,
       session,
       logger,
       turnId,

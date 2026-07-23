@@ -26,7 +26,7 @@
  */
 
 import { jest } from '@jest/globals';
-import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
+import { createWriteDispatcher, createAutoResolveWriteHook } from '../extraction/stage6-dispatchers.js';
 import { createPerTurnWrites, encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
 
 function mockLogger() {
@@ -639,5 +639,44 @@ describe('dispatchClearReading', () => {
     expect(writes.cleared).toHaveLength(1);
     expect(writes.cleared[0]).toEqual({ field: 'measured_zs_ohm', circuit: 3, reason: 'misheard' });
     expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('0.42');
+  });
+});
+
+// P3 Codex-r4 F2 — the auto-resolve write hook (a LIM/value answer to an
+// ask_user / pending-value question) dispatches through record_reading, so it
+// must carry the same capability context: a capable client's LIM answer applies;
+// a capability-absent client's is denied (not falsely reported as written).
+describe('createAutoResolveWriteHook — lim_ranged_write_v1 capability threading', () => {
+  function limWrite() {
+    return {
+      tool: 'record_reading',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      value: 'LIM',
+      source_turn_id: 't1',
+    };
+  }
+
+  test('WITH capability: a LIM ask-answer APPLIES to the snapshot', async () => {
+    const session = makeSession({ circuits: { 3: {} } });
+    const writes = createPerTurnWrites();
+    const hook = createAutoResolveWriteHook(session, mockLogger(), 't1', writes, {
+      hasLimRangedWriteV1: true,
+    });
+    const res = await hook(limWrite(), { toolCallId: 'ask-1' });
+    expect(res.ok).toBe(true);
+    expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('LIM');
+    expect(writes.readings.size).toBe(1);
+  });
+
+  test('WITHOUT capability: a LIM ask-answer is DENIED (skipped, no snapshot write)', async () => {
+    const session = makeSession({ circuits: { 3: {} } });
+    const writes = createPerTurnWrites();
+    const hook = createAutoResolveWriteHook(session, mockLogger(), 't1', writes); // no capability
+    const res = await hook(limWrite(), { toolCallId: 'ask-1' });
+    // The dispatcher returns a non-error skip; the snapshot is NOT mutated.
+    expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBeUndefined();
+    expect(writes.readings.size).toBe(0);
+    expect(res.body?.skipped).toBe(true);
   });
 });
