@@ -82,6 +82,21 @@ describe('LIM sentinel — regex paths (iOS TranscriptFieldMatcher parity)', () 
     expect(result?.circuit_updates?.['1']?.ir_live_earth_mohm).not.toBe('LIM');
   });
 
+  // P3 (2026-07-23) — exact four-form policy on the client instant-regex.
+  it('"live to earth is limp" (fourth form, previously missed) → LIM', () => {
+    const job = makeJob([{ ref: '1', designation: 'Sockets' }]);
+    matcher.match('circuit 1 zs is 0.4', job);
+    const result = matcher.match('live to earth is limp', job);
+    expect(result?.circuit_updates['1']?.ir_live_earth_mohm).toBe('LIM');
+  });
+
+  it('near-match "limited" no longer writes LIM (client obeys the four-form policy)', () => {
+    const job = makeJob([{ ref: '1', designation: 'Sockets' }]);
+    matcher.match('circuit 1 zs is 0.4', job);
+    const result = matcher.match('live to earth is limited', job);
+    expect(result?.circuit_updates?.['1']?.ir_live_earth_mohm).not.toBe('LIM');
+  });
+
   it('numeric IR still wins where dictated: "live to earth greater than 299" is not LIM', () => {
     const result = matcher.match(
       'circuit 1 IR live to earth greater than 299 megohms',
