@@ -81,8 +81,10 @@ const slots = [
     label: 'rating',
     question: 'What rating in amps?',
     parser: parseAmps,
-    // P3 — LIM alternation (see ocpd.js). parseAmps canonicalises to "LIM".
-    namedExtractor: /\b(\d{1,4})\s*(?:amps?|A)\b|\b(lim|limb|limp|limitation)\b/i,
+    // P3 — LIM alternation ANCHORED to a rating/amps phrase (see ocpd.js) so a
+    // "limitation" answer for a sibling slot doesn't cross-write here.
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:amps?|A)\b|\b(?:rating|amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -90,9 +92,10 @@ const slots = [
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,
-    // P3 — LIM alternation. This RCBO slot has no allowedValues gate, so
-    // parseKa returning "LIM" is sufficient.
-    namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b|\b(lim|limb|limp|limitation)\b/i,
+    // P3 — LIM alternation ANCHORED to a breaking-capacity/kA phrase. This RCBO
+    // slot has no allowedValues gate, so parseKa returning "LIM" is sufficient.
+    namedExtractor:
+      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kA|kilo\s*amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -138,8 +141,9 @@ const slots = [
     label: 'RCD operating current',
     question: "What's the operating current in mA?",
     parser: parseMa,
-    // P3 — LIM alternation.
-    namedExtractor: /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(lim|limb|limp|limitation)\b/i,
+    // P3 — LIM alternation ANCHORED to an operating-current/mA phrase.
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|mA|milli\s*amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
 ];

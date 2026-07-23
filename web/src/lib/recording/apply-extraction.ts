@@ -444,24 +444,20 @@ export function shouldClearAutoDerivedMaxZs(
 ): boolean {
   // Nothing to clear.
   if (!hasValue(next.ocpd_max_zs_ohm)) return false;
-  const nextType = typeof next.ocpd_type === 'string' ? next.ocpd_type : '';
-  const nextRating = typeof next.ocpd_rating_a === 'string' ? next.ocpd_rating_a : '';
-  const nextDisc =
-    typeof next.max_disconnect_time_s === 'string' ? next.max_disconnect_time_s : undefined;
-  // If the CURRENT rating still yields a lookup, this isn't a sentinel
-  // transition — the normal recompute path owns it; never clear.
-  if (
-    nextType &&
-    nextRating &&
-    maxZsString({ deviceType: nextType, rating: nextRating, disconnectTime: nextDisc }) != null
-  ) {
-    return false;
-  }
+  const nextRating = (typeof next.ocpd_rating_a === 'string' ? next.ocpd_rating_a : '').trim();
+  // The RATING is the governing input (not the type). Only clear when the
+  // rating itself has transitioned to a NON-NUMERIC value (e.g. the "LIM"
+  // sentinel). A blank rating, a still-numeric rating (an OCPD-TYPE change, or
+  // a disconnect-time change), or an unchanged rating is NOT a rating→sentinel
+  // transition — don't clear on any of those.
+  if (nextRating === '' || Number.isFinite(Number(nextRating))) return false;
   // Need the PRE-transition NUMERIC rating to prove the max-Zs was auto-derived
   // (vs a manual override). Absent it, leave the value untouched.
   if (!prior) return false;
   const priorType = typeof prior.ocpd_type === 'string' ? prior.ocpd_type : '';
   const priorRating = typeof prior.ocpd_rating_a === 'string' ? prior.ocpd_rating_a : '';
+  // The rating must actually have CHANGED (numeric prior → non-numeric next).
+  if (priorRating.trim() === nextRating) return false;
   const priorDisc =
     typeof prior.max_disconnect_time_s === 'string' ? prior.max_disconnect_time_s : undefined;
   if (!priorType || !priorRating) return false;
@@ -873,7 +869,18 @@ function applyCircuitReadings(
     }
     // 3-tier priority — keep the user's value if they've already typed
     // one into the field.
-    if (hasValue(row[column])) {
+    //
+    // P3 (2026-07-23, feedback id 86) — EXCEPTION: a canonical "LIM"
+    // (limitation) reading is an EXPLICIT inspector correction ("actually that
+    // reading is a limitation") and MUST overwrite an existing numeric value,
+    // else the spoken "recorded as LIM" read-back is a lie (Audio-First #2) and
+    // the rating → LIM max-Zs invalidation below is unreachable. LIM only
+    // reaches here after the backend's four-form validation + `lim_ranged_write_v1`
+    // capability gate, so it is always an intended limitation on a numeric
+    // reading field. Every OTHER value still yields to a pre-existing typed
+    // value (the long-standing web correction behaviour is unchanged).
+    const isLimWrite = typeof writeValue === 'string' && writeValue.trim().toLowerCase() === 'lim';
+    if (hasValue(row[column]) && !isLimWrite) {
       pipelineLog('apply_circuit_reading_user_value_kept', {
         circuit: reading.circuit,
         pwa_column: column,
@@ -1760,12 +1767,23 @@ export function applyExtractionToJob(
   const targetCircuits = newCircuits ?? (job.circuits as CircuitRow[] | undefined);
   if (Array.isArray(targetCircuits) && targetCircuits.length > 0) {
     // P3 Fix 6 — before/after view for the OCPD-rating → max-Zs invalidation.
-    // Index the UNPATCHED job circuits by ref so we can recover each row's
-    // PRE-write ocpd_rating_a (the patched row already carries the LIM).
+    // Index the UNPATCHED job circuits so we can recover each row's PRE-write
+    // ocpd_rating_a (the patched row already carries the LIM). Keyed by stable
+    // row id when present, else by (board_id, circuit_ref) — NOT circuit_ref
+    // alone, so a multi-board job where main + sub-board both have circuit 1
+    // doesn't collide (which would evaluate provenance against the wrong
+    // board's rating).
+    const priorRowKey = (r: CircuitRow): string | null => {
+      if (r.id != null && r.id !== '') return `id:${r.id}`;
+      const ref = r.circuit_ref ?? r.number;
+      if (ref == null) return null;
+      const board = typeof r.board_id === 'string' ? r.board_id : '';
+      return `br:${board}|${ref}`;
+    };
     const priorByRef = new Map<string, CircuitRow>();
     for (const p of (job.circuits as CircuitRow[] | undefined) ?? []) {
-      const ref = p.circuit_ref ?? p.number;
-      if (ref != null) priorByRef.set(String(ref), p);
+      const k = priorRowKey(p);
+      if (k != null) priorByRef.set(k, p);
     }
     let mzsChanged = false;
     const nextCircuits = targetCircuits.map((row) => {
@@ -1784,8 +1802,8 @@ export function applyExtractionToJob(
         // cross-platform divergence, and a stale max-Zs feeds a false circuit
         // result). The before/after transition helper clears it ONLY when it
         // was auto-derived (preserving a manual override).
-        const ref = row.circuit_ref ?? row.number;
-        const prior = ref != null ? priorByRef.get(String(ref)) : undefined;
+        const rowKey = priorRowKey(row);
+        const prior = rowKey != null ? priorByRef.get(rowKey) : undefined;
         if (shouldClearAutoDerivedMaxZs(prior, row)) {
           mzsChanged = true;
           return { ...row, ocpd_max_zs_ohm: '' };

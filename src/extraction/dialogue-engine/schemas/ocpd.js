@@ -69,7 +69,11 @@ const slots = [
     parser: parseAmps,
     // P3 — the LIM alternation lets a fuller utterance ("the rating is a
     // limitation") capture the LIM token; parseAmps canonicalises it to "LIM".
-    namedExtractor: /\b(\d{1,4})\s*(?:amps?|A)\b|\b(lim|limb|limp|limitation)\b/i,
+    // ANCHORED to a rating/amps phrase so a "limitation" answer for a DIFFERENT
+    // slot (kA / mA) doesn't also write LIM here — extractNamedFieldValues runs
+    // EVERY slot's extractor per turn.
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:amps?|A)\b|\b(?:rating|amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -77,8 +81,10 @@ const slots = [
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,
-    // P3 — LIM alternation so "breaking capacity is a limitation" captures LIM.
-    namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b|\b(lim|limb|limp|limitation)\b/i,
+    // P3 — LIM alternation ANCHORED to a breaking-capacity/kA phrase (see
+    // ocpd_rating_a) so it doesn't cross-write from a rating/mA "limitation".
+    namedExtractor:
+      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kA|kilo\s*amps?)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
     // 2026-05-04 (field test 07635782): the inspector said "six" for
     // breaking capacity, the engine accepted it as the rating answer

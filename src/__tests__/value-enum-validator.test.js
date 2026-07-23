@@ -229,13 +229,27 @@ describe('validateNumericReadingValue — whole NUMERIC_READING_FIELDS set (P3)'
     expect(validateNumericReadingValue(field, 'lim').ok).toBe(true);
   });
 
-  test.each(UNGATED)('ungated field %s accepts numerics / off-scale / sentinels', (field) => {
+  test.each(UNGATED)('ungated field %s accepts numerics / off-scale / LIM / blank', (field) => {
     expect(validateNumericReadingValue(field, '0.35').ok).toBe(true);
     expect(validateNumericReadingValue(field, '200').ok).toBe(true);
     expect(validateNumericReadingValue(field, '>999').ok).toBe(true);
-    expect(validateNumericReadingValue(field, '∞').ok).toBe(true);
-    expect(validateNumericReadingValue(field, 'N/A').ok).toBe(true);
+    expect(validateNumericReadingValue(field, 'LIM').ok).toBe(true);
     expect(validateNumericReadingValue(field, '').ok).toBe(true);
+  });
+
+  test.each(UNGATED.filter((f) => f !== 'ocpd_max_zs_ohm'))(
+    'measured-reading field %s accepts the discontinuous/N/A sentinels',
+    (field) => {
+      expect(validateNumericReadingValue(field, '∞').ok).toBe(true);
+      expect(validateNumericReadingValue(field, 'N/A').ok).toBe(true);
+    }
+  );
+
+  test('ocpd_max_zs_ohm (a COMPUTED ceiling) rejects ∞/N/A but accepts numeric + LIM', () => {
+    expect(validateNumericReadingValue('ocpd_max_zs_ohm', '∞').ok).toBe(false);
+    expect(validateNumericReadingValue('ocpd_max_zs_ohm', 'N/A').ok).toBe(false);
+    expect(validateNumericReadingValue('ocpd_max_zs_ohm', '1.44').ok).toBe(true);
+    expect(validateNumericReadingValue('ocpd_max_zs_ohm', 'LIM').ok).toBe(true);
   });
 
   test.each(UNGATED)('ungated field %s REJECTS the four near-matches', (field) => {

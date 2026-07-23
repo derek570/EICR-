@@ -368,8 +368,11 @@ const MAIN_SWITCH_BS_EN_PATTERN = new RegExp(
   String.raw`\b${SWITCH_DEVICE}\s+(?:is\s+)?(?:a\s+)?(?:bs\s*(?:en\s*)?)?(1361|3036|88|1631|60947|61008|61009|4293|5419)\b`,
   'gi'
 );
+// P3 (2026-07-23) — narrowed to the exact four LIM forms (was
+// `lim(itation|ited|b)?`, which accepted `limited` and missed `limp`) so the
+// whole web client obeys one four-form policy.
 const MAIN_SWITCH_BS_EN_LIM_PATTERN = new RegExp(
-  String.raw`\b${SWITCH_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b`,
+  String.raw`\b${SWITCH_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 const MAIN_SWITCH_RATING_PATTERN = new RegExp(
@@ -377,7 +380,7 @@ const MAIN_SWITCH_RATING_PATTERN = new RegExp(
   'gi'
 );
 const MAIN_SWITCH_LIM_PATTERN = new RegExp(
-  String.raw`\b${SWITCH_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:limitation|limited|lim)\b`,
+  String.raw`\b${SWITCH_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 // Supply protective device / DNO cutout / "main fuse" → spd_*
@@ -386,7 +389,7 @@ const SUPPLY_FUSE_BS_EN_PATTERN = new RegExp(
   'gi'
 );
 const SUPPLY_FUSE_BS_EN_LIM_PATTERN = new RegExp(
-  String.raw`\b${FUSE_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b`,
+  String.raw`\b${FUSE_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 const SUPPLY_FUSE_RATING_PATTERN = new RegExp(
@@ -394,7 +397,7 @@ const SUPPLY_FUSE_RATING_PATTERN = new RegExp(
   'gi'
 );
 const SUPPLY_FUSE_LIM_PATTERN = new RegExp(
-  String.raw`\b${FUSE_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:limitation|limited|lim)\b`,
+  String.raw`\b${FUSE_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 

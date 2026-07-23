@@ -86,6 +86,7 @@ import {
   isCapabilityGatedLimWrite,
   NUMERIC_READING_FIELDS,
 } from './value-enum-validator.js';
+import { isLimRangedWriteKilled } from './voice-latency-config.js';
 import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
 
 // Field schema is loaded once at module init (same pattern as
@@ -169,11 +170,12 @@ export async function dispatchRecordReading(call, ctx) {
   // snapshot mutation, no wire, no confirmation); the marker-② catch-all net
   // speaks an apology so the chimed turn is never silent. IR fields are NOT
   // gated (they accepted LIM before P3 and are not derivation/status targets).
-  const hasLimRangedWriteV1 = ctx.hasLimRangedWriteV1 === true;
-  if (
-    !hasLimRangedWriteV1 &&
-    isCapabilityGatedLimWrite(canonicaliseNumericReadingField(input.field), input.value)
-  ) {
+  // Deny LIM when the client hasn't advertised the capability OR the SERVER
+  // kill-switch (LIM_RANGED_WRITE_DISABLED) is on — the latter is the rollback
+  // boundary that works even for an already-deployed client that can't revoke
+  // its advert.
+  const denyLim = isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true;
+  if (denyLim && isCapabilityGatedLimWrite(canonicaliseNumericReadingField(input.field), input.value)) {
     logToolCall(logger, {
       sessionId: session.sessionId,
       turnId,
@@ -1523,10 +1525,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   input.value = coerceRecordReadingValue(input.field, input.value);
   const canonicalBulkField = canonicaliseNumericReadingField(input.field);
   // P3 Fix 8 — rollout gate (mirror of the direct record_reading path): deny a
-  // bulk LIM write on a capability-gated field until the client advertises
-  // `lim_ranged_write_v1`. Non-error skip so the marker-② net speaks.
+  // bulk LIM write on a capability-gated field when the client hasn't advertised
+  // `lim_ranged_write_v1` OR the server kill-switch is on. Non-error skip so the
+  // marker-② net speaks.
   if (
-    ctx.hasLimRangedWriteV1 !== true &&
+    (isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true) &&
     isCapabilityGatedLimWrite(canonicalBulkField, input.value)
   ) {
     logToolCall(logger, {

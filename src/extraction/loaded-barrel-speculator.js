@@ -102,7 +102,7 @@ import {
   pruneForSession,
 } from './loaded-barrel-cache.js';
 import { mintCorrelationId, recordOutcome } from './voice-latency-telemetry.js';
-import { getLoadedBarrelMaxPerTurn } from './voice-latency-config.js';
+import { getLoadedBarrelMaxPerTurn, isLimRangedWriteKilled } from './voice-latency-config.js';
 import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
 import {
   coerceRecordReadingValue,
@@ -1300,7 +1300,7 @@ export function createSpeculator({
     // gated set); canonicalise the dialogue-slot alias before the check.
     if (
       record.name === 'record_reading' &&
-      !hasLimRangedWriteV1 &&
+      (isLimRangedWriteKilled() || !hasLimRangedWriteV1) &&
       isCapabilityGatedLimWrite(canonicaliseNumericReadingField(field), value)
     ) {
       logger?.info?.('voice_latency.speculator_skipped_lim_capability', {

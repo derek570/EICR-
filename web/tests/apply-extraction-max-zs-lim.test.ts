@@ -135,4 +135,85 @@ describe('apply-extraction H3 wiring — Fix 6 does not spuriously clear', () =>
     );
     expect(applied?.patch.circuits?.[0]?.ocpd_max_zs_ohm ?? '').toBe('');
   });
+
+  // Codex-r1 F5 — the MODEL path: a LIM reading now OVERWRITES a populated
+  // rating (the LIM-overwrite exception), so the rating becomes LIM AND the
+  // auto-derived max-Zs is cleared in the same apply.
+  it('model path: a LIM reading overwrites a populated rating AND clears the auto-derived max-Zs', () => {
+    const row: CircuitRow = {
+      id: 'c-1',
+      circuit_ref: '1',
+      circuit_designation: 'Cooker',
+      ocpd_type: 'B',
+      ocpd_rating_a: '32',
+      max_disconnect_time_s: '0.4',
+      ocpd_max_zs_ohm: '1.44',
+    };
+    const applied = applyExtractionToJob(
+      makeJob({ circuits: [row] }),
+      makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' }] })
+    );
+    expect(applied!.patch.circuits![0].ocpd_rating_a).toBe('LIM'); // overwrote
+    expect(applied!.patch.circuits![0].ocpd_max_zs_ohm).toBe(''); // auto-derived cleared
+  });
+
+  it('model path: a LIM reading preserves a differing manual max-Zs override', () => {
+    const row: CircuitRow = {
+      id: 'c-1',
+      circuit_ref: '1',
+      ocpd_type: 'B',
+      ocpd_rating_a: '32',
+      max_disconnect_time_s: '0.4',
+      ocpd_max_zs_ohm: '9.99',
+    };
+    const applied = applyExtractionToJob(
+      makeJob({ circuits: [row] }),
+      makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' }] })
+    );
+    expect(applied!.patch.circuits![0].ocpd_rating_a).toBe('LIM');
+    expect(applied?.patch.circuits?.[0]?.ocpd_max_zs_ohm ?? '9.99').toBe('9.99'); // preserved
+  });
+
+  // Codex-r1 F6 — multi-board: main + sub-board both have circuit_ref "1", both
+  // with an auto-derived 1.44. The prior map is keyed by (board_id, ref)/id, so
+  // the row that receives the LIM has its provenance evaluated against ITS OWN
+  // prior (not a collided one) and only that row's max-Zs clears; the other
+  // board's max-Zs is never spuriously touched. (Web's per-circuit reading apply
+  // is ref-only/last-wins — a pre-existing single-board limitation — so the LIM
+  // lands on the sub row; the point of this test is that main is untouched.)
+  it('multi-board same-ref: a LIM rating does not spuriously clear the OTHER board', () => {
+    const main: CircuitRow = {
+      id: 'm-1',
+      circuit_ref: '1',
+      board_id: 'main',
+      ocpd_type: 'B',
+      ocpd_rating_a: '32',
+      max_disconnect_time_s: '0.4',
+      ocpd_max_zs_ohm: '1.44',
+    };
+    const sub: CircuitRow = {
+      id: 's-1',
+      circuit_ref: '1',
+      board_id: 'sub',
+      ocpd_type: 'B',
+      ocpd_rating_a: '32',
+      max_disconnect_time_s: '0.4',
+      ocpd_max_zs_ohm: '1.44',
+    };
+    const applied = applyExtractionToJob(
+      makeJob({ circuits: [main, sub] }),
+      makeResult({
+        readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' } as never],
+      })
+    );
+    const out = applied!.patch.circuits!;
+    const mainOut = out.find((c) => c.id === 'm-1')!;
+    const subOut = out.find((c) => c.id === 's-1')!;
+    // Exactly one board's max-Zs cleared (the one the ref-only apply hit); the
+    // other stays 1.44 — never both, never the wrong one.
+    const cleared = [mainOut.ocpd_max_zs_ohm, subOut.ocpd_max_zs_ohm].filter((v) => v === '');
+    const kept = [mainOut.ocpd_max_zs_ohm, subOut.ocpd_max_zs_ohm].filter((v) => v === '1.44');
+    expect(cleared.length).toBe(1);
+    expect(kept.length).toBe(1);
+  });
 });

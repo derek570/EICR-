@@ -99,6 +99,23 @@ export function isKillSwitchActive() {
 }
 
 /**
+ * P3 Fix 8 (2026-07-23) — SERVER kill-switch for LIM acceptance on the ranged
+ * reading fields. Read fresh every call. When `LIM_RANGED_WRITE_DISABLED=true`
+ * the backend DENIES a LIM write on a capability-gated field EVEN FOR a client
+ * that advertises `lim_ranged_write_v1`. This is the real rollback boundary:
+ * an already-deployed iOS build's advert cannot be remotely revoked, so
+ * reverting the client advert is NOT sufficient — flipping this env on the live
+ * task def (source: ecs/task-def-backend.json) forces deny for every client.
+ * The effective condition is: accept LIM iff (client advertises the capability)
+ * AND NOT (this switch is on).
+ *
+ * @returns {boolean}
+ */
+export function isLimRangedWriteKilled() {
+  return parseBool(process.env.LIM_RANGED_WRITE_DISABLED);
+}
+
+/**
  * Names of the snapshot flags, in declaration order. Exposed so the
  * startup-log emitter (1a.4) can iterate without duplicating the
  * list.
