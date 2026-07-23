@@ -80,6 +80,11 @@ import {
 import { logToolCall, logReadingFieldGuessedFromValue } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
+import {
+  validateNumericReadingValue,
+  canonicaliseNumericReadingField,
+  NUMERIC_READING_FIELDS,
+} from './value-enum-validator.js';
 import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
 
 // Field schema is loaded once at module init (same pattern as
@@ -1467,6 +1472,43 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // P3 (2026-07-23, feedback id 86) — the bulk applier previously skipped BOTH
+  // coercion and the numeric-range/validate policy: `set_field_for_all_circuits
+  // {measured_zs_ohm,"limitation"}` stored "limitation" verbatim across every
+  // circuit, and n/a/∞/out-of-range values slipped through too. Coerce the
+  // value (four-form LIM → "LIM") then run the SAME validateNumericReadingValue
+  // policy as the direct record_reading path BEFORE applying any circuit, so a
+  // near-match / alternate-sentinel / out-of-range bulk write is rejected once
+  // (never persisted to N circuits). Field name alias-normalised for the
+  // membership/validation check. Only numeric reading fields are affected;
+  // select fields are already enforced by validateSetFieldForAllCircuits.
+  input.value = coerceRecordReadingValue(input.field, input.value);
+  const canonicalBulkField = canonicaliseNumericReadingField(input.field);
+  if (NUMERIC_READING_FIELDS.has(canonicalBulkField)) {
+    const numericVerdict = validateNumericReadingValue(canonicalBulkField, input.value);
+    if (!numericVerdict.ok) {
+      const bulkErr = {
+        code: numericVerdict.code,
+        field: 'value',
+        value: input.value,
+        min: numericVerdict.min,
+        max: numericVerdict.max,
+      };
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'set_field_for_all_circuits',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: bulkErr,
+        input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+      });
+      return envelope(call.tool_call_id, { ok: false, error: bulkErr }, true);
+    }
   }
 
   const scope = input.scope ?? 'non_spare';
