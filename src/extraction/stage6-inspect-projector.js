@@ -113,7 +113,10 @@ export function getApplicableRequiredFields({ certType: _certType, circuit }) {
       const v = bucket?.[f];
       if (isMissingValue(v)) return false;
       return String(v).trim().toUpperCase() !== 'N/A';
-    }) || String(bucket?.ocpd_bs_en ?? '').includes('61009');
+      // Codex r3 — EXACT canonical equality per the approved appendix (a
+      // malformed persisted value merely containing '61009' must not make
+      // the five RCD columns required).
+    }) || bucket?.ocpd_bs_en === 'BS EN 61009';
   if (rcdEvidence) {
     for (const f of RCD_FIELDS) required.add(f);
   }
@@ -444,8 +447,11 @@ export function capInspectResult(body) {
   if (byteLength(capped) <= INSPECT_MAX_RESULT_BYTES) return capped;
 
   // Stage 6 (fail-closed): still oversized after every trim — return a
-  // minimal fixed-shape result rather than an over-cap payload.
-  return {
+  // minimal fixed-shape result rather than an over-cap payload. Codex r3:
+  // measure the minimal shape too — an unbounded board_id could carry the
+  // overflow into the fallback itself; board_id/circuit are optional on the
+  // overflow shape and are dropped if they would breach the cap.
+  const minimal = {
     ok: true,
     scope: capped.scope,
     ...(capped.board_id != null ? { board_id: capped.board_id } : {}),
@@ -453,4 +459,6 @@ export function capInspectResult(body) {
     truncated: true,
     overflow: true,
   };
+  if (byteLength(minimal) <= INSPECT_MAX_RESULT_BYTES) return minimal;
+  return { ok: true, scope: capped.scope, truncated: true, overflow: true };
 }

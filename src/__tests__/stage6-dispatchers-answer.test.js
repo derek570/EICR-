@@ -261,6 +261,15 @@ describe('completeness policy — getApplicableRequiredFields (approved appendix
     expect(na).not.toContain('rcd_time_ms');
   });
 
+  test('RCD predicate is EXACT canonical equality (Codex r3): a 61009-containing garble adds nothing', () => {
+    const req = getApplicableRequiredFields({
+      certType: 'EICR',
+      circuit: { circuit_designation: 'Lights', ocpd_bs_en: 'not-a-canonical-61009-note' },
+    });
+    expect(req).not.toContain('rcd_time_ms');
+    expect(req).not.toContain('rcd_bs_en');
+  });
+
   test('spare way → only the designation is applicable', () => {
     expect(
       getApplicableRequiredFields({ certType: 'EICR', circuit: { circuit_designation: 'Spare' } })
@@ -543,6 +552,23 @@ describe('capInspectResult — appendix §4 truncation ladder', () => {
     expect(Buffer.byteLength(JSON.stringify(circuit), 'utf8')).toBeLessThanOrEqual(
       INSPECT_MAX_RESULT_BYTES
     );
+  });
+
+  test('fail-closed overflow shape is itself measured (Codex r3): an oversized board_id is dropped', () => {
+    const hugeId = 'b'.repeat(10000);
+    const capped = capInspectResult({
+      ok: true,
+      scope: 'board',
+      board_id: hugeId,
+      circuit_count: 1,
+      circuits: [],
+      truncated: false,
+    });
+    expect(Buffer.byteLength(JSON.stringify(capped), 'utf8')).toBeLessThanOrEqual(
+      INSPECT_MAX_RESULT_BYTES
+    );
+    expect(capped.overflow).toBe(true);
+    expect(capped.board_id).toBeUndefined();
   });
 
   test('oversized board scope: missing arrays dropped first (missing_count kept), then tail circuits', () => {
