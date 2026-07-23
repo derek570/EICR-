@@ -468,6 +468,21 @@ describe('createInspectDispatcher — scopes, validation, trust boundary (Item 1
     expect(badCircuit.is_error).toBe(true);
   });
 
+  test('per-scope args (Codex r4): summary ignores irrelevant board_id/circuit; digit-string circuit accepted', async () => {
+    const b = body(
+      await dispatch(
+        call('inspect_session_state', { scope: 'summary', board_id: 'sub-99', circuit: -7 })
+      )
+    );
+    expect(b.ok).toBe(true);
+    expect(b.scope).toBe('summary');
+    const str = body(
+      await dispatch(call('inspect_session_state', { scope: 'circuit', circuit: '2' }, 'toolu_2'))
+    );
+    expect(str.ok).toBe(true);
+    expect(str.circuit).toBe(2);
+  });
+
   test('certType normalisation (Codex r2): uppercase EIC stays EIC; unknown → null', async () => {
     for (const [raw, expected] of [
       ['EIC', 'EIC'],

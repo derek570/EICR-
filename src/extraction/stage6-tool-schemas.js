@@ -1213,9 +1213,11 @@ const inspectSessionState = makeTool({
         'Optional exact board id from the BOARDS section of the snapshot (defaults to the current board). Designations are not accepted.',
     },
     circuit: {
-      type: 'integer',
+      // Codex r4 (NIT) — the plan declares number|string; the dispatcher
+      // already coerces digit strings, so advertise both.
+      anyOf: [{ type: 'integer' }, { type: 'string', pattern: '^[1-9]\\d*$' }],
       description:
-        "Circuit ref. Required for scope 'circuit'; for scope 'field' omit it to read a supply/board-level field.",
+        "Circuit ref (integer, or a digit string). Required for scope 'circuit'; for scope 'field' omit it to read a supply/board-level field.",
     },
     field: {
       type: 'string',

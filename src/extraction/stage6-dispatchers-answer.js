@@ -235,22 +235,20 @@ export function createInspectDispatcher(session, logger, turnId, perTurnWrites) 
     // EICR).
     const certType = session.certType;
 
-    const boardId = resolveBoardTarget(snapshot, input.board_id);
-    if (boardId == null) {
-      return emit('rejected', { ok: false, code: 'not_found' }, true, { scope });
-    }
-
-    // Circuit arg validation: integer ≥ 1 when present (string digits accepted).
-    let circuit = null;
-    if (input.circuit != null) {
+    // Codex r4 (NIT) — argument resolution is PER-SCOPE: summary ignores every
+    // optional argument (its contract is "args: none used"), board resolves
+    // only board_id, circuit/field validate exactly what they consume. An
+    // irrelevant malformed argument must never cost a retry round.
+    const resolveBoard = () => resolveBoardTarget(snapshot, input.board_id);
+    const parseCircuit = () => {
+      if (input.circuit == null) return { circuit: null };
       const n = Number(input.circuit);
-      if (!Number.isInteger(n) || n < 1) {
-        return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
-      }
-      circuit = n;
-    }
+      if (!Number.isInteger(n) || n < 1) return { invalid: true };
+      return { circuit: n };
+    };
 
     let body;
+    let circuit = null;
     switch (scope) {
       case 'summary':
         body = projectSummary(snapshot, {
@@ -260,12 +258,23 @@ export function createInspectDispatcher(session, logger, turnId, perTurnWrites) 
             : null,
         });
         break;
-      case 'board':
+      case 'board': {
+        const boardId = resolveBoard();
+        if (boardId == null) {
+          return emit('rejected', { ok: false, code: 'not_found' }, true, { scope });
+        }
         body = projectBoard(snapshot, boardId, { certType });
         break;
+      }
       case 'circuit': {
-        if (circuit == null) {
+        const parsed = parseCircuit();
+        if (parsed.invalid || parsed.circuit == null) {
           return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
+        }
+        circuit = parsed.circuit;
+        const boardId = resolveBoard();
+        if (boardId == null) {
+          return emit('rejected', { ok: false, code: 'not_found' }, true, { scope });
         }
         body = projectCircuit(snapshot, circuit, boardId, { certType });
         if (body == null) {
@@ -277,6 +286,11 @@ export function createInspectDispatcher(session, logger, turnId, perTurnWrites) 
         if (typeof input.field !== 'string' || !isKnownFieldKey(input.field)) {
           return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
         }
+        const parsed = parseCircuit();
+        if (parsed.invalid) {
+          return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
+        }
+        circuit = parsed.circuit;
         // Codex diff-review r1 — field/circuit pairing validation: a
         // circuit-only field needs a circuit; a board-level-only field must
         // not carry one. A mismatch is a correctable-argument error
@@ -288,6 +302,10 @@ export function createInspectDispatcher(session, logger, turnId, perTurnWrites) 
         }
         if (circuit != null && !isCircuitFieldKey(input.field)) {
           return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
+        }
+        const boardId = resolveBoard();
+        if (boardId == null) {
+          return emit('rejected', { ok: false, code: 'not_found' }, true, { scope });
         }
         body = projectField(snapshot, { field: input.field, circuit, boardId });
         if (body == null) {
