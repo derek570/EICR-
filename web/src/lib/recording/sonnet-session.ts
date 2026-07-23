@@ -575,13 +575,26 @@ const STAGE6_PROTOCOL_VERSION = 'stage6';
  *   the backend dispatcher SKIPS applying `< 0.5` readings pre-apply, so
  *   web users silently lost low-confidence dictated values.
  *
+ * - `lim_ranged_write_v1`: P3 (2026-07-23, feedback id 86) rollout-sequencing
+ *   gate for LIM acceptance on the numeric READING fields. Advertised because
+ *   web SHIPS the sentinel-safe guards this wave: the `circuit-derivations.ts`
+ *   derivation guard (no fabrication over a LIM) + the `apply-extraction.ts`
+ *   OCPD→max-Zs invalidation helper + the narrowed four-form client matcher.
+ *   Until a client advertises this, the backend DENIES LIM on the gated fields
+ *   (record_reading / bulk / speculation), so a pre-guard client can't silently
+ *   overwrite a LIM. Web deploys instantly (no TestFlight lag), so advertising
+ *   it in the same wave keeps web LIM acceptance from being blocked.
+ *
  * iOS additionally advertises `regex_fast_v2` and
  * `client_playback_telemetry`. Web MUST NOT claim them until the
  * corresponding plumbing ships (fast-path TTS port / playback-ack
  * telemetry — parity-ledger rows name the follow-up owners): advertising
  * an unimplemented capability is worse than lagging.
  */
-export const VOICE_LATENCY_SUPPORTS: readonly string[] = ['low_conf_readback_v1'];
+export const VOICE_LATENCY_SUPPORTS: readonly string[] = [
+  'low_conf_readback_v1',
+  'lim_ranged_write_v1',
+];
 
 export class SonnetSession {
   private ws: WebSocket | null = null;
