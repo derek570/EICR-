@@ -51,6 +51,13 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
   'VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN',
   'VOICE_LATENCY_ROUND1_MODEL', // explicitly EMPTY in the task-def
   'VOICE_LATENCY_KILL_SWITCH',
+  // A1 agentic-voice (2026-07-23) — the answer-feature master flag. Pinned
+  // from the task-def so the recorded lane replays at the production value
+  // ('false' until the PR-2 flip): every recorded fixture predates A1 and
+  // must replay byte-identical under the flag-off render. Post-flip, pre-flip
+  // fixtures stay valid only if re-verified — the pin makes the lane track
+  // whatever production actually runs, per the drift-enforcement contract.
+  'VOICE_AGENTIC_ANSWERS',
 ]);
 
 /** Behaviour flags ABSENT from the task-def → DELETED so code defaults

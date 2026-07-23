@@ -69,6 +69,18 @@ jest.unstable_mockModule('../logger.js', () => ({
 const { EICRExtractionSession, EICR_SYSTEM_PROMPT, EIC_SYSTEM_PROMPT, EICR_AGENTIC_SYSTEM_PROMPT } =
   await import('../extraction/eicr-extraction-session.js');
 
+// A1 agentic-voice (2026-07-23): these pre-A1 suites pin the FLAG-OFF prompt
+// selection (byte-identical to the historical EICR_AGENTIC_SYSTEM_PROMPT).
+// The code default for VOICE_AGENTIC_ANSWERS is TRUE, which would select the
+// _ANSWERS render — pin the suite to the flag-off state; the flag-on variant
+// + mode-change survival are pinned in stage6-agentic-answers-session.test.js.
+beforeAll(() => {
+  process.env.VOICE_AGENTIC_ANSWERS = 'false';
+});
+afterAll(() => {
+  delete process.env.VOICE_AGENTIC_ANSWERS;
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeSession({ certType = 'eicr', toolCallsMode = 'off' } = {}) {

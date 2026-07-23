@@ -78,14 +78,22 @@ const EXPECTED_TOOL_NAMES = [
   // flags a circuit as feeding another board (sub-main). STOP-SLICE: no
   // forward-ref ask_user — Sonnet must call add_board FIRST.
   'mark_distribution_circuit',
+  // 2026-07-23 A1 agentic-voice: answer_user gives the model its ONLY spoken-
+  // answer egress (stage-don't-send via perTurnWrites.answer);
+  // inspect_session_state is the read-only state query for facts outside the
+  // recent_3/board-scoped cached snapshot. Advertised only when the session's
+  // VOICE_AGENTIC_ANSWERS latch is on (buildSessionTools) — TOOL_SCHEMAS
+  // itself is unconditional.
+  'answer_user',
+  'inspect_session_state',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 16 tools with the expected names', () => {
+  test('exports exactly 18 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(16);
+    expect(TOOL_SCHEMAS).toHaveLength(18);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
