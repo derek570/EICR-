@@ -51,6 +51,10 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
   'VOICE_LATENCY_LOADED_BARREL_MAX_PER_TURN',
   'VOICE_LATENCY_ROUND1_MODEL', // explicitly EMPTY in the task-def
   'VOICE_LATENCY_KILL_SWITCH',
+  // P3 (2026-07-23) — LIM-ranged-write server kill-switch. Pinned from the
+  // task-def so the recorded lane replays at the production value ('false' =
+  // LIM acceptance enabled); flipping it to 'true' is the rollback boundary.
+  'LIM_RANGED_WRITE_DISABLED',
   // A1 agentic-voice (2026-07-23) — the answer-feature master flag. Pinned
   // from the task-def so the recorded lane replays at the production value
   // ('false' until the PR-2 flip): every recorded fixture predates A1 and
