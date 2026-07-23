@@ -4482,7 +4482,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // once); a throw AFTER a delivered VCR is logged but never re-queued
         // — the answer already spoke, and a replay would double-speak
         // (Audio-First #1).
-        let vcrDelivered = !(spoken_response || action);
+        // Mini-review r1 (M2): track the AUDIBLE delivery separately from
+        // "this turn has no VCR". A no-VCR turn that fails mid-sequence must
+        // still requeue (previously vcrDelivered started true there, so an
+        // extraction-send throw silently dropped the whole result).
+        const needsVcr = Boolean(spoken_response || action);
+        let audibleVcrDelivered = false;
         try {
           ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
 
@@ -4537,7 +4542,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // If Sonnet returned a spoken_response or action (query/command recognised),
           // forward as a voice_command_response — iOS handles these via the existing
           // serverDidReceiveVoiceCommandResponse delegate path.
-          if (spoken_response || action) {
+          if (needsVcr) {
+            // Mini-review r1 (M1): `ws` (the ws lib) silently NO-OPS a
+            // callback-less send on a CLOSING/CLOSED socket — a bare send
+            // cannot prove acceptance. Re-check readyState immediately before
+            // the audible frame so a socket that left OPEN mid-sequence
+            // routes to the requeue path instead of a phantom "delivered".
+            // (Async post-acceptance write errors remain unobservable
+            // server-side — that residual is the PLAN-C client chime-silence
+            // watchdog's territory by design.)
+            if (ws.readyState !== ws.OPEN) {
+              throw new Error('socket left OPEN state before voice_command_response send');
+            }
             ws.send(
               JSON.stringify({
                 type: 'voice_command_response',
@@ -4551,7 +4567,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   : {}),
               })
             );
-            vcrDelivered = true;
+            audibleVcrDelivered = true;
             // A1 agentic-voice — LEAK-RULE branch on the internal answer-source
             // marker (non-enumerable, bundler-attached). The legacy substring(0,80)
             // preview was fine for legacy voice-command text, but for MODEL-
@@ -4571,10 +4587,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // Send cost update
           ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
         } catch (emitErr) {
-          if (!vcrDelivered) {
+          // Requeue unless the audible frame ALREADY went out (replaying a
+          // spoken answer would double-speak — Audio-First #1). No-VCR turns
+          // always requeue: a re-sent extraction frame is idempotent-benign
+          // per the P4d replay contract (dedupe tokens carry replay-stable
+          // operation identity).
+          if (!needsVcr || !audibleVcrDelivered) {
             entry.pendingExtractions.push(result);
-            logger.warn('sync emission failed pre-VCR — result re-queued for reconnect replay', {
+            logger.warn('sync emission failed — result re-queued for reconnect replay', {
               sessionId,
+              needs_vcr: needsVcr,
               error: emitErr?.message ?? String(emitErr),
               buffered: entry.pendingExtractions.length,
             });
