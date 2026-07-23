@@ -29,8 +29,8 @@
 
 import { enterScriptByName, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
-import { getCircuitBucket } from './stage6-multi-board-shape.js';
-import { encodeReadingKey } from './stage6-per-turn-writes.js';
+import { getCircuitBucket, getMainBoardId } from './stage6-multi-board-shape.js';
+import { encodeReadingKey, attachEffectiveSlot } from './stage6-per-turn-writes.js';
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
@@ -146,6 +146,15 @@ export async function dispatchStartDialogueScript(call, ctx) {
     result.seeded_writes.length > 0
   ) {
     const bucket = getCircuitBucket(session.stateSnapshot, result.circuit_ref, input.board_id);
+    // P5 (2026-07-23) — resolve the effective board ONCE for every seeded
+    // write. start_dialogue_script's schema declares no board_id (raw
+    // input.board_id is typically undefined) and no resolution existed at
+    // dispatcher entry, so the collapse's effective-slot match had nothing to
+    // key off. Raw input.board_id still feeds encodeReadingKey + the value's
+    // enumerable boardId unchanged; only the non-enumerable slot marker uses
+    // the effective id.
+    const seededEffectiveBoardId =
+      input.board_id ?? session.stateSnapshot?.currentBoardId ?? getMainBoardId(session.stateSnapshot);
     for (const fieldName of result.seeded_writes) {
       const writtenValue = bucket?.[fieldName];
       if (writtenValue === undefined || writtenValue === null || writtenValue === '') continue;
@@ -155,12 +164,20 @@ export async function dispatchStartDialogueScript(call, ctx) {
       // defensive — last-write-wins via Map.set would otherwise
       // overwrite the more-recent value).
       if (perTurnWrites.readings.has(key)) continue;
-      perTurnWrites.readings.set(key, {
-        value: writtenValue,
-        confidence: 1.0,
-        source_turn_id: input.source_turn_id,
-        boardId: input.board_id ?? undefined,
-      });
+      perTurnWrites.readings.set(
+        key,
+        attachEffectiveSlot(
+          {
+            value: writtenValue,
+            confidence: 1.0,
+            source_turn_id: input.source_turn_id,
+            boardId: input.board_id ?? undefined,
+          },
+          fieldName,
+          result.circuit_ref,
+          seededEffectiveBoardId
+        )
+      );
     }
   }
 

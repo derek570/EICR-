@@ -41,6 +41,15 @@ Fixtures are hand-authored today (the ① keystone was written directly from the
 
 Identifier join first (session + utterance/generation id). Otherwise pair a chime with the NEXT final transcript in the same session ONLY when it precedes another chime AND falls within `CHIME_CORRELATION_MAX_MS = 15000` (**exclusive** bound). Ambiguity is a CONVERSION FAILURE requiring a human-selected mapping, never a guess. (Forensic guidance for real captures: correlate by `(branch, same/next-second backend row)` — a bare 15s window is ambiguous; see the Phase-3 reconstruction.)
 
+### The `clear_then_write` state-transition assertion (P5, marker T10)
+
+An `expected_operations[]` entry may set `state_transition: clear_then_write` (its only allowed value) to lock the same-turn clear→write collapse. The op is a **joint** assertion — one `reading.<operation_id>` failure covers BOTH conditions:
+
+1. the **replacement reading** is present in `extracted_readings` (exact `field`, `circuit`, `value`, and outward `board_id`), AND
+2. there are **zero** same-slot `clear_reading` entries in `result.field_corrections` (the stale clear the collapse must drop).
+
+This exact shape exists because a naïve reading oracle GREENs on broken code: the wiped write IS still present in `extracted_readings` (the wipe is the post-envelope `field_corrected` frame), so only the joint assertion RED-proves the wipe. The op MUST be a singular circuit `reading` carrying own `value`, non-empty `field`, non-null `circuit`, no `circuits[]`, and BOTH `board_id` (the replacement's outward board) AND `clear_board_id` (the stale correction's outward board, each `string|null` — they may legitimately differ in spelling for the same effective board); any other shape is rejected fail-closed (`clear_then_write_bad_shape`), and `empty_fallback` still prohibits it as state-dependent. The correction lookup maps the raw expected `field` through the REAL A2 `CLEAR_WIRE_EXEMPT`/`FIELD_CORRECTIONS` dialect (`r2_ohm` stays raw), which is **dynamically injected** into the runner AFTER the recorded lane installs its fake clock — never a static import from the extraction graph (an import-graph regression test enforces this); when the mapping is unavailable the oracle latches INFRASTRUCTURE. Regression fixture (`is_keystone: false`): `frc_4687948e…` (marker T10) RED-proves `reading.op_ir_ctw` on pre-fix code.
+
 ## Fidelity & scope (v1)
 
 Fixtures enter AND exit at the `runShadowHarness` boundary. Out of scope in v1 (each a fixture-validation-rejected `capability_exclusion` + a named follow-up):

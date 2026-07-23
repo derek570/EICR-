@@ -148,7 +148,7 @@ export function matchAudibleOutputs(expectedOutputs, { result, wsFrames }) {
  *  Fail-closed: an operation kind the oracle cannot faithfully verify latches
  *  an INFRASTRUCTURE outcome (which can never satisfy required_green OR an
  *  expected_red) rather than silently passing an un-checked expectation. */
-export function matchOperations(expectedOps, { result }) {
+export function matchOperations(expectedOps, { result, toClearWireField }) {
   const failures = [];
   const readings = result?.extracted_readings ?? [];
   const observations = [...(result?.observations ?? []), ...(result?.observationUpdates ?? [])];
@@ -161,6 +161,57 @@ export function matchOperations(expectedOps, { result }) {
       return true;
     });
   for (const op of expectedOps) {
+    // P5 (2026-07-23, marker T10) — clear_then_write JOINT assertion. On broken
+    // main the wiped write IS present in extracted_readings (the wipe is the
+    // post-envelope field_corrected frame), so the plain reading oracle GREENs;
+    // this branch additionally proves the stale clear was collapsed away. ONE
+    // reading.<operation_id> failure covers BOTH the missing-replacement and
+    // the surviving-stale-clear conditions. Board comparison is EXACT (never
+    // matchReading's null-wildcard): board_id = the replacement reading's
+    // outward board, clear_board_id = the collapsed correction's outward board.
+    if (op.kind === 'reading' && op.state_transition === 'clear_then_write') {
+      const id = `reading.${op.operation_id}`;
+      // A2 wire-dialect mapping is INJECTED (never statically imported here —
+      // the recorded lane installs a fake clock before the extraction graph
+      // loads). Absent → INFRASTRUCTURE, never a spurious pass/fail.
+      if (typeof toClearWireField !== 'function') {
+        failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: 'clear_then_write oracle needs the injected A2 field mapping (toClearWireField) — unavailable' });
+        continue;
+      }
+      const problems = [];
+      // (a) replacement reading present — exact (field, circuit, value, board_id).
+      const replHits = readings.filter(
+        (r) =>
+          norm(r.field) === norm(op.field) &&
+          norm(r.circuit) === norm(op.circuit) &&
+          norm(r.value) === norm(op.value) &&
+          norm(r.board_id ?? null) === norm(op.board_id ?? null),
+      );
+      if (replHits.length === 0) {
+        problems.push(`replacement ${op.field} c${op.circuit} = ${JSON.stringify(op.value)} (board ${JSON.stringify(op.board_id ?? null)}) not written`);
+      } else if (replHits.length > 1 && op.audibility === 'exactly_once') {
+        problems.push(`expected exactly one replacement ${op.field} c${op.circuit}, found ${replHits.length}`);
+      }
+      // (b) zero same-slot clear_reading field_corrections. field_corrections
+      // carry the A2-canonicalised wire field, so map the raw expected field
+      // through the injected mapping for the lookup. Board compared exactly
+      // against clear_board_id.
+      const wireField = toClearWireField(op.field);
+      const staleClears = (result?.field_corrections ?? []).filter(
+        (c) =>
+          c?.reason === 'clear_reading' &&
+          norm(c.field) === norm(wireField) &&
+          norm(c.circuit) === norm(op.circuit) &&
+          norm(c.board_id ?? null) === norm(op.clear_board_id ?? null),
+      );
+      if (staleClears.length > 0) {
+        problems.push(`stale clear_reading correction survived for ${wireField} c${op.circuit} (board ${JSON.stringify(op.clear_board_id ?? null)}) — the write is wiped on the client`);
+      }
+      if (problems.length) {
+        failures.push({ id, outcome: OUTCOME.FAIL, message: `clear_then_write: ${problems.join('; ')}` });
+      }
+      continue;
+    }
     if (op.kind === 'reading' || op.kind === 'board_reading') {
       const id = `reading.${op.operation_id}`;
       // Grouped ops carry `circuits[]` — EVERY declared circuit must have its

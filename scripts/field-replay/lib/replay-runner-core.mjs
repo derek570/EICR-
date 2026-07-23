@@ -512,6 +512,13 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         askOrigins,
         infrastructureViolations: violations,
         validateToolInput,
+        // P5 (2026-07-23) — the A2 clear-wire field mapping, DYNAMICALLY
+        // injected via `modules` (constructed in importExtractionModules AFTER
+        // the fake clock installs). matchOperations needs it to look up the
+        // canonicalised field_corrected wire field for a clear_then_write op;
+        // absent → the oracle latches INFRASTRUCTURE rather than passing
+        // un-checked. Kept off the static import graph on purpose.
+        toClearWireField: modules?.toClearWireField ?? null,
       };
       const failures = evaluateTurn(turn, captured);
       turnResults.push({ turn: turn.turn_index, failures, frames: ws.sent.length });

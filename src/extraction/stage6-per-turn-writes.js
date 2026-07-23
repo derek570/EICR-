@@ -18,9 +18,20 @@
  * ---------------------------------------------------------------------------
  * `readings` is a Map keyed by `${field}::${circuit}`. Its VALUES carry
  * {value, confidence, source_turn_id, auto_resolved?, boardId?} — and NOTHING
- * ELSE. Specifically, `field` and `circuit` MUST NOT appear in the value
- * object; they live in the key and are reconstructed by splitting on '::'
- * in Plan 02-05's bundler.
+ * ELSE (enumerable). Specifically, `field` and `circuit` MUST NOT appear as
+ * ENUMERABLE keys on the value object; they live in the Map key and are
+ * reconstructed by splitting on '::' in Plan 02-05's bundler.
+ *
+ * P5 (2026-07-23, same-turn clear→write wipe): value objects — and each
+ * `cleared` / `fieldCorrections` entry — additionally carry a NON-ENUMERABLE
+ * `[EFFECTIVE_CIRCUIT_SLOT]` slot-identity object `{field, circuit, boardId}`,
+ * where `boardId` is the EFFECTIVE board resolved at dispatch time
+ * (`input.board_id ?? currentBoardId ?? main`, producer-specific). It exists
+ * so the bundler's clear→write collapse can match a clear against its
+ * surviving replacement write under EFFECTIVE (not raw-spelling) board
+ * identity. Non-enumerable → the enumerable shape, JSON.stringify output and
+ * the wire bytes stay byte-identical; the shape tests assert the Symbol is
+ * present but non-enumerable.
  *
  * `boardId` was added in the "Work on Board" hotfix slice 1.1a (2026-05-08)
  * so the bundler can emit `reading.board_id` on the wire and the iOS apply
@@ -74,6 +85,60 @@
  *                         `board_ops` slot only when non-empty so pre-Phase-6
  *                         traffic stays byte-identical to today.
  */
+
+/**
+ * P5 (2026-07-23) — non-enumerable slot-identity marker. Attached at DISPATCH
+ * time to each `readings` VALUE object and each `cleared` / `fieldCorrections`
+ * entry, carrying `{field, circuit, boardId}` where `boardId` is the EFFECTIVE
+ * board (raw spelling resolved to the real board once). The bundler's
+ * clear→write collapse and `dispatchClearReading`'s same-turn delete both key
+ * off this so an omitted vs explicit-current `board_id` spelling denotes the
+ * SAME slot. Non-enumerable: the enumerable value shape and wire bytes are
+ * unchanged.
+ */
+export const EFFECTIVE_CIRCUIT_SLOT = Symbol('stage6.effectiveCircuitSlot');
+
+/**
+ * P5 — the ONE shared slot-DERIVATION helper used by BOTH `dispatchClearReading`'s
+ * effective-aware delete and the bundler's clear→write collapse projection.
+ * Builds a stable identity STRING from raw `(field, circuit, boardId)` parts.
+ *
+ * It is a pure derivation only — it does NOT decide WHEN the raw fallback
+ * applies; that gating is per call site (the delete gates on the entry side;
+ * the projection requires BOTH compared sides to be Symbol-less). Fed the
+ * EFFECTIVE board it yields the effective key; fed a RAW board it yields the
+ * fallback key. `boardId` of null / '' / undefined collapses to the same
+ * empty segment (mirroring `decodeReadingKey`'s null normalisation and the
+ * dispatcher's `board_id ?? null`), so a null-board clear matches a null-board
+ * write. NUL joins never collide with field (snake_case), circuit (digits /
+ * short ref), or board id (`::`/NUL forbidden by `encodeReadingKey`).
+ *
+ * @param {string} field
+ * @param {number|string} circuit
+ * @param {string|null|undefined} boardId
+ * @returns {string}
+ */
+export function rawCircuitSlot(field, circuit, boardId) {
+  const normBoard = boardId == null || boardId === '' ? '' : String(boardId);
+  return `${String(field)}\u0000${String(circuit)}\u0000${normBoard}`;
+}
+
+/**
+ * P5 — attach the non-enumerable EFFECTIVE_CIRCUIT_SLOT marker to a
+ * perTurnWrites value / cleared / fieldCorrections entry. `effectiveBoardId`
+ * is the resolved board (never a raw spelling, never the '*' broadcast
+ * selector; null-normalised). Non-enumerable so the enumerable shape, JSON
+ * output and wire bytes stay byte-identical. Returns `target` for chaining.
+ */
+export function attachEffectiveSlot(target, field, circuit, effectiveBoardId) {
+  Object.defineProperty(target, EFFECTIVE_CIRCUIT_SLOT, {
+    value: { field, circuit, boardId: effectiveBoardId ?? null },
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return target;
+}
 
 export function createPerTurnWrites() {
   return {
@@ -165,8 +230,8 @@ export function createTurnAnswerState() {
 //   boardReadings   : `${field}`              + BOARD_TAG_SEP + `${boardId??''}` + BOARD_TAG_END
 //
 // where:
-//   BOARD_TAG_SEP = ' __board__ '  (NUL-bracketed sentinel)
-//   BOARD_TAG_END = ' '                  (trailing NUL)
+//   BOARD_TAG_SEP = '\u0000__board__\u0000'  (NUL-bracketed sentinel)
+//   BOARD_TAG_END = '\u0000'                  (trailing NUL)
 //
 // Why NUL-bracketed (rather than bare `__main__`): NUL bytes never appear
 // in field names (snake_case identifiers), circuit refs (digits or short

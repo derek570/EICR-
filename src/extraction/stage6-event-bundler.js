@@ -16,7 +16,12 @@
  * `questions` slot into the iOS wire shape.
  */
 
-import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
+import {
+  decodeReadingKey,
+  decodeBoardReadingKey,
+  EFFECTIVE_CIRCUIT_SLOT,
+  rawCircuitSlot,
+} from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
 // can import the same buildConfirmationText without dragging the rest
@@ -64,6 +69,18 @@ export const BUNDLER_PHASE = 2;
 // canonicalisation (sonnet-stream.js:794) still uses. Pinned by the
 // semantic round-trip audit in stage6-clear-wire-audit.test.js.
 export const CLEAR_WIRE_EXEMPT = new Set(['r2_ohm']);
+
+/**
+ * P5 (2026-07-23) — non-enumerable carrier for same-turn clear→write collapse
+ * metadata. When the projection drops one or more stale `clear_reading`
+ * corrections because a same-turn write survived for that circuit slot, it
+ * attaches an array of `{field, circuit, board_id, final_effect:'write'}` to
+ * the bundled result under this Symbol. The bundler stays PURE (no telemetry
+ * side effects — the A2 work removed those); `stage6-shadow-harness.js` reads
+ * this and emits `stage6.same_turn_clear_write_collapsed`. Non-enumerable so
+ * it never enters JSON wire output or a defensive spread.
+ */
+export const SAME_TURN_CLEAR_WRITE_COLLAPSED = Symbol('stage6.sameTurnClearWriteCollapsed');
 
 /**
  * Synthesise brief read-back confirmations from the bundled readings.
@@ -714,6 +731,94 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     extracted_readings.push(reading);
   }
 
+  // P5 (2026-07-23) — same-turn clear→write collapse. A clear_reading + write
+  // for the SAME circuit slot in ONE turn emitted the write frame FIRST then
+  // the stale clear frame, so the clear (minted against pre-write state) wiped
+  // the value on the client even though the server ended with it (marker T10 /
+  // feedback 80B+81). write→clear is ALREADY collapsed correctly for circuit
+  // slots by dispatchClearReading's same-turn delete (only the clear survives).
+  // The MIRROR — clear→final-write — is closed HERE by a PURE projection-time
+  // filter: drop any clear correction whose slot has a SURVIVING readings
+  // write. Given the effective-aware dispatcher delete, a surviving readings
+  // entry co-present with a clear correction can only mean the write came
+  // AFTER the clear.
+  //
+  // Scope: circuit-reading slots from perTurnWrites.readings ONLY. boardReadings
+  // is EXCLUDED — the dispatcher delete never covers it, so co-presence is not
+  // an ordering proof at board scope and a board-scope collapse would wrongly
+  // drop a legitimate board write→clear clear (the inverse divergence). Board-
+  // level write→clear ordering is a pre-existing separate behaviour, out of P5
+  // scope (dated note 2026-07-23).
+  //
+  // Identity: matches the clear entry's EFFECTIVE slot key against the surviving
+  // readings entries' EFFECTIVE keys (both carry EFFECTIVE_CIRCUIT_SLOT, stamped
+  // at dispatch). Symbol-less entries (legacy/hand-built fixtures) fall back to
+  // RAW decoded Map-key identity via the shared rawCircuitSlot helper — readings
+  // identity derived EXCLUSIVELY from decodeReadingKey(mapKey) (the Map key is
+  // authoritative; value.boardId is outward wire metadata only). The raw
+  // fallback applies ONLY when BOTH compared sides lack the Symbol; a one-sided
+  // pair never infers ordering (no collapse). currentBoardId is NEVER resolved
+  // here (a mid-turn select_board would skew it).
+  const survivingEffectiveSlots = new Set();
+  const survivingRawSlots = new Set();
+  for (const [mapKey, val] of perTurnWrites.readings) {
+    const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
+    if (sym) {
+      survivingEffectiveSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+    } else {
+      const d = decodeReadingKey(mapKey);
+      survivingRawSlots.add(rawCircuitSlot(d.field, d.circuit, d.boardId));
+    }
+  }
+  const clearSlotHasSurvivingWrite = (entry) => {
+    const sym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
+    if (sym) {
+      return survivingEffectiveSlots.has(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+    }
+    // Both-Symbol-less fallback: match against the RAW surviving set only.
+    return survivingRawSlots.has(
+      rawCircuitSlot(entry?.field, entry?.circuit, entry?.board_id ?? null)
+    );
+  };
+  // Compute the collapse ONCE and reuse for the wire field_corrections
+  // projection, the cleared_readings envelope, and the cleared-confirmation
+  // synthesis so all three stay consistent. cleared entries carry NO reason
+  // predicate (every perTurnWrites.cleared entry is a clear; its `reason` holds
+  // the MODEL's free-form reason, never the literal 'clear_reading' — a literal
+  // predicate would match nothing); fieldCorrections gate on
+  // reason === 'clear_reading'. Corrections with reason same_turn_correction /
+  // replace_value are NEVER dropped — those legitimately coexist with a write.
+  const rawFieldCorrections = Array.isArray(perTurnWrites.fieldCorrections)
+    ? perTurnWrites.fieldCorrections
+    : [];
+  const clearWriteCollapsedSlots = [];
+  // Telemetry is ONE row PER COLLAPSED SLOT, not per dropped correction: a
+  // clear→write→clear→final-write sequence drops TWO clear corrections for the
+  // SAME slot, but that is one collapse event. Dedupe on the effective/raw slot
+  // identity (the same key the collapse matched on) while still dropping EVERY
+  // matched correction from the wire.
+  const collapsedSlotSeen = new Set();
+  const keptFieldCorrections = [];
+  for (const c of rawFieldCorrections) {
+    if (c && c.reason === 'clear_reading' && clearSlotHasSurvivingWrite(c)) {
+      const sym = c[EFFECTIVE_CIRCUIT_SLOT];
+      const slotKey = sym
+        ? rawCircuitSlot(sym.field, sym.circuit, sym.boardId)
+        : rawCircuitSlot(c.field, c.circuit, c.board_id ?? null);
+      if (!collapsedSlotSeen.has(slotKey)) {
+        collapsedSlotSeen.add(slotKey);
+        clearWriteCollapsedSlots.push({
+          field: c.field,
+          circuit: c.circuit,
+          board_id: sym?.boardId ?? c.board_id ?? null,
+          final_effect: 'write',
+        });
+      }
+      continue;
+    }
+    keptFieldCorrections.push(c);
+  }
+
   // 2-3. Observations + questions — defensive copies so downstream mutation
   //      cannot retroactively alter the bundled result.
   const result = {
@@ -721,6 +826,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     observations: [...perTurnWrites.observations],
     questions: Array.isArray(legacy.questions) ? [...legacy.questions] : [],
   };
+  if (clearWriteCollapsedSlots.length > 0) {
+    // Telemetry-only; non-enumerable so it never rides the wire or a spread.
+    Object.defineProperty(result, SAME_TURN_CLEAR_WRITE_COLLAPSED, {
+      value: clearWriteCollapsedSlots,
+      enumerable: false,
+    });
+  }
   if (_turnId) result.turn_id = _turnId;
   // Voice-latency plan 2026-06-05 Phase 2.1 — emit `utterance_id`
   // ONLY when supplied (matches the `turn_id` emit-when-truthy
@@ -780,7 +892,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   //      these keys see byte-identical traffic to today. Swift Codable
   //      ignores unknown keys, but omission keeps session logs clean.
   if (perTurnWrites.cleared.length > 0) {
-    result.cleared_readings = [...perTurnWrites.cleared];
+    // P5 — drop cleared entries whose slot has a surviving same-turn write
+    // (clear→write). No reason predicate: every cleared entry is a clear.
+    // OMITTED when all were collapsed, keeping the empty-slot byte-identity.
+    const keptCleared = perTurnWrites.cleared.filter((c) => !clearSlotHasSurvivingWrite(c));
+    if (keptCleared.length > 0) {
+      result.cleared_readings = keptCleared;
+    }
   }
   if (perTurnWrites.circuitOps.length > 0) {
     result.circuit_updates = [...perTurnWrites.circuitOps];
@@ -794,7 +912,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // pinned wire shape from PLAN_v3 §4.5 (type/circuit/field/
   // previous_value/reason). OMITTED when empty so back-compat decoders
   // never see the key.
-  if (Array.isArray(perTurnWrites.fieldCorrections) && perTurnWrites.fieldCorrections.length > 0) {
+  if (keptFieldCorrections.length > 0) {
     // §A2 (field-feedback-2026-07-14, F5) — canonicalise ONLY this outbound
     // wire copy, with NEW objects. Session 6B6FE011: `dispatchClearReading`
     // pushed the raw dispatcher key (`r1_r2_ohm`) and it went to the wire
@@ -807,14 +925,20 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // Two constraints make this exact shape load-bearing:
     // 1. NEW objects (map + spread), never in-place: the confirmation-
     //    synthesis block below (synthesiseObservationAndClearedConfirmations)
-    //    runs AFTER this line in the same function and compares
-    //    perTurnWrites.fieldCorrections against writtenSlots on the RAW key
-    //    to suppress the redundant "<field> cleared" TTS when the same turn
-    //    also writes a replacement. An in-place `.field` rewrite through the
-    //    old shallow copy would corrupt that compare and double-speak.
+    //    runs AFTER this line in the same function and compares the field
+    //    corrections against writtenSlots on the RAW key to suppress the
+    //    redundant "<field> cleared" TTS when the same turn also writes a
+    //    replacement. An in-place `.field` rewrite through the old shallow
+    //    copy would corrupt that compare and double-speak. (The spread also
+    //    drops the non-enumerable P5 slot marker — matching already ran.)
     // 2. CLEAR_WIRE_EXEMPT (r2_ohm): see the constant's comment — the
     //    canonical `r2` lands on the WRONG deployed clearer cell.
-    result.field_corrections = perTurnWrites.fieldCorrections.map((c) => ({
+    // P5 — source array is `keptFieldCorrections` (clear→write collapsed
+    // clears already dropped), so a wiped slot's stale clear never reaches the
+    // wire. Matching happened on RAW dispatcher field keys BEFORE this A2
+    // canonicalisation (an A2-mapped field like ir_live_live_mohm / r1_r2_ohm
+    // matched pre-conversion; r2_ohm keeps its exemption).
+    result.field_corrections = keptFieldCorrections.map((c) => ({
       ...c,
       field: CLEAR_WIRE_EXEMPT.has(c.field) ? c.field : (FIELD_CORRECTIONS[c.field] ?? c.field),
     }));
@@ -1067,10 +1191,17 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       circuitSlots: writtenCircuitSlots,
       boardFields: writtenBoardFields,
     };
+    // P5 — pass the collapsed corrections (clear→write collapsed clears already
+    // removed) so a wiped slot never synthesises a "<field> cleared" line. The
+    // #31 writtenSlots suppression still runs on top UNCHANGED (deliberately
+    // board-UNAWARE — the documented pre-existing cross-board over-suppression
+    // is NOT altered by this plan); passing the board-aware-collapsed array is
+    // a strict subset of what #31 would already suppress, so spoken output is
+    // identical to today for every in-scope case.
     const obsAndClears = synthesiseObservationAndClearedConfirmations(
       perTurnWrites.observations,
       perTurnWrites.deletedObservations,
-      perTurnWrites.fieldCorrections,
+      keptFieldCorrections,
       options.circuitDesignations,
       writtenSlots,
       _turnId

@@ -1,0 +1,133 @@
+# T10 — "a same-turn clear→write wipes the value on the client".
+#
+# Marker T10 field session (2026-07-16), feedback ids 80(B) + 81. The raw
+# session id <-> this opaque corpus id mapping is deliberately NOT recorded here
+# (private-mapping convention, mirroring the marker-① keystone). The inspector
+# dictated "Downstairs Socket, circuit 3, IR L to L 100"; the value was read
+# back aloud AND written server-side, then SILENTLY un-written on the client.
+# The turn carried BOTH a clear_reading and a record_reading for the SAME slot
+# (ir_live_live_mohm on circuit 3); the bundler emitted the extraction envelope
+# (the write) FIRST, then the field_corrected frame (the stale clear, minted
+# against pre-write state) AFTER it — so the clear landed last and wiped the
+# write. Server ended with '100'; the client overview was empty. This is the
+# INVERSE Audio-First violation (spoken-but-not-written).
+#
+# RECORDED-lane semantics: the model response is frozen (clear_reading then
+# record_reading in one round — the model's clear→write correction dance,
+# unchanged by the fix). The fix under lock is BACKEND-deterministic: the
+# bundler's projection-time clear→write COLLAPSE (P5) that drops the stale
+# clear_reading field_correction when a same-slot write survives, so the wire
+# carries the write and NO wiping clear.
+#
+# Why a clear_then_write op (not a plain reading op): on PRE-FIX code the wiped
+# write IS still present in extracted_readings (the wipe is the post-envelope
+# field_corrected frame), so a plain reading oracle GREENs on broken main. The
+# clear_then_write oracle JOINTLY asserts the replacement present AND zero
+# same-slot clear_reading field_corrections — so it RED-proves the wipe.
+# board_id/clear_board_id are both null: single-board job, the model passed no
+# board_id on either call (the outward wire identities the collapse preserves).
+#
+# RED proof: reverting the P5 bundler collapse (git checkout <base> --
+# src/extraction/stage6-event-bundler.js) and running `npm run
+# replay:field-corpus` fails EXACTLY `reading.op_ir_ctw` ("clear_then_write:
+# stale clear_reading correction survived …"); restoring the collapse takes the
+# corpus back to green.
+#
+# audibility note (deliberate): chime_observed is FALSE, so the generic
+# audibility.turn oracle does not run. The dictated read-back IS real (the write
+# speaks once on BOTH pre- and post-fix — the bug is the WIPE, not the audio),
+# so it is not the RED differentiator; this fixture isolates the WIRE-collapse
+# contract, mirroring the F/U-4 write-only fixture's qualification.
+#
+# Provenance: HAND-AUTHORED regression fixture derived from marker T10 (the
+# field session has NO field_sources/manifest — the iOS multipart analytics
+# upload is broken — so it was reconstructed from the realtime chunks + backend
+# CloudWatch, not from analyze-session.js). The clear→record model rounds and
+# the ir_live_live_mohm 'LIM'→'100' transition are frozen from that
+# reconstruction; exact millisecond tool ordering was correlated via transcript
+# text + CloudWatch, not client timestamps. The recorded_full provenance labels
+# on confirmations_enabled / in_response_to are SCHEMA-MANDATED for non-keystone
+# fixtures and model the product defaults this synthetic turn assumes
+# (confirmations on; not an answer turn). No captured PII.
+schema_version: 1
+corpus_id: frc_4687948efcd06a3cd9dce203a3aa4ffe
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: reading.op_ir_ctw
+owner: Derek Beckley
+introduced_at: '2026-07-23T18:00:00Z'
+fix_reference: fix_5717ad6e2b427ab108fd545c4e376f46
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  T10 same-turn clear→write wipe: a dictated "IR L to L 100" on circuit 3 (seeded
+  ir_live_live_mohm 'LIM') that the model corrected via clear_reading +
+  record_reading in one round must WRITE ir_live_live_mohm '100' AND carry NO
+  stale clear_reading field_correction — the P5 bundler collapse drops the clear
+  so it never wipes the write on the client.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 3
+      designation: Downstairs Socket
+      ir_live_live_mohm: LIM
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: Downstairs Socket, circuit 3, IR L to L 100.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: false
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_t10_clear
+            name: clear_reading
+            input:
+              field: ir_live_live_mohm
+              circuit: 3
+              reason: user_correction
+            schema_expectation: accept
+            dispatcher_expectation: accept
+          - id: toolu_t10_record
+            name: record_reading
+            input:
+              field: ir_live_live_mohm
+              circuit: 3
+              value: '100'
+              confidence: 0.9
+              source_turn_id: t10
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations:
+      - operation_id: op_ir_ctw
+        kind: reading
+        field: ir_live_live_mohm
+        circuit: 3
+        value: '100'
+        board_id: null
+        clear_board_id: null
+        state_transition: clear_then_write
+        audibility: exactly_once

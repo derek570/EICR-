@@ -38,6 +38,173 @@ describe('matchOperations write oracle', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// P5 (2026-07-23) — clear_then_write joint oracle (marker T10)
+// ---------------------------------------------------------------------------
+
+describe('matchOperations — clear_then_write joint oracle', () => {
+  // Identity A2 mapping unless a field needs canonicalisation. The runner
+  // injects the REAL one (CLEAR_WIRE_EXEMPT + FIELD_CORRECTIONS); here we stub.
+  const toClearWireField = (raw) =>
+    ({ ir_live_live_mohm: 'insulation_resistance_l_l', r1_r2_ohm: 'r1_plus_r2' })[raw] ?? raw;
+
+  const ctwOp = (overrides = {}) => ({
+    operation_id: 'ctw',
+    kind: 'reading',
+    state_transition: 'clear_then_write',
+    field: 'ir_live_live_mohm',
+    circuit: '3',
+    value: '100',
+    board_id: null,
+    clear_board_id: null,
+    audibility: 'exactly_once',
+    ...overrides,
+  });
+
+  test('GREEN: replacement present AND no stale clear → no failure (the fixed contract)', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }],
+      // collapsed — no field_corrections
+    };
+    const fails = matchOperations([ctwOp()], { result, toClearWireField });
+    expect(fails).toHaveLength(0);
+  });
+
+  test('RED (the T10 wipe): replacement present BUT the stale clear survived → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }],
+      // the wipe: the A2-canonicalised clear correction rode the wire after the write
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: null }],
+    };
+    const fails = matchOperations([ctwOp()], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].outcome).toBe(OUTCOME.FAIL);
+    expect(fails[0].id).toBe('reading.ctw');
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('RED: replacement missing → one FAIL (still a single reading.<id> failure)', () => {
+    const result = { extracted_readings: [] };
+    const fails = matchOperations([ctwOp()], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/replacement/);
+  });
+
+  test('board matrix RED: explicit/explicit matching stale clear → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'main' }],
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: 'main' }],
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('board matrix RED: omitted-clear (null) + explicit-write matching stale clear → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'main' }],
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: null }],
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: null });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('board matrix RED: explicit-clear + omitted-write (null) matching stale clear → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }], // board omitted → null
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: 'main' }],
+    };
+    const op = ctwOp({ board_id: null, clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('board matrix RED: replacement written on the WRONG board → replacement-missing FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'sub-1' }], // wrong board
+      // no stale clear
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/replacement/);
+  });
+
+  test('board exactness: a clear on a DIFFERENT board than clear_board_id does not false-RED', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'main' }],
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: 'sub-1' }],
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(0); // the surviving clear is on sub-1, not clear_board_id=main
+  });
+
+  test('r2_ohm exemption: the clear correction stays RAW on the wire, matched via the injected mapping', () => {
+    const result = {
+      extracted_readings: [{ field: 'r2_ohm', circuit: 2, value: '0.5' }],
+      field_corrections: [{ field: 'r2_ohm', circuit: 2, reason: 'clear_reading', board_id: null }],
+    };
+    const op = ctwOp({ field: 'r2_ohm', circuit: '2', value: '0.5' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1); // stale clear survived (matched raw r2_ohm)
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('INFRASTRUCTURE when the A2 mapping is not injected (never a silent pass/fail)', () => {
+    const result = { extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }] };
+    const fails = matchOperations([ctwOp()], { result }); // no toClearWireField
+    expect(fails).toHaveLength(1);
+    expect(fails[0].outcome).toBe(OUTCOME.INFRASTRUCTURE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P5 — import-graph contract: the replay lane must NOT statically import the
+// extraction graph (the recorded lane installs a fake clock BEFORE the graph
+// loads; a static import would load it too early). The A2 mapping is injected
+// dynamically via importExtractionModules instead.
+// ---------------------------------------------------------------------------
+
+describe('P5 — replay lane import-graph contract', () => {
+  const files = [
+    '../../../scripts/field-replay/lib/replay-runner-core.mjs',
+    '../../../scripts/field-replay/lib/replay-assertions.mjs',
+  ];
+  for (const rel of files) {
+    test(`${rel} has no STATIC import of src/extraction/*`, async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const path = await import('node:path');
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const raw = readFileSync(path.resolve(here, rel), 'utf8');
+      // Strip line + block comments FIRST so a `from '…src/extraction…'`
+      // mention inside a comment is not a false positive, and a comment placed
+      // INSIDE an import statement (`import x from /* note */ '…'`) does not
+      // become a false negative. (Cheap and sufficient for a defensive guard on
+      // two hand-maintained files; a source string containing the literal
+      // `from '…'` is not a realistic occurrence here.)
+      const src = raw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+      // Dynamic `await import('…src/extraction…')` (a CallExpression) is
+      // allowed — it runs AFTER the recorded lane installs its fake clock.
+      // Every STATIC form is banned. A static `import`/`export … from '<spec>'`
+      // always carries a `from '<spec>'` clause (dynamic import() never does),
+      // so matching a `from` clause whose specifier hits src/extraction catches
+      // BOTH single-line AND multiline static imports (the `from` may sit on a
+      // later line). Side-effect imports (`import '<spec>'`, no `from`) are
+      // matched separately.
+      const staticFromImport = /\bfrom\s*['"][^'"]*src\/extraction[^'"]*['"]/;
+      const sideEffectImport = /\bimport\s+['"][^'"]*src\/extraction[^'"]*['"]/;
+      expect(staticFromImport.test(src)).toBe(false);
+      expect(sideEffectImport.test(src)).toBe(false);
+    });
+  }
+});
+
 describe('matchToolExpectations', () => {
   const turnWith = (tc) => ({ model_rounds: [{ stop_reason: 'tool_use', tool_calls: [tc] }] });
 

@@ -1082,6 +1082,8 @@ async function importExtractionModules() {
     vlc,
     { createFilledSlotsShadowLogger },
     { runShadowHarness },
+    { CLEAR_WIRE_EXEMPT },
+    { FIELD_CORRECTIONS },
   ] = await Promise.all([
     import('../../src/extraction/eicr-extraction-session.js'),
     import('../../src/extraction/active-sessions.js'),
@@ -1090,7 +1092,19 @@ async function importExtractionModules() {
     import('../../src/extraction/voice-latency-config.js'),
     import('../../src/extraction/stage6-filled-slots-shadow.js'),
     import('../../src/extraction/stage6-shadow-harness.js'),
+    // P5 (2026-07-23) — the A2 clear-wire canonicalisation, imported HERE
+    // (after the fake-clock install at the call site) so it never enters the
+    // static import graph of replay-runner-core.mjs / replay-assertions.mjs
+    // (which the recorded lane loads BEFORE the fake clock). `toClearWireField`
+    // mirrors the bundler's outbound field_corrections mapping exactly:
+    // r2_ohm stays raw (CLEAR_WIRE_EXEMPT), everything else canonicalises via
+    // FIELD_CORRECTIONS. matchOperations uses it to find the canonicalised
+    // field_corrected wire field for a clear_then_write op.
+    import('../../src/extraction/stage6-event-bundler.js'),
+    import('../../src/extraction/field-name-corrections.js'),
   ]);
+  const toClearWireField = (raw) =>
+    CLEAR_WIRE_EXEMPT.has(raw) ? raw : (FIELD_CORRECTIONS[raw] ?? raw);
   return {
     EICRExtractionSession,
     activeSessions,
@@ -1100,6 +1114,7 @@ async function importExtractionModules() {
     parseVoiceLatencyCapabilities: vlc.parseVoiceLatencyCapabilities,
     createFilledSlotsShadowLogger,
     runShadowHarness,
+    toClearWireField,
   };
 }
 

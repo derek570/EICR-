@@ -990,11 +990,16 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(r.field_corrections[0].field).toBe('r2_ohm');
   });
 
-  test('§A2 — same-turn clear+record of the same slot still emits ONLY the replacement read-back (suppression regression)', () => {
-    // The wire canonicalisation must not break the raw-key suppression
-    // compare in synthesiseObservationAndClearedConfirmations: a value
-    // REPLACEMENT (clear + record in one turn) speaks the new value once,
-    // never "<field> cleared" on top (exactly-once invariant, #31).
+  test('P5 (was §A2) — clear→write collapse: replacement read-back once AND the stale clear correction is DROPPED (Symbol-less raw-fallback path)', () => {
+    // P5 (2026-07-23, marker T10 / feedback 80B+81) — this scenario used to
+    // PIN the stale clear_reading field_corrections event REMAINING on the
+    // wire (canonicalised). That is exactly the wipe: the write frame lands,
+    // then the stale clear frame lands after it and un-writes the value on the
+    // client. Now the bundler COLLAPSES it: a clear_reading correction whose
+    // slot has a surviving readings write is dropped. Both entries here are
+    // hand-built WITHOUT the EFFECTIVE_CIRCUIT_SLOT marker, so this exercises
+    // the shared rawCircuitSlot fallback (both-Symbol-less → raw decoded
+    // Map-key identity vs board_id ?? null).
     const readings = new Map([
       [encodeReadingKey('r1_r2_ohm', 3), { value: '0.30', confidence: 1.0, source_turn_id: 't1' }],
     ]);
@@ -1014,12 +1019,18 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { questions: [] },
       { confirmationsEnabled: true, turnId: 'turn-6' }
     );
+    // Spoken output unchanged: the write speaks once, never "<field> cleared".
     const cleared = r.confirmations.filter((c) => c.field === 'field_cleared');
-    expect(cleared).toHaveLength(0); // suppressed — the write speaks instead
+    expect(cleared).toHaveLength(0);
     const replacement = r.confirmations.filter((c) => c.field === 'r1_r2_ohm');
     expect(replacement).toHaveLength(1);
-    // The wire copy is still canonicalised even when the TTS is suppressed.
-    expect(r.field_corrections[0].field).toBe('r1_plus_r2');
+    // The write survives on the wire…
+    expect(r.extracted_readings).toHaveLength(1);
+    expect(r.extracted_readings[0].value).toBe('0.30');
+    // …and the stale clear correction is GONE (collapsed), not merely
+    // suppressed from speech. field_corrections is OMITTED when it empties.
+    expect('field_corrections' in r).toBe(false);
+    expect('cleared_readings' in r).toBe(false);
   });
 
   test('§A1a Codex r3-#2 — two DISTINCT same-turn designation ops BOTH speak, with distinct ordinal tokens', () => {
