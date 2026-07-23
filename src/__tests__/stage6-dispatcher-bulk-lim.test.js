@@ -36,7 +36,10 @@ function parseEnvelope(env) {
   return JSON.parse(env.content);
 }
 
-async function runBulk(field, value) {
+async function runBulk(field, value, { hasLimRangedWriteV1 = true } = {}) {
+  // P3 Fix 8 — LIM acceptance is capability-gated; the LIM-policy tests below
+  // exercise the coercion/validation path, so they run WITH the capability. The
+  // gate itself (deny without it) is covered by its own describe block.
   const session = { sessionId: 's_bulk_lim', stateSnapshot: buildSnapshot() };
   const writes = createPerTurnWrites();
   const env = await dispatchSetFieldForAllCircuits(makeCall({ field, value, confidence: 0.95, source_turn_id: 't1' }), {
@@ -45,6 +48,7 @@ async function runBulk(field, value) {
     turnId: 't1',
     perTurnWrites: writes,
     round: 1,
+    hasLimRangedWriteV1,
   });
   return parseEnvelope(env);
 }
@@ -96,5 +100,22 @@ describe('bulk set_field_for_all_circuits — P3 LIM policy', () => {
     expect(body.ok).toBe(true);
     expect(body.applied.length).toBe(3);
     for (const a of body.applied) expect(a.value).toBe('25');
+  });
+
+  describe('Fix 8 gate — LIM denied without lim_ranged_write_v1', () => {
+    test('LIM on a ranged field is skipped (no apply) without the capability', async () => {
+      const body = await runBulk('measured_zs_ohm', 'limitation', { hasLimRangedWriteV1: false });
+      expect(body).toMatchObject({
+        ok: true,
+        skipped: true,
+        reason: 'lim_ranged_write_capability_missing',
+      });
+    });
+
+    test('a numeric bulk write is unaffected by the gate', async () => {
+      const body = await runBulk('rcd_time_ms', '25', { hasLimRangedWriteV1: false });
+      expect(body.ok).toBe(true);
+      expect(body.applied.length).toBe(3);
+    });
   });
 });

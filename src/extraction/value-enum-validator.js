@@ -123,6 +123,48 @@ export const NUMERIC_READING_FIELDS = new Set([
 ]);
 
 /**
+ * P3 Fix 8 (2026-07-23) — the subset of NUMERIC_READING_FIELDS whose NEW LIM
+ * acceptance is gated behind the `lim_ranged_write_v1` client capability. These
+ * are the fields a pre-guard client would MIShandle on receiving a LIM: the
+ * derivation targets (measured_zs_ohm, r1_r2_ohm — recomputeAll would fabricate
+ * over the LIM) and the status / max-Zs fields (measured_zs_ohm,
+ * ocpd_max_zs_ohm, and ocpd_rating_a which feeds max-Zs), plus the other ranged
+ * fields whose LIM acceptance is entirely NEW in P3 (rejected pre-P3).
+ *
+ * The two IR mohm fields are DELIBERATELY EXCLUDED — they accepted LIM BEFORE
+ * P3 (no range gate) and are NOT derivation / status targets, so a pre-guard
+ * client already handled a LIM there safely. Gating them would REGRESS existing
+ * behaviour. The ring legs are included (their LIM acceptance is new in P3) —
+ * they are not recomputeAll targets, but gating the whole new-acceptance surface
+ * keeps the rollout boundary simple and conservative.
+ *
+ * @type {Set<string>}
+ */
+export const LIM_CAPABILITY_GATED_FIELDS = new Set(
+  [...NUMERIC_READING_FIELDS].filter(
+    (f) => f !== 'ir_live_live_mohm' && f !== 'ir_live_earth_mohm'
+  )
+);
+
+/**
+ * True when a (canonical) field's LIM acceptance is gated behind
+ * `lim_ranged_write_v1`, AND `value` is the canonical LIM sentinel. Used by the
+ * dispatchers + speculator to DENY a LIM write when the client hasn't advertised
+ * the capability.
+ *
+ * @param {string} field — canonical field name (alias-normalise first)
+ * @param {*} value — post-coercion value
+ * @returns {boolean}
+ */
+export function isCapabilityGatedLimWrite(field, value) {
+  return (
+    LIM_CAPABILITY_GATED_FIELDS.has(field) &&
+    typeof value === 'string' &&
+    value.trim().toLowerCase() === 'lim'
+  );
+}
+
+/**
  * Dialogue-slot field aliases → canonical NUMERIC_READING_FIELDS names. The
  * dialogue scripts seed writes under schema slot names that differ from the
  * canonical Sonnet field name (e.g. the RCD trip-time slot is `rcd_trip_time`,

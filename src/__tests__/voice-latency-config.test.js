@@ -311,7 +311,7 @@ describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
 });
 
 describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
-  test('lists exactly the 8 known support strings', () => {
+  test('lists exactly the 9 known support strings', () => {
     expect([...flags.VOICE_LATENCY_KNOWN_SUPPORTS]).toEqual([
       'streaming_http_audio',
       'source_field_in_tts_post',
@@ -322,6 +322,8 @@ describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
       'client_playback_telemetry',
       // readback-correction-optionb §6 — rollout-sequencing gate.
       'low_conf_readback_v1',
+      // P3 Fix 8 — LIM-ranged-write rollout-sequencing gate.
+      'lim_ranged_write_v1',
     ]);
   });
 });
@@ -356,5 +358,36 @@ describe('parseVoiceLatencyCapabilities — hasLowConfReadbackV1 (readback-corre
     expect(
       flags.parseVoiceLatencyCapabilities({ voice_latency: { version: 2, supports: [] } })
     ).toHaveProperty('hasLowConfReadbackV1', false);
+  });
+});
+
+describe('parseVoiceLatencyCapabilities — hasLimRangedWriteV1 (P3 Fix 8)', () => {
+  test('true when the client advertises lim_ranged_write_v1', () => {
+    const caps = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: ['lim_ranged_write_v1'] },
+    });
+    expect(caps.hasLimRangedWriteV1).toBe(true);
+  });
+
+  test('false when advertised supports omit it', () => {
+    const caps = flags.parseVoiceLatencyCapabilities({
+      voice_latency: { version: 1, supports: ['low_conf_readback_v1'] },
+    });
+    expect(caps.hasLimRangedWriteV1).toBe(false);
+  });
+
+  test('present and false on the empty()/v0 shape (safe default = deny LIM acceptance)', () => {
+    expect(flags.parseVoiceLatencyCapabilities(null)).toHaveProperty('hasLimRangedWriteV1', false);
+    expect(flags.parseVoiceLatencyCapabilities({ voice_latency: { version: 0 } })).toHaveProperty(
+      'hasLimRangedWriteV1',
+      false
+    );
+    expect(
+      flags.parseVoiceLatencyCapabilities({ voice_latency: { version: 2, supports: [] } })
+    ).toHaveProperty('hasLimRangedWriteV1', false);
+  });
+
+  test('lim_ranged_write_v1 is in the KNOWN_SUPPORTS enumeration', () => {
+    expect(flags.VOICE_LATENCY_KNOWN_SUPPORTS).toContain('lim_ranged_write_v1');
   });
 });

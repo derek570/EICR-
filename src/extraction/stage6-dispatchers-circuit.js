@@ -83,6 +83,7 @@ import { coerceRecordReadingValue } from './record-reading-coercion.js';
 import {
   validateNumericReadingValue,
   canonicaliseNumericReadingField,
+  isCapabilityGatedLimWrite,
   NUMERIC_READING_FIELDS,
 } from './value-enum-validator.js';
 import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
@@ -159,6 +160,41 @@ export async function dispatchRecordReading(call, ctx) {
   // only checked circuit existence + confidence so the ordering didn't
   // matter. With the enum gate added, ordering is load-bearing.
   input.value = coerceRecordReadingValue(input.field, input.value);
+
+  // P3 Fix 8 — rollout gate. Deny a LIM write on a capability-gated numeric
+  // reading field until the client advertises `lim_ranged_write_v1`. A pre-guard
+  // client lacks the Fix 5/6/9 sentinel guards, so accepting the LIM here would
+  // let its recomputeAll fabricate over it (silent overwrite — Audio-First #2)
+  // or render a false-green circuit result. Returned as a NON-error skip (no
+  // snapshot mutation, no wire, no confirmation); the marker-② catch-all net
+  // speaks an apology so the chimed turn is never silent. IR fields are NOT
+  // gated (they accepted LIM before P3 and are not derivation/status targets).
+  const hasLimRangedWriteV1 = ctx.hasLimRangedWriteV1 === true;
+  if (
+    !hasLimRangedWriteV1 &&
+    isCapabilityGatedLimWrite(canonicaliseNumericReadingField(input.field), input.value)
+  ) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: false,
+      outcome: 'skipped',
+      validation_error: null,
+      input_summary: {
+        field: input.field,
+        circuit: input.circuit,
+        reason: 'lim_ranged_write_capability_missing',
+      },
+    });
+    return envelope(
+      call.tool_call_id,
+      { ok: true, skipped: true, reason: 'lim_ranged_write_capability_missing' },
+      false
+    );
+  }
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1486,6 +1522,30 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // select fields are already enforced by validateSetFieldForAllCircuits.
   input.value = coerceRecordReadingValue(input.field, input.value);
   const canonicalBulkField = canonicaliseNumericReadingField(input.field);
+  // P3 Fix 8 — rollout gate (mirror of the direct record_reading path): deny a
+  // bulk LIM write on a capability-gated field until the client advertises
+  // `lim_ranged_write_v1`. Non-error skip so the marker-② net speaks.
+  if (
+    ctx.hasLimRangedWriteV1 !== true &&
+    isCapabilityGatedLimWrite(canonicalBulkField, input.value)
+  ) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: false,
+      outcome: 'skipped',
+      validation_error: null,
+      input_summary: { field: input.field, reason: 'lim_ranged_write_capability_missing' },
+    });
+    return envelope(
+      call.tool_call_id,
+      { ok: true, skipped: true, reason: 'lim_ranged_write_capability_missing' },
+      false
+    );
+  }
   if (NUMERIC_READING_FIELDS.has(canonicalBulkField)) {
     const numericVerdict = validateNumericReadingValue(canonicalBulkField, input.value);
     if (!numericVerdict.ok) {

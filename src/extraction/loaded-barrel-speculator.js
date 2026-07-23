@@ -112,6 +112,10 @@ import {
   BOARD_FIELD_VALUE_ENUMS,
   CIRCUIT_FIELD_VALUE_ENUMS,
 } from './stage6-dispatch-validation.js';
+import {
+  isCapabilityGatedLimWrite,
+  canonicaliseNumericReadingField,
+} from './value-enum-validator.js';
 import { getActiveSessionEntry } from './active-sessions.js';
 
 const DEFAULT_OUTPUT_FORMAT = 'mp3_22050_32';
@@ -250,6 +254,11 @@ export function createSpeculator({
   // Same-turn circuit_designation writes are layered on top as they are
   // observed (onToolUseStreamed / onSnapshotPatch).
   initialDesignations = null,
+  // P3 Fix 8 — when false (a client that hasn't advertised `lim_ranged_write_v1`)
+  // the dispatcher SKIPS a LIM write on a capability-gated field, so the
+  // speculator must NOT pre-synthesise a confirmation for it (a false read-back
+  // for a write that never lands).
+  hasLimRangedWriteV1 = false,
 }) {
   if (!sessionId) throw new TypeError('createSpeculator: sessionId required');
   if (!costTracker) throw new TypeError('createSpeculator: costTracker required');
@@ -1282,6 +1291,24 @@ export function createSpeculator({
         coerced_value_preview: String(value).slice(0, 40),
       });
       return; // skip synth; bundler emits post-validation
+    }
+
+    // P3 Fix 8 — skip synth when the dispatcher will DENY this LIM write for a
+    // pre-guard client (no `lim_ranged_write_v1`). Pre-synthesising a
+    // confirmation for a write that never lands is a false read-back. Only
+    // record_reading fields are capability-gated (board fields are not in the
+    // gated set); canonicalise the dialogue-slot alias before the check.
+    if (
+      record.name === 'record_reading' &&
+      !hasLimRangedWriteV1 &&
+      isCapabilityGatedLimWrite(canonicaliseNumericReadingField(field), value)
+    ) {
+      logger?.info?.('voice_latency.speculator_skipped_lim_capability', {
+        sessionId,
+        turnId: ctx.turnId,
+        field,
+      });
+      return; // skip synth; the dispatcher denies the write
     }
 
     _speculate({
