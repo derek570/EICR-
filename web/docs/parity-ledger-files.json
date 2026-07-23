@@ -520,7 +520,9 @@
     "observations/obs-photo-autolink"
   ],
   "web/src/lib/recording-context.tsx": [
+    "crosscutting/uiimpactfeedbackgenerator",
     "observations/obs-photo-autolink",
+    "recording/assistant-answers",
     "recording/cancel-pending-tts",
     "recording/fast-path-tts",
     "recording/flux-kill-switch",
@@ -528,8 +530,7 @@
     "recording/readback-dedup-rekey",
     "recording/transcript-gate",
     "recording/tts-fifo",
-    "recording/voice-command-executor-e-g-move",
-    "crosscutting/uiimpactfeedbackgenerator"
+    "recording/voice-command-executor-e-g-move"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
