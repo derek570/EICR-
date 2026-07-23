@@ -53,7 +53,13 @@ import {
   renameCircuitFlagAware,
   deleteCircuitFlagAware,
 } from './stage6-snapshot-mutators.js';
-import { encodeReadingKey } from './stage6-per-turn-writes.js';
+import {
+  encodeReadingKey,
+  decodeReadingKey,
+  EFFECTIVE_CIRCUIT_SLOT,
+  rawCircuitSlot,
+  attachEffectiveSlot,
+} from './stage6-per-turn-writes.js';
 import {
   getCircuitBucket,
   listCircuitRefsInBoard,
@@ -91,6 +97,24 @@ const FIELD_SCHEMA = fieldSchemaRequire('../../config/field_schema.json');
  */
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
+}
+
+// ---- P5 same-turn clear→write slot identity (2026-07-23) --------------------
+
+/**
+ * Resolve the EFFECTIVE board id for a record_reading / clear_reading slot:
+ * an omitted / '' board_id denotes the current board (or the main board when
+ * none is selected), so a valid clear/write pair that mixes spellings (one
+ * omits board_id, one passes the current id explicitly) names the SAME real
+ * slot. Producer-specific per the plan — this universal formula is for
+ * record_reading + clear_reading ONLY; calculators pass their computed
+ * targetBoardId, set_field_for_all_circuits uses each iteration tuple's local
+ * boardId, and start_dialogue_script resolves its own once.
+ */
+function resolveEffectiveBoardId(session, rawBoardId) {
+  const snapshot = session?.stateSnapshot;
+  if (rawBoardId != null && rawBoardId !== '') return rawBoardId;
+  return snapshot?.currentBoardId ?? getMainBoardId(snapshot);
 }
 
 // ---- record_reading --------------------------------------------------------
@@ -255,13 +279,26 @@ export async function dispatchRecordReading(call, ctx) {
   // (e.g. set_field_for_all_circuits('*')) don't collide on Map.set's
   // last-write-wins. Legacy keys without the boardId tag still decode to
   // boardId=null in the bundler.
-  perTurnWrites.readings.set(encodeReadingKey(input.field, input.circuit, input.board_id), {
-    value: input.value,
-    confidence: input.confidence ?? 1.0,
-    source_turn_id: input.source_turn_id,
-    auto_resolved: autoResolved || undefined,
-    boardId: input.board_id ?? undefined,
-  });
+  // P5 (2026-07-23) — attach the effective slot identity so a later clear (or
+  // an earlier clear's collapse) matches this write under EFFECTIVE board id
+  // regardless of raw board_id spelling. Auto-resolve writes ride this site
+  // (::auto:: tool_call_id), so they get the marker too.
+  const recordValue = attachEffectiveSlot(
+    {
+      value: input.value,
+      confidence: input.confidence ?? 1.0,
+      source_turn_id: input.source_turn_id,
+      auto_resolved: autoResolved || undefined,
+      boardId: input.board_id ?? undefined,
+    },
+    input.field,
+    input.circuit,
+    resolveEffectiveBoardId(session, input.board_id)
+  );
+  perTurnWrites.readings.set(
+    encodeReadingKey(input.field, input.circuit, input.board_id),
+    recordValue
+  );
   // Codex r3-#2 — designation ops are ALSO appended to an append-only log
   // (the Map above is last-write-wins) so two distinct same-turn
   // designation changes each get their own read-back + dedupe token.
@@ -366,26 +403,65 @@ export async function dispatchClearReading(call, ctx) {
   // Same-turn correction: if a record_reading for this slot was pushed earlier
   // in THIS turn, remove it from the Map so the bundler doesn't report both a
   // record and a clear for the same slot (that would be contradictory wire).
-  // Slice 1.1c — same boardId-bearing key shape as the record_reading set
-  // call so the delete targets the right (field, circuit, board) tuple.
-  perTurnWrites.readings.delete(encodeReadingKey(input.field, input.circuit, input.board_id));
-  perTurnWrites.cleared.push({
-    field: input.field,
-    circuit: input.circuit,
-    reason: input.reason,
-  });
+  //
+  // P5 (2026-07-23) — EFFECTIVE-board-aware delete. A single raw-key delete
+  // (encodeReadingKey with input.board_id verbatim) misses a mixed-spelling
+  // write→clear turn (write with explicit current board_id, clear with it
+  // omitted, or the inverse), leaving co-presence that the bundler collapse
+  // would then MISread as a clear→write and drop a legitimate final clear.
+  // Iterate the (small, per-turn) readings Map and delete every entry whose
+  // EFFECTIVE slot equals this clear's effective slot. Entries carry the
+  // EFFECTIVE_CIRCUIT_SLOT marker (all four readings.set producers stamp it);
+  // a Symbol-less entry (defensive: legacy/hand-built fixtures) falls back to
+  // RAW decoded Map-key identity vs this clear's RAW (input.board_id ?? null)
+  // via the shared rawCircuitSlot helper — the entry's board is never
+  // back-filled from currentBoardId (the restriction is entry-side only; the
+  // clear's own effective board IS resolved here).
+  const clearEffectiveBoardId = resolveEffectiveBoardId(session, input.board_id);
+  const clearEffectiveKey = rawCircuitSlot(input.field, input.circuit, clearEffectiveBoardId);
+  const clearRawKey = rawCircuitSlot(input.field, input.circuit, input.board_id ?? null);
+  for (const [mapKey, val] of perTurnWrites.readings) {
+    const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
+    let matches;
+    if (sym) {
+      matches = rawCircuitSlot(sym.field, sym.circuit, sym.boardId) === clearEffectiveKey;
+    } else {
+      const decoded = decodeReadingKey(mapKey);
+      matches = rawCircuitSlot(decoded.field, decoded.circuit, decoded.boardId) === clearRawKey;
+    }
+    if (matches) perTurnWrites.readings.delete(mapKey);
+  }
+  perTurnWrites.cleared.push(
+    attachEffectiveSlot(
+      {
+        field: input.field,
+        circuit: input.circuit,
+        reason: input.reason,
+      },
+      input.field,
+      input.circuit,
+      clearEffectiveBoardId
+    )
+  );
   // 1a.6: enqueue a field_corrected WS event so iOS clients with the
   // Stage 1b handler can patch local state when Sonnet clears a value.
   // Wire shape pinned in PLAN_v3 §4.5 (snake_case keys + closed reason
   // enum). board_id surfaced for multi-board sessions; null otherwise.
-  perTurnWrites.fieldCorrections.push({
-    type: 'field_corrected',
-    circuit: input.circuit,
-    field: input.field,
-    previous_value: previousValue,
-    reason: 'clear_reading',
-    board_id: input.board_id ?? null,
-  });
+  perTurnWrites.fieldCorrections.push(
+    attachEffectiveSlot(
+      {
+        type: 'field_corrected',
+        circuit: input.circuit,
+        field: input.field,
+        previous_value: previousValue,
+        reason: 'clear_reading',
+        board_id: input.board_id ?? null,
+      },
+      input.field,
+      input.circuit,
+      clearEffectiveBoardId
+    )
+  );
 
   logToolCall(logger, {
     sessionId: session.sessionId,
@@ -924,7 +1000,11 @@ function parseFiniteNumber(v) {
  *   2. source_turn_id carries a synthetic '::calc::<tool>' marker so log
  *      analysis can split server-derived writes from Sonnet-direct writes.
  */
-function applyCalculatedReading(session, perTurnWrites, { circuit, field, value, tool, boardId }) {
+function applyCalculatedReading(
+  session,
+  perTurnWrites,
+  { circuit, field, value, tool, boardId, effectiveBoardId }
+) {
   // Calculated writes (Zs from Ze + R1+R2, R1+R2 from Zs - Ze, etc.) flow
   // through the same flag-aware mutator as record_reading so the calc
   // outputs land in the SAME bucket shape as the source readings — no
@@ -939,12 +1019,24 @@ function applyCalculatedReading(session, perTurnWrites, { circuit, field, value,
   // Slice 1.1c — encode boardId in the Map key so a cross-board calc sweep
   // (`board_id: '*'` is not yet supported on the calc tools, but the
   // pattern is forward-safe) doesn't collide on (field, circuit) key.
-  perTurnWrites.readings.set(encodeReadingKey(field, circuit, boardId), {
-    value,
-    confidence: 1.0,
-    source_turn_id: `::calc::${tool}`,
-    boardId: boardId ?? undefined,
-  });
+  //
+  // P5 (2026-07-23) — attach the effective slot identity. The calculators
+  // already resolve `targetBoardId` (input.board_id ?? currentBoardId ?? main)
+  // for Ze + selector + bucket lookup; pass THAT as effectiveBoardId (the raw
+  // `boardId` is retained for the Map key + enumerable wire shape). A calc
+  // write after a same-turn clear then collapses under one board identity.
+  const calcValue = attachEffectiveSlot(
+    {
+      value,
+      confidence: 1.0,
+      source_turn_id: `::calc::${tool}`,
+      boardId: boardId ?? undefined,
+    },
+    field,
+    circuit,
+    effectiveBoardId ?? boardId ?? null
+  );
+  perTurnWrites.readings.set(encodeReadingKey(field, circuit, boardId), calcValue);
 }
 
 /**
@@ -1157,6 +1249,7 @@ export async function dispatchCalculateZs(call, ctx) {
       value,
       tool: 'calculate_zs',
       boardId: input.board_id,
+      effectiveBoardId: targetBoardId,
     });
     computed.push({ circuit_ref: ref, field: 'measured_zs_ohm', value });
   }
@@ -1285,6 +1378,7 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
       value,
       tool: 'calculate_r1_plus_r2',
       boardId: input.board_id,
+      effectiveBoardId: targetBoardId,
     });
     computed.push({ circuit_ref: ref, field: 'r1_r2_ohm', value, method });
   }
@@ -1489,12 +1583,26 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       //
       // "Work on Board" hotfix slice 1.1a — value entry carries boardId so
       // the bundler emits the right `reading.board_id` on each entry.
-      perTurnWrites.readings.set(encodeReadingKey(input.field, ref, boardId), {
-        value: input.value,
-        confidence: input.confidence,
-        source_turn_id: input.source_turn_id,
-        boardId: boardId ?? undefined,
-      });
+      // P5 (2026-07-23) — effective slot identity from the iteration tuple's
+      // LOCAL boardId (a '*' broadcast has already been expanded to real board
+      // ids in iterationPlan, so `boardId` is never the '*' selector here);
+      // fall back to current/main only when the local value is nullish. Tagging
+      // a generated reading with '*' would both block a real-board clear from
+      // matching its replacement and conflate same-ref writes across boards.
+      perTurnWrites.readings.set(
+        encodeReadingKey(input.field, ref, boardId),
+        attachEffectiveSlot(
+          {
+            value: input.value,
+            confidence: input.confidence,
+            source_turn_id: input.source_turn_id,
+            boardId: boardId ?? undefined,
+          },
+          input.field,
+          ref,
+          resolveEffectiveBoardId(session, boardId)
+        )
+      );
       applied.push({
         circuit: ref,
         field: input.field,
