@@ -110,6 +110,7 @@ export const FIXTURE_ERROR_CODES = Object.freeze({
   DUPLICATE_OUTPUT_ID: 'duplicate_output_id',
   RECENT_ORDER_MISSING: 'recent_circuit_order_missing',
   ORPHAN_NET_UNATTESTED: 'orphan_net_dependency_unattested',
+  CLEAR_THEN_WRITE_BAD_SHAPE: 'clear_then_write_bad_shape',
 });
 
 /** Ajv structural schema for fixture.yaml. */
@@ -342,8 +343,19 @@ export const FIXTURE_JSON_SCHEMA = {
         circuit: { type: ['string', 'number', 'null'] },
         circuits: { type: 'array', items: { type: ['string', 'number'] } },
         board_id: { type: ['string', 'null'] },
+        // P5 (2026-07-23) — the stale-clear board identity for a
+        // clear_then_write op (the replacement reading's board is `board_id`;
+        // the collapsed correction's board is `clear_board_id`; they may
+        // legitimately differ in spelling for the SAME effective board).
+        clear_board_id: { type: ['string', 'null'] },
         value: {},
-        state_transition: { type: 'string' },
+        // P5 — constrain the previously free-string state_transition to its
+        // sole supported value. A clear_then_write op JOINTLY asserts the
+        // replacement reading present AND zero same-slot clear_reading
+        // field_corrections (the collapse). Cross-field shape is fail-closed
+        // below; the empty_fallback prohibition (operationIsStateDependent)
+        // is retained.
+        state_transition: { enum: ['clear_then_write'] },
         dedupe_token_expected: { type: 'boolean' },
         wire_identity: { type: 'object' },
         audibility: { enum: ['exactly_once', 'derived_exempt'] },
@@ -667,6 +679,29 @@ export async function validateFixtureDocument(doc, opts = {}) {
       opIds.add(op.operation_id);
       if (emptyFallback && operationIsStateDependent(op)) {
         errors.push(err(FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION, oPath, 'empty_fallback prohibits state-dependent blocking assertions'));
+      }
+      // P5 (2026-07-23) — fail-closed shape for a clear_then_write op. It
+      // JOINTLY asserts (a) the replacement reading present AND (b) zero
+      // same-slot clear_reading field_corrections. That only makes sense on a
+      // singular circuit reading carrying both the replacement board identity
+      // (`board_id`) and the stale-clear board identity (`clear_board_id`).
+      // Reject every other shape so a malformed fixture can never GREEN a
+      // half-checked expectation. `hasOwn` because a null value/board is a
+      // legitimate, meaningful assertion (distinct from absent).
+      if (op.state_transition === 'clear_then_write') {
+        const bad = [];
+        if (op.kind !== 'reading') bad.push('kind must be "reading"');
+        if (!Object.hasOwn(op, 'value')) bad.push('own "value" required');
+        if (typeof op.field !== 'string' || op.field === '') bad.push('non-empty string "field" required');
+        if (op.circuit == null) bad.push('singular non-null "circuit" required');
+        if (op.circuits != null) bad.push('"circuits[]" is not allowed (singular circuit only)');
+        for (const k of ['board_id', 'clear_board_id']) {
+          if (!Object.hasOwn(op, k)) bad.push(`own "${k}" required`);
+          else if (!(typeof op[k] === 'string' || op[k] === null)) bad.push(`"${k}" must be string|null`);
+        }
+        if (bad.length) {
+          errors.push(err(FIXTURE_ERROR_CODES.CLEAR_THEN_WRITE_BAD_SHAPE, oPath, `clear_then_write op malformed: ${bad.join('; ')}`));
+        }
       }
       // Referenced circuits/boards must exist in job_state (unless the same
       // fixture creates them earlier — creation ops register their refs).

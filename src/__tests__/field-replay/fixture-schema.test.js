@@ -464,3 +464,100 @@ describe('immutable projection', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// P5 (2026-07-23) — clear_then_write op shape (marker T10)
+// ---------------------------------------------------------------------------
+
+describe('P5 — clear_then_write state_transition op validation', () => {
+  // A fixture whose sole op is a clear_then_write reading. board_id must be
+  // null or the seeded board (the STATE_DEP check gates board_id); clear_board_id
+  // is not state-checked.
+  function ctwFixture(opOverrides = {}, fixtureOverrides = {}) {
+    const op = {
+      operation_id: 'op_ctw',
+      kind: 'reading',
+      field: 'ir_live_live_mohm',
+      circuit: '2',
+      value: '100',
+      board_id: null,
+      clear_board_id: null,
+      state_transition: 'clear_then_write',
+      audibility: 'exactly_once',
+      ...opOverrides,
+    };
+    return baseFixture({
+      expected_failure_id: 'reading.op_ctw',
+      red_proof_failure_id: 'reading.op_ctw',
+      turns: [baseTurn({ expected_operations: [op], expected_audible_outputs: [] })],
+      ...fixtureOverrides,
+    });
+  }
+
+  test('a well-formed clear_then_write op validates', async () => {
+    const r = await validateFixtureDocument(ctwFixture());
+    expect(r.errors).toEqual([]);
+  });
+
+  test('null/null and explicit board spellings both validate (same effective board)', async () => {
+    for (const [board_id, clear_board_id] of [
+      [null, null],
+      ['sym_board_main', null],
+      [null, 'sym_board_main'],
+      ['sym_board_main', 'sym_board_main'],
+    ]) {
+      const r = await validateFixtureDocument(ctwFixture({ board_id, clear_board_id }));
+      expect(r.errors).toEqual([]);
+    }
+  });
+
+  const badShapes = [
+    ['kind not reading', { kind: 'board_reading' }],
+    ['missing value', (op) => delete op.value],
+    ['empty field', { field: '' }],
+    ['null circuit', { circuit: null }],
+    ['circuits[] present', { circuits: ['2', '3'] }],
+    ['missing board_id', (op) => delete op.board_id],
+    ['missing clear_board_id', (op) => delete op.clear_board_id],
+  ];
+  for (const [name, mut] of badShapes) {
+    test(`rejects clear_then_write: ${name}`, async () => {
+      const op = {
+        operation_id: 'op_ctw',
+        kind: 'reading',
+        field: 'ir_live_live_mohm',
+        circuit: '2',
+        value: '100',
+        board_id: null,
+        clear_board_id: null,
+        state_transition: 'clear_then_write',
+        audibility: 'exactly_once',
+      };
+      if (typeof mut === 'function') mut(op);
+      else Object.assign(op, mut);
+      const doc = baseFixture({
+        expected_failure_id: 'reading.op_ctw',
+        red_proof_failure_id: 'reading.op_ctw',
+        turns: [baseTurn({ expected_operations: [op], expected_audible_outputs: [] })],
+      });
+      const r = await validateFixtureDocument(doc);
+      const codes = r.errors.map((e) => e.code);
+      expect(codes).toContain(FIXTURE_ERROR_CODES.CLEAR_THEN_WRITE_BAD_SHAPE);
+    });
+  }
+
+  test('an unknown state_transition value is rejected by the enum (schema)', async () => {
+    const doc = ctwFixture({ state_transition: 'write_then_clear' });
+    const r = await validateFixtureDocument(doc);
+    expect(r.errors.length).toBeGreaterThan(0);
+    expect(r.errors.map((e) => e.code)).toContain(FIXTURE_ERROR_CODES.SCHEMA);
+  });
+
+  test('empty_fallback still prohibits a clear_then_write op (state-dependent)', async () => {
+    const doc = ctwFixture({}, { initial_state_fidelity: 'empty_fallback' });
+    const r = await validateFixtureDocument(doc);
+    expect(r.errors.map((e) => e.code)).toContain(
+      FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION,
+    );
+  });
+});

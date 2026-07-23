@@ -38,6 +38,114 @@ describe('matchOperations write oracle', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// P5 (2026-07-23) — clear_then_write joint oracle (marker T10)
+// ---------------------------------------------------------------------------
+
+describe('matchOperations — clear_then_write joint oracle', () => {
+  // Identity A2 mapping unless a field needs canonicalisation. The runner
+  // injects the REAL one (CLEAR_WIRE_EXEMPT + FIELD_CORRECTIONS); here we stub.
+  const toClearWireField = (raw) =>
+    ({ ir_live_live_mohm: 'insulation_resistance_l_l', r1_r2_ohm: 'r1_plus_r2' })[raw] ?? raw;
+
+  const ctwOp = (overrides = {}) => ({
+    operation_id: 'ctw',
+    kind: 'reading',
+    state_transition: 'clear_then_write',
+    field: 'ir_live_live_mohm',
+    circuit: '3',
+    value: '100',
+    board_id: null,
+    clear_board_id: null,
+    audibility: 'exactly_once',
+    ...overrides,
+  });
+
+  test('GREEN: replacement present AND no stale clear → no failure (the fixed contract)', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }],
+      // collapsed — no field_corrections
+    };
+    const fails = matchOperations([ctwOp()], { result, toClearWireField });
+    expect(fails).toHaveLength(0);
+  });
+
+  test('RED (the T10 wipe): replacement present BUT the stale clear survived → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }],
+      // the wipe: the A2-canonicalised clear correction rode the wire after the write
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: null }],
+    };
+    const fails = matchOperations([ctwOp()], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].outcome).toBe(OUTCOME.FAIL);
+    expect(fails[0].id).toBe('reading.ctw');
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('RED: replacement missing → one FAIL (still a single reading.<id> failure)', () => {
+    const result = { extracted_readings: [] };
+    const fails = matchOperations([ctwOp()], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/replacement/);
+  });
+
+  test('board exactness: a clear on a DIFFERENT board than clear_board_id does not false-RED', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'main' }],
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: 'sub-1' }],
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(0); // the surviving clear is on sub-1, not clear_board_id=main
+  });
+
+  test('r2_ohm exemption: the clear correction stays RAW on the wire, matched via the injected mapping', () => {
+    const result = {
+      extracted_readings: [{ field: 'r2_ohm', circuit: 2, value: '0.5' }],
+      field_corrections: [{ field: 'r2_ohm', circuit: 2, reason: 'clear_reading', board_id: null }],
+    };
+    const op = ctwOp({ field: 'r2_ohm', circuit: '2', value: '0.5' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1); // stale clear survived (matched raw r2_ohm)
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('INFRASTRUCTURE when the A2 mapping is not injected (never a silent pass/fail)', () => {
+    const result = { extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }] };
+    const fails = matchOperations([ctwOp()], { result }); // no toClearWireField
+    expect(fails).toHaveLength(1);
+    expect(fails[0].outcome).toBe(OUTCOME.INFRASTRUCTURE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P5 — import-graph contract: the replay lane must NOT statically import the
+// extraction graph (the recorded lane installs a fake clock BEFORE the graph
+// loads; a static import would load it too early). The A2 mapping is injected
+// dynamically via importExtractionModules instead.
+// ---------------------------------------------------------------------------
+
+describe('P5 — replay lane import-graph contract', () => {
+  const files = [
+    '../../../scripts/field-replay/lib/replay-runner-core.mjs',
+    '../../../scripts/field-replay/lib/replay-assertions.mjs',
+  ];
+  for (const rel of files) {
+    test(`${rel} has no STATIC import of src/extraction/*`, async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const path = await import('node:path');
+      const here = path.dirname(fileURLToPath(import.meta.url));
+      const src = readFileSync(path.resolve(here, rel), 'utf8');
+      // Match STATIC `import ... from '...src/extraction...'` (dynamic
+      // `await import('...src/extraction...')` is allowed and NOT matched).
+      const staticImport = /^\s*import\s+[^\n]*from\s+['"][^'"]*src\/extraction[^'"]*['"]/m;
+      expect(staticImport.test(src)).toBe(false);
+    });
+  }
+});
+
 describe('matchToolExpectations', () => {
   const turnWith = (tc) => ({ model_rounds: [{ stop_reason: 'tool_use', tool_calls: [tc] }] });
 
