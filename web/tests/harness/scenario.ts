@@ -28,7 +28,7 @@ export interface ScenarioTranscriptEntry {
 }
 
 export interface MockFrame {
-  type: 'extraction' | 'question' | 'field_corrected';
+  type: 'extraction' | 'question' | 'field_corrected' | 'voice_command_response';
   readings?: Array<{ field: string; value: unknown; circuit: number | null }>;
   confirmations?: Array<{ field: string; circuit: number | null; text: string }>;
   question?: string;
@@ -41,6 +41,11 @@ export interface MockFrame {
    *  that web's apply path maps both onto the right PWA column. */
   circuit?: number;
   field?: string;
+  /** voice_command_response (A1 agentic-voice, 2026-07-23) — the model's
+   *  spoken answer riding the VCR channel. The PR-1 gate scenario pins that
+   *  the web companion force-speaks it with the confirmation toggle OFF. */
+  spoken_response?: string;
+  understood?: boolean;
 }
 
 export interface MockFrameEntry {
@@ -82,6 +87,11 @@ export interface ReplayScenario {
   };
   transcript: ScenarioTranscriptEntry[];
   mock_frames?: MockFrameEntry[];
+  /** A1 agentic-voice — per-scenario confirmation-toggle state. The runner
+   *  previously hard-coded setConfirmationModeEnabled(true); scenarios that
+   *  pin toggle-OFF behaviour (the VCR force-speak gate) set this false.
+   *  Absent → true (the historical harness default). */
+  confirmation_mode?: boolean;
   expect?: { web?: WebExpectations };
 }
 

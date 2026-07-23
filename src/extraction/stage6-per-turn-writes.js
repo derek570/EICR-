@@ -115,6 +115,35 @@ export function createPerTurnWrites() {
     // onto session.pendingVoicePrompts WITH the generation id post-loop.
     // Entries: { text: string }.
     voiceNotices: [],
+    // A1 agentic-voice (2026-07-23) — turn-local answer state
+    // (PLAN Item 4 `turnAnswerState`). Fed by the answer_user AND
+    // inspect_session_state dispatchers (stage6-dispatchers-answer.js);
+    // read by runLiveMode's post-loop finalization (fixed-fallback staging)
+    // and by bundleToolCallsIntoResult (spoken_response projection).
+    // Living on the accumulator makes it dispatcher-fed state that SURVIVES
+    // a runToolLoop throw/cancellation — finalization never needs
+    // toolLoopOut. `stagedText` is the at-most-once latch: set only on a
+    // successful staging; a rejected first attempt leaves it null so the
+    // model may correct itself within the turn.
+    //   { stagedText: string|null, stagedMeta: {truncated,chars}|null,
+    //     outcomes: [{tool, code, reason?}], emptyRetryUsed: boolean,
+    //     featureTouched: boolean }
+    answer: createTurnAnswerState(),
+  };
+}
+
+/**
+ * A1 agentic-voice — fresh per-turn answer state. Exported for tests and for
+ * any future call site that needs to reset the slot without rebuilding the
+ * whole accumulator.
+ */
+export function createTurnAnswerState() {
+  return {
+    stagedText: null,
+    stagedMeta: null,
+    outcomes: [],
+    emptyRetryUsed: false,
+    featureTouched: false,
   };
 }
 

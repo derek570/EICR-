@@ -80,13 +80,25 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   let wrag;
   let combinedPrompt;
 
-  beforeAll(() => {
+  let renderedOn;
+  let combinedRenderedOn;
+
+  beforeAll(async () => {
     prompt = fssync.readFileSync(PROMPT_PATH, 'utf8');
     schedule = fssync.readFileSync(SCHEDULE_PATH, 'utf8');
     wrag = fssync.readFileSync(WRAG_PATH, 'utf8');
     // Mirror the concatenation done in eicr-extraction-session.js so the
     // budget check sees the same byte stream the model does.
     combinedPrompt = prompt.trimEnd() + '\n\n' + schedule.trimEnd() + '\n\n' + wrag;
+    // A1 agentic-voice (2026-07-23): the RAW .md now carries BOTH the
+    // flag-off (original) and flag-on (answer-feature) variants inside
+    // <!--A1:OFF-->/<!--A1:ON--> marker blocks — the raw file is no longer a
+    // model-visible artifact. Token budgets are measured against the LARGEST
+    // RENDER (flag-on); content assertions keep reading the raw file, which
+    // contains every line of both variants.
+    const sessionModule = await import('../extraction/eicr-extraction-session.js');
+    renderedOn = sessionModule.renderAgenticSystemPrompt(true);
+    combinedRenderedOn = renderedOn.trimEnd() + '\n\n' + schedule.trimEnd() + '\n\n' + wrag;
   });
 
   // ------------------------------------------------------------------
@@ -366,8 +378,20 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // "Zs..."), which would make the steer unreliable; both now carve out
       // the field+circuit-no-value shape as ask-once. Measured ~20445; cap
       // 20480 leaves ~35-token headroom.
-      const estimate = Math.ceil(combinedPrompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20480);
+      //
+      // 2026-07-23 (A1 agentic-voice): the budget now measures the RENDERED
+      // flag-on prompt (the largest byte stream the model can actually see —
+      // the raw .md carries both marker-block variants and inflates a raw
+      // measure by the duplicated OFF originals). Bumped to 21300 to absorb
+      // the ANSWERING QUESTIONS section, the exhaustive TOOLS(18) inventory
+      // (four previously-omitted real tools + answer_user +
+      // inspect_session_state), and the YOU-ARE-DONE-WHEN question carve-out.
+      // Measured 21198 (flag-on render); cap 21300 leaves ~100-token
+      // headroom. The flag-off render stays byte-identical to the pre-A1
+      // prompt (pinned in stage6-agentic-answers-session.test.js), so the
+      // deployed flag-off budget is unchanged.
+      const estimate = Math.ceil(combinedRenderedOn.length / 4);
+      expect(estimate).toBeLessThanOrEqual(21300);
     });
   });
 
@@ -1068,8 +1092,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       //     carved out the field+circuit-no-value shape (ask once, Example
       //     8) — they previously said WAIT, contradicting the steer.
       //     Measured ~15208; cap 15240 leaves ~32-token headroom.
-      const estimate = Math.ceil(prompt.length / 4);
-      expect(estimate).toBeLessThanOrEqual(15240);
+      // 2026-07-23 (A1 agentic-voice): measured against the RENDERED flag-on
+      // base (see the Group 1 comment) — 15960 measured; cap 16060 leaves
+      // ~100-token headroom.
+      const estimate = Math.ceil(renderedOn.length / 4);
+      expect(estimate).toBeLessThanOrEqual(16060);
     });
   });
 

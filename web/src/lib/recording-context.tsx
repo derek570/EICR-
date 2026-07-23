@@ -2927,7 +2927,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
         }
         if (response.spoken_response) {
-          speakConfirmation(response.spoken_response);
+          // A1 agentic-voice web companion (2026-07-23) — force-speak the
+          // voice_command_response. iOS speaks VCR frames UNCONDITIONALLY
+          // (DeepgramRecordingViewModel.swift:9888 → speakBriefConfirmation,
+          // no toggle gate), but speakConfirmation mutes when the
+          // confirmation toggle is OFF (tts.ts:971) — the web DEFAULT — so a
+          // default-config web user would chime, receive the model's spoken
+          // answer, and silently drop it. `force: true` matches iOS's
+          // unconditional VCR speak; the confirmations channel keeps its
+          // toggle on both clients (documented opt-out), and answers still
+          // queue behind read-backs on the existing FIFO (Resolved decision
+          // 3 — no queue-priority change).
+          speakConfirmation(response.spoken_response, { force: true });
         }
         sleepManagerRef.current?.onSpeechActivity();
       },

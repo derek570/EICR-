@@ -6,6 +6,17 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
+# Upgrade the image's npm to the 11.x line (2026-07-23). node:20-alpine
+# bundles npm 10.x, whose vendored `tar` 6.2.1 trips the Trivy CRITICAL gate
+# on CVE-2026-59873 (gzip-bomb DoS; fixed in tar 7.5.19) at
+# usr/local/lib/node_modules/npm/node_modules/tar — the EXACT class the
+# 2026-07-22 backend.Dockerfile fix (0d863b50) closed for the backend image;
+# the frontend image was missed and started blocking every deploy once the
+# fixed tar version landed in the vulnerability DB (ignore-unfixed:true means
+# an advisory only blocks once a fix exists). npm 11.18+ vendors tar ^7.5.19.
+# Placed BEFORE any npm usage so the whole build runs one npm.
+RUN npm install -g npm@11
+
 ARG APP_DIR
 ARG NEXT_PUBLIC_API_URL=https://api.certmate.uk
 # NEXT_PUBLIC_* vars are inlined at `next build` time from process.env, so
@@ -62,6 +73,13 @@ ENV APP_DIR=${APP_DIR}
 
 # Install wget for health checks
 RUN apk add --no-cache wget
+
+# Same npm@11 upgrade as the builder stage: the RUNNER is the scanned/shipped
+# image and node:20-alpine's bundled npm 10.x carries the tar 6.2.1
+# CVE-2026-59873 CRITICAL into the final layer even though the runtime never
+# invokes npm (CMD is a bare `node server.js`). Upgrading (rather than
+# deleting npm) keeps parity with the backend image's 0d863b50 fix.
+RUN npm install -g npm@11
 
 # Don't run as root
 RUN addgroup --system --gid 1001 nodejs

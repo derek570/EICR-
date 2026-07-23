@@ -261,7 +261,7 @@ describe('Phase 3 — tool dispatcher composition (pendingAsks provided)', () =>
 // ---------------------------------------------------------------------------
 
 describe('Phase 3 — null pendingAsks fallback', () => {
-  test('omitted pendingAsks: writes-only dispatcher, no ask composition, identity sortRecords', async () => {
+  test('omitted pendingAsks: composer with null asks (A1) — no ask composition, identity sortRecords', async () => {
     const logger = makeLogger();
     const s = makeSession('shadow');
 
@@ -269,15 +269,29 @@ describe('Phase 3 — null pendingAsks fallback', () => {
 
     expect(createWriteDispatcherSpy).toHaveBeenCalledTimes(1);
     expect(createAskDispatcherSpy).not.toHaveBeenCalled();
-    expect(createToolDispatcherSpy).not.toHaveBeenCalled();
+    // A1 agentic-voice (2026-07-23): the no-pendingAsks path now routes
+    // through the composer too, so answer_user/inspect_session_state always
+    // have a dispatch route. asks is exactly null (the composer delegates
+    // ask_user to writes there — pre-A1 unknown_tool behaviour preserved);
+    // the answer/inspect dispatchers are real closures constructed
+    // independently of pendingAsks.
+    expect(createToolDispatcherSpy).toHaveBeenCalledTimes(1);
+    expect(createToolDispatcherSpy).toHaveBeenCalledWith(
+      writeSentinel,
+      null,
+      expect.objectContaining({
+        answers: expect.any(Function),
+        inspects: expect.any(Function),
+      })
+    );
     expect(createSortRecordsAsksLastSpy).not.toHaveBeenCalled();
 
     const loopArgs = runToolLoopSpy.mock.calls[0][0];
-    expect(loopArgs.dispatcher).toBe(writeSentinel);
+    expect(loopArgs.dispatcher).toBe(composedSentinel);
     expect(loopArgs.sortRecords).toBeUndefined();
   });
 
-  test('explicit pendingAsks=null: same fallback, no throw', async () => {
+  test('explicit pendingAsks=null: same composer-with-null-asks fallback, no throw', async () => {
     const logger = makeLogger();
     const s = makeSession('shadow');
 
@@ -286,9 +300,17 @@ describe('Phase 3 — null pendingAsks fallback', () => {
     ).resolves.toBeDefined();
 
     expect(createAskDispatcherSpy).not.toHaveBeenCalled();
-    expect(createToolDispatcherSpy).not.toHaveBeenCalled();
+    expect(createToolDispatcherSpy).toHaveBeenCalledTimes(1);
+    expect(createToolDispatcherSpy).toHaveBeenCalledWith(
+      writeSentinel,
+      null,
+      expect.objectContaining({
+        answers: expect.any(Function),
+        inspects: expect.any(Function),
+      })
+    );
     const loopArgs = runToolLoopSpy.mock.calls[0][0];
-    expect(loopArgs.dispatcher).toBe(writeSentinel);
+    expect(loopArgs.dispatcher).toBe(composedSentinel);
     expect(loopArgs.sortRecords).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Stage 6 Agentic Extraction — Anthropic tool-schema codegen.
  *
- * Exports TOOL_SCHEMAS: an array of 16 Anthropic tool definitions
+ * Exports TOOL_SCHEMAS: an array of 18 Anthropic tool definitions
  * (additionalProperties:false, NOT strict:true — see makeTool below),
  * codegenned at module load from:
  *   - config/field_schema.json              (circuit_fields -> record_reading.field enum;
@@ -1157,6 +1157,77 @@ const addBoard = makeTool({
   required: ['designation', 'board_type'],
 });
 
+// ---------------------------------------------------------------------------
+// 2026-07-23 A1 agentic-voice — answer_user.
+//
+// The model's ONLY route to the speaker for a spoken ANSWER. Before A1 the
+// live toolset was 16 extraction/mutation tools with zero query/answer
+// egress; assistant text is retained for conversation coherence only and
+// never reaches TTS, so a question turn became a zero-tool end_turn and drew
+// the marker-① "didn't catch that" apology. Deliberately minimal (no topic
+// enum, no field refs) and READ-ONLY by contract: the dispatcher stages the
+// text into a turn-local slot — it performs no session mutation and has no
+// WebSocket access. Emission rides the existing voice_command_response
+// machinery via result.spoken_response.
+// ---------------------------------------------------------------------------
+const answerUser = makeTool({
+  name: 'answer_user',
+  description:
+    "Speak a short answer to a question the inspector asked about this session or certificate (e.g. \"what's missing on circuit 4?\", \"did you get that?\"). At most 2 sentences; terse and factual. NEVER use it to acknowledge, confirm, or narrate a write (read-backs are server-owned), and NEVER in place of ask_user when you need information FROM the inspector. At most one answer per turn.",
+  properties: {
+    answer_text: {
+      type: 'string',
+      maxLength: 300,
+      description:
+        'The spoken answer, ≤ 2 sentences. Plain speech for TTS — no markdown, no field-key names (say "Zs", not "measured_zs_ohm").',
+    },
+  },
+  required: ['answer_text'],
+});
+
+// ---------------------------------------------------------------------------
+// 2026-07-23 A1 agentic-voice — inspect_session_state.
+//
+// Read-only state query. Needed because the cached-prefix snapshot renders
+// reading VALUES for only the 3 most-recently-dictated circuits on the
+// current board (CIRCUIT_ORDER=recent_3 in production) — questions about an
+// older circuit, another board, or whole-cert completeness are otherwise
+// unanswerable without guessing. Response shapes, the required-fields policy
+// behind "missing"/"what's left", the 4096-byte cap, and the is_error matrix
+// are pinned in docs/reference/inspect-session-state-policy.md (the A1
+// Phase 0.6 approved appendix). No wire frames, no TTS — purely model-facing.
+// ---------------------------------------------------------------------------
+const inspectSessionState = makeTool({
+  name: 'inspect_session_state',
+  description:
+    "Query the authoritative session state when the facts you need are NOT visible in the state snapshot above (an older circuit's readings, another board, or whole-certificate completeness). Read-only. Call it FIRST, then speak the result via answer_user. scope: 'summary' = per-board completeness counts; 'board' = incomplete circuits + missing-field names for one board; 'circuit' = all recorded values for one circuit; 'field' = one field's value (omit circuit for a supply/board-level field).",
+  properties: {
+    scope: {
+      type: 'string',
+      enum: ['summary', 'board', 'circuit', 'field'],
+      description: 'What to read. summary/board return counts + missing-field names; circuit/field return recorded values.',
+    },
+    board_id: {
+      type: 'string',
+      description:
+        'Optional exact board id from the BOARDS section of the snapshot (defaults to the current board). Designations are not accepted.',
+    },
+    circuit: {
+      // Codex r4 (NIT) — the plan declares number|string; the dispatcher
+      // already coerces digit strings, so advertise both.
+      anyOf: [{ type: 'integer' }, { type: 'string', pattern: '^[1-9]\\d*$' }],
+      description:
+        "Circuit ref (integer, or a digit string). Required for scope 'circuit'; for scope 'field' omit it to read a supply/board-level field.",
+    },
+    field: {
+      type: 'string',
+      description:
+        "Schema field key (e.g. 'measured_zs_ohm', 'earth_loop_impedance_ze'). Required for scope 'field'.",
+    },
+  },
+  required: ['scope'],
+});
+
 export const TOOL_SCHEMAS = [
   recordReading,
   clearReading,
@@ -1185,7 +1256,30 @@ export const TOOL_SCHEMAS = [
   selectBoard,
   // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit.
   markDistributionCircuit,
+  // 2026-07-23 A1 agentic-voice — appended last so existing TOOL_SCHEMAS
+  // indices stay stable for any consumers that key on them. Advertised to the
+  // model only when the session's VOICE_AGENTIC_ANSWERS master flag is on —
+  // see buildSessionTools below (TOOL_SCHEMAS itself is unconditional).
+  answerUser,
+  inspectSessionState,
 ];
+
+// ---------------------------------------------------------------------------
+// 2026-07-23 A1 agentic-voice — flag-filtered session toolset.
+//
+// The ONE shared helper both tools-array build sites in
+// stage6-shadow-harness.js (runLiveMode live lane AND the shadow/legacy-twin
+// lane) must use, so a tool is never advertised on one lane only. The master
+// flag VOICE_AGENTIC_ANSWERS is latched once per session
+// (session.agenticAnswersEnabled) — callers pass that latched boolean, never
+// a fresh env read, so prompt/tools/gate can't split state.
+// ---------------------------------------------------------------------------
+export const AGENTIC_ANSWER_TOOL_NAMES = Object.freeze(['answer_user', 'inspect_session_state']);
+
+export function buildSessionTools(agenticAnswersEnabled) {
+  if (agenticAnswersEnabled === true) return TOOL_SCHEMAS;
+  return TOOL_SCHEMAS.filter((t) => !AGENTIC_ANSWER_TOOL_NAMES.includes(t.name));
+}
 
 // ---------------------------------------------------------------------------
 // 2026-05-07 multi-board sprint Phase 6.6 — BOARD_OP_NAMES surface lock.

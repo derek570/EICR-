@@ -272,7 +272,7 @@ client must CLEAR stale wording, not keep it** (obs-#52 Fix B). Row matching:
 
 | Frame | Shape | Notes |
 |---|---|---|
-| `voice_command_response` | `{understood, spoken_response, action\|null}` | Sonnet's `spoken_response`/`action` are STRIPPED from `extraction.result` and sent separately. Web plays `spoken_response` via the confirmation FIFO (deliberate divergence, low stakes). |
+| `voice_command_response` | `{understood, spoken_response, action\|null, utterance_id?}` | Sonnet's `spoken_response`/`action` are STRIPPED from `extraction.result` and sent separately. Web plays `spoken_response` via the confirmation FIFO with `{force:true}` since A1 (2026-07-23) — matching iOS's unconditional VCR speak; both clients still DISCARD `utterance_id` (PLAN-C owns decode). **A1: this frame now ALSO carries the model's `answer_user` spoken answers** (and the fixed failed-answer fallback) — staged in `perTurnWrites.answer`, projected as `result.spoken_response` by the bundler, emitted on the sync path + the P4d reconnect replay. Same shape, zero wire change; backend logs answer-sourced sends hashed, never raw (leak rule). |
 | `cancel_pending_tts` | `{prefix, sessionId}` | See §5 — the only frame whose whole point is client-side audio state. |
 | `cost_update` | `{sonnet:{turns,cacheReads,cacheWrites,input,output,compactions,cost}, deepgram:{minutes,cost}, elevenlabs:{characters,cost}, gptVision:{photos,inputTokens,outputTokens,cost}, totalJobCost}` | `cost-tracker.js toCostUpdate()`; sent after each extraction turn. |
 | `field_corrected` | `{circuit, field, previous_value\|null, reason\|null}` | Stage-6 `clear_reading`; emitted per-event AFTER the extraction envelope. |
@@ -307,8 +307,13 @@ call. Forward-decision order (memorise it before debugging "Sonnet ignored
 me"): gate-disabled → drained-retry → pending-ask → active dialogue script →
 `in_response_to` → regex hints → (empty text: block) → has-digit →
 observation-prefix (fuzzy "observation" incl. Deepgram garbles) → strong
-trigger (~20 domain words) → weak trigger (~75) → **block LOW_CONTENT**.
-Blocks emit `voice_latency.gate_blocked` to CloudWatch; UX is deliberate
+trigger (~20 domain words) → weak trigger (~75) → **A1 (2026-07-23): when the
+session's latched `VOICE_AGENTIC_ANSWERS` flag is on, forward
+`BORDERLINE_FORWARD` (`borderline:true`,
+`voice_latency.gate_borderline_forwarded`) — the model decides what the turn
+was; the server carries NO question word-lists, permanently. Flag off (or
+session absent — fail-closed): block LOW_CONTENT** as before.
+Blocks emit `voice_latency.gate_blocked` to CloudWatch; block UX is deliberate
 silence. Bare negations (`no`/`nope`/`nah`) forward (Option-B correction flow).
 
 **Chitchat pause — RETIRED 2026-07-17** (Derek). The `chitchat-pause.js` state

@@ -390,6 +390,20 @@ export const GATE_REASONS = Object.freeze({
   // (TNCS / TN-S / TT / PME / earthing). Forward at content threshold 1 so
   // a bare "It is TNCS." reaches the model and is WRITTEN + read back.
   HAS_EARTHING_SYSTEM: 'has_earthing_system',
+  // A1 agentic-voice (2026-07-23) — under the VOICE_AGENTIC_ANSWERS master
+  // flag, a would-be LOW_CONTENT block FORWARDS instead: every transcript
+  // the server receives corresponds to a client chime already fired
+  // (client gate PASS → chime → send), so a server-side content block is an
+  // un-nettable beep-then-silence — the block returns before runShadowHarness
+  // and the marker nets ever run. With borderline-forward, question detection
+  // is the MODEL's job (Derek's verbatim ask): the server stays list-free
+  // for questions permanently; the model answers via answer_user, no-ops
+  // chatter (marker-① apologises per the confirmation toggle), or writes an
+  // oddly-phrased reading. The gate's blocking economics also shifted: it
+  // was built against Sonnet-priced turns (~$0.027); the live model is
+  // Haiku 4.5 at ~1/10th with a cached prefix, and the measured server-side
+  // blocked volume is ~1 turn/month (Phase 0.3, 2026-07-23).
+  BORDERLINE_FORWARD: 'borderline_forward',
   LOW_CONTENT: 'low_content',
   FALLBACK_FORWARD: 'fallback',
   // Bypass reasons (always forward)
@@ -462,7 +476,15 @@ export const STANDALONE_NEGATION_PATTERN = /^\s*(no|nope|nah)[.!?]*\s*$/i;
  * @param {boolean} [opts.gateEnabled] Master switch. When false the gate is a
  *                  no-op (returns forward + reason 'bypass_flag_off'). Defaults
  *                  to true; production wiring reads VOICE_PRE_LLM_GATE.
- * @returns {{forward: boolean, reason: string, distinctContentWords?: number}}
+ * @param {boolean} [opts.agenticAnswersEnabled] A1 agentic-voice master flag
+ *                  (VOICE_AGENTIC_ANSWERS, latched per session). When true, a
+ *                  would-be LOW_CONTENT block FORWARDS as BORDERLINE_FORWARD
+ *                  with `borderline: true` — the model decides what the turn
+ *                  was. DEFAULTS TO FALSE (fail-closed): a session-absent turn
+ *                  keeps legacy LOW_CONTENT routing, never throws. EMPTY is
+ *                  unaffected — Phase 0.5 proved production clients cannot
+ *                  produce an ordinary-path EMPTY after a chime.
+ * @returns {{forward: boolean, reason: string, distinctContentWords?: number, borderline?: boolean}}
  */
 export function shouldForwardToSonnet(text, opts = {}) {
   const {
@@ -472,6 +494,7 @@ export function shouldForwardToSonnet(text, opts = {}) {
     inResponseTo = false,
     drainedRetry = false,
     gateEnabled = true,
+    agenticAnswersEnabled = false,
   } = opts;
 
   if (!gateEnabled) {
@@ -560,6 +583,20 @@ export function shouldForwardToSonnet(text, opts = {}) {
       forward: true,
       reason: GATE_REASONS.HAS_WEAK_TRIGGER,
       distinctContentWords: distinctContent.size,
+    };
+  }
+  // A1 agentic-voice — borderline-forward. The terminal LOW_CONTENT drop
+  // becomes a FORWARD when the session's master flag is on: the model (not a
+  // server word-list) decides whether the turn was a question, an
+  // oddly-phrased reading, or chatter. `borderline: true` lets the call site
+  // log voice_latency.gate_borderline_forwarded without inferring from the
+  // reason string.
+  if (agenticAnswersEnabled === true) {
+    return {
+      forward: true,
+      reason: GATE_REASONS.BORDERLINE_FORWARD,
+      distinctContentWords: distinctContent.size,
+      borderline: true,
     };
   }
   return {

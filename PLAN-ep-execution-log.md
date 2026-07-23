@@ -1,131 +1,71 @@
-# /ep execution log — PLAN-final.md (ring-script-hardening-2026-07-22)
+# /ep execution log — PLAN-final.md (agentic-voice-2026-07-22)
 
-- Session: `20260722T131327Z-ep`
-- Worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260722T131327Z-ep`
-- Branch: `ep/PLAN-ring-script-hardening-20260722T131327Z-ep`
-- Base: `main` @ `fc9059ea` (origin/main, fetched at claim time)
-- Plan: converged clean at /rp round 17 (0 findings both reviewers); no "Skipped (ambiguous fix)" entries.
-- Plan-size check: ONE feature group (ring-continuity dialogue script), 5 fixes + gates — under the split heuristic. No `[PLAN-SIZE]` warning needed.
+- Session: `20260723T061228Z-ep`
+- Worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260723T061228Z-ep`
+- Branch: `ep/PLAN-agentic-voice-20260723T061228Z-ep` off `main` @ `32d4e6ed`
+- Plan: A1 — Agentic voice: `answer_user` tool + server-gate LLM handoff (backend + one web commit; zero iOS change)
 
-## Step log
+## Notes at start
+- Plan converged after 8 /rp rounds (final round NIT-only). Refine log shows zero skipped-ambiguous regions.
+- [PLAN-SIZE] Plan is one feature-group (agentic answers) with ~7 coupled items — below the split heuristic; no warning needed beyond this note.
+- Phase 0.6 is an explicit Derek-approval gate written INTO the plan ("/ep treats this as a gate — surfaces, doesn't guess"). Derek is present at session start (he un-interrupted the run manually), so the appendix will be surfaced interactively as this run's single interactive moment, bundled with the PR-2 flip-timing decision. Logged as a sanctioned plan-mandated interaction, not an ambiguity-ladder violation.
 
-## Step 1 — Phase 0: anchors, wire surfaces, replay-capture existence
+## Phase 0 — findings (all six items)
 - Status: applied
-- Decision: rule 1 (verbatim). Every plan anchor verified against the worktree:
-  - `engine.js:307` RCD-only gate + `:350-356` two-pattern exclusion; `:1147-1194` 4-way confirm branch; `:1017` cancel; `:1057` detectDifferentEntry; `:1082` topic switch; `:903` last_turn_at reset; `:99-144` broadcast pre-filter; `:2067` transitionToConfirmation; NEGATIVE_RE `:362`.
-  - `schemas/ring-continuity.js:88` trigger (bring|wing present, no re-?continuity), `:94` bare cancel, `:97-120` topic switch, `:135-139` detectPositive (matches anywhere).
-  - `sonnet-stream.js`: `transcriptText = msg.text` then `in_response_to` annotation (~:3665-3713); script-outcome transcriptText adoption on fallthrough (~:3771-3773); ring/IR timeout server notes (~:3849/:3874); `srv-` answer routing → transcript path (~:1397-1454).
-  - Wire surfaces for the delete contract: `dispatchClearReading` pushes `perTurnWrites.cleared` + `perTurnWrites.fieldCorrections` → `result.field_corrections` (read at sonnet-stream.js:4440); `result.cleared_readings` stripped at shadow-harness:1481; `field_cleared` dedupe-token kind `clear_<field>_<circuit>_<turnId>_ordN` (ios-dedupe-key.js); confirmations synthesised in `synthesiseObservationAndClearedConfirmations` (bundler).
-  - `detectStructuredReading` at `stage6-pending-value.js:361` (`.complete` semantics confirmed); `hasNumericValueWithUnit` engine-local.
-  - Distinctness families: `NOOP_AUDIBILITY_PROMPTS` / `CATCHALL_AUDIBILITY_PROMPTS` / `ASK_AUDIBILITY_FALLBACK_TEXT` (shadow-harness:341-374+), F/U-2/3 real-dispatcher notice sweep, `CLIENT_CHIME_WATCHDOG_FALLBACK_TEXT` — all pinned in `client-watchdog-fallback.test.js`.
-- **Replay capture of B4C45F25: DOES NOT EXIST** — `tests/fixtures/field-replay-corpus/` holds 5 `frc_*` fixtures, none from B4C45F25; zero repo references to the session id. Per plan: NO new fixture authored; `npm run replay:field-corpus` runs as existing-corpus non-regression gate only; vault follow-up todo to extend the corpus boundary to dialogue ingress.
-- Existing-test compatibility check: no test pins the old keep-state confirmation-idle behaviour (`confirmation_idle` appears in no test); amend/positive/topic-switch pins remain valid under the new canonical order.
-- Files: none (read-only)
-- Commit: none
+- **0.1 (VCR speak paths):** re-confirmed the plan's citations — iOS `handleVoiceCommandResponse` (`DeepgramRecordingViewModel.swift:9852`) speaks `spokenResponse` unconditionally via `registerTTSFingerprint` + `alertManager.speakBriefConfirmation(:9888-9890)`; web decodes at `sonnet-session.ts:1951-1957` → `recording-context.tsx:2929-2931` `speakConfirmation(...)` WITHOUT force (the companion-commit site).
+- **0.2 (client answer-loss envelope — documented bounded limitations, all ask-collision/burst class, NO common-path permanent drop):**
+  - iOS: `speakBriefConfirmation` while `AlertManager.isAwaitingResponse` **DROPS the answer** (not deferred) with `keyReservation?.onDiscarded()` (`AlertManager.swift:1416-1424`). VCR calls pass no slotKey/reservation → serial FIFO otherwise; no text-keyed dedupe on the VCR path (`registerTTSFingerprint` is STT echo-suppression only) → identical answers queue independently.
+  - Web: confirmation FIFO `MAX_QUEUE_DEPTH = 6` drop-oldest (`tts-queue.ts:108,160-174`); direct asks `preemptFlush()` discard queued items (with synchronous `onDiscarded` un-record); `speakConfirmation` called without `dedupeKey` on the VCR path → no dedupe. Muted when confirmation toggle OFF (`tts.ts:971-978`) — fixed by the companion `{force:true}`.
+  - Verdict per plan: delays are fine; the permanent drops are ask-collision (iOS awaiting-response drop; web preemptFlush) and depth-6 burst overflow — documented as dated bounded limitations on the ledger row; A2 client-wave requirements if field use shows they bite. Not a common-path drop → no pre-merge escalation required.
+- **0.3 (borderline-set measurement):** CloudWatch Insights, `/ecs/eicr/eicr-backend`, 30 days: **exactly 1 server-side `voice_latency.gate_blocked` row** (reason `low_content`, text "Debug."). ~20 other matches were CLIENT-side gate blocks relayed via client_log/diagnostics (iOS TranscriptGate + web `transcript_gate_blocked` — includes question/correction-shaped text like "No. That's not what I wanted.", garbled identity "Custer is Michael Hayden.") — those never reach the server and are follow-up A2's set. Server borderline-forward volume ≈ 1 turn/month.
+- **0.4 (cost estimate):** 1 blocked turn/30d × (Haiku 4.5 cached-prefix turn ≈ $0.002-0.005 + ~150 TTS chars ≈ $0.0075 + occasional inspect round ≈ +30-50% tokens) → **< $0.02/month** at current volume; even 100× post-A2 growth stays ~$1-2/month. NO cost surprise → Resolved decision 2 contingency satisfied; flag-ON-at-ship stands.
+- **0.5 (EMPTY-after-chime proof):** web `transcript-gate.ts:291` `if (trimmed.length === 0) return false` — empty never passes the client gate, so never chimes, never sends. iOS `TranscriptGate.shouldForward` (`DeepgramRecordingViewModel.swift:76`) `if trimmed.isEmpty { return false }` — same, and this check predates all current builds. Bypass paths (pending-ask/inResponseTo/regex-hit) forward BEFORE the empty check on both clients AND on the server gate — precedence preserved. Ordinary-path EMPTY-after-chime is unreachable from production clients → EMPTY stays blocked, no audible fallback needed.
+- **0.6 (completeness-policy appendix):** derived from `bs7671-domain-reference` canon + `field_schema.json`; committed at `docs/reference/inspect-session-state-policy.md`. 18 REQUIRED_BASE keys, 3 conditional groups (ring / RCD-protected / distribution), spare-way exemption, LIM/N/A-satisfy-requiredness semantics, 4 immutable scope shapes, 4096-byte cap, is_error matrix. Surfaced to Derek for approval (below).
 
-## Steps 2–6 — Fixes 1–5 implemented
+## Derek gate (interactive, ~07:20) — BOTH APPROVED
 - Status: applied
-- Decision: rule 1 (all specs executed as written; one rule-2 note below).
-- Commits:
-  - `64e02db5` fix(dialogue): engine + schemas + sonnet-stream — entry guard (Fix 1), canonical confirmation order 0–5h (Fix 2+3), raw-reply contract (Fix 4), purge contract.
-  - `79648ef2` fix(dialogue): legacy twin mirror (Fix 5) incl. Pattern-1 `bring|wing` + `re-?continuity` widening (deliberate, noted in commit body per plan).
-- `[ASSUMED]` (rule 2, minor): the plan's "non-ring adjacency" rejection ("size|csa|mm|conductor|cable adjacent to the anchor") implemented as a ±20-char proximity window between ring anchors and the non-ring nouns (both directions) — the plan named the signal but not the window; a whole-reply check would over-reject valid amendments ("…earths are 1.19, cable is fine").
-- `[ASSUMED]` (rule 2, minor): "immediately preceded (within the same clause) by not|no|never" for negation polarity implemented as whitespace-only adjacency (a comma breaks the clause) so a leading "No, circuit 17 …" does NOT negate 17 — required for the correction flow to still route.
-- The server note is composed in the engine with the plan's exact FIXED text (ring-specific wording; only fires for schemas supplying confirmationClearIntentPattern, i.e. ring).
+- Q1 appendix: **Approve as written** → Item 1b implemented against it verbatim.
+- Q2 PR-2 flip: **Merge PR 2 too** — after PR 1's deploy + verification gate passes, /ep merges the `VOICE_AGENTIC_ANSWERS=true` flip; Derek runs the ear-verified probes at his convenience; rollback = one task-def commit.
 
-## Step 7 — Tests: pinned suite + replay parity + distinctness
-- Status: applied
-- Commits: `d359d197` (75-test ring-confirmation suite + 6 replay byte-parity scenarios + distinctness extension), `a4a2640e` (legacy off-topic-chatter pin updated to the 5h clear contract — the old pin asserted exactly the R3 immortal-state bug this plan fixes).
-- Note: two pinned exemplars use "Zs on circuit 17 is 0.62" instead of the plan's comma phrasing — the comma form "circuit 17, 0.62" is claimed by the PRE-EXISTING broadcast pre-filter comma-list regex (`circuit 17, 0`) before the confirmation branch; net effect identical (cleared, purged, reaches the model, never seeds) and a dedicated test documents that path. Not a deviation from plan substance — the plan's requirement (never seed, never amend, never count, reach the model) holds on both phrasings.
+## Implementation steps (Items 1/1b/2/3/4/5 + web companion + tests + docs)
+- Status: applied (all)
+- Commits (branch `ep/PLAN-agentic-voice-20260723T061228Z-ep`):
+  - `02d4fb39` docs(a1): Phase 0.6 appendix
+  - `b2c2407f` feat(a1): tools + dispatchers + projector + snapshot-user-text extraction + marker-net integration + bundler projection
+  - `7b60dd62` feat(a1): master flag — conditional prompt render, gate borderline-forward, leak-rule telemetry + VCR-log leak fix
+  - `5046ca0f` feat(a1-web): `{force:true}` VCR force-speak + harness VCR mock-frames + RED-proven toggle-OFF scenario + decode contract test
+  - `de457e32` test(a1): 3 new suites (61 tests) + updated pins (16→18, composer-with-null-asks, flag-off suite pins, rendered-prompt token caps) + task-def dark pin + replay-environment classification
+  - `0a4e2bfe` docs(a1): architecture/changelog/hub/wire-skill/ledger(+files-map)
+  - `bc5c3220` chore(a1): lint cleanup
+- [ASSUMED] step "answers stage into a turn-local accumulator slot" — implemented as `perTurnWrites.answer` (the plan's own suggestion `perTurnWrites.answerText` generalised to the full turnAnswerState object the Item-4 finalization needs; single obviously-correct interpretation).
+- [ASSUMED] pre-existing test conflicts resolved per intent, not letter: the 2 legacy prompt-selection suites pinned to flag-OFF via suite-level env pin (they are the byte-identity pins); the agentic-prompt token caps re-pointed at the RENDERED flag-on prompt (the raw .md now carries both variants and is no longer model-visible); phase3's no-pendingAsks pins updated to composer-with-null-asks (behaviour-preserving for ask_user, required so the new tools always have a route).
+- Notable incident: **disk hit ENOSPC mid-run** (npm ci filled the volume; even Bash output files failed). Recovered via codex-cli (rm partial node_modules + npm cache clean; ~2 GB freed), then reused the MAIN checkout's node_modules via symlinks into the worktree instead of a duplicate install (my diff touches no packages/shared-*; runtime resolution identical). **Derek should know the dev Mac has < 2.5 GB free.** Also: the repo tracks `packages/shared-types/node_modules` as a committed ABSOLUTE-path symlink (pre-existing oddity, restored untouched).
 
-## Step 8 — Two-layer delete integration contract (decision-gate criterion 2)
-- Status: applied
-- Commit: `3dc96f89` — (a) real sonnet-stream ingress spy: exact server note + annotation replacement + untouched raw suffix; entry-path no-note; (b) real runShadowHarness + canned 3× clear_reading: 3 field_corrections (ring_continuity_* wire names), 3 token-distinct field_cleared confirmations, 3 ok stage6_tool_call rows, snapshot fields absent, no apology.
-- Phase-0 wire-name verification (plan requirement): result surface confirmed as `field_corrections` (cleared_readings stripped at harness:1481) + `field: 'field_cleared'` confirmations with `clear_*` dedupe tokens.
+## Gates at implementation end
+- Backend Jest: **5716 passed, 0 failed** (2 suites/19 tests skipped — pre-existing).
+- Web vitest: **1430 passed** (1 pre-existing skip).
+- Field-replay corpus (recorded lane, flag pinned 'false'): **5/5 pass** — the wire byte-parity check for the dark state.
+- Prompt byte-identity: `renderAgenticSystemPrompt(false)` === `git show main:config/prompts/sonnet_agentic_system.md` — **BYTE-IDENTICAL** (verified live).
+- Web-companion RED-proof: toggle-OFF scenario FAILS with `{force:true}` reverted, green with it (verified live).
+- ESLint: 0 errors (16 warnings, all but one pre-existing; the one new warning fixed in `bc5c3220`).
+- Web tsc: 17 errors — IDENTICAL to main baseline, none in changed files (zero new).
 
-## Step 9 — Live-model probes (decision-gate criterion 3): BOTH PASS
-- Status: applied
-- Probe A (delete-at-entry, no note): real EICRExtractionSession + real agentic prompt via runShadowHarness live mode → model issued EXACTLY 3 clear_reading calls; snapshot ring fields gone; 3 spoken "cleared" confirmations; no questions. PASS.
-- Probe B (delete-at-confirm, server note + "No. Please delete them all."): same contract → 3 clears, fields gone, spoken confirmations. PASS.
-- No STOP condition triggered; the fallthrough+server-note design is confirmed live.
+## Codex diff review (gpt-5.6-sol high, read-only, worktree access)
+- **Cycle 1 (parallel 3-lens: wire-contract / silent-path / edge-interaction):** 14 findings → 10 unique. APPLIED in-scope (commit `0bc34cd2`): answer_source token unification ('answer_user' only; fallback → answer_meta), sync OPEN-socket emission requeue wrapper (all three lenses converged on the same hole in the plan's "buffering covers send failures" claim), shared redacted answer telemetry on sync + reconnect paths, marker-aware field truncation, field/circuit pairing validation, stale-currentBoardId verification, shadow-wrapper certType+flag copy. ADJUDICATED-NOT-APPLIED: (a) mixed-turn one-utterance semantics + name-guard exclusions — the reviewer proposed per-intent audibility tracking, which CONTRADICTS the plan's explicit Derek-ratified pins ("answer + suppressed ask → one VCR answer, zero F7 apologies"; context §2: "Reviewers should not push scope back in") — recorded as a Codex DISSENT for Derek, see below; (b) confirmation-OFF zero-tool-question silence — the plan's own Item-3.5 documented residual (A2 owns it); (c) post-stream/pre-dispatch cancellation micro-window (featureTouched unset) — documented bounded residual, equals pre-existing opt-out silence, SDK abort kills mid-stream generations so the window is post-stream-only; (d) getMainBoardId legacy ordering — pre-existing shared-helper semantics → vault follow-up.
+- **Mini-review of cycle-1 fix hunks:** 1 BLOCKER + 3 IMPORTANT. APPLIED (commit `e93f22bc`): M1 readyState re-check before the audible VCR send (bare ws.send silently no-ops on CLOSING — a phantom "delivered"); M2 needsVcr/audibleVcrDelivered split (the wrapper had introduced a NEW loss class: no-VCR turns dropped the whole result on an extraction-send throw). ADJUDICATED: M3 requeue idempotency = the established P4d contract; M4 inner-catch swallowing = pre-existing sync-path behaviour → residual.
+- **Cycle 2:** 3 BLOCKERs. APPLIED (commit `95bfaee6`): F2 UTF-8 byte-cap enforcement (emoji repro proved 4,545-byte "capped" results; new byte-accurate stages 4-6 + appendix §4 amended); F3 certType case bug (web sends UPPERCASE 'EIC' → summary reported EICR; raw pass-through, projector single normalisation point). ADJUDICATED: F1 job-state seeder ingestion gaps (rcd_button_confirmed/installation_details never seeded → inspect truthfully-per-session reports unrecorded) — PRE-EXISTING F/U-4/F/U-5-lineage; a schema-driven seeder rewrite is its own /rp wave → vault follow-up.
+- **Cycle 3:** 1 IMPORTANT + 2 NITs, ALL APPLIED (commit `a999d971`): measured stage-6 overflow shape (unbounded board_id could breach the cap inside the fallback itself); EXACT canonical RCD predicate ('BS EN 61009' equality per the appendix); the missed plan-Item-5 record — dated OWNED accepted-exposure note on the ledger row + vault todos (joint answer/ask client-logging redaction sweep; seeder gaps; getMainBoardId audit; A2 fast-follow; PR-2 probe checklist).
+- **Cycle 4: CLEAN — 0 BLOCKER / 0 IMPORTANT, 2 NITs** (applied once per policy, commit follows): per-scope inspect argument resolution (summary ignores irrelevant args) + circuit advertised as integer-or-digit-string. **VERDICT: PASSED.** Trajectory: 10 → (4 fix-hunk) → 3 → 3 → 0.
+- Re-gate after EVERY fix cycle: full backend Jest green each time (5720 → 5722 → 5724 → 5725), corpus 5/5, web 1430.
+- **Codex DISSENT recorded for Derek (not applied — contradicts ratified plan pins):** the reviewer holds that a mixed turn (e.g. rejected write + successful answer) should speak BOTH the answer AND a failure indication, i.e. per-intent audibility instead of the plan's one-utterance-per-turn stance. The plan (8 /rp rounds, two reviewers, Derek walkthrough) deliberately chose one utterance + name-guard exclusions to kill double-speak. If field use shows failed intents being masked by answers, this is A2-cycle material.
 
-## Step 10 — Docs + vault follow-ups
-- Status: applied
-- Commit: `b4499d4e` — architecture.md entry-guard rewritten (per-schema opt-in) + confirmation-machine + purge-contract summary; changelog.md full row; hub CLAUDE.md one-line row.
-- Vault todos added to `obsidian-vault/active/todos-certmate.md`: (1) corpus-boundary extension to dialogue ingress (B4C45F25 class not fixture-lockable; no replayable capture exists); (2) iOS queued-alert tool-call IDs + prefix purge riding the P2/P7 TestFlight wave (accepted purge residual).
-
-## Step 11 — Gates
-- Status: applied (one environment-blocked sub-gate, evidence below)
-- Full backend Jest: **5630 passed / 19 skipped / 0 failed** (exit 0). Includes: RCD entry-guard suite UNCHANGED green; marker-①/② net suites UNCHANGED green (nets not modified); replay byte-parity suite green incl. the 6 new P1 scenarios; the new 75-test ring-confirmation suite; both delete-contract integration suites.
-- Field-replay corpus (recorded lane, non-regression): **5/5 fixtures green** (exit 0). No new fixture authored per Phase-0 (no B4C45F25 capture exists; corpus boundary cannot reach dialogue ingress).
-- `npm run voice-regression`: **ENVIRONMENT-BLOCKED, PRE-EXISTING** — the harness hangs on this dev box with ZERO network activity: full baseline run in the worktree (60+ min elapsed, 5.7s CPU, 0 TCP conns), AND an identical hang reproduced with a SINGLE scenario on PRISTINE main (7+ min, 0.01s CPU, 0 TCP). A gate that hangs identically on the unmodified base cannot gate this diff. Killed both processes. Surfaced for the morning: investigate the legacy voice-latency harness on this box (possibly needs a local backend or interactive env the direct runner no longer sets up).
-- Pre-existing note: the sonnet-stream-extraction-watchdog suite hangs when run STANDALONE on pristine main too (fine inside the full `npm test` run, which is the canonical gate) — not introduced by this branch; my new ingress suite exits cleanly standalone (disconnectTimer + ping-interval teardown included).
-- Jest "worker failed to exit gracefully" warning appears in the full run (exit 0) — attributable to the pre-existing watchdog-suite handle leak above, not the new suites.
-
-## Codex diff review (default ON; gpt-5.6-sol, high effort, read-only)
-
-**Verdict: PASSED at cycle 5 (clean — zero findings).** Finding counts: cycle 1 (three parallel lenses, merged) = 4 BLOCKER + 2 IMPORTANT; mini-review 1 = 3 BLOCKER; cycle 2 = 0 BLOCKER + 2 IMPORTANT; mini-review 2 = 4 BLOCKER; cycle 3 = 1 IMPORTANT; cycle 4 = 1 IMPORTANT; cycle 5 = 0. Converging throughout; cap 10 never approached.
-
-### [DEVIATION] entries (both ship; Codex-sanctioned WITHIN_INTENT)
-1. **Cross-wrapper entry-guard veto** (`session.dialogueEntryGuardVeto`, raw-reply-keyed, 5s window; armed on entry-guard skips, the position-1 delete exit, the guarded destructive fallthroughs, and destructive topic-switch exits from a confirmation). Plan said: ring-only entry guard, sonnet-stream raw-reply plumbing only. Codex cycle-1 lens C showed a multi-scope destructive request ("delete the ring continuity and insulation resistance readings for circuit 13") was guard-skipped by ring only to be hijacked by the IR wrapper's unguarded trigger — the delete never reached the model. intent_evidence: **"BOTH the delete failure and the repeated-question loop are in scope, not just one."** (conversation-context §2). Engine-only, zero wire change; pinned by three tests.
-2. **Polarity-aware 5f correction-cue veto** (`isVetoedPositive`: bounded cue list wrong/incorrect/except/mistake/apart-from/needs-changing + predicate-bound cannot + emptiness-quantifier exemption). Plan pinned only the negated-positive guard; Codex cycle-2 showed "Okay, R1 is wrong" / "All good except R2" false-finish (positive token in an earlier clause). Sanctioned WITHIN_INTENT by cycle-2's verdict (the correction loop is the feedback-91 scope). Six correction pins + three genuine-confirm pins.
-
-### Applied in-scope fixes (commits)
-- `39bcfafe` r1: negated-positive clause-bounded widening; ringSafe.rejected hoisted before 5a (trigger-bearing non-ring corruption class); confirmation-only false comma-LIST pre-filter exemption ("Zs on circuit 17, 0.62" now genuinely reaches 5h per the plan's pinned exemplar); hard-timeout purge scoped to confirmation-bearing schemas; twin entry guard + delete-at-entry replay scenario; vacuous recontinuous pin fixed; bare-"No." ingress net-unreachability test; docs corrected (5630 count, zero-NEW-wire-SHAPE wording, AGENTS.md row).
-- `c87e8753` mini-r1: smart-apostrophe + ASR-stripped auxiliary negations (enumerated, no bare `nt\b`); veto re-keyed to the RAW reply (stable across wrappers after the note replaces transcriptText) + armed on the active-confirmation destructive exits incl. destructive topic-switch.
-- `fbf24e33` r2: 5f correction-cue veto (deviation 2) + twin position-0 broadcast pre-filter mirror + replay pin (non-destructive broadcast never becomes a single-circuit amend on either path).
-- `31993b86` mini-r2: polarity-aware cue machinery (cannot predicate-bound; nothing/none/anything exemption); twin pre-filter moved BEFORE its hard-timeout sweep (engine control order).
-- `25668d32` r3: non-ring adjacency window 20→30 (extractor span).
-- `cc07bf5d` r4: adjacency filler crosses digit-bounded decimals ("CPC is 2.5 mm2").
-
-### Adjudicated as pre-existing / out of diff (with evidence; Codex accepted from cycle 2 onward)
-- Board-scope asymmetry of dialogue-engine writes (`applyWrite` flat vs board-aware reads): pre-exists P1 for EVERY ring write incl. the old circuit-switch recursion the 5a seed replaces. **Vault follow-up added.**
-- pd-family within-call ordering (OCPD trigger before RCD's guard): pre-existing; the plan preserves RCD's `continue` semantics verbatim.
-- Free-text correction phrasings outside the bounded cue list: pre-P1-baseline retained deliberately (broad verbs would false-veto genuine confirms).
-- Legacy twin emits no cancel_pending_tts frames: pre-existing engine-only convention; raw frame ordering pinned in dedicated tests.
-
-### Re-gate results per cycle
-Every fix cycle re-ran the FULL backend suite green: 5645 → 5646 → 5652 → 5653 → 5655 passed, 0 failed. Corpus 5/5 re-verified after cycle 1.
-
-## Completed 2026-07-22T17:20:00Z (pre-merge; deploy annotations appended below after CI)
-
-**Outcome: ALL PASSED (plan-deviation: 2 applied within original intent)**
-
-### Plan deviations (READ FIRST — the plan was amended overnight)
-1. **Cross-wrapper entry-guard veto** — the written plan guarded only ring entry; a multi-scope destructive request would still have been hijacked by the next wrapper's unguarded schema. Codex verdict WITHIN_INTENT, evidence: *"BOTH the delete failure and the repeated-question loop are in scope, not just one."*
-2. **5f correction-cue veto** — the written plan's negated-positive guard missed positive-then-correction replies ("Okay, R1 is wrong"); Codex sanctioned the bounded polarity-aware cue veto as WITHIN_INTENT (the feedback-91 correction loop).
-
-### Commits (worktree branch `ep/PLAN-ring-script-hardening-20260722T131327Z-ep`)
-- 64e02db5 fix(dialogue): ring-script hardening — entry guard, canonical confirmation order, raw-reply contract
-- 79648ef2 fix(dialogue): legacy twin mirror + trigger widening
-- d359d197 test(dialogue): 75-case pinned suite + replay parity + distinctness
-- 3dc96f89 test(dialogue): two-layer delete integration contract
-- a4a2640e test(dialogue): legacy off-topic-chatter pin → position-5h contract
-- b4499d4e docs: architecture entry-guard rewrite + changelog rows
-- 39bcfafe, c87e8753, fbf24e33, 31993b86, 25668d32, cc07bf5d — Codex review fixes (see the review section)
-
-### Files touched
-src/extraction/dialogue-engine/engine.js; schemas/ring-continuity.js; schemas/rcd.js; src/extraction/sonnet-stream.js; src/extraction/ring-continuity-script.js; 5 test files (2 new); docs/reference/architecture.md; docs/reference/changelog.md; CLAUDE.md; AGENTS.md.
-
-### Assumed decisions ([ASSUMED])
-- Non-ring adjacency implemented as a proximity window (now 30 chars, decimal-permeable) rather than an unspecified "adjacent" — refined twice under Codex review.
-- Negation polarity "immediately preceded" = whitespace-only adjacency (a comma breaks the clause) so "No, circuit 17 …" still routes.
-- Two 5h pinned exemplars documented against the broadcast pre-filter reality; the confirmation-only false-comma-list exemption restores the plan's exact exemplar routing.
-
-### Skipped / blocked / failed steps
-- None. (One plan GATE — `npm run voice-regression` — is ENVIRONMENT-BLOCKED: the harness hangs identically on unmodified main with zero network I/O; evidence in Step 11. Surfaced for investigation; not a step of the plan's fix spec and not a regression signal for this diff.)
-
-### Stashes left behind
-- None.
-
-### Tests run + result
-- Full backend Jest: **5655 passed / 19 skipped / 0 failed** (final re-gate; suite grew 5629→5655 over the run).
-- Field-replay corpus (recorded): **5/5** (non-regression gate; no B4C45F25 capture exists — Phase-0 finding).
-- Live-model probes (decision-gate criterion 3): **A (delete-at-entry) PASS; B (delete-at-confirm) PASS** — 3× clear_reading, snapshot cleared, spoken confirmations, no dead-end.
-- RCD entry-guard suite: green UNCHANGED. marker-①/② net suites: green UNCHANGED.
-- Replay byte-parity: green incl. 9 new P1 scenarios.
-
-### Follow-ups recorded (vault todos-certmate.md)
-- Corpus-boundary extension to dialogue-engine ingress (incident class not fixture-lockable; no capture exists).
-- iOS queued-alert tool-call IDs + prefix purge (P2/P7 TestFlight wave; accepted purge residual).
-- ALSO surfaced in the morning summary: voice-regression harness hang on the dev box (pre-existing); board-scope asymmetry of dialogue-engine writes (pre-existing).
+## Completed 2026-07-23T (see git for exact timestamp)
+- **Outcome header: ALL PASSED** — every plan step applied (zero skipped/blocked/failed; the ONE plan-mandated interactive gate — Phase 0.6 appendix + PR-2 timing — was answered live by Derek, both approved), full suites green, Codex diff review PASSED (4 cycles + 1 fix-hunk mini-review, converged to clean).
+- **Commits:** `02d4fb39` appendix · `b2c2407f` tools/dispatchers/nets · `7b60dd62` flag/prompt/gate/telemetry · `5046ca0f` web companion + harness · `de457e32` tests + drift guards + task-def dark pin · `0a4e2bfe` docs gate · `bc5c3220` lint · `0bc34cd2` Codex r1 fixes · `e93f22bc` mini-review M1+M2 · `95bfaee6` r2 fixes · `a999d971` r3 fixes · (r4 NITs) · + this log.
+- **Files touched:** src/extraction/{stage6-tool-schemas, stage6-dispatchers-answer (new), stage6-inspect-projector (new), stage6-snapshot-user-text (new), stage6-dispatchers, stage6-shadow-harness, stage6-event-bundler, stage6-per-turn-writes, stage6-prompt-leak-filter, pre-llm-gate, sonnet-stream, eicr-extraction-session}.js · config/prompts/sonnet_agentic_system.md · ecs/task-def-backend.json · scripts/field-replay/replay-environment.mjs · web/src/lib/recording-context.tsx · web/tests/harness/{scenario,runner,fake-services} · web/tests/a1-vcr-answer-contract.test.ts · tests/fixtures/pwa-replay-sessions/a1-vcr-answer-toggle-off.yaml · docs/reference/{architecture,changelog,inspect-session-state-policy}.md · CLAUDE.md · .claude/skills/certmate-voice-wire-protocol/SKILL.md · web/docs/parity-ledger{.md,-files.json} · 6 test suites updated + 3 new · vault todos-certmate.md (follow-ups).
+- **Plan deviations: NONE** (zero sanctioned WITHIN_INTENT deviations; every Codex OUT_OF_SCOPE finding was adjudicated as either a plan-conformant deliberate pin, a pre-existing-behaviour follow-up, or a documented residual — all listed above and in the vault todos).
+- **Assumed decisions:** perTurnWrites.answer as the turn-local slot (plan's own suggestion generalised); legacy test conflicts resolved per intent (flag-off suite pins; rendered-prompt token caps; composer-with-null-asks pins).
+- **Stashes left behind:** none. Worktree cleaned after merge.
+- **Tests:** backend 5725 passed / 0 failed (19 pre-existing skips) · web 1430 passed · field-replay corpus 5/5 · prompt flag-off render BYTE-IDENTICAL to pre-A1 · web-companion RED-proof verified live · lint 0 errors · web tsc = main baseline.
+- **Incidents:** disk ENOSPC mid-run (recovered via codex-cli cleanup + node_modules symlink reuse — **dev Mac has <2.5 GB free, Derek should clear space**); `packages/shared-types/node_modules` is a committed absolute-path symlink (pre-existing oddity, left untouched).
+- **Deploy record:** appended below after the merges (PR 1 dark → CI deploy → PR-2 flip per Derek's approval).
