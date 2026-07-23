@@ -66,6 +66,8 @@ import {
 } from './stage6-multi-board-shape.js';
 import {
   isWithinRange,
+  validateNumericReadingValue,
+  canonicaliseNumericReadingField,
   CIRCUIT_FIELD_NUMERIC_RANGES,
   BOARD_FIELD_NUMERIC_RANGES,
 } from './value-enum-validator.js';
@@ -221,7 +223,21 @@ export function validateRecordReading(input, snapshot) {
   // text field per the schema (no `options[]`), so allowed===undefined
   // and the closed-enum gate falls through. The range gate is the only
   // line of defence for "Sonnet wrote 3000 ms for a 30 mA AC RCD".
-  const rangeVerdict = isWithinRange(input.field, input.value, CIRCUIT_FIELD_NUMERIC_RANGES);
+  //
+  // P3 (2026-07-23, feedback id 86) — widened from isWithinRange (six ranged
+  // fields only) to validateNumericReadingValue over the WHOLE
+  // NUMERIC_READING_FIELDS set. For a ranged field it delegates to isWithinRange
+  // (identical bounds + the new canonical-LIM acceptance); for an UNGATED
+  // numeric reading field (r1_r2_ohm, r2_ohm, ring legs, ocpd_max_zs_ohm, IR
+  // mohm) it rejects any non-numeric string that is not a recognised
+  // sentinel / off-scale form / canonical LIM — closing the hole where a
+  // near-match garble (`r1_r2_ohm="limited"`) the coercion left unchanged would
+  // persist verbatim. The field name is alias-normalised first so a
+  // dialogue-seeded `rcd_trip_time` is checked against canonical `rcd_time_ms`.
+  const rangeVerdict = validateNumericReadingValue(
+    canonicaliseNumericReadingField(input.field),
+    input.value
+  );
   if (!rangeVerdict.ok) {
     return {
       code: rangeVerdict.code,

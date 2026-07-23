@@ -53,6 +53,7 @@
  */
 
 import { parseBsCode } from './dialogue-engine/parsers/bs-code.js';
+import { NUMERIC_READING_FIELDS, isLimForm } from './value-enum-validator.js';
 
 // Fields whose value is coerced to the {Y, N, OK} subset of the schema
 // enum. Every member's options array shares the shape ["", "OK", "Y", "N", ...].
@@ -72,16 +73,21 @@ const YN_BOOLEAN_FIELDS = new Set([
 ]);
 const BS_EN_FIELDS = new Set(['ocpd_bs_en', 'rcd_bs_en']);
 
-// Insulation-resistance reading fields (circuit side). "LIM" (limitation —
-// test could not be performed) is a valid value for these; Deepgram garbles
-// spoken "LIM" as lim/limb/limp/limit(ation|ed)/lynn/lym. Coerce all to the
-// canonical "LIM" so a Sonnet record_reading / streamed speculation value of
-// "limitation" stores canonically rather than bypassing the dialogue-engine
-// parser's IR canonicalisation (F1AC26FB 2026-06-16; repeat of 2026-02-18 /
-// 2026-06-08 requests). Word-anchored matcher kept byte-aligned with
-// parseMegaohms() in dialogue-engine/parsers/megaohms.js.
-const IR_MOHM_FIELDS = new Set(['ir_live_live_mohm', 'ir_live_earth_mohm']);
-const IR_LIM_RE = /\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i;
+// P3 (2026-07-23, feedback id 86) — "LIM" (limitation: the inspector could not
+// obtain a reading) is a valid value for EVERY numeric READING field, not just
+// the two IR mohm fields. Deepgram garbles spoken "LIM" as lim/limb/limp/
+// limitation; coerce ONLY those four canonical forms to "LIM" so a Sonnet
+// record_reading / streamed speculation value of "limitation" stores
+// canonically. The near-matches limit/limited/lynn/lym are DELIBERATELY NOT
+// coerced (they are common non-limitation words / far garbles): left
+// unchanged, the post-coercion validateNumericReadingValue rejects them.
+//
+// The field set + the exact four-form matcher (LIM_FORM_RE / isLimForm) live in
+// value-enum-validator.js as the single source of truth — the same matcher the
+// dialogue-slot parsers and answer/routing matchers use. This SUPERSEDES the
+// old IR-only broad matcher (F1AC26FB 2026-06-16; repeat of 2026-02-18 /
+// 2026-06-08 requests), which accepted limit/limited/lynn/lym and thus violated
+// the exact-four-form policy on the ungated IR fields.
 
 const YN_TRUE_ALIASES = new Set([
   'true',
@@ -198,10 +204,12 @@ export function coerceRecordReadingValue(field, value) {
     return value;
   }
 
-  if (IR_MOHM_FIELDS.has(field)) {
-    // Only LIM garbles are coerced; numeric / ">N" / sentinel readings pass
-    // through verbatim (none contain a LIM word token).
-    if (IR_LIM_RE.test(value)) return 'LIM';
+  if (NUMERIC_READING_FIELDS.has(field)) {
+    // Only the four canonical LIM garble forms coerce to "LIM"; numeric /
+    // ">N" / sentinel readings pass through verbatim (none contain a LIM word
+    // token). Near-matches (limit/limited/lynn/lym) are left unchanged so the
+    // post-coercion validateNumericReadingValue rejects them.
+    if (isLimForm(value)) return 'LIM';
     return value;
   }
 
