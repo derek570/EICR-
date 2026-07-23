@@ -228,7 +228,12 @@ export function createInspectDispatcher(session, logger, turnId, perTurnWrites) 
     }
 
     const snapshot = session.stateSnapshot;
-    const certType = session.certType === 'eic' ? 'EIC' : 'EICR';
+    // Codex diff-review r2 — pass the session's certType RAW; the projector's
+    // normaliseCertType is the single normalisation point (web sends
+    // uppercase 'EIC'/'EICR'; iOS lowercase; unknown → null per the appendix
+    // contract — a case-sensitive check here reported a real EIC session as
+    // EICR).
+    const certType = session.certType;
 
     const boardId = resolveBoardTarget(snapshot, input.board_id);
     if (boardId == null) {

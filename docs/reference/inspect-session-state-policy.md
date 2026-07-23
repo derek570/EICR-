@@ -130,9 +130,17 @@ When exceeded, truncate deterministically and set `"truncated": true`:
 1. `board`/`summary`: first drop per-circuit `missing` arrays (keep `missing_count`),
 2. then drop tail entries of `circuits[]`/`boards[]` (lowest refs kept, list order stable),
 3. `circuit`: drop `values` entries from the tail (keep `missing` names),
-4. `field`: slice the value string to 512 chars.
+4. `field`: byte-truncate the value string to 512 bytes (code-point-safe, marker-aware —
+   a wrapped USER_TEXT value keeps BOTH markers; the INNER payload is what shrinks),
+5. *(amended 2026-07-23, Codex diff-review r2)* byte-trim every retained wrapped string
+   (top-level `designation`, surviving per-circuit/board designations, `values` entries)
+   to 256 bytes each, code-point-safe + marker-preserving,
+6. *(fail-closed)* if STILL over the cap, return the minimal fixed shape
+   `{ok:true, scope, board_id?, circuit?, truncated:true, overflow:true}` — never an
+   over-cap payload.
 Counts/totals are never recomputed after truncation. Re-serialize after each stage; stop
-as soon as the cap is met.
+as soon as the cap is met. All byte measures are UTF-8 (`Buffer.byteLength`), never
+`String.length`.
 
 ## 5. `is_error` for every outcome (mirrors PLAN Item 1b)
 

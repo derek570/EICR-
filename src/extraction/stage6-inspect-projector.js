@@ -335,6 +335,36 @@ function byteLength(body) {
   return Buffer.byteLength(JSON.stringify(body), 'utf8');
 }
 
+// Codex diff-review r2 — code-point-safe UTF-8 byte truncation. Builds up by
+// code point so a multi-byte character is never split; marker-aware so a
+// wrapped USER_TEXT string keeps BOTH markers.
+const _UT_OPEN = '<<<USER_TEXT>>>';
+const _UT_CLOSE = '<<<END_USER_TEXT>>>';
+
+function byteTruncateString(str, maxBytes) {
+  if (Buffer.byteLength(str, 'utf8') <= maxBytes) return str;
+  let out = '';
+  let used = 0;
+  for (const ch of str) {
+    const b = Buffer.byteLength(ch, 'utf8');
+    if (used + b > maxBytes) break;
+    out += ch;
+    used += b;
+  }
+  return out;
+}
+
+function byteTruncateWrapped(str, maxBytes) {
+  if (typeof str !== 'string') return str;
+  if (Buffer.byteLength(str, 'utf8') <= maxBytes) return str;
+  if (str.startsWith(_UT_OPEN) && str.endsWith(_UT_CLOSE)) {
+    const inner = str.slice(_UT_OPEN.length, -_UT_CLOSE.length);
+    const budget = Math.max(0, maxBytes - _UT_OPEN.length - _UT_CLOSE.length);
+    return `${_UT_OPEN}${byteTruncateString(inner, budget)}${_UT_CLOSE}`;
+  }
+  return byteTruncateString(str, maxBytes);
+}
+
 /**
  * Enforce INSPECT_MAX_RESULT_BYTES. Mutates a shallow-cloned body through the
  * appendix's ladder; counts/totals are never recomputed after truncation.
@@ -372,21 +402,55 @@ export function capInspectResult(body) {
     if (byteLength(capped) <= INSPECT_MAX_RESULT_BYTES) return capped;
   }
 
-  // Stage 4: field scope — slice the value string. Codex diff-review r1:
-  // slicing a WRAPPED value must never orphan the USER_TEXT open marker (a
-  // dangling boundary would make subsequent context read as untrusted data,
-  // or worse, un-terminated). Truncate the INNER payload and re-append the
-  // close marker.
-  if (typeof capped.value === 'string' && capped.value.length > 512) {
-    const open = '<<<USER_TEXT>>>';
-    const close = '<<<END_USER_TEXT>>>';
-    if (capped.value.startsWith(open) && capped.value.endsWith(close)) {
-      const inner = capped.value.slice(open.length, -close.length);
-      const budget = Math.max(0, 512 - open.length - close.length);
-      capped.value = `${open}${inner.slice(0, budget)}${close}`;
-    } else {
-      capped.value = capped.value.slice(0, 512);
-    }
+  // Stage 4: field scope — byte-truncate the value string, marker-aware
+  // (Codex r1: never orphan the USER_TEXT boundary; r2: byte-accurate,
+  // code-point-safe).
+  if (typeof capped.value === 'string') {
+    capped.value = byteTruncateWrapped(capped.value, 512);
+    if (byteLength(capped) <= INSPECT_MAX_RESULT_BYTES) return capped;
   }
-  return capped;
+
+  // Stage 5 (Codex r2): the ladder above never touched retained wrapped
+  // strings (top-level designation, surviving per-circuit designations) and
+  // measured chars, not UTF-8 bytes — a multi-byte-heavy designation could
+  // keep the serialized result over the cap with truncated:true. Byte-trim
+  // every retained long string, markers preserved.
+  const STR_BUDGET = 256;
+  if (typeof capped.designation === 'string') {
+    capped.designation = byteTruncateWrapped(capped.designation, STR_BUDGET);
+  }
+  if (Array.isArray(capped.circuits)) {
+    capped.circuits = capped.circuits.map((c) =>
+      typeof c.designation === 'string'
+        ? { ...c, designation: byteTruncateWrapped(c.designation, STR_BUDGET) }
+        : c
+    );
+  }
+  if (Array.isArray(capped.boards)) {
+    capped.boards = capped.boards.map((b) =>
+      typeof b.designation === 'string'
+        ? { ...b, designation: byteTruncateWrapped(b.designation, STR_BUDGET) }
+        : b
+    );
+  }
+  if (capped.values && typeof capped.values === 'object') {
+    capped.values = Object.fromEntries(
+      Object.entries(capped.values).map(([k, v]) => [
+        k,
+        typeof v === 'string' ? byteTruncateWrapped(v, STR_BUDGET) : v,
+      ])
+    );
+  }
+  if (byteLength(capped) <= INSPECT_MAX_RESULT_BYTES) return capped;
+
+  // Stage 6 (fail-closed): still oversized after every trim — return a
+  // minimal fixed-shape result rather than an over-cap payload.
+  return {
+    ok: true,
+    scope: capped.scope,
+    ...(capped.board_id != null ? { board_id: capped.board_id } : {}),
+    ...(capped.circuit != null ? { circuit: capped.circuit } : {}),
+    truncated: true,
+    overflow: true,
+  };
 }

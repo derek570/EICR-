@@ -459,6 +459,22 @@ describe('createInspectDispatcher — scopes, validation, trust boundary (Item 1
     expect(badCircuit.is_error).toBe(true);
   });
 
+  test('certType normalisation (Codex r2): uppercase EIC stays EIC; unknown → null', async () => {
+    for (const [raw, expected] of [
+      ['EIC', 'EIC'],
+      ['eic', 'EIC'],
+      ['EICR', 'EICR'],
+      ['eicr', 'EICR'],
+      ['banana', null],
+      [undefined, null],
+    ]) {
+      const s2 = makeSession({}, { certType: raw });
+      const d2 = createInspectDispatcher(s2, logger, 'turn-ct', createPerTurnWrites());
+      const b = body(await d2(call('inspect_session_state', { scope: 'summary' }, 'toolu_ct')));
+      expect(b.cert_type).toBe(expected);
+    }
+  });
+
   test('both dispatchers mark featureTouched (inspect-then-silence is a reachable failure)', async () => {
     await dispatch(call('inspect_session_state', { scope: 'summary' }));
     expect(ptw.answer.featureTouched).toBe(true);
@@ -491,6 +507,42 @@ describe('capInspectResult — appendix §4 truncation ladder', () => {
     expect(capped.value.startsWith(openM)).toBe(true);
     expect(capped.value.endsWith(closeM)).toBe(true);
     expect(capped.value.length).toBeLessThanOrEqual(512);
+  });
+
+  test('BYTE cap enforced with multi-byte designations (Codex r2): board/circuit results ≤ 4096 UTF-8 bytes', () => {
+    const emoji = '⚡'.repeat(2000); // 3 bytes/char — char-count measures lie here
+    const wrapped = `<<<USER_TEXT>>>${emoji}<<<END_USER_TEXT>>>`;
+    const board = capInspectResult({
+      ok: true,
+      scope: 'board',
+      board_id: 'main',
+      designation: wrapped,
+      circuit_count: 3,
+      circuits: [
+        { circuit: 1, designation: wrapped, missing: ['measured_zs_ohm'], missing_count: 1 },
+      ],
+      truncated: false,
+    });
+    expect(Buffer.byteLength(JSON.stringify(board), 'utf8')).toBeLessThanOrEqual(
+      INSPECT_MAX_RESULT_BYTES
+    );
+    expect(board.truncated).toBe(true);
+    if (typeof board.designation === 'string') {
+      expect(board.designation.endsWith('<<<END_USER_TEXT>>>')).toBe(true);
+    }
+    const circuit = capInspectResult({
+      ok: true,
+      scope: 'circuit',
+      board_id: 'main',
+      circuit: 2,
+      designation: wrapped,
+      values: { circuit_designation: wrapped, measured_zs_ohm: '0.42' },
+      missing: [],
+      truncated: false,
+    });
+    expect(Buffer.byteLength(JSON.stringify(circuit), 'utf8')).toBeLessThanOrEqual(
+      INSPECT_MAX_RESULT_BYTES
+    );
   });
 
   test('oversized board scope: missing arrays dropped first (missing_count kept), then tail circuits', () => {
