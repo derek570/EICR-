@@ -7,8 +7,13 @@
  * misparse (a circuit reference, a Zs value, etc.) — return null and let
  * the script re-ask.
  */
+import { parseLimSlot } from './lim-slot.js';
+
 export function parseVoltage(text) {
   if (typeof text !== 'string') return null;
+  // P3 — "LIM" (limitation) is a valid IR test-voltage value.
+  const lim = parseLimSlot(text);
+  if (lim) return lim;
   // Take the first 2-4 digit integer in the text. IR voltage is always
   // integer (no decimal) and in the hundreds.
   const m = text.match(/\b(\d{2,4})\b/);

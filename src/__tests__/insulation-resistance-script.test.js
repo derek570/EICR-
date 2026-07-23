@@ -207,12 +207,17 @@ describe('parseValue', () => {
     expect(parseValue('maxed out')).toBe('>999');
   });
 
-  // LIM (limitation) sentinel — reversed 2026-06-16 (F1AC26FB). Deepgram
-  // garbles spoken "LIM" as lim/limb/limp/limit(ation|ed)/lynn/lym.
-  test.each(['LIM', 'lim', 'limb', 'limp', 'limit', 'limitation', 'limited', 'Lynn', 'Lym'])(
-    '"%s" → "LIM"',
+  // LIM (limitation) sentinel — reversed 2026-06-16 (F1AC26FB); P3 (2026-07-23)
+  // narrowed to the EXACT four forms. limit/limited/lynn/lym are near-matches
+  // that must NOT coerce (they now return null so the validator rejects them).
+  test.each(['LIM', 'lim', 'limb', 'limp', 'limitation'])('"%s" → "LIM"', (t) => {
+    expect(parseValue(t)).toBe('LIM');
+  });
+
+  test.each(['limit', 'limited', 'Lynn', 'Lym'])(
+    'near-match "%s" is NOT coerced to LIM (returns null)',
     (t) => {
-      expect(parseValue(t)).toBe('LIM');
+      expect(parseValue(t)).toBeNull();
     }
   );
 
@@ -1344,8 +1349,8 @@ describe('LIM / limitation IS a valid sentinel value', () => {
     expect(parseValue('LIM')).toBe('LIM');
   });
 
-  test('parseValue("limit") → "LIM"', () => {
-    expect(parseValue('limit')).toBe('LIM');
+  test('parseValue("limit") → null (near-match, P3 four-form policy)', () => {
+    expect(parseValue('limit')).toBeNull();
   });
 
   test('parseValue("limitation") → "LIM"', () => {

@@ -11,8 +11,13 @@
  *
  * Reasonable range 1..1000.
  */
+import { parseLimSlot } from './lim-slot.js';
+
 export function parseMa(text) {
   if (typeof text !== 'string' || !text) return null;
+  // P3 — "LIM" (limitation) is a valid RCD operating-current value.
+  const lim = parseLimSlot(text);
+  if (lim) return lim;
   const m = text.match(/\b(\d{1,4})\s*(?:m\s*a|milli\s*amps?)?\b/i);
   if (!m) return null;
   const n = Number(m[1]);

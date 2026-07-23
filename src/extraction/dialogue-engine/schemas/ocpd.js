@@ -67,7 +67,9 @@ const slots = [
     label: 'rating',
     question: 'What rating in amps?',
     parser: parseAmps,
-    namedExtractor: /\b(\d{1,4})\s*(?:amps?|A)\b/i,
+    // P3 — the LIM alternation lets a fuller utterance ("the rating is a
+    // limitation") capture the LIM token; parseAmps canonicalises it to "LIM".
+    namedExtractor: /\b(\d{1,4})\s*(?:amps?|A)\b|\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -75,7 +77,8 @@ const slots = [
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,
-    namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b/i,
+    // P3 — LIM alternation so "breaking capacity is a limitation" captures LIM.
+    namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b|\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
     // 2026-05-04 (field test 07635782): the inspector said "six" for
     // breaking capacity, the engine accepted it as the rating answer
@@ -93,7 +96,10 @@ const slots = [
     //
     // Strings (not numbers) so the array can include the half-step
     // ratings (1.5, 4.5) without float-equality risk.
-    allowedValues: ['1.5', '3', '4.5', '6', '10', '16', '20', '25', '36', '50', '80'],
+    // P3 — "LIM" (limitation) is a valid breaking-capacity answer; without it in
+    // the allow-set both the named-extraction gate (extraction.js) and the
+    // engine's bare-value gate would drop a LIM reply and re-ask forever.
+    allowedValues: ['1.5', '3', '4.5', '6', '10', '16', '20', '25', '36', '50', '80', 'LIM'],
   },
 ];
 

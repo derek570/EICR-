@@ -270,9 +270,13 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     // Narrowly scoped: only pvr-* ids (server-brokered), only a concrete
     // context_field, only a numeric or sentinel-shaped reply.
     const trimmed = typeof newText === 'string' ? newText.trim() : '';
+    // P3 (2026-07-23): widened lim|limitation → the full four forms
+    // lim|limb|limp|limitation so a supported limb/limp value reply isn't
+    // mis-classified as user_moved_on (which would delete the pending entry and
+    // LOSE the answer — beep-then-no-write).
     const looksLikeValue =
       /\d/.test(trimmed) ||
-      /\b(?:lim|limitation|discontinuous|open circuit|infinity)\b/i.test(trimmed);
+      /\b(?:lim|limb|limp|limitation|discontinuous|open circuit|infinity)\b/i.test(trimmed);
     if (trimmed && looksLikeValue) {
       for (const [id, entry] of pendingAsks.entries()) {
         if (

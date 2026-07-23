@@ -123,7 +123,7 @@ const IR_CORRECTION_RE = /^\s*no\b[,.]?\s+(.+?)[.!?]*\s*$/i;
 // correction phrased with leading filler ("no, it's 250") is rejected rather
 // than risk a misfire — the inspector simply says the bare value.
 const IR_VALUE_ONLY_RE =
-  /^(?:>\s*\.?\d+(?:\.\d+)?|(?:greater|more)\s+than\s+\.?\d+(?:\.\d+)?|(?:over|above)\s+\.?\d+(?:\.\d+)?|\.?\d+(?:\.\d+)?|infinit(?:e|y)|off\s*scale|out\s*of\s*range|o\.?\s*l|max(?:ed)?(?:\s+out)?|lim|limb|limp|limit(?:ation|ed)?|lynn|lym)(?:\s*(?:mΩ|MΩ|meg(?:a|ger)?\s*ohms?|megohms?|milli\s*ohms?|m\s*ohms?|ohms?))?$/i;
+  /^(?:>\s*\.?\d+(?:\.\d+)?|(?:greater|more)\s+than\s+\.?\d+(?:\.\d+)?|(?:over|above)\s+\.?\d+(?:\.\d+)?|\.?\d+(?:\.\d+)?|infinit(?:e|y)|off\s*scale|out\s*of\s*range|o\.?\s*l|max(?:ed)?(?:\s+out)?|lim|limb|limp|limitation)(?:\s*(?:mΩ|MΩ|meg(?:a|ger)?\s*ohms?|megohms?|milli\s*ohms?|m\s*ohms?|ohms?))?$/i;
 
 /**
  * Entry triggers — variations that start the script. Pattern 1 ("full")
@@ -291,11 +291,12 @@ export function parseValue(text) {
   //    DELIBERATELY EXCLUDED until 2026-06-16 on the theory a "separate
   //    limitation-handling flow" owned it; that flow never existed, so
   //    spoken "LIM" looped the IR slot ask forever (reported 2026-02-18,
-  //    2026-06-08, F1AC26FB 2026-06-16). Deepgram garbles spoken "LIM" as
-  //    lim/limb/limp/limit(ation|ed)/lynn/lym — all canonicalise to "LIM".
-  //    MUST stay byte-identical to parseMegaohms() in
-  //    dialogue-engine/parsers/megaohms.js for the replay corpus.
-  if (/\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i.test(text)) {
+  //    2026-06-08, F1AC26FB 2026-06-16). P3 (2026-07-23): narrowed to the EXACT
+  //    four forms lim/limb/limp/limitation — limit/limited/lynn/lym are
+  //    near-matches that must NOT coerce. MUST stay byte-identical to
+  //    parseMegaohms() in dialogue-engine/parsers/megaohms.js for the replay
+  //    corpus.
+  if (/\b(?:lim|limb|limp|limitation)\b/i.test(text)) {
     return 'LIM';
   }
 
@@ -342,7 +343,7 @@ export function extractNamedFieldValues(text) {
   if (typeof text !== 'string' || !text) return [];
   const out = [];
   const valueGroup =
-    '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d*\\.?\\d+';
+    '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|o\\s*l|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limitation)\\b|\\d*\\.?\\d+';
   // Separator gap between the field phrase and the value. The ORIGINAL
   // class `[^\d∞>a-z]{0,30}?` excluded ALL letters, so any connective
   // ("is"/"was") or Deepgram filler ("raining") between the phrase and the

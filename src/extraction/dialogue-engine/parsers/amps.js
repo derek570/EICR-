@@ -12,8 +12,14 @@
  * Returns the integer as a string (matching iOS Circuit model's
  * String storage of `ocpdRatingA`). Null on no match.
  */
+import { parseLimSlot } from './lim-slot.js';
+
 export function parseAmps(text) {
   if (typeof text !== 'string' || !text) return null;
+  // P3 — "LIM" (limitation) is a valid rating value. Checked before the numeric
+  // match so a LIM answer writes canonical "LIM" instead of re-asking forever.
+  const lim = parseLimSlot(text);
+  if (lim) return lim;
   // First integer in the text. The schema's namedExtractor regex
   // typically captures the value group already; bare-value fallback
   // path passes the raw transcript and we extract the first int.

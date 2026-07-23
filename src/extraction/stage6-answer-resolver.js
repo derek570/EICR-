@@ -33,6 +33,10 @@
 
 import { createRequire } from 'node:module';
 import { isEvasionMarker, isValidSentinel } from './value-normalise.js';
+import {
+  NUMERIC_READING_FIELDS,
+  canonicaliseNumericReadingField,
+} from './value-enum-validator.js';
 
 // JSON-import via createRequire mirrors the canonical pattern used by
 // stage6-tool-schemas.js (lines 33-42) — under this project's ES-modules +
@@ -696,15 +700,17 @@ const DISCONTINUOUS_PHRASES = [
 // Continuity field set — the only fields on which a discontinuous/open reply
 // maps to ∞, and on which a "limitation" reply maps to the "LIM" sentinel.
 const CONTINUITY_FIELDS = ['r1_r2_ohm', 'r2_ohm', 'ring_r1_ohm', 'ring_rn_ohm', 'ring_r2_ohm'];
-// "LIM" (limitation) is a STRING sentinel, NOT infinity. The inspector's
-// "limitation" can be garbled by Deepgram as lim/limb/limp/limit(ation|ed)/
-// lynn/lym. This MUST stay word-boundaried and consistent with the rest of the
-// codebase (record-reading-coercion.js IR_LIM_RE, value-normalise.js) — field
+// "LIM" (limitation) is a STRING sentinel, NOT infinity. P3 (2026-07-23):
+// narrowed to the EXACT four forms lim/limb/limp/limitation (was
+// lim/limb/limp/limit(ation|ed)/lynn/lym) — limit/limited/lynn/lym are
+// near-matches that must NOT coerce, keeping this consistent with the shared
+// four-form policy (value-enum-validator.js LIM_FORM_RE, record-reading-
+// coercion.js, the dialogue parsers). This MUST stay word-boundaried — field
 // report 2026-06-24 #2: the inspector said "Limb." and a substring
 // `"limb".includes("lim")` here wrote ring_r1_ohm = ∞ (silent data corruption,
 // deduped on TTS). On a continuity field "limitation" writes the string "LIM";
 // ∞ requires an explicit discontinuous/open/infinity phrase below.
-const LIM_RE = /\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i;
+const LIM_RE = /\b(?:lim|limb|limp|limitation)\b/i;
 // Build a \b-anchored matcher for the discontinuous phrases so a token like
 // "ol"/"open" never bites mid-word (e.g. "old", "opening"). Multi-word phrases
 // ("open circuit") are matched verbatim with word boundaries on each end.
@@ -798,8 +804,16 @@ export function resolveValueAnswer({
   // writes the STRING "LIM", never ∞ and never a silent drop. Checked BEFORE
   // the discontinuous branch so "limb"/"lim" can no longer fall through to ∞.
   // Field report 2026-06-24 #2: "Limb." silently wrote ring_r1_ohm = ∞.
+  // P3 (2026-07-23, feedback id 86) — LIM is a valid reading for EVERY numeric
+  // reading field, not just the continuity ones. Previously this branch was
+  // gated on CONTINUITY_FIELDS, so a LIM reply for e.g. measured_zs_ohm (a
+  // non-continuity numeric field) fell through to terminalApology instead of
+  // writing. Broaden the LIM branch to accept every alias-normalised
+  // NUMERIC_READING_FIELDS member (rcd_trip_time → rcd_time_ms etc.); the
+  // discontinuous/open/∞ branch below stays continuity-only (CONTINUITY_FIELDS
+  // is a strict subset of NUMERIC_READING_FIELDS, so this only ADDS).
   if (LIM_RE.test(lower)) {
-    if (CONTINUITY_FIELDS.includes(contextField)) {
+    if (NUMERIC_READING_FIELDS.has(canonicaliseNumericReadingField(contextField))) {
       return {
         kind: 'auto_resolve',
         writes: buildWrites('LIM', 0.9),
@@ -807,7 +821,7 @@ export function resolveValueAnswer({
     }
     return {
       kind: 'escalate',
-      parsed_hint: 'lim_on_non_continuity_field',
+      parsed_hint: 'lim_on_non_numeric_reading_field',
     };
   }
 

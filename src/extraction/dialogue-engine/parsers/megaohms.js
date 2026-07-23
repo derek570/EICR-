@@ -52,11 +52,13 @@ export function parseMegaohms(text) {
   }
 
   // 3. Limitation sentinel — "LIM" means the test could not be performed
-  //    (access/safety limitation). Deepgram garbles spoken "LIM" as
-  //    lim/limb/limp/limit(ation|ed)/lynn/lym (garble set per
-  //    sonnet_full_transcript_system.md:39 + "limp" seen in F1AC26FB).
-  //    Word-anchored so it never fires inside unrelated words.
-  if (/\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\b/i.test(text)) {
+  //    (access/safety limitation). P3 (2026-07-23): narrowed to the EXACT four
+  //    forms lim/limb/limp/limitation (was lim/limb/limp/limit(ation|ed)/
+  //    lynn/lym). limit/limited/lynn/lym are near-matches that must NOT coerce
+  //    — the post-coercion validator rejects them — so the client + backend
+  //    obey one consistent four-form policy. Word-anchored so it never fires
+  //    inside unrelated words.
+  if (/\b(?:lim|limb|limp|limitation)\b/i.test(text)) {
     return 'LIM';
   }
 
@@ -90,7 +92,7 @@ export function parseMegaohms(text) {
 // active-script bare-value matching) and any future consumer would pick
 // up the same fix here.
 export const MEGAOHMS_VALUE_GROUP =
-  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d*\\.?\\d+';
+  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limitation)\\b|\\d*\\.?\\d+';
 
 /**
  * Restricted value group for the BARE-BRIDGE arm of the L-L/L-E named
@@ -131,7 +133,7 @@ export const MEGAOHMS_VALUE_GROUP =
  * supported. Only the loose bare-bridge form is tightened.
  */
 export const MEGAOHMS_BARE_SAFE_VALUE_GROUP =
-  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limit(?:ation|ed)?|lynn|lym)\\b|\\d+\\.\\d+|\\.\\d+|\\d{2,}';
+  '>\\s*\\d+(?:\\.\\d+)?|>\\s*\\.\\d+|greater\\s+(?:than|then)\\s+\\d+(?:\\.\\d+)?|greater\\s+(?:than|then)\\s+\\.\\d+|more\\s+than\\s+\\d+(?:\\.\\d+)?|more\\s+than\\s+\\.\\d+|over\\s+\\d+(?:\\.\\d+)?|above\\s+\\d+(?:\\.\\d+)?|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?|\\b(?:lim|limb|limp|limitation)\\b|\\d+\\.\\d+|\\.\\d+|\\d{2,}';
 
 /**
  * Match a bare megaohms value at IR script entry — a number or sentinel
