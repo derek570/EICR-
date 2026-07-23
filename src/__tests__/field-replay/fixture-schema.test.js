@@ -546,6 +546,16 @@ describe('P5 — clear_then_write state_transition op validation', () => {
     });
   }
 
+  test('rejects a non-string/non-null board_id or clear_board_id (schema type)', async () => {
+    for (const key of ['board_id', 'clear_board_id']) {
+      const r = await validateFixtureDocument(ctwFixture({ [key]: 5 }));
+      expect(r.errors.length).toBeGreaterThan(0);
+      // Ajv structural (type: [string, null]) rejects a number before the
+      // cross-field check runs — either way it is not admitted.
+      expect(r.errors.map((e) => e.code)).toContain(FIXTURE_ERROR_CODES.SCHEMA);
+    }
+  });
+
   test('an unknown state_transition value is rejected by the enum (schema)', async () => {
     const doc = ctwFixture({ state_transition: 'write_then_clear' });
     const r = await validateFixtureDocument(doc);

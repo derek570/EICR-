@@ -90,6 +90,50 @@ describe('matchOperations — clear_then_write joint oracle', () => {
     expect(fails[0].message).toMatch(/replacement/);
   });
 
+  test('board matrix RED: explicit/explicit matching stale clear → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'main' }],
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: 'main' }],
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('board matrix RED: omitted-clear (null) + explicit-write matching stale clear → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'main' }],
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: null }],
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: null });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('board matrix RED: explicit-clear + omitted-write (null) matching stale clear → one FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100' }], // board omitted → null
+      field_corrections: [{ field: 'insulation_resistance_l_l', circuit: 3, reason: 'clear_reading', board_id: 'main' }],
+    };
+    const op = ctwOp({ board_id: null, clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/stale clear/);
+  });
+
+  test('board matrix RED: replacement written on the WRONG board → replacement-missing FAIL', () => {
+    const result = {
+      extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'sub-1' }], // wrong board
+      // no stale clear
+    };
+    const op = ctwOp({ board_id: 'main', clear_board_id: 'main' });
+    const fails = matchOperations([op], { result, toClearWireField });
+    expect(fails).toHaveLength(1);
+    expect(fails[0].message).toMatch(/replacement/);
+  });
+
   test('board exactness: a clear on a DIFFERENT board than clear_board_id does not false-RED', () => {
     const result = {
       extracted_readings: [{ field: 'ir_live_live_mohm', circuit: 3, value: '100', board_id: 'main' }],
