@@ -329,11 +329,10 @@ export function capInspectResult(body) {
 
   // Stage 1: drop per-circuit `missing` arrays (keep missing_count).
   if (Array.isArray(capped.circuits)) {
-    capped.circuits = capped.circuits.map((c) =>
-      Array.isArray(c.missing) ? { ...c, missing: undefined } : c
-    );
     capped.circuits = capped.circuits.map((c) => {
-      const { missing: _m, ...rest } = c;
+      if (!Array.isArray(c.missing)) return c;
+      const rest = { ...c };
+      delete rest.missing;
       return rest;
     });
     if (byteLength(capped) <= INSPECT_MAX_RESULT_BYTES) return capped;
