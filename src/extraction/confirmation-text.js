@@ -104,7 +104,7 @@ export const CONFIRMATION_FRIENDLY_NAMES = Object.freeze({
   surge_spd_bs_en: 'surge protection BS EN',
   surge_status_indicator: 'surge protection indicator',
   main_switch_bs_en: 'main switch BS EN',
-  rcd_operating_current_ma: 'RCD',
+  rcd_operating_current_ma: 'RCD operating current',
   rcd_time_ms: 'RCD time',
   rcd_type: 'RCD type',
   rcd_bs_en: 'RCD BS EN',
@@ -263,6 +263,35 @@ export function deriveFriendlyName(field) {
 const COUNT_STYLE_FIELDS = Object.freeze(new Set(['number_of_points']));
 
 /**
+ * P3 (2026-07-23, feedback id 86) — the ONE shared spoken-tail builder for the
+ * VALUE portion of a confirmation. buildConfirmationText,
+ * buildGroupedConfirmationText, AND the Loaded Barrel speculator must produce
+ * byte-identical value text, or the speculator's pre-synth drifts from the
+ * bundler's emission → a barrel cache MISS + parity_mismatch (F/U-1 lesson).
+ *
+ * A LIM value speaks the ENHANCED tail "…recorded as LIM — limitation" (Derek's
+ * chosen wording) so a hands-free inspector can tell a limitation from a
+ * measured value by ear — checked FIRST, above the count/calculated styles,
+ * because a limitation is a limitation regardless of the field's normal
+ * phrasing. Otherwise: count-style "<N> <noun>", calculator
+ * "<field> calculated as <value>", or the plain "<field> <value>".
+ *
+ * @param {string} field — canonical field name
+ * @param {string} valueStr — the trimmed value string
+ * @param {string} friendly — the field's spoken friendly name
+ * @param {{calculated?: boolean}} options
+ * @returns {string} the spoken value tail (no circuit prefix)
+ */
+export function buildValueSpokenTail(field, valueStr, friendly, options = {}) {
+  if (typeof valueStr === 'string' && valueStr.trim().toLowerCase() === 'lim') {
+    return `${friendly} recorded as LIM — limitation`;
+  }
+  if (COUNT_STYLE_FIELDS.has(field)) return `${valueStr} ${friendly}`;
+  if (options.calculated === true) return `${friendly} calculated as ${valueStr}`;
+  return `${friendly} ${valueStr}`;
+}
+
+/**
  * Build a SINGLE grouped confirmation for a fan-out reading that
  * touched multiple circuits in one turn (e.g. an IR reading dictated
  * "for all circuits", or a set_field_for_all_circuits broadcast).
@@ -363,19 +392,12 @@ export function buildGroupedConfirmationText(
     const isTrue = lc === 'true' || lc === 'y' || lc === 'ok' || lc === 'yes';
     if (!isTrue) return null;
     tail = 'polarity confirmed';
-  } else if (COUNT_STYLE_FIELDS.has(field)) {
-    // Count before noun — see buildConfirmationText (item #7).
-    tail = `${valueStr} ${friendly}`;
-  } else if (options.calculated === true) {
-    // F/U-1 (2026-07-19) — server-derived calculator results speak with a
-    // "calculated as" marker so the inspector can tell a derived value from
-    // a measured one by ear (a calculated Zs on a certificate is a
-    // different evidentiary claim than a meter reading). Only the two
-    // numeric calc fields ever take this branch; the special-case fields
-    // above are never calculator outputs.
-    tail = `${friendly} calculated as ${valueStr}`;
   } else {
-    tail = `${friendly} ${valueStr}`;
+    // P3 — the SAME shared spoken-tail builder as buildConfirmationText (LIM
+    // enhanced phrasing / count / calculator / plain), so a fan-out LIM line
+    // reads "Circuits 1 to 3, Zs recorded as LIM — limitation" and stays
+    // byte-identical to the per-circuit + speculator text.
+    tail = buildValueSpokenTail(field, valueStr, friendly, options);
   }
 
   // Head selection.
@@ -461,11 +483,8 @@ export function buildConfirmationText(field, value, circuit, designation = null,
   // calculator result: speak "calculated as" so the inspector can tell a
   // derived value from a measured one by ear. Only the generic numeric
   // branch — the special-case fields above are never calculator outputs.
-  const body = COUNT_STYLE_FIELDS.has(field)
-    ? `${valueStr} ${friendly}`
-    : options.calculated === true
-      ? `${friendly} calculated as ${valueStr}`
-      : `${friendly} ${valueStr}`;
+  // P3 — shared spoken-tail builder (LIM enhanced phrasing / count / calc / plain).
+  const body = buildValueSpokenTail(field, valueStr, friendly, options);
 
   // Board-level readings (circuit 0 or absent) skip the prefix — "Ze
   // 0.25" is a complete sentence in inspector parlance, "Circuit 0, Ze"
