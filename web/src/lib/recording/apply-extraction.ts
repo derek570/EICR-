@@ -418,6 +418,62 @@ export function hasValue(v: unknown): boolean {
 }
 
 /**
+ * P3 Fix 6 (2026-07-23, feedback id 86) — before/after transition helper for
+ * the OCPD-rating → max-Zs invalidation. iOS canon: the pre-write capture in
+ * `Circuit.recalculateMaxZs` / the `CircuitsTab` inline lookup.
+ *
+ * Returns true when a row's AUTO-DERIVED numeric `ocpd_max_zs_ohm` should be
+ * CLEARED because `ocpd_rating_a` transitioned from a numeric value (that
+ * produced the current max-Zs) to a value the lookup can't use (e.g. the LIM
+ * sentinel). A differing MANUAL override is PRESERVED (current max-Zs ≠ the
+ * pre-LIM lookup). `ocpd_breaking_capacity_ka` is deliberately irrelevant here
+ * — it is not a max-Zs lookup input (max-zs-lookup keys on `type_rating` only),
+ * so a LIM breaking-capacity must NOT clear a valid max-Zs.
+ *
+ * The zero-argument recompute (H3 pass) runs AFTER the write and can't
+ * reconstruct the pre-change tuple, so the caller passes BEFORE (`prior`, the
+ * unpatched job circuit) and AFTER (`next`, the projected row) state.
+ *
+ * @param prior — the circuit row BEFORE this turn's writes (or undefined for a
+ *   newly-created row, which has no auto-derived history)
+ * @param next — the projected circuit row AFTER this turn's writes
+ */
+export function shouldClearAutoDerivedMaxZs(
+  prior: CircuitRow | undefined,
+  next: CircuitRow
+): boolean {
+  // Nothing to clear.
+  if (!hasValue(next.ocpd_max_zs_ohm)) return false;
+  const nextType = typeof next.ocpd_type === 'string' ? next.ocpd_type : '';
+  const nextRating = typeof next.ocpd_rating_a === 'string' ? next.ocpd_rating_a : '';
+  const nextDisc =
+    typeof next.max_disconnect_time_s === 'string' ? next.max_disconnect_time_s : undefined;
+  // If the CURRENT rating still yields a lookup, this isn't a sentinel
+  // transition — the normal recompute path owns it; never clear.
+  if (
+    nextType &&
+    nextRating &&
+    maxZsString({ deviceType: nextType, rating: nextRating, disconnectTime: nextDisc }) != null
+  ) {
+    return false;
+  }
+  // Need the PRE-transition NUMERIC rating to prove the max-Zs was auto-derived
+  // (vs a manual override). Absent it, leave the value untouched.
+  if (!prior) return false;
+  const priorType = typeof prior.ocpd_type === 'string' ? prior.ocpd_type : '';
+  const priorRating = typeof prior.ocpd_rating_a === 'string' ? prior.ocpd_rating_a : '';
+  const priorDisc =
+    typeof prior.max_disconnect_time_s === 'string' ? prior.max_disconnect_time_s : undefined;
+  if (!priorType || !priorRating) return false;
+  const preLimMaxZs = maxZsString({
+    deviceType: priorType,
+    rating: priorRating,
+    disconnectTime: priorDisc,
+  });
+  return preLimMaxZs != null && next.ocpd_max_zs_ohm === preLimMaxZs;
+}
+
+/**
  * Narrative installation-details fields. Long multi-sentence dictations
  * ("Installation is over 50 years old. Walls are damp. Sockets are
  * 1960s.") may arrive split across multiple Deepgram final transcripts
@@ -1703,6 +1759,14 @@ export function applyExtractionToJob(
   // ceiling without waiting for the next turn.
   const targetCircuits = newCircuits ?? (job.circuits as CircuitRow[] | undefined);
   if (Array.isArray(targetCircuits) && targetCircuits.length > 0) {
+    // P3 Fix 6 — before/after view for the OCPD-rating → max-Zs invalidation.
+    // Index the UNPATCHED job circuits by ref so we can recover each row's
+    // PRE-write ocpd_rating_a (the patched row already carries the LIM).
+    const priorByRef = new Map<string, CircuitRow>();
+    for (const p of (job.circuits as CircuitRow[] | undefined) ?? []) {
+      const ref = p.circuit_ref ?? p.number;
+      if (ref != null) priorByRef.set(String(ref), p);
+    }
     let mzsChanged = false;
     const nextCircuits = targetCircuits.map((row) => {
       const type = typeof row.ocpd_type === 'string' ? row.ocpd_type : '';
@@ -1711,9 +1775,24 @@ export function applyExtractionToJob(
         typeof row.max_disconnect_time_s === 'string'
           ? (row.max_disconnect_time_s as string)
           : undefined;
-      if (!type || !rating) return row;
-      const computed = maxZsString({ deviceType: type, rating, disconnectTime: disc });
-      if (computed == null) return row;
+      const computed = type && rating ? maxZsString({ deviceType: type, rating, disconnectTime: disc }) : null;
+
+      if (computed == null) {
+        // P3 Fix 6 — the rating is no longer usable for a max-Zs lookup (it
+        // just became a non-numeric sentinel like LIM). An AUTO-DERIVED numeric
+        // ocpd_max_zs_ohm would otherwise persist STALE (iOS nils it →
+        // cross-platform divergence, and a stale max-Zs feeds a false circuit
+        // result). The before/after transition helper clears it ONLY when it
+        // was auto-derived (preserving a manual override).
+        const ref = row.circuit_ref ?? row.number;
+        const prior = ref != null ? priorByRef.get(String(ref)) : undefined;
+        if (shouldClearAutoDerivedMaxZs(prior, row)) {
+          mzsChanged = true;
+          return { ...row, ocpd_max_zs_ohm: '' };
+        }
+        return row;
+      }
+
       // 3-tier priority — never overwrite a user-typed override.
       if (hasValue(row.ocpd_max_zs_ohm)) return row;
       if (row.ocpd_max_zs_ohm === computed) return row;
