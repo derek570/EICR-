@@ -65,11 +65,8 @@ import {
   listCircuitRefsInBoard,
 } from './stage6-multi-board-shape.js';
 import {
-  isWithinRange,
   validateNumericReadingValue,
   canonicaliseNumericReadingField,
-  CIRCUIT_FIELD_NUMERIC_RANGES,
-  BOARD_FIELD_NUMERIC_RANGES,
 } from './value-enum-validator.js';
 
 // Fix B 2026-06-02 (handoff-2026-06-02-fixes.md §B) — per-field VALUE
