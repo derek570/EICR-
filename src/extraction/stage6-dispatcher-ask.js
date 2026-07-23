@@ -1072,7 +1072,11 @@ async function buildResolvedBody({
       return {
         answered: true,
         untrusted_user_text: outcome.user_text,
-        auto_resolved: true,
+        // P3 Codex-r6 — a dispatched write can be a non-error SKIP (capability
+        // gate / low-conf pre-apply): report auto_resolved ONLY when every write
+        // actually landed, so a denied LIM doesn't falsely read as resolved
+        // (the model treats auto_resolved:true as proof the value was written).
+        auto_resolved: dispatched.length > 0 && dispatched.every((d) => d.ok),
         match_status: 'enum_resolved',
         resolved_writes: dispatched,
       };
@@ -1162,7 +1166,8 @@ async function buildResolvedBody({
       return {
         answered: true,
         untrusted_user_text: outcome.user_text,
-        auto_resolved: true,
+        // P3 Codex-r6 — auto_resolved only when every write landed (see enum branch).
+        auto_resolved: dispatched.length > 0 && dispatched.every((d) => d.ok),
         match_status: 'value_resolved',
         resolved_writes: dispatched,
       };
@@ -1266,7 +1271,8 @@ async function buildResolvedBody({
     return {
       answered: true,
       untrusted_user_text: outcome.user_text,
-      auto_resolved: true,
+      // P3 Codex-r6 — auto_resolved only when every write landed (see enum branch).
+      auto_resolved: dispatched.length > 0 && dispatched.every((d) => d.ok),
       match_status: 'auto_resolved',
       resolved_writes: dispatched,
     };

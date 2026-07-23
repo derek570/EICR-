@@ -191,3 +191,19 @@ describe('Codex-r5 hardening: connector-grammar LIM arms + punctuated bare LIM',
     expect(parseAmps('breaking capacity is a limitation')).toBeNull();
   });
 });
+
+describe('Codex-r6: connector supports "is:" and apostrophe-s', () => {
+  function fields(text, slots) {
+    return extractNamedFieldValues(text, slots);
+  }
+  test.each([
+    'rating is: LIM',
+    "rating's a limitation",
+    'rating equals limitation',
+    'the rating is a limitation',
+    'rating: LIM',
+    'rating limitation',
+  ])('"%s" → ocpd_rating_a LIM', (text) => {
+    expect(fields(text, ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')?.value).toBe('LIM');
+  });
+});
