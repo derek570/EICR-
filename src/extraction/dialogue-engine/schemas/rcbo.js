@@ -81,9 +81,9 @@ const slots = [
     label: 'rating',
     question: 'What rating in amps?',
     parser: parseAmps,
-    // P3 — numeric-only named extractor (see ocpd.js). LIM via active-slot
-    // parser / normaliser only.
-    namedExtractor: /\b(\d{1,4})\s*(?:amps?|A)\b/i,
+    // P3 — numeric arm OR a field-qualified LIM anchored to "rating" (see ocpd.js).
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:amps?|A)\b|\brating\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -91,8 +91,10 @@ const slots = [
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,
-    // P3 — numeric-only named extractor. LIM via active-slot parser / normaliser.
-    namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b/i,
+    // P3 — numeric arm OR a field-qualified LIM anchored to a breaking-capacity
+    // phrase (see ocpd.js).
+    namedExtractor:
+      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -138,8 +140,10 @@ const slots = [
     label: 'RCD operating current',
     question: "What's the operating current in mA?",
     parser: parseMa,
-    // P3 — numeric-only named extractor. LIM via active-slot parser / normaliser.
-    namedExtractor: /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b/i,
+    // P3 — numeric arm OR a field-qualified LIM anchored to an operating-current
+    // phrase ("operating current"/"milli amps"/"mA").
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|milli\s*amps?|mA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
 ];

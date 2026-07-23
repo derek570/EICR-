@@ -102,36 +102,51 @@ describe('normaliseDialogueSlotWrite — seeded pending_writes gate', () => {
 import { extractNamedFieldValues } from '../extraction/dialogue-engine/helpers/extraction.js';
 import { rcboSchema } from '../extraction/dialogue-engine/schemas/rcbo.js';
 
-describe('named extraction never CROSS-WRITES LIM (F2 — numeric-only extractors)', () => {
-  function fieldsFrom(text, slots) {
-    return extractNamedFieldValues(text, slots);
+describe('named extraction routes a field-qualified LIM to ONE slot (F2)', () => {
+  function limFields(text, slots) {
+    return extractNamedFieldValues(text, slots)
+      .filter((o) => o.value === 'LIM')
+      .map((o) => o.field);
   }
 
-  // The ocpd rating/kA and rcd mA namedExtractors are numeric-only — a LIM
-  // answer for one slot must NEVER write LIM to a sibling slot via named
-  // extraction (that class of cross-write is the reason the LIM alternatives
-  // were removed). A LIM answer arrives via the ACTIVE-SLOT parser instead.
+  // A field-qualified LIM must write LIM to EXACTLY its own slot — never
+  // cross-write to a sibling (the anchors are the field NAME only, so
+  // "kilo/milli amps" no longer collide with the rating "amps" anchor).
   test.each([
-    'the rating is a limitation',
-    'breaking capacity is a limitation',
-    'kilo amps is a limitation',
-    'milli amps is a limitation',
-  ])('"%s" writes LIM to NO ocpd/rcbo slot via named extraction', (text) => {
-    for (const slots of [ocpdSchema.slots, rcboSchema.slots]) {
-      const out = fieldsFrom(text, slots);
-      for (const o of out) expect(o.value).not.toBe('LIM');
-    }
+    ['the rating is a limitation', 'ocpd_rating_a'],
+    ['breaking capacity is a limitation', 'ocpd_breaking_capacity_ka'],
+    ['kilo amps is a limitation', 'ocpd_breaking_capacity_ka'],
+    ['operating current is a limitation', 'rcd_operating_current_ma'],
+    ['milli amps is a limitation', 'rcd_operating_current_ma'],
+  ])('"%s" → LIM only on %s (RCBO schema)', (text, expectedField) => {
+    const fields = limFields(text, rcboSchema.slots);
+    expect(fields).toEqual([expectedField]);
+  });
+
+  test('OCPD schema: rating vs breaking-capacity LIM never cross-write', () => {
+    expect(limFields('the rating is a limitation', ocpdSchema.slots)).toEqual(['ocpd_rating_a']);
+    expect(limFields('breaking capacity is a limitation', ocpdSchema.slots)).toEqual([
+      'ocpd_breaking_capacity_ka',
+    ]);
+    expect(limFields('kilo amps is a limitation', ocpdSchema.slots)).toEqual([
+      'ocpd_breaking_capacity_ka',
+    ]);
   });
 
   test('a plain numeric utterance still writes only the numeric field', () => {
-    const out = fieldsFrom('the rating is 32 amps', ocpdSchema.slots);
+    const out = extractNamedFieldValues('the rating is 32 amps', ocpdSchema.slots);
     expect(out.find((o) => o.field === 'ocpd_rating_a')?.value).toBe('32');
     expect(out.map((o) => o.field)).not.toContain('ocpd_breaking_capacity_ka');
   });
 
-  test('the ACTIVE-SLOT parser is the LIM path: parseAmps/parseKa/parseMa("limitation") → LIM', () => {
+  test('the ACTIVE-SLOT parser handles a BARE LIM reply, and does NOT cross-write a field-qualified one', () => {
+    // Bare LIM answer to the current slot → LIM.
     expect(parseAmps('limitation')).toBe('LIM');
-    expect(parseKa('limitation')).toBe('LIM');
-    expect(parseMa('limitation')).toBe('LIM');
+    expect(parseKa('LIM')).toBe('LIM');
+    expect(parseMa("it's a limitation")).toBe('LIM');
+    // A field-qualified LIM for a DIFFERENT field, heard while THIS slot is
+    // active, must NOT parse to LIM here (routed by the sibling's anchor).
+    expect(parseAmps('breaking capacity is a limitation')).toBeNull();
+    expect(parseAmps('milli amps is a limitation')).toBeNull();
   });
 });

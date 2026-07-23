@@ -126,8 +126,10 @@ const slots = [
     label: 'operating current',
     question: "What's the operating current in mA?",
     parser: parseMa,
-    // P3 — numeric-only named extractor. LIM via active-slot parser / normaliser.
-    namedExtractor: /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b/i,
+    // P3 — numeric arm OR a field-qualified LIM anchored to an operating-current
+    // phrase (see rcbo.js).
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|milli\s*amps?|mA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
 ];

@@ -711,14 +711,16 @@ function applyCircuit0Readings(
  *  changes were made, or null for no-op. Creates a new row for any
  *  circuit number we haven't seen yet so subsequent readings have a
  *  stable id to land on. */
-// P3 Codex-r1 F4 — the wire field names of the numeric READING fields. Only a
+// P3 Codex-r1 F4 — the PWA COLUMN names of the numeric READING fields. Only a
 // LIM write to one of these bypasses the 3-tier value guard; a LIM on a free-text
-// field (circuit_designation, ref, …) must NOT erase a manual value. Includes the
-// rcd_trip_time legacy alias.
-const NUMERIC_READING_WIRE_FIELDS = new Set<string>([
+// field (circuit_designation, ref, …) must NOT erase a manual value. Membership
+// is checked on the TRANSLATED column (translateCircuitField), so a legacy wire
+// name (ocpd_rating / zs / r1_plus_r2 / insulation_resistance_l_l / …) still
+// resolves to its canonical column here — F1: checking the raw wire field would
+// miss those and re-block the legitimate single-board LIM correction.
+const NUMERIC_READING_COLUMNS = new Set<string>([
   'measured_zs_ohm',
   'rcd_time_ms',
-  'rcd_trip_time',
   'rcd_operating_current_ma',
   'ocpd_rating_a',
   'ocpd_breaking_capacity_ka',
@@ -905,17 +907,23 @@ function applyCircuitReadings(
     // capability gate, so it is always an intended limitation on a numeric
     // reading field. Every OTHER value still yields to a pre-existing typed
     // value (the long-standing web correction behaviour is unchanged).
-    // The exception fires ONLY for a canonical LIM value on a numeric READING
-    // field (F4 — never a free-text field like circuit_designation), AND only
-    // when the target ref is UNAMBIGUOUS (F6 — web's ref-only apply can't tell
-    // apart two boards' circuit 1; overwriting on an ambiguous ref could corrupt
-    // the wrong board, so keep the blocking behaviour there).
-    const refForCount = String(reading.circuit);
-    const isLimWrite =
-      typeof writeValue === 'string' &&
-      writeValue.trim().toLowerCase() === 'lim' &&
-      NUMERIC_READING_WIRE_FIELDS.has(reading.field) &&
-      (refCounts.get(refForCount) ?? 0) <= 1;
+    // P3 — a canonical LIM value.
+    const isLimValue = typeof writeValue === 'string' && writeValue.trim().toLowerCase() === 'lim';
+    // F6/F4 — on a multi-board job web's ref-only apply can't tell apart two
+    // boards' circuit 1, so a LIM landing on an AMBIGUOUS ref could corrupt the
+    // wrong board. Suppress the LIM write ENTIRELY on an ambiguous ref (skip the
+    // reading — never write to an arbitrarily-selected board, even a blank one).
+    if (isLimValue && (refCounts.get(String(reading.circuit)) ?? 0) > 1) {
+      pipelineLog('apply_circuit_reading_lim_ambiguous_ref_skipped', {
+        circuit: reading.circuit,
+        pwa_column: column,
+      });
+      continue;
+    }
+    // The overwrite exception fires ONLY for a canonical LIM on a numeric
+    // READING column (F4 — checked on the TRANSLATED column, never a free-text
+    // field like circuit_designation).
+    const isLimWrite = isLimValue && NUMERIC_READING_COLUMNS.has(column);
     if (hasValue(row[column]) && !isLimWrite) {
       pipelineLog('apply_circuit_reading_user_value_kept', {
         circuit: reading.circuit,

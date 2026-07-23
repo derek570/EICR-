@@ -67,13 +67,13 @@ const slots = [
     label: 'rating',
     question: 'What rating in amps?',
     parser: parseAmps,
-    // P3 — numeric-only named extractor. A LIM answer for this slot arrives via
-    // the ACTIVE-SLOT parser (parseAmps recognises the four LIM forms) or the
-    // pending_writes normaliser — NOT via named extraction. A named LIM
-    // alternation here can't be anchored tightly enough to avoid cross-writing
-    // LIM to sibling slots (kilo/milli "amps" collisions), so it is deliberately
-    // omitted; the parser path covers the reachable dialogue LIM answer.
-    namedExtractor: /\b(\d{1,4})\s*(?:amps?|A)\b/i,
+    // P3 — numeric arm OR a field-qualified LIM anchored to the word "rating"
+    // ONLY (never bare "amps", which collides with "kilo/milli amps"). Passes
+    // the bare LIM token (m[2]) to parseAmps. A BARE "limitation" reply is
+    // handled by the active-slot parser (parseLimSlot); a limitation for a
+    // sibling slot is captured by THAT slot's anchor, not this one.
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:amps?|A)\b|\brating\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -81,10 +81,11 @@ const slots = [
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,
-    // P3 — numeric-only named extractor (see ocpd_rating_a). LIM arrives via the
-    // active-slot parser (parseKa) / normaliser; "LIM" is in allowedValues so
-    // the parser + bare-value paths accept it.
-    namedExtractor: /\b(\d+(?:\.\d+)?)\s*kA\b/i,
+    // P3 — numeric arm OR a field-qualified LIM anchored to a breaking-capacity
+    // phrase ("breaking capacity"/"kilo amps"/"kA"), so "breaking capacity is a
+    // limitation" writes LIM to THIS slot only. "LIM" is in allowedValues.
+    namedExtractor:
+      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
     // 2026-05-04 (field test 07635782): the inspector said "six" for
     // breaking capacity, the engine accepted it as the rating answer
