@@ -53,7 +53,7 @@ import {
   detectBroadcastIntent,
 } from './parsers/circuit-range.js';
 import { OBSERVATION_PATTERN } from '../pre-llm-gate.js';
-import { coerceRecordReadingValue } from '../record-reading-coercion.js';
+import { normaliseDialogueSlotWrite } from './helpers/dialogue-slot-normalise.js';
 // P1 ring-script-hardening — "reading-like" classification for the
 // confirmation branch's 5h idle rule (never consume a dictated reading into
 // the miss counter). Leaf module (imports only node:module), no cycle.
@@ -1987,13 +1987,23 @@ function runActivePath({
       if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
         for (const w of state.pending_writes) {
           if (state.values[w.field] !== undefined) continue;
-          // Defensive IR-LIM canonicalisation on drain (idempotent with the
-          // validWrites coercion) — covers pending_writes queued from any
-          // origin (seed path + followUpVolunteered) before they hit the
-          // snapshot. Scoped to ir_live_* (F1AC26FB #4.2).
-          const drainValue = w.field.startsWith('ir_live_')
-            ? coerceRecordReadingValue(w.field, w.value)
-            : w.value;
+          // P3 — normalise seeded pending_writes for the WHOLE numeric reading
+          // field set (was scoped to ir_live_* only). Coerces four-form LIM →
+          // "LIM", then validates range / numeric-validity / allowedValues; a
+          // near-match / alternate-sentinel / out-of-range / off-ladder value is
+          // REJECTED (dropped) instead of persisted verbatim. Non-numeric fields
+          // (bs_en / Y-N) pass through unchanged.
+          const norm = normaliseDialogueSlotWrite(schema, w.field, w.value);
+          if (!norm.ok) {
+            logger?.info?.(`${schema.logEventPrefix}_pending_write_rejected`, {
+              sessionId,
+              circuit_ref: ref,
+              field: w.field,
+              reason: norm.reason,
+            });
+            continue;
+          }
+          const drainValue = norm.value;
           applyWrite(session, schema, ref, w.field, drainValue, now);
           writes.push({ ...w, value: drainValue });
           drainedFromPending = true;
@@ -3205,16 +3215,19 @@ export function enterScriptByName({
         if (w?.field) droppedFields.push(w.field);
         continue;
       }
-      // Canonicalise IR-slot LIM garbles ("limitation"/"limb"/… → "LIM")
-      // for seeded pending_writes, which otherwise bypass the megaohms
-      // parser entirely (they are applied directly via
-      // applyWriteWithDerivations / queued for the drain path). Scoped to
-      // `ir_live_*` so bs_en / Y-N seed behaviour is unchanged (F1AC26FB
-      // #4.2). coerceRecordReadingValue is a no-op for non-LIM IR values.
-      const canonValue = w.field.startsWith('ir_live_')
-        ? coerceRecordReadingValue(w.field, w.value)
-        : w.value;
-      validWrites.push({ field: w.field, value: canonValue });
+      // P3 — normalise seeded pending_writes for the WHOLE numeric reading field
+      // set (was scoped to ir_live_*), which otherwise bypass the slot parsers
+      // entirely. Coerces four-form LIM → "LIM" then validates range /
+      // numeric-validity / allowedValues; a near-match / alternate-sentinel /
+      // out-of-range / off-ladder value is REJECTED (dropped) instead of
+      // persisted verbatim. Non-numeric fields (bs_en / Y-N) pass through
+      // unchanged, preserving the prior seed behaviour.
+      const norm = normaliseDialogueSlotWrite(schema, w.field, w.value);
+      if (!norm.ok) {
+        droppedFields.push(w.field);
+        continue;
+      }
+      validWrites.push({ field: w.field, value: norm.value });
     }
   }
 
@@ -3491,11 +3504,22 @@ export function tryResumePausedScript({
   if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
     for (const w of state.pending_writes) {
       if (state.values[w.field] !== undefined) continue;
-      // Defensive IR-LIM canonicalisation on drain after circuit-create
-      // resume (idempotent; scoped to ir_live_* — F1AC26FB #4.2).
-      const drainValue = w.field.startsWith('ir_live_')
-        ? coerceRecordReadingValue(w.field, w.value)
-        : w.value;
+      // P3 — normalise seeded pending_writes for the WHOLE numeric reading field
+      // set on the circuit-create resume drain (was scoped to ir_live_*).
+      // Coerce four-form LIM → "LIM", validate, and REJECT a near-match /
+      // alternate-sentinel / out-of-range / off-ladder value. Non-numeric fields
+      // pass through unchanged.
+      const norm = normaliseDialogueSlotWrite(schema, w.field, w.value);
+      if (!norm.ok) {
+        logger?.info?.(`${schema.logEventPrefix}_pending_write_rejected`, {
+          sessionId: session.sessionId,
+          circuit_ref: matchedRef,
+          field: w.field,
+          reason: norm.reason,
+        });
+        continue;
+      }
+      const drainValue = norm.value;
       applyWrite(session, schema, matchedRef, w.field, drainValue, now);
       drainedWrites.push({ ...w, value: drainValue });
     }

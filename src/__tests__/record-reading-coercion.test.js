@@ -98,16 +98,47 @@ describe('coerceRecordReadingValue — polarity_confirmed enum', () => {
   });
 });
 
-describe('coerceRecordReadingValue — IR LIM canonicalisation (F1AC26FB #4.2)', () => {
-  test.each(['LIM', 'lim', 'limb', 'limp', 'limit', 'limitation', 'limited', 'Lynn', 'Lym'])(
+describe('coerceRecordReadingValue — LIM canonicalisation (P3 2026-07-23; four-form policy)', () => {
+  // P3: only the FOUR canonical forms coerce to "LIM". The old broad matcher
+  // also accepted limit/limited/lynn/lym — those are now DELIBERATELY rejected
+  // (left unchanged so validateNumericReadingValue rejects them).
+  test.each(['LIM', 'lim', 'limb', 'limp', 'limitation'])(
     'ir_live_live_mohm "%s" → "LIM"',
     (v) => {
       expect(coerceRecordReadingValue('ir_live_live_mohm', v)).toBe('LIM');
     }
   );
 
+  test.each(['limit', 'limited', 'Lynn', 'Lym'])(
+    'ir_live_live_mohm near-match "%s" is NOT coerced (passes through unchanged)',
+    (v) => {
+      expect(coerceRecordReadingValue('ir_live_live_mohm', v)).toBe(v);
+    }
+  );
+
   test('ir_live_earth_mohm coerces LIM garbles too', () => {
     expect(coerceRecordReadingValue('ir_live_earth_mohm', 'limitation')).toBe('LIM');
+  });
+
+  test('P3 — LIM coercion now covers the whole NUMERIC_READING_FIELDS set', () => {
+    // ranged fields
+    expect(coerceRecordReadingValue('measured_zs_ohm', 'limitation')).toBe('LIM');
+    expect(coerceRecordReadingValue('rcd_time_ms', 'limb')).toBe('LIM');
+    expect(coerceRecordReadingValue('ocpd_rating_a', 'limp')).toBe('LIM');
+    expect(coerceRecordReadingValue('ocpd_breaking_capacity_ka', 'lim')).toBe('LIM');
+    expect(coerceRecordReadingValue('ir_test_voltage_v', 'LIM')).toBe('LIM');
+    // ungated numeric fields
+    expect(coerceRecordReadingValue('r1_r2_ohm', 'limitation')).toBe('LIM');
+    expect(coerceRecordReadingValue('r2_ohm', 'limitation')).toBe('LIM');
+    expect(coerceRecordReadingValue('ring_r1_ohm', 'limitation')).toBe('LIM');
+    expect(coerceRecordReadingValue('ring_rn_ohm', 'limitation')).toBe('LIM');
+    expect(coerceRecordReadingValue('ring_r2_ohm', 'limitation')).toBe('LIM');
+    expect(coerceRecordReadingValue('ocpd_max_zs_ohm', 'limitation')).toBe('LIM');
+    // near-matches never coerce, on ranged or ungated fields
+    expect(coerceRecordReadingValue('measured_zs_ohm', 'limited')).toBe('limited');
+    expect(coerceRecordReadingValue('r1_r2_ohm', 'lynn')).toBe('lynn');
+    // classification field NOT in the set → never coerced to LIM
+    expect(coerceRecordReadingValue('ocpd_type', 'limitation')).toBe('limitation');
   });
 
   test('numeric / ">N" / sentinel IR readings pass through verbatim', () => {

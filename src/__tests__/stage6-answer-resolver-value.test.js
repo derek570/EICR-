@@ -140,8 +140,10 @@ describe('resolveValueAnswer — sentinels', () => {
   // substring-matched by 'lim' in DISCONTINUOUS_PHRASES and silently wrote
   // ring_r1_ohm = ∞ (corruption, deduped on TTS). LIM is a STRING sentinel
   // consistent with record-reading-coercion.js / value-normalise.js.
-  test('"limb" / "lim" / "limitation" on a continuity field → write the string "LIM", never ∞', () => {
-    for (const phrase of ['limb', 'lim', 'Limb.', 'limitation', 'limited']) {
+  test('"limb" / "lim" / "limp" / "limitation" on a continuity field → write the string "LIM", never ∞', () => {
+    // P3 (2026-07-23): the four canonical forms only. "limited" is a near-match
+    // that must NOT coerce (asserted separately below).
+    for (const phrase of ['limb', 'lim', 'Limb.', 'limp', 'limitation']) {
       const verdict = resolveValueAnswer({
         userText: phrase,
         contextField: 'ring_r1_ohm',
@@ -155,15 +157,47 @@ describe('resolveValueAnswer — sentinels', () => {
     }
   });
 
-  test('"limitation" on a non-continuity field → escalate (not ∞, not a drop)', () => {
+  test('near-matches "limited"/"limit"/"lynn"/"lym" on a continuity field do NOT write LIM (P3)', () => {
+    for (const phrase of ['limited', 'limit', 'lynn', 'lym']) {
+      const verdict = resolveValueAnswer({
+        userText: phrase,
+        contextField: 'ring_r1_ohm',
+        contextCircuit: 2,
+        sourceTurnId: 't',
+      });
+      // Not a LIM auto-resolve; the resolver escalates (or otherwise does not
+      // write "LIM").
+      if (verdict.kind === 'auto_resolve') {
+        expect(verdict.writes[0].value).not.toBe('LIM');
+      } else {
+        expect(verdict.kind).toBe('escalate');
+      }
+    }
+  });
+
+  // P3 (2026-07-23) — LIM is a valid reading for EVERY numeric reading field,
+  // not just the continuity ones. A LIM reply for measured_zs_ohm now WRITES
+  // "LIM" (previously it escalated to terminalApology — the round-9 fix).
+  test('"limitation" on a non-continuity NUMERIC reading field (measured_zs_ohm) → write "LIM"', () => {
     const verdict = resolveValueAnswer({
       userText: 'limitation',
       contextField: 'measured_zs_ohm',
       contextCircuit: 2,
       sourceTurnId: 't',
     });
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].value).toBe('LIM');
+  });
+
+  test('"limitation" on a truly non-reading field → escalate (lim_on_non_numeric_reading_field)', () => {
+    const verdict = resolveValueAnswer({
+      userText: 'limitation',
+      contextField: 'ocpd_type',
+      contextCircuit: 2,
+      sourceTurnId: 't',
+    });
     expect(verdict.kind).toBe('escalate');
-    expect(verdict.parsed_hint).toBe('lim_on_non_continuity_field');
+    expect(verdict.parsed_hint).toBe('lim_on_non_numeric_reading_field');
   });
 
   // Word-boundary guard: "open"/"ol" tokens must not bite mid-word.

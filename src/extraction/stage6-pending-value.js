@@ -299,8 +299,12 @@ const BOOLEAN_VOCAB = new Set([
 ]);
 
 // Sentinel value vocabulary (LIM family + discontinuous/open + greater-than).
+// P3 (2026-07-23): widened the LIM family from lim|limitation to the full four
+// forms lim|limb|limp|limitation so a supported limb/limp reply is recognised
+// as a value (not mis-routed as a user-moved-on overtake, which would LOSE the
+// pending answer).
 const SENTINEL_VALUE_RE =
-  /\b(?:lim|limitation|discontinuous|open circuit|infinity|greater than \d+|>\s*\d+)\b/i;
+  /\b(?:lim|limb|limp|limitation|discontinuous|open circuit|infinity|greater than \d+|>\s*\d+)\b/i;
 
 let lexiconCache = null;
 function buildLexicon(fieldSchema) {

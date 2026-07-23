@@ -13,8 +13,16 @@
  * identical replay corpus passes — we are NOT taking the opportunity to
  * extend ring's vocabulary in this PR.
  */
+import { parseLimSlot } from './lim-slot.js';
+
 export function parseOhms(text) {
   if (typeof text !== 'string') return null;
+  // P3 — "LIM" (limitation) is a valid ring-leg value (the inspector could not
+  // obtain the reading). Checked before the numeric match so a LIM ring answer
+  // writes canonical "LIM" instead of re-asking. The four-form matcher is shared
+  // with the other numeric slot parsers.
+  const lim = parseLimSlot(text);
+  if (lim) return lim;
   // Numeric — accept "200", "0.43", ".43", or integer "1".
   const m = text.match(/-?\d*\.\d+|-?\d+/);
   if (!m) return null;

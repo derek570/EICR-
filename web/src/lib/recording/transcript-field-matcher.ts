@@ -368,8 +368,11 @@ const MAIN_SWITCH_BS_EN_PATTERN = new RegExp(
   String.raw`\b${SWITCH_DEVICE}\s+(?:is\s+)?(?:a\s+)?(?:bs\s*(?:en\s*)?)?(1361|3036|88|1631|60947|61008|61009|4293|5419)\b`,
   'gi'
 );
+// P3 (2026-07-23) — narrowed to the exact four LIM forms (was
+// `lim(itation|ited|b)?`, which accepted `limited` and missed `limp`) so the
+// whole web client obeys one four-form policy.
 const MAIN_SWITCH_BS_EN_LIM_PATTERN = new RegExp(
-  String.raw`\b${SWITCH_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b`,
+  String.raw`\b${SWITCH_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 const MAIN_SWITCH_RATING_PATTERN = new RegExp(
@@ -377,7 +380,7 @@ const MAIN_SWITCH_RATING_PATTERN = new RegExp(
   'gi'
 );
 const MAIN_SWITCH_LIM_PATTERN = new RegExp(
-  String.raw`\b${SWITCH_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:limitation|limited|lim)\b`,
+  String.raw`\b${SWITCH_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 // Supply protective device / DNO cutout / "main fuse" → spd_*
@@ -386,7 +389,7 @@ const SUPPLY_FUSE_BS_EN_PATTERN = new RegExp(
   'gi'
 );
 const SUPPLY_FUSE_BS_EN_LIM_PATTERN = new RegExp(
-  String.raw`\b${FUSE_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b`,
+  String.raw`\b${FUSE_DEVICE}\s+(?:(?:of\s+)?(?:the\s+)?)?(?:bs\s*(?:en\s*)?)?(?:number|standard)?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 const SUPPLY_FUSE_RATING_PATTERN = new RegExp(
@@ -394,7 +397,7 @@ const SUPPLY_FUSE_RATING_PATTERN = new RegExp(
   'gi'
 );
 const SUPPLY_FUSE_LIM_PATTERN = new RegExp(
-  String.raw`\b${FUSE_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:limitation|limited|lim)\b`,
+  String.raw`\b${FUSE_DEVICE}(?:\s+(?:current\s+)?(?:rating|size))?\s+(?:is\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b`,
   'gi'
 );
 
@@ -469,10 +472,15 @@ const IR_LL_POSTFIX =
   /(?:greater\s+than\s+|more\s+than\s+|>\s*|over\s+)?(\d+\.?\d*)\s*(?:mega?\s*ohms?|MΩ|grooms?|rooms?)?\s+live\s+to\s+(?:lives?|neutral)/gi;
 const IR_LL_POSTFIX_GREATER =
   /(?:greater\s+than|more\s+than|>|over)\s+(\d+\.?\d*)\s*(?:mega?\s*ohms?|MΩ|grooms?|rooms?)?\s+live\s+to\s+(?:lives?|neutral)/gi;
+// P3 (2026-07-23, feedback id 86) — the instant-regex writes land BEFORE
+// backend validation, so the client matcher must obey the SAME exact-four-form
+// LIM policy (lim/limb/limp/limitation). The old `lim(itation|ited|b)?` group
+// matched `limited` (a near-match that must NOT coerce) and missed `limp`;
+// narrowed to the exact four forms so a near-match produces NO client write.
 const IR_LE_LIM =
-  /\b(?:(?:live|light)\s+(?:to\s+)?earth|l[-–]?e|ir\s+live\s+(?:to\s+)?earth)\s+(?:(?:is|was)\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b/gi;
+  /\b(?:(?:live|light)\s+(?:to\s+)?earth|l[-–]?e|ir\s+live\s+(?:to\s+)?earth)\s+(?:(?:is|was)\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b/gi;
 const IR_LL_LIM =
-  /\b(?:live\s+to\s+(?:lives?|neutral)|l[-–]l)\s+(?:(?:is|are)\s+)?(?:a\s+)?(?:lim(?:itation|ited|b)?)\b/gi;
+  /\b(?:live\s+to\s+(?:lives?|neutral)|l[-–]l)\s+(?:(?:is|are)\s+)?(?:a\s+)?(?:lim|limb|limp|limitation)\b/gi;
 const TEST_VOLTAGE_PATTERN = /\b(?:test\s+)?voltage\s+(?:is\s+|of\s+|=\s*)?(\d+)/gi;
 
 // RCD / OCPD

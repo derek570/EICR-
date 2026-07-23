@@ -51,6 +51,8 @@
  * 24h CloudWatch sanity sweep after deploy is the calibration loop.
  */
 
+import { isValidSentinel } from './value-normalise.js';
+
 /**
  * Circuit-side numeric ranges, keyed by canonical Sonnet field name.
  *
@@ -77,6 +79,138 @@ export const CIRCUIT_FIELD_NUMERIC_RANGES = new Map([
  * @type {Map<string, {min: number, max: number}>}
  */
 export const BOARD_FIELD_NUMERIC_RANGES = new Map();
+
+/**
+ * P3 (2026-07-23, feedback id 86) — the canonical set of numeric READING /
+ * VALUE fields that accept "LIM" (limitation — the inspector could not obtain
+ * a reading). This is the ONE named allow-set that drives:
+ *   - the range-gate LIM acceptance (isWithinRange, below),
+ *   - post-coercion validation (validateNumericReadingValue, below),
+ *   - the shared garble coercion (record-reading-coercion.js coerces only the
+ *     four canonical LIM forms on members of this set),
+ *   - the cross-platform derivation / result-status guards (shared-utils +
+ *     iOS mirror the same membership via inlined sentinel sets).
+ *
+ * Membership = the SIX ranged fields (CIRCUIT_FIELD_NUMERIC_RANGES) PLUS the
+ * ungated numeric readings that have NO range gate (r1_r2_ohm, r2_ohm, the
+ * three ring legs, ocpd_max_zs_ohm, and the two IR mohm fields). Closed-enum
+ * CLASSIFICATION fields (ocpd_bs_en/type, rcd_bs_en/type, wiring_type,
+ * ref_method, polarity/button results) and structural identifiers
+ * (circuit_ref, designation) are FIRMLY OUT of scope — a "limitation" means
+ * "I could not obtain a reading", and a classification/identifier is not a
+ * reading. (Extending LIM to closed enums is a separate future plan.)
+ *
+ * @type {Set<string>}
+ */
+export const NUMERIC_READING_FIELDS = new Set([
+  // The six ranged fields (also in CIRCUIT_FIELD_NUMERIC_RANGES):
+  'measured_zs_ohm',
+  'rcd_time_ms',
+  'rcd_operating_current_ma',
+  'ocpd_rating_a',
+  'ocpd_breaking_capacity_ka',
+  'ir_test_voltage_v',
+  // Ungated numeric readings (no isWithinRange entry — validated only by
+  // validateNumericReadingValue below):
+  'r1_r2_ohm',
+  'r2_ohm',
+  'ring_r1_ohm',
+  'ring_rn_ohm',
+  'ring_r2_ohm',
+  'ocpd_max_zs_ohm',
+  'ir_live_live_mohm',
+  'ir_live_earth_mohm',
+]);
+
+/**
+ * P3 Fix 8 (2026-07-23) — the subset of NUMERIC_READING_FIELDS whose NEW LIM
+ * acceptance is gated behind the `lim_ranged_write_v1` client capability. These
+ * are the fields a pre-guard client would MIShandle on receiving a LIM: the
+ * derivation targets (measured_zs_ohm, r1_r2_ohm — recomputeAll would fabricate
+ * over the LIM) and the status / max-Zs fields (measured_zs_ohm,
+ * ocpd_max_zs_ohm, and ocpd_rating_a which feeds max-Zs), plus the other ranged
+ * fields whose LIM acceptance is entirely NEW in P3 (rejected pre-P3).
+ *
+ * The two IR mohm fields are DELIBERATELY EXCLUDED — they accepted LIM BEFORE
+ * P3 (no range gate) and are NOT derivation / status targets, so a pre-guard
+ * client already handled a LIM there safely. Gating them would REGRESS existing
+ * behaviour. The ring legs are included (their LIM acceptance is new in P3) —
+ * they are not recomputeAll targets, but gating the whole new-acceptance surface
+ * keeps the rollout boundary simple and conservative.
+ *
+ * @type {Set<string>}
+ */
+export const LIM_CAPABILITY_GATED_FIELDS = new Set(
+  [...NUMERIC_READING_FIELDS].filter(
+    (f) => f !== 'ir_live_live_mohm' && f !== 'ir_live_earth_mohm'
+  )
+);
+
+/**
+ * True when a (canonical) field's LIM acceptance is gated behind
+ * `lim_ranged_write_v1`, AND `value` is the canonical LIM sentinel. Used by the
+ * dispatchers + speculator to DENY a LIM write when the client hasn't advertised
+ * the capability.
+ *
+ * @param {string} field — canonical field name (alias-normalise first)
+ * @param {*} value — post-coercion value
+ * @returns {boolean}
+ */
+export function isCapabilityGatedLimWrite(field, value) {
+  return (
+    LIM_CAPABILITY_GATED_FIELDS.has(field) &&
+    typeof value === 'string' &&
+    value.trim().toLowerCase() === 'lim'
+  );
+}
+
+/**
+ * Dialogue-slot field aliases → canonical NUMERIC_READING_FIELDS names. The
+ * dialogue scripts seed writes under schema slot names that differ from the
+ * canonical Sonnet field name (e.g. the RCD trip-time slot is `rcd_trip_time`,
+ * schemas/rcd.js:42, not canonical `rcd_time_ms`). A membership/validation
+ * check against only the canonical set would miss such seeded alias writes, so
+ * normalise the field name through this map BEFORE any membership test — while
+ * still writing the schema's required wire field.
+ *
+ * @type {Map<string, string>}
+ */
+export const DIALOGUE_SLOT_FIELD_ALIASES = new Map([['rcd_trip_time', 'rcd_time_ms']]);
+
+/**
+ * Return the canonical NUMERIC_READING_FIELDS name for a possibly-aliased
+ * dialogue slot field, or the field unchanged when it has no alias.
+ *
+ * @param {string} field
+ * @returns {string}
+ */
+export function canonicaliseNumericReadingField(field) {
+  return DIALOGUE_SLOT_FIELD_ALIASES.get(field) ?? field;
+}
+
+/**
+ * P3 — the EXACT four LIM garble forms accepted anywhere in the pipeline.
+ * Enumerated (NOT fuzzy) per the parity §3E fuzzy-matching ban: only these
+ * four spellings canonicalise to "LIM". `limit`/`limited`/`lynn`/`lym` are
+ * DELIBERATELY excluded (they are common non-limitation words / far garbles);
+ * they must NOT coerce, so the post-coercion validator rejects them. Trailing
+ * punctuation is handled by the `\b` word boundaries. This is the single
+ * source of truth referenced by record-reading-coercion.js, the dialogue-slot
+ * parsers, and the answer/routing matchers.
+ *
+ * @type {RegExp}
+ */
+export const LIM_FORM_RE = /\b(?:lim|limb|limp|limitation)\b/i;
+
+/**
+ * True if `value` (a string) contains one of the four canonical LIM forms.
+ *
+ * @param {*} value
+ * @returns {boolean}
+ */
+export function isLimForm(value) {
+  return typeof value === 'string' && LIM_FORM_RE.test(value);
+}
 
 /**
  * Predicate: is `value` within the configured numeric range for `field`?
@@ -108,6 +242,16 @@ export function isWithinRange(field, value, rangeMap = CIRCUIT_FIELD_NUMERIC_RAN
   if (typeof value !== 'string') {
     return { ok: false, code: 'invalid_type', field, value };
   }
+  // P3 (2026-07-23, feedback id 86) — "LIM" (limitation: the inspector could
+  // not obtain a reading) is a legitimate value for EVERY ranged reading
+  // field. Accept the CANONICAL "LIM" here (record-reading-coercion.js has
+  // already canonicalised the four garble forms before this gate runs). The
+  // `typeof === 'string'` guard above is load-bearing: `["LIM"]` must NOT
+  // stringify through — an array/object still hits the invalid_type gate. Only
+  // the exact "LIM" sentinel is admitted; the OTHER sentinels (n/a, na, ∞,
+  // inf, infinity) stay rejected on ranged fields (a "not applicable" or
+  // "discontinuous" is not a valid measurement here — only a limitation is).
+  if (value.trim().toLowerCase() === 'lim') return { ok: true };
   // Blank passes — see JSDoc rationale above. The dispatcher's coercion
   // pass + the upstream enum gate already deal with the "Sonnet emitted
   // a blank value on a closed-enum field" failure mode.
@@ -141,4 +285,76 @@ export function isWithinRange(field, value, rangeMap = CIRCUIT_FIELD_NUMERIC_RAN
     };
   }
   return { ok: true };
+}
+
+/**
+ * P3 (2026-07-23, feedback id 86) — post-coercion validation for the WHOLE
+ * NUMERIC_READING_FIELDS set, invoked from BOTH the direct record_reading
+ * dispatcher AND the set_field_for_all_circuits bulk dispatcher.
+ *
+ * WHY this exists on top of isWithinRange: only the SIX ranged fields have an
+ * isWithinRange entry. The ungated numeric readings (r1_r2_ohm, r2_ohm, the
+ * three ring legs, ocpd_max_zs_ohm, the two IR mohm fields) have NO gate — so
+ * a near-match garble the coercion left unchanged (e.g. `r1_r2_ohm="limited"`)
+ * would persist VERBATIM and then be treated as blank by the derivation guard
+ * and overwritten. This validator rejects any non-numeric string on an ungated
+ * numeric field that is not a recognised sentinel / off-scale form / canonical
+ * LIM.
+ *
+ * Contract per field class:
+ *   - Ranged field (in CIRCUIT_FIELD_NUMERIC_RANGES): delegate to isWithinRange
+ *     so it stays the SINGLE authority (numeric bounds + canonical LIM accepted;
+ *     other sentinels + out-of-range rejected).
+ *   - Ungated numeric reading field: accept finite numerics (string or number),
+ *     `>N`/`<N` off-scale forms, the recognised VALID_SENTINELS (n/a, na, ∞,
+ *     inf, infinity — legitimate for IR/ring fields today), canonical "LIM",
+ *     and blank; REJECT every other string (the four near-matches included).
+ *   - Any field NOT in NUMERIC_READING_FIELDS: pass through {ok:true} (not our
+ *     concern — the closed-enum + text validators own those).
+ *
+ * The caller (dispatcher) passes the CANONICAL field name (or normalises a
+ * dialogue-slot alias first via canonicaliseNumericReadingField). Coercion
+ * (record-reading-coercion.js) runs BEFORE this so canonical "LIM" is what we
+ * see for an accepted garble.
+ *
+ * @param {string} field — canonical Sonnet field name (alias-normalised)
+ * @param {string|number|*} value — post-coercion value
+ * @returns {{ok: true} | {ok: false, code: string, field: string, value: any, min?: number, max?: number}}
+ */
+export function validateNumericReadingValue(field, value) {
+  // Ranged fields → isWithinRange is authoritative (bounds + LIM + sentinel
+  // rejection all live there). Keeps one source of truth for the six.
+  if (CIRCUIT_FIELD_NUMERIC_RANGES.has(field)) {
+    return isWithinRange(field, value, CIRCUIT_FIELD_NUMERIC_RANGES);
+  }
+  // Not a numeric reading field → not this validator's concern.
+  if (!NUMERIC_READING_FIELDS.has(field)) return { ok: true };
+
+  // Ungated numeric reading field.
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? { ok: true }
+      : { ok: false, code: 'invalid_type', field, value };
+  }
+  if (typeof value !== 'string') {
+    return { ok: false, code: 'invalid_type', field, value };
+  }
+  const v = value.trim();
+  if (v === '') return { ok: true };
+  if (v.toLowerCase() === 'lim') return { ok: true }; // canonical LIM (post-coercion)
+  // ocpd_max_zs_ohm is a COMPUTED ceiling — only a finite numeric or "LIM" is
+  // meaningful. Reject the off-scale (>N/<N) and discontinuous/N-A sentinels
+  // that ARE legitimate on a measured continuity / IR reading.
+  if (field === 'ocpd_max_zs_ohm') {
+    return Number.isFinite(Number(v))
+      ? { ok: true }
+      : { ok: false, code: 'value_invalid_numeric_reading', field, value };
+  }
+  if (/^[<>]\s*\d+(?:\.\d+)?$/.test(v)) return { ok: true }; // off-scale sentinel form
+  if (Number.isFinite(Number(v))) return { ok: true }; // numeric string
+  // Field-appropriate NON-LIM sentinels: the discontinuous/not-applicable
+  // markers (n/a, na, ∞, inf, infinity) are legitimate on a real measured
+  // reading (continuity / IR).
+  if (isValidSentinel(v)) return { ok: true };
+  return { ok: false, code: 'value_invalid_numeric_reading', field, value };
 }

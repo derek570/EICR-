@@ -13,8 +13,13 @@
  *
  * Returns the canonical integer string or null.
  */
+import { parseLimSlot } from './lim-slot.js';
+
 export function parseKa(text) {
   if (typeof text !== 'string' || !text) return null;
+  // P3 — "LIM" (limitation) is a valid breaking-capacity value.
+  const lim = parseLimSlot(text);
+  if (lim) return lim;
   const m = text.match(/\b(\d+(?:\.\d+)?)\s*(?:k\s*a)?\b/i);
   if (!m) return null;
   const n = Number(m[1]);

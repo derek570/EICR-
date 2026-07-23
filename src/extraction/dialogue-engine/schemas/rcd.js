@@ -73,8 +73,11 @@ const slots = [
     // the `\btrip\s*time\b` anchor is prefix-agnostic; the fix for
     // that garble is the `ICD` entry-trigger alias below, without
     // which the extractor was never consulted.
+    // P3 — LIM alternation: "trip time is a limitation" captures the LIM token
+    // (m[2]); parseMs canonicalises it to "LIM". Volunteered-only, so this is
+    // the only path a LIM trip time can arrive.
     namedExtractor:
-      /(?:\btrip\s*time\b|\btryptoid\b|\btriptan\b)[^∞]{0,40}?(\d+(?:\.\d+)?)\s*(?:m\s*s|millisecond|milliseconds)\b/i,
+      /(?:\btrip\s*time\b|\btryptoid\b|\btriptan\b)[^∞]{0,40}?(?:(\d+(?:\.\d+)?)\s*(?:m\s*s|millisecond|milliseconds)\b|(lim|limb|limp|limitation)\b)/i,
     acceptsBareValue: false,
     volunteeredOnly: true,
     countsTowardCancelTally: false,
@@ -118,11 +121,15 @@ const slots = [
     acceptsBareValue: true,
   },
   {
+    // P3 — LIM alternation so "operating current is a limitation" captures LIM.
     field: 'rcd_operating_current_ma',
     label: 'operating current',
     question: "What's the operating current in mA?",
     parser: parseMa,
-    namedExtractor: /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b/i,
+    // P3 — numeric arm OR a field-qualified LIM anchored to an operating-current
+    // phrase (see rcbo.js).
+    namedExtractor:
+      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|milli\s*amps?|mA)\b\s*(?:(?:is|was|reads?|equals?|of)\b\s*)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
 ];

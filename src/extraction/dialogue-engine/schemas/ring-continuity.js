@@ -25,7 +25,9 @@ import {
 // in the regex but don't write — which is the existing tested
 // behaviour. Restoring the sentinels' write semantics is out of PR1
 // scope; the byte-identical replay corpus depends on this match.
-const RING_VALUE_GROUP = '\\d*\\.?\\d+|infinite|open|discontinuous|infinity';
+// P3 — the four LIM forms added so a ring-leg "limitation" reply is captured by
+// the namedExtractor and canonicalised to "LIM" by parseOhms.
+const RING_VALUE_GROUP = '\\d*\\.?\\d+|infinite|open|discontinuous|infinity|lim|limb|limp|limitation';
 
 // KNOWN LIMITATION (orig. 2026-05-21 session 293F074F; "dead code" claim
 // corrected 2026-06-16): this schema IS the live ring-continuity path

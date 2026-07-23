@@ -1072,6 +1072,15 @@ async function buildResolvedBody({
       return {
         answered: true,
         untrusted_user_text: outcome.user_text,
+        // NOTE (P3): a dispatched write CAN be a non-error SKIP (capability gate
+        // / the PRE-EXISTING low-conf pre-apply gate), in which case
+        // auto_resolved:true here over-reports. Correctly routing a skip to a
+        // failure path needs a NEW dispatch_denied match_status + caller handling
+        // (the resolved statuses are a documented model contract) — a
+        // PRE-EXISTING ask-resolver concern (the low-conf skip always had it),
+        // out of P3's scope. The pending-value branch (below) DOES apologise on a
+        // skip via terminalApology; the direct record_reading + bulk + speculator
+        // paths are fully gated. Tracked as a follow-up.
         auto_resolved: true,
         match_status: 'enum_resolved',
         resolved_writes: dispatched,
@@ -1162,6 +1171,7 @@ async function buildResolvedBody({
       return {
         answered: true,
         untrusted_user_text: outcome.user_text,
+        // NOTE (P3): skip over-reporting is a pre-existing follow-up (see enum branch).
         auto_resolved: true,
         match_status: 'value_resolved',
         resolved_writes: dispatched,
@@ -1266,6 +1276,7 @@ async function buildResolvedBody({
     return {
       answered: true,
       untrusted_user_text: outcome.user_text,
+      // NOTE (P3): skip over-reporting is a pre-existing follow-up (see enum branch).
       auto_resolved: true,
       match_status: 'auto_resolved',
       resolved_writes: dispatched,

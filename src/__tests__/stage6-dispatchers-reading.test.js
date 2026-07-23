@@ -26,7 +26,7 @@
  */
 
 import { jest } from '@jest/globals';
-import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
+import { createWriteDispatcher, createAutoResolveWriteHook } from '../extraction/stage6-dispatchers.js';
 import { createPerTurnWrites, encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
 
 function mockLogger() {
@@ -311,6 +311,74 @@ describe('dispatchRecordReading', () => {
     });
   });
 
+  // P3 Fix 8 — lim_ranged_write_v1 rollout gate.
+  describe('lim_ranged_write_v1 gate (LIM on a capability-gated field)', () => {
+    function limCall(field = 'measured_zs_ohm', value = 'LIM') {
+      return {
+        tool_call_id: 'tu_lim',
+        name: 'record_reading',
+        input: { field, circuit: 3, value, source_turn_id: 't1' },
+      };
+    }
+
+    test('WITHOUT capability: LIM on measured_zs_ohm is DENIED (skipped, no mutation)', async () => {
+      const session = makeSession({ circuits: { 3: {} } });
+      const logger = mockLogger();
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, logger, 'turn-1', writes); // no capability
+      const result = await d(limCall(), {});
+      expect(result.is_error).toBe(false);
+      expect(JSON.parse(result.content)).toMatchObject({
+        ok: true,
+        skipped: true,
+        reason: 'lim_ranged_write_capability_missing',
+      });
+      expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBeUndefined();
+      expect(writes.readings.size).toBe(0);
+    });
+
+    test('WITH capability: LIM on measured_zs_ohm APPLIES + reads back', async () => {
+      const session = makeSession({ circuits: { 3: {} } });
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes, {
+        hasLimRangedWriteV1: true,
+      });
+      const result = await d(limCall(), {});
+      expect(result.is_error).toBe(false);
+      expect(JSON.parse(result.content).skipped).toBeUndefined();
+      expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('LIM');
+      expect(writes.readings.size).toBe(1);
+    });
+
+    test('the four LIM garble forms are all denied without the capability', async () => {
+      for (const form of ['lim', 'limb', 'limp', 'limitation']) {
+        const session = makeSession({ circuits: { 3: {} } });
+        const writes = createPerTurnWrites();
+        const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes);
+        const result = await d(limCall('measured_zs_ohm', form), {});
+        expect(JSON.parse(result.content).reason).toBe('lim_ranged_write_capability_missing');
+        expect(writes.readings.size).toBe(0);
+      }
+    });
+
+    test('IR fields are NOT gated — LIM applies without the capability (pre-P3 behaviour)', async () => {
+      const session = makeSession({ circuits: { 3: {} } });
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes); // no capability
+      const result = await d(limCall('ir_live_live_mohm', 'limitation'), {});
+      expect(JSON.parse(result.content).skipped).toBeUndefined();
+      expect(session.stateSnapshot.circuits[3].ir_live_live_mohm).toBe('LIM');
+    });
+
+    test('a numeric write is unaffected by the gate', async () => {
+      const session = makeSession({ circuits: { 3: {} } });
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes);
+      await d(limCall('measured_zs_ohm', '0.35'), {});
+      expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('0.35');
+    });
+  });
+
   test('round counter monotonically increments across three sequential calls (STO-01)', async () => {
     const session = makeSession({ circuits: { 1: {}, 2: {}, 3: {} } });
     const logger = mockLogger();
@@ -571,5 +639,47 @@ describe('dispatchClearReading', () => {
     expect(writes.cleared).toHaveLength(1);
     expect(writes.cleared[0]).toEqual({ field: 'measured_zs_ohm', circuit: 3, reason: 'misheard' });
     expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('0.42');
+  });
+});
+
+// P3 Codex-r4 F2 — the auto-resolve write hook (a LIM/value answer to an
+// ask_user / pending-value question) dispatches through record_reading, so it
+// must carry the same capability context: a capable client's LIM answer applies;
+// a capability-absent client's is denied (not falsely reported as written).
+describe('createAutoResolveWriteHook — lim_ranged_write_v1 capability threading', () => {
+  function limWrite() {
+    return {
+      tool: 'record_reading',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      value: 'LIM',
+      source_turn_id: 't1',
+    };
+  }
+
+  test('WITH capability: a LIM ask-answer APPLIES to the snapshot', async () => {
+    const session = makeSession({ circuits: { 3: {} } });
+    const writes = createPerTurnWrites();
+    const hook = createAutoResolveWriteHook(session, mockLogger(), 't1', writes, {
+      hasLimRangedWriteV1: true,
+    });
+    const res = await hook(limWrite(), { toolCallId: 'ask-1' });
+    expect(res.ok).toBe(true);
+    expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBe('LIM');
+    expect(writes.readings.size).toBe(1);
+  });
+
+  test('WITHOUT capability: a LIM ask-answer is DENIED (skipped, no snapshot write)', async () => {
+    const session = makeSession({ circuits: { 3: {} } });
+    const writes = createPerTurnWrites();
+    const hook = createAutoResolveWriteHook(session, mockLogger(), 't1', writes); // no capability
+    const res = await hook(limWrite(), { toolCallId: 'ask-1' });
+    // The dispatcher returns a non-error skip; the snapshot is NOT mutated.
+    expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBeUndefined();
+    expect(writes.readings.size).toBe(0);
+    expect(res.body?.skipped).toBe(true);
+    // C5-F3 — a capability-denied skip must NOT report success (else the ask
+    // resolver falsely claims auto_resolved with no write).
+    expect(res.ok).toBe(false);
   });
 });

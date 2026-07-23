@@ -49,6 +49,29 @@ function parseImpedance(s: string | undefined | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * P3 (2026-07-23, feedback id 86) — recognised non-numeric SENTINELS that mean
+ * the field is INTENTIONALLY occupied (the inspector set "LIM" / "N/A" / a
+ * discontinuous marker), NOT blank. `parseImpedance` returns `null` for these,
+ * so without this guard `recompute` would treat a LIM Zs as an empty target and
+ * FABRICATE a derived value over it — silently reversing the spoken read-back
+ * (Audio-First invariant #2). And because `recomputeAll` runs job-wide on every
+ * apply, the next dictated reading on ANY circuit would clobber the LIM.
+ *
+ * INLINED (not imported) on purpose: `shared-utils` is consumed BY `src/` / web
+ * / iOS; importing the backend `value-normalise.js` into `shared-utils` would be
+ * an invalid one-way-dependency edge. Kept byte-aligned with the backend
+ * `VALID_SENTINELS` (value-normalise.js) AND the iOS `CircuitDerivations.swift`
+ * mirror — a parity test pins all three.
+ */
+export const DERIVATION_SENTINELS = new Set(['n/a', 'na', 'lim', '∞', 'inf', 'infinity']);
+
+/** True when `s` is a recognised occupied-but-non-numeric sentinel. */
+function isDerivationSentinel(s: string | undefined | null): boolean {
+  if (s == null) return false;
+  return DERIVATION_SENTINELS.has(String(s).trim().toLowerCase());
+}
+
 /** 2 dp result, trailing-zero trim. Matches the inspector's typed-
  *  reading convention so derived values display identically to
  *  manually-entered ones. */
@@ -80,25 +103,37 @@ export function recompute(
   const r1r2 = parseImpedance(circuit.r1_r2_ohm);
   const zs = parseImpedance(circuit.measured_zs_ohm);
 
+  // P3 — a sentinel target (e.g. LIM Zs) is INTENTIONALLY occupied, not blank.
+  // parseImpedance already returned null for it, so guard each fill against
+  // overwriting a sentinel. Note the Ze guard is on the `ze` PARAMETER, not a
+  // circuit field: DerivableCircuit has no Ze field (Ze arrives via the arg
+  // from resolveZe), so guarding a circuit.earth_loop_impedance_ze would be a
+  // no-op that leaves the fabrication hole open.
+  const zsIsSentinel = isDerivationSentinel(circuit.measured_zs_ohm);
+  const r1r2IsSentinel = isDerivationSentinel(circuit.r1_r2_ohm);
+  const zeIsSentinel = isDerivationSentinel(ze);
+
   // Zs = Ze + R1+R2 — fill Zs when blank and the other two are
-  // numeric.
-  if (zs == null && zeNum != null && r1r2 != null) {
+  // numeric. Skip when Zs is a sentinel (LIM/N/A/∞ must not be overwritten).
+  if (zs == null && !zsIsSentinel && zeNum != null && r1r2 != null) {
     const derived = format(zeNum + r1r2);
     circuit.measured_zs_ohm = derived;
     return { kind: 'filled_zs', value: derived };
   }
 
   // R1+R2 = Zs - Ze — fill R1+R2 when blank, the other two are
-  // numeric, AND the result is non-negative (Zs ≥ Ze).
-  if (r1r2 == null && zeNum != null && zs != null && zs >= zeNum) {
+  // numeric, AND the result is non-negative (Zs ≥ Ze). Skip when R1+R2 is a
+  // sentinel.
+  if (r1r2 == null && !r1r2IsSentinel && zeNum != null && zs != null && zs >= zeNum) {
     const derived = format(zs - zeNum);
     circuit.r1_r2_ohm = derived;
     return { kind: 'filled_r1r2', value: derived };
   }
 
   // Ze = Zs - R1+R2 — rare in practice. Caller decides whether to
-  // write the derived value to supply / board.
-  if (zeNum == null && zs != null && r1r2 != null && zs >= r1r2) {
+  // write the derived value to supply / board. Skip when the Ze parameter is a
+  // sentinel (a LIM board Ze must not be replaced by a fabricated value).
+  if (zeNum == null && !zeIsSentinel && zs != null && r1r2 != null && zs >= r1r2) {
     return { kind: 'filled_ze', value: format(zs - r1r2) };
   }
 
@@ -155,9 +190,15 @@ export function recomputeAll(job: JobLike): Array<Record<string, unknown>> | nul
     const ze = resolveZe(row, job);
     const copy = { ...row } as DerivableCircuit & Record<string, unknown>;
     const outcome = recompute(copy, ze);
-    if (outcome.kind === 'no_change') return row;
-    changed = true;
-    return copy;
+    // P3 — only the outcomes that MUTATE the row (filled_zs / filled_r1r2)
+    // report a change. filled_ze is caller-owned (recompute returns the value;
+    // the row is untouched), so it must NOT report a spurious row change +
+    // updateJob round trip.
+    if (outcome.kind === 'filled_zs' || outcome.kind === 'filled_r1r2') {
+      changed = true;
+      return copy;
+    }
+    return row;
   });
   return changed ? next : null;
 }

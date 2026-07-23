@@ -793,9 +793,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // dispatchRecordReading's PRE-APPLY gate can skip `< 0.5` readings
     // until the client advertises low_conf_readback_v1 (rollout safety).
     const hasLowConfReadbackV1 = entry?.voiceLatency?.capabilities?.hasLowConfReadbackV1 === true;
+    // P3 Fix 8 — thread the LIM-ranged-write capability so the record_reading +
+    // bulk dispatchers DENY a LIM on a capability-gated field until the client
+    // advertises `lim_ranged_write_v1` (rollout safety: a pre-guard client would
+    // silently overwrite the LIM via recomputeAll / render a false-green status).
+    const hasLimRangedWriteV1 = entry?.voiceLatency?.capabilities?.hasLimRangedWriteV1 === true;
     const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, {
       ws,
       hasLowConfReadbackV1,
+      hasLimRangedWriteV1,
     });
     // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
     // path into the normal write infrastructure: when ask_user carries a
@@ -808,7 +814,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       liveSession,
       log,
       turnId,
-      perTurnWrites
+      perTurnWrites,
+      // P3 Codex-r4 — a LIM/value answer to an ask_user / pending-value question
+      // resolves through record_reading, so carry the same capability context.
+      { hasLimRangedWriteV1 }
     );
     // A1 agentic-voice (2026-07-23) — the two read-only answer-feature
     // dispatchers. Constructed INDEPENDENTLY of pendingAsks (both composition
@@ -939,6 +948,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           costTracker: session.costTracker,
           logger: log,
           initialDesignations,
+          // P3 Fix 8 — deny LIM pre-synthesis on capability-gated fields when the
+          // client hasn't advertised `lim_ranged_write_v1` (the dispatcher will
+          // SKIP the write, so a pre-synth confirmation would be a false
+          // read-back for a write that never lands).
+          hasLimRangedWriteV1: entry?.voiceLatency?.capabilities?.hasLimRangedWriteV1 === true,
           // Plan B (2026-06-17) B1a — SUPPRESS the mid-stream advertisement.
           //
           // PREVIOUSLY (2026-05-28 mid-stream emit, lever 1): the moment a

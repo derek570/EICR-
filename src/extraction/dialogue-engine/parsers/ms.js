@@ -19,8 +19,13 @@
  * stores trip time as a string for consistency with other ring/IR
  * fields.
  */
+import { parseLimSlot } from './lim-slot.js';
+
 export function parseMs(text) {
   if (typeof text !== 'string' || !text) return null;
+  // P3 — "LIM" (limitation) is a valid RCD trip-time value.
+  const lim = parseLimSlot(text);
+  if (lim) return lim;
   // \b\d+(?:\.\d+)?\b captures bare integers and decimals (some testers
   // emit "12.5 ms"); the trailing unit is optional so a bare-value
   // answer like "25" still parses.

@@ -80,6 +80,13 @@ import {
 import { logToolCall, logReadingFieldGuessedFromValue } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
+import {
+  validateNumericReadingValue,
+  canonicaliseNumericReadingField,
+  isCapabilityGatedLimWrite,
+  NUMERIC_READING_FIELDS,
+} from './value-enum-validator.js';
+import { isLimRangedWriteKilled } from './voice-latency-config.js';
 import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
 
 // Field schema is loaded once at module init (same pattern as
@@ -154,6 +161,42 @@ export async function dispatchRecordReading(call, ctx) {
   // only checked circuit existence + confidence so the ordering didn't
   // matter. With the enum gate added, ordering is load-bearing.
   input.value = coerceRecordReadingValue(input.field, input.value);
+
+  // P3 Fix 8 — rollout gate. Deny a LIM write on a capability-gated numeric
+  // reading field until the client advertises `lim_ranged_write_v1`. A pre-guard
+  // client lacks the Fix 5/6/9 sentinel guards, so accepting the LIM here would
+  // let its recomputeAll fabricate over it (silent overwrite — Audio-First #2)
+  // or render a false-green circuit result. Returned as a NON-error skip (no
+  // snapshot mutation, no wire, no confirmation); the marker-② catch-all net
+  // speaks an apology so the chimed turn is never silent. IR fields are NOT
+  // gated (they accepted LIM before P3 and are not derivation/status targets).
+  // Deny LIM when the client hasn't advertised the capability OR the SERVER
+  // kill-switch (LIM_RANGED_WRITE_DISABLED) is on — the latter is the rollback
+  // boundary that works even for an already-deployed client that can't revoke
+  // its advert.
+  const denyLim = isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true;
+  if (denyLim && isCapabilityGatedLimWrite(canonicaliseNumericReadingField(input.field), input.value)) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: false,
+      outcome: 'skipped',
+      validation_error: null,
+      input_summary: {
+        field: input.field,
+        circuit: input.circuit,
+        reason: 'lim_ranged_write_capability_missing',
+      },
+    });
+    return envelope(
+      call.tool_call_id,
+      { ok: true, skipped: true, reason: 'lim_ranged_write_capability_missing' },
+      false
+    );
+  }
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1467,6 +1510,68 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // P3 (2026-07-23, feedback id 86) — the bulk applier previously skipped BOTH
+  // coercion and the numeric-range/validate policy: `set_field_for_all_circuits
+  // {measured_zs_ohm,"limitation"}` stored "limitation" verbatim across every
+  // circuit, and n/a/∞/out-of-range values slipped through too. Coerce the
+  // value (four-form LIM → "LIM") then run the SAME validateNumericReadingValue
+  // policy as the direct record_reading path BEFORE applying any circuit, so a
+  // near-match / alternate-sentinel / out-of-range bulk write is rejected once
+  // (never persisted to N circuits). Field name alias-normalised for the
+  // membership/validation check. Only numeric reading fields are affected;
+  // select fields are already enforced by validateSetFieldForAllCircuits.
+  input.value = coerceRecordReadingValue(input.field, input.value);
+  const canonicalBulkField = canonicaliseNumericReadingField(input.field);
+  // P3 Fix 8 — rollout gate (mirror of the direct record_reading path): deny a
+  // bulk LIM write on a capability-gated field when the client hasn't advertised
+  // `lim_ranged_write_v1` OR the server kill-switch is on. Non-error skip so the
+  // marker-② net speaks.
+  if (
+    (isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true) &&
+    isCapabilityGatedLimWrite(canonicalBulkField, input.value)
+  ) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: false,
+      outcome: 'skipped',
+      validation_error: null,
+      input_summary: { field: input.field, reason: 'lim_ranged_write_capability_missing' },
+    });
+    return envelope(
+      call.tool_call_id,
+      { ok: true, skipped: true, reason: 'lim_ranged_write_capability_missing' },
+      false
+    );
+  }
+  if (NUMERIC_READING_FIELDS.has(canonicalBulkField)) {
+    const numericVerdict = validateNumericReadingValue(canonicalBulkField, input.value);
+    if (!numericVerdict.ok) {
+      const bulkErr = {
+        code: numericVerdict.code,
+        field: 'value',
+        value: input.value,
+        min: numericVerdict.min,
+        max: numericVerdict.max,
+      };
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'set_field_for_all_circuits',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: bulkErr,
+        input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+      });
+      return envelope(call.tool_call_id, { ok: false, error: bulkErr }, true);
+    }
   }
 
   const scope = input.scope ?? 'non_spare';

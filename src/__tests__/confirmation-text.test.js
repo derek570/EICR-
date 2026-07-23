@@ -396,3 +396,48 @@ describe('buildFanoutGroupKey — F/U-1 r3 shared fan-out identity (bundler grou
     ).toBe('f|||');
   });
 });
+
+// P3 (2026-07-23, feedback id 86) — enhanced LIM read-back.
+describe('confirmation-text — P3 LIM enhanced spoken tail', () => {
+  test('a LIM Zs reads back "recorded as LIM — limitation"', () => {
+    expect(buildConfirmationText('measured_zs_ohm', 'LIM', 4)).toBe(
+      'Circuit 4, Zs recorded as LIM — limitation'
+    );
+  });
+
+  test('LIM phrasing is used for every numeric reading field', () => {
+    expect(buildConfirmationText('r1_r2_ohm', 'LIM', 2)).toBe(
+      'Circuit 2, R1 plus R2 recorded as LIM — limitation'
+    );
+    expect(buildConfirmationText('ring_r1_ohm', 'LIM', 3)).toContain('recorded as LIM — limitation');
+    expect(buildConfirmationText('ocpd_rating_a', 'LIM', 5)).toContain('recorded as LIM — limitation');
+  });
+
+  test('rcd_operating_current_ma has an explicit spoken label', () => {
+    expect(buildConfirmationText('rcd_operating_current_ma', '30', 1)).toBe(
+      'Circuit 1, RCD operating current 30'
+    );
+    expect(buildConfirmationText('rcd_operating_current_ma', 'LIM', 1)).toBe(
+      'Circuit 1, RCD operating current recorded as LIM — limitation'
+    );
+  });
+
+  test('a grouped LIM fan-out uses the same enhanced tail', () => {
+    expect(buildGroupedConfirmationText('measured_zs_ohm', 'LIM', [1, 2, 3], 3)).toBe(
+      'All circuits, Zs recorded as LIM — limitation'
+    );
+    expect(buildGroupedConfirmationText('measured_zs_ohm', 'LIM', [1, 2, 3])).toBe(
+      'Circuits 1 to 3, Zs recorded as LIM — limitation'
+    );
+  });
+
+  test('a numeric value still reads plainly (LIM branch does not fire)', () => {
+    expect(buildConfirmationText('measured_zs_ohm', '0.62', 1)).toBe('Circuit 1, Zs 0.62');
+  });
+
+  test('case-insensitive: "lim" also triggers the enhanced tail', () => {
+    expect(buildConfirmationText('measured_zs_ohm', 'lim', 1)).toBe(
+      'Circuit 1, Zs recorded as LIM — limitation'
+    );
+  });
+});

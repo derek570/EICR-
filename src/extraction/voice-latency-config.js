@@ -99,6 +99,23 @@ export function isKillSwitchActive() {
 }
 
 /**
+ * P3 Fix 8 (2026-07-23) — SERVER kill-switch for LIM acceptance on the ranged
+ * reading fields. Read fresh every call. When `LIM_RANGED_WRITE_DISABLED=true`
+ * the backend DENIES a LIM write on a capability-gated field EVEN FOR a client
+ * that advertises `lim_ranged_write_v1`. This is the real rollback boundary:
+ * an already-deployed iOS build's advert cannot be remotely revoked, so
+ * reverting the client advert is NOT sufficient — flipping this env on the live
+ * task def (source: ecs/task-def-backend.json) forces deny for every client.
+ * The effective condition is: accept LIM iff (client advertises the capability)
+ * AND NOT (this switch is on).
+ *
+ * @returns {boolean}
+ */
+export function isLimRangedWriteKilled() {
+  return parseBool(process.env.LIM_RANGED_WRITE_DISABLED);
+}
+
+/**
  * Names of the snapshot flags, in declaration order. Exposed so the
  * startup-log emitter (1a.4) can iterate without duplicating the
  * list.
@@ -169,6 +186,15 @@ const KNOWN_SUPPORTS = Object.freeze([
   // `hasLowConfReadbackV1` ACCESSOR below (on BOTH the populated result
   // AND the empty()/v0 shape).
   'low_conf_readback_v1',
+  // P3 (2026-07-23, feedback id 86). A client advertises `lim_ranged_write_v1`
+  // once it carries the sentinel-safe guards (Fix 5 derivation guard, Fix 6
+  // OCPD→max-Zs invalidation, Fix 9 result-status). It is a ROLLOUT-SEQUENCING
+  // gate: until advertised, the backend DENIES accepting "LIM" on a RANGED
+  // reading field (via record_reading / bulk / dialogue writes / speculation),
+  // so a pre-guard client never silently overwrites a LIM via recomputeAll or
+  // renders a false-green circuit result. Web advertises it in the same wave
+  // (deploys instantly); iOS on its own TestFlight build.
+  'lim_ranged_write_v1',
 ]);
 
 export function parseVoiceLatencyCapabilities(capabilitiesObj) {
@@ -188,6 +214,12 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     // `undefined` (falsy) which is the SAFE default (skip < 0.5 apply),
     // but accessing it must not throw / drift from the populated shape.
     hasLowConfReadbackV1: false,
+    // P3 (2026-07-23) — lim_ranged_write_v1: the client carries the Fix 5/6/9
+    // sentinel-safe derivation + status guards, so the backend may ACCEPT a LIM
+    // on a ranged reading field. Absent/false is the SAFE default (backend
+    // denies LIM acceptance) so a pre-guard client never silently overwrites a
+    // LIM via recomputeAll or shows a false-green status.
+    hasLimRangedWriteV1: false,
     raw,
   });
 
@@ -212,6 +244,7 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     hasRegexFastV2: supports.has('regex_fast_v2'),
     hasClientPlaybackTelemetry: supports.has('client_playback_telemetry'),
     hasLowConfReadbackV1: supports.has('low_conf_readback_v1'),
+    hasLimRangedWriteV1: supports.has('lim_ranged_write_v1'),
     raw,
   };
 }
