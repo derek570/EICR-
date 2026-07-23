@@ -305,7 +305,14 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
       // dispatcher contracts emit JSON; a parse failure is a contract bug.
       // Leave body null and let the ok flag carry the signal.
     }
-    return { ok: env.is_error !== true, body };
+    // P3 Codex-r5 — a non-error SKIP (the record_reading dispatcher's
+    // capability-missing / low-conf pre-apply gate returns {ok:true,skipped:true}
+    // with NO snapshot or per-turn write) must NOT be reported as a successful
+    // auto-resolve. Treating it as failure routes the ask resolver to its
+    // apology/failure path instead of falsely claiming auto_resolved with no
+    // write.
+    const skipped = body?.skipped === true;
+    return { ok: env.is_error !== true && !skipped, body };
   };
 }
 

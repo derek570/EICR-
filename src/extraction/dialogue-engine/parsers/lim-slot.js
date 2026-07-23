@@ -28,7 +28,7 @@
  * @type {RegExp}
  */
 const BARE_LIM_RE =
-  /^(?:(?:it'?s|that'?s|it\s+is|that\s+is|the\s+(?:reading|value)\s+is|reading\s+is|value\s+is)\s+)?(?:an?\s+)?(?:lim|limb|limp|limitation)\s*[.!]?$/i;
+  /^(?:(?:it'?s|that'?s|it\s+is|that\s+is|the\s+(?:reading|value)\s+is|reading\s+is|value\s+is)\s+)?(?:an?\s+)?(?:lim|limb|limp|limitation)\s*[.!?,;:]*$/i;
 
 /**
  * Return canonical "LIM" when `text` is a BARE (unqualified) LIM reply, else

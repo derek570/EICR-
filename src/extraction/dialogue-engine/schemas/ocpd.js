@@ -73,7 +73,7 @@ const slots = [
     // handled by the active-slot parser (parseLimSlot); a limitation for a
     // sibling slot is captured by THAT slot's anchor, not this one.
     namedExtractor:
-      /\b(\d{1,4})\s*(?:amps?|A)\b|\brating\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+      /\b(\d{1,4})\s*(?:amps?|A)\b|\brating\b\s*(?:(?:is|was|reads?|equals?|of)\s+)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -85,7 +85,7 @@ const slots = [
     // phrase ("breaking capacity"/"kilo amps"/"kA"), so "breaking capacity is a
     // limitation" writes LIM to THIS slot only. "LIM" is in allowedValues.
     namedExtractor:
-      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b\s*(?:(?:is|was|reads?|equals?|of)\s+)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
     // 2026-05-04 (field test 07635782): the inspector said "six" for
     // breaking capacity, the engine accepted it as the rating answer

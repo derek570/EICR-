@@ -83,7 +83,7 @@ const slots = [
     parser: parseAmps,
     // P3 — numeric arm OR a field-qualified LIM anchored to "rating" (see ocpd.js).
     namedExtractor:
-      /\b(\d{1,4})\s*(?:amps?|A)\b|\brating\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+      /\b(\d{1,4})\s*(?:amps?|A)\b|\brating\b\s*(?:(?:is|was|reads?|equals?|of)\s+)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -94,7 +94,7 @@ const slots = [
     // P3 — numeric arm OR a field-qualified LIM anchored to a breaking-capacity
     // phrase (see ocpd.js).
     namedExtractor:
-      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+      /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b\s*(?:(?:is|was|reads?|equals?|of)\s+)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
   {
@@ -143,7 +143,7 @@ const slots = [
     // P3 — numeric arm OR a field-qualified LIM anchored to an operating-current
     // phrase ("operating current"/"milli amps"/"mA").
     namedExtractor:
-      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|milli\s*amps?|mA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|milli\s*amps?|mA)\b\s*(?:(?:is|was|reads?|equals?|of)\s+)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
 ];

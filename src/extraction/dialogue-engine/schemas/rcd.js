@@ -129,7 +129,7 @@ const slots = [
     // P3 — numeric arm OR a field-qualified LIM anchored to an operating-current
     // phrase (see rcbo.js).
     namedExtractor:
-      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|milli\s*amps?|mA)\b[^.?!]{0,20}?\b(lim|limb|limp|limitation)\b/i,
+      /\b(\d{1,4})\s*(?:mA|milli\s*amps?)\b|\b(?:operating\s+current|milli\s*amps?|mA)\b\s*(?:(?:is|was|reads?|equals?|of)\s+)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
   },
 ];

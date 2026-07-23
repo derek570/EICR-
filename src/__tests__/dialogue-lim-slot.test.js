@@ -150,3 +150,44 @@ describe('named extraction routes a field-qualified LIM to ONE slot (F2)', () =>
     expect(parseAmps('milli amps is a limitation')).toBeNull();
   });
 });
+
+// P3 Codex-r5 — the tightened LIM-arm connector grammar must NOT consume a
+// numeric clause for a sibling field (no 20-char span across another field),
+// and the BARE parser must accept trailing punctuation.
+describe('Codex-r5 hardening: connector-grammar LIM arms + punctuated bare LIM', () => {
+  function fields(text, slots) {
+    return extractNamedFieldValues(text, slots);
+  }
+
+  test('compound "rating 32A, kA is LIM" → rating 32 (numeric) + kA LIM, no cross-write', () => {
+    const out = fields('rating 32A, kA is LIM', ocpdSchema.slots);
+    expect(out.find((o) => o.field === 'ocpd_rating_a')?.value).toBe('32');
+    expect(out.find((o) => o.field === 'ocpd_breaking_capacity_ka')?.value).toBe('LIM');
+  });
+
+  test('compound "breaking capacity 6 kA, rating LIM" → kA 6 + rating LIM', () => {
+    const out = fields('breaking capacity 6 kA, rating LIM', ocpdSchema.slots);
+    expect(out.find((o) => o.field === 'ocpd_breaking_capacity_ka')?.value).toBe('6');
+    expect(out.find((o) => o.field === 'ocpd_rating_a')?.value).toBe('LIM');
+  });
+
+  test('field-qualified forms with connectors "rating: LIM" / "rating equals LIM" → rating LIM', () => {
+    expect(fields('rating: LIM', ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')?.value).toBe(
+      'LIM'
+    );
+    expect(
+      fields('rating equals limitation', ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')
+        ?.value
+    ).toBe('LIM');
+  });
+
+  test('BARE parser accepts common trailing punctuation', () => {
+    for (const t of ['LIM?', 'limitation,', 'limb;', 'limp:', 'LIM.', 'limitation!']) {
+      expect(parseAmps(t)).toBe('LIM');
+    }
+  });
+
+  test('BARE parser still rejects a field-qualified LIM for a different field', () => {
+    expect(parseAmps('breaking capacity is a limitation')).toBeNull();
+  });
+});

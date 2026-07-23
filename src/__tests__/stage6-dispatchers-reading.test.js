@@ -678,5 +678,8 @@ describe('createAutoResolveWriteHook — lim_ranged_write_v1 capability threadin
     expect(session.stateSnapshot.circuits[3].measured_zs_ohm).toBeUndefined();
     expect(writes.readings.size).toBe(0);
     expect(res.body?.skipped).toBe(true);
+    // C5-F3 — a capability-denied skip must NOT report success (else the ask
+    // resolver falsely claims auto_resolved with no write).
+    expect(res.ok).toBe(false);
   });
 });
