@@ -792,15 +792,28 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     ? perTurnWrites.fieldCorrections
     : [];
   const clearWriteCollapsedSlots = [];
+  // Telemetry is ONE row PER COLLAPSED SLOT, not per dropped correction: a
+  // clear→write→clear→final-write sequence drops TWO clear corrections for the
+  // SAME slot, but that is one collapse event. Dedupe on the effective/raw slot
+  // identity (the same key the collapse matched on) while still dropping EVERY
+  // matched correction from the wire.
+  const collapsedSlotSeen = new Set();
   const keptFieldCorrections = [];
   for (const c of rawFieldCorrections) {
     if (c && c.reason === 'clear_reading' && clearSlotHasSurvivingWrite(c)) {
-      clearWriteCollapsedSlots.push({
-        field: c.field,
-        circuit: c.circuit,
-        board_id: c[EFFECTIVE_CIRCUIT_SLOT]?.boardId ?? c.board_id ?? null,
-        final_effect: 'write',
-      });
+      const sym = c[EFFECTIVE_CIRCUIT_SLOT];
+      const slotKey = sym
+        ? rawCircuitSlot(sym.field, sym.circuit, sym.boardId)
+        : rawCircuitSlot(c.field, c.circuit, c.board_id ?? null);
+      if (!collapsedSlotSeen.has(slotKey)) {
+        collapsedSlotSeen.add(slotKey);
+        clearWriteCollapsedSlots.push({
+          field: c.field,
+          circuit: c.circuit,
+          board_id: sym?.boardId ?? c.board_id ?? null,
+          final_effect: 'write',
+        });
+      }
       continue;
     }
     keptFieldCorrections.push(c);

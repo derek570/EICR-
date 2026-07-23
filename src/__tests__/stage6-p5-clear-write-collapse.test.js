@@ -100,6 +100,27 @@ describe('P5 — clear→write collapse (circuit slot)', () => {
   });
 });
 
+describe('P5 — repeated clear→write on one slot', () => {
+  test('clear→write→clear→final-write: both clears dropped, ONE telemetry row for the slot', async () => {
+    const session = makeSession({ 3: { ir_live_live_mohm: 'LIM' } });
+    const p = createPerTurnWrites();
+    // clear, write, clear again, write again — all same slot.
+    await dispatchClearReading(clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }, 'c1'), ctx(session, p));
+    await dispatchRecordReading(recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '90', confidence: 0.9, source_turn_id: 't1' }, 'w1'), ctx(session, p));
+    await dispatchClearReading(clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }, 'c2'), ctx(session, p));
+    await dispatchRecordReading(recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }, 'w2'), ctx(session, p));
+    const r = bundle(p);
+    // The final write survives; every stale clear is dropped from the wire.
+    expect(r.extracted_readings).toHaveLength(1);
+    expect(r.extracted_readings[0].value).toBe('100');
+    expect('field_corrections' in r).toBe(false);
+    // ONE collapse event for the slot (not one per dropped correction).
+    expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toEqual([
+      { field: 'ir_live_live_mohm', circuit: 3, board_id: 'main', final_effect: 'write' },
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 2 + 3. write→clear regression guards (incl. mixed-spelling)
 // ---------------------------------------------------------------------------

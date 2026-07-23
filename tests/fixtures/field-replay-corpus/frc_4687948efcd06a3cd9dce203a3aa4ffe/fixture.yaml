@@ -1,6 +1,8 @@
 # T10 — "a same-turn clear→write wipes the value on the client".
 #
-# Field session 36731498 (2026-07-16), feedback ids 80(B) + 81. The inspector
+# Marker T10 field session (2026-07-16), feedback ids 80(B) + 81. The raw
+# session id <-> this opaque corpus id mapping is deliberately NOT recorded here
+# (private-mapping convention, mirroring the marker-① keystone). The inspector
 # dictated "Downstairs Socket, circuit 3, IR L to L 100"; the value was read
 # back aloud AND written server-side, then SILENTLY un-written on the client.
 # The turn carried BOTH a clear_reading and a record_reading for the SAME slot
@@ -37,9 +39,9 @@
 # so it is not the RED differentiator; this fixture isolates the WIRE-collapse
 # contract, mirroring the F/U-4 write-only fixture's qualification.
 #
-# Provenance: HAND-AUTHORED regression fixture derived from marker T10 (session
-# 36731498 has NO field_sources/manifest — the iOS multipart analytics upload
-# is broken — so it was reconstructed from the realtime chunks + backend
+# Provenance: HAND-AUTHORED regression fixture derived from marker T10 (the
+# field session has NO field_sources/manifest — the iOS multipart analytics
+# upload is broken — so it was reconstructed from the realtime chunks + backend
 # CloudWatch, not from analyze-session.js). The clear→record model rounds and
 # the ir_live_live_mohm 'LIM'→'100' transition are frozen from that
 # reconstruction; exact millisecond tool ordering was correlated via transcript
@@ -48,13 +50,13 @@
 # fixtures and model the product defaults this synthetic turn assumes
 # (confirmations on; not an answer turn). No captured PII.
 schema_version: 1
-corpus_id: frc_c1ea77d0b13e4a05f5c9a2b6e8f14730
+corpus_id: frc_4687948efcd06a3cd9dce203a3aa4ffe
 purpose: regression
 gate_state: required_green
 red_proof_failure_id: reading.op_ir_ctw
 owner: Derek Beckley
 introduced_at: '2026-07-23T18:00:00Z'
-fix_reference: fix_1c7ea77d0b13e4a05f5c9a2b6e8f1473
+fix_reference: fix_5717ad6e2b427ab108fd545c4e376f46
 expires_at: '2099-01-01T00:00:00.000Z'
 initial_state_fidelity: hand_authored
 is_keystone: false
