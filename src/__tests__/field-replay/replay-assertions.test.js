@@ -137,8 +137,15 @@ describe('P5 — replay lane import-graph contract', () => {
       const { fileURLToPath } = await import('node:url');
       const path = await import('node:path');
       const here = path.dirname(fileURLToPath(import.meta.url));
-      const src = readFileSync(path.resolve(here, rel), 'utf8');
-      // Dynamic `await import('...src/extraction...')` (a CallExpression) is
+      const raw = readFileSync(path.resolve(here, rel), 'utf8');
+      // Strip line + block comments FIRST so a `from '…src/extraction…'`
+      // mention inside a comment is not a false positive, and a comment placed
+      // INSIDE an import statement (`import x from /* note */ '…'`) does not
+      // become a false negative. (Cheap and sufficient for a defensive guard on
+      // two hand-maintained files; a source string containing the literal
+      // `from '…'` is not a realistic occurrence here.)
+      const src = raw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+      // Dynamic `await import('…src/extraction…')` (a CallExpression) is
       // allowed — it runs AFTER the recorded lane installs its fake clock.
       // Every STATIC form is banned. A static `import`/`export … from '<spec>'`
       // always carries a `from '<spec>'` clause (dynamic import() never does),
@@ -147,7 +154,7 @@ describe('P5 — replay lane import-graph contract', () => {
       // later line). Side-effect imports (`import '<spec>'`, no `from`) are
       // matched separately.
       const staticFromImport = /\bfrom\s*['"][^'"]*src\/extraction[^'"]*['"]/;
-      const sideEffectImport = /^\s*import\s+['"][^'"]*src\/extraction[^'"]*['"]/m;
+      const sideEffectImport = /\bimport\s+['"][^'"]*src\/extraction[^'"]*['"]/;
       expect(staticFromImport.test(src)).toBe(false);
       expect(sideEffectImport.test(src)).toBe(false);
     });

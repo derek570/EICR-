@@ -546,6 +546,31 @@ describe('P5 — slot-identity fallback contract', () => {
     expect(rB[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toBeUndefined();
   });
 
+  test('Symbol-less raw fallback: omitted-board write + board_id-less clear collapse (undefined/absent both normalise to null)', () => {
+    const p = createPerTurnWrites();
+    // Write keyed with undefined board (no Symbol); clear with NO board_id
+    // property at all. rawCircuitSlot must normalise both to the null board so
+    // they still match.
+    p.readings.set(encodeReadingKey('measured_zs_ohm', 1, undefined), {
+      value: '0.42',
+      confidence: 1,
+      source_turn_id: 't1',
+    });
+    p.fieldCorrections.push({
+      type: 'field_corrected',
+      circuit: 1,
+      field: 'measured_zs_ohm',
+      previous_value: '1.0',
+      reason: 'clear_reading',
+      // board_id deliberately OMITTED
+    });
+    const r = bundle(p);
+    expect('field_corrections' in r).toBe(false); // collapsed
+    expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toEqual([
+      { field: 'measured_zs_ohm', circuit: 1, board_id: null, final_effect: 'write' },
+    ]);
+  });
+
   test('one-sided Symbol (marked write + Symbol-less clear) → no collapse', () => {
     const p = createPerTurnWrites();
     // Marked write (effective set), Symbol-less clear (raw set) → the sets never
