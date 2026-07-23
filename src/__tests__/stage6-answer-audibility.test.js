@@ -247,7 +247,10 @@ describe('failed-answer self-healing — the fixed fallback speaks in BOTH toggl
       const opts = baseOpts({ confirmationsEnabled });
       const result = await runShadowHarness(makeSession(), 'did you get that?', [], opts);
       expect(result.spoken_response).toBe(ANSWER_FALLBACK_TEXT);
-      expect(result.answer_source).toBe('answer_fallback');
+      // Codex r1: ONE source token per the plan's Item 1.5 contract; the
+      // fallback distinction rides answer_meta only.
+      expect(result.answer_source).toBe('answer_user');
+      expect(result.answer_meta.fallback).toBe(true);
       // Exactly ONE utterance: the fallback via VCR. No A3 REJECTED_PROMPTS
       // apology (name-guard exclusion), no marker-② catch-all, no F7.
       expect(fieldNilApologies(result)).toHaveLength(0);
@@ -344,6 +347,62 @@ describe('cancelled turns — finalization still runs; answers suppress the F7 c
     expect(result.spoken_response).toBe(ANSWER_FALLBACK_TEXT);
     const queued = (session.pendingVoicePrompts ?? []).map((p) => p.text);
     expect(queued).not.toContain(ASK_AUDIBILITY_FALLBACK_TEXT);
+  });
+
+  test('FRAME SHAPES (Codex r1): sync-path extraction frame carries no answer keys; VCR frame byte-shape pinned', async () => {
+    const answer = 'Circuit 4 has no Zs recorded yet.';
+    mockAnswerLoop({
+      envelope: { is_error: false, content: JSON.stringify({ ok: true }) },
+      mutate: (ptw) => {
+        ptw.answer.featureTouched = true;
+        ptw.answer.stagedText = answer;
+        ptw.answer.stagedMeta = { truncated: false, chars: answer.length };
+        ptw.answer.outcomes.push({ tool: 'answer_user', code: 'ok' });
+      },
+    });
+    const result = await runShadowHarness(
+      makeSession(),
+      "What's missing on circuit 4?",
+      [],
+      baseOpts({ utteranceId: 'utt-epoch-1' })
+    );
+    // EXACTLY the sync path's destructure-spread (sonnet-stream.js) — the
+    // extraction frame must carry neither the spoken answer nor either
+    // internal marker.
+    const {
+      questions_for_user: _q,
+      extracted_readings,
+      spoken_response,
+      action,
+      observationUpdates: _o,
+      ...rest
+    } = result;
+    const extractionFrame = JSON.stringify({
+      type: 'extraction',
+      result: { readings: extracted_readings, ...rest },
+    });
+    expect(extractionFrame).not.toContain('spoken_response');
+    expect(extractionFrame).not.toContain('answer_source');
+    expect(extractionFrame).not.toContain('answer_meta');
+    // EXACTLY the emit sites' VCR construction (sync + reconnect replay share
+    // this shape) — byte-pinned to what the web contract test consumes.
+    const vcrFrame = JSON.stringify({
+      type: 'voice_command_response',
+      understood: true,
+      spoken_response: spoken_response || '',
+      action: action || null,
+      ...(typeof result.utterance_id === 'string' && result.utterance_id
+        ? { utterance_id: result.utterance_id }
+        : {}),
+    });
+    expect(JSON.parse(vcrFrame)).toEqual({
+      type: 'voice_command_response',
+      understood: true,
+      spoken_response: answer,
+      action: null,
+      utterance_id: 'utt-epoch-1',
+    });
+    expect(vcrFrame).not.toContain('answer_source');
   });
 
   test('cancelled turn with NO answer-feature touch → existing F7 cancellation behaviour unchanged', async () => {

@@ -420,6 +420,32 @@ describe('createInspectDispatcher — scopes, validation, trust boundary (Item 1
     }
   });
 
+  test('field/circuit pairing (Codex r1): circuit field without circuit, board field with circuit → invalid_scope', async () => {
+    const noCircuit = await dispatch(
+      call('inspect_session_state', { scope: 'field', field: 'measured_zs_ohm' })
+    );
+    expect(body(noCircuit)).toEqual({ ok: false, code: 'invalid_scope' });
+    expect(noCircuit.is_error).toBe(true);
+    const withCircuit = await dispatch(
+      call(
+        'inspect_session_state',
+        { scope: 'field', field: 'earth_loop_impedance_ze', circuit: 2 },
+        'toolu_2'
+      )
+    );
+    expect(body(withCircuit)).toEqual({ ok: false, code: 'invalid_scope' });
+    expect(withCircuit.is_error).toBe(true);
+  });
+
+  test('stale currentBoardId (Codex r1): falls back to a VERIFIED main board, never a phantom-empty answer', async () => {
+    session.stateSnapshot.currentBoardId = 'ghost-board';
+    const env = await dispatch(call('inspect_session_state', { scope: 'board' }));
+    const b = body(env);
+    expect(b.ok).toBe(true);
+    expect(b.board_id).toBe('main');
+    expect(b.circuit_count).toBe(2);
+  });
+
   test('not_found (unknown board / absent circuit) → is_error:true', async () => {
     const badBoard = await dispatch(
       call('inspect_session_state', { scope: 'board', board_id: 'sub-99' })
@@ -445,6 +471,26 @@ describe('capInspectResult — appendix §4 truncation ladder', () => {
   test('under the cap → returned untouched, truncated false', () => {
     const small = { ok: true, scope: 'summary', boards: [], truncated: false };
     expect(capInspectResult(small)).toBe(small);
+  });
+
+  test('field-scope truncation is MARKER-AWARE (Codex r1): the close marker always survives', () => {
+    const openM = '<<<USER_TEXT>>>';
+    const closeM = '<<<END_USER_TEXT>>>';
+    const wrapped = `${openM}${'x'.repeat(5000)}${closeM}`;
+    const capped = capInspectResult({
+      ok: true,
+      scope: 'field',
+      board_id: 'main',
+      circuit: 2,
+      field: 'circuit_designation',
+      recorded: true,
+      value: wrapped,
+      truncated: false,
+    });
+    expect(capped.truncated).toBe(true);
+    expect(capped.value.startsWith(openM)).toBe(true);
+    expect(capped.value.endsWith(closeM)).toBe(true);
+    expect(capped.value.length).toBeLessThanOrEqual(512);
   });
 
   test('oversized board scope: missing arrays dropped first (missing_count kept), then tail circuits', () => {

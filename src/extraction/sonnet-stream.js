@@ -59,6 +59,32 @@ import {
 // voice_latency.gate_blocked. Kill-switch: VOICE_PRE_LLM_GATE=false.
 import { shouldForwardToSonnet, GATE_REASONS } from './pre-llm-gate.js';
 
+// A1 agentic-voice (Codex diff-review r1) — ONE redacted answer-emission
+// logger shared by the sync path AND the P4d reconnect replay, called only
+// AFTER a successful voice_command_response send. LEAK RULE: model-controlled
+// answer text is never logged raw — source + char count + truncation +
+// fallback flag + sha256-16 hash only.
+function logAnswerEmitted(sessionId, result, spokenResponse, path) {
+  try {
+    logger.info('voice_latency.answer_user_emitted', {
+      sessionId,
+      path,
+      source: 'answer_user',
+      fallback: result.answer_meta?.fallback === true,
+      chars: result.answer_meta?.chars ?? (spokenResponse || '').length,
+      truncated: result.answer_meta?.truncated === true,
+      utterance_id_kind:
+        typeof result.utterance_id === 'string' && result.utterance_id ? 'present' : 'absent',
+      answer_hash: createHash('sha256')
+        .update(spokenResponse || '', 'utf8')
+        .digest('hex')
+        .slice(0, 16),
+    });
+  } catch {
+    // telemetry must never break emission
+  }
+}
+
 const PRE_LLM_GATE_ENABLED = process.env.VOICE_PRE_LLM_GATE !== 'false';
 // 2026-04-29 — server-driven ring continuity script. Bypasses Sonnet for the
 // duration of an R1/Rn/R2 micro-conversation, fixing the Flux-fragmentation
@@ -3141,6 +3167,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   : {}),
               })
             );
+            // A1 Codex r1 — answers delivered via reconnect replay carry the
+            // same redacted emission telemetry as the sync path (non-enumerable
+            // answer_source survives buffering by reference).
+            if (result.answer_source) {
+              logAnswerEmitted(sessionId, result, spoken_response, 'reconnect_replay');
+            }
           }
         } catch (err) {
           logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
@@ -4441,104 +4473,118 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ...rest
         } = result;
         const resultWithoutQuestions = { readings: extracted_readings, ...rest };
-        ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
+        // A1 Codex diff-review r1 — the plan's "post-harness WS send failure
+        // is covered by buffering + P4d replay" claim was only true for a
+        // socket that was ALREADY non-OPEN. Wrap the whole OPEN-socket
+        // emission sequence: a throw BEFORE the audible voice_command_response
+        // went out re-queues the ORIGINAL result into pendingExtractions
+        // (reconnect replays extraction idempotently and the VCR exactly
+        // once); a throw AFTER a delivered VCR is logged but never re-queued
+        // — the answer already spoke, and a replay would double-speak
+        // (Audio-First #1).
+        let vcrDelivered = !(spoken_response || action);
+        try {
+          ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
 
-        // Phase E: emit `current_board_changed` for any select_board op
-        // Sonnet emitted this turn. iOS uses the unified envelope to drive
-        // `JobViewModel.currentBoardId` regardless of switch source — see
-        // helper docstring above.
-        emitCurrentBoardChangedFromBoardOps(ws, entry.session.stateSnapshot, result.board_ops);
+          // Phase E: emit `current_board_changed` for any select_board op
+          // Sonnet emitted this turn. iOS uses the unified envelope to drive
+          // `JobViewModel.currentBoardId` regardless of switch source — see
+          // helper docstring above.
+          emitCurrentBoardChangedFromBoardOps(ws, entry.session.stateSnapshot, result.board_ops);
 
-        // Phase A: dispatch RULE 6 correction edits (observation_id reused).
-        // These must fire before the BPG4 refinement path so iOS patches the
-        // code change before any web-search-based refinement considers the
-        // observation.
-        dispatchObservationUpdates(ws, sessionId, observationUpdates);
+          // Phase A: dispatch RULE 6 correction edits (observation_id reused).
+          // These must fire before the BPG4 refinement path so iOS patches the
+          // code change before any web-search-based refinement considers the
+          // observation.
+          dispatchObservationUpdates(ws, sessionId, observationUpdates);
 
-        // Stage 1a 1a.6 — emit each `field_corrected` WS event after the
-        // extraction envelope. iOS handler at Stage6Messages.swift:138-165
-        // decodes the snake_case wire shape and patches local state.
-        // Stage 3 will consume these events to invalidate matching
-        // suppression entries; in 1a.6 the emission is informational
-        // (iOS handler exists but does nothing user-facing until Stage 1b
-        // ships a UI hook).
-        if (Array.isArray(result.field_corrections) && result.field_corrections.length > 0) {
-          for (const evt of result.field_corrections) {
-            try {
-              ws.send(JSON.stringify(evt));
-            } catch (err) {
-              logger.warn('field_corrected emit failed', {
+          // Stage 1a 1a.6 — emit each `field_corrected` WS event after the
+          // extraction envelope. iOS handler at Stage6Messages.swift:138-165
+          // decodes the snake_case wire shape and patches local state.
+          // Stage 3 will consume these events to invalidate matching
+          // suppression entries; in 1a.6 the emission is informational
+          // (iOS handler exists but does nothing user-facing until Stage 1b
+          // ships a UI hook).
+          if (Array.isArray(result.field_corrections) && result.field_corrections.length > 0) {
+            for (const evt of result.field_corrections) {
+              try {
+                ws.send(JSON.stringify(evt));
+              } catch (err) {
+                logger.warn('field_corrected emit failed', {
+                  sessionId,
+                  circuit: evt?.circuit,
+                  field: evt?.field,
+                  error: err?.message,
+                });
+              }
+            }
+          }
+
+          // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
+          // AFTER extraction is sent so the inspector sees the observation
+          // immediately; the refined code/regulation arrives a second or two
+          // later as an `observation_update` and the iOS client patches the
+          // already-rendered observation in place.
+          if (Array.isArray(result.observations) && result.observations.length > 0 && entry) {
+            refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
+              logger.warn('refineObservationsAsync unhandled', {
                 sessionId,
-                circuit: evt?.circuit,
-                field: evt?.field,
                 error: err?.message,
+              });
+            });
+          }
+
+          // If Sonnet returned a spoken_response or action (query/command recognised),
+          // forward as a voice_command_response — iOS handles these via the existing
+          // serverDidReceiveVoiceCommandResponse delegate path.
+          if (spoken_response || action) {
+            ws.send(
+              JSON.stringify({
+                type: 'voice_command_response',
+                understood: true,
+                spoken_response: spoken_response || '',
+                action: action || null,
+                // PLAN-C P4d (row 6) — carry the sync result's response epoch so the
+                // client chime watchdog disarms on the spoken command reply.
+                ...(typeof result.utterance_id === 'string' && result.utterance_id
+                  ? { utterance_id: result.utterance_id }
+                  : {}),
+              })
+            );
+            vcrDelivered = true;
+            // A1 agentic-voice — LEAK-RULE branch on the internal answer-source
+            // marker (non-enumerable, bundler-attached). The legacy substring(0,80)
+            // preview was fine for legacy voice-command text, but for MODEL-
+            // GENERATED answers raw text is never logged (shared redacted
+            // logger, also called by the reconnect replay).
+            if (result.answer_source) {
+              logAnswerEmitted(sessionId, result, spoken_response, 'sync');
+            } else {
+              logger.info('Voice command from extraction', {
+                sessionId,
+                action: action?.type || 'query',
+                response: (spoken_response || '').substring(0, 80),
               });
             }
           }
-        }
 
-        // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
-        // AFTER extraction is sent so the inspector sees the observation
-        // immediately; the refined code/regulation arrives a second or two
-        // later as an `observation_update` and the iOS client patches the
-        // already-rendered observation in place.
-        if (Array.isArray(result.observations) && result.observations.length > 0 && entry) {
-          refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
-            logger.warn('refineObservationsAsync unhandled', {
+          // Send cost update
+          ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
+        } catch (emitErr) {
+          if (!vcrDelivered) {
+            entry.pendingExtractions.push(result);
+            logger.warn('sync emission failed pre-VCR — result re-queued for reconnect replay', {
               sessionId,
-              error: err?.message,
-            });
-          });
-        }
-
-        // If Sonnet returned a spoken_response or action (query/command recognised),
-        // forward as a voice_command_response — iOS handles these via the existing
-        // serverDidReceiveVoiceCommandResponse delegate path.
-        if (spoken_response || action) {
-          ws.send(
-            JSON.stringify({
-              type: 'voice_command_response',
-              understood: true,
-              spoken_response: spoken_response || '',
-              action: action || null,
-              // PLAN-C P4d (row 6) — carry the sync result's response epoch so the
-              // client chime watchdog disarms on the spoken command reply.
-              ...(typeof result.utterance_id === 'string' && result.utterance_id
-                ? { utterance_id: result.utterance_id }
-                : {}),
-            })
-          );
-          // A1 agentic-voice — LEAK-RULE branch on the internal answer-source
-          // marker (non-enumerable, bundler-attached). The legacy substring(0,80)
-          // preview was fine for legacy voice-command text, but for MODEL-
-          // GENERATED answers raw text is never logged: source + char count +
-          // truncation flag + hash only.
-          if (result.answer_source) {
-            logger.info('voice_latency.answer_user_emitted', {
-              sessionId,
-              source: result.answer_source,
-              chars: result.answer_meta?.chars ?? (spoken_response || '').length,
-              truncated: result.answer_meta?.truncated === true,
-              utterance_id_kind:
-                typeof result.utterance_id === 'string' && result.utterance_id
-                  ? 'present'
-                  : 'absent',
-              answer_hash: createHash('sha256')
-                .update(spoken_response || '', 'utf8')
-                .digest('hex')
-                .slice(0, 16),
+              error: emitErr?.message ?? String(emitErr),
+              buffered: entry.pendingExtractions.length,
             });
           } else {
-            logger.info('Voice command from extraction', {
+            logger.warn('sync emission failed post-VCR — NOT re-queued (answer already spoken)', {
               sessionId,
-              action: action?.type || 'query',
-              response: (spoken_response || '').substring(0, 80),
+              error: emitErr?.message ?? String(emitErr),
             });
           }
         }
-
-        // Send cost update
-        ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
       } else {
         // Buffer extraction results when WebSocket not OPEN — flushed on reconnect
         entry.pendingExtractions.push(result);

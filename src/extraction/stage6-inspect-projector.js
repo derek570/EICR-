@@ -155,6 +155,16 @@ export function isKnownFieldKey(field) {
   return CIRCUIT_FIELD_KEY_SET.has(field) || BOARD_LEVEL_FIELD_KEYS.has(field);
 }
 
+// Codex diff-review r1 — field/circuit pairing classifiers for scope='field'
+// argument validation (a circuit field without a circuit — or a board-level
+// field with one — must be invalid_scope, never a false "not recorded").
+export function isCircuitFieldKey(field) {
+  return CIRCUIT_FIELD_KEY_SET.has(field);
+}
+export function isBoardLevelFieldKey(field) {
+  return BOARD_LEVEL_FIELD_KEYS.has(field);
+}
+
 function findBoard(snapshot, boardId) {
   if (!Array.isArray(snapshot?.boards)) return undefined;
   return snapshot.boards.find((b) => b && b.id === boardId);
@@ -166,8 +176,14 @@ export function resolveBoardTarget(snapshot, requestedBoardId) {
   if (requestedBoardId != null && requestedBoardId !== '') {
     return findBoard(snapshot, requestedBoardId) ? requestedBoardId : null;
   }
-  const id = snapshot?.currentBoardId ?? getMainBoardId(snapshot);
-  return id;
+  // Codex diff-review r1 — a stale currentBoardId (hydration/resume) must not
+  // produce a confidently-empty board answer: accept it only when it still
+  // resolves in boards[]; else fall back to a VERIFIED main board; null when
+  // neither exists (caller emits not_found).
+  const current = snapshot?.currentBoardId;
+  if (current != null && findBoard(snapshot, current)) return current;
+  const mainId = getMainBoardId(snapshot);
+  return findBoard(snapshot, mainId) ? mainId : null;
 }
 
 function boardDesignation(snapshot, boardId) {
@@ -356,9 +372,21 @@ export function capInspectResult(body) {
     if (byteLength(capped) <= INSPECT_MAX_RESULT_BYTES) return capped;
   }
 
-  // Stage 4: field scope — slice the value string.
+  // Stage 4: field scope — slice the value string. Codex diff-review r1:
+  // slicing a WRAPPED value must never orphan the USER_TEXT open marker (a
+  // dangling boundary would make subsequent context read as untrusted data,
+  // or worse, un-terminated). Truncate the INNER payload and re-append the
+  // close marker.
   if (typeof capped.value === 'string' && capped.value.length > 512) {
-    capped.value = capped.value.slice(0, 512);
+    const open = '<<<USER_TEXT>>>';
+    const close = '<<<END_USER_TEXT>>>';
+    if (capped.value.startsWith(open) && capped.value.endsWith(close)) {
+      const inner = capped.value.slice(open.length, -close.length);
+      const budget = Math.max(0, 512 - open.length - close.length);
+      capped.value = `${open}${inner.slice(0, budget)}${close}`;
+    } else {
+      capped.value = capped.value.slice(0, 512);
+    }
   }
   return capped;
 }

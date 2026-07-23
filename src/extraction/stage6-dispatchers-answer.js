@@ -47,6 +47,8 @@ import {
   capInspectResult,
   resolveBoardTarget,
   isKnownFieldKey,
+  isCircuitFieldKey,
+  isBoardLevelFieldKey,
 } from './stage6-inspect-projector.js';
 
 /** Resolved decision 1 (Derek 2026-07-22): terse answers, hard cap. */
@@ -268,6 +270,18 @@ export function createInspectDispatcher(session, logger, turnId, perTurnWrites) 
       }
       case 'field': {
         if (typeof input.field !== 'string' || !isKnownFieldKey(input.field)) {
+          return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
+        }
+        // Codex diff-review r1 — field/circuit pairing validation: a
+        // circuit-only field needs a circuit; a board-level-only field must
+        // not carry one. A mismatch is a correctable-argument error
+        // (invalid_scope, is_error:true) — never a false "not recorded"
+        // answer the model would speak as fact. Keys present in BOTH unions
+        // accept either form.
+        if (circuit == null && !isBoardLevelFieldKey(input.field)) {
+          return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
+        }
+        if (circuit != null && !isCircuitFieldKey(input.field)) {
           return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
         }
         body = projectField(snapshot, { field: input.field, circuit, boardId });

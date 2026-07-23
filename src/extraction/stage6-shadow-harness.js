@@ -2775,6 +2775,12 @@ export function buildShadowSessionForDispatcher(session, preLegacySnapshot, preL
     // stub) that omits the field — the existing Phase 2-5 tests use
     // bare session stubs that may not set toolCallsMode explicitly.
     toolCallsMode: session.toolCallsMode ?? 'shadow',
+    // A1 (Codex diff-review r1) — the inspect dispatcher reads BOTH off the
+    // session it is bound to: certType drives the projected cert_type (an
+    // EIC shadow session must not report EICR) and agenticAnswersEnabled
+    // keeps the shadow lane's toolset derivation same-source as live.
+    certType: session.certType,
+    agenticAnswersEnabled: session.agenticAnswersEnabled === true,
   };
 }
 
@@ -2940,7 +2946,10 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // advertised without a dispatch route). Bound to shadowSession so the
   // inspect projector reads the shadow clone's snapshot, keeping the shadow
   // lane side-effect-free on live state.
-  const shadowAgenticAnswersEnabled = session?.agenticAnswersEnabled === true;
+  // A1 Codex r1 — derive from the shadowSession wrapper (which copies the
+  // live session's latch) so the shadow dispatchers and the shadow toolset
+  // are same-source.
+  const shadowAgenticAnswersEnabled = shadowSession?.agenticAnswersEnabled === true;
   const shadowAnswers = createAnswerDispatcher(shadowSession, log, turnId, perTurnWrites);
   const shadowInspects = createInspectDispatcher(shadowSession, log, turnId, perTurnWrites);
   // 2026-04-27 — auto-resolve hook is NOT threaded into shadow mode.

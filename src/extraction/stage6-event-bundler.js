@@ -755,17 +755,22 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   const _answerState = perTurnWrites.answer;
   if (typeof _answerState?.stagedText === 'string' && _answerState.stagedText.trim()) {
     result.spoken_response = _answerState.stagedText;
+    // Codex diff-review r1 — the internal source token is exactly
+    // 'answer_user' per the plan's Item 1.5 contract; the fallback
+    // distinction lives ONLY on answer_meta.fallback (telemetry dimension),
+    // never as a second source token.
     Object.defineProperty(result, 'answer_source', {
-      value: _answerState.stagedMeta?.fallback === true ? 'answer_fallback' : 'answer_user',
+      value: 'answer_user',
       enumerable: false,
     });
     // Same non-enumerable treatment for the emit-site telemetry meta
-    // (chars/truncated) — readable at sonnet-stream's redacted-logging
-    // branch, never on the wire.
+    // (chars/truncated/fallback) — readable at sonnet-stream's
+    // redacted-logging branch, never on the wire.
     Object.defineProperty(result, 'answer_meta', {
       value: {
         truncated: _answerState.stagedMeta?.truncated === true,
         chars: _answerState.stagedText.length,
+        fallback: _answerState.stagedMeta?.fallback === true,
       },
       enumerable: false,
     });
