@@ -75,6 +75,10 @@ export interface ReplayOptions {
   mode?: 'mock' | 'live';
   /** live mode: ms to wait for backend frames after each send. */
   liveTurnTimeoutMs?: number;
+  /** A1 agentic-voice — confirmation-toggle state for the replay. Overrides
+   *  the scenario's `confirmation_mode`; both absent → true (historical
+   *  hard-coded default). */
+  confirmationMode?: boolean;
 }
 
 type RecordingApi = ReturnType<typeof useRecording>;
@@ -107,7 +111,9 @@ export async function replayScenario(
     if (!token) throw new Error('live mode requires PWA_REPLAY_TOKEN (harness-mint-jwt)');
     window.localStorage.setItem('cm_token', token);
   }
-  setConfirmationModeEnabled(true);
+  // A1 agentic-voice — per-scenario/-option toggle state (was hard-coded
+  // true). The VCR force-speak gate scenario replays with the toggle OFF.
+  setConfirmationModeEnabled(options.confirmationMode ?? scenario.confirmation_mode ?? true);
   resetTtsQueue();
   // Cross-scenario hygiene: echo fingerprints/window are tts.ts module
   // state with a 15s wall-clock TTL — under back-to-back replays a
@@ -302,6 +308,12 @@ function emitFrame(
     sonnet.emitFieldCorrected({
       circuit: frame.circuit ?? 0,
       field: frame.field ?? '',
+    });
+  } else if (frame.type === 'voice_command_response') {
+    // A1 agentic-voice — the model's spoken answer on the VCR channel.
+    sonnet.emitVoiceCommandResponse({
+      understood: frame.understood ?? true,
+      spoken_response: frame.spoken_response ?? '',
     });
   }
 }

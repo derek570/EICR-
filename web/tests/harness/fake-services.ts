@@ -155,6 +155,10 @@ export interface FakeSonnetCallbacks {
   onExtraction?: (result: unknown) => void;
   onQuestion?: (q: unknown) => void;
   onFieldCorrected?: (msg: unknown) => void;
+  /** A1 agentic-voice (2026-07-23) — voice_command_response frames carry the
+   *  model's spoken answers; the PR-1 verification-gate scenario drives the
+   *  REAL onVoiceCommandResponse → speakConfirmation({force:true}) path. */
+  onVoiceCommandResponse?: (msg: unknown) => void;
   [key: string]: unknown;
 }
 
@@ -231,6 +235,20 @@ export class FakeSonnetSession implements SonnetSessionLike {
    *  path — the A2 canonicalised-clear-key mock-lane pin rides this. */
   emitFieldCorrected(msg: { circuit: number; field: string }): void {
     this.callbacks.onFieldCorrected?.(msg);
+  }
+  /** A1 agentic-voice — `voice_command_response` frame (spoken answers).
+   *  Same decoded shape the real SonnetSession delivers
+   *  (sonnet-session.ts voice_command_response case). */
+  emitVoiceCommandResponse(msg: {
+    understood: boolean;
+    spoken_response: string;
+    action?: unknown;
+  }): void {
+    this.callbacks.onVoiceCommandResponse?.({
+      understood: msg.understood,
+      spoken_response: msg.spoken_response,
+      action: msg.action ?? null,
+    });
   }
 }
 

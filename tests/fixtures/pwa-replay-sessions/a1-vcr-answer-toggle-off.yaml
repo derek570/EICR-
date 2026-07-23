@@ -1,0 +1,57 @@
+# A1 agentic-voice PR-1 verification-gate scenario (2026-07-23) — pins that
+# a `voice_command_response` spoken answer PLAYS with the confirmation
+# toggle OFF (the web default). Without the companion `{force: true}` on the
+# onVoiceCommandResponse → speakConfirmation call, speakConfirmation mutes
+# when the toggle is off (tts.ts) and a default-config web user would chime,
+# receive the model's answer frame, and drop it silently — while iOS speaks
+# VCR frames unconditionally. This is the executable pre-flip check from the
+# plan's Delivery section: no prod agentic-answer VCR frame exists while
+# VOICE_AGENTIC_ANSWERS=false, so the mock lane injects one.
+
+name: a1-vcr-answer-toggle-off
+description: |
+  Question turn ("What's still missing on circuit 4?") passes the client
+  gate (digit), the mock backend replies with an extraction plus a
+  voice_command_response answer, and the answer is SPOKEN despite
+  confirmation_mode: false (force-speak parity with iOS's unconditional
+  VCR speak path).
+suite: pwa-replay-sessions
+
+metadata:
+  source: a1-agentic-voice plan Delivery §PR-1 gate (authored 2026-07-23)
+  platform: web
+  initial_state_fidelity: hand_authored
+  synthetic_interims: true
+
+confirmation_mode: false
+
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      circuits:
+        - number: 4
+          designation: Kitchen Sockets
+
+transcript:
+  - at_ms: 0
+    text: "What's still missing on circuit 4?"
+    isFinal: true
+
+mock_frames:
+  - on_transcript: "What's still missing on circuit 4?"
+    frames:
+      - type: extraction
+        readings: []
+        confirmations: []
+      - type: voice_command_response
+        understood: true
+        spoken_response: 'Circuit 4 still needs Zs and both insulation readings.'
+
+expect:
+  web:
+    gate_passed:
+      - "What's still missing on circuit 4?"
+    chime_count: 1
+    confirmations_played:
+      - contains: 'Circuit 4 still needs Zs'
