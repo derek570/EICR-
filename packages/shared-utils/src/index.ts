@@ -32,5 +32,11 @@ export { matchCircuits, similarityScore, normaliseLabel } from './circuit-matche
 export type { CircuitMatch, MatcherNewCircuit, MatcherExistingCircuit } from './circuit-matcher';
 export { maxZsLookup, maxZsString } from './max-zs-lookup';
 export type { MaxZsLookupArgs } from './max-zs-lookup';
-export { recompute, recomputeAll, resolveZe, clampImpedance } from './circuit-derivations';
+export {
+  recompute,
+  recomputeAll,
+  resolveZe,
+  clampImpedance,
+  DERIVATION_SENTINELS,
+} from './circuit-derivations';
 export type { DerivationOutcome, ImpedanceField, ClampOutcome } from './circuit-derivations';
