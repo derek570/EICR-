@@ -193,9 +193,24 @@ const WRITE_TOOL_NAMES = Object.freeze(new Set(Object.keys(WRITE_DISPATCHERS)));
  * @param {Function} asks    createAskDispatcher(...) output (Plan 03-05).
  * @returns {(call: {tool_call_id?, id?, name, input}, ctx) => Promise<{tool_use_id, content, is_error}>}
  */
-export function createToolDispatcher(writes, asks) {
+export function createToolDispatcher(writes, asks, { answers, inspects } = {}) {
   return async function dispatchTool(call, ctx) {
-    if (call.name === 'ask_user') return asks(call, ctx);
+    // A1 agentic-voice (2026-07-23) — dedicated routes for the two read-only
+    // answer-feature tools. Deliberately NOT WRITE_DISPATCHERS entries (that
+    // table feeds WRITE_TOOL_NAMES and every consumer keyed on it, and an
+    // answer is not a write). The answer/inspect dispatchers are constructed
+    // independently of pendingAsks at BOTH harness composition sites — a tool
+    // must never be advertised without a dispatch route.
+    if (call.name === 'answer_user' && typeof answers === 'function') return answers(call, ctx);
+    if (call.name === 'inspect_session_state' && typeof inspects === 'function') {
+      return inspects(call, ctx);
+    }
+    // `asks` is nullable since A1: the no-pendingAsks composition path now
+    // also flows through this composer (it previously used the bare writes
+    // dispatcher). Delegating ask_user to `writes` there reproduces the
+    // pre-A1 behaviour byte-for-byte: the write dispatcher's unknown_tool
+    // envelope + log row.
+    if (call.name === 'ask_user') return asks ? asks(call, ctx) : writes(call, ctx);
     if (WRITE_TOOL_NAMES.has(call.name)) return writes(call, ctx);
     return {
       tool_use_id: call.tool_call_id ?? call.id,

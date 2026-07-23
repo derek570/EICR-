@@ -119,7 +119,12 @@ import {
   applyConfirmationDebounce,
 } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
-import { TOOL_SCHEMAS } from './stage6-tool-schemas.js';
+import { buildSessionTools } from './stage6-tool-schemas.js';
+import {
+  createAnswerDispatcher,
+  createInspectDispatcher,
+  ANSWER_FALLBACK_TEXT,
+} from './stage6-dispatchers-answer.js';
 import {
   tryResumePausedScript,
   tryEnterScriptFromWrites,
@@ -778,6 +783,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       turnId,
       perTurnWrites
     );
+    // A1 agentic-voice (2026-07-23) — the two read-only answer-feature
+    // dispatchers. Constructed INDEPENDENTLY of pendingAsks (both composition
+    // branches below receive them): a tool must never be advertised without a
+    // dispatch route. Cheap closures — constructing them on flag-off turns is
+    // harmless because the tools are then not advertised (buildSessionTools).
+    const liveAgenticAnswersEnabled = liveSession?.agenticAnswersEnabled === true;
+    const answers = createAnswerDispatcher(liveSession, log, turnId, perTurnWrites);
+    const inspects = createInspectDispatcher(liveSession, log, turnId, perTurnWrites);
     let dispatcher;
     let sortRecords;
     let askGateForTurn = null;
@@ -824,10 +837,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           obsClarifyChains: liveSession.obsClarifyChains,
         });
       }
-      dispatcher = createToolDispatcher(writes, asks);
+      dispatcher = createToolDispatcher(writes, asks, { answers, inspects });
       sortRecords = createSortRecordsAsksLast();
     } else {
-      dispatcher = writes;
+      // A1: route through the composer even without pendingAsks so
+      // answer_user/inspect_session_state always have a dispatch route;
+      // ask_user falls back to `writes` inside the composer, reproducing the
+      // pre-A1 unknown_tool behaviour byte-for-byte.
+      dispatcher = createToolDispatcher(writes, null, { answers, inspects });
       sortRecords = undefined;
     }
 
@@ -1009,7 +1026,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         model: SHADOW_MODEL,
         system: systemBlocks,
         messages: liveMessages,
-        tools: TOOL_SCHEMAS,
+        // A1: flag-filtered toolset — the session-latched master flag decides
+        // whether answer_user/inspect_session_state are advertised.
+        tools: buildSessionTools(liveAgenticAnswersEnabled),
         dispatcher,
         ctx: { sessionId: session.sessionId, turnId },
         logger: log,
@@ -1090,6 +1109,59 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
 
     askGateForTurn?.destroy();
+
+    // ── A1 agentic-voice — turnAnswerState FINALIZATION (PLAN Item 4) ─────
+    // Runs at the post-loop seam: AFTER the runToolLoop try/catch (BOTH the
+    // normal return AND the cancelled fallthrough — perTurnWrites.answer is
+    // dispatcher-fed, so it survives the throw) and BEFORE
+    // bundleToolCallsIntoResult, whose projection turns the staged text into
+    // result.spoken_response. The ANSWER FEATURE guarantees its OWN
+    // audibility in both confirmation-toggle states: all apology nets below
+    // are confirmationsEnabled-gated, so "the nets apologise" cannot cover a
+    // confirmation-OFF failed answer. Stage the FIXED fallback when the
+    // feature was attempted (ANY answer_user OR inspect_session_state call —
+    // the prompt's inspect-then-answer flow makes inspect-then-silence a
+    // reachable failure), nothing was staged, and the turn produced no
+    // successful write and no emitted ask (a mixed inspect+write turn is
+    // owned by the read-back / the documented opt-out — pinned NO-fallback).
+    // Deliberately derived from turnAnswerState alone, never by re-parsing
+    // toolLoopOut.tool_calls (undefined on cancelled turns); runs on
+    // cancelled turns too (cancelled-turn policy).
+    try {
+      const answerState = perTurnWrites.answer;
+      if (answerState?.featureTouched === true && answerState.stagedText == null) {
+        const hadSuccessfulWrite =
+          (perTurnWrites.readings?.size ?? 0) > 0 ||
+          (perTurnWrites.boardReadings?.size ?? 0) > 0 ||
+          (perTurnWrites.cleared?.length ?? 0) > 0 ||
+          (perTurnWrites.observations?.length ?? 0) > 0 ||
+          (perTurnWrites.deletedObservations?.length ?? 0) > 0 ||
+          (perTurnWrites.circuitOps?.length ?? 0) > 0 ||
+          (perTurnWrites.boardOps?.length ?? 0) > 0;
+        const hadEmittedAsk = emittedAskToolCallIds.size > 0;
+        if (!hadSuccessfulWrite && !hadEmittedAsk) {
+          answerState.stagedText = ANSWER_FALLBACK_TEXT;
+          answerState.stagedMeta = {
+            fallback: true,
+            truncated: false,
+            chars: ANSWER_FALLBACK_TEXT.length,
+          };
+          log.info?.('stage6.answer_fallback_staged', {
+            sessionId: session.sessionId,
+            turnId,
+            generationId,
+            cancelled,
+            outcomes: answerState.outcomes.map((o) => ({ tool: o.tool, code: o.code })),
+          });
+        }
+      }
+    } catch (answerFinalErr) {
+      log.warn?.('stage6.answer_finalization_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: answerFinalErr?.message ?? String(answerFinalErr),
+      });
+    }
 
     // Bundle the per-turn writes into the legacy iOS shape. Pass null for
     // legacyResultShape — there's no legacy result; bundler will produce
@@ -1710,15 +1782,31 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // ask_user returns is_error:false (so the every() test already excludes
         // it — the inspector hears that question over WS via ask_user_started);
         // the explicit name guard is belt-and-suspenders against double-speak.
+        // A1 agentic-voice (2026-07-23) — the two answer-feature tools join
+        // the ask_user name-guard. A sole terminal-failed answer_user
+        // (empty_answer, is_error:true) would otherwise read as an
+        // all-rejected turn and push a REJECTED_PROMPTS apology IN ADDITION
+        // to the Item-4 fixed fallback answer (double-speak). A turn that
+        // touched the answer feature is owned by the fallback machinery.
         const allRejected =
           orphanToolCalls > 0 &&
           toolCalls.every((c) => c?.result?.is_error === true) &&
-          !toolCalls.some((c) => c?.name === 'ask_user');
+          !toolCalls.some(
+            (c) =>
+              c?.name === 'ask_user' ||
+              c?.name === 'answer_user' ||
+              c?.name === 'inspect_session_state'
+          );
         const producedNothing =
           (orphanToolCalls === 0 || allRejected) &&
           (result.extracted_readings?.length ?? 0) === 0 &&
           (result.observations?.length ?? 0) === 0 &&
-          (result.confirmations?.length ?? 0) === 0;
+          (result.confirmations?.length ?? 0) === 0 &&
+          // A1 (belt-and-braces beside the name-guard): a staged spoken
+          // answer — real or fixed fallback — is audible output, so the turn
+          // did NOT produce nothing. NEW behaviour: the harness had zero
+          // spoken_response references before A1.
+          !isAudibleText(result.spoken_response);
         // An answer turn is owned by the ask-resolution path — never second-guess
         // it. (A tool call of ANY kind, including a real ask_user, also trips
         // orphanToolCalls > 0 and skips the net, covering the "Haiku asked but
@@ -2172,14 +2260,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // so a wedged-then-cancelled turn is never silent. The normal branch
         // keeps the exact "ask ATTEMPTED but never emitted" predicate (no
         // vacuous firing on empty turns).
+        // A1 agentic-voice — a staged answer (real or the Item-4 fallback) is
+        // an audible SURVIVOR: neither the F7 apology nor the cancellation
+        // apology may double-speak over it. Required false on BOTH branches.
+        const survivingAnswer = isAudibleText(result.spoken_response);
         const shouldFire = cancelled
           ? survivingConfCount === 0 &&
             survivingPromptCount === 0 &&
-            emittedAskToolCallIds.size === 0
+            emittedAskToolCallIds.size === 0 &&
+            !survivingAnswer
           : attemptedAskCalls.length > 0 &&
             emittedAskToolCallIds.size === 0 &&
             survivingConfCount === 0 &&
-            survivingPromptCount === 0;
+            survivingPromptCount === 0 &&
+            !survivingAnswer;
         if (shouldFire) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           // Queue on the A4 FIFO channel; the drain below moves it onto the
@@ -2261,7 +2355,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           survivingConfCount === 0 &&
           survivingPromptCount === 0 &&
           emittedAskToolCallIds.size === 0 &&
-          debouncedConfirmationCountThisTurn === 0;
+          debouncedConfirmationCountThisTurn === 0 &&
+          // A1 agentic-voice — a staged spoken answer (real or fallback) IS
+          // speech-intent: a chimed turn with an answer draws no apology
+          // (mutual exclusion), exactly as audible confirmations, emitted
+          // asks and queued prompts already count.
+          !isAudibleText(result.spoken_response);
         if (noSpeechIntent) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           // F/U-2/3 (2026-07-19, Codex r1) — SPECIFIC-FIRST branch: when a
@@ -2836,6 +2935,14 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const pendingAsks = options.pendingAsks ?? null;
   const ws = options.ws ?? null;
   const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
+  // A1 agentic-voice (2026-07-23) — same two dedicated answer-feature routes
+  // as the live lane (a tool is never advertised on one lane only, and never
+  // advertised without a dispatch route). Bound to shadowSession so the
+  // inspect projector reads the shadow clone's snapshot, keeping the shadow
+  // lane side-effect-free on live state.
+  const shadowAgenticAnswersEnabled = session?.agenticAnswersEnabled === true;
+  const shadowAnswers = createAnswerDispatcher(shadowSession, log, turnId, perTurnWrites);
+  const shadowInspects = createInspectDispatcher(shadowSession, log, turnId, perTurnWrites);
   // 2026-04-27 — auto-resolve hook is NOT threaded into shadow mode.
   //
   // The original 2026-04-27 path-2 wiring created a `shadowAutoResolveWrite`
@@ -2915,10 +3022,17 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
         mode: 'shadow',
       });
     }
-    dispatcher = createToolDispatcher(writes, asks);
+    dispatcher = createToolDispatcher(writes, asks, {
+      answers: shadowAnswers,
+      inspects: shadowInspects,
+    });
     sortRecords = createSortRecordsAsksLast();
   } else {
-    dispatcher = writes;
+    // A1: composer even without pendingAsks — see the live-lane comment.
+    dispatcher = createToolDispatcher(writes, null, {
+      answers: shadowAnswers,
+      inspects: shadowInspects,
+    });
     sortRecords = undefined; // runToolLoop treats undefined as identity.
   }
 
@@ -2952,7 +3066,8 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       model: SHADOW_MODEL,
       system: systemBlocks,
       messages: [{ role: 'user', content: transcriptText }],
-      tools: TOOL_SCHEMAS,
+      // A1: shadow lane advertises the SAME flag-filtered toolset as live.
+      tools: buildSessionTools(shadowAgenticAnswersEnabled),
       dispatcher,
       ctx: { sessionId: session.sessionId, turnId },
       logger: log,

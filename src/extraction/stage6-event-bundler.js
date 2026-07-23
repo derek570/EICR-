@@ -737,6 +737,30 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // envelope now carries the field and the iOS pairing fires.
   if (_utteranceId) result.utterance_id = _utteranceId;
 
+  // A1 agentic-voice (2026-07-23) — project the turn's staged spoken answer
+  // (answer_user success, or the Item-4 fixed fallback staged by runLiveMode's
+  // post-loop finalization) as `result.spoken_response`. The EXISTING
+  // voice_command_response emit machinery in sonnet-stream.js (sync path +
+  // P4d reconnect replay) then fires unchanged — answer-after-extraction
+  // ordering, the utterance_id stamp, socket-down buffering and FIFO replay
+  // all for free. Key OMITTED when nothing is staged, so flag-off (and every
+  // answer-less turn) stays byte-identical to pre-A1.
+  //
+  // `answer_source` is the internal origin marker for redacted logging at the
+  // emit site (model-controlled text is never logged raw). It MUST NOT ride
+  // the wire: the raw result is destructure-spread into extraction frames at
+  // three sites AND buffered whole into pendingExtractions when the socket is
+  // down, so it is attached NON-ENUMERABLY — every spread/JSON.stringify site
+  // is then automatically clean while `result.answer_source` stays readable.
+  const _answerState = perTurnWrites.answer;
+  if (typeof _answerState?.stagedText === 'string' && _answerState.stagedText.trim()) {
+    result.spoken_response = _answerState.stagedText;
+    Object.defineProperty(result, 'answer_source', {
+      value: _answerState.stagedMeta?.fallback === true ? 'answer_fallback' : 'answer_user',
+      enumerable: false,
+    });
+  }
+
   // 4-6. New Phase 2 slots — OMITTED when empty so iOS decoders unaware of
   //      these keys see byte-identical traffic to today. Swift Codable
   //      ignores unknown keys, but omission keeps session logs clean.
