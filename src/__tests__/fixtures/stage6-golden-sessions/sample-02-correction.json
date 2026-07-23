@@ -3,6 +3,7 @@
   "_requirement": "STT-11 + STT-09 (same-turn correction — last-write-wins on the perTurnWrites Map; see stage6-per-turn-writes.js SHAPE LOCK comment).",
   "_fixture_shape": "dual-SSE",
   "_normalisation_note": "Legacy emits field_clears; bundler emits cleared_readings. normaliseExtractionResult collapses both into `clears` so both paths compare on the same slot. The correction (new value) lives in the readings slot.",
+  "_p5_note": "P5 (2026-07-23, marker T10 / feedback 80B+81): a same-turn clear→final-write for the SAME slot is a value REPLACEMENT — the new reading IS the correction, and surfacing a separate clear on top wipes the value on the client (the write frame lands, then the stale clear frame lands after it). The bundler now COLLAPSES the tool-path clear_reading when a same-slot write survives, so cleared_readings is empty on this turn. The legacy `field_clears` is therefore set to [] here to keep BOTH normalised paths converged on the corrected reading-only contract — matching sample-05-refill-guard, which already encodes field_clears:[] for its clear+rewrite turn. The tool-call SSE still emits clear_reading then record_reading (the real live sequence); P5 collapses it in the bundler.",
   "pre_turn_state": {
     "snapshot": {
       "circuits": {
@@ -40,7 +41,7 @@
       "index": 0,
       "delta": {
         "type": "input_json_delta",
-        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"measured_zs_ohm\",\"value\":\"0.71\",\"confidence\":0.95}],\"field_clears\":[{\"circuit\":3,\"field\":\"measured_zs_ohm\",\"reason\":\"user_correction\"}],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
+        "partial_json": "{\"extracted_readings\":[{\"circuit\":3,\"field\":\"measured_zs_ohm\",\"value\":\"0.71\",\"confidence\":0.95}],\"field_clears\":[],\"circuit_updates\":[],\"observations\":[],\"questions_for_user\":[]}"
       }
     },
     { "type": "content_block_stop", "index": 0 },
