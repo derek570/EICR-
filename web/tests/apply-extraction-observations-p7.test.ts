@@ -11,8 +11,9 @@
  * never written — an inverse Audio-First violation.
  *
  * The fix keys dedupe on the server id: distinct ids BOTH render; a re-seen
- * id is an IDEMPOTENT REPLAY (P4d reconnect) → fill-absent-only, no creation
- * side-effects, no schedule re-projection; a nil id retains the text gate.
+ * id is an IDEMPOTENT REPLAY (P4d reconnect) → a PURE NO-OP (no double-append,
+ * no field fill, no creation side-effects, no schedule re-projection); a nil id
+ * retains the text-similarity gate.
  *
  * The M9 / exact-dedupe tests in apply-extraction-observations-parity.test.ts
  * and apply-extraction-parity.test.ts exercise the RETAINED nil-id fallback
@@ -115,7 +116,7 @@ describe('P7 — distinct server_id observations both render', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────
-// Idempotent replay (same server_id) — one entry, fill-absent, no side-effects
+// Idempotent replay (same server_id) — PURE NO-OP (no append, no fill, no side-effects)
 // ────────────────────────────────────────────────────────────────────
 describe('P7 — same server_id is a pure no-op replay', () => {
   it('does NOT double-append and does NOT fill any field (pure no-op)', () => {
