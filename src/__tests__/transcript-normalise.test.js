@@ -79,12 +79,18 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(normalise('Z s for circuit 3 was 0.67').text).toBe('Zs for circuit 3 was 0.67');
   });
 
-  test('a long circuit-designation scope (>60 chars) still collapses (bounded to 120)', () => {
+  test('a realistic reading scope (within the 60-char bound) collapses', () => {
+    const input = 'Z s for the downstairs ring final circuit was 0.67';
+    expect(normalise(input).text).toBe('Zs for the downstairs ring final circuit was 0.67');
+  });
+
+  test('a pathologically long name-shaped clause is NOT collapsed (bound favours name-safety)', () => {
+    // >60-char gap between the scope-prep and the trailing "was 1" — the bound
+    // stops the later reading grammar from dragging the name token into "Zs".
     const input =
-      'Z s for the upstairs heating and hot water boiler radial circuit number three was 0.67';
-    expect(normalise(input).text).toBe(
-      'Zs for the upstairs heating and hot water boiler radial circuit number three was 0.67'
-    );
+      'Designation Z S for the long-standing metropolitan installation classification and records category was 1';
+    expect(normalise(input).text).toBe(input);
+    expect(normalise(input).rules_hit).toEqual([]);
   });
 
   test('the dropped connectors ("measuring"/"equalled") do NOT false-positive', () => {

@@ -103,11 +103,17 @@ const ZS_VALUE_CONNECTOR = '(?:was|were|is|are|reads?|equals?|measured|measures|
 // ("Z s ON the heating…", "Z s FOR circuit 3…"). These are NOT value-connectors
 // — they must be FOLLOWED (within the bounded gap) by a value-connector + value.
 const ZS_SCOPE_PREP = '(?:on|onto|for|at|of|to|in|across|between)';
-// Bounded same-clause scope gap between the scope-prep and the value-connector —
-// covers "the heating " / "circuit 3 " etc. Bounded to defuse ReDoS; 120 chars
-// accommodates a long circuit designation while staying linear. Never bridges a
-// clause/sentence delimiter (. ! ? ; newline).
-const ZS_SCOPE_GAP = '[^.!?;\\n]{0,120}?';
+// Bounded same-clause scope gap between the scope-prep and the value-connector
+// — covers realistic dictated reading scopes ("the heating ", "circuit 3 ",
+// "the downstairs ring final circuit "). Bounded to 60 chars, which (a) defuses
+// ReDoS (linear per token) and (b) deliberately favours NAME-SAFETY over
+// collapsing a pathologically long scope: a longer bound widens the window in
+// which a long name-shaped clause "Z S for <long text> was <n>" would wrongly
+// collapse. Very long reading scopes (>60 chars) are left un-collapsed
+// (false-negative, acceptable — no inspector dictates the full circuit
+// description inline with a Zs value; the rule grows from field evidence).
+// Never bridges a clause/sentence delimiter (. ! ? ; newline).
+const ZS_SCOPE_GAP = '[^.!?;\\n]{0,60}?';
 // Optional qualifier between the connector and the value ("was about 0.67").
 const ZS_QUALIFIER = '(?:the\\s+|about\\s+|around\\s+|approximately\\s+)?';
 // Value vocabulary — a number (int/decimal/leading-dot) OR a domain sentinel.
