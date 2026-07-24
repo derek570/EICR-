@@ -4399,6 +4399,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // rejection path. Undefined / null / non-string-or-array values
         // resolve to no correlation ids for this turn.
         regexFastCorrelationId: msg.regex_fast_correlation_id,
+        // Observation-tier routing (C1) — the UNTOUCHED inspector transcript.
+        // runLiveMode classifies OBSERVATION_PATTERN on this (NOT the possibly
+        // enriched `transcriptText` above, which may carry a "[In response to
+        // TTS question...]" prefix from :3758) so a bare answer on an
+        // observation-question turn cannot wrongly escalate to the Sonnet
+        // observation tier. Server-context isolation.
+        rawInspectorTranscript: msg.text,
       });
 
       // Plan 03-12 r14 Codex MAJOR — stamp seenTranscriptUtterances ONLY

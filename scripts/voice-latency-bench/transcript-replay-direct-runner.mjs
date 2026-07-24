@@ -690,6 +690,11 @@ async function runScenario(scenarioPath, apiKey) {
         confirmationsEnabled: true, // need for speculator to fire
         pendingAsks,
         ws,
+        // Observation-tier routing (C1) — this runner's transcriptText IS the
+        // raw fixture transcript (no server enrichment), so it doubles as the
+        // raw classification source. Threaded so bench observation scenarios
+        // route identically to prod after the OBSERVATION_TIER_ROUTING flip.
+        rawInspectorTranscript: transcriptText,
         logger: makeCapturingLogger(buckets),
         // F7 Item 2 — a caller that omits generationId emits uncorrelated
         // telemetry rows. Mint one per turn so the replay harness's captured

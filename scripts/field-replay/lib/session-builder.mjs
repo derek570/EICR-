@@ -80,6 +80,7 @@ export const HARNESS_OPTION_TABLE = Object.freeze({
   ws: { source: 'the replay WS stub for the turn' },
   regexFastCorrelationId: { source: 'SINGULAR production option (sonnet-stream.js:4343; a plural property would be silently ignored) — fixture may store array-valued regex_fast_correlation_ids; the builder passes per-turn through the singular option; absence passed only when evidence-backed', capability_exclusion: 'fast_path_finalizer' },
   logger: { source: 'the replay capturing logger (harness-supported option; production omits it and uses the module logger — the replay supplies it to capture rows per turn)' },
+  rawInspectorTranscript: { source: 'fixture turn.transcript (the untouched inspector text; production threads msg.text at sonnet-stream.js:4316). Observation-tier routing (C1) classifies OBSERVATION_PATTERN on THIS, so the recorded lane must route identically to prod — omitting it would leave replay observation turns on the default model after the OBSERVATION_TIER_ROUTING flip' },
 });
 
 /**
@@ -186,6 +187,13 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
         fallbackToLegacy: entry.fallbackToLegacy === true,
         ws,
         ...(regexFastCorrelationId !== undefined ? { regexFastCorrelationId } : {}),
+        // Observation-tier routing (C1) — the raw inspector transcript the
+        // router classifies on. `turn.transcript` is exactly what the runner
+        // passes as runShadowHarness's transcript arg (replay-runner-core.mjs:410),
+        // and the recorded lane applies no server enrichment, so it IS raw.
+        // Threaded so a recorded observation fixture routes to
+        // OBSERVATION_EXTRACT_MODEL identically to prod after the flip.
+        rawInspectorTranscript: turn.transcript,
         logger,
       };
     },
