@@ -77,6 +77,42 @@ Rules: the epoch is snapshotted at frame **creation** (never re-read from mutabl
 
 ---
 
+## Backend transcript normalisation (P6 — canonical ingest layer)
+
+> Added 2026-07-24 (feedback ids 89 + 80A). Backend-only, **zero wire change**.
+
+There is now ONE canonical normalisation layer for the raw dictation transcript, applied at the backend ingest in `src/extraction/sonnet-stream.js`. `src/extraction/transcript-normalise.js` is a pure, enumerated `normalise(text) → {text, rules_hit[]}` with **two evidence-backed rules** (word-boundary, pattern-anchored — **no fuzzy/edit-distance**, per §3E + the research-methodology ban):
+
+| Rule ID | Rewrite | Notes |
+|---------|---------|-------|
+| `a_hundred` | `"a hundred"` → `"100"` | The article word-number (iOS/web digit-ise `"one hundred"` + compounds, not `"a hundred"`). Compound guard: `"a hundred and fifty"` is left UNTOUCHED (out of scope, no corruption). Runs FIRST so its digit output satisfies the `zs_field_token` gate. |
+| `zs_field_token` | `"Z s"`/`"Zed s"`/`"zed s"` → `"Zs"` | **Context-gated** on a reading-shaped same-clause (connector/scope word + numeric-or-sentinel value) so genuine two-letter dictation (`"Z S Electrical"`, `"designation Z S 1"`, spelled postcodes) is NOT collapsed. |
+
+**Origin:** id 89 (`"Z s on the heating was 0.67"`) failed to anchor because `reading-transcript-anchor.js` looks for the substring `"zs"`, which spaced `"z s"` misses; id 80A (`"A hundred MΩ"`) failed to parse because the word-number produced no digit.
+
+### Raw/canonical split (do NOT mutate `msg.text`)
+
+`msg.text` is **never mutated** — a canonical COPY is derived and threaded to model-facing/behavioural consumers, so the recorded-corpus fixtures + the reverse-race dedupe keys keep the raw garble (a future replay must reproduce the bug, not mask it). There is no live raw-transcript S3 sink on this path (only `cost_summary.json` is uploaded); the authoritative raw artifact for replays is the hand-authored `.yaml` fixture.
+
+Applied at **two seams**, with this consumer routing table:
+
+| Seam | CANONICAL (canonical copy) | RAW (unchanged) |
+|------|----------------------------|-----------------|
+| **A — `handleTranscript`** (top, after the `isStopping` guard) | both content anchors (recentAskAnswers consult + recentTranscripts push), the pre-LLM gate, BOTH `classifyOvertake` calls (pre-queue + transcript-overtake — the latter stays **un-annotated**), `detectStructuredReading`, the model-bound `transcriptText` (incl. the `in_response_to` annotation), the three dialogue-script `rawReplyText` args (normalised but **un-annotated**), `runShadowHarness` | `msg.text`; exact-dedupe on `utterance_id`; log previews (`.slice(0,80)`) |
+| **B — `ask_user_answered`** | the pre-sanitisation reverse-race lookup (canonical comparison copy only); AFTER sanitisation, `canonicalAnswerText` → the `classifyOvertake` shape check, the new-command gate, `detectStructuredReading`, `resolvePayload.user_text`, the re-injected synthetic transcript, the recentAskAnswers anchor push | `sanitiseUserText` runs on RAW `msg.user_text` (length/truncation semantics unchanged); raw previews + sanitisation flags |
+
+**Both content anchors are canonical on BOTH seams** so cross-seam dedupe equality holds in either arrival order (no double-exposure). The re-injected synthetic transcript is already canonical, so Seam A re-normalises it to a no-op.
+
+**Telemetry:** `stage6.transcript_normalised { rules_hit, seam }` (rule IDs ONLY — never the raw/canonical text; leak-filter). At Seam A the result is stashed on a JSON-invisible `Symbol` so the isExtracting queue/drain + `user_moved_on` re-entries reuse it and log EXACTLY once per message.
+
+**Incidental INFO-log previews** (engine / dispatcher-logger) that derive from the now-canonical vars MAY read canonical — that is the documented, pinned behaviour (the load-bearing raw requirement is only the debug/corpus capture boundary, which has no live sink here).
+
+**Web:** zero wire change; web transcripts flow through the same backend ingest, so web benefits identically. The web client-side regex fast-hint tier still sees raw text (acceptable — Sonnet overwrites).
+
+**Key files:** `src/extraction/transcript-normalise.js` (pure rules), `src/extraction/sonnet-stream.js` (the two seams), `src/__tests__/transcript-normalise.test.js` (unit), `src/__tests__/sonnet-stream-transcript-normalise-ingress.test.js` (the sole raw→canonical ingress proof — the direct replay runner bypasses these seams).
+
+---
+
 ## Auto-Sleep (Deepgram Power Saving)
 
 Prevents wasted Deepgram billing when the inspector stops speaking. Three-tier state machine:
