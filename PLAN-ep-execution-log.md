@@ -1,109 +1,64 @@
-# /ep execution log — P4 ask-decline-ack-net
+# EP Execution Log — P6 transcript-normaliser
 
-- **Plan:** `PLAN-final.md` (feedback id 85 / session 2ACE7677)
-- **Session:** `20260723T233944Z-ep`
-- **Repo:** `/Users/derekbeckley/Developer/EICR_Automation`
-- **Branch:** `ep/PLAN-20260723T233944Z-ep`
-- **Worktree:** `/Users/derekbeckley/Developer/EICR_Automation-ep-20260723T233944Z-ep`
-- **Base:** `main` @ `da8d1fb2` (P3 #111 + P5 #110 already landed — the batch predecessors)
+**Session:** 20260724T072723Z-ep
+**Plan:** PLAN-final.md
+**Repo:** /Users/derekbeckley/Developer/EICR_Automation
+**Branch:** ep/PLAN-20260724T072723Z-ep
+**Started:** 2026-07-24T07:28Z
+**Chain:** hop 2, `.ep-queue` wave member (feedback-2026-07-22 batch, P6 of 7)
 
-Node note: local runs on v25.6.1 (dev box); CI authoritative on Node 20. Worktree
-`node_modules` symlinked from the main checkout for local test runs.
+## Plan summary
+Backend-only. New `src/extraction/transcript-normalise.js` (pure, `normalise(text[,context]) → {text, rules_hit[]}`) applied at TWO seams in `sonnet-stream.js`:
+- Seam A: top of `handleTranscript` (after `entry.isStopping` guard, before ask-answer anchor) — canonical/raw split, do NOT mutate `msg.text`.
+- Seam B: `ask_user_answered` handler (after `sanitiseUserText`, ~:1599).
+TWO evidence-backed rules: (1) context-gated "Z s"/"Zed s"/"zed s"→"Zs"; (2) "a hundred"→"100".
 
-## Step 1 — onAskAnswered resolution-time observer (dispatcher)
+## Phase 0 — line-ref & raw-sink verification (2026-07-24T07:35Z)
 - Status: applied
-- Decision: rule 1 (verbatim). Added the `onAskAnswered({toolCallId, answered, declineClass, source})` option to `createAskDispatcher`; fired AFTER the initial ask await (with `classifyDeclineReply(outcome.user_text)`) and after each `pvr-*` `brokerDeterministicAsk` await; threaded through `buildResolvedBody` → `resolvePendingValueFlow` → `runPendingValueChain` → `brokerDeterministicAsk` exactly as `onAskUserStarted` is. Both fire sites guard-swallow observer errors.
-- Files: `src/extraction/stage6-dispatcher-ask.js`
-- Commit: `839fbf56`
+- File is `src/extraction/sonnet-stream.js` (4965 lines). Plan line refs verified against current main — accurate:
+  - `:3217` `handleTranscript` def; `:3243` `entry.isStopping` guard (Seam A goes right after).
+  - `:3294` + `:3355` `normaliseForAskMatch(msg.text)` content anchors; `:3399` gate; `:3514` pre-queue classifyOvertake; `:3570` detectStructuredReading; `:3714` `let transcriptText = msg.text`; `:3758` in_response_to annotation; `:3802/3847/3875` rawReplyText args; `:4061` transcript-overtake classifyOvertake.
+  - Seam B: `ask_user_answered` case `:1438`; `msg.user_text` validated string at `:1447`; `srv-*` early-exit `:1472`; reverse-race anchor `:1563`; `sanitised = sanitiseUserText` `:1599`; classifyOvertake shape `:1663`; detectStructuredReading `:1722`; synthetic transcript `:1760`; resolvePayload.user_text `:1672/1787`; recentAskAnswers push `:1893`.
+  - Mirror ledger: recentTranscripts pushed at `:3355` (consulted by Seam B `:1563`); recentAskAnswers pushed at Seam B `:1893` (consulted by Seam A `:3294`). BOTH content anchors must be canonical on BOTH seams for cross-seam dedupe equality (double-exposure guard).
+- **RAW-SINK determination (Phase-0 deliverable) = plan Option (c).** The live voice path (`sonnet-stream.js`) uploads ONLY `session-analytics/<user>/<sid>/cost_summary.json` (`:4870`). There is NO raw-transcript S3/jsonl capture in this path (the `recording.js` `debug_transcription.json` is the OLD Whisper batch route, not the Flux/Sonnet voice pipeline). `session.activeTurnTranscript` (stage6-shadow-harness.js:702) becomes canonical by design. Recorded-corpus fixtures are hand-authored `.yaml` (already carry raw garble). So raw preservation is satisfied by NOT mutating `msg.text` in memory; the authoritative raw artifact for future replays is the hand-authored fixture. Incidental INFO-log previews (dispatcher-logger, engine) MAY become canonical — documented + pinned by test per plan.
+- `parseMegaohms`/`parseBareMegaohmsWithUnit` confirmed: "a hundred" yields no digit (fails); "100 MΩ" parses to "100". megaron/milligrams already aliased (unit rule correctly dropped).
+- Integration test harness: `ws._emit('message', Buffer.from(JSON.stringify(frame)))` drives handlers captured via `ws.on` mock (sonnet-stream-ask-routing.test.js pattern); `runShadowHarnessSpy.mock.calls.at(-1)[1]` is the `transcriptText` arg.
+- Non-string `msg.text` edge preserved: `canonicalTranscriptText = typeof msg.text === 'string' ? normResult.text : msg.text` so pathological non-string frames see byte-identical behaviour.
 
-## Step 2 — per-turn ask-lifecycle ledger + the net (harness)
-- Status: applied
-- Decision: rule 1. Ledger (`askLifecycleLedger` Map + monotonic `askEventSeq`) created alongside `emittedAskToolCallIds`; `onAskUserStarted` stamps emission, the new `onAskAnswered` stamps resolution+answered+declineClass; `_seedAskLifecycle` test seam replays events through the REAL observers. New net after the marker-② catch block, before the §A4 drain: fires on `confirmationsEnabled` ∧ not-cancelled ∧ LAST-emitted-ask `answered===true` ∧ zero post-answer speech (debounced EXCLUDED; `!isAudibleText(spoken_response)` A1 term). Two families `ASK_DECLINE_ACK_PROMPTS` / `ASK_ANSWERED_ACK_PROMPTS` rotate `turnNum % len`. Telemetry `stage6.answered_ask_ack_emitted` (+ error guard).
-- Files: `src/extraction/stage6-shadow-harness.js`
-- Commit: `839fbf56`
 
-## Step 3 — fixture-schema Option-B relaxation
-- Status: applied
-- Decision: rule 1. `field_null_fallback` matcher now validates with a NON-EMPTY trimmed `text_exact` alone (token no longer required; empty/whitespace still rejected). Chosen over Option A (net-new `audibility.answered_ask` oracle) per the plan's stated preference — far smaller change.
-- Files: `scripts/field-replay/lib/fixture-schema.mjs` + 5 validation tests in `src/__tests__/field-replay/fixture-schema.test.js`
-- Commit: `10af0eed`
+## Steps executed
+- **Step: new module `src/extraction/transcript-normalise.js`** — applied. Pure `normalise(text)→{text,rules_hit[]}`; two enumerated rules (a_hundred, context-gated zs_field_token); rule order load-bearing (a_hundred first). Commit a53c9b23.
+- **Step: Seam A wiring (handleTranscript)** — applied. canonicalTranscriptText derived after isStopping guard; routed to both content anchors, gate, BOTH classifyOvertake, detectStructuredReading, transcriptText+in_response_to, 3× rawReplyText, runShadowHarness; non-string fallback; enumerable Symbol telemetry dedupe. Commit bb63ab66.
+- **Step: Seam B wiring (ask_user_answered)** — applied. sanitiseUserText on RAW; canonicalUserTextForAnchor (raw-based) for both dedupe keys; canonicalAnswerText for behavioural consumers. Commit bb63ab66.
+- **Step: production-ingress integration test** — applied. `sonnet-stream-transcript-normalise-ingress.test.js` (both seams, anchor flip, real parser, dedupe both orders, queue/drain single-log). Commit 6426c4ce.
+- **Step: real-engine IR ingress test** — applied (added during Codex review; plan required "activate the REAL IR dialogue state"). `sonnet-stream-transcript-normalise-ir-realengine.test.js`. Commit 896bdb36.
+- **Step: docs (ios-pipeline.md + changelog + hub rows)** — applied. Commits f8e3ee3a + review-cycle doc fixes.
 
-## Step 4 — unit + audibility-sweep tests
-- Status: applied
-- Decision: rule 1, with one realism correction (see [ASSUMED]). New `stage6-ask-decline-ack-net.test.js` (15 cases) + a real-composition integration case + timeout negative in `stage6-audibility-invariants.test.js`. `ASK_USER_ANSWER_OUTCOMES` enum untouched → its disjoint/union invariants stay green automatically.
-- Files: `src/__tests__/stage6-ask-decline-ack-net.test.js` (new), `src/__tests__/stage6-audibility-invariants.test.js`
-- Commit: `839fbf56`
-- **[ASSUMED] step 4** — the mocked-lane "fires" tests needed the `ask_user` tool call PRESENT in `toolLoopOut.tool_calls` (a `silentAnsweredLoop()` helper), because a real answered-ask turn always carries the ask_user in the loop, which is exactly what EXCLUDES the A3/marker-① orphan net (it keys on empty `tool_calls`). An empty-tool-call mock let marker-① fire and mask the P4 net — a mock artifact, not a real path. Chose the realistic mock (single obvious interpretation; verified against the A3 predicate at `stage6-shadow-harness.js:~1975`).
+## Phase-0 determinations
+- Raw-sink = plan Option (c): no live raw-transcript S3 sink (only cost_summary.json); authoritative raw artifacts = the raw literals in the unit/ingress tests + field-feedback records (2ACE7677 / 36731498). No P6 .yaml corpus fixture needed.
+- All plan line refs verified accurate against current main.
 
-## Step 5 — recorded-lane fixture (Option B, RED→GREEN proven)
-- Status: applied
-- Decision: rule 1. `frc_85ace7677d0e1c4a7b2f3609e5d1a8c4/fixture.yaml` — single turn: `ask_user` (concrete `context_field: measured_zs_ohm`, circuit 3) answered "No. Don't worry." (escalates with no write, no pending-value apology), model no-op round 2. `expected_audible_outputs` declares BOTH the ask frame AND the ack (`kind:field_null_fallback`, `text_exact: "No problem, moving on."`).
-- **RED-proof:** with the harness reverted to pre-net (`da8d1fb2`), the fixture (flipped to `expected_red`) failed EXACTLY `audibility.output.out_decline_ack` ("expected 1 audible output(s), found 0"), gate verdict "expected RED confirmed". Harness + fixture then restored; `required_green` passes. Full corpus 7/7.
-- Files: `tests/fixtures/field-replay-corpus/frc_85ace7677d0e1c4a7b2f3609e5d1a8c4/fixture.yaml` (new)
-- Commit: `fa957016`
+## Codex diff review — the ship gate
+- **Verdict: PASSED (converged clean at cycle 8, zero BLOCKER/IMPORTANT).**
+- Cycle 1 (parallel 3-lens): 6 findings (4 BLOCKER-class) — Zs false-positive (connector+value anywhere), ReDoS, compound-guard holes, telemetry-Symbol-lost-on-queue-spread, cross-seam anchor divergence, mocked-IR-test. All fixed. Commit 896bdb36.
+- Per-fix mini-review 1: 4 IMPORTANT (compound-guard "and"/multi-digit, connector false-positives, scope-cap). Fixed. Commit d3d221db.
+- Cycle 2: 2 BLOCKER (name-with-later-reading collapse; "a hundred point oh five"/"and half" decimals) + docs. Fixed. Commit b8970b82.
+- Per-fix mini-review 2: 1 IMPORTANT (120-char bound too permissive → reverted to 60, name-safety). Fixed. Commit 5af66b91.
+- Cycle 3: 3 BLOCKER (newline-crossing; overtake raw-length-cap bypass; missing AGENTS.md hub row) + docs NIT. Fixed. Commit 04c7a2e3.
+- Cycle 4: 1 BLOCKER (CR + sentinel-internal \s newline-crossing) + 2 doc NITs. Fixed. Commit 4da45474.
+- Cycle 5: 1 BLOCKER (at/of address corruption). Fixed. Commit 5d194d0d.
+- Cycle 6: 1 IMPORTANT (comma-bridge to later field). Fixed. Commit addc778d.
+- Cycle 7: 1 IMPORTANT (a_hundred uncertainty markers → false exact 100). Fixed. Commit e0e09d6a.
+- Cycle 8: EMPTY — converged.
+- ACCEPTED residuals (documented, not fixed — within the plan's "grows from field evidence"): "reads as"-style extra-word Zs false-negatives; F8/§A4 "Ze is a hundred" reinjection double-speak (pre-existing, identical for digit readings); AGENTS.md P4-row gap (pre-existing divergence); no P6 .yaml corpus fixture (Option-c); pathological no-comma name+reading run-on in one utterance.
+- No SANCTIONED_DEVIATIONS (every fix was in-scope; none required going beyond the plan's intent).
 
-## Step 6 — docs + gates
-- Status: applied
-- Decision: rule 1. architecture.md (Stage 6 audibility-net section), changelog.md (detailed), CLAUDE.md (hub one-liner), field-replay-corpus.md (`field_null_fallback` oracle subsection). Full backend suite **5989 passed / 0 failed / 19 skipped**; corpus **7/7**; my changed files lint clean (0 errors). Pre-existing repo lint artifacts (the `packages/` glob ESLint-9 ignore → `npm run lint` exit 2; `postcode_lookup.js:207` no-empty error) reproduce on `main` and are NOT introduced by this change.
-- Files: `docs/reference/architecture.md`, `docs/reference/changelog.md`, `docs/reference/field-replay-corpus.md`, `CLAUDE.md`
-- Commit: `f47d8c6f`
-
-## Gate summary (pre-Codex)
-- Every plan step: **applied**.
-- Backend Jest: 5989 passed, 0 failed.
-- Field-replay corpus: 7/7.
-- Lint (my files): clean.
-- **Gate: ALL PASSED** → proceed to the Codex diff review before merge.
-
-## Codex diff review (gpt-5.6-sol, reasoningEffort high)
-
-Codex was rate-limited (quota exhausted by the earlier P5/P3 batch's review
-cycles) for ~4h; per the /ep policy I held the merge and retried rather than
-ship unreviewed or downgrade the model. Once the quota cleared, the review ran
-to convergence. The full diff+plan+context exceeded the freshly-reset
-token-per-window budget, so the review ran on the behavioral CORE diff
-(src/extraction + scripts — where all runtime risk lives); the tests/fixture/docs
-are non-runtime and already green + RED-proven.
-
-### [DEVIATION] — cancelled-turn coverage (Codex-sanctioned WITHIN_INTENT)
-The plan's predicate 1 says the net fires only on NON-cancelled turns ("the F7
-Item-3 cancellation branch owns cancelled turns"). Cycle 1 found this assumption
-WRONG: F7's cancellation branch fires ONLY when `emittedAskToolCallIds.size===0`,
-so an ANSWERED ask (size>0) on a cancelled turn is covered by NO net → silent,
-the exact feedback-85 class. The net now fires on cancelled turns too. Codex
-cycle 2 evaluated this against the conversation-context and returned
-**WITHIN_INTENT**, quoting: *"P4 covers ONLY feedback id 85 (the answered-ask
-decline → silence). It is the sibling to the 'chime is a promise' invariant …
-a chimed/answered turn MUST produce audible output."* Applied + shipped as a
-sanctioned deviation (commit `65d0c4d1` + ordering completions in `1e95f8cd`,
-`ea9cc9e0`).
-
-### Cycles
-- **Cycle 1** (4 findings: 1 BLOCKER + 3 IMPORTANT) — cancelled silent-path
-  (→ the WITHIN_INTENT deviation above); ledger resolutionSeq>emissionSeq guard;
-  over-broad classifyDeclineReply (whole-reply anchor + digit guard); padded
-  text_exact fixture-schema reject. All applied (`65d0c4d1`).
-  - Per-fix mini-review: 2 NITs (declineClass re-emission reset; classifier
-    politeness/curly-apostrophe false-negatives) applied (`7b1261ce`).
-- **Cycle 2** (2 findings: 1 BLOCKER + 1 IMPORTANT) — onAskAnswered ordered
-  before the cancel guard (real-dispatcher regression); 3→5-phrase burst-margin
-  families (append-only, fixture pin unchanged). Applied (`1e95f8cd`).
-  - Per-fix mini-review: 1 BLOCKER — advanceResponseEpoch must ALSO precede the
-    cancel guard (else the cancelled-turn ack carries a stale utterance_id and a
-    client watchdog false-fires a second fallback). Applied (`ea9cc9e0`).
-- **Cycle 3** (1 IMPORTANT) — max-emissionSeq selection ≠ the plan's exact
-  "latest-answered / later-emitted" rule (an interleaved unanswered srv-* ask
-  could wrongly suppress). Reimplemented to the plan's two-step rule + regression
-  (`83da44e4`).
-- **Cycle 4** — CLEAN (0 BLOCKER, 0 IMPORTANT). Converged.
-
-Trajectory (BLOCKER/IMPORTANT counts): 4 → 2 → 1 → 0.
-
-## Final gate (post-Codex)
-- **Outcome: ALL PASSED (plan-deviation: 1 applied within original intent).**
-- Backend Jest: 6031 passed, 0 failed (+42 over the pre-review baseline).
-- Field-replay corpus: 7/7 (fixture `frc_85ace7677…` RED-proven → required_green).
-- Lint: my files clean.
-- Codex diff review: PASSED at cycle 4.
-- → Ship: ready PR + merge + CI/ECS deploy watch (backend-only; no iOS/TestFlight
-  component). Then make-live + chain to the next queued batch plan.
+## Completed 2026-07-24T09:10Z
+- **Outcome: ALL PASSED** (every step applied; full backend suite green; Codex diff review PASSED).
+- Commits: 16 (module, seams, tests, docs, 8 review-cycle fixes, count sync). Feature branch `ep/PLAN-20260724T072723Z-ep`.
+- Files touched: `src/extraction/transcript-normalise.js` (new), `src/extraction/sonnet-stream.js`, `src/__tests__/transcript-normalise.test.js` (new), `src/__tests__/sonnet-stream-transcript-normalise-ingress.test.js` (new), `src/__tests__/sonnet-stream-transcript-normalise-ir-realengine.test.js` (new), `docs/reference/ios-pipeline.md`, `docs/reference/changelog.md`, `CLAUDE.md`, `AGENTS.md`.
+- Assumed decisions: none load-bearing (the plan was execution-ready).
+- Skipped/blocked/failed steps: none.
+- Stashes: none.
+- Tests: 49 P6-specific tests; full backend suite 6080 passed / 19 skipped / 0 failed. ReDoS-guard 0.06–0.13ms on 72–140KB inputs.
+- Deploy: backend-only, ZERO wire change → backend PR→merge→ECS. No iOS changes → no TestFlight.
