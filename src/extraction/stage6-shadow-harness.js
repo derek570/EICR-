@@ -1203,6 +1203,67 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // force to disable, the bespoke negation gate is moot; the rolling-window
     // injection above is the load-bearing part of resolving a bare "no".
 
+    // ── Observation-tier model routing (chunk C1) ────────────────────────
+    // The live path historically ran EVERY turn — including observation
+    // severity coding (C1/C2/C3/FI + BPG4 reasoning) — on SHADOW_MODEL
+    // (= process.env.SONNET_EXTRACT_MODEL = Haiku in prod). The tiered router
+    // in EICRExtractionSession.callWithRetry (eicr-extraction-session.js:2798)
+    // that escalates observation turns to OBSERVATION_EXTRACT_MODEL (Sonnet)
+    // is DEAD on this path — runLiveMode hard-coded model: SHADOW_MODEL.
+    //
+    // Ship DARK behind OBSERVATION_TIER_ROUTING (default OFF): flag off →
+    // selectedModel === SHADOW_MODEL for every turn → the live path is
+    // byte-identical to pre-C1. Flag on → an observation-shaped RAW utterance
+    // routes the whole tool loop (incl. any blocking ask_user continuation)
+    // to OBSERVATION_EXTRACT_MODEL. Rollback = flip the flag off (task-def
+    // edit + CI redeploy), NOT an edit of OBSERVATION_EXTRACT_MODEL. Mirrors
+    // A1 (VOICE_AGENTIC_ANSWERS) / WS4 (DEEPGRAM_STT_MODEL) dark-ship-then-flip.
+    //
+    // ⚠️ Classify on the RAW inspector text, NOT `transcriptText`. On an answer
+    // turn sonnet-stream.js:3758 prepends "[In response to TTS question…]" to
+    // transcriptText BEFORE runShadowHarness, so classifying it could match
+    // OBSERVATION_PATTERN on the QUESTION context and wrongly escalate a bare
+    // "yes" — violating server-context isolation. The prod ingress + the
+    // replay/bench harness callers thread the untouched msg.text as
+    // options.rawInspectorTranscript; classify ONLY that. (Non-live callers /
+    // legacy tests omit it → '' → never matches → stays on the default model,
+    // which under flag-off is SHADOW_MODEL anyway.)
+    //
+    // Coverage note (accepted, not a regression): OBSERVATION_PATTERN keys off
+    // observation-shaped phrasing; a record_observation whose utterance did not
+    // match it stays on the default model — a partial improvement, never a
+    // regression. The fuller mapped-category classifier is a C2 (gate) concern.
+    const observationTierFlagEnabled =
+      (process.env.OBSERVATION_TIER_ROUTING || '').trim() === 'true';
+    const observationModel = (process.env.OBSERVATION_EXTRACT_MODEL || '').trim();
+    const rawInspectorTranscript =
+      typeof options.rawInspectorTranscript === 'string' ? options.rawInspectorTranscript : '';
+    // classifier_match is the RAW-text pattern result, independent of the flag
+    // (telemetry distinguishes "matched" from "flag let it route").
+    const observationClassifierMatch = OBSERVATION_PATTERN.test(rawInspectorTranscript);
+    const routeToObservationTier =
+      observationTierFlagEnabled && observationClassifierMatch && observationModel.length > 0;
+    const selectedModel = routeToObservationTier ? observationModel : SHADOW_MODEL;
+    // Observation-tier turns LOCK the model across every round (disable the
+    // round-1 VOICE_LATENCY_ROUND1_MODEL Haiku override so the escalation isn't
+    // undone on round 1); reading turns keep the latency override.
+    const round1OverrideLocked = routeToObservationTier;
+    // Routing telemetry — the formerly-dead seam has no built-in proof of which
+    // model ran, so the post-flip P8 live probes could silently still be on
+    // Haiku. Emit ONE PII-safe structured event (no transcript text) BEFORE the
+    // tool loop; a routing test asserts it and the post-flip live-probe
+    // checklist requires its presence as evidence the seam is active.
+    // Payload is EXACTLY the plan-specified five routing-decision fields — no
+    // transcript text (PII-safe) and no extra keys, so the event shape is a
+    // stable, asserted contract (see the routing test's exact-shape check).
+    log?.info?.('stage6.observation_tier_routing', {
+      classifier_match: observationClassifierMatch,
+      flag_enabled: observationTierFlagEnabled,
+      selected_model: selectedModel,
+      default_model: SHADOW_MODEL,
+      round1_override_locked: round1OverrideLocked,
+    });
+
     // F7 Item 3 — per-generation cancellation. `signal` fires when the
     // extraction watchdog's absolute ceiling (or a no-ask 30s deadline) aborts
     // this generation. `cancelled` is latched in the runToolLoop catch below so
@@ -1219,7 +1280,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       throwIfStage6Cancelled(signal);
       toolLoopOut = await runToolLoop({
         client: session.client,
-        model: SHADOW_MODEL,
+        // Observation-tier routing (C1) — SHADOW_MODEL under flag-off /
+        // reading turns; OBSERVATION_EXTRACT_MODEL for an observation-shaped
+        // raw utterance when OBSERVATION_TIER_ROUTING is on. Computed once
+        // above. (The mode==='shadow' comparison call ~:3470 stays on
+        // SHADOW_MODEL — its contract is matching SHADOW_MODEL; do NOT change
+        // that one.)
+        model: selectedModel,
+        // Lock the selected model across every round for observation-tier
+        // turns (disable the round-1 latency override); reading turns keep it.
+        allowRound1ModelOverride: !round1OverrideLocked,
         system: systemBlocks,
         messages: liveMessages,
         // A1: flag-filtered toolset — the session-latched master flag decides

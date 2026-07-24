@@ -41,6 +41,14 @@ Changes go live in ~2 minutes.
 
 **Or just tell Claude Code:** "deploy" or "push to cloud"
 
+### Observation-tier routing — flip & rollback (`OBSERVATION_TIER_ROUTING`)
+
+The observation-tier model router (chunk C1) ships DARK: `ecs/task-def-backend.json` sets `OBSERVATION_TIER_ROUTING=false`, so the live recording path is byte-identical to pre-C1 (all extraction on `SONNET_EXTRACT_MODEL` = Haiku). Activation and rollback are BOTH a single flag flip in source + a CI redeploy — never a live `aws ecs` mutation, and never an edit of `OBSERVATION_EXTRACT_MODEL`:
+
+- **Flip ON (activate):** change `OBSERVATION_TIER_ROUTING` to `"true"` in `ecs/task-def-backend.json`, commit, merge to `main` → CI re-registers the task def + rolls the service. **Flip prerequisite:** the web observation-processing TTS cue (parity-ledger `recording/observation-processing-cue`) must be live + verified first — the flag routes BOTH clients' observation turns to Sonnet (added latency), and iOS already masks it with its own cue while web does not yet. There is NO numeric latency gate (Derek: latency is masked by a processing cue, not gated on a number).
+- **Rollback:** change it back to `"false"`, commit, merge, redeploy. This restores byte-identical pre-C1 behaviour with no other change.
+- **Verify the seam is active** post-flip: `aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m | grep observation_tier_routing` — the `stage6.observation_tier_routing` event carries `{classifier_match, flag_enabled, selected_model, default_model, round1_override_locked}` (PII-safe, no transcript). `flag_enabled:true` + `selected_model` == the observation model on an observation turn proves the router fired. The P8 live probes REQUIRE this evidence (they must run against the Sonnet-routed path; re-run them if P8 already merged — probes on Haiku validate the wrong model).
+
 ### Check Cloud Status
 ```bash
 # Service status (both frontend and backend)

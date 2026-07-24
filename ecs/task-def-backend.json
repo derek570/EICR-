@@ -53,7 +53,8 @@
         { "name": "CIRCUIT_ORDER",                      "value": "recent_3" },
         { "name": "SONNET_EXTRACT_MODEL",               "value": "claude-haiku-4-5-20251001" },
         { "name": "OBSERVATION_EXTRACT_MODEL",          "value": "claude-sonnet-4-6" },
-        { "name": "VOICE_AGENTIC_ANSWERS",              "value": "true" }
+        { "name": "VOICE_AGENTIC_ANSWERS",              "value": "true" },
+        { "name": "OBSERVATION_TIER_ROUTING",           "value": "false" }
       ],
       "mountPoints": [],
       "volumesFrom": [],

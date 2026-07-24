@@ -28,10 +28,14 @@ describe('drift enforcement against ecs/task-def-backend.json', () => {
       expect(taskDef).toHaveProperty(k);
     }
   });
-  test('the three routing values are pinned to the task-def snapshot', () => {
+  test('the four routing values are pinned to the task-def snapshot', () => {
     expect(taskDef.SONNET_EXTRACT_MODEL).toBe('claude-haiku-4-5-20251001');
     expect(taskDef.OBSERVATION_EXTRACT_MODEL).toBe('claude-sonnet-4-6');
     expect(taskDef.VOICE_LATENCY_ROUND1_MODEL).toBe('');
+    // Observation-tier routing (C1) — 'false' in the dark PR; the flip commit
+    // moves this to 'true'. The pin keeps the recorded lane at the prod value.
+    expect(taskDef.OBSERVATION_TIER_ROUTING).toBe('false');
+    expect(PINNED_FROM_TASK_DEF).toContain('OBSERVATION_TIER_ROUTING');
   });
   test('SNAPSHOT_FORMAT/CIRCUIT_ORDER — the exact prompt-divergence gotchas — are pinned', () => {
     expect(taskDef.SNAPSHOT_FORMAT).toBe('split_blocks');
