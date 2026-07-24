@@ -58,11 +58,7 @@ export const TERMINAL_ASK_OUTCOMES = Object.freeze([
   'session_reconnected',
 ]);
 
-export const ANSWER_CHANNELS = Object.freeze([
-  'pending_registry',
-  'next_transcript',
-  'terminal',
-]);
+export const ANSWER_CHANNELS = Object.freeze(['pending_registry', 'next_transcript', 'terminal']);
 
 export const PROVENANCE_KINDS = Object.freeze([
   'recorded_full',
@@ -488,7 +484,9 @@ export async function validateFixtureDocument(doc, opts = {}) {
   const validate = await getFixtureValidator();
   if (!validate(doc)) {
     for (const e of validate.errors ?? []) {
-      errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, e.instancePath || '/', e.message ?? 'schema error'));
+      errors.push(
+        err(FIXTURE_ERROR_CODES.SCHEMA, e.instancePath || '/', e.message ?? 'schema error')
+      );
     }
     // Structural failure: cross-field rules would throw on missing shapes.
     return { ok: false, errors };
@@ -497,62 +495,144 @@ export async function validateFixtureDocument(doc, opts = {}) {
   // Corpus-ID validity.
   const idCheck = validateOpaqueRef('corpus', doc.corpus_id, opts.manifestFragments ?? []);
   if (!idCheck.ok) {
-    errors.push(err(FIXTURE_ERROR_CODES.BAD_CORPUS_ID, '/corpus_id', `corpus_id rejected: ${idCheck.reason}`));
+    errors.push(
+      err(FIXTURE_ERROR_CODES.BAD_CORPUS_ID, '/corpus_id', `corpus_id rejected: ${idCheck.reason}`)
+    );
   }
 
   // Gate-state cross-field requirements.
   const gs = doc.gate_state;
   if (gs === 'expected_red') {
-    const missing = ['expected_failure_id', 'red_proof_failure_id', 'owner', 'introduced_at', 'fix_reference', 'expires_at'].filter(
-      (k) => doc[k] == null || doc[k] === '',
-    );
+    const missing = [
+      'expected_failure_id',
+      'red_proof_failure_id',
+      'owner',
+      'introduced_at',
+      'fix_reference',
+      'expires_at',
+    ].filter((k) => doc[k] == null || doc[k] === '');
     if (missing.length) {
-      errors.push(err(FIXTURE_ERROR_CODES.EXPECTED_RED_MISSING_FIELDS, '/', `expected_red missing: ${missing.join(', ')}`));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.EXPECTED_RED_MISSING_FIELDS,
+          '/',
+          `expected_red missing: ${missing.join(', ')}`
+        )
+      );
     }
-    if (doc.expected_failure_id != null && doc.red_proof_failure_id != null && doc.expected_failure_id !== doc.red_proof_failure_id) {
-      errors.push(err(FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH, '/expected_failure_id', 'active expected_failure_id must equal red_proof_failure_id'));
+    if (
+      doc.expected_failure_id != null &&
+      doc.red_proof_failure_id != null &&
+      doc.expected_failure_id !== doc.red_proof_failure_id
+    ) {
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH,
+          '/expected_failure_id',
+          'active expected_failure_id must equal red_proof_failure_id'
+        )
+      );
     }
     if (doc.purpose === 'triage') {
-      errors.push(err(FIXTURE_ERROR_CODES.TRIAGE_WITH_FAILURE_ID, '/purpose', 'a triage fixture has no legitimate RED failure — it is admitted directly as required_green'));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.TRIAGE_WITH_FAILURE_ID,
+          '/purpose',
+          'a triage fixture has no legitimate RED failure — it is admitted directly as required_green'
+        )
+      );
     }
   }
   if (gs === 'required_green') {
     if (doc.expected_failure_id != null) {
-      errors.push(err(FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH, '/expected_failure_id', 'required_green must not carry an ACTIVE expected_failure_id'));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH,
+          '/expected_failure_id',
+          'required_green must not carry an ACTIVE expected_failure_id'
+        )
+      );
     }
     if (doc.purpose === 'triage' && doc.red_proof_failure_id != null) {
-      errors.push(err(FIXTURE_ERROR_CODES.TRIAGE_WITH_FAILURE_ID, '/red_proof_failure_id', 'triage fixtures carry no red_proof_failure_id'));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.TRIAGE_WITH_FAILURE_ID,
+          '/red_proof_failure_id',
+          'triage fixtures carry no red_proof_failure_id'
+        )
+      );
     }
     // A REGRESSION fixture admitted directly as required_green (fix-wave-
     // lands-first contingency) must carry the immutable RED proof id; the
     // dual-evidence check itself is acceptance/history-level.
     if (doc.purpose === 'regression' && doc.red_proof_failure_id == null) {
-      errors.push(err(FIXTURE_ERROR_CODES.GREEN_REGRESSION_MISSING_RED_PROOF, '/red_proof_failure_id', 'a regression fixture admitted required_green needs red_proof_failure_id (dual-proof rule)'));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.GREEN_REGRESSION_MISSING_RED_PROOF,
+          '/red_proof_failure_id',
+          'a regression fixture admitted required_green needs red_proof_failure_id (dual-proof rule)'
+        )
+      );
     }
   }
   if (gs === 'unsupported_pending') {
-    const missing = ['capability_exclusion', 'owner', 'named_followup', 'sanitized_transcript', 'human_expectations'].filter(
-      (k) => doc[k] == null || (Array.isArray(doc[k]) && doc[k].length === 0) || doc[k] === '',
+    const missing = [
+      'capability_exclusion',
+      'owner',
+      'named_followup',
+      'sanitized_transcript',
+      'human_expectations',
+    ].filter(
+      (k) => doc[k] == null || (Array.isArray(doc[k]) && doc[k].length === 0) || doc[k] === ''
     );
     if (missing.length) {
-      errors.push(err(FIXTURE_ERROR_CODES.UNSUPPORTED_PENDING_MISSING_FIELDS, '/', `unsupported_pending missing: ${missing.join(', ')}`));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.UNSUPPORTED_PENDING_MISSING_FIELDS,
+          '/',
+          `unsupported_pending missing: ${missing.join(', ')}`
+        )
+      );
     }
   }
   if (gs === 'superseded') {
     if (!doc.tombstone?.replacement_corpus_id || !doc.tombstone?.policy_change_reference) {
-      errors.push(err(FIXTURE_ERROR_CODES.TOMBSTONE_MISSING_FIELDS, '/tombstone', 'superseded requires tombstone.replacement_corpus_id + policy_change_reference'));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.TOMBSTONE_MISSING_FIELDS,
+          '/tombstone',
+          'superseded requires tombstone.replacement_corpus_id + policy_change_reference'
+        )
+      );
     }
   }
   if (gs === 'privacy_quarantined') {
     const t = doc.tombstone ?? {};
-    if (!t.quarantine_reason || !t.reviewer || !t.replacement_corpus_id || !t.prior_attestation_hash) {
-      errors.push(err(FIXTURE_ERROR_CODES.TOMBSTONE_MISSING_FIELDS, '/tombstone', 'privacy_quarantined requires quarantine_reason, reviewer, replacement_corpus_id, prior_attestation_hash'));
+    if (
+      !t.quarantine_reason ||
+      !t.reviewer ||
+      !t.replacement_corpus_id ||
+      !t.prior_attestation_hash
+    ) {
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.TOMBSTONE_MISSING_FIELDS,
+          '/tombstone',
+          'privacy_quarantined requires quarantine_reason, reviewer, replacement_corpus_id, prior_attestation_hash'
+        )
+      );
     }
     // The tombstone must NEVER claim the sensitive bytes are gone — they
     // remain in git history; disclosure has a separate PII-incident path.
     const note = `${t.note ?? ''}`.toLowerCase();
     if (/\b(erased|deleted from history|gone|removed from git)\b/.test(note)) {
-      errors.push(err(FIXTURE_ERROR_CODES.QUARANTINE_CLAIMS_ERASURE, '/tombstone/note', 'quarantine is execution containment, not erasure'));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.QUARANTINE_CLAIMS_ERASURE,
+          '/tombstone/note',
+          'quarantine is execution containment, not erasure'
+        )
+      );
     }
   }
 
@@ -560,7 +640,13 @@ export async function validateFixtureDocument(doc, opts = {}) {
   if (doc.fix_reference != null) {
     const fr = validateFixReference(doc.fix_reference);
     if (!fr.ok) {
-      errors.push(err(FIXTURE_ERROR_CODES.BAD_FIX_REFERENCE, '/fix_reference', `fix_reference inadmissible: ${fr.reason}`));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.BAD_FIX_REFERENCE,
+          '/fix_reference',
+          `fix_reference inadmissible: ${fr.reason}`
+        )
+      );
     }
   }
 
@@ -574,10 +660,16 @@ export async function validateFixtureDocument(doc, opts = {}) {
   // Production jobState circuits use `number` (voice-latency scenario
   // schema); accept the legacy aliases too.
   const jobCircuits = new Set(
-    (doc.job_state?.circuits ?? []).map((c) => String(c.number ?? c.circuit_ref ?? c.ref ?? c.id ?? '')),
+    (doc.job_state?.circuits ?? []).map((c) =>
+      String(c.number ?? c.circuit_ref ?? c.ref ?? c.id ?? '')
+    )
   );
-  const jobBoards = new Set((doc.job_state?.boards ?? []).map((b) => String(b.board_id ?? b.id ?? '')));
-  const jobObservations = new Set((doc.job_state?.observations ?? []).map((o) => String(o.observation_id ?? o.id ?? '')));
+  const jobBoards = new Set(
+    (doc.job_state?.boards ?? []).map((b) => String(b.board_id ?? b.id ?? ''))
+  );
+  const jobObservations = new Set(
+    (doc.job_state?.observations ?? []).map((o) => String(o.observation_id ?? o.id ?? ''))
+  );
   const emptyFallback = doc.initial_state_fidelity === 'empty_fallback';
   const isKeystone = doc.is_keystone === true;
 
@@ -589,7 +681,13 @@ export async function validateFixtureDocument(doc, opts = {}) {
     for (const [ri, r] of (turn.regex_results ?? []).entries()) {
       const fieldName = typeof r === 'object' && r !== null ? (r.field ?? r.name ?? '') : String(r);
       if (String(fieldName).includes('install.postcode') || String(fieldName) === 'postcode') {
-        errors.push(err(FIXTURE_ERROR_CODES.POSTCODE_HINT_FORBIDDEN, `${tPath}/regex_results/${ri}`, 'postcode-lookup hints are forbidden in v1 deterministic fixtures (capability exclusion: postcode_lookup)'));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.POSTCODE_HINT_FORBIDDEN,
+            `${tPath}/regex_results/${ri}`,
+            'postcode-lookup hints are forbidden in v1 deterministic fixtures (capability exclusion: postcode_lookup)'
+          )
+        );
       }
     }
 
@@ -598,14 +696,32 @@ export async function validateFixtureDocument(doc, opts = {}) {
     for (const key of ['confirmations_enabled', 'in_response_to']) {
       const v = turn[key];
       if (v == null) {
-        errors.push(err(FIXTURE_ERROR_CODES.PROVENANCE_MISSING, `${tPath}/${key}`, `${key} must be supplied with provenance (fixtures may never invent or default it)`));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.PROVENANCE_MISSING,
+            `${tPath}/${key}`,
+            `${key} must be supplied with provenance (fixtures may never invent or default it)`
+          )
+        );
         continue;
       }
       if (v.provenance === 'reconstructed_reviewed' && !isKeystone) {
-        errors.push(err(FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED, `${tPath}/${key}`, 'reconstructed_reviewed is admissible only on keystone fixtures (historical-capture exception)'));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED,
+            `${tPath}/${key}`,
+            'reconstructed_reviewed is admissible only on keystone fixtures (historical-capture exception)'
+          )
+        );
       }
       if (v.provenance === 'reconstructed' || v.provenance === 'canonical') {
-        errors.push(err(FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED, `${tPath}/${key}`, `${key} requires recorded_full (or reconstructed_reviewed on keystones)`));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED,
+            `${tPath}/${key}`,
+            `${key} requires recorded_full (or reconstructed_reviewed on keystones)`
+          )
+        );
       }
     }
 
@@ -618,10 +734,22 @@ export async function validateFixtureDocument(doc, opts = {}) {
       for (const [ci, tc] of (round.tool_calls ?? []).entries()) {
         const cPath = `${tPath}/model_rounds/${ri}/tool_calls/${ci}`;
         if (tc.schema_expectation === 'reject' && !tc.schema_reject_code) {
-          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA_EXPECTATION_MISSING_CODE, cPath, 'schema_expectation: reject requires schema_reject_code'));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.SCHEMA_EXPECTATION_MISSING_CODE,
+              cPath,
+              'schema_expectation: reject requires schema_reject_code'
+            )
+          );
         }
         if (tc.dispatcher_expectation === 'reject' && !tc.dispatcher_reject_code) {
-          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA_EXPECTATION_MISSING_CODE, cPath, 'dispatcher_expectation: reject requires dispatcher_reject_code'));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.SCHEMA_EXPECTATION_MISSING_CODE,
+              cPath,
+              'dispatcher_expectation: reject requires dispatcher_reject_code'
+            )
+          );
         }
       }
     }
@@ -634,15 +762,37 @@ export async function validateFixtureDocument(doc, opts = {}) {
       if (aa.match?.tool_call_id) declaredAskIds.add(aa.match.tool_call_id);
       if (aa.answer_channel === 'terminal') {
         if (!aa.terminal_outcome) {
-          errors.push(err(FIXTURE_ERROR_CODES.ASK_BAD_TERMINAL, aPath, 'terminal channel requires terminal_outcome'));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.ASK_BAD_TERMINAL,
+              aPath,
+              'terminal channel requires terminal_outcome'
+            )
+          );
         }
       } else if (aa.answer_channel === 'pending_registry') {
         if (!aa.answer?.user_text && !aa.terminal_outcome) {
-          errors.push(err(FIXTURE_ERROR_CODES.ASK_UNANSWERED, aPath, 'pending_registry answer requires answer.user_text (or an explicit terminal_outcome)'));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.ASK_UNANSWERED,
+              aPath,
+              'pending_registry answer requires answer.user_text (or an explicit terminal_outcome)'
+            )
+          );
         }
         // Bounded answered offsets: 0 <= at_ms_after_ask < ASK_USER_TIMEOUT_MS.
-        if (aa.answer?.answered && aa.at_ms_after_ask != null && aa.at_ms_after_ask >= ASK_USER_TIMEOUT_MS) {
-          errors.push(err(FIXTURE_ERROR_CODES.ASK_ANSWER_OFFSET_OUT_OF_RANGE, `${aPath}/at_ms_after_ask`, `answered offset must be < ASK_USER_TIMEOUT_MS (${ASK_USER_TIMEOUT_MS}); at/beyond requires terminal_outcome: timeout (timeout-wins at equality)`));
+        if (
+          aa.answer?.answered &&
+          aa.at_ms_after_ask != null &&
+          aa.at_ms_after_ask >= ASK_USER_TIMEOUT_MS
+        ) {
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.ASK_ANSWER_OFFSET_OUT_OF_RANGE,
+              `${aPath}/at_ms_after_ask`,
+              `answered offset must be < ASK_USER_TIMEOUT_MS (${ASK_USER_TIMEOUT_MS}); at/beyond requires terminal_outcome: timeout (timeout-wins at equality)`
+            )
+          );
         }
       }
       // No-new-seam rule: a BACKEND-generated non-emitted ask may match ONLY
@@ -650,7 +800,13 @@ export async function validateFixtureDocument(doc, opts = {}) {
       // reason / question_contains matchers (the registry entry carries
       // neither, and the plan forbids a production DI seam).
       if (aa.match?.origin === 'backend' && (aa.match.reason || aa.match.question_contains)) {
-        errors.push(err(FIXTURE_ERROR_CODES.ASK_BACKEND_RICH_MATCHER, `${aPath}/match`, 'backend-generated asks match on the reduced tuple only (tool_call_id/context_field/context_circuit)'));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.ASK_BACKEND_RICH_MATCHER,
+            `${aPath}/match`,
+            'backend-generated asks match on the reduced tuple only (tool_call_id/context_field/context_circuit)'
+          )
+        );
       }
     }
 
@@ -663,9 +819,17 @@ export async function validateFixtureDocument(doc, opts = {}) {
         if (tc.dispatcher_expectation === 'reject' || tc.schema_expectation === 'reject') continue;
         const covered =
           declaredAskIds.has(tc.id) ||
-          (turn.ask_answers ?? []).some((aa) => !aa.match?.tool_call_id && aa.match?.origin !== 'backend');
+          (turn.ask_answers ?? []).some(
+            (aa) => !aa.match?.tool_call_id && aa.match?.origin !== 'backend'
+          );
         if (!covered) {
-          errors.push(err(FIXTURE_ERROR_CODES.ASK_UNANSWERED, `${tPath}/model_rounds/${ri}/tool_calls/${ci}`, `injected blocking ask_user ${tc.id} has no ask_answers declaration (deterministic answer or explicit terminal outcome)`));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.ASK_UNANSWERED,
+              `${tPath}/model_rounds/${ri}/tool_calls/${ci}`,
+              `injected blocking ask_user ${tc.id} has no ask_answers declaration (deterministic answer or explicit terminal outcome)`
+            )
+          );
         }
       }
     }
@@ -674,11 +838,23 @@ export async function validateFixtureDocument(doc, opts = {}) {
     for (const [oi, op] of (turn.expected_operations ?? []).entries()) {
       const oPath = `${tPath}/expected_operations/${oi}`;
       if (opIds.has(op.operation_id)) {
-        errors.push(err(FIXTURE_ERROR_CODES.DUPLICATE_OPERATION_ID, oPath, `duplicate operation_id ${op.operation_id}`));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.DUPLICATE_OPERATION_ID,
+            oPath,
+            `duplicate operation_id ${op.operation_id}`
+          )
+        );
       }
       opIds.add(op.operation_id);
       if (emptyFallback && operationIsStateDependent(op)) {
-        errors.push(err(FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION, oPath, 'empty_fallback prohibits state-dependent blocking assertions'));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION,
+            oPath,
+            'empty_fallback prohibits state-dependent blocking assertions'
+          )
+        );
       }
       // P5 (2026-07-23) — fail-closed shape for a clear_then_write op. It
       // JOINTLY asserts (a) the replacement reading present AND (b) zero
@@ -692,15 +868,23 @@ export async function validateFixtureDocument(doc, opts = {}) {
         const bad = [];
         if (op.kind !== 'reading') bad.push('kind must be "reading"');
         if (!Object.hasOwn(op, 'value')) bad.push('own "value" required');
-        if (typeof op.field !== 'string' || op.field === '') bad.push('non-empty string "field" required');
+        if (typeof op.field !== 'string' || op.field === '')
+          bad.push('non-empty string "field" required');
         if (op.circuit == null) bad.push('singular non-null "circuit" required');
         if (op.circuits != null) bad.push('"circuits[]" is not allowed (singular circuit only)');
         for (const k of ['board_id', 'clear_board_id']) {
           if (!Object.hasOwn(op, k)) bad.push(`own "${k}" required`);
-          else if (!(typeof op[k] === 'string' || op[k] === null)) bad.push(`"${k}" must be string|null`);
+          else if (!(typeof op[k] === 'string' || op[k] === null))
+            bad.push(`"${k}" must be string|null`);
         }
         if (bad.length) {
-          errors.push(err(FIXTURE_ERROR_CODES.CLEAR_THEN_WRITE_BAD_SHAPE, oPath, `clear_then_write op malformed: ${bad.join('; ')}`));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.CLEAR_THEN_WRITE_BAD_SHAPE,
+              oPath,
+              `clear_then_write op malformed: ${bad.join('; ')}`
+            )
+          );
         }
       }
       // Referenced circuits/boards must exist in job_state (unless the same
@@ -712,16 +896,34 @@ export async function validateFixtureDocument(doc, opts = {}) {
       const circuitRefs = op.circuits ?? (op.circuit != null ? [op.circuit] : []);
       for (const c of circuitRefs) {
         if (!jobCircuits.has(String(c))) {
-          errors.push(err(FIXTURE_ERROR_CODES.STATE_DEP_MISSING, oPath, `referenced circuit ${c} not present in job_state (or created earlier in the fixture)`));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.STATE_DEP_MISSING,
+              oPath,
+              `referenced circuit ${c} not present in job_state (or created earlier in the fixture)`
+            )
+          );
         }
       }
       if (op.board_id != null && jobBoards.size > 0 && !jobBoards.has(String(op.board_id))) {
-        errors.push(err(FIXTURE_ERROR_CODES.STATE_DEP_MISSING, oPath, `referenced board ${op.board_id} not present in job_state`));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.STATE_DEP_MISSING,
+            oPath,
+            `referenced board ${op.board_id} not present in job_state`
+          )
+        );
       }
       if (op.kind === 'observation_update') {
         const target = op.wire_identity?.observation_id ?? op.value?.observation_id ?? null;
         if (target != null && !jobObservations.has(String(target))) {
-          errors.push(err(FIXTURE_ERROR_CODES.STATE_DEP_MISSING, oPath, `observation_update references unseeded observation ${target}`));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.STATE_DEP_MISSING,
+              oPath,
+              `observation_update references unseeded observation ${target}`
+            )
+          );
         }
       }
     }
@@ -729,16 +931,50 @@ export async function validateFixtureDocument(doc, opts = {}) {
     for (const [xi, out] of (turn.expected_audible_outputs ?? []).entries()) {
       const xPath = `${tPath}/expected_audible_outputs/${xi}`;
       if (outIds.has(out.output_id)) {
-        errors.push(err(FIXTURE_ERROR_CODES.DUPLICATE_OUTPUT_ID, xPath, `duplicate output_id ${out.output_id}`));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.DUPLICATE_OUTPUT_ID,
+            xPath,
+            `duplicate output_id ${out.output_id}`
+          )
+        );
       }
       outIds.add(out.output_id);
       if (out.kind === 'field_null_fallback') {
-        if (typeof out.match?.text_exact !== 'string' || !(out.match.dedupe_token || out.match.expected_key)) {
-          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, xPath, 'field_null_fallback requires trimmed byte-exact text_exact + dedupe_token/expected_key (and implies field:null + circuit:null)'));
+        // P4 (ask-decline-ack-net 2026-07-23) — a NON-EMPTY trimmed text_exact
+        // is a sufficient oracle on its own. Historically this ALSO demanded a
+        // dedupe_token / expected_key, but the §A4-drained field-null ack this
+        // oracle targets (marker-①/②/F7 apologies AND the P4 decline-ack) is
+        // TOKENLESS — field:null is outside DEDUPE_TOKEN_FIELDS, so the emitted
+        // confirmation carries no token, and runtime `confirmationMatches` keys
+        // on `text_exact` alone (no token needed). Demanding a token made a
+        // field-null-fallback oracle impossible to express, and a FABRICATED
+        // token would then fail the runtime match against the tokenless wire
+        // ack (so it could never flip to required_green). An empty/whitespace
+        // text_exact provides no meaningful oracle and stays REJECTED. The
+        // field:null + circuit:null implication (enforced at match time in
+        // replay-assertions.mjs) and the DUPLICATE_OUTPUT_ID check above are
+        // unchanged.
+        const teNonEmpty =
+          typeof out.match?.text_exact === 'string' && out.match.text_exact.trim().length > 0;
+        if (!teNonEmpty) {
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.SCHEMA,
+              xPath,
+              'field_null_fallback requires a non-empty trimmed byte-exact text_exact (and implies field:null + circuit:null)'
+            )
+          );
         }
       }
       if (out.operation_ref && !opIds.has(out.operation_ref)) {
-        errors.push(err(FIXTURE_ERROR_CODES.STATE_DEP_MISSING, xPath, `operation_ref ${out.operation_ref} matches no expected_operation`));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.STATE_DEP_MISSING,
+            xPath,
+            `operation_ref ${out.operation_ref} matches no expected_operation`
+          )
+        );
       }
     }
   }
@@ -748,7 +984,13 @@ export async function validateFixtureDocument(doc, opts = {}) {
     if (p.provenance !== 'reconstructed_reviewed') continue;
     const isOutboundOption = /\/(confirmations_enabled|in_response_to)$/.test(ptr);
     if (!isKeystone || !isOutboundOption) {
-      errors.push(err(FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED, `/input_provenance`, `reconstructed_reviewed at ${ptr} is admissible only for keystone outbound options`));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED,
+          `/input_provenance`,
+          `reconstructed_reviewed at ${ptr} is admissible only for keystone outbound options`
+        )
+      );
     }
   }
 
@@ -764,19 +1006,40 @@ export async function validateFixtureDocument(doc, opts = {}) {
   const firstTurnIndex = turns[0]?.turn_index ?? 1;
   if (EXECUTABLE_STATES.has(doc.gate_state)) {
     if (doc.prestate && Object.keys(doc.prestate).length > 0) {
-      errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/prestate', `prestate is accepted by the schema but NOT applied by the runner — remove it and seed via job_state + real preceding turns (mid-session helper state is unsupported in v1)`));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN,
+          '/prestate',
+          `prestate is accepted by the schema but NOT applied by the runner — remove it and seed via job_state + real preceding turns (mid-session helper state is unsupported in v1)`
+        )
+      );
     }
     if (firstTurnIndex > 1) {
-      errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/turns/0/turn_index', `executable fixture must start at turn_index 1 — the runner never fast-forwards mid-session; seed prior state with real preceding turns instead`));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN,
+          '/turns/0/turn_index',
+          `executable fixture must start at turn_index 1 — the runner never fast-forwards mid-session; seed prior state with real preceding turns instead`
+        )
+      );
     }
     // turn_index must be EXACTLY 1..N (sorted, unique, contiguous): the runner
     // executes turns in sorted order as session turns 1..N, so a gap like
     // [1,9] would silently run turn "9" as the 2nd session turn and mislabel
     // the state it represents (Codex #3 follow-up).
     if (turns.length > 0) {
-      const idxs = turns.map((t) => t.turn_index).slice().sort((a, b) => a - b);
+      const idxs = turns
+        .map((t) => t.turn_index)
+        .slice()
+        .sort((a, b) => a - b);
       if (!idxs.every((v, i) => v === i + 1)) {
-        errors.push(err(FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN, '/turns', `turn_index values must be exactly 1..N (unique, contiguous); got [${turns.map((t) => t.turn_index).join(', ')}]`));
+        errors.push(
+          err(
+            FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN,
+            '/turns',
+            `turn_index values must be exactly 1..N (unique, contiguous); got [${turns.map((t) => t.turn_index).join(', ')}]`
+          )
+        );
       }
     }
     // Unsupported expected_operations kinds: clear / rename / create_circuit
@@ -786,7 +1049,13 @@ export async function validateFixtureDocument(doc, opts = {}) {
     for (const [ti, t] of turns.entries()) {
       for (const [oi, op] of (t.expected_operations ?? []).entries()) {
         if (op.kind === 'clear' || op.kind === 'rename' || op.kind === 'create_circuit') {
-          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, `/turns/${ti}/expected_operations/${oi}`, `operation kind '${op.kind}' has no faithful oracle yet — unsupported in v1`));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.SCHEMA,
+              `/turns/${ti}/expected_operations/${oi}`,
+              `operation kind '${op.kind}' has no faithful oracle yet — unsupported in v1`
+            )
+          );
         }
       }
     }
@@ -796,10 +1065,18 @@ export async function validateFixtureDocument(doc, opts = {}) {
   // recent order OR warm-up turns (CIRCUIT_ORDER=recent_3 prompt selection).
   const circuitCount = (doc.job_state?.circuits ?? []).length;
   if (circuitCount > 3) {
-    const hasOrder = Array.isArray(doc.recent_circuit_order?.value) && doc.recent_circuit_order.value.length > 0;
-    const hasWarmup = Array.isArray(doc.prestate?.warm_up_turns) && doc.prestate.warm_up_turns.length > 0;
+    const hasOrder =
+      Array.isArray(doc.recent_circuit_order?.value) && doc.recent_circuit_order.value.length > 0;
+    const hasWarmup =
+      Array.isArray(doc.prestate?.warm_up_turns) && doc.prestate.warm_up_turns.length > 0;
     if (!hasOrder && !hasWarmup) {
-      errors.push(err(FIXTURE_ERROR_CODES.RECENT_ORDER_MISSING, '/recent_circuit_order', `job_state has ${circuitCount} circuits (>3): recent_3 prompt selection needs a complete provenance-backed recent order or deterministic warm-up turns`));
+      errors.push(
+        err(
+          FIXTURE_ERROR_CODES.RECENT_ORDER_MISSING,
+          '/recent_circuit_order',
+          `job_state has ${circuitCount} circuits (>3): recent_3 prompt selection needs a complete provenance-backed recent order or deterministic warm-up turns`
+        )
+      );
     }
   }
 
@@ -814,7 +1091,13 @@ export async function validateFixtureDocument(doc, opts = {}) {
       for (const tc of r.tool_calls ?? []) {
         if (tc?.id == null) continue;
         if (seenToolIds.has(tc.id)) {
-          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, where, `duplicate tool_call id '${tc.id}' — ids must be unique across all rounds`));
+          errors.push(
+            err(
+              FIXTURE_ERROR_CODES.SCHEMA,
+              where,
+              `duplicate tool_call id '${tc.id}' — ids must be unique across all rounds`
+            )
+          );
         } else {
           seenToolIds.add(tc.id);
         }
@@ -846,7 +1129,9 @@ export function legalTransition(fromState, toState, context = {}) {
         ? { ok: true, reason: 'promotion' }
         : { ok: false, reason: 'promotion_requires_new_attestation' };
     case 'unsupported_pending→required_green':
-      return context.newAttestation && context.redEvidenceAgainstPreFix && context.greenEvidenceAgainstFixingSubject
+      return context.newAttestation &&
+        context.redEvidenceAgainstPreFix &&
+        context.greenEvidenceAgainstFixingSubject
         ? { ok: true, reason: 'dual_proof_promotion' }
         : { ok: false, reason: 'direct_green_promotion_requires_dual_red_green_proof' };
     case 'required_green→superseded':

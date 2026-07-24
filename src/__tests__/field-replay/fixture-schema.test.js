@@ -107,13 +107,17 @@ describe('structural + gate-state validation', () => {
     delete doc.fix_reference;
     const r = await validateFixtureDocument(doc);
     expect(r.ok).toBe(false);
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EXPECTED_RED_MISSING_FIELDS)).toBe(true);
+    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EXPECTED_RED_MISSING_FIELDS)).toBe(
+      true
+    );
   });
 
   test('active expected_failure_id must equal red_proof_failure_id', async () => {
     const doc = baseFixture({ expected_failure_id: 'some.other.assertion' });
     const r = await validateFixtureDocument(doc);
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH)).toBe(true);
+    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH)).toBe(
+      true
+    );
   });
 
   test('a triage fixture is never expected_red', async () => {
@@ -138,7 +142,9 @@ describe('structural + gate-state validation', () => {
     delete doc.expected_failure_id;
     delete doc.red_proof_failure_id;
     const r = await validateFixtureDocument(doc);
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.GREEN_REGRESSION_MISSING_RED_PROOF)).toBe(true);
+    expect(
+      r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.GREEN_REGRESSION_MISSING_RED_PROOF)
+    ).toBe(true);
     // With the red proof present it validates.
     const doc2 = baseFixture({ gate_state: 'required_green' });
     delete doc2.expected_failure_id;
@@ -149,7 +155,9 @@ describe('structural + gate-state validation', () => {
   test('required_green with an ACTIVE expected_failure_id rejects', async () => {
     const doc = baseFixture({ gate_state: 'required_green' });
     const r = await validateFixtureDocument(doc);
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH)).toBe(true);
+    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EXPECTED_FAILURE_ID_MISMATCH)).toBe(
+      true
+    );
   });
 
   test('unsupported_pending requires exclusion/owner/followup/transcript/expectations but allows absent model_rounds', async () => {
@@ -169,14 +177,18 @@ describe('structural + gate-state validation', () => {
     const missing = { ...doc };
     delete missing.named_followup;
     const r2 = await validateFixtureDocument(missing);
-    expect(r2.errors.some((e) => e.code === FIXTURE_ERROR_CODES.UNSUPPORTED_PENDING_MISSING_FIELDS)).toBe(true);
+    expect(
+      r2.errors.some((e) => e.code === FIXTURE_ERROR_CODES.UNSUPPORTED_PENDING_MISSING_FIELDS)
+    ).toBe(true);
   });
 
   test('superseded and privacy_quarantined require tombstones; quarantine may not claim erasure', async () => {
     const sup = baseFixture({ gate_state: 'superseded' });
     delete sup.expected_failure_id;
     const r = await validateFixtureDocument(sup);
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.TOMBSTONE_MISSING_FIELDS)).toBe(true);
+    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.TOMBSTONE_MISSING_FIELDS)).toBe(
+      true
+    );
 
     const q = baseFixture({
       gate_state: 'privacy_quarantined',
@@ -190,7 +202,9 @@ describe('structural + gate-state validation', () => {
     });
     delete q.expected_failure_id;
     const r2 = await validateFixtureDocument(q);
-    expect(r2.errors.some((e) => e.code === FIXTURE_ERROR_CODES.QUARANTINE_CLAIMS_ERASURE)).toBe(true);
+    expect(r2.errors.some((e) => e.code === FIXTURE_ERROR_CODES.QUARANTINE_CLAIMS_ERASURE)).toBe(
+      true
+    );
   });
 
   test('bad corpus id and inadmissible fix_reference reject', async () => {
@@ -233,7 +247,7 @@ describe('ask_answers obligations', () => {
           answer: { answered: true, user_text: 'Circuit two.' },
           at_ms_after_ask: 1200,
         },
-      ]),
+      ])
     );
     expect(r.errors).toEqual([]);
   });
@@ -251,21 +265,28 @@ describe('ask_answers obligations', () => {
     const before = await validateFixtureDocument(mk(ASK_USER_TIMEOUT_MS - 1));
     expect(before.errors).toEqual([]);
     const at = await validateFixtureDocument(mk(ASK_USER_TIMEOUT_MS));
-    expect(at.errors.some((e) => e.code === FIXTURE_ERROR_CODES.ASK_ANSWER_OFFSET_OUT_OF_RANGE)).toBe(true);
+    expect(
+      at.errors.some((e) => e.code === FIXTURE_ERROR_CODES.ASK_ANSWER_OFFSET_OUT_OF_RANGE)
+    ).toBe(true);
     const after = await validateFixtureDocument(mk(ASK_USER_TIMEOUT_MS + 1));
-    expect(after.errors.some((e) => e.code === FIXTURE_ERROR_CODES.ASK_ANSWER_OFFSET_OUT_OF_RANGE)).toBe(true);
+    expect(
+      after.errors.some((e) => e.code === FIXTURE_ERROR_CODES.ASK_ANSWER_OFFSET_OUT_OF_RANGE)
+    ).toBe(true);
   });
 
   test('terminal channel requires a bounded terminal_outcome', async () => {
     const r = await validateFixtureDocument(
-      fixtureWithAsk([{ match: { tool_call_id: 'sym_tc_ask' }, answer_channel: 'terminal' }]),
+      fixtureWithAsk([{ match: { tool_call_id: 'sym_tc_ask' }, answer_channel: 'terminal' }])
     );
     expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.ASK_BAD_TERMINAL)).toBe(true);
   });
 
   test('a declared-rejected ask needs no answer (immediate tool-result outcome)', async () => {
     const r = await validateFixtureDocument(
-      fixtureWithAsk([], { dispatcher_expectation: 'reject', dispatcher_reject_code: 'validation_error' }),
+      fixtureWithAsk([], {
+        dispatcher_expectation: 'reject',
+        dispatcher_reject_code: 'validation_error',
+      })
     );
     expect(r.errors).toEqual([]);
   });
@@ -274,13 +295,19 @@ describe('ask_answers obligations', () => {
     const turn = baseTurn();
     turn.ask_answers = [
       {
-        match: { origin: 'backend', reason: 'observation_confirmation', context_field: 'observation_clarify' },
+        match: {
+          origin: 'backend',
+          reason: 'observation_confirmation',
+          context_field: 'observation_clarify',
+        },
         answer_channel: 'pending_registry',
         answer: { answered: true, user_text: 'It was the socket by the sink.' },
       },
     ];
     const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.ASK_BACKEND_RICH_MATCHER)).toBe(true);
+    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.ASK_BACKEND_RICH_MATCHER)).toBe(
+      true
+    );
     // Reduced tuple passes.
     turn.ask_answers[0].match = { origin: 'backend', context_field: 'observation_clarify' };
     const r2 = await validateFixtureDocument(baseFixture({ turns: [turn] }));
@@ -314,7 +341,9 @@ describe('capability exclusions + fidelity rules', () => {
     turn.expected_audible_outputs = [];
     const doc = baseFixture({ initial_state_fidelity: 'empty_fallback', turns: [turn] });
     const r = await validateFixtureDocument(doc);
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION)).toBe(true);
+    expect(
+      r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION)
+    ).toBe(true);
   });
 
   test('expected operations referencing circuits absent from job_state reject', async () => {
@@ -335,16 +364,93 @@ describe('capability exclusions + fidelity rules', () => {
     });
     const nonKeystone = await validateFixtureDocument(baseFixture({ turns: [turn2] }));
     expect(
-      nonKeystone.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED),
+      nonKeystone.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PROVENANCE_RESTRICTED)
     ).toBe(true);
-    const keystone = await validateFixtureDocument(baseFixture({ turns: [turn2], is_keystone: true }));
+    const keystone = await validateFixtureDocument(
+      baseFixture({ turns: [turn2], is_keystone: true })
+    );
     expect(keystone.errors).toEqual([]);
+  });
+
+  // ── P4 (ask-decline-ack-net 2026-07-23) — field_null_fallback relaxation ──
+  // The §A4-drained field-null ack (marker-①/②/F7 apologies AND the P4
+  // decline-ack) is TOKENLESS, so a non-empty trimmed text_exact is a
+  // sufficient oracle on its own; a fabricated token would then FAIL the
+  // runtime match against the tokenless wire ack. An empty/whitespace text_exact
+  // still provides no meaningful oracle and stays rejected.
+  function fnfTurn(match) {
+    // A turn whose sole audible output is a field_null_fallback ack — no
+    // expected_operations (the answered-decline produces no write), and the
+    // ack is a declared-silence-adjacent field-nil confirmation.
+    return baseTurn({
+      model_rounds: [{ stop_reason: 'end_turn', text: '' }],
+      expected_operations: [],
+      expected_audible_outputs: [
+        { output_id: 'out_ack', kind: 'field_null_fallback', count: 1, match },
+      ],
+    });
+  }
+
+  test('field_null_fallback with a non-empty trimmed text_exact ALONE (no token) VALIDATES', async () => {
+    const turn = fnfTurn({ text_exact: 'No problem, moving on.' });
+    const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
+    // No SCHEMA error for the field_null_fallback matcher (a token is no longer
+    // required). Other structural checks are unaffected.
+    expect(
+      r.errors.some(
+        (e) => e.code === FIXTURE_ERROR_CODES.SCHEMA && /field_null_fallback/.test(e.message ?? '')
+      )
+    ).toBe(false);
+  });
+
+  test('field_null_fallback with a token AND a non-empty text_exact still VALIDATES (token ignored, not required)', async () => {
+    const turn = fnfTurn({ text_exact: 'Okay — leaving that one.', dedupe_token: 'tok_ignored' });
+    const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
+    expect(
+      r.errors.some(
+        (e) => e.code === FIXTURE_ERROR_CODES.SCHEMA && /field_null_fallback/.test(e.message ?? '')
+      )
+    ).toBe(false);
+  });
+
+  test('field_null_fallback with an EMPTY text_exact is REJECTED (no meaningful oracle)', async () => {
+    const turn = fnfTurn({ text_exact: '' });
+    const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
+    expect(
+      r.errors.some(
+        (e) => e.code === FIXTURE_ERROR_CODES.SCHEMA && /field_null_fallback/.test(e.message ?? '')
+      )
+    ).toBe(true);
+  });
+
+  test('field_null_fallback with a WHITESPACE-ONLY text_exact is REJECTED (even with a token)', async () => {
+    const turn = fnfTurn({ text_exact: '   ', dedupe_token: 'tok_present' });
+    const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
+    expect(
+      r.errors.some(
+        (e) => e.code === FIXTURE_ERROR_CODES.SCHEMA && /field_null_fallback/.test(e.message ?? '')
+      )
+    ).toBe(true);
+  });
+
+  test('field_null_fallback with a non-STRING text_exact is REJECTED', async () => {
+    const turn = fnfTurn({ dedupe_token: 'tok_present' }); // no text_exact at all
+    const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
+    expect(
+      r.errors.some(
+        (e) => e.code === FIXTURE_ERROR_CODES.SCHEMA && /field_null_fallback/.test(e.message ?? '')
+      )
+    ).toBe(true);
   });
 
   test('executable fixture fails CLOSED on mid-session start OR any prestate block (prestate/warm-up are NOT applied)', async () => {
     // A mid-session first turn needs state the runner never fast-forwards.
-    const midSession = await validateFixtureDocument(baseFixture({ turns: [baseTurn({ turn_index: 9 })] }));
-    expect(midSession.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN)).toBe(true);
+    const midSession = await validateFixtureDocument(
+      baseFixture({ turns: [baseTurn({ turn_index: 9 })] })
+    );
+    expect(midSession.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN)).toBe(
+      true
+    );
 
     // A prestate block — including warm_up_turns — is REJECTED, not satisfied:
     // the runner applies neither, so admitting it would replay against wrong
@@ -353,9 +459,11 @@ describe('capability exclusions + fidelity rules', () => {
       baseFixture({
         turns: [baseTurn({ turn_index: 1 })],
         prestate: { warm_up_turns: [{ transcript: 'warm up', at_ms: 0 }] },
-      }),
+      })
     );
-    expect(withPrestate.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN)).toBe(true);
+    expect(withPrestate.errors.some((e) => e.code === FIXTURE_ERROR_CODES.PRESTATE_UNKNOWN)).toBe(
+      true
+    );
   });
 
   test('>3 circuits requires provenance-backed recent order or warm-up turns', async () => {
@@ -363,7 +471,12 @@ describe('capability exclusions + fidelity rules', () => {
       job_state: {
         certificateType: 'eicr',
         boards: [],
-        circuits: [{ circuit_ref: '1' }, { circuit_ref: '2' }, { circuit_ref: '3' }, { circuit_ref: '4' }],
+        circuits: [
+          { circuit_ref: '1' },
+          { circuit_ref: '2' },
+          { circuit_ref: '3' },
+          { circuit_ref: '4' },
+        ],
       },
     });
     const r = await validateFixtureDocument(doc);
@@ -381,7 +494,15 @@ describe('capability exclusions + fidelity rules', () => {
     // this, and the matcher correlates evidence by id.
     turn.model_rounds.unshift({
       stop_reason: 'tool_use',
-      tool_calls: [{ id: 'sym_tc_1', name: 'record_reading', input: {}, schema_expectation: 'accept', dispatcher_expectation: 'accept' }],
+      tool_calls: [
+        {
+          id: 'sym_tc_1',
+          name: 'record_reading',
+          input: {},
+          schema_expectation: 'accept',
+          dispatcher_expectation: 'accept',
+        },
+      ],
     });
     const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
     expect(r.errors.some((e) => /duplicate tool_call id/.test(e.message))).toBe(true);
@@ -391,7 +512,9 @@ describe('capability exclusions + fidelity rules', () => {
     const turn = baseTurn();
     turn.model_rounds[0].tool_calls[0].schema_expectation = 'reject';
     const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
-    expect(r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.SCHEMA_EXPECTATION_MISSING_CODE)).toBe(true);
+    expect(
+      r.errors.some((e) => e.code === FIXTURE_ERROR_CODES.SCHEMA_EXPECTATION_MISSING_CODE)
+    ).toBe(true);
   });
 
   test('field_null_fallback outputs require byte-exact text + token/key', async () => {
@@ -410,28 +533,33 @@ describe('gate_state machine', () => {
   });
   test('unsupported_pending → expected_red requires a new attestation', () => {
     expect(legalTransition('unsupported_pending', 'expected_red', {}).ok).toBe(false);
-    expect(legalTransition('unsupported_pending', 'expected_red', { newAttestation: true }).ok).toBe(true);
+    expect(
+      legalTransition('unsupported_pending', 'expected_red', { newAttestation: true }).ok
+    ).toBe(true);
   });
   test('unsupported_pending → required_green requires the dual RED+GREEN proof', () => {
     expect(
-      legalTransition('unsupported_pending', 'required_green', { newAttestation: true }).ok,
+      legalTransition('unsupported_pending', 'required_green', { newAttestation: true }).ok
     ).toBe(false);
     expect(
       legalTransition('unsupported_pending', 'required_green', {
         newAttestation: true,
         redEvidenceAgainstPreFix: true,
         greenEvidenceAgainstFixingSubject: true,
-      }).ok,
+      }).ok
     ).toBe(true);
   });
   test('required_green → superseded requires reviewed supersession', () => {
     expect(legalTransition('required_green', 'superseded', {}).ok).toBe(false);
-    expect(legalTransition('required_green', 'superseded', { reviewedSupersession: true }).ok).toBe(true);
+    expect(legalTransition('required_green', 'superseded', { reviewedSupersession: true }).ok).toBe(
+      true
+    );
   });
   test('* → privacy_quarantined requires a governance event', () => {
     expect(legalTransition('expected_red', 'privacy_quarantined', {}).ok).toBe(false);
     expect(
-      legalTransition('required_green', 'privacy_quarantined', { quarantineGovernanceEvent: true }).ok,
+      legalTransition('required_green', 'privacy_quarantined', { quarantineGovernanceEvent: true })
+        .ok
     ).toBe(true);
   });
   test('everything else is illegal (incl. required_green → expected_red)', () => {
@@ -455,12 +583,12 @@ describe('immutable projection', () => {
     const green = baseFixture({ gate_state: 'required_green' });
     delete green.expected_failure_id;
     expect(attestationPayloadHash(immutableProjection(red))).toBe(
-      attestationPayloadHash(immutableProjection(green)),
+      attestationPayloadHash(immutableProjection(green))
     );
     const tampered = baseFixture();
     tampered.turns[0].transcript = 'edited transcript';
     expect(attestationPayloadHash(immutableProjection(red))).not.toBe(
-      attestationPayloadHash(immutableProjection(tampered)),
+      attestationPayloadHash(immutableProjection(tampered))
     );
   });
 });
@@ -567,7 +695,7 @@ describe('P5 — clear_then_write state_transition op validation', () => {
     const doc = ctwFixture({}, { initial_state_fidelity: 'empty_fallback' });
     const r = await validateFixtureDocument(doc);
     expect(r.errors.map((e) => e.code)).toContain(
-      FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION,
+      FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION
     );
   });
 });
