@@ -180,23 +180,34 @@ describe('F7 Item 2 A — dispatcher emission hook (onAskUserStarted)', () => {
     const ws = makeOpenWs();
     const ac = new AbortController();
     const answeredEvents = [];
+    // A response-epoch ref (PLAN-C P4c) — the ack emitted on the cancelled turn
+    // is stamped result.utterance_id = responseEpochRef.current by the bundler,
+    // so the epoch MUST advance to the answering utterance BEFORE the throw
+    // (Codex r2 second BLOCKER), else the client watchdog it armed false-fires a
+    // second fallback (exactly-once TTS violation).
+    const responseEpochRef = { current: 'ask-opening-utt' };
     const dispatch = createAskDispatcher(
       { sessionId: 's', toolCallsMode: 'live', stateSnapshot: { circuits: {} } },
       logger,
       'turn-1',
       pending,
       ws,
-      { onAskAnswered: (e) => answeredEvents.push(e), signal: ac.signal }
+      { onAskAnswered: (e) => answeredEvents.push(e), signal: ac.signal, responseEpochRef }
     );
     const p = dispatch({ tool_call_id: 'toolu_p4c', name: 'ask_user', input: VALID_ASK }, {});
     await Promise.resolve();
     await Promise.resolve();
-    // The watchdog aborts, THEN the inspector's decline answer arrives.
+    // The watchdog aborts, THEN the inspector's decline answer arrives, carrying
+    // the ANSWERING utterance's id.
     ac.abort(new ExtractionCancelledError('ceiling'));
-    pending.resolve('toolu_p4c', { answered: true, user_text: "No. Don't worry." });
+    pending.resolve('toolu_p4c', {
+      answered: true,
+      user_text: "No. Don't worry.",
+      utterance_id: 'answering-utt',
+    });
     // The dispatcher still throws the fatal control-flow error…
     await expect(p).rejects.toBeInstanceOf(ExtractionCancelledError);
-    // …but the answered outcome was recorded FIRST (source initial, decline).
+    // …but the answered outcome was recorded FIRST (source initial, decline)…
     expect(answeredEvents).toHaveLength(1);
     expect(answeredEvents[0]).toMatchObject({
       toolCallId: 'toolu_p4c',
@@ -204,6 +215,9 @@ describe('F7 Item 2 A — dispatcher emission hook (onAskUserStarted)', () => {
       source: 'initial',
       declineClass: 'decline',
     });
+    // …and the response epoch advanced to the answering utterance BEFORE the
+    // throw, so the cancelled-turn ack disarms the right watchdog.
+    expect(responseEpochRef.current).toBe('answering-utt');
   });
 
   test('F7 Item 3 (cycle-2) — a gated ask whose signal aborts DURING the debounce delay never registers or emits', async () => {

@@ -676,19 +676,34 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // stage6.ask_registration_hook_error row was already emitted in the executor.
     if (hookError) throw hookError;
 
+    // PLAN-C P4c — advance the response epoch from the INITIAL ask outcome.
+    // If this ask (raised on the loop-opening utterance) was answered by a
+    // LATER chimed utterance, the outcome carries that utterance's id; the
+    // read-backs/pvr that follow inherit it so the client watchdog armed by that
+    // later chime disarms on the speech. A timeout / user-moved-on-without-id /
+    // teardown carries no epoch and leaves the reference untouched (advance is
+    // non-empty-only + idempotent).
+    // ORDERING (Codex r2 BLOCKER): advanced BEFORE `throwIfStage6Cancelled`,
+    // alongside the P4 observer below. When an answer wins registry resolution
+    // but the generation is aborted before the dispatcher resumes, P4 now emits
+    // an ack on the cancelled turn — and that ack (like every confirmation in
+    // the cancelled partial-finalization) is stamped `result.utterance_id =
+    // responseEpochRef.current` by the bundler, so the epoch MUST reflect the
+    // answering utterance or the watchdog it armed never disarms and false-fires
+    // a SECOND fallback (an exactly-once TTS violation). Advancing is a pure ref
+    // mutation (no session-state write / apology / pvr re-ask), so it does not
+    // breach the cancellation guard's contract; the guard still stops all of
+    // those below.
+    advanceResponseEpoch(responseEpochRef, outcome);
+
     // P4 (ask-decline-ack-net) — stamp the INITIAL ask's resolution into the
     // per-turn ask-lifecycle ledger. `answered===true` (a real user reply — a
     // decline counts) is what the answered-ask silent-continuation net keys on;
-    // a timeout / user_moved_on carries answered:false and is excluded.
-    // ORDERING (Codex r2 BLOCKER): fired BEFORE `throwIfStage6Cancelled` — when
-    // an answer wins registry resolution but the generation is aborted before
-    // the dispatcher resumes, the throw below would otherwise skip this observer
-    // and the ledger would never learn the ask was answered, so P4 could not
-    // fire on the cancelled turn (the exact answered-cancelled silent path P4
-    // now covers). It is a PURE, error-swallowed observer with no state
-    // mutation, so recording it ahead of the cancellation guard is safe; the
-    // guard still stops all auto-resolve write / apology / pvr-* continuation
-    // work below.
+    // a timeout / user_moved_on carries answered:false and is excluded. Fired
+    // BEFORE `throwIfStage6Cancelled` (Codex r2) for the same reason as the
+    // epoch advance: else the throw skips this observer and the ledger never
+    // learns the ask was answered, so P4 could not fire on the cancelled turn.
+    // Pure, error-swallowed observer with no state mutation.
     if (onAskAnswered) {
       try {
         onAskAnswered({
@@ -708,16 +723,6 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // pvr-* re-ask. The throw propagates as a fatal control-flow error to
     // the harness cancellation-finalization boundary.
     throwIfStage6Cancelled(signal);
-
-    // PLAN-C P4c — advance the response epoch from the INITIAL ask outcome
-    // BEFORE buildResolvedBody (which may create a pvr-* re-ask or dispatch a
-    // continuation). If this ask (raised on the loop-opening utterance) was
-    // answered by a LATER chimed utterance, the outcome carries that
-    // utterance's id; the read-backs/pvr that follow now inherit it so the
-    // client watchdog armed by that later chime disarms on the speech. A
-    // timeout / user-moved-on-without-id / teardown carries no epoch and leaves
-    // the reference untouched.
-    advanceResponseEpoch(responseEpochRef, outcome);
 
     // Step 5: log final outcome.
     const answerOutcome = outcome.answered ? 'answered' : outcome.reason;
