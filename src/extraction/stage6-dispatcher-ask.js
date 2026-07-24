@@ -676,6 +676,32 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // stage6.ask_registration_hook_error row was already emitted in the executor.
     if (hookError) throw hookError;
 
+    // P4 (ask-decline-ack-net) — stamp the INITIAL ask's resolution into the
+    // per-turn ask-lifecycle ledger. `answered===true` (a real user reply — a
+    // decline counts) is what the answered-ask silent-continuation net keys on;
+    // a timeout / user_moved_on carries answered:false and is excluded.
+    // ORDERING (Codex r2 BLOCKER): fired BEFORE `throwIfStage6Cancelled` — when
+    // an answer wins registry resolution but the generation is aborted before
+    // the dispatcher resumes, the throw below would otherwise skip this observer
+    // and the ledger would never learn the ask was answered, so P4 could not
+    // fire on the cancelled turn (the exact answered-cancelled silent path P4
+    // now covers). It is a PURE, error-swallowed observer with no state
+    // mutation, so recording it ahead of the cancellation guard is safe; the
+    // guard still stops all auto-resolve write / apology / pvr-* continuation
+    // work below.
+    if (onAskAnswered) {
+      try {
+        onAskAnswered({
+          toolCallId,
+          answered: outcome.answered === true,
+          declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
+          source: 'initial',
+        });
+      } catch {
+        // best-effort observer — never propagate
+      }
+    }
+
     // F7 Item 3 — the awaited ask outcome just returned. If the watchdog
     // aborted this generation while we were blocked, STOP here — before
     // buildResolvedBody runs any auto-resolve write / apology enqueue /
@@ -692,27 +718,6 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // timeout / user-moved-on-without-id / teardown carries no epoch and leaves
     // the reference untouched.
     advanceResponseEpoch(responseEpochRef, outcome);
-
-    // P4 (ask-decline-ack-net) — stamp the INITIAL ask's resolution into the
-    // per-turn ask-lifecycle ledger. `answered===true` (a real user reply — a
-    // decline counts) is what the answered-ask silent-continuation net keys on;
-    // a timeout / user_moved_on carries answered:false and is excluded. Fired
-    // BEFORE buildResolvedBody so the ledger records the answered outcome even
-    // if a downstream resolver path (auto-write / pvr broker) later runs.
-    // Best-effort: the harness observer swallows its own errors, but guard here
-    // too so a hook fault can never break resolution.
-    if (onAskAnswered) {
-      try {
-        onAskAnswered({
-          toolCallId,
-          answered: outcome.answered === true,
-          declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
-          source: 'initial',
-        });
-      } catch {
-        // best-effort observer — never propagate
-      }
-    }
 
     // Step 5: log final outcome.
     const answerOutcome = outcome.answered ? 'answered' : outcome.reason;

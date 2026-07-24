@@ -413,15 +413,25 @@ export const ASK_AUDIBILITY_FALLBACK_TEXT =
 // / "couldn't" / "Hmm" / "nothing came" stems) so the field-nil channels never
 // cross-dedupe — pinned by the string-inequality assertion in
 // stage6-ask-decline-ack-net.test.js.
+// FIVE phrasings each (Codex r2), matching the NOOP_/CATCHALL_ burst margin:
+// the wording wraps only every 5 turns, so a repeat cannot re-silence a burst
+// (turnNum ≡ mod len inside the client's 30 s field-null TTL) before the SIXTH
+// consecutive answered-silent turn in 30 s — a shape no real session produces.
+// APPEND-ONLY (never reorder) so the recorded fixture's `text_exact` (decline
+// index 1 = "No problem, moving on.") stays stable.
 export const ASK_DECLINE_ACK_PROMPTS = Object.freeze([
   'Okay — leaving that one.',
   'No problem, moving on.',
   "Alright — I'll leave that as it is.",
+  "That's fine — I'll leave it there.",
+  'Sure — leaving that as it stands.',
 ]);
 export const ASK_ANSWERED_ACK_PROMPTS = Object.freeze([
   'Okay, got it.',
   'Right, noted.',
   'Understood.',
+  'Got that, thanks.',
+  'Noted — carrying on.',
 ]);
 
 // marker-② (numeric-gate-redesign 2026-07-18) — the FINAL catch-all audibility

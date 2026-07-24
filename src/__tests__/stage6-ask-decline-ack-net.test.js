@@ -559,26 +559,28 @@ describe('P4 — apology-text distinctness + rotation', () => {
     expect(new Set(ASK_ANSWERED_ACK_PROMPTS).size).toBe(ASK_ANSWERED_ACK_PROMPTS.length);
   });
 
-  test('the ack wording rotates across turns (turnNum % len)', async () => {
+  test('Codex r2: each family carries FIVE phrasings (the NOOP/CATCHALL burst margin) so a repeat cannot re-silence a burst before the 6th consecutive turn', () => {
+    expect(ASK_DECLINE_ACK_PROMPTS.length).toBe(5);
+    expect(ASK_ANSWERED_ACK_PROMPTS.length).toBe(5);
+  });
+
+  test('the ack wording rotates across a FULL family cycle with no repeat within the window (turnNum % len)', async () => {
+    // Five consecutive decline-silent turns on the SAME session must produce
+    // five DISTINCT phrasings — no client field-null dedupe key collides within
+    // the burst (the previous 3-phrase family wrapped on turn 4).
     const session = makeSession();
-    silentAnsweredLoop();
-    const r1 = await runShadowHarness(
-      session,
-      'ask decline one',
-      [],
-      baseOpts({ _seedAskLifecycle: declineLifecycle() })
-    );
-    silentAnsweredLoop();
-    const r2 = await runShadowHarness(
-      session,
-      'ask decline two',
-      [],
-      baseOpts({ _seedAskLifecycle: declineLifecycle() })
-    );
-    const t1 = declineAckPrompts(r1)[0]?.text;
-    const t2 = declineAckPrompts(r2)[0]?.text;
-    expect(t1).toBeDefined();
-    expect(t2).toBeDefined();
-    expect(t1).not.toBe(t2);
+    const texts = [];
+    for (let i = 0; i < ASK_DECLINE_ACK_PROMPTS.length; i += 1) {
+      silentAnsweredLoop();
+      const r = await runShadowHarness(
+        session,
+        `ask decline ${i}`,
+        [],
+        baseOpts({ _seedAskLifecycle: declineLifecycle() })
+      );
+      texts.push(declineAckPrompts(r)[0]?.text);
+    }
+    expect(texts.every((t) => typeof t === 'string')).toBe(true);
+    expect(new Set(texts).size).toBe(ASK_DECLINE_ACK_PROMPTS.length);
   });
 });

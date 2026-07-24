@@ -170,6 +170,42 @@ describe('F7 Item 2 A — dispatcher emission hook (onAskUserStarted)', () => {
     expect(autoResolveWrite).not.toHaveBeenCalled();
   });
 
+  test('P4 (Codex r2 BLOCKER) — onAskAnswered records the answered outcome BEFORE the cancellation throw, so the P4 ledger learns the ask was answered on a cancelled turn', async () => {
+    // The answer wins registry resolution but the generation is aborted before
+    // the dispatcher resumes. onAskAnswered MUST still fire (it is ordered ahead
+    // of throwIfStage6Cancelled), else the per-turn ledger never learns the ask
+    // was answered and P4 cannot close the answered-cancelled silent path.
+    const logger = makeLogger();
+    const pending = createPendingAsksRegistry();
+    const ws = makeOpenWs();
+    const ac = new AbortController();
+    const answeredEvents = [];
+    const dispatch = createAskDispatcher(
+      { sessionId: 's', toolCallsMode: 'live', stateSnapshot: { circuits: {} } },
+      logger,
+      'turn-1',
+      pending,
+      ws,
+      { onAskAnswered: (e) => answeredEvents.push(e), signal: ac.signal }
+    );
+    const p = dispatch({ tool_call_id: 'toolu_p4c', name: 'ask_user', input: VALID_ASK }, {});
+    await Promise.resolve();
+    await Promise.resolve();
+    // The watchdog aborts, THEN the inspector's decline answer arrives.
+    ac.abort(new ExtractionCancelledError('ceiling'));
+    pending.resolve('toolu_p4c', { answered: true, user_text: "No. Don't worry." });
+    // The dispatcher still throws the fatal control-flow error…
+    await expect(p).rejects.toBeInstanceOf(ExtractionCancelledError);
+    // …but the answered outcome was recorded FIRST (source initial, decline).
+    expect(answeredEvents).toHaveLength(1);
+    expect(answeredEvents[0]).toMatchObject({
+      toolCallId: 'toolu_p4c',
+      answered: true,
+      source: 'initial',
+      declineClass: 'decline',
+    });
+  });
+
   test('F7 Item 3 (cycle-2) — a gated ask whose signal aborts DURING the debounce delay never registers or emits', async () => {
     jest.useFakeTimers();
     try {
