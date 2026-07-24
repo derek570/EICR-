@@ -29,7 +29,17 @@
 import { jest } from '@jest/globals';
 
 import { mockClient } from './helpers/mockStream.js';
+import {
+  makeLiveSession as makeF7LiveSession,
+  makeOpenWs,
+  toolUseRound as f7ToolUseRound,
+  endTurnRound as f7EndTurnRound,
+} from './helpers/f7-audibility-matrix.js';
 import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
+import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
+import { ASK_USER_TIMEOUT_MS } from '../extraction/stage6-dispatcher-ask.js';
+import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
+import { activeSessions } from '../extraction/active-sessions.js';
 import { CostTracker } from '../extraction/cost-tracker.js';
 
 // A distinctive sentinel so a routed observation turn is unambiguous vs the
@@ -371,5 +381,119 @@ describe('observation-tier routing — multi-round + override lock + cost', () =
 
     expect(addSpy).toHaveBeenCalledTimes(1);
     expect(addSpy).toHaveBeenCalledWith(expect.any(Object), OBS_MODEL);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Blocking ask_user continuation — driven through the REAL dispatcher
+// composition (real pending-asks registry + gate stack + runToolLoop) so the
+// ask genuinely SUSPENDS the loop and RESUMES on the answer. This is the
+// load-bearing multi-round case the plan names: the selected model must hold
+// across the suspend/resume boundary. Uses the F7 integration lane's proven
+// fake-timer drive (stage6-audibility-invariants.test.js) — the gate debounce
+// + the 45s ask timeout make real timers impractical.
+// ───────────────────────────────────────────────────────────────────────────
+describe('observation-tier routing — blocking ask_user continuation (real dispatcher)', () => {
+  const SID = 'sess-obs-routing-ask';
+  const MAX_ADVANCE_MS = QUESTION_GATE_DELAY_MS + ASK_USER_TIMEOUT_MS + 2000;
+  let savedFlag;
+  let savedModel;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    // The router reads getActiveSessionEntry(sessionId); register a minimal
+    // entry (loadedBarrel OFF → speculator skipped) exactly like the F7 lane.
+    activeSessions.set(SID, {
+      session: { sessionId: SID },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+      broadcastIntentByTurn: new Map(),
+      voiceLatency: { flags: { loadedBarrel: false } },
+    });
+    savedFlag = process.env.OBSERVATION_TIER_ROUTING;
+    savedModel = process.env.OBSERVATION_EXTRACT_MODEL;
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+  });
+
+  afterEach(() => {
+    activeSessions.delete(SID);
+    jest.useRealTimers();
+    if (savedFlag === undefined) delete process.env.OBSERVATION_TIER_ROUTING;
+    else process.env.OBSERVATION_TIER_ROUTING = savedFlag;
+    if (savedModel === undefined) delete process.env.OBSERVATION_EXTRACT_MODEL;
+    else process.env.OBSERVATION_EXTRACT_MODEL = savedModel;
+  });
+
+  /** Drive one live turn under fake timers, resolving any queued ask the moment
+   *  it registers (ported from stage6-audibility-invariants.test.js). */
+  async function driveAskTurn(session, transcript, opts, answers) {
+    const pendingAsks = opts.pendingAsks;
+    const answerMap = new Map(Object.entries(answers));
+    let settled = false;
+    let value;
+    let error;
+    const p = runShadowHarness(session, transcript, [], opts).then(
+      (v) => {
+        settled = true;
+        value = v;
+      },
+      (e) => {
+        settled = true;
+        error = e;
+      }
+    );
+    await jest.advanceTimersByTimeAsync(0);
+    const step = 250;
+    let elapsed = 0;
+    while (!settled && elapsed <= MAX_ADVANCE_MS) {
+      for (const [id, payload] of [...answerMap]) {
+        if (pendingAsks && pendingAsks.resolve(id, payload)) answerMap.delete(id);
+      }
+      await jest.advanceTimersByTimeAsync(step);
+      elapsed += step;
+    }
+    await jest.advanceTimersByTimeAsync(0);
+    await p;
+    if (error) throw error;
+    return value;
+  }
+
+  test('both the pre-ask round and the post-answer round run on OBSERVATION_EXTRACT_MODEL', async () => {
+    const client = mockClient([
+      f7ToolUseRound([
+        {
+          id: 'toolu_obs_ask',
+          name: 'ask_user',
+          input: {
+            question: 'Which circuit is that observation for?',
+            reason: 'ambiguous_circuit',
+            context_field: 'measured_zs_ohm',
+            context_circuit: null,
+            expected_answer_shape: 'circuit_ref',
+          },
+        },
+      ]),
+      f7EndTurnRound('ok'),
+    ]);
+    const session = makeF7LiveSession({ sessionId: SID, client });
+    const ws = makeOpenWs();
+    const opts = {
+      logger: makeLogger(),
+      pendingAsks: createPendingAsksRegistry(),
+      ws,
+      confirmationsEnabled: true,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    };
+
+    await driveAskTurn(session, OBS_TRANSCRIPT, opts, {
+      toolu_obs_ask: { answered: true, user_text: 'Circuit 4' },
+    });
+
+    // The ask genuinely suspended + resumed the loop → two Anthropic calls,
+    // both on the observation tier (the model is selected once and locked).
+    expect(client._callCount).toBe(2);
+    expect(client._calls[0].model).toBe(OBS_MODEL); // pre-ask round
+    expect(client._calls[1].model).toBe(OBS_MODEL); // post-answer resume round
   });
 });

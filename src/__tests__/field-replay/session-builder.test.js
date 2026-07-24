@@ -409,14 +409,10 @@ describe('blocking behaviour through the REAL harness', () => {
 
   // NOTE on the blocking ask_user continuation (plan test list): the selected
   // model must hold across the loop's suspend-on-ask / resume-on-answer
-  // boundary. This is STRUCTURALLY guaranteed — `model: selectedModel` is passed
-  // ONCE to runToolLoop and reused for EVERY `client.messages.stream` call,
-  // including the post-ask resume round (the ask suspends WITHIN one runToolLoop
-  // invocation, it does not restart the loop). The multi-round proof in
-  // stage6-observation-tier-routing.test.js pins that a second round uses the
-  // same model; ask_user adds no new model source. A bespoke real-harness
-  // ask_user register/resume test was intentionally NOT added: no test in the
-  // suite drives a real ask_user registration through runShadowHarness (every
-  // ask test short-circuits via budget-exhaustion or stubs the registry), so a
-  // hand-rolled suspend/resume drive would be flaky rather than load-bearing.
+  // boundary. That case is pinned end-to-end through the REAL dispatcher
+  // composition (real pending-asks registry + gate stack + fake-timer drive) in
+  // stage6-observation-tier-routing.test.js › "blocking ask_user continuation"
+  // — round 1 emits ask_user, the loop suspends, the ask is answered, and both
+  // the pre-ask and post-answer Anthropic calls are asserted on
+  // OBSERVATION_EXTRACT_MODEL.
 });
