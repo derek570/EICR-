@@ -1106,7 +1106,6 @@ function applyObservations(
       if (replayIdx >= 0) {
         const row = { ...existing[replayIdx] };
         let filled = false;
-        let scheduleFilled = false;
         if (!row.regulation && obs.regulation) {
           row.regulation = obs.regulation;
           filled = true;
@@ -1123,19 +1122,16 @@ function applyObservations(
           row.regulation_description = obs.regulation_description;
           filled = true;
         }
-        if (!row.schedule_item && obs.schedule_item && validScheduleRefs.has(obs.schedule_item)) {
-          row.schedule_item = obs.schedule_item;
-          filled = true;
-          scheduleFilled = true;
-        }
+        // NOTE: `schedule_item` is DELIBERATELY NOT filled on a replay, and a
+        // replay is NEVER added to `acceptedForSchedule`. Projecting a schedule
+        // outcome from a replay would (a) resurrect an outcome the inspector may
+        // have since cleared and (b) use the STALE replay `code` rather than the
+        // row's since-refined code. Schedule linking is owned by the create path
+        // + observation_update; a replay only fills pure data fields.
         if (filled) {
           existing[replayIdx] = row;
           changed = true;
         }
-        // Only a NEWLY-filled schedule_item may re-project onto the schedule;
-        // an already-set schedule_item on a replay must NOT resurrect an
-        // outcome the inspector has since cleared.
-        if (scheduleFilled) acceptedForSchedule.push(obs);
         pipelineLog('apply_observations_idempotent_replay', {
           server_id: incomingServerId.slice(0, 8),
           filled,
@@ -1194,7 +1190,11 @@ function applyObservations(
     }
     existing.push(row);
     changed = true;
-    acceptedForSchedule.push(obs);
+    // Project the schedule from the NORMALISED row, not the raw wire obs: use
+    // the VALIDATED `row.schedule_item` (an M11-invalid ref was stripped → no
+    // orphan schedule key) and the parsed `code` (so `markScheduleItems…`
+    // never marks an outcome from an unvalidated ref or an unparsed code).
+    acceptedForSchedule.push({ ...obs, code, schedule_item: row.schedule_item });
   }
   if (!changed) return null;
 

@@ -140,13 +140,19 @@ describe('P7 — same server_id is an idempotent replay', () => {
     expect(applied?.patch.observations?.[0].regulation).toBe('543.3.1');
   });
 
-  it('a fill-absent replay does NOT attach a pending photo (gated on append, not `changed`)', () => {
+  it('a fill-absent replay of a NON-TAIL row attaches the photo to neither row (gated on append, not `changed`)', () => {
     const onPhotoAttached = vi.fn();
     const onLastObservationCreated = vi.fn();
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
     try {
+      // Row A is the matched (replayed) row but is NOT the array tail; row B is
+      // unrelated and sits at the tail. A `changed`-gated photo attach would
+      // wrongly land on `existing[last]` (row B) despite no new observation.
       const job = makeJob({
-        observations: [{ id: 'r-A', server_id: 'srv-A', code: 'C3', description: 'loose earth' }],
+        observations: [
+          { id: 'r-A', server_id: 'srv-A', code: 'C3', description: 'loose earth' },
+          { id: 'r-B', server_id: 'srv-B', code: 'C2', description: 'loose terminal' },
+        ],
       } as Partial<JobDetail>);
       const result = makeResult({
         observations: [
@@ -163,15 +169,51 @@ describe('P7 — same server_id is an idempotent replay', () => {
         onPhotoAttached,
         onLastObservationCreated,
       });
-      // The absent field was filled…
+      // The absent field was filled on the matched (non-tail) row A…
       expect(applied?.patch.observations?.[0].regulation).toBe('543.3.1');
-      // …but NO creation side-effects fired on the replay.
+      // …but NO creation side-effects fired: neither row gets the photo.
       expect(applied?.patch.observations?.[0].photos).toBeUndefined();
+      expect(applied?.patch.observations?.[1].photos).toBeUndefined();
       expect(onPhotoAttached).not.toHaveBeenCalled();
       expect(onLastObservationCreated).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it('initial extraction → refinement → ORIGINAL replay does NOT restore stale fields', () => {
+    // Post-refine state: observation_update authoritatively changed code (C2→C1)
+    // and text, and left regulation ABSENT. A P4d reconnect then replays the
+    // ORIGINAL frame (code C2, original text, regulation 416.2).
+    const job = makeJob({
+      observations: [
+        {
+          id: 'r-A',
+          server_id: 'srv-A',
+          code: 'C1',
+          description: 'Small hole in the side of the enclosure — reclassified.',
+        },
+      ],
+    } as Partial<JobDetail>);
+    const result = makeResult({
+      observations: [
+        {
+          observation_id: 'srv-A',
+          observation_text: 'small hole side',
+          code: 'C2',
+          regulation: '416.2',
+        },
+      ],
+    });
+    const applied = applyExtractionToJob(job, result);
+    expect(applied?.patch.observations).toHaveLength(1);
+    // The ABSENT regulation is filled from the replay…
+    expect(applied?.patch.observations?.[0].regulation).toBe('416.2');
+    // …but the since-refined code + text are NOT restored to the stale originals.
+    expect(applied?.patch.observations?.[0].code).toBe('C1');
+    expect(applied?.patch.observations?.[0].description).toBe(
+      'Small hole in the side of the enclosure — reclassified.'
+    );
   });
 
   it('DISCRIMINATING schedule regression — a replay does NOT re-project a CLEARED outcome', () => {
@@ -269,7 +311,7 @@ describe('P7 — applyObservationUpdate scoped fuzzy fallback', () => {
     expect(updated?.find((o) => o.server_id === 'srv-A')).toBeTruthy();
   });
 
-  it('a non-empty incoming id fuzzy-matches a LEGACY (no server_id) row and STAMPS it', () => {
+  it('a non-empty incoming id fuzzy-matches a LEGACY (no server_id) row via >70% overlap and STAMPS it', () => {
     const job = makeJob({
       observations: [
         { id: 'r-legacy', code: 'C3', description: 'small hole in the side of the enclosure' },
@@ -277,8 +319,11 @@ describe('P7 — applyObservationUpdate scoped fuzzy fallback', () => {
     } as Partial<JobDetail>);
     const updated = applyObservationUpdate(job, {
       observation_id: 'srv-new', // misses (no row carries it), fuzzy-matches the legacy row
-      observation_text: 'Small hole in the side of the enclosure.',
-      original_text: 'small hole in the side of the enclosure',
+      observation_text: 'Small hole on the side of enclosure.',
+      // NON-identical to the row description (so the exact-match shortcut is
+      // NOT taken) but ~86% directional word overlap → exercises the real
+      // >70% fuzzy branch that P7 scopes to legacy rows.
+      original_text: 'small hole on the side of enclosure',
       code: 'C2',
     });
     expect(updated).toHaveLength(1);
