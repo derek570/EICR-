@@ -64,6 +64,15 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(r.rules_hit).toEqual([]);
   });
 
+  test('a name token is NOT collapsed even when a LATER reading shares the comma-joined clause', () => {
+    // "Electrical" (a name word) immediately follows the token, so it is neither
+    // a value-connector nor a scope-preposition — the later "Ze was 0.67"
+    // (belonging to Ze) must not drag the name "Z S" into "Zs".
+    const r = normalise('Customer name Z S Electrical, Ze was 0.67');
+    expect(r.text).toBe('Customer name Z S Electrical, Ze was 0.67');
+    expect(r.rules_hit).toEqual([]);
+  });
+
   test('a value introduced by a value-connector after a scope phrase DOES collapse', () => {
     // "Z s for circuit 3 was 0.67" — the scope "for circuit 3" sits in the gap;
     // the value 0.67 is introduced by "was".
@@ -144,6 +153,11 @@ describe('transcript-normalise — rule 2: "a hundred" → "100"', () => {
       'a hundred fifty',
       'a hundred 50 megaohms',
       'a hundred-50 megaohms',
+      'a hundred point oh five',
+      'a hundred point nought five',
+      'a hundred and half',
+      'a hundred quarter',
+      'a hundred a quarter',
     ]) {
       const r = normalise(input);
       expect(r.text).toBe(input);

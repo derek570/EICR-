@@ -99,7 +99,7 @@ Applied at **two seams**, with this consumer routing table:
 | Seam | CANONICAL (canonical copy) | RAW (unchanged) |
 |------|----------------------------|-----------------|
 | **A — `handleTranscript`** (top, after the `isStopping` guard) | both content anchors (recentAskAnswers consult + recentTranscripts push), the pre-LLM gate, BOTH `classifyOvertake` calls (pre-queue + transcript-overtake — the latter stays **un-annotated**), `detectStructuredReading`, the model-bound `transcriptText` (incl. the `in_response_to` annotation), the three dialogue-script `rawReplyText` args (normalised but **un-annotated**), `runShadowHarness` | `msg.text`; exact-dedupe on `utterance_id`; log previews (`.slice(0,80)`) |
-| **B — `ask_user_answered`** | the pre-sanitisation reverse-race lookup (canonical comparison copy only); AFTER sanitisation, `canonicalAnswerText` → the `classifyOvertake` shape check, the new-command gate, `detectStructuredReading`, `resolvePayload.user_text`, the re-injected synthetic transcript, the recentAskAnswers anchor push | `sanitiseUserText` runs on RAW `msg.user_text` (length/truncation semantics unchanged); raw previews + sanitisation flags |
+| **B — `ask_user_answered`** | **Behavioural (model-facing) consumers** use `canonicalAnswerText` (= normalise of the POST-sanitisation text): the `classifyOvertake` shape check, the new-command gate, `detectStructuredReading`, `resolvePayload.user_text`, the re-injected synthetic transcript. **Dedupe-ledger ops** (the pre-sanitisation reverse-race lookup AND the recentAskAnswers anchor push) use one raw-based `canonicalUserTextForAnchor` (= normalise(`msg.user_text`)) so their keys match Seam A's raw-based transcript stamp in either arrival order — even for a truncated/control-stripped answer. | `sanitiseUserText` runs on RAW `msg.user_text` (length/truncation semantics unchanged); raw previews + sanitisation flags |
 
 **Both content anchors are canonical on BOTH seams** so cross-seam dedupe equality holds in either arrival order (no double-exposure). The re-injected synthetic transcript is already canonical, so Seam A re-normalises it to a no-op.
 
@@ -109,7 +109,7 @@ Applied at **two seams**, with this consumer routing table:
 
 **Web:** zero wire change; web transcripts flow through the same backend ingest, so web benefits identically. The web client-side regex fast-hint tier still sees raw text (acceptable — Sonnet overwrites).
 
-**Key files:** `src/extraction/transcript-normalise.js` (pure rules), `src/extraction/sonnet-stream.js` (the two seams), `src/__tests__/transcript-normalise.test.js` (unit), `src/__tests__/sonnet-stream-transcript-normalise-ingress.test.js` (the sole raw→canonical ingress proof — the direct replay runner bypasses these seams).
+**Key files:** `src/extraction/transcript-normalise.js` (pure rules), `src/extraction/sonnet-stream.js` (the two seams), `src/__tests__/transcript-normalise.test.js` (unit), `src/__tests__/sonnet-stream-transcript-normalise-ingress.test.js` (the raw→canonical ingress proof for both seams — the direct replay runner bypasses these seams), `src/__tests__/sonnet-stream-transcript-normalise-ir-realengine.test.js` (drives the REAL insulation-resistance dialogue engine end-to-end through `handleTranscript` and asserts it records `ir_live_live_mohm=100` from a raw "A hundred megaohms").
 
 ---
 
