@@ -12,8 +12,9 @@
  * Dedupe OUTCOME tests mirror the session-scoped Set semantics used at
  * the recording-context D6 loop: identical key → suppressed (deduped),
  * distinct keys → both read back. iOS-parity expectations:
- *   - same field+circuit twice → DEDUPED (do NOT expect two read-backs;
- *     corrections ride the separate correction-TTS path)
+ *   - same field+circuit, DIFFERENT text (a correction) → both read back
+ *     (id-84 correction-swallow fix — value-aware single-circuit key)
+ *   - same field+circuit, SAME text (a genuine duplicate) → DEDUPED
  *   - multi-circuit / board-level with different TEXT → distinct
  *   - identical text → suppressed
  *   - board-scoped isolation via the boardId-in-hash degenerate branch
@@ -47,14 +48,14 @@ describe('djb2UInt64Decimal — parity vectors vs src/extraction/ios-dedupe-key.
 });
 
 describe('buildConfirmationDedupeKey — branch selection (iOS canon)', () => {
-  it('single-circuit keeps the legacy "{field}_{circuit}" shape (correction-TTS cross-match)', () => {
+  it('single-circuit uses the VALUE-AWARE "{field}_{circuit}_{djb2(text)}" shape (id-84)', () => {
     expect(
       buildConfirmationDedupeKey({
         text: 'Circuit 5, Zs 0.44 ohms',
         field: 'measured_zs_ohm',
         circuit: 5,
       })
-    ).toBe('measured_zs_ohm_5');
+    ).toBe('measured_zs_ohm_5_4307459161827590531');
   });
 
   it('single-circuit wins over circuits[] when both present', () => {
@@ -65,7 +66,7 @@ describe('buildConfirmationDedupeKey — branch selection (iOS canon)', () => {
         circuit: 2,
         circuits: [2, 3],
       })
-    ).toBe('measured_zs_ohm_2');
+    ).toBe('measured_zs_ohm_2_7573094619599403');
   });
 
   it('multi-circuit broadcast sorts circuits and hashes the spoken text (backend-mirror vector)', () => {
@@ -94,7 +95,7 @@ describe('buildConfirmationDedupeKey — branch selection (iOS canon)', () => {
   });
 
   it('missing field falls back to "unknown"', () => {
-    expect(buildConfirmationDedupeKey({ text: 'x', circuit: 7 })).toBe('unknown_7');
+    expect(buildConfirmationDedupeKey({ text: 'x', circuit: 7 })).toBe('unknown_7_177693');
   });
 });
 
@@ -113,11 +114,20 @@ function speakSimulation(confs: Array<Parameters<typeof buildConfirmationDedupeK
 }
 
 describe('dedupe outcomes (session-Set semantics, iOS parity)', () => {
-  it('same field+circuit twice → second DEDUPED even with different text (iOS single-circuit shape)', () => {
+  it('id-84: same field+circuit, DIFFERENT text (a correction) → BOTH read back (value-aware key)', () => {
     expect(
       speakSimulation([
         { text: 'Circuit 3, Zs 0.44 ohms', field: 'measured_zs_ohm', circuit: 3 },
         { text: 'Circuit 3, Zs 0.52 ohms', field: 'measured_zs_ohm', circuit: 3 },
+      ])
+    ).toEqual([0, 1]);
+  });
+
+  it('same field+circuit, SAME text (a genuine duplicate) → second DEDUPED', () => {
+    expect(
+      speakSimulation([
+        { text: 'Circuit 3, Zs 0.44 ohms', field: 'measured_zs_ohm', circuit: 3 },
+        { text: 'Circuit 3, Zs 0.44 ohms', field: 'measured_zs_ohm', circuit: 3 },
       ])
     ).toEqual([0]);
   });
@@ -321,7 +331,7 @@ describe('§A1a dedupe_token — allowlist + token-composition vectors (backend-
     ).toEqual([0, 1]);
   });
 
-  it('NEGATIVE: measured-value fields IGNORE the token — bare key preserved for the correction-TTS cross-match', () => {
+  it('NEGATIVE: measured-value fields IGNORE the token — VALUE-AWARE key (id-84)', () => {
     expect(
       buildConfirmationDedupeKey({
         text: 'Circuit 1, Zs 0.44 ohms',
@@ -329,7 +339,7 @@ describe('§A1a dedupe_token — allowlist + token-composition vectors (backend-
         circuit: 1,
         dedupe_token: 'spurious_token',
       })
-    ).toBe('measured_zs_ohm_1');
+    ).toBe('measured_zs_ohm_1_6997897068188437119');
     expect(
       buildConfirmationDedupeKey({
         text: 'Circuit 2, R1 plus R2 0.86',
@@ -337,13 +347,13 @@ describe('§A1a dedupe_token — allowlist + token-composition vectors (backend-
         circuit: 2,
         dedupe_token: 'spurious_token',
       })
-    ).toBe('r1_r2_ohm_2');
+    ).toBe('r1_r2_ohm_2_11915183769915549805');
   });
 
-  it('token absent / empty → legacy shapes byte-unchanged (backward-compatible fallback, backend-first ship order)', () => {
+  it('token absent / empty → value-aware single-circuit shape (backward-compatible fallback, backend-first ship order)', () => {
     expect(
       buildConfirmationDedupeKey({ text: 'Circuit 3 renamed', field: 'circuit_op', circuit: 3 })
-    ).toBe('circuit_op_3');
+    ).toBe('circuit_op_3_14649073344730819783');
     expect(
       buildConfirmationDedupeKey({
         text: 'Circuit 3 renamed',
@@ -351,7 +361,7 @@ describe('§A1a dedupe_token — allowlist + token-composition vectors (backend-
         circuit: 3,
         dedupe_token: '',
       })
-    ).toBe('circuit_op_3');
+    ).toBe('circuit_op_3_14649073344730819783');
     // Degenerate fallback hashes — generated from the backend mirror.
     expect(
       buildConfirmationDedupeKey({ text: 'Observation deleted', field: 'observation_deletion' })
