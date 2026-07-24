@@ -434,8 +434,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // a garble ("n o") sits between anchor and value (folded into Example 8);
       // (2) Steer 2 DECIDING FACTS BY CLASS — a compact three-class C2/C3
       // deciding-facts checklist (enclosure holes / accessories-CUs / bonding)
-      // inside the AMBIGUOUS C2/C3 SEVERITY block, reusing its one-ask budget +
-      // clarification_chain_id framing. Net growth ~+516 tokens (minimised via
+      // inside the AMBIGUOUS C2/C3 SEVERITY block, reusing its bounded
+      // clarification budget + clarification_chain_id framing. Net growth
+      // ~+745 tokens (minimised via
       // a shared ACCESS LADDER; a measured cap bump was the EXPECTED path per
       // the plan, not a fallback — compaction cannot fold ~500 tokens away).
       // Measured 21714; after the Codex diff-review cycle-1 correctness fixes
@@ -448,8 +449,8 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // cited C2/C3 classes — the plan itself states a measured cap bump on
       // BOTH caps is the EXPECTED path ("compaction cannot recover ~600 tokens
       // by folding alone"). Minimised via the shared ACCESS LADDER + terse
-      // prose. Measured 21923 (after cycle-1 + mini-review + cycle-2 fixes); cap
-      // 22025 leaves ~102-token headroom. NOTE: the flag-off render is NO LONGER
+      // prose. Measured 21943 (after the cycle-1/mini-review/cycle-2/cycle-3 fixes); cap
+      // 22025 leaves ~82-token headroom. NOTE: the flag-off render is NO LONGER
       // byte-identical to the pre-A1 prompt (P8 grew the shared region); only
       // the A1 OFF-marker blocks stay verbatim. The deployed prod render is
       // flag-ON.
@@ -1165,8 +1166,8 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // shared ACCESS LADDER). A measured cap bump on BOTH caps was the
       // EXPECTED path per the P8 plan (see the Group 1 combined-cap comment).
       // After the Codex diff-review correctness fixes (cycle 1 + mini-review +
-      // cycle 2 — see the combined cap comment) the base render measures 16686;
-      // cap 16790 leaves ~104-token headroom.
+      // cycle 2 — see the combined cap comment) the base render measures 16705;
+      // cap 16790 leaves ~85-token headroom.
       const estimate = Math.ceil(renderedOn.length / 4);
       expect(estimate).toBeLessThanOrEqual(16790);
     });
@@ -1838,8 +1839,8 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
 
     // P8 (2026-07-24, feedback id 83): Steer 2 — a compact three-class C2/C3
     // deciding-facts checklist inside the AMBIGUOUS C2/C3 SEVERITY block, so it
-    // rides the block's existing one-ask budget + clarification_chain_id
-    // framing (no parallel ask path). Fact-weighting cue, never a blanket
+    // rides the block's existing bounded clarification budget +
+    // clarification_chain_id framing (no parallel ask path). Fact-weighting cue, never a blanket
     // default code. Lands in the shared region → both flag states. STATIC
     // guards only — the behavioural half (model asks the deciding fact) is a
     // live-lane probe.
@@ -1873,6 +1874,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(block).toContain('Enclosure penetrations/holes');
         expect(block).toContain('Basic protection at accessories / CUs');
         expect(block).toContain('Bonding (main protective)');
+        // Accessories/CUs carries its ranked deciding facts (per the plan):
+        // access ladder, then broken/missing-vs-design-gap, then height.
+        const acc = block.slice(
+          block.indexOf('Basic protection at accessories / CUs'),
+          block.indexOf('Bonding (main protective)')
+        );
+        expect(acc).toMatch(/broken\/missing component vs design gap/);
+        expect(acc).toMatch(/height\/accessibility/);
         // Bonding uses its OWN tree, not the shared ACCESS LADDER.
         expect(block).toMatch(/Bonding \(main protective\) — its OWN tree, not the ACCESS LADDER/);
         // Key BS 7671 citations (verified current-edition at execution).
