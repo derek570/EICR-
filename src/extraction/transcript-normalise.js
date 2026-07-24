@@ -92,15 +92,19 @@
 const ZS_TOKEN = 'z(?:ed)?\\s+s';
 // Bounded same-clause scope gap between the token and the value-connector —
 // covers "on the heating " / "for circuit 3 " etc. Bounded to defuse ReDoS; a
-// reading clause between the field token and its value is short. Never bridges
-// a clause/sentence delimiter (. ! ? ; newline).
-const ZS_SCOPE_GAP = '[^.!?;\\n]{0,60}?';
+// reading clause between the field token and its value is short. 120 chars
+// accommodates a long circuit designation ("for the upstairs heating and hot
+// water boiler radial circuit number three ") while staying bounded (linear
+// backtracking). Never bridges a clause/sentence delimiter (. ! ? ; newline).
+const ZS_SCOPE_GAP = '[^.!?;\\n]{0,120}?';
 // VALUE-introducing connectors — the words that in dictation come IMMEDIATELY
 // before a measured value ("was 0.67", "is 0.2", "reads 0.4", "of 0.5"). Scope
 // prepositions ("on"/"for") are deliberately NOT here — they introduce the
 // nouns being measured, not the value, so "for circuit 1" must not qualify.
-const ZS_VALUE_CONNECTOR =
-  '(?:was|were|is|are|reads?|equals?|equalled|measured|measures|measuring|shows?|showing|of|at)';
+// Kept to the common, low-false-positive forms — "measuring"/"equalled"/
+// "showing" were dropped (they read naturally in non-reading text like
+// "Z S Electrical measuring 10 metres").
+const ZS_VALUE_CONNECTOR = '(?:was|were|is|are|reads?|equals?|measured|measures|of|at)';
 // Optional qualifier between the connector and the value ("was about 0.67").
 const ZS_QUALIFIER = '(?:the\\s+|about\\s+|around\\s+|approximately\\s+)?';
 // Value vocabulary — a number (int/decimal/leading-dot) OR a domain sentinel.
@@ -119,18 +123,35 @@ const ZS_CONTEXT_RE = new RegExp(
  * This rule closes ONLY that observed gap — there is NO general word-number
  * parser here (compound handling stays on the iOS/web layer, out of scope).
  *
- * Guard (hardened after review): a trailing negative lookahead prevents firing
- * on ANY COMPOUND continuation — rewriting only the "a hundred" head would
- * corrupt it. The guard rejects a continuation introduced by whitespace, comma,
- * OR hyphen (so "a hundred and fifty", "a hundred, and fifty",
- * "a hundred-and-fifty", "a hundred and zero", "a hundred point five",
- * "a hundred and a half" are ALL left untouched — a partial "100 and fifty" /
- * "100 point five" would let the IR parser misread 150 / 100.5 as 100). The
- * observed case "a hundred MΩ"/"a hundred ohms"/"a hundred." fires because the
- * following token is a unit/end, not a number-continuation.
+ * Guard (hardened over two review passes): a trailing negative lookahead
+ * prevents firing on any NUMERIC compound continuation — rewriting only the
+ * "a hundred" head would corrupt it. The continuation may be introduced by
+ * whitespace, comma, OR hyphen (so "a hundred and fifty", "a hundred, and
+ * fifty", "a hundred-and-fifty", "a hundred and zero", "a hundred point five",
+ * "a hundred and a half", "a hundred fifty", "a hundred 50" / "a hundred-50"
+ * are ALL left untouched — a partial "100 and fifty" / "100 point five" /
+ * "100 50" would let the IR parser misread 150 / 100.5 / 10050 as 100).
+ *
+ * Crucially the "and"/"point" branches require a NUMBER after them, so a
+ * sentence-level conjunction is NOT a compound: "L to N is a hundred, and
+ * polarity is pass" DOES digit-ise the standalone 100 (the "and" introduces a
+ * new fact, not "and <number>"). The observed case "a hundred MΩ" /
+ * "a hundred ohms" / "a hundred." fires — the following token is a unit/end,
+ * not a number-continuation.
  */
-const A_HUNDRED_RE =
-  /\ba\s+hundred\b(?![\s,-]+(?:and|point|half|\d|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b)/gi;
+const A_HUNDRED_NUM_WORD =
+  '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)';
+const A_HUNDRED_SEP = '[\\s,-]+';
+const A_HUNDRED_RE = new RegExp(
+  `\\ba\\s+hundred\\b(?!${A_HUNDRED_SEP}(?:` +
+    // "and <number|a half>" / "point <number>" compound continuations
+    `and${A_HUNDRED_SEP}(?:a${A_HUNDRED_SEP}half\\b|${A_HUNDRED_NUM_WORD}\\b|\\d)|` +
+    `point${A_HUNDRED_SEP}(?:${A_HUNDRED_NUM_WORD}\\b|\\d)|` +
+    // direct number continuation ("a hundred fifty", "a hundred 50")
+    `a${A_HUNDRED_SEP}half\\b|${A_HUNDRED_NUM_WORD}\\b|\\d` +
+    `))`,
+  'gi'
+);
 
 /**
  * Stable rule IDs. Exported for tests + telemetry (the caller logs

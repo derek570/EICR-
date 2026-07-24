@@ -70,6 +70,23 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(normalise('Z s for circuit 3 was 0.67').text).toBe('Zs for circuit 3 was 0.67');
   });
 
+  test('a long circuit-designation scope (>60 chars) still collapses (bounded to 120)', () => {
+    const input =
+      'Z s for the upstairs heating and hot water boiler radial circuit number three was 0.67';
+    expect(normalise(input).text).toBe(
+      'Zs for the upstairs heating and hot water boiler radial circuit number three was 0.67'
+    );
+  });
+
+  test('the dropped connectors ("measuring"/"equalled") do NOT false-positive', () => {
+    expect(normalise('Z S Electrical measuring 10 metres').text).toBe(
+      'Z S Electrical measuring 10 metres'
+    );
+    expect(normalise('designation Z S equalled 1 in the old schedule').text).toBe(
+      'designation Z S equalled 1 in the old schedule'
+    );
+  });
+
   test('designation with a preceding "is" is still NOT collapsed (connector before, not after)', () => {
     // "is" sits BEFORE the token; the rule requires a connector AFTER the token.
     expect(normalise('the designation is Z S 1').text).toBe('the designation is Z S 1');
@@ -113,9 +130,9 @@ describe('transcript-normalise — rule 2: "a hundred" → "100"', () => {
   });
 
   // ── Compound guard — a compound must NOT be corrupted into "100 and ..." ──
-  test('leaves compound continuations UNTOUCHED (no "100 …" corruption)', () => {
+  test('leaves compound / decimal / multi-digit continuations UNTOUCHED (no "100 …" corruption)', () => {
     // Every one of these, if the head were rewritten, would let the IR parser
-    // misread the value as 100. All must be left entirely untouched.
+    // misread the value (150 / 100.5 / 10050) as 100. All left untouched.
     for (const input of [
       'a hundred and fifty megaohms',
       'a hundred and one',
@@ -124,11 +141,22 @@ describe('transcript-normalise — rule 2: "a hundred" → "100"', () => {
       'a hundred point five',
       'a hundred-and-fifty',
       'a hundred, and fifty',
+      'a hundred fifty',
+      'a hundred 50 megaohms',
+      'a hundred-50 megaohms',
     ]) {
       const r = normalise(input);
       expect(r.text).toBe(input);
       expect(r.rules_hit).toEqual([]);
     }
+  });
+
+  test('a sentence-level "and" (not "and <number>") still digit-ises the standalone 100', () => {
+    // Multi-fact dictation — "and polarity is pass" is a NEW fact, not a compound
+    // number, so the standalone reading is digit-ised.
+    const r = normalise('L to N is a hundred, and polarity is pass');
+    expect(r.text).toBe('L to N is 100, and polarity is pass');
+    expect(r.rules_hit).toEqual([NORMALISE_RULE_IDS.A_HUNDRED]);
   });
 
   test('does not fire inside a larger word', () => {
