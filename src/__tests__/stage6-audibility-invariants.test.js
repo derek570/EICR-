@@ -47,7 +47,11 @@
 
 import { jest } from '@jest/globals';
 
-import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
+import {
+  runShadowHarness,
+  ASK_DECLINE_ACK_PROMPTS,
+  ASK_ANSWERED_ACK_PROMPTS,
+} from '../extraction/stage6-shadow-harness.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 import { ASK_USER_TIMEOUT_MS } from '../extraction/stage6-dispatcher-ask.js';
 import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
@@ -567,5 +571,82 @@ describe('F7 property — applyConfirmationDebounce (generated replay patterns)'
     expect(b).toHaveLength(1);
     // A different value on a different-from-lastField hit survives.
     expect(a2).toHaveLength(1);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// P4 (ask-decline-ack-net 2026-07-23) — the answered-ask silent-continuation
+// case, driven through the REAL composition (real pendingAsks + real
+// dispatcher + real onAskAnswered → the per-turn ledger → the net). This is the
+// class the generic `turnIsAudible` oracle CANNOT catch: the ask_user_started
+// question frame is itself "audible", so an answered-then-silent turn passes
+// the generic check while the inspector actually hears nothing after their
+// reply. The assertion therefore targets the P4 ack confirmation directly.
+describe('P4 integration — an ANSWERED clarify ask with a silent continuation speaks ONE decline ack', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    registerEntry();
+  });
+  afterEach(() => {
+    activeSessions.delete(SESSION_ID);
+    jest.useRealTimers();
+  });
+
+  // A concrete context_field ask: a decline reply escalates through the value
+  // resolver (no write, no pending-value apology — a plain 'none'/pvr ask would
+  // instead route to the terminal apology) and the model no-op's round 2. That
+  // is genuine silence → the P4 net owes one decline ack.
+  const DECLINE_ASK = {
+    question: 'What was the Zs reading for circuit 3?',
+    reason: 'missing_value',
+    context_field: 'measured_zs_ohm',
+    context_circuit: 3,
+    expected_answer_shape: 'number',
+  };
+
+  function fieldNilAcks(result) {
+    const declineSet = new Set(ASK_DECLINE_ACK_PROMPTS);
+    const answeredSet = new Set(ASK_ANSWERED_ACK_PROMPTS);
+    return (result.confirmations ?? []).filter(
+      (c) => c.field == null && (declineSet.has(c.text) || answeredSet.has(c.text))
+    );
+  }
+
+  test('the ask emits, the decline "No. Don\'t worry." is understood, the continuation is silent → exactly ONE decline-family ack', async () => {
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client: mockClient([
+        toolUseRound([{ id: 'toolu_ask_d', name: 'ask_user', input: DECLINE_ASK }]),
+        endTurnRound(''),
+      ]),
+    });
+    const ws = makeOpenWs();
+    const opts = baseOpts({ ws, chimeObserved: true });
+    const result = await driveLiveTurn(session, 'zed s for circuit three', opts, {
+      answers: { toolu_ask_d: { answered: true, user_text: "No. Don't worry." } },
+    });
+    // The question WAS spoken (so the generic turnIsAudible passes — which is
+    // exactly why it can't catch this class)…
+    expect(askStartedFrames(ws).length).toBeGreaterThanOrEqual(1);
+    // …but the REAL fix is the post-answer decline ack.
+    const acks = fieldNilAcks(result);
+    expect(acks).toHaveLength(1);
+    expect(ASK_DECLINE_ACK_PROMPTS).toContain(acks[0].text);
+    expect(acks[0].expects_ios_ack).toBe(false);
+  });
+
+  test("a TIMEOUT (no reply) draws NO decline ack — the already-spoken question is the turn's last audio", async () => {
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client: mockClient([
+        toolUseRound([{ id: 'toolu_ask_t', name: 'ask_user', input: DECLINE_ASK }]),
+        endTurnRound(''),
+      ]),
+    });
+    const ws = makeOpenWs();
+    const opts = baseOpts({ ws, chimeObserved: true });
+    // No `answers` → the ask times out (answered:false) under the advanced clock.
+    const result = await driveLiveTurn(session, 'zed s for circuit three', opts);
+    expect(fieldNilAcks(result)).toHaveLength(0);
   });
 });
