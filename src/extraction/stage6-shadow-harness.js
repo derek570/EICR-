@@ -1253,9 +1253,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // Haiku. Emit ONE PII-safe structured event (no transcript text) BEFORE the
     // tool loop; a routing test asserts it and the post-flip live-probe
     // checklist requires its presence as evidence the seam is active.
+    // Payload is EXACTLY the plan-specified five routing-decision fields — no
+    // transcript text (PII-safe) and no extra keys, so the event shape is a
+    // stable, asserted contract (see the routing test's exact-shape check).
     log?.info?.('stage6.observation_tier_routing', {
-      sessionId: session.sessionId,
-      turnId,
       classifier_match: observationClassifierMatch,
       flag_enabled: observationTierFlagEnabled,
       selected_model: selectedModel,

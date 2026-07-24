@@ -184,10 +184,19 @@ describe('observation-tier routing — model selection matrix', () => {
 
     const ev = routingEvent(logger);
     expect(ev).toBeTruthy();
-    expect(ev.classifier_match).toBe(true);
-    expect(ev.flag_enabled).toBe(true);
-    expect(ev.selected_model).toBe(OBS_MODEL);
-    expect(ev.round1_override_locked).toBe(true);
+    // EXACT five-field shape — no transcript text, no extra keys (PII-safe
+    // contract). default_model is SHADOW_MODEL (module-latched); read it back
+    // rather than hardcoding the process's latched value.
+    expect(Object.keys(ev).sort()).toEqual(
+      ['classifier_match', 'default_model', 'flag_enabled', 'round1_override_locked', 'selected_model'].sort()
+    );
+    expect(ev).toEqual({
+      classifier_match: true,
+      flag_enabled: true,
+      selected_model: OBS_MODEL,
+      default_model: ev.default_model,
+      round1_override_locked: true,
+    });
     // End-to-end: the model actually reaching the SDK is the observation tier.
     expect(session.client._calls[0].model).toBe(OBS_MODEL);
   });
@@ -298,11 +307,15 @@ describe('observation-tier routing — model selection matrix', () => {
 });
 
 describe('observation-tier routing — multi-round + override lock + cost', () => {
-  test('EVERY continuation round stays on the selected model (blocking / multi-round loop)', async () => {
+  test('EVERY continuation round stays on the selected model (multi-round loop)', async () => {
     process.env.OBSERVATION_TIER_ROUTING = 'true';
     process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
     const logger = makeLogger();
-    // Round 1 emits a tool_use → the loop continues → round 2 end_turn.
+    // Round 1 emits a tool_use → the loop continues → round 2 end_turn. Both
+    // Anthropic calls must run on the observation tier (the model is passed
+    // ONCE to runToolLoop and reused every round). The BLOCKING ask_user
+    // suspend/resume variant of this contract is pinned end-to-end through the
+    // REAL harness in field-replay/session-builder.test.js.
     const session = makeLiveSession([
       toolUseRound('record_observation', { category: 'C2', description: 'cracked socket' }),
       endTurnRound(),

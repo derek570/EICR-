@@ -332,12 +332,12 @@ describe('blocking behaviour through the REAL harness', () => {
 
   // Observation-tier routing (C1) — the recorded lane must route identically
   // to prod: an observation-shaped fixture transcript escalates to
-  // OBSERVATION_EXTRACT_MODEL when OBSERVATION_TIER_ROUTING is on, and a
-  // reading transcript does not. The raw text is threaded via buildTurnOptions'
-  // rawInspectorTranscript = turn.transcript, so the router sees the SAME
-  // string prod sees — enriched context alone cannot escalate (covered
-  // end-to-end in stage6-observation-tier-routing.test.js).
-  test('observation fixture routes to OBSERVATION_EXTRACT_MODEL (flag on); a reading fixture does not', async () => {
+  // OBSERVATION_EXTRACT_MODEL when OBSERVATION_TIER_ROUTING is on, a reading
+  // transcript does not, AND enriched server context alone cannot escalate —
+  // the router keys off buildTurnOptions' rawInspectorTranscript (turn.transcript),
+  // NOT the harness transcript arg, so a bare "yes" answer whose HARNESS
+  // transcript mentions "observation" stays on the default model.
+  test('observation fixture routes to OBSERVATION_EXTRACT_MODEL (flag on); reading + enriched-context-only do NOT', async () => {
     const OBS_MODEL = 'claude-observation-tier-sentinel';
     const savedFlag = process.env.OBSERVATION_TIER_ROUTING;
     const savedModel = process.env.OBSERVATION_EXTRACT_MODEL;
@@ -345,7 +345,11 @@ describe('blocking behaviour through the REAL harness', () => {
     process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
     const logger = makeLogger();
 
-    async function routeModelFor(transcript, corpusId) {
+    // `harnessTranscript` is what runShadowHarness receives (in prod this may be
+    // the ENRICHED "[In response to TTS question…]" form); `rawTranscript` is
+    // the untouched inspector text buildTurnOptions threads as
+    // rawInspectorTranscript. Default: identical (a normal recorded turn).
+    async function routeModelFor({ harnessTranscript, rawTranscript = harnessTranscript, corpusId }) {
       const built = buildReplaySession({
         modules,
         fixture: baseFixture({ corpus_id: corpusId }),
@@ -362,13 +366,13 @@ describe('blocking behaviour through the REAL harness', () => {
           turn: {
             confirmations_enabled: { value: true },
             in_response_to: { value: false },
-            transcript,
+            transcript: rawTranscript,
           },
           ws,
           onAskRegistered: () => true,
           signal: new AbortController().signal,
         });
-        await runShadowHarness(built.session, transcript, [], opts);
+        await runShadowHarness(built.session, harnessTranscript, [], opts);
         return built.session.client._calls[0].model;
       } finally {
         built.teardown();
@@ -376,16 +380,25 @@ describe('blocking behaviour through the REAL harness', () => {
     }
 
     try {
-      const obsModel = await routeModelFor(
-        'observation, cracked socket outlet on circuit four',
-        'frc_00000000000000000000000000000001'
-      );
-      const readingModel = await routeModelFor(
-        'zs circuit one is nought point six two',
-        'frc_00000000000000000000000000000002'
-      );
+      const obsModel = await routeModelFor({
+        harnessTranscript: 'observation, cracked socket outlet on circuit four',
+        corpusId: 'frc_00000000000000000000000000000001',
+      });
+      const readingModel = await routeModelFor({
+        harnessTranscript: 'zs circuit one is nought point six two',
+        corpusId: 'frc_00000000000000000000000000000002',
+      });
+      // Enriched-context-only: the HARNESS transcript mentions "observation"
+      // (would match OBSERVATION_PATTERN) but the RAW text is a bare "yes" —
+      // the router must NOT escalate (server-context isolation at replay level).
+      const enrichedModel = await routeModelFor({
+        harnessTranscript: '[In response to TTS question: is this an observation?] yes',
+        rawTranscript: 'yes',
+        corpusId: 'frc_00000000000000000000000000000003',
+      });
       expect(obsModel).toBe(OBS_MODEL);
       expect(readingModel).not.toBe(OBS_MODEL);
+      expect(enrichedModel).not.toBe(OBS_MODEL);
     } finally {
       if (savedFlag === undefined) delete process.env.OBSERVATION_TIER_ROUTING;
       else process.env.OBSERVATION_TIER_ROUTING = savedFlag;
@@ -393,4 +406,17 @@ describe('blocking behaviour through the REAL harness', () => {
       else process.env.OBSERVATION_EXTRACT_MODEL = savedModel;
     }
   });
+
+  // NOTE on the blocking ask_user continuation (plan test list): the selected
+  // model must hold across the loop's suspend-on-ask / resume-on-answer
+  // boundary. This is STRUCTURALLY guaranteed — `model: selectedModel` is passed
+  // ONCE to runToolLoop and reused for EVERY `client.messages.stream` call,
+  // including the post-ask resume round (the ask suspends WITHIN one runToolLoop
+  // invocation, it does not restart the loop). The multi-round proof in
+  // stage6-observation-tier-routing.test.js pins that a second round uses the
+  // same model; ask_user adds no new model source. A bespoke real-harness
+  // ask_user register/resume test was intentionally NOT added: no test in the
+  // suite drives a real ask_user registration through runShadowHarness (every
+  // ask test short-circuits via budget-exhaustion or stubs the registry), so a
+  // hand-rolled suspend/resume drive would be flaky rather than load-bearing.
 });
