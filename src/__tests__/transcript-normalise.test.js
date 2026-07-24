@@ -82,6 +82,14 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(normalise('Z s at the cooker was 0.67').text).toBe('Zs at the cooker was 0.67');
   });
 
+  test('a name/address does NOT bridge to a LATER comma-separated field', () => {
+    // The scope gap excludes commas, so "…at 1 High Street, supply is 230" can't
+    // reach the later "is 230" to satisfy form B — the name stays intact.
+    const input = 'Customer name Z S at 1 High Street, supply is 230 volts';
+    expect(normalise(input).text).toBe(input);
+    expect(normalise(input).rules_hit).toEqual([]);
+  });
+
   test('a name token is NOT collapsed even when a LATER reading shares the comma-joined clause', () => {
     // "Electrical" (a name word) immediately follows the token, so it is neither
     // a value-connector nor a scope-preposition — the later "Ze was 0.67"

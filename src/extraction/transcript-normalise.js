@@ -122,11 +122,14 @@ const ZS_SCOPE_PREP = '(?:on|onto|for|at|of|to|in|across|between)';
 // ReDoS (linear per token) and (b) deliberately favours NAME-SAFETY over
 // collapsing a pathologically long scope: a longer bound widens the window in
 // which a long name-shaped clause "Z S for <long text> was <n>" would wrongly
-// collapse. Very long reading scopes (>60 chars) are left un-collapsed
-// (false-negative, acceptable — no inspector dictates the full circuit
-// description inline with a Zs value; the rule grows from field evidence).
-// Never bridges a clause/sentence delimiter (. ! ? ; CR newline).
-const ZS_SCOPE_GAP = '[^.!?;\\r\\n]{0,60}?';
+// collapse. It ALSO excludes the COMMA: a dictated reading scope is a short
+// noun phrase with NO internal comma, whereas a comma reliably separates a
+// name/address from a LATER field — so "Customer name Z S at 1 High Street,
+// supply is 230 volts" cannot bridge the address to the later "is 230" (the
+// comma stops the gap before the connector). Very long / comma'd scopes are
+// left un-collapsed (false-negative, acceptable — the rule grows from field
+// evidence). Never bridges a clause/sentence delimiter (. ! ? ; , CR newline).
+const ZS_SCOPE_GAP = '[^.!?;,\\r\\n]{0,60}?';
 // Optional qualifier between the connector and the value ("was about 0.67").
 const ZS_QUALIFIER = `(?:the${H}+|about${H}+|around${H}+|approximately${H}+)?`;
 // Value vocabulary — a number (int/decimal/leading-dot) OR a domain sentinel.
