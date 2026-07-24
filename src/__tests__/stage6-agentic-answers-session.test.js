@@ -51,7 +51,7 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
     }
   });
 
-  test('flag-off render preserves every original line; no answer-feature content', () => {
+  test('flag-off render preserves A1 OFF-block lines; no answer-feature content', () => {
     const off = renderAgenticSystemPrompt(false);
     expect(off).toContain('TOOLS (12):');
     expect(off).toContain('There are NO `query_*` tools — consult the cached prefix directly.');

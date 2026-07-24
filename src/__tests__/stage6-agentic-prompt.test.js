@@ -448,13 +448,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // cited C2/C3 classes — the plan itself states a measured cap bump on
       // BOTH caps is the EXPECTED path ("compaction cannot recover ~600 tokens
       // by folding alone"). Minimised via the shared ACCESS LADDER + terse
-      // prose. Measured 21883 (after the cycle-1 + mini-review fixes); cap 21985
-      // leaves ~102-token headroom. NOTE: the flag-off render is NO LONGER
+      // prose. Measured 21923 (after cycle-1 + mini-review + cycle-2 fixes); cap
+      // 22025 leaves ~102-token headroom. NOTE: the flag-off render is NO LONGER
       // byte-identical to the pre-A1 prompt (P8 grew the shared region); only
       // the A1 OFF-marker blocks stay verbatim. The deployed prod render is
       // flag-ON.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(21985);
+      expect(estimate).toBeLessThanOrEqual(22025);
     });
   });
 
@@ -1164,11 +1164,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // region, so the base render grows too (~+517 tokens, minimised via a
       // shared ACCESS LADDER). A measured cap bump on BOTH caps was the
       // EXPECTED path per the P8 plan (see the Group 1 combined-cap comment).
-      // After the Codex diff-review correctness fixes (cycle 1 + the per-fix
-      // mini-review — see the combined cap comment) the base render measures
-      // 16645; cap 16750 leaves ~105-token headroom.
+      // After the Codex diff-review correctness fixes (cycle 1 + mini-review +
+      // cycle 2 — see the combined cap comment) the base render measures 16686;
+      // cap 16790 leaves ~104-token headroom.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(16750);
+      expect(estimate).toBeLessThanOrEqual(16790);
     });
   });
 
@@ -1847,11 +1847,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         // The checklist lives INSIDE the AMBIGUOUS block (reuses its budget).
         const ai = rendered.indexOf('AMBIGUOUS C2/C3 SEVERITY — ONE TARGETED FACTUAL ASK');
-        const di = rendered.indexOf('DECIDING FACTS BY CLASS (id 83');
-        const ci = rendered.indexOf('- CHAIN ID:');
+        const bi = rendered.indexOf('- BOUND:', ai);
+        const di = rendered.indexOf('DECIDING FACTS BY CLASS (id 83', ai);
+        // Search CHAIN ID from di so we can't accidentally match an earlier one.
+        const ci = rendered.indexOf('- CHAIN ID:', di);
         expect(ai).toBeGreaterThanOrEqual(0);
-        expect(di).toBeGreaterThan(ai);
-        expect(ci).toBeGreaterThan(di); // checklist sits between BOUND and CHAIN ID
+        expect(bi).toBeGreaterThan(ai);
+        // The checklist references "the bounded clarification budget above", so
+        // it MUST sit AFTER BOUND and BEFORE CHAIN ID — pin the full ordering.
+        expect(di).toBeGreaterThan(bi);
+        expect(ci).toBeGreaterThan(di);
         const block = rendered.slice(di, ci);
         // Fact-weighting, ask-first, never blanket-default.
         expect(block).toMatch(/never blanket-default a code/);
@@ -1884,10 +1889,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
           block.indexOf('Bathroom supplementary bonding')
         );
         expect(bond.length).toBeGreaterThan(0);
-        // Extraneous-part prerequisite + every C2 branch present.
-        expect(bond).toMatch(/only matters on an EXTRANEOUS-conductive part/);
+        // Extraneous prerequisite governs ONLY the absent/undersized branches.
         expect(bond).toMatch(
-          /absent\/ineffective bond, OR CSA below 6 mm², OR thermal damage → \*\*C2\*\*/
+          /the absent\/ineffective and undersized branches apply to an EXTRANEOUS-conductive part/
+        );
+        expect(bond).toMatch(/absent\/ineffective main bond, OR CSA below 6 mm² → \*\*C2\*\*/);
+        // Thermal damage is INDEPENDENT of extraneous status, and escalates to
+        // C1 on immediate present danger (not flattened to an unconditional C2).
+        expect(bond).toMatch(
+          /thermal damage → \*\*C2\*\* \(or \*\*C1\*\* if the facts establish immediate present danger — the clear-cut guard above\), independent of extraneous status/
         );
         // The safety-critical anti-over-code gradation, bound to the sound-bond
         // clause: a sound ≥6mm² bond is C3 at most, NEVER C2 (emittable — the
