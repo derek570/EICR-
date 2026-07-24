@@ -1,95 +1,106 @@
-# Execution log — P2 read-back exactly-once (/ep autonomous run)
+# /ep execution log — P7 obs-dedupe-demotion (marker ④, feedback id 82)
 
-- Session: `20260724T101516Z-ep`
-- Plan: `PLAN-final.md`
-- Target repo (EICR_Automation): `/Users/derekbeckley/Developer/EICR_Automation`
-- Worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260724T101516Z-ep`
-- Branch: `ep/PLAN-20260724T101516Z-ep` off `main` @ `55e11062`
-- iOS repo (CertMateUnified, SEPARATE git repo, gitignored in EICR_Automation): `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
-- Chain: `--chain --chain-hop=3` (wave member, `.ep-queue` marker present)
+- Session: `20260724T113749Z-ep` (chain hop 4)
+- Plan: `~/.claude/handoffs/EICR_Automation--p7-obs-dedupe-demotion-2026-07-23/PLAN-final.md`
+- EICR_Automation worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260724T113749Z-ep`, branch `ep/PLAN-20260724T113749Z-ep` off `main` @ `e7a97cff`
+- iOS repo (CertMateUnified, SEPARATE gitignored repo): `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
 
-## Structural notes (pre-execution)
+## Structural facts (verified at startup)
 
-- **Two-repo plan.** EICR_Automation holds the backend mirror (A1-2) + web (A1-3) + docs. All iOS work (A1-1 dedupe key, Bug A' correction-swallow, Bug B double-read-back) lives in the SEPARATE `CertMateUnified` repo — the `/ep` worktree isolates ONLY EICR_Automation, so iOS edits happen in an isolated CertMateUnified worktree branched off iOS `origin/main`.
-- **iOS checkout was on a HELD branch** `marker1-numeric-chatter-gate-20260717T211033Z` (memory: numeric-chatter gate HELD, must NOT ship). iOS `origin/main` does NOT contain it — iOS work branches off clean `origin/main`.
-- **[PLAN-SIZE]** This plan is one feature (read-back exactly once) but Bug B (id-87 double read-back) is an intricate iOS fast-path concurrency subsystem — 7 /rp rounds to specify (new VM record store, generation-scoped lifecycle, alias join, fail-closed canonicaliser, grouped-confirmation aggregate coordinator, nil-board resolver, per-circuit synthesis). Review effort scales with interaction count; expect a long Codex convergence on the iOS diff. This is a warning, not a gate.
-- **No cross-client wire dependency** (plan: NO wire-shape/decoder change). Each platform computes its dedupe key independently; the backend mirror is telemetry-only. So the EICR_Automation PR (backend mirror + web + docs) is self-consistent and shippable independently of the iOS TestFlight.
+- CertMateUnified is a SEPARATE nested git repo, gitignored in EICR_Automation → the `/ep` worktree isolates ONLY EICR_Automation. iOS work happens in an isolated CertMateUnified worktree off iOS `origin/main` (@ `ee71c8c`, clean — NOT the HELD `marker1-numeric-chatter-gate` branch the checkout sits on).
+- Swift file is `CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift` (plan cited `Sources/…` — line/path shifted post P1/A1/P5/P2).
+- **Cross-repo delivery pattern (P2 precedent, this same batch):** Web + docs (EICR_Automation worktree) = full `/ep` deliverable → gate → Codex → merge → deploy. iOS (CertMateUnified worktree) = compile-verified + committed + **draft PR, NOT merged/TestFlighted** — rides the SUPERVISED P7-shared TestFlight build (autonomous runs have no reliable iOS test loop; P2's iOS PR #35 is a draft awaiting the same shared build). P7's plan says "ride the SAME build as P2" → consistent.
 
 ## Steps
 
-### Step A1-2 — backend telemetry mirror (value-aware buildPerCircuitDedupeKey)
+### iOS Fix 1 — applySonnetObservations id-keyed upsert (Fix spec 1)
 - Status: applied
-- Decision: rule 1 (verbatim). Call site drifted `:2523`→`:2896` (context-context warned); threaded `entry.text`. Docstrings reversed to value-aware; symbol-named the correction site instead of a line number.
-- Files: `src/extraction/ios-dedupe-key.js`, `src/extraction/stage6-shadow-harness.js`, `src/__tests__/ios-dedupe-key.test.js`, `src/__tests__/stage6-shadow-harness-telemetry.test.js`
-- Commit: `b8070644`
-- Notes: `[ASSUMED]` the end-to-end telemetry test at `stage6-shadow-harness-telemetry.test.js:235` (single match, `entry.text` bundler-synthesized) → asserted the value-aware SHAPE `/^measured_zs_ohm_1_\d+$/` rather than a brittle hash of the exact synthesized line. 29/29 drift tests green. `stage6-event-bundler.test.js:950` untouched (plan-declared). Worktree had no node_modules → symlinked from main repo (same lockfile/base).
-
-### Step A1-3 — web value-aware single-circuit key
-- Status: applied
-- Decision: rule 1. Single-circuit branch → `${field}_${circuit}_${djb2(text)}`; token precedence unchanged. Docstrings reversed. Store unchanged (Derek: no TTL).
-- Files: `web/src/lib/recording/confirmation-dedupe-key.ts`, `web/tests/confirmation-dedupe-key.test.ts`
-- Commit: `f6f6b785`
-- Notes: The `same field+circuit + different text → DEDUPED` test FLIPPED to both-speak (the whole point of id-84); added a same-text-repeat-still-dedupes test. Hash vectors regenerated from the backend mirror. `confirmation-dedupe-store.test.ts` uses opaque key strings → no change. 32/32 web dedupe tests green.
-
-### Step Docs — changelog + hub row + reference doc + parity ledger
-- Status: applied
-- Decision: rule 2. No dedicated confirmation-dedupe section existed in the recording-pipeline reference (`ios-pipeline.md`), so ADDED a concise "Confirmation read-back dedupe key" section (three key shapes + the id-84 value-aware change). Changelog row + hub one-liner. Parity ledger: NEW row `recording/readback-dedup-value-aware` (partial until device smoke) + files-map entry; the existing `recording/readback-dedup-rekey` note annotated SUPERSEDED where it documented the now-retired "measured fields stay value-less for the correction cross-match" contract.
-- Files: `docs/reference/changelog.md`, `CLAUDE.md`, `docs/reference/ios-pipeline.md`, `web/docs/parity-ledger.md`, `web/docs/parity-ledger-files.json`
-- Commit: `6c3d8973`
-
-### Step A1-1 (iOS) — value-aware single-circuit buildConfirmationDedupeKey
-- Status: applied (in the SEPARATE CertMateUnified repo; isolated worktree off iOS `origin/main` @ `ee71c8c`, branch `ep/p2-readback-exactly-once-20260724T101516Z-ep`)
-- Decision: rule 1. Single-circuit branch folds djb2 of `conf.text` (`{field}_{circuit}_{djb2(text)}`), matching the multi-circuit branch. Docstrings (function summary, single-circuit rationale, §A1a measured-fields note) rewritten to value-aware; stale "line 6845" cross-refs replaced by symbol name `correctionDedupeKey`.
+- Decision: rule 1. Replaced the >0.7 text-similarity gate with server `observation_id` keying: non-nil id already present → IDEMPOTENT REPLAY (fill-absent-only on regulation/rationale/regulationTitle/regulationDescription/scheduleItem, `continue` BEFORE the pending-photo/recentObservationId/observation_added creation side-effects); non-nil id not seen → apply (server authoritative); nil/empty id → retain the text-similarity fallback for id-less rows ONLY. Added one-release diagnostic `observation_apply {observation_id, dedupe_bypassed_reason[, filled_absent]}` via `serverWS.sendClientDiagnostic` + debug log.
 - Files: `CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift`
-- Notes: line refs drifted (`buildConfirmationDedupeKey` at :904, not the plan's :931).
 
-### Step A' (iOS) — value-aware client-initiated correctionDedupeKey
-- Status: applied (CertMateUnified worktree)
-- Decision: rule 1. `correctionDedupeKey` made value-aware by folding djb2 of `ttsText` (`shortKey_circuit_djb2(ttsText)`) — this shape now MATCHES the value-aware `buildConfirmationDedupeKey` single-circuit branch, so the inline-key and the deferred-flush recomputed-key stay consistent. Dedupe check switched from `confirmedFieldKeys.contains` to `isConfirmationKeyLive(..., fieldIsNil:false)`; inline speak branch now RESERVES via `makeConfirmationKeyReservation` + threads `keyReservation` into `speakBriefConfirmation` (mirrors the server-confirmation inline path at :9688) instead of the permanent `confirmedFieldKeys.insert` — a discarded/failed-to-play correction stays re-speakable.
+### iOS Fix 2 — observation_update handler id-first scoped fuzzy (Fix spec 2)
+- Status: applied
+- Decision: rule 1. Fuzzy fallback now SKIPS any row carrying a DIFFERENT server id when the incoming id is non-empty (`if incomingId != nil, !(obs.serverId ?? "").isEmpty { return false }`); on a legacy (no-serverId) fuzzy match with a non-empty incoming id, the id is STAMPED onto the matched row (`matchedByFuzzyLegacy`). nil incoming id keeps the unrestricted fuzzy (older-server compat).
 - Files: `CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift`
-- Notes: correction path drifted to :7938-8014 (plan cited :7945). Deferred correction path unchanged (matches the main deferred path — flush handles the key).
 
-### Step Bug B (iOS) — id-87 double read-back fast-path suppression
-- Status: DEFERRED (not implemented)
-- Decision: rule 3 (skip rather than guess) + overriding product-safety. Bug B is an all-or-nothing intricate iOS fast-path concurrency SUBSYSTEM — 7 /rp rounds to specify: a new VM-owned fast-attempt record store (exact + base-slot lookups, nil-board resolver, two-terminal lifecycle, generation token), VALUE + effective-board in the suppression identity, a `canonicalFastPathField` alias mapper, a fail-closed field-aware value canonicaliser, generation-scoped supersession across ~6 AlertManager+VM lifecycle mutation sites, a grouped-confirmation aggregate coordinator with per-circuit text synthesis, and an AlertManager↔VM lifecycle-ownership re-architecture (threading correlation-id+generation callbacks out of private AlertManager methods). It touches the LIVE recording audio path field inspectors hear. A PARTIAL implementation is explicitly WORSE than none (the plan states a key-format-only fix INTRODUCES a new Audio-First violation — a fast clip suppressing a different Sonnet-final value). It cannot be implemented to a shippable, VERIFIABLE standard in an autonomous run with no iOS test loop (the batched-turn / grouped / generation races are runtime/on-device; xcodebuild-test is heavy and can't deterministically exercise the concurrency). The Codex diff-review gate reviews against the plan but cannot catch Swift compile/runtime/on-device audio regressions. iOS shares P7's TestFlight (explicitly NOT this-run-urgent). → Deferred to a supervised iOS session with a real build+test loop.
-- Files: none
-- Notes (Bug B deferral): The iOS surface was fully mapped for the handoff — `AlertManager.swift` fast-path state machine (`FastPathSlotState` :219, `fastPathSlotStates` :227, `slotKey(field:circuit:boardId:)` :457, `markFastPathPending` :1524 / `markFastPathFailed` :1532 / `playFastPathAudio` :1465, suppression block in `speakBriefConfirmation` :1359-1403, `discardQueueItemPrePlay` :1571, `purge(prefix:)` :2007, `ConfirmationKeyReservation` :243) + the VM fast-path dispatch (`DeepgramRecordingViewModel.swift:3053-3114`, 2-part slotKey at :3055; the inline `slotKey:nil` confirmation at :9692; `ValueConfirmation`/`ExtractedReading` in `Sources/Services/ClaudeService.swift`). This map + the plan §"Bug B" is the ready brief for the supervised session.
+### iOS tests (Fix spec / Tests-gates)
+- Status: applied
+- Decision: rule 1. New `ApplySonnetObservationsP7Tests.swift` (distinct-id/high-overlap both render; distinct-id/identical-text both render; same-id replay one entry + fill-absent + NO creation side-effects; refine→replay no stale restore; non-tail-row pending-photo untouched; nil-id text fallback dedupe+render). Extended `HandleObservationUpdateTests.swift` with the 3 P7 update-handler cases (id-miss+nil-server-id→update+stamp; nil-incoming fuzzy; distinct-id→create-without-mutating). Added VM `_test_` hooks: `_test_applySonnetObservations`, `_test_setPendingObservationPhoto`, `_test_pendingObservationPhotoPath`, `_test_recentObservationId`.
+- Files: `CertMateUnified/Tests/CertMateUnifiedTests/Recording/ApplySonnetObservationsP7Tests.swift`, `.../HandleObservationUpdateTests.swift`, `CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift`
+- Note: the new test file wasn't in the committed (XcodeGen-managed) `.xcodeproj`; ran `xcodegen generate` (clean +4-line diff, project.yml already in sync) so it compiles into the target. Reverted the unintended `Info.plist` CFBundleVersion 420→100 the regen made (build numbering is deploy-testflight's job; this run ships a DRAFT iOS PR, not a TestFlight). iOS commit `6eb223c`.
+- Tests run: `xcodebuild build-for-testing` (app+tests) exit 0; `xcodebuild test -only-testing:ApplySonnetObservationsP7Tests` → 6/6; `HandleObservationUpdateTests` → 11/11 (8 original + 3 new P7). All green.
 
-## Codex diff review (EICR_Automation worktree diff)
+### Web Fix 3 — applyObservations id-keyed + replay metadata + scoped fuzzy (Fix spec 3)
+- Status: applied
+- Decision: rule 1. `applyObservations` now keys on `server_id`: replay → fill-absent-only; nil-id → retained `observationLooksDuplicate`. Return type changed `ObservationRow[] | null` → `{rows, acceptedForSchedule} | null`; the single caller (`applyExtractionToJob`) updated to gate `markScheduleItemsFromObservations` on `acceptedForSchedule` (never the raw frame) and photo/reverse-link on a real APPEND (not `changed`). `applyObservationUpdate` fuzzy loop scoped: `if (hasIncomingId && existing[i].server_id) continue`. EIC schedule path preserved as `[]` (observations dropped → nothing accepted; consistent with "gate on accepted creations").
+- Files: `web/src/lib/recording/apply-extraction.ts`
+- Web commit `cdd1511d`.
 
-- **Cycle 1** (single combined 3-lens review — wire-contract faithfulness + silent-path hunt + edge/test fidelity; the mandated parallel 3-lens hit a rate limit + a schema error, folded into one call for a 458-line focused diff): 1 BLOCKER + 2 IMPORTANT.
-  - BLOCKER (Documentation sync) — `AGENTS.md` is a TRACKED hub-changelog mirror of `CLAUDE.md`; the P2 row was added to CLAUDE.md only. → APPLIED (added the P2 row to AGENTS.md), commit `897e245c`.
-  - IMPORTANT (Test fidelity) — the `stage6-shadow-harness-telemetry.test.js` reading-row assertion used only a shape regex, which would still pass if `entry.text` regressed to undefined (5381 fallback). → APPLIED (assert wire text non-empty AND `expected_dedupe_key === buildPerCircuitDedupeKey(wire.field, wire.circuit, wire.text, wire.dedupe_token)`), commit `897e245c`. 29/29 dedupe tests still green.
-  - IMPORTANT (Silent-path / djb2 collision) — `recommended_fix = OUT_OF_SCOPE`, `intent_verdict = WITHIN_INTENT` but evidence was a GENERIC quote (the feature covers id-84), NOT an affirmative instruction to change the djb2 contract. → NOT APPLIED (correctly). This is a theoretical property of the Derek-decided cross-platform djb2 TEXT-HASH identity contract that the multi-circuit + degenerate branches have used since 2026-06/07 — not new to this diff, worst case one re-dictation. The recommended fix explicitly contradicts the plan's TEXT-HASH decision, so applying it would be an out-of-plan invention. Recorded as decided-not-a-defect; passed to cycle 2 on the "do NOT re-flag" list.
-- **Cycle 2** (re-review with the djb2 finding on the already-decided list): **0 findings — CLEAN.** Verdict: **PASSED.** Both fixes verified correct + complete; full diff faithful to the plan, no new correctness findings. Backend 6094 + web 1457 green.
+### Web tests + docs (Tests-gates + Documentation)
+- Status: applied
+- Decision: rule 1. New `web/tests/apply-extraction-observations-p7.test.ts` (10 cases incl. the DISCRIMINATING clear→replay schedule regression). RETAINED M9/exact-dedupe parity tests pass UNCHANGED (nil-id fallback path). Docs: ios-pipeline.md new "Observation apply identity (P7)" section; changelog.md + hub CLAUDE.md rows; parity-ledger.md new `recording/observation-id-dedupe` row (partial until device smoke) + files-map entry. Docs commit `fccec6b3`.
+- Files: `web/tests/apply-extraction-observations-p7.test.ts`, `docs/reference/ios-pipeline.md`, `docs/reference/changelog.md`, `CLAUDE.md`, `web/docs/parity-ledger.md`, `web/docs/parity-ledger-files.json`
+
+### Gates
+- iOS: build-for-testing exit 0; P7 apply 6/6 + update-handler 11/11 green.
+- Web: focused observation suite 51/51; **full web workspace suite 1467 passed / 1 skipped / 0 failed**; eslint clean on changed files; typecheck adds ZERO new errors (17 pre-existing on `main` in two untouched test files); parity-ledger check 0 duplicate/stale/blank.
+- Node: local run on Node 25 (dev box; no Node 20 available). Change is pure logic in `apply-extraction.ts` (no jsdom/Storage) → Node-version-insensitive; the authoritative merge gate is CI's Node-20 "Test Frontend" job.
+
+## Codex diff review
+
+Reviewed the COMBINED cross-repo implementation (web+docs worktree diff + iOS diff) against the plan — P7 is cross-platform so both diffs are one logical change.
+
+### Cycle 1 (gpt-5.6-sol, high) — 2 BLOCKER + 2 IMPORTANT, all APPLIED (in-scope)
+- **[BLOCKER] web schedule projection from raw obs** (`apply-extraction.ts`): a replay that filled an ABSENT `schedule_item` projected the STALE replay `code` (row may have been refined), and a creation's M11-stripped invalid ref still reached `markScheduleItemsFromObservations` (no ref validation → orphan key). FIX (in-scope): dropped the replay `schedule_item` fill entirely (plan allows "at most fill absent"), and normalised the creation projection to `{...obs, code, schedule_item: row.schedule_item}` (validated ref + parsed code). Discriminating schedule test still holds.
+- **[BLOCKER] iOS replay filled `scheduleItem` without linking** (`DeepgramRecordingViewModel.swift`): filling the field skipped `ObservationScheduleLinker`, so the Inspection-tab outcome stayed blank AND diverged from web. FIX (in-scope): dropped the iOS replay `scheduleItem` fill too — symmetric with web; a replay now fills only pure data fields (regulation/rationale/canonical wording) on BOTH clients.
+- **[IMPORTANT] web tests weaker than the plan mandate**: the photo test used a single row (not a non-tail match) and there was no web refine→replay-preserves-fields test. FIX: photo test now seeds matched-non-tail A + unrelated tail B (asserts neither gets the photo); added an initial→refine→ORIGINAL-replay test (absent regulation fills; since-refined code+text NOT restored).
+- **[IMPORTANT] legacy-stamp tests hit the exact-match shortcut** (iOS + web): `original_text` equalled the row text, so the >70% fuzzy branch never ran. FIX: changed both to non-identical ~86%-overlap text ("small hole **on** the side **of** enclosure").
+
+### Cycle 2 (gpt-5.6-sol, high) — 1 BLOCKER + 2 IMPORTANT
+- **[BLOCKER] replay could restore CLEARED canonical wording** (both clients): the fill-absent set still included `regulation_title`/`regulation_description`, which `observation_update` sets UNCONDITIONALLY (a table-miss clears them to nil). Codex's insight generalises: a replay is the SAME frame the original apply consumed, so fill-absent can ONLY no-op or restore an authoritatively-cleared field → never useful, sometimes harmful. FIX (in-scope, APPLIED): made the idempotent-replay a **PURE NO-OP** on BOTH clients (log + skip; fill nothing). Plan-faithful ("at most fill absent" → filling none). Added regression tests: replay after an `observation_update` that CLEARED `regulation_title` → wording NOT restored (iOS `testReplay_DoesNotRestoreClearedCanonicalWording`; web equivalent). Docs (ios-pipeline.md + changelog + hub + parity ledger) updated fill-absent → pure no-op.
+- **[IMPORTANT] web `observation_update` does not reconcile `inspection_schedule`** — OUT OF SCOPE (pre-existing, not applied). `applyObservationUpdate` (the pure fn P7 touched) never reconciled schedule; the CALLER (`recording-context.tsx onObservationUpdate`) persists only `{observations}`. P7 did NOT introduce or worsen this — it's a separate pre-existing web/iOS parity gap in the observation_update→schedule path, unrelated to the dedupe demotion (Fix spec 3 does not cover it). FOLLOW-UP: vault todo `todos-certmate.md` — "web observation_update should reconcile inspection_schedule.items (iOS parity)". Not a P7 ship blocker.
+- **[IMPORTANT] full iOS suite not run** — VALID per plan "Full iOS suite … before … PR delivery". APPLIED: ran the complete `xcodebuild test` scheme — **1023 functional test cases passed, 0 failures** (both P7 classes green in the full run); the run was killed by the environment during the trailing `PerformanceTests` timing BENCHMARKS (non-correctness; one already passed at 0.795s). iOS ships a DRAFT PR (rides the supervised P7-shared TestFlight build where the full suite incl. perf re-runs with a human — P2 precedent).
+
+### Cycle 3 (gpt-5.6-sol, high) — CLEAN
+Empty findings. "No remaining BLOCKER or IMPORTANT … Both clients implement pure no-op same-ID replay, distinct-ID creation, legacy nil-ID fallback, and scoped fuzzy observation updates; web schedule projection uses normalized accepted creations only." Two comment-only NITs (retired fill-absent wording) fixed best-effort. **Codex diff review verdict: PASSED.**
 
 
+## Completed 2026-07-24T13:40:00Z
 
-## Completed 2026-07-24 (EICR_Automation scope)
+### Outcome header: ALL PASSED
 
-### Outcome header: ALL PASSED (EICR_Automation worktree deliverable) — iOS Bug B (id-87) DEFERRED to a supervised P7-shared TestFlight
+Two-repo deliverable, both gate-green + Codex-clean (cycle 3 empty findings):
+- **EICR_Automation worktree (web + docs)** → full `/ep` deliverable: ready PR → merge → CI → ECS (frontend) → make-live.
+- **CertMateUnified (iOS, separate repo)** → DRAFT PR, NOT merged/TestFlighted — rides the supervised P7-shared TestFlight build (autonomous runs have no reliable iOS test loop; P2 precedent, plan "ride the SAME build as P2").
 
-This run has TWO deliverables in TWO repos. The `/ep` worktree/gate/Codex-review/deploy machinery operates on the **EICR_Automation worktree** (a gitignored, SEPARATE iOS repo cannot be in it). The worktree deliverable (backend telemetry mirror A1-2 + web A1-3 + docs) is **complete, full-suites-green, and Codex-clean** → it ships. The iOS work is a separate repo on a separate (P7-shared) TestFlight channel that this run's merge does not trigger; iOS A1-1 + Bug A' are done + compile-verified on an iOS branch, and Bug B (id-87) is deferred (see its step). This is plan-sanctioned: the plan's Delivery section separates "web-only PR" + "small backend PR" from the iOS TestFlight.
+### Commits — EICR_Automation branch `ep/PLAN-20260724T113749Z-ep`
+- `cdd1511d` — web companion (server-id dedupe + `{rows, acceptedForSchedule}` metadata + scoped fuzzy)
+- `fccec6b3` — docs (ios-pipeline P7 section + changelog + hub + parity ledger + files-map)
+- `0b0c339f` — Codex cycle-1 (web schedule projection normalise + test faithfulness)
+- `564efcb0` — Codex cycle-2 (web replay = pure no-op + cleared-wording regression + doc sync)
+- `a555ee42` — comment cleanup (pure-no-op wording)
+- (final) — this execution log
 
-### Commits (EICR_Automation branch `ep/PLAN-20260724T101516Z-ep`)
-- `b8070644` — A1-2 backend telemetry mirror value-aware key
-- `f6f6b785` — A1-3 web value-aware single-circuit key
-- `6c3d8973` — docs (changelog + hub + ios-pipeline reference + parity ledger)
-- `897e245c` — Codex fixes (AGENTS.md hub sync + exact telemetry assertion)
+### Commits — CertMateUnified branch `ep/p7-obs-dedupe-20260724T113749Z-ep`
+- `6eb223c` — P7 iOS (applySonnetObservations id-keyed + observation_update scoped fuzzy + tests + hooks)
+- `01c54a7` — Codex cycle-1 (drop replay scheduleItem fill + fuzzy test)
+- `5e055dd` — Codex cycle-2 (replay = pure no-op + cleared-wording regression)
 
-### Commits (iOS branch `ep/p2-readback-exactly-once-20260724T101516Z-ep` in CertMateUnified)
-- `f1a0c45` — iOS A1-1 + Bug A' (value-aware keys), compiles clean (xcodebuild)
-- `14d446a` — iOS tests (compiles clean, build-for-testing)
+### Files touched
+- Web: `web/src/lib/recording/apply-extraction.ts`, `web/tests/apply-extraction-observations-p7.test.ts`
+- Docs: `docs/reference/ios-pipeline.md`, `docs/reference/changelog.md`, `CLAUDE.md`, `web/docs/parity-ledger.md`, `web/docs/parity-ledger-files.json`
+- iOS: `Sources/Recording/DeepgramRecordingViewModel.swift`, `Tests/CertMateUnifiedTests/Recording/ApplySonnetObservationsP7Tests.swift`, `Tests/CertMateUnifiedTests/Recording/HandleObservationUpdateTests.swift`, `CertMateUnified.xcodeproj/project.pbxproj`
 
-### Tests run
-- Backend Jest FULL: 6094 passed, 19 skipped, 0 failed.
-- Web vitest FULL: 1457 passed, 1 skipped, 0 failed.
-- iOS: `xcodebuild build` + `build-for-testing` both exit 0 (compile-verified; suite NOT run — deferred to supervised session).
+### Plan deviations
+None. One Codex-suggested fix (make the replay a pure no-op vs the plan's "fill absent") was applied within the plan's explicit "at most fill absent" latitude — a tightening, not a deviation; intent_verdict null (in-scope).
 
-### Codex diff review: PASSED (clean at cycle 2). See the Codex section above.
+### Assumed decisions
+- iOS delivery = DRAFT PR (not TestFlight) per the P2 batch precedent + plan "ride the SAME build as P2" (the supervised P7-shared build). Rationale in the Structural facts header.
 
-### Assumed decisions to sanity-check
-- `[ASSUMED]` telemetry test at `stage6-shadow-harness-telemetry.test.js` — the bundler-synthesized text made a hardcoded hash brittle; first used a shape regex, then (per Codex) strengthened to an exact `buildPerCircuitDedupeKey(...)` equality against the wire confirmation. Sound.
+### Skipped / blocked / failed
+None. One Codex IMPORTANT (web `observation_update`→schedule reconciliation) was PRE-EXISTING + out of P7 scope → vault follow-up `todos-certmate.md`, not applied.
 
-### Skipped / deferred
-- **iOS Bug B (id-87 double read-back)** — DEFERRED (not implemented). All-or-nothing intricate iOS fast-path concurrency subsystem; unverifiable to a shippable standard autonomously (no iOS test loop; live-audio-path regression risk; a PARTIAL version introduces a NEW Audio-First violation per the plan). Shares P7's TestFlight. Ready brief = the plan §"Bug B" + the iOS surface map in this log. **iOS A1-1 + Bug A' are NOT auto-merged/TestFlighted** — they ride the supervised P7-shared build so the whole iOS wave (incl. Bug B) verifies together with a test loop.
+### Tests run + result
+- Web: full workspace suite **1469 passed / 1 skipped / 0 failed**; P7 focused 12; retained M9/exact-dedupe unchanged; eslint clean; ZERO new typecheck errors (17 pre-existing on main, untouched files); parity-ledger check 0 dup/stale/blank.
+- iOS: `xcodebuild build-for-testing` exit 0; focused P7 6 + update-handler 11 green; full suite **1023 functional passed / 0 failed** (killed during perf benchmarks).
+- Codex diff review: 3 cycles → PASSED (cycle-1 2B+2I, cycle-2 1B+2I, cycle-3 CLEAN).
