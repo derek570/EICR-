@@ -77,6 +77,24 @@ Rules: the epoch is snapshotted at frame **creation** (never re-read from mutabl
 
 ---
 
+## Confirmation read-back dedupe key (client-side; value-aware since id-84)
+
+The spoken read-back loop suppresses a *duplicate* confirmation via a per-client dedupe key computed from the wire `Confirmation`. The key is computed CLIENT-side (iOS `buildConfirmationDedupeKey`, web `confirmation-dedupe-key.ts`); the backend `src/extraction/ios-dedupe-key.js` is a **telemetry-only mirror** that reproduces the same key so the `ios_send_attempt` `expected_dedupe_key` row reconciles byte-for-byte against client reality — it is NOT a wire field.
+
+Three key shapes:
+
+| Shape | Key | When |
+|-------|-----|------|
+| per-circuit  | `{field}_{circuit}_{djb2(text)}` | a single-circuit reading confirmation |
+| multi-circuit | `{field}_{sortedCircuits.join('-')}_{djb2(text)}` | a grouped broadcast (`circuit:null`, `circuits:[…]`) |
+| degenerate | `{field}_{djb2(text + boardId)}` | board-level / supply / installation (no circuit) |
+
+For the five text-op fields (`circuit_op`, `observation`, `observation_deletion`, `field_cleared`, `circuit_designation`) a backend-stamped `dedupe_token` takes precedence in EVERY branch (`{field}_{dedupe_token}`), so identical-text REPEATS of DISTINCT operations don't collide (field-feedback-2026-07-14 §A1a).
+
+> **id-84 (2026-07-24) — value-aware single-circuit key.** The per-circuit shape was previously value-LESS (`{field}_{circuit}`) and kept that way deliberately so the iOS local correction-TTS dedupe could cross-match wire keys. But because field read-back keys are session-**permanent**, a spoken correction (a second reading on the same field+circuit with a DIFFERENT value) collided with the original key forever and was **silently swallowed** — beep-then-silence on a successful correction (session 2ACE7677: "No. It was 0.63." spoke nothing). Fix: fold djb2 of the confirmation TEXT (which encodes the value) into the single-circuit key, matching the multi-circuit branch. A correction (different text) now yields a distinct key and speaks; a genuine duplicate (same field+circuit+SAME text — e.g. the model re-recording circuit 4) still dedupes. The correction-TTS cross-match is **intentionally dropped** (worst case an extra local read-back, never silence). Derek's decisions: TEXT-HASH (not a direct value in the key, which would need wire/decoder changes), and NO new field-key TTL. iOS adds the twin fix to its own client-initiated `correctionDedupeKey`, plus the id-87 fast-path double-read-back suppression (fast clip + bundler safety-net now share a VALUE- and effective-board-aware suppression identity). Parity: `web/docs/parity-ledger.md` `recording/readback-dedup-value-aware`.
+
+---
+
 ## Backend transcript normalisation (P6 — canonical ingest layer)
 
 > Added 2026-07-24 (feedback ids 89 + 80A). Backend-only, **zero wire change**.

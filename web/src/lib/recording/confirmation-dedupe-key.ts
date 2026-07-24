@@ -14,8 +14,8 @@
  * `src/extraction/ios-dedupe-key.js` (READ-ONLY reference — backend is
  * shared with iOS and immutable during PWA work). The three shapes:
  *
- *   - per-circuit:   `${field}_${circuit}`             (legacy shape —
- *     shared with correction-TTS dedupe, preserves cross-matching)
+ *   - per-circuit:   `${field}_${circuit}_${djb2(text)}`  (VALUE-AWARE,
+ *     id-84 correction-swallow fix — a correction speaks, a duplicate dedupes)
  *   - multi-circuit: `${field}_${sortedCircuits.join('-')}_${djb2(text)}`
  *   - degenerate:    `${field}_${djb2(text + (boardId ?? ''))}`
  *     (board-level / supply / installation — no circuit info; boardId
@@ -46,10 +46,10 @@
  * stamps a `dedupe_token` on the wire confirmation entry (replay-stable
  * operation identity — see `stage6-event-bundler.js`) and the token key
  * `${field}_${dedupe_token}` takes precedence in EVERY branch the
- * confirmation can reach. Measured-value fields IGNORE the token — the
- * bare `${field}_${circuit}` single-circuit shape is load-bearing for
- * the iOS correction-TTS cross-match, mirrored here. Token absent
- * (pre-token backend) → the legacy shapes, byte-unchanged.
+ * confirmation can reach. Measured-value fields IGNORE the token — their
+ * VALUE-AWARE `${field}_${circuit}_${djb2(text)}` single-circuit shape
+ * (id-84) separates a correction from a duplicate on its own. Token absent
+ * (pre-token backend) → the positional shapes, byte-unchanged.
  */
 
 /**
@@ -116,9 +116,16 @@ export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
     return `${conf.field}_${conf.dedupe_token}`;
   }
   if (conf.circuit != null) {
-    // Single-circuit: historical "{field}_{circuit}" shape so
-    // correction-TTS dedupe entries still cross-match (iOS Bug A fix).
-    return `${field}_${conf.circuit}`;
+    // Single-circuit: VALUE-AWARE "{field}_{circuit}_{djb2(text)}" shape
+    // (id-84 correction-swallow fix, 2026-07-24). The confirmation text
+    // encodes the value, so a correction (0.83 → 0.63, DIFFERENT text)
+    // produces a DISTINCT key and speaks, while a genuine duplicate (same
+    // field+circuit+SAME text) still dedupes — matching the multi-circuit
+    // branch. The prior value-LESS shape was deliberately kept so the iOS
+    // local correction-TTS dedupe could cross-match these wire keys; that
+    // cross-match is now INTENTIONALLY dropped (it permanently swallowed
+    // the second read-back of a corrected value — session 2ACE7677 id-84).
+    return `${field}_${conf.circuit}_${djb2UInt64Decimal(conf.text)}`;
   }
   if (conf.circuits != null && conf.circuits.length > 0) {
     // Multi-circuit broadcast: sorted circuits + djb2 of the spoken text.

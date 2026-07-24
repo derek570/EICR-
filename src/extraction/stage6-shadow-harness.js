@@ -2896,6 +2896,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           expectedDedupeKey = buildPerCircuitDedupeKey(
             entry.field,
             entry.circuit,
+            entry.text,
             entry.dedupe_token
           );
         } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {

@@ -12,7 +12,7 @@
  * (`buildConfirmationDedupeKey`).
  *
  * Three key shapes — pick at the call site:
- *   - per-circuit:   "<field>_<circuit>"
+ *   - per-circuit:   "<field>_<circuit>_<djb2(text)>"  (VALUE-AWARE, id-84)
  *   - multi-circuit: "<field>_<sortedCircuits.join('-')>_<djb2(text)>"
  *   - degenerate:    "<field>_<djb2(text + (boardId ?? ''))>"  (NEW W2.3 shape)
  *
@@ -45,8 +45,9 @@
  *   - field_cleared         → `clear_<field>_<circuit|board>_<turnId|legacy>_ord<N>`
  *   - circuit_op            → `circop_<turnId|noturn>_<ordinal>_<op>_<ref>`
  *   - circuit_designation   → `desig_<circuit(s)>_<turnId>`
- * Measured-value fields NEVER carry a token — their bare `{field}_{circuit}`
- * shape is load-bearing for the iOS correction-TTS cross-match (~:7751).
+ * Measured-value fields NEVER carry a token — their VALUE-AWARE
+ * `{field}_{circuit}_{djb2(text)}` shape separates a correction from a
+ * duplicate on its own (id-84 correction-swallow fix, 2026-07-24).
  *
  * Rollout window: `expected_dedupe_key` telemetry is forward-looking during
  * the backend→TestFlight/web window — build-418 (and pre-sweep web) clients
@@ -100,24 +101,35 @@ export function djb2UInt64Decimal(text) {
 }
 
 /**
- * Per-circuit dedupe key. Preserves the legacy "{field}_{circuit}" shape so
- * correction-TTS dedupe at iOS line 6845 continues to cross-match.
+ * Per-circuit dedupe key. VALUE-AWARE shape "{field}_{circuit}_{djb2(text)}"
+ * (id-84 correction-swallow fix, 2026-07-24) — the confirmation TEXT encodes
+ * the reading value, so folding its djb2 hash makes a correction (0.83 → 0.63,
+ * DIFFERENT text) produce a DISTINCT key and speak, while a genuine duplicate
+ * (same field+circuit+SAME text) still dedupes. This matches the multi-circuit
+ * branch's `djb2(text)` fold. The prior shape was deliberately value-LESS so
+ * the iOS local correction-TTS dedupe (`correctionDedupeKey`) could cross-match
+ * these wire keys; that cross-match is now INTENTIONALLY dropped (id-84: the
+ * cross-match permanently swallowed the second read-back of a corrected value).
+ * Worst case of dropping it is an extra local read-back, never silence — guarded
+ * on server-confirmation turns by the iOS `!(confirmationModeEnabled && …)` check
+ * (see `correctionDedupeKey` in DeepgramRecordingViewModel.swift).
  *
  * §A1a: when the confirmation carries a `dedupe_token` AND the field is on
  * the text-op allowlist, the token key takes precedence — `{field}_{token}`.
- * Measured-value fields ignore the token (bare shape is load-bearing for the
- * correction cross-match).
+ * Measured-value fields ignore the token; their value-aware shape does the
+ * correction-vs-duplicate separation on its own.
  *
  * @param {string} field
  * @param {number} circuit
+ * @param {string} text  — the final TTS-line text the bundler emitted (encodes value)
  * @param {string|null|undefined} opToken — the wire `dedupe_token`, if any
  * @returns {string}
  */
-export function buildPerCircuitDedupeKey(field, circuit, opToken) {
+export function buildPerCircuitDedupeKey(field, circuit, text, opToken) {
   if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
     return `${field}_${opToken}`;
   }
-  return `${field ?? 'unknown'}_${circuit}`;
+  return `${field ?? 'unknown'}_${circuit}_${djb2UInt64Decimal(text ?? '')}`;
 }
 
 /**
