@@ -120,13 +120,15 @@ const ZS_SCOPE_PREP = '(?:on|onto|for|at|of|to|in|across|between)';
 // collapse. Very long reading scopes (>60 chars) are left un-collapsed
 // (false-negative, acceptable — no inspector dictates the full circuit
 // description inline with a Zs value; the rule grows from field evidence).
-// Never bridges a clause/sentence delimiter (. ! ? ; newline).
-const ZS_SCOPE_GAP = '[^.!?;\\n]{0,60}?';
+// Never bridges a clause/sentence delimiter (. ! ? ; CR newline).
+const ZS_SCOPE_GAP = '[^.!?;\\r\\n]{0,60}?';
 // Optional qualifier between the connector and the value ("was about 0.67").
 const ZS_QUALIFIER = `(?:the${H}+|about${H}+|around${H}+|approximately${H}+)?`;
 // Value vocabulary — a number (int/decimal/leading-dot) OR a domain sentinel.
+// Internal spacing is HORIZONTAL-only too (a sentinel like "off scale" must not
+// bridge a newline, e.g. a name "Z S is off\nscale" must stay untouched).
 const ZS_VALUE =
-  '(?:\\d*\\.\\d+|\\d+|>\\s*\\.?\\d|\\b(?:lim|limb|limp|limitation|ol|infinite|infinity|off\\s*scale|out\\s*of\\s*range|max(?:ed)?)\\b)';
+  `(?:\\d*\\.\\d+|\\d+|>${H}*\\.?\\d|\\b(?:lim|limb|limp|limitation|ol|infinite|infinity|off${H}*scale|out${H}*of${H}*range|max(?:ed)?)\\b)`;
 // Form A (direct connector) OR Form B (scope-prep … connector). The token must
 // be immediately followed by one of these — an arbitrary noun after the token
 // (a name/designation word) matches NEITHER and is left untouched. An optional

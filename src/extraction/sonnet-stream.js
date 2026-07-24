@@ -1618,12 +1618,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             let resolvePayload;
             let sanitised = null;
             // P6 — the CANONICAL form of the sanitised answer text. Assigned in
-            // the not-seen branch after sanitisation; every BEHAVIOURAL consumer
-            // (classifyOvertake shape check, the new-command gate, the structured
-            // -reading detector, resolvePayload.user_text, the re-injected
-            // synthetic transcript, and the recentAskAnswers anchor push) reads
-            // this so the content-anchor equality with Seam A holds in BOTH
-            // arrival orders. Raw previews + sanitisation flags stay on sanitised.
+            // the not-seen branch after sanitisation; every model-facing/
+            // BEHAVIOURAL consumer (classifyOvertake shape check, the new-command
+            // gate, the structured-reading detector, resolvePayload.user_text,
+            // the re-injected synthetic transcript) reads this. The dedupe-ledger
+            // anchor push does NOT — it uses the raw-based
+            // `canonicalUserTextForAnchor` above so its key matches Seam A's
+            // raw-based transcript stamp in BOTH arrival orders (even for a
+            // truncated/stripped answer). Raw previews + sanitisation flags stay
+            // on sanitised.
             let canonicalAnswerText = null;
 
             if (alreadySeenAsTranscript) {

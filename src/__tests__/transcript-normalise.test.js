@@ -119,11 +119,22 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(r.rules_hit).toEqual([]);
   });
 
-  test('does not bridge across a NEWLINE (structural spacing is horizontal-only)', () => {
-    // "Z S" on one line, "was 0.67" on the next — a newline is a clause
-    // boundary, so the name token is left untouched.
+  test('does not bridge across a NEWLINE or CR (structural + sentinel spacing is horizontal-only)', () => {
+    // "Z S" on one line, "was 0.67" on the next — a newline/CR is a clause
+    // boundary, so the name token is left untouched. Sentinel-internal spacing
+    // ("off scale") is horizontal too, so it cannot bridge a line break either.
     expect(normalise('customer name Z S\nwas 0.67').text).toBe('customer name Z S\nwas 0.67');
     expect(normalise('Z S\nis 0.2').rules_hit).toEqual([]);
+    expect(normalise('customer name Z S on account\rwas 0.67').rules_hit).toEqual([]);
+    expect(normalise('customer name Z S is off\nscale').rules_hit).toEqual([]);
+  });
+
+  test('horizontal-space sentinel values DO collapse ("off scale", "out of range", "> 5")', () => {
+    expect(normalise('Z s on the shower was off scale').text).toBe(
+      'Zs on the shower was off scale'
+    );
+    expect(normalise('Z s was out of range').text).toBe('Zs was out of range');
+    expect(normalise('Z s is > 5').text).toBe('Zs is > 5');
   });
 
   test('an optional comma/colon may sit between the token and the lead-in', () => {

@@ -92,7 +92,7 @@ There is now ONE canonical normalisation layer for the raw dictation transcript,
 
 ### Raw/canonical split (do NOT mutate `msg.text`)
 
-`msg.text` is **never mutated** — a canonical COPY is derived and threaded to model-facing/behavioural consumers, so the recorded-corpus fixtures + the reverse-race dedupe keys keep the raw garble (a future replay must reproduce the bug, not mask it). There is no live raw-transcript S3 sink on this path (only `cost_summary.json` is uploaded); the authoritative raw artifact for replays is the hand-authored `.yaml` fixture.
+`msg.text` is **never mutated** — a canonical COPY is derived and threaded to model-facing/behavioural consumers, so the recorded-corpus fixtures + the reverse-race dedupe keys keep the raw garble (a future replay must reproduce the bug, not mask it). There is no live raw-transcript S3 sink on this path (only `cost_summary.json` is uploaded); the authoritative raw artifacts for future replays are the RAW literals pinned in the unit + production-ingress tests plus the field-feedback records (sessions 2ACE7677 / 36731498). No P6 `.yaml` corpus fixture was added — the production-ingress test is the load-bearing raw→canonical proof.
 
 Applied at **two seams**, with this consumer routing table:
 
