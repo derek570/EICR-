@@ -90,10 +90,18 @@
  * a value-connector nor a scope-preposition — even though a later "was 0.67"
  * (belonging to Ze) sits in the same comma-joined clause. A looser
  * "connector/value anywhere in the clause" predicate corrupted exactly that
- * class. The gap in form (B) is **bounded** (`{0,120}`) so the lookahead can
+ * class. The gap in form (B) is **bounded** (`{0,60}`) so the lookahead can
  * never catastrophically backtrack on a long no-value clause (ReDoS-safe).
+ *
+ * All structural whitespace in this rule is HORIZONTAL only (`[ \t]`, not
+ * `\s`), so the collapse never bridges a NEWLINE — a newline is a clause
+ * delimiter exactly like `. ! ? ;`. "customer name Z S\nwas 0.67" (two lines)
+ * is left untouched. An optional comma/colon may sit between the token and the
+ * lead-in ("Z s, on the heating was 0.67" / "Z s: is 0.2").
  */
-const ZS_TOKEN = 'z(?:ed)?\\s+s';
+// Horizontal whitespace only — never crosses a newline (a clause delimiter).
+const H = '[ \\t]';
+const ZS_TOKEN = `z(?:ed)?${H}+s`;
 // VALUE-introducing connectors — the words that in dictation come IMMEDIATELY
 // before a measured value ("was 0.67", "is 0.2", "reads 0.4", "of 0.5"). Kept to
 // the common, low-false-positive forms — "measuring"/"equalled"/"showing" were
@@ -115,16 +123,17 @@ const ZS_SCOPE_PREP = '(?:on|onto|for|at|of|to|in|across|between)';
 // Never bridges a clause/sentence delimiter (. ! ? ; newline).
 const ZS_SCOPE_GAP = '[^.!?;\\n]{0,60}?';
 // Optional qualifier between the connector and the value ("was about 0.67").
-const ZS_QUALIFIER = '(?:the\\s+|about\\s+|around\\s+|approximately\\s+)?';
+const ZS_QUALIFIER = `(?:the${H}+|about${H}+|around${H}+|approximately${H}+)?`;
 // Value vocabulary — a number (int/decimal/leading-dot) OR a domain sentinel.
 const ZS_VALUE =
   '(?:\\d*\\.\\d+|\\d+|>\\s*\\.?\\d|\\b(?:lim|limb|limp|limitation|ol|infinite|infinity|off\\s*scale|out\\s*of\\s*range|max(?:ed)?)\\b)';
 // Form A (direct connector) OR Form B (scope-prep … connector). The token must
 // be immediately followed by one of these — an arbitrary noun after the token
-// (a name/designation word) matches NEITHER and is left untouched.
-const ZS_VALUE_TAIL = `${ZS_VALUE_CONNECTOR}\\s+${ZS_QUALIFIER}${ZS_VALUE}`;
+// (a name/designation word) matches NEITHER and is left untouched. An optional
+// comma/colon may separate the token from the lead-in.
+const ZS_VALUE_TAIL = `${ZS_VALUE_CONNECTOR}${H}+${ZS_QUALIFIER}${ZS_VALUE}`;
 const ZS_CONTEXT_RE = new RegExp(
-  `\\b${ZS_TOKEN}\\b(?=\\s+(?:${ZS_VALUE_TAIL}|${ZS_SCOPE_PREP}\\b${ZS_SCOPE_GAP}\\b${ZS_VALUE_TAIL}))`,
+  `\\b${ZS_TOKEN}\\b(?=[,:]?${H}+(?:${ZS_VALUE_TAIL}|${ZS_SCOPE_PREP}\\b${ZS_SCOPE_GAP}\\b${ZS_VALUE_TAIL}))`,
   'gi'
 );
 

@@ -140,7 +140,10 @@ import { normalise as normaliseTranscript } from './transcript-normalise.js';
 // logs OR the Anthropic tool_result body. Pure function; throws on abusive
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
 // instead of smuggling the abuse downstream.
-import { sanitiseUserText } from './stage6-sanitise-user-text.js';
+import {
+  sanitiseUserText,
+  HARD_REJECT_USER_TEXT_LEN,
+} from './stage6-sanitise-user-text.js';
 // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter. The
 // activeSessions entry owns one askBudget per session; the wrapper layer
 // (Plan 05-01) calls isExhausted(key) BEFORE invoking the inner ask
@@ -3646,6 +3649,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (preVerdict.kind === 'answers') {
         let sanitisedPre = null;
         try {
+          // P6 — enforce the hard-length trust boundary on the RAW transcript
+          // (see the main transcript-overtake path for the rationale: normalise
+          // only shrinks, so the raw length must gate the reject).
+          if (typeof msg.text === 'string' && msg.text.length > HARD_REJECT_USER_TEXT_LEN) {
+            const err = new Error(
+              `user_text_too_long:${msg.text.length}:${HARD_REJECT_USER_TEXT_LEN}`
+            );
+            err.code = 'USER_TEXT_TOO_LONG';
+            throw err;
+          }
           sanitisedPre = sanitiseUserText(preVerdict.userText);
         } catch (sanErr) {
           logger.warn('stage6.user_text_rejected', {
@@ -4218,6 +4231,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           let sanitised = null;
           let sanitisationFailed = false;
           try {
+            // P6 — the classifier + resolve value are CANONICAL (id-89), but the
+            // hard-length trust boundary must still gate on the RAW transcript
+            // length: normalise() only ever SHRINKS text ("a hundred"→"100"), so
+            // a raw transcript over the hard cap could otherwise slip through as a
+            // sub-cap canonical answer, weakening the reject the ask_user_answered
+            // channel enforces on raw. Enforce it on msg.text before sanitising
+            // the canonical value (voice transcripts are never this long — this is
+            // a defence-in-depth parity guard, thrown into the same catch below).
+            if (typeof msg.text === 'string' && msg.text.length > HARD_REJECT_USER_TEXT_LEN) {
+              const err = new Error(
+                `user_text_too_long:${msg.text.length}:${HARD_REJECT_USER_TEXT_LEN}`
+              );
+              err.code = 'USER_TEXT_TOO_LONG';
+              throw err;
+            }
             sanitised = sanitiseUserText(verdict.userText);
           } catch (sanErr) {
             sanitisationFailed = true;

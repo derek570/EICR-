@@ -119,6 +119,18 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(r.rules_hit).toEqual([]);
   });
 
+  test('does not bridge across a NEWLINE (structural spacing is horizontal-only)', () => {
+    // "Z S" on one line, "was 0.67" on the next — a newline is a clause
+    // boundary, so the name token is left untouched.
+    expect(normalise('customer name Z S\nwas 0.67').text).toBe('customer name Z S\nwas 0.67');
+    expect(normalise('Z S\nis 0.2').rules_hit).toEqual([]);
+  });
+
+  test('an optional comma/colon may sit between the token and the lead-in', () => {
+    expect(normalise('Z s, on the heating was 0.67').text).toBe('Zs, on the heating was 0.67');
+    expect(normalise('Z s: is 0.2').text).toBe('Zs: is 0.2');
+  });
+
   test('does not match "z s" inside larger words', () => {
     // No word-boundary z<space>s pattern here.
     expect(normalise('the fuses on circuit 3 was 0.4').text).toBe('the fuses on circuit 3 was 0.4');
