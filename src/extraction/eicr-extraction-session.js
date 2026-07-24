@@ -1004,10 +1004,12 @@ const _WRAG_BS7671_EICR = fssync.readFileSync(
 // lines byte-for-byte; ON blocks hold the answer-feature rewrites (TOOLS(18)
 // inventory, the inspect_session_state steer replacing "There are NO query_*
 // tools", the ANSWERING QUESTIONS section, the YOU-ARE-DONE-WHEN question
-// carve-out). Marker lines are never emitted, so the flag-off render is
-// BYTE-IDENTICAL to the pre-A1 prompt — zero cache invalidation while the
-// prod task-def pins VOICE_AGENTIC_ANSWERS=false. Pure and deterministic;
-// pinned by the flag-off byte-identity + mode-change survival tests.
+// carve-out). Marker lines are never emitted. The A1 OFF-marker blocks retain
+// their A1-era lines verbatim, but SHARED-region edits outside every marker
+// block (e.g. the P8 2026-07-24 prompt steers) change BOTH renders equally, so
+// the flag-off render is NO LONGER byte-identical to the *pre-A1* prompt and
+// such an edit re-warms the prompt cache once. Pure and deterministic; pinned
+// by the flag-off answer-feature-absence + mode-change survival tests.
 export function renderAgenticSystemPrompt(agenticAnswersEnabled) {
   const enabled = agenticAnswersEnabled === true;
   const out = [];
@@ -1037,9 +1039,10 @@ function _composeAgenticPrompt(base) {
   return base.trimEnd() + '\n\n' + _SCHEDULE_OF_INSPECTION_EICR.trimEnd() + '\n\n' + _WRAG_BS7671_EICR;
 }
 
-// Flag-off variant keeps the historical export name — byte-identical to the
-// pre-A1 prompt so every existing consumer/test and the prod prompt cache are
-// untouched while the flag is off.
+// Flag-off variant keeps the historical export name. Its ANSWER-FEATURE content
+// stays absent (only the A1 ON-marker blocks add it); note it is no longer
+// byte-identical to the pre-A1 prompt once SHARED-region edits (e.g. P8) land,
+// which re-warm the prompt cache for both renders.
 export const EICR_AGENTIC_SYSTEM_PROMPT = _composeAgenticPrompt(renderAgenticSystemPrompt(false));
 export const EICR_AGENTIC_SYSTEM_PROMPT_ANSWERS = _composeAgenticPrompt(
   renderAgenticSystemPrompt(true)

@@ -157,9 +157,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           'field anchor, an UNAMBIGUOUS circuit/board scope, AND a schema-valid value'
         );
-        // The two guards survive: a leading-"no" correction and an ask-reply.
-        expect(rendered).toMatch(/"No\. It was 0\.63" stays a correction/);
-        expect(rendered).toContain('resolves the ask');
+        // Empty-slot writes directly; a correction to a filled slot still
+        // clears then records (does NOT bypass the correction contract).
+        expect(rendered).toMatch(/ALREADY-FILLED slot still clears then records/);
+        // The precedence guards survive: an ask-reply resolves first, and a
+        // leading-"no" correction is not a fresh write.
+        expect(rendered).toMatch(/reply to a pending `ask_user` resolves that ask first/);
+        expect(rendered).toMatch(/"No\. It was 0\.63"/);
+        expect(rendered).toContain('is a correction');
       }
       // The value-less ask (Example 8 / marker-② Phase-4 steer) MUST survive —
       // Steer 1 sits beside it, not on top of it.
@@ -431,13 +436,21 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // clarification_chain_id framing. Net growth ~+516 tokens (minimised via
       // a shared ACCESS LADDER; a measured cap bump was the EXPECTED path per
       // the plan, not a fallback — compaction cannot fold ~500 tokens away).
-      // Measured 21714 (flag-on render); cap 21820 leaves ~106-token headroom.
-      // NOTE: the flag-off render is NO LONGER byte-identical to the pre-A1
-      // prompt (P8 grew the shared region); only the A1 OFF-marker blocks stay
-      // verbatim. The deployed prod render is flag-ON (VOICE_AGENTIC_ANSWERS
-      // is true in prod), which this cap measures.
+      // Measured 21714; after the Codex diff-review cycle-1 correctness fixes
+      // (NC→C3-at-most since the record_observation enum has no NC code; the
+      // bounded clarification-budget wording; the Steer-1 precedence + empty-
+      // slot-vs-correction guards; bonding gets its OWN tree off the ACCESS
+      // LADDER) the combined render measures 21834; cap 21940 leaves ~106-token
+      // headroom. Net growth (~+636) exceeds the plan's aspirational ~250
+      // target, which is STRUCTURALLY unreachable with Derek's mandated THREE
+      // cited C2/C3 classes — the plan itself states a measured cap bump on
+      // BOTH caps is the EXPECTED path ("compaction cannot recover ~600 tokens
+      // by folding alone"). Minimised via the shared ACCESS LADDER + terse
+      // prose. NOTE: the flag-off render is NO LONGER byte-identical to the
+      // pre-A1 prompt (P8 grew the shared region); only the A1 OFF-marker
+      // blocks stay verbatim. The deployed prod render is flag-ON.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(21820);
+      expect(estimate).toBeLessThanOrEqual(21940);
     });
   });
 
@@ -1147,9 +1160,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // region, so the base render grows too (~+517 tokens, minimised via a
       // shared ACCESS LADDER). A measured cap bump on BOTH caps was the
       // EXPECTED path per the P8 plan (see the Group 1 combined-cap comment).
-      // Measured 16477 (flag-on base); cap 16580 leaves ~103-token headroom.
+      // After the Codex diff-review cycle-1 correctness fixes (see the combined
+      // cap comment) the base render measures 16597; cap 16700 leaves
+      // ~103-token headroom.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(16580);
+      expect(estimate).toBeLessThanOrEqual(16700);
     });
   });
 
@@ -1770,7 +1785,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // first matches the RULE 1 cross-reference.
       const idx = prompt.indexOf('AMBIGUOUS C2/C3 SEVERITY — ONE TARGETED FACTUAL ASK');
       expect(idx).toBeGreaterThanOrEqual(0);
-      const block = prompt.slice(idx, idx + 3200);
+      // Window widened 3200 → 4400 (P8 2026-07-24): the Steer-2 DECIDING FACTS
+      // BY CLASS checklist was inserted between BOUND and CHAIN ID, pushing the
+      // CHAIN ID bullet (and its `clarification_chain_id`) further from the
+      // heading. The block genuinely grew; the assertion's intent (all these
+      // pins live in the AMBIGUOUS block) is unchanged.
+      const block = prompt.slice(idx, idx + 4400);
       expect(block).toEqual(expect.stringContaining('`reason: "observation_confirmation"`'));
       expect(block).toEqual(expect.stringContaining('`context_field: "observation_clarify"`'));
       expect(block).toEqual(expect.stringContaining('`expected_answer_shape: "free_text"`'));
@@ -1828,22 +1848,31 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         const block = rendered.slice(di, ci);
         // Fact-weighting, ask-first, never blanket-default.
         expect(block).toMatch(/never blanket-default a code/);
-        expect(block).toMatch(/one-ask budget above/);
-        // Shared ACCESS LADDER: accessible-to-touch → C1 (the exact gradation).
+        // Uses the BOUNDED clarification budget (one initial + one continuation),
+        // NOT a "one-ask" budget that would suppress a permitted continuation.
+        expect(block).toMatch(/bounded clarification budget above \(one initial ask \+ at most one continuation\)/);
+        // All outcomes are emittable codes — there is no NC code in the tool enum.
+        expect(block).toMatch(/there is no NC code/);
+        expect(block).not.toMatch(/→ \*\*NC\*\*/);
+        // ACCESS LADDER covers TWO classes (holes + accessories), NOT bonding.
         expect(block).toMatch(/live parts accessible TO TOUCH → \*\*C1\*\*/);
         expect(block).toMatch(/potential access, not presently touchable → \*\*C2\*\*/);
         // All three classes present.
         expect(block).toContain('Enclosure penetrations/holes');
         expect(block).toContain('Basic protection at accessories / CUs');
         expect(block).toContain('Bonding (main protective)');
+        // Bonding uses its OWN tree, not the shared ACCESS LADDER.
+        expect(block).toMatch(/Bonding \(main protective\) — its OWN tree, not the ACCESS LADDER/);
         // Key BS 7671 citations (verified current-edition at execution).
         expect(block).toContain('416.2.2'); // top-surface IP4X
         expect(block).toContain('416.2.1'); // side IP2X
         expect(block).toContain('411.3.1.2'); // bonding provision
         expect(block).toContain('701.415.2'); // bathroom supplementary omission
         expect(block).toContain('512.2'); // environmental IP, NOT 416.2
-        // The safety-critical anti-over-code gradation: sound ≥6mm² bond = NC.
-        expect(block).toMatch(/at least 6 mm² with NO thermal damage → \*\*NC\*\*/);
+        // The safety-critical anti-over-code gradation: a sound ≥6mm² bond is
+        // C3 at most, NEVER C2 (emittable — replaces the un-emittable NC).
+        expect(block).toMatch(/at least 6 mm² with no thermal damage is NOT potentially dangerous → \*\*C3 at most\*\*/);
+        expect(block).toMatch(/never C2/);
       }
     });
   });
