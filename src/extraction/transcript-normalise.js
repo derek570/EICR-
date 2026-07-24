@@ -164,12 +164,18 @@ const ZS_CONTEXT_RE = new RegExp(
  * are ALL left untouched — a partial "100 and fifty" / "100 point five" /
  * "100 50" would let the IR parser misread 150 / 100.5 / 10050 as 100).
  *
- * Crucially the "and"/"point" branches require a NUMBER after them, so a
- * sentence-level conjunction is NOT a compound: "L to N is a hundred, and
- * polarity is pass" DOES digit-ise the standalone 100 (the "and" introduces a
- * new fact, not "and <number>"). The observed case "a hundred MΩ" /
- * "a hundred ohms" / "a hundred." fires — the following token is a unit/end,
- * not a number-continuation.
+ * Crucially the "and"/"point" branches require a NUMBER (or an uncertainty
+ * marker) after them, so a sentence-level conjunction is NOT a compound: "L to N
+ * is a hundred, and polarity is pass" DOES digit-ise the standalone 100 (the
+ * "and" introduces a new fact, not "and <number>"). The observed case
+ * "a hundred MΩ" / "a hundred ohms" / "a hundred." fires — the following token
+ * is a unit/end, not a continuation.
+ *
+ * UNCERTAINTY markers are also left untouched: "a hundred and something",
+ * "a hundred or so", "a hundred and a bit", "a hundred odd", "a hundred-ish" are
+ * approximate replies — digit-ising the head to an exact "100" would make the IR
+ * parser record a precise 100 MΩ the inspector never asserted. Left as-is, the
+ * parser treats them as non-values and re-asks.
  */
 const A_HUNDRED_NUM_WORD =
   '(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)';
@@ -180,14 +186,19 @@ const A_HUNDRED_SEP = '[\\s,-]+';
 const A_HUNDRED_FRAC = `(?:a${A_HUNDRED_SEP})?(?:half|quarter)\\b|oh\\b|nought\\b`;
 // A continuation token that makes "a hundred …" a bigger/decimal number.
 const A_HUNDRED_NUMISH = `(?:${A_HUNDRED_FRAC}|${A_HUNDRED_NUM_WORD}\\b|\\d)`;
+// Uncertainty / approximation markers ("odd", "-ish", "something", "a bit") —
+// their presence means the value is NOT an exact 100, so the head is left alone.
+const A_HUNDRED_IND = `something\\b|odd\\b|ish\\b|a${A_HUNDRED_SEP}bit\\b`;
 const A_HUNDRED_RE = new RegExp(
   `\\ba\\s+hundred\\b(?!${A_HUNDRED_SEP}(?:` +
-    // "and <numish>" compound continuation ("and fifty", "and a half", "and half")
-    `and${A_HUNDRED_SEP}${A_HUNDRED_NUMISH}|` +
+    // "and/or <numish|uncertainty|so>" continuation ("and fifty", "and a half",
+    // "and something", "or so", "and a bit")
+    `(?:and|or)${A_HUNDRED_SEP}(?:so\\b|${A_HUNDRED_IND}|${A_HUNDRED_NUMISH})|` +
     // "point <anything>" is always a spoken decimal ("point five", "point oh five")
     `point\\b|` +
-    // direct number/fraction continuation ("a hundred fifty", "a hundred 50", "a hundred half")
-    `${A_HUNDRED_NUMISH}` +
+    // direct number/fraction/uncertainty continuation ("a hundred fifty",
+    // "a hundred 50", "a hundred half", "a hundred odd", "a hundred-ish")
+    `${A_HUNDRED_IND}|${A_HUNDRED_NUMISH}` +
     `))`,
   'gi'
 );

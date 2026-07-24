@@ -220,6 +220,23 @@ describe('transcript-normalise — rule 2: "a hundred" → "100"', () => {
     }
   });
 
+  test('leaves UNCERTAINTY/approximation forms untouched (no false exact 100)', () => {
+    // These are approximate replies — digit-ising to an exact "100" would make
+    // the IR parser record a precise value the inspector never asserted.
+    for (const input of [
+      'a hundred and something megaohms',
+      'a hundred or something',
+      'a hundred and a bit',
+      'a hundred odd',
+      'a hundred-ish',
+      'a hundred or so',
+    ]) {
+      const r = normalise(input);
+      expect(r.text).toBe(input);
+      expect(r.rules_hit).toEqual([]);
+    }
+  });
+
   test('a sentence-level "and" (not "and <number>") still digit-ises the standalone 100', () => {
     // Multi-fact dictation — "and polarity is pass" is a NEW fact, not a compound
     // number, so the standalone reading is digit-ised.
