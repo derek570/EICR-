@@ -107,7 +107,7 @@ Apply rules (`applySonnetObservations` / `applyObservations`):
 
 | Incoming `observation_id` | Behaviour |
 |---------------------------|-----------|
-| non-nil, already on a row (`server_id` match) | **IDEMPOTENT REPLAY** — a P4d reconnect replays the ORIGINAL extraction frame PRESERVING ids. Fill only fields still ABSENT; SKIP every creation side-effect (append, pending-photo attach, `recentObservationId`/reverse-link, `observation_added` card) AND raw-frame schedule projection. Authoritative field changes remain `observation_update`'s job — a replay never overwrites a since-refined text/code/regulation. |
+| non-nil, already on a row (`server_id` match) | **IDEMPOTENT REPLAY — PURE NO-OP.** A P4d reconnect replays the ORIGINAL extraction frame PRESERVING ids. Because it is the SAME frame the original apply already consumed, "filling absent fields" could only ever no-op OR restore a field an authoritative `observation_update` has since CLEARED (`regulation_title`/`description` clear to nil on a table-miss refinement; schedule linking is owned by the create path), so a replay fills NOTHING and skips every creation side-effect (append, pending-photo attach, `recentObservationId`/reverse-link, `observation_added` card) AND schedule projection. Authoritative field changes remain `observation_update`'s job. |
 | non-nil, not seen | apply (server authoritative, already deduped) |
 | nil/empty (older servers omit it) | retain the text-similarity fallback for id-less rows ONLY, so a nil-id replay can't duplicate-render |
 

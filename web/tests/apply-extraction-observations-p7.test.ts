@@ -117,14 +117,16 @@ describe('P7 — distinct server_id observations both render', () => {
 // ────────────────────────────────────────────────────────────────────
 // Idempotent replay (same server_id) — one entry, fill-absent, no side-effects
 // ────────────────────────────────────────────────────────────────────
-describe('P7 — same server_id is an idempotent replay', () => {
-  it('does NOT double-append and fills only ABSENT fields', () => {
+describe('P7 — same server_id is a pure no-op replay', () => {
+  it('does NOT double-append and does NOT fill any field (pure no-op)', () => {
     const job = makeJob({
       observations: [
         { id: 'r-A', server_id: 'srv-A', code: 'C3', description: 'loose earth conductor' },
       ],
     } as Partial<JobDetail>);
-    // Replay the same id, now carrying a regulation → fill-absent.
+    // Replay the same id, now carrying a regulation the row lacks. A pure no-op
+    // replay must change NOTHING (fill-absent could only ever restore a field an
+    // authoritative update cleared — never useful, sometimes harmful).
     const result = makeResult({
       observations: [
         {
@@ -136,11 +138,11 @@ describe('P7 — same server_id is an idempotent replay', () => {
       ],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied?.patch.observations).toHaveLength(1);
-    expect(applied?.patch.observations?.[0].regulation).toBe('543.3.1');
+    // No observation change at all → no patch.observations.
+    expect(applied?.patch.observations).toBeUndefined();
   });
 
-  it('a fill-absent replay of a NON-TAIL row attaches the photo to neither row (gated on append, not `changed`)', () => {
+  it('a replay of a NON-TAIL row attaches the photo to neither row (no creation side-effects)', () => {
     const onPhotoAttached = vi.fn();
     const onLastObservationCreated = vi.fn();
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
@@ -169,11 +171,8 @@ describe('P7 — same server_id is an idempotent replay', () => {
         onPhotoAttached,
         onLastObservationCreated,
       });
-      // The absent field was filled on the matched (non-tail) row A…
-      expect(applied?.patch.observations?.[0].regulation).toBe('543.3.1');
-      // …but NO creation side-effects fired: neither row gets the photo.
-      expect(applied?.patch.observations?.[0].photos).toBeUndefined();
-      expect(applied?.patch.observations?.[1].photos).toBeUndefined();
+      // Pure no-op → no observation change and NO creation side-effects.
+      expect(applied?.patch.observations).toBeUndefined();
       expect(onPhotoAttached).not.toHaveBeenCalled();
       expect(onLastObservationCreated).not.toHaveBeenCalled();
     } finally {
@@ -183,8 +182,8 @@ describe('P7 — same server_id is an idempotent replay', () => {
 
   it('initial extraction → refinement → ORIGINAL replay does NOT restore stale fields', () => {
     // Post-refine state: observation_update authoritatively changed code (C2→C1)
-    // and text, and left regulation ABSENT. A P4d reconnect then replays the
-    // ORIGINAL frame (code C2, original text, regulation 416.2).
+    // and text. A P4d reconnect then replays the ORIGINAL frame; a pure no-op
+    // must leave the refined row untouched (no stale code/text restore).
     const job = makeJob({
       observations: [
         {
@@ -206,14 +205,35 @@ describe('P7 — same server_id is an idempotent replay', () => {
       ],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied?.patch.observations).toHaveLength(1);
-    // The ABSENT regulation is filled from the replay…
-    expect(applied?.patch.observations?.[0].regulation).toBe('416.2');
-    // …but the since-refined code + text are NOT restored to the stale originals.
-    expect(applied?.patch.observations?.[0].code).toBe('C1');
-    expect(applied?.patch.observations?.[0].description).toBe(
-      'Small hole in the side of the enclosure — reclassified.'
-    );
+    // Pure no-op → no patch; the refined row is untouched.
+    expect(applied?.patch.observations).toBeUndefined();
+  });
+
+  it('a replay does NOT restore a regulation_title an authoritative update CLEARED (cycle-2 BLOCKER)', () => {
+    // observation_update sets regulation_title/description UNCONDITIONALLY, so a
+    // table-miss refinement CLEARS the canonical wording to nil. Post-clear the
+    // row has NO wording. A replay of the ORIGINAL frame (which carried the
+    // wording) must NOT resurrect the stale wording of the old regulation.
+    const job = makeJob({
+      observations: [
+        { id: 'r-A', server_id: 'srv-A', code: 'C2', description: 'no earth to metalwork' },
+      ],
+    } as Partial<JobDetail>);
+    const result = makeResult({
+      observations: [
+        {
+          observation_id: 'srv-A',
+          observation_text: 'no earth to metalwork',
+          code: 'C2',
+          regulation_title: 'ADS - Protective earthing',
+          regulation_description:
+            'Exposed-conductive-parts shall be connected to a protective conductor.',
+        },
+      ],
+    });
+    const applied = applyExtractionToJob(job, result);
+    // Pure no-op → wording is NOT restored (no observation patch at all).
+    expect(applied?.patch.observations).toBeUndefined();
   });
 
   it('DISCRIMINATING schedule regression — a replay does NOT re-project a CLEARED outcome', () => {

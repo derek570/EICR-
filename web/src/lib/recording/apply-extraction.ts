@@ -1102,39 +1102,21 @@ function applyObservations(
     //  • nil/empty id (older servers omit it) → retain the text-similarity
     //    fallback for id-less rows ONLY so a nil-id replay can't duplicate.
     if (incomingServerId) {
-      const replayIdx = existing.findIndex((o) => o.server_id === incomingServerId);
-      if (replayIdx >= 0) {
-        const row = { ...existing[replayIdx] };
-        let filled = false;
-        if (!row.regulation && obs.regulation) {
-          row.regulation = obs.regulation;
-          filled = true;
-        }
-        if (!row.rationale && obs.rationale) {
-          row.rationale = obs.rationale;
-          filled = true;
-        }
-        if (!row.regulation_title && obs.regulation_title) {
-          row.regulation_title = obs.regulation_title;
-          filled = true;
-        }
-        if (!row.regulation_description && obs.regulation_description) {
-          row.regulation_description = obs.regulation_description;
-          filled = true;
-        }
-        // NOTE: `schedule_item` is DELIBERATELY NOT filled on a replay, and a
-        // replay is NEVER added to `acceptedForSchedule`. Projecting a schedule
-        // outcome from a replay would (a) resurrect an outcome the inspector may
-        // have since cleared and (b) use the STALE replay `code` rather than the
-        // row's since-refined code. Schedule linking is owned by the create path
-        // + observation_update; a replay only fills pure data fields.
-        if (filled) {
-          existing[replayIdx] = row;
-          changed = true;
-        }
+      const alreadyPresent = existing.some((o) => o.server_id === incomingServerId);
+      if (alreadyPresent) {
+        // IDEMPOTENT REPLAY — PURE NO-OP. A P4d reconnect replays the ORIGINAL
+        // extraction frame PRESERVING ids. Because it is the SAME frame the
+        // original apply already consumed, "filling absent fields" from it can
+        // only ever (a) no-op — the frame carries nothing the row lacks — or
+        // (b) RESTORE a field an authoritative observation_update has since
+        // CLEARED (regulation_title/description clear to null on a table-miss
+        // refinement; schedule linking is owned by the create path). So a
+        // replay fills NOTHING and skips every creation side-effect (append,
+        // pending-photo attach, reverse-link) AND schedule projection.
+        // Authoritative field changes remain applyObservationUpdate's job. The
+        // plan permits "at most fill absent" — filling none is faithful + safer.
         pipelineLog('apply_observations_idempotent_replay', {
           server_id: incomingServerId.slice(0, 8),
-          filled,
         });
         continue;
       }
