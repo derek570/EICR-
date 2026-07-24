@@ -27,6 +27,7 @@
  */
 
 import { jest } from '@jest/globals';
+import { buildPerCircuitDedupeKey } from '../extraction/ios-dedupe-key.js';
 
 const SESSION_ID = 'sess-a1a-telemetry';
 
@@ -231,10 +232,18 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
     }
 
     // Reading row: VALUE-AWARE key {field}_{circuit}_{djb2(text)} (id-84
-    // correction-swallow fix) + non-null confidence. The text is
-    // bundler-synthesized end-to-end, so assert the shape rather than a
-    // brittle hash of the exact synthesized line.
+    // correction-swallow fix) + non-null confidence. Prove the bundler's
+    // synthesized `text` actually flows through to the key builder — assert
+    // the wire confirmation has non-empty text AND that the emitted key equals
+    // the exact algorithm applied to that wire text (a regressed/undefined
+    // text would compute the 5381 fallback suffix and this would fail).
     const zsRow = attempts.find((a) => a.field === 'measured_zs_ohm');
+    const zsWire = result.confirmations.find((c) => c.field === 'measured_zs_ohm');
+    expect(typeof zsWire.text).toBe('string');
+    expect(zsWire.text.length).toBeGreaterThan(0);
+    expect(zsRow.expected_dedupe_key).toBe(
+      buildPerCircuitDedupeKey(zsWire.field, zsWire.circuit, zsWire.text, zsWire.dedupe_token)
+    );
     expect(zsRow.expected_dedupe_key).toMatch(/^measured_zs_ohm_1_\d+$/);
     expect(zsRow.confidence).toBe(0.92);
 
