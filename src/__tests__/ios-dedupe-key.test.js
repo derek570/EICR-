@@ -53,13 +53,33 @@ describe('djb2UInt64Decimal — UInt64 wrap arithmetic mirror', () => {
   });
 });
 
-describe('buildPerCircuitDedupeKey — legacy shape preserved for cross-match', () => {
-  test('shape is "<field>_<circuit>"', () => {
-    expect(buildPerCircuitDedupeKey('ir_live_live_mohm', 1)).toBe('ir_live_live_mohm_1');
+describe('buildPerCircuitDedupeKey — VALUE-AWARE shape (id-84 correction-swallow fix)', () => {
+  test('shape is "<field>_<circuit>_<djb2(text)>" (text encodes the value)', () => {
+    expect(
+      buildPerCircuitDedupeKey('ir_live_live_mohm', 1, 'Circuit 1, insulation resistance L-L 100 megaohms')
+    ).toBe('ir_live_live_mohm_1_11903432231037752243');
+  });
+
+  test('absent text folds djb2("") = 5381', () => {
+    expect(buildPerCircuitDedupeKey('ir_live_live_mohm', 1)).toBe('ir_live_live_mohm_1_5381');
   });
 
   test('null field falls back to "unknown"', () => {
-    expect(buildPerCircuitDedupeKey(null, 2)).toBe('unknown_2');
+    expect(buildPerCircuitDedupeKey(null, 2)).toBe('unknown_2_5381');
+  });
+
+  test('id-84: a correction (same field+circuit, DIFFERENT text) → DISTINCT key → both speak', () => {
+    const first = buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Garage, circuit 1, Zs 0.83');
+    const correction = buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Garage, circuit 1, Zs 0.63');
+    expect(first).toBe('measured_zs_ohm_1_13860271736903475550');
+    expect(correction).toBe('measured_zs_ohm_1_13860271736903475484');
+    expect(first).not.toBe(correction);
+  });
+
+  test('a genuine duplicate (same field+circuit+SAME text) → SAME key → deduped', () => {
+    expect(buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Garage, circuit 1, Zs 0.83')).toBe(
+      buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Garage, circuit 1, Zs 0.83')
+    );
   });
 });
 
@@ -141,18 +161,19 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
     expect(
       buildDegenerateDedupeKey('observation', 'Observation C2 — cracked socket', null, 'obs_obs-7')
     ).toBe('observation_obs_obs-7');
-    // clear → {field, circuit, turn, ordinal}
-    expect(buildPerCircuitDedupeKey('field_cleared', 3, 'clear_r1_r2_ohm_3_turn-9_ord0')).toBe(
-      'field_cleared_clear_r1_r2_ohm_3_turn-9_ord0'
-    );
+    // clear → {field, circuit, turn, ordinal} (token is the 4th positional arg;
+    // 3rd is `text`, ignored when the token key wins)
+    expect(
+      buildPerCircuitDedupeKey('field_cleared', 3, 'R1 plus R2 cleared', 'clear_r1_r2_ohm_3_turn-9_ord0')
+    ).toBe('field_cleared_clear_r1_r2_ohm_3_turn-9_ord0');
     // rename/circuit op → turn + operation identity (turnId + ordinal + op + ref)
-    expect(buildPerCircuitDedupeKey('circuit_op', 4, 'circop_turn-9_0_rename_4')).toBe(
-      'circuit_op_circop_turn-9_0_rename_4'
-    );
+    expect(
+      buildPerCircuitDedupeKey('circuit_op', 4, 'Circuit 4 renamed', 'circop_turn-9_0_rename_4')
+    ).toBe('circuit_op_circop_turn-9_0_rename_4');
     // designation → turn + operation identity
-    expect(buildPerCircuitDedupeKey('circuit_designation', 2, 'desig_2_turn-9')).toBe(
-      'circuit_designation_desig_2_turn-9'
-    );
+    expect(
+      buildPerCircuitDedupeKey('circuit_designation', 2, 'Circuit 2 named Sockets', 'desig_2_turn-9')
+    ).toBe('circuit_designation_desig_2_turn-9');
   });
 
   test('token takes precedence in EVERY branch an allowlisted confirmation can reach', () => {
@@ -179,8 +200,8 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
         'desig_1-2_t1'
       )
     ).toBe('circuit_designation_desig_1-2_t1');
-    // Per-circuit branch.
-    expect(buildPerCircuitDedupeKey('circuit_op', 3, 'circop_t1_0_rename_3')).toBe(
+    // Per-circuit branch (token 4th positional; 3rd `text` ignored under the token key).
+    expect(buildPerCircuitDedupeKey('circuit_op', 3, 'Circuit 3 renamed', 'circop_t1_0_rename_3')).toBe(
       'circuit_op_circop_t1_0_rename_3'
     );
   });
@@ -201,14 +222,18 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
     expect(replay1).toBe(replay2);
   });
 
-  test('NEGATIVE: measured-value fields IGNORE the token — bare key preserved for the iOS correction-TTS cross-match', () => {
-    expect(buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'spurious_token')).toBe(
-      'measured_zs_ohm_1'
-    );
-    expect(buildPerCircuitDedupeKey('r1_r2_ohm', 2, 'spurious_token')).toBe('r1_r2_ohm_2');
-    // And token absence on an allowlisted field falls back to the legacy shape
-    // (backward-compatible fallback — ship order is backend-first).
-    expect(buildPerCircuitDedupeKey('circuit_op', 3, null)).toBe('circuit_op_3');
-    expect(buildPerCircuitDedupeKey('circuit_op', 3, undefined)).toBe('circuit_op_3');
+  test('NEGATIVE: measured-value fields IGNORE the token — VALUE-AWARE key, token 4th positional (id-84)', () => {
+    // A spurious token on a measured field is ignored; the key is the
+    // value-aware {field}_{circuit}_{djb2(text)} shape.
+    expect(
+      buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Circuit 1, Zs 0.44 ohms', 'spurious_token')
+    ).toBe('measured_zs_ohm_1_6997897068188437119');
+    expect(
+      buildPerCircuitDedupeKey('r1_r2_ohm', 2, 'Circuit 2, R1+R2 0.31 ohms', 'spurious_token')
+    ).toBe('r1_r2_ohm_2_10206090935165990305');
+    // And token absence on an allowlisted field falls back to the value-aware
+    // shape (backward-compatible fallback — ship order is backend-first).
+    expect(buildPerCircuitDedupeKey('circuit_op', 3, null)).toBe('circuit_op_3_5381');
+    expect(buildPerCircuitDedupeKey('circuit_op', 3, undefined)).toBe('circuit_op_3_5381');
   });
 });

@@ -230,9 +230,12 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
       }
     }
 
-    // Reading row: bare key + non-null confidence.
+    // Reading row: VALUE-AWARE key {field}_{circuit}_{djb2(text)} (id-84
+    // correction-swallow fix) + non-null confidence. The text is
+    // bundler-synthesized end-to-end, so assert the shape rather than a
+    // brittle hash of the exact synthesized line.
     const zsRow = attempts.find((a) => a.field === 'measured_zs_ohm');
-    expect(zsRow.expected_dedupe_key).toBe('measured_zs_ohm_1');
+    expect(zsRow.expected_dedupe_key).toMatch(/^measured_zs_ohm_1_\d+$/);
     expect(zsRow.confidence).toBe(0.92);
 
     // No _confidence leaks onto the wire (strip runs unconditionally after
