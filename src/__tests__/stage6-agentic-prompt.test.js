@@ -157,14 +157,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           'field anchor, an UNAMBIGUOUS circuit/board scope, AND a schema-valid value'
         );
-        // Empty-slot writes directly; a correction to a filled slot still
-        // clears then records (does NOT bypass the correction contract).
-        expect(rendered).toMatch(/ALREADY-FILLED slot still clears then records/);
+        // Empty-slot writes directly; correcting a filled slot follows the
+        // normal correction path (circuit clears-then-records, board overwrites
+        // via record_board_reading) — does NOT bypass the correction contract.
+        expect(rendered).toMatch(/correcting an ALREADY-FILLED slot follows the normal correction path/);
+        expect(rendered).toMatch(/a board field overwrites via `record_board_reading`/);
         // The precedence guards survive: an ask-reply resolves first, and a
-        // leading-"no" correction is not a fresh write.
+        // leading-"no" reply (value-bearing or not) is NOT a fresh Steer-1 write.
         expect(rendered).toMatch(/reply to a pending `ask_user` resolves that ask first/);
+        expect(rendered).toMatch(/a leading-"no" reply with no in-utterance anchor\+scope is NOT this write/);
         expect(rendered).toMatch(/"No\. It was 0\.63"/);
-        expect(rendered).toContain('is a correction');
       }
       // The value-less ask (Example 8 / marker-② Phase-4 steer) MUST survive —
       // Steer 1 sits beside it, not on top of it.
@@ -446,11 +448,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // cited C2/C3 classes — the plan itself states a measured cap bump on
       // BOTH caps is the EXPECTED path ("compaction cannot recover ~600 tokens
       // by folding alone"). Minimised via the shared ACCESS LADDER + terse
-      // prose. NOTE: the flag-off render is NO LONGER byte-identical to the
-      // pre-A1 prompt (P8 grew the shared region); only the A1 OFF-marker
-      // blocks stay verbatim. The deployed prod render is flag-ON.
+      // prose. Measured 21883 (after the cycle-1 + mini-review fixes); cap 21985
+      // leaves ~102-token headroom. NOTE: the flag-off render is NO LONGER
+      // byte-identical to the pre-A1 prompt (P8 grew the shared region); only
+      // the A1 OFF-marker blocks stay verbatim. The deployed prod render is
+      // flag-ON.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(21940);
+      expect(estimate).toBeLessThanOrEqual(21985);
     });
   });
 
@@ -1160,11 +1164,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // region, so the base render grows too (~+517 tokens, minimised via a
       // shared ACCESS LADDER). A measured cap bump on BOTH caps was the
       // EXPECTED path per the P8 plan (see the Group 1 combined-cap comment).
-      // After the Codex diff-review cycle-1 correctness fixes (see the combined
-      // cap comment) the base render measures 16597; cap 16700 leaves
-      // ~103-token headroom.
+      // After the Codex diff-review correctness fixes (cycle 1 + the per-fix
+      // mini-review — see the combined cap comment) the base render measures
+      // 16645; cap 16750 leaves ~105-token headroom.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(16700);
+      expect(estimate).toBeLessThanOrEqual(16750);
     });
   });
 
@@ -1785,12 +1789,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // first matches the RULE 1 cross-reference.
       const idx = prompt.indexOf('AMBIGUOUS C2/C3 SEVERITY — ONE TARGETED FACTUAL ASK');
       expect(idx).toBeGreaterThanOrEqual(0);
-      // Window widened 3200 → 4400 (P8 2026-07-24): the Steer-2 DECIDING FACTS
-      // BY CLASS checklist was inserted between BOUND and CHAIN ID, pushing the
-      // CHAIN ID bullet (and its `clarification_chain_id`) further from the
-      // heading. The block genuinely grew; the assertion's intent (all these
-      // pins live in the AMBIGUOUS block) is unchanged.
-      const block = prompt.slice(idx, idx + 4400);
+      // Bound the slice STRUCTURALLY at the next section header (P8 2026-07-24):
+      // the Steer-2 DECIDING FACTS BY CLASS checklist was inserted between BOUND
+      // and CHAIN ID, growing the block past the old fixed 3200-char window.
+      // Ending at 'WORKED EXAMPLES:' captures the whole AMBIGUOUS block (incl.
+      // CHAIN ID's `clarification_chain_id`) without pulling in later examples
+      // that could false-match.
+      const end = prompt.indexOf('WORKED EXAMPLES:', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
       expect(block).toEqual(expect.stringContaining('`reason: "observation_confirmation"`'));
       expect(block).toEqual(expect.stringContaining('`context_field: "observation_clarify"`'));
       expect(block).toEqual(expect.stringContaining('`expected_answer_shape: "free_text"`'));
@@ -1869,10 +1876,27 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(block).toContain('411.3.1.2'); // bonding provision
         expect(block).toContain('701.415.2'); // bathroom supplementary omission
         expect(block).toContain('512.2'); // environmental IP, NOT 416.2
-        // The safety-critical anti-over-code gradation: a sound ≥6mm² bond is
-        // C3 at most, NEVER C2 (emittable — replaces the un-emittable NC).
-        expect(block).toMatch(/at least 6 mm² with no thermal damage is NOT potentially dangerous → \*\*C3 at most\*\*/);
-        expect(block).toMatch(/never C2/);
+        // Bonding branches — asserted LOCALLY within the main-bond clause (up to
+        // the bathroom sentence) so the C2 routing and the sound-bond cap are
+        // pinned to the right clause, not matched anywhere in the checklist.
+        const bond = block.slice(
+          block.indexOf('Bonding (main protective)'),
+          block.indexOf('Bathroom supplementary bonding')
+        );
+        expect(bond.length).toBeGreaterThan(0);
+        // Extraneous-part prerequisite + every C2 branch present.
+        expect(bond).toMatch(/only matters on an EXTRANEOUS-conductive part/);
+        expect(bond).toMatch(
+          /absent\/ineffective bond, OR CSA below 6 mm², OR thermal damage → \*\*C2\*\*/
+        );
+        // The safety-critical anti-over-code gradation, bound to the sound-bond
+        // clause: a sound ≥6mm² bond is C3 at most, NEVER C2 (emittable — the
+        // replacement for the un-emittable NC code).
+        expect(bond).toMatch(
+          /SOUND bond at least 6 mm² with no thermal damage is NOT potentially dangerous → \*\*C3 at most\*\* \(improvement for the undersize\), never C2/
+        );
+        // Bathroom supplementary omission also caps at C3, never C2.
+        expect(block).toMatch(/omission conditions are met it may be omitted → \*\*C3 at most, never C2\*\*/);
       }
     });
   });

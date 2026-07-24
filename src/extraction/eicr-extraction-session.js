@@ -1006,10 +1006,12 @@ const _WRAG_BS7671_EICR = fssync.readFileSync(
 // tools", the ANSWERING QUESTIONS section, the YOU-ARE-DONE-WHEN question
 // carve-out). Marker lines are never emitted. The A1 OFF-marker blocks retain
 // their A1-era lines verbatim, but SHARED-region edits outside every marker
-// block (e.g. the P8 2026-07-24 prompt steers) change BOTH renders equally, so
-// the flag-off render is NO LONGER byte-identical to the *pre-A1* prompt and
-// such an edit re-warms the prompt cache once. Pure and deterministic; pinned
-// by the flag-off answer-feature-absence + mode-change survival tests.
+// block (e.g. the P8 2026-07-24 prompt steers) change BOTH rendered strings, so
+// the flag-off render is NO LONGER byte-identical to the *pre-A1* prompt. Only
+// the variant actually SENT incurs a cache miss; prod latches one variant
+// (`VOICE_AGENTIC_ANSWERS`), so such an edit costs one cold-cache window per
+// deploy. Pure and deterministic; pinned by the flag-off answer-feature-absence
+// + mode-change survival tests.
 export function renderAgenticSystemPrompt(agenticAnswersEnabled) {
   const enabled = agenticAnswersEnabled === true;
   const out = [];
@@ -1041,8 +1043,9 @@ function _composeAgenticPrompt(base) {
 
 // Flag-off variant keeps the historical export name. Its ANSWER-FEATURE content
 // stays absent (only the A1 ON-marker blocks add it); note it is no longer
-// byte-identical to the pre-A1 prompt once SHARED-region edits (e.g. P8) land,
-// which re-warm the prompt cache for both renders.
+// byte-identical to the pre-A1 prompt once SHARED-region edits (e.g. P8) land.
+// See renderAgenticSystemPrompt above for the cache note (only the sent variant
+// misses; prod latches one → one cold-cache window per deploy).
 export const EICR_AGENTIC_SYSTEM_PROMPT = _composeAgenticPrompt(renderAgenticSystemPrompt(false));
 export const EICR_AGENTIC_SYSTEM_PROMPT_ANSWERS = _composeAgenticPrompt(
   renderAgenticSystemPrompt(true)
