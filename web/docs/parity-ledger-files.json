@@ -547,7 +547,8 @@
     "observations/obs-photo-autolink"
   ],
   "web/src/lib/recording/confirmation-dedupe-key.ts": [
-    "recording/readback-dedup-rekey"
+    "recording/readback-dedup-rekey",
+    "recording/readback-dedup-value-aware"
   ],
   "web/src/lib/recording/confirmation-dedupe-store.ts": [
     "recording/confirmation-dedupe-ttl"
