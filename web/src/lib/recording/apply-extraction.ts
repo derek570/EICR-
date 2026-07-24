@@ -1028,6 +1028,24 @@ function observationLooksDuplicate(candidate: string, existing: string): boolean
  *  Captures `observation_id` (server-assigned UUID) into row.server_id
  *  so a follow-up `observation_update` (BPG4 refinement) can patch the
  *  exact row even after the visible text changes. */
+/** Result of a `applyObservations` fold.
+ *
+ *  P7 (marker ④): side-effects (pending-photo attach, reverse-link feed) and
+ *  downstream schedule projection must fire on ACCEPTED creations / explicit
+ *  field-fills — NEVER a raw replay frame. So the fold TRACKS which incoming
+ *  observations it actually accepted (`acceptedForSchedule`) and returns the
+ *  mutated rows separately; the caller drives `markScheduleItemsFromObservations`
+ *  from `acceptedForSchedule`, not the raw `observations` array. */
+type ApplyObservationsResult = {
+  rows: ObservationRow[];
+  /** Observations that should drive inspection-schedule projection — new
+   *  creations plus idempotent-replays that filled a previously-ABSENT
+   *  schedule_item. A replay whose schedule_item was already set is NOT
+   *  included (re-projecting it would resurrect an outcome the inspector has
+   *  since cleared/edited). */
+  acceptedForSchedule: Observation[];
+};
+
 function applyObservations(
   job: JobDetail,
   observations: Observation[],
@@ -1036,12 +1054,13 @@ function applyObservations(
     onPhotoAttached?: (blobId: string) => void;
     onLastObservationCreated?: (id: string, timestamp: number) => void;
   } = {}
-): ObservationRow[] | null {
+): ApplyObservationsResult | null {
   if (observations.length === 0) return null;
   const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
   const certType = typeof job.certificate_type === 'string' ? job.certificate_type : 'EICR';
   const validScheduleRefs = buildScheduleRefSet(certType);
   let changed = false;
+  const acceptedForSchedule: Observation[] = [];
   // Track the count of pre-existing rows so we can compute which
   // appends are *new this turn* (vs. those carried in from the job
   // snapshot). The reverse-link helper only fires for new rows.
@@ -1058,14 +1077,83 @@ function applyObservations(
       });
       continue;
     }
-    // M9 — bidirectional fuzzy dedup against every existing row.
-    const duplicate = existing.some((o) => observationLooksDuplicate(text, o.description ?? ''));
-    if (duplicate) {
-      pipelineLog('apply_observations_dedup_skip', {
-        text_preview: text.slice(0, 40),
-      });
-      continue;
+    const incomingServerId =
+      typeof obs.observation_id === 'string' && obs.observation_id.length > 0
+        ? obs.observation_id
+        : null;
+
+    // P7 (marker ④, feedback id 82) — observation identity is SERVER-OWNED.
+    // The backend runs its own dedupe/refinement pipeline and stamps every
+    // created observation with a stable `observation_id`, so a server-created
+    // observation arriving here is already deduped and authoritative. The old
+    // client-side text-similarity gate (`observationLooksDuplicate`, >0.7 word
+    // overlap / 40-char prefix) was a redundant belt-and-braces filter that
+    // FALSE-POSITIVE-swallowed genuinely distinct observations sharing common
+    // electrical vocabulary (the session-36731498 top-hole-vs-side-hole drop:
+    // heard, never written — an inverse Audio-First violation). Key dedupe on
+    // the server id instead:
+    //  • non-nil id already present → IDEMPOTENT REPLAY (a P4d reconnect
+    //    replays the ORIGINAL extraction frame PRESERVING ids). Fill only
+    //    fields still ABSENT and SKIP every creation side-effect (append,
+    //    pending-photo attach, reverse-link) AND raw-frame schedule projection.
+    //    Never overwrite a since-refined field from the stale replay payload —
+    //    authoritative changes remain applyObservationUpdate's job.
+    //  • non-nil id NOT seen → apply (server authoritative, deduped).
+    //  • nil/empty id (older servers omit it) → retain the text-similarity
+    //    fallback for id-less rows ONLY so a nil-id replay can't duplicate.
+    if (incomingServerId) {
+      const replayIdx = existing.findIndex((o) => o.server_id === incomingServerId);
+      if (replayIdx >= 0) {
+        const row = { ...existing[replayIdx] };
+        let filled = false;
+        let scheduleFilled = false;
+        if (!row.regulation && obs.regulation) {
+          row.regulation = obs.regulation;
+          filled = true;
+        }
+        if (!row.rationale && obs.rationale) {
+          row.rationale = obs.rationale;
+          filled = true;
+        }
+        if (!row.regulation_title && obs.regulation_title) {
+          row.regulation_title = obs.regulation_title;
+          filled = true;
+        }
+        if (!row.regulation_description && obs.regulation_description) {
+          row.regulation_description = obs.regulation_description;
+          filled = true;
+        }
+        if (!row.schedule_item && obs.schedule_item && validScheduleRefs.has(obs.schedule_item)) {
+          row.schedule_item = obs.schedule_item;
+          filled = true;
+          scheduleFilled = true;
+        }
+        if (filled) {
+          existing[replayIdx] = row;
+          changed = true;
+        }
+        // Only a NEWLY-filled schedule_item may re-project onto the schedule;
+        // an already-set schedule_item on a replay must NOT resurrect an
+        // outcome the inspector has since cleared.
+        if (scheduleFilled) acceptedForSchedule.push(obs);
+        pipelineLog('apply_observations_idempotent_replay', {
+          server_id: incomingServerId.slice(0, 8),
+          filled,
+        });
+        continue;
+      }
+      // non-nil id NOT seen — fall through to the create path (authoritative).
+    } else {
+      // M9 / nil-id fallback — text-similarity dedup for id-less rows ONLY.
+      const duplicate = existing.some((o) => observationLooksDuplicate(text, o.description ?? ''));
+      if (duplicate) {
+        pipelineLog('apply_observations_dedup_skip', {
+          text_preview: text.slice(0, 40),
+        });
+        continue;
+      }
     }
+
     const id = globalThis.crypto?.randomUUID?.() ?? `obs-${Date.now()}-${existing.length + 1}`;
     const row: ObservationRow = {
       id,
@@ -1106,8 +1194,16 @@ function applyObservations(
     }
     existing.push(row);
     changed = true;
+    acceptedForSchedule.push(obs);
   }
-  if (changed) {
+  if (!changed) return null;
+
+  // Side-effects fire ONLY on a real append (P7): a fill-absent replay sets
+  // `changed` but appends nothing, so gating the pending-photo attach /
+  // reverse-link on `changed` would attach a photo to `existing[last]`
+  // (a pre-existing row) despite no new observation. Gate on the append.
+  const appended = existing.length > baselineCount;
+  if (appended) {
     // Forward-link: attach the pending photo to the LAST appended
     // observation if it's still within the 60 s auto-link window.
     // The merge helper is pure — it returns `true` iff it mutated
@@ -1126,14 +1222,10 @@ function applyObservations(
     }
     // Reverse-link feed: record the LAST appended observation so a
     // subsequent photo capture can attach to it directly (Phase 4).
-    // Only fires when this turn actually appended at least one new
-    // row — pre-existing observations don't count as "recent".
-    if (existing.length > baselineCount) {
-      const last = existing[existing.length - 1];
-      options.onLastObservationCreated?.(last.id, Date.now());
-    }
+    const last = existing[existing.length - 1];
+    options.onLastObservationCreated?.(last.id, Date.now());
   }
-  return changed ? existing : null;
+  return { rows: existing, acceptedForSchedule };
 }
 
 /**
@@ -1174,6 +1266,8 @@ export function applyObservationUpdate(
 ): ObservationRow[] | null {
   const existing = [...((job.observations as ObservationRow[] | undefined) ?? [])];
   const fuzzyKey = (update.original_text ?? update.observation_text ?? '').toLowerCase().trim();
+  const hasIncomingId =
+    typeof update.observation_id === 'string' && update.observation_id.length > 0;
   let matchIndex = -1;
   if (update.observation_id) {
     matchIndex = existing.findIndex((o) => o.server_id === update.observation_id);
@@ -1186,6 +1280,14 @@ export function applyObservationUpdate(
     const targetWords = new Set(fuzzyKey.split(/\s+/).filter(Boolean));
     if (targetWords.size > 0) {
       for (let i = existing.length - 1; i >= 0; i--) {
+        // P7 (marker ④): SCOPE the fuzzy fallback. When the update carries a
+        // non-empty observation_id that MISSED, NEVER fuzzy-match a row already
+        // carrying a DIFFERENT server_id — it's a distinct server-owned
+        // observation (the same side/top-hole shape). Only legacy (no-server_id)
+        // rows may fuzzy-match; the incoming id is then STAMPED onto the matched
+        // row below so future updates match by id. A nil incoming id keeps the
+        // unrestricted fuzzy (older-server compat — no id to conflict).
+        if (hasIncomingId && existing[i].server_id) continue;
         const existingText = (existing[i].description ?? '').toLowerCase().trim();
         if (existingText === fuzzyKey) {
           matchIndex = i;
@@ -1837,7 +1939,8 @@ export function applyExtractionToJob(
         typeof row.max_disconnect_time_s === 'string'
           ? (row.max_disconnect_time_s as string)
           : undefined;
-      const computed = type && rating ? maxZsString({ deviceType: type, rating, disconnectTime: disc }) : null;
+      const computed =
+        type && rating ? maxZsString({ deviceType: type, rating, disconnectTime: disc }) : null;
 
       if (computed == null) {
         // P3 Fix 6 — the rating is no longer usable for a max-Zs lookup (it
@@ -1931,7 +2034,7 @@ export function applyExtractionToJob(
   }
 
   // Observations.
-  const newObservations =
+  const obsResult =
     isEic && observations.length > 0
       ? null
       : applyObservations(job, observations, {
@@ -1939,7 +2042,7 @@ export function applyExtractionToJob(
           onPhotoAttached: options.onPhotoAttached,
           onLastObservationCreated: options.onLastObservationCreated,
         });
-  if (newObservations) patch.observations = newObservations;
+  if (obsResult) patch.observations = obsResult.rows;
   if (isEic && observations.length > 0) {
     pipelineLog('apply_eic_dropped_observations', {
       dropped_count: observations.length,
@@ -1952,7 +2055,17 @@ export function applyExtractionToJob(
   // shows up on the Inspection tab but the outcome column stays
   // blank, forcing the inspector to manually tick what they already
   // dictated.
-  const newScheduleItems = markScheduleItemsFromObservations(job, observations);
+  //
+  // P7 (marker ④): project from the observations `applyObservations` ACTUALLY
+  // accepted (new creations + newly-filled schedule_items) — NEVER the raw
+  // frame. A P4d reconnect replays the ORIGINAL observation frame; consuming it
+  // raw here would re-project a schedule outcome the inspector has since cleared
+  // or edited (the `hasValue` user-set guard only protects an already-SET
+  // outcome, so a CLEARED ref would silently re-appear). On the EIC drop path
+  // (observations discarded) the schedule frame is empty — unchanged behaviour.
+  const scheduleObservations =
+    isEic && observations.length > 0 ? [] : (obsResult?.acceptedForSchedule ?? []);
+  const newScheduleItems = markScheduleItemsFromObservations(job, scheduleObservations);
   if (newScheduleItems) {
     const existingSchedule = (job.inspection_schedule as Record<string, unknown> | undefined) ?? {};
     patch.inspection_schedule = { ...existingSchedule, items: newScheduleItems };
