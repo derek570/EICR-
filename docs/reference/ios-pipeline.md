@@ -153,6 +153,25 @@ Applied at **two seams**, with this consumer routing table:
 
 ---
 
+## Model-decision prompt steers (P8 — `sonnet_agentic_system.md`)
+
+> Added 2026-07-24 (feedback ids 88 + 83). Backend **prompt-only**, ONE batched edit, **zero wire change** — both clients benefit identically. These are MODEL-DECISION fixes: recorded-lane fixtures cannot lock a should-have-decided-differently bug, so verification is LIVE probes / the nightly live lane, not a corpus fixture.
+
+Two steers were folded into `config/prompts/sonnet_agentic_system.md`. Both land in the SHARED region (outside the `<!--A1:OFF-->`/`<!--A1:ON-->` marker blocks), so they render in BOTH `VOICE_AGENTIC_ANSWERS` flag states.
+
+| Steer | Where | Rule |
+|-------|-------|------|
+| **Steer 1 — garble-adjacent value writes (id 88)** | Folded into **Example 8** (`Calculate Zs vs bare Zs`) | When a field anchor + an UNAMBIGUOUS circuit/board scope + a schema-valid value are ALL present, WRITE even if a garble (`"n o"`, a stray mid-utterance `"no"`, filler) sits between anchor and value — a mid-utterance garble is not a negation (`"Zs on the cooker is n o 0.55"` → `record_reading`, not a `missing_value` ask). Does NOT weaken missing-scope / contradiction / invalid-range handling; does NOT fire for a leading-`"no"` correction with no in-utterance anchor+scope (`"No. It was 0.63"` stays a correction), nor for a `"no"`+value reply to a pending `ask_user` (that resolves the ask). |
+| **Steer 2 — observation C-coding deciding-facts checklist (id 83)** | Inside the existing **AMBIGUOUS C2/C3 SEVERITY** block (reuses its bounded clarification budget + `clarification_chain_id` framing — no parallel ask path) | A compact THREE-class checklist. TWO classes (enclosure penetrations/holes · basic protection at accessories/CUs) share one ACCESS LADDER — live parts accessible TO TOUCH → **C1**; potential access → **C2**; tool/lockable or no danger → **C3**; main protective **bonding** has its OWN tree (for an extraneous-conductive part, absent/ineffective bonding or CSA <6 mm² → C2; thermal damage independently → C2, or C1 if immediate present danger; a sound ≥6 mm² bond with no thermal damage → **C3 at most, never C2**). Per-class BS 7671 citations (416.2.2 top-surface IP4X vs 416.2.1 side IP2X; 411.3.1.2 + 544.1.1/Table 54.8 bonding; 701.415.2 bathroom supplementary; 512.2 environmental IP ≠ 416.2). A FACT-WEIGHTING cue, never a blanket-default code: weight the deciding fact, ASK it first (bounded: one initial ask + at most one continuation), then code. **All outcomes are emittable C1/C2/C3/FI — there is no NC code in `record_observation` (enum is C1/C2/C3/FI); the plan's "NC"/"NO observation" outcomes were reworked to "C3 at most, never C2" during the Codex diff review so an explicit observation always records a valid code (RULE 1a) and no silent-drop / dropped-observation-net path exists.** |
+
+**Prompt-budget note:** the steers added ~+745 tokens (base render) / ~+745 (combined), minimised via the shared ACCESS LADDER consolidation + terse prose. A measured cap bump on BOTH budget assertions in `src/__tests__/stage6-agentic-prompt.test.js` was the EXPECTED path — the plan states "compaction cannot recover ~600 tokens by folding alone" and the ~250-token target is STRUCTURALLY unreachable with Derek's mandated THREE cited C2/C3 classes. Base cap `renderedOn <= 16790` (measured 16705), combined cap `combinedRenderedOn <= 22025` (measured 21943), each `measured + ~100` headroom. One cold-cache window post-deploy (~5-min TTL re-warms).
+
+**Live probes (post-deploy, documented — not run at merge; no `ANTHROPIC_API_KEY` in CI yet):** A) `"Zs on the <designation> is n o <value>"` → WRITE + read-back, no ask. B) read back a value, then `"No. It was <other>"` → correction, not a spurious write. C) `"Observation: small hole in the top of the consumer unit"` (multi-turn) → ONE ask naming the deciding fact, then a DISCRIMINATING code (live-parts-accessible-to-touch → **C1**, not C2). D) bare `"Zs for circuit N."` → still exactly ONE `missing_value` ask (Example-8 / marker-② steer survives).
+
+**Key files:** `config/prompts/sonnet_agentic_system.md` (the two steers), `src/__tests__/stage6-agentic-prompt.test.js` (bumped budget caps + the Group 0b Steer-1 pin + the Group 18 Steer-2 pin, both asserted in BOTH flag renders), `src/__tests__/stage6-agentic-answers-session.test.js` + `src/extraction/eicr-extraction-session.js` + `docs/reference/architecture.md` (stale-comment sweep — the flag-off render is no longer pre-A1 byte-identical once shared-region edits land).
+
+---
+
 ## Auto-Sleep (Deepgram Power Saving)
 
 Prevents wasted Deepgram billing when the inspector stops speaking. Three-tier state machine:

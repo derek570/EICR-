@@ -81,6 +81,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   let combinedPrompt;
 
   let renderedOn;
+  let renderedOff;
   let combinedRenderedOn;
 
   beforeAll(async () => {
@@ -98,6 +99,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     // contains every line of both variants.
     const sessionModule = await import('../extraction/eicr-extraction-session.js');
     renderedOn = sessionModule.renderAgenticSystemPrompt(true);
+    // P8 (2026-07-24): steers land in the SHARED region, so they must render
+    // in BOTH flag variants — pin the flag-OFF render too.
+    renderedOff = sessionModule.renderAgenticSystemPrompt(false);
     combinedRenderedOn = renderedOn.trimEnd() + '\n\n' + schedule.trimEnd() + '\n\n' + wrag;
   });
 
@@ -133,6 +137,40 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(prompt).toContain('include `context_board_id` when working on a sub-board');
       // The explicit-compute path is preserved.
       expect(prompt).toContain('calculate_zs({circuit_ref:2, all:false})');
+    });
+
+    // P8 (2026-07-24, feedback id 88): Steer 1 — a garbled value adjacent to a
+    // complete anchored reading ("Zs on the cooker is n o 0.55") must still
+    // WRITE, not draw a spurious missing_value ask. Folded into Example 8; it
+    // must NOT weaken the value-less ask (pinned above) or the correction /
+    // ask-reply guards. Lands in the shared region → renders in BOTH flag
+    // states.
+    test('Steer 1 — garble-adjacent value still writes (id 88), in both flag states', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('GARBLE-ADJACENT VALUE (id 88)');
+        // The core rule: a mid-utterance garble is not a negation.
+        expect(rendered).toContain('a mid-utterance garble is not a negation');
+        // The id-88 worked example resolves to a WRITE, not an ask.
+        expect(rendered).toContain('"Zs on the cooker is n o 0.55"');
+        expect(rendered).toMatch(/"Zs on the cooker is n o 0\.55" → `record_reading`/);
+        // Structural-completeness contract is NOT weakened.
+        expect(rendered).toContain(
+          'field anchor, an UNAMBIGUOUS circuit/board scope, AND a schema-valid value'
+        );
+        // Empty-slot writes directly; correcting a filled slot follows the
+        // normal correction path (circuit clears-then-records, board overwrites
+        // via record_board_reading) — does NOT bypass the correction contract.
+        expect(rendered).toMatch(/correcting an ALREADY-FILLED slot follows the normal correction path/);
+        expect(rendered).toMatch(/a board field overwrites via `record_board_reading`/);
+        // The precedence guards survive: an ask-reply resolves first, and a
+        // leading-"no" reply (value-bearing or not) is NOT a fresh Steer-1 write.
+        expect(rendered).toMatch(/reply to a pending `ask_user` resolves that ask first/);
+        expect(rendered).toMatch(/a leading-"no" reply with no in-utterance anchor\+scope is NOT this write/);
+        expect(rendered).toMatch(/"No\. It was 0\.63"/);
+      }
+      // The value-less ask (Example 8 / marker-② Phase-4 steer) MUST survive —
+      // Steer 1 sits beside it, not on top of it.
+      expect(renderedOn).toContain('BARE field+circuit, no value, no compute verb');
     });
   });
 
@@ -387,11 +425,37 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (four previously-omitted real tools + answer_user +
       // inspect_session_state), and the YOU-ARE-DONE-WHEN question carve-out.
       // Measured 21198 (flag-on render); cap 21300 leaves ~100-token
-      // headroom. The flag-off render stays byte-identical to the pre-A1
-      // prompt (pinned in stage6-agentic-answers-session.test.js), so the
-      // deployed flag-off budget is unchanged.
+      // headroom.
+      //
+      // 2026-07-24 (P8 prompt-steers, feedback ids 88 + 83): a single batched
+      // edit added two model-decision steers to the SHARED region (outside the
+      // A1 marker blocks, so BOTH flag renders grow identically): (1) Steer 1
+      // GARBLE-ADJACENT VALUE — a field+scope+value utterance still WRITEs when
+      // a garble ("n o") sits between anchor and value (folded into Example 8);
+      // (2) Steer 2 DECIDING FACTS BY CLASS — a compact three-class C2/C3
+      // deciding-facts checklist (enclosure holes / accessories-CUs / bonding)
+      // inside the AMBIGUOUS C2/C3 SEVERITY block, reusing its bounded
+      // clarification budget + clarification_chain_id framing. Net growth
+      // ~+745 tokens (minimised via
+      // a shared ACCESS LADDER; a measured cap bump was the EXPECTED path per
+      // the plan, not a fallback — compaction cannot fold ~500 tokens away).
+      // Measured 21714; after the Codex diff-review cycle-1 correctness fixes
+      // (NC→C3-at-most since the record_observation enum has no NC code; the
+      // bounded clarification-budget wording; the Steer-1 precedence + empty-
+      // slot-vs-correction guards; bonding gets its OWN tree off the ACCESS
+      // LADDER) the combined render measures 21834; cap 21940 leaves ~106-token
+      // headroom. Net growth (~+636) exceeds the plan's aspirational ~250
+      // target, which is STRUCTURALLY unreachable with Derek's mandated THREE
+      // cited C2/C3 classes — the plan itself states a measured cap bump on
+      // BOTH caps is the EXPECTED path ("compaction cannot recover ~600 tokens
+      // by folding alone"). Minimised via the shared ACCESS LADDER + terse
+      // prose. Measured 21943 (after the cycle-1/mini-review/cycle-2/cycle-3 fixes); cap
+      // 22025 leaves ~82-token headroom. NOTE: the flag-off render is NO LONGER
+      // byte-identical to the pre-A1 prompt (P8 grew the shared region); only
+      // the A1 OFF-marker blocks stay verbatim. The deployed prod render is
+      // flag-ON.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(21300);
+      expect(estimate).toBeLessThanOrEqual(22025);
     });
   });
 
@@ -1095,8 +1159,17 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 2026-07-23 (A1 agentic-voice): measured against the RENDERED flag-on
       // base (see the Group 1 comment) — 15960 measured; cap 16060 leaves
       // ~100-token headroom.
+      // 2026-07-24 (P8 prompt-steers, ids 88 + 83): Steer 1 (garble-adjacent
+      // value writes, folded into Example 8) + Steer 2 (three-class C2/C3
+      // deciding-facts checklist in the AMBIGUOUS block) land in the SHARED
+      // region, so the base render grows too (~+517 tokens, minimised via a
+      // shared ACCESS LADDER). A measured cap bump on BOTH caps was the
+      // EXPECTED path per the P8 plan (see the Group 1 combined-cap comment).
+      // After the Codex diff-review correctness fixes (cycle 1 + mini-review +
+      // cycle 2 — see the combined cap comment) the base render measures 16705;
+      // cap 16790 leaves ~85-token headroom.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(16060);
+      expect(estimate).toBeLessThanOrEqual(16790);
     });
   });
 
@@ -1717,7 +1790,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // first matches the RULE 1 cross-reference.
       const idx = prompt.indexOf('AMBIGUOUS C2/C3 SEVERITY — ONE TARGETED FACTUAL ASK');
       expect(idx).toBeGreaterThanOrEqual(0);
-      const block = prompt.slice(idx, idx + 3200);
+      // Bound the slice STRUCTURALLY at the next section header (P8 2026-07-24):
+      // the Steer-2 DECIDING FACTS BY CLASS checklist was inserted between BOUND
+      // and CHAIN ID, growing the block past the old fixed 3200-char window.
+      // Ending at 'WORKED EXAMPLES:' captures the whole AMBIGUOUS block (incl.
+      // CHAIN ID's `clarification_chain_id`) without pulling in later examples
+      // that could false-match.
+      const end = prompt.indexOf('WORKED EXAMPLES:', idx);
+      expect(end).toBeGreaterThan(idx);
+      const block = prompt.slice(idx, end);
       expect(block).toEqual(expect.stringContaining('`reason: "observation_confirmation"`'));
       expect(block).toEqual(expect.stringContaining('`context_field: "observation_clarify"`'));
       expect(block).toEqual(expect.stringContaining('`expected_answer_shape: "free_text"`'));
@@ -1754,6 +1835,88 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       const block = prompt.slice(idx, idx + 2000);
       expect(block).toMatch(/AUTHORITATIVE/);
       expect(block).toMatch(/NOT subsumed/);
+    });
+
+    // P8 (2026-07-24, feedback id 83): Steer 2 — a compact three-class C2/C3
+    // deciding-facts checklist inside the AMBIGUOUS C2/C3 SEVERITY block, so it
+    // rides the block's existing bounded clarification budget +
+    // clarification_chain_id framing (no parallel ask path). Fact-weighting cue, never a blanket
+    // default code. Lands in the shared region → both flag states. STATIC
+    // guards only — the behavioural half (model asks the deciding fact) is a
+    // live-lane probe.
+    test('Steer 2 — three-class C2/C3 deciding-facts checklist (id 83), in both flag states', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        // The checklist lives INSIDE the AMBIGUOUS block (reuses its budget).
+        const ai = rendered.indexOf('AMBIGUOUS C2/C3 SEVERITY — ONE TARGETED FACTUAL ASK');
+        const bi = rendered.indexOf('- BOUND:', ai);
+        const di = rendered.indexOf('DECIDING FACTS BY CLASS (id 83', ai);
+        // Search CHAIN ID from di so we can't accidentally match an earlier one.
+        const ci = rendered.indexOf('- CHAIN ID:', di);
+        expect(ai).toBeGreaterThanOrEqual(0);
+        expect(bi).toBeGreaterThan(ai);
+        // The checklist references "the bounded clarification budget above", so
+        // it MUST sit AFTER BOUND and BEFORE CHAIN ID — pin the full ordering.
+        expect(di).toBeGreaterThan(bi);
+        expect(ci).toBeGreaterThan(di);
+        const block = rendered.slice(di, ci);
+        // Fact-weighting, ask-first, never blanket-default.
+        expect(block).toMatch(/never blanket-default a code/);
+        // Uses the BOUNDED clarification budget (one initial + one continuation),
+        // NOT a "one-ask" budget that would suppress a permitted continuation.
+        expect(block).toMatch(/bounded clarification budget above \(one initial ask \+ at most one continuation\)/);
+        // All outcomes are emittable codes — there is no NC code in the tool enum.
+        expect(block).toMatch(/there is no NC code/);
+        expect(block).not.toMatch(/→ \*\*NC\*\*/);
+        // ACCESS LADDER covers TWO classes (holes + accessories), NOT bonding.
+        expect(block).toMatch(/live parts accessible TO TOUCH → \*\*C1\*\*/);
+        expect(block).toMatch(/potential access, not presently touchable → \*\*C2\*\*/);
+        // All three classes present.
+        expect(block).toContain('Enclosure penetrations/holes');
+        expect(block).toContain('Basic protection at accessories / CUs');
+        expect(block).toContain('Bonding (main protective)');
+        // Accessories/CUs carries its ranked deciding facts (per the plan):
+        // access ladder, then broken/missing-vs-design-gap, then height.
+        const acc = block.slice(
+          block.indexOf('Basic protection at accessories / CUs'),
+          block.indexOf('Bonding (main protective)')
+        );
+        expect(acc).toMatch(/broken\/missing component vs design gap/);
+        expect(acc).toMatch(/height\/accessibility/);
+        // Bonding uses its OWN tree, not the shared ACCESS LADDER.
+        expect(block).toMatch(/Bonding \(main protective\) — its OWN tree, not the ACCESS LADDER/);
+        // Key BS 7671 citations (verified current-edition at execution).
+        expect(block).toContain('416.2.2'); // top-surface IP4X
+        expect(block).toContain('416.2.1'); // side IP2X
+        expect(block).toContain('411.3.1.2'); // bonding provision
+        expect(block).toContain('701.415.2'); // bathroom supplementary omission
+        expect(block).toContain('512.2'); // environmental IP, NOT 416.2
+        // Bonding branches — asserted LOCALLY within the main-bond clause (up to
+        // the bathroom sentence) so the C2 routing and the sound-bond cap are
+        // pinned to the right clause, not matched anywhere in the checklist.
+        const bond = block.slice(
+          block.indexOf('Bonding (main protective)'),
+          block.indexOf('Bathroom supplementary bonding')
+        );
+        expect(bond.length).toBeGreaterThan(0);
+        // Extraneous prerequisite governs ONLY the absent/undersized branches.
+        expect(bond).toMatch(
+          /the absent\/ineffective and undersized branches apply to an EXTRANEOUS-conductive part/
+        );
+        expect(bond).toMatch(/absent\/ineffective main bond, OR CSA below 6 mm² → \*\*C2\*\*/);
+        // Thermal damage is INDEPENDENT of extraneous status, and escalates to
+        // C1 on immediate present danger (not flattened to an unconditional C2).
+        expect(bond).toMatch(
+          /thermal damage → \*\*C2\*\* \(or \*\*C1\*\* if the facts establish immediate present danger — the clear-cut guard above\), independent of extraneous status/
+        );
+        // The safety-critical anti-over-code gradation, bound to the sound-bond
+        // clause: a sound ≥6mm² bond is C3 at most, NEVER C2 (emittable — the
+        // replacement for the un-emittable NC code).
+        expect(bond).toMatch(
+          /SOUND bond at least 6 mm² with no thermal damage is NOT potentially dangerous → \*\*C3 at most\*\* \(improvement for the undersize\), never C2/
+        );
+        // Bathroom supplementary omission also caps at C3, never C2.
+        expect(block).toMatch(/omission conditions are met it may be omitted → \*\*C3 at most, never C2\*\*/);
+      }
     });
   });
 
