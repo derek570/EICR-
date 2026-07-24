@@ -6,11 +6,14 @@
  *  - VOICE_AGENTIC_ANSWERS resolved ONCE at construction, latched; default
  *    TRUE unless exactly 'false'; boolean constructor override wins.
  *  - renderAgenticSystemPrompt: flag-off render carries NO marker lines and
- *    NO answer-feature content (byte-identity to the pre-A1 prompt is proven
- *    by construction — OFF blocks hold the original lines verbatim — and was
- *    verified against `git show main:` at build time); flag-on render
- *    carries the ANSWERING QUESTIONS section, TOOLS (18), and the
- *    inspect_session_state steer replacing "There are NO query_* tools".
+ *    NO answer-feature content. The A1 OFF-marker blocks still hold their
+ *    original A1-era lines verbatim; the flag-on render adds the ANSWERING
+ *    QUESTIONS section, TOOLS (18), and the inspect_session_state steer
+ *    replacing "There are NO query_* tools". NOTE: the flag-off render is no
+ *    longer byte-identical to the *pre-A1* prompt — subsequent SHARED-region
+ *    edits outside the marker blocks (e.g. P8 2026-07-24 prompt steers) grow
+ *    BOTH renders equally. This test proves the ABSENCE of answer-feature
+ *    content in the flag-off render, not byte-identity to any snapshot.
  *  - the selected render SURVIVES applyModeChange (both flag states).
  *  - gate: LOW_CONTENT → BORDERLINE_FORWARD only when the latched flag is
  *    passed true; option defaults FALSE (session-absent fail-closed);
