@@ -95,6 +95,28 @@ For the five text-op fields (`circuit_op`, `observation`, `observation_deletion`
 
 ---
 
+## Observation apply identity (P7 — server-id keying, marker ④)
+
+> Added 2026-07-24 (feedback id 82, session 36731498). Client-only (iOS `applySonnetObservations` + web `applyObservations`); **zero backend change**.
+
+The observation ENTITY apply path (distinct from the confirmation TTS path above) now keys dedupe on the server-assigned `observation_id`, not client-side text similarity. The backend owns observation identity — it stamps every created observation with a stable id and runs its own dedupe/refinement pipeline (BPG4, RULE-6, D2 chains) — so a server-created observation arriving at the client is already deduped and authoritative.
+
+The old client text-similarity gate (>0.7 word overlap / 40-char prefix, on BOTH clients) was a redundant belt-and-braces filter that false-positive-swallowed genuinely distinct observations sharing common electrical vocabulary — e.g. "small hole in the **side** of the enclosure" vs "small hole present in the **top** of the enclosure" (~0.8 overlap). Session 36731498's top-hole C3 was backend-created, its confirmation SPOKEN, then dropped by this gate — heard, never written (an inverse Audio-First violation).
+
+Apply rules (`applySonnetObservations` / `applyObservations`):
+
+| Incoming `observation_id` | Behaviour |
+|---------------------------|-----------|
+| non-nil, already on a row (`server_id` match) | **IDEMPOTENT REPLAY — PURE NO-OP.** A P4d reconnect replays the ORIGINAL extraction frame PRESERVING ids. Because it is the SAME frame the original apply already consumed, "filling absent fields" could only ever no-op OR restore a field an authoritative `observation_update` has since CLEARED (`regulation_title`/`description` clear to nil on a table-miss refinement; schedule linking is owned by the create path), so a replay fills NOTHING and skips every creation side-effect (append, pending-photo attach, `recentObservationId`/reverse-link, `observation_added` card) AND schedule projection. Authoritative field changes remain `observation_update`'s job. |
+| non-nil, not seen | apply (server authoritative, already deduped) |
+| nil/empty (older servers omit it) | retain the text-similarity fallback for id-less rows ONLY, so a nil-id replay can't duplicate-render |
+
+The `observation_update` handler is **id-first, scoped-fuzzy**: match `server_id` first; on a miss, fuzzy-match ONLY legacy (no-`server_id`) rows and STAMP the incoming id onto the match; NEVER fuzzy-match a row carrying a DIFFERENT server id (that would patch the wrong distinct observation — the same side/top-hole shape). A nil incoming id keeps the unrestricted fuzzy (older-server compat).
+
+One-release diagnostic (iOS): `observation_apply {observation_id, dedupe_bypassed_reason}` on the `client_diagnostic` channel confirms from the field that id-keying introduces no duplicate-render regression. Parity: `web/docs/parity-ledger.md` `recording/observation-id-dedupe`.
+
+---
+
 ## Backend transcript normalisation (P6 — canonical ingest layer)
 
 > Added 2026-07-24 (feedback ids 89 + 80A). Backend-only, **zero wire change**.
