@@ -316,6 +316,26 @@ describe('P4 — the answered-ask silent-continuation net FIRES', () => {
     expect((r2.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(false);
     expect(declineAckPrompts(r2)).toHaveLength(1);
   });
+
+  test('(e-cancel) Codex r1: an answered ask on a CANCELLED turn with nothing audible → ack STILL fires (F7 cancellation branch needs size===0, so it misses the answered case)', async () => {
+    // The generation is cancelled AFTER the ask was answered (a wedged/failed
+    // continuation → the cancellation finalization). F7's cancellation branch
+    // requires emittedAskToolCallIds.size===0, so a size>0 answered ask is
+    // covered by neither F7, marker-② (!cancelled), nor a not-cancelled P4 —
+    // genuine silence, the exact feedback-85 class. P4 closes it.
+    runToolLoopSpy.mockImplementation(async () => {
+      throw new Error('stream disconnected mid-continuation');
+    });
+    const opts = baseOpts({ _seedAskLifecycle: declineLifecycle(), generationId: 'gen-cx' });
+    const result = await runShadowHarness(makeSession(), 'ask, decline, then cancel', [], opts);
+    // The turn ends well-formed…
+    expect(Array.isArray(result.confirmations)).toBe(true);
+    // …and exactly ONE field-nil ack survives — the P4 decline ack, NOT the F7
+    // ASK_AUDIBILITY_FALLBACK_TEXT (F7's cancellation branch declined, size>0).
+    const fieldNil = (result.confirmations ?? []).filter((c) => c.field == null);
+    expect(fieldNil).toHaveLength(1);
+    expect(DECLINE_SET.has(fieldNil[0].text)).toBe(true);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -403,6 +423,28 @@ describe('P4 — does NOT fire', () => {
       ],
     });
     const result = await runShadowHarness(makeSession(), 'rcd script step', [], opts);
+    expect(declineAckPrompts(result)).toHaveLength(0);
+  });
+
+  test('(h2) Codex r1: an ask RE-EMITTED after its earlier resolution → no ack (resolutionSeq must be > the latest emissionSeq)', async () => {
+    // Defensive ordering: the same tool_call_id is emitted, answered, then
+    // emitted AGAIN (a re-emission). The ledger keeps answered:true but the new
+    // emissionSeq now exceeds the resolutionSeq — the ask has NOT been answered
+    // since re-emission, so firing would double-speak over a live question.
+    const opts = baseOpts({
+      _seedAskLifecycle: [
+        { event: 'emitted', toolCallId: 'toolu_re', source: 'initial' },
+        {
+          event: 'answered',
+          toolCallId: 'toolu_re',
+          source: 'initial',
+          answered: true,
+          declineClass: 'decline',
+        },
+        { event: 'emitted', toolCallId: 'toolu_re', source: 'initial' }, // re-emitted, now unanswered
+      ],
+    });
+    const result = await runShadowHarness(makeSession(), 're-emitted ask', [], opts);
     expect(declineAckPrompts(result)).toHaveLength(0);
   });
 

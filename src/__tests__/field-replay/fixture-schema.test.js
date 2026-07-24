@@ -443,6 +443,26 @@ describe('capability exclusions + fidelity rules', () => {
     ).toBe(true);
   });
 
+  test('Codex r1: field_null_fallback with a PADDED text_exact (leading/trailing whitespace) is REJECTED (unsatisfiable against the trimmed candidate)', async () => {
+    // Runtime confirmationMatches trims the candidate confirmation text and
+    // compares it to the RAW matcher, so a padded text_exact validates yet can
+    // never turn green. Both leading- and trailing-padded values must reject.
+    for (const padded of [
+      ' No problem, moving on.',
+      'No problem, moving on. ',
+      '\tNo problem, moving on.',
+    ]) {
+      const turn = fnfTurn({ text_exact: padded });
+      const r = await validateFixtureDocument(baseFixture({ turns: [turn] }));
+      expect(
+        r.errors.some(
+          (e) =>
+            e.code === FIXTURE_ERROR_CODES.SCHEMA && /field_null_fallback/.test(e.message ?? '')
+        )
+      ).toBe(true);
+    }
+  });
+
   test('executable fixture fails CLOSED on mid-session start OR any prestate block (prestate/warm-up are NOT applied)', async () => {
     // A mid-session first turn needs state the runner never fast-forwards.
     const midSession = await validateFixtureDocument(

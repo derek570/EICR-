@@ -746,11 +746,15 @@ export async function validateFixtureDocument(doc, opts = {}) {
         // text_exact provides no meaningful oracle and stays REJECTED. The
         // field:null + circuit:null implication (enforced at match time in
         // replay-assertions.mjs) and the DUPLICATE_OUTPUT_ID check above are
-        // unchanged.
-        const teNonEmpty =
-          typeof out.match?.text_exact === 'string' && out.match.text_exact.trim().length > 0;
-        if (!teNonEmpty) {
-          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, xPath, 'field_null_fallback requires a non-empty trimmed byte-exact text_exact (and implies field:null + circuit:null)'));
+        // unchanged. The value must be ALREADY trimmed (`=== .trim()`), not
+        // merely trim-non-empty (Codex r1): runtime `confirmationMatches` trims
+        // the CANDIDATE confirmation text and compares it to the RAW matcher
+        // (replay-assertions.mjs), so a padded text_exact is byte-exact
+        // UNSATISFIABLE — it would validate here yet never turn green.
+        const te = out.match?.text_exact;
+        const teValid = typeof te === 'string' && te.trim().length > 0 && te === te.trim();
+        if (!teValid) {
+          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, xPath, 'field_null_fallback requires a non-empty, already-trimmed byte-exact text_exact (no leading/trailing whitespace; implies field:null + circuit:null)'));
         }
       }
       if (out.operation_ref && !opIds.has(out.operation_ref)) {

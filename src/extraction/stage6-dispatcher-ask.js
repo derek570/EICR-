@@ -1634,38 +1634,31 @@ const PENDING_VALUE_APOLOGY =
 // conservative. Substring/token matching (NOT the exact whole-string
 // CANCEL_PHRASES check) so the repro "No. Don't worry." — which CANCEL_PHRASES
 // cannot match because of the internal full stop — is still classified decline.
-const DECLINE_MARKERS = [
-  "don't worry",
-  'dont worry',
-  'not worried',
-  'leave it',
-  'leave that',
-  'leave them',
-  'skip it',
-  'skip that',
-  'skip them',
-  'never mind',
-  'nevermind',
-  'forget it',
-  'forget that',
-  'no problem',
-  "don't bother",
-  'dont bother',
-];
-const BARE_NEGATIONS = new Set(['no', 'nope', 'nah', 'no thanks', 'no thank you']);
-function classifyDeclineReply(userText) {
+// An allowlisted decline PHRASE — a brush-off with no substantive content.
+// Alternation fragment (no anchors) reused inside the whole-reply matcher.
+const DECLINE_PHRASE_RE =
+  "(?:don'?t worry(?: about it)?|not worried|leave (?:it|that|them)|skip (?:it|that|them)|never ?mind|forget (?:it|that)|no problem|don'?t bother)";
+// The WHOLE reply must be a bare negation, an allowlisted decline phrase, or a
+// leading bare-negation composed with one — with only punctuation/whitespace
+// between and around. Codex r1: the previous unrestricted `^no[\s.,!—-]` +
+// substring matching mis-classified substantive answers ("No, it was 0.63",
+// "No CPC on that circuit", "Don't worry, it is circuit three") as declines.
+// Anchoring the WHOLE reply keeps "No. Don't worry." while rejecting anything
+// carrying a value, field, or other content.
+const BARE_NEGATION_RE = '(?:no|nope|nah)(?: thanks| thank you)?';
+const WHOLE_DECLINE_RE = new RegExp(
+  `^(?:${BARE_NEGATION_RE}|(?:${BARE_NEGATION_RE}[\\s.,!?—-]+)?${DECLINE_PHRASE_RE})[\\s.,!?—-]*$`,
+  'i'
+);
+export function classifyDeclineReply(userText) {
   if (typeof userText !== 'string') return null;
-  const lower = userText.toLowerCase().trim();
-  if (!lower) return null;
-  // Bare negation (outer punctuation stripped) — "No.", "nope", "nah".
-  const stripped = lower.replace(/^[^\w]+|[^\w]+$/g, '');
-  if (BARE_NEGATIONS.has(stripped)) return 'decline';
-  // A leading bare "no" followed only by decline filler ("No. Don't worry.").
-  if (/^no[\s.,!—-]/.test(lower)) return 'decline';
-  for (const marker of DECLINE_MARKERS) {
-    if (lower.includes(marker)) return 'decline';
-  }
-  return null;
+  const trimmed = userText.trim();
+  if (!trimmed) return null;
+  // A reply carrying ANY digit is substantive (a value / circuit ref) — never a
+  // decline, regardless of a leading "no" (belt-and-braces alongside the
+  // whole-reply anchor, which already rejects it).
+  if (/\d/.test(trimmed)) return null;
+  return WHOLE_DECLINE_RE.test(trimmed) ? 'decline' : null;
 }
 
 /**

@@ -2604,11 +2604,24 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the ack reaches result.confirmations THIS turn, exactly like marker-②).
     //
     // Fires when ALL hold:
-    //   1. confirmationsEnabled + NOT cancelled (a mode-off user opted out of
-    //      the spoken channel; the F7 Item-3 cancellation branch owns cancelled
-    //      turns). NOTE: NOT gated on chimeObserved — the answered-ask signal
+    //   1. confirmationsEnabled (a mode-off user opted out of the spoken
+    //      channel). NOTE: NOT gated on chimeObserved — the answered-ask signal
     //      (a real user reply) is stronger proof of engagement than a chime,
-    //      and the F7 ask net is likewise not chime-gated.
+    //      and the F7 ask net is likewise not chime-gated. Codex r1 DEVIATION
+    //      from the plan's predicate-1 ("not cancelled"): the plan assumed the
+    //      F7 Item-3 cancellation branch owns cancelled turns, but that branch
+    //      fires ONLY when `emittedAskToolCallIds.size === 0` (a prior EMITTED
+    //      ask counts as its audibility — the documented PLAN-C residual), so an
+    //      ANSWERED ask on a cancelled turn (size>0) is covered by NEITHER F7
+    //      (needs size 0), marker-② (!cancelled), nor a not-cancelled P4 →
+    //      genuine silence, the exact feedback-85 class ("an answered turn MUST
+    //      produce audible output"). P4 is uniquely positioned to close it — it
+    //      knows the ask was ANSWERED, which F7 does not track. Firing on
+    //      cancelled is mutually exclusive with the F7 cancellation branch
+    //      (P4 requires an answered ask, size>0; F7 requires size===0) and the
+    //      cancelled finalization builds result.confirmations + stages the A1
+    //      answer, so a cancelled turn that DID read a value back / stage an
+    //      answer still suppresses the ack via predicate 3.
     //   2. The LAST ask emitted this turn was ANSWERED by a real user reply
     //      (`answered===true`, source initial/pvr). A decline reply counts; a
     //      timeout / user_moved_on does NOT (those resolve `answered:false`, so
@@ -2641,7 +2654,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // predicate 3 treats as a survivor — so in production this net is a
     // BACKSTOP for the frozen-no-op path, not the primary channel.
     try {
-      if (options.confirmationsEnabled === true && !cancelled) {
+      if (options.confirmationsEnabled === true) {
         // The last ask emitted this turn (max emissionSeq). Only emitted asks
         // (emissionSeq != null) are candidates — a resolution-only ledger entry
         // (defensive out-of-order) is never the "last emitted".
@@ -2650,11 +2663,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           if (rec.emissionSeq == null) continue;
           if (lastEmitted == null || rec.emissionSeq > lastEmitted.emissionSeq) lastEmitted = rec;
         }
-        // Fire only when the last emitted ask was a REAL answered reply. A
-        // timeout / user_moved_on (answered:false) leaves the spoken question
-        // as the turn's last audio, and an srv-* engine ask is never answered
-        // here — both correctly decline the net.
-        if (lastEmitted && lastEmitted.answered === true) {
+        // Fire only when the last emitted ask was a REAL answered reply whose
+        // resolution came AFTER its (latest) emission. A timeout / user_moved_on
+        // (answered:false) leaves the spoken question as the turn's last audio,
+        // and an srv-* engine ask is never answered here — both correctly
+        // decline the net. The `resolutionSeq > emissionSeq` guard (Codex r1)
+        // rejects a defensive out-of-order record AND a same-id RE-EMISSION
+        // after an earlier resolution (a re-emitted ask carries a stale
+        // answered:true but its new emissionSeq now exceeds its resolutionSeq —
+        // it has NOT been answered since re-emission, so it must not fire).
+        if (
+          lastEmitted &&
+          lastEmitted.answered === true &&
+          lastEmitted.resolutionSeq != null &&
+          lastEmitted.resolutionSeq > lastEmitted.emissionSeq
+        ) {
           const survivingConfCount = Array.isArray(result.confirmations)
             ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
             : 0;
