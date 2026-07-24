@@ -1,0 +1,362 @@
+/**
+ * stage6-observation-tier-routing.test.js — the observation-tier model router
+ * on the LIVE recording path (chunk C1).
+ *
+ * WHY: runLiveMode historically hard-coded `model: SHADOW_MODEL`
+ * (= process.env.SONNET_EXTRACT_MODEL = Haiku in prod) into runToolLoop, so
+ * EVERY observation severity-coding turn ran on Haiku — the tiered router in
+ * EICRExtractionSession.callWithRetry (eicr-extraction-session.js:2798) that
+ * escalates observation turns to OBSERVATION_EXTRACT_MODEL (Sonnet) never fired
+ * on this path. This suite is the deterministic routing matrix.
+ *
+ * The router:
+ *   - is DARK behind OBSERVATION_TIER_ROUTING (default OFF → byte-identical);
+ *   - classifies OBSERVATION_PATTERN on the RAW inspector text
+ *     (options.rawInspectorTranscript = untouched msg.text), NEVER the enriched
+ *     transcriptText — so a bare answer on an observation-question turn cannot
+ *     escalate (server-context isolation);
+ *   - routes the WHOLE loop (every continuation round) to the selected model;
+ *   - locks out the round-1 VOICE_LATENCY_ROUND1_MODEL override for
+ *     observation-tier turns (reading turns keep it);
+ *   - flows the selected model to the cost tracker (toolLoopOut.model);
+ *   - emits ONE PII-safe stage6.observation_tier_routing telemetry event.
+ *
+ * Model output QUALITY (does Sonnet actually code C2 correctly) is NOT tested
+ * here — that is advisory live-lane probing (non-deterministic). This suite
+ * asserts only WHICH MODEL the SDK is invoked with.
+ */
+
+import { jest } from '@jest/globals';
+
+import { mockClient } from './helpers/mockStream.js';
+import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
+import { CostTracker } from '../extraction/cost-tracker.js';
+
+// A distinctive sentinel so a routed observation turn is unambiguous vs the
+// default (SHADOW_MODEL, latched from SONNET_EXTRACT_MODEL at module import).
+const OBS_MODEL = 'claude-observation-tier-sentinel';
+const ROUND1_MODEL = 'claude-round1-fast-sentinel';
+
+// Observation-shaped raw utterance (contains the literal "observation" →
+// matches OBSERVATION_PATTERN). Reading utterance is digits-only (no match).
+const OBS_TRANSCRIPT = 'observation, cracked socket outlet on circuit four, category two';
+const READING_TRANSCRIPT = 'zs circuit one is nought point six two';
+
+function makeLogger() {
+  return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+}
+
+function endTurnRound(text = 'ok') {
+  return [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_end',
+        role: 'assistant',
+        content: [],
+        usage: {
+          input_tokens: 1000,
+          cache_creation_input_tokens: 100,
+          cache_read_input_tokens: 0,
+          output_tokens: 0,
+        },
+      },
+    },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+    { type: 'content_block_stop', index: 0 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn' },
+      usage: { output_tokens: 40 },
+    },
+    { type: 'message_stop' },
+  ];
+}
+
+function toolUseRound(name, input) {
+  return [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_tu',
+        role: 'assistant',
+        content: [],
+        usage: {
+          input_tokens: 800,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 500,
+          output_tokens: 0,
+        },
+      },
+    },
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'tool_use', id: 'toolu_1', name, input: {} },
+    },
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+    },
+    { type: 'content_block_stop', index: 0 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'tool_use' },
+      usage: { output_tokens: 30 },
+    },
+    { type: 'message_stop' },
+  ];
+}
+
+function makeLiveSession(rounds) {
+  return {
+    sessionId: 'sess-obs-routing',
+    turnCount: 0,
+    toolCallsMode: 'live',
+    systemPrompt: 'TEST',
+    client: mockClient(rounds),
+    stateSnapshot: { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] },
+    extractedObservations: [],
+    extractedReadingsCount: 0,
+    askedQuestions: [],
+    pendingAsks: { size: 0, entries: () => [], register: jest.fn() },
+    costTracker: new CostTracker(),
+    buildSystemBlocks() {
+      return [
+        { type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral', ttl: '5m' } },
+      ];
+    },
+    buildAgenticSystemBlocks() {
+      return this.buildSystemBlocks();
+    },
+    extractFromUtterance: jest.fn(),
+  };
+}
+
+/** Pull the single stage6.observation_tier_routing telemetry payload. */
+function routingEvent(logger) {
+  const call = logger.info.mock.calls.find((c) => c[0] === 'stage6.observation_tier_routing');
+  return call ? call[1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// Env isolation — the router live-reads OBSERVATION_TIER_ROUTING and
+// OBSERVATION_EXTRACT_MODEL (mirroring callWithRetry). SHADOW_MODEL is
+// module-latched at import, so the DEFAULT model is fixed for the process;
+// assertions read it back from the telemetry event rather than hardcoding it.
+// ---------------------------------------------------------------------------
+const ENV_KEYS = [
+  'OBSERVATION_TIER_ROUTING',
+  'OBSERVATION_EXTRACT_MODEL',
+  'VOICE_LATENCY_ROUND1_MODEL',
+];
+let savedEnv;
+
+beforeEach(() => {
+  savedEnv = {};
+  for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+  // Clean slate each test.
+  delete process.env.OBSERVATION_TIER_ROUTING;
+  delete process.env.OBSERVATION_EXTRACT_MODEL;
+  delete process.env.VOICE_LATENCY_ROUND1_MODEL;
+});
+
+afterEach(() => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+});
+
+describe('observation-tier routing — model selection matrix', () => {
+  test('flag ON + observation raw utterance → routes to OBSERVATION_EXTRACT_MODEL', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+
+    await runShadowHarness(session, OBS_TRANSCRIPT, [], {
+      logger,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    });
+
+    const ev = routingEvent(logger);
+    expect(ev).toBeTruthy();
+    expect(ev.classifier_match).toBe(true);
+    expect(ev.flag_enabled).toBe(true);
+    expect(ev.selected_model).toBe(OBS_MODEL);
+    expect(ev.round1_override_locked).toBe(true);
+    // End-to-end: the model actually reaching the SDK is the observation tier.
+    expect(session.client._calls[0].model).toBe(OBS_MODEL);
+  });
+
+  test('ordinary reading turn → stays on the default model (SHADOW_MODEL) even flag ON', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+
+    await runShadowHarness(session, READING_TRANSCRIPT, [], {
+      logger,
+      rawInspectorTranscript: READING_TRANSCRIPT,
+    });
+
+    const ev = routingEvent(logger);
+    expect(ev.classifier_match).toBe(false);
+    expect(ev.flag_enabled).toBe(true);
+    expect(ev.selected_model).toBe(ev.default_model);
+    expect(ev.selected_model).not.toBe(OBS_MODEL);
+    expect(ev.round1_override_locked).toBe(false);
+    expect(session.client._calls[0].model).toBe(ev.default_model);
+  });
+
+  test('flag OFF → default model for EVERYTHING (dark-ship byte-identity), even an observation utterance', async () => {
+    // No OBSERVATION_TIER_ROUTING set (default OFF).
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+
+    await runShadowHarness(session, OBS_TRANSCRIPT, [], {
+      logger,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    });
+
+    const ev = routingEvent(logger);
+    // The raw text still matched the pattern, but the flag gates the route.
+    expect(ev.classifier_match).toBe(true);
+    expect(ev.flag_enabled).toBe(false);
+    expect(ev.selected_model).toBe(ev.default_model);
+    expect(ev.selected_model).not.toBe(OBS_MODEL);
+    expect(ev.round1_override_locked).toBe(false);
+    expect(session.client._calls[0].model).toBe(ev.default_model);
+  });
+
+  test('server-added context cannot escalate: a bare "yes" answer stays on the default model', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+
+    // The ENRICHED transcript (what sonnet-stream builds at :3758) mentions
+    // "observation" and DOES match OBSERVATION_PATTERN — proving the danger.
+    const enriched = '[In response to TTS question: is this an observation?] yes';
+    expect(
+      // sanity: the enriched string WOULD have escalated if we classified it
+      /\b(?:obs|[oa]?b[a-z]{0,5}v[a-z]{0,4}(?:tion|sion|shun|shen|shan|shon|nce|tor|tior|ation))s?\b/i.test(
+        enriched
+      )
+    ).toBe(true);
+
+    await runShadowHarness(session, enriched, [], {
+      logger,
+      // …but the router classifies ONLY the raw inspector text, which is "yes".
+      rawInspectorTranscript: 'yes',
+    });
+
+    const ev = routingEvent(logger);
+    expect(ev.classifier_match).toBe(false);
+    expect(ev.selected_model).toBe(ev.default_model);
+    expect(ev.selected_model).not.toBe(OBS_MODEL);
+    expect(session.client._calls[0].model).toBe(ev.default_model);
+  });
+
+  test('flag ON + observation utterance but OBSERVATION_EXTRACT_MODEL unset → safe fallback to default', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    // OBSERVATION_EXTRACT_MODEL deliberately unset.
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+
+    await runShadowHarness(session, OBS_TRANSCRIPT, [], {
+      logger,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    });
+
+    const ev = routingEvent(logger);
+    expect(ev.classifier_match).toBe(true);
+    expect(ev.flag_enabled).toBe(true);
+    expect(ev.selected_model).toBe(ev.default_model);
+    expect(ev.round1_override_locked).toBe(false);
+    expect(session.client._calls[0].model).toBe(ev.default_model);
+  });
+
+  test('missing rawInspectorTranscript (legacy caller) → never escalates', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+
+    // No rawInspectorTranscript in options → classified as '' → no match.
+    await runShadowHarness(session, OBS_TRANSCRIPT, [], { logger });
+
+    const ev = routingEvent(logger);
+    expect(ev.classifier_match).toBe(false);
+    expect(ev.selected_model).toBe(ev.default_model);
+    expect(session.client._calls[0].model).toBe(ev.default_model);
+  });
+});
+
+describe('observation-tier routing — multi-round + override lock + cost', () => {
+  test('EVERY continuation round stays on the selected model (blocking / multi-round loop)', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+    // Round 1 emits a tool_use → the loop continues → round 2 end_turn.
+    const session = makeLiveSession([
+      toolUseRound('record_observation', { category: 'C2', description: 'cracked socket' }),
+      endTurnRound(),
+    ]);
+
+    await runShadowHarness(session, OBS_TRANSCRIPT, [], {
+      logger,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    });
+
+    expect(session.client._callCount).toBe(2);
+    expect(session.client._calls[0].model).toBe(OBS_MODEL);
+    expect(session.client._calls[1].model).toBe(OBS_MODEL);
+  });
+
+  test('observation turns IGNORE the round-1 override; reading turns RETAIN it', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    process.env.VOICE_LATENCY_ROUND1_MODEL = ROUND1_MODEL;
+
+    // Reading turn: round-1 override applies (latency fast-path).
+    const readingLogger = makeLogger();
+    const readingSession = makeLiveSession([endTurnRound()]);
+    await runShadowHarness(readingSession, READING_TRANSCRIPT, [], {
+      logger: readingLogger,
+      rawInspectorTranscript: READING_TRANSCRIPT,
+    });
+    expect(readingSession.client._calls[0].model).toBe(ROUND1_MODEL);
+
+    // Observation turn: the model is LOCKED — the round-1 override cannot
+    // swap the Sonnet escalation back to the fast model.
+    const obsLogger = makeLogger();
+    const obsSession = makeLiveSession([endTurnRound()]);
+    await runShadowHarness(obsSession, OBS_TRANSCRIPT, [], {
+      logger: obsLogger,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    });
+    expect(routingEvent(obsLogger).round1_override_locked).toBe(true);
+    expect(obsSession.client._calls[0].model).toBe(OBS_MODEL);
+  });
+
+  test('the cost tracker receives the SELECTED model (observation tier)', async () => {
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+    const addSpy = jest.spyOn(session.costTracker, 'addSonnetUsage');
+
+    await runShadowHarness(session, OBS_TRANSCRIPT, [], {
+      logger,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    });
+
+    expect(addSpy).toHaveBeenCalledTimes(1);
+    expect(addSpy).toHaveBeenCalledWith(expect.any(Object), OBS_MODEL);
+  });
+});

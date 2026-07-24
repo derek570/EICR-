@@ -181,6 +181,23 @@ describe('builder composition', () => {
         expect(Object.prototype.hasOwnProperty.call(opts, k)).toBe(true);
       }
       expect(opts.regexFastCorrelationId).toBe('sym_corr_1'); // SINGULAR
+      // Observation-tier routing (C1) — rawInspectorTranscript is threaded from
+      // the fixture's raw turn.transcript so the recorded lane classifies on
+      // the SAME string prod does (msg.text), never an enriched form.
+      const optsWithTranscript = built.buildTurnOptions({
+        turnIndex: 4,
+        turn: {
+          confirmations_enabled: { value: true },
+          in_response_to: { value: false },
+          transcript: 'observation, cracked socket on circuit four',
+        },
+        ws,
+        onAskRegistered: () => true,
+        signal: new AbortController().signal,
+      });
+      expect(optsWithTranscript.rawInspectorTranscript).toBe(
+        'observation, cracked socket on circuit four'
+      );
       expect(opts.pendingAsks).toBe(built.entry.pendingAsks); // identity preserved
       // Absence is passed only when evidence-backed: no ids → option omitted.
       const optsNone = built.buildTurnOptions({
@@ -310,6 +327,70 @@ describe('blocking behaviour through the REAL harness', () => {
       expect([...built.entry.pendingAsks.entries()]).toEqual([]);
     } finally {
       built.teardown();
+    }
+  });
+
+  // Observation-tier routing (C1) — the recorded lane must route identically
+  // to prod: an observation-shaped fixture transcript escalates to
+  // OBSERVATION_EXTRACT_MODEL when OBSERVATION_TIER_ROUTING is on, and a
+  // reading transcript does not. The raw text is threaded via buildTurnOptions'
+  // rawInspectorTranscript = turn.transcript, so the router sees the SAME
+  // string prod sees — enriched context alone cannot escalate (covered
+  // end-to-end in stage6-observation-tier-routing.test.js).
+  test('observation fixture routes to OBSERVATION_EXTRACT_MODEL (flag on); a reading fixture does not', async () => {
+    const OBS_MODEL = 'claude-observation-tier-sentinel';
+    const savedFlag = process.env.OBSERVATION_TIER_ROUTING;
+    const savedModel = process.env.OBSERVATION_EXTRACT_MODEL;
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+
+    async function routeModelFor(transcript, corpusId) {
+      const built = buildReplaySession({
+        modules,
+        fixture: baseFixture({ corpus_id: corpusId }),
+        logger,
+      });
+      try {
+        const ws = makeOpenWs();
+        built.entry.ws = ws;
+        built.session.client = mockClient([endTurnRound()]);
+        built.session.start(built.fixtureJobState);
+        built.session._clearCacheKeepalive?.();
+        const opts = built.buildTurnOptions({
+          turnIndex: 1,
+          turn: {
+            confirmations_enabled: { value: true },
+            in_response_to: { value: false },
+            transcript,
+          },
+          ws,
+          onAskRegistered: () => true,
+          signal: new AbortController().signal,
+        });
+        await runShadowHarness(built.session, transcript, [], opts);
+        return built.session.client._calls[0].model;
+      } finally {
+        built.teardown();
+      }
+    }
+
+    try {
+      const obsModel = await routeModelFor(
+        'observation, cracked socket outlet on circuit four',
+        'frc_00000000000000000000000000000001'
+      );
+      const readingModel = await routeModelFor(
+        'zs circuit one is nought point six two',
+        'frc_00000000000000000000000000000002'
+      );
+      expect(obsModel).toBe(OBS_MODEL);
+      expect(readingModel).not.toBe(OBS_MODEL);
+    } finally {
+      if (savedFlag === undefined) delete process.env.OBSERVATION_TIER_ROUTING;
+      else process.env.OBSERVATION_TIER_ROUTING = savedFlag;
+      if (savedModel === undefined) delete process.env.OBSERVATION_EXTRACT_MODEL;
+      else process.env.OBSERVATION_EXTRACT_MODEL = savedModel;
     }
   });
 });
