@@ -1,176 +1,109 @@
-# Execution log — P3 lim-for-zs (/ep)
+# /ep execution log — P4 ask-decline-ack-net
 
-- Session: 20260723T203822Z-ep
-- Plan: PLAN-final.md (converged round 10, 9 fixes, cross-platform)
-- Base: main @ 06b98180 (P5 / PR #110 merged)
-- Worktree: /Users/derekbeckley/Developer/EICR_Automation-ep-20260723T203822Z-ep
-- Branch: ep/PLAN-20260723T203822Z-ep
-- Started: 2026-07-23T20:38Z
+- **Plan:** `PLAN-final.md` (feedback id 85 / session 2ACE7677)
+- **Session:** `20260723T233944Z-ep`
+- **Repo:** `/Users/derekbeckley/Developer/EICR_Automation`
+- **Branch:** `ep/PLAN-20260723T233944Z-ep`
+- **Worktree:** `/Users/derekbeckley/Developer/EICR_Automation-ep-20260723T233944Z-ep`
+- **Base:** `main` @ `da8d1fb2` (P3 #111 + P5 #110 already landed — the batch predecessors)
 
-[PLAN-SIZE] This plan bundles 9 fixes across one high-interaction subsystem (LIM sentinel acceptance) touching backend src/extraction + packages/shared-utils + web/ + iOS CertMateUnified. It is ONE semantic feature with no independent-shippable seam (per /rp round-3/5 scope notes) — long Codex convergence expected. Not a split candidate.
+Node note: local runs on v25.6.1 (dev box); CI authoritative on Node 20. Worktree
+`node_modules` symlinked from the main checkout for local test runs.
 
-## Structural decomposition (decided at Fix 5)
-- CertMateUnified (iOS) is a SEPARATE git repo (gitignored by the outer repo),
-  currently on held branch `marker1-numeric-chatter-gate` (1 commit ahead of iOS
-  `main`, deliberately unmerged per memory). The /ep worktree covers only
-  backend/src, packages/shared-utils, web/.
-- DECISION: ship the backend + shared-utils + web wave through the worktree →
-  PR → merge → ECS FIRST (safe by the lim_ranged_write_v1 gate: capability-absent
-  iOS clients are DENIED LIM — no silent overwrite). Then author the iOS Swift
-  changes (Fix 5 Swift mirror / Fix 6 iOS / Fix 9 / client matcher / capability
-  advert) on a clean P3 branch in an ISOLATED CertMateUnified worktree branched
-  from iOS `main` (NOT the held marker1 HEAD), and ship via TestFlight. This is
-  exactly the plan's rollout order (Fix 8: backend deny-first, then guarded
-  clients advertise; iOS on P3's OWN TestFlight build).
-- Worktree node_modules rebuilt with @certmate/* → worktree packages so web
-  vitest exercises the worktree's shared-utils (env-only; no committed config
-  change).
-
-## Step Fix 0/1/2 — NUMERIC_READING_FIELDS spine + range gate + coercion
+## Step 1 — onAskAnswered resolution-time observer (dispatcher)
 - Status: applied
-- Decision: rule 1 (verbatim). Commit dd933a7d.
-- Files: value-enum-validator.js, record-reading-coercion.js, stage6-dispatch-validation.js, + 2 tests
-- Tests: 85 + 70 green.
+- Decision: rule 1 (verbatim). Added the `onAskAnswered({toolCallId, answered, declineClass, source})` option to `createAskDispatcher`; fired AFTER the initial ask await (with `classifyDeclineReply(outcome.user_text)`) and after each `pvr-*` `brokerDeterministicAsk` await; threaded through `buildResolvedBody` → `resolvePendingValueFlow` → `runPendingValueChain` → `brokerDeterministicAsk` exactly as `onAskUserStarted` is. Both fire sites guard-swallow observer errors.
+- Files: `src/extraction/stage6-dispatcher-ask.js`
+- Commit: `839fbf56`
 
-## Step Fix 4 — bulk set_field_for_all_circuits LIM policy
+## Step 2 — per-turn ask-lifecycle ledger + the net (harness)
 - Status: applied
-- Decision: rule 1. Commit 545995b1.
-- Files: stage6-dispatchers-circuit.js, stage6-dispatcher-bulk-lim.test.js
-- Tests: 26 green.
+- Decision: rule 1. Ledger (`askLifecycleLedger` Map + monotonic `askEventSeq`) created alongside `emittedAskToolCallIds`; `onAskUserStarted` stamps emission, the new `onAskAnswered` stamps resolution+answered+declineClass; `_seedAskLifecycle` test seam replays events through the REAL observers. New net after the marker-② catch block, before the §A4 drain: fires on `confirmationsEnabled` ∧ not-cancelled ∧ LAST-emitted-ask `answered===true` ∧ zero post-answer speech (debounced EXCLUDED; `!isAudibleText(spoken_response)` A1 term). Two families `ASK_DECLINE_ACK_PROMPTS` / `ASK_ANSWERED_ACK_PROMPTS` rotate `turnNum % len`. Telemetry `stage6.answered_ask_ack_emitted` (+ error guard).
+- Files: `src/extraction/stage6-shadow-harness.js`
+- Commit: `839fbf56`
 
-## Step Fix 5 (TS) — shared-utils derivation guard
+## Step 3 — fixture-schema Option-B relaxation
 - Status: applied
-- Decision: rule 1. Commit 16c4f75b. iOS Swift mirror deferred to the iOS wave.
-- Files: circuit-derivations.ts, index.ts, circuit-derivations-lim-guard.test.ts
-- Tests: 24 green (guard + impedance regression).
+- Decision: rule 1. `field_null_fallback` matcher now validates with a NON-EMPTY trimmed `text_exact` alone (token no longer required; empty/whitespace still rejected). Chosen over Option A (net-new `audibility.answered_ask` oracle) per the plan's stated preference — far smaller change.
+- Files: `scripts/field-replay/lib/fixture-schema.mjs` + 5 validation tests in `src/__tests__/field-replay/fixture-schema.test.js`
+- Commit: `10af0eed`
 
-## Step Fix 6 (web) — OCPD-rating → max-Zs invalidation
-- Status: applied (with a documented reachability note)
-- Decision: rule 2 (single obvious refactor). Extracted the plan's "before/after
-  transition helper" into an EXPORTED pure `shouldClearAutoDerivedMaxZs(prior,next)`
-  and wired it into the H3 max-Zs pass (apply-extraction.ts:1697-1721 region).
-- [NOTE] Web's long-standing 3-tier value guard (apply-extraction.ts:~820) BLOCKS a
-  readings-based numeric→LIM OVERWRITE of a populated ocpd_rating_a (verified by
-  probe: 32→40 reading is dropped as `apply_circuit_reading_user_value_kept`). So
-  the numeric→LIM transition does not reach the H3 pass through applyExtractionToJob
-  in one call; it primarily reaches web via UI/manual edit + the projected row.
-  The helper is therefore implemented + unit-tested directly with before/after row
-  state (exactly the plan's "transition helper that receives BEFORE and AFTER
-  circuit state") and is correct + defensive for any path that lands the
-  transition. Broadening the web correction guard is OUT of P3 scope (regression
-  risk across all voice corrections). iOS applies LIM to the rating and the
-  Circuit.recalculateMaxZs transition helper clears max-Zs there (iOS wave).
-- Files: apply-extraction.ts (+ shouldClearAutoDerivedMaxZs), apply-extraction-max-zs-lim.test.ts
-- Tests: 24 green (helper matrix + wiring no-op + impedance regression).
+## Step 4 — unit + audibility-sweep tests
+- Status: applied
+- Decision: rule 1, with one realism correction (see [ASSUMED]). New `stage6-ask-decline-ack-net.test.js` (15 cases) + a real-composition integration case + timeout negative in `stage6-audibility-invariants.test.js`. `ASK_USER_ANSWER_OUTCOMES` enum untouched → its disjoint/union invariants stay green automatically.
+- Files: `src/__tests__/stage6-ask-decline-ack-net.test.js` (new), `src/__tests__/stage6-audibility-invariants.test.js`
+- Commit: `839fbf56`
+- **[ASSUMED] step 4** — the mocked-lane "fires" tests needed the `ask_user` tool call PRESENT in `toolLoopOut.tool_calls` (a `silentAnsweredLoop()` helper), because a real answered-ask turn always carries the ask_user in the loop, which is exactly what EXCLUDES the A3/marker-① orphan net (it keys on empty `tool_calls`). An empty-tool-call mock let marker-① fire and mask the P4 net — a mock artifact, not a real path. Chose the realistic mock (single obvious interpretation; verified against the A3 predicate at `stage6-shadow-harness.js:~1975`).
 
-## Step Fix 3 (backend + web) — dialogue LIM ingestion + matcher inventory
-- Status: applied. Commits 4a828ad8 (web matcher), 7caa248e (backend dialogue).
-- Decision: rule 1/2. Shared parseLimSlot helper + normaliseDialogueSlotWrite;
-  narrowed EVERY broad matcher (parseMegaohms, IR schema regex, legacy IR twin,
-  answer-resolver LIM_RE, web client IR patterns) to the four forms; broadened
-  resolveValueAnswer LIM branch to NUMERIC_READING_FIELDS; widened pending-value
-  + overtake-classifier to four forms; 3 pending_writes drain-site guards.
-- iOS client matcher (TranscriptFieldMatcher.swift) → iOS wave (task 12).
-- Tests: dialogue-lim-slot.test.js (60) + updated legacy-IR-twin + resolver tests
-  to four-form policy. dialogue/parsers/resolver/pending/overtake suites green.
+## Step 5 — recorded-lane fixture (Option B, RED→GREEN proven)
+- Status: applied
+- Decision: rule 1. `frc_85ace7677d0e1c4a7b2f3609e5d1a8c4/fixture.yaml` — single turn: `ask_user` (concrete `context_field: measured_zs_ohm`, circuit 3) answered "No. Don't worry." (escalates with no write, no pending-value apology), model no-op round 2. `expected_audible_outputs` declares BOTH the ask frame AND the ack (`kind:field_null_fallback`, `text_exact: "No problem, moving on."`).
+- **RED-proof:** with the harness reverted to pre-net (`da8d1fb2`), the fixture (flipped to `expected_red`) failed EXACTLY `audibility.output.out_decline_ack` ("expected 1 audible output(s), found 0"), gate verdict "expected RED confirmed". Harness + fixture then restored; `required_green` passes. Full corpus 7/7.
+- Files: `tests/fixtures/field-replay-corpus/frc_85ace7677d0e1c4a7b2f3609e5d1a8c4/fixture.yaml` (new)
+- Commit: `fa957016`
 
-## Step Fix 8 (backend) — lim_ranged_write_v1 capability gate
-- Status: applied. Commit 999a5bb7.
-- Decision: rule 1/2. Capability parse + advert + KNOWN_SUPPORTS; record_reading
-  + bulk dispatcher DENY gates (non-error skip → marker-② speaks); speculator
-  LIM pre-synth skip; IR fields excluded (pre-P3 behaviour preserved).
-- [DEFERRED] dialogue-engine ACTIVE-SLOT LIM gate — the round-5 BLOCKER-complexity
-  threading. Dialogue scripts don't write the recomputeAll Zs targets; residual
-  pre-guard exposure is a narrow non-Zs path (stale max-Zs on an OCPD dialogue
-  LIM). Model-driven paths (the feedback-86 Zs vector) fully gated. iOS advert →
-  iOS wave.
+## Step 6 — docs + gates
+- Status: applied
+- Decision: rule 1. architecture.md (Stage 6 audibility-net section), changelog.md (detailed), CLAUDE.md (hub one-liner), field-replay-corpus.md (`field_null_fallback` oracle subsection). Full backend suite **5989 passed / 0 failed / 19 skipped**; corpus **7/7**; my changed files lint clean (0 errors). Pre-existing repo lint artifacts (the `packages/` glob ESLint-9 ignore → `npm run lint` exit 2; `postcode_lookup.js:207` no-empty error) reproduce on `main` and are NOT introduced by this change.
+- Files: `docs/reference/architecture.md`, `docs/reference/changelog.md`, `docs/reference/field-replay-corpus.md`, `CLAUDE.md`
+- Commit: `f47d8c6f`
 
-## Step Fix 7 (backend) — enhanced LIM read-back
-- Status: applied. Commit 14137025.
-- Decision: rule 2. ONE shared buildValueSpokenTail used by buildConfirmationText
-  + buildGroupedConfirmationText; speculator byte-identity automatic (uses
-  buildConfirmationText); rcd_operating_current_ma label = "RCD operating current".
-- [DEFERRED] dialogue-script WRITE-TIME LIM read-back + announced-tracking
-  (finishMessage renders "LIM amps"). Secondary; feedback-86 read-back flows
-  through the bundler builders which now carry the enhanced phrasing.
+## Gate summary (pre-Codex)
+- Every plan step: **applied**.
+- Backend Jest: 5989 passed, 0 failed.
+- Field-replay corpus: 7/7.
+- Lint (my files): clean.
+- **Gate: ALL PASSED** → proceed to the Codex diff review before merge.
 
-## Step Fix 9 + iOS wave (Swift, separate CertMateUnified repo)
-- Status: applied (committed to iOS branch; TestFlight build DEFERRED)
-- iOS worktree: /Users/derekbeckley/Developer/CertMateUnified-ep-p3-20260723T203822Z
-  Branch: ep/p3-lim-for-zs-20260723T203822Z (off iOS main ee71c8c, NOT the held
-  marker1-numeric-chatter-gate branch). Commit 7b0b060.
-- Fix 5 CircuitDerivations sentinel guard (+ recomputeAll filledZe fix + parity),
-  Fix 6 Circuit.recalculateMaxZs(previousRatingA:) + CircuitsTab inline +
-  JobDetailView keyboard-accessory routed through it, Fix 9 CircuitsTab
-  result-status .incomplete on non-numeric operand, Fix 3 TranscriptFieldMatcher
-  four-form narrowing, Fix 8 ServerWebSocketService capability advert. iOS unit
-  tests added (CircuitDerivationsTests).
-- [DEFERRED — TestFlight build] I cannot compile Swift in this environment, and
-  deploy-testflight.sh builds from PROJECT_DIR (the main checkout, currently on
-  the HELD marker1 branch). Auto-shipping an uncompiled build or disrupting the
-  held checkout overnight is riskier than a clean handoff. The backend
-  `lim_ranged_write_v1` gate makes this SAFE: capability-absent iOS clients are
-  DENIED LIM (no silent overwrite) until the P3 iOS build ships. ACTION FOR
-  DEREK: check out `ep/p3-lim-for-zs-20260723T203822Z` in CertMateUnified (or
-  merge it to iOS main) and run deploy-testflight.sh once the backend ECS rollout
-  is live (plan's mandatory backend-first ordering).
+## Codex diff review (gpt-5.6-sol, reasoningEffort high)
 
-## Step Fix 11 — docs + web companion + fixture
-- Docs applied (commit d47b0425): field_schema.json ai_guidance (6 ranged),
-  field-reference.md LIM box, changelog + hub row.
-- Web companion applied (commit 5d266447): sonnet-session.ts advertises
-  lim_ranged_write_v1; parity-ledger row circuits/lim-sentinel-display updated.
-- [DEFERRED — recorded-lane fixture] The 2ACE7677 capture does NOT exist in the
-  repo (confirmed — no field_sources/manifest; the plan flagged this). Per the
-  plan's own caveat ("or use a clearly-synthetic capability-on integration test
-  rather than falsifying recorded provenance"), the synthetic capability-on
-  integration coverage (dispatcher gate deny/allow tests + confirmation LIM tests
-  + bulk gate) satisfies the intent. A recorded fixture cannot be authored
-  without the real capture; NOT fabricated.
+Codex was rate-limited (quota exhausted by the earlier P5/P3 batch's review
+cycles) for ~4h; per the /ep policy I held the merge and retried rather than
+ship unreviewed or downgrade the model. Once the quota cleared, the review ran
+to convergence. The full diff+plan+context exceeded the freshly-reset
+token-per-window budget, so the review ran on the behavioral CORE diff
+(src/extraction + scripts — where all runtime risk lives); the tests/fixture/docs
+are non-runtime and already green + RED-proven.
 
-## Codex diff review — CONVERGED CLEAN (8 cycles)
-- Cycle 1 (multi-lens): 8 BLOCKER + 3 IMPORTANT.
-- Cycle 2 (mini): 1 BLOCKER + 5 IMPORTANT.
-- Cycle 3 (mini): 2 BLOCKER + 2 IMPORTANT.
-- Cycle 4 (full): 1 BLOCKER + 2 IMPORTANT.
-- Cycle 5: 0 BLOCKER + 3 IMPORTANT.
-- Cycle 6: 0 BLOCKER + 2 IMPORTANT.
-- Cycle 7: 0 BLOCKER + 2 IMPORTANT.
-- Cycle 8 (final verify): CLEAN (empty findings). PASSED.
-- Trajectory BLOCKERs: 8→1→2→1→0→0→0→0. Findings: 11→6→4→3→3→2→2→0.
-- All in-scope BLOCKER/IMPORTANT findings applied + re-gated green each cycle
-  (fix commits dd933a7d…5511632f). No plan deviation required Codex intent
-  sanction (all fixes were within the plan's scope or fixed my own fix-hunk
-  defects).
+### [DEVIATION] — cancelled-turn coverage (Codex-sanctioned WITHIN_INTENT)
+The plan's predicate 1 says the net fires only on NON-cancelled turns ("the F7
+Item-3 cancellation branch owns cancelled turns"). Cycle 1 found this assumption
+WRONG: F7's cancellation branch fires ONLY when `emittedAskToolCallIds.size===0`,
+so an ANSWERED ask (size>0) on a cancelled turn is covered by NO net → silent,
+the exact feedback-85 class. The net now fires on cancelled turns too. Codex
+cycle 2 evaluated this against the conversation-context and returned
+**WITHIN_INTENT**, quoting: *"P4 covers ONLY feedback id 85 (the answered-ask
+decline → silence). It is the sibling to the 'chime is a promise' invariant …
+a chimed/answered turn MUST produce audible output."* Applied + shipped as a
+sanctioned deviation (commit `65d0c4d1` + ordering completions in `1e95f8cd`,
+`ea9cc9e0`).
 
-## Documented follow-ups (surfaced to Derek)
-1. Dialogue-engine LIM completeness: the per-CLIENT lim_ranged_write_v1 capability
-   gate + server kill-switch coverage + Fix-7 write-time enhanced read-back for
-   the ACTIVE-SLOT / named-extraction / seeded dialogue LIM paths. The
-   model-driven paths (record_reading + set_field_for_all_circuits + speculator —
-   the feedback-86 Zs vector) are FULLY capability+kill-switch gated + read-back;
-   the dialogue scripts write non-Zs OCPD/RCD/ring fields. This is the plan's own
-   round-5 (Fix 8) + Fix-7 deferral; needs session-threading + caller
-   return-value propagation.
-2. Ask-resolver skip over-reporting (PRE-EXISTING, out of P3 scope): the enum /
-   value / generic auto-resolve branches report auto_resolved:true even when a
-   dispatched write was a non-error SKIP (the low-conf pre-apply gate always had
-   this). A correct fix needs a NEW dispatch_denied match_status + caller
-   handling. The pending-value branch DOES apologise on a skip (terminalApology).
-3. Recorded-lane 2ACE7677 fixture: no capture exists in the repo; synthetic
-   capability-on integration tests provide the coverage (per the plan's caveat).
-4. iOS TestFlight build: the iOS P3 branch (ep/p3-lim-for-zs-20260723T203822Z in
-   CertMateUnified) is committed + ready but NOT built. It ships via TestFlight
-   AFTER the backend ECS rollout (plan's mandatory backend-first ordering) — run
-   deploy-testflight.sh with PROJECT_DIR on the P3 branch. Deferred because Swift
-   can't be compiled in this environment and PROJECT_DIR carries held marker1
-   work; the backend lim_ranged_write_v1 gate makes this SAFE (old iOS denied LIM).
-5. Closed-enum classification LIM (ocpd_bs_en/type, rcd_*, wiring_type, etc.):
-   FIRMLY out of P3 scope — a SEPARATE future plan (per the plan's resolved
-   decisions). Flagged to Derek, does not block P3.
+### Cycles
+- **Cycle 1** (4 findings: 1 BLOCKER + 3 IMPORTANT) — cancelled silent-path
+  (→ the WITHIN_INTENT deviation above); ledger resolutionSeq>emissionSeq guard;
+  over-broad classifyDeclineReply (whole-reply anchor + digit guard); padded
+  text_exact fixture-schema reject. All applied (`65d0c4d1`).
+  - Per-fix mini-review: 2 NITs (declineClass re-emission reset; classifier
+    politeness/curly-apostrophe false-negatives) applied (`7b1261ce`).
+- **Cycle 2** (2 findings: 1 BLOCKER + 1 IMPORTANT) — onAskAnswered ordered
+  before the cancel guard (real-dispatcher regression); 3→5-phrase burst-margin
+  families (append-only, fixture pin unchanged). Applied (`1e95f8cd`).
+  - Per-fix mini-review: 1 BLOCKER — advanceResponseEpoch must ALSO precede the
+    cancel guard (else the cancelled-turn ack carries a stale utterance_id and a
+    client watchdog false-fires a second fallback). Applied (`ea9cc9e0`).
+- **Cycle 3** (1 IMPORTANT) — max-emissionSeq selection ≠ the plan's exact
+  "latest-answered / later-emitted" rule (an interleaved unanswered srv-* ask
+  could wrongly suppress). Reimplemented to the plan's two-step rule + regression
+  (`83da44e4`).
+- **Cycle 4** — CLEAN (0 BLOCKER, 0 IMPORTANT). Converged.
 
-## Completed 2026-07-23T23:27:52Z
-- **Outcome: ALL PASSED** (every fix applied; full backend + web suites green; Codex diff review CONVERGED CLEAN at cycle 8). SHIPPING the backend + shared-utils + web + docs wave (PR-only → merge → ECS). iOS TestFlight deferred (follow-up 4).
-- Commits: dd933a7d, 545995b1, 16c4f75b, dcc6259a, 4a828ad8, 7caa248e, 999a5bb7, 14137025, d47b0425, 5d266447, 2de6ca05 (spine + fixes 1-9 + docs + web advert), then Codex-review fixes 49bfab85 → 5511632f, + iOS branch commit 7b0b060 (separate CertMateUnified repo).
-- Tests: backend 5967 passed / 19 skipped; web 1456 passed / 1 skipped; iOS unit tests authored (compiled at TestFlight time).
-- Assumed decisions: dialogue LIM completeness + ask-resolver skip-reporting + recorded fixture + iOS TestFlight are documented follow-ups (above), not silent gaps.
+Trajectory (BLOCKER/IMPORTANT counts): 4 → 2 → 1 → 0.
+
+## Final gate (post-Codex)
+- **Outcome: ALL PASSED (plan-deviation: 1 applied within original intent).**
+- Backend Jest: 6031 passed, 0 failed (+42 over the pre-review baseline).
+- Field-replay corpus: 7/7 (fixture `frc_85ace7677…` RED-proven → required_green).
+- Lint: my files clean.
+- Codex diff review: PASSED at cycle 4.
+- → Ship: ready PR + merge + CI/ECS deploy watch (backend-only; no iOS/TestFlight
+  component). Then make-live + chain to the next queued batch plan.

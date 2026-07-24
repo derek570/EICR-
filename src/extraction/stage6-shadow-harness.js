@@ -388,6 +388,52 @@ export const NOOP_AUDIBILITY_PROMPTS = Object.freeze([
 export const ASK_AUDIBILITY_FALLBACK_TEXT =
   "Sorry — I couldn't action that. Could you say it again?";
 
+// P4 (ask-decline-ack-net 2026-07-23, feedback id 85 / session 2ACE7677) —
+// the "answered-ask, silent continuation" acknowledgment families. THIS net's
+// class: the assistant posed a clarify ask, the inspector ANSWERED it (a real
+// reply — a decline "No. Don't worry." counts), and the continuation produced
+// ZERO audible output. marker-② deliberately treats the earlier spoken ask as
+// audibility evidence (its `emittedAskToolCallIds.size===0` term is correct for
+// the spoken-but-UNanswered class), so an ANSWERED-then-silent turn slips every
+// existing net. An answered turn that goes silent is a "chime is a promise"
+// violation (Audio-First #1) exactly like a chimed no-op.
+//
+// TWO variants (Derek, round-1 walkthrough), because the ack must NOT read as a
+// failure — the answer WAS understood (the F/U-2/3 lesson: an understood/noop
+// outcome drawing a "didn't catch that" apology reads as failure):
+//   - DECLINE family — for decline-shaped answers ("no", "don't worry",
+//     "leave it", "skip it"): an affirmative "I'm leaving that one" ack.
+//   - ANSWERED family — for any other silent-but-answered outcome: a plain
+//     "Okay."-class ack.
+// Both ROTATE turnNum % len (like NOOP_/CATCHALL_) so a burst of answered
+// silences doesn't collide inside the client's 30 s text-keyed field-nil
+// dedupe, AND so the recorded-lane fixture's `text_exact` oracle is
+// deterministically computable. Wording is a DELIBERATELY DIFFERENT
+// construction from EVERY existing apology family (no "Sorry" / "didn't catch"
+// / "couldn't" / "Hmm" / "nothing came" stems) so the field-nil channels never
+// cross-dedupe — pinned by the string-inequality assertion in
+// stage6-ask-decline-ack-net.test.js.
+// FIVE phrasings each (Codex r2), matching the NOOP_/CATCHALL_ burst margin:
+// the wording wraps only every 5 turns, so a repeat cannot re-silence a burst
+// (turnNum ≡ mod len inside the client's 30 s field-null TTL) before the SIXTH
+// consecutive answered-silent turn in 30 s — a shape no real session produces.
+// APPEND-ONLY (never reorder) so the recorded fixture's `text_exact` (decline
+// index 1 = "No problem, moving on.") stays stable.
+export const ASK_DECLINE_ACK_PROMPTS = Object.freeze([
+  'Okay — leaving that one.',
+  'No problem, moving on.',
+  "Alright — I'll leave that as it is.",
+  "That's fine — I'll leave it there.",
+  'Sure — leaving that as it stands.',
+]);
+export const ASK_ANSWERED_ACK_PROMPTS = Object.freeze([
+  'Okay, got it.',
+  'Right, noted.',
+  'Understood.',
+  'Got that, thanks.',
+  'Noted — carrying on.',
+]);
+
 // marker-② (numeric-gate-redesign 2026-07-18) — the FINAL catch-all audibility
 // net's apology family. Fires when a chime was heard but the turn produced
 // ZERO speech-intent of any kind — the "a tool ran, didn't error, but emitted
@@ -756,6 +802,52 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // silent turns). CLIENT-side dedupe is deliberately invisible here — that
     // case belongs to the PLAN-C client watchdog.
     let debouncedConfirmationCountThisTurn = 0;
+    // ── P4 (ask-decline-ack-net) — per-turn ask-lifecycle ledger ──────────
+    // The answered-ask net (after marker-②, below) needs to know, for THIS
+    // turn: was the LAST ask the model/broker emitted actually ANSWERED by a
+    // real user reply (a decline counts; a timeout / user_moved_on does NOT),
+    // and did nothing audible follow it? None of the existing signals carry
+    // that — the marker-② counters (result.confirmations / spoken_response /
+    // debounce) are created only AFTER the blocking tool loop returns, so they
+    // cannot be snapshotted at resolution; onAskRegistered/onAskUserStarted
+    // fire PRE-answer with no outcome; the pending-asks registry is per-SESSION
+    // not per-turn. So we keep a per-turn ledger keyed by tool_call_id,
+    // populated by onAskUserStarted (emission) + the NEW onAskAnswered
+    // resolution-time observer (answered flag + sanitized decline class). A
+    // single monotonic counter stamps emission/resolution order so the net can
+    // find the LAST emitted ask and test whether it was answered. `srv-*`
+    // dialogue-engine asks enter via onAskUserStarted (ASK_STARTED_OBSERVER)
+    // but NEVER receive an onAskAnswered call (they bypass pendingAsks and are
+    // answered on a LATER transcript), so they stay `answered:false` and are
+    // excluded from the answered set automatically.
+    let askEventSeq = 0;
+    const askLifecycleLedger = new Map();
+    const recordAskEmission = (toolCallId, source) => {
+      askEventSeq += 1;
+      const existing = askLifecycleLedger.get(toolCallId);
+      if (existing) {
+        // A RE-EMISSION of the same id is a FRESH, not-yet-answered question:
+        // clear the prior resolution + decline class so a stale answered:true /
+        // decline family can never carry over (Codex mini-review NIT). The
+        // resolutionSeq>emissionSeq guard already prevents firing until a new
+        // resolution lands; resetting the class prevents a re-answered ask from
+        // speaking the previous answer's wording.
+        existing.emissionSeq = askEventSeq;
+        existing.resolutionSeq = null;
+        existing.answered = false;
+        existing.declineClass = null;
+        if (existing.source == null) existing.source = source ?? null;
+      } else {
+        askLifecycleLedger.set(toolCallId, {
+          id: toolCallId,
+          source: source ?? null,
+          emissionSeq: askEventSeq,
+          resolutionSeq: null,
+          answered: false,
+          declineClass: null,
+        });
+      }
+    };
     const VALID_EMISSION_SOURCES = new Set(['initial', 'pvr', 'dialogue_script']);
     const onAskUserStarted = ({ toolCallId, source } = {}) => {
       if (toolCallId == null) return;
@@ -763,6 +855,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // it — else an emitted question is misclassified silent and the
       // fallback double-speaks. The telemetry emit is a SEPARATE try/catch.
       emittedAskToolCallIds.add(toolCallId);
+      // P4 — stamp emission order into the per-turn ask ledger (before the
+      // telemetry try/catch so a logger throw cannot lose the ledger entry).
+      recordAskEmission(toolCallId, source);
       try {
         log?.info?.('stage6.ask_user_started_emitted', {
           sessionId: session.sessionId,
@@ -778,6 +873,63 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // never let a telemetry failure erase emission evidence
       }
     };
+    // ── P4 — resolution-time observer (the ONLY hook carrying the answered
+    // outcome). Fired from the ask dispatcher AFTER its blocking await AND from
+    // the pvr broker inside buildResolvedBody/resolvePendingValueFlow, threaded
+    // through options the same way onAskRegistered is. SWALLOWS all errors so a
+    // failing observer can never deadlock or corrupt ask resolution. Only asks
+    // that went through pendingAsks reach here, so `srv-*` engine asks are
+    // excluded by construction.
+    const onAskAnswered = ({ toolCallId, answered, declineClass, source } = {}) => {
+      if (toolCallId == null) return;
+      try {
+        askEventSeq += 1;
+        const existing = askLifecycleLedger.get(toolCallId);
+        if (existing) {
+          existing.resolutionSeq = askEventSeq;
+          existing.answered = answered === true;
+          // Assign UNCONDITIONALLY (Codex mini-review NIT): a null declineClass
+          // (a non-decline answer) must OVERWRITE a prior decline class from an
+          // earlier resolution of the same id, else a re-answered ask speaks the
+          // stale decline family.
+          existing.declineClass = declineClass ?? null;
+          if (source != null && existing.source == null) existing.source = source;
+        } else {
+          // Resolution before a recorded emission is not a real path (asks
+          // emit before they resolve), but record defensively so the ledger is
+          // never lied to by an out-of-order call.
+          askLifecycleLedger.set(toolCallId, {
+            id: toolCallId,
+            source: source ?? null,
+            emissionSeq: null,
+            resolutionSeq: askEventSeq,
+            answered: answered === true,
+            declineClass: declineClass ?? null,
+          });
+        }
+      } catch {
+        // resolution must never deadlock on an observer failure
+      }
+    };
+    // Test-only seam (underscore-prefixed, never passed in production): a
+    // mocked-runToolLoop lane has no real dispatcher to drive the ask
+    // lifecycle, so a test replays ordered {event:'emitted'|'answered', ...}
+    // records through the REAL observers above — exercising the ledger +
+    // answered-ask net rather than a parallel path.
+    if (Array.isArray(options._seedAskLifecycle)) {
+      for (const ev of options._seedAskLifecycle) {
+        if (!ev || ev.toolCallId == null) continue;
+        if (ev.event === 'emitted')
+          onAskUserStarted({ toolCallId: ev.toolCallId, source: ev.source });
+        else if (ev.event === 'answered')
+          onAskAnswered({
+            toolCallId: ev.toolCallId,
+            answered: ev.answered !== false,
+            declineClass: ev.declineClass ?? null,
+            source: ev.source,
+          });
+      }
+    }
     // Attach to the live WS so the dialogue engine's safeSend choke point
     // reports its ask_user_started emissions through the same observer. Torn
     // down in the finally block so it never leaks across turns.
@@ -836,6 +988,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         autoResolveWrite: liveAutoResolveWrite,
         // F7 Item 2 — the emission audit hook (initial + pvr broker sends).
         onAskUserStarted,
+        // P4 — the resolution-time hook (initial await + pvr broker) that
+        // stamps the answered outcome + decline class into the per-turn ledger.
+        onAskAnswered,
         // F7 Item 3 — the CONTROL hook (arms the watchdog latch on register)
         // + the per-generation abort signal so a ceiling-cancelled generation's
         // awaiting dispatcher throws (after each pending-ask await, before any
@@ -2461,6 +2616,140 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         sessionId: session.sessionId,
         turnId,
         error: catchallErr?.message ?? String(catchallErr),
+      });
+    }
+
+    // ── P4 (ask-decline-ack-net 2026-07-23, feedback id 85) — answered-ask
+    // silent-continuation net. Placed at the semantic seam AFTER the marker-②
+    // catch block (its `emittedAskToolCallIds.size===0` term structurally
+    // excludes any answered-ask turn — the earlier spoken ask permanently
+    // satisfies marker-②'s audibility evidence) and BEFORE the §A4 drain (so
+    // the ack reaches result.confirmations THIS turn, exactly like marker-②).
+    //
+    // Fires when ALL hold:
+    //   1. confirmationsEnabled (a mode-off user opted out of the spoken
+    //      channel). NOTE: NOT gated on chimeObserved — the answered-ask signal
+    //      (a real user reply) is stronger proof of engagement than a chime,
+    //      and the F7 ask net is likewise not chime-gated. Codex r1 DEVIATION
+    //      from the plan's predicate-1 ("not cancelled"): the plan assumed the
+    //      F7 Item-3 cancellation branch owns cancelled turns, but that branch
+    //      fires ONLY when `emittedAskToolCallIds.size === 0` (a prior EMITTED
+    //      ask counts as its audibility — the documented PLAN-C residual), so an
+    //      ANSWERED ask on a cancelled turn (size>0) is covered by NEITHER F7
+    //      (needs size 0), marker-② (!cancelled), nor a not-cancelled P4 →
+    //      genuine silence, the exact feedback-85 class ("an answered turn MUST
+    //      produce audible output"). P4 is uniquely positioned to close it — it
+    //      knows the ask was ANSWERED, which F7 does not track. Firing on
+    //      cancelled is mutually exclusive with the F7 cancellation branch
+    //      (P4 requires an answered ask, size>0; F7 requires size===0) and the
+    //      cancelled finalization builds result.confirmations + stages the A1
+    //      answer, so a cancelled turn that DID read a value back / stage an
+    //      answer still suppresses the ack via predicate 3.
+    //   2. The LAST ask emitted this turn was ANSWERED by a real user reply
+    //      (`answered===true`, source initial/pvr). A decline reply counts; a
+    //      timeout / user_moved_on does NOT (those resolve `answered:false`, so
+    //      the already-emitted question is the turn's last audio and no ack is
+    //      owed). Keying on the LAST emitted ask makes this mutually exclusive
+    //      with a "later emitted ask AFTER the answer" (a follow-up question is
+    //      itself audible → the later ask becomes the last-emitted and, if IT
+    //      timed out, `answered` is false → no ack; if IT was answered and
+    //      silent, exactly ONE ack fires for it). `srv-*` engine asks never get
+    //      an onAskAnswered call, so an srv-*-only turn has `answered:false` →
+    //      no ack.
+    //   3. Post-answer speech predicate == 0: no surviving audible confirmation,
+    //      no current-generation queued prompt, AND !isAudibleText(spoken_response)
+    //      — the A1 mutual-exclusion term (a `answer_user` spoken answer, real
+    //      or the Item-4 fallback, is the audible response; the ack must not
+    //      double-speak over it). DEBOUNCED confirmations are DELIBERATELY
+    //      EXCLUDED: a debounced confirmation was removed BEFORE crossing an
+    //      audible channel, so it is NOT post-answer audible output — letting
+    //      `debouncedConfirmationCountThisTurn` suppress the ack would repeat
+    //      the exact defect (answered utterance → silence). Only output that
+    //      will ACTUALLY be spoken suppresses the ack.
+    //
+    // Two-variant wording (Derek): a decline-shaped answer draws the
+    // affirmative DECLINE family; any other silent-but-answered outcome draws
+    // the plain ANSWERED family. NEVER a "didn't catch that" apology — the
+    // answer WAS understood (F/U-2/3 lesson).
+    //
+    // A1 backstop note: under VOICE_AGENTIC_ANSWERS the model may itself ANSWER
+    // a declined/clarify ask via `answer_user` (→ spoken_response), which
+    // predicate 3 treats as a survivor — so in production this net is a
+    // BACKSTOP for the frozen-no-op path, not the primary channel.
+    try {
+      if (options.confirmationsEnabled === true) {
+        // The plan's exact rule (Codex r3): find the LATEST ANSWERED blocking
+        // ask (by resolutionSeq), then suppress ONLY if a NEW ask was emitted
+        // AFTER that answer resolved. A prior "max-emissionSeq must be answered"
+        // shortcut was NOT equivalent — an UNanswered ask emitted BEFORE the
+        // latest answer resolved (e.g. an srv-* dialogue-script ask observed via
+        // ASK_STARTED_OBSERVER while the initial ask awaited) would be the
+        // max-emissionSeq record with answered:false and wrongly suppress the
+        // ack, recreating answered-turn silence.
+        //
+        // `answered===true` + `resolutionSeq != null` + `resolutionSeq >
+        // emissionSeq` selects a real reply whose resolution followed its
+        // LATEST emission — this rejects a defensive out-of-order record AND a
+        // same-id RE-EMISSION after an earlier resolution (a re-emitted ask
+        // carries a stale answered:true but its new emissionSeq now exceeds its
+        // resolutionSeq, so it is not "answered since re-emission"). `srv-*`
+        // engine asks never receive an onAskAnswered call, so they stay
+        // answered:false and are excluded.
+        let latestAnswered = null;
+        for (const rec of askLifecycleLedger.values()) {
+          if (
+            rec.answered === true &&
+            rec.resolutionSeq != null &&
+            rec.emissionSeq != null &&
+            rec.resolutionSeq > rec.emissionSeq
+          ) {
+            if (latestAnswered == null || rec.resolutionSeq > latestAnswered.resolutionSeq) {
+              latestAnswered = rec;
+            }
+          }
+        }
+        // A NEW ask emitted AFTER the latest answer resolved is itself audible
+        // (a follow-up question), so the turn is not silent — decline the net.
+        let laterAskEmitted = false;
+        if (latestAnswered) {
+          for (const rec of askLifecycleLedger.values()) {
+            if (rec.emissionSeq != null && rec.emissionSeq > latestAnswered.resolutionSeq) {
+              laterAskEmitted = true;
+              break;
+            }
+          }
+        }
+        if (latestAnswered && !laterAskEmitted) {
+          const survivingConfCount = Array.isArray(result.confirmations)
+            ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
+            : 0;
+          const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
+            ? session.pendingVoicePrompts.filter(
+                (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
+              ).length
+            : 0;
+          const survivingAnswer = isAudibleText(result.spoken_response);
+          if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
+            if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
+            const isDecline = latestAnswered.declineClass === 'decline';
+            const family = isDecline ? ASK_DECLINE_ACK_PROMPTS : ASK_ANSWERED_ACK_PROMPTS;
+            const text = family[turnNum % family.length];
+            session.pendingVoicePrompts.push({ text, generationId });
+            log.info?.('stage6.answered_ask_ack_emitted', {
+              sessionId: session.sessionId,
+              turnId,
+              generationId,
+              ack_class: isDecline ? 'decline' : 'answered',
+              answered_ask_source: latestAnswered.source ?? null,
+            });
+          }
+        }
+      }
+    } catch (ackErr) {
+      log.warn?.('stage6.answered_ask_ack_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: ackErr?.message ?? String(ackErr),
       });
     }
 

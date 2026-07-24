@@ -1,0 +1,126 @@
+# P4 (ask-decline-ack-net 2026-07-23, feedback id 85 / session 2ACE7677) —
+# "an ANSWERED clarify ask with a silent continuation must speak ONE ack".
+#
+# Field repro (session 2ACE7677 turn-7): the assistant asked a clarify question
+# about a reading, the inspector answered "No. Don't worry.", and the session
+# went COMPLETELY SILENT — no ack, no apology, nothing. An answered turn that
+# produces zero audible output violates "chime is a promise" / Audio-First #1.
+#
+# marker-② deliberately treats the earlier spoken ask as audibility evidence
+# (its `emittedAskToolCallIds.size===0` term is CORRECT for the spoken-but-
+# UNANSWERED class), so an ANSWERED-then-silent turn slips every existing net.
+# The P4 net keys off the resolution-time `onAskAnswered` observer + a per-turn
+# ask-lifecycle ledger and speaks ONE field-null decline ack.
+#
+# RECORDED-lane semantics: the frozen model response is unchanged by the fix
+# (the model's side is the same no-op continuation pre/post — see the plan's
+# A1 note; live A1 may instead ANSWER the decline via answer_user, making the
+# net a backstop). The fix under lock is BACKEND-deterministic: the decline
+# reply "No. Don't worry." escalates through the value resolver (no write, no
+# pending-value apology), the model no-op's round 2, and the new net drains ONE
+# decline-family ack into result.confirmations.
+#
+# ORACLE (plan Option B): the §A4-drained ack is `{text, field:null,
+# circuit:null, expects_ios_ack:false}` — TOKENLESS (field:null is outside
+# DEDUPE_TOKEN_FIELDS), and runtime `confirmationMatches` keys on `text_exact`.
+# The ack rotates deterministically as `turnNum % ASK_DECLINE_ACK_PROMPTS.length`
+# (turn 1 → index 1 → "No problem, moving on."), so the phrase is computable in
+# the frozen lane. This needed the scoped `fixture-schema.mjs` relaxation
+# (a non-empty trimmed `text_exact` alone validates a `field_null_fallback`
+# matcher; a token would then FAIL the runtime match against the tokenless ack).
+# The declared `expected_audible_outputs` carry BOTH the original ask_user frame
+# AND the ack, so `matchAudibleOutputs` suppresses the `audibility.turn`
+# false-pass (the ask question is itself "audible") and the RED id is
+# `audibility.output.out_decline_ack`. Pre-fix replay fails EXACTLY that id
+# (the ask emits + is claimed; the ack is never synthesised → 0 matches).
+#
+# Provenance: HAND-AUTHORED / reconstructed from realtime chunks — session
+# 2ACE7677 has no field_sources/manifest (the iOS multipart analytics upload was
+# broken; same constraint as the P3/P5 fixtures). Unit-test twins live in
+# stage6-ask-decline-ack-net.test.js + the stage6-audibility-invariants P4
+# integration case. No captured PII.
+schema_version: 1
+corpus_id: frc_85ace7677d0e1c4a7b2f3609e5d1a8c4
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: audibility.output.out_decline_ack
+owner: Derek Beckley
+introduced_at: '2026-07-23T00:00:00Z'
+fix_reference: fix_a1b2c3d4e5f60718293a4b5c6d7e8f90
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  P4 answered-ask decline ack: an ask_user about circuit-3 Zs, answered "No.
+  Don't worry." (understood → no write), followed by a model no-op, must speak
+  exactly ONE decline-family field-null ack ("No problem, moving on."). The
+  original ask_user_started frame is ALSO a declared audible output so the
+  generic turnIsAudible false-pass is suppressed and the RED id is the missing
+  ack.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 3
+      designation: Upstairs Sockets
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: The Zs for circuit three.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_p4ask
+            name: ask_user
+            input:
+              question: What was the Zs reading for circuit 3?
+              reason: missing_value
+              context_field: measured_zs_ohm
+              context_circuit: 3
+              expected_answer_shape: number
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    ask_answers:
+      - match:
+          tool_call_id: toolu_p4ask
+        answer_channel: pending_registry
+        answer:
+          answered: true
+          user_text: No. Don't worry.
+        at_ms_after_ask: 2000
+        at_ms_after_ask_provenance: recorded_full
+    expected_operations: []
+    expected_audible_outputs:
+      - output_id: out_ask
+        kind: ask_user
+        count: 1
+        match:
+          tool_call_id: toolu_p4ask
+      - output_id: out_decline_ack
+        kind: field_null_fallback
+        count: 1
+        match:
+          text_exact: No problem, moving on.

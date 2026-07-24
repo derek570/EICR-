@@ -733,8 +733,28 @@ export async function validateFixtureDocument(doc, opts = {}) {
       }
       outIds.add(out.output_id);
       if (out.kind === 'field_null_fallback') {
-        if (typeof out.match?.text_exact !== 'string' || !(out.match.dedupe_token || out.match.expected_key)) {
-          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, xPath, 'field_null_fallback requires trimmed byte-exact text_exact + dedupe_token/expected_key (and implies field:null + circuit:null)'));
+        // P4 (ask-decline-ack-net 2026-07-23) — a NON-EMPTY trimmed text_exact
+        // is a sufficient oracle on its own. Historically this ALSO demanded a
+        // dedupe_token / expected_key, but the §A4-drained field-null ack this
+        // oracle targets (marker-①/②/F7 apologies AND the P4 decline-ack) is
+        // TOKENLESS — field:null is outside DEDUPE_TOKEN_FIELDS, so the emitted
+        // confirmation carries no token, and runtime `confirmationMatches` keys
+        // on `text_exact` alone (no token needed). Demanding a token made a
+        // field-null-fallback oracle impossible to express, and a FABRICATED
+        // token would then fail the runtime match against the tokenless wire
+        // ack (so it could never flip to required_green). An empty/whitespace
+        // text_exact provides no meaningful oracle and stays REJECTED. The
+        // field:null + circuit:null implication (enforced at match time in
+        // replay-assertions.mjs) and the DUPLICATE_OUTPUT_ID check above are
+        // unchanged. The value must be ALREADY trimmed (`=== .trim()`), not
+        // merely trim-non-empty (Codex r1): runtime `confirmationMatches` trims
+        // the CANDIDATE confirmation text and compares it to the RAW matcher
+        // (replay-assertions.mjs), so a padded text_exact is byte-exact
+        // UNSATISFIABLE — it would validate here yet never turn green.
+        const te = out.match?.text_exact;
+        const teValid = typeof te === 'string' && te.trim().length > 0 && te === te.trim();
+        if (!teValid) {
+          errors.push(err(FIXTURE_ERROR_CODES.SCHEMA, xPath, 'field_null_fallback requires a non-empty, already-trimmed byte-exact text_exact (no leading/trailing whitespace; implies field:null + circuit:null)'));
         }
       }
       if (out.operation_ref && !opIds.has(out.operation_ref)) {

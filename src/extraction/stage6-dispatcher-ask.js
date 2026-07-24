@@ -186,6 +186,15 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // Never alters registration / questionEmitted / send classification.
   const onAskUserStarted =
     typeof opts?.onAskUserStarted === 'function' ? opts.onAskUserStarted : null;
+  // P4 (ask-decline-ack-net) — RESOLUTION-time OBSERVATION hook. Fired scalar
+  // with ({toolCallId, answered, declineClass, source}) AFTER the blocking ask
+  // await returns (initial ask here; the pvr broker fires its own inside
+  // brokerDeterministicAsk). The per-turn ask-lifecycle ledger in the harness
+  // keys the answered-ask silent-continuation net off this — no existing hook
+  // carries the answered outcome. Best-effort OBSERVATION only: never alters
+  // resolution, the returned body, or the pending Promise, and swallows its own
+  // errors on the harness side.
+  const onAskAnswered = typeof opts?.onAskAnswered === 'function' ? opts.onAskAnswered : null;
   // F7 Item 3 — CONTROL hook (distinct from Item 2's OBSERVATION hook). Fired
   // scalar with (toolCallId) IMMEDIATELY after each successful register and
   // BEFORE any send. Returns true while the generation still owns the
@@ -667,22 +676,53 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // stage6.ask_registration_hook_error row was already emitted in the executor.
     if (hookError) throw hookError;
 
+    // PLAN-C P4c — advance the response epoch from the INITIAL ask outcome.
+    // If this ask (raised on the loop-opening utterance) was answered by a
+    // LATER chimed utterance, the outcome carries that utterance's id; the
+    // read-backs/pvr that follow inherit it so the client watchdog armed by that
+    // later chime disarms on the speech. A timeout / user-moved-on-without-id /
+    // teardown carries no epoch and leaves the reference untouched (advance is
+    // non-empty-only + idempotent).
+    // ORDERING (Codex r2 BLOCKER): advanced BEFORE `throwIfStage6Cancelled`,
+    // alongside the P4 observer below. When an answer wins registry resolution
+    // but the generation is aborted before the dispatcher resumes, P4 now emits
+    // an ack on the cancelled turn — and that ack (like every confirmation in
+    // the cancelled partial-finalization) is stamped `result.utterance_id =
+    // responseEpochRef.current` by the bundler, so the epoch MUST reflect the
+    // answering utterance or the watchdog it armed never disarms and false-fires
+    // a SECOND fallback (an exactly-once TTS violation). Advancing is a pure ref
+    // mutation (no session-state write / apology / pvr re-ask), so it does not
+    // breach the cancellation guard's contract; the guard still stops all of
+    // those below.
+    advanceResponseEpoch(responseEpochRef, outcome);
+
+    // P4 (ask-decline-ack-net) — stamp the INITIAL ask's resolution into the
+    // per-turn ask-lifecycle ledger. `answered===true` (a real user reply — a
+    // decline counts) is what the answered-ask silent-continuation net keys on;
+    // a timeout / user_moved_on carries answered:false and is excluded. Fired
+    // BEFORE `throwIfStage6Cancelled` (Codex r2) for the same reason as the
+    // epoch advance: else the throw skips this observer and the ledger never
+    // learns the ask was answered, so P4 could not fire on the cancelled turn.
+    // Pure, error-swallowed observer with no state mutation.
+    if (onAskAnswered) {
+      try {
+        onAskAnswered({
+          toolCallId,
+          answered: outcome.answered === true,
+          declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
+          source: 'initial',
+        });
+      } catch {
+        // best-effort observer — never propagate
+      }
+    }
+
     // F7 Item 3 — the awaited ask outcome just returned. If the watchdog
     // aborted this generation while we were blocked, STOP here — before
     // buildResolvedBody runs any auto-resolve write / apology enqueue /
     // pvr-* re-ask. The throw propagates as a fatal control-flow error to
     // the harness cancellation-finalization boundary.
     throwIfStage6Cancelled(signal);
-
-    // PLAN-C P4c — advance the response epoch from the INITIAL ask outcome
-    // BEFORE buildResolvedBody (which may create a pvr-* re-ask or dispatch a
-    // continuation). If this ask (raised on the loop-opening utterance) was
-    // answered by a LATER chimed utterance, the outcome carries that
-    // utterance's id; the read-backs/pvr that follow now inherit it so the
-    // client watchdog armed by that later chime disarms on the speech. A
-    // timeout / user-moved-on-without-id / teardown carries no epoch and leaves
-    // the reference untouched.
-    advanceResponseEpoch(responseEpochRef, outcome);
 
     // Step 5: log final outcome.
     const answerOutcome = outcome.answered ? 'answered' : outcome.reason;
@@ -775,6 +815,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // F7 Item 2 — the broker fires this on a SUCCESSFUL pvr-* send
       // (source:'pvr') so the post-loop audibility net counts brokered asks.
       onAskUserStarted,
+      // P4 — the broker fires this after each brokered pvr-* await so a
+      // brokered answered-ask is captured in the per-turn ledger too.
+      onAskAnswered,
       // F7 Item 3 — the broker fires this after each successful pvr-* register.
       onAskRegistered,
       // F7 Item 3 — cancellation signal (checked after each broker await +
@@ -833,6 +876,7 @@ async function buildResolvedBody({
   pendingAsks = null,
   ws = null,
   onAskUserStarted = null,
+  onAskAnswered = null,
   onAskRegistered = null,
   signal = null,
   generationId = null,
@@ -883,6 +927,7 @@ async function buildResolvedBody({
       pendingAsks,
       ws,
       onAskUserStarted,
+      onAskAnswered,
       onAskRegistered,
       signal,
       generationId,
@@ -1405,6 +1450,7 @@ async function brokerDeterministicAsk({
   expectedAnswerShape,
   pendingValue,
   onAskUserStarted = null,
+  onAskAnswered = null,
   onAskRegistered = null,
   signal = null,
   responseEpochRef = null,
@@ -1530,6 +1576,24 @@ async function brokerDeterministicAsk({
   // await). A timeout / broker_emit_failed / user_moved_on-without-id leaves
   // the reference untouched.
   advanceResponseEpoch(responseEpochRef, outcome);
+  // P4 (ask-decline-ack-net) — stamp this brokered pvr-* ask's resolution into
+  // the per-turn ledger (source:'pvr'). A brokered ask that IS answered but
+  // whose continuation produces nothing audible is exactly the answered-ask
+  // silent case the net covers; a broker_* / timeout / user_moved_on carries
+  // answered:false and is excluded. Best-effort observer — the emission is
+  // already recorded via onAskUserStarted; this only adds the answered outcome.
+  if (onAskAnswered) {
+    try {
+      onAskAnswered({
+        toolCallId: pvrId,
+        answered: outcome.answered === true,
+        declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
+        source: 'pvr',
+      });
+    } catch {
+      // best-effort observer — never propagate
+    }
+  }
   return { pvrId, outcome };
 }
 
@@ -1569,6 +1633,47 @@ function isPendingValueAsk(input) {
 
 const PENDING_VALUE_APOLOGY =
   "Sorry, I couldn't place that reading — could you say the field and value together again?";
+
+// P4 (ask-decline-ack-net) — decline-shape classifier for the answered-ask ack
+// wording. Returns 'decline' when the reply is a clear brush-off ("no", "don't
+// worry", "leave it", "skip it", "never mind", …), else null. This ONLY selects
+// which ack FAMILY the answered-ask net speaks (decline vs generic "Okay.") — it
+// never gates whether the net fires (that is `answered===true` + nothing
+// audible) and never suppresses a value, so a false positive is low-stakes (a
+// slightly-off but still-correct acknowledgment) and it stays deliberately
+// conservative. Substring/token matching (NOT the exact whole-string
+// CANCEL_PHRASES check) so the repro "No. Don't worry." — which CANCEL_PHRASES
+// cannot match because of the internal full stop — is still classified decline.
+// An allowlisted decline PHRASE — a brush-off with no substantive content.
+// Alternation fragment (no anchors) reused inside the whole-reply matcher.
+// `APOS` = optional straight OR curly apostrophe (STT/normalisers emit either).
+const APOS = "['’]?";
+const DECLINE_PHRASE_RE = `(?:don${APOS}t worry(?: about (?:it|that))?|not worried|leave (?:it|that|them)|skip (?:it|that|them)|never ?mind|forget (?:it|that)|no problem|don${APOS}t bother)`;
+// The WHOLE reply must be a bare negation, an allowlisted decline phrase, or a
+// leading bare-negation composed with one — with only punctuation/whitespace
+// and bounded politeness (please/just/thanks) between and around. Codex r1: the
+// previous unrestricted `^no[\s.,!—-]` + substring matching mis-classified
+// substantive answers ("No, it was 0.63", "No CPC on that circuit", "Don't
+// worry, it is circuit three") as declines. Anchoring the WHOLE reply keeps
+// genuine declines ("No. Don't worry.", "Please leave it.", "No, leave it
+// thanks.") while rejecting anything carrying a value, field, or other content.
+const BARE_NEGATION_RE = '(?:no|nope|nah)(?: thanks| thank you)?';
+const POLITE_PREFIX_RE = '(?:please |just )?';
+const POLITE_SUFFIX_RE = '(?:[\\s,]+(?:thanks|thank you|please))?';
+const WHOLE_DECLINE_RE = new RegExp(
+  `^${POLITE_PREFIX_RE}(?:${BARE_NEGATION_RE}|(?:${BARE_NEGATION_RE}[\\s.,!?—-]+)?${DECLINE_PHRASE_RE})${POLITE_SUFFIX_RE}[\\s.,!?—-]*$`,
+  'i'
+);
+export function classifyDeclineReply(userText) {
+  if (typeof userText !== 'string') return null;
+  const trimmed = userText.trim();
+  if (!trimmed) return null;
+  // A reply carrying ANY digit is substantive (a value / circuit ref) — never a
+  // decline, regardless of a leading "no" (belt-and-braces alongside the
+  // whole-reply anchor, which already rejects it).
+  if (/\d/.test(trimmed)) return null;
+  return WHOLE_DECLINE_RE.test(trimmed) ? 'decline' : null;
+}
 
 /**
  * Engagement wrapper — returns a tool_result body when the pending-value
@@ -1647,6 +1752,7 @@ async function runPendingValueChain(args) {
     pendingAsks,
     ws,
     onAskUserStarted,
+    onAskAnswered,
     onAskRegistered,
     signal,
     generationId,
@@ -1708,6 +1814,7 @@ async function runPendingValueChain(args) {
           pendingAsks,
           ws,
           onAskUserStarted,
+          onAskAnswered,
           onAskRegistered,
           signal,
           responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
@@ -1790,6 +1897,7 @@ async function runPendingValueChain(args) {
         pendingAsks,
         ws,
         onAskUserStarted,
+        onAskAnswered,
         onAskRegistered,
         signal,
         responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
@@ -1829,6 +1937,7 @@ async function runPendingValueChain(args) {
         pendingAsks,
         ws,
         onAskUserStarted,
+        onAskAnswered,
         onAskRegistered,
         signal,
         responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
