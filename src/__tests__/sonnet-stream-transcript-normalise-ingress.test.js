@@ -300,6 +300,49 @@ describe('Seam A — "Z s … 0.67" is canonicalised at ingest (id 89)', () => {
     expect(payloadStr).not.toContain('0.67');
     expect(payloadStr).not.toContain('heating');
   });
+
+  test('the telemetry row is NOT duplicated across the isExtracting queue+drain re-entry', async () => {
+    // A queued transcript re-enters handleTranscript via `{ ...msg }` when the
+    // in-flight extraction drains. The normalisation result rides an ENUMERABLE
+    // Symbol so the spread copies it forward — the drained clone reuses it and
+    // does NOT re-log. (A non-enumerable marker would be dropped by the spread
+    // and log twice.)
+    const ws = connect(wss);
+    await startSession(ws, 'sess-A6');
+
+    // Block the FIRST extraction so the second transcript queues behind it.
+    let releaseFirst;
+    const firstGate = new Promise((res) => {
+      releaseFirst = res;
+    });
+    let callN = 0;
+    runShadowHarnessSpy.mockImplementation(async () => {
+      callN += 1;
+      if (callN === 1) await firstGate;
+      return {
+        extracted_readings: [],
+        questions_for_user: [],
+        observations: [],
+        confirmations: [],
+      };
+    });
+
+    // Transcript A — a non-triggering utterance that OCCUPIES the extractor
+    // (blocked on firstGate). It fires no rule, so it logs zero rows.
+    const pA = sendFrame(ws, { type: 'transcript', text: 'hello world', utterance_id: 'uA' });
+    // Transcript B — the id-89 utterance; arrives while isExtracting → queues.
+    await sendFrame(ws, { type: 'transcript', text: RAW, utterance_id: 'uB' });
+    // Release A → its finally drains B, which re-enters via the spread clone.
+    releaseFirst();
+    await pA;
+
+    const rows = loggerModule.default.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.transcript_normalised'
+    );
+    // Exactly ONE row for B across first-entry + drain re-entry.
+    expect(rows).toHaveLength(1);
+    expect(rows[0][1].rules_hit).toEqual(['zs_field_token']);
+  });
 });
 
 // -----------------------------------------------------------------------------

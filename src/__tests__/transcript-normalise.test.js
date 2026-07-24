@@ -50,6 +50,26 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(r.rules_hit).toEqual([]);
   });
 
+  test('designation "Z S for circuit 1" is NOT collapsed (scope noun before the value, not a value-connector)', () => {
+    // The value "1" is introduced by the scope noun "circuit", NOT by a
+    // value-connector (was/is/reads/…), so the reading gate does not fire.
+    const r = normalise('designation Z S for circuit 1');
+    expect(r.text).toBe('designation Z S for circuit 1');
+    expect(r.rules_hit).toEqual([]);
+  });
+
+  test('"customer name Z S Electrical for unit 1" is NOT collapsed', () => {
+    const r = normalise('customer name Z S Electrical for unit 1');
+    expect(r.text).toBe('customer name Z S Electrical for unit 1');
+    expect(r.rules_hit).toEqual([]);
+  });
+
+  test('a value introduced by a value-connector after a scope phrase DOES collapse', () => {
+    // "Z s for circuit 3 was 0.67" — the scope "for circuit 3" sits in the gap;
+    // the value 0.67 is introduced by "was".
+    expect(normalise('Z s for circuit 3 was 0.67').text).toBe('Zs for circuit 3 was 0.67');
+  });
+
   test('designation with a preceding "is" is still NOT collapsed (connector before, not after)', () => {
     // "is" sits BEFORE the token; the rule requires a connector AFTER the token.
     expect(normalise('the designation is Z S 1').text).toBe('the designation is Z S 1');
@@ -93,14 +113,22 @@ describe('transcript-normalise — rule 2: "a hundred" → "100"', () => {
   });
 
   // ── Compound guard — a compound must NOT be corrupted into "100 and ..." ──
-  test('leaves "a hundred and fifty" UNTOUCHED (compound out of scope, no corruption)', () => {
-    const r = normalise('a hundred and fifty megaohms');
-    expect(r.text).toBe('a hundred and fifty megaohms');
-    expect(r.rules_hit).toEqual([]);
-  });
-
-  test('leaves "a hundred and one" untouched', () => {
-    expect(normalise('a hundred and one').text).toBe('a hundred and one');
+  test('leaves compound continuations UNTOUCHED (no "100 …" corruption)', () => {
+    // Every one of these, if the head were rewritten, would let the IR parser
+    // misread the value as 100. All must be left entirely untouched.
+    for (const input of [
+      'a hundred and fifty megaohms',
+      'a hundred and one',
+      'a hundred and zero',
+      'a hundred and a half',
+      'a hundred point five',
+      'a hundred-and-fifty',
+      'a hundred, and fifty',
+    ]) {
+      const r = normalise(input);
+      expect(r.text).toBe(input);
+      expect(r.rules_hit).toEqual([]);
+    }
   });
 
   test('does not fire inside a larger word', () => {
@@ -131,7 +159,9 @@ describe('transcript-normalise — combined + idempotency', () => {
       'Z s on the cooker was a hundred',
       'customer name Z S Electrical',
       'designation Z S 1',
+      'designation Z S for circuit 1',
       'a hundred and fifty megaohms',
+      'a hundred point five',
       '',
       'nothing to change here',
       // punctuation / case variants
@@ -151,5 +181,16 @@ describe('transcript-normalise — combined + idempotency', () => {
     expect(normalise(null)).toEqual({ text: '', rules_hit: [] });
     expect(normalise(42)).toEqual({ text: '', rules_hit: [] });
     expect(normalise('')).toEqual({ text: '', rules_hit: [] });
+  });
+
+  test('no catastrophic backtracking on a long connector-dense no-value clause (ReDoS guard)', () => {
+    // The Zs lookahead gap is bounded, so a long clause with many connectors and
+    // no value completes in ~linear time rather than stalling the event loop.
+    const evil = 'z s ' + 'was on for is are '.repeat(4000);
+    const start = process.hrtime.bigint();
+    const r = normalise(evil);
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    expect(r.rules_hit).toEqual([]); // no value → no collapse
+    expect(elapsedMs).toBeLessThan(250);
   });
 });

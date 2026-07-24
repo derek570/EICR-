@@ -710,14 +710,17 @@ export const CONSUMED_UTTERANCE_CAP = 256;
 export const RECENT_ASK_ANSWER_TTL_MS = 1500;
 export const RECENT_ASK_ANSWER_CAP = 8;
 
-// P6 — JSON-invisible marker stashed on an inbound transcript `msg` object
-// carrying its computed normalisation result + a `logged` flag. handleTranscript
-// re-enters for the SAME `msg` via the isExtracting queue-and-drain AND the
-// `user_moved_on` retry path; reusing the stashed result there avoids
-// re-normalising and, crucially, double-logging the `stage6.transcript_normalised`
-// telemetry row (rule 4 of the plan — exactly ONE row across entry + drain).
-// A Symbol key is non-enumerable + never serialised, so it can never leak into
-// the wire frame, the S3 capture, or a JSON.stringify of the message.
+// P6 — marker stashed on an inbound transcript `msg` object carrying its computed
+// normalisation result + a `logged` flag. handleTranscript re-enters for the SAME
+// logical message via the isExtracting queue-and-drain AND the `user_moved_on`
+// retry path; both re-queue by SPREADING `msg` into a fresh object
+// (`{ ...msg }` at the pendingTranscripts.push sites), so the marker MUST be an
+// ENUMERABLE own property to survive the spread — a non-enumerable one is dropped
+// by `{ ... }`/Object.assign and the drained clone would re-normalise + re-log,
+// violating the exactly-ONE-row contract (rule 4). A Symbol key is still invisible
+// to `JSON.stringify`, `Object.keys`, and `for…in` (all ignore symbol keys
+// regardless of enumerability), so it can NEVER leak into the wire frame or the
+// S3 capture — only object-spread (which we rely on here) copies it.
 const TRANSCRIPT_NORMALISED = Symbol('transcriptNormalised');
 
 /**
@@ -1567,6 +1570,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // output (lowercase / strip non-alphanumerics / collapse
             // whitespace), NOT substring — mirrors the r16 design
             // rationale (short "three" vs "move to three").
+            // P6 — the CANONICAL form of the RAW answer text, derived the SAME
+            // way Seam A canonicalises the transcript (normalise(msg.user_text),
+            // NOT the post-sanitisation text). Used for BOTH content-anchor ledger
+            // operations on this seam — the pre-sanitisation reverse-race lookup
+            // AND the recentAskAnswers anchor push — so a transcript's canonical
+            // key (Seam A: normalise(msg.text)) and its paired answer's canonical
+            // key match in EITHER arrival order. Deriving the anchor from the
+            // POST-sanitisation text would diverge from the transcript side for a
+            // truncated (>8192 char) or control-stripped answer and let the pair
+            // double-expose. The MODEL-facing value still uses canonicalAnswerText
+            // (post-sanitisation) below — only the dedupe keys are raw-based.
+            const canonicalUserTextForAnchor =
+              typeof msg.user_text === 'string' ? normaliseTranscript(msg.user_text).text : '';
             let alreadySeenByContent = false;
             let matchedContentEntry = null;
             if (!anchoredAsTranscript && typeof msg.user_text === 'string') {
@@ -1577,14 +1593,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 );
                 if (entry.recentTranscripts.length > 0) {
                   // P6 — SEAM B reverse-race lookup uses the CANONICAL user
-                  // text so its dedupe key matches the recentTranscripts ledger
-                  // (which Seam A now stamps canonical). A raw lookup here vs a
-                  // canonical ledger would MISS the match and double-expose the
-                  // same utterance. Sanitisation itself still runs on the RAW
-                  // value below (this canonical copy is comparison-only).
-                  const normalisedAnswer = normaliseForAskMatch(
-                    normaliseTranscript(msg.user_text).text
-                  );
+                  // text (raw-based, matching Seam A's recentTranscripts stamp)
+                  // so its dedupe key matches. A raw lookup vs a canonical ledger
+                  // would MISS the match and double-expose. Sanitisation still
+                  // runs on the RAW value below (this copy is comparison-only).
+                  const normalisedAnswer = normaliseForAskMatch(canonicalUserTextForAnchor);
                   if (normalisedAnswer.length > 0) {
                     const matchIdx = entry.recentTranscripts.findIndex(
                       (t) => t.normalisedText === normalisedAnswer
@@ -1946,13 +1959,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // Skip when alreadySeenAsTranscript — the transcript was
             // already extracted, no race left to defend against.
             if (resolved && !alreadySeenAsTranscript) {
-              // P6 — anchor on the CANONICAL answer text so Seam A's content
-              // anchor (canonicalTranscriptText → normaliseForAskMatch) matches
-              // it in either arrival order. In the not-seen branch sanitised is
-              // set ⟺ canonicalAnswerText is set; the resolvePayload.user_text
-              // fallback (never reached here since alreadySeenAsTranscript is
-              // false) is already canonical too.
-              const anchorText = sanitised ? canonicalAnswerText : resolvePayload.user_text;
+              // P6 — anchor on the RAW-BASED canonical answer text (the SAME
+              // basis as Seam A's transcript stamp, normalise(msg.text)) so the
+              // content-anchor equality holds in EITHER arrival order even for a
+              // truncated / control-stripped answer (post-sanitisation text would
+              // diverge from the transcript side). The model-facing value used
+              // canonicalAnswerText above; only this dedupe key is raw-based.
+              // resolvePayload.user_text is unreachable here (alreadySeenAsTranscript
+              // is false) but is itself canonical — kept as a defensive fallback.
+              const anchorText = canonicalUserTextForAnchor || resolvePayload.user_text;
               const normalised = normaliseForAskMatch(anchorText);
               if (normalised.length > 0) {
                 if (!entry.recentAskAnswers) entry.recentAskAnswers = [];
@@ -3334,9 +3349,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     let normResult = msg[TRANSCRIPT_NORMALISED];
     if (!normResult) {
       normResult = normaliseTranscript(typeof msg.text === 'string' ? msg.text : '');
+      // enumerable:true so `{ ...msg }` in the queue/drain re-queue copies the
+      // marker forward (symbol keys stay invisible to JSON/Object.keys/for…in).
       Object.defineProperty(msg, TRANSCRIPT_NORMALISED, {
         value: normResult,
-        enumerable: false,
+        enumerable: true,
         configurable: true,
         writable: true,
       });
@@ -3560,7 +3577,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // distribution; just enriches the turn context. The hint is set
     // on the msg object so any downstream extractor can read it
     // without a re-parse.
-    if (typeof msg.text === 'string' && BULK_EXCLUDE_PATTERN.test(msg.text)) {
+    // P6 — behavioural consumer: test the CANONICAL copy (the intent hint mutates
+    // routing). The two normaliser rules never touch "apart from/except/…", so
+    // canonical === raw for this pattern today; reading canonical keeps the
+    // routing-table contract correct if the rule set ever grows. Preview stays raw.
+    if (typeof msg.text === 'string' && BULK_EXCLUDE_PATTERN.test(canonicalTranscriptText)) {
       if (!msg.intentHints || typeof msg.intentHints !== 'object') {
         msg.intentHints = {};
       }
