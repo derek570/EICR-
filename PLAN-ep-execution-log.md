@@ -1,110 +1,64 @@
-# Execution log — Sonnet observation-tier routing (router chunk C1)
+# EP Execution Log — P6 transcript-normaliser
 
-- Plan: `PLAN-final.md`
-- Session: `20260724T084902Z-ep`
-- Repo: `/Users/derekbeckley/Developer/EICR_Automation`
-- Worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260724T084902Z-ep`
-- Branch: `ep/PLAN-20260724T084902Z-ep`
-- Base: `main` @ `b1e4d811`
-- Started: 2026-07-24T08:49Z
+**Session:** 20260724T072723Z-ep
+**Plan:** PLAN-final.md
+**Repo:** /Users/derekbeckley/Developer/EICR_Automation
+**Branch:** ep/PLAN-20260724T072723Z-ep
+**Started:** 2026-07-24T07:28Z
+**Chain:** hop 2, `.ep-queue` wave member (feedback-2026-07-22 batch, P6 of 7)
 
-## Pre-flight ref verification (against current main)
-- `runShadowHarness` non-test callers = EXACTLY TWO: `src/extraction/sonnet-stream.js:4316` (prod ingress), `scripts/voice-latency-bench/transcript-replay-direct-runner.mjs:689` (bench runner). Field-replay runner reaches it via `scripts/field-replay/lib/replay-runner-core.mjs:410` using `built.buildTurnOptions` (session-builder.mjs). ✅ matches plan.
-- `model: SHADOW_MODEL` at `stage6-shadow-harness.js:1222` (LIVE — change) and `:3408` (shadow-comparison — KEEP). ✅
-- `SHADOW_MODEL` def `:170` (`process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6'`). ✅
-- `OBSERVATION_PATTERN` imported `:143` from `pre-llm-gate.js`. ✅
-- `runLiveMode(session, transcriptText, regexResults, options, log)` `:568`; `transcriptText` enriched at `sonnet-stream.js:3758`; raw = `msg.text` (`:3714`). ✅
-- `runToolLoop` model param `stage6-tool-loop.js:262`; round-1 override `:414-418`. ✅
-- Cost tracking `stage6-shadow-harness.js:2900` `addSonnetUsage(toolLoopOut.usage, toolLoopOut.model)`. ✅
-- `PINNED_FROM_TASK_DEF` `replay-environment.mjs:39` (already pins OBSERVATION_EXTRACT_MODEL:43, VOICE_LATENCY_ROUND1_MODEL:52). ✅
-- Task-def `ecs/task-def-backend.json:54-55` SONNET/OBSERVATION models present; no OBSERVATION_TIER_ROUTING yet. ✅
-- Replay routing snapshot test `src/__tests__/field-replay/replay-environment.test.js:31-34` asserts 3 values. ✅
-- `[PLAN-SIZE]` single feature-group (the router) — NOT a large bundle; short Codex convergence expected.
+## Plan summary
+Backend-only. New `src/extraction/transcript-normalise.js` (pure, `normalise(text[,context]) → {text, rules_hit[]}`) applied at TWO seams in `sonnet-stream.js`:
+- Seam A: top of `handleTranscript` (after `entry.isStopping` guard, before ask-answer anchor) — canonical/raw split, do NOT mutate `msg.text`.
+- Seam B: `ask_user_answered` handler (after `sanitiseUserText`, ~:1599).
+TWO evidence-backed rules: (1) context-gated "Z s"/"Zed s"/"zed s"→"Zs"; (2) "a hundred"→"100".
 
----
-
-## Steps (plan → tasks)
-
-## Step 1 — runToolLoop model-lock option
+## Phase 0 — line-ref & raw-sink verification (2026-07-24T07:35Z)
 - Status: applied
-- Decision: rule 1 — verbatim per plan §"Round-1 override interaction".
-- Files: src/extraction/stage6-tool-loop.js
-- Commit: 65a184ff
-- Notes: New `allowRound1ModelOverride` param (default true = byte-identical); gates the VOICE_LATENCY_ROUND1_MODEL override.
+- File is `src/extraction/sonnet-stream.js` (4965 lines). Plan line refs verified against current main — accurate:
+  - `:3217` `handleTranscript` def; `:3243` `entry.isStopping` guard (Seam A goes right after).
+  - `:3294` + `:3355` `normaliseForAskMatch(msg.text)` content anchors; `:3399` gate; `:3514` pre-queue classifyOvertake; `:3570` detectStructuredReading; `:3714` `let transcriptText = msg.text`; `:3758` in_response_to annotation; `:3802/3847/3875` rawReplyText args; `:4061` transcript-overtake classifyOvertake.
+  - Seam B: `ask_user_answered` case `:1438`; `msg.user_text` validated string at `:1447`; `srv-*` early-exit `:1472`; reverse-race anchor `:1563`; `sanitised = sanitiseUserText` `:1599`; classifyOvertake shape `:1663`; detectStructuredReading `:1722`; synthetic transcript `:1760`; resolvePayload.user_text `:1672/1787`; recentAskAnswers push `:1893`.
+  - Mirror ledger: recentTranscripts pushed at `:3355` (consulted by Seam B `:1563`); recentAskAnswers pushed at Seam B `:1893` (consulted by Seam A `:3294`). BOTH content anchors must be canonical on BOTH seams for cross-seam dedupe equality (double-exposure guard).
+- **RAW-SINK determination (Phase-0 deliverable) = plan Option (c).** The live voice path (`sonnet-stream.js`) uploads ONLY `session-analytics/<user>/<sid>/cost_summary.json` (`:4870`). There is NO raw-transcript S3/jsonl capture in this path (the `recording.js` `debug_transcription.json` is the OLD Whisper batch route, not the Flux/Sonnet voice pipeline). `session.activeTurnTranscript` (stage6-shadow-harness.js:702) becomes canonical by design. Recorded-corpus fixtures are hand-authored `.yaml` (already carry raw garble). So raw preservation is satisfied by NOT mutating `msg.text` in memory; the authoritative raw artifact for future replays is the hand-authored fixture. Incidental INFO-log previews (dispatcher-logger, engine) MAY become canonical — documented + pinned by test per plan.
+- `parseMegaohms`/`parseBareMegaohmsWithUnit` confirmed: "a hundred" yields no digit (fails); "100 MΩ" parses to "100". megaron/milligrams already aliased (unit rule correctly dropped).
+- Integration test harness: `ws._emit('message', Buffer.from(JSON.stringify(frame)))` drives handlers captured via `ws.on` mock (sonnet-stream-ask-routing.test.js pattern); `runShadowHarnessSpy.mock.calls.at(-1)[1]` is the `transcriptText` arg.
+- Non-string `msg.text` edge preserved: `canonicalTranscriptText = typeof msg.text === 'string' ? normResult.text : msg.text` so pathological non-string frames see byte-identical behaviour.
 
-## Step 2 — selectedModel router in runLiveMode + telemetry
-- Status: applied
-- Decision: rule 1 — computed selectedModel once before runToolLoop; classify on raw `options.rawInspectorTranscript`; changed ONLY the LIVE call (`:1288`), left the `mode==='shadow'` call on SHADOW_MODEL; PII-safe `stage6.observation_tier_routing` event.
-- Files: src/extraction/stage6-shadow-harness.js
-- Commit: ca2e9660 (telemetry payload later trimmed to the plan's exact five fields in 2e9df987)
-- Notes: Verified the two `model: SHADOW_MODEL` sites (1222→selectedModel at LIVE; 3477 kept).
 
-## Step 3 — thread rawInspectorTranscript
-- Status: applied
-- Decision: rule 1 — both non-test callers (sonnet-stream.js:4316 = msg.text; transcript-replay-direct-runner.mjs:689 = transcriptText) + session-builder.mjs (HARNESS_OPTION_TABLE + buildTurnOptions = turn.transcript). grep confirmed EXACTLY two non-test callers; field-replay runner reaches it via buildTurnOptions.
-- Files: src/extraction/sonnet-stream.js, scripts/voice-latency-bench/transcript-replay-direct-runner.mjs, scripts/field-replay/lib/session-builder.mjs
-- Commit: c3e30b68
+## Steps executed
+- **Step: new module `src/extraction/transcript-normalise.js`** — applied. Pure `normalise(text)→{text,rules_hit[]}`; two enumerated rules (a_hundred, context-gated zs_field_token); rule order load-bearing (a_hundred first). Commit a53c9b23.
+- **Step: Seam A wiring (handleTranscript)** — applied. canonicalTranscriptText derived after isStopping guard; routed to both content anchors, gate, BOTH classifyOvertake, detectStructuredReading, transcriptText+in_response_to, 3× rawReplyText, runShadowHarness; non-string fallback; enumerable Symbol telemetry dedupe. Commit bb63ab66.
+- **Step: Seam B wiring (ask_user_answered)** — applied. sanitiseUserText on RAW; canonicalUserTextForAnchor (raw-based) for both dedupe keys; canonicalAnswerText for behavioural consumers. Commit bb63ab66.
+- **Step: production-ingress integration test** — applied. `sonnet-stream-transcript-normalise-ingress.test.js` (both seams, anchor flip, real parser, dedupe both orders, queue/drain single-log). Commit 6426c4ce.
+- **Step: real-engine IR ingress test** — applied (added during Codex review; plan required "activate the REAL IR dialogue state"). `sonnet-stream-transcript-normalise-ir-realengine.test.js`. Commit 896bdb36.
+- **Step: docs (ios-pipeline.md + changelog + hub rows)** — applied. Commits f8e3ee3a + review-cycle doc fixes.
 
-## Step 4 — env inventory pin + task-def
-- Status: applied
-- Decision: rule 1 — added OBSERVATION_TIER_ROUTING to PINNED_FROM_TASK_DEF (bumped inventory version 1→2), task-def value "false" (dark), extended routing snapshot test 3→4.
-- Files: scripts/field-replay/replay-environment.mjs, ecs/task-def-backend.json, src/__tests__/field-replay/replay-environment.test.js
-- Commit: bf2333bb
-- Notes: The versioned inventory guard now classifies the new env read; all 10 replay-environment tests green.
+## Phase-0 determinations
+- Raw-sink = plan Option (c): no live raw-transcript S3 sink (only cost_summary.json); authoritative raw artifacts = the raw literals in the unit/ingress tests + field-feedback records (2ACE7677 / 36731498). No P6 .yaml corpus fixture needed.
+- All plan line refs verified accurate against current main.
 
-## Step 5 — routing tests (unit + replay parity)
-- Status: applied
-- Decision: rule 1 — new stage6-observation-tier-routing.test.js (routing matrix) + session-builder.test.js replay-parity. Cycles 1-2 added: exact-shape telemetry assertion, enriched-context-cannot-escalate replay case, a HARDENED real ask_user suspend/resume test.
-- Files: src/__tests__/stage6-observation-tier-routing.test.js (new), src/__tests__/field-replay/session-builder.test.js
-- Commit: bc54d395 (+ 2e9df987, 7fd52aeb, 02df0ca8)
+## Codex diff review — the ship gate
+- **Verdict: PASSED (converged clean at cycle 8, zero BLOCKER/IMPORTANT).**
+- Cycle 1 (parallel 3-lens): 6 findings (4 BLOCKER-class) — Zs false-positive (connector+value anywhere), ReDoS, compound-guard holes, telemetry-Symbol-lost-on-queue-spread, cross-seam anchor divergence, mocked-IR-test. All fixed. Commit 896bdb36.
+- Per-fix mini-review 1: 4 IMPORTANT (compound-guard "and"/multi-digit, connector false-positives, scope-cap). Fixed. Commit d3d221db.
+- Cycle 2: 2 BLOCKER (name-with-later-reading collapse; "a hundred point oh five"/"and half" decimals) + docs. Fixed. Commit b8970b82.
+- Per-fix mini-review 2: 1 IMPORTANT (120-char bound too permissive → reverted to 60, name-safety). Fixed. Commit 5af66b91.
+- Cycle 3: 3 BLOCKER (newline-crossing; overtake raw-length-cap bypass; missing AGENTS.md hub row) + docs NIT. Fixed. Commit 04c7a2e3.
+- Cycle 4: 1 BLOCKER (CR + sentinel-internal \s newline-crossing) + 2 doc NITs. Fixed. Commit 4da45474.
+- Cycle 5: 1 BLOCKER (at/of address corruption). Fixed. Commit 5d194d0d.
+- Cycle 6: 1 IMPORTANT (comma-bridge to later field). Fixed. Commit addc778d.
+- Cycle 7: 1 IMPORTANT (a_hundred uncertainty markers → false exact 100). Fixed. Commit e0e09d6a.
+- Cycle 8: EMPTY — converged.
+- ACCEPTED residuals (documented, not fixed — within the plan's "grows from field evidence"): "reads as"-style extra-word Zs false-negatives; F8/§A4 "Ze is a hundred" reinjection double-speak (pre-existing, identical for digit readings); AGENTS.md P4-row gap (pre-existing divergence); no P6 .yaml corpus fixture (Option-c); pathological no-comma name+reading run-on in one utterance.
+- No SANCTIONED_DEVIATIONS (every fix was in-scope; none required going beyond the plan's intent).
 
-## Step 6 — docs + changelog + ledger + todo
-- Status: applied
-- Decision: rule 1 — architecture.md (models table + flag table + Stage-6 router note), deployment.md (flip/rollback subsection), changelog.md/CLAUDE.md/AGENTS.md rows, parity-ledger row annotated (status stays 'missing' — web cue is a separate wave), vault todo added (outside repo).
-- Files: docs/reference/architecture.md, docs/reference/deployment.md, docs/reference/changelog.md, CLAUDE.md, AGENTS.md, web/docs/parity-ledger.md
-- Commit: 59e5c9d4 (counts corrected in 02df0ca8)
-
-## Step 7 — backend Jest green
-- Status: applied
-- Decision: rule 1 — full backend suite green (6042 passed / 19 skipped / 0 failed); eslint 0 errors (14 pre-existing warnings, none from C1); prettier drift on 5 files is PRE-EXISTING on main (scripts/ + field-replay tests are outside lint-staged's glob), not introduced here.
-- Notes: Ran on Node v25 (dev box; the real gate is CI Node 20). Worktree node_modules symlinked from the main checkout (identical dep tree; no packages/ touched).
-
-## Codex diff review
-
-- **Cycle 1** (parallel multi-lens: wire-contract / silent-path / edge-interactions): 3 merged findings, ALL faithfulness/test-coverage (no production-logic bug — lens b "no silent-path/read-back regression", lens c "no runtime correctness defects"). (F1) telemetry payload trimmed to the plan's exact five fields → APPLIED. (F2) blocking-ask_user continuation test used record_observation not a real ask → APPLIED (see mini-review). (F3) replay enriched-context-cannot-escalate assertion missing → APPLIED. Re-gate green.
-- **Mini-review (cycle-1 hunks):** confirmed the telemetry trim breaks no consumer + the exact-shape assertion is deterministic + routeModelFor refactor sound; correctly flagged that my "no test drives a real ask_user" NOTE was WRONG (stage6-audibility-invariants.test.js does) → APPLIED a proper fake-timer ask_user suspend/resume test.
-- **Cycle 2:** 1 IMPORTANT (the ask test could false-pass via timeout-resume; "gate stack" comment inaccurate) → APPLIED (assert the answer emptied the registry + the ask_user_started frame emitted; dropped the gate-stack wording). 1 NIT (stale doc counts) → APPLIED (9→10 tests, 5940→6042). Re-gate green.
-- **Mini-review (cycle-2 hunks):** ZERO defects — `unresolvedAnswers===0` is a sound proof the answer (not a timeout) won the race; askStartedFrames is a correct emission oracle; no new flakiness.
-- **Cycle 3:** ZERO findings — "faithful, complete, and within the router-only C1 plan scope." **VERDICT: PASSED.**
-- Convergence: 3 → 2 → 0. No sanctioned plan deviations (SANCTIONED_DEVIATIONS empty).
-
-## Completed 2026-07-24T09:55:46Z
-
-**Outcome header: ALL PASSED**
-
-Backend-only, dark behind `OBSERVATION_TIER_ROUTING` (default OFF) → the live path is byte-identical to pre-C1 at merge. Every plan step applied (no assumed/skipped/blocked/failed). Codex diff review PASSED (3→2→0 across 3 cycles + 2 mini-reviews; no plan deviations).
-
-**Commits (9 + this log):**
-- 65a184ff feat(stage6): add allowRound1ModelOverride model-lock to runToolLoop
-- ca2e9660 feat(stage6): route observation turns to Sonnet on the live path (dark)
-- c3e30b68 feat(replay): thread rawInspectorTranscript to every runShadowHarness caller
-- bf2333bb feat(replay): pin OBSERVATION_TIER_ROUTING in the env inventory + task-def
-- bc54d395 test(stage6): observation-tier routing matrix (unit + replay parity)
-- 59e5c9d4 docs(stage6): document the observation-tier router (C1) + flip/rollback
-- 2e9df987 fix(ep): address Codex review cycle 1 — telemetry shape + replay coverage
-- 7fd52aeb fix(ep): add real ask_user suspend/resume routing test (mini-review)
-- 02df0ca8 fix(ep): address Codex review cycle 2 — ask test robustness + stale doc counts
-
-**Files touched:** src/extraction/{stage6-tool-loop.js, stage6-shadow-harness.js, sonnet-stream.js}; scripts/field-replay/{lib/session-builder.mjs, replay-environment.mjs}; scripts/voice-latency-bench/transcript-replay-direct-runner.mjs; ecs/task-def-backend.json; src/__tests__/{stage6-observation-tier-routing.test.js (new), field-replay/session-builder.test.js, field-replay/replay-environment.test.js}; docs/reference/{architecture.md, deployment.md, changelog.md}; CLAUDE.md; AGENTS.md; web/docs/parity-ledger.md. Plus the vault todo (outside repo).
-
-**Plan deviations:** none.
-
-**Assumed decisions:** none.
-
-**Skipped / blocked / failed steps:** none.
-
-**Stashes left behind:** none.
-
-**Tests run + result:** backend Jest — 6042 passed / 19 skipped / 0 failed. New: 10 routing unit tests + replay-parity (option-table thread, obs-fixture-routes-to-Sonnet, enriched-cannot-escalate) + replay-environment 3→4 snapshot. eslint 0 errors; prettier drift pre-existing on main (not introduced).
-
-**Post-merge follow-ups (vault todos-certmate.md, dated 2026-07-24):** web observation-processing cue (flip prerequisite), the flag flip, P8 probes on the Sonnet-routed path, the C2 deterministic ask-gate spike (NOT /ep-ready).
+## Completed 2026-07-24T09:10Z
+- **Outcome: ALL PASSED** (every step applied; full backend suite green; Codex diff review PASSED).
+- Commits: 16 (module, seams, tests, docs, 8 review-cycle fixes, count sync). Feature branch `ep/PLAN-20260724T072723Z-ep`.
+- Files touched: `src/extraction/transcript-normalise.js` (new), `src/extraction/sonnet-stream.js`, `src/__tests__/transcript-normalise.test.js` (new), `src/__tests__/sonnet-stream-transcript-normalise-ingress.test.js` (new), `src/__tests__/sonnet-stream-transcript-normalise-ir-realengine.test.js` (new), `docs/reference/ios-pipeline.md`, `docs/reference/changelog.md`, `CLAUDE.md`, `AGENTS.md`.
+- Assumed decisions: none load-bearing (the plan was execution-ready).
+- Skipped/blocked/failed steps: none.
+- Stashes: none.
+- Tests: 49 P6-specific tests; full backend suite 6080 passed / 19 skipped / 0 failed. ReDoS-guard 0.06–0.13ms on 72–140KB inputs.
+- Deploy: backend-only, ZERO wire change → backend PR→merge→ECS. No iOS changes → no TestFlight.

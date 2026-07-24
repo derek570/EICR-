@@ -130,11 +130,20 @@ export const EXTRACTION_WATCHDOG_ABSOLUTE_MS = 3 * ASK_USER_TIMEOUT_MS + 2 * EXT
 // isExtracting.
 import { detectStructuredReading } from './stage6-pending-value.js';
 import { RECORDABLE_READING_FIELDS } from './recordable-reading-fields.js';
+// P6 (feedback 89 + 80A) — the canonical dictation-transcript normaliser.
+// Applied at TWO ingest seams (Seam A top of handleTranscript, Seam B the
+// ask_user_answered user_text handler); derives a canonical COPY without
+// mutating msg.text so the recorded-corpus fixtures + reverse-race dedupe keys
+// keep the raw garble. Pure + enumerated (no fuzzy). See transcript-normalise.js.
+import { normalise as normaliseTranscript } from './transcript-normalise.js';
 // Plan 03-10 Task 2 — bound + scrub user_text before it touches CloudWatch
 // logs OR the Anthropic tool_result body. Pure function; throws on abusive
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
 // instead of smuggling the abuse downstream.
-import { sanitiseUserText } from './stage6-sanitise-user-text.js';
+import {
+  sanitiseUserText,
+  HARD_REJECT_USER_TEXT_LEN,
+} from './stage6-sanitise-user-text.js';
 // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter. The
 // activeSessions entry owns one askBudget per session; the wrapper layer
 // (Plan 05-01) calls isExhausted(key) BEFORE invoking the inner ask
@@ -703,6 +712,19 @@ export const CONSUMED_UTTERANCE_CAP = 256;
 // answers, which shouldn't happen under STA-01.
 export const RECENT_ASK_ANSWER_TTL_MS = 1500;
 export const RECENT_ASK_ANSWER_CAP = 8;
+
+// P6 — marker stashed on an inbound transcript `msg` object carrying its computed
+// normalisation result + a `logged` flag. handleTranscript re-enters for the SAME
+// logical message via the isExtracting queue-and-drain AND the `user_moved_on`
+// retry path; both re-queue by SPREADING `msg` into a fresh object
+// (`{ ...msg }` at the pendingTranscripts.push sites), so the marker MUST be an
+// ENUMERABLE own property to survive the spread — a non-enumerable one is dropped
+// by `{ ... }`/Object.assign and the drained clone would re-normalise + re-log,
+// violating the exactly-ONE-row contract (rule 4). A Symbol key is still invisible
+// to `JSON.stringify`, `Object.keys`, and `for…in` (all ignore symbol keys
+// regardless of enumerability), so it can NEVER leak into the wire frame or the
+// S3 capture — only object-spread (which we rely on here) copies it.
+const TRANSCRIPT_NORMALISED = Symbol('transcriptNormalised');
 
 /**
  * Normalise a freeform utterance for equality-based dedupe.
@@ -1551,6 +1573,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // output (lowercase / strip non-alphanumerics / collapse
             // whitespace), NOT substring — mirrors the r16 design
             // rationale (short "three" vs "move to three").
+            // P6 — the CANONICAL form of the RAW answer text, derived the SAME
+            // way Seam A canonicalises the transcript (normalise(msg.user_text),
+            // NOT the post-sanitisation text). Used for BOTH content-anchor ledger
+            // operations on this seam — the pre-sanitisation reverse-race lookup
+            // AND the recentAskAnswers anchor push — so a transcript's canonical
+            // key (Seam A: normalise(msg.text)) and its paired answer's canonical
+            // key match in EITHER arrival order. Deriving the anchor from the
+            // POST-sanitisation text would diverge from the transcript side for a
+            // truncated (>8192 char) or control-stripped answer and let the pair
+            // double-expose. The MODEL-facing value still uses canonicalAnswerText
+            // (post-sanitisation) below — only the dedupe keys are raw-based.
+            const canonicalUserTextForAnchor =
+              typeof msg.user_text === 'string' ? normaliseTranscript(msg.user_text).text : '';
             let alreadySeenByContent = false;
             let matchedContentEntry = null;
             if (!anchoredAsTranscript && typeof msg.user_text === 'string') {
@@ -1560,7 +1595,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   (t) => t.expiresAt > nowTs
                 );
                 if (entry.recentTranscripts.length > 0) {
-                  const normalisedAnswer = normaliseForAskMatch(msg.user_text);
+                  // P6 — SEAM B reverse-race lookup uses the CANONICAL user
+                  // text (raw-based, matching Seam A's recentTranscripts stamp)
+                  // so its dedupe key matches. A raw lookup vs a canonical ledger
+                  // would MISS the match and double-expose. Sanitisation still
+                  // runs on the RAW value below (this copy is comparison-only).
+                  const normalisedAnswer = normaliseForAskMatch(canonicalUserTextForAnchor);
                   if (normalisedAnswer.length > 0) {
                     const matchIdx = entry.recentTranscripts.findIndex(
                       (t) => t.normalisedText === normalisedAnswer
@@ -1577,6 +1617,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
             let resolvePayload;
             let sanitised = null;
+            // P6 — the CANONICAL form of the sanitised answer text. Assigned in
+            // the not-seen branch after sanitisation; every model-facing/
+            // BEHAVIOURAL consumer (classifyOvertake shape check, the new-command
+            // gate, the structured-reading detector, resolvePayload.user_text,
+            // the re-injected synthetic transcript) reads this. The dedupe-ledger
+            // anchor push does NOT — it uses the raw-based
+            // `canonicalUserTextForAnchor` above so its key matches Seam A's
+            // raw-based transcript stamp in BOTH arrival orders (even for a
+            // truncated/stripped answer). Raw previews + sanitisation flags stay
+            // on sanitised.
+            let canonicalAnswerText = null;
 
             if (alreadySeenAsTranscript) {
               resolvePayload = {
@@ -1611,6 +1662,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   })
                 );
                 break;
+              }
+
+              // P6 — normalise the SANITISED answer text (sanitisation stays on
+              // the raw value above so hard-length/truncation semantics are
+              // unchanged). Route this canonical copy to every behavioural
+              // consumer below. When Seam B re-injects the synthetic transcript,
+              // that text is already canonical, so Seam A's re-normalise is a
+              // no-op and never double-logs.
+              const answerNorm = normaliseTranscript(sanitised.text);
+              canonicalAnswerText = answerNorm.text;
+              if (answerNorm.rules_hit.length > 0) {
+                logger.info('stage6.transcript_normalised', {
+                  sessionId: currentSessionId,
+                  // Rule IDs ONLY — never the raw/canonical full text (leak-filter).
+                  rules_hit: answerNorm.rules_hit,
+                  seam: 'ask_answer',
+                });
               }
 
               // Bug C remediation (session DC946608, 2026-05-06) — substantive
@@ -1660,7 +1728,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     yield [msg.tool_call_id, askEntry];
                   },
                 };
-                const shapeVerdict = classifyOvertake(sanitised.text, [], singleAskRegistry);
+                const shapeVerdict = classifyOvertake(canonicalAnswerText, [], singleAskRegistry);
                 if (shapeVerdict.kind === 'answers') {
                   // Shape match — fall through to the resolve path below
                   // without running the imperative gate. The matched answer
@@ -1669,7 +1737,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   // imperative-prefix or not.
                   resolvePayload = {
                     answered: true,
-                    user_text: sanitised.text,
+                    user_text: canonicalAnswerText, // P6 — canonical answer to the model.
                   };
                   if (sanitised.truncated || sanitised.stripped) {
                     resolvePayload.sanitisation = {
@@ -1688,10 +1756,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 const NEW_COMMAND_PREFIX_RE =
                   /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
                 const BULK_SCOPE_RE = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
-                const wordCount = sanitised.text.split(/\s+/).filter(Boolean).length;
+                // P6 — judge the new-command gate on the CANONICAL text so the
+                // same string is gated, resolved, and re-injected (the
+                // structured-reading detector below is canonical too — they must
+                // not disagree).
+                const wordCount = canonicalAnswerText.split(/\s+/).filter(Boolean).length;
                 const matchedImperative =
-                  wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(sanitised.text);
-                const matchedBulkScope = BULK_SCOPE_RE.test(sanitised.text);
+                  wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(canonicalAnswerText);
+                const matchedBulkScope = BULK_SCOPE_RE.test(canonicalAnswerText);
                 // §A4 (F8) round-8 channel separation — the direct
                 // ask_user_answered handler skips the new-command gate
                 // whenever the classifier returns "answers", so an
@@ -1719,7 +1791,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   askEntry?.pendingValueEligible === true ||
                   (typeof msg.tool_call_id === 'string' && msg.tool_call_id.startsWith('pvr-'));
                 const structuredAnswer = pendingValueClassAsk
-                  ? detectStructuredReading(sanitised.text)
+                  ? detectStructuredReading(canonicalAnswerText)
                   : null;
                 const matchedStructuredReading =
                   structuredAnswer != null && structuredAnswer.complete === true;
@@ -1756,8 +1828,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   // Fire-and-forget — errors are logged, not propagated, so
                   // the ws.on('message') return path stays clean.
                   const syntheticTranscript = {
+                    // P6 — re-inject the CANONICAL text so the reinjected
+                    // command flows through extraction already normalised. Seam
+                    // A re-normalises it to a no-op (idempotent) and never
+                    // double-logs.
                     type: 'transcript',
-                    text: sanitised.text,
+                    text: canonicalAnswerText,
                     utterance_id: msg.consumed_utterance_id ?? null,
                     confidence: 1.0,
                   };
@@ -1784,7 +1860,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               if (!resolvePayload) {
                 resolvePayload = {
                   answered: true,
-                  user_text: sanitised.text,
+                  user_text: canonicalAnswerText, // P6 — canonical answer to the model.
                 };
                 if (sanitised.truncated || sanitised.stripped) {
                   resolvePayload.sanitisation = {
@@ -1889,7 +1965,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // Skip when alreadySeenAsTranscript — the transcript was
             // already extracted, no race left to defend against.
             if (resolved && !alreadySeenAsTranscript) {
-              const anchorText = sanitised ? sanitised.text : resolvePayload.user_text;
+              // P6 — anchor on the RAW-BASED canonical answer text (the SAME
+              // basis as Seam A's transcript stamp, normalise(msg.text)) so the
+              // content-anchor equality holds in EITHER arrival order even for a
+              // truncated / control-stripped answer (post-sanitisation text would
+              // diverge from the transcript side). The model-facing value used
+              // canonicalAnswerText above; only this dedupe key is raw-based.
+              // resolvePayload.user_text is unreachable here (alreadySeenAsTranscript
+              // is false) but is itself canonical — kept as a defensive fallback.
+              const anchorText = canonicalUserTextForAnchor || resolvePayload.user_text;
               const normalised = normaliseForAskMatch(anchorText);
               if (normalised.length > 0) {
                 if (!entry.recentAskAnswers) entry.recentAskAnswers = [];
@@ -3248,6 +3332,50 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       return;
     }
 
+    // P6 (feedback 89 + 80A) — SEAM A: canonical dictation-transcript
+    // normalisation. Derive a canonical COPY of the raw transcript WITHOUT
+    // mutating msg.text (the raw garble MUST survive for the recorded-corpus
+    // fixtures + the reverse-race dedupe keys, else a future replay masks the
+    // bug). Every BEHAVIOURAL consumer downstream in this handler reads
+    // `canonicalTranscriptText` instead of `msg.text` — the ask-answer content
+    // anchors (both the consult below and the recentTranscripts push), the
+    // pre-LLM gate, BOTH classifyOvertake calls, detectStructuredReading, the
+    // model-bound transcriptText (incl. the in_response_to annotation built
+    // from it), the dialogue-script rawReplyText args (normalised but
+    // un-annotated), and runShadowHarness. Raw diagnostics/log-previews keep
+    // reading msg.text.
+    //
+    // Non-string msg.text is preserved byte-for-byte: normalise() returns '' on
+    // a non-string, but we fall back to the original msg.text so pathological
+    // frames see exactly today's behaviour through the gate/classifier chain.
+    //
+    // The result is stashed on a JSON-invisible Symbol so the isExtracting
+    // queue-and-drain + user_moved_on retry re-entries reuse it (no
+    // re-normalise, no double telemetry row). Telemetry fires at most once here.
+    let normResult = msg[TRANSCRIPT_NORMALISED];
+    if (!normResult) {
+      normResult = normaliseTranscript(typeof msg.text === 'string' ? msg.text : '');
+      // enumerable:true so `{ ...msg }` in the queue/drain re-queue copies the
+      // marker forward (symbol keys stay invisible to JSON/Object.keys/for…in).
+      Object.defineProperty(msg, TRANSCRIPT_NORMALISED, {
+        value: normResult,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    const canonicalTranscriptText =
+      typeof msg.text === 'string' ? normResult.text : msg.text;
+    if (normResult.rules_hit.length > 0 && !normResult.logged) {
+      logger.info('stage6.transcript_normalised', {
+        sessionId,
+        // Rule IDs ONLY — never the raw/canonical full text (leak-filter).
+        rules_hit: normResult.rules_hit,
+        seam: 'transcript',
+      });
+      normResult.logged = true;
+    }
+
     // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
     // dedupe. If this transcript carries a utterance_id that iOS already
     // routed as an ask_user_answered payload, drop it silently. Sonnet
@@ -3291,7 +3419,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Evict expired in-place.
       entry.recentAskAnswers = entry.recentAskAnswers.filter((a) => a.expiresAt > nowTs);
       if (entry.recentAskAnswers.length > 0) {
-        const normalisedMsg = normaliseForAskMatch(msg.text);
+        // P6 — canonical (mirrors the recentAskAnswers push at Seam B, which
+        // is also canonical; both sides canonical keeps the cross-seam
+        // content-anchor equality consistent so no answer double-exposes).
+        const normalisedMsg = normaliseForAskMatch(canonicalTranscriptText);
         if (normalisedMsg.length > 0) {
           const matchIdx = entry.recentAskAnswers.findIndex(
             (a) => a.normalisedText === normalisedMsg
@@ -3352,7 +3483,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // point of this ledger is to cover utterance_id-less clients on
       // BOTH sides. TTL + CAP bound memory under STA-01.
       if (typeof msg.text === 'string') {
-        const normalised = normaliseForAskMatch(msg.text);
+        // P6 — canonical (Seam B's reverse-race lookup normalises the
+        // ask-answer user_text the same way, so this ledger's keys match).
+        const normalised = normaliseForAskMatch(canonicalTranscriptText);
         if (normalised.length > 0) {
           if (!Array.isArray(entry.recentTranscripts)) entry.recentTranscripts = [];
           entry.recentTranscripts.push({
@@ -3396,7 +3529,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // chaining + === true keeps session-absent turns fail-closed on legacy
     // LOW_CONTENT routing, never throwing.
     const agenticAnswersEnabled = entry.session?.agenticAnswersEnabled === true;
-    const gateDecision = shouldForwardToSonnet(msg.text, {
+    const gateDecision = shouldForwardToSonnet(canonicalTranscriptText, {
       regexResults: Array.isArray(msg.regexResults) ? msg.regexResults : null,
       hasPendingAsk: entry.pendingAsks && entry.pendingAsks.size > 0,
       hasActiveDialogueScript,
@@ -3450,7 +3583,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // distribution; just enriches the turn context. The hint is set
     // on the msg object so any downstream extractor can read it
     // without a re-parse.
-    if (typeof msg.text === 'string' && BULK_EXCLUDE_PATTERN.test(msg.text)) {
+    // P6 — behavioural consumer: test the CANONICAL copy (the intent hint mutates
+    // routing). The two normaliser rules never touch "apart from/except/…", so
+    // canonical === raw for this pattern today; reading canonical keeps the
+    // routing-table contract correct if the rule set ever grows. Preview stays raw.
+    if (typeof msg.text === 'string' && BULK_EXCLUDE_PATTERN.test(canonicalTranscriptText)) {
       if (!msg.intentHints || typeof msg.intentHints !== 'object') {
         msg.intentHints = {};
       }
@@ -3511,10 +3648,20 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     //                      today.
     if (entry.isExtracting && entry.pendingAsks && entry.pendingAsks.size > 0) {
       const preQueueRegex = Array.isArray(msg.regexResults) ? msg.regexResults : [];
-      const preVerdict = classifyOvertake(msg.text, preQueueRegex, entry.pendingAsks);
+      const preVerdict = classifyOvertake(canonicalTranscriptText, preQueueRegex, entry.pendingAsks);
       if (preVerdict.kind === 'answers') {
         let sanitisedPre = null;
         try {
+          // P6 — enforce the hard-length trust boundary on the RAW transcript
+          // (see the main transcript-overtake path for the rationale: normalise
+          // only shrinks, so the raw length must gate the reject).
+          if (typeof msg.text === 'string' && msg.text.length > HARD_REJECT_USER_TEXT_LEN) {
+            const err = new Error(
+              `user_text_too_long:${msg.text.length}:${HARD_REJECT_USER_TEXT_LEN}`
+            );
+            err.code = 'USER_TEXT_TOO_LONG';
+            throw err;
+          }
           sanitisedPre = sanitiseUserText(preVerdict.userText);
         } catch (sanErr) {
           logger.warn('stage6.user_text_rejected', {
@@ -3567,7 +3714,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             RECORDABLE_READING_FIELDS.has(r.field) &&
             r.value != null
         );
-        const structuredPre = hasRecordablePre ? null : detectStructuredReading(msg.text);
+        const structuredPre = hasRecordablePre
+          ? null
+          : detectStructuredReading(canonicalTranscriptText);
         if (hasRecordablePre || (structuredPre && structuredPre.complete === true)) {
           // PLAN-C P4c — this fresh transcript SUPERSEDES the pending ask, so
           // it is now the response epoch: any residual speech the awoken
@@ -3711,7 +3860,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // "code 2", or "FI" that only make sense alongside the preceding prompt.
       // We inline this as a bracketed note — it stays in the conversation
       // history and helps future turns too.
-      let transcriptText = msg.text;
+      // P6 — model-bound transcript starts from the CANONICAL copy (Seam A).
+      let transcriptText = canonicalTranscriptText;
       if (
         msg.in_response_to &&
         typeof msg.in_response_to === 'object' &&
@@ -3755,7 +3905,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const rawType = typeof msg.in_response_to.type === 'string' ? msg.in_response_to.type : '';
         const safeType = ALLOWED_QUESTION_TYPES.has(rawType) ? rawType : null;
         const qType = safeType ? ` type=${safeType}` : '';
-        transcriptText = `[In response to TTS question${qType}: ${qJson}] ${msg.text}`;
+        transcriptText = `[In response to TTS question${qType}: ${qJson}] ${canonicalTranscriptText}`;
         logger.info('Transcript annotated with in_response_to', {
           sessionId,
           qType: safeType || 'unknown',
@@ -3792,14 +3942,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         session: entry.session,
         sessionId,
         transcriptText,
-        // P1 ring-script-hardening (Fix 4) — the RAW client reply. The
+        // P1 ring-script-hardening (Fix 4) — the UN-ANNOTATED reply. The
         // in_response_to annotation above prepends the quoted TTS question
         // onto transcriptText; the engine's confirmation branch must parse
         // the un-annotated reply (otherwise extractNamedFieldValues reads
         // R1/Rn/R2 out of the QUOTED "All correct?" question and
         // detectPositive matches "correct" inside it even when the reply is
         // "No."). transcriptText stays the model-bound fallthrough text.
-        rawReplyText: msg.text,
+        // P6 — this is the CANONICAL (normalised) reply, NOT annotated:
+        // canonicalTranscriptText carries the Seam-A normalisation but never
+        // the bracketed TTS-question prefix, preserving the un-annotated
+        // contract while the script sees the same "Zs"/"100" text the model does.
+        rawReplyText: canonicalTranscriptText,
         logger,
         // PLAN-C P4d (row 1) — the creation-time response epoch for any
         // ask_user_started this active-path turn emits is THIS transcript's
@@ -3841,10 +3995,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         session: entry.session,
         sessionId,
         transcriptText,
-        // P1 Fix 4 — raw reply (see the ring-script call above). Inert for
-        // IR today (no confirmation block) but keeps the engine contract
-        // uniform across the three wrapper call sites.
-        rawReplyText: msg.text,
+        // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
+        // for IR today (no confirmation block) but keeps the engine contract
+        // uniform across the three wrapper call sites. P6 — CANONICAL,
+        // un-annotated (see the ring-script call).
+        rawReplyText: canonicalTranscriptText,
         logger,
         // PLAN-C P4d (row 1) — see the ring-script call above.
         responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -3870,9 +4025,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         session: entry.session,
         sessionId,
         transcriptText,
-        // P1 Fix 4 — raw reply (see the ring-script call above). Inert for
-        // the protective-device family today (no confirmation block).
-        rawReplyText: msg.text,
+        // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
+        // for the protective-device family today (no confirmation block).
+        // P6 — CANONICAL, un-annotated (see the ring-script call).
+        rawReplyText: canonicalTranscriptText,
         logger,
         // PLAN-C P4d (row 1) — see the ring-script call above.
         responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -4047,18 +4203,22 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // pure — safe to call every turn — but the guard keeps the CloudWatch
       // noise floor clean.
       //
-      // Plan 03-11 Task 3 — MAJOR remediation: classify against the RAW
-      // `msg.text`, NOT the `[In response to TTS question]`-annotated
-      // `transcriptText`. The annotation is only for Sonnet's turn context;
-      // the classifier's shape-aware no-regex branch compares against a
-      // yes/no vocabulary (STA-04c) and against "non-empty trimmed text"
+      // Plan 03-11 Task 3 — MAJOR remediation: classify against the
+      // UN-ANNOTATED transcript, NOT the `[In response to TTS question]`-
+      // annotated `transcriptText`. The annotation is only for Sonnet's turn
+      // context; the classifier's shape-aware no-regex branch compares against
+      // a yes/no vocabulary (STA-04c) and against "non-empty trimmed text"
       // for free_text asks. Prefixing "[In response to ...]" would turn a
       // plain "yes" into a multi-word string that fails the yes/no match
-      // and turn an empty free_text answer into a non-empty one. Using
-      // raw msg.text keeps the classifier's shape branch doing what it's
-      // tested to do.
+      // and turn an empty free_text answer into a non-empty one.
+      // P6 — use `canonicalTranscriptText` (the Seam-A CANONICAL copy),
+      // which is un-annotated (never carries the bracketed prefix) but
+      // normalised. Without this, an id-89-style "Z s … 0.67" ask-answer
+      // resolved on THIS path would be classified/forwarded on RAW text and
+      // slip the anchor. It stays un-annotated, so the yes/no + free_text
+      // shape branches behave exactly as tested.
       if (entry.pendingAsks.size > 0) {
-        const verdict = classifyOvertake(msg.text, regexResults, entry.pendingAsks);
+        const verdict = classifyOvertake(canonicalTranscriptText, regexResults, entry.pendingAsks);
         if (verdict.kind === 'answers') {
           // Plan 03-11 Task 3 — MAJOR remediation: sanitise verdict.userText
           // before resolve(). Without this, a transcript-routed ask answer
@@ -4074,6 +4234,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           let sanitised = null;
           let sanitisationFailed = false;
           try {
+            // P6 — the classifier + resolve value are CANONICAL (id-89), but the
+            // hard-length trust boundary must still gate on the RAW transcript
+            // length: normalise() only ever SHRINKS text ("a hundred"→"100"), so
+            // a raw transcript over the hard cap could otherwise slip through as a
+            // sub-cap canonical answer, weakening the reject the ask_user_answered
+            // channel enforces on raw. Enforce it on msg.text before sanitising
+            // the canonical value (voice transcripts are never this long — this is
+            // a defence-in-depth parity guard, thrown into the same catch below).
+            if (typeof msg.text === 'string' && msg.text.length > HARD_REJECT_USER_TEXT_LEN) {
+              const err = new Error(
+                `user_text_too_long:${msg.text.length}:${HARD_REJECT_USER_TEXT_LEN}`
+              );
+              err.code = 'USER_TEXT_TOO_LONG';
+              throw err;
+            }
             sanitised = sanitiseUserText(verdict.userText);
           } catch (sanErr) {
             sanitisationFailed = true;
