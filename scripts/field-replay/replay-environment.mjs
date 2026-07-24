@@ -32,7 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const REPLAY_ENV_INVENTORY_VERSION = 1;
+export const REPLAY_ENV_INVENTORY_VERSION = 2;
 
 /** Vars PINNED from ecs/task-def-backend.json (value read live from the
  *  task-def at load time so the drift test enforces itself). */
@@ -62,6 +62,14 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
   // fixtures stay valid only if re-verified — the pin makes the lane track
   // whatever production actually runs, per the drift-enforcement contract.
   'VOICE_AGENTIC_ANSWERS',
+  // Observation-tier routing (2026-07-24, chunk C1) — the dark-ship flag that
+  // routes observation turns to OBSERVATION_EXTRACT_MODEL (Sonnet) on the live
+  // path. Pinned from the task-def so the recorded lane replays at the
+  // production value ('false' in the dark PR, 'true' in the flip commit): the
+  // versioned inventory test scans every extraction-layer env read and FAILS
+  // if this new read (stage6-shadow-harness.js runLiveMode) is unpinned, and
+  // pinning keeps recorded replays from diverging from the prod flag value.
+  'OBSERVATION_TIER_ROUTING',
 ]);
 
 /** Behaviour flags ABSENT from the task-def → DELETED so code defaults

@@ -181,6 +181,23 @@ describe('builder composition', () => {
         expect(Object.prototype.hasOwnProperty.call(opts, k)).toBe(true);
       }
       expect(opts.regexFastCorrelationId).toBe('sym_corr_1'); // SINGULAR
+      // Observation-tier routing (C1) — rawInspectorTranscript is threaded from
+      // the fixture's raw turn.transcript so the recorded lane classifies on
+      // the SAME string prod does (msg.text), never an enriched form.
+      const optsWithTranscript = built.buildTurnOptions({
+        turnIndex: 4,
+        turn: {
+          confirmations_enabled: { value: true },
+          in_response_to: { value: false },
+          transcript: 'observation, cracked socket on circuit four',
+        },
+        ws,
+        onAskRegistered: () => true,
+        signal: new AbortController().signal,
+      });
+      expect(optsWithTranscript.rawInspectorTranscript).toBe(
+        'observation, cracked socket on circuit four'
+      );
       expect(opts.pendingAsks).toBe(built.entry.pendingAsks); // identity preserved
       // Absence is passed only when evidence-backed: no ids → option omitted.
       const optsNone = built.buildTurnOptions({
@@ -312,4 +329,90 @@ describe('blocking behaviour through the REAL harness', () => {
       built.teardown();
     }
   });
+
+  // Observation-tier routing (C1) — the recorded lane must route identically
+  // to prod: an observation-shaped fixture transcript escalates to
+  // OBSERVATION_EXTRACT_MODEL when OBSERVATION_TIER_ROUTING is on, a reading
+  // transcript does not, AND enriched server context alone cannot escalate —
+  // the router keys off buildTurnOptions' rawInspectorTranscript (turn.transcript),
+  // NOT the harness transcript arg, so a bare "yes" answer whose HARNESS
+  // transcript mentions "observation" stays on the default model.
+  test('observation fixture routes to OBSERVATION_EXTRACT_MODEL (flag on); reading + enriched-context-only do NOT', async () => {
+    const OBS_MODEL = 'claude-observation-tier-sentinel';
+    const savedFlag = process.env.OBSERVATION_TIER_ROUTING;
+    const savedModel = process.env.OBSERVATION_EXTRACT_MODEL;
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
+    const logger = makeLogger();
+
+    // `harnessTranscript` is what runShadowHarness receives (in prod this may be
+    // the ENRICHED "[In response to TTS question…]" form); `rawTranscript` is
+    // the untouched inspector text buildTurnOptions threads as
+    // rawInspectorTranscript. Default: identical (a normal recorded turn).
+    async function routeModelFor({ harnessTranscript, rawTranscript = harnessTranscript, corpusId }) {
+      const built = buildReplaySession({
+        modules,
+        fixture: baseFixture({ corpus_id: corpusId }),
+        logger,
+      });
+      try {
+        const ws = makeOpenWs();
+        built.entry.ws = ws;
+        built.session.client = mockClient([endTurnRound()]);
+        built.session.start(built.fixtureJobState);
+        built.session._clearCacheKeepalive?.();
+        const opts = built.buildTurnOptions({
+          turnIndex: 1,
+          turn: {
+            confirmations_enabled: { value: true },
+            in_response_to: { value: false },
+            transcript: rawTranscript,
+          },
+          ws,
+          onAskRegistered: () => true,
+          signal: new AbortController().signal,
+        });
+        await runShadowHarness(built.session, harnessTranscript, [], opts);
+        return built.session.client._calls[0].model;
+      } finally {
+        built.teardown();
+      }
+    }
+
+    try {
+      const obsModel = await routeModelFor({
+        harnessTranscript: 'observation, cracked socket outlet on circuit four',
+        corpusId: 'frc_00000000000000000000000000000001',
+      });
+      const readingModel = await routeModelFor({
+        harnessTranscript: 'zs circuit one is nought point six two',
+        corpusId: 'frc_00000000000000000000000000000002',
+      });
+      // Enriched-context-only: the HARNESS transcript mentions "observation"
+      // (would match OBSERVATION_PATTERN) but the RAW text is a bare "yes" —
+      // the router must NOT escalate (server-context isolation at replay level).
+      const enrichedModel = await routeModelFor({
+        harnessTranscript: '[In response to TTS question: is this an observation?] yes',
+        rawTranscript: 'yes',
+        corpusId: 'frc_00000000000000000000000000000003',
+      });
+      expect(obsModel).toBe(OBS_MODEL);
+      expect(readingModel).not.toBe(OBS_MODEL);
+      expect(enrichedModel).not.toBe(OBS_MODEL);
+    } finally {
+      if (savedFlag === undefined) delete process.env.OBSERVATION_TIER_ROUTING;
+      else process.env.OBSERVATION_TIER_ROUTING = savedFlag;
+      if (savedModel === undefined) delete process.env.OBSERVATION_EXTRACT_MODEL;
+      else process.env.OBSERVATION_EXTRACT_MODEL = savedModel;
+    }
+  });
+
+  // NOTE on the blocking ask_user continuation (plan test list): the selected
+  // model must hold across the loop's suspend-on-ask / resume-on-answer
+  // boundary. That case is pinned end-to-end through the REAL dispatcher
+  // composition (real pending-asks registry + gate stack + fake-timer drive) in
+  // stage6-observation-tier-routing.test.js › "blocking ask_user continuation"
+  // — round 1 emits ask_user, the loop suspends, the ask is answered, and both
+  // the pre-ask and post-answer Anthropic calls are asserted on
+  // OBSERVATION_EXTRACT_MODEL.
 });
