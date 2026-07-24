@@ -351,6 +351,19 @@ export async function runToolLoop({
    * → no cancellation checks (back-compat with every non-live caller / test).
    */
   signal,
+  /**
+   * Observation-tier routing (chunk C1) — the round-1 model-lock switch.
+   * `VOICE_LATENCY_ROUND1_MODEL` (below) lets ops route round-1 to a faster
+   * model for latency, but when `runLiveMode` has DELIBERATELY selected the
+   * observation-tier model (Sonnet) for BPG4 severity reasoning, letting the
+   * round-1 override swap it back to Haiku for the first round would defeat
+   * the whole point of the escalation. So `runLiveMode` passes
+   * `allowRound1ModelOverride: false` for observation-tier turns to lock the
+   * selected model across every round. Reading turns pass true (or omit it),
+   * retaining the latency override. Default true = byte-identical to every
+   * pre-C1 caller / test.
+   */
+  allowRound1ModelOverride = true,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -411,9 +424,16 @@ export async function runToolLoop({
     // round-2+ stays on the default Sonnet model. Unset / empty = no
     // override = legacy behaviour. The flag is live-read so a flip
     // takes effect on the next API call without a restart.
+    // Observation-tier routing (C1): `allowRound1ModelOverride === false`
+    // pins the caller-selected model across every round, so a deliberate
+    // Sonnet escalation is not silently swapped back to the round-1 Haiku
+    // override. Reading turns keep the override (default true).
     const round1ModelOverride = process.env.VOICE_LATENCY_ROUND1_MODEL;
     const effectiveModel =
-      rounds === 1 && typeof round1ModelOverride === 'string' && round1ModelOverride
+      allowRound1ModelOverride &&
+      rounds === 1 &&
+      typeof round1ModelOverride === 'string' &&
+      round1ModelOverride
         ? round1ModelOverride
         : model;
     const streamArgs = {
