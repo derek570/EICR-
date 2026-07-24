@@ -336,6 +336,36 @@ describe('P4 — the answered-ask silent-continuation net FIRES', () => {
     expect(fieldNil).toHaveLength(1);
     expect(DECLINE_SET.has(fieldNil[0].text)).toBe(true);
   });
+
+  test('(f-reemit) Codex mini-review: an ask RE-EMITTED after a decline answer, then RE-ANSWERED with a non-decline → fires the GENERIC family, not the stale decline (declineClass reset on re-emission)', async () => {
+    silentAnsweredLoop('toolu_rx');
+    const opts = baseOpts({
+      _seedAskLifecycle: [
+        { event: 'emitted', toolCallId: 'toolu_rx', source: 'initial' },
+        {
+          event: 'answered',
+          toolCallId: 'toolu_rx',
+          source: 'initial',
+          answered: true,
+          declineClass: 'decline',
+        },
+        { event: 'emitted', toolCallId: 'toolu_rx', source: 'initial' }, // re-emitted (resets class)
+        {
+          event: 'answered',
+          toolCallId: 'toolu_rx',
+          source: 'initial',
+          answered: true,
+          declineClass: null,
+        }, // non-decline
+      ],
+    });
+    const result = await runShadowHarness(makeSession(), 're-emit then generic answer', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    // The stale 'decline' class must NOT survive the re-emission → generic ack.
+    expect(ANSWERED_SET.has(acks[0].text)).toBe(true);
+    expect(DECLINE_SET.has(acks[0].text)).toBe(false);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -32,6 +32,13 @@ describe('classifyDeclineReply — genuine declines classify', () => {
     "Don't bother",
     'No, leave it', // bare-negation + allowlisted phrase
     'No — never mind.',
+    // Codex mini-review NIT — bounded politeness + curly apostrophe + "about that"
+    'Please leave it.',
+    'Just leave it.',
+    'No, leave it thanks.',
+    "Don't worry about that.",
+    'Don’t worry.', // curly apostrophe
+    'Leave it, thanks',
   ];
   for (const reply of declines) {
     test(`"${reply}" → decline`, () => {

@@ -816,7 +816,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       askEventSeq += 1;
       const existing = askLifecycleLedger.get(toolCallId);
       if (existing) {
+        // A RE-EMISSION of the same id is a FRESH, not-yet-answered question:
+        // clear the prior resolution + decline class so a stale answered:true /
+        // decline family can never carry over (Codex mini-review NIT). The
+        // resolutionSeq>emissionSeq guard already prevents firing until a new
+        // resolution lands; resetting the class prevents a re-answered ask from
+        // speaking the previous answer's wording.
         existing.emissionSeq = askEventSeq;
+        existing.resolutionSeq = null;
+        existing.answered = false;
+        existing.declineClass = null;
         if (existing.source == null) existing.source = source ?? null;
       } else {
         askLifecycleLedger.set(toolCallId, {
@@ -869,7 +878,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         if (existing) {
           existing.resolutionSeq = askEventSeq;
           existing.answered = answered === true;
-          if (declineClass != null) existing.declineClass = declineClass;
+          // Assign UNCONDITIONALLY (Codex mini-review NIT): a null declineClass
+          // (a non-decline answer) must OVERWRITE a prior decline class from an
+          // earlier resolution of the same id, else a re-answered ask speaks the
+          // stale decline family.
+          existing.declineClass = declineClass ?? null;
           if (source != null && existing.source == null) existing.source = source;
         } else {
           // Resolution before a recorded emission is not a real path (asks

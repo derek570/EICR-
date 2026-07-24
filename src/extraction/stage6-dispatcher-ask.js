@@ -1636,18 +1636,22 @@ const PENDING_VALUE_APOLOGY =
 // cannot match because of the internal full stop — is still classified decline.
 // An allowlisted decline PHRASE — a brush-off with no substantive content.
 // Alternation fragment (no anchors) reused inside the whole-reply matcher.
-const DECLINE_PHRASE_RE =
-  "(?:don'?t worry(?: about it)?|not worried|leave (?:it|that|them)|skip (?:it|that|them)|never ?mind|forget (?:it|that)|no problem|don'?t bother)";
+// `APOS` = optional straight OR curly apostrophe (STT/normalisers emit either).
+const APOS = "['’]?";
+const DECLINE_PHRASE_RE = `(?:don${APOS}t worry(?: about (?:it|that))?|not worried|leave (?:it|that|them)|skip (?:it|that|them)|never ?mind|forget (?:it|that)|no problem|don${APOS}t bother)`;
 // The WHOLE reply must be a bare negation, an allowlisted decline phrase, or a
 // leading bare-negation composed with one — with only punctuation/whitespace
-// between and around. Codex r1: the previous unrestricted `^no[\s.,!—-]` +
-// substring matching mis-classified substantive answers ("No, it was 0.63",
-// "No CPC on that circuit", "Don't worry, it is circuit three") as declines.
-// Anchoring the WHOLE reply keeps "No. Don't worry." while rejecting anything
-// carrying a value, field, or other content.
+// and bounded politeness (please/just/thanks) between and around. Codex r1: the
+// previous unrestricted `^no[\s.,!—-]` + substring matching mis-classified
+// substantive answers ("No, it was 0.63", "No CPC on that circuit", "Don't
+// worry, it is circuit three") as declines. Anchoring the WHOLE reply keeps
+// genuine declines ("No. Don't worry.", "Please leave it.", "No, leave it
+// thanks.") while rejecting anything carrying a value, field, or other content.
 const BARE_NEGATION_RE = '(?:no|nope|nah)(?: thanks| thank you)?';
+const POLITE_PREFIX_RE = '(?:please |just )?';
+const POLITE_SUFFIX_RE = '(?:[\\s,]+(?:thanks|thank you|please))?';
 const WHOLE_DECLINE_RE = new RegExp(
-  `^(?:${BARE_NEGATION_RE}|(?:${BARE_NEGATION_RE}[\\s.,!?—-]+)?${DECLINE_PHRASE_RE})[\\s.,!?—-]*$`,
+  `^${POLITE_PREFIX_RE}(?:${BARE_NEGATION_RE}|(?:${BARE_NEGATION_RE}[\\s.,!?—-]+)?${DECLINE_PHRASE_RE})${POLITE_SUFFIX_RE}[\\s.,!?—-]*$`,
   'i'
 );
 export function classifyDeclineReply(userText) {
