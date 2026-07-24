@@ -366,6 +366,37 @@ describe('P4 — the answered-ask silent-continuation net FIRES', () => {
     expect(ANSWERED_SET.has(acks[0].text)).toBe(true);
     expect(DECLINE_SET.has(acks[0].text)).toBe(false);
   });
+
+  test('(g-interleave) Codex r3: an UNanswered srv-* ask emitted BEFORE the initial ask resolves → the ack STILL fires (later-emission is checked against the ANSWER resolution, not max emissionSeq)', async () => {
+    // A emits, an srv-* dialogue-script ask B emits (via ASK_STARTED_OBSERVER)
+    // while A awaits, THEN A is answered. B is never answered here and emitted
+    // BEFORE A's resolution — it is NOT a "later emitted ask after the answer",
+    // so the turn is silent-after-A and the ack must fire. A max-emissionSeq
+    // rule would pick B (answered:false) and wrongly suppress.
+    silentAnsweredLoop('toolu_A');
+    const opts = baseOpts({
+      _seedAskLifecycle: [
+        { event: 'emitted', toolCallId: 'toolu_A', source: 'initial' },
+        { event: 'emitted', toolCallId: 'srv-rcd-B', source: 'dialogue_script' }, // interleaved, never answered
+        {
+          event: 'answered',
+          toolCallId: 'toolu_A',
+          source: 'initial',
+          answered: true,
+          declineClass: 'decline',
+        },
+      ],
+    });
+    const result = await runShadowHarness(
+      makeSession(),
+      'interleaved srv ask then answer A',
+      [],
+      opts
+    );
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    expect(DECLINE_SET.has(acks[0].text)).toBe(true);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────

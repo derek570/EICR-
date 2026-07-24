@@ -2678,29 +2678,48 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // BACKSTOP for the frozen-no-op path, not the primary channel.
     try {
       if (options.confirmationsEnabled === true) {
-        // The last ask emitted this turn (max emissionSeq). Only emitted asks
-        // (emissionSeq != null) are candidates — a resolution-only ledger entry
-        // (defensive out-of-order) is never the "last emitted".
-        let lastEmitted = null;
+        // The plan's exact rule (Codex r3): find the LATEST ANSWERED blocking
+        // ask (by resolutionSeq), then suppress ONLY if a NEW ask was emitted
+        // AFTER that answer resolved. A prior "max-emissionSeq must be answered"
+        // shortcut was NOT equivalent — an UNanswered ask emitted BEFORE the
+        // latest answer resolved (e.g. an srv-* dialogue-script ask observed via
+        // ASK_STARTED_OBSERVER while the initial ask awaited) would be the
+        // max-emissionSeq record with answered:false and wrongly suppress the
+        // ack, recreating answered-turn silence.
+        //
+        // `answered===true` + `resolutionSeq != null` + `resolutionSeq >
+        // emissionSeq` selects a real reply whose resolution followed its
+        // LATEST emission — this rejects a defensive out-of-order record AND a
+        // same-id RE-EMISSION after an earlier resolution (a re-emitted ask
+        // carries a stale answered:true but its new emissionSeq now exceeds its
+        // resolutionSeq, so it is not "answered since re-emission"). `srv-*`
+        // engine asks never receive an onAskAnswered call, so they stay
+        // answered:false and are excluded.
+        let latestAnswered = null;
         for (const rec of askLifecycleLedger.values()) {
-          if (rec.emissionSeq == null) continue;
-          if (lastEmitted == null || rec.emissionSeq > lastEmitted.emissionSeq) lastEmitted = rec;
+          if (
+            rec.answered === true &&
+            rec.resolutionSeq != null &&
+            rec.emissionSeq != null &&
+            rec.resolutionSeq > rec.emissionSeq
+          ) {
+            if (latestAnswered == null || rec.resolutionSeq > latestAnswered.resolutionSeq) {
+              latestAnswered = rec;
+            }
+          }
         }
-        // Fire only when the last emitted ask was a REAL answered reply whose
-        // resolution came AFTER its (latest) emission. A timeout / user_moved_on
-        // (answered:false) leaves the spoken question as the turn's last audio,
-        // and an srv-* engine ask is never answered here — both correctly
-        // decline the net. The `resolutionSeq > emissionSeq` guard (Codex r1)
-        // rejects a defensive out-of-order record AND a same-id RE-EMISSION
-        // after an earlier resolution (a re-emitted ask carries a stale
-        // answered:true but its new emissionSeq now exceeds its resolutionSeq —
-        // it has NOT been answered since re-emission, so it must not fire).
-        if (
-          lastEmitted &&
-          lastEmitted.answered === true &&
-          lastEmitted.resolutionSeq != null &&
-          lastEmitted.resolutionSeq > lastEmitted.emissionSeq
-        ) {
+        // A NEW ask emitted AFTER the latest answer resolved is itself audible
+        // (a follow-up question), so the turn is not silent — decline the net.
+        let laterAskEmitted = false;
+        if (latestAnswered) {
+          for (const rec of askLifecycleLedger.values()) {
+            if (rec.emissionSeq != null && rec.emissionSeq > latestAnswered.resolutionSeq) {
+              laterAskEmitted = true;
+              break;
+            }
+          }
+        }
+        if (latestAnswered && !laterAskEmitted) {
           const survivingConfCount = Array.isArray(result.confirmations)
             ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
             : 0;
@@ -2712,7 +2731,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           const survivingAnswer = isAudibleText(result.spoken_response);
           if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
             if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-            const isDecline = lastEmitted.declineClass === 'decline';
+            const isDecline = latestAnswered.declineClass === 'decline';
             const family = isDecline ? ASK_DECLINE_ACK_PROMPTS : ASK_ANSWERED_ACK_PROMPTS;
             const text = family[turnNum % family.length];
             session.pendingVoicePrompts.push({ text, generationId });
@@ -2721,7 +2740,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               turnId,
               generationId,
               ack_class: isDecline ? 'decline' : 'answered',
-              answered_ask_source: lastEmitted.source ?? null,
+              answered_ask_source: latestAnswered.source ?? null,
             });
           }
         }
