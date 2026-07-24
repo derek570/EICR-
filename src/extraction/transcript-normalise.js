@@ -103,10 +103,15 @@
 const H = '[ \\t]';
 const ZS_TOKEN = `z(?:ed)?${H}+s`;
 // VALUE-introducing connectors — the words that in dictation come IMMEDIATELY
-// before a measured value ("was 0.67", "is 0.2", "reads 0.4", "of 0.5"). Kept to
-// the common, low-false-positive forms — "measuring"/"equalled"/"showing" were
-// dropped (they read naturally in non-reading text like "…measuring 10 metres").
-const ZS_VALUE_CONNECTOR = '(?:was|were|is|are|reads?|equals?|measured|measures|of|at)';
+// before a measured value ("was 0.67", "is 0.2", "reads 0.4"). Kept to the
+// common, low-false-positive forms. "measuring"/"equalled"/"showing" were
+// dropped (they read naturally in non-reading text like "…measuring 10 metres"),
+// and — critically — "of"/"at" are NOT direct value-connectors: they are the
+// prepositions of an address ("Z S at 1 High Street", "Z S of 10 Mill Lane")
+// and a bare integer after them ("at 1") would corrupt the name/address. They
+// remain SCOPE-prepositions below (form B), where they must be FOLLOWED by a
+// real value-connector, so an address (no trailing connector) never collapses.
+const ZS_VALUE_CONNECTOR = '(?:was|were|is|are|reads?|equals?|measured|measures)';
 // SCOPE prepositions that can introduce the measured scope right after the token
 // ("Z s ON the heating…", "Z s FOR circuit 3…"). These are NOT value-connectors
 // — they must be FOLLOWED (within the bounded gap) by a value-connector + value.

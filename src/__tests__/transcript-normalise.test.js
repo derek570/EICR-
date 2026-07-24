@@ -64,6 +64,24 @@ describe('transcript-normalise — rule 1: context-gated "Z s" → "Zs"', () => 
     expect(r.rules_hit).toEqual([]);
   });
 
+  test('an ADDRESS token is NOT collapsed ("at"/"of" are address prepositions, not value-connectors)', () => {
+    // "at 1"/"of 10" is an address ("Z S at 1 High Street"), not a reading —
+    // "at"/"of" are only scope-prepositions (form B), which need a trailing
+    // value-connector, so a bare address never collapses.
+    for (const input of [
+      'The customer is Z S at 1 High Street',
+      'Z S of 10 High Street',
+      'client Z S at 5 Mill Lane',
+    ]) {
+      const r = normalise(input);
+      expect(r.text).toBe(input);
+      expect(r.rules_hit).toEqual([]);
+    }
+    // But a scoped reading using at/of as the scope-prep + a trailing connector
+    // still collapses.
+    expect(normalise('Z s at the cooker was 0.67').text).toBe('Zs at the cooker was 0.67');
+  });
+
   test('a name token is NOT collapsed even when a LATER reading shares the comma-joined clause', () => {
     // "Electrical" (a name word) immediately follows the token, so it is neither
     // a value-connector nor a scope-preposition — the later "Ze was 0.67"
