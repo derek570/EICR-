@@ -34,6 +34,7 @@ import {
   makeOpenWs,
   toolUseRound as f7ToolUseRound,
   endTurnRound as f7EndTurnRound,
+  askStartedFrames,
 } from './helpers/f7-audibility-matrix.js';
 import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
@@ -324,8 +325,8 @@ describe('observation-tier routing — multi-round + override lock + cost', () =
     // Round 1 emits a tool_use → the loop continues → round 2 end_turn. Both
     // Anthropic calls must run on the observation tier (the model is passed
     // ONCE to runToolLoop and reused every round). The BLOCKING ask_user
-    // suspend/resume variant of this contract is pinned end-to-end through the
-    // REAL harness in field-replay/session-builder.test.js.
+    // suspend/resume variant of this contract is pinned by the "blocking
+    // ask_user continuation" describe block below in this file.
     const session = makeLiveSession([
       toolUseRound('record_observation', { category: 'C2', description: 'cracked socket' }),
       endTurnRound(),
@@ -385,13 +386,15 @@ describe('observation-tier routing — multi-round + override lock + cost', () =
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// Blocking ask_user continuation — driven through the REAL dispatcher
-// composition (real pending-asks registry + gate stack + runToolLoop) so the
-// ask genuinely SUSPENDS the loop and RESUMES on the answer. This is the
-// load-bearing multi-round case the plan names: the selected model must hold
-// across the suspend/resume boundary. Uses the F7 integration lane's proven
-// fake-timer drive (stage6-audibility-invariants.test.js) — the gate debounce
-// + the 45s ask timeout make real timers impractical.
+// Blocking ask_user continuation — driven through the REAL ask dispatcher +
+// pending-asks registry + runToolLoop so the ask genuinely SUSPENDS the loop
+// and RESUMES on the ANSWER (not a timeout). This is the load-bearing
+// multi-round case the plan names: the selected model must hold across the
+// suspend/resume boundary. Uses the F7 integration lane's proven fake-timer
+// drive (stage6-audibility-invariants.test.js) — the gate debounce + the 45s
+// ask timeout make real timers impractical. The test asserts the answer
+// actually resolved the ask (registry emptied by the ANSWER, before the
+// timeout) so a timeout-driven resume cannot false-pass the model assertions.
 // ───────────────────────────────────────────────────────────────────────────
 describe('observation-tier routing — blocking ask_user continuation (real dispatcher)', () => {
   const SID = 'sess-obs-routing-ask';
@@ -426,7 +429,11 @@ describe('observation-tier routing — blocking ask_user continuation (real disp
   });
 
   /** Drive one live turn under fake timers, resolving any queued ask the moment
-   *  it registers (ported from stage6-audibility-invariants.test.js). */
+   *  it registers (ported from stage6-audibility-invariants.test.js). Returns
+   *  the settled result AND how many supplied answers were never consumed —
+   *  `unresolvedAnswers > 0` means the ask timed out instead of being answered
+   *  (`pendingAsks.resolve` only succeeds for a still-registered ask), which
+   *  the caller asserts against so a timeout-resume can't false-pass. */
   async function driveAskTurn(session, transcript, opts, answers) {
     const pendingAsks = opts.pendingAsks;
     const answerMap = new Map(Object.entries(answers));
@@ -456,7 +463,7 @@ describe('observation-tier routing — blocking ask_user continuation (real disp
     await jest.advanceTimersByTimeAsync(0);
     await p;
     if (error) throw error;
-    return value;
+    return { value, unresolvedAnswers: answerMap.size };
   }
 
   test('both the pre-ask round and the post-answer round run on OBSERVATION_EXTRACT_MODEL', async () => {
@@ -478,20 +485,26 @@ describe('observation-tier routing — blocking ask_user continuation (real disp
     ]);
     const session = makeF7LiveSession({ sessionId: SID, client });
     const ws = makeOpenWs();
+    const pendingAsks = createPendingAsksRegistry();
     const opts = {
       logger: makeLogger(),
-      pendingAsks: createPendingAsksRegistry(),
+      pendingAsks,
       ws,
       confirmationsEnabled: true,
       rawInspectorTranscript: OBS_TRANSCRIPT,
     };
 
-    await driveAskTurn(session, OBS_TRANSCRIPT, opts, {
+    const { unresolvedAnswers } = await driveAskTurn(session, OBS_TRANSCRIPT, opts, {
       toolu_obs_ask: { answered: true, user_text: 'Circuit 4' },
     });
 
-    // The ask genuinely suspended + resumed the loop → two Anthropic calls,
-    // both on the observation tier (the model is selected once and locked).
+    // The ask really EMITTED (crossed the WS) and was ANSWERED (registry
+    // emptied by the answer, before the 45s timeout) — NOT a timeout-resume.
+    expect(askStartedFrames(ws).length).toBeGreaterThanOrEqual(1);
+    expect(unresolvedAnswers).toBe(0);
+    expect([...pendingAsks.entries()].length).toBe(0);
+    // …and the answered suspend/resume kept BOTH Anthropic calls on the
+    // observation tier (the model is selected once and locked).
     expect(client._callCount).toBe(2);
     expect(client._calls[0].model).toBe(OBS_MODEL); // pre-ask round
     expect(client._calls[1].model).toBe(OBS_MODEL); // post-answer resume round
