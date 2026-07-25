@@ -325,6 +325,15 @@ export function clampReadingForDispatch({ field, value, earthing } = {}) {
  * Single telemetry choke point for an applied clamp — one INFO row per corrected
  * write, from whichever seam applied it.
  *
+ * CURRENT CALLERS: the three Stage-6 dispatcher seams and the dialogue engine's
+ * post-completion correction breadcrumb (Seam C). The dialogue Seams A and B do
+ * NOT emit this row: `applyWrite` / `normaliseDialogueSlotWrite` take no logger,
+ * and threading one through the twelve `applyWrite` invocations is a bounded
+ * follow-up rather than part of the safety fix. A clamped dialogue write is still
+ * observable — the script's own `logger.info` row reports the STORED (clamped)
+ * value, and the correction is named aloud in the read-back — it just is not
+ * greppable under this single event name yet.
+ *
  * The clamp is now the only actor that can change a dictated number between the
  * inspector's mouth and the certificate, so it has to be observable: a
  * mis-tuned band or a wrongly-resolved earthing arrangement shows up here as a

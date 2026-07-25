@@ -58,7 +58,13 @@ import { normaliseDialogueSlotWrite } from './helpers/dialogue-slot-normalise.js
 // the Stage-6 dispatchers so the engine can never disagree about the band) and
 // the state-scoped correction store that carries `16 → 1.6` provenance from the
 // write turn to the LATER turn that speaks the read-back.
-import { resolveBoardAwareEarthing } from '../impedance-clamp.js';
+import {
+  clampReadingForDispatch,
+  logImpedanceClamp,
+  resolveBoardAwareEarthing,
+} from '../impedance-clamp.js';
+import { canonicaliseNumericReadingField } from '../value-enum-validator.js';
+import { formatCorrectionClause } from '../confirmation-text.js';
 // NOTE: `clearValueCorrection` (lifecycle rule 2 — the slot itself was cleared)
 // is deliberately NOT imported here: the dialogue engine has no per-slot clear
 // path. Within an episode a slot is only ever OVERWRITTEN, which routes through
@@ -309,37 +315,97 @@ export function processDialogueTurn(ctx) {
           const corrected = cbCfg.valueParser(m[1]);
           if (corrected !== null && corrected !== undefined) {
             session.dialogueCorrectionBreadcrumb = null; // one-shot
+            // Plan D Seam C (2026-07-25, feedback id 100(b)) — this breadcrumb is
+            // a FOURTH dialogue write producer: it touches neither `applyWrite`
+            // (Seam B) nor `normaliseDialogueSlotWrite` (Seam A), so both of those
+            // clamps miss it. And it is a DICTATED impedance correction — exactly
+            // the class this plan exists to fix — so an unclamped write here would
+            // store a raw 16 while the server advertises `server_impedance_clamp`
+            // and the client has stopped clamping.
+            //
+            // Unlike Seams A/B the write turn IS the speech turn here (the
+            // snapshot write, the extraction frame, the spoken line and the log
+            // row are all emitted below), so the correction needs no state-scoped
+            // transport — it is consumed inline and cannot outlive this block.
+            //
+            // COVERAGE NOTE (verified 2026-07-25): the ONLY schema declaring a
+            // `correctionBreadcrumb` today is insulation-resistance, whose
+            // `fields` are the two megaohm IR legs — neither is in an impedance
+            // clamp band, so on the live path this clamp is currently a
+            // pass-through. It is wired anyway because the breadcrumb config is
+            // schema-driven: the moment ring continuity (or any other
+            // continuity-field schema) gains a breadcrumb, this producer would
+            // otherwise start storing raw values while the server advertises
+            // `server_impedance_clamp` and the client has stopped clamping. The
+            // §7 matrix pins BOTH halves — IR passes through byte-unchanged, and
+            // a continuity-field breadcrumb clamps and names the correction.
+            const clamped = clampReadingForDispatch({
+              // Canonical name: the clamp sets are keyed canonically, and a
+              // breadcrumb field is a dialogue slot name (ring_r2_ohm, r1_r2).
+              field: canonicaliseNumericReadingField(crumb.field),
+              value: corrected,
+              // The guard above already proved `crumb.boardId === currentBoardId`,
+              // so resolving on the crumb's board is the same board the reading
+              // was taken on — a TT sub-board keeps its own band.
+              earthing: resolveBoardAwareEarthing(session.stateSnapshot, currentBoardId),
+            });
+            const effective = clamped.value;
             applyReadingFlagAware(session.stateSnapshot, {
               circuit: crumb.circuit_ref,
               field: crumb.field,
-              value: corrected,
+              value: effective,
             });
             safeSend(
               ws,
               buildExtractionPayload(
                 crumb.circuit_ref,
-                [{ field: crumb.field, value: corrected }],
+                [{ field: crumb.field, value: effective }],
                 crumbSchema.extractionSource
               )
             );
             const label = cbCfg.fieldLabels?.[crumb.field] ?? crumb.field;
+            // The clause is APPENDED as its own sentence rather than spliced into
+            // the "Got it, …" line, matching the ring triple's shape: an
+            // UNCORRECTED breadcrumb therefore renders byte-identically to
+            // pre-Plan-D and only a clamped one grows the extra sentence.
+            const correctionClause = formatCorrectionClause(clamped.correction);
             safeSend(
               ws,
               buildScriptInfo({
                 toolCallIdPrefix: crumbSchema.toolCallIdPrefix,
                 sessionId,
                 kind: 'correction',
-                text: `Got it, ${label} ${corrected}.`,
+                text:
+                  correctionClause === null
+                    ? `Got it, ${label} ${effective}.`
+                    : `Got it, ${label} ${effective}. ${correctionClause}.`,
                 now,
                 responseEpoch,
               })
             );
+            // The script's own row keeps its shape and now reports the STORED
+            // value (it previously reported the raw dictated one).
             logger?.info?.(`${crumbSchema.logEventPrefix}_post_completion_correction`, {
               sessionId,
               circuit_ref: crumb.circuit_ref,
               field: crumb.field,
-              value: corrected,
+              value: effective,
             });
+            // A divide additionally emits the shared clamp row, so every
+            // server-altered number is greppable from one event name regardless
+            // of which seam altered it.
+            if (clamped.correction) {
+              logImpedanceClamp(logger, {
+                sessionId,
+                seam: 'dialogue_correction_breadcrumb',
+                field: crumb.field,
+                circuit: crumb.circuit_ref,
+                board_id: currentBoardId,
+                original: clamped.correction.original,
+                corrected: clamped.correction.corrected,
+                divisor: clamped.correction.divisor,
+              });
+            }
             return { handled: true, fallthrough: false };
           }
         }
