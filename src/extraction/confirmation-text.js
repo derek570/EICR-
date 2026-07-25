@@ -276,15 +276,37 @@ const COUNT_STYLE_FIELDS = Object.freeze(new Set(['number_of_points']));
  * phrasing. Otherwise: count-style "<N> <noun>", calculator
  * "<field> calculated as <value>", or the plain "<field> <value>".
  *
+ * id-100(b) (2026-07-25) — when the server CLAMPED a decimal-slip impedance
+ * reading before writing it, the read-back names the correction out loud:
+ * "Ze recorded as 1.6 — I corrected 16 to 1.6". Two reasons the correction is
+ * SPOKEN rather than applied silently:
+ *   1. Audio-First #1 says the read-back must speak the value that was STORED.
+ *      A silent divide would satisfy that literally while still surprising the
+ *      inspector, who dictated "sixteen" and would hear "one point six" with no
+ *      explanation — indistinguishable from a transcription failure.
+ *   2. On a SAFETY-CRITICAL earth-loop reading the inspector must be able to
+ *      reject the correction. Naming the original ("I corrected 16 to 1.6")
+ *      gives them the one fact they need to say "no, it really was 16".
+ * The DIVISOR is deliberately NOT spoken (Derek's decision) — "divided by ten"
+ * is implementation detail; the two values are the actionable content. The
+ * spoken value is `valueStr` (what was written), never `correction.corrected`,
+ * so the stored-value invariant holds even if the metadata ever drifted.
+ * Checked AFTER the LIM branch: a LIM sentinel is never numerically clamped, so
+ * if both were somehow present the limitation phrasing is the safer read.
+ *
  * @param {string} field — canonical field name
  * @param {string} valueStr — the trimmed value string
  * @param {string} friendly — the field's spoken friendly name
- * @param {{calculated?: boolean}} options
+ * @param {{calculated?: boolean, correction?: {original: string, corrected: string}|null}} options
  * @returns {string} the spoken value tail (no circuit prefix)
  */
 export function buildValueSpokenTail(field, valueStr, friendly, options = {}) {
   if (typeof valueStr === 'string' && valueStr.trim().toLowerCase() === 'lim') {
     return `${friendly} recorded as LIM — limitation`;
+  }
+  const correction = options.correction;
+  if (correction && correction.original != null && correction.corrected != null) {
+    return `${friendly} recorded as ${valueStr} — I corrected ${correction.original} to ${correction.corrected}`;
   }
   if (COUNT_STYLE_FIELDS.has(field)) return `${valueStr} ${friendly}`;
   if (options.calculated === true) return `${friendly} calculated as ${valueStr}`;
@@ -335,10 +357,30 @@ export function buildValueSpokenTail(field, valueStr, friendly, options = {}) {
  * speaking, so " 0.5" and "0.5" produce IDENTICAL spoken text and must share
  * one identity. calculated is part of the key: a calculated and a dictated
  * same-field/same-value write speak with different phrasing and never group.
+ *
+ * id-100(b) (2026-07-25) — the FULL clamp-correction identity (original AND
+ * corrected, not merely "was corrected") joins the key. Both halves are
+ * load-bearing:
+ *   - Including corrections at all: a clamped write and an unclamped write of
+ *     the SAME final value speak different text ("R1+R2 recorded as 1.6 — I
+ *     corrected 16 to 1.6" vs "R1+R2 1.6"), so grouping them would silence one
+ *     of the two phrasings — and the correction clause is the half that would
+ *     lose, dropping the safety-critical disclosure.
+ *   - Including the ORIGINAL: two circuits could both land on 1.6, one from a
+ *     dictated 16 and one from a dictated 160. Keying on a mere boolean would
+ *     collapse them into one line naming a single original, telling the
+ *     inspector something factually untrue about one of the circuits.
+ * The discriminator is APPENDED only when a correction exists — never emitted
+ * as an empty trailing segment — so every uncorrected key (the overwhelming
+ * majority, and the one the pinned vectors below guard) stays byte-identical to
+ * its pre-id-100(b) form. Widening all keys unconditionally would have been an
+ * invisible change to all three call sites for zero benefit.
  */
-export function buildFanoutGroupKey({ field, value, boardId, calculated }) {
+export function buildFanoutGroupKey({ field, value, boardId, calculated, correction }) {
   const valueStr = String(value ?? '').trim();
-  return `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
+  const base = `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
+  if (!correction || correction.original == null || correction.corrected == null) return base;
+  return `${base}|${correction.original}>${correction.corrected}`;
 }
 
 export function buildGroupedConfirmationText(
