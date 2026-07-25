@@ -1,0 +1,118 @@
+# Plan D (readback-reflects-stored-value, feedback id 100(b) / session C06B9904)
+# — "the read-back must speak the value that was STORED".
+#
+# Field repro (turn 4 of the session): on a TN-C-S installation the inspector
+# dictated "Main earth is sixteen now." The model emitted
+# record_board_reading{earth_loop_impedance_ze, "16"} and the server SPOKE
+# "Ze 16" — while the client independently divided the number by ten and
+# stored 1.6. The inspector heard one number and the certificate kept another.
+# On a TN-C-S supply a 16 Ω external earth-fault loop impedance is three orders
+# of magnitude outside the plausible band, so "16" is a decimal-point garble of
+# 1.6 — the CLIENT's arithmetic was right and the SERVER's read-back was wrong.
+#
+# The fix makes the SERVER authoritative: the value is clamped BEFORE it is
+# written, so the snapshot, the wire reading and the spoken confirmation are all
+# synthesised from the SAME clamped number, and the correction is NAMED aloud
+# ("... — I corrected 16 to 1.6") rather than applied silently. Silent
+# divergence between the heard number and the stored number is the
+# safety-critical half of this defect; an unannounced correction is the other.
+#
+# RECORDED-lane semantics: the frozen model round is IDENTICAL pre- and
+# post-fix — the model still emits "16"; the fix is entirely in the BACKEND's
+# handling of that write (clamp at the dispatcher pre-write seam, carry the
+# correction through the bundler into the confirmation text). That is exactly
+# the class the recorded lane can lock.
+#
+# ORACLE: `expected_operations` asserts the WRITE that crosses the wire carries
+# the clamped literal 1.6 (the shadow harness folds record_board_reading
+# writes into extracted_readings with circuit 0, which is the array the oracle
+# reads). `expected_audible_outputs` asserts the SPOKEN line byte-exactly —
+# both halves of "stored == spoken" and the named correction. Pre-fix replay
+# fails EXACTLY `reading.op_ze_clamped` (the write is "16", never 1.6); the
+# audible oracle was added only once the fix landed, per the RED→GREEN
+# two-commit contract (an expected_red fixture must fail exactly ONE id).
+#
+# EARTHING: seeded through `job_state.supply.earthing_arrangement` rather than
+# by replaying the real turn-2 that dictated it — replaying that turn would emit
+# its own unclaimed "earthing arrangement TN-C-S" confirmation and break the
+# exactly-one-failed-id RED requirement. The arrangement is load-bearing here:
+# the ze band is TN-C-S/TN-S/TT-dependent and the clamp FAILS SAFE (writes and
+# speaks the raw number) when it cannot resolve one.
+#
+# Provenance: HAND-AUTHORED / reconstructed — the S3 analytics bundle for this
+# session is TRUNCATED to cost_summary.json alone (the known iOS multipart
+# analytics-upload gap, same constraint as the P3/P4/P5 fixtures), so there is
+# no field_sources/manifest. The frozen round is reconstructed from the
+# CloudWatch `stage6_tool_call` row for the turn (record_board_reading,
+# earth_loop_impedance_ze, confidence 0.95) plus the client realtime log chunks
+# (the dictation and the "Ze 16" spoken confirmation). Unit-test twins live in
+# stage6-impedance-clamp.test.js. No captured PII.
+schema_version: 1
+corpus_id: frc_51be8bece8e63330a2f0daf78220af92
+purpose: regression
+gate_state: expected_red
+expected_failure_id: reading.op_ze_clamped
+red_proof_failure_id: reading.op_ze_clamped
+owner: Derek Beckley
+introduced_at: '2026-07-25T00:00:00Z'
+fix_reference: fix_92fc1bdcf41108d3b76c28bc99283e9f
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  Supply Ze dictated as "16" on a TN-C-S installation must be STORED as 1.6 and
+  the read-back must speak 1.6, naming the correction. Pre-fix the write kept
+  the raw 16 while the client stored 1.6 — the inspector heard a number the
+  certificate did not hold.
+job_state:
+  certificateType: eicr
+  supply:
+    earthing_arrangement: TN-C-S
+  boards:
+    - id: main
+      board_type: main
+  circuits: []
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: reconstructed
+    transcript: Main earth is 16 now.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_pd_ze_clamp
+            name: record_board_reading
+            input:
+              field: earth_loop_impedance_ze
+              value: '16'
+              confidence: 0.95
+              source_turn_id: turn-1
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations:
+      - operation_id: op_ze_clamped
+        kind: board_reading
+        tool: record_board_reading
+        field: earth_loop_impedance_ze
+        value: '1.6'
+        audibility: exactly_once
