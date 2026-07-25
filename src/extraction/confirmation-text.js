@@ -263,6 +263,28 @@ export function deriveFriendlyName(field) {
 const COUNT_STYLE_FIELDS = Object.freeze(new Set(['number_of_points']));
 
 /**
+ * id-100(b) (2026-07-25) — the ONE source of the spoken correction wording.
+ *
+ * Two families of producer need it and must not drift apart: the reading
+ * read-backs, which embed it as a tail on "<field> recorded as <value> — …"
+ * (buildValueSpokenTail below), and the DIALOGUE-script read-backs, whose
+ * sentence shape is fixed by their schema ("R1 x, Rn y, R2 z. All correct?")
+ * and so can only APPEND the clause as a sentence of its own. Both call this,
+ * so a future wording change lands on every spoken path at once.
+ *
+ * Returns `null` — not an empty string — when there is nothing to say, so a
+ * caller cannot splice an empty clause into a sentence and emit stray
+ * punctuation.
+ *
+ * @param {{original: *, corrected: *}|null|undefined} correction
+ * @returns {string|null} e.g. "I corrected 16 to 1.6"
+ */
+export function formatCorrectionClause(correction) {
+  if (!correction || correction.original == null || correction.corrected == null) return null;
+  return `I corrected ${correction.original} to ${correction.corrected}`;
+}
+
+/**
  * P3 (2026-07-23, feedback id 86) — the ONE shared spoken-tail builder for the
  * VALUE portion of a confirmation. buildConfirmationText,
  * buildGroupedConfirmationText, AND the Loaded Barrel speculator must produce
@@ -304,9 +326,9 @@ export function buildValueSpokenTail(field, valueStr, friendly, options = {}) {
   if (typeof valueStr === 'string' && valueStr.trim().toLowerCase() === 'lim') {
     return `${friendly} recorded as LIM — limitation`;
   }
-  const correction = options.correction;
-  if (correction && correction.original != null && correction.corrected != null) {
-    return `${friendly} recorded as ${valueStr} — I corrected ${correction.original} to ${correction.corrected}`;
+  const correctionClause = formatCorrectionClause(options.correction);
+  if (correctionClause !== null) {
+    return `${friendly} recorded as ${valueStr} — ${correctionClause}`;
   }
   if (COUNT_STYLE_FIELDS.has(field)) return `${valueStr} ${friendly}`;
   if (options.calculated === true) return `${friendly} calculated as ${valueStr}`;

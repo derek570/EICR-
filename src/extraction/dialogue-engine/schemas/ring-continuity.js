@@ -18,6 +18,9 @@ import {
   recordRingContinuityWrite,
   clearRingContinuityState,
 } from '../../ring-continuity-timeout.js';
+// id-100(b) — the shared correction wording, so the ring triple read-back and
+// the dispatcher read-backs can never phrase a clamp differently.
+import { formatCorrectionClause } from '../../confirmation-text.js';
 
 // Value-alternation matches the legacy script's pattern exactly,
 // including the sentinel words ("infinite", "open", etc). The parser
@@ -27,7 +30,8 @@ import {
 // scope; the byte-identical replay corpus depends on this match.
 // P3 — the four LIM forms added so a ring-leg "limitation" reply is captured by
 // the namedExtractor and canonicalised to "LIM" by parseOhms.
-const RING_VALUE_GROUP = '\\d*\\.?\\d+|infinite|open|discontinuous|infinity|lim|limb|limp|limitation';
+const RING_VALUE_GROUP =
+  '\\d*\\.?\\d+|infinite|open|discontinuous|infinity|lim|limb|limp|limitation';
 
 // KNOWN LIMITATION (orig. 2026-05-21 session 293F074F; "dead code" claim
 // corrected 2026-06-16): this schema IS the live ring-continuity path
@@ -157,11 +161,33 @@ const topicSwitchTriggers = [
 // reading. Mirrors the legacy `ring-continuity-script.js` confirmation
 // flow byte-for-byte — same question text, same `confirm_ring_continuity`
 // reason on the wire, same positive-vocabulary detector.
-function buildRingContinuityConfirmation({ values }) {
+// id-100(b) (2026-07-25) — this triple read-back is the ONLY dialogue-script
+// path that speaks stored VALUES back, so it is the only one that can violate
+// "the read-back must speak the value that was stored". The values already come
+// out of `state.values`, which applyWrite now fills with the CLAMPED value, so
+// the numbers are correct by construction; what this adds is NAMING the
+// correction, without which the inspector hears "R1 1.6" having said "sixteen"
+// and cannot tell a clamp from a mis-transcription. The clause is appended as
+// its own sentence because the triple's shape is fixed and byte-pinned against
+// the legacy ring-continuity-script.js twin for replay parity — an UNCORRECTED
+// loop (every real ring reading in every existing fixture) therefore renders
+// byte-identically to before, and only a clamped loop grows the extra sentence.
+// Multiple corrected slots in one loop are listed in slot order, since each is a
+// separate safety-relevant fact the inspector may want to reject.
+function buildRingContinuityConfirmation({ values, corrections = null }) {
   const r1 = values.ring_r1_ohm ?? '?';
   const rn = values.ring_rn_ohm ?? '?';
   const r2 = values.ring_r2_ohm ?? '?';
-  return `R1 ${r1}, Rn ${rn}, R2 ${r2}. All correct?`;
+  const triple = `R1 ${r1}, Rn ${rn}, R2 ${r2}.`;
+  const clauses = [];
+  if (corrections) {
+    for (const field of ['ring_r1_ohm', 'ring_rn_ohm', 'ring_r2_ohm']) {
+      const clause = formatCorrectionClause(corrections[field]);
+      if (clause !== null) clauses.push(`${clause}.`);
+    }
+  }
+  if (clauses.length === 0) return `${triple} All correct?`;
+  return `${triple} ${clauses.join(' ')} All correct?`;
 }
 
 function detectRingContinuityPositive(text) {

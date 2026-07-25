@@ -54,6 +54,19 @@ import {
 } from './parsers/circuit-range.js';
 import { OBSERVATION_PATTERN } from '../pre-llm-gate.js';
 import { normaliseDialogueSlotWrite } from './helpers/dialogue-slot-normalise.js';
+// Plan D (feedback id 100(b)) — the impedance clamp's band resolver (shared with
+// the Stage-6 dispatchers so the engine can never disagree about the band) and
+// the state-scoped correction store that carries `16 → 1.6` provenance from the
+// write turn to the LATER turn that speaks the read-back.
+import { resolveBoardAwareEarthing } from '../impedance-clamp.js';
+// NOTE: `clearValueCorrection` (lifecycle rule 2 — the slot itself was cleared)
+// is deliberately NOT imported here: the dialogue engine has no per-slot clear
+// path. Within an episode a slot is only ever OVERWRITTEN, which routes through
+// applyWrite → recordValueCorrection(null) (rule 1), and ending/re-entering a
+// script replaces the whole state object (rule 3). The helper stays exported and
+// unit-pinned as the API for a future clear path; wiring an unused import here
+// would be dead code.
+import { recordValueCorrection, consumeValueCorrection } from './helpers/value-corrections.js';
 // P1 ring-script-hardening — "reading-like" classification for the
 // confirmation branch's 5h idle rule (never consume a dictated reading into
 // the miss counter). Leaf module (imports only node:module), no cycle.
@@ -780,6 +793,13 @@ function initScriptState(session, schema, circuit_ref, now) {
     schemaName: schema.name,
     circuit_ref,
     values: {},
+    // Plan D (2026-07-25) — impedance-clamp provenance, field-keyed, exactly
+    // parallel to `values`. Lives HERE (not on the session) so lifecycle rule 3
+    // is structural: a new/cancelled/abandoned script replaces this whole
+    // object and the corrections go with it, so a stale "I corrected 16 to 1.6"
+    // can never survive into an unrelated episode. See
+    // helpers/value-corrections.js.
+    valueCorrections: {},
     // One-shot pending value awaiting a standard-set confirm (#1 IR voltage).
     // Holds the non-standard Number the engine asked the inspector to repeat;
     // null when no confirm is in flight. Lives on state so it clears with the
@@ -883,15 +903,35 @@ function transitionToConfirmation({
   responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
   const state = session.dialogueScriptState;
+  // The guard runs BEFORE the corrections are consumed — consuming on a path
+  // that then emits nothing would silently discard the provenance and the
+  // clamp would never be named aloud (a spoken-but-not-heard bug).
   if (!state || !schema?.confirmation?.buildMessage) return;
   state.awaiting_confirmation = true;
+  // Plan D (id-100(b)) — CONSUME the clamp provenance for every slot this
+  // message reads back. Consume, not peek: this confirmation is the read-back
+  // that names the correction, and the amend/re-confirm loop re-enters here, so
+  // peeking would repeat "I corrected 16 to 1.6" on every subsequent
+  // re-confirmation (Audio-First #1 is exactly once, not at-least-once). A slot
+  // corrected by a LATER amend records a fresh correction and is named then.
+  //
+  // The value the caller is composing from is `state.values`, which applyWrite
+  // fills with the CLAMPED value — so the spoken number is the stored number by
+  // construction, and this only adds the explanation.
+  const corrections = {};
+  for (const slot of schema.slots ?? []) {
+    const correction = consumeValueCorrection(state, slot.field);
+    if (correction) corrections[slot.field] = correction;
+  }
   safeSend(
     ws,
     buildScriptConfirm({
       toolCallIdPrefix: schema.toolCallIdPrefix,
       sessionId,
       circuit_ref: state.circuit_ref,
-      question: schema.confirmation.buildMessage({ values: state.values }),
+      // The CALLER composes the finished string (wire-emit.js takes a prebuilt
+      // question and is deliberately left unchanged).
+      question: schema.confirmation.buildMessage({ values: state.values, corrections }),
       reason: schema.confirmation.reason,
       now,
       responseEpoch,
@@ -1025,7 +1065,10 @@ function runEntry({
     if (circuitRef !== null) {
       const slot = schema.slots.find((s) => s.field === w.field);
       const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now);
-      writes.push(w);
+      // Plan D Seam B — the WIRE entry carries the value that was STORED, not
+      // the raw dictated one, or the client writes 16 into a cell the server
+      // holds at 1.6.
+      writes.push({ ...w, value: r.effectiveValue });
       // Audit-2026-06-02 Phase 2 — surface derivation mirrors/sets to
       // the same extraction envelope so iOS sees both columns update
       // on one audible confirmation. auto_resolved flags the derived
@@ -1143,10 +1186,21 @@ function runEntry({
  * Apply a write to the snapshot AND run any slot derivations. Returns
  * { pivotTo } so the caller can defer pivot handling to a clean point
  * in the active-path flow (after all in-utterance writes have landed).
+ *
+ * Plan D Seam B (2026-07-25) — also returns `effectiveValue`: the value
+ * `applyWrite` actually STORED after the impedance clamp. Callers must use it
+ * for the wire entry they hand to `buildExtractionPayload` and for their log
+ * row, or the frame carries the raw dictated 16 while the snapshot holds 1.6
+ * and the client writes 16 into the cell.
+ *
+ * Derivations are fed the EFFECTIVE value too: a derivation computed from the
+ * raw 16 (e.g. an OCPD-rating → max-Zs comparison) would be reasoning about a
+ * magnitude that was never stored.
  */
 function applyWriteWithDerivations(session, schema, slot, circuit_ref, value, now) {
-  applyWrite(session, schema, circuit_ref, slot.field, value, now);
-  return applyDerivations({ session, schema, slot, value });
+  const written = applyWrite(session, schema, circuit_ref, slot.field, value, now);
+  const derived = applyDerivations({ session, schema, slot, value: written.value });
+  return { ...derived, effectiveValue: written.value, correction: written.correction };
 }
 
 /**
@@ -1211,18 +1265,32 @@ function runActivePath({
   if (state.awaiting_disambiguation && typeof schema.disambiguateBareValue === 'function') {
     const bare = state.awaiting_disambiguation;
     const verdict = schema.disambiguateBareValue(text);
+    // Plan D Seam B — the clamped value actually stored, for the log row below.
+    let disambiguatedValue = null;
     if (verdict && verdict.field) {
       // Belt-and-braces: don't overwrite if the inspector somehow
       // filled the chosen slot in the meantime (rare but possible if
       // a parallel write landed).
       if (state.values[verdict.field] == null) {
-        applyWrite(session, schema, state.circuit_ref, verdict.field, bare.value, now);
-        state.values[verdict.field] = bare.value;
+        // Plan D Seam B — capture the return value. The raw re-assignment that
+        // used to sit on the next line (`state.values[...] = bare.value`) is
+        // DELETED: applyWrite already writes state.values, and re-assigning the
+        // raw value would undo the clamp so the NEXT turn's read-back re-reads
+        // the uncorrected magnitude.
+        const written = applyWrite(
+          session,
+          schema,
+          state.circuit_ref,
+          verdict.field,
+          bare.value,
+          now
+        );
+        disambiguatedValue = written.value;
         safeSend(
           ws,
           buildExtractionPayload(
             state.circuit_ref,
-            [{ field: verdict.field, value: bare.value }],
+            [{ field: verdict.field, value: written.value }],
             schema.extractionSource
           )
         );
@@ -1230,7 +1298,7 @@ function runActivePath({
       logger?.info?.(`${schema.logEventPrefix}_disambiguation_resolved`, {
         sessionId,
         circuit_ref: state.circuit_ref,
-        bare_value: bare.value,
+        bare_value: disambiguatedValue ?? bare.value,
         target_field: verdict.field,
         textPreview: text.slice(0, 80),
       });
@@ -1746,8 +1814,11 @@ function runActivePath({
       for (const w of ringSafe.values) {
         const slot = schema.slots.find((s) => s.field === w.field);
         const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
-        state.values[w.field] = w.value;
-        overwrites.push(w);
+        // Plan D Seam B — the raw `state.values[w.field] = w.value` that used to
+        // sit here is DELETED. applyWrite has already written the CLAMPED value;
+        // re-assigning the raw one undid the clamp, so the next confirmation
+        // read-back re-read the uncorrected magnitude.
+        overwrites.push({ ...w, value: r.effectiveValue });
         // Audit-2026-06-02 Phase 2 — propagate derivation mirrors on
         // confirmation-time amends so a corrected ocpd_bs_en still
         // updates the rcd_bs_en column on the wire (same UX guarantee
@@ -1792,8 +1863,9 @@ function runActivePath({
             parsed,
             now
           );
-          state.values[slot.field] = parsed;
-          const writes = [{ field: slot.field, value: parsed }];
+          // Plan D Seam B — raw re-assignment DELETED (applyWrite already stored
+          // the clamped value); the wire entry carries the effective value.
+          const writes = [{ field: slot.field, value: r.effectiveValue }];
           for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
           for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
           safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
@@ -1801,7 +1873,8 @@ function runActivePath({
             sessionId,
             circuit_ref: state.circuit_ref,
             field: slot.field,
-            value: parsed,
+            // Plan D Seam B — log the value that was STORED.
+            value: r.effectiveValue,
           });
           state.confirmation_no_progress = 0;
           state.confirmation_pending_slot = null;
@@ -1993,7 +2066,14 @@ function runActivePath({
           // near-match / alternate-sentinel / out-of-range / off-ladder value is
           // REJECTED (dropped) instead of persisted verbatim. Non-numeric fields
           // (bs_en / Y-N) pass through unchanged.
-          const norm = normaliseDialogueSlotWrite(schema, w.field, w.value);
+          // Plan D Seam A — the normaliser also clamps impedances; pass the
+          // session's board-aware earthing so it picks the right band.
+          const norm = normaliseDialogueSlotWrite(
+            schema,
+            w.field,
+            w.value,
+            resolveBoardAwareEarthing(session?.stateSnapshot, null)
+          );
           if (!norm.ok) {
             logger?.info?.(`${schema.logEventPrefix}_pending_write_rejected`, {
               sessionId,
@@ -2004,8 +2084,23 @@ function runActivePath({
             continue;
           }
           const drainValue = norm.value;
+          // PROPAGATE Seam A's correction — do NOT let the write re-derive it.
+          // applyWrite re-clamps by design, but by now the value is already 1.6,
+          // which clamps cleanly to `{kind:'ok'}` and returns a null correction,
+          // so the 16 → 1.6 provenance would be LOST and the clause could never
+          // be spoken. Recording Seam A's object AFTER the write overwrites that
+          // null with the real provenance.
+          // `w.correction` first: a seed queued by enterScriptByName was ALREADY
+          // clamped there, so this turn's re-normalise reports no correction and
+          // only the queued object still knows it was 16. A raw entry queued by
+          // named extraction has no `correction` and gets its provenance from
+          // this turn's clamp instead.
+          const drainCorrection = w.correction ?? norm.correction;
           applyWrite(session, schema, ref, w.field, drainValue, now);
-          writes.push({ ...w, value: drainValue });
+          if (drainCorrection) {
+            recordValueCorrection(session.dialogueScriptState, w.field, drainCorrection);
+          }
+          writes.push({ field: w.field, value: drainValue });
           drainedFromPending = true;
         }
         state.pending_writes = [];
@@ -2293,7 +2388,9 @@ function runActivePath({
     // Local: write the parsed exclusive value (+ any derivations) and finish.
     const writeExclusiveAndFinish = (v) => {
       const r = applyWriteWithDerivations(session, schema, currentSlot, state.circuit_ref, v, now);
-      writes.push({ field: currentSlot.field, value: v });
+      // Plan D — emit the EFFECTIVE (clamped) value, not the local `v`, so the
+      // frame the client renders matches what the server stored.
+      writes.push({ field: currentSlot.field, value: r.effectiveValue });
       // Audit-2026-06-02 Phase 2 — IR voltage / similar exclusive-slot parsers
       // don't currently have mirroring derivations, but the wire shape stays
       // consistent across paths if a future schema declares them.
@@ -2494,7 +2591,10 @@ function runActivePath({
     if (state.values[w.field] !== undefined) continue;
     const slot = schema.slots.find((s) => s.field === w.field);
     const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
-    writes.push(w);
+    // Plan D — the wire entry carries the EFFECTIVE (clamped) value; `w.value`
+    // is the raw parsed magnitude and would put 16 in the cell while the
+    // snapshot holds 1.6.
+    writes.push({ ...w, value: r.effectiveValue });
     // PLAN-backend-final.md Phase 6.2 — volunteered-write clears the
     // deferred mark for this slot so the engine asks normally on the
     // NEXT re-entry. Inspector phrases the plan calls out — "come back
@@ -2570,7 +2670,8 @@ function runActivePath({
         bareValue,
         now
       );
-      writes.push({ field: currentSlot.field, value: bareValue });
+      // Plan D — EFFECTIVE (clamped) value on the wire, not the raw bareValue.
+      writes.push({ field: currentSlot.field, value: r.effectiveValue });
       // Audit-2026-06-02 Phase 2 — bare-value derivation mirrors (e.g.
       // inspector answers a bare BS code while the engine has rcd_bs_en
       // expected; RCBO mirror to ocpd_bs_en) ride the same envelope.
@@ -3222,12 +3323,32 @@ export function enterScriptByName({
       // out-of-range / off-ladder value is REJECTED (dropped) instead of
       // persisted verbatim. Non-numeric fields (bs_en / Y-N) pass through
       // unchanged, preserving the prior seed behaviour.
-      const norm = normaliseDialogueSlotWrite(schema, w.field, w.value);
+      // Plan D Seam A — the normaliser also clamps impedances (band chosen from
+      // the session's board-aware earthing), so a seeded `ze` of 16 on a TN-C-S
+      // installation becomes 1.6 instead of being REJECTED as out-of-range.
+      const norm = normaliseDialogueSlotWrite(
+        schema,
+        w.field,
+        w.value,
+        resolveBoardAwareEarthing(session?.stateSnapshot, null)
+      );
       if (!norm.ok) {
         droppedFields.push(w.field);
         continue;
       }
-      validWrites.push({ field: w.field, value: norm.value });
+      // `correction` rides the local entry so the provenance survives to
+      // whichever consumer writes it: applied immediately below (recorded into
+      // the state store) or queued into pending_writes and recorded at the
+      // drain. It is NEVER re-derived downstream — by then the value is 1.6,
+      // which clamps cleanly and reports no correction.
+      //
+      // Attached CONDITIONALLY: an entry may be queued verbatim into
+      // `state.pending_writes`, and the uncorrected case is ~every real write,
+      // so omitting the key keeps the queued shape byte-identical to pre-Plan-D
+      // (a `correction: null` would churn every pending_writes pin for nothing).
+      const entry = { field: w.field, value: norm.value };
+      if (norm.correction) entry.correction = norm.correction;
+      validWrites.push(entry);
     }
   }
 
@@ -3269,14 +3390,24 @@ export function enterScriptByName({
     if (resolvedCircuitRef !== null) {
       const slot = schema.slots.find((s) => s.field === w.field);
       const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now);
-      appliedWrites.push(w);
-      wireWrites.push(w);
+      // Plan D — PROPAGATE Seam A's provenance (applyWrite's own re-clamp of the
+      // already-corrected value reports null and would retire it), and strip the
+      // `correction` key from the outgoing entries so it can never appear on the
+      // dispatcher's `seeded_writes` envelope or the extraction frame.
+      if (w.correction) {
+        recordValueCorrection(state, w.field, w.correction);
+      }
+      appliedWrites.push({ field: w.field, value: r.effectiveValue });
+      wireWrites.push({ field: w.field, value: r.effectiveValue });
       for (const mw of r.mirrorWrites) wireWrites.push({ ...mw, auto_resolved: true });
       for (const sw of r.setWrites) wireWrites.push({ ...sw, auto_resolved: true });
       if (r.pivotTo) pivotTo = r.pivotTo;
     } else {
       // Circuit unknown — queue. The active path drains pending_writes
-      // once a digit or designation answer lands.
+      // once a digit or designation answer lands. The queued entry keeps its
+      // `correction` so the drain can record the provenance it can no longer
+      // re-derive (Plan D); pending_writes is only ever read for `.field`
+      // (logging) and `.value` (the drain), so the extra key is inert.
       state.pending_writes.push(w);
     }
   }
@@ -3509,7 +3640,13 @@ export function tryResumePausedScript({
       // Coerce four-form LIM → "LIM", validate, and REJECT a near-match /
       // alternate-sentinel / out-of-range / off-ladder value. Non-numeric fields
       // pass through unchanged.
-      const norm = normaliseDialogueSlotWrite(schema, w.field, w.value);
+      // Plan D Seam A — clamp band from the session's board-aware earthing.
+      const norm = normaliseDialogueSlotWrite(
+        schema,
+        w.field,
+        w.value,
+        resolveBoardAwareEarthing(session?.stateSnapshot, null)
+      );
       if (!norm.ok) {
         logger?.info?.(`${schema.logEventPrefix}_pending_write_rejected`, {
           sessionId: session.sessionId,
@@ -3520,8 +3657,15 @@ export function tryResumePausedScript({
         continue;
       }
       const drainValue = norm.value;
+      // See the circuit-resolution drain above: a seed queued by
+      // enterScriptByName was already clamped there, so only its own
+      // `correction` still carries the 16 → 1.6 provenance.
+      const drainCorrection = w.correction ?? norm.correction;
       applyWrite(session, schema, matchedRef, w.field, drainValue, now);
-      drainedWrites.push({ ...w, value: drainValue });
+      if (drainCorrection) {
+        recordValueCorrection(state, w.field, drainCorrection);
+      }
+      drainedWrites.push({ field: w.field, value: drainValue });
     }
     state.pending_writes = [];
   }
@@ -3599,13 +3743,17 @@ export function tryResumePausedScript({
       // Branch (2): exactly one filled — auto-assign the bare value to
       // the other slot. No user question.
       const targetField = llFilled ? 'ir_live_earth_mohm' : 'ir_live_live_mohm';
-      applyWrite(session, schema, matchedRef, targetField, bare.value, now);
-      state.values[targetField] = bare.value;
+      // Plan D — applyWrite is authoritative: it clamps, writes the clamped
+      // value into BOTH the snapshot and state.values, and records the
+      // correction. The raw `state.values[targetField] = bare.value` that used
+      // to follow was a split-brain generator (snapshot 1.6, local map 16) and
+      // is deleted in favour of the returned effective value.
+      const written = applyWrite(session, schema, matchedRef, targetField, bare.value, now);
       state.ambiguous_bare_value = null;
       logger?.info?.(`${schema.logEventPrefix}_disambiguation_auto_assigned`, {
         sessionId: session.sessionId,
         circuit_ref: matchedRef,
-        bare_value: bare.value,
+        bare_value: written.value,
         target_field: targetField,
         reason: llFilled ? 'll_already_filled' : 'le_already_filled',
       });
@@ -3613,7 +3761,7 @@ export function tryResumePausedScript({
         ws,
         buildExtractionPayload(
           matchedRef,
-          [{ field: targetField, value: bare.value }],
+          [{ field: targetField, value: written.value }],
           schema.extractionSource
         )
       );
