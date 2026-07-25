@@ -78,6 +78,7 @@ import {
   ringContinuitySchema,
   ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
+import { dispatchStartDialogueScript } from '../extraction/stage6-dispatchers-script.js';
 
 // ───────────────────────────────────────────────────────────── helpers ──
 
@@ -1133,6 +1134,101 @@ describe('dialogue Seam B — the correction ledger lifecycle', () => {
     expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('1.6');
     expect(session.dialogueScriptState.values.ring_r1_ohm).toBeUndefined();
     expect(peekValueCorrection(session.dialogueScriptState, 'ring_r1_ohm')).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// §7 — dialogue Seam D: the start_dialogue_script backfill hand-off
+//
+// `start_dialogue_script` with `pending_writes` is a SONNET-initiated seed:
+// enterScriptByName clamps it (Seam A) and records the provenance into the
+// dialogue state store, whose only speech consumer is the script's own
+// end-of-script confirmation — but the dispatcher ALSO backfills
+// perTurnWrites so the value reaches `extracted_readings`, which puts it in
+// front of the Stage-6 bundler too. That bundler line lands FIRST, so it is
+// the one the inspector reacts to; it has to carry the clause.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('dialogue Seam D — start_dialogue_script seeds hand the clamp to the bundler', () => {
+  function scriptSession() {
+    const session = makeSession({ earthing: 'TN-C-S', circuits: { 4: {} } });
+    session.activeWs = null;
+    return session;
+  }
+
+  function seedCall(field, value) {
+    return {
+      tool_call_id: 'tu_sds1',
+      name: 'start_dialogue_script',
+      input: {
+        schema: 'ring_continuity',
+        circuit: 4,
+        source_turn_id: 't1',
+        reason: 'inspector dictated a ring reading',
+        pending_writes: [{ field, value }],
+      },
+    };
+  }
+
+  async function seed(session, writes, field, value) {
+    return dispatchStartDialogueScript(seedCall(field, value), {
+      session,
+      logger: mockLogger(),
+      turnId: 'turn-1',
+      round: 1,
+      perTurnWrites: writes,
+    });
+  }
+
+  test('DISCRIMINATING: a seeded 16 is stored 1.6 AND the bundler names the correction', async () => {
+    const session = scriptSession();
+    const writes = createPerTurnWrites();
+    await seed(session, writes, 'ring_r1_ohm', '16');
+
+    // The clamp itself already worked pre-fix (Seam A) — assert it so a
+    // regression there is not mistaken for a transport regression.
+    expect(session.stateSnapshot.circuits[4].ring_r1_ohm).toBe('1.6');
+
+    // THIS is the discriminating half. Pre-fix the backfill built a fresh
+    // entry object with no Symbol, so the bundler read back the bare
+    // "Circuit 4, ring R1 1.6" — right number, no explanation, and the
+    // inspector who said "sixteen" was never told the server had divided it.
+    const entry = writes.readings.get(encodeReadingKey('ring_r1_ohm', 4, undefined));
+    expect(entry[IMPEDANCE_CLAMP_CORRECTION]).toEqual({
+      original: '16',
+      corrected: '1.6',
+      divisor: 10,
+    });
+    expect(texts(bundle(writes)).join(' | ')).toContain('I corrected 16 to 1.6');
+  });
+
+  test('the hand-off CONSUMES, so the clause is named exactly once (Audio-First #1)', async () => {
+    const session = scriptSession();
+    await seed(session, createPerTurnWrites(), 'ring_r1_ohm', '16');
+    // The bundler owns this clause now; leaving the ledger entry would make
+    // the end-of-script confirmation say "I corrected 16 to 1.6" a SECOND
+    // time on a later turn.
+    expect(peekValueCorrection(session.dialogueScriptState, 'ring_r1_ohm')).toBeNull();
+  });
+
+  test('an UNCORRECTED seed carries no Symbol and reads back byte-identically', async () => {
+    const session = scriptSession();
+    const writes = createPerTurnWrites();
+    await seed(session, writes, 'ring_r1_ohm', '0.43');
+
+    const entry = writes.readings.get(encodeReadingKey('ring_r1_ohm', 4, undefined));
+    expect(entry[IMPEDANCE_CLAMP_CORRECTION]).toBeUndefined();
+    expect(texts(bundle(writes)).join(' | ')).not.toContain('I corrected');
+  });
+
+  test('the correction is non-enumerable — it cannot reach a wire frame', async () => {
+    const session = scriptSession();
+    const writes = createPerTurnWrites();
+    await seed(session, writes, 'ring_r1_ohm', '16');
+
+    const entry = writes.readings.get(encodeReadingKey('ring_r1_ohm', 4, undefined));
+    expect(Object.keys(entry)).not.toContain('correction');
+    expect(JSON.stringify(entry)).not.toContain('16');
   });
 });
 
