@@ -984,10 +984,34 @@ function transitionToConfirmation({
   // The value the caller is composing from is `state.values`, which applyWrite
   // fills with the CLAMPED value — so the spoken number is the stored number by
   // construction, and this only adds the explanation.
+  //
+  // …but consume ONLY when this message can actually reach the inspector.
+  // `safeSend` silently returns on an absent/closed socket (by design — "the
+  // script's persistent state is the source of truth, not the wire"), so
+  // consuming unconditionally would empty the ledger on a turn that spoke
+  // NOTHING. The clause would then be owed and unpayable: the confirmation
+  // re-emit path below (case (c), an inspector re-stating the entry trigger)
+  // routes back through here, finds an empty ledger, and reads the value back
+  // BARE — a clamp applied and never named, which is the failure this plan
+  // exists to prevent. Nothing was spoken, so the ledger legitimately still
+  // owes the clause; leave it there for whoever speaks next.
+  //
+  // The predicate mirrors `safeSend`'s own gate (wire-emit.js is deliberately
+  // untouched by this plan, and it reports no success signal to callers). It is
+  // the same `readyState !== undefined && readyState !== OPEN` idiom used by the
+  // two legacy scripts. RESIDUAL, accepted: a socket that is OPEN but whose
+  // `send` THROWS still consumes — closing that needs `safeSend` to return
+  // delivery status, which is a wire-emit change and a follow-up.
+  const canDeliver =
+    !!ws &&
+    typeof ws.send === 'function' &&
+    (ws.readyState === undefined || ws.readyState === ws.OPEN);
   const corrections = {};
-  for (const slot of schema.slots ?? []) {
-    const correction = consumeValueCorrection(state, slot.field);
-    if (correction) corrections[slot.field] = correction;
+  if (canDeliver) {
+    for (const slot of schema.slots ?? []) {
+      const correction = consumeValueCorrection(state, slot.field);
+      if (correction) corrections[slot.field] = correction;
+    }
   }
   safeSend(
     ws,

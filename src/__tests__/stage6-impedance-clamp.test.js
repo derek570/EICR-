@@ -1049,6 +1049,64 @@ describe('dialogue Seam B — through a REAL engine caller', () => {
     ringTurn(ws, session, '0.78', 4000);
     expect(ws.sent.at(-1).question).toBe('R1 0.43, Rn 0.43, R2 0.78. All correct?');
   });
+
+  // Codex cycle-3 IMPORTANT. `safeSend` silently returns on an absent/closed
+  // socket (by design — "the script's persistent state is the source of truth,
+  // not the wire") and reports no success signal to its caller, so consuming
+  // the correction ledger unconditionally emptied it on a turn that spoke
+  // NOTHING. The clause was then owed and unpayable: the confirmation re-emit
+  // path (order 5g, an inspector re-stating the entry to revisit the readback)
+  // routes back through transitionToConfirmation, finds an empty ledger, and
+  // reads the clamped value back BARE. A clamp applied and never named is the
+  // failure this plan exists to prevent, so the consume is now gated on the
+  // socket being able to deliver.
+  test('DISCRIMINATING: a CLOSED socket at confirmation time does not consume the clause', () => {
+    const ws = new FakeWS();
+    const session = ringSession();
+    ringTurn(ws, session, 'Ring continuity for circuit 13.', 1000);
+    ringTurn(ws, session, '16', 2000); // R1 — out of band, corrected to 1.6
+    ringTurn(ws, session, 'Neutrals are 0.43.', 3000);
+
+    // The socket drops before the last slot completes the triple.
+    ws.readyState = 3; // CLOSED
+    const sentBefore = ws.sent.length;
+    ringTurn(ws, session, '0.78', 4000);
+
+    // Nothing was spoken, so the clause is still OWED — not silently burned.
+    expect(ws.sent.length).toBe(sentBefore);
+    expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('1.6');
+    expect(peekValueCorrection(session.dialogueScriptState, 'ring_r1_ohm')).toEqual({
+      original: '16',
+      corrected: '1.6',
+      divisor: 10,
+    });
+
+    // …and it is paid the moment a confirmation can actually be delivered: the
+    // inspector re-states the entry, the socket is back, and the re-emitted
+    // read-back names the correction.
+    ws.readyState = ws.OPEN;
+    ringTurn(ws, session, 'Ring continuity for circuit 13.', 5000);
+    expect(ws.sent.at(-1).question).toBe(
+      'R1 1.6, Rn 0.43, R2 0.78. I corrected 16 to 1.6. All correct?'
+    );
+  });
+
+  test('an OPEN socket still consumes — the clause is named ONCE, not on every re-confirm', () => {
+    // The other half of the gate: gating on deliverability must not weaken
+    // exactly-once (Audio-First #1) on the normal path.
+    const ws = new FakeWS();
+    const session = ringSession();
+    ringTurn(ws, session, 'Ring continuity for circuit 13.', 1000);
+    ringTurn(ws, session, '16', 2000);
+    ringTurn(ws, session, 'Neutrals are 0.43.', 3000);
+    ringTurn(ws, session, '0.78', 4000);
+    expect(ws.sent.at(-1).question).toContain('I corrected 16 to 1.6');
+    expect(peekValueCorrection(session.dialogueScriptState, 'ring_r1_ohm')).toBeNull();
+
+    // Re-stating the entry re-emits the read-back; the clause must NOT repeat.
+    ringTurn(ws, session, 'Ring continuity for circuit 13.', 5000);
+    expect(ws.sent.at(-1).question).toBe('R1 1.6, Rn 0.43, R2 0.78. All correct?');
+  });
 });
 
 describe('dialogue Seam B — the correction ledger lifecycle', () => {
