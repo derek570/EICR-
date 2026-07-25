@@ -100,12 +100,28 @@ describe('F/U-4 — updateJobState supply merge maps aliases to canonical (fill-
     expect(s.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('0.13');
   });
 
-  test('the alias map is exactly the four supply keys (scope pin)', () => {
+  test('the alias map is exactly the five supply keys (scope pin)', () => {
+    // WIDENED 2026-07-25 by Plan D (feedback id 100(b), session C06B9904) — from
+    // the original four Ze/PFC keys to five, by exactly `earthing_arrangement`.
+    //
+    // WHY the fifth key is load-bearing rather than scope creep: the impedance
+    // clamp FAILS SAFE on the ze band when the earthing arrangement is unknown
+    // (TT tolerates up to 200 Ω, non-TT only 5 Ω — so with no arrangement
+    // resolved, a dictated "16" must be stored and spoken RAW rather than
+    // guessed at). The arrangement therefore has to be resolvable from turn 1,
+    // before any `job_state_update` frame arrives; seeding it through this
+    // supply merge is what makes that true.
+    //
+    // This pin stays a SCOPE guard: it is deliberately exhaustive so any
+    // further widening is a conscious edit here, never a silent one. Only the
+    // camelCase form needs an alias — snake_case `earthing_arrangement` is
+    // already canonical and passes through unrenamed.
     expect(SUPPLY_MERGE_KEY_ALIASES).toEqual({
       earthLoopImpedanceZe: 'earth_loop_impedance_ze',
       ze: 'earth_loop_impedance_ze',
       prospectiveFaultCurrent: 'prospective_fault_current',
       pfc: 'prospective_fault_current',
+      earthingArrangement: 'earthing_arrangement',
     });
   });
 
