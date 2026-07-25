@@ -317,34 +317,135 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
 }
 
 /**
- * Default Phase 3 sortRecords hook for runToolLoop. Moves every `ask_user`
- * record to the END of the array while preserving stream-emission
- * (index-ascending) order within each partition.
+ * True for a `record_board_reading` record whose target field is the closed-enum
+ * `earthing_arrangement`. This is the CANONICAL definition; runToolLoop's
+ * emergency sort fallback inlines a byte-equivalent copy (it must stay free of
+ * any dependency on this module) and a parity test pins the two together.
  *
- * STA-02 defense-in-depth: if Sonnet interleaves an `ask_user` block between
- * write-tool blocks inside a single response (prompt-discipline drift), this
- * hook still ensures the writes land BEFORE the blocking ask stalls the
- * round. Pair with Phase 4 prompt discipline.
+ * Defensive on shape: `input` may be absent or non-object on a malformed record,
+ * and a non-string `field` must never throw here — the dispatcher owns validation.
  *
- * Pure function — does NOT mutate the input array. The hook returns a new
- * array whose elements are the same object identities as the input (shallow
- * copy). Empty / single-element inputs short-circuit to identity.
+ * @param {{name?: string, input?: unknown}} rec
+ * @returns {boolean}
+ */
+export function isEarthingArrangementRecord(rec) {
+  if (!rec || rec.name !== 'record_board_reading') return false;
+  const input = rec.input;
+  if (!input || typeof input !== 'object') return false;
+  return input.field === 'earthing_arrangement';
+}
+
+/**
+ * True for a record that MUTATES `snapshot.currentBoardId` — `add_board`
+ * (stage6-dispatchers-board.js:738) and `select_board` (:880). These are BOARD
+ * CONTEXT BOUNDARIES for the sort below: `record_board_reading` carries no
+ * `board_id` in its tool schema, so its target board is resolved at dispatch
+ * time as `snapshot.currentBoardId` — reordering a board write ACROSS one of
+ * these lands it on a different board. Canonical definition; runToolLoop's
+ * emergency sort fallback inlines a byte-equivalent copy and a parity test pins
+ * the two together.
  *
- * Returns the input unchanged when it is not an array — defensive fail-open
- * so a future bug in runToolLoop that passes the hook something weird does
- * not swallow records into `undefined` and break the turn.
+ * @param {{name?: string}} rec
+ * @returns {boolean}
+ */
+export function isBoardContextChangingRecord(rec) {
+  if (!rec) return false;
+  return rec.name === 'add_board' || rec.name === 'select_board';
+}
+
+/**
+ * Default Phase 3 sortRecords hook for runToolLoop. Produces a THREE-way stable
+ * partition, preserving stream-emission (index-ascending) order WITHIN each
+ * partition:
+ *
+ *   1. `record_board_reading {field: 'earthing_arrangement'}` — FIRST
+ *   2. every other write record
+ *   3. `ask_user` — LAST
+ *
+ * …except that partitions 1 and 2 are applied PER BOARD-CONTEXT SEGMENT, not
+ * across the whole round (see `isBoardContextChangingRecord`).
+ *
+ * STA-02 defense-in-depth (partition 3): if Sonnet interleaves an `ask_user`
+ * block between write-tool blocks inside a single response (prompt-discipline
+ * drift), this hook still ensures the writes land BEFORE the blocking ask stalls
+ * the round. Pair with Phase 4 prompt discipline.
+ *
+ * id-100(b) / Codex lens-3 (2026-07-25) — partition 1 exists because the
+ * SERVER-AUTHORITATIVE impedance clamp resolves the Ze band from the COMMITTED
+ * `session.stateSnapshot`, and runToolLoop dispatches a round's records
+ * SEQUENTIALLY in this order. A single utterance can carry both facts ("Ze is 16
+ * on a TN-C-S system") and the model then emits them in UTTERANCE order — Ze
+ * first, earthing second. Without this partition that Ze write resolves an
+ * UNKNOWN arrangement and declines to divide (the documented fail-safe), while
+ * the same utterance phrased the other way round ("TN-C-S system, Ze is 16")
+ * WOULD clamp. Silent order-dependence is unacceptable on a safety-critical
+ * path — and once a client latches `server_impedance_clamp` and stands its own
+ * clamp down, the unclamped value is what reaches the certificate. Committing
+ * the arrangement first makes the clamp deterministic for the whole round.
+ *
+ * ONLY `earthing_arrangement` is hoisted. It is a closed-enum FACT that no other
+ * record consults for its own validation, so moving it cannot change any other
+ * record's outcome — it can only make the Ze band resolution better-informed.
+ * This is deliberately NOT a general "facts before measurements" reordering: the
+ * narrow rule is the one with a proven failure mode.
+ *
+ * BOARD-CONTEXT SEGMENTS (Codex mini-review, 2026-07-25) — the hoist is bounded.
+ * `record_board_reading` has NO `board_id` in its tool schema, so the dispatcher
+ * resolves its target as `snapshot.currentBoardId`, and `add_board`/`select_board`
+ * MUTATE that field mid-round. Hoisting an earthing write across one of those
+ * would silently land the arrangement on a DIFFERENT board — "add the garage
+ * board, earthing is TT, Ze is 16" would stamp TT on the origin supply instead of
+ * the new board. `add_board`/`select_board` records therefore stay pinned in
+ * place and act as segment boundaries: the earthing-first partition is applied
+ * WITHIN each maximal run of non-context-changing writes, never across one. With
+ * no such record in the round (the overwhelmingly common case, and the id-100(b)
+ * repro) the whole round is one segment and the behaviour is exactly the simple
+ * three-way partition. `ask_user` is still moved to the round tail globally: it
+ * writes nothing, so it has no board context to lose.
+ *
+ * Pure function — does NOT mutate the input array. The hook returns a new array
+ * whose elements are the same object identities as the input (shallow copy).
+ * Empty / single-element inputs short-circuit to identity.
+ *
+ * Returns the input unchanged when it is not an array — defensive fail-open so a
+ * future bug in runToolLoop that passes the hook something weird does not
+ * swallow records into `undefined` and break the turn.
  *
  * @returns {(records: Array<{id, name, input, index}>) => Array<same shape>}
  */
 export function createSortRecordsAsksLast() {
   return function sortAsksLast(records) {
     if (!Array.isArray(records) || records.length < 2) return records;
-    const writes = [];
+    const ordered = [];
     const asks = [];
+    let earthing = [];
+    let writes = [];
+    // Emit the segment accumulated so far: earthing writes first, then the rest,
+    // each in stream order. Called at every board-context boundary and once at
+    // the end, so a hoist can never cross an add_board/select_board.
+    const flushSegment = () => {
+      if (earthing.length > 0) {
+        ordered.push(...earthing);
+        earthing = [];
+      }
+      if (writes.length > 0) {
+        ordered.push(...writes);
+        writes = [];
+      }
+    };
     for (const r of records) {
-      if (r && r.name === 'ask_user') asks.push(r);
-      else writes.push(r);
+      if (r && r.name === 'ask_user') {
+        asks.push(r);
+      } else if (isBoardContextChangingRecord(r)) {
+        flushSegment();
+        ordered.push(r);
+      } else if (isEarthingArrangementRecord(r)) {
+        earthing.push(r);
+      } else {
+        writes.push(r);
+      }
     }
-    return [...writes, ...asks];
+    flushSegment();
+    return [...ordered, ...asks];
   };
 }

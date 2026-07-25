@@ -33,7 +33,10 @@ import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
 import { runShadowHarness } from './stage6-shadow-harness.js';
-import { SPEECH_EPOCHS_CAPABILITY } from './client-watchdog-fallback.js';
+import {
+  SERVER_IMPEDANCE_CLAMP_CAPABILITY,
+  SPEECH_EPOCHS_CAPABILITY,
+} from './client-watchdog-fallback.js';
 // Plan 06-23 obs-#52 Fix B — canonical BS 7671 regulation lookup. The
 // `record_observation` dispatcher (stage6-dispatchers-observation.js) already
 // imports this for INITIAL extraction; the refinement (BPG4) + RULE-6 edit
@@ -140,10 +143,7 @@ import { normalise as normaliseTranscript } from './transcript-normalise.js';
 // logs OR the Anthropic tool_result body. Pure function; throws on abusive
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
 // instead of smuggling the abuse downstream.
-import {
-  sanitiseUserText,
-  HARD_REJECT_USER_TEXT_LEN,
-} from './stage6-sanitise-user-text.js';
+import { sanitiseUserText, HARD_REJECT_USER_TEXT_LEN } from './stage6-sanitise-user-text.js';
 // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter. The
 // activeSessions entry owns one askBudget per session; the wrapper layer
 // (Plan 05-01) calls isExhausted(key) BEFORE invoking the inner ask
@@ -326,6 +326,38 @@ function resolveEffectiveToolCallsMode() {
   const raw = process.env.SONNET_TOOL_CALLS ?? 'live';
   if (raw === 'off' || raw === 'shadow' || raw === 'live') return raw;
   return 'live';
+}
+
+/**
+ * Plan D (2026-07-25, feedback id 100(b)) — the `server_impedance_clamp` advert
+ * fields for a session-ESTABLISHING `session_ack`, spread into the frame.
+ *
+ * Returns `{}` — not `{server_impedance_clamp: 0}` — when the capability does not
+ * hold, so a withholding ack is byte-identical to a pre-Plan-D one and an old
+ * client cannot mistake a falsy value for a truthy field.
+ *
+ * WHY GATED ON THE SESSION'S MODE, NOT ON THE ENV
+ * The capability asserts that the value the client is about to receive has
+ * already been clamped, which is only true if the Stage-6 dispatchers ran.
+ * `runShadowHarness` decides that from `session.toolCallsMode ?? 'off'`, so this
+ * reads the SAME expression: the advert is true exactly when the harness will
+ * dispatch live. Reading `process.env` instead would drift the moment an
+ * operator flipped `SONNET_TOOL_CALLS` mid-session — the ack would promise a
+ * clamp the already-constructed session is not performing.
+ *
+ * Mid-session flips are safe by construction: the reconnect/resume paths restamp
+ * `session.toolCallsMode` (via `applyModeChange`) BEFORE their ack is sent, so
+ * each ack reflects the mode that will actually run, and the client latch is
+ * per-connection — a client that latched the capability on an earlier live
+ * connection cannot be silently un-gated without a new ack.
+ *
+ * @param {object|null|undefined} session An `EICRExtractionSession`.
+ * @returns {{server_impedance_clamp?: number}}
+ */
+function impedanceClampCapabilityFields(session) {
+  return (session?.toolCallsMode ?? 'off') === 'live'
+    ? { server_impedance_clamp: SERVER_IMPEDANCE_CLAMP_CAPABILITY }
+    : {};
 }
 
 /**
@@ -1225,8 +1257,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     // — that is NOT an established session (no epoch stream to
                     // arm against), so the capability is withheld and the
                     // client latch clears until the subsequent 'started' ack.
+                    // Plan D — `server_impedance_clamp` rides the SAME
+                    // establishing-ack condition, but is additionally
+                    // mode-gated: the resumed session's own toolCallsMode
+                    // decides, because only the live tool-call path runs the
+                    // clamp seams.
                     ...(ack.status === 'resumed'
-                      ? { speech_epochs: SPEECH_EPOCHS_CAPABILITY }
+                      ? {
+                          speech_epochs: SPEECH_EPOCHS_CAPABILITY,
+                          ...impedanceClampCapabilityFields(
+                            activeSessions.get(activeEntryKey)?.session
+                          ),
+                        }
                       : {}),
                   })
                 );
@@ -1272,6 +1314,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   status: 'resumed',
                   // PLAN-C P4b — establishing ack → advertise the capability.
                   speech_epochs: SPEECH_EPOCHS_CAPABILITY,
+                  // Plan D — mode-gated; the woken session keeps whatever mode
+                  // it was constructed/restamped with.
+                  ...impedanceClampCapabilityFields(resumeEntry.session),
                 })
               );
             }
@@ -2360,6 +2405,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           sessionId: existing.rehydrateSessionId || null,
           // PLAN-C P4b — establishing ack → advertise the watchdog capability.
           speech_epochs: SPEECH_EPOCHS_CAPABILITY,
+          // Plan D — mode-gated. Read AFTER the reconnect path's
+          // `existing.session.applyModeChange(toolCallsMode)` above, so a
+          // mid-session mode flip is reflected in this ack rather than
+          // advertising the mode the session was originally started with.
+          ...impedanceClampCapabilityFields(existing.session),
         })
       );
 
@@ -2851,6 +2901,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // PLAN-C P4b — advertise the watchdog epoch capability on every
         // session-ESTABLISHING ack so clients can arm; absent on old backends.
         speech_epochs: SPEECH_EPOCHS_CAPABILITY,
+        // Plan D — mode-gated; on the fresh-start path `session` carries the
+        // mode resolved for this connection.
+        ...impedanceClampCapabilityFields(session),
       })
     );
 
@@ -3364,8 +3417,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         writable: true,
       });
     }
-    const canonicalTranscriptText =
-      typeof msg.text === 'string' ? normResult.text : msg.text;
+    const canonicalTranscriptText = typeof msg.text === 'string' ? normResult.text : msg.text;
     if (normResult.rules_hit.length > 0 && !normResult.logged) {
       logger.info('stage6.transcript_normalised', {
         sessionId,
@@ -3648,7 +3700,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     //                      today.
     if (entry.isExtracting && entry.pendingAsks && entry.pendingAsks.size > 0) {
       const preQueueRegex = Array.isArray(msg.regexResults) ? msg.regexResults : [];
-      const preVerdict = classifyOvertake(canonicalTranscriptText, preQueueRegex, entry.pendingAsks);
+      const preVerdict = classifyOvertake(
+        canonicalTranscriptText,
+        preQueueRegex,
+        entry.pendingAsks
+      );
       if (preVerdict.kind === 'answers') {
         let sanitisedPre = null;
         try {

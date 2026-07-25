@@ -117,6 +117,13 @@ import {
   canonicaliseNumericReadingField,
 } from './value-enum-validator.js';
 import { getActiveSessionEntry } from './active-sessions.js';
+// id-100(b) (2026-07-25) — the speculator MUST apply the same impedance clamp
+// the dispatcher applies, for the same reason it already applies the dispatcher's
+// value coercion (see onToolUseStreamed): the mid-stream path speculates from the
+// RAW streamed tool input, so an unclamped speculation would pre-synthesise
+// "Ze 16" while the dispatcher stores 1.6 — the exact C06B9904 defect, served
+// from cache and audible BEFORE the bundler could correct it.
+import { IMPEDANCE_CLAMP_CORRECTION, clampReadingForDispatch } from './impedance-clamp.js';
 
 const DEFAULT_OUTPUT_FORMAT = 'mp3_22050_32';
 
@@ -259,9 +266,33 @@ export function createSpeculator({
   // speculator must NOT pre-synthesise a confirmation for it (a false read-back
   // for a write that never lands).
   hasLimRangedWriteV1 = false,
+  // id-100(b) (2026-07-25) — board-aware earthing resolver for the impedance
+  // clamp on the mid-stream path. A FUNCTION, not a static string, deliberately:
+  // the dispatcher resolves earthing per write via resolveBoardAwareEarthing
+  // (a sub-board on a TT rod has a different band from a TN-C-S origin), so a
+  // single construction-time string would make the speculated text diverge from
+  // the bundler's on exactly the multi-board jobs where the clamp matters most.
+  // The closure reads the same session snapshot the dispatcher reads.
+  // Signature: (boardId: string|null) → string|null. Null/absent ⇒ unknown
+  // earthing ⇒ clampReadingForDispatch fails safe and leaves ze alone.
+  resolveEarthing = null,
 }) {
   if (!sessionId) throw new TypeError('createSpeculator: sessionId required');
   if (!costTracker) throw new TypeError('createSpeculator: costTracker required');
+
+  // id-100(b) — resolveEarthing reads live session state, so it is treated as
+  // untrusted here: this module's contract (see the header) is that it MUST NOT
+  // throw out of onToolUseStreamed / onSnapshotPatch. An unresolvable earthing
+  // degrades to null, which clampReadingForDispatch treats as fail-safe (ze
+  // left alone) rather than guessing a band.
+  const safeEarthing = (boardId) => {
+    if (typeof resolveEarthing !== 'function') return null;
+    try {
+      return resolveEarthing(boardId);
+    } catch (_e) {
+      return null;
+    }
+  };
 
   let currentTurnId = null;
   let perTurnCount = 0;
@@ -437,6 +468,13 @@ export function createSpeculator({
     turnId,
     calculated = false,
     derived = false,
+    // id-100(b) — the clamp correction ({original, corrected, divisor}) for this
+    // write, or null. Threaded to BOTH the fan-out bucket key and the text
+    // builder so the speculated line is byte-identical to the bundler's; a
+    // correction present here but absent there is a guaranteed validate-time
+    // drift (wasted synth) and, worse, a served line missing the safety
+    // disclosure.
+    correction = null,
   }) {
     // F/U-1 (2026-07-19) — mirror/polarity derivations (derived: true) never
     // produce a final confirmation (the bundler's designed-silent exception),
@@ -490,8 +528,11 @@ export function createSpeculator({
     if (Number.isInteger(circuit) && circuit > 0) {
       // F/U-1 — shared builder (see buildFanoutGroupKey): calc-ness is
       // part of the bucket identity so calc-vs-dictated same-value writes
-      // never trip broadcast suppression against each other.
-      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated });
+      // never trip broadcast suppression against each other. id-100(b) adds
+      // the clamp-correction identity for the same reason — a clamped and an
+      // unclamped write of the same final value speak different lines and must
+      // not suppress each other.
+      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated, correction });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket) {
         if (bucket.suppressed) {
@@ -562,7 +603,15 @@ export function createSpeculator({
     // write would open a speculation that can only drift at validate (wasted
     // synth, no latency win). The cacheKey embeds expandedText, so identity
     // stays consistent automatically.
-    const text = buildConfirmationText(field, value, circuit, designation, { calculated });
+    // id-100(b) — the correction clause is part of the spoken text, so it must be
+    // part of the SPECULATED text too: the cacheKey embeds expandedText, so a
+    // speculation that omitted the clause would MISS at validate and the
+    // inspector would hear the bundler's line a second later instead (latency
+    // loss), or — before the clamp reached this seam at all — hear the raw value.
+    const text = buildConfirmationText(field, value, circuit, designation, {
+      calculated,
+      correction,
+    });
     if (!text) return;
     const expandedText = expandForTTS(text);
     if (!expandedText) return;
@@ -634,7 +683,7 @@ export function createSpeculator({
     // a hand-rolled key here silently diverged when the calc component
     // was added (Codex F/U-1 r2).
     if (Number.isInteger(circuit) && circuit > 0) {
-      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated });
+      const bucketKey = buildFanoutGroupKey({ field, value, boardId, calculated, correction });
       const bucket = broadcastBuckets.get(bucketKey);
       if (bucket && !bucket.correlationId) {
         bucket.correlationId = correlationId;
@@ -992,10 +1041,19 @@ export function createSpeculator({
       // F/U-1 (2026-07-19) — thread write provenance so the speculated text
       // matches the bundler: ::calc:: writes speculate with "calculated as"
       // phrasing; derived (mirror) writes are skipped inside _speculate.
+      // id-100(b) — the clamp correction rides the SAME non-enumerable Symbol
+      // the bundler reads (the dispatcher stashed it on the mirror object).
+      // captureSnapshot/diffSnapshot copy Map VALUE REFERENCES, not clones, so
+      // the patch entries reaching this hook are the very objects the dispatcher
+      // decorated — the Symbol survives. Reading it here (rather than re-running
+      // the clamp) is what guarantees this entry point and the mid-stream one
+      // agree: a re-clamp could disagree if the snapshot's earthing changed
+      // mid-turn, and disagreement is a cache MISS plus a doubled read-back.
       const writeProvenance = (entry) => ({
         calculated:
           typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::'),
         derived: entry?.derived === true,
+        correction: entry?.[IMPEDANCE_CLAMP_CORRECTION] ?? null,
       });
       for (const added of patch.readings.added) {
         const slot = decodeReadingKey(added.key);
@@ -1236,10 +1294,25 @@ export function createSpeculator({
     // as a regression-guard failure on the post-deploy probe even
     // though the dispatcher correctly canonicalised. Both record_reading
     // and record_board_reading branches need their matching helper.
-    const value =
+    const coercedValue =
       record.name === 'record_board_reading'
         ? coerceRecordBoardReadingValue(field, rawValue)
         : coerceRecordReadingValue(field, rawValue);
+
+    // id-100(b) (2026-07-25) — apply the dispatcher's impedance clamp, in the
+    // dispatcher's order (coerce → clamp), for the same drift reason as the
+    // coercion above. This is the FIRST seam the C06B9904 value passes through:
+    // the mid-stream hook fires while Sonnet is still streaming, so on a prod
+    // session (VOICE_LATENCY_LOADED_BARREL=true) the speculated line is what the
+    // inspector actually HEARS. Unclamped here means "Ze 16" is synthesised,
+    // cached, and served before the dispatcher has stored 1.6.
+    const boardIdForClamp = typeof input.board_id === 'string' ? input.board_id : null;
+    const streamedClamp = clampReadingForDispatch({
+      field,
+      value: coercedValue,
+      earthing: safeEarthing(boardIdForClamp),
+    });
+    const value = streamedClamp.value;
 
     // Plan B (2026-06-17) B1b — observe a same-turn circuit_designation write
     // (record_reading {field:'circuit_designation', circuit:N, value:'Cooker'})
@@ -1314,10 +1387,11 @@ export function createSpeculator({
     _speculate({
       field,
       circuit,
-      boardId: typeof input.board_id === 'string' ? input.board_id : null,
+      boardId: boardIdForClamp,
       value,
       confidence: typeof input.confidence === 'number' ? input.confidence : 1.0,
       turnId: ctx.turnId,
+      correction: streamedClamp.correction,
     }).catch((err) => {
       // _speculate already swallows synth errors internally; this
       // catch is belt-and-braces for any sync-throw before the synth

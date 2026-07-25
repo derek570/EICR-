@@ -145,6 +145,9 @@ import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { buildConfirmationText } from './confirmation-text.js';
 import { expandForTTS } from './tts-text-expander.js';
+// id-100(b) — board-aware earthing for the speculator's impedance clamp and the
+// orphan-recovery write (§4.4/§4.7); the SAME resolver the dispatchers use.
+import { clampReadingForDispatch, resolveBoardAwareEarthing } from './impedance-clamp.js';
 // §A1a (field-feedback-2026-07-14) — the ios_send_attempt telemetry loop
 // moved here from stage6-event-bundler.js so it emits one row per SURVIVING
 // wire confirmation (after the mid-stream-canonical filter AND the token-
@@ -534,22 +537,37 @@ export function reparseSingleCompleteReading(transcriptText, schemas) {
  */
 export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) {
   const stage6Field = ORPHAN_SLOT_TO_STAGE6_FIELD[tuple.slotField] ?? tuple.slotField;
+  // id-100(b) (2026-07-25) — the orphan net is an INDEPENDENT write path: it
+  // reaches applyReadingFlagAware without passing through any Stage-6
+  // dispatcher, so the dispatcher clamp does not cover it. An out-of-range
+  // continuity value recovered here would be stored raw while the client
+  // divided it — the same server/client split-brain as C06B9904, just via a
+  // different door. Circuit-scoped with no board_id, so earthing resolves for
+  // the main board (the same `null` the dispatchers pass for an unscoped write).
+  const orphanClamp = clampReadingForDispatch({
+    field: stage6Field,
+    value: tuple.value,
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, null),
+  });
+  const orphanValue = orphanClamp.value;
   applyReadingFlagAware(session.stateSnapshot, {
     circuit: tuple.circuit,
     field: stage6Field,
-    value: tuple.value,
+    value: orphanValue,
   });
   if (!Array.isArray(result.extracted_readings)) result.extracted_readings = [];
   const reading = {
     field: stage6Field,
     circuit: tuple.circuit,
-    value: tuple.value,
+    value: orphanValue,
     confidence: 0.9,
     source_turn_id: turnId ?? null,
   };
   result.extracted_readings.push(reading);
   const designation = session.stateSnapshot?.circuits?.[tuple.circuit]?.circuit_designation ?? null;
-  const text = buildConfirmationText(stage6Field, tuple.value, tuple.circuit, designation);
+  const text = buildConfirmationText(stage6Field, orphanValue, tuple.circuit, designation, {
+    correction: orphanClamp.correction,
+  });
   if (text) {
     if (!Array.isArray(result.confirmations)) result.confirmations = [];
     result.confirmations.push({
@@ -1103,6 +1121,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           costTracker: session.costTracker,
           logger: log,
           initialDesignations,
+          // id-100(b) (2026-07-25) — board-aware earthing for the speculator's
+          // impedance clamp. Passed as a closure over the live snapshot (NOT a
+          // captured string) so it resolves through the exact same ladder the
+          // dispatchers use; a divergence here would make the pre-synthesised
+          // line differ from the emitted confirmation, which is a cache MISS at
+          // best and a wrong spoken value at worst.
+          resolveEarthing: (boardId) => resolveBoardAwareEarthing(session.stateSnapshot, boardId),
           // P3 Fix 8 — deny LIM pre-synthesis on capability-gated fields when the
           // client hasn't advertised `lim_ranged_write_v1` (the dispatcher will
           // SKIP the write, so a pre-synth confirmation would be a false

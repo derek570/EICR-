@@ -669,10 +669,59 @@ export async function runToolLoop({
         // preserving relative order of each partition. Pure, allocation-
         // light, no external deps — matches createSortRecordsAsksLast's
         // contract closely enough to preserve STA-02 defensively.
-        sortedRecords = [
-          ...records.filter((r) => r?.name !== 'ask_user'),
-          ...records.filter((r) => r?.name === 'ask_user'),
-        ];
+        //
+        // id-100(b) (2026-07-25): the fallback also reproduces the hook's
+        // earthing-FIRST partition. The server-authoritative impedance clamp
+        // resolves the Ze band from the COMMITTED snapshot, so a same-round
+        // `earthing_arrangement` write MUST dispatch before an impedance write
+        // or the clamp silently declines to divide (see the partition-1
+        // rationale on createSortRecordsAsksLast). A sort-hook throw must not
+        // quietly downgrade a safety-critical invariant.
+        //
+        // The hoist is BOUNDED by board context: `record_board_reading` carries
+        // no board_id, so its target is `snapshot.currentBoardId`, and
+        // add_board/select_board mutate that mid-round. Those records stay
+        // pinned and act as segment boundaries — an earthing write is only
+        // hoisted within its own segment, never across one, or the arrangement
+        // would land on a different board.
+        //
+        // The predicates are INLINED rather than imported: this module
+        // deliberately has no dependency on stage6-dispatchers.js (importing it
+        // would drag the whole dispatcher tree into the tool-loop module graph
+        // and into every loop test that mocks dispatchers). The canonical
+        // definitions are `isEarthingArrangementRecord` /
+        // `isBoardContextChangingRecord` there, and a parity test pins this
+        // branch's output to the hook's so the two cannot drift.
+        const isEarthing = (r) =>
+          r?.name === 'record_board_reading' &&
+          !!r.input &&
+          typeof r.input === 'object' &&
+          r.input.field === 'earthing_arrangement';
+        const isBoardContextChanging = (r) => r?.name === 'add_board' || r?.name === 'select_board';
+        const orderedFallback = [];
+        const askFallback = [];
+        let earthingSeg = [];
+        let writeSeg = [];
+        const flushFallbackSegment = () => {
+          if (earthingSeg.length > 0) {
+            orderedFallback.push(...earthingSeg);
+            earthingSeg = [];
+          }
+          if (writeSeg.length > 0) {
+            orderedFallback.push(...writeSeg);
+            writeSeg = [];
+          }
+        };
+        for (const r of records) {
+          if (r?.name === 'ask_user') askFallback.push(r);
+          else if (isBoardContextChanging(r)) {
+            flushFallbackSegment();
+            orderedFallback.push(r);
+          } else if (isEarthing(r)) earthingSeg.push(r);
+          else writeSeg.push(r);
+        }
+        flushFallbackSegment();
+        sortedRecords = [...orderedFallback, ...askFallback];
       }
     }
     const toolResults = [];

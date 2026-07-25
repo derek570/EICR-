@@ -63,6 +63,10 @@ import * as auth from '../auth.js';
 import { getElevenLabsKey } from '../services/secrets.js';
 import logger from '../logger.js';
 import { buildConfirmationText } from '../extraction/confirmation-text.js';
+import {
+  clampReadingForDispatch,
+  resolveBoardAwareEarthing,
+} from '../extraction/impedance-clamp.js';
 import { isRegexFastEligible } from '../extraction/regex-fast-eligibility.js';
 import { getActiveSessionEntry, getVoiceLatencyForSession } from '../extraction/active-sessions.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
@@ -209,12 +213,34 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
     }
   }
 
+  // Impedance clamp (feedback id 100(b), session C06B9904). This route is
+  // a THIRD, independent producer of spoken confirmation text (the other
+  // two being stage6-event-bundler.js and loaded-barrel-speculator.js),
+  // and it is the LOWEST-latency one: iOS plays the returned MP3 within
+  // ~500ms, long before the model's tool call reaches any dispatcher. So
+  // it is the seam most likely to actually be HEARD, and an unclamped
+  // read-back here would speak "Ze 16" while the dispatcher later stores
+  // 1.6 — exactly the C06B9904 defect, just via the fastest channel.
+  // Clamping here keeps the route byte-identical to the server
+  // confirmation for the same slot (the Pivot-3 canonical-text contract).
+  // r1_r2_ohm is in CONTINUITY_IMPEDANCE_FIELDS so it clamps;
+  // measured_zs_ohm is deliberately absent from both clamp sets so it
+  // passes through byte-unchanged.
+  const fastClamp = clampReadingForDispatch({
+    field,
+    value,
+    earthing: resolveBoardAwareEarthing(entry?.session?.stateSnapshot, boardId),
+  });
+
   // Build the confirmation. buildConfirmationText handles the canonical
   // friendly-name lookup, value coercion, and Circuit-N prefix. Returns
   // null when the field isn't in the friendly-name table — but the
   // eligibility whitelist above already filtered those, so this is
-  // belt-and-braces.
-  const text = buildConfirmationText(field, value, circuit);
+  // belt-and-braces. The 5th `options` param carries the correction so
+  // the clause ("— I corrected 16 to 1.6") is spoken here too.
+  const text = buildConfirmationText(field, fastClamp.value, circuit, null, {
+    correction: fastClamp.correction,
+  });
   if (!text) {
     return rejectWithDecrement(res, sessionId, correlationId, 422, {
       error: 'unable to build confirmation for candidate',

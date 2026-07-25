@@ -46,3 +46,31 @@ export const CLIENT_CHIME_WATCHDOG_FALLBACK_TEXT =
  * (re)establish a session the client can arm against.
  */
 export const SPEECH_EPOCHS_CAPABILITY = 1;
+
+/**
+ * Plan D (2026-07-25, feedback id 100(b)) — the `session_ack` advert for
+ * SERVER-AUTHORITATIVE impedance clamping. It means, precisely:
+ *
+ *   "the impedance value you are about to receive has ALREADY been clamped
+ *    server-side, and the confirmation you are about to hear names the value
+ *    that was actually stored — so do NOT clamp it again."
+ *
+ * A client that sees it must disable its own `clampImpedance` for the Ze family;
+ * a client that does not see it keeps clamping, which is why an old / rolled-back
+ * backend has no regression window. Both halves matter: double-clamping would
+ * divide a corrected `1.6` to `0.16`, and neither side clamping would let the raw
+ * `16` that this whole plan exists to catch reach the certificate.
+ *
+ * MODE-GATED, unlike `speech_epochs`. The claim is only TRUE when the Stage-6
+ * dispatchers ran: `off` / `shadow` sessions take the legacy result path
+ * (`stage6-shadow-harness.js`), whose snapshot writer stores the RAW dictated
+ * value, so none of the plan's clamp seams are on it. Emitters therefore gate on
+ * the same `session.toolCallsMode ?? 'off'` read the harness dispatches on — see
+ * `impedanceClampCapabilityFields` in `sonnet-stream.js`. This is what makes the
+ * documented `STAGE6_TOOL_CALLS_MODE` rollback safe: a post-rollback session
+ * simply stops advertising, and the client clamp takes over again.
+ *
+ * A NUMBER for the same forward-versioning reason as `SPEECH_EPOCHS_CAPABILITY`;
+ * clients accept it only for the strict value `1`.
+ */
+export const SERVER_IMPEDANCE_CLAMP_CAPABILITY = 1;

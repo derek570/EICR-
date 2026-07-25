@@ -31,6 +31,12 @@ import { enterScriptByName, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { getCircuitBucket, getMainBoardId } from './stage6-multi-board-shape.js';
 import { encodeReadingKey, attachEffectiveSlot } from './stage6-per-turn-writes.js';
+// Imported from the helper directly rather than the barrel: value-corrections.js
+// is dialogue-engine INTERNAL transport (the barrel exports the turn-processing
+// API), and this dispatcher is the one outside consumer that legitimately has to
+// hand a correction over to the Stage-6 bundler. See the backfill below.
+import { consumeValueCorrection } from './dialogue-engine/helpers/value-corrections.js';
+import { IMPEDANCE_CLAMP_CORRECTION } from './impedance-clamp.js';
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
@@ -154,7 +160,9 @@ export async function dispatchStartDialogueScript(call, ctx) {
     // enumerable boardId unchanged; only the non-enumerable slot marker uses
     // the effective id.
     const seededEffectiveBoardId =
-      input.board_id ?? session.stateSnapshot?.currentBoardId ?? getMainBoardId(session.stateSnapshot);
+      input.board_id ??
+      session.stateSnapshot?.currentBoardId ??
+      getMainBoardId(session.stateSnapshot);
     for (const fieldName of result.seeded_writes) {
       const writtenValue = bucket?.[fieldName];
       if (writtenValue === undefined || writtenValue === null || writtenValue === '') continue;
@@ -164,20 +172,52 @@ export async function dispatchStartDialogueScript(call, ctx) {
       // defensive — last-write-wins via Map.set would otherwise
       // overwrite the more-recent value).
       if (perTurnWrites.readings.has(key)) continue;
-      perTurnWrites.readings.set(
-        key,
-        attachEffectiveSlot(
-          {
-            value: writtenValue,
-            confidence: 1.0,
-            source_turn_id: input.source_turn_id,
-            boardId: input.board_id ?? undefined,
-          },
-          fieldName,
-          result.circuit_ref,
-          seededEffectiveBoardId
-        )
+      const entry = attachEffectiveSlot(
+        {
+          value: writtenValue,
+          confidence: 1.0,
+          source_turn_id: input.source_turn_id,
+          boardId: input.board_id ?? undefined,
+        },
+        fieldName,
+        result.circuit_ref,
+        seededEffectiveBoardId
       );
+      // Plan D (id-100(b)) — HAND THE CLAMP PROVENANCE OVER TO THE BUNDLER.
+      //
+      // `enterScriptByName` clamps a seeded pending_write (Seam A) and records
+      // "16 → 1.6" into the dialogue state store, whose only speech consumer is
+      // the script's own end-of-script confirmation. But THIS backfill also puts
+      // the value in front of the Stage-6 bundler, which read it back with the
+      // bare line "Circuit 4, ring R1 1.6" — the stored number was right, but
+      // the inspector was never told the server had divided their "16". That
+      // defeats the whole reason the correction is named aloud (§3: a WRONG
+      // correction has to be catchable by ear), and it is the read-back that
+      // lands FIRST, so it is the one they actually react to.
+      //
+      // CONSUME, not peek — this is a speech path, and consuming is precisely
+      // what keeps the clause exactly-once (Audio-First #1): whichever of the
+      // two read-backs gets there first names it, and the other stays bare.
+      // Both orderings are safe by construction:
+      //   - script asks the next slot  → correction still in state here, the
+      //     bundler names it, the later confirmation does not repeat it.
+      //   - script confirms immediately (every slot seeded) → the confirmation
+      //     already consumed it inside enterScriptByName, this returns null,
+      //     and the bundler line is bare. Named once either way.
+      //
+      // Non-enumerable + Symbol-keyed for the same reason as every other seam:
+      // it must reach the synthesiser and must never be serialisable onto a
+      // wire frame.
+      const seededCorrection = consumeValueCorrection(session.dialogueScriptState, fieldName);
+      if (seededCorrection) {
+        Object.defineProperty(entry, IMPEDANCE_CLAMP_CORRECTION, {
+          value: seededCorrection,
+          enumerable: false,
+          configurable: true,
+          writable: false,
+        });
+      }
+      perTurnWrites.readings.set(key, entry);
     }
   }
 

@@ -30,9 +30,12 @@ describe('parseLimSlot — four-form matcher', () => {
   test.each(['LIM', 'lim', 'limb', 'limp', 'limitation'])('"%s" → LIM', (v) => {
     expect(parseLimSlot(v)).toBe('LIM');
   });
-  test.each(['limit', 'limited', 'lynn', 'lym', 'climbing', '32'])('near/other "%s" → null', (v) => {
-    expect(parseLimSlot(v)).toBeNull();
-  });
+  test.each(['limit', 'limited', 'lynn', 'lym', 'climbing', '32'])(
+    'near/other "%s" → null',
+    (v) => {
+      expect(parseLimSlot(v)).toBeNull();
+    }
+  );
 });
 
 describe('numeric slot parsers accept the four LIM forms', () => {
@@ -59,9 +62,14 @@ describe('numeric slot parsers still parse their numerics (no regression)', () =
 
 describe('normaliseDialogueSlotWrite — seeded pending_writes gate', () => {
   test('accepts a LIM garble → canonical LIM on a numeric reading field', () => {
+    // id-100(b): the return shape gained `correction` (null on every
+    // non-impedance / sentinel path). Pinned explicitly rather than loosened to
+    // toMatchObject so an accidental non-null correction on a LIM sentinel — a
+    // limitation is not a magnitude and must never be divided — fails loudly.
     expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_rating_a', 'limitation')).toEqual({
       ok: true,
       value: 'LIM',
+      correction: null,
     });
   });
 
@@ -76,23 +84,30 @@ describe('normaliseDialogueSlotWrite — seeded pending_writes gate', () => {
 
   test('honours the OCPD-kA allowedValues ladder, but accepts LIM', () => {
     // 66 kA is off-ladder → rejected.
-    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '66').ok).toBe(false);
-    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '6').ok).toBe(true);
-    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', 'limitation')).toEqual(
-      { ok: true, value: 'LIM' }
+    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '66').ok).toBe(
+      false
     );
+    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '6').ok).toBe(true);
+    expect(
+      normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', 'limitation')
+    ).toEqual({ ok: true, value: 'LIM', correction: null });
   });
 
   test('rcd_trip_time alias validates against canonical rcd_time_ms bounds', () => {
     expect(normaliseDialogueSlotWrite(ocpdSchema, 'rcd_trip_time', 'LIM')).toEqual({
       ok: true,
       value: 'LIM',
+      correction: null,
     });
     expect(normaliseDialogueSlotWrite(ocpdSchema, 'rcd_trip_time', '5000').ok).toBe(false);
   });
 
   test('non-numeric-reading field passes through unchanged (bs_en/Y-N seed behaviour)', () => {
-    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_type', 'B')).toEqual({ ok: true, value: 'B' });
+    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_type', 'B')).toEqual({
+      ok: true,
+      value: 'B',
+      correction: null,
+    });
   });
 });
 
@@ -172,9 +187,9 @@ describe('Codex-r5 hardening: connector-grammar LIM arms + punctuated bare LIM',
   });
 
   test('field-qualified forms with connectors "rating: LIM" / "rating equals LIM" → rating LIM', () => {
-    expect(fields('rating: LIM', ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')?.value).toBe(
-      'LIM'
-    );
+    expect(
+      fields('rating: LIM', ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')?.value
+    ).toBe('LIM');
     expect(
       fields('rating equals limitation', ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')
         ?.value
@@ -203,7 +218,9 @@ describe('Codex-r6/r7: connector supports "is:" but not possessive apostrophe-s'
     'rating: LIM',
     'rating limitation',
   ])('"%s" → ocpd_rating_a LIM', (text) => {
-    expect(fields(text, ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')?.value).toBe('LIM');
+    expect(fields(text, ocpdSchema.slots).find((o) => o.field === 'ocpd_rating_a')?.value).toBe(
+      'LIM'
+    );
   });
 
   // Codex-r7 F1 — the possessive "rating's limitation" must NOT hijack an

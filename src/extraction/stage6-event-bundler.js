@@ -52,6 +52,11 @@ import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 // that don't decode expanded_text fall through to local expansion via
 // Self.expandForTTS (Sources/Recording/AlertManager.swift).
 import { expandForTTS } from './tts-text-expander.js';
+// id-100(b) (2026-07-25) — the dispatcher stashes an impedance-clamp correction
+// on the perTurnWrites value entry under this Symbol, so the read-back can name
+// the correction aloud. Import is the KEY only; impedance-clamp.js is a leaf
+// module (its sole import is stage6-multi-board-shape.js) so there is no cycle.
+import { IMPEDANCE_CLAMP_CORRECTION } from './impedance-clamp.js';
 
 export const BUNDLER_PHASE = 2;
 
@@ -402,9 +407,17 @@ function synthesiseConfirmations(
   boardReadings,
   designations = null,
   totalCircuitsInJob = null,
-  calcReadings = null
+  calcReadings = null,
+  clampCorrections = null
 ) {
   const out = [];
+  // id-100(b) (2026-07-25) — per-bundle identity map from a projected reading
+  // object to the impedance-clamp correction the dispatcher recorded for it.
+  // Keyed on object IDENTITY (same pattern as calcReadings/suppress sets) rather
+  // than on a (field, circuit, board) tuple, because the tuple is not unique
+  // across a turn that writes the same slot twice — identity is.
+  const correctionOf = (r) =>
+    clampCorrections instanceof WeakMap ? (clampCorrections.get(r) ?? null) : null;
   // F/U-1 (2026-07-19) — identity Set of projected reading objects that came
   // from a calculator write (::calc:: source). These speak with "calculated
   // as" phrasing so the inspector can ear-distinguish a derived value from a
@@ -450,11 +463,15 @@ function synthesiseConfirmations(
     // and a dictated same-value Zs speak with different phrasing and never
     // collapse), and the value is trimmed to match the spoken text the
     // builders produce.
+    // id-100(b) — the clamp correction is part of the fan-out identity, so a
+    // clamped and an unclamped write of the same final value never collapse into
+    // one line (which would silence the safety-critical correction clause).
     const groupKey = buildFanoutGroupKey({
       field: r.field,
       value: r.value,
       boardId: r.board_id,
       calculated: isCalc(r),
+      correction: correctionOf(r),
     });
     let bucket = groups.get(groupKey);
     if (!bucket) {
@@ -463,6 +480,9 @@ function synthesiseConfirmations(
         value: r.value,
         board_id: r.board_id,
         calculated: isCalc(r),
+        // Safe to read off the FIRST member: every member of a bucket shares
+        // this correction by construction (it is part of the group key).
+        correction: correctionOf(r),
         items: [],
         indices: [],
       };
@@ -493,7 +513,7 @@ function synthesiseConfirmations(
       bucket.value,
       circuits,
       totalCircuitsInJob,
-      { calculated: bucket.calculated }
+      { calculated: bucket.calculated, correction: bucket.correction }
     );
     if (!grouped) continue;
     const entry = {
@@ -540,6 +560,7 @@ function synthesiseConfirmations(
     const designation = lookupDesignation(r.circuit);
     const text = buildConfirmationText(r.field, r.value, r.circuit, designation, {
       calculated: isCalc(r),
+      correction: correctionOf(r),
     });
     if (!text) continue;
     const entry = {
@@ -568,7 +589,15 @@ function synthesiseConfirmations(
   }
   for (const r of boardReadings) {
     // Audio-first: no confidence gate on the final read-back (see above).
-    const text = buildConfirmationText(r.field, r.value, null);
+    // id-100(b) — THIS IS THE C06B9904 REPRO PATH. A supply Ze arrives here as a
+    // board reading (circuit null), and this call previously passed only three
+    // arguments, so an options object could not reach the text builder at all —
+    // the correction clause would have been structurally unreachable for the very
+    // field that produced the defect. The 4th argument stays `null` (board
+    // readings have no circuit and therefore no designation prefix).
+    const text = buildConfirmationText(r.field, r.value, null, null, {
+      correction: correctionOf(r),
+    });
     if (!text) continue;
     const entry = {
       text,
@@ -683,6 +712,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // designed-silent exception.
   const suppressConfirmationReadings = new Set();
   const calcConfirmationReadings = new Set();
+  // id-100(b) — impedance-clamp corrections, carried from the dispatcher's
+  // perTurnWrites value entry (Symbol-keyed) onto the freshly-projected reading
+  // object the confirmation synthesiser will see. A WeakMap keyed on the reading
+  // object is the same identity-based hand-off the two Sets above use; it cannot
+  // reach the wire because the projected `reading` objects are serialised by
+  // key enumeration and the correction never becomes one of their keys.
+  const clampCorrectionByReading = new WeakMap();
   const isDerivedWrite = (entry) => entry?.derived === true;
   const isCalcWrite = (entry) =>
     typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::');
@@ -727,6 +763,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       suppressConfirmationReadings.add(reading);
     } else if (isCalcWrite(entry)) {
       calcConfirmationReadings.add(reading);
+    }
+    // id-100(b) — carry the dispatcher's clamp correction across the projection
+    // boundary. Read off the Symbol (never an enumerable key), so a legacy or
+    // hand-built fixture entry simply has no correction.
+    const clampCorrection = entry?.[IMPEDANCE_CLAMP_CORRECTION];
+    if (clampCorrection) {
+      clampCorrectionByReading.set(reading, clampCorrection);
     }
     extracted_readings.push(reading);
   }
@@ -986,6 +1029,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       if (isDerivedWrite(entry)) {
         suppressConfirmationReadings.add(reading);
       }
+      // id-100(b) — same clamp-correction hand-off as the circuit loop. This is
+      // the branch the C06B9904 supply-Ze write travels through.
+      const clampCorrection = entry?.[IMPEDANCE_CLAMP_CORRECTION];
+      if (clampCorrection) {
+        clampCorrectionByReading.set(reading, clampCorrection);
+      }
       extracted_board_readings.push(reading);
     }
     result.extracted_board_readings = extracted_board_readings;
@@ -1063,7 +1112,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       confirmableBoardReadings,
       options.circuitDesignations,
       options.totalCircuitsInJob ?? null,
-      calcConfirmationReadings
+      calcConfirmationReadings,
+      clampCorrectionByReading
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
     // loop and the `_confidence` strip MOVED to stage6-shadow-harness.js,

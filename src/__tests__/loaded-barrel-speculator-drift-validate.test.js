@@ -166,7 +166,12 @@ describe('B1b — validateAgainstConfirmations: match vs drift', () => {
     // Bundler emitted the CORRECTED value (0.6) → speculated 0.5 has no match.
     const corrected = buildConfirmationText('measured_zs_ohm', '0.6', 1);
     const invalidated = spec.validateAgainstConfirmations('T1', [
-      { field: 'measured_zs_ohm', circuit: 1, text: corrected, expanded_text: expandForTTS(corrected) },
+      {
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        text: corrected,
+        expanded_text: expandForTTS(corrected),
+      },
     ]);
 
     expect(invalidated).toBe(1);
@@ -205,7 +210,12 @@ describe('B1b — validateAgainstConfirmations: match vs drift', () => {
 
     const grouped = 'Circuits 1 and 2, insulation resistance line to earth';
     const invalidated = spec.validateAgainstConfirmations('T1', [
-      { field: 'insulation_resistance_l_e', circuit: null, text: grouped, expanded_text: expandForTTS(grouped) },
+      {
+        field: 'insulation_resistance_l_e',
+        circuit: null,
+        text: grouped,
+        expanded_text: expandForTTS(grouped),
+      },
     ]);
 
     expect(invalidated).toBe(2);
@@ -279,7 +289,12 @@ describe('B1b — validateAgainstConfirmations: match vs drift', () => {
     // matching 9.9 entry servable.
     const finalText = buildConfirmationText('measured_zs_ohm', '9.9', 1);
     const invalidated = spec.validateAgainstConfirmations('T1', [
-      { field: 'measured_zs_ohm', circuit: 1, text: finalText, expanded_text: expandForTTS(finalText) },
+      {
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        text: finalText,
+        expanded_text: expandForTTS(finalText),
+      },
     ]);
     expect(invalidated).toBe(0);
     expect(peek(finalKey)?.state).toBe('ready');
@@ -298,7 +313,12 @@ describe('B1b — designation parity', () => {
     synths[0].resolve();
     await flush();
 
-    const key = keyFor({ field: 'measured_zs_ohm', value: '0.5', circuit: 4, designation: 'Cooker' });
+    const key = keyFor({
+      field: 'measured_zs_ohm',
+      value: '0.5',
+      circuit: 4,
+      designation: 'Cooker',
+    });
     expect(peek(key)?.state).toBe('ready');
 
     // Bundler emits the SAME designated text → HIT (no invalidate).
@@ -316,18 +336,26 @@ describe('B1b — designation parity', () => {
 
     // Streamed circuit_designation write first (Sonnet renamed circuit 4).
     spec.onToolUseStreamed({
-      record: { name: 'record_reading', input: { field: 'circuit_designation', circuit: '4', value: 'Cooker' } },
+      record: {
+        name: 'record_reading',
+        input: { field: 'circuit_designation', circuit: '4', value: 'Cooker' },
+      },
       ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
     });
     await flush();
     // Then the zs reading on circuit 4.
     spec.onToolUseStreamed({
-      record: { name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: '4', value: '0.5' } },
+      record: {
+        name: 'record_reading',
+        input: { field: 'measured_zs_ohm', circuit: '4', value: '0.5' },
+      },
       ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
     });
     await flush();
 
-    const zsSynth = synths.find((s) => s.text.includes('zed S') || s.text.toLowerCase().includes('zed'));
+    const zsSynth = synths.find(
+      (s) => s.text.includes('zed S') || s.text.toLowerCase().includes('zed')
+    );
     expect(zsSynth?.text).toBe(expandedFor('measured_zs_ohm', '0.5', 4, 'Cooker'));
   });
 
@@ -337,23 +365,96 @@ describe('B1b — designation parity', () => {
 
     // Reading streams FIRST (no designation observed yet) → un-designated text.
     spec.onToolUseStreamed({
-      record: { name: 'record_reading', input: { field: 'measured_zs_ohm', circuit: '4', value: '0.5' } },
+      record: {
+        name: 'record_reading',
+        input: { field: 'measured_zs_ohm', circuit: '4', value: '0.5' },
+      },
       ctx: { sessionId: 'S', turnId: 'T1', roundIdx: 1 },
     });
     await flush();
     expect(synths[0].text).toBe(expandedFor('measured_zs_ohm', '0.5', 4, null)); // "Circuit 4..."
     synths[0].resolve();
     await flush();
-    const undesignatedKey = keyFor({ field: 'measured_zs_ohm', value: '0.5', circuit: 4, designation: null });
+    const undesignatedKey = keyFor({
+      field: 'measured_zs_ohm',
+      value: '0.5',
+      circuit: 4,
+      designation: null,
+    });
     expect(peek(undesignatedKey)?.state).toBe('ready');
 
     // Designation arrives later; the bundler's FINAL emitted confirmation is
     // designated ("Cooker, ...") → the un-designated parked entry must MISS.
     const designated = buildConfirmationText('measured_zs_ohm', '0.5', 4, 'Cooker');
     const invalidated = spec.validateAgainstConfirmations('T1', [
-      { field: 'measured_zs_ohm', circuit: 4, text: designated, expanded_text: expandForTTS(designated) },
+      {
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        text: designated,
+        expanded_text: expandForTTS(designated),
+      },
     ]);
     expect(invalidated).toBe(1);
     expect(peek(undesignatedKey)).toBe(null); // dropped → fresh synth, never a stale un-designated serve
+  });
+
+  // ---------------------------------------------------------------------
+  // Plan D (id-100(b)) — the SAME-ROUND clamp-ordering degradation, pinned.
+  //
+  // Found by the Codex full review of the clamp diff. `onToolUseStreamed`
+  // fires the moment a tool-use block finishes streaming, so a speculation
+  // is built from the state snapshot AS IT WAS AT STREAM TIME. When the
+  // earthing arrangement and the impedance reading arrive in the SAME round,
+  // the earthing record has not been dispatched yet when the Zs block
+  // streams — so `safeEarthing` is the PRE-turn value and the speculation is
+  // synthesised from the UNCLAMPED number with a bare (clause-less) line.
+  //
+  // This is NOT fixable in the streaming hook: the whole latency purpose of
+  // the Loaded Barrel is to start synthesis before the round completes, and
+  // buffering until the round's writes are known forfeits exactly that. It
+  // does not need to be fixed, because the drift validator is the safety
+  // net — the bundler's ACTUAL emitted confirmation carries the correction
+  // clause, the parked entry's expandedText does not, so the entry is
+  // invalidated and dropped. keys.js then structurally MISSES (a different
+  // expandedText is a different cache key) and synthesises the correct line
+  // fresh. The cost is one wasted synth and the normal (un-accelerated)
+  // TTS latency; the inspector NEVER hears the unclamped number.
+  //
+  // Pinned here because that safety depends on the correction clause being
+  // part of the text identity. If a future change made the clause a
+  // post-synthesis decoration (appended after the cache key is computed),
+  // this test goes RED and the failure mode would otherwise be silent:
+  // a stale "Circuit 4, Zs 16" served from cache over a stored 1.6 — the
+  // exact id-100(b) defect, reintroduced through the cache instead of the
+  // dispatcher.
+  test('ordering edge: reading speculates BEFORE the same-round earthing clamp → safe MISS, never a stale UNCLAMPED serve', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+
+    // The Zs block streams first, while the snapshot still says "no earthing
+    // observed this turn" → the speculator synthesises the RAW 16.
+    const unclampedKey = await specToReady(spec, synths, {
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      value: '16',
+    });
+    expect(peek(unclampedKey)?.state).toBe('ready');
+
+    // The earthing record is dispatched later in the SAME round, the
+    // dispatcher clamps 16 → 1.6, and the bundler's emitted confirmation
+    // carries the correction clause.
+    const clamped = buildConfirmationText('measured_zs_ohm', '1.6', 4, null, {
+      correction: { original: '16', corrected: '1.6', divisor: 10 },
+    });
+    expect(clamped).toContain('I corrected 16 to 1.6');
+
+    const invalidated = spec.validateAgainstConfirmations('T1', [
+      { field: 'measured_zs_ohm', circuit: 4, text: clamped, expanded_text: expandForTTS(clamped) },
+    ]);
+
+    expect(invalidated).toBe(1);
+    // Dropped → keys.js MISSes → the clamped line is synthesised fresh.
+    // The unclamped "16" audio is never servable.
+    expect(peek(unclampedKey)).toBe(null);
   });
 });
