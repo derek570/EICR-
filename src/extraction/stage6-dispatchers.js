@@ -336,6 +336,24 @@ export function isEarthingArrangementRecord(rec) {
 }
 
 /**
+ * True for a record that MUTATES `snapshot.currentBoardId` — `add_board`
+ * (stage6-dispatchers-board.js:738) and `select_board` (:880). These are BOARD
+ * CONTEXT BOUNDARIES for the sort below: `record_board_reading` carries no
+ * `board_id` in its tool schema, so its target board is resolved at dispatch
+ * time as `snapshot.currentBoardId` — reordering a board write ACROSS one of
+ * these lands it on a different board. Canonical definition; runToolLoop's
+ * emergency sort fallback inlines a byte-equivalent copy and a parity test pins
+ * the two together.
+ *
+ * @param {{name?: string}} rec
+ * @returns {boolean}
+ */
+export function isBoardContextChangingRecord(rec) {
+  if (!rec) return false;
+  return rec.name === 'add_board' || rec.name === 'select_board';
+}
+
+/**
  * Default Phase 3 sortRecords hook for runToolLoop. Produces a THREE-way stable
  * partition, preserving stream-emission (index-ascending) order WITHIN each
  * partition:
@@ -343,6 +361,9 @@ export function isEarthingArrangementRecord(rec) {
  *   1. `record_board_reading {field: 'earthing_arrangement'}` — FIRST
  *   2. every other write record
  *   3. `ask_user` — LAST
+ *
+ * …except that partitions 1 and 2 are applied PER BOARD-CONTEXT SEGMENT, not
+ * across the whole round (see `isBoardContextChangingRecord`).
  *
  * STA-02 defense-in-depth (partition 3): if Sonnet interleaves an `ask_user`
  * block between write-tool blocks inside a single response (prompt-discipline
@@ -368,6 +389,20 @@ export function isEarthingArrangementRecord(rec) {
  * This is deliberately NOT a general "facts before measurements" reordering: the
  * narrow rule is the one with a proven failure mode.
  *
+ * BOARD-CONTEXT SEGMENTS (Codex mini-review, 2026-07-25) — the hoist is bounded.
+ * `record_board_reading` has NO `board_id` in its tool schema, so the dispatcher
+ * resolves its target as `snapshot.currentBoardId`, and `add_board`/`select_board`
+ * MUTATE that field mid-round. Hoisting an earthing write across one of those
+ * would silently land the arrangement on a DIFFERENT board — "add the garage
+ * board, earthing is TT, Ze is 16" would stamp TT on the origin supply instead of
+ * the new board. `add_board`/`select_board` records therefore stay pinned in
+ * place and act as segment boundaries: the earthing-first partition is applied
+ * WITHIN each maximal run of non-context-changing writes, never across one. With
+ * no such record in the round (the overwhelmingly common case, and the id-100(b)
+ * repro) the whole round is one segment and the behaviour is exactly the simple
+ * three-way partition. `ask_user` is still moved to the round tail globally: it
+ * writes nothing, so it has no board context to lose.
+ *
  * Pure function — does NOT mutate the input array. The hook returns a new array
  * whose elements are the same object identities as the input (shallow copy).
  * Empty / single-element inputs short-circuit to identity.
@@ -381,14 +416,36 @@ export function isEarthingArrangementRecord(rec) {
 export function createSortRecordsAsksLast() {
   return function sortAsksLast(records) {
     if (!Array.isArray(records) || records.length < 2) return records;
-    const earthing = [];
-    const writes = [];
+    const ordered = [];
     const asks = [];
+    let earthing = [];
+    let writes = [];
+    // Emit the segment accumulated so far: earthing writes first, then the rest,
+    // each in stream order. Called at every board-context boundary and once at
+    // the end, so a hoist can never cross an add_board/select_board.
+    const flushSegment = () => {
+      if (earthing.length > 0) {
+        ordered.push(...earthing);
+        earthing = [];
+      }
+      if (writes.length > 0) {
+        ordered.push(...writes);
+        writes = [];
+      }
+    };
     for (const r of records) {
-      if (r && r.name === 'ask_user') asks.push(r);
-      else if (isEarthingArrangementRecord(r)) earthing.push(r);
-      else writes.push(r);
+      if (r && r.name === 'ask_user') {
+        asks.push(r);
+      } else if (isBoardContextChangingRecord(r)) {
+        flushSegment();
+        ordered.push(r);
+      } else if (isEarthingArrangementRecord(r)) {
+        earthing.push(r);
+      } else {
+        writes.push(r);
+      }
     }
-    return [...earthing, ...writes, ...asks];
+    flushSegment();
+    return [...ordered, ...asks];
   };
 }

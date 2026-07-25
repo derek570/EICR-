@@ -1323,8 +1323,13 @@ describe('stage6-tool-loop', () => {
     // import would drag the whole dispatcher tree into the loop's module graph
     // and into every loop test that mocks dispatchers). Pin the two
     // implementations to the same ordering over a record set that exercises
-    // every partition plus the malformed shapes the predicate has to tolerate,
-    // so changing one without the other fails here.
+    // every partition, BOTH board-context boundaries, and the value-shaped edge
+    // cases the predicate has to tolerate (an absent / non-string `field`), so
+    // changing one without the other fails here. Note the fixture is limited to
+    // shapes the STREAM ASSEMBLER can actually produce — a null record or a
+    // non-object `input` never reaches this branch, so pinning those here would
+    // be theatre; they are covered as direct predicate calls in
+    // stage6-impedance-clamp.test.js.
     test('emergency fallback ordering === createSortRecordsAsksLast ordering (drift lock)', async () => {
       const { createSortRecordsAsksLast } = await import('../extraction/stage6-dispatchers.js');
       const records = [
@@ -1332,10 +1337,18 @@ describe('stage6-tool-loop', () => {
         { id: 'b', name: 'ask_user', input: { question: 'q' } },
         { id: 'c', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
         { id: 'd', name: 'record_board_reading', input: { field: 'earth_loop_impedance_ze' } },
-        // malformed / edge shapes the predicate must tolerate without throwing
+        // edge shapes the predicate must tolerate without throwing
         { id: 'e', name: 'record_board_reading', input: {} },
         { id: 'f', name: 'record_board_reading', input: { field: 42 } },
         { id: 'g', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+        // board-context boundary: 'h' pins in place, so 'i' may NOT be hoisted
+        // ahead of it (record_board_reading resolves its target board from
+        // snapshot.currentBoardId, which add_board mutates).
+        { id: 'h', name: 'add_board', input: { designation: 'Garage' } },
+        { id: 'i', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+        { id: 'j', name: 'record_board_reading', input: { field: 'ze_at_db' } },
+        { id: 'k', name: 'select_board', input: { board_id: 'main' } },
+        { id: 'l', name: 'record_board_reading', input: { field: 'earth_loop_impedance_ze' } },
       ];
 
       const client = mockClient([toolUseRound(records), endTurnRound('done')]);
@@ -1360,7 +1373,7 @@ describe('stage6-tool-loop', () => {
       const hookOrder = createSortRecordsAsksLast()(records).map((r) => r.id);
       // Explicit expectation as well as cross-equality: a bare `seen ===
       // hookOrder` would still pass if BOTH regressed to identity order.
-      expect(hookOrder).toEqual(['c', 'g', 'a', 'd', 'e', 'f', 'b']);
+      expect(hookOrder).toEqual(['c', 'g', 'a', 'd', 'e', 'f', 'h', 'i', 'j', 'k', 'l', 'b']);
       expect(seen).toEqual(hookOrder);
     });
   });

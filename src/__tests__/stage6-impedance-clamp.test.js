@@ -46,6 +46,7 @@ import {
   createWriteDispatcher,
   createSortRecordsAsksLast,
   isEarthingArrangementRecord,
+  isBoardContextChangingRecord,
 } from '../extraction/stage6-dispatchers.js';
 import {
   createPerTurnWrites,
@@ -1387,7 +1388,10 @@ describe('Plan D — same-round earthing_arrangement dispatches before the imped
     expect(texts(result)).toContain('Ze recorded as 1.6 — I corrected 16 to 1.6');
   });
 
-  test('the reverse utterance order reaches the SAME stored value (order-independence)', async () => {
+  // CONTROL, not a proof of the fix: the arrangement is ALREADY ahead of the Ze
+  // in emission order, so this passes on unfixed source too. It is here to pin
+  // that the hoist did not BREAK the phrasing that always worked.
+  test('CONTROL — the reverse utterance order reaches the same stored value', async () => {
     const session = makeSession({ earthing: null });
     const writes = createPerTurnWrites();
     const records = [
@@ -1408,11 +1412,18 @@ describe('Plan D — same-round earthing_arrangement dispatches before the imped
     expect(session.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('1.6');
   });
 
-  test('a same-round TT arrangement emitted after the Ze LEAVES 16 alone (band widened, not divided)', async () => {
+  test('DISCRIMINATING: a same-round TT emitted after the Ze OVERRIDES a stale TN-C-S and leaves 16 alone', async () => {
     // The safety direction that matters: 16 Ω is an ordinary TT rod-earth
     // reading. Hoisting the arrangement must make the band CORRECT, not just
     // make the clamp fire.
-    const session = makeSession({ earthing: null });
+    //
+    // The session is seeded TN-C-S so this test can FAIL: without the hoist the
+    // Ze dispatches first, resolves the STALE TN-C-S band [0.01, 5], and divides
+    // a perfectly good rod-earth reading to 1.6 — corrupting a correct value,
+    // the exact harm this plan exists to prevent. Seeding nothing would make the
+    // assertion true on unfixed source (unknown arrangement also declines to
+    // divide) and prove nothing.
+    const session = makeSession({ earthing: 'TN-C-S' });
     const writes = createPerTurnWrites();
     const records = [
       {
@@ -1429,7 +1440,58 @@ describe('Plan D — same-round earthing_arrangement dispatches before the imped
     for (const rec of createSortRecordsAsksLast()(records)) {
       await dispatchBoardReading(session, writes, rec.input, rec.id);
     }
+    expect(session.stateSnapshot.circuits[0].earthing_arrangement).toBe('TT');
     expect(session.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('16');
     expect(JSON.stringify(texts(bundle(writes)))).not.toContain('I corrected');
+  });
+
+  // --- board-context segments (Codex mini-review, 2026-07-25) -----------------
+  // `record_board_reading` has no board_id: the dispatcher resolves its target as
+  // snapshot.currentBoardId, which add_board/select_board mutate mid-round. The
+  // hoist must therefore never cross one, or "add the garage board, earthing is
+  // TT, Ze is 16" would stamp TT on the ORIGIN supply instead of the new board.
+
+  test('DISCRIMINATING: an earthing write is NOT hoisted across add_board', () => {
+    const sort = createSortRecordsAsksLast();
+    const records = [
+      { id: 'add', name: 'add_board', input: { designation: 'Garage' } },
+      { id: 'earth', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+      { id: 'ze', name: 'record_board_reading', input: { field: 'earth_loop_impedance_ze' } },
+    ];
+    // Pre-fix this returned ['earth','add','ze'] — the arrangement committed
+    // against the OLD currentBoardId.
+    expect(sort(records).map((r) => r.id)).toEqual(['add', 'earth', 'ze']);
+  });
+
+  test('select_board is also a boundary, and each segment hoists independently', () => {
+    const sort = createSortRecordsAsksLast();
+    const records = [
+      { id: 'ze1', name: 'record_board_reading', input: { field: 'earth_loop_impedance_ze' } },
+      { id: 'earth1', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+      { id: 'sel', name: 'select_board', input: { board_id: 'sub-1' } },
+      { id: 'ze2', name: 'record_board_reading', input: { field: 'ze_at_db' } },
+      { id: 'ask', name: 'ask_user', input: { question: 'q' } },
+      { id: 'earth2', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+    ];
+    // Segment 1 hoists earth1 above ze1; the boundary stays put; segment 2
+    // hoists earth2 above ze2; the ask still goes to the ROUND tail (it writes
+    // nothing, so it has no board context to lose).
+    expect(sort(records).map((r) => r.id)).toEqual([
+      'earth1',
+      'ze1',
+      'sel',
+      'earth2',
+      'ze2',
+      'ask',
+    ]);
+  });
+
+  test('isBoardContextChangingRecord is narrow and total', () => {
+    expect(isBoardContextChangingRecord({ name: 'add_board' })).toBe(true);
+    expect(isBoardContextChangingRecord({ name: 'select_board' })).toBe(true);
+    expect(isBoardContextChangingRecord({ name: 'record_board_reading' })).toBe(false);
+    for (const bad of [null, undefined, {}, { name: 42 }, 'add_board']) {
+      expect(isBoardContextChangingRecord(bad)).toBe(false);
+    }
   });
 });
