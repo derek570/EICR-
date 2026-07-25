@@ -542,6 +542,8 @@
   "web/src/lib/recording/apply-extraction.ts": [
     "installation/eic-comments",
     "observations/obs-photo-autolink",
+    "recording/impedance-clamp-readback",
+    "recording/impedance-out-of-range-divergence",
     "recording/observation-id-dedupe"
   ],
   "web/src/lib/recording/capture-observation-photo.ts": [
