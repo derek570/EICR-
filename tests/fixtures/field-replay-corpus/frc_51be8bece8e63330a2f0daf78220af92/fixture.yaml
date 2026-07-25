@@ -50,8 +50,7 @@
 schema_version: 1
 corpus_id: frc_51be8bece8e63330a2f0daf78220af92
 purpose: regression
-gate_state: expected_red
-expected_failure_id: reading.op_ze_clamped
+gate_state: required_green
 red_proof_failure_id: reading.op_ze_clamped
 owner: Derek Beckley
 introduced_at: '2026-07-25T00:00:00Z'
@@ -116,3 +115,16 @@ turns:
         field: earth_loop_impedance_ze
         value: '1.6'
         audibility: exactly_once
+    # The OTHER half of the invariant: what the inspector actually HEARS. The
+    # write oracle above proves 1.6 was stored; this proves 1.6 was spoken, in
+    # the same turn, once, and that the correction was NAMED rather than made
+    # silently. Byte-exact on purpose — the whole defect is a divergence
+    # between two renderings of one number, so a substring/"contains 1.6"
+    # matcher would tolerate exactly the class of drift under lock.
+    expected_audible_outputs:
+      - output_id: out_ze_readback
+        kind: reading_confirmation
+        operation_ref: op_ze_clamped
+        count: 1
+        match:
+          text_exact: Ze recorded as 1.6 — I corrected 16 to 1.6
