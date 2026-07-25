@@ -88,6 +88,12 @@ import {
 } from './value-enum-validator.js';
 import { isLimRangedWriteKilled } from './voice-latency-config.js';
 import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
+import {
+  IMPEDANCE_CLAMP_CORRECTION,
+  clampReadingForDispatch,
+  logImpedanceClamp,
+  resolveBoardAwareEarthing,
+} from './impedance-clamp.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -162,6 +168,25 @@ export async function dispatchRecordReading(call, ctx) {
   // matter. With the enum gate added, ordering is load-bearing.
   input.value = coerceRecordReadingValue(input.field, input.value);
 
+  // Plan D (2026-07-25, feedback id 100(b)) — SERVER-AUTHORITATIVE impedance
+  // clamp. Ordering is load-bearing and matches the coercion above: coerce
+  // (garble / enum normalisation) → clamp (numeric range) → validate. Mutating
+  // `input.value` in place is deliberate — it is the SINGLE source both the
+  // authoritative `applyReadingFlagAware` write below and the `perTurnWrites`
+  // mirror read from, so there is no way for the snapshot and the wire to end up
+  // holding different numbers. That split-brain is exactly the class of defect
+  // this plan closes (the client used to divide AFTER the server had spoken).
+  //
+  // The correction is stashed on the perTurnWrites entry below so the bundler
+  // can name it in the read-back; it must NEVER be spoken from here, because a
+  // dispatcher has no idea whether its write will survive to a confirmation.
+  const zeClamp = clampReadingForDispatch({
+    field: input.field,
+    value: input.value,
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, input.board_id),
+  });
+  input.value = zeClamp.value;
+
   // P3 Fix 8 — rollout gate. Deny a LIM write on a capability-gated numeric
   // reading field until the client advertises `lim_ranged_write_v1`. A pre-guard
   // client lacks the Fix 5/6/9 sentinel guards, so accepting the LIM here would
@@ -175,7 +200,10 @@ export async function dispatchRecordReading(call, ctx) {
   // boundary that works even for an already-deployed client that can't revoke
   // its advert.
   const denyLim = isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true;
-  if (denyLim && isCapabilityGatedLimWrite(canonicaliseNumericReadingField(input.field), input.value)) {
+  if (
+    denyLim &&
+    isCapabilityGatedLimWrite(canonicaliseNumericReadingField(input.field), input.value)
+  ) {
     logToolCall(logger, {
       sessionId: session.sessionId,
       turnId,
@@ -338,6 +366,29 @@ export async function dispatchRecordReading(call, ctx) {
     input.circuit,
     resolveEffectiveBoardId(session, input.board_id)
   );
+  // Plan D — carry the clamp provenance to the confirmation synthesiser. A
+  // non-enumerable Symbol keeps it strictly backend-internal: the wire payload
+  // is built by JSON-shaped serialisation, so this cannot leak to a client even
+  // if a new wire boundary is added later.
+  if (zeClamp.correction) {
+    Object.defineProperty(recordValue, IMPEDANCE_CLAMP_CORRECTION, {
+      value: zeClamp.correction,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    logImpedanceClamp(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      seam: 'record_reading',
+      field: input.field,
+      circuit: input.circuit,
+      board_id: input.board_id ?? null,
+      original: zeClamp.correction.original,
+      corrected: zeClamp.correction.corrected,
+      divisor: zeClamp.correction.divisor,
+    });
+  }
   perTurnWrites.readings.set(
     encodeReadingKey(input.field, input.circuit, input.board_id),
     recordValue
@@ -1524,6 +1575,24 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // select fields are already enforced by validateSetFieldForAllCircuits.
   input.value = coerceRecordReadingValue(input.field, input.value);
   const canonicalBulkField = canonicaliseNumericReadingField(input.field);
+  // id-100(b) (2026-07-25) — SERVER-AUTHORITATIVE impedance clamp, second of
+  // the three pre-write seams. Ordering is coerce → clamp → validate: the
+  // clamp must see the post-coercion value (so a LIM sentinel is already a
+  // string the clamp declines) and the validator must see the POST-clamp
+  // value (otherwise a decimal-slip 16 would be rejected as out-of-range for
+  // a continuity field instead of being corrected to 1.6). Clamped ONCE here
+  // rather than per-iteration: `input.value` is a single scalar broadcast to
+  // every circuit, and the correction identity must be IDENTICAL across the
+  // fan-out so the grouped confirmation collapses to one spoken line.
+  // Earthing is resolved from the tool's board scope; a '*' broadcast has no
+  // board record so it falls through to the supply arrangement on
+  // circuits[0], which is the correct installation-wide default.
+  const bulkClamp = clampReadingForDispatch({
+    field: canonicalBulkField,
+    value: input.value,
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, input.board_id),
+  });
+  input.value = bulkClamp.value;
   // P3 Fix 8 — rollout gate (mirror of the direct record_reading path): deny a
   // bulk LIM write on a capability-gated field when the client hasn't advertised
   // `lim_ranged_write_v1` OR the server kill-switch is on. Non-error skip so the
@@ -1694,20 +1763,33 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       // fall back to current/main only when the local value is nullish. Tagging
       // a generated reading with '*' would both block a real-board clear from
       // matching its replacement and conflate same-ref writes across boards.
-      perTurnWrites.readings.set(
-        encodeReadingKey(input.field, ref, boardId),
-        attachEffectiveSlot(
-          {
-            value: input.value,
-            confidence: input.confidence,
-            source_turn_id: input.source_turn_id,
-            boardId: boardId ?? undefined,
-          },
-          input.field,
-          ref,
-          resolveEffectiveBoardId(session, boardId)
-        )
+      const bulkMirror = attachEffectiveSlot(
+        {
+          value: input.value,
+          confidence: input.confidence,
+          source_turn_id: input.source_turn_id,
+          boardId: boardId ?? undefined,
+        },
+        input.field,
+        ref,
+        resolveEffectiveBoardId(session, boardId)
       );
+      // id-100(b) — stash the clamp correction on every fan-out mirror entry so
+      // the bundler can name the correction aloud. The SAME correction object
+      // (identical original/corrected) is attached to each entry, which is what
+      // lets buildFanoutGroupKey collapse the whole sweep into one spoken line
+      // ("Circuits 1 to 5, R1+R2 recorded as 1.6 — I corrected 16 to 1.6")
+      // instead of repeating the correction once per circuit. Non-enumerable so
+      // it can never reach the wire or a JSON snapshot.
+      if (bulkClamp.correction) {
+        Object.defineProperty(bulkMirror, IMPEDANCE_CLAMP_CORRECTION, {
+          value: bulkClamp.correction,
+          enumerable: false,
+          configurable: true,
+          writable: true,
+        });
+      }
+      perTurnWrites.readings.set(encodeReadingKey(input.field, ref, boardId), bulkMirror);
       applied.push({
         circuit: ref,
         field: input.field,
@@ -1718,6 +1800,25 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         ...(input.board_id === '*' ? { board_id: boardId } : {}),
       });
     }
+  }
+
+  // id-100(b) — ONE telemetry row for the whole sweep (not one per circuit):
+  // the clamp decision was taken once, and the row carries the circuit list so
+  // an operator can still see the blast radius. Emitted only when at least one
+  // circuit actually took the write, so a wholly-skipped sweep never claims a
+  // correction was applied.
+  if (bulkClamp.correction && applied.length > 0) {
+    logImpedanceClamp(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      seam: 'set_field_for_all_circuits',
+      field: input.field,
+      circuits: applied.map((a) => a.circuit),
+      board_id: input.board_id ?? null,
+      original: bulkClamp.correction.original,
+      corrected: bulkClamp.correction.corrected,
+      divisor: bulkClamp.correction.divisor,
+    });
   }
 
   // Phase 8.2 — surface excluded_count = inspector intent (deduped

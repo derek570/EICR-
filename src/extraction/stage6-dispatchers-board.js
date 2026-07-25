@@ -62,6 +62,12 @@ import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 import { validateBoardScope, BOARD_FIELD_VALUE_ENUMS } from './stage6-dispatch-validation.js';
 import { coerceRecordBoardReadingValue } from './record-reading-coercion.js';
 import { isWithinRange, BOARD_FIELD_NUMERIC_RANGES } from './value-enum-validator.js';
+import {
+  IMPEDANCE_CLAMP_CORRECTION,
+  clampReadingForDispatch,
+  logImpedanceClamp,
+  resolveBoardAwareEarthing,
+} from './impedance-clamp.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
 // underlying enum is itself frozen-by-convention (codegenned from
@@ -224,6 +230,30 @@ export async function dispatchRecordBoardReading(call, ctx) {
   //
   // PII discipline mirrors steps 1 + 2 above — never log input.value.
   input.value = coerceRecordBoardReadingValue(input.field, input.value);
+  // id-100(b) (2026-07-25) — SERVER-AUTHORITATIVE impedance clamp. THIS IS THE
+  // C06B9904 REPRO PATH: `record_board_reading {earth_loop_impedance_ze, "16"}`
+  // used to be written verbatim server-side and read back as "Ze 16", while the
+  // client independently divided it to 1.6 — the inspector heard a value that
+  // was never stored (Audio-First #1: the read-back must speak the value that
+  // was stored). The server now performs the correction itself, so the spoken
+  // confirmation is synthesised from the SAME scalar that lands in the snapshot.
+  //
+  // Ordering is coerce → clamp → validate: the clamp sees the post-coercion
+  // value, and the enum/range gates below see the post-clamp value. Mutating
+  // `input.value` in place is deliberate — it is the SINGLE source that both
+  // the authoritative `applyBoardReadingFlagAware` write and the perTurnWrites
+  // mirror read from, which structurally forecloses a snapshot-vs-wire split
+  // brain (there is no second variable that could drift).
+  //
+  // The Ze band depends on the earthing arrangement (TT installations legitimately
+  // measure up to 200 Ω), so it is resolved board-aware; when the arrangement is
+  // UNKNOWN the clamp declines to divide (fail safe — see impedance-clamp.js).
+  const boardClamp = clampReadingForDispatch({
+    field: input.field,
+    value: input.value,
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, input.board_id),
+  });
+  input.value = boardClamp.value;
   const allowed = BOARD_FIELD_VALUE_ENUMS.get(input.field);
   if (allowed) {
     if (typeof input.value !== 'string') {
@@ -358,13 +388,39 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // single tool-loop turn can write the same field on two boards (e.g. main
   // and a sub-board's supply Ze) without one clobbering the other. Pre-1.1c
   // legacy keys (no boardId tag) decode as boardId=null in the bundler.
-  perTurnWrites.boardReadings.set(encodeBoardReadingKey(input.field, input.board_id), {
+  const boardMirror = {
     value: input.value,
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,
     auto_resolved: autoResolved || undefined,
     boardId: input.board_id ?? undefined,
-  });
+  };
+  // id-100(b) — stash the clamp correction on the mirror entry so the bundler
+  // can name it aloud ("Ze recorded as 1.6 — I corrected 16 to 1.6"). A Symbol
+  // key is invisible to JSON.stringify and to every `Object.keys`/spread-based
+  // wire serialiser by construction, so this is backend-internal transport that
+  // CANNOT leak onto the wire or into a snapshot — no wire-shape change, and no
+  // client decoder work is required for either platform.
+  if (boardClamp.correction) {
+    Object.defineProperty(boardMirror, IMPEDANCE_CLAMP_CORRECTION, {
+      value: boardClamp.correction,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    logImpedanceClamp(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      seam: 'record_board_reading',
+      field: input.field,
+      circuit: null,
+      board_id: input.board_id ?? null,
+      original: boardClamp.correction.original,
+      corrected: boardClamp.correction.corrected,
+      divisor: boardClamp.correction.divisor,
+    });
+  }
+  perTurnWrites.boardReadings.set(encodeBoardReadingKey(input.field, input.board_id), boardMirror);
 
   // 4b) Bonding-continuity mirror derivation — 2026-06-12 field report
   // (session 15B88D6B, voiceFeedbackId 21): "I'd like this [main protective

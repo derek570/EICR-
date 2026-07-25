@@ -448,6 +448,19 @@ export const SUPPLY_MERGE_KEY_ALIASES = Object.freeze({
   ze: 'earth_loop_impedance_ze',
   prospectiveFaultCurrent: 'prospective_fault_current',
   pfc: 'prospective_fault_current',
+  // Plan D (2026-07-25, feedback id 100(b)) — the earthing arrangement is now a
+  // LOAD-BEARING input, not just a rendered fact: the server-authoritative
+  // impedance clamp (`src/extraction/impedance-clamp.js`) picks the Ze band from
+  // it (TT ⇒ [0.01, 200] Ω, anything else ⇒ [0.01, 5] Ω), and with the
+  // arrangement unknown the clamp FAILS SAFE and refuses to divide. Both
+  // spellings must therefore collapse onto ONE canonical key before the merge,
+  // or `Object.entries` iteration order would decide which of two identical
+  // FACT_FIELDS writes lands last — and a supply payload that happened to list
+  // camelCase after snake_case would leave the canonical key populated from the
+  // wrong source. `normaliseSupplyIngest` deletes both spellings and re-adds
+  // only the canonical one with explicit precedence; this entry is the
+  // belt-and-braces for any future supply path that reaches the merge directly.
+  earthingArrangement: 'earthing_arrangement',
 });
 
 /**
@@ -508,6 +521,11 @@ export function normaliseSupplyIngest(supply) {
     'prospective_fault_current',
     'prospectiveFaultCurrent',
     'pfc',
+    // Plan D — see SUPPLY_MERGE_KEY_ALIASES. Both earthing spellings are
+    // deleted and exactly one canonical key is re-added below, so the merge
+    // never sees two order-dependent writes to the same FACT field.
+    'earthing_arrangement',
+    'earthingArrangement',
   ]) {
     delete out[k];
   }
@@ -531,10 +549,33 @@ export function normaliseSupplyIngest(supply) {
     }
     return undefined;
   };
+  // Plan D — the earthing arrangement is a STRING-VALUED fact ("TN-C-S", "TT",
+  // …), so it cannot go through `pick` above: that helper deliberately rejects
+  // anything non-numeric (Ze/PFC are measured electrical values and a
+  // non-numeric string there is prompt-injection text, dropped at ingestion).
+  // A separate string-shaped pick keeps that guarantee intact while still
+  // canonicalising the earthing spelling. Same precedence order (canonical
+  // snake_case → iOS camelCase), same own-keys-only + scalars-only discipline,
+  // and the same "trim proves presence, it does not reformat" contract — the
+  // clamp's band selection does a case-insensitive `includes('TT')`, so the
+  // stored spelling is passed through verbatim rather than normalised here.
+  const pickString = (...keys) => {
+    for (const k of keys) {
+      if (!Object.hasOwn(supply, k)) continue;
+      const v = supply[k];
+      if (typeof v !== 'string') continue;
+      const str = v.trim();
+      if (str === '') continue;
+      return str;
+    }
+    return undefined;
+  };
   const zeVal = pick('earth_loop_impedance_ze', 'earthLoopImpedanceZe', 'ze');
   if (zeVal !== undefined) out.earth_loop_impedance_ze = zeVal;
   const pfcVal = pick('prospective_fault_current', 'prospectiveFaultCurrent', 'pfc');
   if (pfcVal !== undefined) out.prospective_fault_current = pfcVal;
+  const earthingVal = pickString('earthing_arrangement', 'earthingArrangement');
+  if (earthingVal !== undefined) out.earthing_arrangement = earthingVal;
   return out;
 }
 
@@ -877,7 +918,6 @@ const MERGE_SKIP_KEYS = new Set([
   'board_info',
 ]);
 
-
 // Tool-use schema for forced structured output. claude-sonnet-4-6 does not
 // support assistant-message prefill, so we use tool_choice to guarantee the
 // model returns JSON that matches our extraction schema. The tool is never
@@ -1038,7 +1078,9 @@ export function renderAgenticSystemPrompt(agenticAnswersEnabled) {
 }
 
 function _composeAgenticPrompt(base) {
-  return base.trimEnd() + '\n\n' + _SCHEDULE_OF_INSPECTION_EICR.trimEnd() + '\n\n' + _WRAG_BS7671_EICR;
+  return (
+    base.trimEnd() + '\n\n' + _SCHEDULE_OF_INSPECTION_EICR.trimEnd() + '\n\n' + _WRAG_BS7671_EICR
+  );
 }
 
 // Flag-off variant keeps the historical export name. Its ANSWER-FEATURE content
@@ -1710,8 +1752,19 @@ export class EICRExtractionSession {
     // Codex review: resolution goes through the shared normaliseSupplyIngest
     // helper (canonical snake_case FIRST — the PWA JobDetail contract sends
     // supply_characteristics with `earth_loop_impedance_ze` — then iOS
-    // camelCase, then the legacy short alias). The seeder still deliberately
-    // seeds ONLY Ze/PFC (its narrow historical scope).
+    // camelCase, then the legacy short alias).
+    //
+    // Plan D (2026-07-25, feedback id 100(b)) — the seeder's historical
+    // Ze/PFC-only scope is WIDENED by exactly one field: `earthing_arrangement`.
+    // It is no longer merely a rendered fact; the server-authoritative impedance
+    // clamp picks the Ze band from it, and an UNKNOWN arrangement makes the
+    // clamp fail safe and refuse to divide. Without seeding it, a job whose
+    // earthing was established days ago in the PWA/iOS Board tab would have an
+    // unknown arrangement from turn 1, so the very first dictated
+    // "main earth is 16" of a session — the C06B9904 repro — would pass through
+    // unclamped purely because the session had not been told the system was
+    // TN-C-S yet. The other supply facts are still deliberately out of scope:
+    // nothing else on the supply feeds a WRITE decision.
     const supply = selectSupplyContainer(jobState);
     if (supply) {
       const resolved = normaliseSupplyIngest(supply);
@@ -1720,8 +1773,14 @@ export class EICRExtractionSession {
         fields.earth_loop_impedance_ze = resolved.earth_loop_impedance_ze;
       if (resolved.prospective_fault_current !== undefined)
         fields.prospective_fault_current = resolved.prospective_fault_current;
+      if (resolved.earthing_arrangement !== undefined)
+        fields.earthing_arrangement = resolved.earthing_arrangement;
       if (Object.keys(fields).length > 0) {
-        this.stateSnapshot.circuits[0] = { ...fields };
+        // Spread the existing bucket first: `circuits[0]` is normally untouched
+        // by the numbered-circuit loop above, but a jobState carrying a literal
+        // circuit 0 would have seeded it — and a supply seed must never silently
+        // wipe circuit fields (pre-Plan-D this was a bare assignment).
+        this.stateSnapshot.circuits[0] = { ...(this.stateSnapshot.circuits[0] ?? {}), ...fields };
         seeded++;
       }
     }
