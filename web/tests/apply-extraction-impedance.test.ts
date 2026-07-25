@@ -215,14 +215,91 @@ describe('apply-extraction H4 — Zs derivation on Sonnet writes', () => {
 // H5 — clampImpedance recovery for Deepgram decimal drops
 // ────────────────────────────────────────────────────────────────────
 describe('apply-extraction H5 — impedance clamp recovery', () => {
-  it('recovers Sonnet-emitted "44" → "0.44" via ÷100 for measured_zs_ohm', () => {
+  // ──────────────────────────────────────────────────────────────────
+  // Plan D (id-100(b)) web companion, 2026-07-25 — `measured_zs_ohm` is
+  // no longer clamped client-side. These two tests are DISCRIMINATING:
+  // on unfixed `main` the map still carried `measured_zs_ohm:'continuity'`
+  // and both values below were silently divided.
+  // ──────────────────────────────────────────────────────────────────
+  it('DISCRIMINATING: a legitimate 5 Ω Zs is NOT silently divided to 0.5', () => {
+    // The defect this removal fixes. 5 Ω is a perfectly ordinary Zs on a
+    // long radial or a TT installation, and the backend's own range gate
+    // allows Zs up to 100 Ω — but web's continuity band `[0.01, 2.0]`
+    // treated it as a dropped decimal and wrote 0.5, an order of
+    // magnitude out, silently. On `main` this expectation reads '0.5'.
+    const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Outbuilding' };
+    const job = makeJob({ circuits: [row] });
+    const result = makeResult({
+      readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '5' }],
+    });
+    const applied = applyExtractionToJob(job, result);
+    expect(applied!.patch.circuits![0].measured_zs_ohm).toBe('5');
+  });
+
+  it('DISCRIMINATING: an apparently decimal-dropped Zs is stored RAW — nothing corrects it, by design', () => {
+    // "44" for a Zs probably IS a dropped decimal — and it is still
+    // stored as 44, on every platform. Plan D's backend clamp set
+    // deliberately EXCLUDES `measured_zs_ohm` (a backend test pins
+    // `resolveImpedanceKind('measured_zs_ohm') === null`), because
+    // adopting web's continuity band server-side would newly divide
+    // legitimate multi-ohm Zs on iOS. So this is NOT "left for the
+    // server to fix later" — no layer fixes it, and that is the
+    // decision, not an oversight.
+    //
+    // Correcting it HERE is the thing that must not happen:
+    // `applyExtractionToJob` has no TTS channel, so a client-side divide
+    // is silent — the inspector hears the server read back 44 while 0.44
+    // sits in the cell. That divergence between the spoken and the
+    // stored number is precisely the id-100(b) defect. A wrong Zs is
+    // caught by ear instead: the inspector hears "Zs 44" and corrects it
+    // by speaking, which only works while both numbers agree.
+    //
+    // On `main` this expectation reads '0.44'.
     const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Cooker' };
     const job = makeJob({ circuits: [row] });
     const result = makeResult({
       readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '44' }],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied!.patch.circuits![0].measured_zs_ohm).toBe('0.44');
+    expect(applied!.patch.circuits![0].measured_zs_ohm).toBe('44');
+  });
+
+  it('the removal is SCOPED to Zs — R1+R2 still clamps in the same extraction', () => {
+    // Guards the removal against over-reach: the shared `continuity`
+    // band is still correct for the R1+R2 / ring legs (a genuinely
+    // sub-ohm family), and pulling Zs out must not disturb them. Both
+    // fields ride the same map on the same circuit in one turn.
+    const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Ring' };
+    const job = makeJob({ circuits: [row] });
+    const result = makeResult({
+      readings: [
+        { circuit: 1, field: 'measured_zs_ohm', value: '5' },
+        { circuit: 1, field: 'r1_r2_ohm', value: '14' },
+      ],
+    });
+    const applied = applyExtractionToJob(job, result);
+    const cell = applied!.patch.circuits![0];
+    expect(cell.measured_zs_ohm).toBe('5');
+    expect(cell.r1_r2_ohm).toBe('1.4');
+  });
+
+  it('CHARACTERISATION (not change-proving): an already-server-corrected value passes through inert', () => {
+    // §4.9 round-5 IMPORTANT, recorded honestly: this test CANNOT FAIL
+    // on `main` and must NOT be counted among the tests that prove the
+    // fix. It exists only to pin the shape the plan relies on — that
+    // web's retained clamp is inert for values the server already
+    // corrected. `clampImpedance` returns `{kind:'ok'}` for an in-band
+    // input, so no divide happens, no metadata is emitted, and there is
+    // no TTS side-effect (web has no TTS channel here at all). That
+    // inertness is WHY `recording-context.tsx` needs no correction
+    // plumbing and the backend confirmation can stay authoritative.
+    const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Ring' };
+    const job = makeJob({ circuits: [row] });
+    const result = makeResult({
+      readings: [{ circuit: 1, field: 'r1_r2_ohm', value: '1.6' }],
+    });
+    const applied = applyExtractionToJob(job, result);
+    expect(applied!.patch.circuits![0].r1_r2_ohm).toBe('1.6');
   });
 
   it('recovers via ÷10 when the value is just one decimal-place off', () => {
@@ -240,23 +317,29 @@ describe('apply-extraction H5 — impedance clamp recovery', () => {
     // 9999 doesn't recover cleanly (÷10 = 999.9, ÷100 = 99.99). Out
     // of typical band but we write it so the inspector sees the
     // wonky value rather than a silent drop.
+    //
+    // Re-pointed from `measured_zs_ohm` to `r1_r2_ohm` in the plan-D web
+    // companion: Zs no longer enters the clamp at all, so asserting it
+    // on Zs would have gone on passing while testing nothing. The
+    // `out_of_range` branch still needs a field that reaches it.
     const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Shower' };
     const job = makeJob({ circuits: [row] });
     const result = makeResult({
-      readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '9999' }],
+      readings: [{ circuit: 1, field: 'r1_r2_ohm', value: '9999' }],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied!.patch.circuits![0].measured_zs_ohm).toBe('9999');
+    expect(applied!.patch.circuits![0].r1_r2_ohm).toBe('9999');
   });
 
   it('passes through in-range values unchanged (no rounding surprises)', () => {
+    // Also re-pointed off `measured_zs_ohm` — same reason as above.
     const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Cooker' };
     const job = makeJob({ circuits: [row] });
     const result = makeResult({
-      readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.42' }],
+      readings: [{ circuit: 1, field: 'r1_r2_ohm', value: '0.42' }],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied!.patch.circuits![0].measured_zs_ohm).toBe('0.42');
+    expect(applied!.patch.circuits![0].r1_r2_ohm).toBe('0.42');
   });
 
   it('clamps ring continuity readings (ring_r1_ohm, ring_rn_ohm, ring_r2_ohm)', () => {

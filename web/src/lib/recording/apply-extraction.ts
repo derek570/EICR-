@@ -142,14 +142,42 @@ function translateCircuitField(wireField: string): string {
 
 /**
  * Per-circuit columns that carry an impedance value (R1+R2, ring
- * continuity legs, Zs, bare R2). Map to the `clampImpedance` field
+ * continuity legs, bare R2). Map to the `clampImpedance` field
  * tag so the per-reading clamp picks the right bound band. Ze on
  * the circuit row itself is unusual (Ze is supply-level not per-
  * circuit) but listed for completeness — it'd land here only if
  * someone added a per-board Ze override column.
+ *
+ * `measured_zs_ohm` is DELIBERATELY ABSENT (plan D, id-100(b) web
+ * companion, 2026-07-25). It used to sit here on the `continuity`
+ * band `[0.01, 2.0]`, which silently divided any Zs above 2 Ω — so a
+ * legitimate 5 Ω Zs on a long radial was written as 0.5, an order of
+ * magnitude out, with nothing said aloud and nothing shown. That was a
+ * WEB-ONLY defect: iOS has never clamped Zs, and the backend's own
+ * range gate allows Zs 0–100 Ω (`src/extraction/value-enum-validator.js`),
+ * so web was the only surface silently rewriting values the rest of the
+ * system considers perfectly valid. Zs legitimately spans two orders of
+ * magnitude (a sub-ohm final circuit to a tens-of-ohms TT installation),
+ * which is exactly why no continuity-shaped band fits it.
+ *
+ * Do NOT re-add it, and do NOT assume the server picked the job up: Zs is
+ * clamped on NO platform. Plan D's backend clamp set deliberately EXCLUDES
+ * `measured_zs_ohm` (`src/extraction/impedance-clamp.js` —
+ * `resolveImpedanceKind('measured_zs_ohm')` returns null, and a backend test
+ * pins it), because adopting web's continuity band server-side would have
+ * newly divided legitimate multi-ohm Zs readings on iOS — a safety fix
+ * introducing a fresh safety defect. So after this removal a dictated
+ * "forty four" for Zs is STORED AS 44, everywhere, uncorrected.
+ *
+ * That is the intended outcome, not a gap. A genuinely mis-heard Zs is
+ * caught by the READ-BACK, not by arithmetic: the inspector hears "Zs 44",
+ * knows it is wrong, and corrects it by speaking. That works precisely
+ * because the spoken value and the stored value are the same number —
+ * which is the whole point of plan D. Guessing a divisor for a quantity
+ * that legitimately spans two orders of magnitude would put those two
+ * numbers back out of step, which is the defect, not the fix.
  */
 const CIRCUIT_IMPEDANCE_FIELD_TYPE: Record<string, ImpedanceField> = {
-  measured_zs_ohm: 'continuity',
   r1_r2_ohm: 'continuity',
   r2_ohm: 'continuity',
   ring_r1_ohm: 'continuity',
