@@ -317,34 +317,78 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
 }
 
 /**
- * Default Phase 3 sortRecords hook for runToolLoop. Moves every `ask_user`
- * record to the END of the array while preserving stream-emission
- * (index-ascending) order within each partition.
+ * True for a `record_board_reading` record whose target field is the closed-enum
+ * `earthing_arrangement`. This is the CANONICAL definition; runToolLoop's
+ * emergency sort fallback inlines a byte-equivalent copy (it must stay free of
+ * any dependency on this module) and a parity test pins the two together.
  *
- * STA-02 defense-in-depth: if Sonnet interleaves an `ask_user` block between
- * write-tool blocks inside a single response (prompt-discipline drift), this
- * hook still ensures the writes land BEFORE the blocking ask stalls the
- * round. Pair with Phase 4 prompt discipline.
+ * Defensive on shape: `input` may be absent or non-object on a malformed record,
+ * and a non-string `field` must never throw here — the dispatcher owns validation.
  *
- * Pure function — does NOT mutate the input array. The hook returns a new
- * array whose elements are the same object identities as the input (shallow
- * copy). Empty / single-element inputs short-circuit to identity.
+ * @param {{name?: string, input?: unknown}} rec
+ * @returns {boolean}
+ */
+export function isEarthingArrangementRecord(rec) {
+  if (!rec || rec.name !== 'record_board_reading') return false;
+  const input = rec.input;
+  if (!input || typeof input !== 'object') return false;
+  return input.field === 'earthing_arrangement';
+}
+
+/**
+ * Default Phase 3 sortRecords hook for runToolLoop. Produces a THREE-way stable
+ * partition, preserving stream-emission (index-ascending) order WITHIN each
+ * partition:
  *
- * Returns the input unchanged when it is not an array — defensive fail-open
- * so a future bug in runToolLoop that passes the hook something weird does
- * not swallow records into `undefined` and break the turn.
+ *   1. `record_board_reading {field: 'earthing_arrangement'}` — FIRST
+ *   2. every other write record
+ *   3. `ask_user` — LAST
+ *
+ * STA-02 defense-in-depth (partition 3): if Sonnet interleaves an `ask_user`
+ * block between write-tool blocks inside a single response (prompt-discipline
+ * drift), this hook still ensures the writes land BEFORE the blocking ask stalls
+ * the round. Pair with Phase 4 prompt discipline.
+ *
+ * id-100(b) / Codex lens-3 (2026-07-25) — partition 1 exists because the
+ * SERVER-AUTHORITATIVE impedance clamp resolves the Ze band from the COMMITTED
+ * `session.stateSnapshot`, and runToolLoop dispatches a round's records
+ * SEQUENTIALLY in this order. A single utterance can carry both facts ("Ze is 16
+ * on a TN-C-S system") and the model then emits them in UTTERANCE order — Ze
+ * first, earthing second. Without this partition that Ze write resolves an
+ * UNKNOWN arrangement and declines to divide (the documented fail-safe), while
+ * the same utterance phrased the other way round ("TN-C-S system, Ze is 16")
+ * WOULD clamp. Silent order-dependence is unacceptable on a safety-critical
+ * path — and once a client latches `server_impedance_clamp` and stands its own
+ * clamp down, the unclamped value is what reaches the certificate. Committing
+ * the arrangement first makes the clamp deterministic for the whole round.
+ *
+ * ONLY `earthing_arrangement` is hoisted. It is a closed-enum FACT that no other
+ * record consults for its own validation, so moving it cannot change any other
+ * record's outcome — it can only make the Ze band resolution better-informed.
+ * This is deliberately NOT a general "facts before measurements" reordering: the
+ * narrow rule is the one with a proven failure mode.
+ *
+ * Pure function — does NOT mutate the input array. The hook returns a new array
+ * whose elements are the same object identities as the input (shallow copy).
+ * Empty / single-element inputs short-circuit to identity.
+ *
+ * Returns the input unchanged when it is not an array — defensive fail-open so a
+ * future bug in runToolLoop that passes the hook something weird does not
+ * swallow records into `undefined` and break the turn.
  *
  * @returns {(records: Array<{id, name, input, index}>) => Array<same shape>}
  */
 export function createSortRecordsAsksLast() {
   return function sortAsksLast(records) {
     if (!Array.isArray(records) || records.length < 2) return records;
+    const earthing = [];
     const writes = [];
     const asks = [];
     for (const r of records) {
       if (r && r.name === 'ask_user') asks.push(r);
+      else if (isEarthingArrangementRecord(r)) earthing.push(r);
       else writes.push(r);
     }
-    return [...writes, ...asks];
+    return [...earthing, ...writes, ...asks];
   };
 }

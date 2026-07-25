@@ -1247,6 +1247,122 @@ describe('stage6-tool-loop', () => {
       );
       expect(errorLogged).toBe(true);
     });
+
+    // id-100(b) (2026-07-25) — the emergency fallback must ALSO reproduce the
+    // hook's earthing-FIRST partition. The server-authoritative impedance clamp
+    // resolves the Ze band from the COMMITTED snapshot, so a same-round
+    // `earthing_arrangement` write has to dispatch BEFORE an impedance write or
+    // the clamp silently declines to divide. A sort-hook throw must not quietly
+    // downgrade a safety-critical invariant to "whatever order the model spoke".
+    //
+    // DISCRIMINATING: the model emits Ze FIRST here (utterance order for "Ze is
+    // 16 on a TN-C-S system"), so the pre-fix fallback dispatched toolu_ze
+    // before toolu_earthing.
+    test('hook throws → emergency fallback ALSO dispatches earthing_arrangement first (id-100(b))', async () => {
+      const client = mockClient([
+        toolUseRound([
+          {
+            id: 'toolu_ze',
+            name: 'record_board_reading',
+            input: {
+              field: 'earth_loop_impedance_ze',
+              value: '16',
+              confidence: 0.95,
+              source_turn_id: 't1',
+            },
+          },
+          {
+            id: 'toolu_ask',
+            name: 'ask_user',
+            input: {
+              question: 'Which board?',
+              reason: 'ambiguous_board',
+              expected_answer_shape: 'text',
+            },
+          },
+          {
+            id: 'toolu_earthing',
+            name: 'record_board_reading',
+            input: {
+              field: 'earthing_arrangement',
+              value: 'TN-C-S',
+              confidence: 0.95,
+              source_turn_id: 't1',
+            },
+          },
+        ]),
+        endTurnRound('done'),
+      ]);
+      const seen = [];
+      const dispatcher = jest.fn(async (call) => {
+        seen.push(call.tool_call_id);
+        return { tool_use_id: call.tool_call_id, content: '{"ok":true}', is_error: false };
+      });
+
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages: [{ role: 'user', content: 'start' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher,
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        sortRecords: () => {
+          throw new Error('sort_failed_for_earthing_partition');
+        },
+      });
+
+      // Earthing first (so the clamp can resolve the band), then the remaining
+      // write, then the blocking ask — all three partitions honoured.
+      expect(seen).toEqual(['toolu_earthing', 'toolu_ze', 'toolu_ask']);
+    });
+
+    // Drift lock: the fallback branch inlines its own copy of the earthing
+    // predicate (this module must not depend on stage6-dispatchers.js — that
+    // import would drag the whole dispatcher tree into the loop's module graph
+    // and into every loop test that mocks dispatchers). Pin the two
+    // implementations to the same ordering over a record set that exercises
+    // every partition plus the malformed shapes the predicate has to tolerate,
+    // so changing one without the other fails here.
+    test('emergency fallback ordering === createSortRecordsAsksLast ordering (drift lock)', async () => {
+      const { createSortRecordsAsksLast } = await import('../extraction/stage6-dispatchers.js');
+      const records = [
+        { id: 'a', name: 'record_reading', input: { field: 'measured_zs_ohm' } },
+        { id: 'b', name: 'ask_user', input: { question: 'q' } },
+        { id: 'c', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+        { id: 'd', name: 'record_board_reading', input: { field: 'earth_loop_impedance_ze' } },
+        // malformed / edge shapes the predicate must tolerate without throwing
+        { id: 'e', name: 'record_board_reading', input: {} },
+        { id: 'f', name: 'record_board_reading', input: { field: 42 } },
+        { id: 'g', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+      ];
+
+      const client = mockClient([toolUseRound(records), endTurnRound('done')]);
+      const seen = [];
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        system: 'sys',
+        messages: [{ role: 'user', content: 'start' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher: jest.fn(async (call) => {
+          seen.push(call.tool_call_id);
+          return { tool_use_id: call.tool_call_id, content: '{"ok":true}', is_error: false };
+        }),
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        sortRecords: () => {
+          throw new Error('sort_failed_drift_lock');
+        },
+      });
+
+      const hookOrder = createSortRecordsAsksLast()(records).map((r) => r.id);
+      // Explicit expectation as well as cross-equality: a bare `seen ===
+      // hookOrder` would still pass if BOTH regressed to identity order.
+      expect(hookOrder).toEqual(['c', 'g', 'a', 'd', 'e', 'f', 'b']);
+      expect(seen).toEqual(hookOrder);
+    });
   });
 
   test('dispatcher error path → tool_result with is_error:true, loop continues', async () => {

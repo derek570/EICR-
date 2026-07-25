@@ -42,7 +42,11 @@ import {
   clampImpedance,
   clampReadingForDispatch,
 } from '../extraction/impedance-clamp.js';
-import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
+import {
+  createWriteDispatcher,
+  createSortRecordsAsksLast,
+  isEarthingArrangementRecord,
+} from '../extraction/stage6-dispatchers.js';
 import {
   createPerTurnWrites,
   encodeReadingKey,
@@ -1275,5 +1279,157 @@ describe('dialogue Seam C — post-completion correction breadcrumb', () => {
     });
     expect(session.stateSnapshot.circuits[5].ir_live_earth_mohm).toBe('100');
     expect(JSON.stringify(ws.sent)).not.toContain('I corrected');
+  });
+});
+
+// ─────────────────────────── same-round dispatch ordering (Codex lens 3) ──
+//
+// The clamp resolves the Ze band from the COMMITTED `session.stateSnapshot`,
+// and runToolLoop dispatches a round's records SEQUENTIALLY. A single utterance
+// can carry both facts, and the model emits them in UTTERANCE order — so
+// "Ze is 16 on a TN-C-S system" arrives Ze-FIRST. Without the earthing-first
+// partition in `createSortRecordsAsksLast` that Ze write sees an UNKNOWN
+// arrangement and declines to divide (the fail-safe), while the same utterance
+// phrased the other way round WOULD clamp: a silent order-dependence on a
+// safety-critical path. These tests pin the partition and its consequence.
+describe('Plan D — same-round earthing_arrangement dispatches before the impedance write', () => {
+  test('createSortRecordsAsksLast hoists earthing_arrangement, keeps asks last, stable within partitions', () => {
+    const sort = createSortRecordsAsksLast();
+    const records = [
+      { id: 'ze', name: 'record_board_reading', input: { field: 'earth_loop_impedance_ze' } },
+      { id: 'ask', name: 'ask_user', input: { question: 'q' } },
+      { id: 'earth', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+      { id: 'zs', name: 'record_reading', input: { field: 'measured_zs_ohm' } },
+      { id: 'earth2', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+    ];
+    expect(sort(records).map((r) => r.id)).toEqual(['earth', 'earth2', 'ze', 'zs', 'ask']);
+    // Pure — the input array is untouched.
+    expect(records.map((r) => r.id)).toEqual(['ze', 'ask', 'earth', 'zs', 'earth2']);
+  });
+
+  test('the predicate is narrow: only record_board_reading + earthing_arrangement is hoisted', () => {
+    expect(
+      isEarthingArrangementRecord({
+        name: 'record_board_reading',
+        input: { field: 'earthing_arrangement' },
+      })
+    ).toBe(true);
+    // A same-named field on a DIFFERENT tool is not a board fact write.
+    expect(
+      isEarthingArrangementRecord({
+        name: 'record_reading',
+        input: { field: 'earthing_arrangement' },
+      })
+    ).toBe(false);
+    // Another board fact is NOT hoisted — the narrow rule is the proven one.
+    expect(
+      isEarthingArrangementRecord({
+        name: 'record_board_reading',
+        input: { field: 'manufacturer' },
+      })
+    ).toBe(false);
+    // Malformed shapes must never throw.
+    for (const bad of [
+      null,
+      undefined,
+      {},
+      { name: 'record_board_reading' },
+      { name: 'record_board_reading', input: null },
+      { name: 'record_board_reading', input: 'earthing_arrangement' },
+      { name: 'record_board_reading', input: { field: 42 } },
+    ]) {
+      expect(isEarthingArrangementRecord(bad)).toBe(false);
+    }
+  });
+
+  test('identity/degenerate inputs short-circuit unchanged', () => {
+    const sort = createSortRecordsAsksLast();
+    const one = [
+      { id: 'a', name: 'record_board_reading', input: { field: 'earthing_arrangement' } },
+    ];
+    expect(sort(one)).toBe(one);
+    expect(sort([])).toEqual([]);
+    expect(sort(null)).toBe(null);
+  });
+
+  test('DISCRIMINATING: "Ze is 16 on a TN-C-S system" (Ze emitted FIRST) still stores 1.6', async () => {
+    // NOTHING is seeded — no job_state supply, no prior turn. The arrangement
+    // arrives in this very round, AFTER the Ze in emission order.
+    const session = makeSession({ earthing: null });
+    const writes = createPerTurnWrites();
+    const records = [
+      {
+        id: 'tu_ze',
+        name: 'record_board_reading',
+        input: { field: 'earth_loop_impedance_ze', value: '16' },
+      },
+      {
+        id: 'tu_earth',
+        name: 'record_board_reading',
+        input: { field: 'earthing_arrangement', value: 'TN-C-S' },
+      },
+    ];
+
+    // Dispatch in the hook's order, exactly as runToolLoop does.
+    for (const rec of createSortRecordsAsksLast()(records)) {
+      const env = await dispatchBoardReading(session, writes, rec.input, rec.id);
+      expect(env.is_error).toBe(false);
+    }
+
+    // The clamped LITERAL — not a cross-equality, which would already hold on
+    // unfixed source (both sides would read '16').
+    expect(session.stateSnapshot.circuits[0].earthing_arrangement).toBe('TN-C-S');
+    expect(session.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('1.6');
+
+    // ...and the SPOKEN line names the correction, so a wrong clamp is
+    // catchable by ear.
+    const result = bundle(writes);
+    expect(texts(result)).toContain('Ze recorded as 1.6 — I corrected 16 to 1.6');
+  });
+
+  test('the reverse utterance order reaches the SAME stored value (order-independence)', async () => {
+    const session = makeSession({ earthing: null });
+    const writes = createPerTurnWrites();
+    const records = [
+      {
+        id: 'tu_earth',
+        name: 'record_board_reading',
+        input: { field: 'earthing_arrangement', value: 'TN-C-S' },
+      },
+      {
+        id: 'tu_ze',
+        name: 'record_board_reading',
+        input: { field: 'earth_loop_impedance_ze', value: '16' },
+      },
+    ];
+    for (const rec of createSortRecordsAsksLast()(records)) {
+      await dispatchBoardReading(session, writes, rec.input, rec.id);
+    }
+    expect(session.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('1.6');
+  });
+
+  test('a same-round TT arrangement emitted after the Ze LEAVES 16 alone (band widened, not divided)', async () => {
+    // The safety direction that matters: 16 Ω is an ordinary TT rod-earth
+    // reading. Hoisting the arrangement must make the band CORRECT, not just
+    // make the clamp fire.
+    const session = makeSession({ earthing: null });
+    const writes = createPerTurnWrites();
+    const records = [
+      {
+        id: 'tu_ze',
+        name: 'record_board_reading',
+        input: { field: 'earth_loop_impedance_ze', value: '16' },
+      },
+      {
+        id: 'tu_earth',
+        name: 'record_board_reading',
+        input: { field: 'earthing_arrangement', value: 'TT' },
+      },
+    ];
+    for (const rec of createSortRecordsAsksLast()(records)) {
+      await dispatchBoardReading(session, writes, rec.input, rec.id);
+    }
+    expect(session.stateSnapshot.circuits[0].earth_loop_impedance_ze).toBe('16');
+    expect(JSON.stringify(texts(bundle(writes)))).not.toContain('I corrected');
   });
 });

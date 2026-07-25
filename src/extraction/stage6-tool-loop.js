@@ -669,8 +669,29 @@ export async function runToolLoop({
         // preserving relative order of each partition. Pure, allocation-
         // light, no external deps — matches createSortRecordsAsksLast's
         // contract closely enough to preserve STA-02 defensively.
+        //
+        // id-100(b) (2026-07-25): the fallback also reproduces the hook's
+        // earthing-FIRST partition. The server-authoritative impedance clamp
+        // resolves the Ze band from the COMMITTED snapshot, so a same-round
+        // `earthing_arrangement` write MUST dispatch before an impedance write
+        // or the clamp silently declines to divide (see the partition-1
+        // rationale on createSortRecordsAsksLast). A sort-hook throw must not
+        // quietly downgrade a safety-critical invariant.
+        //
+        // The predicate is INLINED rather than imported: this module
+        // deliberately has no dependency on stage6-dispatchers.js (importing it
+        // would drag the whole dispatcher tree into the tool-loop module graph
+        // and into every loop test that mocks dispatchers). The canonical
+        // definition is `isEarthingArrangementRecord` there, and a parity test
+        // pins this branch's output to the hook's so the two cannot drift.
+        const isEarthing = (r) =>
+          r?.name === 'record_board_reading' &&
+          !!r.input &&
+          typeof r.input === 'object' &&
+          r.input.field === 'earthing_arrangement';
         sortedRecords = [
-          ...records.filter((r) => r?.name !== 'ask_user'),
+          ...records.filter((r) => r?.name !== 'ask_user' && isEarthing(r)),
+          ...records.filter((r) => r?.name !== 'ask_user' && !isEarthing(r)),
           ...records.filter((r) => r?.name === 'ask_user'),
         ];
       }
