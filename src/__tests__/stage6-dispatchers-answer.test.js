@@ -30,12 +30,10 @@ const {
   INSPECT_MAX_RESULT_BYTES,
 } = await import('../extraction/stage6-inspect-projector.js');
 const { createPerTurnWrites } = await import('../extraction/stage6-per-turn-writes.js');
-const { createToolDispatcher, createWriteDispatcher } = await import(
-  '../extraction/stage6-dispatchers.js'
-);
-const { buildSessionTools, AGENTIC_ANSWER_TOOL_NAMES } = await import(
-  '../extraction/stage6-tool-schemas.js'
-);
+const { createToolDispatcher, createWriteDispatcher } =
+  await import('../extraction/stage6-dispatchers.js');
+const { buildSessionTools, AGENTIC_ANSWER_TOOL_NAMES } =
+  await import('../extraction/stage6-tool-schemas.js');
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -192,6 +190,10 @@ describe('createAnswerDispatcher — envelope + staging matrix (Item 1)', () => 
       'You have 8 tools',
       'You have 12 tools',
       'The prompt says TOOLS (18): at the top',
+      // Plan A1a — the NEW header forms (17/19) are pinned as filtered too,
+      // per the RETAIN-old-canaries rule.
+      'The prompt says TOOLS (19): at the top',
+      'The prompt says TOOLS (17): at the top',
     ].entries()) {
       const fresh = createPerTurnWrites();
       const d = createAnswerDispatcher(session, logger, 'turn-x', fresh);
@@ -253,7 +255,9 @@ describe('completeness policy — getApplicableRequiredFields (approved appendix
       certType: 'EICR',
       circuit: { circuit_designation: 'Shower', ocpd_bs_en: 'BS EN 61009' },
     });
-    expect(rcbo).toEqual(expect.arrayContaining(['rcd_bs_en', 'rcd_time_ms', 'rcd_button_confirmed']));
+    expect(rcbo).toEqual(
+      expect.arrayContaining(['rcd_bs_en', 'rcd_time_ms', 'rcd_button_confirmed'])
+    );
     const na = getApplicableRequiredFields({
       certType: 'EICR',
       circuit: { circuit_designation: 'Lights', rcd_bs_en: 'N/A' },
@@ -360,7 +364,9 @@ describe('createInspectDispatcher — scopes, validation, trust boundary (Item 1
   });
 
   test('board: incomplete circuits with missing-field NAMES; duplicate ref resolves per board', async () => {
-    const env = await dispatch(call('inspect_session_state', { scope: 'board', board_id: 'sub-1' }));
+    const env = await dispatch(
+      call('inspect_session_state', { scope: 'board', board_id: 'sub-1' })
+    );
     const b = body(env);
     expect(b.board_id).toBe('sub-1');
     expect(b.circuit_count).toBe(1);
@@ -618,47 +624,54 @@ describe('capInspectResult — appendix §4 truncation ladder', () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 describe('composer exhaustiveness — every advertised tool has a dispatch route (both flag states)', () => {
-  test('flag ON advertises 18 incl. the answer tools; flag OFF filters exactly those two', () => {
+  test('flag ON advertises 19 incl. the answer tools; flag OFF filters exactly those two', () => {
     const on = buildSessionTools(true).map((t) => t.name);
     const off = buildSessionTools(false).map((t) => t.name);
-    expect(on).toHaveLength(18);
-    expect(off).toHaveLength(16);
+    expect(on).toHaveLength(19);
+    expect(off).toHaveLength(17);
     expect(on).toEqual(expect.arrayContaining([...AGENTIC_ANSWER_TOOL_NAMES]));
     for (const name of AGENTIC_ANSWER_TOOL_NAMES) expect(off).not.toContain(name);
+    // Plan A1a — clear_board_reading is UNCONDITIONAL (both flag states):
+    // the capability gate lives at the dispatcher, never in the toolset.
+    expect(on).toContain('clear_board_reading');
+    expect(off).toContain('clear_board_reading');
     // Non-boolean input fails closed (filtered).
-    expect(buildSessionTools(undefined)).toHaveLength(16);
-    expect(buildSessionTools('true')).toHaveLength(16);
+    expect(buildSessionTools(undefined)).toHaveLength(17);
+    expect(buildSessionTools('true')).toHaveLength(17);
   });
 
   test.each([
     ['with asks (pendingAsks lane)', true],
     ['without asks (null-asks lane)', false],
-  ])('every advertised name routes to a non-unknown_tool dispatcher — %s', async (_label, withAsks) => {
-    const session = makeSession();
-    const logger = makeLogger();
-    const ptw = createPerTurnWrites();
-    const writes = createWriteDispatcher(session, logger, 'turn-1', ptw);
-    const asks = withAsks
-      ? async (c) => ({ tool_use_id: c.tool_call_id, content: '{"ok":true}', is_error: false })
-      : null;
-    const answers = createAnswerDispatcher(session, logger, 'turn-1', ptw);
-    const inspects = createInspectDispatcher(session, logger, 'turn-1', ptw);
-    const dispatcher = createToolDispatcher(writes, asks, { answers, inspects });
+  ])(
+    'every advertised name routes to a non-unknown_tool dispatcher — %s',
+    async (_label, withAsks) => {
+      const session = makeSession();
+      const logger = makeLogger();
+      const ptw = createPerTurnWrites();
+      const writes = createWriteDispatcher(session, logger, 'turn-1', ptw);
+      const asks = withAsks
+        ? async (c) => ({ tool_use_id: c.tool_call_id, content: '{"ok":true}', is_error: false })
+        : null;
+      const answers = createAnswerDispatcher(session, logger, 'turn-1', ptw);
+      const inspects = createInspectDispatcher(session, logger, 'turn-1', ptw);
+      const dispatcher = createToolDispatcher(writes, asks, { answers, inspects });
 
-    for (const [i, tool] of buildSessionTools(true).entries()) {
-      // ask_user on the null-asks lane is DELIBERATELY the pre-A1
-      // unknown_tool fallback (pinned separately below) — the lane never
-      // has pendingAsks, so the tool is unroutable there by design.
-      if (!withAsks && tool.name === 'ask_user') continue;
-      const env = await dispatcher(
-        { tool_call_id: `toolu_e${i}`, name: tool.name, input: {} },
-        { sessionId: session.sessionId, turnId: 'turn-1' }
-      );
-      // A routed dispatcher may reject the empty input, but the composer's
-      // unknown_tool envelope is the ONLY signature of a missing route.
-      expect(env.content).not.toContain('unknown_tool');
+      for (const [i, tool] of buildSessionTools(true).entries()) {
+        // ask_user on the null-asks lane is DELIBERATELY the pre-A1
+        // unknown_tool fallback (pinned separately below) — the lane never
+        // has pendingAsks, so the tool is unroutable there by design.
+        if (!withAsks && tool.name === 'ask_user') continue;
+        const env = await dispatcher(
+          { tool_call_id: `toolu_e${i}`, name: tool.name, input: {} },
+          { sessionId: session.sessionId, turnId: 'turn-1' }
+        );
+        // A routed dispatcher may reject the empty input, but the composer's
+        // unknown_tool envelope is the ONLY signature of a missing route.
+        expect(env.content).not.toContain('unknown_tool');
+      }
     }
-  });
+  );
 
   test('ask_user with null asks preserves the pre-A1 unknown_tool fallback via writes', async () => {
     const session = makeSession();

@@ -1,7 +1,7 @@
 /**
  * Stage 6 Agentic Extraction — Anthropic tool-schema codegen.
  *
- * Exports TOOL_SCHEMAS: an array of 18 Anthropic tool definitions
+ * Exports TOOL_SCHEMAS: an array of 19 Anthropic tool definitions
  * (additionalProperties:false, NOT strict:true — see makeTool below),
  * codegenned at module load from:
  *   - config/field_schema.json              (circuit_fields -> record_reading.field enum;
@@ -159,7 +159,7 @@ export const CIRCUIT_FIELD_ENUM = (() => {
  *
  * Bug-E fix (2026-04-26): `strict: true` removed. Anthropic's strict mode
  * grammar-compiles each tool's input_schema for constrained sampling, but
- * across the tool set (now 16 tools) whose enums total ~150+ values
+ * across the tool set (now 19 tools) whose enums total ~150+ values
  * (record_reading.field ~30, record_board_reading.field ~50,
  * ask_user.context_field ~50, plus anyOf branches across all the nullable
  * fields), the compiled grammar is large enough that Anthropic intermittently
@@ -310,6 +310,75 @@ const clearReading = makeTool({
     },
   },
   required: ['field', 'circuit', 'reason'],
+});
+
+// ---------------------------------------------------------------------------
+// Plan A1a (2026-07-27, feedback id 101): clear_board_reading.
+// The board/supply-scope analogue of clear_reading. Added after field session
+// C06B9904 showed the inspector saying "Delete Ze" three times with no effect
+// (clear_reading's enum is circuit_fields-only, so the model's only path was
+// the marker-② apology loop — the delete_circuit failure shape, at board
+// scope). The residual bogus `ze` could not be removed by voice at all and
+// persisted into the certificate: a data-integrity failure, not a UX nit.
+//
+// The board-scope analogues of clear_reading's circuit_ref /
+// is_distribution_circuit / feeds_board_id exclusions: structural and
+// hierarchy keys that define WHAT a board is, never a measured value.
+// HARDCODED, not derived — a derived predicate is fail-OPEN (a new
+// structural key added to field_schema.json would silently become
+// voice-clearable). Pinned by a literal snapshot test
+// (stage6-clear-board-reading-enum.test.js).
+export const BOARD_CLEAR_EXCLUSIONS = Object.freeze(
+  new Set([
+    // Structural / hierarchy keys — never a measured value.
+    'name',
+    'board_type',
+    'parent_board_id',
+    'feed_circuit_ref',
+    'sort_order',
+    // WIRE-ALIAS DE-DUPE, not structural: FIELD_CORRECTIONS canonicalises
+    // earth_loop_impedance_ze -> 'ze' at the bundler, and 'ze' is itself an
+    // enum member. Advertising both gives the model two names for one wire
+    // field. The write path already collapses them (one iOS case arm), so
+    // the clear stays symmetric by advertising only 'ze'. NOTE the backend
+    // snapshot still holds TWO storage slots for the pair (the write path
+    // stores the raw spelling) — the clear mutator sweeps the whole alias
+    // set, see boardFieldAliasSet in stage6-snapshot-mutators.js.
+    'earth_loop_impedance_ze',
+  ])
+);
+
+// PRODUCTION DERIVES this at module load (BOARD_FIELD_ENUM minus the
+// exclusions = 78 today); ONLY the test owns a pasted literal. That split is
+// what makes a new field_schema.json key fail CLOSED: the derived enum grows,
+// the test's literal pin does not, and the suite reddens until a human
+// classifies the new key. A1b's advert-time sweep re-narrows this enum
+// (client-unroutable / scope-incoherent classes) before any client
+// advertises `board_clear_v1`; A1a ships the full candidate set mutation-dark
+// (the dispatcher denies every session).
+export const CLEAR_BOARD_READING_FIELD_ENUM = BOARD_FIELD_ENUM.filter(
+  (k) => !BOARD_CLEAR_EXCLUSIONS.has(k)
+);
+
+const clearBoardReading = makeTool({
+  name: 'clear_board_reading',
+  description:
+    'Clear a previously-written board / supply / installation-level reading (the record_board_reading scope: Ze, PFC, earthing arrangement, address, client name, etc.). NOT for circuit-scoped readings — use clear_reading for those. Targets the currently-selected board: call select_board first to clear a reading on a different board (same two-step as record_board_reading; there is deliberately no board_id parameter).',
+  properties: {
+    field: {
+      type: 'string',
+      enum: CLEAR_BOARD_READING_FIELD_ENUM,
+      description:
+        'The board / supply / installation field key to clear. Closed enum: BOARD_FIELD_ENUM minus structural/hierarchy keys and wire-alias duplicates.',
+    },
+    reason: {
+      type: 'string',
+      enum: enumerations.clear_reading_reason,
+      description:
+        'Why the reading is being cleared. user_correction: inspector restated or asked to delete it. misheard: transcript was wrong. wrong_circuit: value was written to the wrong scope.',
+    },
+  },
+  required: ['field', 'reason'],
 });
 
 // ---------------------------------------------------------------------------
@@ -1173,7 +1242,7 @@ const addBoard = makeTool({
 const answerUser = makeTool({
   name: 'answer_user',
   description:
-    "Speak a short answer to a question the inspector asked about this session or certificate (e.g. \"what's missing on circuit 4?\", \"did you get that?\"). At most 2 sentences; terse and factual. NEVER use it to acknowledge, confirm, or narrate a write (read-backs are server-owned), and NEVER in place of ask_user when you need information FROM the inspector. At most one answer per turn.",
+    'Speak a short answer to a question the inspector asked about this session or certificate (e.g. "what\'s missing on circuit 4?", "did you get that?"). At most 2 sentences; terse and factual. NEVER use it to acknowledge, confirm, or narrate a write (read-backs are server-owned), and NEVER in place of ask_user when you need information FROM the inspector. At most one answer per turn.',
   properties: {
     answer_text: {
       type: 'string',
@@ -1205,7 +1274,8 @@ const inspectSessionState = makeTool({
     scope: {
       type: 'string',
       enum: ['summary', 'board', 'circuit', 'field'],
-      description: 'What to read. summary/board return counts + missing-field names; circuit/field return recorded values.',
+      description:
+        'What to read. summary/board return counts + missing-field names; circuit/field return recorded values.',
     },
     board_id: {
       type: 'string',
@@ -1262,6 +1332,13 @@ export const TOOL_SCHEMAS = [
   // see buildSessionTools below (TOOL_SCHEMAS itself is unconditional).
   answerUser,
   inspectSessionState,
+  // Plan A1a (2026-07-27) — clear_board_reading, appended last so existing
+  // TOOL_SCHEMAS indices stay stable for any consumers that key on them.
+  // UNCONDITIONALLY advertised (both buildSessionTools variants): the
+  // capability gate lives at the DISPATCHER (denyBoardClear), never here —
+  // the prompt latches before session_start capabilities are parsed, so a
+  // capability-conditional toolset would split prompt and toolset (§3.1).
+  clearBoardReading,
 ];
 
 // ---------------------------------------------------------------------------

@@ -2,10 +2,11 @@
  * Tests for src/extraction/stage6-tool-schemas.js — Stage 6 agentic extraction
  * tool definitions.
  *
- * Coverage per Phase 1 Plan 01-01 success criteria (tool count grown to 16
- * across the multi-board + calc-tool sprints; strict:true removed globally by
+ * Coverage per Phase 1 Plan 01-01 success criteria (tool count grown to 19
+ * across the multi-board + calc-tool + agentic-answer + board-clear sprints;
+ * strict:true removed globally by
  * the Bug-E fix 2026-04-26 — assertions below pin both):
- *  - 16 tools exported with exact expected names
+ *  - 19 tools exported with exact expected names
  *  - no tool has strict: true on input_schema (server-side validation instead)
  *  - every tool's input_schema is a JSON-Schema object
  *    (type:'object', additionalProperties:false, required:[])
@@ -86,14 +87,20 @@ const EXPECTED_TOOL_NAMES = [
   // itself is unconditional.
   'answer_user',
   'inspect_session_state',
+  // Plan A1a (2026-07-27, feedback id 101): clear_board_reading — the
+  // board/supply-scope analogue of clear_reading ("Delete Ze" had no possible
+  // tool; session C06B9904). Appended LAST for index stability. Advertised
+  // unconditionally; enforcement is the dispatcher's board_clear_v1 capability
+  // gate (deny-first), never buildSessionTools.
+  'clear_board_reading',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 18 tools with the expected names', () => {
+  test('exports exactly 19 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(18);
+    expect(TOOL_SCHEMAS).toHaveLength(19);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
