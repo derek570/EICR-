@@ -311,7 +311,7 @@ describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
 });
 
 describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
-  test('lists exactly the 9 known support strings', () => {
+  test('lists exactly the 10 known support strings', () => {
     expect([...flags.VOICE_LATENCY_KNOWN_SUPPORTS]).toEqual([
       'streaming_http_audio',
       'source_field_in_tts_post',
@@ -324,6 +324,8 @@ describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
       'low_conf_readback_v1',
       // P3 Fix 8 — LIM-ranged-write rollout-sequencing gate.
       'lim_ranged_write_v1',
+      // Plan A1a — board/supply-scope clear rollout-sequencing gate.
+      'board_clear_v1',
     ]);
   });
 });
@@ -346,10 +348,7 @@ describe('parseVoiceLatencyCapabilities — hasLowConfReadbackV1 (readback-corre
   test('present and false on the empty()/v0 shape (missing capabilities)', () => {
     // Load-bearing: the accessor MUST exist on the v0 fallback too, so the
     // dispatcher gate reads false (safe — skip <0.5) rather than undefined.
-    expect(flags.parseVoiceLatencyCapabilities(null)).toHaveProperty(
-      'hasLowConfReadbackV1',
-      false
-    );
+    expect(flags.parseVoiceLatencyCapabilities(null)).toHaveProperty('hasLowConfReadbackV1', false);
     expect(flags.parseVoiceLatencyCapabilities({ voice_latency: { version: 0 } })).toHaveProperty(
       'hasLowConfReadbackV1',
       false
