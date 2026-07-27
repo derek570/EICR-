@@ -589,10 +589,12 @@ function dedupAndCap(boosts: KeytermBoost[], cap: number): KeytermBoost[] {
 // is a deliberate, hand-curated ~40-term subset of the garble-critical +
 // core-domain vocabulary — NOT an auto-derived dump of the uncurated nova-3
 // boost map (which the plan explicitly forbids wiring to a production Flux
-// builder). It is gated behind `DEEPGRAM_STT_MODEL=flux`, which is NOT the
-// product default (`DEFAULT_STT_MODEL='nova3'`), so it never reaches production
-// this session. The Flux-default flip commit replaces this list with the FINAL
-// curated set in the same change that flips the default — see the flip runbook.
+// builder). ⚠️ LIVE IN PRODUCTION since 2026-07-03: the emergency flip commit
+// (`ff620997`, task-def `DEEPGRAM_STT_MODEL=flux`, fixing nova-3's
+// partial-sentence sends) shipped Flux — and therefore THIS provisional list —
+// without waiting for the final iOS curation. Replacing it with the FINAL
+// curated iOS set (post real-audio check + TestFlight) is still an open
+// follow-up — see the WS4 flip runbook.
 //
 // Flux builder constants mirror the iOS Flux path (≤100 terms / 2000-char URL
 // budget, distinct from the nova-3 web caps of 85/1800). At a ~40-term curated
