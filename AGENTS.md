@@ -7,10 +7,12 @@
 > - Delete stale content rather than commenting it out. Keep every file under its target line count.
 > - **Commit automatically after each logical unit of work — do NOT wait to be asked.** Small, focused commits with detailed messages explaining both what changed and WHY the code exists.
 
-> **MANDATORY — Backend (`src/`, `config/prompts/`, `packages/shared-types`, `packages/shared-utils`, RDS, S3) is SHARED with iOS and IMMUTABLE during PWA-only work.**
-> - PWA bug fixes / parity work / UI tweaks land in `web/` ONLY. Do NOT touch `src/`, `config/prompts/*.md`, or shared-types/shared-utils without an explicit cross-platform mandate.
-> - **Why:** iOS already runs against the current backend shape; any backend change risks iOS regression and a TestFlight cycle. iOS is canon for the data contract.
-> - **How to apply:** before editing anything outside `web/`, stop and ask: "is this fix changing behaviour that iOS sees?" If yes, surface it to the user before touching it. If a PWA gap really cannot be closed without a backend change, escalate — do not bundle a backend tweak into a PWA fix.
+> **MANDATORY — Backend (`src/`, `config/prompts/`, `packages/shared-types`, `packages/shared-utils`, RDS, S3) is SHARED with iOS and web. Changing it is ALLOWED in any wave — no separate mandate, no permission step. The ONE invariant is that the wave ENDS with every client correct.**
+> - **Transient mid-wave breakage on either client is fine.** A wave that leaves one client wrong when the work stops is not. Do not gate a backend change on "but iOS sees this" — ship it, then ship the client half in the same wave.
+> - **Never leave a cross-client wave half-shipped when Derek next goes out to inspect.** Backend deploys in ~30 min; iOS needs a TestFlight build he actually installs. Before declaring a wave done, confirm the client halves are on the shipped versions.
+> - **Capability gates are a judgement call, not ceremony.** Reach for one when a wave will realistically end with clients on different versions, or when a new wire shape would confuse an older build; skip it when both halves ship together.
+> - **Why (2026-07-26, Derek — supersedes the 2026-04 freeze):** Derek is the only user and does not touch the app until a whole weekend batch is finished, so the mid-inspection-regression harm the freeze priced in does not exist; the coordination tax it charged was real and stranded genuine fixes (feedback id 101).
+> - **Still binding, and unchanged:** infra changes come from source (rule below); `main` is PR-only; iOS remains canon for the DATA CONTRACT when the two clients disagree about shape — a design tiebreak, not a permission gate.
 > - **Pure-frontend state** (anything that doesn't traverse the WS / HTTP boundary) is not covered by this rule.
 
 > **MANDATORY — Infrastructure changes must come from source.**
