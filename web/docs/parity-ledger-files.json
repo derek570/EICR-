@@ -542,6 +542,7 @@
   "web/src/lib/recording/apply-extraction.ts": [
     "installation/eic-comments",
     "observations/obs-photo-autolink",
+    "recording/board-clear-denial-notice",
     "recording/impedance-clamp-readback",
     "recording/impedance-out-of-range-divergence",
     "recording/observation-id-dedupe"
@@ -578,6 +579,7 @@
   ],
   "web/src/lib/recording/sonnet-session.ts": [
     "observations/obs-card-canonical-wording",
+    "recording/board-clear-denial-notice",
     "recording/cancel-pending-tts",
     "recording/capability-advertising",
     "recording/fast-path-tts",
