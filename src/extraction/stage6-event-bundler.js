@@ -21,6 +21,8 @@ import {
   decodeBoardReadingKey,
   EFFECTIVE_CIRCUIT_SLOT,
   rawCircuitSlot,
+  EFFECTIVE_BOARD_SLOT,
+  boardSlotKey,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -353,10 +355,22 @@ function synthesiseObservationAndClearedConfirmations(
           ) {
             continue;
           }
-        } else if (writtenSlots.boardFields instanceof Set && writtenSlots.boardFields.has(field)) {
-          // Board/installation-level clear (circuit 0/null) with a same-field
+        } else if (writtenSlots.boardFields instanceof Set) {
+          // Board/installation-level clear (circuit 0/null) with a same-SLOT
           // board write this turn — a replacement; let the write speak.
-          continue;
+          // Plan A1a: membership is by EFFECTIVE BOARD SLOT (canonical field
+          // + scope-conditioned board id), never the bare field — a bare-
+          // field test wrongly silenced a cross-board clear on a board-
+          // scoped field. A stamp-less correction (no dispatcher-pushed
+          // board clear carries none; defensive for hand-built fixtures)
+          // keeps today's bare-field behaviour via the null-board sentinel.
+          const bsym = c[EFFECTIVE_BOARD_SLOT];
+          const clearSlot = bsym
+            ? boardSlotKey(bsym.field, bsym.boardId)
+            : boardSlotKey(FIELD_CORRECTIONS[field] ?? field, null);
+          if (writtenSlots.boardFields.has(clearSlot)) {
+            continue;
+          }
         }
       }
       // Skip suppressed fields + *_id (mirrors buildConfirmationText
@@ -823,6 +837,38 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       rawCircuitSlot(entry?.field, entry?.circuit, entry?.board_id ?? null)
     );
   };
+  // Plan A1a (2026-07-27) — mechanism B, the BOARD twin of the circuit
+  // collapse above. A board correction can now emit clear_board_reading then
+  // a replacement record_board_reading in one turn (the documented
+  // replacement idiom); the circuit machinery cannot see board slots
+  // (board writes live in perTurnWrites.boardReadings, and a board clear's
+  // circuit is null so the raw circuit fallback can never match). Deferring
+  // this recreates P5's exact clear→write wipe at board scope: the #31 gate
+  // silences the spoken clear (replacement), the stale clear frame then
+  // wipes the client AFTER the write's extraction envelope — client blank,
+  // server written, nothing audible about it.
+  //
+  // Identity: EFFECTIVE_BOARD_SLOT stamps ONLY (canonical field + scope-
+  // conditioned board id — global fields board-insensitive). No raw
+  // fallback: a board clear only ever dispatches for a SCOPE-CLASSIFIED
+  // field, and a same-slot write of that field is stamped by
+  // dispatchRecordBoardReading, so a stamp-vs-stamp match is complete for
+  // every reachable pair; an unstamped (unclassified legacy) write can
+  // never co-exist with a board clear of the same slot.
+  const survivingBoardSlots = new Set();
+  // Defensive: hand-built accumulators (older test fixtures) may omit the
+  // boardReadings Map entirely.
+  const boardReadingsMap =
+    perTurnWrites.boardReadings instanceof Map ? perTurnWrites.boardReadings : new Map();
+  for (const val of boardReadingsMap.values()) {
+    const bsym = val?.[EFFECTIVE_BOARD_SLOT];
+    if (bsym) survivingBoardSlots.add(boardSlotKey(bsym.field, bsym.boardId));
+  }
+  const boardClearHasSurvivingWrite = (entry) => {
+    const bsym = entry?.[EFFECTIVE_BOARD_SLOT];
+    if (!bsym) return false;
+    return survivingBoardSlots.has(boardSlotKey(bsym.field, bsym.boardId));
+  };
   // Compute the collapse ONCE and reuse for the wire field_corrections
   // projection, the cleared_readings envelope, and the cleared-confirmation
   // synthesis so all three stay consistent. cleared entries carry NO reason
@@ -854,6 +900,22 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           field: c.field,
           circuit: c.circuit,
           board_id: sym?.boardId ?? c.board_id ?? null,
+          final_effect: 'write',
+        });
+      }
+      continue;
+    }
+    // Plan A1a — mechanism B: board clear→write collapse. Same telemetry
+    // dedupe discipline as the circuit branch (one row per collapsed SLOT).
+    if (c && c.reason === 'clear_reading' && boardClearHasSurvivingWrite(c)) {
+      const bsym = c[EFFECTIVE_BOARD_SLOT];
+      const slotKey = `board:${boardSlotKey(bsym.field, bsym.boardId)}`;
+      if (!collapsedSlotSeen.has(slotKey)) {
+        collapsedSlotSeen.add(slotKey);
+        clearWriteCollapsedSlots.push({
+          field: c.field,
+          circuit: null,
+          board_id: bsym.boardId ?? c.board_id ?? null,
           final_effect: 'write',
         });
       }
@@ -1025,6 +1087,26 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       // pinning to boards[0].
       if (entry.boardId != null) {
         reading.board_id = entry.boardId;
+      }
+      // Plan A1a (round-8) — projected-write board identity. Egress sends the
+      // extraction BEFORE current_board_changed, so a same-turn
+      // select_board(B) → write delivers a BOARDLESS write while the client
+      // still has board A selected (server ends with B written, client
+      // applies to A). For CAPABILITY-ENABLED sessions, fill board_id from
+      // the resolved EFFECTIVE_BOARD_SLOT stamp for every CLASSIFIED
+      // board-scoped write. UNCLASSIFIED legacy writes (no stamp) and
+      // capability-absent sessions stay byte-identical — the capability +
+      // classification boundary is the wire-compat line.
+      {
+        const a1aSym = entry?.[EFFECTIVE_BOARD_SLOT];
+        if (
+          options.hasBoardClearV1 === true &&
+          a1aSym &&
+          a1aSym.boardId != null &&
+          reading.board_id == null
+        ) {
+          reading.board_id = a1aSym.boardId;
+        }
       }
       if (isDerivedWrite(entry)) {
         suppressConfirmationReadings.add(reading);
@@ -1231,10 +1313,31 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         writtenCircuitSlots.add(`${r.field}|${String(r.circuit)}`);
       }
     }
+    // Plan A1a (2026-07-27) — the #31 board membership is now a Set of
+    // EFFECTIVE BOARD SLOTS, not bare field names, sourced from
+    // perTurnWrites.boardReadings stamps — the SAME source mechanism B's
+    // collapse uses (one source for both, or they drift). The old producer
+    // iterated result.extracted_board_readings, whose entries are freshly
+    // constructed (they cannot carry the non-enumerable stamp) and whose
+    // board_id is undefined on the live no-param write path — a bare-field
+    // Set silently suppressed a legitimate CROSS-BOARD clear's speech
+    // (write manufacturer on A, select_board B, clear on B: both operations
+    // survive the collapse but the bare string 'manufacturer' from A's
+    // write ate B's clear read-back — an Audio-First #1 violation).
+    // Symbol-less (unclassified legacy) writes keep today's bare-field
+    // suppression via the stable null-board sentinel key
+    // boardSlotKey(canonical, null).
     const writtenBoardFields = new Set();
-    if (Array.isArray(result.extracted_board_readings)) {
-      for (const r of result.extracted_board_readings) {
-        if (typeof r.field === 'string') writtenBoardFields.add(r.field);
+    const writtenBoardMap =
+      perTurnWrites.boardReadings instanceof Map ? perTurnWrites.boardReadings : new Map();
+    for (const [bKey, bVal] of writtenBoardMap) {
+      const bsym = bVal?.[EFFECTIVE_BOARD_SLOT];
+      if (bsym) {
+        writtenBoardFields.add(boardSlotKey(bsym.field, bsym.boardId));
+      } else {
+        const d = decodeBoardReadingKey(bKey);
+        const canonical = FIELD_CORRECTIONS[d.field] ?? d.field;
+        writtenBoardFields.add(boardSlotKey(canonical, null));
       }
     }
     const writtenSlots = {
