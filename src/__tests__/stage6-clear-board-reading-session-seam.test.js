@@ -264,7 +264,7 @@ describe('REAL session seam — capability parse, live emission bytes, reconnect
     expect(wsC._sent.some((f) => f.type === 'field_corrected')).toBe(true);
   });
 
-  test('reconnect frame that OMITS the capabilities block keeps the existing parse (legacy semantics, fails safe either way)', async () => {
+  test('reconnect frame that OMITS the capabilities block is DENY-FIRST: the stale advert is revoked (mini-review M1)', async () => {
     const wsA = connect();
     const entry = await startSession(wsA, { supports: ['board_clear_v1'] });
     entry.session.start(null);
@@ -272,7 +272,10 @@ describe('REAL session seam — capability parse, live emission bytes, reconnect
     const wsB = connect();
     await startSession(wsB, {}); // no capabilities key at all
     await sendClearTranscript(wsB, 'ze');
-    // Existing advert retained → still capable → the clear mutates.
-    expect(entry.session.stateSnapshot.circuits[0]).not.toHaveProperty('ze');
+    // An omitted block re-parses to the empty/deny shape — a client that
+    // stops advertising (or never could) must not retain destructive-clear
+    // authority from a stale construction-time parse.
+    expect(entry.session.stateSnapshot.circuits[0].ze).toBe('0.4');
+    expect(wsB._sent.some((f) => f.type === 'field_corrected')).toBe(false);
   });
 });

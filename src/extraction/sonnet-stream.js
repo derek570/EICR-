@@ -2498,20 +2498,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (existing.session) {
         existing.session.applyModeChange(toolCallsMode);
       }
-      // Plan A1a (Codex diff-review r1) — re-parse voice-latency
-      // CAPABILITIES at rebind time, following the r5-#2 precedent (write
-      // the freshly-computed handshake state back onto the existing entry).
-      // Without this, `existing.voiceLatency.capabilities` stayed at its
-      // construction-time value for the entry's lifetime: a client
-      // reconnecting with a DIFFERENT build (app update mid-session) would
-      // keep the OLD advert — for the deny-first `board_clear_v1` mutation
-      // gate that means a downgraded client retains mutation authority (and
-      // an upgraded one stays denied). Guarded on the block being PRESENT:
-      // a reconnect frame that omits `capabilities` keeps the existing
-      // parse (the pre-existing semantics for legacy clients that never
-      // send the block; both shipped clients always include it in their
-      // session_start builder).
-      if (msg.capabilities !== undefined && existing.voiceLatency) {
+      // Plan A1a (Codex diff-review r1 + mini-review M1) — re-parse
+      // voice-latency CAPABILITIES at rebind time, following the r5-#2
+      // precedent (write the freshly-computed handshake state back onto the
+      // existing entry). Without this, `existing.voiceLatency.capabilities`
+      // stayed at its construction-time value for the entry's lifetime: a
+      // client reconnecting with a DIFFERENT build (app update mid-session)
+      // kept the OLD advert — for the deny-first `board_clear_v1` MUTATION
+      // gate that means a downgraded client retains destructive-clear
+      // authority (and an upgraded one stays denied). UNCONDITIONAL
+      // re-parse, deliberately: an OMITTED block parses to the
+      // empty/deny-everything shape, which is the DENY-FIRST direction for
+      // every capability in the registry (they are all rollout-sequencing
+      // gates whose absent state is the safe state). Both shipped clients
+      // build reconnect session_start frames with the same builder as the
+      // original, so a capable client always re-advertises; a legacy client
+      // that never sent the block re-parses to the same empty shape it
+      // already had.
+      if (existing.voiceLatency) {
         existing.voiceLatency.capabilities = parseVoiceLatencyCapabilities(msg.capabilities);
       }
       if (existing.disconnectTimer) {
