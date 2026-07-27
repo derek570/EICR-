@@ -103,7 +103,11 @@ import {
   createObsClarifyChainBroker,
   normaliseObsClarifyChainId,
 } from './stage6-ask-gate-wrapper.js';
-import { createPerTurnWrites } from './stage6-per-turn-writes.js';
+import {
+  createPerTurnWrites,
+  EFFECTIVE_BOARD_SLOT,
+  boardSlotKey,
+} from './stage6-per-turn-writes.js';
 // readback-correction-optionb §3.3a/b — rolling conversational window so the
 // live model can resolve a bare "no" against the read-backs it spoke.
 import {
@@ -968,10 +972,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // advertises `lim_ranged_write_v1` (rollout safety: a pre-guard client would
     // silently overwrite the LIM via recomputeAll / render a false-green status).
     const hasLimRangedWriteV1 = entry?.voiceLatency?.capabilities?.hasLimRangedWriteV1 === true;
+    // Plan A1a (2026-07-27) — thread the board-clear capability so
+    // dispatchClearBoardReading's deny-first gate can distinguish a capable
+    // client from the dark-state default. Parsed once at session_start
+    // (sonnet-stream.js) into the active-session entry; the SHADOW lane
+    // threads the SAME parsed value (see runShadowHarness) — a
+    // lane-asymmetric capability would make live clear while shadow denies,
+    // diverging the clone from live state and reporting spurious divergence
+    // on every subsequent turn.
+    const hasBoardClearV1 = entry?.voiceLatency?.capabilities?.hasBoardClearV1 === true;
     const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, {
       ws,
       hasLowConfReadbackV1,
       hasLimRangedWriteV1,
+      hasBoardClearV1,
     });
     // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
     // path into the normal write infrastructure: when ask_user carries a
@@ -1579,6 +1593,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // harness (test fixtures); the emit is silently skipped there.
       logger: log,
       sessionId: session.sessionId,
+      // Plan A1a (round-8) — capability gate for the projected-write board
+      // identity (extracted_board_readings[].board_id fill from the
+      // EFFECTIVE_BOARD_SLOT stamp). Capability-absent sessions stay
+      // byte-identical; the capability + classification boundary is the
+      // wire-compat line.
+      hasBoardClearV1,
     });
 
     // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
@@ -2513,6 +2533,93 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         });
       }
 
+    // ── Plan A1a (2026-07-27) §3.5a — net 0: MANDATORY notice drain ──────
+    // The ADDITIVE audible channel for board-clear denial / kill-switch /
+    // already-empty / EICR-refusal / unknown-scope outcomes. Deliberately
+    // NOT voiceNotices: that channel is a turn-final FALLBACK drained only
+    // inside `if (noSpeechIntent)`, which is correct for a stale notice an
+    // operation superseded but WRONG here — a board-clear outcome is the
+    // ONLY report the inspector will ever get about that operation, so a
+    // mixed turn (denied clear + successful reading) must speak BOTH.
+    //
+    // PLACEMENT is load-bearing in both directions: AFTER the §D2 net (D2
+    // keeps first crack at its observation-clarify class) and BEFORE the F7
+    // pre-emission net — a turn with a soft-skipped board-clear outcome PLUS
+    // a suppressed ask would otherwise let F7 queue its generic "couldn't
+    // action that — say it again?" fallback before the mandatory notice
+    // becomes visible, reintroducing the misleading repeat-request loop.
+    // Draining first makes F7 (and marker-②) count the mandatory prompt as
+    // surviving speech — a turn never carries both a notice and an apology.
+    //
+    // Same guard shape as marker-②: confirmationsEnabled (mode-off users
+    // opted out of the spoken channel), chimeObserved, NOT cancelled (a
+    // cancelled generation's accumulator dies with the turn; the F7
+    // cancellation branch owns that apology). Entries are stamped with
+    // generationId at the drain, per the voiceNotices precedent —
+    // dispatchers cannot stamp (ctx carries no generationId, and an
+    // unstamped pendingVoicePrompts entry counts as current-generation).
+    try {
+      if (options.confirmationsEnabled === true && options.chimeObserved === true && !cancelled) {
+        const staged = Array.isArray(perTurnWrites?.mandatoryNotices)
+          ? perTurnWrites.mandatoryNotices.filter(
+              (n) => n && typeof n.text === 'string' && n.text.trim().length > 0
+            )
+          : [];
+        if (staged.length > 0) {
+          // §3.5 narrow exception — same-slot suppression, ALREADY-EMPTY
+          // family ONLY: when the same clear is retried and SUCCEEDS later
+          // in the turn (a surviving same-slot clear correction), or a
+          // same-slot write landed, the already-empty notice must not speak
+          // alongside the operation's own read-back. Slot identity is the
+          // shared boardSlotKey (global fields board-insensitive) — the same
+          // helper the collapse and the #31 gate use. This is same-SLOT
+          // suppression only; it must never generalise back into whole-turn
+          // suppression (the round-11 defect this channel replaces).
+          const survivingSlots = new Set();
+          if (perTurnWrites?.boardReadings instanceof Map) {
+            for (const val of perTurnWrites.boardReadings.values()) {
+              const bsym = val?.[EFFECTIVE_BOARD_SLOT];
+              if (bsym) survivingSlots.add(boardSlotKey(bsym.field, bsym.boardId));
+            }
+          }
+          if (Array.isArray(perTurnWrites?.fieldCorrections)) {
+            for (const c of perTurnWrites.fieldCorrections) {
+              const bsym = c?.[EFFECTIVE_BOARD_SLOT];
+              if (bsym && c.reason === 'clear_reading') {
+                survivingSlots.add(boardSlotKey(bsym.field, bsym.boardId));
+              }
+            }
+          }
+          if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
+          for (const notice of staged) {
+            if (
+              notice.family === 'board_clear_already_empty' &&
+              typeof notice.slotKey === 'string' &&
+              survivingSlots.has(notice.slotKey)
+            ) {
+              continue;
+            }
+            session.pendingVoicePrompts.push({ text: notice.text, generationId });
+            // Distinct telemetry row — NEVER reuse dispatcher_voice_notice_
+            // emitted; the two channels must be separable in CloudWatch.
+            log.info?.('stage6.mandatory_notice_emitted', {
+              sessionId: session.sessionId,
+              turnId,
+              generationId,
+              family: notice.family ?? null,
+              textPreview: notice.text.slice(0, 80),
+            });
+          }
+        }
+      }
+    } catch (mandatoryErr) {
+      log.warn?.('stage6.mandatory_notice_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: mandatoryErr?.message ?? String(mandatoryErr),
+      });
+    }
+
     // ── F7 Item 2 (task #16) — pre-emission ask-audibility net ───────────
     // Codex cycle-6 finding: A3/D2/A4 all MISS the case where Sonnet emitted
     // an ask_user that was SUPPRESSED before ask_user_started crossed the wire
@@ -3369,7 +3476,19 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // lands the per-session registry in sonnet-stream.js.
   const pendingAsks = options.pendingAsks ?? null;
   const ws = options.ws ?? null;
-  const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites);
+  // Plan A1a (2026-07-27) — the shadow lane resolves the SAME parsed
+  // board-clear capability as live (from the active-session entry for this
+  // session id). The shadow lane's mutations are confined to the
+  // shadowSession CLONE by the existing boundary above — that is what makes
+  // this safe, and it is a property of the LANE, not of the capability.
+  // Denying here by construction (the round-4 error) would make live clear
+  // while shadow denies: the two states diverge and every subsequent turn
+  // reports spurious divergence — the exact failure the clone invariant
+  // comment exists to prevent.
+  const shadowCapEntry = getActiveSessionEntry(session.sessionId);
+  const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites, {
+    hasBoardClearV1: shadowCapEntry?.voiceLatency?.capabilities?.hasBoardClearV1 === true,
+  });
   // A1 agentic-voice (2026-07-23) — same two dedicated answer-feature routes
   // as the live lane (a tool is never advertised on one lane only, and never
   // advertised without a dispatch route). Bound to shadowSession so the
