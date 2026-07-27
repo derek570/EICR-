@@ -337,7 +337,20 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
  * @returns {boolean}
  */
 export function isEarthingArrangementRecord(rec) {
-  if (!rec || rec.name !== 'record_board_reading') return false;
+  // Plan A1a (Codex diff-review r1): `clear_board_reading` joins the
+  // earthing-OPERATION group. With only the write recognised, the hoist
+  // would reorder an earthing WRITE ahead of a preceding earthing CLEAR,
+  // inverting a model-emitted clear→write correction into write→clear —
+  // once A1b classifies `earthing_arrangement` as clearable, mechanism A
+  // would then delete the write and the final state would be blank. The
+  // partition preserves order WITHIN a partition, so keeping the whole
+  // group in partition 1 keeps clear→write and write→clear in their
+  // emitted order. Today `earthing_arrangement` is scope-UNCLASSIFIED
+  // (the clear soft-skips without mutating), so this is a zero-behaviour
+  // change that removes a latent A1b footgun.
+  if (!rec || (rec.name !== 'record_board_reading' && rec.name !== 'clear_board_reading')) {
+    return false;
+  }
   const input = rec.input;
   if (!input || typeof input !== 'object') return false;
   return input.field === 'earthing_arrangement';

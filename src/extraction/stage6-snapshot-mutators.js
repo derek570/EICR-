@@ -515,7 +515,20 @@ export function boardFieldAliasSet(field) {
   return aliases;
 }
 
+/** A value that is actually WORTH clearing: non-nullish and, for strings,
+ * non-blank after trimming. A key that merely EXISTS holding null/''/blank
+ * is dead residue — reporting it as a successful clear would speak
+ * "Ze cleared" over nothing meaningfully removed, when the truthful
+ * outcome is the already-empty notice (Codex diff-review r1). */
+function isMeaningfulStoredValue(v) {
+  if (v == null) return false;
+  if (typeof v === 'string') return v.trim().length > 0;
+  return true;
+}
+
 /** Delete every alias spelling of `field` from one plain record.
+ * `cleared` reports whether a MEANINGFUL value was removed (empty residue
+ * keys are still deleted, but deleting them is not "a clear").
  * @returns {{cleared: boolean, previousValue: string|null}} */
 function clearAliasesFromRecord(record, aliasSet) {
   if (!record || typeof record !== 'object') return { cleared: false, previousValue: null };
@@ -524,9 +537,11 @@ function clearAliasesFromRecord(record, aliasSet) {
   for (const alias of aliasSet) {
     if (alias in record) {
       const prior = record[alias];
-      if (previousValue == null && prior != null) previousValue = String(prior);
+      if (isMeaningfulStoredValue(prior)) {
+        if (previousValue == null) previousValue = String(prior);
+        cleared = true;
+      }
       delete record[alias];
-      cleared = true;
     }
   }
   return { cleared, previousValue };

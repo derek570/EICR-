@@ -1086,32 +1086,51 @@ export const BOARD_CLEAR_SCOPE_MAP = Object.freeze({
  * A1b ships a client that could actually be updated to.
  */
 export const BOARD_CLEAR_NOTICE_FAMILIES = Object.freeze({
+  // Codex diff-review r1: FIVE variants per family (the plan's floor is
+  // "≥3"). With exactly three, a FOURTH same-family retry inside the
+  // clients' 30 s field-nil text-dedupe window would wrap back to the first
+  // byte-identical string and be swallowed; five keeps five consecutive
+  // retries audibly distinct — comfortably past the observed three-attempt
+  // loop.
   board_clear_capability_missing: Object.freeze([
     (f) => `Board-reading clear isn't available in this app version — delete ${f} on screen.`,
     (f) => `This app version can't clear board readings by voice — remove ${f} using the screen.`,
     (f) =>
       `Voice clearing for board readings isn't supported in this app build — edit ${f} on screen instead.`,
+    (f) =>
+      `Board readings can't be cleared by voice on this app version — take ${f} out on screen.`,
+    (f) =>
+      `This build doesn't support voice-clearing board readings — clear ${f} from the screen instead.`,
   ]),
   board_clear_disabled: Object.freeze([
     (f) => `Clearing board readings is switched off right now — please delete ${f} on screen.`,
     (f) => `Board-reading clears are currently turned off — remove ${f} using the screen for now.`,
     (f) => `The board-clear function is disabled at the moment — edit ${f} on screen instead.`,
+    (f) => `Board-reading clearing is temporarily off — please take ${f} out on screen.`,
+    (f) =>
+      `Clears for board readings are switched off for now — clear ${f} from the screen instead.`,
   ]),
   board_clear_already_empty: Object.freeze([
     (f) => `${capitaliseFirst(f)} is already blank.`,
     (f) => `There's no ${f} recorded — nothing to clear.`,
     (f) => `${capitaliseFirst(f)} is already empty, so no value was removed.`,
+    (f) => `Nothing is recorded for ${f} — there's no value to remove.`,
+    (f) => `${capitaliseFirst(f)} holds no value at the moment, so there was nothing to clear.`,
   ]),
   field_not_applicable_on_eicr: Object.freeze([
     () =>
       `Comments only apply to an EIC — this certificate is an EICR, so there's nothing to clear.`,
     () => `This is an EICR — the comments field belongs to an EIC and isn't in use here.`,
     () => `There's no comments field on an EICR — that one only exists on an EIC certificate.`,
+    () => `The comments field doesn't exist on an EICR certificate, so there's nothing to remove.`,
+    () => `Comments belong to EIC certificates only — this EICR has no comments field to clear.`,
   ]),
   board_clear_scope_unclassified: Object.freeze([
     (f) => `${capitaliseFirst(f)} can't be cleared by voice yet — delete it on screen.`,
     (f) => `Voice clearing isn't set up for ${f} — remove it using the screen.`,
     (f) => `Clearing ${f} by voice isn't wired up yet — edit it on screen instead.`,
+    (f) => `${capitaliseFirst(f)} isn't voice-clearable yet — take it out on screen.`,
+    (f) => `Voice can't clear ${f} for now — please remove it from the screen.`,
   ]),
 });
 
@@ -1142,8 +1161,15 @@ function djb2Index(turnId, count) {
  * first use. State lives beside the session's dispatcher context and MUST be
  * stored (a re-derivation would repeat the prior text and the clients' 30 s
  * dedupe would go silent).
+ *
+ * Codex diff-review r1: selection is called at the DRAIN (the harness's
+ * net-0 site), NEVER at stage time — dedupe AND the drain's same-slot
+ * suppression must complete BEFORE the cursor advances, so a suppressed
+ * notice can never consume a variant (a consumed-but-unspoken variant lets
+ * the next emitted notice wrap to the last AUDIBLE byte string and be
+ * client-deduped into silence). EXPORTED for the harness + unit tests.
  */
-function selectMandatoryNoticeText(session, family, turnId, friendly) {
+export function selectMandatoryNoticeText(session, family, turnId, friendly) {
   const variants = BOARD_CLEAR_NOTICE_FAMILIES[family];
   if (!session._mandatoryNoticeRotation || typeof session._mandatoryNoticeRotation !== 'object') {
     session._mandatoryNoticeRotation = {};
@@ -1157,13 +1183,20 @@ function selectMandatoryNoticeText(session, family, turnId, friendly) {
 }
 
 /**
- * Stage a mandatory notice (§3.5a net 0) with within-turn (family + slot)
- * dedupe applied BEFORE rotation selection (round-14): a duplicate staging
- * never consumes a rotation variant, so three same-family/same-slot denials
- * in one turn produce ONE emission and the NEXT turn still rotates to a
- * different string.
+ * Stage a mandatory notice (§3.5a net 0) as METADATA ONLY — the spoken text
+ * is selected at the harness DRAIN, after within-turn dedupe (here) and the
+ * drain's same-slot suppression have both settled, so the rotation cursor
+ * advances EXACTLY once per notice that will actually be emitted
+ * (round-14 + Codex diff-review r1). Entries carry the telemetry
+ * dimensions the drain's `stage6.mandatory_notice_emitted` row requires
+ * (family / field / board / reason — PII-safe: field names and board ids,
+ * never values).
  */
-function stageMandatoryNotice(perTurnWrites, session, { family, slotKey: slot, turnId, friendly }) {
+function stageMandatoryNotice(
+  perTurnWrites,
+  session,
+  { family, slotKey: slot, turnId, friendly, field, boardId, reason }
+) {
   if (!Array.isArray(perTurnWrites.mandatoryNotices)) return;
   const duplicate = perTurnWrites.mandatoryNotices.some(
     (n) => n && n.family === family && n.slotKey === slot
@@ -1171,8 +1204,12 @@ function stageMandatoryNotice(perTurnWrites, session, { family, slotKey: slot, t
   if (duplicate) return;
   perTurnWrites.mandatoryNotices.push({
     family,
-    text: selectMandatoryNoticeText(session, family, turnId, friendly),
     slotKey: slot,
+    turnId,
+    friendly,
+    field: field ?? null,
+    boardId: boardId ?? null,
+    reason: reason ?? family,
   });
 }
 
@@ -1283,6 +1320,9 @@ export async function dispatchClearBoardReading(call, ctx) {
       slotKey: noticeSlotKey,
       turnId,
       friendly,
+      field: input.field,
+      boardId: resolvedBoardId,
+      reason,
     });
     return envelope(call.tool_call_id, { ok: true, skipped: true, reason }, false);
   }
@@ -1313,6 +1353,9 @@ export async function dispatchClearBoardReading(call, ctx) {
       slotKey: noticeSlotKey,
       turnId,
       friendly,
+      field: input.field,
+      boardId: resolvedBoardId,
+      reason,
     });
     return envelope(call.tool_call_id, { ok: true, skipped: true, reason }, false);
   }
@@ -1339,6 +1382,9 @@ export async function dispatchClearBoardReading(call, ctx) {
       slotKey: noticeSlotKey,
       turnId,
       friendly,
+      field: input.field,
+      boardId: resolvedBoardId,
+      reason,
     });
     return envelope(call.tool_call_id, { ok: true, skipped: true, reason }, false);
   }
@@ -1371,6 +1417,9 @@ export async function dispatchClearBoardReading(call, ctx) {
       slotKey: noticeSlotKey,
       turnId,
       friendly,
+      field: input.field,
+      boardId: resolvedBoardId,
+      reason: 'field_not_set',
     });
     return envelope(call.tool_call_id, { ok: true, noop: true, reason: 'field_not_set' }, false);
   }

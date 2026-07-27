@@ -25,6 +25,7 @@ const {
   dispatchAddBoard,
   BOARD_CLEAR_SCOPE_MAP,
   BOARD_CLEAR_NOTICE_FAMILIES,
+  selectMandatoryNoticeText,
 } = await import('../extraction/stage6-dispatchers-board.js');
 const { createPerTurnWrites, EFFECTIVE_BOARD_SLOT, boardSlotKey, encodeBoardReadingKey } =
   await import('../extraction/stage6-per-turn-writes.js');
@@ -624,24 +625,11 @@ describe('§3.5 — notice families + rotation contract', () => {
     }
   });
 
-  test('monotonic cycle: three consecutive same-family notices are three DISTINCT strings; a duplicate staging never consumes a variant', async () => {
+  test('staging is METADATA-ONLY and never consumes a rotation variant; duplicate stagings dedupe on (family+slot)', async () => {
+    // Codex diff-review r1: text selection moved to the harness DRAIN so a
+    // later-suppressed notice can never consume a variant. Staging must
+    // therefore carry no text and never touch the rotation cursor.
     const session = makeSession();
-    const texts = [];
-    for (let i = 0; i < 3; i += 1) {
-      const ptw = createPerTurnWrites();
-      const env = await dispatchClearBoardReading(
-        call({ field: 'ze', reason: 'user_correction' }, `toolu_r${i}`),
-        ctxFor(session, ptw, { turnId: `turn-${i}` })
-      );
-      expect(body(env).noop).toBe(true); // ze is empty — already-blank family
-      expect(ptw.mandatoryNotices).toHaveLength(1);
-      texts.push(ptw.mandatoryNotices[0].text);
-    }
-    expect(new Set(texts).size).toBe(3);
-
-    // Round-14: three identical stagings in ONE turn → one retained notice,
-    // ONE rotation-cursor advance; the NEXT turn still rotates.
-    const cursorBefore = { ...session._mandatoryNoticeRotation };
     const ptw = createPerTurnWrites();
     for (let i = 0; i < 3; i += 1) {
       await dispatchClearBoardReading(
@@ -649,16 +637,60 @@ describe('§3.5 — notice families + rotation contract', () => {
         ctxFor(session, ptw, { turnId: 'turn-dup' })
       );
     }
+    // Three identical stagings in ONE turn → one retained metadata entry…
     expect(ptw.mandatoryNotices).toHaveLength(1);
-    expect(session._mandatoryNoticeRotation.board_clear_already_empty).toBe(
-      (cursorBefore.board_clear_already_empty + 1) % 3
-    );
-    const ptwNext = createPerTurnWrites();
-    await dispatchClearBoardReading(
-      call({ field: 'ze', reason: 'user_correction' }, 'toolu_next'),
-      ctxFor(session, ptwNext, { turnId: 'turn-next' })
-    );
-    expect(ptwNext.mandatoryNotices[0].text).not.toBe(ptw.mandatoryNotices[0].text);
+    expect(ptw.mandatoryNotices[0]).toMatchObject({
+      family: 'board_clear_already_empty',
+      friendly: 'Ze',
+      field: 'ze',
+      reason: 'field_not_set',
+    });
+    expect(ptw.mandatoryNotices[0]).not.toHaveProperty('text');
+    // …and ZERO cursor consumption (selection happens only at the drain).
+    expect(session._mandatoryNoticeRotation).toBeUndefined();
+  });
+
+  test('selectMandatoryNoticeText: strict monotonic cycle — consecutive selections always distinct, even for turn-ids that COLLIDE under the rejected djb2 selector', () => {
+    const family = 'board_clear_already_empty';
+    const len = BOARD_CLEAR_NOTICE_FAMILIES[family].length;
+    const djb2 = (s) => {
+      let h = 5381;
+      for (let i = 0; i < s.length; i += 1) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+      return h % len;
+    };
+    // Re-derive colliding ids against the REAL modulus (the §3.5 sample
+    // arrays are turnId-format-dependent and deliberately not copied):
+    // for each of ≥5 prefixes, find two ids with EQUAL djb2 index — the
+    // rejected hash selector would repeat the same string on them.
+    for (const prefix of ['sess', 'turn', 'F1AC26FB', 'gen', 'live']) {
+      let a = null;
+      let b = null;
+      outer: for (let i = 0; i < 200; i += 1) {
+        for (let j = i + 1; j < 200; j += 1) {
+          if (djb2(`${prefix}-${i}`) === djb2(`${prefix}-${j}`)) {
+            a = `${prefix}-${i}`;
+            b = `${prefix}-${j}`;
+            break outer;
+          }
+        }
+      }
+      expect(a).not.toBeNull();
+      const session = makeSession();
+      const first = selectMandatoryNoticeText(session, family, a, 'Ze');
+      const second = selectMandatoryNoticeText(session, family, b, 'Ze');
+      // djb2(a) === djb2(b), so a hash selector returns the SAME string —
+      // the real monotonic cycle must not.
+      expect(second).not.toBe(first);
+    }
+    // Three consecutive selections are three distinct strings; every family
+    // now carries FIVE variants so five consecutive fires stay distinct
+    // (Codex r1 — a fourth retry must not wrap into the 30 s client dedupe).
+    const session = makeSession();
+    const five = [];
+    for (let i = 0; i < 5; i += 1) {
+      five.push(selectMandatoryNoticeText(session, family, `t-${i}`, 'Ze'));
+    }
+    expect(new Set(five).size).toBe(5);
   });
 });
 
@@ -676,9 +708,16 @@ describe('already-empty clear (dispatcher half of test 7)', () => {
     expect(ptw.fieldCorrections).toHaveLength(0);
     expect(ptw.cleared).toHaveLength(0);
     expect(ptw.mandatoryNotices).toHaveLength(1);
-    expect(ptw.mandatoryNotices[0].family).toBe('board_clear_already_empty');
-    const allVariants = BOARD_CLEAR_NOTICE_FAMILIES.board_clear_already_empty.map((f) => f('Ze'));
-    expect(allVariants).toContain(ptw.mandatoryNotices[0].text);
+    // Metadata-only staging (drain-time selection): family + telemetry
+    // dimensions, no text.
+    expect(ptw.mandatoryNotices[0]).toMatchObject({
+      family: 'board_clear_already_empty',
+      friendly: 'Ze',
+      field: 'ze',
+      boardId: 'main',
+      reason: 'field_not_set',
+    });
+    expect(ptw.mandatoryNotices[0]).not.toHaveProperty('text');
   });
 });
 

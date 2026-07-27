@@ -108,6 +108,12 @@ import {
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
 } from './stage6-per-turn-writes.js';
+// Plan A1a — the net-0 drain selects mandatory-notice text AT THE DRAIN
+// (post-suppression) via the dispatcher module's exported selector, so the
+// rotation cursor advances exactly once per emitted notice. Safe import:
+// stage6-dispatchers-board.js is already in this module's graph via
+// stage6-dispatchers.js.
+import { selectMandatoryNoticeText } from './stage6-dispatchers-board.js';
 // readback-correction-optionb §3.3a/b — rolling conversational window so the
 // live model can resolve a bare "no" against the read-backs it spoke.
 import {
@@ -2561,9 +2567,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     try {
       if (options.confirmationsEnabled === true && options.chimeObserved === true && !cancelled) {
         const staged = Array.isArray(perTurnWrites?.mandatoryNotices)
-          ? perTurnWrites.mandatoryNotices.filter(
-              (n) => n && typeof n.text === 'string' && n.text.trim().length > 0
-            )
+          ? perTurnWrites.mandatoryNotices.filter((n) => n && typeof n.family === 'string')
           : [];
         if (staged.length > 0) {
           // §3.5 narrow exception — same-slot suppression, ALREADY-EMPTY
@@ -2599,15 +2603,36 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             ) {
               continue;
             }
-            session.pendingVoicePrompts.push({ text: notice.text, generationId });
+            // Codex diff-review r1 — text SELECTION happens HERE, after the
+            // within-turn dedupe (stage time) AND the same-slot suppression
+            // above have both settled, so the per-session rotation cursor
+            // advances EXACTLY once per notice actually emitted. Selecting
+            // at stage time let a later-suppressed notice consume a variant
+            // silently — after enough suppressed attempts the next audible
+            // notice could wrap to the last HEARD byte string and be
+            // swallowed by the clients' 30 s text dedupe.
+            const noticeText = selectMandatoryNoticeText(
+              session,
+              notice.family,
+              notice.turnId ?? turnId,
+              notice.friendly
+            );
+            if (typeof noticeText !== 'string' || noticeText.trim().length === 0) continue;
+            session.pendingVoicePrompts.push({ text: noticeText, generationId });
             // Distinct telemetry row — NEVER reuse dispatcher_voice_notice_
             // emitted; the two channels must be separable in CloudWatch.
+            // Carries the §3.5a dimensions (family/field/board/reason) —
+            // PII-safe: field names and board ids only, never values; the
+            // preview is bounded at 80 chars.
             log.info?.('stage6.mandatory_notice_emitted', {
               sessionId: session.sessionId,
               turnId,
               generationId,
               family: notice.family ?? null,
-              textPreview: notice.text.slice(0, 80),
+              field: notice.field ?? null,
+              board: notice.boardId ?? null,
+              reason: notice.reason ?? notice.family ?? null,
+              textPreview: noticeText.slice(0, 80),
             });
           }
         }

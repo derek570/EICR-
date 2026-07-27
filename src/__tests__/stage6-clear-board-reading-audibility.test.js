@@ -61,8 +61,12 @@ jest.unstable_mockModule('../extraction/loaded-barrel-speculator.js', () => ({
   createSpeculator: createSpeculatorSpy,
 }));
 
-const { runShadowHarness, CATCHALL_AUDIBILITY_PROMPTS, REJECTED_PROMPTS } =
-  await import('../extraction/stage6-shadow-harness.js');
+const {
+  runShadowHarness,
+  CATCHALL_AUDIBILITY_PROMPTS,
+  REJECTED_PROMPTS,
+  ASK_AUDIBILITY_FALLBACK_TEXT,
+} = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
 const { parseVoiceLatencyCapabilities } = await import('../extraction/voice-latency-config.js');
 const { BOARD_CLEAR_NOTICE_FAMILIES } = await import('../extraction/stage6-dispatchers-board.js');
@@ -417,6 +421,44 @@ describe('tests 9/10 — denial at the seam (five legs + leg vi three-turn rotat
     assertNoApologies(result, opts.logger);
   });
 
+  test('10 leg (vi) — three consecutive KILL-SWITCH denial turns: three DISTINCT kill-family strings, zero mutation/frames', async () => {
+    process.env.BOARD_CLEAR_DISABLED = 'true';
+    const session = makeSession({ circuits: { 0: { ze: '0.4' } } });
+    const texts = [];
+    for (let i = 0; i < 3; i += 1) {
+      loopDispatching([clearCall('ze', `toolu_k${i}`)]);
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, `Delete Ze kill ${i}`, [], opts);
+      const speakers = fieldNullConfs(result);
+      expect(speakers).toHaveLength(1);
+      expect(familyTexts('board_clear_disabled', 'ze')).toContain(speakers[0].text);
+      texts.push(speakers[0].text);
+      expect(session.stateSnapshot.circuits[0].ze).toBe('0.4');
+      expect(result.field_corrections ?? []).toHaveLength(0);
+      assertNoApologies(result, opts.logger);
+    }
+    expect(new Set(texts).size).toBe(3);
+  });
+
+  test('19 rotation leg — three consecutive UNKNOWN-SCOPE turns: three DISTINCT unknown-scope strings', async () => {
+    const session = makeSession({ circuits: { 0: { earthing_arrangement: 'TN-C-S' } } });
+    const texts = [];
+    for (let i = 0; i < 3; i += 1) {
+      loopDispatching([clearCall('earthing_arrangement', `toolu_s${i}`)]);
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, `clear earthing ${i}`, [], opts);
+      const speakers = fieldNullConfs(result);
+      expect(speakers).toHaveLength(1);
+      expect(familyTexts('board_clear_scope_unclassified', 'earthing_arrangement')).toContain(
+        speakers[0].text
+      );
+      texts.push(speakers[0].text);
+      expect(session.stateSnapshot.circuits[0].earthing_arrangement).toBe('TN-C-S');
+      assertNoApologies(result, opts.logger);
+    }
+    expect(new Set(texts).size).toBe(3);
+  });
+
   test('9 leg (vi) — three consecutive denial turns: three DISTINCT family strings, zero mutation/frames throughout', async () => {
     registerEntry(false);
     const session = makeSession({ circuits: { 0: { ze: '0.4' } } });
@@ -620,6 +662,163 @@ describe('test 19 (seam legs) — unknown-scope fail-closed speaks the A1a famil
     ).toHaveLength(1);
     expect(speakers.some((c) => c.field === 'measured_zs_ohm')).toBe(true);
     assertNoApologies(result, opts.logger);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('net 0 × SUPPRESSED ask (the §4 harness-row test): the mandatory notice wins, F7 stays quiet', () => {
+  // A turn with a soft-skipped board-clear outcome PLUS an ask that was
+  // ATTEMPTED but never emitted would otherwise let the F7 pre-emission net
+  // queue its generic "couldn't action that — say it again?" fallback —
+  // reintroducing the misleading repeat-request loop. Draining net 0 FIRST
+  // makes F7 count the mandatory prompt as surviving speech.
+  const representativeOutcomes = [
+    [
+      'capability-missing',
+      () => registerEntry(false),
+      clearCall('ze', 'toolu_c'),
+      'board_clear_capability_missing',
+      'ze',
+      {},
+    ],
+    [
+      'kill-switch',
+      () => {
+        process.env.BOARD_CLEAR_DISABLED = 'true';
+      },
+      clearCall('ze', 'toolu_c'),
+      'board_clear_disabled',
+      'ze',
+      { circuits: { 0: { ze: '0.4' } } },
+    ],
+    ['already-empty', () => {}, clearCall('ze', 'toolu_c'), 'board_clear_already_empty', 'ze', {}],
+    [
+      'EICR-refusal',
+      () => {},
+      clearCall('comments', 'toolu_c'),
+      'field_not_applicable_on_eicr',
+      'comments',
+      { circuits: { 0: { comments: 'seeded' } } },
+    ],
+    [
+      'unknown-scope',
+      () => {},
+      clearCall('earthing_arrangement', 'toolu_c'),
+      'board_clear_scope_unclassified',
+      'earthing_arrangement',
+      { circuits: { 0: { earthing_arrangement: 'TT' } } },
+    ],
+  ];
+
+  test.each(representativeOutcomes)(
+    '%s outcome + suppressed ask_user → exactly the specific notice; no ASK_AUDIBILITY_FALLBACK_TEXT; no catch-all',
+    async (_label, setup, theCall, family, field, stateOverrides) => {
+      setup();
+      const session = makeSession(stateOverrides, field === 'comments' ? { certType: 'EICR' } : {});
+      // The mocked loop dispatches the clear through the REAL dispatcher and
+      // ALSO reports an attempted ask_user whose emission was suppressed
+      // (the mocked ask dispatcher returns an envelope but never fires
+      // onAskUserStarted — emittedAskToolCallIds stays empty, the F7
+      // "attempted but never emitted" shape).
+      runToolLoopSpy.mockImplementation(async (opts) => {
+        const env = await opts.dispatcher(
+          { tool_call_id: theCall.id, name: theCall.name, input: theCall.input },
+          opts.ctx
+        );
+        return {
+          stop_reason: 'end_turn',
+          rounds: 1,
+          tool_calls: [
+            { tool_call_id: theCall.id, name: theCall.name, input: theCall.input, result: env },
+            {
+              tool_call_id: 'toolu_ask',
+              name: 'ask_user',
+              input: { question: 'suppressed?', reason: 'unclear' },
+              result: {
+                tool_use_id: 'toolu_ask',
+                content: '{"answer_outcome":"restrained_mode"}',
+                is_error: false,
+              },
+            },
+          ],
+          aborted: false,
+          messages_final: [],
+          usage: {},
+          terminal_reason: 'end_turn',
+        };
+      });
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, 'mixed suppressed-ask turn', [], opts);
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(1);
+      expect(familyTexts(family, field)).toContain(speakers[0].text);
+      // F7's generic fallback must NOT fire — the mandatory notice counts as
+      // surviving speech.
+      expect(speakers.some((c) => c.text === ASK_AUDIBILITY_FALLBACK_TEXT)).toBe(false);
+      const f7Rows = opts.logger.info.mock.calls.filter(
+        ([ev]) => ev === 'stage6.ask_audibility_fallback_emitted'
+      );
+      expect(f7Rows).toHaveLength(0);
+      assertNoApologies(result, opts.logger);
+    }
+  );
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('telemetry — stage6.mandatory_notice_emitted carries the §3.5a dimensions', () => {
+  test('family + field + board + reason + bounded preview', async () => {
+    registerEntry(false);
+    const session = makeSession({ circuits: { 0: { ze: '0.4' } } });
+    loopDispatching([clearCall('ze', 'toolu_t')]);
+    const opts = baseOpts();
+    await runShadowHarness(session, 'Delete Ze.', [], opts);
+    const rows = mandatoryRows(opts.logger);
+    expect(rows).toHaveLength(1);
+    const payload = rows[0][1];
+    expect(payload).toMatchObject({
+      family: 'board_clear_capability_missing',
+      field: 'ze',
+      board: 'main',
+      reason: 'board_clear_capability_missing',
+    });
+    expect(typeof payload.textPreview).toBe('string');
+    expect(payload.textPreview.length).toBeLessThanOrEqual(80);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('rotation exactly-once under suppression (Codex r1 — a suppressed notice never consumes a variant)', () => {
+  test('turn 1: already-empty notice SUPPRESSED by a same-slot write → cursor untouched; turns 2-3 emit DISTINCT variants with no wrap-repeat', async () => {
+    const session = makeSession();
+    // Turn 1: already-empty clear + same-slot write → the notice is
+    // suppressed at the drain; the rotation cursor must NOT advance.
+    loopDispatching([
+      clearCall('ze', 'toolu_c1'),
+      {
+        name: 'record_board_reading',
+        input: { field: 'ze', value: '0.35', confidence: 0.9, source_turn_id: 't1' },
+        id: 'toolu_w1',
+      },
+    ]);
+    let opts = baseOpts();
+    let result = await runShadowHarness(session, 'suppressed turn', [], opts);
+    expect(audibleConfs(result).filter((c) => c.field == null)).toHaveLength(0);
+    expect(session._mandatoryNoticeRotation).toBeUndefined();
+
+    // Turns 2 and 3: genuine already-empty clears (ze cleared by hand
+    // between turns) → two DISTINCT emitted variants.
+    const texts = [];
+    for (let i = 0; i < 2; i += 1) {
+      delete session.stateSnapshot.circuits[0].ze;
+      delete session.stateSnapshot.circuits[0].earth_loop_impedance_ze;
+      loopDispatching([clearCall('ze', `toolu_e${i}`)]);
+      opts = baseOpts();
+      result = await runShadowHarness(session, `empty clear ${i}`, [], opts);
+      const speakers = fieldNullConfs(result);
+      expect(speakers).toHaveLength(1);
+      texts.push(speakers[0].text);
+    }
+    expect(new Set(texts).size).toBe(2);
   });
 });
 
