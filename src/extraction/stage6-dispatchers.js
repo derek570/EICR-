@@ -47,6 +47,7 @@ import {
 } from './stage6-dispatchers-observation.js';
 import {
   dispatchRecordBoardReading,
+  dispatchClearBoardReading,
   dispatchAddBoard,
   dispatchSelectBoard,
   dispatchMarkDistributionCircuit,
@@ -107,6 +108,13 @@ export const WRITE_DISPATCHERS = {
   // call add_board FIRST. Path-2 resolver entanglement risk made the
   // ask_user flow a supervised slice.
   mark_distribution_circuit: dispatchMarkDistributionCircuit,
+  // Plan A1a (2026-07-27, feedback id 101) — clear_board_reading, the
+  // board/supply-scope analogue of clear_reading ("Delete Ze" had no possible
+  // tool; session C06B9904). Deny-first at the DISPATCHER via board_clear_v1
+  // (denyBoardClear) — the tool is always advertised, and every session
+  // without the capability gets a soft-skip + spoken notice, never a
+  // mutation or a board field_corrected frame.
+  clear_board_reading: dispatchClearBoardReading,
 };
 
 /**

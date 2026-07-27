@@ -27,9 +27,12 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all fifteen keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all sixteen keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
+        // Plan A1a (2026-07-27) — board/supply-scope clear (dispatcher-gated
+        // deny-first via board_clear_v1).
+        'clear_board_reading',
         'clear_reading',
         'create_circuit',
         'delete_circuit',
@@ -82,6 +85,8 @@ describe('barrel re-exports', () => {
     expect(WRITE_DISPATCHERS.mark_distribution_circuit).toBe(
       boardSibling.dispatchMarkDistributionCircuit
     );
+    // Plan A1a (2026-07-27) — clear_board_reading lives on the board sibling.
+    expect(WRITE_DISPATCHERS.clear_board_reading).toBe(boardSibling.dispatchClearBoardReading);
   });
 
   test('every dispatcher returns a well-formed envelope when invoked with valid inputs', async () => {
@@ -187,6 +192,13 @@ describe('barrel re-exports', () => {
       // existing board id in the minimal seed; the actual no-cycle gate
       // lives in validateBoardHierarchy and is invoked from add_board.
       mark_distribution_circuit: { circuit: 3, feeds_board_id: 'main' },
+      // Plan A1a (2026-07-27) — clear_board_reading. The barrel ctx carries
+      // no hasBoardClearV1, so the dispatcher's deny-first capability gate
+      // returns the SOFT-SKIP envelope {ok:true, skipped:true, reason:
+      // 'board_clear_capability_missing'} — is_error:false and ok:true, which
+      // is exactly the §3.5a mutation-safe dark-state shape this test's
+      // envelope assertions require.
+      clear_board_reading: { field: 'ze', reason: 'user_correction' },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       // Fresh session per call so create_circuit(4) etc don't collide.
