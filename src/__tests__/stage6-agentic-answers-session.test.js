@@ -53,7 +53,13 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
 
   test('flag-off render preserves A1 OFF-block lines; no answer-feature content', () => {
     const off = renderAgenticSystemPrompt(false);
-    expect(off).toContain('TOOLS (12):');
+    // Plan A1a (2026-07-27): clear_board_reading grew both renders — the
+    // flag-off heading is 17 (the real flag-off toolset; the old 12 was
+    // stale even before A1a) and the four non-agentic board/bulk tools now
+    // sit OUTSIDE the A1:ON block (buildSessionTools(false) advertises
+    // them, so a flag-off inventory describing only 13 would contradict a
+    // 17 heading).
+    expect(off).toContain('TOOLS (17):');
     expect(off).toContain('There are NO `query_*` tools — consult the cached prefix directly.');
     expect(off).toContain(
       'If no new information was spoken, emit NO tool calls — the server handles silence.'
@@ -61,14 +67,24 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
     expect(off).not.toContain('ANSWERING QUESTIONS:');
     expect(off).not.toContain('answer_user');
     expect(off).not.toContain('inspect_session_state');
-    expect(off).not.toContain('TOOLS (18)');
+    expect(off).not.toContain('TOOLS (19)');
     expect(off).not.toContain('You have 18 tools');
+    // Round-13 parity: the four non-agentic tools ARE in the flag-off render.
+    for (const name of [
+      'set_field_for_all_circuits',
+      'add_board',
+      'select_board',
+      'mark_distribution_circuit',
+      'clear_board_reading',
+    ]) {
+      expect(off).toContain(`\`${name}\``);
+    }
   });
 
-  test('flag-on render carries the rewrites and the exhaustive TOOLS (18) inventory', () => {
+  test('flag-on render carries the rewrites and the exhaustive TOOLS (19) inventory', () => {
     const on = renderAgenticSystemPrompt(true);
-    expect(on).toContain('TOOLS (18):');
-    expect(on).not.toContain('TOOLS (12):');
+    expect(on).toContain('TOOLS (19):');
+    expect(on).not.toContain('TOOLS (17):');
     expect(on).toContain('ANSWERING QUESTIONS:');
     expect(on).toContain('call `inspect_session_state`');
     expect(on).not.toContain('There are NO `query_*` tools');
@@ -80,6 +96,7 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
       'mark_distribution_circuit',
       'answer_user',
       'inspect_session_state',
+      'clear_board_reading',
     ]) {
       expect(on).toContain(`\`${name}\``);
     }
@@ -87,6 +104,19 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
     expect(on).toContain('A question turn is NOT "no new information"');
     expect(on).toContain('only `answer_user` reaches the speaker');
     expect(on).toContain('"You have 18 tools"');
+  });
+
+  test('plan A1a — both renders carry the scope-explicit clear directives and the Delete-Ze example', () => {
+    for (const enabled of [true, false]) {
+      const rendered = renderAgenticSystemPrompt(enabled);
+      expect(rendered).toContain('`clear_board_reading` removes BOARD/SUPPLY/INSTALLATION fields');
+      expect(rendered).toContain(
+        '"Delete Ze" → `clear_board_reading({field:"ze", reason:"user_correction"})`'
+      );
+      // SINGLE-BOARD FOCUS covers the clear path with the same
+      // select_board-first discipline as the write path.
+      expect(rendered).toMatch(/`record_board_reading` \/ `clear_board_reading` calls scope there/);
+    }
   });
 
   test('the composed exports match their renders (flag-off keeps the historical name)', () => {
@@ -255,8 +285,8 @@ describe('leak filter — retained count literals + complete TOOL_KEYWORD_RE (It
       expect(checkForPromptLeak(text, { field: 'question' }).safe).toBe(false);
     }
     // Ordinary inspection speech stays safe.
-    expect(checkForPromptLeak('Circuit 4 has no Zs recorded yet.', { field: 'question' }).safe).toBe(
-      true
-    );
+    expect(
+      checkForPromptLeak('Circuit 4 has no Zs recorded yet.', { field: 'question' }).safe
+    ).toBe(true);
   });
 });

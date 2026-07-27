@@ -34,6 +34,7 @@ import {
   TOOL_SCHEMAS,
   CONTEXT_FIELD_ENUM,
   BOARD_FIELD_ENUM,
+  CLEAR_BOARD_READING_FIELD_ENUM,
 } from '../extraction/stage6-tool-schemas.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -160,12 +161,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         // Empty-slot writes directly; correcting a filled slot follows the
         // normal correction path (circuit clears-then-records, board overwrites
         // via record_board_reading) — does NOT bypass the correction contract.
-        expect(rendered).toMatch(/correcting an ALREADY-FILLED slot follows the normal correction path/);
+        expect(rendered).toMatch(
+          /correcting an ALREADY-FILLED slot follows the normal correction path/
+        );
         expect(rendered).toMatch(/a board field overwrites via `record_board_reading`/);
         // The precedence guards survive: an ask-reply resolves first, and a
         // leading-"no" reply (value-bearing or not) is NOT a fresh Steer-1 write.
         expect(rendered).toMatch(/reply to a pending `ask_user` resolves that ask first/);
-        expect(rendered).toMatch(/a leading-"no" reply with no in-utterance anchor\+scope is NOT this write/);
+        expect(rendered).toMatch(
+          /a leading-"no" reply with no in-utterance anchor\+scope is NOT this write/
+        );
         expect(rendered).toMatch(/"No\. It was 0\.63"/);
       }
       // The value-less ask (Example 8 / marker-② Phase-4 steer) MUST survive —
@@ -454,8 +459,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // byte-identical to the pre-A1 prompt (P8 grew the shared region); only
       // the A1 OFF-marker blocks stay verbatim. The deployed prod render is
       // flag-ON.
+      // Plan A1a (2026-07-27, clear_board_reading): the new tool bullet +
+      // scope-explicit clear directives + Delete-Ze steer land in the SHARED
+      // region (both renders grow — the bullet list is outside the A1
+      // markers), plus the corrected 17/19 headings. Measured 22245; cap
+      // 22345 leaves ~100-token headroom (measured + ~100 per the P8
+      // precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(22025);
+      expect(estimate).toBeLessThanOrEqual(22345);
     });
   });
 
@@ -748,6 +759,25 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       }
       const invalidBoard = [...new Set(boardFieldClaims)].filter((id) => !validBoardFields.has(id));
       expect(invalidBoard).toEqual([]);
+
+      // Plan A1a (2026-07-27) — clear_board_reading worked examples ("Delete
+      // Ze"): the field claim there must be a CLEAR_BOARD_READING_FIELD_ENUM
+      // member (the 78-member advertised clear enum, a strict subset of
+      // BOARD_FIELD_ENUM). Their spans are likewise excluded from the
+      // circuit-fields audit below.
+      const validClearBoardFields = new Set(CLEAR_BOARD_READING_FIELD_ENUM);
+      const clearBoardCallRe = /clear_board_reading\s*\(\s*\{([^}]*)\}/g;
+      const clearBoardClaims = [];
+      while ((m = clearBoardCallRe.exec(prompt)) !== null) {
+        boardSpans.push([m.index, m.index + m[0].length]);
+        const fieldMatch = m[1].match(/field:\s*"([a-z_][a-z0-9_]*)"/);
+        if (fieldMatch) clearBoardClaims.push(fieldMatch[1]);
+      }
+      expect(clearBoardClaims.length).toBeGreaterThan(0); // the Delete-Ze steer exists
+      const invalidClearBoard = [...new Set(clearBoardClaims)].filter(
+        (id) => !validClearBoardFields.has(id)
+      );
+      expect(invalidClearBoard).toEqual([]);
 
       // Now scan every `field: "X"` outside the record_board_reading spans
       // and require circuit-fields enum membership. Word-boundary
@@ -1168,8 +1198,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // After the Codex diff-review correctness fixes (cycle 1 + mini-review +
       // cycle 2 — see the combined cap comment) the base render measures 16705;
       // cap 16790 leaves ~85-token headroom.
+      // Plan A1a (2026-07-27, clear_board_reading): shared-region growth (new
+      // tool bullet, scope-explicit clear directives, Delete-Ze steer,
+      // corrected 17/19 headings — see the Group 1 comment). Measured 17008;
+      // cap 17108 leaves ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(16790);
+      expect(estimate).toBeLessThanOrEqual(17108);
     });
   });
 
@@ -1863,7 +1897,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(block).toMatch(/never blanket-default a code/);
         // Uses the BOUNDED clarification budget (one initial + one continuation),
         // NOT a "one-ask" budget that would suppress a permitted continuation.
-        expect(block).toMatch(/bounded clarification budget above \(one initial ask \+ at most one continuation\)/);
+        expect(block).toMatch(
+          /bounded clarification budget above \(one initial ask \+ at most one continuation\)/
+        );
         // All outcomes are emittable codes — there is no NC code in the tool enum.
         expect(block).toMatch(/there is no NC code/);
         expect(block).not.toMatch(/→ \*\*NC\*\*/);
@@ -1915,7 +1951,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
           /SOUND bond at least 6 mm² with no thermal damage is NOT potentially dangerous → \*\*C3 at most\*\* \(improvement for the undersize\), never C2/
         );
         // Bathroom supplementary omission also caps at C3, never C2.
-        expect(block).toMatch(/omission conditions are met it may be omitted → \*\*C3 at most, never C2\*\*/);
+        expect(block).toMatch(
+          /omission conditions are met it may be omitted → \*\*C3 at most, never C2\*\*/
+        );
       }
     });
   });
