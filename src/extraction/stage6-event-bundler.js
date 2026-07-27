@@ -1353,7 +1353,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // same-turn write only suppresses the clear line for the SAME effective
     // slot — a write on one board no longer suppresses a spoken clear on a
     // DIFFERENT board (the pre-A1a board-UNAWARE cross-board over-suppression
-    // is closed; test 11-L1/L2 pins both directions).
+    // is closed; tests 6 and 6c pin both cross-board directions, 11-L1/L2
+    // pin the symbol-less legacy fallback).
     const obsAndClears = synthesiseObservationAndClearedConfirmations(
       perTurnWrites.observations,
       perTurnWrites.deletedObservations,
