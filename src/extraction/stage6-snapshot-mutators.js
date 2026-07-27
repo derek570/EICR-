@@ -31,6 +31,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { getMainBoardId } from './stage6-multi-board-shape.js';
+import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 
 /**
  * Write a reading into stateSnapshot.circuits[circuit][field]. Auto-creates
@@ -476,6 +477,150 @@ export function applyBoardReadingFlagAware(snapshot, args) {
   } else {
     applyBoardReadingMultiBoard(snapshot, args);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Plan A1a (2026-07-27, feedback id 101) — board/supply-scope CLEAR trio.
+// There was no board clearer of any kind before this: clear_reading's trio is
+// circuit-scope only, and the asymmetry (write board fields, never clear them)
+// is the exact defect session C06B9904 hit ("Delete Ze" ×3, apology loop,
+// bogus value persisting into the certificate).
+// ---------------------------------------------------------------------------
+
+/**
+ * A board field may exist in the snapshot under any spelling the model used
+ * on the write path (record_board_reading advertises all 84 members,
+ * including both halves of a FIELD_CORRECTIONS alias pair — the
+ * canonicalisation is OUTBOUND-ONLY, applied by the bundler when building
+ * result.field_corrections; dispatchRecordBoardReading stores the RAW field).
+ * A clear must therefore target EVERY spelling that canonicalises to the same
+ * wire field — otherwise the untouched alias re-asserts the value on the next
+ * snapshot (a clear that un-clears itself: the F5 shape, on Ze, in the plan
+ * written to fix F5).
+ *
+ * Derived from FIELD_CORRECTIONS itself (all keys mapping to the canonical
+ * wire name, plus the canonical name), never hand-listed — a future alias
+ * then works without a code change. boardFieldAliasSet('ze') ===
+ * Set{'ze', 'earth_loop_impedance_ze'}.
+ *
+ * @param {string} field — any spelling (raw enum member or canonical wire name)
+ * @returns {Set<string>}
+ */
+export function boardFieldAliasSet(field) {
+  const canonical = FIELD_CORRECTIONS[field] ?? field;
+  const aliases = new Set([field, canonical]);
+  for (const [raw, wire] of Object.entries(FIELD_CORRECTIONS)) {
+    if (wire === canonical) aliases.add(raw);
+  }
+  return aliases;
+}
+
+/** Delete every alias spelling of `field` from one plain record.
+ * @returns {{cleared: boolean, previousValue: string|null}} */
+function clearAliasesFromRecord(record, aliasSet) {
+  if (!record || typeof record !== 'object') return { cleared: false, previousValue: null };
+  let cleared = false;
+  let previousValue = null;
+  for (const alias of aliasSet) {
+    if (alias in record) {
+      const prior = record[alias];
+      if (previousValue == null && prior != null) previousValue = String(prior);
+      delete record[alias];
+      cleared = true;
+    }
+  }
+  return { cleared, previousValue };
+}
+
+/**
+ * Legacy-bucket board clear: removes every alias spelling of `field` from
+ * stateSnapshot.circuits[0] (the legacy supply/board/installation surface).
+ * Contract matches clearReadingInSnapshot: {cleared, previousValue}.
+ *
+ * @param {{circuits: Object}} snapshot
+ * @param {{field: string}} input
+ * @returns {{cleared: boolean, previousValue: string|null}}
+ */
+export function clearBoardReadingInSnapshot(snapshot, { field }) {
+  return clearAliasesFromRecord(snapshot?.circuits?.[0], boardFieldAliasSet(field));
+}
+
+/**
+ * Multi-board board clear: removes every alias spelling of `field` from the
+ * resolved board's BoardInfo record on snapshot.boards[].
+ *
+ * @param {{boards?: Array, currentBoardId?: string}} snapshot
+ * @param {{field: string, boardId?: string}} input
+ * @returns {{cleared: boolean, previousValue: string|null}}
+ */
+export function clearBoardReadingMultiBoard(snapshot, { field, boardId }) {
+  const id = resolveBoardId(snapshot, boardId);
+  const board = Array.isArray(snapshot?.boards)
+    ? snapshot.boards.find((b) => b && b.id === id)
+    : undefined;
+  return clearAliasesFromRecord(board, boardFieldAliasSet(field));
+}
+
+/**
+ * Scope-aware board clear (§3.3a). BACKEND STORAGE SCOPE IS A SECOND,
+ * INDEPENDENT AXIS from client persistence scope: applyBoardReadingFlagAware
+ * deposits a main-target write in circuits[0] and a non-main write in
+ * boards[<resolved>], so WHERE a value lives depends on currentBoardId AT
+ * WRITE TIME. The rule, in one line: scope decides both the slot key and the
+ * bucket sweep — GLOBAL fields clear everywhere under every alias;
+ * BOARD-SCOPED fields clear one board's record.
+ *
+ * `scope` is passed EXPLICITLY by the dispatcher (which owns the pinned
+ * scope map) — this module must not import it (dependency inversion) nor
+ * re-derive it (drift).
+ *
+ *  - scope 'global': board-INSENSITIVE. Removes the field from circuits[0],
+ *    from EVERY boards[i], under every alias spelling, regardless of
+ *    currentBoardId. Never branches on isMainBoardTarget — a global field's
+ *    written value may sit in either bucket depending on which board was
+ *    selected when it was dictated, and a partial sweep re-asserts on the
+ *    next snapshot (the §3.3a F5 factory).
+ *  - scope 'board': targets exactly the board a write would have hit
+ *    (resolveBoardId convention). Main target additionally sweeps the main
+ *    board's boards[] record — both backing buckets feed the same board —
+ *    but NEVER another board's record.
+ *
+ * @param {{circuits: Object, boards?: Array, currentBoardId?: string}} snapshot
+ * @param {{field: string, boardId?: string, scope: 'global'|'board'}} args
+ * @returns {{cleared: boolean, previousValue: string|null}}
+ */
+export function clearBoardReadingFlagAware(snapshot, args) {
+  const { field, boardId, scope } = args ?? {};
+  const aliasSet = boardFieldAliasSet(field);
+  if (scope === 'global') {
+    let cleared = false;
+    let previousValue = null;
+    const fold = (res) => {
+      if (res.cleared) cleared = true;
+      if (previousValue == null) previousValue = res.previousValue;
+    };
+    fold(clearAliasesFromRecord(snapshot?.circuits?.[0], aliasSet));
+    if (Array.isArray(snapshot?.boards)) {
+      for (const board of snapshot.boards) {
+        fold(clearAliasesFromRecord(board, aliasSet));
+      }
+    }
+    return { cleared, previousValue };
+  }
+  // Board-scoped: mirror the write path's target resolution.
+  if (isMainBoardTarget(snapshot, args)) {
+    const legacy = clearAliasesFromRecord(snapshot?.circuits?.[0], aliasSet);
+    const mainId = getMainBoardId(snapshot);
+    const mainBoard = Array.isArray(snapshot?.boards)
+      ? snapshot.boards.find((b) => b && b.id === mainId)
+      : undefined;
+    const boardRes = clearAliasesFromRecord(mainBoard, aliasSet);
+    return {
+      cleared: legacy.cleared || boardRes.cleared,
+      previousValue: legacy.previousValue ?? boardRes.previousValue,
+    };
+  }
+  return clearBoardReadingMultiBoard(snapshot, { field, boardId });
 }
 
 /**
