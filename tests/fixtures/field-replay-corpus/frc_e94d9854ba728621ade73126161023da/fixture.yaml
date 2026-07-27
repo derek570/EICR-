@@ -1,0 +1,129 @@
+# Plan A1a (clear_board_reading, feedback id 101 / session C06B9904) —
+# "Delete Ze" must clear the board/supply field and SPEAK the clear.
+#
+# Field repro: the inspector said "Delete Ze" THREE times and each attempt
+# drew a marker-family apology inviting a retry — clear_reading's enum is
+# circuit_fields-only, so the model had NO possible tool for a board/supply
+# clear (the delete_circuit failure shape, at board scope). The residual
+# bogus `ze` (the feedback id 100(b) silent divide, locked by the sibling
+# fixture frc_51be8bec…) could not be removed by voice at all and persisted
+# into the certificate — a data-integrity failure in a legally-significant
+# document.
+#
+# WHAT IS CAPTURED vs RECONSTRUCTED (resolution (a), decided at plan round 5;
+# machine-readable copy in input_provenance):
+#   - Inspector transcript: ONE selected captured "Delete Ze" attempt from
+#     session C06B9904, re-indexed as fixture turn 1 with the captured
+#     pre-turn Ze state seeded into job_state (the other two captured
+#     attempts are OMITTED — the round-8 executable-shape decision).
+#   - client_capabilities: SYNTHETIC (`reconstructed`) — board_clear_v1 is a
+#     property of the post-A1b BUILD, not of what the inspector said; set to
+#     the post-ship state being asserted. Without it the dispatcher denies
+#     with board_clear_capability_missing on every replay and this oracle
+#     could never go green.
+#   - The model round containing clear_board_reading: RECONSTRUCTED — the
+#     tool did not exist at capture time, so the captured model response
+#     cannot contain a call to it. This fixture is a lock on BACKEND
+#     HANDLING of the call and must NEVER be cited as evidence the model
+#     CHOOSES the tool (that is a live-lane question, verified by the
+#     post-deploy probe).
+#   - confirmations_enabled: recorded_full — the capture had confirmations
+#     ON (same session as frc_51be8bec…, whose per-turn value is
+#     recorded_full true), so NO keystone claim is needed (the round-10
+#     "capture had confirmations off" branch was NOT taken).
+#
+# PURPOSE=triage (admitted directly as required_green, no red-proof id) —
+# deliberately, per the plan's test-13 row: this is a POST-FIX GATE, not a
+# RED test. On unfixed main the injected call returns `unknown_tool` (a HARD
+# rejection), the A3 all-rejected net speaks a REJECTED_PROMPTS line, and the
+# failure id is the unclaimed-output/apology class — a DIFFERENT failure from
+# the one being locked, so an expected_red proof would be dishonest. The
+# corpus dual-proof rule therefore classifies it as the no-legitimate-RED
+# kind. Its value is guarding future re-breakage of the dispatcher, wire and
+# audibility path end-to-end through the real harness.
+#
+# ORACLE (audible output ONLY — v1 rejects `expected_operations` of kind
+# 'clear'; the mutation proof lives in unit tests 3-6 of
+# stage6-clear-board-reading-dispatcher/bundler.test.js): EXACTLY ONE
+# uniquely-matched audible confirmation naming the cleared field ("Ze
+# cleared", the field_cleared synthesis), and — via the one-to-one
+# unclaimed-output rule — no other audible output of any kind: no
+# REJECTED_PROMPTS member, no CATCHALL_AUDIBILITY_PROMPTS member, no
+# mandatory-notice line (a successful clear speaks through the normal
+# field_correction confirmation path and never doubles with a notice, §8
+# criterion 3).
+schema_version: 1
+corpus_id: frc_e94d9854ba728621ade73126161023da
+purpose: triage
+gate_state: required_green
+owner: Derek Beckley
+introduced_at: '2026-07-27T00:00:00Z'
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  "Delete Ze" on a session whose supply Ze is populated must clear the value
+  by voice and speak "Ze cleared" exactly once — never an apology, never a
+  repeat-request loop. Locks the clear_board_reading dispatcher, capability
+  gate (synthetically-capable client), snapshot sweep and confirmation
+  synthesis through the real harness. Model tool-CHOICE is live-lane.
+job_state:
+  certificateType: eicr
+  supply:
+    earthing_arrangement: TN-C-S
+    ze: '1.6'
+  boards:
+    - id: main
+      board_type: main
+  circuits: []
+client_capabilities:
+  value:
+    - board_clear_v1
+  provenance: reconstructed
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+input_provenance:
+  /turns/0/transcript:
+    provenance: recorded_full
+    ref: 'session C06B9904 — one selected captured "Delete Ze" attempt (feedback id 101)'
+  /client_capabilities:
+    provenance: reconstructed
+    ref: 'PLAN-final.md §5 "Recorded fixture — narrowed" — board_clear_v1 is a property of the post-A1b build'
+  /turns/0/model_rounds:
+    provenance: reconstructed
+    ref: 'clear_board_reading did not exist at capture time; round reconstructed per resolution (a), plan round 5/10'
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: reconstructed
+    transcript: Delete Ze.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_a1a_clear_ze
+            name: clear_board_reading
+            input:
+              field: ze
+              reason: user_correction
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_audible_outputs:
+      - output_id: out_ze_clear_spoken
+        kind: reading_confirmation
+        count: 1
+        match:
+          field: field_cleared
+          circuit: null
+          text_exact: Ze cleared
