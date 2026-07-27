@@ -1346,11 +1346,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     };
     // P5 — pass the collapsed corrections (clear→write collapsed clears already
     // removed) so a wiped slot never synthesises a "<field> cleared" line. The
-    // #31 writtenSlots suppression still runs on top UNCHANGED (deliberately
-    // board-UNAWARE — the documented pre-existing cross-board over-suppression
-    // is NOT altered by this plan); passing the board-aware-collapsed array is
-    // a strict subset of what #31 would already suppress, so spoken output is
-    // identical to today for every in-scope case.
+    // #31 writtenSlots suppression runs on top, re-sourced by plan A1a to
+    // EFFECTIVE-BOARD-SLOT identity: boardFields is a Set of boardSlotKey
+    // (canonical field + resolved board id from the write's stamp; a
+    // Symbol-less legacy entry falls back to the null-board sentinel). A
+    // same-turn write only suppresses the clear line for the SAME effective
+    // slot — a write on one board no longer suppresses a spoken clear on a
+    // DIFFERENT board (the pre-A1a board-UNAWARE cross-board over-suppression
+    // is closed; test 11-L1/L2 pins both directions).
     const obsAndClears = synthesiseObservationAndClearedConfirmations(
       perTurnWrites.observations,
       perTurnWrites.deletedObservations,

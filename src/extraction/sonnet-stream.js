@@ -3465,6 +3465,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         if (out.vcrSent && result.answer_source) {
           logAnswerEmitted(sessionId, result, result.spoken_response, 'reconnect_replay');
         }
+        // A1a Codex r2 — kick BPG4 refinement for observations whose FIRST
+        // delivery happens via this replay. The immediate path kicks
+        // refinement only on full-ledger success, so every result in this
+        // buffer has NEVER had it kicked (immediate failure, socket-closed
+        // buffering, and flush requeue all skip the kick) — firing here on
+        // ledger completion is therefore exactly-once by construction.
+        // Without this, an observation extracted during socket loss rendered
+        // on reconnect but never received its refined code/regulation
+        // (pendingRefinements was never seeded, so replayPendingRefinements
+        // below had nothing to re-kick).
+        if (Array.isArray(result.observations) && result.observations.length > 0) {
+          refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
+            logger.warn('refineObservationsAsync unhandled (reconnect flush)', {
+              sessionId,
+              error: err?.message,
+            });
+          });
+        }
       }
       if (requeue.length) {
         // Preserve original order at the head of the buffer for the next flush.

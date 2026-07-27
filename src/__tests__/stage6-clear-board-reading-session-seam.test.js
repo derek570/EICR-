@@ -34,6 +34,20 @@ jest.unstable_mockModule('../extraction/stage6-tool-loop.js', () => ({
   LOOP_CAP: 8,
   NOOP_DISPATCHER: async () => ({}),
 }));
+// Codex r2 refinement-kick leg: a fake OpenAI client so getOpenAIClient()
+// returns non-null and refineObservationsAsync reaches its pendingRefinements
+// seeding (the assertion target). The search call HANGS (never resolves)
+// deliberately: a fast-failing fake makes refineObservation return null,
+// which the caller treats as "resolved" and DELETES the pending entry —
+// racing the assertion. An in-flight search is exactly the state the
+// seeding exists to make visible to a reconnect.
+jest.unstable_mockModule('openai', () => ({
+  default: class FakeOpenAI {
+    constructor() {
+      this.chat = { completions: { create: () => new Promise(() => {}) } };
+    }
+  },
+}));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
@@ -262,6 +276,42 @@ describe('REAL session seam — capability parse, live emission bytes, reconnect
     await sendClearTranscript(wsC, 'ze');
     expect(entry.session.stateSnapshot.circuits[0]).not.toHaveProperty('ze');
     expect(wsC._sent.some((f) => f.type === 'field_corrected')).toBe(true);
+  });
+
+  test('reconnect flush KICKS BPG4 refinement for observations first delivered via replay (Codex r2): pendingRefinements is seeded after the ledger completes', async () => {
+    const prevKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'test-key-refine';
+    try {
+      const wsA = connect();
+      const entry = await startSession(wsA, { supports: ['board_clear_v1'] });
+      entry.session.start(null);
+      // A result whose FIRST delivery attempt never happened (socket-closed
+      // buffering) — the immediate path never kicked refinement for it.
+      entry.pendingExtractions.push({
+        extracted_readings: {},
+        confirmations: [],
+        observations: [
+          {
+            observation_id: 'obs-refine-1',
+            observation_text: 'Damaged socket outlet front plate in the kitchen',
+            code: 'C2',
+          },
+        ],
+      });
+      // Reconnect → flushPendingExtractions replays the ledger and must
+      // seed pendingRefinements (the pre-fix code only called
+      // replayPendingRefinements, which had nothing to re-kick).
+      const wsB = connect();
+      await startSession(wsB, { supports: ['board_clear_v1'] });
+      // Seeding happens after an awaited getOpenAIClient() — yield macrotasks.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(wsB._sent.some((f) => f.type === 'extraction')).toBe(true);
+      expect(entry.pendingRefinements?.has('obs-refine-1')).toBe(true);
+    } finally {
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevKey;
+    }
   });
 
   test('reconnect frame that OMITS the capabilities block is DENY-FIRST: the stale advert is revoked (mini-review M1)', async () => {
