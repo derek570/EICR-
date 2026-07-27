@@ -20,21 +20,23 @@
  *
  * Two named constants, split on purpose:
  *   - DEFAULT_STT_MODEL — the PRODUCT default, used when the env var is MISSING
- *     (blank/undefined). Starts 'nova3'; the Flux-default flip commit changes
- *     THIS one constant (and the task-def value) to 'flux'.
+ *     (blank/undefined). 'flux' since 2026-07-27: the 2026-07-03 flip commit
+ *     (`ff620997`) set the task-def value to `flux` but missed this constant,
+ *     leaving a silent nova-3 (partial-sentence bug) branch if the env var
+ *     were ever dropped from the task def. Now the missing-env branch matches
+ *     the shipped product default.
  *   - SAFE_STT_MODEL — the FAIL-SAFE posture, used on an UNRECOGNISED non-empty
  *     value AND on a config-route fetch failure. NEVER flips from 'nova3'.
- * Splitting them matters: after the flip, a bad env edit or a broken
- * runtime-config route must still fail SAFE to nova3, not silently keep Flux
- * running. The task def always sets the value explicitly (`nova3` until the
- * flip, `flux` in it) so live behaviour never depends on the missing-value
- * branch.
+ * Splitting them matters: a bad env edit or a broken runtime-config route must
+ * still fail SAFE to nova3 (the kill-switch's fail direction), not silently
+ * keep Flux running. The task def always sets the value explicitly (`flux`)
+ * so live behaviour never depends on the missing-value branch.
  */
 
 import type { SttModel } from './recording/deepgram-service';
 
-/** Product default (env MISSING). May flip to 'flux' in the flip commit. */
-export const DEFAULT_STT_MODEL: SttModel = 'nova3';
+/** Product default (env MISSING). Matches the shipped task-def value. */
+export const DEFAULT_STT_MODEL: SttModel = 'flux';
 
 /** Fail-safe (unrecognised value OR fetch failure). NEVER flips. */
 export const SAFE_STT_MODEL: SttModel = 'nova3';

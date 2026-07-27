@@ -9,7 +9,7 @@
 | Component | Technology |
 |-----------|------------|
 | iOS App | SwiftUI (CertMateUnified) — primary user interface |
-| Transcription | Deepgram Nova-3 (direct WebSocket from iOS) |
+| Transcription | Deepgram Flux `flux-general-en` (`/v2/listen`, direct WebSocket from both clients; web since 2026-07-03 via the `DEEPGRAM_STT_MODEL` runtime kill-switch, nova-3 fail-safe only) |
 | Data Extraction | Claude Sonnet 4.5 (live rolling extraction) + OpenAI GPT (batch/CCU photo analysis) |
 | Photo Analysis | OpenAI Vision API |
 | Backend | Node.js (ES modules) — API server, job processing, S3 storage |

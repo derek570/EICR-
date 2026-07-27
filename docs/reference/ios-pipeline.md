@@ -11,9 +11,9 @@ The iOS app connects directly to Deepgram for transcription and uses a server-si
 ```
 iOS (16kHz PCM audio)
        │
-       ├──► DeepgramService.swift (direct wss://api.deepgram.com/v1/listen)
-       │         │  Nova-3, en-GB, smart_format, punctuate, interim_results
-       │         │  endpointing=300, utterance_end_ms=1300
+       ├──► DeepgramService.swift (direct wss://api.deepgram.com/v2/listen)
+       │         │  Flux `flux-general-en`, eot_threshold=0.7,
+       │         │  eot_timeout_ms=5000, mip_opt_out (TurnInfo/EndOfTurn events)
        │         │
        │◄── transcript words (final + interim)
        │
@@ -46,7 +46,7 @@ iOS (16kHz PCM audio)
 | File | Purpose |
 |------|---------|
 | `CertMateUnified/.../DeepgramRecordingViewModel.swift` | iOS recording VM — orchestrates full pipeline |
-| `CertMateUnified/.../DeepgramService.swift` | Direct WebSocket to Deepgram Nova-3 |
+| `CertMateUnified/.../DeepgramService.swift` | Direct WebSocket to Deepgram Flux (`/v2/listen`) |
 | `CertMateUnified/.../ServerWebSocketService.swift` | WebSocket client to backend Sonnet extraction |
 | `CertMateUnified/.../NumberNormaliser.swift` | Spoken number → digit conversion |
 | `CertMateUnified/.../KeywordBoostGenerator.swift` | Board photo data + remote config → Deepgram keyword boosts |
