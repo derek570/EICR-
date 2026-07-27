@@ -140,6 +140,61 @@ export function attachEffectiveSlot(target, field, circuit, effectiveBoardId) {
   return target;
 }
 
+/**
+ * Plan A1a (2026-07-27) — non-enumerable BOARD slot-identity marker, the
+ * board twin of EFFECTIVE_CIRCUIT_SLOT. Attached at DISPATCH time to each
+ * `boardReadings` VALUE object (dispatchRecordBoardReading) and each board
+ * `fieldCorrections` entry (dispatchClearBoardReading). Carries
+ * `{field, boardId}` where `field` is the CANONICAL member of the field's
+ * alias set (never the raw spelling the model used) and `boardId` is —
+ * SCOPE-CONDITIONALLY — the resolved board id for BOARD-SCOPED fields and
+ * `null` for GLOBAL fields (a global field's slot is board-INSENSITIVE:
+ * select_board is a no-op on it, so a write on board A and a clear on board
+ * B are one and the same slot). Non-enumerable so it never rides the wire
+ * or a spread.
+ *
+ * WHY this exists: the live `perTurnWrites.boardReadings` map key is
+ * BOARDLESS for schema-conforming model calls (record_board_reading has no
+ * board_id param, so encodeBoardReadingKey gets `undefined`), which means
+ * the raw key does NOT identify the board a write actually hit. Matching
+ * clear-vs-write on raw keys either collapses cross-board operations on a
+ * board-scoped field (silently unspeaking a real dictated reading — Audio
+ * First #1) or misses same-slot alias-spelling pairs entirely.
+ */
+export const EFFECTIVE_BOARD_SLOT = Symbol('stage6.effectiveBoardSlot');
+
+/**
+ * Plan A1a — stable identity STRING for a board slot, shared by the
+ * dispatcher's same-turn write delete (mechanism A), the bundler's board
+ * clear→write collapse (mechanism B), the #31 spoken-clear suppression, and
+ * the mandatory-notice same-slot dedupe. ONE derivation for all four — two
+ * derivations is how they drift.
+ *
+ * `boardId` MUST already be the scope-conditioned value (resolved id for
+ * board-scoped fields, null for global fields); this helper does not know
+ * scopes.
+ */
+export function boardSlotKey(canonicalField, boardId) {
+  const normBoard = boardId == null || boardId === '' ? '' : String(boardId);
+  return `${String(canonicalField)}\u0000__boardslot__\u0000${normBoard}`;
+}
+
+/**
+ * Plan A1a — attach the non-enumerable EFFECTIVE_BOARD_SLOT marker.
+ * `canonicalField` is the canonical alias-set member; `effectiveBoardId` is
+ * the resolved board for board-scoped fields and null for global fields.
+ * Returns `target` for chaining.
+ */
+export function attachEffectiveBoardSlot(target, canonicalField, effectiveBoardId) {
+  Object.defineProperty(target, EFFECTIVE_BOARD_SLOT, {
+    value: { field: canonicalField, boardId: effectiveBoardId ?? null },
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return target;
+}
+
 export function createPerTurnWrites() {
   return {
     readings: new Map(),
@@ -180,6 +235,23 @@ export function createPerTurnWrites() {
     // onto session.pendingVoicePrompts WITH the generation id post-loop.
     // Entries: { text: string }.
     voiceNotices: [],
+    // Plan A1a (2026-07-27) §3.5a — MANDATORY notices: net 0, an ADDITIVE
+    // audible channel, deliberately distinct from voiceNotices. voiceNotices
+    // are turn-final FALLBACK candidates drained only inside
+    // `if (noSpeechIntent)` — correct for a stale notice an operation
+    // superseded, WRONG for a board-clear denial/refusal/already-empty
+    // outcome, which is the ONLY report the inspector will ever get about
+    // that operation. A mixed turn (denied clear + successful reading) must
+    // speak BOTH. The harness drains this accumulator UNCONDITIONALLY
+    // (before noSpeechIntent is computed, so a mandatory notice also
+    // suppresses marker-② — a turn never carries both a notice and an
+    // apology), stamping generationId at the drain per the voiceNotices
+    // precedent (the accumulator dies with the turn; no leak across
+    // cancelled generations).
+    // Entries: { family: string, text: string, slotKey: string } — slotKey
+    // is boardSlotKey(canonical field, scope-conditioned board id), used for
+    // within-turn (family + slot) dedupe BEFORE rotation selection.
+    mandatoryNotices: [],
     // A1 agentic-voice (2026-07-23) — turn-local answer state
     // (PLAN Item 4 `turnAnswerState`). Fed by the answer_user AND
     // inspect_session_state dispatchers (stage6-dispatchers-answer.js);
