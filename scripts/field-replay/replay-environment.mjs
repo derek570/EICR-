@@ -55,6 +55,12 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
   // task-def so the recorded lane replays at the production value ('false' =
   // LIM acceptance enabled); flipping it to 'true' is the rollback boundary.
   'LIM_RANGED_WRITE_DISABLED',
+  // Plan A1a (2026-07-27) — clear_board_reading server kill-switch. Pinned
+  // from the task-def so the recorded lane replays at the production value
+  // ('false' = the dispatcher gate is capability-only); flipping it to
+  // 'true' is the real rollback lever (a deployed client's board_clear_v1
+  // advert cannot be remotely revoked).
+  'BOARD_CLEAR_DISABLED',
   // A1 agentic-voice (2026-07-23) — the answer-feature master flag. Pinned
   // from the task-def so the recorded lane replays at the production value
   // ('false' until the PR-2 flip): every recorded fixture predates A1 and
