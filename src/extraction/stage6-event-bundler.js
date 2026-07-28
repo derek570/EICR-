@@ -368,9 +368,31 @@ function synthesiseObservationAndClearedConfirmations(
       if (writtenSlots) {
         const circ = c.circuit;
         if (Number.isInteger(circ) && circ > 0) {
+          // A2-multiboard (2026-07-28) — membership is by EFFECTIVE CIRCUIT
+          // SLOT, the exact circuit-side twin of the board fix plan A1a made
+          // below for the same reason. `field|circuit` is board-AMBIGUOUS
+          // (record_reading / clear_reading both omit `board_id` in the common
+          // case), so a write on ONE board ate the read-back of a surviving
+          // clear on ANOTHER: write Zs c1 on main, select_board garage, clear
+          // Zs c1 on garage — the two effective slots differ so P5's collapse
+          // correctly keeps BOTH operations, then the bare `measured_zs_ohm|1`
+          // string from main's write suppressed garage's "Zs cleared". The
+          // clear lands server-side and on the client and is never spoken:
+          // Audio-First #1, written-but-not-spoken.
+          //
+          // The clear carries its dispatch-time EFFECTIVE_CIRCUIT_SLOT stamp
+          // (dispatchClearReading attaches it to every fieldCorrections entry),
+          // so this is a pure server-side suppression decision — no wire field
+          // is read or written and the frame bytes are untouched. Symbol-less
+          // (legacy-fixture) clears fall back to the stable null-board sentinel
+          // key, which is what keeps their existing behaviour byte-identical.
+          const csym = c[EFFECTIVE_CIRCUIT_SLOT];
+          const clearSlot = csym
+            ? rawCircuitSlot(csym.field, csym.circuit, csym.boardId)
+            : rawCircuitSlot(field, circ, null);
           if (
             writtenSlots.circuitSlots instanceof Set &&
-            writtenSlots.circuitSlots.has(`${field}|${String(circ)}`)
+            writtenSlots.circuitSlots.has(clearSlot)
           ) {
             continue;
           }
@@ -1666,11 +1688,25 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // Circuit readings key by field+circuit ref; board/installation readings
     // (client_name, supply fields, …) live in a separate slot with no circuit,
     // so they key field-only at board scope.
+    // A2-multiboard (2026-07-28) — the circuit twin of the A1a board fix
+    // immediately below: membership is a Set of EFFECTIVE CIRCUIT SLOTS,
+    // sourced from the write JOURNAL's stamps, not the bare `field|circuit`
+    // string. `extracted_readings` is deliberately NOT the source — its
+    // entries are freshly constructed downstream and therefore CANNOT carry
+    // the non-enumerable EFFECTIVE_CIRCUIT_SLOT stamp, the exact trap the
+    // board half documents. `projectReadingWinners` is the one authoritative
+    // answer to "which effective slots did this turn write?", and it is the
+    // same source the clear→write collapse already matches on — one source
+    // for both, or they drift.
+    //
+    // Unsequenced/Symbol-less legacy writes resolve, via readingSlotKeyOf's
+    // own fallback, to the raw decoded key — whose board is null for every
+    // omitted-`board_id` write, i.e. the same stable null-board sentinel the
+    // clear side falls back to. Single-board turns therefore behave exactly
+    // as before (both sides resolve to the one board, or both to null).
     const writtenCircuitSlots = new Set();
-    for (const r of extracted_readings) {
-      if (typeof r.field === 'string' && r.circuit != null) {
-        writtenCircuitSlots.add(`${r.field}|${String(r.circuit)}`);
-      }
+    for (const w of projectReadingWinners(perTurnWrites)) {
+      writtenCircuitSlots.add(w.slot);
     }
     // Plan A1a (2026-07-27) — the #31 board membership is now a Set of
     // EFFECTIVE BOARD SLOTS, not bare field names, sourced from
