@@ -426,6 +426,13 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
           pendingAsks.register(toolCallId, {
             contextField: input.context_field,
             contextCircuit: input.context_circuit,
+            // Plan E §4b piece 3 (Codex r2) — the ask's FULL scope, not just
+            // its single circuit ref. isSameSemanticSlot() compares these
+            // against the reply's projected scope; omitting them here (they
+            // were only reaching buildResolvedBody) left the comparison
+            // permanently unscoped on the ask side in production.
+            contextCircuits: input.context_circuits ?? null,
+            contextBoardId: input.context_board_id ?? null,
             // §A4 — sibling of pendingWrite; see stage6-pending-asks-registry.js.
             pendingValue: capturedPendingValue,
             pendingValueEligible,
@@ -1468,6 +1475,12 @@ async function brokerDeterministicAsk({
       pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
     }, ASK_USER_TIMEOUT_MS);
     try {
+      // Plan E §4b piece 3 (Codex r2) — deliberately NO contextCircuits /
+      // contextBoardId here. These are the server's own deterministic §A4
+      // asks, whose whole purpose is to ESTABLISH the missing scope ("which
+      // circuit was that for?"); there is no multi-circuit or board scope to
+      // carry, and no caller has one to pass. The registry defaults both to
+      // null, which is the correct ask-side scope for this family.
       pendingAsks.register(pvrId, {
         contextField,
         contextCircuit,

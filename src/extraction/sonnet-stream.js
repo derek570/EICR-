@@ -2187,7 +2187,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     yield [msg.tool_call_id, askEntry];
                   },
                 };
-                const shapeVerdict = classifyOvertake(canonicalAnswerText, [], singleAskRegistry);
+                // Plan E §4b piece 3 (Codex r2) — pass boards here too. This
+                // is the third classifyOvertake call site; without the board
+                // list, projectReplyBoardId cannot resolve a designation in
+                // the reply, so a board-scoped answer compares as unscoped.
+                const shapeVerdict = classifyOvertake(canonicalAnswerText, [], singleAskRegistry, {
+                  boards: entry.session?.stateSnapshot?.boards ?? null,
+                });
                 if (shapeVerdict.kind === 'answers') {
                   // Shape match — fall through to the resolve path below
                   // without running the imperative gate. The matched answer
