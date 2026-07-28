@@ -163,8 +163,8 @@ const IR_ENTRY_PATTERNS = [
   //    vocabulary is preserved verbatim (`international`, where the live
   //    schema carries `insurance` — the historical per-file divergence is
   //    deliberate and pinned by test). Circuit stays capture group 1.
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b/i,
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\bi\s*r\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\bi\s*r\b/i,
   // 1. Full: "insulation/installation/international resistance" + optional "circuit N"
   /\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // 2. Terse: "IR for circuit N" — requires "circuit N" trailer.
@@ -223,16 +223,24 @@ function collectIrTriggerCircuitRefs(text) {
   let matched = false;
   const refs = [];
   for (const pattern of IR_ENTRY_PATTERNS) {
-    const m = text.match(pattern);
-    if (!m) continue;
-    matched = true;
-    if (m[1]) {
-      const ref = Number(m[1]);
-      if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+    // EVERY occurrence, not just the first (mirrors the engine).
+    const global = pattern.flags.includes('g')
+      ? pattern
+      : new RegExp(pattern.source, `${pattern.flags}g`);
+    for (const m of text.matchAll(global)) {
+      matched = true;
+      if (m[1]) {
+        const ref = Number(m[1]);
+        if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+      }
     }
   }
   return { matched, refs };
 }
+
+// Scope-conflict provenance marker — mirrors the engine's CONFLICT_OVERWRITE
+// (conflict-utterance values overwrite a pre-filled destination on drain).
+const IR_CONFLICT_OVERWRITE = Symbol('conflictOverwrite');
 
 /**
  * Detect a different IR entry on a NEW circuit while one is already active.
@@ -845,8 +853,12 @@ export function processInsulationResistanceTurn(ctx) {
     // volunteered values against an unresolved episode, ask which_circuit.
     if (entry.scope_conflict === true) {
       initScript(session, null, now);
+      session.insulationResistanceScript.scope_conflict_origin = true;
       const queued = extractNamedFieldValues(maskCircuitSpans(text));
-      for (const w of queued) session.insulationResistanceScript.pending_writes.push(w);
+      for (const w of queued) {
+        w[IR_CONFLICT_OVERWRITE] = true;
+        session.insulationResistanceScript.pending_writes.push(w);
+      }
       logger?.info?.('stage6.insulation_resistance_script_entry_scope_conflict', {
         sessionId,
         pending_writes: session.insulationResistanceScript.pending_writes.map((w) => w.field),
@@ -887,7 +899,9 @@ export function processInsulationResistanceTurn(ctx) {
       }
     }
     const existing = circuitRef ? readExistingIrValues(session, circuitRef) : {};
-    const volunteered = extractNamedFieldValues(text);
+    // Masked (mirrors the engine): a "circuit N" span's digit is never an
+    // IR reading value.
+    const volunteered = extractNamedFieldValues(maskCircuitSpans(text));
 
     initScript(session, circuitRef, now);
 
@@ -1013,15 +1027,27 @@ export function processInsulationResistanceTurn(ctx) {
   const diffEntry = detectDifferentIrEntry(text, state.circuit_ref);
   if (diffEntry.scope_conflict === true) {
     const queued = extractNamedFieldValues(maskCircuitSpans(text));
+    // Carry an UNRESOLVED prior episode's queued values forward (mirrors
+    // the engine); fields the conflict utterance restates take precedence.
+    const priorPending =
+      state.circuit_ref === null && Array.isArray(state.pending_writes)
+        ? state.pending_writes.filter((pw) => !queued.some((q) => q.field === pw.field))
+        : [];
     logger?.info?.('stage6.insulation_resistance_script_different_entry_scope_conflict', {
       sessionId,
       from_ref: state.circuit_ref,
       pending_writes: queued.map((w) => w.field),
+      carried_pending_writes: priorPending.map((w) => w.field),
       textPreview: text.slice(0, 80),
     });
     clearScript(session);
     initScript(session, null, now);
-    for (const w of queued) session.insulationResistanceScript.pending_writes.push(w);
+    session.insulationResistanceScript.scope_conflict_origin = true;
+    for (const w of queued) {
+      w[IR_CONFLICT_OVERWRITE] = true;
+      session.insulationResistanceScript.pending_writes.push(w);
+    }
+    for (const w of priorPending) session.insulationResistanceScript.pending_writes.push(w);
     safeSend(
       ws,
       buildScriptAsk({
@@ -1097,7 +1123,11 @@ export function processInsulationResistanceTurn(ctx) {
       // Drain pending_writes onto the resolved circuit.
       if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
         for (const w of state.pending_writes) {
-          if (state.values[w.field] !== undefined) continue;
+          // Conflict-origin writes OVERWRITE a pre-filled destination
+          // (mirrors the engine's CONFLICT_OVERWRITE contract).
+          if (w[IR_CONFLICT_OVERWRITE] !== true && state.values[w.field] !== undefined) {
+            continue;
+          }
           applyWrite(session, ref, w.field, w.value, now);
           writes.push(w);
           drainedFromPending = true;
@@ -1117,7 +1147,7 @@ export function processInsulationResistanceTurn(ctx) {
       // Couldn't resolve a circuit. Mirror ring's "queue values, stay
       // alive" pattern: if the inspector volunteered MORE field values
       // while waiting on the circuit, queue them and wait silently.
-      const followUpVolunteered = extractNamedFieldValues(text);
+      const followUpVolunteered = extractNamedFieldValues(maskCircuitSpans(text));
       if (followUpVolunteered.length > 0) {
         for (const w of followUpVolunteered) {
           const alreadyQueued = (state.pending_writes ?? []).some(
@@ -1133,6 +1163,20 @@ export function processInsulationResistanceTurn(ctx) {
           queued_fields: followUpVolunteered.map((w) => w.field),
           pending_writes_total: state.pending_writes.length,
         });
+        // Conflict-origin episodes RE-ASK after queueing (mirrors the engine).
+        if (state.scope_conflict_origin === true) {
+          safeSend(
+            ws,
+            buildScriptAsk({
+              sessionId,
+              circuit_ref: null,
+              missing_field: null,
+              now,
+              kind: 'which_circuit',
+              responseEpoch,
+            })
+          );
+        }
         return { handled: true, fallthrough: false };
       }
 
@@ -1251,7 +1295,8 @@ export function processInsulationResistanceTurn(ctx) {
   }
 
   // 6. Reading phase — extract any named-field values on this turn.
-  const named = extractNamedFieldValues(text);
+  // Masked (mirrors the engine's step-7).
+  const named = extractNamedFieldValues(maskCircuitSpans(text));
   for (const w of named) {
     if (state.values[w.field] !== undefined) continue;
     applyWrite(session, state.circuit_ref, w.field, w.value, now);
@@ -1269,7 +1314,7 @@ export function processInsulationResistanceTurn(ctx) {
     named.length === 0 &&
     state.circuit_ref !== null
   ) {
-    const bareValue = parseValue(text);
+    const bareValue = parseValue(maskCircuitSpans(text));
     if (bareValue !== null) {
       const expected = nextMissingReading(state.values);
       if (expected) {

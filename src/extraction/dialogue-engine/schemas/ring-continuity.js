@@ -105,11 +105,11 @@ const triggers = [
   // ask, never a silent winner.
   // Leading-full: "Circuit N, ring/bring/wing continuity/final …" (incl. the
   // enumerated `re-?continuity` Flux garble — same alternation as Pattern 1).
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b/i,
   // Leading-terse: "Circuit N … ring" — same bring/wing garble alternation
   // as this schema's Pattern 2 (the legacy twin's terse pattern is ring-only;
   // that historical divergence is preserved per-file, not reconciled here).
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\b(?:ring|bring|wing)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:ring|bring|wing)\b/i,
   // Pattern 1 ("full") matches "ring/bring/wing continuity/final" with an
   // optional circuit number anywhere within ~50 characters of the trigger
   // phrase. The "bring" / "wing" alternation tolerates Deepgram's habit of

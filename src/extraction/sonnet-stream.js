@@ -927,11 +927,24 @@ const TRANSCRIPT_NORMALISED = Symbol('transcriptNormalised');
 // supplied (or overwritten) by a client JSON frame, and never leaks into
 // JSON.stringify output. Non-writable: the stamp is set-once by design — a
 // drain re-entry must see the ORIGINAL arrival time, not a re-stamp.
-// Exported for TEST observability only (asserting byte-exact stamp survival
-// through the queue/requeue spreads). Exporting does not weaken the trust
-// property: clients speak JSON, which cannot carry Symbol keys — only
-// same-process server code can read or set this property.
-export const TRANSCRIPT_ARRIVED_AT = Symbol('transcriptArrivedAt');
+// MODULE-PRIVATE (never exported — the plan's storage contract): tests that
+// need to assert stamp survival locate the property by Symbol DESCRIPTION on
+// the queued clone (Object.getOwnPropertySymbols), never by identity.
+// Clock: performance.now() — MONOTONIC (Codex diff-review r1). The window is
+// an ordered arrival delta; a wall-clock step (NTP correction, host
+// suspend/resume) under Date.now could make a valid delete→trigger delta
+// negative or spuriously >12 s. performance.now cannot go backwards.
+const TRANSCRIPT_ARRIVED_AT = Symbol('transcriptArrivedAt');
+
+// The per-transcript destructive-arbitration VERDICT (Codex diff-review r1).
+// The token itself is one-shot (consumed at the extraction slot), but the
+// TRANSCRIPT that consumed it can be requeued by the post-wrapper
+// `user_moved_on` path (`_drainedRetry`); on drain the token is gone, so
+// without carrying the verdict the formerly-suppressed trigger would enter
+// the script — recreating id 93 through the requeue. Same enumerable-Symbol
+// mechanics as the arrival stamp: survives `{ ...msg }`, invisible to JSON,
+// never client-suppliable.
+const DESTRUCTIVE_SUPPRESS_VERDICT = Symbol('destructiveSuppressVerdict');
 
 /**
  * Normalise a freeform utterance for equality-based dedupe.
@@ -3579,7 +3592,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // and a drain-time re-stamp would silently widen it by the queue wait.
     if (!(TRANSCRIPT_ARRIVED_AT in msg)) {
       Object.defineProperty(msg, TRANSCRIPT_ARRIVED_AT, {
-        value: Date.now(),
+        value: performance.now(),
         // enumerable so `{ ...msg }` at the two pendingTranscripts.push sites
         // copies it forward (see TRANSCRIPT_NORMALISED for the mechanics).
         enumerable: true,
@@ -4062,7 +4075,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // what makes the FIFO case work: delete + trigger both queued behind an
     // in-flight extraction drain in order — the delete arms during its own
     // drain, the trigger consumes here on its.
-    const suppressDestructiveEntry = consumeDestructiveToken('extraction_slot');
+    let suppressDestructiveEntry;
+    if (typeof msg[DESTRUCTIVE_SUPPRESS_VERDICT] === 'boolean') {
+      // A previous pass of THIS transcript already arbitrated (it was then
+      // requeued by the post-wrapper user_moved_on path) — reuse the verdict;
+      // the one-shot token is long gone.
+      suppressDestructiveEntry = msg[DESTRUCTIVE_SUPPRESS_VERDICT];
+    } else {
+      suppressDestructiveEntry = consumeDestructiveToken('extraction_slot');
+      Object.defineProperty(msg, DESTRUCTIVE_SUPPRESS_VERDICT, {
+        value: suppressDestructiveEntry,
+        enumerable: true, // survives the { ...msg } requeue spreads
+        configurable: false,
+        writable: false,
+      });
+    }
 
     // F7 Item 2 — mint ONE generation id per extraction invocation. Threaded
     // via runShadowHarness options to the emission / fallback / ios_send_attempt

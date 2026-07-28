@@ -126,8 +126,8 @@ const RING_ENTRY_PATTERNS = [
   //    per-file divergence preserved: this twin's terse trigger token is
   //    `ring` only (matching its own Pattern 2 below), while the schema's
   //    terse family carries the bring/wing garble alternation.
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b/i,
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\bring\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\bring\b/i,
   // 1. Full: "ring/bring/wing continuity/final" + optional "circuit N"
   //    within 50 chars. Allows filler ("for, uh,"), any preposition, or none.
   //
@@ -340,16 +340,28 @@ function collectRingTriggerCircuitRefs(text) {
   let matched = false;
   const refs = [];
   for (const pattern of RING_ENTRY_PATTERNS) {
-    const m = text.match(pattern);
-    if (!m) continue;
-    matched = true;
-    if (m[1]) {
-      const ref = Number(m[1]);
-      if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+    // EVERY occurrence, not just the first (mirrors the engine): two clauses
+    // using the SAME trigger family are as much a contradiction as a
+    // leading-vs-trailing pair.
+    const global = pattern.flags.includes('g')
+      ? pattern
+      : new RegExp(pattern.source, `${pattern.flags}g`);
+    for (const m of text.matchAll(global)) {
+      matched = true;
+      if (m[1]) {
+        const ref = Number(m[1]);
+        if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+      }
     }
   }
   return { matched, refs };
 }
+
+// Scope-conflict provenance marker on a queued pending write — mirrors the
+// engine's CONFLICT_OVERWRITE Symbol (a value dictated ON the conflict
+// utterance overwrites a pre-filled destination on drain; ordinary queued
+// writes keep the skip-if-seeded guard). Symbol: JSON-invisible.
+const RING_CONFLICT_OVERWRITE = Symbol('conflictOverwrite');
 
 function detectDifferentRingEntry(text, currentCircuitRef) {
   if (typeof text !== 'string' || !text) {
@@ -963,8 +975,12 @@ export function processRingContinuityTurn(ctx) {
     // volunteered values against an UNRESOLVED episode, ask which_circuit.
     if (entry.scope_conflict === true) {
       initScript(session, null, now);
+      session.ringContinuityScript.scope_conflict_origin = true;
       const queued = extractNamedFieldValues(maskCircuitSpans(text));
-      for (const w of queued) session.ringContinuityScript.pending_writes.push(w);
+      for (const w of queued) {
+        w[RING_CONFLICT_OVERWRITE] = true;
+        session.ringContinuityScript.pending_writes.push(w);
+      }
       logger?.info?.('stage6.ring_continuity_script_entry_scope_conflict', {
         sessionId,
         pending_writes: session.ringContinuityScript.pending_writes.map((w) => w.field),
@@ -1021,7 +1037,10 @@ export function processRingContinuityTurn(ctx) {
     // the floor whenever the entry utterance carried readings without
     // a circuit number. ALWAYS extract; let the queue (pending_writes)
     // hold the values until the circuit resolves.
-    const volunteered = extractNamedFieldValues(text);
+    // Masked (mirrors the engine): the trailing "for circuit N" span's digit
+    // must never be captured as a conductor value even on an unambiguous
+    // repeated scope.
+    const volunteered = extractNamedFieldValues(maskCircuitSpans(text));
 
     initScript(session, circuitRef, now);
     // Seed values from existing snapshot AND from any volunteered fields.
@@ -1170,11 +1189,9 @@ export function processRingContinuityTurn(ctx) {
   //    position-2 conflict branch: a two-circuit contradiction is handled in
   //    BOTH states (the 5a preflight filters out the CURRENT circuit, so a
   //    conflicting pair containing it would silently switch to the other
-  //    ref). Raw reply parsed in confirmation mode; annotated text otherwise.
-  const diffEntry = detectDifferentRingEntry(
-    state.awaiting_confirmation ? reply : text,
-    state.circuit_ref
-  );
+  //    ref). RAW reply parsed in EVERY state (mirrors the engine — the
+  //    annotation defeats the leading patterns' clause-start anchor).
+  const diffEntry = detectDifferentRingEntry(reply, state.circuit_ref);
   if (diffEntry.scope_conflict === true) {
     const wasConfirmation = state.awaiting_confirmation === true;
     let queued;
@@ -1184,11 +1201,18 @@ export function processRingContinuityTurn(ctx) {
     } else {
       queued = extractNamedFieldValues(maskCircuitSpans(reply));
     }
+    // Carry an UNRESOLVED prior episode's queued values forward (mirrors
+    // the engine); fields the conflict utterance restates take precedence.
+    const priorPending =
+      state.circuit_ref === null && Array.isArray(state.pending_writes)
+        ? state.pending_writes.filter((pw) => !queued.some((q) => q.field === pw.field))
+        : [];
     logger?.info?.('stage6.ring_continuity_script_different_entry_scope_conflict', {
       sessionId,
       from_ref: state.circuit_ref,
       was_confirmation: wasConfirmation,
       pending_writes: queued.map((w) => w.field),
+      carried_pending_writes: priorPending.map((w) => w.field),
       textPreview: reply.slice(0, 80),
     });
     // No cancel_pending_tts purge here: the twin emits no purge frames by
@@ -1196,7 +1220,12 @@ export function processRingContinuityTurn(ctx) {
     // position-0 comment above).
     clearScript(session);
     initScript(session, null, now);
-    for (const w of queued) session.ringContinuityScript.pending_writes.push(w);
+    session.ringContinuityScript.scope_conflict_origin = true;
+    for (const w of queued) {
+      w[RING_CONFLICT_OVERWRITE] = true;
+      session.ringContinuityScript.pending_writes.push(w);
+    }
+    for (const w of priorPending) session.ringContinuityScript.pending_writes.push(w);
     safeSend(
       ws,
       buildScriptAsk({
@@ -1628,7 +1657,11 @@ export function processRingContinuityTurn(ctx) {
       // said it twice between entry and resolution).
       if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
         for (const w of state.pending_writes) {
-          if (state.values[w.field] !== undefined) continue;
+          // Conflict-origin writes OVERWRITE a pre-filled destination
+          // (mirrors the engine's CONFLICT_OVERWRITE contract).
+          if (w[RING_CONFLICT_OVERWRITE] !== true && state.values[w.field] !== undefined) {
+            continue;
+          }
           applyWrite(session, ref, w.field, w.value, now);
           writes.push(w);
           drainedFromPending = true;
@@ -1665,7 +1698,7 @@ export function processRingContinuityTurn(ctx) {
       // its prompt can reason about the utterance. The script's pending
       // queue is discarded in that case (logged so we can size the
       // problem in production).
-      const followUpVolunteered = extractNamedFieldValues(text);
+      const followUpVolunteered = extractNamedFieldValues(maskCircuitSpans(text));
       if (followUpVolunteered.length > 0) {
         // Stay in the script. Queue the values and wait silently for
         // the circuit. (No re-ask via TTS — interrupting the inspector
@@ -1687,6 +1720,22 @@ export function processRingContinuityTurn(ctx) {
           queued_fields: followUpVolunteered.map((w) => w.field),
           pending_writes_total: state.pending_writes.length,
         });
+        // Conflict-origin episodes RE-ASK after queueing (mirrors the
+        // engine); ordinary unresolved episodes keep the queue-silently
+        // behaviour pinned by the 361A638D replay scenario.
+        if (state.scope_conflict_origin === true) {
+          safeSend(
+            ws,
+            buildScriptAsk({
+              sessionId,
+              circuit_ref: null,
+              missing_field: null,
+              now,
+              kind: 'which_circuit',
+              responseEpoch,
+            })
+          );
+        }
         return { handled: true, fallthrough: false };
       }
 
@@ -1710,7 +1759,9 @@ export function processRingContinuityTurn(ctx) {
   // 5. Did the user volunteer one or more named-field values on THIS
   //    turn? Runs AFTER circuit resolution above, so a "Circuit 1,
   //    neutrals 0.43" answer applies the Rn write on the same turn.
-  const named = extractNamedFieldValues(text);
+  // Masked (mirrors the engine's step-7): a circuit span's digit is never a
+  // conductor value.
+  const named = extractNamedFieldValues(maskCircuitSpans(text));
   for (const w of named) {
     if (state.values[w.field] !== undefined) continue; // don't overwrite
     applyWrite(session, state.circuit_ref, w.field, w.value, now);
@@ -1746,7 +1797,7 @@ export function processRingContinuityTurn(ctx) {
     named.length === 0 &&
     state.circuit_ref !== null
   ) {
-    const bareValue = parseValue(text);
+    const bareValue = parseValue(maskCircuitSpans(text));
     if (bareValue !== null) {
       const expected = nextMissingField(state.values);
       if (expected) {

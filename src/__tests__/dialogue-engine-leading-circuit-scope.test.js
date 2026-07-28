@@ -393,6 +393,186 @@ describe('matrix 3 — contradiction asks; masking pinned per conflict state', (
 });
 
 // ---------------------------------------------------------------------------
+// 3b. Codex diff-review r1 hardening pins.
+// ---------------------------------------------------------------------------
+
+describe('review r1 — collect-all across OCCURRENCES, masking on the ordinary path, conflict data preservation', () => {
+  test('repeated SAME-pattern contradiction is collected (engine + both twins)', () => {
+    const conflict = { matched: true, circuit_ref: null, scope_conflict: true };
+    const text = 'Ring continuity for circuit 10. Ring continuity for circuit 13.';
+    expect(engineDetectEntry(text, ringContinuitySchema)).toEqual(conflict);
+    expect(legacyRingDetectEntry(text)).toEqual(conflict);
+    const irText = 'Insulation resistance for circuit 10. Insulation resistance for circuit 13.';
+    expect(engineDetectEntry(irText, insulationResistanceSchema)).toEqual(conflict);
+    expect(legacyIrDetectEntry(irText)).toEqual(conflict);
+  });
+
+  test.each([
+    ['engine ring', engineRing],
+    ['legacy ring twin', legacyRing],
+  ])(
+    '%s: UNAMBIGUOUS repeated scope with a value writes the VALUE, never the span digit',
+    (_l, proc) => {
+      const { session } = run(
+        proc,
+        [{ text: 'Circuit 13, ring continuity earths for circuit 13 are 1.19.', now: 1000 }],
+        { 13: {} }
+      );
+      expect(session.stateSnapshot.circuits[13].ring_r2_ohm).toBe('1.19');
+    }
+  );
+
+  test.each([
+    ['engine ring', engineRing],
+    ['legacy ring twin', legacyRing],
+  ])('%s: conflict-queued value OVERWRITES a pre-filled destination on resolve', (_l, proc) => {
+    // awaiting_confirmation conflict with the current circuit AMONG the refs
+    // and the destination already holding R2 — the dictated 1.19 must win.
+    const { ws, session } = run(
+      proc,
+      [
+        { text: 'Ring continuity for circuit 5.', now: 1000 },
+        { text: RING_CONTAMINATED, now: 2000 },
+        { text: 'circuit 5', now: 3000 },
+      ],
+      { 3: {}, 5: { ring_r1_ohm: '0.31', ring_rn_ohm: '0.29', ring_r2_ohm: '0.47' } }
+    );
+    expect(whichCircuitAsks(ws, RING_WHICH)).toHaveLength(1);
+    expect(session.stateSnapshot.circuits[5].ring_r2_ohm).toBe('1.19');
+    expect(session.stateSnapshot.circuits[3].ring_r2_ohm).toBeUndefined();
+  });
+
+  test.each([
+    ['engine ring', engineRing],
+    ['legacy ring twin', legacyRing],
+  ])("%s: an UNRESOLVED episode's queued values survive a conflict replacement", (_l, proc) => {
+    const { session } = run(
+      proc,
+      [
+        { text: 'Ring continuity is lives are 0.75.', now: 1000 }, // unresolved, queues R1
+        { text: 'Circuit 5, ring continuity for circuit 3.', now: 2000 }, // conflict replaces
+        { text: 'circuit 5', now: 3000 },
+      ],
+      { 3: {}, 5: {} }
+    );
+    expect(session.stateSnapshot.circuits[5].ring_r1_ohm).toBe('0.75');
+  });
+
+  test.each([
+    ['engine ring', engineRing],
+    ['legacy ring twin', legacyRing],
+  ])(
+    '%s: a value-only reply to the conflict ask RE-ASKS which_circuit and keeps the queue',
+    (_l, proc) => {
+      const { ws, session } = run(
+        proc,
+        [
+          { text: 'Circuit 5, ring continuity for circuit 3.', now: 1000 },
+          { text: 'Lives are 0.61.', now: 2000 }, // value, not a circuit — re-ask
+          { text: 'circuit 5', now: 3000 },
+        ],
+        { 3: {}, 5: {} }
+      );
+      expect(whichCircuitAsks(ws, RING_WHICH)).toHaveLength(2);
+      expect(session.stateSnapshot.circuits[5].ring_r1_ohm).toBe('0.61');
+    }
+  );
+
+  test('engine IR: a conflict reply during awaiting_disambiguation is NOT a disambiguation answer', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {}, 5: {}, 13: {} });
+    // Hand-built minimal awaiting_disambiguation state (the pause/resume
+    // machinery that produces it normally spans a Sonnet turn).
+    session.dialogueScriptState = {
+      active: true,
+      schemaName: 'insulation_resistance',
+      circuit_ref: 13,
+      values: {},
+      valueCorrections: {},
+      slotPendingConfirm: null,
+      pending_writes: [],
+      skipped_slots: new Set(),
+      entered_at: 500,
+      last_turn_at: 500,
+      circuit_retry_attempted: false,
+      last_designation_attempt: null,
+      slot_no_progress: null,
+      entered_via_pivot: false,
+      pivoted_from: null,
+      ambiguous_bare_value: null,
+      paused: false,
+      awaiting_disambiguation: { value: '299', source: 'megaohm' },
+      disambiguation_retry_attempted: false,
+    };
+    engineIR({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Circuit 5, insulation resistance live to live for circuit 3 is 200.',
+      logger: null,
+      now: 1000,
+    });
+    // The buffered 299 must NOT have been routed to circuit 13, and the
+    // conflict must have asked.
+    expect(session.stateSnapshot.circuits[13].ir_live_live_mohm).toBeUndefined();
+    expect(session.stateSnapshot.circuits[13].ir_live_earth_mohm).toBeUndefined();
+    expect(whichCircuitAsks(ws, IR_WHICH)).toHaveLength(1);
+  });
+
+  test('engine: annotated in_response_to reply still switches on a LEADING circuit and never writes the ref as a value', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {}, 14: {} });
+    engineRing({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      logger: null,
+      now: 1000,
+    });
+    engineRing({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText:
+        '[In response to TTS question: "What are the lives?"] Circuit 14, ring continuity.',
+      rawReplyText: 'Circuit 14, ring continuity.',
+      logger: null,
+      now: 2000,
+    });
+    expect(session.dialogueScriptState.circuit_ref).toBe(14);
+    // The quoted question's "lives" + the leading 14 must not have written
+    // 14 (or its clamp 1.4) anywhere.
+    for (const c of Object.values(session.stateSnapshot.circuits)) {
+      for (const v of Object.values(c)) {
+        expect(String(v)).not.toBe('14');
+        expect(String(v)).not.toBe('1.4');
+      }
+    }
+  });
+
+  test.each([
+    ['engine ring', engineRing, 'circuit 5 is ring continuity'],
+    ['legacy ring twin', legacyRing, 'circuit 5 is ring continuity'],
+  ])(
+    '%s: ACTIVE "circuit N is …" keeps its topic-switch claim (leading pattern must not pre-empt)',
+    (_l, proc, switchText) => {
+      const { session } = run(
+        proc,
+        [
+          { text: 'Ring continuity for circuit 13.', now: 1000 },
+          { text: switchText, now: 2000 },
+        ],
+        { 5: {}, 13: {} }
+      );
+      // Topic switch → cleared state, NOT a switch to circuit 5.
+      const state = session.dialogueScriptState ?? session.ringContinuityScript ?? null;
+      expect(state?.active ?? false).toBe(false);
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
 // 4. Existing exclusions unchanged.
 // ---------------------------------------------------------------------------
 

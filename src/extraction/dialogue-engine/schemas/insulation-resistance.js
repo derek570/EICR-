@@ -182,8 +182,8 @@ const triggers = [
   // legacy twin's international) is preserved verbatim. Circuit stays
   // capture group 1; detect* collect across all patterns and a
   // leading-vs-trailing contradiction surfaces as scope_conflict.
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b/i,
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\bi\s*r\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\bi\s*r\b/i,
   // Pattern 1 (full): "insulation/installation/insurance resistance" + optional
   // "circuit N". The "installation"/"insurance" alternations tolerate Deepgram's
   // tendency to mis-hear "insulation". Field report 2026-06-24 #3: "insurance

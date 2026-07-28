@@ -65,8 +65,16 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
 }));
 
-const { initSonnetStream, activeSessions, TRANSCRIPT_ARRIVED_AT } =
-  await import('../extraction/sonnet-stream.js');
+const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
+
+// The arrival stamp is MODULE-PRIVATE (plan storage contract) — locate it on
+// a queued clone by Symbol DESCRIPTION, never by identity.
+const arrivalStampOf = (obj) => {
+  const sym = Object.getOwnPropertySymbols(obj).find(
+    (x) => x.description === 'transcriptArrivedAt'
+  );
+  return sym ? obj[sym] : undefined;
+};
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
 
 function makeFakeWs() {
@@ -137,6 +145,7 @@ const consumedRows = () =>
 const T0 = 1_700_000_000_000;
 let fakeNow;
 let nowSpy;
+let perfSpy;
 let wss;
 const openWs = [];
 
@@ -149,12 +158,17 @@ beforeEach(() => {
   activeSessions.clear();
   sonnetSessionStore.clear();
   fakeNow = T0;
+  // Arrival stamps use the MONOTONIC clock (performance.now); other
+  // machinery (content-anchor TTLs, veto windows) stays on Date.now — mock
+  // both onto the same controllable value.
   nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+  perfSpy = jest.spyOn(performance, 'now').mockImplementation(() => fakeNow);
   wss = initSonnetStream(null, async () => 'key', jest.fn());
 });
 
 afterEach(async () => {
   nowSpy.mockRestore();
+  perfSpy.mockRestore();
   for (const ws of openWs.splice(0)) {
     ws.readyState = 3; // CLOSED
     await ws._emit('close');
@@ -240,8 +254,8 @@ describe('id 93 — cross-utterance delete state machine at the sonnet-stream se
     // Both queued; the arrival stamps are byte-exact on the queued clones
     // (the `{ ...msg }` spread preserves the enumerable Symbol).
     expect(entry.pendingTranscripts).toHaveLength(2);
-    expect(entry.pendingTranscripts[0][TRANSCRIPT_ARRIVED_AT]).toBe(T0 + 1000);
-    expect(entry.pendingTranscripts[1][TRANSCRIPT_ARRIVED_AT]).toBe(T0 + 7000);
+    expect(arrivalStampOf(entry.pendingTranscripts[0])).toBe(T0 + 1000);
+    expect(arrivalStampOf(entry.pendingTranscripts[1])).toBe(T0 + 7000);
 
     // Drain long after the window would have expired on a consumption-time
     // clock — the ORDERED ARRIVAL DELTA (6000 ms) is what must be compared.
@@ -353,12 +367,103 @@ describe('id 93 — cross-utterance delete state machine at the sonnet-stream se
     await ws._emit('message', transcript('Delete.', 'u1'));
     expect(requeued).toHaveLength(1);
     expect(requeued[0]._drainedRetry).toBe(true);
-    expect(requeued[0][TRANSCRIPT_ARRIVED_AT]).toBe(T0);
+    expect(arrivalStampOf(requeued[0])).toBe(T0);
     // The drained re-entry reached the model-commit seam and armed.
     expect(armedRows()).toHaveLength(1);
 
     fakeNow = T0 + 6000;
     await ws._emit('message', transcript('recontinuity readings for circuit 13.', 'u2'));
+    expect(confirmAsks(ws)).toHaveLength(0);
+    expect(harnessCalls[harnessCalls.length - 1]).toBe('recontinuity readings for circuit 13.');
+  });
+
+  test('AWAITING_CONFIRMATION → bare "delete" → scoped trigger at 6 s ⇒ suppressed (the plan §4 ingress case: the 5h clear returns handled+fallthrough and MUST still arm)', async () => {
+    const { ws } = await startLiveSession(wss, 'sess-x-confirm-arm');
+    // All-filled entry jumps straight to the ring confirmation.
+    await ws._emit('message', transcript('Ring continuity for circuit 13.', 'u1'));
+    expect(confirmAsks(ws)).toHaveLength(1);
+    // Bare "Delete." in confirmation mode: no clearIntent object → the 5h
+    // idle-clear path clears the episode and falls through to the model —
+    // the {handled:true, fallthrough:true} shape that must arm.
+    fakeNow = T0 + 2000;
+    await ws._emit('message', transcript('Delete.', 'u2'));
+    expect(harnessCalls[harnessCalls.length - 1]).toBe('Delete.');
+    expect(armedRows()).toHaveLength(1);
+    // The scoped trigger 6 s after the delete is suppressed — the model owns
+    // the delete intent; the script must not re-enter its confirmation.
+    fakeNow = T0 + 8000;
+    await ws._emit('message', transcript('recontinuity readings for circuit 13.', 'u3'));
+    expect(confirmAsks(ws)).toHaveLength(1); // still only the original ask
+    expect(harnessCalls[harnessCalls.length - 1]).toBe('recontinuity readings for circuit 13.');
+  });
+
+  test('a LIVE pending ask answered via the pre-queue classifyOvertake seam CONSUMES an armed token (ask-resolution disposition) and the answer never arms', async () => {
+    const { ws, entry } = await startLiveSession(wss, 'sess-x-livask');
+    // The DELETE itself holds the extraction slot: arming happens at the
+    // model-commit seam BEFORE the (blocked) runShadowHarness await, so the
+    // token is live while isExtracting=true — the only topology in which the
+    // PRE-QUEUE classifier can see a token.
+    let release;
+    harnessGate = new Promise((r) => {
+      release = r;
+    });
+    const inFlight = ws._emit('message', transcript('Delete.', 'u1'));
+    expect(armedRows()).toHaveLength(1);
+    // A live registered ask the next transcript's regex hit resolves.
+    entry.pendingAsks.register('toolu_live', {
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 4,
+      expectedAnswerShape: 'value',
+      resolve: jest.fn(),
+      timer: null,
+      askStartedAt: fakeNow,
+    });
+    fakeNow = T0 + 2000;
+    await ws._emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'transcript',
+          text: 'Zs on circuit 4 is 0.62.',
+          utterance_id: 'u2',
+          regexResults: [{ field: 'measured_zs_ohm', circuit: 4, value: '0.62' }],
+        })
+      )
+    );
+    // Consumed by the ask channel (pre_queue_answered) — token gone, and the
+    // answering transcript never reached the arm site.
+    const consumed = consumedRows();
+    expect(consumed).toHaveLength(1);
+    expect(consumed[0][1]).toMatchObject({ seam: 'pre_queue_answered' });
+    expect(armedRows()).toHaveLength(1); // still only the delete's arm
+    fakeNow = T0 + 4000;
+    release();
+    await inFlight;
+    // The later trigger enters normally — nothing suppresses it.
+    fakeNow = T0 + 5000;
+    await ws._emit('message', transcript('Ring continuity for circuit 13.', 'u3'));
+    expect(confirmAsks(ws)).toHaveLength(1);
+  });
+
+  test('suppression verdict SURVIVES a user_moved_on requeue of the TRIGGER (the token is one-shot but the verdict rides the _drainedRetry clone)', async () => {
+    const { ws, entry } = await startLiveSession(wss, 'sess-x-verdict');
+    // Arm.
+    await ws._emit('message', transcript('Delete.', 'u1'));
+    expect(armedRows()).toHaveLength(1);
+    // A pending ask whose shape can never match the trigger → the POST-wrapper
+    // classifyOvertake returns user_moved_on and requeues the trigger AFTER
+    // the extraction-slot consume already burned the token.
+    entry.pendingAsks.register('toolu_v', {
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 4,
+      expectedAnswerShape: 'number',
+      resolve: jest.fn(),
+      timer: null,
+      askStartedAt: fakeNow,
+    });
+    fakeNow = T0 + 6000;
+    await ws._emit('message', transcript('recontinuity readings for circuit 13.', 'u2'));
+    // The drained retry must reach the model still suppressed — no script ask.
     expect(confirmAsks(ws)).toHaveLength(0);
     expect(harnessCalls[harnessCalls.length - 1]).toBe('recontinuity readings for circuit 13.');
   });
