@@ -139,6 +139,19 @@ export function createWriteDispatcher(session, logger, turnId, perTurnWrites, ex
     round += 1;
     const fn = WRITE_DISPATCHERS[call.name];
     if (!fn) {
+      // Plan B §3.2 — the OBJECT-form unknown_tool route (e.g. ask_user
+      // delegated to writes when no ask dispatcher is composed). Stage the
+      // model_contract refusal through the bound callback so the turn's
+      // audible outcome is an honest internal-snag line instead of the
+      // generic "couldn't action that"; the envelope below stays
+      // byte-identical (the model's self-correction signal is unchanged).
+      // Best-effort: staging must never break dispatch.
+      try {
+        safeExtra.onUnknownToolRefusal?.(call.tool_call_id ?? call.id ?? null);
+      } catch {
+        // swallowed — the envelope is the contract; the A3/marker-② nets
+        // keep the turn audible without the notice.
+      }
       logToolCall(logger, {
         sessionId: session.sessionId,
         turnId,
@@ -201,7 +214,11 @@ const WRITE_TOOL_NAMES = Object.freeze(new Set(Object.keys(WRITE_DISPATCHERS)));
  * @param {Function} asks    createAskDispatcher(...) output (Plan 03-05).
  * @returns {(call: {tool_call_id?, id?, name, input}, ctx) => Promise<{tool_use_id, content, is_error}>}
  */
-export function createToolDispatcher(writes, asks, { answers, inspects } = {}) {
+export function createToolDispatcher(
+  writes,
+  asks,
+  { answers, inspects, onUnknownToolRefusal } = {}
+) {
   return async function dispatchTool(call, ctx) {
     // A1 agentic-voice (2026-07-23) — dedicated routes for the two read-only
     // answer-feature tools. Deliberately NOT WRITE_DISPATCHERS entries (that
@@ -220,6 +237,16 @@ export function createToolDispatcher(writes, asks, { answers, inspects } = {}) {
     // envelope + log row.
     if (call.name === 'ask_user') return asks ? asks(call, ctx) : writes(call, ctx);
     if (WRITE_TOOL_NAMES.has(call.name)) return writes(call, ctx);
+    // Plan B §3.2 — the STRING-form unknown_tool route (a hallucinated tool
+    // name the composer has no route for). Stage the model_contract refusal
+    // via the bound callback: a hallucinated tool is a protocol error, not
+    // an impossible request, so the spoken line is the internal-snag family,
+    // never a capability refusal. The envelope stays byte-identical.
+    try {
+      onUnknownToolRefusal?.(call.tool_call_id ?? call.id ?? null);
+    } catch {
+      // swallowed — see createWriteDispatcher's unknown-tool branch.
+    }
     return {
       tool_use_id: call.tool_call_id ?? call.id,
       content: JSON.stringify({ error: 'unknown_tool', name: call.name }),

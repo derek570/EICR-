@@ -94,6 +94,18 @@ import {
   logImpedanceClamp,
   resolveBoardAwareEarthing,
 } from './impedance-clamp.js';
+// Plan B (honest-refusal, 2026-07-28) — three-way field_not_clearable
+// classification: board-coverable fields BRIDGE to A1a's pure classifier,
+// known-but-excluded circuit fields stage `unsupported_clear`, off-schema
+// strings stage the leak-safe `model_contract` off-schema route.
+import { classifyBoardClear } from './stage6-dispatchers-board.js';
+import { stageMandatoryNotice, spokenBoardOrdinal } from './refusal-notices.js';
+import {
+  CLEAR_BOARD_READING_FIELD_ENUM,
+  CIRCUIT_FIELD_ENUM,
+  CLEAR_READING_FIELD_ENUM,
+} from './stage6-tool-schemas.js';
+import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -439,6 +451,171 @@ export async function dispatchRecordReading(call, ctx) {
 
 // ---- clear_reading ---------------------------------------------------------
 
+// Plan B §3.2 — canonical-vs-canonical board-coverability membership
+// (round-6 BLOCKER: the clear_board_reading enum's OWN members are
+// mixed-spelling — `ze` is enum-resident canonical but
+// `prospective_fault_current` is enum-resident RAW with `pfc` absent, so a
+// one-sided canonicalisation misroutes PFC). Build the canonical image of
+// the whole enum ONCE and test the canonicalised input against it — never
+// raw-vs-raw (raw `earth_loop_impedance_ze` is a BOARD_CLEAR_EXCLUSION;
+// only canonical `ze` is enum-resident) and never canonical-vs-raw.
+const CANONICAL_BOARD_CLEARABLE = new Set(
+  CLEAR_BOARD_READING_FIELD_ENUM.map((m) => FIELD_CORRECTIONS[m] ?? m)
+);
+const CIRCUIT_FIELD_SET = new Set(CIRCUIT_FIELD_ENUM);
+const CLEAR_READING_FIELD_SET = new Set(CLEAR_READING_FIELD_ENUM);
+
+/**
+ * Plan B §3.2 — stage the dispatcher-authored structural refusal for a
+ * `field_not_clearable` rejection. THREE-way classification (round-2: the
+ * original board-coverable EXCLUSION left the headline `clear_reading`-on-Ze
+ * case with NO notice from EITHER plan — a clear_reading call never reaches
+ * dispatchClearBoardReading, so "A1a owns it" was false):
+ *
+ *   1. BOARD-COVERABLE (canonical field ∈ clear_board_reading's canonical
+ *      enum image) → bridge to classifyBoardClear. A non-null denialFamily
+ *      (dark / kill-switched / EICR-inapplicable / scope-unclassified)
+ *      stages that A1a family's notice — with coverage, so the A3
+ *      arbitration can suppress the generic REJECTED_PROMPTS beside this
+ *      hard-reject envelope (round-3: A1a's own soft-skips never needed
+ *      coverage because is_error:false keeps them out of allRejected). A
+ *      null denialFamily (CAPABLE — the model simply misrouted a supported
+ *      operation) stages `wrong_tool_clear`: NOT a capability refusal (the
+ *      operation is possible and the inspector did nothing wrong), slot
+ *      keyed on the SAME scope-conditioned boardSlotKey a successful
+ *      clear_board_reading stamps, so a same-turn self-correction
+ *      reconciles it away at net-0 (both dispatch orders).
+ *   2. KNOWN CIRCUIT FIELD with no clear support (the closed server-owned
+ *      set CIRCUIT_FIELD_ENUM − CLEAR_READING_FIELD_ENUM) →
+ *      `unsupported_clear`, label ONLY from field_schema.json
+ *      `circuit_fields[field].label` (asserted non-empty — an undefined
+ *      label must never render).
+ *   3. OFF-SCHEMA / arbitrary string → the `model_contract` off-schema
+ *      route: no trusted label, no proof the "field" is real — NEVER render
+ *      the raw field string (leak safety); stable server-owned slot +
+ *      repeat key (`offschema_clear`), distinct from the unknown-tool
+ *      bucket so neither route inflates the other's "attempt ⟨n⟩".
+ *
+ * Staging is best-effort beside a byte-identical hard-reject envelope: the
+ * envelope (and the model's ability to self-correct) must survive any
+ * staging failure, so the caller wraps this in try/catch.
+ */
+function stageClearReadingRefusal(call, ctx, input) {
+  const { session, perTurnWrites, turnId } = ctx;
+  const coveredToolCallIds = [call.tool_call_id];
+  const fieldRaw = input.field;
+  const canonicalField =
+    typeof fieldRaw === 'string' ? (FIELD_CORRECTIONS[fieldRaw] ?? fieldRaw) : fieldRaw;
+
+  const boardClause = (boardId) => {
+    const n = spokenBoardOrdinal(session?.stateSnapshot, boardId);
+    return n == null ? '' : ` on board ${n}`;
+  };
+
+  if (typeof canonicalField === 'string' && CANONICAL_BOARD_CLEARABLE.has(canonicalField)) {
+    const cls = classifyBoardClear(session, ctx, canonicalField, input);
+    // §3.5 rule (2): the rendered string embeds the slot discriminator the
+    // repeat bucket carries — global-scope slots (ze/pfc) have a null board
+    // component and NO discriminator; board-scoped/unclassified slots carry
+    // the resolved board, spoken as its injective ordinal.
+    const clause = cls.scope === 'global' ? '' : boardClause(cls.resolvedBoardId);
+    const friendly = `${cls.friendlyLabel}${clause}`;
+    if (cls.denialFamily != null) {
+      stageMandatoryNotice(perTurnWrites, session, {
+        family: cls.denialFamily,
+        slotKey: cls.slotKey,
+        turnId,
+        friendly,
+        field: fieldRaw,
+        boardId: cls.resolvedBoardId,
+        reason: cls.denialFamily,
+        coveredToolCallIds,
+        route: cls.denialFamily,
+        repeatKey: `${cls.denialFamily}::${cls.slotKey}`,
+      });
+    } else {
+      stageMandatoryNotice(perTurnWrites, session, {
+        family: 'wrong_tool_clear',
+        slotKey: cls.slotKey,
+        turnId,
+        friendly,
+        field: fieldRaw,
+        boardId: cls.resolvedBoardId,
+        reason: 'wrong_tool_clear',
+        coveredToolCallIds,
+        route: 'wrong_tool_clear',
+        repeatKey: `wrong_tool_clear::${cls.slotKey}`,
+      });
+    }
+    return;
+  }
+
+  if (
+    typeof fieldRaw === 'string' &&
+    CIRCUIT_FIELD_SET.has(fieldRaw) &&
+    !CLEAR_READING_FIELD_SET.has(fieldRaw)
+  ) {
+    const schemaLabel = FIELD_SCHEMA.circuit_fields?.[fieldRaw]?.label;
+    const boardComponent = resolveEffectiveBoardId(session, input.board_id);
+    // Codex diff-review cycle 1 — discriminator TRUST guards. The rendered
+    // string must embed the FULL slot discriminator its repeat bucket
+    // carries; when a component can't be rendered trustworthily the notice
+    // is NOT staged (the call stays UNCOVERED, so A3's generic fallback
+    // keeps the turn fail-audible — never two byte-identical covered
+    // refusals for different slots):
+    //   - `field_not_clearable` fires BEFORE circuit validation, so a
+    //     malformed/absent circuit (e.g. a string "4") reaches this code;
+    //     two different malformed circuits would share the empty clause.
+    //   - a boards[] snapshot whose resolved non-null board id has no
+    //     ordinal would drop the board clause the same way.
+    const circuitTrusted = Number.isInteger(input.circuit);
+    const boardRenderable =
+      boardComponent == null ||
+      !Array.isArray(session?.stateSnapshot?.boards) ||
+      spokenBoardOrdinal(session.stateSnapshot, boardComponent) != null;
+    if (
+      typeof schemaLabel === 'string' &&
+      schemaLabel.trim().length > 0 &&
+      circuitTrusted &&
+      boardRenderable
+    ) {
+      const slotKey = rawCircuitSlot(canonicalField, input.circuit, boardComponent);
+      const friendly = `${schemaLabel} for circuit ${input.circuit}${boardClause(boardComponent)}`;
+      stageMandatoryNotice(perTurnWrites, session, {
+        family: 'unsupported_clear',
+        slotKey,
+        turnId,
+        friendly,
+        field: fieldRaw,
+        boardId: boardComponent ?? null,
+        reason: 'unsupported_clear',
+        coveredToolCallIds,
+        route: 'unsupported_clear',
+        repeatKey: `unsupported_clear::${slotKey}`,
+      });
+    }
+    // Known circuit field but an untrusted discriminator (or a missing
+    // schema label — impossible by the closed set, defended anyway): stage
+    // NOTHING. Falling through to the label-free off-schema route would
+    // mislabel a REAL field as unrecognised; leaving the call uncovered
+    // keeps today's generic A3 wording (fail-audible, §3.6).
+    return;
+  }
+
+  stageMandatoryNotice(perTurnWrites, session, {
+    family: 'model_contract',
+    slotKey: 'offschema_clear',
+    turnId,
+    friendly: null,
+    field: null,
+    boardId: null,
+    reason: 'offschema_clear',
+    coveredToolCallIds,
+    route: 'offschema_clear',
+    repeatKey: 'model_contract::offschema_clear',
+  });
+}
+
 /**
  * Validate → clearReadingInSnapshot → if cleared: perTurnWrites.cleared.push +
  * perTurnWrites.readings.delete (same-turn correction) → log → envelope.
@@ -458,6 +635,24 @@ export async function dispatchClearReading(call, ctx) {
     validateBoardScope(input, session.stateSnapshot) ||
     validateClearReading(input, session.stateSnapshot);
   if (err) {
+    // Plan B §3.2 — a field_not_clearable rejection is the ONE validation
+    // class this dispatcher deterministically KNOWS is structural (the field
+    // enum is server-owned), so it stages an honest refusal notice beside
+    // the unchanged hard-reject envelope. Recoverable rejections
+    // (circuit_not_found, wrong_board…) stage NOTHING — the model should
+    // retry those, and A3/marker-② keep today's behaviour byte-identically.
+    // Best-effort: a staging failure must never break the envelope.
+    if (err.code === 'field_not_clearable') {
+      try {
+        stageClearReadingRefusal(call, ctx, input);
+      } catch (refusalErr) {
+        logger?.warn?.('stage6.clear_refusal_stage_error', {
+          sessionId: session.sessionId,
+          turnId,
+          error: refusalErr?.message ?? String(refusalErr),
+        });
+      }
+    }
     logToolCall(logger, {
       sessionId: session.sessionId,
       turnId,
