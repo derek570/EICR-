@@ -63,6 +63,7 @@ import { BOARD_FIELD_ENUM, CLEAR_BOARD_READING_FIELD_ENUM } from './stage6-tool-
 import { isBoardClearKilled } from './voice-latency-config.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { CONFIRMATION_FRIENDLY_NAMES, deriveFriendlyName } from './confirmation-text.js';
+import { stageMandatoryNotice } from './refusal-notices.js';
 import { buildDegenerateDedupeKey } from './ios-dedupe-key.js';
 import {
   DEFAULT_MAIN_BOARD_ID,
@@ -1071,152 +1072,107 @@ export const BOARD_CLEAR_SCOPE_MAP = Object.freeze({
   manufacturer: 'board',
 });
 
-/**
- * §3.5/§3.5a — the FIVE mandatory-notice families. Each is ≥3 exact,
- * semantically-equivalent strings; families are mutually string-distinct and
- * distinct from REJECTED_PROMPTS / CATCHALL_AUDIBILITY_PROMPTS /
- * NOOP_AUDIBILITY_PROMPTS (never a "didn't catch that" — the request WAS
- * understood, and "say it again" wording is precisely the infinite-retry
- * invitation this plan exists to kill). Rotation exists because byte-identical
- * repeats inside 30 s are swallowed by the clients' A1(b) field-nil text
- * dedupe — Derek said "Delete Ze" THREE times; attempts 2 and 3 must not go
- * silent.
- *
- * Wording is TRUTHFUL for the dark state: no "please update the app" until
- * A1b ships a client that could actually be updated to.
- */
-export const BOARD_CLEAR_NOTICE_FAMILIES = Object.freeze({
-  // Codex diff-review r1: FIVE variants per family (the plan's floor is
-  // "≥3"). With exactly three, a FOURTH same-family retry inside the
-  // clients' 30 s field-nil text-dedupe window would wrap back to the first
-  // byte-identical string and be swallowed; five keeps five consecutive
-  // retries audibly distinct — comfortably past the observed three-attempt
-  // loop.
-  board_clear_capability_missing: Object.freeze([
-    (f) => `Board-reading clear isn't available in this app version — delete ${f} on screen.`,
-    (f) => `This app version can't clear board readings by voice — remove ${f} using the screen.`,
-    (f) =>
-      `Voice clearing for board readings isn't supported in this app build — edit ${f} on screen instead.`,
-    (f) =>
-      `Board readings can't be cleared by voice on this app version — take ${f} out on screen.`,
-    (f) =>
-      `This build doesn't support voice-clearing board readings — clear ${f} from the screen instead.`,
-  ]),
-  board_clear_disabled: Object.freeze([
-    (f) => `Clearing board readings is switched off right now — please delete ${f} on screen.`,
-    (f) => `Board-reading clears are currently turned off — remove ${f} using the screen for now.`,
-    (f) => `The board-clear function is disabled at the moment — edit ${f} on screen instead.`,
-    (f) => `Board-reading clearing is temporarily off — please take ${f} out on screen.`,
-    (f) =>
-      `Clears for board readings are switched off for now — clear ${f} from the screen instead.`,
-  ]),
-  board_clear_already_empty: Object.freeze([
-    (f) => `${capitaliseFirst(f)} is already blank.`,
-    (f) => `There's no ${f} recorded — nothing to clear.`,
-    (f) => `${capitaliseFirst(f)} is already empty, so no value was removed.`,
-    (f) => `Nothing is recorded for ${f} — there's no value to remove.`,
-    (f) => `${capitaliseFirst(f)} holds no value at the moment, so there was nothing to clear.`,
-  ]),
-  field_not_applicable_on_eicr: Object.freeze([
-    () =>
-      `Comments only apply to an EIC — this certificate is an EICR, so there's nothing to clear.`,
-    () => `This is an EICR — the comments field belongs to an EIC and isn't in use here.`,
-    () => `There's no comments field on an EICR — that one only exists on an EIC certificate.`,
-    () => `The comments field doesn't exist on an EICR certificate, so there's nothing to remove.`,
-    () => `Comments belong to EIC certificates only — this EICR has no comments field to clear.`,
-  ]),
-  board_clear_scope_unclassified: Object.freeze([
-    (f) => `${capitaliseFirst(f)} can't be cleared by voice yet — delete it on screen.`,
-    (f) => `Voice clearing isn't set up for ${f} — remove it using the screen.`,
-    (f) => `Clearing ${f} by voice isn't wired up yet — edit it on screen instead.`,
-    (f) => `${capitaliseFirst(f)} isn't voice-clearable yet — take it out on screen.`,
-    (f) => `Voice can't clear ${f} for now — please remove it from the screen.`,
-  ]),
-});
-
-function capitaliseFirst(s) {
-  return typeof s === 'string' && s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
-}
+// Plan B (honest-refusal, 2026-07-28) §3.1 — the notice-family machinery
+// (families + djb2-seeded rotation selection + staging/coalescing) moved
+// VERBATIM to the shared refusal-notice registry so new structural-refusal
+// families are declared, not re-implemented. These two re-exports are the
+// COMPATIBILITY surface: existing A1a suites import them from this module,
+// and the byte-parity pins live against these names. The shared module is
+// dependency-downstream-only (imports nothing from dispatchers/harness).
+export { BOARD_CLEAR_NOTICE_FAMILIES, selectMandatoryNoticeText } from './refusal-notices.js';
 
 /** Spoken name for a board field: friendly-table entry or snake→spaces. */
 function boardFieldSpokenName(field) {
   return CONFIRMATION_FRIENDLY_NAMES[field] ?? deriveFriendlyName(field);
 }
 
-// djb2 over the turn id — the F/U-2/3 seeding hash. Used ONLY to seed the
-// first selection of a family's rotation cursor (so different sessions start
-// at different phrasings); NEVER as the per-turn selector (a hash gives no
-// no-consecutive-repeat guarantee — §3.5's executed counter-examples).
-function djb2Index(turnId, count) {
-  let h = 5381;
-  const str = String(turnId ?? '');
-  for (let i = 0; i < str.length; i += 1) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
-  return h % count;
-}
-
-/**
- * §3.5 — pinned selection algorithm: a per-session, per-family STRICT
- * MONOTONIC CYCLE. Consecutive selections are always distinct; three
- * consecutive fires are three distinct strings. Seeded from the djb2 hash on
- * first use. State lives beside the session's dispatcher context and MUST be
- * stored (a re-derivation would repeat the prior text and the clients' 30 s
- * dedupe would go silent).
- *
- * Codex diff-review r1: selection is called at the DRAIN (the harness's
- * net-0 site), NEVER at stage time — dedupe AND the drain's same-slot
- * suppression must complete BEFORE the cursor advances, so a suppressed
- * notice can never consume a variant (a consumed-but-unspoken variant lets
- * the next emitted notice wrap to the last AUDIBLE byte string and be
- * client-deduped into silence). EXPORTED for the harness + unit tests.
- */
-export function selectMandatoryNoticeText(session, family, turnId, friendly) {
-  const variants = BOARD_CLEAR_NOTICE_FAMILIES[family];
-  if (!session._mandatoryNoticeRotation || typeof session._mandatoryNoticeRotation !== 'object') {
-    session._mandatoryNoticeRotation = {};
-  }
-  const state = session._mandatoryNoticeRotation;
-  const prev = state[family];
-  const idx =
-    typeof prev === 'number' ? (prev + 1) % variants.length : djb2Index(turnId, variants.length);
-  state[family] = idx;
-  return variants[idx](friendly);
-}
-
-/**
- * Stage a mandatory notice (§3.5a net 0) as METADATA ONLY — the spoken text
- * is selected at the harness DRAIN, after within-turn dedupe (here) and the
- * drain's same-slot suppression have both settled, so the rotation cursor
- * advances EXACTLY once per notice that will actually be emitted
- * (round-14 + Codex diff-review r1). Entries carry the telemetry
- * dimensions the drain's `stage6.mandatory_notice_emitted` row requires
- * (family / field / board / reason — PII-safe: field names and board ids,
- * never values).
- */
-function stageMandatoryNotice(
-  perTurnWrites,
-  session,
-  { family, slotKey: slot, turnId, friendly, field, boardId, reason }
-) {
-  if (!Array.isArray(perTurnWrites.mandatoryNotices)) return;
-  const duplicate = perTurnWrites.mandatoryNotices.some(
-    (n) => n && n.family === family && n.slotKey === slot
-  );
-  if (duplicate) return;
-  perTurnWrites.mandatoryNotices.push({
-    family,
-    slotKey: slot,
-    turnId,
-    friendly,
-    field: field ?? null,
-    boardId: boardId ?? null,
-    reason: reason ?? family,
-  });
-}
-
 function resolveEffectiveBoardIdForClear(session, rawBoardId) {
   const snapshot = session?.stateSnapshot;
   if (rawBoardId != null && rawBoardId !== '') return rawBoardId;
   return snapshot?.currentBoardId ?? getMainBoardId(snapshot);
+}
+
+/**
+ * Plan B §3.2 (round-3) — the PURE board-clear classifier, extracted from
+ * dispatchClearBoardReading's inline steps 3–5 so the `clear_reading` bridge
+ * can ask "would clear_board_reading deny this field, and why?" WITHOUT
+ * running the dispatcher (which, in the capable state, would MUTATE — it
+ * would clear a reading the user never asked that tool to clear).
+ *
+ * Side-effect-free by contract: no logging, no staging, no snapshot writes.
+ * `dispatchClearBoardReading` consumes this in place of its inline checks
+ * (validation precedence + rendered bytes pinned by parity tests), so the
+ * two callers can never drift.
+ *
+ * DECISION ORDER (A1a round-11 pin, test 20): capability/kill-switch denial
+ * → cert-type applicability refusal → scope classification. Capability-
+ * missing is checked FIRST: it is the honest dark-state message (the
+ * kill-switch code is only meaningful for a client that could otherwise
+ * clear).
+ *
+ * `input` is required (round-6): the board-scoped slotKey needs
+ * `input.board_id` via resolveEffectiveBoardIdForClear and the friendlyLabel
+ * needs the field spelling; for global `ze`/`pfc` the board component is
+ * null and `input.board_id` is unused. The returned `slotKey` is
+ * SCOPE-CONDITIONED to mirror the success path's EFFECTIVE_BOARD_SLOT
+ * stamping exactly (`clearSlotBoardComponent = scope==='global' ? null :
+ * resolvedBoardId`) — the bridge uses this ONE derivation for both its
+ * notice slotKey and its `${family}::${slotKey}` repeat key, so a
+ * same-turn `clear_board_reading` success on the same slot can reconcile
+ * the bridge's wrong_tool_clear notice away (net-0).
+ *
+ * @returns {{denialFamily: string|null, slotKey: string, friendlyLabel: string,
+ *            resolvedBoardId: string|null, scope: 'global'|'board'|undefined}}
+ *          `denialFamily ∈ {board_clear_capability_missing, board_clear_disabled,
+ *          field_not_applicable_on_eicr, board_clear_scope_unclassified}`;
+ *          null means the field IS clearable for this session.
+ */
+export function classifyBoardClear(session, ctx, canonicalField, input) {
+  const friendlyLabel = boardFieldSpokenName(input.field);
+  const resolvedBoardId = resolveEffectiveBoardIdForClear(session, input.board_id);
+  const scope = BOARD_CLEAR_SCOPE_MAP[canonicalField];
+  // Scope-conditioned slot for CLASSIFIED fields; total denial-slot fallback
+  // (canonical field + resolved board) for UNCLASSIFIED fields — erring
+  // toward EXTRA audibility (two denials on different boards both speak)
+  // rather than over-suppression (A1a §3.5 round-11).
+  const slotKey =
+    scope === 'global'
+      ? boardSlotKey(canonicalField, null)
+      : boardSlotKey(canonicalField, resolvedBoardId);
+  const capabilityMissing = ctx.hasBoardClearV1 !== true;
+  const killed = isBoardClearKilled();
+  if (capabilityMissing || killed) {
+    return {
+      denialFamily: capabilityMissing ? 'board_clear_capability_missing' : 'board_clear_disabled',
+      slotKey,
+      friendlyLabel,
+      resolvedBoardId,
+      scope,
+    };
+  }
+  if (
+    input.field === 'comments' &&
+    typeof session.certType === 'string' &&
+    session.certType.toLowerCase() !== 'eic'
+  ) {
+    return {
+      denialFamily: 'field_not_applicable_on_eicr',
+      slotKey,
+      friendlyLabel,
+      resolvedBoardId,
+      scope,
+    };
+  }
+  if (scope !== 'global' && scope !== 'board') {
+    return {
+      denialFamily: 'board_clear_scope_unclassified',
+      slotKey,
+      friendlyLabel,
+      resolvedBoardId,
+      scope,
+    };
+  }
+  return { denialFamily: null, slotKey, friendlyLabel, resolvedBoardId, scope };
 }
 
 /**
@@ -1284,88 +1240,26 @@ export async function dispatchClearBoardReading(call, ctx) {
   }
 
   const canonicalField = FIELD_CORRECTIONS[input.field] ?? input.field;
-  const friendly = boardFieldSpokenName(input.field);
-  const resolvedBoardId = resolveEffectiveBoardIdForClear(session, input.board_id);
-  const scope = BOARD_CLEAR_SCOPE_MAP[canonicalField];
-  // Scope-conditioned slot for CLASSIFIED fields; total denial-slot fallback
-  // (canonical field + resolved board) for UNCLASSIFIED fields — erring
-  // toward EXTRA audibility (two denials on different boards both speak)
-  // rather than over-suppression (§3.5 round-11).
-  const noticeSlotKey =
-    scope === 'global'
-      ? boardSlotKey(canonicalField, null)
-      : boardSlotKey(canonicalField, resolvedBoardId);
 
-  // 3) Capability / kill-switch denial — the deny-first gate that keeps A1a
-  //    mutation-dark (§3.1). Capability-missing is checked FIRST: it is the
-  //    honest dark-state message (the kill-switch code is only meaningful
-  //    for a client that could otherwise clear).
-  const capabilityMissing = ctx.hasBoardClearV1 !== true;
-  const killed = isBoardClearKilled();
-  if (capabilityMissing || killed) {
-    const reason = capabilityMissing ? 'board_clear_capability_missing' : 'board_clear_disabled';
-    logToolCall(logger, {
-      sessionId: session.sessionId,
-      turnId,
-      tool_use_id: call.tool_call_id,
-      tool: 'clear_board_reading',
-      round,
-      is_error: false,
-      outcome: 'skipped',
-      validation_error: null,
-      input_summary: { field: input.field, reason },
-    });
-    stageMandatoryNotice(perTurnWrites, session, {
-      family: reason,
-      slotKey: noticeSlotKey,
-      turnId,
-      friendly,
-      field: input.field,
-      boardId: resolvedBoardId,
-      reason,
-    });
-    return envelope(call.tool_call_id, { ok: true, skipped: true, reason }, false);
-  }
-
-  // 4) Certificate-type applicability refusal (§3.7): `comments` is EIC-only.
-  //    certType is CLIENT-supplied (jobState.certificateType) so the guard is
-  //    casing-defended — a strict lowercase equality would never fire on an
-  //    uppercase 'EICR' while lowercase-authored tests stayed green.
-  if (
-    input.field === 'comments' &&
-    typeof session.certType === 'string' &&
-    session.certType.toLowerCase() !== 'eic'
-  ) {
-    const reason = 'field_not_applicable_on_eicr';
-    logToolCall(logger, {
-      sessionId: session.sessionId,
-      turnId,
-      tool_use_id: call.tool_call_id,
-      tool: 'clear_board_reading',
-      round,
-      is_error: false,
-      outcome: 'skipped',
-      validation_error: null,
-      input_summary: { field: input.field, reason },
-    });
-    stageMandatoryNotice(perTurnWrites, session, {
-      family: reason,
-      slotKey: noticeSlotKey,
-      turnId,
-      friendly,
-      field: input.field,
-      boardId: resolvedBoardId,
-      reason,
-    });
-    return envelope(call.tool_call_id, { ok: true, skipped: true, reason }, false);
-  }
-
-  // 5) Scope classification — UNKNOWN scope fails CLOSED (§3.4, test 19).
-  //    A mis-scoped clear is the F5 factory (a global field cleared as
-  //    board-scoped never sweeps circuits[0], so the value survives and
-  //    re-asserts), so an unclassified field never reaches the mutator.
-  if (scope !== 'global' && scope !== 'board') {
-    const reason = 'board_clear_scope_unclassified';
+  // 3–5) Capability/kill-switch denial → cert-type applicability refusal →
+  //    scope classification, via the PURE classifier (plan B §3.2 extraction
+  //    — the clear_reading bridge shares the exact decision sequence without
+  //    risking a mutation). Decision order + rendered bytes are parity-pinned
+  //    against the pre-extraction inline checks. A denial is a SOFT SKIP
+  //    (is_error:false) + a staged mandatory notice, per the envelope
+  //    discipline in the function header; the honest dark-state message
+  //    (capability_missing) wins over the kill-switch code, the EICR
+  //    refusal only fires for a CAPABLE session, and UNKNOWN scope fails
+  //    CLOSED (a mis-scoped clear is the F5 factory — a global field
+  //    cleared as board-scoped never sweeps circuits[0], so the value
+  //    survives and re-asserts).
+  const cls = classifyBoardClear(session, ctx, canonicalField, input);
+  const friendly = cls.friendlyLabel;
+  const resolvedBoardId = cls.resolvedBoardId;
+  const scope = cls.scope;
+  const noticeSlotKey = cls.slotKey;
+  if (cls.denialFamily != null) {
+    const reason = cls.denialFamily;
     logToolCall(logger, {
       sessionId: session.sessionId,
       turnId,
