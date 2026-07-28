@@ -29,7 +29,7 @@
  * REQUIREMENT covered: STA-04 (overtake classifier).
  */
 
-import { classifyOvertake } from '../extraction/stage6-overtake-classifier.js';
+import { classifyOvertake, projectReplyBoardId } from '../extraction/stage6-overtake-classifier.js';
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -1036,5 +1036,172 @@ describe('classifyOvertake — §A4 pendingValue continuation + pvr-* value asks
       ])
     );
     expect(verdict.kind).toBe('user_moved_on');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Plan E §4b piece 3 (2026-07-28, feedback id 100(a) + INDEX C4) — the shared
+// semantic-slot identity: alias-normalised field + circuit-SET + board
+// compatibility. The transcript-first pre-queue path is the PRODUCTION
+// ask-answer decision for current clients, so these pins live at the
+// classifier, not just the direct handler.
+// -----------------------------------------------------------------------------
+
+describe('classifyOvertake — plan E semantic-slot identity', () => {
+  const askTimerlessEntry = (over = {}) => ({
+    contextField: 'earth_loop_impedance_ze',
+    contextCircuit: null,
+    expectedAnswerShape: 'number',
+    ...over,
+  });
+
+  test('ALIAS-NORMALISED same field: detector-complete "Ze is 0.35" answering a ze-spelled ask → answers (no false overtake)', () => {
+    const verdict = classifyOvertake(
+      'Ze is 0.35',
+      [],
+      mockPending([['toolu_ze', askTimerlessEntry({ contextField: 'ze' })]])
+    );
+    expect(verdict).toEqual({ kind: 'answers', toolCallId: 'toolu_ze', userText: 'Ze is 0.35' });
+  });
+
+  test('C4 repro: detector-complete "main earth is 16" against the Ze ask → user_moved_on (re-opened field choice)', () => {
+    for (const ctx of ['earth_loop_impedance_ze', 'ze']) {
+      const verdict = classifyOvertake(
+        'main earth is 16',
+        [],
+        mockPending([['toolu_ze', askTimerlessEntry({ contextField: ctx })]])
+      );
+      expect(verdict.kind).toBe('user_moved_on');
+    }
+  });
+
+  test('round-4 stale-ask precedence: outstanding supply-Ze ask + "Ze at the board is 0.2" → user_moved_on (a ze_at_db write, not a supply-Ze answer)', () => {
+    const verdict = classifyOvertake(
+      'Ze at the board is 0.2',
+      [],
+      mockPending([['toolu_ze', askTimerlessEntry()]])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('newly-explicit circuit scope: "which circuit?" Zs ask answered "Zs circuit 4 is 0.30" → user_moved_on (overtake + write circuit 4)', () => {
+    const verdict = classifyOvertake(
+      'Zs circuit 4 is 0.30',
+      [],
+      mockPending([
+        [
+          'toolu_zs_which',
+          askTimerlessEntry({
+            contextField: 'measured_zs_ohm',
+            contextCircuit: null,
+            expectedAnswerShape: 'circuit_ref',
+          }),
+        ],
+      ])
+    );
+    expect(verdict.kind).toBe('user_moved_on');
+  });
+
+  test('non-earth same-field-alias generalisation pin: "RCD trip time circuit 2 is 26" answering the (rcd_trip_time, 2) ask → answers, NOT overtake', () => {
+    const verdict = classifyOvertake(
+      'RCD trip time circuit 2 is 26',
+      [],
+      mockPending([
+        ['toolu_rcd', askTimerlessEntry({ contextField: 'rcd_trip_time', contextCircuit: 2 })],
+      ])
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'toolu_rcd',
+      userText: 'RCD trip time circuit 2 is 26',
+    });
+  });
+
+  test('multi-circuit re-scope (round-4/round-7): reply inside the stored contextCircuits SET answers; outside it overtakes', () => {
+    const multiAsk = () =>
+      askTimerlessEntry({
+        contextField: 'measured_zs_ohm',
+        contextCircuit: null,
+        contextCircuits: [1, 2],
+      });
+    const inside = classifyOvertake(
+      'Zs circuit 2 is 0.30',
+      [],
+      mockPending([['toolu_multi', multiAsk()]])
+    );
+    expect(inside.kind).toBe('answers');
+    const outside = classifyOvertake(
+      'Zs circuit 3 is 0.30',
+      [],
+      mockPending([['toolu_multi', multiAsk()]])
+    );
+    expect(outside.kind).toBe('user_moved_on');
+  });
+
+  test('board re-scope (round-4/round-6): a reply naming a DIFFERENT board via the session snapshot overtakes; the same board answers', () => {
+    const boards = [
+      { id: 'main', designation: 'DB-1', board_type: 'main' },
+      { id: 'board_2', designation: 'Garage', board_type: 'sub' },
+    ];
+    const boardAsk = () => askTimerlessEntry({ contextField: 'ze_at_db', contextBoardId: 'main' });
+    // Reply re-scopes to the Garage board → overtake.
+    const rescope = classifyOvertake(
+      'Ze at the board is 0.2 on the Garage board',
+      [],
+      mockPending([['toolu_zedb', boardAsk()]]),
+      { boards }
+    );
+    expect(rescope.kind).toBe('user_moved_on');
+    // Same board named explicitly → still the answer.
+    const same = classifyOvertake(
+      'Ze at the board is 0.2 on the DB-1 board',
+      [],
+      mockPending([['toolu_zedb', boardAsk()]]),
+      { boards }
+    );
+    expect(same.kind).toBe('answers');
+    // No board named → compatible (bare restatement).
+    const bare = classifyOvertake(
+      'Ze at the board is 0.2',
+      [],
+      mockPending([['toolu_zedb', boardAsk()]]),
+      { boards }
+    );
+    expect(bare.kind).toBe('answers');
+  });
+
+  test('regex-path alias normalisation: regex hit (ze, null) vs ask contextField earth_loop_impedance_ze → answers', () => {
+    const verdict = classifyOvertake(
+      'ze is 0.45',
+      [{ field: 'ze', circuit: null, value: 0.45 }],
+      mockPending([['toolu_canon', askTimerlessEntry({ contextField: 'earth_loop_impedance_ze' })]])
+    );
+    expect(verdict.kind).toBe('answers');
+  });
+});
+
+describe('projectReplyBoardId — plan E conservatism', () => {
+  test('a board designation "Main" never matches the "main" in "main earth is 16" (no board-context cue)', () => {
+    expect(
+      projectReplyBoardId('main earth is 16', [
+        { id: 'b1', designation: 'Main' },
+        { id: 'b2', designation: 'Garage' },
+      ])
+    ).toBeNull();
+  });
+
+  test('server-internal board IDs are never matched — only designations', () => {
+    expect(
+      projectReplyBoardId('Ze at the main board is 0.2', [{ id: 'main', designation: 'DB-1' }])
+    ).toBeNull();
+  });
+
+  test('cue + designation on a word boundary projects; longest designation wins', () => {
+    const boards = [
+      { id: 'b1', designation: 'DB-1' },
+      { id: 'b12', designation: 'DB-12' },
+    ];
+    expect(projectReplyBoardId('Ze on the DB-12 board is 0.2', boards)).toBe('b12');
+    expect(projectReplyBoardId('Ze on the DB-1 board is 0.2', boards)).toBe('b1');
   });
 });

@@ -493,3 +493,393 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
     expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
   });
 });
+
+// -----------------------------------------------------------------------------
+// Plan E §4b (2026-07-28, feedback id 100(a) + INDEX C4) — ordinary-ask
+// overtake on the direct channel, confirmation-mode latch, supersession,
+// and the paired-transcript reservation lifecycle (both wire orders).
+// -----------------------------------------------------------------------------
+
+function registerOrdinaryFieldAsk(entry, toolCallId, resolveFn, over = {}) {
+  entry.pendingAsks.register(toolCallId, {
+    contextField: 'earth_loop_impedance_ze',
+    contextCircuit: null,
+    expectedAnswerShape: 'number',
+    resolve: resolveFn,
+    timer: makeAskTimer(),
+    askStartedAt: Date.now(),
+    ...over,
+  });
+}
+
+describe('plan E — C4 ordinary-ask overtake (direct ask_user_answered channel)', () => {
+  test('id-100 repro (toolu_*): "main earth is 16" answering the Ze ask → user_moved_on WITHOUT a Ze write + re-injection lands the CSA reading', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-1');
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+
+    let resolvedPayload = null;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_ask', (payload) => {
+      resolvedPayload = payload;
+    });
+    // Latch: the session last saw confirmations ON.
+    entry.lastConfirmationsEnabled = true;
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_ask',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-1',
+    });
+
+    // The old ask resolves user_moved_on — never a Ze write, never
+    // answered:true (P4's decline net keys on answered:true, so it cannot
+    // fire off this outcome).
+    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(resolvedPayload.user_text).toBeUndefined();
+    expect(entry.pendingAsks.size).toBe(0);
+
+    // Verdict row carries the re-opened field choice (field KEYS only).
+    const rows = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_rejected_new_command'
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0][1]).toMatchObject({
+      ordinary_ask_overtake: true,
+      ask_field: 'earth_loop_impedance_ze',
+      reply_field: 'earthing_conductor_csa',
+      matched_imperative: false,
+      matched_bulk_scope: false,
+    });
+
+    // Re-injection reaches the harness as a normal turn, WITH the latched
+    // confirmation mode (an unlatched re-injection would write silently —
+    // Audio-First #1).
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    const call = runShadowHarnessSpy.mock.calls.at(-1);
+    expect(call[1]).toContain('main earth is 16');
+    expect(call[3]).toMatchObject({ confirmationsEnabled: true });
+  });
+
+  test('pvr-* identity: "main earth is 16" against a brokered concrete-field ask also overtakes + re-injects', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-2');
+    let resolvedPayload = null;
+    entry.pendingAsks.register('pvr-1', {
+      contextField: 'rcd_time_ms',
+      contextCircuit: 2,
+      expectedAnswerShape: 'number',
+      pendingValue: { value: '26', unit: 'ms', source: 'transcript' },
+      resolve: (payload) => {
+        resolvedPayload = payload;
+      },
+      timer: makeAskTimer(),
+      askStartedAt: Date.now(),
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'pvr-1',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-2',
+    });
+
+    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('main earth is 16');
+  });
+
+  test('same-field reply keeps today\'s answer path byte-identically: "Ze is 0.35" answering the Ze ask → answered:true, NO re-injection', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-3');
+    const loggerModule = (await import('../logger.js')).default;
+    loggerModule.warn.mockClear();
+
+    let resolvedPayload = null;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_same', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_same',
+      user_text: 'Ze is 0.35',
+      consumed_utterance_id: 'u-e-3',
+    });
+
+    expect(resolvedPayload).toMatchObject({ answered: true, user_text: 'Ze is 0.35' });
+    expect(entry.pendingAsks.size).toBe(0);
+    // No overtake verdict, no re-injection.
+    const rows = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_rejected_new_command'
+    );
+    expect(rows).toHaveLength(0);
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('bare value reply unregressed: "0.35" resolves the ask\'s original field (answered:true)', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-4');
+    let resolvedPayload = null;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_bare', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_bare',
+      user_text: '0.35',
+      consumed_utterance_id: 'u-e-4',
+    });
+
+    expect(resolvedPayload).toMatchObject({ answered: true, user_text: '0.35' });
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('alias-spelled ask: contextField "ze" + "Ze is 0.35" reply is the SAME slot (no false overtake on the direct channel)', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-5');
+    let resolvedPayload = null;
+    registerOrdinaryFieldAsk(
+      entry,
+      'toolu_ze_alias',
+      (payload) => {
+        resolvedPayload = payload;
+      },
+      { contextField: 'ze' }
+    );
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_alias',
+      user_text: 'Ze is 0.35',
+      consumed_utterance_id: 'u-e-5',
+    });
+
+    expect(resolvedPayload).toMatchObject({ answered: true, user_text: 'Ze is 0.35' });
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('supersession: the overtake supersedes the active generation BEFORE resolving, and drains straggler asks', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-6');
+    const callOrder = [];
+    let resolvedPayload = null;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_super', (payload) => {
+      callOrder.push('resolve');
+      resolvedPayload = payload;
+    });
+    // Keep a local ref: the synthetic re-injection's own extraction installs
+    // (and on release deletes) the REAL per-generation handle on the entry,
+    // so the entry property is not stable across the flow.
+    const supersedeSpy = jest.fn((reason) => {
+      callOrder.push(`supersede:${reason}`);
+      return true;
+    });
+    entry.supersedeActiveGeneration = supersedeSpy;
+    const rejectAllSpy = jest.spyOn(entry.pendingAsks, 'rejectAll');
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_super',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-6',
+    });
+
+    expect(supersedeSpy).toHaveBeenCalledWith('ask_answer_overtake');
+    // Supersede BEFORE resolve (one synchronous block — the dispatcher's
+    // continuation must already see the aborted signal).
+    expect(callOrder[0]).toBe('supersede:ask_answer_overtake');
+    expect(callOrder[1]).toBe('resolve');
+    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(rejectAllSpy).toHaveBeenCalledWith('user_moved_on');
+  });
+});
+
+describe('plan E — paired-transcript reservation lifecycle (both wire orders)', () => {
+  test('answer-first COMMIT: the paired real transcript is suppressed after a successful synthetic extraction — ONE extraction total (fast-path id anchor)', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-7');
+    const loggerModule = (await import('../logger.js')).default;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_pair', () => {});
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_pair',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-7',
+    });
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    // Reservation committed after harness success.
+    expect(entry.reinjectionReservations).toHaveLength(0);
+
+    // The paired REAL transcript (same utterance id) arrives late.
+    loggerModule.info.mockClear();
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'main earth is 16',
+      utterance_id: 'u-e-7',
+      regexResults: [],
+    });
+
+    // Suppressed — still exactly one extraction, nothing queued.
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(entry.pendingTranscripts).toHaveLength(0);
+    const suppressedRows = loggerModule.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.transcript_suppressed'
+    );
+    expect(suppressedRows).toHaveLength(1);
+  });
+
+  test('answer-first COMMIT (legacy pair, no utterance id): the content anchor suppresses the paired transcript', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-8');
+    const loggerModule = (await import('../logger.js')).default;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_legacy', () => {});
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_legacy',
+      user_text: 'main earth is 16',
+      // No consumed_utterance_id — legacy client; only the content anchor
+      // can cover the pair.
+    });
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+
+    loggerModule.warn.mockClear();
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'main earth is 16',
+      regexResults: [],
+    });
+
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    const contentRows = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.transcript_suppressed_content_anchor'
+    );
+    expect(contentRows).toHaveLength(1);
+  });
+
+  test('FAILURE-path ROLLBACK: synthetic extraction fails ⇒ anchors removed, the paired real transcript remains processable — the reading is never lost', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-9');
+    const loggerModule = (await import('../logger.js')).default;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_fail', () => {});
+    runShadowHarnessSpy.mockClear();
+    runShadowHarnessSpy.mockImplementationOnce(async () => {
+      throw new Error('anthropic 500');
+    });
+    loggerModule.warn.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_fail',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-9',
+    });
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1); // the failed synthetic
+
+    // Rolled back: reservation gone, BOTH anchors released.
+    expect(entry.reinjectionReservations).toHaveLength(0);
+    expect(entry.consumedAskUtterances.has('u-e-9')).toBe(false);
+    expect(entry.recentAskAnswers).toHaveLength(0);
+    const rollbackRows = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.reinjection_rolled_back'
+    );
+    expect(rollbackRows).toHaveLength(1);
+    expect(rollbackRows[0][1]).toMatchObject({ reason: 'extraction_error' });
+
+    // The paired real transcript arrives — NOT suppressed, processes as a
+    // normal turn (exactly one successful extraction of the reading).
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'main earth is 16',
+      utterance_id: 'u-e-9',
+      regexResults: [],
+    });
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(2);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('main earth is 16');
+  });
+
+  test('transcript-first wire order (the PRODUCTION order): pre-queue overtake rejects the ask, the late direct frame downgrades to unresolved', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-10');
+    const loggerModule = (await import('../logger.js')).default;
+    entry.isExtracting = true; // the ask is blocking the tool loop
+
+    let rejectedPayload = null;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_tf', (payload) => {
+      rejectedPayload = payload;
+    });
+    const rejectAllSpy = jest.spyOn(entry.pendingAsks, 'rejectAll');
+    runShadowHarnessSpy.mockClear();
+
+    // The reply arrives on the transcript channel FIRST (current clients).
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'main earth is 16',
+      utterance_id: 'u-e-10',
+      regexResults: [],
+    });
+
+    // Pre-queue: detector-complete different-slot reading ⇒ evidence-backed
+    // user_moved_on; the transcript itself queues as a fresh command.
+    expect(rejectAllSpy).toHaveBeenCalledWith('user_moved_on', {
+      response_utterance_id: 'u-e-10',
+    });
+    expect(rejectedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(entry.pendingAsks.size).toBe(0);
+    expect(entry.pendingTranscripts).toHaveLength(1);
+
+    // The duplicate direct frame arrives late — the ask is already gone, so
+    // it downgrades to unresolved (never a second consumption).
+    loggerModule.warn.mockClear();
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_tf',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-10',
+    });
+    const unresolvedRows = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.ask_user_answered_unresolved'
+    );
+    expect(unresolvedRows).toHaveLength(1);
+  });
+
+  test('F-seam order-independence: an armed destructive token is consumed EXACTLY ONCE by the re-injected synthetic, never left stale', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-11');
+    const loggerModule = (await import('../logger.js')).default;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_tok', () => {});
+    // A standalone "delete" armed the token at the model-commit seam just
+    // before the overtake reply.
+    entry.session.pendingDestructiveIntent = { deleteArrivedAt: 0 };
+    loggerModule.info.mockClear();
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_tok',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-11',
+    });
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+
+    // Token consumed exactly once (at the synthetic's extraction slot) and
+    // not left to suppress a later legitimate entry.
+    expect(entry.session.pendingDestructiveIntent).toBeUndefined();
+    const consumedRows = loggerModule.info.mock.calls.filter(
+      (c) => c[0] === 'stage6.cross_utterance_destructive_consumed'
+    );
+    expect(consumedRows).toHaveLength(1);
+  });
+});
