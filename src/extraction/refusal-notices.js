@@ -407,6 +407,49 @@ export function stageMandatoryNotice(
   perTurnWrites.mandatoryNotices.push(notice);
 }
 
+/**
+ * Plan B §3.5 rule (3) — the spoken board component is a server-owned
+ * INJECTIVE identifier: the board's ORDINAL (1-based index in
+ * `snapshot.boards`), NEVER the designation alone (`add_board` enforces no
+ * designation uniqueness) and never a raw board-id string. Returns null when
+ * the board can't be resolved (legacy single-board snapshots with no
+ * boards[]) — callers then omit the board clause, which is safe because a
+ * second board cannot exist without a boards[] array.
+ */
+export function spokenBoardOrdinal(snapshot, boardId) {
+  if (boardId == null || !Array.isArray(snapshot?.boards)) return null;
+  const idx = snapshot.boards.findIndex((b) => b && b.id === boardId);
+  return idx >= 0 ? idx + 1 : null;
+}
+
+/**
+ * Plan B §3.2 — stage the `model_contract` unknown-tool refusal. An unknown
+ * tool name is a model/protocol contract error, NOT evidence the user's
+ * request is impossible (a supported request expressed through a
+ * hallucinated tool name must never draw "I can't do that") — so the
+ * wording is the non-blaming internal-snag family. Slot + repeat key are
+ * the server-owned `unknown_tool` constants (leak safety: never the
+ * hallucinated tool name); multiple unknown-tool failures in one turn
+ * coalesce to ONE line whose coverage lists every call id (round-8).
+ * Without a call id there is nothing for the A3 arbitration to cover, so
+ * nothing is staged (fail-closed to today's behaviour).
+ */
+export function stageUnknownToolRefusal(perTurnWrites, session, { turnId, toolCallId }) {
+  if (toolCallId == null) return;
+  stageMandatoryNotice(perTurnWrites, session, {
+    family: 'model_contract',
+    slotKey: 'unknown_tool',
+    turnId,
+    friendly: null,
+    field: null,
+    boardId: null,
+    reason: 'unknown_tool',
+    coveredToolCallIds: [toolCallId],
+    route: 'unknown_tool',
+    repeatKey: 'model_contract::unknown_tool',
+  });
+}
+
 /** True when a staged notice carries call-level coverage (B-staged). */
 export function noticeIsCovered(notice) {
   return Array.isArray(notice?.coveredToolCallIds) && notice.coveredToolCallIds.length > 0;
