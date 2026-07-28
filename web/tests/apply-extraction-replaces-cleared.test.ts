@@ -313,7 +313,77 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     );
     // Pinned so the reason cannot silently become the cardinality term: this
     // case defers at count 1, which is exactly what the count alone misses.
-    expect(deferred?.payload).toMatchObject({ unknown_op_board: true, effective_board_count: 1 });
+    expect(deferred?.payload).toMatchObject({
+      unknown_named_board: true,
+      effective_board_count: 1,
+    });
+  });
+
+  it('source 4f — a READING naming a board web has NO record of defers (no ops at all)', () => {
+    // The same unroutable-ref class as 4d, reached through the OTHER door and
+    // with an EMPTY `board_ops` — so nothing in the op term can catch it. Web
+    // has no `boards[]` and one unscoped flat "circuit 1" row; the server sends
+    // a flagged replacement stamped `board_id:'sub-1'`. If the reading's own id
+    // were allowed to count as evidence FOR ITSELF the union would be exactly
+    // {sub-1} — cardinality 1, no ops — and the bypass would overwrite a flat
+    // row that may belong to the MAIN board.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading({ board_id: 'sub-1' })],
+      } as unknown as Partial<ExtractionResult>)
+    );
+
+    expect(row.ir_live_live_mohm).toBe('LIM');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
+    const deferred = getPipelineLog().find(
+      (e) => e.stage === 'apply_replaces_cleared_multiboard_deferred'
+    );
+    expect(deferred?.payload).toMatchObject({
+      unknown_named_board: true,
+      adds_board_this_turn: false,
+      effective_board_count: 1,
+    });
+  });
+
+  it('NEVER A NEW SKIP — a reading-named-unknown-board defer still FILLS an empty cell', () => {
+    const job = makeJob({
+      circuits: [populatedRow({ ir_live_live_mohm: undefined })],
+      boards: [],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading({ board_id: 'sub-1' })],
+      } as unknown as Partial<ExtractionResult>)
+    );
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('a reading whose board IS in the registry stays fully evidenced and takes the bypass', () => {
+    // The guard must not swallow the ordinary scoped single-board case: web
+    // knows `main`, the row is scoped to `main`, and the server stamps `main`.
+    const job = makeJob({
+      circuits: [populatedRow({ board_id: 'main' })],
+      boards: [{ id: 'main' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading({ board_id: 'main' })],
+      } as unknown as Partial<ExtractionResult>)
+    );
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
   });
 
   it('NEVER A NEW SKIP — a `select_board`-deferred reading still FILLS an empty cell', () => {

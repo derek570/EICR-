@@ -898,16 +898,23 @@ function applyCircuitReadings(
   // exists. `addsBoardThisTurn` is belt-and-braces for a malformed op whose
   // `board_id` is missing/empty and so contributes nothing to the set.
   //
-  // Why an op-named board must also be INDEPENDENTLY evidenced: folding an op's
-  // id into the set proves the server named a board, NOT that it is the only
-  // one. A stale/legacy job whose `boards[]` and row `board_id`s are all empty
-  // would, on a `select_board(sub-1)` + board-omitted flagged replacement, see
-  // a union of exactly {sub-1} and take the bypass — overwriting whichever flat
-  // "circuit 1" row happens to exist, which may be the MAIN board's. So an op
-  // naming a board web has no independent record of is itself a defer signal:
-  // web's registry is out of sync with the server's and the ref cannot be
-  // routed. A `select_board` onto a board already in `boards[]`/rows/readings
-  // is fully evidenced and still takes the bypass.
+  // Why a THIS-TURN-named board must also be INDEPENDENTLY evidenced: folding a
+  // board id the SERVER asserts this turn into the set proves the server named a
+  // board, NOT that it is the only one — an assertion must never vouch for
+  // itself. Only two sources are independent evidence: web's own `boards[]`
+  // registry and the boards its EXISTING rows are already scoped to. A
+  // stale/legacy job whose `boards[]` and row `board_id`s are all empty would
+  // otherwise see a union of exactly {sub-1} and take the bypass — overwriting
+  // whichever flat "circuit 1" row happens to exist, which may be the MAIN
+  // board's. That holds through BOTH doors and each was found separately:
+  //  • an OP naming an unknown board (`select_board(sub-1)` + a board-omitted
+  //    flagged replacement), and
+  //  • a READING naming an unknown board (`{circuit:1, …, board_id:'sub-1'}`
+  //    with no ops at all) — the same unroutable-ref class, reached without
+  //    any `board_ops` in the envelope.
+  // Either one means web's registry is out of sync with the server's and the
+  // ref cannot be routed, so it is itself a defer signal. A board already in
+  // `boards[]`/rows is fully evidenced and still takes the bypass.
   //
   // Every declined case FALLS THROUGH to the unchanged gate — never a new
   // skip. A fail-closed SKIP would create a fresh spoken-but-not-written case,
@@ -928,7 +935,7 @@ function applyCircuitReadings(
   //    change and out of A2's scope.
   const hasReplacesClearedReading = readings.some((r) => r.replaces_cleared === true);
   const addsBoardThisTurn = boardOps.some((op) => op?.op === 'add_board');
-  const boardEvidence: { ids: Set<string>; unknownOpBoard: boolean } | null =
+  const boardEvidence: { ids: Set<string>; unknownNamedBoard: boolean } | null =
     hasReplacesClearedReading
       ? (() => {
           const ids = new Set<string>();
@@ -941,11 +948,18 @@ function applyCircuitReadings(
           // synthesised row carries no board_id, so it could only ever dilute
           // this set with nothing).
           for (const row of circuits) addId((row as Record<string, unknown>).board_id);
-          for (const r of readings) addId(r.board_id);
-          // Snapshot BEFORE folding the ops in, so "independently evidenced" is
-          // order-independent: one op cannot vouch for another op's board.
+          // Everything ABOVE is web's own independent evidence; everything
+          // BELOW is the server's assertion about THIS turn. Snapshotting here
+          // is what stops an assertion vouching for itself, and makes the
+          // result order-independent — no reading or op can evidence another.
           const independent = new Set(ids);
-          let unknownOpBoard = false;
+          let unknownNamedBoard = false;
+          const note = (v: unknown) => {
+            if (typeof v !== 'string' || v === '') return;
+            if (!independent.has(v)) unknownNamedBoard = true;
+            ids.add(v);
+          };
+          for (const r of readings) note(r.board_id);
           const OP_BOARD_KEYS = [
             'board_id',
             'parent_board_id',
@@ -955,14 +969,9 @@ function applyCircuitReadings(
           for (const op of boardOps) {
             const o = op as unknown as Record<string, unknown> | null;
             if (!o) continue;
-            for (const key of OP_BOARD_KEYS) {
-              const v = o[key];
-              if (typeof v !== 'string' || v === '') continue;
-              if (!independent.has(v)) unknownOpBoard = true;
-              ids.add(v);
-            }
+            for (const key of OP_BOARD_KEYS) note(o[key]);
           }
-          return { ids, unknownOpBoard };
+          return { ids, unknownNamedBoard };
         })()
       : null;
 
@@ -1057,14 +1066,14 @@ function applyCircuitReadings(
     if (reading.replaces_cleared === true) {
       if (
         boardEvidence !== null &&
-        (boardEvidence.ids.size > 1 || addsBoardThisTurn || boardEvidence.unknownOpBoard)
+        (boardEvidence.ids.size > 1 || addsBoardThisTurn || boardEvidence.unknownNamedBoard)
       ) {
         pipelineLog('apply_replaces_cleared_multiboard_deferred', {
           circuit: reading.circuit,
           pwa_column: column,
           effective_board_count: boardEvidence.ids.size,
           adds_board_this_turn: addsBoardThisTurn,
-          unknown_op_board: boardEvidence.unknownOpBoard,
+          unknown_named_board: boardEvidence.unknownNamedBoard,
         });
       } else {
         // Ref cardinality comes from `refCounts`, built from the ORIGINAL
