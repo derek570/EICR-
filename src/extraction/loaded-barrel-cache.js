@@ -323,6 +323,35 @@ export function markSuperseded(cacheKey, reason = 'superseded') {
 }
 
 /**
+ * A2-multiboard item 4 — EXACT-KEY atomic terminate, for PENDING **and** READY.
+ *
+ * The two existing invalidation doors are both wrong for a same-turn collapsed
+ * replacement:
+ *
+ *   - `markSuperseded` CASes pending-only, so a speculation that has already
+ *     finished synthesising (state `ready`) survives it and stays servable —
+ *     which is exactly the stale entry a collapsed clear→write turn produces.
+ *   - `invalidateBySlot` is SESSION-wide with no turn identifier, so it would
+ *     also kill an adjacent in-flight turn's ordinary speculation that happens
+ *     to share (field, circuit, board). The reconciliation knows the precise
+ *     registry key it wants dead; it must not reach beyond it.
+ *
+ * So this is deliberately the narrowest possible door: one exact `cacheKey`,
+ * terminated through the same `_terminate()` primitive every other path uses
+ * (pending promise resolved with null, controller aborted, entry + index
+ * removed), and a no-op on an absent or already-terminal entry. Terminal states
+ * stay terminal — `_terminate` returns false for `claimed`/`aborted`/
+ * `ttl_expired`, preserving the frozen state machine.
+ *
+ * Returns true if this call is the one that terminated the entry.
+ */
+export function terminateByKey(cacheKey, reason = 'collapsed_replacement') {
+  const entry = entries.get(cacheKey);
+  if (!entry) return false;
+  return _terminate(entry, 'aborted', reason);
+}
+
+/**
  * Drop every entry of `sessionId` whose slot matches (boardId, field,
  * circuit). Used when clear_reading fires or a same-slot re-record
  * overwrites a prior speculation. Returns the number of entries

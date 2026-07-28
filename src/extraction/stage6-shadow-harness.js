@@ -2220,6 +2220,30 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       dedupeReadbacks(spokenReadbacks)
     );
 
+    // A2-multiboard item 4 — reconcile same-turn COLLAPSED clear→write
+    // replacements before the drift validation runs.
+    //
+    // Ordering is load-bearing, and this is deliberately its OWN block rather
+    // than a branch inside the validate guard below. The validate pass compares
+    // expanded TEXT only, so a speculation parked under the null board (the
+    // model omits `board_id` in the common case) whose text equals the emitted
+    // confirmation is judged VALID and left servable for its whole TTL — even
+    // though the surviving write reached the wire enriched with its effective
+    // board. Reconciliation therefore gets first refusal on those entries;
+    // whatever it does not terminate falls through to the ordinary drift check
+    // unchanged. The separate-block shape also means a LOADED_BARREL-off
+    // session, or an older speculator with no such method, is a silent no-op
+    // rather than a throw.
+    if (speculator && typeof speculator.reconcileCollapsedReplacements === 'function') {
+      speculator.reconcileCollapsedReplacements(turnId, result, {
+        // Same aborted expression the validate call computes below.
+        aborted:
+          cancelled ||
+          toolLoopOut?.aborted === true ||
+          toolLoopOut?.terminal_reason === 'tool_use_cap_hit',
+      });
+    }
+
     // Plan B (2026-06-17) B1b — post-loop speculation drift validation. Runs
     // on the FINAL emitted confirmation set (after the mid-stream-canonical
     // filter — a no-op post-B1a — AND applyConfirmationDebounce above), so a

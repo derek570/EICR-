@@ -97,6 +97,7 @@ import {
   markReady,
   markSuperseded,
   invalidateBySlot,
+  terminateByKey,
   pruneSessionUnboardedEntries,
   pruneMismatchedBoardEntries,
   pruneForSession,
@@ -174,6 +175,52 @@ function buildSlotKey({ field, circuit, boardId }) {
 // Codex F/U-1 r2 caught the back-link hand-rolling a diverged key (bucket
 // never found → suppress-but-never-abort); r3 unified the bundler's twin
 // into the same builder so the identity cannot drift across modules either.
+
+/**
+ * Board-id normalisation shared by the collapsed-replacement reconciliation.
+ * Same rule `buildSlotKey`/`slotMatches` already use — an empty string is the
+ * fast-TTS route's spelling of "no board" and must not read as a board named
+ * "".
+ */
+function normaliseSpeculationBoardId(boardId) {
+  return typeof boardId === 'string' && boardId.length > 0 ? boardId : null;
+}
+
+/**
+ * A2-multiboard item 4 — does this turn's speculation registration describe the
+ * same write as a `replaces_cleared` wire reading?
+ *
+ * The board arm is the whole reason this predicate exists rather than reusing
+ * `slotMatches`. A `record_reading` whose `board_id` the model omitted (the
+ * common shape — scope comes from `select_board` state) is speculated, and
+ * therefore CACHE-KEYED, under the NULL board. The same write then reaches the
+ * wire ENRICHED with its dispatcher-resolved effective board (item 1 always
+ * enriches a flagged replacement). Exact-board matching would therefore miss
+ * exactly the entries this reconciliation exists to kill, so an omitted
+ * registration board matches the enriched reading it was pre-synthesised for.
+ *
+ * The reverse asymmetry is deliberately NOT matched: when the model DID name a
+ * board the dispatcher records it on the value entry and the bundler copies it
+ * straight onto the reading, so "explicit registration board + board-less
+ * flagged reading" cannot describe one write, and matching it would only widen
+ * the blast radius for nothing.
+ */
+function collapsedReplacementMatches(regSlot, reading) {
+  if (!regSlot || !reading) return false;
+  if (regSlot.field !== reading.field) return false;
+
+  const regBoard = normaliseSpeculationBoardId(regSlot.boardId);
+  const readingBoard = normaliseSpeculationBoardId(reading.board_id);
+  if (regBoard !== null && regBoard !== readingBoard) return false;
+
+  const readingCircuit = reading.circuit == null ? null : Number(reading.circuit);
+  // A non-numeric circuit ref (`Number(...)` → NaN) has no slot identity here.
+  if (readingCircuit === null || !Number.isFinite(readingCircuit)) return false;
+  // Registrations are single-circuit today; an array is tolerated so that a
+  // future grouped registration is a membership test rather than a silent miss.
+  const regCircuits = Array.isArray(regSlot.circuit) ? regSlot.circuit : [regSlot.circuit];
+  return regCircuits.some((c) => c != null && Number(c) === readingCircuit);
+}
 
 /**
  * slotMatches predicate for abortBySlot. The fast-TTS route passes
@@ -1316,6 +1363,87 @@ export function createSpeculator({
   }
 
   /**
+   * A2-multiboard item 4 — INVALIDATE-ONLY reconciliation of same-turn
+   * collapsed clear→write replacements.
+   *
+   * P5 (2026-07-23) collapses a same-turn `clear_reading` → `record_reading`
+   * pair at projection time: the stale clear is dropped and only the surviving
+   * write reaches the wire, carrying `replaces_cleared: true`. The speculator
+   * ran BEFORE any of that, off the raw dispatch — so a speculation opened for
+   * such a slot is parked under whatever the dispatch said, which for the
+   * common omitted-`board_id` shape is the NULL board while the emitted
+   * confirmation carries the enriched effective board.
+   *
+   * `validateAgainstConfirmations` is NOT a safety net for this. It compares
+   * expanded TEXT and nothing else — never board id, never cache key — and the
+   * board is not part of the spoken line, so a stale null-board entry whose
+   * text equals the emitted confirmation is judged VALID and left servable for
+   * the rest of its 15s TTL. Reconciliation is therefore its own pass.
+   *
+   * INVALIDATE-ONLY by decision: every matched entry is terminated and nothing
+   * is re-speculated, so the worst case is one fresh synthesis (latency), never
+   * a stale serve. `{ aborted }` is accepted for symmetry with the validate
+   * call next door and to keep the seam open for a future restart design — it
+   * is behaviour-identical today, because "terminate everything matched" is
+   * already what an aborted turn would want. No cap or refund bookkeeping: a
+   * terminated entry's per-turn charge is simply spent, exactly as it is on the
+   * drift path.
+   *
+   * Termination goes through the cache's EXACT-KEY door, never `invalidateBySlot`
+   * — a slot-wide, session-wide invalidation would also kill an adjacent
+   * in-flight turn's ordinary speculation that happens to share the same
+   * (field, circuit, board).
+   *
+   * Never throws (a telemetry-adjacent pass must not break extraction).
+   *
+   * @param {string} turnId the harness's turn id — never the implicit currentTurnId
+   * @param {{extracted_readings?: Array<object>}} result the bundled turn result
+   * @param {{aborted?: boolean}} [opts]
+   * @returns {number} count of speculations terminated
+   */
+  function reconcileCollapsedReplacements(turnId, result, opts = {}) {
+    let terminated = 0;
+    try {
+      const turnReg = speculationsByTurn.get(turnId);
+      if (!turnReg || turnReg.size === 0) return 0;
+
+      const readings = result?.extracted_readings;
+      if (!Array.isArray(readings) || readings.length === 0) return 0;
+
+      // Only the collapse survivors. An ORDINARY omitted-board write carries no
+      // such key, so its null-board cache entry is untouched and keeps hitting.
+      const flagged = readings.filter((r) => r && r.replaces_cleared === true);
+      if (flagged.length === 0) return 0;
+
+      for (const reg of turnReg.values()) {
+        // Terminal entries were physically purged (cachePeek → null); nothing
+        // to do and no telemetry owed.
+        if (!cachePeek(reg.cacheKey)) continue;
+        if (!flagged.some((r) => collapsedReplacementMatches(reg.slot, r))) continue;
+        if (!terminateByKey(reg.cacheKey, 'collapsed_replacement')) continue;
+        terminated += 1;
+        recordOutcome(reg.correlationId, 'loaded_barrel_collapsed_replacement_invalidated', {
+          meta: {
+            sessionId,
+            turnId,
+            field: reg.slot.field,
+            circuit: reg.slot.circuit,
+            boardId: reg.slot.boardId,
+            aborted: opts?.aborted === true,
+          },
+        });
+      }
+    } catch (err) {
+      logger?.error?.('voice_latency.loaded_barrel.reconcile_error', {
+        sessionId,
+        turnId,
+        error: err?.message,
+      });
+    }
+    return terminated;
+  }
+
+  /**
    * Loaded Barrel Phase 2.D (2026-05-25) — streamed-tool hook.
    *
    * Fires from inside runToolLoop's per-round stream loop the moment a
@@ -1606,6 +1734,7 @@ export function createSpeculator({
     onLoopComplete,
     onToolUseStreamed,
     validateAgainstConfirmations,
+    reconcileCollapsedReplacements,
     abortBySlot,
     shutdown,
     _internalState: {
