@@ -3468,19 +3468,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     if (Array.isArray(result.confirmations)) {
       for (const entry of result.confirmations) {
         let expectedDedupeKey;
+        // A2-multiboard item 10 — the circuit branches now fold the wire
+        // `board_id` too (the degenerate branch always did). This row must stay
+        // byte-truthful about what a client computes, so it passes the SAME
+        // wire field the client sees; a confirmation with no `board_id` hashes
+        // identically to before.
         if (Number.isInteger(entry.circuit)) {
           expectedDedupeKey = buildPerCircuitDedupeKey(
             entry.field,
             entry.circuit,
             entry.text,
-            entry.dedupe_token
+            entry.dedupe_token,
+            entry.board_id
           );
         } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {
           expectedDedupeKey = buildMultiCircuitDedupeKey(
             entry.field,
             entry.circuits,
             entry.text,
-            entry.dedupe_token
+            entry.dedupe_token,
+            entry.board_id
           );
         } else {
           expectedDedupeKey = buildDegenerateDedupeKey(
