@@ -14,17 +14,46 @@
  * than a 3-tier priority regression, and the gate stays intact for everything
  * else.
  *
- * The two properties every test here exists to protect:
+ * ---------------------------------------------------------------------------
+ * A2-multiboard item 6 (2026-07-28) — THIS SUITE HAS BEEN INVERTED.
  *
- *   1. The bypass is NARROW. It fires only for a flagged reading on an
- *      unambiguously-resolvable single-board slot. An unflagged reading must
- *      still be blocked by the gate, or A2 has quietly deleted the protection
- *      that stops a low-priority source clobbering CCU/manual data.
+ * A2-core resolved a flagged replacement by asking an ENVELOPE-WIDE question:
+ * "is this whole turn unambiguous?" It counted the union of every board
+ * identity visible on the turn (registry + row scopes + sibling readings +
+ * board ops) and, when that count exceeded one, DEFERRED every flagged reading
+ * in the envelope — including ones whose target row was never in doubt. It then
+ * fell THROUGH to the ordinary fill-only gate, so a declined replacement still
+ * wrote whenever the cell happened to be empty.
  *
- *   2. Declining is never a SKIP. Every path that refuses the bypass falls
- *      through to the unchanged gate, so an empty cell still fills. A
- *      fail-closed skip would manufacture a fresh spoken-but-not-written case —
- *      the very defect being closed.
+ * That was the right answer while web routed by bare `circuit_ref`. It is the
+ * wrong question now that the backend stamps the dispatcher-resolved effective
+ * board onto EVERY flagged write (item 1, `stage6-event-bundler.js`). P4b asks
+ * a per-reading, structural question instead: WHICH ROWS may this replacement
+ * legally land on? Compute that eligibility set in full, then branch on its
+ * size.
+ *
+ * Four behaviours therefore INVERT, and each is asserted here as an inversion
+ * rather than merely deleted — a deleted assertion proves nothing about the
+ * code that replaced it:
+ *
+ *   1. A zero-match ref flips from "fill the freshly-synthesised row" to
+ *      NO ROW CREATED. `ensureRow` is prohibited for flagged replacements.
+ *   2. A duplicate ref flips from "the unflagged gate still writes the empty
+ *      one" to NEITHER ROW CHANGED.
+ *   3. Envelope-wide multi-board evidence flips from a blanket block to a
+ *      TARGETED overwrite of the named board's row.
+ *   4. Declining is now a genuine fail-closed stop, not a fall-through.
+ *
+ * The two properties every test here still exists to protect:
+ *
+ *   1. The bypass is NARROW. It fires only for a flagged reading that resolves
+ *      to exactly one legal row. An unflagged reading must still be blocked by
+ *      the gate, or A2 has quietly deleted the protection that stops a
+ *      low-priority source clobbering CCU/manual data.
+ *
+ *   2. Every non-write outcome is NAMED. The partition is exhaustive
+ *      (`ambiguous_board` / `orphan_board_ref` / `duplicate_board_ref`), so a
+ *      silent third path cannot exist.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { applyExtractionToJob } from '@/lib/recording/apply-extraction';
@@ -33,7 +62,7 @@ import type { ExtractionResult } from '@/lib/recording/sonnet-session';
 import type { CircuitRow, JobDetail } from '@/lib/types';
 import wireContract from '../../tests/fixtures/test-contracts/replaces-cleared-circuit.json';
 
-function makeJob(over: Partial<JobDetail> = {}): JobDetail {
+function makeJob(over: Record<string, unknown> = {}): JobDetail {
   return {
     id: 'job_1',
     job_id: 'job_1',
@@ -47,7 +76,7 @@ function makeJob(over: Partial<JobDetail> = {}): JobDetail {
   } as unknown as JobDetail;
 }
 
-function makeResult(over: Partial<ExtractionResult> = {}): ExtractionResult {
+function makeResult(over: Record<string, unknown> = {}): ExtractionResult {
   return {
     readings: [],
     field_clears: [],
@@ -56,18 +85,19 @@ function makeResult(over: Partial<ExtractionResult> = {}): ExtractionResult {
     validation_alerts: [],
     confirmations: [],
     ...over,
-  };
+  } as unknown as ExtractionResult;
 }
 
 /** A circuit 1 whose IR L-L cell is already populated — the cell the
  *  collapsed replacement has to be able to overwrite. */
-const populatedRow = (over: Partial<CircuitRow> = {}): CircuitRow => ({
-  id: 'c-1',
-  circuit_ref: '1',
-  circuit_designation: 'Sockets',
-  ir_live_live_mohm: 'LIM',
-  ...over,
-});
+const populatedRow = (over: Record<string, unknown> = {}): CircuitRow =>
+  ({
+    id: 'c-1',
+    circuit_ref: '1',
+    circuit_designation: 'Sockets',
+    ir_live_live_mohm: 'LIM',
+    ...over,
+  }) as unknown as CircuitRow;
 
 /** The replacement reading, as the backend stamps it. */
 const flaggedReading = (over: Record<string, unknown> = {}) =>
@@ -80,11 +110,16 @@ const flaggedReading = (over: Record<string, unknown> = {}) =>
   }) as unknown as ExtractionResult['readings'][number];
 
 const stages = () => getPipelineLog().map((e) => e.stage);
-const cellAfter = (job: JobDetail, result: ExtractionResult, idx = 0) => {
+const payloadOf = (stage: string) => getPipelineLog().find((e) => e.stage === stage)?.payload;
+
+const rowsAfter = (job: JobDetail, result: ExtractionResult): CircuitRow[] => {
   const applied = applyExtractionToJob(job, result);
   expect(applied).not.toBeNull();
-  return applied!.patch.circuits![idx];
+  expect(applied!.patch.circuits).toBeDefined();
+  return applied!.patch.circuits!;
 };
+const cellAfter = (job: JobDetail, result: ExtractionResult, idx = 0) =>
+  rowsAfter(job, result)[idx];
 
 beforeEach(() => {
   clearPipelineLog();
@@ -162,603 +197,416 @@ describe('A2 — the flagged replacement overwrites a populated cell', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3 — multi-board deferral, asserted through all three cardinality sources.
+// 3 — P4b: the replacement resolves its OWN row, per reading.
 //
-// Web's apply is REF-ONLY (`circuit_ref` carries no board scope), so on a
-// multi-board job two boards' "circuit 1" are indistinguishable here and an
-// overwrite could clobber the WRONG board's value. The gate therefore counts
-// the UNION of every board identity visible this turn; >1 defers.
+// Every test in this block replaces an A2-core "defer the whole envelope" case.
+// The old behaviour is asserted ABSENT (the stage name no longer exists in the
+// codebase) alongside the new outcome, so a revert cannot pass this suite by
+// re-introducing the gate.
 // ---------------------------------------------------------------------------
 
-describe('A2 — multi-board jobs defer (all three cardinality sources)', () => {
-  const expectDeferred = (job: JobDetail, result: ExtractionResult) => {
-    const row = cellAfter(job, result);
-    expect(row.ir_live_live_mohm).toBe('LIM'); // unchanged — fell through to the gate
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
-  };
+describe('A2-multiboard — P4b resolves a flagged replacement against eligible ROWS', () => {
+  it('INVERSION 3 — a multi-board job is a TARGETED overwrite, not a blanket defer', () => {
+    // A2-core source 1: the registry names two boards, so the whole envelope
+    // deferred and the correction was silently lost. Item 1 now stamps the
+    // dispatcher-resolved board onto the flagged write, so the target is not in
+    // doubt: sub-1's circuit 1 is overwritten and MAIN's is left alone.
+    const job = makeJob({
+      circuits: [
+        populatedRow({ id: 'c-1m', board_id: 'main' }),
+        populatedRow({ id: 'c-1s', board_id: 'sub-1' }),
+      ],
+      boards: [
+        { id: 'main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' },
+      ],
+    });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading({ board_id: 'sub-1' })] }));
 
-  it('source 1 — the job board registry names two boards', () => {
-    expectDeferred(
-      makeJob({
-        circuits: [populatedRow()],
-        boards: [{ id: 'main' }, { id: 'sub-1' }],
-      } as unknown as Partial<JobDetail>),
-      makeResult({ readings: [flaggedReading()] })
-    );
+    expect(rows[0].ir_live_live_mohm).toBe('LIM'); // main untouched
+    expect(rows[1].ir_live_live_mohm).toBe('100'); // sub-1 replaced
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
   });
 
-  it('source 2 — existing circuit ROWS carry two distinct board ids', () => {
-    expectDeferred(
-      makeJob({
-        circuits: [
-          populatedRow({ board_id: 'main' } as Partial<CircuitRow>),
-          { id: 'c-2', circuit_ref: '2', board_id: 'sub-1' } as CircuitRow,
-        ],
-      }),
-      makeResult({ readings: [flaggedReading()] })
-    );
-  });
-
-  it('source 3 — a SIBLING reading in the same envelope names a second board', () => {
-    // Nothing on the job says multi-board; only the envelope does. Without this
-    // source the bypass would fire against a board registry that is merely
-    // stale, which is exactly when guessing is most dangerous.
-    expectDeferred(
-      makeJob({
-        circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
-      }),
+  it('INVERSION 3 — a same-envelope `add_board` no longer blocks an unrelated correction', () => {
+    // A2-core source 4, the ordering trap: `board_ops` ride this envelope and
+    // the caller applies them AFTER the readings, so cardinality was 1 at apply
+    // time and A2-core deferred on the op alone. P4b never consults the ops —
+    // the row index already says which rows exist, and the reading says which
+    // board it means. "Add the garage board, and Zs on circuit 1 was 100" is a
+    // targeted write plus a board creation, not an ambiguity.
+    const job = makeJob({
+      circuits: [populatedRow({ board_id: 'main' })],
+      boards: [{ id: 'main', board_type: 'main' }],
+    });
+    const row = cellAfter(
+      job,
       makeResult({
-        readings: [
-          flaggedReading({ board_id: 'main' }),
-          flaggedReading({
-            circuit: 2,
-            field: 'measured_zs_ohm',
-            value: '0.42',
-            board_id: 'sub-1',
-            replaces_cleared: undefined,
-          }),
-        ],
-      })
-    );
-  });
-
-  it('3c — the INCOMING reading names a board the job does not know about', () => {
-    expectDeferred(
-      makeJob({
-        circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
-      }),
-      makeResult({ readings: [flaggedReading({ board_id: 'sub-1' })] })
-    );
-  });
-
-  it('source 4 — a same-envelope `add_board` defers, even though boards[] is still single', () => {
-    // The ordering trap: `board_ops` rides this envelope but the caller applies
-    // it AFTER the readings (`onBoardOps` fires after `onExtraction`). Read off
-    // `job.boards` alone, cardinality is 1 at apply time and the bypass would
-    // overwrite the ORIGINAL board's circuit 1 before board B exists.
-    expectDeferred(
-      makeJob({
-        circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
-        boards: [{ id: 'main' }],
-      } as unknown as Partial<JobDetail>),
-      makeResult({
-        readings: [flaggedReading()],
+        readings: [flaggedReading({ board_id: 'main' })],
         board_ops: [{ op: 'add_board', board_id: 'sub-1', designation: 'Garage CU' }],
       })
     );
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
   });
 
-  it('source 4b — an `add_board` whose id is empty STILL defers (the belt-and-braces term)', () => {
-    // A malformed op contributes nothing to the id union, so the set-size test
-    // alone would pass it. `addsBoardThisTurn` is what catches it.
-    expectDeferred(
+  it('leg 4b — a replacement on the CANONICAL MAIN board inherits the legacy flat rows', () => {
+    // The commonest post-`add_board` shape: the registry has main + sub, but the
+    // original circuits were never scoped. Those unscoped rows genuinely belong
+    // to a board, and the one board they can be ATTRIBUTED to without guessing
+    // is the canonical main — that is the board whose circuits the legacy
+    // namespace has always meant (item 5's rule, mirrored backend/web/iOS).
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [
+        { id: 'main-uuid', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' },
+      ],
+    });
+    const rows = rowsAfter(
+      job,
+      makeResult({ readings: [flaggedReading({ board_id: 'main-uuid' })] })
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('leg 4b (inverse) — a SUB board NEVER inherits them, and creates no row', () => {
+    // The same job, the same unscoped row, but the replacement names the sub
+    // board. Attribution would be a guess, so there is nothing eligible — and
+    // INVERSION 1 applies: no row is synthesised to receive the value. A
+    // replacement names a cell the server has already cleared, so a ref with no
+    // eligible row is proof web's view and the server's disagree, not an
+    // invitation to invent a circuit the inspector never mentioned.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [
+        { id: 'main-uuid', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' },
+      ],
+    });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading({ board_id: 'sub-1' })] }));
+
+    expect(rows).toHaveLength(1); // NO ROW CREATED
+    expect(rows[0].ir_live_live_mohm).toBe('LIM'); // and nothing written
+    expect(payloadOf('apply_replaces_cleared_orphan_board_ref')).toMatchObject({
+      circuit: 1,
+      board_id: 'sub-1',
+      eligible_matches: 0,
+    });
+    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('leg 4c — a scoped row COLLIDING with an attributed-unscoped row fails closed', () => {
+    // The reason eligibility is computed IN FULL before it is branched on. A
+    // resolver that returned on the first scoped match it found would silently
+    // pick one of these two rows; both are legally "main's circuit 1", and only
+    // the inspector knows which. Two candidates → neither is touched.
+    const job = makeJob({
+      circuits: [
+        populatedRow(), // unscoped legacy row, attributed to main
+        populatedRow({ id: 'c-1m', board_id: 'main', ir_live_live_mohm: '50' }),
+      ],
+      boards: [{ id: 'main', board_type: 'main' }],
+    });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading({ board_id: 'main' })] }));
+
+    expect(rows[0].ir_live_live_mohm).toBe('LIM');
+    expect(rows[1].ir_live_live_mohm).toBe('50');
+    expect(payloadOf('apply_replaces_cleared_duplicate_board_ref')).toMatchObject({
+      circuit: 1,
+      board_id: 'main',
+      eligible_matches: 2,
+    });
+    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('leg 4c — two rows scoped to the SAME board and ref also fail closed', () => {
+    // The array-valued index exists for exactly this: a last-wins map reports
+    // both of these as one row and would overwrite an arbitrary member of the
+    // pair. Duplicates have to stay observable to be declinable.
+    const job = makeJob({
+      circuits: [
+        populatedRow({ id: 'c-1a', board_id: 'sub-1' }),
+        populatedRow({ id: 'c-1b', board_id: 'sub-1', ir_live_live_mohm: '50' }),
+      ],
+      boards: [
+        { id: 'main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' },
+      ],
+    });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading({ board_id: 'sub-1' })] }));
+
+    expect(rows[0].ir_live_live_mohm).toBe('LIM');
+    expect(rows[1].ir_live_live_mohm).toBe('50');
+    expect(payloadOf('apply_replaces_cleared_duplicate_board_ref')).toMatchObject({
+      board_id: 'sub-1',
+      eligible_matches: 2,
+    });
+  });
+
+  it('leg 4d-iii — an UNSCOPED flagged reading on a multi-board job is ambiguous even when the ref is UNIQUE', () => {
+    // Item 1 enriches EVERY flagged write with its effective board, so an
+    // unscoped flagged reading arriving at a multi-board job means the
+    // enrichment did not happen — an older backend, or a board the dispatcher
+    // could not resolve. Ref uniqueness does not rescue it: two boards can each
+    // have exactly one circuit 1 and only one of them is a row here, so a
+    // unique-ref shortcut would write to whichever board happened to be
+    // materialised.
+    const job = makeJob({
+      circuits: [populatedRow({ board_id: 'main' })], // the ONLY row with ref '1'
+      boards: [
+        { id: 'main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' },
+      ],
+    });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ir_live_live_mohm).toBe('LIM');
+    expect(payloadOf('apply_replaces_cleared_ambiguous_board')).toMatchObject({
+      circuit: 1,
+      job_board_count: 2,
+    });
+    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('leg 4d-iii (boundary) — the same unscoped reading on a SINGLE-board job still writes', () => {
+    // At most one board, so every row is that board's whether it says so or
+    // not: the ref IS the identity. Declining here would reopen the exact
+    // spoken-but-not-written defect A2 closes, on the commonest job shape there
+    // is.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [{ id: 'main', board_type: 'main' }],
+    });
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('leg 4 — a job with NO registry at all is the single-board case', () => {
+    // The legacy flat shape: no `boards[]`, every row unscoped, the backend
+    // stamping its synthesised default main id. Both branches (scoped to the
+    // default main, and unscoped) have to land.
+    const flat = () => makeJob({ circuits: [populatedRow()], boards: [] });
+
+    expect(
+      cellAfter(flat(), makeResult({ readings: [flaggedReading({ board_id: 'main' })] }))
+        .ir_live_live_mohm
+    ).toBe('100');
+    clearPipelineLog();
+    expect(cellAfter(flat(), makeResult({ readings: [flaggedReading()] })).ir_live_live_mohm).toBe(
+      '100'
+    );
+  });
+
+  it('the canonical-main rule is FIRST-USABLE-MAIN, never first-sub', () => {
+    // Item 5's shared rule, exercised through the attribution branch: a sub
+    // board listed first does not become the attribution target just by being
+    // `boards[0]`.
+    const job = () =>
       makeJob({
-        circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
-        boards: [{ id: 'main' }],
-      } as unknown as Partial<JobDetail>),
-      makeResult({
-        readings: [flaggedReading()],
-        board_ops: [{ op: 'add_board', board_id: '' }],
-      })
+        circuits: [populatedRow()],
+        boards: [
+          { id: 'sub-1', board_type: 'sub_distribution' },
+          { id: 'main-2', board_type: 'main' },
+        ],
+      });
+
+    // The real main attracts the legacy rows…
+    expect(
+      cellAfter(job(), makeResult({ readings: [flaggedReading({ board_id: 'main-2' })] }))
+        .ir_live_live_mohm
+    ).toBe('100');
+
+    clearPipelineLog();
+
+    // …and the first-listed sub does not.
+    const rows = rowsAfter(
+      job(),
+      makeResult({ readings: [flaggedReading({ board_id: 'sub-1' })] })
     );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ir_live_live_mohm).toBe('LIM');
+    expect(stages()).toContain('apply_replaces_cleared_orphan_board_ref');
   });
 
-  it('source 4c — a NON-add board op on one board does not defer', () => {
-    // `select_board` naming the board we already know about is not evidence of
-    // a second board; deferring on it would cost overwrites for nothing.
+  it('a registry entry with no usable id is skipped when picking the canonical main', () => {
+    // "Usable" is the first clause of the shared rule: a plain record with a
+    // truthy id. A half-written entry must not shadow the real main and turn
+    // every legacy-row replacement into an orphan.
     const job = makeJob({
-      circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
-      boards: [{ id: 'main' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
-      job,
-      makeResult({
-        readings: [flaggedReading({ board_id: 'main' })],
-        board_ops: [{ op: 'select_board', board_id: 'main' }],
-      })
-    );
+      circuits: [populatedRow()],
+      boards: [{ board_type: 'main' }, { id: 'main-2', board_type: 'main' }],
+    });
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading({ board_id: 'main-2' })] }));
 
     expect(row.ir_live_live_mohm).toBe('100');
     expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
   });
 
-  it('source 4d — a `select_board` onto a board web has NO record of defers', () => {
-    // The wrong-board class `add_board` covers, reached by a different door.
-    // Legacy/stale job: no `boards[]`, no row scope — so web's own evidence is
-    // EMPTY. The server, which knows main + sub-1, selects sub-1 and sends a
-    // board-omitted flagged replacement for "circuit 1". Folding the op's id in
-    // makes the union exactly {sub-1} — cardinality 1, no add_board — so on
-    // count alone this would take the bypass and overwrite the one flat
-    // "circuit 1" row, which may well be the MAIN board's. Naming a board web
-    // cannot independently corroborate means the registries are out of sync and
-    // the ref is unroutable, so it defers.
-    const job = makeJob({
-      circuits: [populatedRow()],
-      boards: [],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
-      job,
-      makeResult({
-        readings: [flaggedReading()],
-        board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
-      } as unknown as Partial<ExtractionResult>)
-    );
+  it('INVERSION 1 — an ORPHAN ref creates NO row (A2-core filled a synthesised one)', () => {
+    // A2-core logged `apply_replaces_cleared_orphan_ref` and then let `ensureRow`
+    // manufacture circuit 7 and fill it. A replacement names a cell the server
+    // has already cleared, so "no such circuit" is a disagreement to surface,
+    // not a circuit to invent — inventing one writes a legally-significant
+    // value onto a circuit the inspector never mentioned.
+    const job = makeJob({ circuits: [populatedRow()] });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading({ circuit: 7 })] }));
 
-    expect(row.ir_live_live_mohm).toBe('LIM');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
-    const deferred = getPipelineLog().find(
-      (e) => e.stage === 'apply_replaces_cleared_multiboard_deferred'
-    );
-    // Pinned so the reason cannot silently become the cardinality term: this
-    // case defers at count 1, which is exactly what the count alone misses.
-    expect(deferred?.payload).toMatchObject({
-      unknown_named_board: true,
-      effective_board_count: 1,
+    expect(rows).toHaveLength(1);
+    expect(rows.some((r) => r.circuit_ref === '7')).toBe(false);
+    expect(payloadOf('apply_replaces_cleared_orphan_board_ref')).toMatchObject({
+      circuit: 7,
+      board_id: null,
+      eligible_matches: 0,
     });
   });
 
-  it('source 4f — a READING naming a board web has NO record of defers (no ops at all)', () => {
-    // The same unroutable-ref class as 4d, reached through the OTHER door and
-    // with an EMPTY `board_ops` — so nothing in the op term can catch it. Web
-    // has no `boards[]` and one unscoped flat "circuit 1" row; the server sends
-    // a flagged replacement stamped `board_id:'sub-1'`. If the reading's own id
-    // were allowed to count as evidence FOR ITSELF the union would be exactly
-    // {sub-1} — cardinality 1, no ops — and the bypass would overwrite a flat
-    // row that may belong to the MAIN board.
+  it('INVERSION 2 — a DUPLICATE ref leaves BOTH rows untouched', () => {
     const job = makeJob({
-      circuits: [populatedRow()],
-      boards: [],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
-      job,
-      makeResult({
-        readings: [flaggedReading({ board_id: 'sub-1' })],
-      } as unknown as Partial<ExtractionResult>)
-    );
+      circuits: [populatedRow(), populatedRow({ id: 'c-1b', ir_live_live_mohm: '50' })],
+    });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading()] }));
 
-    expect(row.ir_live_live_mohm).toBe('LIM');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
-    const deferred = getPipelineLog().find(
-      (e) => e.stage === 'apply_replaces_cleared_multiboard_deferred'
-    );
-    expect(deferred?.payload).toMatchObject({
-      unknown_named_board: true,
-      adds_board_this_turn: false,
-      effective_board_count: 1,
+    expect(rows[0].ir_live_live_mohm).toBe('LIM');
+    expect(rows[1].ir_live_live_mohm).toBe('50');
+    expect(payloadOf('apply_replaces_cleared_duplicate_board_ref')).toMatchObject({
+      circuit: 1,
+      board_id: null,
+      eligible_matches: 2,
     });
   });
 
-  it('NEVER A NEW SKIP — a reading-named-unknown-board defer still FILLS an empty cell', () => {
+  it('INVERSION 4 — a decline is a STOP, not a fall-through that still fills an empty cell', () => {
+    // A2-core's whole "NEVER A NEW SKIP" family: every declined flagged reading
+    // fell through to the ordinary fill-only gate, so a duplicate ref still
+    // wrote whenever the cell happened to be empty — i.e. it picked one of two
+    // ambiguous rows after all, just quietly and only sometimes.
+    //
+    // The trade is deliberate and stated: the cost here is a missing value the
+    // inspector can recover by re-dictating (they will hear it was not read
+    // back). The cost of guessing is a silent write onto a circuit they never
+    // spoke about, in a legally-significant certificate, which no read-back can
+    // catch by ear.
     const job = makeJob({
-      circuits: [populatedRow({ ir_live_live_mohm: undefined })],
-      boards: [],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
-      job,
-      makeResult({
-        readings: [flaggedReading({ board_id: 'sub-1' })],
-      } as unknown as Partial<ExtractionResult>)
-    );
+      circuits: [
+        populatedRow({ ir_live_live_mohm: undefined }),
+        populatedRow({ id: 'c-1b', ir_live_live_mohm: undefined }),
+      ],
+    });
+    const rows = rowsAfter(job, makeResult({ readings: [flaggedReading()] }));
 
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+    expect(rows[0].ir_live_live_mohm).toBeUndefined();
+    expect(rows[1].ir_live_live_mohm).toBeUndefined();
+    expect(stages()).toContain('apply_replaces_cleared_duplicate_board_ref');
+    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
   });
 
-  it('a reading whose board IS in the registry stays fully evidenced and takes the bypass', () => {
-    // The guard must not swallow the ordinary scoped single-board case: web
-    // knows `main`, the row is scoped to `main`, and the server stamps `main`.
-    const job = makeJob({
-      circuits: [populatedRow({ board_id: 'main' })],
-      boards: [{ id: 'main' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
+  it('the prohibition is scoped to FLAGGED readings — an ordinary sibling still creates its row', () => {
+    // `ensureRow` is not disabled; it is bypassed for the one reading class
+    // that must never invent a target. An unflagged reading for the same absent
+    // circuit behaves exactly as it did before A2-multiboard.
+    const job = makeJob({ circuits: [populatedRow()] });
+    const rows = rowsAfter(
       job,
       makeResult({
-        readings: [flaggedReading({ board_id: 'main' })],
-      } as unknown as Partial<ExtractionResult>)
+        readings: [
+          flaggedReading({ circuit: 7 }),
+          flaggedReading({
+            circuit: 7,
+            field: 'measured_zs_ohm',
+            value: '0.42',
+            replaces_cleared: undefined,
+          }),
+        ],
+      })
     );
 
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
-    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
+    const created = rows.find((r) => r.circuit_ref === '7');
+    expect(created).toBeDefined();
+    expect(created!.measured_zs_ohm).toBe('0.42');
+    // …and the flagged one still declined rather than riding the row its
+    // unflagged sibling created.
+    expect(created!.ir_live_live_mohm).toBeUndefined();
+    expect(stages()).toContain('apply_replaces_cleared_orphan_board_ref');
   });
 
-  it('LEGACY SHAPE — the backend default main id overwrites on a job with no board identity', () => {
-    // The single most common job shape: no `boards[]`, every row unscoped. The
-    // backend has synthesised its default main board and stamps that literal
-    // id on the reading. Web has never seen the string, so without the seed it
-    // reads as an unknown board and the bypass declines — leaving the stale
-    // value in place, i.e. the exact defect A2 exists to close.
+  it('a legacy row CLAIMED by a replacement is not re-used by a later ordinary write for another board', () => {
+    // The replacement attributes the unscoped row to main and writes there. A
+    // sibling ordinary reading for sub-1 must then get its OWN row — landing on
+    // the row main just claimed would be the wrong-board overwrite the whole
+    // resolution exists to prevent.
     const job = makeJob({
       circuits: [populatedRow()],
-      boards: [],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
+      boards: [
+        { id: 'main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub_distribution' },
+      ],
+    });
+    const rows = rowsAfter(
       job,
-      makeResult({
-        readings: [flaggedReading({ board_id: 'main' })],
-      } as unknown as Partial<ExtractionResult>)
-    );
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
-    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('LEGACY SHAPE — the seed cannot mask a SECOND board in the same envelope', () => {
-    // The seed goes into the independence snapshot, never into the cardinality
-    // set, so `main` + `sub-1` still declines on the count.
-    expectDeferred(
-      makeJob({ circuits: [populatedRow()], boards: [] } as unknown as Partial<JobDetail>),
       makeResult({
         readings: [
           flaggedReading({ board_id: 'main' }),
           flaggedReading({
-            circuit: 2,
+            board_id: 'sub-1',
             field: 'measured_zs_ohm',
             value: '0.42',
-            board_id: 'sub-1',
             replaces_cleared: undefined,
           }),
         ],
-      } as unknown as Partial<ExtractionResult>)
-    );
-  });
-
-  it('a job that HAS its own registry naming something else is a real mismatch and defers', () => {
-    // The seed is deliberately narrow: it fires only when web has NO board
-    // identity of its own. Here web knows `db-1`, so a server-asserted `main`
-    // is a genuine registry disagreement, not the legacy flat shape.
-    expectDeferred(
-      makeJob({
-        circuits: [populatedRow({ board_id: 'db-1' } as Partial<CircuitRow>)],
-        boards: [{ id: 'db-1' }],
-      } as unknown as Partial<JobDetail>),
-      makeResult({ readings: [flaggedReading({ board_id: 'main' })] })
-    );
-  });
-
-  it('POST-add_board TURN — a registry board no row is scoped to, beside unscoped rows, defers', () => {
-    // The turn AFTER "add the garage board": web's `applyBoardOpsToJob` appended
-    // `sub-1` WITHOUT materialising the implicit main its flat rows belong to,
-    // so the registry says one board while the rows say a different one. The
-    // write omits `board_id` (the backend omits it whenever the model relies on
-    // the current board), so neither the count nor the reading term sees the
-    // second scope — without this term the bypass would put SUB's reading into
-    // MAIN's circuit 1.
-    const job = makeJob({
-      circuits: [populatedRow()],
-      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('LIM');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
-    const deferred = getPipelineLog().find(
-      (e) => e.stage === 'apply_replaces_cleared_multiboard_deferred'
-    );
-    expect(deferred?.payload).toMatchObject({
-      implicit_unregistered_board: true,
-      effective_board_count: 1,
-      unknown_named_board: false,
-      adds_board_this_turn: false,
-    });
-  });
-
-  it('NEVER A NEW SKIP — an implicit-unregistered-board defer still FILLS an empty cell', () => {
-    const job = makeJob({
-      circuits: [populatedRow({ ir_live_live_mohm: undefined })],
-      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('BOARD-TAB SHAPE — a registry MAIN board owning no row is the single board, and overwrites', () => {
-    // The commonest real single-board job that HAS a `boards[]`: the Board tab
-    // synthesises `boards[0]` from legacy `board_info` (`board_type: 'main'`,
-    // a fresh uuid) and persists it on any edit WITHOUT scoping the existing
-    // circuits, which the Circuits tab renders under the selected board. The
-    // registry board owns no row, but it is MAIN — the unscoped rows are its
-    // own. Declining here would keep the stale value and reopen the exact
-    // spoken-but-not-written defect A2 closes.
-    const job = makeJob({
-      circuits: [populatedRow()],
-      boards: [{ id: 'b7f1c0de-0000-4000-8000-000000000001', board_type: 'main' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
-    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('BOARD-TAB SHAPE — a legacy registry board with NO board_type reads as main, and overwrites', () => {
-    // Mirrors the backend's own predicate (`stage6-multi-board-shape.js:54`):
-    // an absent `board_type` is a legacy main board, not an unknown sub.
-    const job = makeJob({
-      circuits: [populatedRow()],
-      boards: [{ id: 'legacy-1' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
-  });
-
-  it('BOARD-TAB SHAPE — an OFF-PEAK sole board is a sibling of main, not a sub, and overwrites', () => {
-    // `off_peak` is a TOP-LEVEL board fed straight from the supply mains: the
-    // Board tab clears `parent_board_id` when the user flips to it, and the
-    // backend hierarchy validator accepts one main beside one off_peak. So a
-    // legacy flat job whose sole synthesised board the user has relabelled
-    // "Off-Peak Board" is still ONE board owning its own unscoped rows —
-    // declining it would reopen the defect exactly as the main-typed shape did.
-    const job = makeJob({
-      circuits: [populatedRow()],
-      boards: [{ id: 'op-1', board_type: 'off_peak' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
-    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('THE CLOSED UNION — every BoardType picks a side, and only the CHILD types defer', () => {
-    // `BoardType` is closed (`packages/shared-types/src/circuit.ts:9`), so this
-    // is exhaustive, not a sample. A new member added later lands here as a
-    // failure rather than silently inheriting whichever side the predicate
-    // happens to give it.
-    const expectations: [string | undefined, boolean][] = [
-      ['main', false],
-      ['off_peak', false],
-      [undefined, false],
-      ['sub_distribution', true],
-      ['sub_main', true],
-    ];
-    for (const [boardType, shouldDefer] of expectations) {
-      const board: Record<string, unknown> = { id: 'b-1' };
-      if (boardType !== undefined) board.board_type = boardType;
-      const job = makeJob({
-        circuits: [populatedRow()],
-        boards: [board],
-      } as unknown as Partial<JobDetail>);
-      const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-      expect(
-        { boardType, value: row.ir_live_live_mohm },
-        `board_type=${String(boardType)} should ${shouldDefer ? 'defer' : 'overwrite'}`
-      ).toEqual({ boardType, value: shouldDefer ? 'LIM' : '100' });
-      clearPipelineLog();
-    }
-  });
-
-  it('a MAIN-typed registry board that declares a parent is still a sub scope, and defers', () => {
-    // `board_type` alone is not the whole predicate: a declared parent is
-    // independent proof the unscoped rows belong to a scope nothing names.
-    const job = makeJob({
-      circuits: [populatedRow()],
-      boards: [{ id: 'odd-1', board_type: 'main', parent_board_id: 'p-1' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('LIM');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('a registry board that owns EVERY row is not an implicit second scope', () => {
-    // Same registry, and every row is scoped to it — ONE scope, so this stays
-    // cardinality 1 and must still bypass. The board is deliberately a SUB
-    // board, so row-ownership is the ONLY reason the implicit-unregistered
-    // term stays quiet.
-    const job = makeJob({
-      circuits: [
-        populatedRow({ board_id: 'sub-1' } as Partial<CircuitRow>),
-        {
-          id: 'c-2',
-          circuit_ref: '2',
-          circuit_designation: 'Lights',
-          board_id: 'sub-1',
-        } as CircuitRow,
-      ],
-      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
-    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('MIXED ROW SCOPES — a board owning SOME row, beside an unscoped row, defers', () => {
-    // The gap row-ownership alone cannot see. `sub-1` owns a row, so the
-    // implicit-unregistered term stays quiet; the flagged reading carries NO
-    // board_id (the backend omits it whenever the model relies on the current
-    // board) so the reading term is blind too; cardinality is 1. But an
-    // unscoped row belongs to a board the registry never names, so the job
-    // carries TWO scopes and a bare `circuit_ref` cannot pick between them.
-    // Without the row-scope term this overwrites the unregistered board's
-    // circuit 1 with SUB's reading.
-    const job = makeJob({
-      circuits: [
-        populatedRow(),
-        {
-          id: 'c-2',
-          circuit_ref: '2',
-          circuit_designation: 'Lights',
-          board_id: 'sub-1',
-        } as CircuitRow,
-      ],
-      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('LIM');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('MIXED ROW SCOPES — a CCU-appended board with NO board_type defers on the ROWS', () => {
-    // `applyAddNewBoardMode` (`apply-ccu-analysis.ts`) deliberately leaves
-    // `board_type` UNSET on an appended sub-board — the inspector fills it in
-    // on the Board tab — so the type predicate reads it as TOP-LEVEL and
-    // `isSub` is false. The registry term therefore CANNOT fire on the
-    // commonest producer of a two-scope job. The row-scope term catches it,
-    // and needs no type at all.
-    const job = makeJob({
-      circuits: [
-        populatedRow(),
-        {
-          id: 'c-2',
-          circuit_ref: '2',
-          circuit_designation: 'Lights',
-          board_id: 'ccu-new',
-        } as CircuitRow,
-      ],
-      boards: [{ id: 'ccu-new', designation: 'DB-2' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('LIM');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('NEVER A NEW SKIP — a mixed-row-scope defer still FILLS an empty cell', () => {
-    const job = makeJob({
-      circuits: [
-        populatedRow({ ir_live_live_mohm: undefined }),
-        {
-          id: 'c-2',
-          circuit_ref: '2',
-          circuit_designation: 'Lights',
-          board_id: 'sub-1',
-        } as CircuitRow,
-      ],
-      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('NEVER A NEW SKIP — a `select_board`-deferred reading still FILLS an empty cell', () => {
-    const job = makeJob({
-      circuits: [populatedRow({ ir_live_live_mohm: undefined })],
-      boards: [],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
-      job,
-      makeResult({
-        readings: [flaggedReading()],
-        board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
-      } as unknown as Partial<ExtractionResult>)
-    );
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-
-  it('NEVER A NEW SKIP — an `add_board`-deferred reading still FILLS an empty cell', () => {
-    const job = makeJob({
-      circuits: [populatedRow({ ir_live_live_mohm: undefined, board_id: 'main' })],
-      boards: [{ id: 'main' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(
-      job,
-      makeResult({
-        readings: [flaggedReading()],
-        board_ops: [{ op: 'add_board', board_id: 'sub-1' }],
       })
     );
 
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].ir_live_live_mohm).toBe('100');
+    expect(rows[0].measured_zs_ohm).toBeUndefined();
+    expect((rows[1] as unknown as Record<string, unknown>).board_id).toBe('sub-1');
+    expect(rows[1].measured_zs_ohm).toBe('0.42');
   });
 
-  it('3b — a SOLE board with an explicit id still bypasses (cardinality 1, not 0)', () => {
-    const job = makeJob({
-      circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
-      boards: [{ id: 'main' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading({ board_id: 'main' })] }));
+  it('REMOVAL INVENTORY — the A2-core gate stages no longer exist on ANY path', () => {
+    // A2-core's three web stage names are retired, not renamed-in-place: a
+    // revert that restores the envelope-wide gate would re-emit one of these
+    // and fail here even if it somehow satisfied the outcome assertions above.
+    const shapes: [JobDetail, ExtractionResult][] = [
+      [
+        makeJob({
+          circuits: [populatedRow()],
+          boards: [{ id: 'main' }, { id: 'sub-1' }],
+        }),
+        makeResult({ readings: [flaggedReading()] }),
+      ],
+      [
+        makeJob({ circuits: [populatedRow()] }),
+        makeResult({ readings: [flaggedReading({ circuit: 7 })] }),
+      ],
+      [
+        makeJob({ circuits: [populatedRow(), populatedRow({ id: 'c-1b' })] }),
+        makeResult({ readings: [flaggedReading()] }),
+      ],
+      [
+        makeJob({ circuits: [populatedRow({ board_id: 'main' })], boards: [{ id: 'main' }] }),
+        makeResult({
+          readings: [flaggedReading()],
+          board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
+        }),
+      ],
+    ];
 
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
-  });
-
-  it('NEVER A NEW SKIP — a deferred flagged reading still FILLS an empty cell', () => {
-    // The whole point of falling through rather than skipping: deferral costs
-    // an overwrite, never a write.
-    const job = makeJob({
-      circuits: [populatedRow({ ir_live_live_mohm: undefined })],
-      boards: [{ id: 'main' }, { id: 'sub-1' }],
-    } as unknown as Partial<JobDetail>);
-    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(row.ir_live_live_mohm).toBe('100');
-    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 3d / 3e — ref resolution on a single-board job.
-// ---------------------------------------------------------------------------
-
-describe('A2 — ref resolution declines', () => {
-  it('3d — an ORPHAN ref (no such circuit before this turn) still lands, via the synthesised row', () => {
-    const job = makeJob({ circuits: [populatedRow()] });
-    const row = cellAfter(
-      job,
-      makeResult({ readings: [flaggedReading({ circuit: 7 })] }),
-      1 // the row ensureRow synthesised for circuit 7
-    );
-
-    expect(row.circuit_ref).toBe('7');
-    expect(row.ir_live_live_mohm).toBe('100');
-    // A blank synthesised cell needs no bypass — logged, not bypassed.
-    expect(stages()).toContain('apply_replaces_cleared_orphan_ref');
-    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
-  });
-
-  it('3e — a DUPLICATE ref is ambiguous even on one board: the populated cell is kept', () => {
-    const job = makeJob({
-      circuits: [populatedRow(), populatedRow({ id: 'c-1b', ir_live_live_mohm: '50' })],
-    });
-    const applied = applyExtractionToJob(job, makeResult({ readings: [flaggedReading()] }));
-
-    expect(applied).not.toBeNull();
-    // Same refusal the LIM guard makes: never resolve an ambiguous ref by
-    // picking one arbitrarily.
-    expect(applied!.patch.circuits![0].ir_live_live_mohm).toBe('LIM');
-    expect(applied!.patch.circuits![1].ir_live_live_mohm).toBe('50');
-    expect(stages()).toContain('apply_replaces_cleared_duplicate_ref');
-    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
+    for (const [job, result] of shapes) {
+      clearPipelineLog();
+      applyExtractionToJob(job, result);
+      expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
+      expect(stages()).not.toContain('apply_replaces_cleared_orphan_ref');
+      expect(stages()).not.toContain('apply_replaces_cleared_duplicate_ref');
+    }
   });
 });
 
