@@ -1024,6 +1024,34 @@ function findReinjectionReservation(entry, { utteranceId, normalisedText }) {
   );
 }
 
+// STASH — record a paired real transcript that was suppressed under a LIVE
+// reservation, so a rollback can requeue it.
+//
+// Codex r1 #7 — DEDUPED BY IDENTITY AND BOUNDED. The raw `suppressed.push()`
+// was unbounded: a client retransmitting the same paired frame while a slow
+// synthetic was still in flight stacked N clones, and rollback then requeued
+// all N — turning one reading into N extractions and N read-backs (the
+// double-speak inverse of the bug this machinery fixes). One frame per
+// utterance identity, hard-capped.
+const REINJECTION_SUPPRESSED_CAP = 4;
+
+function stashSuppressedFrame(reservation, msg, normalisedText) {
+  if (!reservation || !Array.isArray(reservation.suppressed)) return;
+  const id = typeof msg?.utterance_id === 'string' ? msg.utterance_id : null;
+  const key = id ?? (typeof normalisedText === 'string' ? `t:${normalisedText}` : null);
+  if (key != null) {
+    const already = reservation.suppressed.some((f) => {
+      const fid = typeof f?.utterance_id === 'string' ? f.utterance_id : null;
+      return fid != null ? fid === id : f?.__stashKey === key;
+    });
+    if (already) return;
+  }
+  if (reservation.suppressed.length >= REINJECTION_SUPPRESSED_CAP) return;
+  const frame = { ...msg };
+  if (key != null && frame.utterance_id == null) frame.__stashKey = key;
+  reservation.suppressed.push(frame);
+}
+
 // COMMIT — the synthetic extraction succeeded: drop the reservation record
 // (the anchors stay registered; any stashed paired frame stays suppressed —
 // its speech was delivered by the synthetic, exactly once).
@@ -2797,6 +2825,29 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // stash (and on rollback requeue) frames from the OLD socket. Reset
       // together with its anchors.
       existing.reinjectionReservations = [];
+      // Codex r1 #5 — the reservations are gone, so a synthetic still QUEUED in
+      // pendingTranscripts now carries a DEAD reservation object: its
+      // commit/rollback would be a no-op against the fresh array, and its
+      // trusted-bypass marker would let it re-extract speech whose anchors no
+      // longer exist (double-write on the retransmitted pair). Drop the queued
+      // synthetics with the ledgers that backed them; the client retransmits
+      // whatever it still owes on the new socket.
+      if (Array.isArray(existing.pendingTranscripts) && existing.pendingTranscripts.length > 0) {
+        const before = existing.pendingTranscripts.length;
+        existing.pendingTranscripts = existing.pendingTranscripts.filter(
+          (f) => f?.[REINJECTION_RESERVATION] == null
+        );
+        const dropped = before - existing.pendingTranscripts.length;
+        if (dropped > 0) {
+          logger.warn('stage6.reinjection_dropped_on_reconnect', { sessionId, dropped });
+        }
+      }
+      // Codex r1 #6 — the confirmation-mode latch belongs to the OLD socket's
+      // frames. A synthetic re-injected after the rebind must not synthesise
+      // under the previous connection's mode (a forbidden speak, or a silent
+      // write when the new client expects read-back). Clear it; the first real
+      // frame on the new ws re-latches it.
+      existing.lastConfirmationsEnabled = false;
       // Update the ws reference and re-bind the question gate to new ws.
       // This preserves the Anthropic conversation history across reconnects.
       existing.ws = ws;
@@ -3627,6 +3678,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Plan E §4b piece 4 — mirror of the handleSessionStart reconnect branch:
     // reservations anchor into the ledgers just cleared, so they reset too.
     entry.reinjectionReservations = [];
+    // Codex r1 #5 + #6 — mirror of the handleSessionStart reconnect branch:
+    // drop queued synthetics whose reservation just died (their commit/rollback
+    // would no-op and their trusted bypass would re-extract retransmitted
+    // speech), and clear the confirmation-mode latch so a post-rebind synthetic
+    // can't synthesise under the previous socket's mode.
+    if (Array.isArray(entry.pendingTranscripts) && entry.pendingTranscripts.length > 0) {
+      const before = entry.pendingTranscripts.length;
+      entry.pendingTranscripts = entry.pendingTranscripts.filter(
+        (f) => f?.[REINJECTION_RESERVATION] == null
+      );
+      const dropped = before - entry.pendingTranscripts.length;
+      if (dropped > 0) {
+        logger.warn('stage6.reinjection_dropped_on_reconnect', {
+          sessionId: clientSessionId,
+          dropped,
+        });
+      }
+    }
+    entry.lastConfirmationsEnabled = false;
 
     // Rebind the socket + questionGate callback to the new WS, matching the
     // handleSessionStart reconnection branch. This preserves the Anthropic
@@ -3799,6 +3869,38 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // (commit), and the extraction catch (rollback + requeue).
     const reinjectionReservation = msg[REINJECTION_RESERVATION] ?? null;
 
+    // Codex r1 #4 — TERMINAL SETTLEMENT for the early-return paths that reach
+    // neither the post-harness commit nor the catch's rollback. An unsettled
+    // reservation stays live for the rest of the session: it keeps suppressing
+    // later paired frames and its entry never leaves `reinjectionReservations`.
+    // Disposition is per-path, on the risk asymmetry:
+    //   COMMIT  — the turn WAS handled audibly (a dialogue script consumed the
+    //             reply and emitted its own wire events). Requeuing here would
+    //             re-extract speech the script already answered — the exact
+    //             double-write/double-speak this machinery exists to prevent.
+    //   ROLLBACK— any OTHER unsettled exit. We cannot prove anything was
+    //             spoken, so fail toward never losing the reading (a duplicate
+    //             is swallowed by the client's value-aware read-back dedupe;
+    //             silence is not recoverable).
+    const settleReinjection = (disposition, reason) => {
+      if (!reinjectionReservation) return;
+      if (disposition === 'commit') {
+        commitReinjectionReservation(entry, reinjectionReservation);
+        logger.info('stage6.reinjection_committed', { sessionId, reason });
+        return;
+      }
+      const requeue = rollbackReinjectionReservation(entry, reinjectionReservation);
+      if (requeue.length === 0) return;
+      logger.warn('stage6.reinjection_rolled_back', {
+        sessionId,
+        reason,
+        requeued: requeue.length,
+      });
+      for (const frame of requeue) {
+        entry.pendingTranscripts.push({ ...frame });
+      }
+    };
+
     // Plan E §4b piece 4 — CONFIRMATION-MODE LATCH. Real transcript frames
     // carry confirmations_enabled; the direct ask_user_answered frame does
     // NOT, so a re-injected reply needs the session's last-known mode or the
@@ -3946,7 +4048,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       const liveReservation = findReinjectionReservation(entry, {
         utteranceId: msg.utterance_id,
       });
-      if (liveReservation) liveReservation.suppressed.push({ ...msg });
+      stashSuppressedFrame(liveReservation, msg, null);
       logger.info('stage6.transcript_suppressed', {
         sessionId,
         utterance_id: msg.utterance_id,
@@ -3999,7 +4101,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             const liveReservation = findReinjectionReservation(entry, {
               normalisedText: normalisedMsg,
             });
-            if (liveReservation) liveReservation.suppressed.push({ ...msg });
+            stashSuppressedFrame(liveReservation, msg, normalisedMsg);
             logger.warn('stage6.transcript_suppressed_content_anchor', {
               sessionId,
               utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -4248,10 +4350,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     //                      today.
     if (entry.isExtracting && entry.pendingAsks && entry.pendingAsks.size > 0) {
       const preQueueRegex = Array.isArray(msg.regexResults) ? msg.regexResults : [];
+      // Codex r1 #1 — the board arm of the semantic-slot comparison is only
+      // live if the session's boards reach the classifier. Current clients
+      // send the transcript BEFORE ask_user_answered, so THIS is the
+      // production decision point: omitting `boards` here left
+      // projectReplyBoardId permanently returning null in prod (a
+      // "Ze at the board is 0.2 on the Garage board" reply to a DB-1 ask
+      // compared as the same slot and was written against DB-1).
       const preVerdict = classifyOvertake(
         canonicalTranscriptText,
         preQueueRegex,
-        entry.pendingAsks
+        entry.pendingAsks,
+        { boards: entry.session?.stateSnapshot?.boards ?? null }
       );
       if (preVerdict.kind === 'answers') {
         let sanitisedPre = null;
@@ -4329,6 +4439,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ? null
           : detectStructuredReading(canonicalTranscriptText);
         if (hasRecordablePre || (structuredPre && structuredPre.complete === true)) {
+          // Plan E §4b piece 4 / Codex r1 #2 — SUPERSEDE FIRST on this path
+          // too. Current clients send the transcript BEFORE
+          // ask_user_answered, so this pre-queue branch — not the direct
+          // handler — is where a production overtake is decided. Without the
+          // abort, `rejectAll` merely unblocks the old generation: it stays
+          // live and can emit another ask, a write, or speech belonging to
+          // the abandoned field BEFORE the queued transcript drains. The
+          // abort makes runLiveMode finalize it as a PARTIAL (applied writes
+          // still read back exactly once; marker-② exempts cancelled turns),
+          // which is the determinism piece 4 requires.
+          if (typeof entry.supersedeActiveGeneration === 'function') {
+            entry.supersedeActiveGeneration('transcript_pre_queue_overtake');
+          }
           // PLAN-C P4c — this fresh transcript SUPERSEDES the pending ask, so
           // it is now the response epoch: any residual speech the awoken
           // dispatcher emits belongs to THIS utterance. Carry its id into the
@@ -4654,6 +4777,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // No Sonnet call, no shadow harness, no question-gate pass on
         // this turn. The script already emitted the wire events iOS
         // needs (`extraction` + `ask_user_started`).
+        settleReinjection('commit', 'ring_script_handled');
         return;
       }
       if (ringScriptOutcome.handled && ringScriptOutcome.fallthrough) {
@@ -4695,6 +4819,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         suppressDestructiveEntry,
       });
       if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
+        settleReinjection('commit', 'ir_script_handled');
         return;
       }
       if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
@@ -4727,6 +4852,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         suppressDestructiveEntry,
       });
       if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
+        settleReinjection('commit', 'protective_device_script_handled');
         return;
       }
       if (pdScriptOutcome.handled && pdScriptOutcome.fallthrough) {
@@ -4911,7 +5037,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // slip the anchor. It stays un-annotated, so the yes/no + free_text
       // shape branches behave exactly as tested.
       if (entry.pendingAsks.size > 0) {
-        const verdict = classifyOvertake(canonicalTranscriptText, regexResults, entry.pendingAsks);
+        // Codex r1 #1 — board-scope projection needs the session snapshot
+        // here too (see the pre-queue call site).
+        const verdict = classifyOvertake(canonicalTranscriptText, regexResults, entry.pendingAsks, {
+          boards: entry.session?.stateSnapshot?.boards ?? null,
+        });
         if (verdict.kind === 'answers') {
           // Plan 03-11 Task 3 — MAJOR remediation: sanitise verdict.userText
           // before resolve(). Without this, a transcript-routed ask answer
@@ -5327,12 +5457,43 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Plan E §4b piece 4 — the synthetic re-injection's extraction
       // RESOLVED: COMMIT the reservation. The anchors stay registered, so
       // the paired real transcript stays suppressed — its speech was
-      // delivered by this turn, exactly once. (A watchdog/supersession
-      // cancellation finalizes a PARTIAL inside runLiveMode and still
-      // resolves here — applied writes were read back, so commit is the
-      // correct settle for that path too.)
+      // delivered by this turn, exactly once.
+      //
+      // Codex r1 #3 — but "resolved" is NOT "produced something". A Sonnet
+      // 5xx / tool-loop timeout / supersession is caught INSIDE runLiveMode
+      // and returns a cancelled PARTIAL, so the harness resolves normally
+      // with an empty result. Committing there suppressed the paired real
+      // transcript even though nothing was written and nothing was spoken —
+      // a permanently lost reading, the exact inverse-Audio-First failure
+      // this machinery exists to prevent. Settle on PRODUCTION, not on
+      // resolution: if the turn yielded no write and no speech, ROLL BACK so
+      // the pair is reprocessed. Failing this direction is safe — worst case
+      // the same confirmation is produced twice and the client's value-aware
+      // text-hash dedupe (P2) swallows the duplicate; failing the other way
+      // is silence.
       if (reinjectionReservation) {
-        commitReinjectionReservation(entry, reinjectionReservation);
+        const producedSomething =
+          (Array.isArray(result?.extracted_readings) && result.extracted_readings.length > 0) ||
+          (Array.isArray(result?.confirmations) && result.confirmations.length > 0) ||
+          (Array.isArray(result?.observations) && result.observations.length > 0) ||
+          (Array.isArray(result?.circuit_updates) && result.circuit_updates.length > 0) ||
+          // An ask IS an audible, terminal outcome: the synthetic turn spoke a
+          // question. Requeuing the pair there would ask it a second time.
+          (Array.isArray(result?.questions_for_user) && result.questions_for_user.length > 0) ||
+          (typeof result?.spoken_response === 'string' && result.spoken_response.trim().length > 0);
+        if (producedSomething) {
+          commitReinjectionReservation(entry, reinjectionReservation);
+        } else {
+          const requeue = rollbackReinjectionReservation(entry, reinjectionReservation);
+          logger.warn('stage6.reinjection_rolled_back', {
+            sessionId,
+            reason: 'produced_nothing',
+            requeued: requeue.length,
+          });
+          for (const frame of requeue) {
+            entry.pendingTranscripts.push({ ...frame });
+          }
+        }
       }
 
       entry.lastRegexResults = [];
@@ -5626,6 +5787,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         delete entry.supersedeActiveGeneration;
       }
       entry.isExtracting = false;
+
+      // Codex r1 #4 — CATCH-ALL settlement. Every known terminal path settles
+      // explicitly (commit on production, rollback on error/gate-block/script-
+      // handled); this is the backstop for an exit that adds a new early return
+      // without one. Idempotent by construction — an already-settled
+      // reservation is no longer in the array and rolls back to []. Runs BEFORE
+      // the drain so anything requeued here re-enters on this same pass.
+      settleReinjection('rollback', 'unsettled_turn_exit');
 
       // Plan 03-12 r12 BLOCK remediation — drain MUST sit inside finally.
       //

@@ -707,6 +707,16 @@ describe('plan E — paired-transcript reservation lifecycle (both wire orders)'
     const loggerModule = (await import('../logger.js')).default;
     registerOrdinaryFieldAsk(entry, 'toolu_ze_pair', () => {});
     runShadowHarnessSpy.mockClear();
+    // Codex r1 #3 — a COMMIT test must model a turn that actually PRODUCED
+    // something: the reservation now settles on production, not on mere
+    // resolution (an empty result is a cancelled partial and must roll back,
+    // which is what the FAILURE-path test below asserts).
+    runShadowHarnessSpy.mockImplementationOnce(async () => ({
+      extracted_readings: [{ field: 'earthing_conductor_csa', value: '16' }],
+      questions_for_user: [],
+      observations: [],
+      confirmations: [{ field: 'earthing_conductor_csa', text: 'Main earth 16' }],
+    }));
 
     await sendFrame(ws, {
       type: 'ask_user_answered',
@@ -742,6 +752,13 @@ describe('plan E — paired-transcript reservation lifecycle (both wire orders)'
     const loggerModule = (await import('../logger.js')).default;
     registerOrdinaryFieldAsk(entry, 'toolu_ze_legacy', () => {});
     runShadowHarnessSpy.mockClear();
+    // Codex r1 #3 — see the fast-path COMMIT test: commit requires production.
+    runShadowHarnessSpy.mockImplementationOnce(async () => ({
+      extracted_readings: [{ field: 'earthing_conductor_csa', value: '16' }],
+      questions_for_user: [],
+      observations: [],
+      confirmations: [{ field: 'earthing_conductor_csa', text: 'Main earth 16' }],
+    }));
 
     await sendFrame(ws, {
       type: 'ask_user_answered',
@@ -881,5 +898,129 @@ describe('plan E — paired-transcript reservation lifecycle (both wire orders)'
       (c) => c[0] === 'stage6.cross_utterance_destructive_consumed'
     );
     expect(consumedRows).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Codex cycle-1 remediation. Each test below pins ONE defect the review found
+// in the plan-E machinery; each was RED before its fix.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('plan E — Codex cycle-1 remediation', () => {
+  test('#3 PRODUCED-NOTHING rollback: a harness that RESOLVES with an empty result (a cancelled partial — Sonnet 5xx, tool-loop timeout, supersession) rolls back instead of committing, so the paired reading is never silently lost', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-r1');
+    const loggerModule = (await import('../logger.js')).default;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_empty', () => {});
+    runShadowHarnessSpy.mockClear();
+    loggerModule.warn.mockClear();
+    // Resolves normally, produces NOTHING — the shape runLiveMode returns when
+    // it finalizes a cancelled turn. Pre-fix this COMMITTED.
+    runShadowHarnessSpy.mockImplementationOnce(async () => ({
+      extracted_readings: [],
+      questions_for_user: [],
+      observations: [],
+      confirmations: [],
+    }));
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_empty',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-r1',
+    });
+    await flushUntilHarnessCalled();
+
+    expect(entry.reinjectionReservations).toHaveLength(0);
+    expect(entry.consumedAskUtterances.has('u-e-r1')).toBe(false);
+    const rows = loggerModule.warn.mock.calls.filter(
+      (c) => c[0] === 'stage6.reinjection_rolled_back'
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0][1]).toMatchObject({ reason: 'produced_nothing' });
+
+    // …and the paired real transcript is therefore still processable.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'main earth is 16',
+      utterance_id: 'u-e-r1',
+      regexResults: [],
+    });
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('#3b an ASK is production: a synthetic turn that only asked a question COMMITS (requeuing would ask it twice)', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-r2');
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_ask', () => {});
+    runShadowHarnessSpy.mockClear();
+    runShadowHarnessSpy.mockImplementationOnce(async () => ({
+      extracted_readings: [],
+      questions_for_user: [{ field: 'earthing_conductor_csa', text: 'Which board?' }],
+      observations: [],
+      confirmations: [],
+    }));
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_ask',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-r2',
+    });
+    await flushUntilHarnessCalled();
+
+    expect(entry.reinjectionReservations).toHaveLength(0);
+    expect(entry.consumedAskUtterances.has('u-e-r2')).toBe(true); // anchor kept
+  });
+
+  test('#2 the transcript-first pre-queue overtake SUPERSEDES the active generation — pre-fix the old generation stayed live and could still speak', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-r3');
+    entry.isExtracting = true;
+    const supersedeSpy = jest.fn();
+    entry.supersedeActiveGeneration = supersedeSpy;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_pq', () => {});
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'main earth is 16',
+      utterance_id: 'u-e-r3',
+      regexResults: [],
+    });
+
+    expect(supersedeSpy).toHaveBeenCalledWith('transcript_pre_queue_overtake');
+  });
+
+  test('#5/#6 reconnect: a queued synthetic whose reservation just died is DROPPED, and the confirmation-mode latch is cleared so it cannot synthesise under the old socket mode', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-r4');
+    entry.lastConfirmationsEnabled = true;
+    // A turn is in flight, so the answer-first re-injection QUEUES its
+    // synthetic (carrying the module-private reservation marker) rather than
+    // running it inline.
+    entry.isExtracting = true;
+    registerOrdinaryFieldAsk(entry, 'toolu_ze_rc', () => {});
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'toolu_ze_rc',
+      user_text: 'main earth is 16',
+      consumed_utterance_id: 'u-e-r4',
+    });
+    const queuedSynthetics = entry.pendingTranscripts.filter(
+      (f) => Object.getOwnPropertySymbols(f).length > 0
+    );
+    expect(queuedSynthetics.length).toBeGreaterThan(0); // guard: the shape under test
+    entry.pendingTranscripts.push({ type: 'transcript', text: 'an ordinary queued frame' });
+
+    // Reconnect: the client re-opens a socket and re-sends session_start for
+    // the SAME session id — handleSessionStart's reconnect branch.
+    await startSession(wss, 'sess-e-r4');
+
+    expect(entry.reinjectionReservations).toHaveLength(0);
+    expect(entry.lastConfirmationsEnabled).toBe(false);
+    // The dead-reservation synthetic is gone; the ordinary frame survives.
+    expect(
+      entry.pendingTranscripts.filter((f) => Object.getOwnPropertySymbols(f).length > 0)
+    ).toHaveLength(0);
+    expect(entry.pendingTranscripts.some((f) => f.text === 'an ordinary queued frame')).toBe(true);
   });
 });
