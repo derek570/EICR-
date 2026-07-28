@@ -244,9 +244,10 @@ export const B_STAGED_POOLS = Object.freeze({
  */
 export const B_STAGED_TERMINALS = Object.freeze({
   // round-18: "voice-editable" was FALSE for circuit_ref (renameable by voice
-  // via rename_circuit, just not clearable) — the terminal says CLEARABLE.
+  // via rename_circuit, just not clearable) — the terminal says CLEARABLE,
+  // byte-exact to the plan template (Codex diff-review cycle 1).
   unsupported_clear: (f, n) =>
-    `Still can't clear ${f} — that's attempt ${n}; it isn't voice-clearable in this build.`,
+    `Still can't clear ${f} — that's attempt ${n}; it isn't voice-CLEARABLE in this build.`,
   wrong_tool_clear: (f, n) =>
     `${capitaliseFirst(f)} has NOT been cleared — attempt ${n} hit a routing snag, and it's logged.`,
   unknown_tool: (f, n) => `That one hit the same internal snag again — attempt ${n} is logged.`,
@@ -374,11 +375,21 @@ export function stageMandatoryNotice(
         Array.isArray(existing.coveredToolCallIds) && existing.coveredToolCallIds.length > 0;
       if (!wasCovered) {
         // FIRST direct→covered transition: the entry becomes B-staged. Adopt
-        // the B selection identity and initialise the per-slot counter
-        // exactly once — WITHOUT touching the A1a family cursor.
+        // the B selection identity AND the incoming rendering/telemetry
+        // metadata (Codex diff-review cycle 1: the DIRECT notice's friendly
+        // lacks the B slot discriminator — e.g. the board ordinal on a
+        // board-scoped field — so retaining it would make the rendered
+        // bytes dispatch-order-DEPENDENT and let two boards' first attempts
+        // collide into client-dedupe silence). Initialise the per-slot
+        // counter exactly once — WITHOUT touching the A1a family cursor.
         existing.coveredToolCallIds = [];
         existing.route = route ?? existing.route ?? family;
         existing.repeatKey = repeatKey ?? existing.repeatKey ?? `${family}::${slot}`;
+        if (friendly != null) existing.friendly = friendly;
+        if (field !== undefined) existing.field = field ?? null;
+        if (boardId !== undefined) existing.boardId = boardId ?? null;
+        if (reason != null) existing.reason = reason;
+        if (turnId != null) existing.turnId = turnId;
         bumpRefusedOp(session, existing.repeatKey, nowMs);
       }
       for (const id of coveredToolCallIds) {
@@ -462,7 +473,7 @@ export function noticeIsCovered(notice) {
  * unknown family (the drain's empty-text skip keeps the turn on today's
  * fail-audible paths — marker-② speaks if nothing else does).
  */
-export function renderMandatoryNoticeText(session, notice, turnId) {
+export function renderMandatoryNoticeText(session, notice, turnId, nowMs = Date.now()) {
   if (!noticeIsCovered(notice)) {
     // DIRECT (A1a) regime — byte-parity for attempts 1..poolSize, then the
     // family terminal (the sanctioned wrap-silence fix). The parallel
@@ -496,7 +507,15 @@ export function renderMandatoryNoticeText(session, notice, turnId) {
   const pool = B_STAGED_POOLS[route];
   if (!pool) return null;
   const repeatKey = notice.repeatKey ?? `${notice.family}::${notice.slotKey}`;
-  const count = session?.refusedOps?.[repeatKey]?.count ?? 1;
+  const entry = session?.refusedOps?.[repeatKey];
+  const count = entry?.count ?? 1;
+  // Codex diff-review cycle 1 — anchor the 30 s expiry at the moment the
+  // notice is actually RENDERED for speech, not at stage time: a refusal
+  // staged before a blocking ask can drain tens of seconds later, and a
+  // stage-time anchor would let the NEXT attempt reset to attempt 1 while
+  // the just-spoken attempt-1 text is still inside the client's dedupe
+  // window. Notices that never drain keep their stage-time stamp.
+  if (entry) entry.lastAt = nowMs;
   if (count >= 3) {
     const terminal = B_STAGED_TERMINALS[route];
     if (terminal) return terminal(notice.friendly, count);

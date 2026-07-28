@@ -2165,6 +2165,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         //   zero refusal lines — never both).
         //   NO coverage → today's behaviour byte-identically (fail-audible).
         let rejectedSetFullyCovered = false;
+        // Stamps drain:false on every covered notice — branch 3's "one
+        // generic line, zero refusal lines". TIMING (Codex diff-review
+        // cycle 1): recovery runs FIRST, so on the flag-ON path the stamp is
+        // DEFERRED into the emission block's `!recovered` branch — a
+        // partially-covered turn whose reading IS recovered must keep its
+        // covered refusals draining additively beside the read-back
+        // (state-machine branch 1). Under flag-OFF the emission block (and
+        // recovery) never runs, so the stamp applies immediately — that is
+        // what preserves marker-②'s fallback for the uncovered rejection.
+        const stampCoveredNoticesNonDraining = () => {
+          const staged = Array.isArray(perTurnWrites?.mandatoryNotices)
+            ? perTurnWrites.mandatoryNotices
+            : [];
+          for (const n of staged) {
+            if (Array.isArray(n?.coveredToolCallIds) && n.coveredToolCallIds.length > 0) {
+              n.drain = false;
+            }
+          }
+        };
+        let partialCoveragePending = false;
         if (allRejected) {
           const stagedNotices = Array.isArray(perTurnWrites?.mandatoryNotices)
             ? perTurnWrites.mandatoryNotices
@@ -2181,10 +2201,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           rejectedSetFullyCovered =
             rejectedIds.length > 0 && rejectedIds.every((id) => coveredUnion.has(id));
           if (coveredUnion.size > 0 && !rejectedSetFullyCovered) {
-            for (const n of stagedNotices) {
-              if (Array.isArray(n?.coveredToolCallIds) && n.coveredToolCallIds.length > 0) {
-                n.drain = false;
-              }
+            if (ORPHAN_PROMPT_ENABLED) {
+              partialCoveragePending = true;
+            } else {
+              stampCoveredNoticesNonDraining();
             }
           }
         }
@@ -2250,6 +2270,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                 textPreview: String(transcriptText || '').slice(0, 80),
               });
             }
+          }
+          // Codex diff-review cycle 1 — the DEFERRED branch-3 stamp: only a
+          // turn whose recovery FAILED hands the whole rejected set to A3's
+          // generic line; a recovered turn keeps its covered refusals
+          // draining additively beside the read-back (branch 1).
+          if (!recovered && partialCoveragePending) {
+            stampCoveredNoticesNonDraining();
           }
           if (!recovered && allRejected && rejectedSetFullyCovered) {
             // Plan B §3.3 branch 2 — recovery failed but EVERY rejected call

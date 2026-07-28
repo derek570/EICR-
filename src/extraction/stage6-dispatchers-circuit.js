@@ -556,11 +556,31 @@ function stageClearReadingRefusal(call, ctx, input) {
     !CLEAR_READING_FIELD_SET.has(fieldRaw)
   ) {
     const schemaLabel = FIELD_SCHEMA.circuit_fields?.[fieldRaw]?.label;
-    if (typeof schemaLabel === 'string' && schemaLabel.trim().length > 0) {
-      const boardComponent = resolveEffectiveBoardId(session, input.board_id);
+    const boardComponent = resolveEffectiveBoardId(session, input.board_id);
+    // Codex diff-review cycle 1 — discriminator TRUST guards. The rendered
+    // string must embed the FULL slot discriminator its repeat bucket
+    // carries; when a component can't be rendered trustworthily the notice
+    // is NOT staged (the call stays UNCOVERED, so A3's generic fallback
+    // keeps the turn fail-audible — never two byte-identical covered
+    // refusals for different slots):
+    //   - `field_not_clearable` fires BEFORE circuit validation, so a
+    //     malformed/absent circuit (e.g. a string "4") reaches this code;
+    //     two different malformed circuits would share the empty clause.
+    //   - a boards[] snapshot whose resolved non-null board id has no
+    //     ordinal would drop the board clause the same way.
+    const circuitTrusted = Number.isInteger(input.circuit);
+    const boardRenderable =
+      boardComponent == null ||
+      !Array.isArray(session?.stateSnapshot?.boards) ||
+      spokenBoardOrdinal(session.stateSnapshot, boardComponent) != null;
+    if (
+      typeof schemaLabel === 'string' &&
+      schemaLabel.trim().length > 0 &&
+      circuitTrusted &&
+      boardRenderable
+    ) {
       const slotKey = rawCircuitSlot(canonicalField, input.circuit, boardComponent);
-      const circuitClause = Number.isInteger(input.circuit) ? ` for circuit ${input.circuit}` : '';
-      const friendly = `${schemaLabel}${circuitClause}${boardClause(boardComponent)}`;
+      const friendly = `${schemaLabel} for circuit ${input.circuit}${boardClause(boardComponent)}`;
       stageMandatoryNotice(perTurnWrites, session, {
         family: 'unsupported_clear',
         slotKey,
@@ -573,11 +593,13 @@ function stageClearReadingRefusal(call, ctx, input) {
         route: 'unsupported_clear',
         repeatKey: `unsupported_clear::${slotKey}`,
       });
-      return;
     }
-    // Label missing/empty (should be impossible — the closed set guarantees
-    // the schema entry): fail toward the label-free off-schema route rather
-    // than rendering "undefined".
+    // Known circuit field but an untrusted discriminator (or a missing
+    // schema label — impossible by the closed set, defended anyway): stage
+    // NOTHING. Falling through to the label-free off-schema route would
+    // mislabel a REAL field as unrecognised; leaving the call uncovered
+    // keeps today's generic A3 wording (fail-audible, §3.6).
+    return;
   }
 
   stageMandatoryNotice(perTurnWrites, session, {

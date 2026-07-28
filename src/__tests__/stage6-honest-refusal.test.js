@@ -788,6 +788,291 @@ describe('§5.10 — A1a DIRECT-denial terminals (attempt 6+) + shared-helper pa
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+describe('Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals', () => {
+  test('branch 1 with PARTIAL coverage: a recovered reading speaks AND the covered refusal drains additively; no generic prompt', async () => {
+    const session = makeSession({ circuits: { 5: { circuit_designation: 'Shower' } } });
+    loopDispatching([
+      clearReadingCall('circuit_ref', 5, 'toolu_pcov'),
+      clearReadingCall('measured_zs_ohm', 99, 'toolu_punc'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(
+      session,
+      'RCD trip time for circuit 5 is 24 ms',
+      [],
+      opts
+    );
+
+    // The recovered write landed and was read back…
+    expect(session.stateSnapshot.circuits[5].rcd_time_ms).toBeDefined();
+    const speakers = audibleConfs(result);
+    expect(speakers.length).toBeGreaterThanOrEqual(2);
+    // …the covered refusal was NOT drain:false-stamped (recovery ran first)…
+    const refusalPool = bridgePoolTexts(
+      'unsupported_clear',
+      'Circuit Reference for circuit 5 on board 1'
+    );
+    expect(speakers.some((c) => refusalPool.includes(c.text))).toBe(true);
+    // …and no generic prompt of any family fired.
+    assertNoGenericApologies(result, opts.logger);
+  });
+
+  test('untrusted discriminators stage NOTHING (fail-audible): a malformed circuit keeps today’s generic A3 wording, never a covered refusal', async () => {
+    const session = makeSession({ circuits: { 4: {} } });
+    loopDispatching([
+      {
+        name: 'clear_reading',
+        input: { field: 'circuit_ref', circuit: '4', reason: 'user_correction' },
+        id: 'toolu_badc',
+      },
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'Clear the reference.', [], opts);
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(1);
+    expect(REJECTED_SET.has(speakers[0].text)).toBe(true);
+    expect(mandatoryRows(opts.logger)).toHaveLength(0);
+  });
+
+  test('BOARD-SCOPED direct↔bridge provenance, both orders: identical output carrying the board ordinal; distinct bytes across two boards sharing a designation', async () => {
+    const perBoard = {};
+    for (const boardId of ['main', 'b2']) {
+      const outputs = [];
+      for (const order of ['direct-first', 'bridge-first']) {
+        registerEntry(false);
+        const session = makeSession({
+          boards: [
+            { id: 'main', designation: 'DB-1', board_type: 'main' },
+            { id: 'b2', designation: 'DB-1', board_type: 'sub' },
+          ],
+          currentBoardId: boardId,
+        });
+        const calls =
+          order === 'direct-first'
+            ? [
+                clearBoardCall('manufacturer', 'toolu_d'),
+                clearReadingCall('manufacturer', 1, 'toolu_b'),
+              ]
+            : [
+                clearReadingCall('manufacturer', 1, 'toolu_b'),
+                clearBoardCall('manufacturer', 'toolu_d'),
+              ];
+        loopDispatching(calls);
+        const opts = baseOpts();
+        const result = await runShadowHarness(session, 'Delete the manufacturer.', [], opts);
+        const speakers = audibleConfs(result);
+        expect(speakers).toHaveLength(1);
+        outputs.push(speakers[0].text);
+        // The covered render must carry the injective board ordinal (the F2
+        // transition adopts the bridge metadata in BOTH orders).
+        const ordinal = boardId === 'main' ? 1 : 2;
+        expect(speakers[0].text).toContain(`on board ${ordinal}`);
+        assertNoGenericApologies(result, opts.logger);
+        activeSessions.delete(SESSION_ID);
+      }
+      expect(outputs[0]).toBe(outputs[1]);
+      perBoard[boardId] = outputs[0];
+    }
+    // Two boards sharing one designation never render identical bytes.
+    expect(perBoard.main).not.toBe(perBoard.b2);
+  });
+
+  test('same label, two circuits, interleaved through attempt 3+: separate counters, every render byte-distinct, terminals carry their own circuit', async () => {
+    const session = makeSession({ circuits: { 4: {}, 7: {} } });
+    const texts = [];
+    const seq = [4, 7, 4, 7, 4, 7];
+    for (let i = 0; i < seq.length; i += 1) {
+      loopDispatching([clearReadingCall('circuit_ref', seq[i], `toolu_il${i}`)]);
+      const result = await runShadowHarness(session, 'Clear the reference.', [], baseOpts());
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(1);
+      texts.push(speakers[0].text);
+    }
+    expect(new Set(texts).size).toBe(6);
+    // Attempt 3 for each circuit renders that circuit's own terminal.
+    expect(texts[4]).toBe(
+      B_STAGED_TERMINALS.unsupported_clear('Circuit Reference for circuit 4 on board 1', 3)
+    );
+    expect(texts[5]).toBe(
+      B_STAGED_TERMINALS.unsupported_clear('Circuit Reference for circuit 7 on board 1', 3)
+    );
+  });
+
+  test('attempt-6 direct terminals for the remaining families: board_clear_disabled, field_not_applicable_on_eicr, board_clear_scope_unclassified — each renders its OWN truthful terminal', async () => {
+    const cases = [
+      {
+        family: 'board_clear_disabled',
+        field: 'ze',
+        friendly: ZE_FRIENDLY,
+        setup: () => {
+          registerEntry(true);
+          process.env.BOARD_CLEAR_DISABLED = 'true';
+        },
+        session: () => makeSession(),
+      },
+      {
+        family: 'field_not_applicable_on_eicr',
+        field: 'comments',
+        friendly: CONFIRMATION_FRIENDLY_NAMES['comments'] ?? deriveFriendlyName('comments'),
+        setup: () => registerEntry(true),
+        session: () => makeSession({}, { certType: 'EICR' }),
+      },
+      {
+        family: 'board_clear_scope_unclassified',
+        field: 'earthing_arrangement',
+        friendly:
+          CONFIRMATION_FRIENDLY_NAMES['earthing_arrangement'] ??
+          deriveFriendlyName('earthing_arrangement'),
+        setup: () => registerEntry(true),
+        session: () => makeSession(),
+      },
+    ];
+    for (const c of cases) {
+      c.setup();
+      const session = c.session();
+      const texts = [];
+      for (let i = 0; i < 6; i += 1) {
+        loopDispatching([clearBoardCall(c.field, `toolu_${c.family}_${i}`)]);
+        const result = await runShadowHarness(session, `Delete ${c.field}.`, [], baseOpts());
+        const speakers = audibleConfs(result);
+        expect(speakers).toHaveLength(1);
+        texts.push(speakers[0].text);
+      }
+      expect(new Set(texts).size).toBe(6);
+      const variants = BOARD_CLEAR_NOTICE_FAMILIES[c.family].map((f) => f(c.friendly));
+      for (let i = 0; i < 5; i += 1) expect(variants).toContain(texts[i]);
+      expect(texts[5]).toBe(DIRECT_DENIAL_TERMINALS[c.family](c.friendly, 6));
+      expect(texts[5]).not.toMatch(/nothing recorded/i);
+      delete process.env.BOARD_CLEAR_DISABLED;
+      activeSessions.delete(SESSION_ID);
+    }
+  });
+
+  test('cross-turn direct↔bridge on Ze at attempts 1–2 never collide (route-distinct pools inside one 30 s window)', async () => {
+    const session = makeSession();
+    loopDispatching([clearBoardCall('ze', 'toolu_ct1')]);
+    const r1 = await runShadowHarness(session, 'Delete Ze.', [], baseOpts());
+    loopDispatching([clearReadingCall('earth_loop_impedance_ze', 0, 'toolu_ct2')]);
+    const r2 = await runShadowHarness(session, 'Delete Ze.', [], baseOpts());
+    const t1 = audibleConfs(r1)[0].text;
+    const t2 = audibleConfs(r2)[0].text;
+    expect(t1).not.toBe(t2);
+    expect(
+      BOARD_CLEAR_NOTICE_FAMILIES.board_clear_capability_missing.map((f) => f(ZE_FRIENDLY))
+    ).toContain(t1);
+    expect(bridgePoolTexts('board_clear_capability_missing', ZE_FRIENDLY)).toContain(t2);
+  });
+
+  test('unknown_tool and offschema_clear driven to attempt 3 render DISTINCT terminals with their own ordinals', async () => {
+    const session = makeSession();
+    const finals = {};
+    for (const kind of ['unknown', 'offschema']) {
+      for (let i = 0; i < 3; i += 1) {
+        const call =
+          kind === 'unknown'
+            ? [{ name: 'frobnicate_reading', input: {}, id: `toolu_${kind}${i}` }]
+            : [clearReadingCall('banana_volts', 3, `toolu_${kind}${i}`)];
+        loopDispatching(call);
+        const result = await runShadowHarness(session, 'Do the thing.', [], baseOpts());
+        finals[kind] = audibleConfs(result)[0].text;
+      }
+    }
+    expect(finals.unknown).toBe(B_STAGED_TERMINALS.unknown_tool(null, 3));
+    expect(finals.offschema).toBe(B_STAGED_TERMINALS.offschema_clear(null, 3));
+    expect(finals.unknown).not.toBe(finals.offschema);
+  });
+
+  test('object-form route with PARTIAL coverage: one generic line, zero refusal lines', async () => {
+    const session = makeSession();
+    loopDispatching([
+      { name: 'ask_user', input: { question: 'hm?' }, id: 'toolu_opc1' },
+      clearReadingCall('measured_zs_ohm', 99, 'toolu_opc2'),
+    ]);
+    const opts = baseOpts({ pendingAsks: null });
+    const result = await runShadowHarness(session, 'Some turn.', [], opts);
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(1);
+    expect(REJECTED_SET.has(speakers[0].text)).toBe(true);
+    expect(mandatoryRows(opts.logger)).toHaveLength(0);
+  });
+
+  test('CAPABLE correction via ALREADY-EMPTY, both orders: wrong_tool_clear reconciled away; the already-blank notice speaks alone', async () => {
+    for (const order of ['reject-first', 'success-first']) {
+      registerEntry(true);
+      const session = makeSession(); // ze never set → already_empty
+      const calls =
+        order === 'reject-first'
+          ? [
+              clearReadingCall('earth_loop_impedance_ze', 0, 'toolu_ae_r'),
+              clearBoardCall('ze', 'toolu_ae_s'),
+            ]
+          : [
+              clearBoardCall('ze', 'toolu_ae_s'),
+              clearReadingCall('earth_loop_impedance_ze', 0, 'toolu_ae_r'),
+            ];
+      loopDispatching(calls);
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, 'Delete Ze.', [], opts);
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(1);
+      expect(
+        BOARD_CLEAR_NOTICE_FAMILIES.board_clear_already_empty.map((f) => f(ZE_FRIENDLY))
+      ).toContain(speakers[0].text);
+      const wtcTexts = bridgePoolTexts('wrong_tool_clear', ZE_FRIENDLY);
+      expect(wtcTexts.includes(speakers[0].text)).toBe(false);
+      assertNoGenericApologies(result, opts.logger);
+      activeSessions.delete(SESSION_ID);
+    }
+  });
+
+  test('fake-clock: the 30 s expiry anchors at DRAIN time, not stage time (a late-draining attempt keeps the next attempt in-window)', () => {
+    const session = {};
+    const ptw = { mandatoryNotices: [] };
+    const t0 = 1_000_000;
+    const meta = {
+      family: 'unsupported_clear',
+      slotKey: 'slotX',
+      turnId: 't1',
+      friendly: 'sample label',
+      field: 'circuit_ref',
+      boardId: null,
+      reason: 'unsupported_clear',
+      coveredToolCallIds: ['id1'],
+      route: 'unsupported_clear',
+      repeatKey: 'unsupported_clear::slotX',
+    };
+    refusalModule.stageMandatoryNotice(ptw, session, meta, t0);
+    // Drains 20 s later (e.g. behind a blocking ask) — lastAt refreshes.
+    const text1 = refusalModule.renderMandatoryNoticeText(
+      session,
+      ptw.mandatoryNotices[0],
+      't1',
+      t0 + 20_000
+    );
+    expect(B_STAGED_POOLS.unsupported_clear.map((f) => f('sample label'))).toContain(text1);
+    // A repeat 45 s after STAGING is only 25 s after the drain — still
+    // in-window: count advances to 2 (no reset to a byte-identical attempt 1).
+    const ptw2 = { mandatoryNotices: [] };
+    refusalModule.stageMandatoryNotice(
+      ptw2,
+      session,
+      { ...meta, coveredToolCallIds: ['id2'] },
+      t0 + 45_000
+    );
+    expect(session.refusedOps['unsupported_clear::slotX'].count).toBe(2);
+    // But a repeat >30 s after the DRAIN resets to attempt 1.
+    const ptw3 = { mandatoryNotices: [] };
+    refusalModule.stageMandatoryNotice(
+      ptw3,
+      session,
+      { ...meta, coveredToolCallIds: ['id3'] },
+      t0 + 45_000 + 31_000
+    );
+    expect(session.refusedOps['unsupported_clear::slotX'].count).toBe(1);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 describe('§5.11 — centralised distinctness inventory + wording contract', () => {
   const inventory = renderedNoticeInventory();
 
