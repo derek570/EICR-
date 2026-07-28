@@ -23,7 +23,8 @@
         "circuit": 2,
         "value": "Sockets",
         "confidence": 1,
-        "source": "tool_call"
+        "source": "tool_call",
+        "board_id": "main"
       }
     ],
     "observations": [],

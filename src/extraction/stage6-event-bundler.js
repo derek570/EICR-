@@ -26,6 +26,7 @@ import {
   projectReadingWinners,
   projectBoardReadingWinners,
   circuitDesignationKey,
+  readEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -156,6 +157,16 @@ function synthesiseStateChangeConfirmations(
   turnId = null
 ) {
   const out = [];
+  // A2-multiboard item 3 — a designation read-back only covers THIS op when it
+  // landed on the SAME board. The pair key is consulted first (multi-board
+  // turns enrich the reading with its board); the bare ref is the unscoped
+  // fallback every single-board turn takes.
+  const designationCovered = (op, ref) => {
+    if (!skipCircuitDesignations) return false;
+    const eff = readEffectiveOpBoard(op);
+    if (eff != null && skipCircuitDesignations.has(circuitDesignationKey(eff, ref))) return true;
+    return skipCircuitDesignations.has(ref);
+  };
   if (Array.isArray(circuitOps)) {
     for (let opIdx = 0; opIdx < circuitOps.length; opIdx += 1) {
       const op = circuitOps[opIdx];
@@ -163,7 +174,7 @@ function synthesiseStateChangeConfirmations(
       if (!Number.isInteger(ref) || ref <= 0) continue;
       let text = null;
       if (op.op === 'create') {
-        if (skipCircuitDesignations.has(ref)) continue; // covered by reading TTS
+        if (designationCovered(op, ref)) continue; // covered by reading TTS
         const desig = op?.meta?.designation;
         if (typeof desig === 'string' && desig.trim()) {
           text = `Circuit ${ref} is now the ${desig.trim()}`;
@@ -171,7 +182,7 @@ function synthesiseStateChangeConfirmations(
           text = `Circuit ${ref} created`;
         }
       } else if (op.op === 'rename') {
-        if (skipCircuitDesignations.has(ref)) continue;
+        if (designationCovered(op, ref)) continue;
         const desig = op?.meta?.designation;
         if (typeof desig === 'string' && desig.trim()) {
           text = `Circuit ${ref} is now the ${desig.trim()}`;
@@ -1441,23 +1452,49 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // confirmations expand. Tokens gain an ordinal so each op is a distinct
     // replay-stable identity for the client dedupe.
     if (Array.isArray(perTurnWrites.designationOps) && perTurnWrites.designationOps.length > 0) {
+      // A2-multiboard item 3 — group by the EFFECTIVE board, not the raw one.
+      // `record_reading` omits `board_id` in the common case, so a
+      // `select_board A → rename circuit 3 → select_board B → rename circuit 3`
+      // turn produced TWO raw-null ops that merged into ONE scope bucket, and
+      // the expansion then spoke both boards' names as if they were two edits
+      // of a single circuit. The effective board separates them; single-board
+      // traffic groups identically to before (one board ⇒ one bucket either
+      // way).
       const opsByScope = new Map();
+      const groupCountByCircuit = new Map();
       for (const op of perTurnWrites.designationOps) {
-        const k = `${op.circuit}|${op.boardId ?? ''}`;
-        if (!opsByScope.has(k)) opsByScope.set(k, []);
+        const k = `${op.circuit}|${readEffectiveOpBoard(op) ?? ''}`;
+        if (!opsByScope.has(k)) {
+          opsByScope.set(k, []);
+          groupCountByCircuit.set(op.circuit, (groupCountByCircuit.get(op.circuit) ?? 0) + 1);
+        }
         opsByScope.get(k).push(op);
       }
-      for (const [k, ops] of opsByScope) {
+      for (const [, ops] of opsByScope) {
         if (ops.length < 2) continue; // single op — the Map-derived entry is exact
         // Codex r5-#2 — the lookup must match BOARD as well as circuit:
         // without it, repeated writes on board B could replace board A's
         // confirmation for the same circuit ref (A omitted, B duplicated).
-        const idx = confirmations.findIndex(
+        //
+        // A2-multiboard item 3 — the confirmation's `board_id` is the WIRE
+        // value, which item 1 enriches onto ORDINARY readings only when the
+        // turn touched more than one board. So match the effective board FIRST
+        // (exact, and the only correct answer in the multi-board case), then
+        // fall back to a circuit-only match ONLY when this circuit has a single
+        // op-group — i.e. there is no other board it could be confused with.
+        // That fallback is what keeps single-board traffic byte-identical.
+        const opEffectiveBoard = readEffectiveOpBoard(ops[0]);
+        let idx = confirmations.findIndex(
           (c) =>
             c.field === 'circuit_designation' &&
             c.circuit === ops[0].circuit &&
-            (c.board_id ?? null) === (ops[0].boardId ?? null)
+            (c.board_id ?? null) === opEffectiveBoard
         );
+        if (idx < 0 && (groupCountByCircuit.get(ops[0].circuit) ?? 0) === 1) {
+          idx = confirmations.findIndex(
+            (c) => c.field === 'circuit_designation' && c.circuit === ops[0].circuit
+          );
+        }
         if (idx < 0) continue;
         const replacement = ops.map((op, i) => {
           const text = buildConfirmationText('circuit_designation', op.value, op.circuit, op.value);
@@ -1482,10 +1519,22 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // reading writes. Dedup against the per-turn circuit_designation
     // writes so we don't double-announce "Circuit 1 is now the Cooker"
     // when Sonnet pairs create_circuit + record_reading.
+    //
+    // A2-multiboard item 3 — the dedupe identity is `(effective_board, ref)`,
+    // not the bare ref. On a multi-board turn a designation read-back for
+    // board A's circuit 3 used to suppress board B's `create circuit 3`
+    // confirmation as well, so a real state change on B went unspoken
+    // (Audio-First #1). A board-scoped reading contributes ONLY its pair key;
+    // an unscoped reading contributes the bare ref, which is what every
+    // single-board turn produces — so single-board behaviour is unchanged.
     const skipDesignations = new Set();
     for (const r of extracted_readings) {
       if (r.field === 'circuit_designation' && Number.isInteger(r.circuit)) {
-        skipDesignations.add(r.circuit);
+        if (r.board_id != null && r.board_id !== '') {
+          skipDesignations.add(circuitDesignationKey(r.board_id, r.circuit));
+        } else {
+          skipDesignations.add(r.circuit);
+        }
       }
     }
     const stateChanges = synthesiseStateChangeConfirmations(

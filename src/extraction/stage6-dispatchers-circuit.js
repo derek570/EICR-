@@ -61,6 +61,7 @@ import {
   attachEffectiveSlot,
   recordReadingWrite,
   removeReadingWrites,
+  attachEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
 import {
   getCircuitBucket,
@@ -425,12 +426,21 @@ export async function dispatchRecordReading(call, ctx) {
   // (the Map above is last-write-wins) so two distinct same-turn
   // designation changes each get their own read-back + dedupe token.
   if (input.field === 'circuit_designation' && Array.isArray(perTurnWrites.designationOps)) {
-    perTurnWrites.designationOps.push({
-      circuit: input.circuit,
-      boardId: input.board_id ?? null,
-      value: input.value,
-      confidence: input.confidence ?? 1.0,
-    });
+    // A2-multiboard item 3 — `boardId` stays the RAW value (existing consumers
+    // read it and the wire dedupe token is built from it), but the EFFECTIVE
+    // board is stamped alongside it so the bundler's op grouping can key on the
+    // real per-board identity instead of merging two boards' same-ref writes.
+    perTurnWrites.designationOps.push(
+      attachEffectiveOpBoard(
+        {
+          circuit: input.circuit,
+          boardId: input.board_id ?? null,
+          value: input.value,
+          confidence: input.confidence ?? 1.0,
+        },
+        resolveEffectiveBoardId(session, input.board_id)
+      )
+    );
   }
 
   // Ring continuity tracking — stamp the circuit's last-write timestamp
@@ -955,22 +965,33 @@ export async function dispatchCreateCircuit(call, ctx) {
     boardId: input.board_id,
   });
 
-  perTurnWrites.circuitOps.push({
-    op: 'create',
-    circuit_ref: input.circuit_ref,
-    // "Work on Board" hotfix slice 1.1a — circuit_updates wire shape carries
-    // board_id so the iOS apply path (which converts shadow-harness's legacy-
-    // shape delete projection into a bucket lookup) routes the new bucket to
-    // the right board. Omit-when-undefined preserves byte-identical traffic
-    // for single-board sessions.
-    ...(input.board_id != null ? { board_id: input.board_id } : {}),
-    meta: {
-      designation: input.designation ?? null,
-      phase: input.phase ?? null,
-      rating_amps: input.rating_amps ?? null,
-      cable_csa_mm2: input.cable_csa_mm2 ?? null,
-    },
-  });
+  perTurnWrites.circuitOps.push(
+    attachEffectiveOpBoard(
+      {
+        op: 'create',
+        circuit_ref: input.circuit_ref,
+        // "Work on Board" hotfix slice 1.1a — circuit_updates wire shape carries
+        // board_id so the iOS apply path (which converts shadow-harness's legacy-
+        // shape delete projection into a bucket lookup) routes the new bucket to
+        // the right board. Omit-when-undefined preserves byte-identical traffic
+        // for single-board sessions.
+        //
+        // A2-multiboard item 3 — this RAW key is retained (it is what the
+        // existing consumers read); the EFFECTIVE board is stamped
+        // non-enumerably and it is the stamp, not this key, that the wire
+        // projection emits. A `select_board B → create circuit 4` turn omits
+        // board_id here but MUST reach the clients addressed to B.
+        ...(input.board_id != null ? { board_id: input.board_id } : {}),
+        meta: {
+          designation: input.designation ?? null,
+          phase: input.phase ?? null,
+          rating_amps: input.rating_amps ?? null,
+          cable_csa_mm2: input.cable_csa_mm2 ?? null,
+        },
+      },
+      resolveEffectiveBoardId(session, input.board_id)
+    )
+  );
 
   // Mark the new circuit as "recent" so its full bucket (including the
   // designation we just wrote) renders in the compact snapshot on the next
@@ -1147,20 +1168,26 @@ export async function dispatchRenameCircuit(call, ctx) {
     });
   }
 
-  perTurnWrites.circuitOps.push({
-    op: 'rename',
-    from_ref: input.from_ref,
-    circuit_ref: input.circuit_ref,
-    // "Work on Board" hotfix slice 1.1a — see dispatchCreateCircuit for
-    // rationale. Rename ops route to the target board's bucket on iOS.
-    ...(input.board_id != null ? { board_id: input.board_id } : {}),
-    meta: {
-      designation: input.designation ?? null,
-      phase: input.phase ?? null,
-      rating_amps: input.rating_amps ?? null,
-      cable_csa_mm2: input.cable_csa_mm2 ?? null,
-    },
-  });
+  perTurnWrites.circuitOps.push(
+    attachEffectiveOpBoard(
+      {
+        op: 'rename',
+        from_ref: input.from_ref,
+        circuit_ref: input.circuit_ref,
+        // "Work on Board" hotfix slice 1.1a — see dispatchCreateCircuit for
+        // rationale. Rename ops route to the target board's bucket on iOS.
+        // A2-multiboard item 3 — the EFFECTIVE board is the stamp below.
+        ...(input.board_id != null ? { board_id: input.board_id } : {}),
+        meta: {
+          designation: input.designation ?? null,
+          phase: input.phase ?? null,
+          rating_amps: input.rating_amps ?? null,
+          cable_csa_mm2: input.cable_csa_mm2 ?? null,
+        },
+      },
+      resolveEffectiveBoardId(session, input.board_id)
+    )
+  );
 
   // Mark the (renamed) circuit as "recent" so its bucket renders in the
   // compact snapshot on the next turn — same rationale as
@@ -1240,14 +1267,22 @@ export async function dispatchDeleteCircuit(call, ctx) {
     boardId: input.board_id,
   });
 
-  perTurnWrites.circuitOps.push({
-    op: 'delete',
-    circuit_ref: input.circuit_ref,
-    // "Work on Board" hotfix slice 1.1a — board_id flows through to iOS so
-    // the legacy-shape delete projection (shadow-harness :436-447) can route
-    // to the right board's bucket on apply.
-    ...(input.board_id != null ? { board_id: input.board_id } : {}),
-  });
+  perTurnWrites.circuitOps.push(
+    attachEffectiveOpBoard(
+      {
+        op: 'delete',
+        circuit_ref: input.circuit_ref,
+        // "Work on Board" hotfix slice 1.1a — board_id flows through to iOS so
+        // the legacy-shape delete projection (shadow-harness :436-447) can route
+        // to the right board's bucket on apply.
+        // A2-multiboard item 3 — the EFFECTIVE board is the stamp below; a
+        // `select_board B → delete circuit 2` turn used to reach the clients
+        // unscoped and delete MAIN's circuit 2.
+        ...(input.board_id != null ? { board_id: input.board_id } : {}),
+      },
+      resolveEffectiveBoardId(session, input.board_id)
+    )
+  );
 
   logToolCall(logger, {
     sessionId: session.sessionId,

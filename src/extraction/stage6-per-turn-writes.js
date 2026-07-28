@@ -204,6 +204,50 @@ export function attachEffectiveBoardSlot(target, canonicalField, effectiveBoardI
 }
 
 /**
+ * A2-multiboard item 3 (2026-07-28) — the EFFECTIVE board a circuit-topology
+ * operation actually hit.
+ *
+ * WHY: `create_circuit` / `rename_circuit` / `delete_circuit` /
+ * `record_reading{circuit_designation}` all take an OPTIONAL `board_id`, and
+ * the overwhelmingly common model call omits it — the scope then comes from
+ * the session's `select_board` state. Every producer pushed the RAW
+ * `input.board_id` onto `circuitOps` / `designationOps`, so a
+ * `select_board B → create circuit 4` turn mutated board B server-side but
+ * reached both clients UNSCOPED (they resolved it against their own default
+ * board, i.e. main). The stamp records what the server actually did, at
+ * dispatch time, where the resolution is already known.
+ *
+ * Non-enumerable so `perTurnWrites` snapshots, spreads and `JSON.stringify`
+ * are byte-identical — the wire projection reads it explicitly and writes a
+ * PUBLIC `board_id` (see stage6-shadow-harness.js).
+ */
+export const EFFECTIVE_OP_BOARD = Symbol('stage6.effectiveOpBoard');
+
+export function attachEffectiveOpBoard(target, effectiveBoardId) {
+  Object.defineProperty(target, EFFECTIVE_OP_BOARD, {
+    value: { boardId: effectiveBoardId ?? null },
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return target;
+}
+
+/**
+ * Read the stamp, falling back to the op's own raw `board_id`/`boardId` when
+ * it is absent. The fallback keeps every legacy/test-constructed op (and any
+ * future producer that forgets the stamp) behaving exactly as it did before
+ * item 3 rather than silently losing an explicitly-addressed board.
+ */
+export function readEffectiveOpBoard(op) {
+  if (!op || typeof op !== 'object') return null;
+  const stamped = op[EFFECTIVE_OP_BOARD];
+  if (stamped) return stamped.boardId ?? null;
+  const raw = op.board_id ?? op.boardId ?? null;
+  return raw == null || raw === '' ? null : raw;
+}
+
+/**
  * A2-multiboard (2026-07-28) — the shared `(effective_board_id, circuit_ref)`
  * designation identity.
  *

@@ -111,7 +111,28 @@ import {
   circuitDesignationKey,
   decodeReadingKey,
   projectReadingWinners,
+  readEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
+
+/**
+ * A2-multiboard item 3 — read the server-authoritative designation for a
+ * circuit out of the (effective board, ref)-keyed map the harness builds
+ * post-mutation. Pair FIRST, bare ref as the unscoped fallback, empty string
+ * when genuinely nameless: the wire shape's `designation` is a non-optional
+ * Swift `String`, so a projection must always produce one.
+ */
+function resolveHarnessDesignation(designations, boardId, circuitRef) {
+  if (!(designations instanceof Map)) return '';
+  if (boardId != null && boardId !== '') {
+    // Board-scoped: the pair is the ONLY correct answer. Falling back to the
+    // bare ref here would hand a sub-board circuit MAIN's name for the same
+    // ref — the exact cross-board leak the pair key exists to close.
+    const paired = designations.get(circuitDesignationKey(boardId, circuitRef));
+    return typeof paired === 'string' && paired ? paired : '';
+  }
+  const bare = designations.get(circuitRef) ?? designations.get(String(circuitRef));
+  return typeof bare === 'string' && bare ? bare : '';
+}
 // A2-multiboard — the designation map is keyed by (effective board, circuit
 // ref), and the snapshot's circuit buckets are DUAL-SHAPE (main board under
 // bare numeric keys, sub-boards under `${board_id}::${ref}` composites), so
@@ -1758,6 +1779,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // lands the create/rename meta on the right board's circuit row
           // rather than always main's. Omit when nullish (single-board session
           // / pre-1.1a dispatcher write).
+          //
+          // A2-multiboard item 3 — the address is the EFFECTIVE board, not the
+          // raw one. `create_circuit`'s `board_id` is optional and the common
+          // model call omits it (scope comes from `select_board`), so a
+          // `select_board B → create circuit 4 named "Cooker"` turn used to
+          // send an UNSCOPED designation reading that both clients landed on
+          // MAIN. The stamp is what the server actually mutated.
           const synthesised = {
             field: legacyField,
             circuit: ref,
@@ -1765,7 +1793,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             confidence: 1.0,
             source: 'tool_call',
           };
-          if (op.board_id != null) synthesised.board_id = op.board_id;
+          const effBoard = readEffectiveOpBoard(op);
+          if (effBoard != null) synthesised.board_id = effBoard;
           result.extracted_readings.push(synthesised);
         }
       }
@@ -1912,22 +1941,71 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // (iOS ignores it for deletes — see applyCircuitUpdates handler).
     // Capturing first lets us preserve the strip's invariant ("no Stage 6
     // shape on the wire to iOS") while still surfacing the delete intent.
-    const legacyShapeDeletes = [];
+    //
+    // A2-multiboard item 3 (2026-07-28) — the fold above is LOSSY, and this
+    // block is now the lossless complement for the two shapes it cannot carry:
+    //
+    //   1. A metadata-free `create_circuit` (only `circuit_ref`). Every
+    //      META_TO_LEGACY_FIELD value is null, so the fold emits NOTHING, and
+    //      the strip below removes the only other carrier — the created row
+    //      reached NEITHER client. The next dictated reading for it then had
+    //      no row to land on.
+    //   2. A `rename_circuit` that RENUMBERS (`from_ref !== circuit_ref`).
+    //      The fold emits the new ref's meta but never `from_ref`, so a client
+    //      could only ever ADD a row at the new ref and left the old one
+    //      behind as a duplicate.
+    //
+    // Ops that the fold DOES represent (a create/rename carrying a
+    // designation, same ref) are deliberately NOT duplicated here — the fold's
+    // designation reading already creates/renames the row on both clients, and
+    // a second carrier would risk a double read-back.
+    //
+    // `designation` is always a String because iOS's `CircuitUpdate` Codable
+    // declares it non-optional and throws away the WHOLE extraction message on
+    // a shape mismatch (the Bug-F class). It is sourced from the op's own meta
+    // first, then the server-authoritative post-mutation designation map, so a
+    // projection can never blank a name the server still holds.
+    const legacyShapeCircuitOps = [];
     if (Array.isArray(result.circuit_updates)) {
       for (const op of result.circuit_updates) {
-        if (op && op.op === 'delete' && Number.isInteger(op.circuit_ref)) {
-          // "Work on Board" hotfix slice 1.1b — board_id rides through to iOS
-          // so the delete routes to the right board's bucket on apply.
-          // Slice 1.2 extends iOS's CircuitUpdate Codable with the optional
-          // boardId field; pre-fix iOS clients ignore it via decodeIfPresent.
-          const projected = {
-            circuit: op.circuit_ref,
-            designation: '',
-            action: 'delete',
-          };
-          if (op.board_id != null) projected.board_id = op.board_id;
-          legacyShapeDeletes.push(projected);
+        if (!op || !Number.isInteger(op.circuit_ref) || op.circuit_ref <= 0) continue;
+        // A2-multiboard item 3 — address every projected op to the board the
+        // server actually mutated. `board_id` is optional on all three circuit
+        // tools and the common model call omits it (scope comes from
+        // `select_board`), so the raw key sent an unscoped op that both clients
+        // resolved against MAIN — deleting or renumbering the wrong board's
+        // circuit. Slice 1.2 extended iOS's CircuitUpdate Codable with the
+        // optional boardId field; pre-fix clients ignore it via decodeIfPresent.
+        const effBoard = readEffectiveOpBoard(op);
+        const metaDesig =
+          typeof op?.meta?.designation === 'string' && op.meta.designation.trim()
+            ? op.meta.designation.trim()
+            : null;
+
+        if (op.op === 'delete') {
+          // designation:'' is a placeholder — iOS ignores it for deletes (see
+          // applyCircuitUpdates handler), and web's handler resolves the row by
+          // (board_id, circuit) alone.
+          const projected = { circuit: op.circuit_ref, designation: '', action: 'delete' };
+          if (effBoard != null) projected.board_id = effBoard;
+          legacyShapeCircuitOps.push(projected);
+          continue;
         }
+
+        const renumbering =
+          op.op === 'rename' && Number.isInteger(op.from_ref) && op.from_ref !== op.circuit_ref;
+        const unrepresentedByFold = op.op === 'create' && metaDesig == null;
+        if (!renumbering && !unrepresentedByFold) continue;
+
+        const projected = {
+          circuit: op.circuit_ref,
+          designation:
+            metaDesig ?? resolveHarnessDesignation(circuitDesignations, effBoard, op.circuit_ref),
+          action: op.op,
+        };
+        if (effBoard != null) projected.board_id = effBoard;
+        if (renumbering) projected.from_ref = op.from_ref;
+        legacyShapeCircuitOps.push(projected);
       }
     }
 
@@ -1947,12 +2025,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     delete result.cleared_readings;
     delete result.observation_deletions;
 
-    // Re-emit deletes in the legacy iOS shape AFTER the strip so the iOS
-    // CircuitUpdate decoder accepts them. Only set the slot if there are any —
-    // an empty array would be benign for current iOS but pointlessly noisy
-    // in session logs.
-    if (legacyShapeDeletes.length > 0) {
-      result.circuit_updates = legacyShapeDeletes;
+    // Re-emit the projected ops in the legacy iOS shape AFTER the strip so the
+    // iOS CircuitUpdate decoder accepts them. Only set the slot if there are
+    // any — an empty array would be benign for current iOS but pointlessly
+    // noisy in session logs.
+    if (legacyShapeCircuitOps.length > 0) {
+      result.circuit_updates = legacyShapeCircuitOps;
     }
 
     // Bug-H fix (2026-04-28): same Codable-throw class as Bug-F, but for
