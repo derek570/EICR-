@@ -942,3 +942,158 @@ describe('A2 — projectExtractionResultForWire', () => {
     expect(projected.some_future_frame_key).toEqual({ nested: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The fail-closed branch's ONLY observability.
+//
+// When two same-turn spellings of one slot survive, the bundler stamps NOTHING
+// (correct — guessing which write the clear belongs to could flag the wrong
+// one) and web keeps its stale value. On the wire that is indistinguishable
+// from an ordinary skip, so `stage6.replaces_cleared_ambiguous_projection` is
+// the only way the case is ever visible in production. These tests drive the
+// REAL harness so the emitter can't be deleted while the suites stay green.
+// ---------------------------------------------------------------------------
+
+/** A turn whose clear has TWO surviving same-slot replacements (differing only
+ *  in board spelling) — the ambiguity the bundler refuses to resolve. */
+function ambiguousProjectionSession() {
+  const streams = [
+    toolUseRound([
+      {
+        id: 'toolu_clear_amb',
+        name: 'clear_reading',
+        input: { field: 'measured_zs_ohm', circuit: 3, reason: 'user_correction' },
+      },
+      {
+        id: 'toolu_amb_1',
+        name: 'record_reading',
+        input: {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.42',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+      },
+      {
+        id: 'toolu_amb_2',
+        name: 'record_reading',
+        input: {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.44',
+          confidence: 0.9,
+          source_turn_id: 't1',
+          board_id: 'main',
+        },
+      },
+    ]),
+    endTurnRound('done'),
+  ];
+  return {
+    sessionId: 'a2-amb',
+    turnCount: 0,
+    toolCallsMode: 'live',
+    systemPrompt: 'TEST SYSTEM PROMPT',
+    client: mockClient(streams),
+    stateSnapshot: {
+      circuits: { 3: { measured_zs_ohm: '1.50' } },
+      boards: [{ id: 'main', designation: 'DB-1', board_type: 'main' }],
+      currentBoardId: 'main',
+      pending_readings: [],
+      observations: [],
+      validation_alerts: [],
+    },
+    extractedObservations: [],
+    buildSystemBlocks() {
+      return [{ type: 'text', text: this.systemPrompt }];
+    },
+    extractFromUtterance: jest.fn(async () => ({
+      extracted_readings: [],
+      observations: [],
+      questions: [],
+    })),
+  };
+}
+
+describe('A2 — ambiguous-projection telemetry reaches the logger', () => {
+  test('the LIVE lane emits one row carrying the exact slot key', async () => {
+    const logger = mockLogger();
+    const session = ambiguousProjectionSession();
+    const result = await runShadowHarness(
+      session,
+      'zs on circuit three is nought point four two',
+      [],
+      {
+        logger,
+        confirmationsEnabled: true,
+        utteranceId: 'utt-a2-amb',
+      }
+    );
+
+    // Precondition — the bundler really did decline to flag anything.
+    expect(
+      (result.extracted_readings ?? []).filter((r) => r.replaces_cleared === true)
+    ).toHaveLength(0);
+    const slots = result[REPLACES_CLEARED_AMBIGUOUS_PROJECTION];
+    expect(slots).toHaveLength(1);
+
+    const rows = logger.info.mock.calls.filter(
+      ([event]) => event === 'stage6.replaces_cleared_ambiguous_projection'
+    );
+    expect(rows).toHaveLength(1);
+    // The EXACT key, not a substring — a payload that merely mentions the field
+    // can't be traced back to a slot, which is the whole point of logging it.
+    expect(rows[0][1].slot_key).toBe(slots[0]);
+    expect(rows[0][1].sessionId).toBe('a2-amb');
+  });
+
+  test('an ordinary collapsed turn emits NO ambiguity row', async () => {
+    const logger = mockLogger();
+    const result = await runShadowHarness(
+      wireContractSession(),
+      'insulation live live is one hundred',
+      [],
+      {
+        logger,
+        confirmationsEnabled: true,
+        utteranceId: 'utt-a2-amb-neg',
+      }
+    );
+
+    expect(result.extracted_readings.some((r) => r.replaces_cleared === true)).toBe(true);
+    expect(
+      logger.info.mock.calls.filter(
+        ([event]) => event === 'stage6.replaces_cleared_ambiguous_projection'
+      )
+    ).toHaveLength(0);
+  });
+
+  test('DRIFT LOCK — the emitter is wired on BOTH harness lanes', () => {
+    // The live lane is covered end-to-end above; the shadow lane is only
+    // reachable behind a legacy-comparison run, so its wiring is pinned
+    // structurally. Deleting either call site must fail a test — otherwise the
+    // documented observability silently becomes live-only.
+    const src = readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../extraction/stage6-shadow-harness.js'
+      ),
+      'utf8'
+    );
+    // Two CALL sites — the live lane's `result` and the shadow lane's
+    // `toolResult`.
+    const callSites = src.match(
+      /emitReplacesClearedAmbiguousTelemetry\(log, session, turnId, (result|toolResult)\);/g
+    );
+    expect(callSites).toHaveLength(2);
+    expect(new Set(callSites).size).toBe(2); // one per lane, not one line twice
+    // Beside its P5 sibling at both sites, reading the SAME turn object — the
+    // pairing that would break first if either lane were re-plumbed.
+    expect(
+      src.match(
+        /emitClearWriteCollapseTelemetry\(log, session, turnId, (result|toolResult)\);\n\s*emitReplacesClearedAmbiguousTelemetry\(log, session, turnId, \1\);/g
+      )
+    ).toHaveLength(2);
+  });
+});

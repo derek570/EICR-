@@ -232,6 +232,74 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     );
   });
 
+  it('source 4 — a same-envelope `add_board` defers, even though boards[] is still single', () => {
+    // The ordering trap: `board_ops` rides this envelope but the caller applies
+    // it AFTER the readings (`onBoardOps` fires after `onExtraction`). Read off
+    // `job.boards` alone, cardinality is 1 at apply time and the bypass would
+    // overwrite the ORIGINAL board's circuit 1 before board B exists.
+    expectDeferred(
+      makeJob({
+        circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
+        boards: [{ id: 'main' }],
+      } as unknown as Partial<JobDetail>),
+      makeResult({
+        readings: [flaggedReading()],
+        board_ops: [{ op: 'add_board', board_id: 'sub-1', designation: 'Garage CU' }],
+      })
+    );
+  });
+
+  it('source 4b — an `add_board` whose id is empty STILL defers (the belt-and-braces term)', () => {
+    // A malformed op contributes nothing to the id union, so the set-size test
+    // alone would pass it. `addsBoardThisTurn` is what catches it.
+    expectDeferred(
+      makeJob({
+        circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
+        boards: [{ id: 'main' }],
+      } as unknown as Partial<JobDetail>),
+      makeResult({
+        readings: [flaggedReading()],
+        board_ops: [{ op: 'add_board', board_id: '' }],
+      })
+    );
+  });
+
+  it('source 4c — a NON-add board op on one board does not defer', () => {
+    // `select_board` naming the board we already know about is not evidence of
+    // a second board; deferring on it would cost overwrites for nothing.
+    const job = makeJob({
+      circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],
+      boards: [{ id: 'main' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading({ board_id: 'main' })],
+        board_ops: [{ op: 'select_board', board_id: 'main' }],
+      })
+    );
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('NEVER A NEW SKIP — an `add_board`-deferred reading still FILLS an empty cell', () => {
+    const job = makeJob({
+      circuits: [populatedRow({ ir_live_live_mohm: undefined, board_id: 'main' })],
+      boards: [{ id: 'main' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading()],
+        board_ops: [{ op: 'add_board', board_id: 'sub-1' }],
+      })
+    );
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
   it('3b — a SOLE board with an explicit id still bypasses (cardinality 1, not 0)', () => {
     const job = makeJob({
       circuits: [populatedRow({ board_id: 'main' } as Partial<CircuitRow>)],

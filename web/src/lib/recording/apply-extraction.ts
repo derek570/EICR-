@@ -768,6 +768,7 @@ function applyCircuitReadings(
   readings: ExtractedReading[],
   circuitUpdates: CircuitUpdate[],
   fieldClears: FieldClear[],
+  boardOps: BoardOp[],
   options: ApplyExtractionOptions = {}
 ): CircuitRow[] | null {
   const perCircuitReadings = readings.filter((r) => r.circuit >= 1 && r.field);
@@ -886,12 +887,36 @@ function applyCircuitReadings(
   // circuit rows, and the board ids on EVERY reading in this extraction
   // envelope (the last one is what makes an incoming reading for an unknown
   // board B, or a sibling reading for a different board, defer rather than
-  // guess). A board id is "unscoped" (contributes nothing) when null/empty.
+  // guess), AND every board id named by this turn's `board_ops`. A board id is
+  // "unscoped" (contributes nothing) when null/empty.
+  //
+  // Why `board_ops` has to be in the union: the ops ride the SAME envelope but
+  // the caller applies them AFTER the readings (`onBoardOps` fires after
+  // `onExtraction` — sonnet-session.ts). Without this term an "add the garage
+  // board … no, circuit 1's Zs is 0.6" turn would see cardinality 1, take the
+  // bypass, and overwrite the ORIGINAL board's circuit 1 before board B even
+  // exists. `addsBoardThisTurn` is belt-and-braces for a malformed op whose
+  // `board_id` is missing/empty and so contributes nothing to the set.
   //
   // Every declined case FALLS THROUGH to the unchanged gate — never a new
   // skip. A fail-closed SKIP would create a fresh spoken-but-not-written case,
   // which is the very defect this closes. Declines are observability-only.
+  //
+  // Two things this DELIBERATELY does not change:
+  //  • The LIM overwrite exception below is independent of this flag and is
+  //    left exactly as it was — a LIM write still overwrites on its own terms
+  //    (including on a multi-board job, which is pre-existing behaviour and
+  //    a separate concern, not something A2 introduces or fixes).
+  //  • ACCEPTED RACE: the marker proves the SERVER cleared the cell, not that
+  //    web's current value is still the cleared predecessor. If the inspector
+  //    types a new value into this exact cell in the ~1-2s between speaking
+  //    and the extraction landing, the bypass overwrites it. That is iOS
+  //    canon (iOS applies the replacement unconditionally) and the alternative
+  //    — skipping — is the spoken-but-not-written defect this closes. Fixing
+  //    it properly needs utterance-correlated freshness, which is a wire
+  //    change and out of A2's scope.
   const hasReplacesClearedReading = readings.some((r) => r.replaces_cleared === true);
+  const addsBoardThisTurn = boardOps.some((op) => op?.op === 'add_board');
   const effectiveBoardIds: Set<string> | null = hasReplacesClearedReading
     ? (() => {
         const ids = new Set<string>();
@@ -905,6 +930,14 @@ function applyCircuitReadings(
         // this set with nothing).
         for (const row of circuits) addId((row as Record<string, unknown>).board_id);
         for (const r of readings) addId(r.board_id);
+        for (const op of boardOps) {
+          const o = op as unknown as Record<string, unknown>;
+          if (!o) continue;
+          addId(o.board_id);
+          addId(o.parent_board_id);
+          addId(o.feeds_board_id);
+          addId(o.source_board_id);
+        }
         return ids;
       })()
     : null;
@@ -998,11 +1031,12 @@ function applyCircuitReadings(
     // is logged whether or not the cell happened to be populated.
     let replacesClearedBypass = false;
     if (reading.replaces_cleared === true) {
-      if (effectiveBoardIds !== null && effectiveBoardIds.size > 1) {
+      if (effectiveBoardIds !== null && (effectiveBoardIds.size > 1 || addsBoardThisTurn)) {
         pipelineLog('apply_replaces_cleared_multiboard_deferred', {
           circuit: reading.circuit,
           pwa_column: column,
           effective_board_count: effectiveBoardIds.size,
+          adds_board_this_turn: addsBoardThisTurn,
         });
       } else {
         // Ref cardinality comes from `refCounts`, built from the ORIGINAL
@@ -1994,7 +2028,18 @@ export function applyExtractionToJob(
 
   // Per-circuit readings + updates + clears. Thread options so
   // ensureRow can apply user defaults on circuit creation (H7 parity).
-  let newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears, options);
+  // `board_ops` rides the SAME envelope but is applied by the caller
+  // AFTER this returns (`onBoardOps` fires after `onExtraction` —
+  // sonnet-session.ts). The A2 gate below therefore has to read the ops
+  // itself; by the time boards[] reflects them the readings have landed.
+  let newCircuits = applyCircuitReadings(
+    job,
+    readings,
+    circuitUpdates,
+    fieldClears,
+    result.board_ops ?? [],
+    options
+  );
   if (newCircuits) patch.circuits = newCircuits;
 
   // H3 — auto-compute `ocpd_max_zs_ohm` for any circuit whose OCPD
