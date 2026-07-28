@@ -72,6 +72,7 @@ import {
   ensureMultiBoardShape,
   getCircuitBucket,
   getMainBoardId,
+  normaliseBoardScopeInput,
 } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 import { validateBoardScope, BOARD_FIELD_VALUE_ENUMS } from './stage6-dispatch-validation.js';
@@ -962,7 +963,14 @@ export async function dispatchSelectBoard(call, ctx) {
 // ---------------------------------------------------------------------------
 export async function dispatchMarkDistributionCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input ?? {};
+  // A2-multiboard item 6 — normalise the board scope before anything reads it.
+  // Here `board_id` names the SOURCE board, resolved with a nullish fallback to
+  // the current board; an empty string used to slip past that fallback and come
+  // back `source_board_not_found` instead of defaulting like an absent key.
+  // The two destructive/authoritative board dispatchers in this file
+  // (`clear_board_reading`, `record_board_reading`) are deliberately EXEMPT and
+  // must keep rejecting an injected empty id — see validateBoardScope.
+  const input = normaliseBoardScopeInput(call.input ?? {});
 
   function reject(code, field) {
     const err = field == null ? { code } : { code, field };

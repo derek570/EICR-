@@ -36,6 +36,68 @@ export const DEFAULT_MAIN_BOARD_ID = 'main';
 export const DEFAULT_MAIN_BOARD_DESIGNATION = 'DB-1';
 export const DEFAULT_MAIN_BOARD_TYPE = 'main';
 
+/**
+ * A2-multiboard (2026-07-28) scope item 6 — the UNSCOPED-BOARD-ID rule, stated
+ * once so every seam agrees on what "no board" looks like.
+ *
+ * A board id is UNSCOPED when it is absent (`null`/`undefined`) OR the empty
+ * string. The empty string is not a hypothetical: legacy CSV parsing writes
+ * `board_id: ''`, `record_reading` can retain `boardId: ''`, and the bundler
+ * emits it (it only checks `!= null`). Everything downstream then disagrees
+ * about what it means — `getCircuitBucket` and friends use a nullish fallback
+ * and treat it as "the current board", while `validateBoardScope` compares it
+ * against the current board id and REJECTS the call as `wrong_board`. So the
+ * same tool call is simultaneously routable and unroutable depending on which
+ * helper looks at it first.
+ *
+ * Mirrors web's `isUnscopedBoardId` (three ad-hoc copies, e.g.
+ * `web/src/lib/recording/apply-ccu-analysis.ts`).
+ *
+ * @param {unknown} boardId
+ * @returns {boolean}
+ */
+export function isUnscopedBoardId(boardId) {
+  return boardId == null || boardId === '';
+}
+
+/**
+ * Normalise a tool-call input's board scope IN PLACE, deleting an unscoped
+ * `board_id` so every downstream reader sees the key as ABSENT — which is the
+ * one spelling all of them already agree on (`?? currentBoardId`,
+ * `!= null` omit-guards, `validateBoardScope`'s `== null` early-return).
+ *
+ * Called at the TOP of each in-scope dispatcher, BEFORE validation, snapshot
+ * lookup/mutation, Map-key encoding, outward metadata, telemetry and
+ * effective-slot attachment — one call covers all of them, because after it
+ * runs the empty string never existed.
+ *
+ * In-place rather than a clone deliberately: `dispatchRecordReading` already
+ * mutates `call.input` (coercion, then the impedance clamp) precisely so the
+ * snapshot write and the wire mirror cannot hold different values. A clone
+ * would silently break that contract on exactly the legacy inputs this
+ * normaliser exists to handle. Identity is always preserved.
+ *
+ * `'*'` (the `set_field_for_all_circuits` broadcast) is NOT a board id and is
+ * passed through untouched.
+ *
+ * Deliberately NOT applied to the identity/selection and destructive
+ * board-scoped inputs — `select_board`, `clear_board_reading` and
+ * `record_board_reading` must keep REJECTING an injected empty id
+ * (`invalid_board_id` / `wrong_board`) rather than silently retargeting a
+ * destructive or authoritative write at the current board. See the exemption
+ * note on `validateBoardScope`.
+ *
+ * @template {object} T
+ * @param {T} input
+ * @returns {T} the same object
+ */
+export function normaliseBoardScopeInput(input) {
+  if (input && typeof input === 'object' && input.board_id === '') {
+    delete input.board_id;
+  }
+  return input;
+}
+
 // "Work on Board" sprint Phase A — resolve the main board id from a
 // snapshot. Used by the dual-shape helpers below to decide whether a
 // per-call boardId targets the legacy flat namespace (main) or the

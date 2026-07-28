@@ -66,6 +66,8 @@ import {
   getCircuitBucket,
   listCircuitRefsInBoard,
   getMainBoardId,
+  isUnscopedBoardId,
+  normaliseBoardScopeInput,
 } from './stage6-multi-board-shape.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
@@ -140,7 +142,7 @@ function envelope(tool_use_id, body, is_error) {
  */
 function resolveEffectiveBoardId(session, rawBoardId) {
   const snapshot = session?.stateSnapshot;
-  if (rawBoardId != null && rawBoardId !== '') return rawBoardId;
+  if (!isUnscopedBoardId(rawBoardId)) return rawBoardId;
   return snapshot?.currentBoardId ?? getMainBoardId(snapshot);
 }
 
@@ -156,7 +158,14 @@ function resolveEffectiveBoardId(session, rawBoardId) {
  */
 export async function dispatchRecordReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — normalise the board scope FIRST, before validation,
+  // snapshot lookup/mutation, Map-key encoding, outward metadata, telemetry and
+  // effective-slot attachment. A legacy `board_id: ''` used to be routable and
+  // unroutable at the same time: `getCircuitBucket` read it as "current board"
+  // while `validateBoardScope` compared it to the current board id and rejected
+  // the whole call as `wrong_board`. Doing this at the dispatcher boundary means
+  // every seam below sees the one spelling they already agree on — absent.
+  const input = normaliseBoardScopeInput(call.input);
   // readback-correction-optionb §6 — capability flag threaded via the
   // write dispatcher's extraCtx (stage6-shadow-harness.js sources it from
   // entry.voiceLatency.capabilities.hasLowConfReadbackV1). Absent/false on
@@ -636,7 +645,11 @@ function stageClearReadingRefusal(call, ctx, input) {
  */
 export async function dispatchClearReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading. Note this is the CIRCUIT
+  // clear, which is in scope; `clear_board_reading` is deliberately EXEMPT (an
+  // injected empty id there must keep rejecting rather than silently retarget a
+  // destructive clear at the current board).
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -791,7 +804,8 @@ export async function dispatchClearReading(call, ctx) {
  */
 export async function dispatchCreateCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1009,7 +1023,8 @@ export async function dispatchCreateCircuit(call, ctx) {
  */
 export async function dispatchRenameCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1199,7 +1214,8 @@ export async function dispatchRenameCircuit(call, ctx) {
  */
 export async function dispatchDeleteCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1487,7 +1503,11 @@ function noteAlreadyRecordedIfWhollySkipped(
  */
 export async function dispatchCalculateZs(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading. The calculators route
+  // through `validateCalculateBoardTarget` rather than `validateBoardScope`, and
+  // its `?? currentBoardId` guard is a `== null` check too, so an empty id used
+  // to survive as a phantom explicit target and come back `board_not_found`.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err = validateCalculateZs(input, session.stateSnapshot);
   if (err) {
@@ -1596,7 +1616,8 @@ export async function dispatchCalculateZs(call, ctx) {
  */
 export async function dispatchCalculateR1PlusR2(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchCalculateZs.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err = validateCalculateR1PlusR2(input, session.stateSnapshot);
   if (err) {
@@ -1752,7 +1773,10 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
  */
 export async function dispatchSetFieldForAllCircuits(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input ?? {};
+  // A2-multiboard item 6 — see dispatchRecordReading. Only the empty string is
+  // touched; the `'*'` broadcast sentinel is not a board id and is passed
+  // through untouched to the per-board fan-out below.
+  const input = normaliseBoardScopeInput(call.input ?? {});
 
   const err = validateSetFieldForAllCircuits(input);
   if (err) {

@@ -29,7 +29,11 @@
 
 import { enterScriptByName, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
-import { getCircuitBucket, getMainBoardId } from './stage6-multi-board-shape.js';
+import {
+  getCircuitBucket,
+  getMainBoardId,
+  normaliseBoardScopeInput,
+} from './stage6-multi-board-shape.js';
 import {
   encodeReadingKey,
   attachEffectiveSlot,
@@ -68,7 +72,12 @@ function envelope(tool_use_id, body, is_error) {
  */
 export async function dispatchStartDialogueScript(call, ctx) {
   const { session, logger, turnId, round, ws, perTurnWrites } = ctx;
-  const input = call.input || {};
+  // A2-multiboard item 6 — normalise once at the dispatcher boundary; this
+  // single call covers all four places the script drain reads `input.board_id`
+  // (bucket lookup, seeded effective board, reading-key encoding and the
+  // outward `boardId` on the per-turn write), which would otherwise disagree
+  // about whether an empty string means "current board" or a real scope.
+  const input = normaliseBoardScopeInput(call.input || {});
 
   // Resolve the WebSocket the engine should emit the first ask through.
   // The composer in stage6-dispatchers.js doesn't currently thread

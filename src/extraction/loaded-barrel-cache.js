@@ -73,6 +73,28 @@ export function buildCacheKey({ sessionId, turnId, boardId, field, circuit, expa
   return crypto.createHash('sha1').update(`${s}:${t}:${b}:${f}:${c}:${txt}`).digest('hex');
 }
 
+/**
+ * A2-multiboard (2026-07-28) scope item 6 — the UNSCOPED-board rule, applied to
+ * the cache's own stored/compared board identity.
+ *
+ * `buildCacheKey` already folds `null` and `''` onto the same hashed byte (:64),
+ * but the ENTRY stored `boardId ?? null`, which keeps an empty string as a
+ * distinct value. Every consumer below then compares with `== null`, so an entry
+ * cached from a legacy `board_id: ''` write was unreachable by the very
+ * invalidations that exist to stop stale audio being served: `invalidateBySlot`
+ * on a clear/re-record would not match it, `pruneSessionUnboardedEntries` would
+ * skip it on add_board, and `pruneMismatchedBoardEntries` would abort it on
+ * EVERY select_board. Collapsing at the boundary makes the entry's identity
+ * agree with the key it is filed under.
+ *
+ * Mirrors `isUnscopedBoardId` in `stage6-multi-board-shape.js`; kept module-local
+ * because this file is imported by the TTS route and deliberately has no
+ * dependency on the Stage-6 dispatcher graph.
+ */
+function normBoard(boardId) {
+  return boardId == null || boardId === '' ? null : String(boardId);
+}
+
 function _removeFromIndex(sessionId, key) {
   const set = sessionIndex.get(sessionId);
   if (!set) return;
@@ -190,7 +212,7 @@ export function set({
     state: 'pending',
     sessionId,
     turnId,
-    boardId: boardId ?? null,
+    boardId: normBoard(boardId),
     field,
     circuit: circuit ?? null,
     expandedText,
@@ -309,7 +331,7 @@ export function markSuperseded(cacheKey, reason = 'superseded') {
 export function invalidateBySlot(sessionId, { boardId, field, circuit }) {
   const set = sessionIndex.get(sessionId);
   if (!set) return 0;
-  const wantedBoard = boardId == null ? null : String(boardId);
+  const wantedBoard = normBoard(boardId);
   const wantedField = field == null ? null : String(field);
   const wantedCircuit = circuit == null ? null : String(circuit);
   let invalidated = 0;
@@ -318,7 +340,7 @@ export function invalidateBySlot(sessionId, { boardId, field, circuit }) {
   for (const k of keys) {
     const e = entries.get(k);
     if (!e) continue;
-    const eBoard = e.boardId == null ? null : String(e.boardId);
+    const eBoard = normBoard(e.boardId);
     const eCircuit = e.circuit == null ? null : String(e.circuit);
     if (eBoard !== wantedBoard) continue;
     if (e.field !== wantedField) continue;
@@ -340,7 +362,7 @@ export function pruneSessionUnboardedEntries(sessionId) {
   let pruned = 0;
   for (const k of Array.from(set)) {
     const e = entries.get(k);
-    if (!e || e.boardId != null) continue;
+    if (!e || normBoard(e.boardId) != null) continue;
     if (_terminate(e, 'aborted', 'prune_unboarded_on_add_board')) pruned++;
   }
   return pruned;
@@ -355,12 +377,12 @@ export function pruneSessionUnboardedEntries(sessionId) {
 export function pruneMismatchedBoardEntries(sessionId, currentBoardId) {
   const set = sessionIndex.get(sessionId);
   if (!set) return 0;
-  const wanted = currentBoardId == null ? null : String(currentBoardId);
+  const wanted = normBoard(currentBoardId);
   let pruned = 0;
   for (const k of Array.from(set)) {
     const e = entries.get(k);
     if (!e) continue;
-    const eBoard = e.boardId == null ? null : String(e.boardId);
+    const eBoard = normBoard(e.boardId);
     if (eBoard === wanted) continue;
     if (_terminate(e, 'aborted', 'prune_on_select_board')) pruned++;
   }
