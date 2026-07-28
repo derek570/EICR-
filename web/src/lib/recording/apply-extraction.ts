@@ -947,65 +947,85 @@ function applyCircuitReadings(
   //    change and out of A2's scope.
   const hasReplacesClearedReading = readings.some((r) => r.replaces_cleared === true);
   const addsBoardThisTurn = boardOps.some((op) => op?.op === 'add_board');
-  const boardEvidence: { ids: Set<string>; unknownNamedBoard: boolean } | null =
-    hasReplacesClearedReading
-      ? (() => {
-          const ids = new Set<string>();
-          const addId = (v: unknown) => {
-            if (typeof v === 'string' && v !== '') ids.add(v);
-          };
-          const boards = Array.isArray(job.boards) ? job.boards : [];
-          for (const b of boards) addId((b as { id?: unknown } | null)?.id);
-          // Rows are read BEFORE the reading loop can synthesise any (a
-          // synthesised row carries no board_id, so it could only ever dilute
-          // this set with nothing).
-          for (const row of circuits) addId((row as Record<string, unknown>).board_id);
-          // Everything ABOVE is web's own independent evidence; everything
-          // BELOW is the server's assertion about THIS turn. Snapshotting here
-          // is what stops an assertion vouching for itself, and makes the
-          // result order-independent — no reading or op can evidence another.
-          const independent = new Set(ids);
-          // …with ONE seeded id. When web has no board identity of its own at
-          // all — no `boards[]`, every row unscoped, i.e. the legacy flat
-          // single-board shape — the backend has SYNTHESISED its default main
-          // board (`DEFAULT_MAIN_BOARD_ID` in `src/extraction/
-          // stage6-multi-board-shape.js`) and may stamp that literal id on the
-          // reading. Web has never seen the string, so without this it reads as
-          // an unknown board and the bypass declines — which would leave the
-          // stale value in place on the single most common job shape there is,
-          // i.e. re-open the exact defect A2 exists to close. The synthesised
-          // default is the one id whose meaning web CAN infer: "the only
-          // board", which is precisely what its one flat row set is.
-          //
-          // Deliberately narrow: seeded ONLY when web's own evidence is empty
-          // (a job that HAS a board registry naming something else is a real
-          // registry mismatch and must still defer), it goes into
-          // `independent` and NOT `ids` (so it can never inflate cardinality),
-          // and every OTHER id stays unknown — a `sub-1` on the same legacy
-          // job still declines, and a `main` + `sub-1` envelope still declines
-          // on the count.
-          if (independent.size === 0) independent.add(BACKEND_DEFAULT_MAIN_BOARD_ID);
-          let unknownNamedBoard = false;
-          const note = (v: unknown) => {
-            if (typeof v !== 'string' || v === '') return;
-            if (!independent.has(v)) unknownNamedBoard = true;
-            ids.add(v);
-          };
-          for (const r of readings) note(r.board_id);
-          const OP_BOARD_KEYS = [
-            'board_id',
-            'parent_board_id',
-            'feeds_board_id',
-            'source_board_id',
-          ];
-          for (const op of boardOps) {
-            const o = op as unknown as Record<string, unknown> | null;
-            if (!o) continue;
-            for (const key of OP_BOARD_KEYS) note(o[key]);
-          }
-          return { ids, unknownNamedBoard };
-        })()
-      : null;
+  const boardEvidence: {
+    ids: Set<string>;
+    unknownNamedBoard: boolean;
+    implicitUnregisteredBoard: boolean;
+  } | null = hasReplacesClearedReading
+    ? (() => {
+        const ids = new Set<string>();
+        const addId = (v: unknown) => {
+          if (typeof v === 'string' && v !== '') ids.add(v);
+        };
+        const boards = Array.isArray(job.boards) ? job.boards : [];
+        for (const b of boards) addId((b as { id?: unknown } | null)?.id);
+        // Rows are read BEFORE the reading loop can synthesise any (a
+        // synthesised row carries no board_id, so it could only ever dilute
+        // this set with nothing).
+        const rowScopedIds = new Set<string>();
+        let hasUnscopedRow = false;
+        for (const row of circuits) {
+          const bid = (row as Record<string, unknown>).board_id;
+          if (typeof bid === 'string' && bid !== '') rowScopedIds.add(bid);
+          else hasUnscopedRow = true;
+          addId(bid);
+        }
+        // Everything ABOVE is web's own independent evidence; everything
+        // BELOW is the server's assertion about THIS turn. Snapshotting here
+        // is what stops an assertion vouching for itself, and makes the
+        // result order-independent — no reading or op can evidence another.
+        const independent = new Set(ids);
+        // A board web's REGISTRY names but NO row is scoped to, while
+        // unscoped rows exist, means the unscoped rows belong to a board the
+        // registry does not name — two scopes, not one, and the count alone
+        // says one. This is not hypothetical: `applyBoardOpsToJob`'s
+        // `add_board` appends the new board WITHOUT materialising the
+        // implicit main the existing flat rows belong to (unlike the backend,
+        // which synthesises one), so the turn AFTER "add the garage board"
+        // leaves `boards: [sub-1]` beside unscoped main-board rows. A write
+        // that omits `board_id` — which the backend does whenever the model
+        // relies on the current board — then carries no id at all, so the
+        // reading term cannot see it either, and the bypass would overwrite
+        // MAIN's circuit 1 with SUB's reading. CCU never produces this shape
+        // (it scopes every row it writes), so the term costs nothing real.
+        const implicitUnregisteredBoard =
+          hasUnscopedRow && [...independent].some((id) => !rowScopedIds.has(id));
+        // …with ONE seeded id. When web has no board identity of its own at
+        // all — no `boards[]`, every row unscoped, i.e. the legacy flat
+        // single-board shape — the backend has SYNTHESISED its default main
+        // board (`DEFAULT_MAIN_BOARD_ID` in `src/extraction/
+        // stage6-multi-board-shape.js`) and may stamp that literal id on the
+        // reading. Web has never seen the string, so without this it reads as
+        // an unknown board and the bypass declines — which would leave the
+        // stale value in place on the single most common job shape there is,
+        // i.e. re-open the exact defect A2 exists to close. The synthesised
+        // default is the one id whose meaning web CAN infer: "the only
+        // board", which is precisely what its one flat row set is.
+        //
+        // Deliberately narrow: seeded ONLY when web's own evidence is empty
+        // (a job that HAS a board registry naming something else is a real
+        // registry mismatch and must still defer), it goes into
+        // `independent` and NOT `ids` (so it can never inflate cardinality),
+        // and every OTHER id stays unknown — a `sub-1` on the same legacy
+        // job still declines, and a `main` + `sub-1` envelope still declines
+        // on the count.
+        if (independent.size === 0) independent.add(BACKEND_DEFAULT_MAIN_BOARD_ID);
+        let unknownNamedBoard = false;
+        const note = (v: unknown) => {
+          if (typeof v !== 'string' || v === '') return;
+          if (!independent.has(v)) unknownNamedBoard = true;
+          ids.add(v);
+        };
+        for (const r of readings) note(r.board_id);
+        const OP_BOARD_KEYS = ['board_id', 'parent_board_id', 'feeds_board_id', 'source_board_id'];
+        for (const op of boardOps) {
+          const o = op as unknown as Record<string, unknown> | null;
+          if (!o) continue;
+          for (const key of OP_BOARD_KEYS) note(o[key]);
+        }
+        return { ids, unknownNamedBoard, implicitUnregisteredBoard };
+      })()
+    : null;
 
   // Earthing arrangement is needed to widen the Ze clamp ceiling on
   // TT systems (200 Ω vs 5 Ω). Resolve once outside the loop —
@@ -1098,7 +1118,10 @@ function applyCircuitReadings(
     if (reading.replaces_cleared === true) {
       if (
         boardEvidence !== null &&
-        (boardEvidence.ids.size > 1 || addsBoardThisTurn || boardEvidence.unknownNamedBoard)
+        (boardEvidence.ids.size > 1 ||
+          addsBoardThisTurn ||
+          boardEvidence.unknownNamedBoard ||
+          boardEvidence.implicitUnregisteredBoard)
       ) {
         pipelineLog('apply_replaces_cleared_multiboard_deferred', {
           circuit: reading.circuit,
@@ -1106,6 +1129,7 @@ function applyCircuitReadings(
           effective_board_count: boardEvidence.ids.size,
           adds_board_this_turn: addsBoardThisTurn,
           unknown_named_board: boardEvidence.unknownNamedBoard,
+          implicit_unregistered_board: boardEvidence.implicitUnregisteredBoard,
         });
       } else {
         // Ref cardinality comes from `refCounts`, built from the ORIGINAL

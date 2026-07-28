@@ -441,6 +441,62 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     );
   });
 
+  it('POST-add_board TURN — a registry board no row is scoped to, beside unscoped rows, defers', () => {
+    // The turn AFTER "add the garage board": web's `applyBoardOpsToJob` appended
+    // `sub-1` WITHOUT materialising the implicit main its flat rows belong to,
+    // so the registry says one board while the rows say a different one. The
+    // write omits `board_id` (the backend omits it whenever the model relies on
+    // the current board), so neither the count nor the reading term sees the
+    // second scope — without this term the bypass would put SUB's reading into
+    // MAIN's circuit 1.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('LIM');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
+    const deferred = getPipelineLog().find(
+      (e) => e.stage === 'apply_replaces_cleared_multiboard_deferred'
+    );
+    expect(deferred?.payload).toMatchObject({
+      implicit_unregistered_board: true,
+      effective_board_count: 1,
+      unknown_named_board: false,
+      adds_board_this_turn: false,
+    });
+  });
+
+  it('NEVER A NEW SKIP — an implicit-unregistered-board defer still FILLS an empty cell', () => {
+    const job = makeJob({
+      circuits: [populatedRow({ ir_live_live_mohm: undefined })],
+      boards: [{ id: 'sub-1' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('a registry board that DOES own a row is not an implicit second scope', () => {
+    // Same registry, but a row is scoped to it — the unscoped sibling belongs to
+    // that one board, so this stays cardinality 1 and must still bypass.
+    const job = makeJob({
+      circuits: [
+        populatedRow({ board_id: 'sub-1' } as Partial<CircuitRow>),
+        { id: 'c-2', circuit_ref: '2', circuit_designation: 'Lights' } as CircuitRow,
+      ],
+      boards: [{ id: 'sub-1' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
   it('NEVER A NEW SKIP — a `select_board`-deferred reading still FILLS an empty cell', () => {
     const job = makeJob({
       circuits: [populatedRow({ ir_live_live_mohm: undefined })],
