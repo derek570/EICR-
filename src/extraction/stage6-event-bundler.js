@@ -1583,9 +1583,35 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           );
         }
         if (idx < 0) continue;
+        // A2-multiboard item 3 (Codex cycle 2) — the replacements inherit the
+        // board identity of the confirmation they REPLACE, not the raw
+        // `op.boardId`.
+        //
+        // Raw is board-AMBIGUOUS: `rename_circuit`/`record_reading` omit
+        // `board_id` in the common case, so on a
+        // `select_board main → rename 3 → rename 3 → select_board sub → rename 3 → rename 3`
+        // turn BOTH groups minted `desig_3_<turn>_ord0`/`_ord1` and emitted no
+        // `board_id` at all. `applyConfirmationDebounce` then swallowed the
+        // second board's pair as duplicates: the sub-board's designations were
+        // written but never spoken — Audio-First #1, and the exact
+        // spoken-vs-written split this item exists to close. It also left the
+        // surviving read-backs unroutable, since the client can only address a
+        // board it is told about.
+        //
+        // The wire `board_id` is the right source rather than
+        // `opEffectiveBoard` because these entries SUBSTITUTE for
+        // `confirmations[idx]` — they must carry the identity the client would
+        // otherwise have received — and because it is the same convention the
+        // §A1a primary token stamping above already uses. Byte-invariance
+        // follows for free: a single-board turn is not cross-board-enriched, so
+        // the value is absent, `boardPart` is '' and every existing token (and
+        // its pinned iOS/web hash vector) is unchanged. It only ever differs in
+        // the colliding cross-board case, where the primary lookup above
+        // already proved the confirmation carries its effective board.
+        const wireBoardId = confirmations[idx].board_id ?? null;
+        const boardPart = wireBoardId != null ? `_${wireBoardId}` : '';
         const replacement = ops.map((op, i) => {
           const text = buildConfirmationText('circuit_designation', op.value, op.circuit, op.value);
-          const boardPart = op.boardId != null ? `_${op.boardId}` : '';
           const entry = {
             text,
             expanded_text: expandForTTS(text),
@@ -1594,7 +1620,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
             dedupe_token: `desig_${op.circuit}${boardPart}_${_turnId ?? 'noturn'}_ord${i}`,
             _confidence: typeof op.confidence === 'number' ? op.confidence : null,
           };
-          if (op.boardId != null) entry.board_id = op.boardId;
+          if (wireBoardId != null) entry.board_id = wireBoardId;
           return entry;
         });
         confirmations.splice(idx, 1, ...replacement);
