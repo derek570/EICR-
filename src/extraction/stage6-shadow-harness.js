@@ -110,6 +110,7 @@ import {
   EFFECTIVE_CIRCUIT_SLOT,
   circuitDesignationKey,
   decodeReadingKey,
+  projectBoardReadingWinners,
   projectReadingWinners,
   readEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
@@ -2967,11 +2968,23 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // clear_board_reading SUCCESS (or a same-slot already-empty
           // outcome), never by an unrelated same-slot write.
           const survivingClearSlots = new Set();
-          if (perTurnWrites?.boardReadings instanceof Map) {
-            for (const val of perTurnWrites.boardReadings.values()) {
-              const bsym = val?.[EFFECTIVE_BOARD_SLOT];
-              if (bsym) survivingSlots.add(boardSlotKey(bsym.field, bsym.boardId));
-            }
+          // A2-multiboard (2026-07-28) — the write side reads the PROJECTED
+          // winners, never the raw `boardReadings` Map. `record_board_reading`
+          // carries no schema `board_id`, so two boards' writes for the same
+          // field collide on one raw key and `Map.set` keeps only the last:
+          // `clear manufacturer on main (already blank) → record manufacturer
+          // on main → select_board garage → record manufacturer on garage`
+          // left main's write invisible here, so main's already-empty notice
+          // was NOT suppressed and spoke alongside main's own write read-back —
+          // a contradiction ("manufacturer already blank" + "manufacturer
+          // recorded as Wylex") that this plan's own projection fix newly makes
+          // audible, because main's write now survives to be read back at all.
+          // The stamp-only guard is kept deliberately: a Symbol-less legacy
+          // entry contributes nothing (as before), so the new set is a strict
+          // SUPERSET of the old one and single-board turns are unchanged.
+          for (const w of projectBoardReadingWinners(perTurnWrites)) {
+            const bsym = w?.value?.[EFFECTIVE_BOARD_SLOT];
+            if (bsym) survivingSlots.add(boardSlotKey(bsym.field, bsym.boardId));
           }
           if (Array.isArray(perTurnWrites?.fieldCorrections)) {
             for (const c of perTurnWrites.fieldCorrections) {
