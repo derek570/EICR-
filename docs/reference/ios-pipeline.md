@@ -77,6 +77,34 @@ Rules: the epoch is snapshotted at frame **creation** (never re-read from mutabl
 
 ---
 
+## Wire contract — `replaces_cleared` (A2, 2026-07-28)
+
+A same-turn `clear_reading` + `record_reading` on ONE circuit slot is collapsed **server-side** (P5, 2026-07-23): the clear is dropped from the wire and only the surviving write is sent. That collapse is correct for ordering, but it destroys the one fact a fill-only client needs — *the server already emptied this cell* — so the write arrives BARE against a cell the client still believes the user owns.
+
+`replaces_cleared` restores exactly that fact on the surviving `readings[]` entry:
+
+| | |
+|---|---|
+| **Shape** | `readings[i].replaces_cleared?: true` — boolean, **omit-when-false** |
+| **Producer** | `stage6-event-bundler.js`, at the same point the collapse drops the clear |
+| **Meaning** | this write superseded a same-turn clear of the SAME circuit slot; treat it as a REPLACEMENT, not a new value competing on source priority |
+
+Rules:
+
+- **Omit-when-false is the compatibility mechanism** — there is no capability gate, and none is needed: a turn with no collapse is byte-identical to the pre-A2 wire, so an older client is never handed a key it must understand. Emitting `false` would have forfeited that and required a gate.
+- **Never inferred by a consumer.** The marker is stamped by the producer that performed the collapse; nothing downstream reconstructs it from an absent clear.
+- **Fail-closed-unflagged:** if more than one surviving write resolves to the collapsed slot, the bundler stamps NOTHING and emits `stage6.replaces_cleared_ambiguous_projection`. An unflagged write is always safe (the consumer's normal gate applies); a wrongly-flagged one would license an overwrite.
+- **Circuit slots only.** The identity is the effective circuit slot (`EFFECTIVE_CIRCUIT_SLOT`), distinct from the board-scope `EFFECTIVE_BOARD_SLOT` (plan A1a) — the two Symbols are deliberately never cross-wired.
+- **Derived writes are not candidates** (`derived: true` mirrors/auto-ticks). Calculator writes (`source_turn_id` starting `::calc::`) **are** candidates — since F/U-1 (2026-07-19) a calc result is an explicitly-requested, spoken value.
+
+**Consumers.** Web is the reason this exists: `applyCircuitReadings` is fill-only and source-agnostic, so it silently skipped the collapsed replacement — the assistant SPOKE it and the server + iOS stored it while web kept the stale value (the inverse Audio-First violation). Web now bypasses its gate for a flagged reading, but **only** on an unambiguously-resolvable single-board slot; a multi-board job, an orphan ref, or a duplicate ref all DECLINE the bypass and fall through to the unchanged gate (`apply_replaces_cleared_multiboard_deferred` / `_orphan_ref` / `_duplicate_ref`), so declining is never a new skip — an empty cell still fills.
+
+**iOS needs no change and gets none.** `ExtractedReading` declares explicit `CodingKeys`, so the key decodes inertly; `applySonnetValue` already applies any DIFFERING value regardless of source state (only an exact duplicate of a pre-existing value is blocked), so the replacement already lands. Both properties are pinned by `DeepgramRecordingViewModelReplacesClearedTests` (CertMateUnified) rather than assumed — a stricter decoder or a source-priority gate ported from web would reintroduce the defect on iOS, and that test is what catches it.
+
+The frame both clients are tested against is pinned at `tests/fixtures/test-contracts/replaces-cleared-circuit.json` (see the README there — regenerate from the production egress chain, never hand-edit).
+
+---
+
 ## Confirmation read-back dedupe key (client-side; value-aware since id-84)
 
 The spoken read-back loop suppresses a *duplicate* confirmation via a per-client dedupe key computed from the wire `Confirmation`. The key is computed CLIENT-side (iOS `buildConfirmationDedupeKey`, web `confirmation-dedupe-key.ts`); the backend `src/extraction/ios-dedupe-key.js` is a **telemetry-only mirror** that reproduces the same key so the `ios_send_attempt` `expected_dedupe_key` row reconciles byte-for-byte against client reality — it is NOT a wire field.
