@@ -51,6 +51,15 @@ export interface ExtractedReading {
   source?: string;
   unit?: string;
   confidence?: number;
+  /**
+   * A2 (2026-07-28) — the backend stamps this when the write superseded a
+   * same-turn `clear_reading` for the identical circuit slot that the server
+   * then dropped from the wire (P5 same-turn collapse, 2026-07-23). Consumers
+   * treat it as "the server already cleared this cell", so overwriting a
+   * populated cell is a replacement rather than a priority regression.
+   * OMITTED (never `false`) on ordinary writes.
+   */
+  replaces_cleared?: boolean;
 }
 
 export interface RollingExtractionResult {

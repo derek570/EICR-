@@ -44,6 +44,22 @@ export interface ExtractedReading {
    */
   board_id?: string | null;
   confidence?: number;
+  /**
+   * A2 (2026-07-28) — set by the backend bundler when this write SUPERSEDED a
+   * same-turn `clear_reading` for the identical circuit slot and the server
+   * dropped that clear from the wire (the P5 2026-07-23 same-turn collapse).
+   *
+   * Without it the reading arrives as an ordinary write against a cell the web
+   * client still believes is populated, and `applyCircuitReadings`' fill-only
+   * gate silently skips it — the assistant speaks the replacement and the
+   * server + iOS store it while web keeps the STALE value (the inverse
+   * Audio-First violation). `true` means "the server already cleared this
+   * cell", so overwriting is a replacement, not a 3-tier priority regression.
+   *
+   * OMITTED (never `false`) for ordinary writes, so an un-collapsed turn is
+   * byte-identical to pre-A2 traffic.
+   */
+  replaces_cleared?: boolean;
 }
 
 export interface FieldClear {

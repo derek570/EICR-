@@ -90,6 +90,22 @@ export const CLEAR_WIRE_EXEMPT = new Set(['r2_ohm']);
 export const SAME_TURN_CLEAR_WRITE_COLLAPSED = Symbol('stage6.sameTurnClearWriteCollapsed');
 
 /**
+ * A2 (2026-07-28) — non-enumerable carrier for `replaces_cleared` projections
+ * the bundler DECLINED to stamp because the collapsed slot resolved to more
+ * than one candidate surviving reading (a same-turn double spelling of the
+ * same slot — e.g. one write omitting `board_id` and one carrying the explicit
+ * current board). Stamping either would be a guess, so the projection stamps
+ * NOTHING (fail-closed-unflagged: the web consumer then behaves exactly as it
+ * does today) and records the slot keys here. `stage6-shadow-harness.js` reads
+ * this and emits `stage6.replaces_cleared_ambiguous_projection`. Non-enumerable
+ * so it never enters JSON wire output or a defensive spread; the bundler itself
+ * stays PURE (no logging).
+ */
+export const REPLACES_CLEARED_AMBIGUOUS_PROJECTION = Symbol(
+  'stage6.replacesClearedAmbiguousProjection'
+);
+
+/**
  * Synthesise brief read-back confirmations from the bundled readings.
  *
  * The legacy prose-JSON extractor used to emit a `confirmations` array
@@ -733,6 +749,24 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // reach the wire because the projected `reading` objects are serialised by
   // key enumeration and the correction never becomes one of their keys.
   const clampCorrectionByReading = new WeakMap();
+  // A2 (2026-07-28) — `replaces_cleared` candidate index. Keyed by the SAME
+  // slot identity the P5 collapse below matches on, and SPLIT the same way
+  // (effective-stamped writes vs Symbol-less raw-key writes) so a lookup can
+  // never resolve to a write the collapse predicate itself would not have
+  // considered. Values are the PROJECTED reading objects, so a hit can be
+  // stamped directly. Derived/mirror writes are excluded from candidacy — they
+  // are designed-silent computed consequences, never the audible replacement a
+  // clear was superseded by. CALCULATOR writes REMAIN candidates: since F/U-1
+  // (2026-07-19) a `::calc::` result is an explicitly-requested, spoken and
+  // authoritative value, so a clear→calculate turn has exactly the same
+  // spoken-but-not-written exposure on web as a clear→dictate turn.
+  const replacesEffectiveCandidates = new Map();
+  const replacesRawCandidates = new Map();
+  const addReplacesCandidate = (map, slotKey, reading) => {
+    const bucket = map.get(slotKey);
+    if (bucket) bucket.push(reading);
+    else map.set(slotKey, [reading]);
+  };
   const isDerivedWrite = (entry) => entry?.derived === true;
   const isCalcWrite = (entry) =>
     typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::');
@@ -744,7 +778,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // is NOT used for emission — the value entry's boardId (set by the
     // dispatcher in slice 1.1a) is the wire-shape SoT; the key boardId
     // is purely a same-turn collision-key.
-    const { field, circuit: circuitStr } = decodeReadingKey(key);
+    const decodedKey = decodeReadingKey(key);
+    const { field, circuit: circuitStr } = decodedKey;
     const circuitInt = Number(circuitStr);
     const circuit =
       circuitStr !== '' && Number.isInteger(circuitInt) && String(circuitInt) === circuitStr
@@ -777,6 +812,24 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       suppressConfirmationReadings.add(reading);
     } else if (isCalcWrite(entry)) {
       calcConfirmationReadings.add(reading);
+    }
+    // A2 — index this projected reading as a `replaces_cleared` candidate
+    // unless it is a derived/mirror write (see the Map declarations above).
+    if (!isDerivedWrite(entry)) {
+      const effSym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
+      if (effSym) {
+        addReplacesCandidate(
+          replacesEffectiveCandidates,
+          rawCircuitSlot(effSym.field, effSym.circuit, effSym.boardId),
+          reading
+        );
+      } else {
+        addReplacesCandidate(
+          replacesRawCandidates,
+          rawCircuitSlot(decodedKey.field, decodedKey.circuit, decodedKey.boardId),
+          reading
+        );
+      }
     }
     // id-100(b) — carry the dispatcher's clamp correction across the projection
     // boundary. Read off the Symbol (never an enumerable key), so a legacy or
@@ -887,6 +940,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // identity (the same key the collapse matched on) while still dropping EVERY
   // matched correction from the wire.
   const collapsedSlotSeen = new Set();
+  // A2 — accumulated here, applied AFTER `const result` below. The stamps
+  // themselves could be applied in-loop, but the ambiguity manifest Symbol
+  // cannot (`result` is in its temporal dead zone until the declaration), so
+  // both halves are deferred together and land at one site.
+  const pendingStamp = [];
+  const ambiguousProjectionSlots = [];
   const keptFieldCorrections = [];
   for (const c of rawFieldCorrections) {
     if (c && c.reason === 'clear_reading' && clearSlotHasSurvivingWrite(c)) {
@@ -902,6 +961,31 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           board_id: sym?.boardId ?? c.board_id ?? null,
           final_effect: 'write',
         });
+        // A2 (2026-07-28) — the collapse just dropped this clear from the wire,
+        // so web receives a BARE write against a still-populated cell and its
+        // fill-only `applyCircuitReadings` gate silently skips it (the reading
+        // is spoken and stored server-side but never lands on web — the inverse
+        // Audio-First violation). Mark the surviving reading so the consumer can
+        // tell "this write REPLACES a value the server already cleared" apart
+        // from an ordinary write. Look the candidate up with the SAME
+        // effective-first slotKey the collapse matched on (never the raw
+        // `c.field`/`c.circuit`, which would mis-key a scope-resolved clear) and
+        // in the SAME-sidedness bucket, so a stamp can only ever land on a write
+        // the collapse predicate itself considered.
+        const cands = (sym ? replacesEffectiveCandidates : replacesRawCandidates).get(slotKey);
+        if (cands && cands.length === 1) {
+          pendingStamp.push(cands[0]);
+        } else if (cands && cands.length > 1) {
+          // Fail-closed-UNFLAGGED: two same-turn spellings of one slot survived
+          // (e.g. one write omitting board_id and one carrying the explicit
+          // current board). Stamping either would be a guess, so stamp nothing
+          // and let web behave exactly as it does today; the harness emits
+          // telemetry so the case is observable if it ever fires in the field.
+          ambiguousProjectionSlots.push(slotKey);
+        }
+        // cands undefined/empty is reachable only when the sole surviving write
+        // for the slot was a derived/mirror write (excluded from candidacy).
+        // Nothing audible replaced the clear, so there is nothing to stamp.
       }
       continue;
     }
@@ -935,6 +1019,19 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // Telemetry-only; non-enumerable so it never rides the wire or a spread.
     Object.defineProperty(result, SAME_TURN_CLEAR_WRITE_COLLAPSED, {
       value: clearWriteCollapsedSlots,
+      enumerable: false,
+    });
+  }
+  // A2 — apply the deferred `replaces_cleared` stamps. Enumerable and
+  // omit-when-false: an ordinary write carries no such key, so every existing
+  // wire snapshot (and every client that has never heard of the field) is
+  // byte-identical to pre-A2.
+  for (const reading of pendingStamp) {
+    reading.replaces_cleared = true;
+  }
+  if (ambiguousProjectionSlots.length > 0) {
+    Object.defineProperty(result, REPLACES_CLEARED_AMBIGUOUS_PROJECTION, {
+      value: ambiguousProjectionSlots,
       enumerable: false,
     });
   }

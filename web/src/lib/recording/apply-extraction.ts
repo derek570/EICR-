@@ -868,6 +868,47 @@ function applyCircuitReadings(
     }
   }
 
+  // A2 (2026-07-28) — `replaces_cleared` bypass gate.
+  //
+  // The backend collapses a same-turn `clear_reading` + `record_reading` for
+  // one circuit slot (P5, 2026-07-23): only the write reaches the wire, so web
+  // sees a BARE write against a cell it still believes the user owns, and the
+  // fill-only 3-tier gate below silently skips it. The assistant SPOKE the
+  // replacement and the server + iOS stored it — web alone keeps the stale
+  // value. `replaces_cleared: true` marks exactly those writes so the gate can
+  // let them through WITHOUT weakening the gate for anything else.
+  //
+  // Why gated on single-board: web's apply is REF-ONLY (`circuit_ref` has no
+  // board scope), so on a multi-board job two boards' "circuit 1" are
+  // indistinguishable here and an overwrite could clobber the WRONG board's
+  // value. Cardinality is therefore the UNION of every board identity visible
+  // this turn — the job's board registry, the board ids stamped on existing
+  // circuit rows, and the board ids on EVERY reading in this extraction
+  // envelope (the last one is what makes an incoming reading for an unknown
+  // board B, or a sibling reading for a different board, defer rather than
+  // guess). A board id is "unscoped" (contributes nothing) when null/empty.
+  //
+  // Every declined case FALLS THROUGH to the unchanged gate — never a new
+  // skip. A fail-closed SKIP would create a fresh spoken-but-not-written case,
+  // which is the very defect this closes. Declines are observability-only.
+  const hasReplacesClearedReading = readings.some((r) => r.replaces_cleared === true);
+  const effectiveBoardIds: Set<string> | null = hasReplacesClearedReading
+    ? (() => {
+        const ids = new Set<string>();
+        const addId = (v: unknown) => {
+          if (typeof v === 'string' && v !== '') ids.add(v);
+        };
+        const boards = Array.isArray(job.boards) ? job.boards : [];
+        for (const b of boards) addId((b as { id?: unknown } | null)?.id);
+        // Rows are read BEFORE the reading loop can synthesise any (a
+        // synthesised row carries no board_id, so it could only ever dilute
+        // this set with nothing).
+        for (const row of circuits) addId((row as Record<string, unknown>).board_id);
+        for (const r of readings) addId(r.board_id);
+        return ids;
+      })()
+    : null;
+
   // Earthing arrangement is needed to widen the Ze clamp ceiling on
   // TT systems (200 Ω vs 5 Ω). Resolve once outside the loop —
   // either from the just-built section patch (this turn's Sonnet
@@ -952,12 +993,55 @@ function applyCircuitReadings(
     // READING column (F4 — checked on the TRANSLATED column, never a free-text
     // field like circuit_designation).
     const isLimWrite = isLimValue && NUMERIC_READING_COLUMNS.has(column);
-    if (hasValue(row[column]) && !isLimWrite) {
+    // A2 — resolve the `replaces_cleared` bypass for this reading (see the
+    // gate docstring above). Evaluated for every flagged reading, so a decline
+    // is logged whether or not the cell happened to be populated.
+    let replacesClearedBypass = false;
+    if (reading.replaces_cleared === true) {
+      if (effectiveBoardIds !== null && effectiveBoardIds.size > 1) {
+        pipelineLog('apply_replaces_cleared_multiboard_deferred', {
+          circuit: reading.circuit,
+          pwa_column: column,
+          effective_board_count: effectiveBoardIds.size,
+        });
+      } else {
+        // Ref cardinality comes from `refCounts`, built from the ORIGINAL
+        // circuits and never mutated by ensureRow — so a row this turn just
+        // synthesised reads as 0 (orphan), not 1.
+        const refMatches = refCounts.get(String(reading.circuit)) ?? 0;
+        if (refMatches === 1) {
+          replacesClearedBypass = true;
+        } else if (refMatches === 0) {
+          // The replacement names a circuit that did not exist before this
+          // turn. ensureRow already created a blank row, so the value still
+          // LANDS (never a drop) — it just doesn't need the bypass.
+          pipelineLog('apply_replaces_cleared_orphan_ref', {
+            circuit: reading.circuit,
+            pwa_column: column,
+          });
+        } else {
+          // Two rows share this ref even on a single-board job — the same
+          // ambiguity the LIM guard above refuses to resolve.
+          pipelineLog('apply_replaces_cleared_duplicate_ref', {
+            circuit: reading.circuit,
+            pwa_column: column,
+            ref_matches: refMatches,
+          });
+        }
+      }
+    }
+    if (hasValue(row[column]) && !isLimWrite && !replacesClearedBypass) {
       pipelineLog('apply_circuit_reading_user_value_kept', {
         circuit: reading.circuit,
         pwa_column: column,
       });
       continue;
+    }
+    if (replacesClearedBypass && hasValue(row[column])) {
+      pipelineLog('apply_replaces_cleared_bypass_applied', {
+        circuit: reading.circuit,
+        pwa_column: column,
+      });
     }
     circuits[idx] = {
       ...row,

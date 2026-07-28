@@ -132,6 +132,7 @@ import {
   BUNDLER_PHASE,
   applyConfirmationDebounce,
   SAME_TURN_CLEAR_WRITE_COLLAPSED,
+  REPLACES_CLEARED_AMBIGUOUS_PROJECTION,
 } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { buildSessionTools } from './stage6-tool-schemas.js';
@@ -275,6 +276,32 @@ function emitClearWriteCollapseTelemetry(log, session, turnId, result) {
         circuit: slot.circuit,
         board_id: slot.board_id ?? null,
         final_effect: slot.final_effect,
+      });
+    } catch {
+      // Telemetry must never break extraction.
+    }
+  }
+}
+
+/**
+ * A2 (2026-07-28) — emit one `stage6.replaces_cleared_ambiguous_projection`
+ * INFO row per slot where the bundler DECLINED to stamp `replaces_cleared`
+ * because the collapsed slot resolved to more than one candidate surviving
+ * reading. Fail-closed-unflagged is silent on the wire by design, so this row
+ * is the ONLY observability that the case fired; without it a web cell that
+ * kept a stale value would look identical to an ordinary skip. The slot key is
+ * server-derived (canonical field + circuit + effective board id) — no
+ * model-controlled string, so no leak-filter concern.
+ */
+function emitReplacesClearedAmbiguousTelemetry(log, session, turnId, result) {
+  const slots = result?.[REPLACES_CLEARED_AMBIGUOUS_PROJECTION];
+  if (!Array.isArray(slots) || slots.length === 0) return;
+  for (const slotKey of slots) {
+    try {
+      log?.info?.('stage6.replaces_cleared_ambiguous_projection', {
+        sessionId: session?.sessionId,
+        turnId,
+        slot_key: slotKey,
       });
     } catch {
       // Telemetry must never break extraction.
@@ -1622,6 +1649,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
 
     // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
     emitClearWriteCollapseTelemetry(log, session, turnId, result);
+    emitReplacesClearedAmbiguousTelemetry(log, session, turnId, result);
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
     // readings (record_board_reading dispatches) into extracted_readings with
@@ -3928,6 +3956,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
 
   // P5 (2026-07-23) — emit clear→write collapse telemetry (shadow path).
   emitClearWriteCollapseTelemetry(log, session, turnId, toolResult);
+  emitReplacesClearedAmbiguousTelemetry(log, session, turnId, toolResult);
 
   // Step 6: slot-diff the two result shapes.
   const divergence = compareSlots(legacy, toolResult);

@@ -85,7 +85,7 @@ function makeLogger() {
  * @param {any} streamResponses  Array of event arrays (one per stream call).
  * @param {any} legacyResult     What extractFromUtterance resolves to.
  */
-function makeSession(streamResponses, legacyResult, mode = 'shadow') {
+function makeSession(streamResponses, legacyResult, mode = 'shadow', snapshotExtra = {}) {
   return {
     sessionId: 'sess-e2e',
     turnCount: 0,
@@ -97,6 +97,7 @@ function makeSession(streamResponses, legacyResult, mode = 'shadow') {
       pending_readings: [],
       observations: [],
       validation_alerts: [],
+      ...snapshotExtra,
     },
     extractedObservations: [],
     // Plan 04-11 r5-#1 — runShadowHarness now calls session.buildSystemBlocks()
@@ -264,5 +265,101 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
     });
     // No divergence log (nothing to compare).
     expect(logger.info).not.toHaveBeenCalledWith('stage6_divergence', expect.anything());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 (2026-07-28) — `replaces_cleared` PRODUCER leg, through the REAL harness.
+//
+// P5 (2026-07-23) collapses a same-turn clear_reading + record_reading for one
+// circuit slot server-side, so the wire carries a BARE write against a cell the
+// client still believes is populated. Web's `applyCircuitReadings` gate is
+// fill-only and source-agnostic, so it silently skipped that write: the server
+// and iOS stored the replacement while web kept the STALE value — the inverse
+// Audio-First violation (spoken, not written). The marker tells web "the server
+// already cleared this cell", so the overwrite is a replacement rather than a
+// priority regression.
+//
+// These two cases pin the PRODUCER end of that contract at the seam production
+// actually uses: `runShadowHarness` in `live` mode → real dispatchers → real
+// bundler. The per-producer matrix (calculate_zs, bulk, script, mixed spelling,
+// ambiguity) lives in `stage6-a2-replaces-cleared.test.js`.
+// ---------------------------------------------------------------------------
+
+describe('A2 — replaces_cleared through the live harness', () => {
+  test('same-turn clear_reading + record_reading on one slot: surviving reading is flagged, stale clear dropped', async () => {
+    const logger = makeLogger();
+    const streams = [
+      toolUseRound([
+        {
+          id: 'toolu_clear',
+          name: 'clear_reading',
+          input: { field: 'ir_live_live_mohm', circuit: 1, reason: 'user_correction' },
+        },
+        {
+          id: 'toolu_write',
+          name: 'record_reading',
+          input: {
+            field: 'ir_live_live_mohm',
+            circuit: 1,
+            value: '100',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
+      ]),
+      endTurnRound('done'),
+    ];
+    const legacyResult = { extracted_readings: [], observations: [], questions: [] };
+
+    // Seed the slot so the clear actually clears something (a noop clear stages
+    // no correction and there would be nothing to collapse).
+    const s = makeSession(streams, legacyResult, 'live', {
+      circuits: { 1: { ir_live_live_mohm: 'LIM' } },
+    });
+    const result = await runShadowHarness(s, 'IR live live on circuit one is one hundred', [], {
+      logger,
+    });
+
+    expect(result.extracted_readings).toHaveLength(1);
+    expect(result.extracted_readings[0]).toMatchObject({
+      field: 'ir_live_live_mohm',
+      circuit: 1,
+      value: '100',
+      replaces_cleared: true,
+    });
+    // The stale clear never reaches the wire (P5's collapse).
+    expect('field_corrections' in result).toBe(false);
+    expect('cleared_readings' in result).toBe(false);
+  });
+
+  test('an ordinary write (no same-turn clear) carries NO replaces_cleared key at all', async () => {
+    const logger = makeLogger();
+    const streams = [
+      toolUseRound([
+        {
+          id: 'toolu_write_only',
+          name: 'record_reading',
+          input: {
+            field: 'ir_live_live_mohm',
+            circuit: 1,
+            value: '100',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          },
+        },
+      ]),
+      endTurnRound('done'),
+    ];
+    const legacyResult = { extracted_readings: [], observations: [], questions: [] };
+
+    const s = makeSession(streams, legacyResult, 'live');
+    const result = await runShadowHarness(s, 'IR live live on circuit one is one hundred', [], {
+      logger,
+    });
+
+    expect(result.extracted_readings).toHaveLength(1);
+    // Omit-when-false: unflagged turns stay byte-identical to pre-A2.
+    expect('replaces_cleared' in result.extracted_readings[0]).toBe(false);
   });
 });
