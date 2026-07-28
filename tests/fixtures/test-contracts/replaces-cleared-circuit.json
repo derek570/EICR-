@@ -1,0 +1,73 @@
+{
+  "type": "extraction",
+  "result": {
+    "readings": [
+      {
+        "field": "insulation_resistance_l_l",
+        "circuit": 1,
+        "value": "100",
+        "confidence": 0.9,
+        "source": "tool_call",
+        "replaces_cleared": true
+      },
+      {
+        "field": "zs",
+        "circuit": 1,
+        "value": "0.42",
+        "confidence": 0.9,
+        "source": "tool_call"
+      },
+      {
+        "field": "designation",
+        "circuit": 2,
+        "value": "Sockets",
+        "confidence": 1,
+        "source": "tool_call"
+      }
+    ],
+    "observations": [],
+    "questions": [],
+    "turn_id": "a2-wire-turn-1",
+    "utterance_id": "utt-a2-wire",
+    "field_corrections": [
+      {
+        "type": "field_corrected",
+        "circuit": 1,
+        "field": "r1_plus_r2",
+        "previous_value": "0.86",
+        "reason": "clear_reading",
+        "board_id": null
+      }
+    ],
+    "confirmations": [
+      {
+        "text": "Circuit 1, IR L to L 100",
+        "expanded_text": "Circuit 1, IR L to L 100.",
+        "field": "ir_live_live_mohm",
+        "circuit": 1
+      },
+      {
+        "text": "Circuit 1, Zs 0.42",
+        "expanded_text": "Circuit 1, zed S zero point four two",
+        "field": "measured_zs_ohm",
+        "circuit": 1
+      },
+      {
+        "text": "Circuit 2 is now the Sockets",
+        "expanded_text": "Circuit 2 is now the Sockets",
+        "field": "circuit_op",
+        "circuit": 2,
+        "dedupe_token": "circop_a2-wire-turn-1_0_create_2",
+        "expects_ios_ack": false
+      },
+      {
+        "text": "Circuit 1, R1 plus R2 cleared",
+        "expanded_text": "Circuit 1, R 1 plus R 2 cleared",
+        "field": "field_cleared",
+        "circuit": 1,
+        "dedupe_token": "clear_r1_r2_ohm_1_a2-wire-turn-1_ord0",
+        "expects_ios_ack": false
+      }
+    ]
+  }
+}

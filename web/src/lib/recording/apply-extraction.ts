@@ -746,6 +746,18 @@ function applyCircuit0Readings(
 // name (ocpd_rating / zs / r1_plus_r2 / insulation_resistance_l_l / …) still
 // resolves to its canonical column here — F1: checking the raw wire field would
 // miss those and re-block the legitimate single-board LIM correction.
+// A2 (2026-07-28) — the board id the BACKEND synthesises for a snapshot that
+// arrived with no `boards[]` at all (`DEFAULT_MAIN_BOARD_ID` in
+// `src/extraction/stage6-multi-board-shape.js`). Web has no board named this —
+// it is the server's name for "the only board" on a legacy flat job — so the
+// `replaces_cleared` evidence check seeds it, and ONLY it, when web's own
+// evidence is empty. A hand-mirrored literal: web cannot import from `src/`.
+// If the backend constant ever changes, the symptom is a `replaces_cleared`
+// write silently declining on legacy single-board jobs (stale value kept, the
+// A2 defect back) — pinned by the legacy-shape test in
+// `web/tests/apply-extraction-replaces-cleared.test.ts`.
+const BACKEND_DEFAULT_MAIN_BOARD_ID = 'main';
+
 const NUMERIC_READING_COLUMNS = new Set<string>([
   'measured_zs_ohm',
   'rcd_time_ms',
@@ -768,6 +780,7 @@ function applyCircuitReadings(
   readings: ExtractedReading[],
   circuitUpdates: CircuitUpdate[],
   fieldClears: FieldClear[],
+  boardOps: BoardOp[],
   options: ApplyExtractionOptions = {}
 ): CircuitRow[] | null {
   const perCircuitReadings = readings.filter((r) => r.circuit >= 1 && r.field);
@@ -868,6 +881,224 @@ function applyCircuitReadings(
     }
   }
 
+  // A2 (2026-07-28) — `replaces_cleared` bypass gate.
+  //
+  // The backend collapses a same-turn `clear_reading` + `record_reading` for
+  // one circuit slot (P5, 2026-07-23): only the write reaches the wire, so web
+  // sees a BARE write against a cell it still believes the user owns, and the
+  // fill-only 3-tier gate below silently skips it. The assistant SPOKE the
+  // replacement and the server + iOS stored it — web alone keeps the stale
+  // value. `replaces_cleared: true` marks exactly those writes so the gate can
+  // let them through WITHOUT weakening the gate for anything else.
+  //
+  // Why gated on single-board: web's apply is REF-ONLY (`circuit_ref` has no
+  // board scope), so on a multi-board job two boards' "circuit 1" are
+  // indistinguishable here and an overwrite could clobber the WRONG board's
+  // value. Cardinality is therefore the UNION of every board identity visible
+  // this turn — the job's board registry, the board ids stamped on existing
+  // circuit rows, and the board ids on EVERY reading in this extraction
+  // envelope (the last one is what makes an incoming reading for an unknown
+  // board B, or a sibling reading for a different board, defer rather than
+  // guess), AND every board id named by this turn's `board_ops`. A board id is
+  // "unscoped" (contributes nothing) when null/empty.
+  //
+  // Why `board_ops` has to be in the union: the ops ride the SAME envelope but
+  // the caller applies them AFTER the readings (`onBoardOps` fires after
+  // `onExtraction` — sonnet-session.ts). Without this term an "add the garage
+  // board … no, circuit 1's Zs is 0.6" turn would see cardinality 1, take the
+  // bypass, and overwrite the ORIGINAL board's circuit 1 before board B even
+  // exists. `addsBoardThisTurn` is belt-and-braces for a malformed op whose
+  // `board_id` is missing/empty and so contributes nothing to the set.
+  //
+  // Why a THIS-TURN-named board must also be INDEPENDENTLY evidenced: folding a
+  // board id the SERVER asserts this turn into the set proves the server named a
+  // board, NOT that it is the only one — an assertion must never vouch for
+  // itself. Only two sources are independent evidence: web's own `boards[]`
+  // registry and the boards its EXISTING rows are already scoped to. A
+  // stale/legacy job whose `boards[]` and row `board_id`s are all empty would
+  // otherwise see a union of exactly {sub-1} and take the bypass — overwriting
+  // whichever flat "circuit 1" row happens to exist, which may be the MAIN
+  // board's. That holds through BOTH doors and each was found separately:
+  //  • an OP naming an unknown board (`select_board(sub-1)` + a board-omitted
+  //    flagged replacement), and
+  //  • a READING naming an unknown board (`{circuit:1, …, board_id:'sub-1'}`
+  //    with no ops at all) — the same unroutable-ref class, reached without
+  //    any `board_ops` in the envelope.
+  // Either one means web's registry is out of sync with the server's and the
+  // ref cannot be routed, so it is itself a defer signal. A board already in
+  // `boards[]`/rows is fully evidenced and still takes the bypass.
+  //
+  // Every declined case FALLS THROUGH to the unchanged gate — never a new
+  // skip. A fail-closed SKIP would create a fresh spoken-but-not-written case,
+  // which is the very defect this closes. Declines are observability-only.
+  //
+  // Two things this DELIBERATELY does not change:
+  //  • The LIM overwrite exception below is independent of this flag and is
+  //    left exactly as it was — a LIM write still overwrites on its own terms
+  //    (including on a multi-board job, which is pre-existing behaviour and
+  //    a separate concern, not something A2 introduces or fixes).
+  //  • ACCEPTED RACE: the marker proves the SERVER cleared the cell, not that
+  //    web's current value is still the cleared predecessor. If the inspector
+  //    types a new value into this exact cell in the ~1-2s between speaking
+  //    and the extraction landing, the bypass overwrites it. That is iOS
+  //    canon (iOS applies the replacement unconditionally) and the alternative
+  //    — skipping — is the spoken-but-not-written defect this closes. Fixing
+  //    it properly needs utterance-correlated freshness, which is a wire
+  //    change and out of A2's scope.
+  const hasReplacesClearedReading = readings.some((r) => r.replaces_cleared === true);
+  const addsBoardThisTurn = boardOps.some((op) => op?.op === 'add_board');
+  const boardEvidence: {
+    ids: Set<string>;
+    unknownNamedBoard: boolean;
+    implicitUnregisteredBoard: boolean;
+    mixedRowScopes: boolean;
+  } | null = hasReplacesClearedReading
+    ? (() => {
+        const ids = new Set<string>();
+        const addId = (v: unknown) => {
+          if (typeof v === 'string' && v !== '') ids.add(v);
+        };
+        const boards = Array.isArray(job.boards) ? job.boards : [];
+        // Registry records are kept whole, not flattened to ids: whether an
+        // unowned board implies a SECOND scope turns on what KIND of board it
+        // is (see `implicitUnregisteredBoard` below).
+        const registry: { id: string; isSub: boolean }[] = [];
+        for (const b of boards) {
+          const rec = b as { id?: unknown; board_type?: unknown; parent_board_id?: unknown } | null;
+          addId(rec?.id);
+          if (typeof rec?.id !== 'string' || rec.id === '') continue;
+          // What matters is whether the board is a CHILD — a child implies a
+          // parent scope nothing here names. `BoardType` is a CLOSED union
+          // (`packages/shared-types/src/circuit.ts:9`) of exactly
+          // main | sub_distribution | sub_main | off_peak, so this is
+          // exhaustive rather than a guess: `main` and `off_peak` are both
+          // TOP-LEVEL boards fed straight from the supply mains — the Board
+          // tab says so and CLEARS `parent_board_id` for both
+          // (`web/src/app/job/[id]/board/page.tsx`), and the backend hierarchy
+          // validator accepts one main beside one off_peak. An ABSENT type is
+          // main, mirroring the backend's own predicate
+          // (`src/extraction/stage6-multi-board-shape.js:54`). A declared
+          // parent is independent proof of a child whatever the type says.
+          const typeIsTopLevel =
+            !rec.board_type || rec.board_type === 'main' || rec.board_type === 'off_peak';
+          registry.push({ id: rec.id, isSub: !typeIsTopLevel || rec.parent_board_id != null });
+        }
+        // Rows are read BEFORE the reading loop can synthesise any (a
+        // synthesised row carries no board_id, so it could only ever dilute
+        // this set with nothing).
+        const rowScopedIds = new Set<string>();
+        let hasUnscopedRow = false;
+        for (const row of circuits) {
+          const bid = (row as Record<string, unknown>).board_id;
+          if (typeof bid === 'string' && bid !== '') rowScopedIds.add(bid);
+          else hasUnscopedRow = true;
+          addId(bid);
+        }
+        // Everything ABOVE is web's own independent evidence; everything
+        // BELOW is the server's assertion about THIS turn. Snapshotting here
+        // is what stops an assertion vouching for itself, and makes the
+        // result order-independent — no reading or op can evidence another.
+        const independent = new Set(ids);
+        // A SUB board web's REGISTRY names but NO row is scoped to, while
+        // unscoped rows exist, means those unscoped rows belong to the parent
+        // the registry does not name — two scopes, not one, and the count
+        // alone says one. This is not hypothetical: `applyBoardOpsToJob`'s
+        // `add_board` appends the new board WITHOUT materialising the
+        // implicit main the existing flat rows belong to (unlike the backend,
+        // which synthesises one), so the turn AFTER "add the garage board"
+        // leaves `boards: [sub-1]` beside unscoped main-board rows. A write
+        // that omits `board_id` — which the backend does whenever the model
+        // relies on the current board — then carries no id at all, so the
+        // reading term cannot see it either, and the bypass would overwrite
+        // MAIN's circuit 1 with SUB's reading. CCU never produces this shape
+        // (it scopes every row it writes), so the term costs nothing real.
+        //
+        // The SUB restriction is what keeps this from over-declining the
+        // commonest real single-board shape. The Board tab synthesises a sole
+        // `boards[0]` from legacy `board_info` with `board_type: 'main'` and
+        // persists it on any edit WITHOUT scoping the existing circuits
+        // (`web/src/app/job/[id]/board/page.tsx` — the memo and
+        // `persistBoards`), and the Circuits tab deliberately renders those
+        // unscoped legacy rows under the selected board. That job is genuinely
+        // single-board: a registry TOP-LEVEL board that owns no row owns the
+        // unscoped ones. Declining it would keep the stale value and reopen
+        // the very spoken-but-not-written defect A2 exists to close, so a
+        // top-level board never fires this term — only a CHILD board, which by
+        // definition implies a parent scope nothing here names. The same
+        // applies to an `off_peak` board relabelled onto a legacy flat job:
+        // it is a sibling of main, not a sub-board, so it owns its own
+        // unscoped rows.
+        //
+        // That registry test is necessary but NOT sufficient, and the gap is
+        // the ROWS. It only fires on a board owning NO row, so a child board
+        // owning SOME row — just not the target one — walks straight past it
+        // while unscoped rows sit beside it: two scopes, count 1, bypass. And
+        // the type reasoning above cannot even see the commonest producer of
+        // that shape, because `applyAddNewBoardMode` deliberately leaves
+        // `board_type` UNSET for the inspector to fill in on the Board tab
+        // (`apply-ccu-analysis.ts`), so a CCU-appended SUB board reads as
+        // top-level here and `isSub` is false. Both are one defect: a job
+        // whose rows carry MORE THAN ONE scope cannot be resolved by bare
+        // `circuit_ref`, whatever the registry claims. Unscoped rows are their
+        // own scope, so scope count is the distinct row `board_id`s plus one
+        // if any row is unscoped, and anything above 1 defers.
+        //
+        // This is deliberately BLIND to which board is which: web cannot tell
+        // `append_rail` (new rows scoped to the SAME board the legacy unscoped
+        // rows belong to — safe to overwrite) from `add_new_board` (new rows
+        // scoped to a DIFFERENT board — a wrong-board write), because both
+        // produce byte-identical mixed scoping. So it declines both. That
+        // costs a stale value on an `append_rail` job, which is the pre-A2
+        // status quo and is recoverable by re-dictating; guessing costs a
+        // silent overwrite of a cell the inspector never spoke about, in a
+        // legally-significant certificate, which no read-back can catch by
+        // ear. The guard exists on that asymmetry.
+        const mixedRowScopes = rowScopedIds.size + (hasUnscopedRow ? 1 : 0) > 1;
+        const implicitUnregisteredBoard =
+          mixedRowScopes ||
+          (hasUnscopedRow && registry.some((b) => b.isSub && !rowScopedIds.has(b.id)));
+        // …with ONE seeded id. When web has no board identity of its own at
+        // all — no `boards[]`, every row unscoped, i.e. the legacy flat
+        // single-board shape — the backend has SYNTHESISED its default main
+        // board (`DEFAULT_MAIN_BOARD_ID` in `src/extraction/
+        // stage6-multi-board-shape.js`) and may stamp that literal id on the
+        // reading. Web has never seen the string, so without this it reads as
+        // an unknown board and the bypass declines — which would leave the
+        // stale value in place on the single most common job shape there is,
+        // i.e. re-open the exact defect A2 exists to close. The synthesised
+        // default is the one id whose meaning web CAN infer: "the only
+        // board", which is precisely what its one flat row set is.
+        //
+        // Deliberately narrow: seeded ONLY when web's own evidence is empty
+        // (a job that HAS a board registry naming something else is a real
+        // registry mismatch and must still defer), it goes into
+        // `independent` and NOT `ids` (so it can never inflate cardinality),
+        // and every OTHER id stays unknown — a `sub-1` on the same legacy
+        // job still declines, and a `main` + `sub-1` envelope still declines
+        // on the count.
+        if (independent.size === 0) independent.add(BACKEND_DEFAULT_MAIN_BOARD_ID);
+        let unknownNamedBoard = false;
+        const note = (v: unknown) => {
+          if (typeof v !== 'string' || v === '') return;
+          if (!independent.has(v)) unknownNamedBoard = true;
+          ids.add(v);
+        };
+        for (const r of readings) note(r.board_id);
+        const OP_BOARD_KEYS = ['board_id', 'parent_board_id', 'feeds_board_id', 'source_board_id'];
+        for (const op of boardOps) {
+          const o = op as unknown as Record<string, unknown> | null;
+          if (!o) continue;
+          for (const key of OP_BOARD_KEYS) note(o[key]);
+        }
+        // `mixedRowScopes` is reported separately from the combined verdict so
+        // the decline telemetry says WHICH evidence fired: a mixed-scope job
+        // is a routine `append_rail`/`add_new_board` shape the A2-multiboard
+        // plan can fix properly, while a registry-only fire is the rarer
+        // unmaterialised-parent bug.
+        return { ids, unknownNamedBoard, implicitUnregisteredBoard, mixedRowScopes };
+      })()
+    : null;
+
   // Earthing arrangement is needed to widen the Ze clamp ceiling on
   // TT systems (200 Ω vs 5 Ω). Resolve once outside the loop —
   // either from the just-built section patch (this turn's Sonnet
@@ -952,12 +1183,65 @@ function applyCircuitReadings(
     // READING column (F4 — checked on the TRANSLATED column, never a free-text
     // field like circuit_designation).
     const isLimWrite = isLimValue && NUMERIC_READING_COLUMNS.has(column);
-    if (hasValue(row[column]) && !isLimWrite) {
+    // A2 — resolve the `replaces_cleared` bypass for this reading (see the
+    // gate docstring above). Evaluated for every flagged reading, so a decline
+    // is logged whether or not the cell happened to be populated.
+    let replacesClearedBypass = false;
+    if (reading.replaces_cleared === true) {
+      if (
+        boardEvidence !== null &&
+        (boardEvidence.ids.size > 1 ||
+          addsBoardThisTurn ||
+          boardEvidence.unknownNamedBoard ||
+          boardEvidence.implicitUnregisteredBoard)
+      ) {
+        pipelineLog('apply_replaces_cleared_multiboard_deferred', {
+          circuit: reading.circuit,
+          pwa_column: column,
+          effective_board_count: boardEvidence.ids.size,
+          adds_board_this_turn: addsBoardThisTurn,
+          unknown_named_board: boardEvidence.unknownNamedBoard,
+          implicit_unregistered_board: boardEvidence.implicitUnregisteredBoard,
+          mixed_row_scopes: boardEvidence.mixedRowScopes,
+        });
+      } else {
+        // Ref cardinality comes from `refCounts`, built from the ORIGINAL
+        // circuits and never mutated by ensureRow — so a row this turn just
+        // synthesised reads as 0 (orphan), not 1.
+        const refMatches = refCounts.get(String(reading.circuit)) ?? 0;
+        if (refMatches === 1) {
+          replacesClearedBypass = true;
+        } else if (refMatches === 0) {
+          // The replacement names a circuit that did not exist before this
+          // turn. ensureRow already created a blank row, so the value still
+          // LANDS (never a drop) — it just doesn't need the bypass.
+          pipelineLog('apply_replaces_cleared_orphan_ref', {
+            circuit: reading.circuit,
+            pwa_column: column,
+          });
+        } else {
+          // Two rows share this ref even on a single-board job — the same
+          // ambiguity the LIM guard above refuses to resolve.
+          pipelineLog('apply_replaces_cleared_duplicate_ref', {
+            circuit: reading.circuit,
+            pwa_column: column,
+            ref_matches: refMatches,
+          });
+        }
+      }
+    }
+    if (hasValue(row[column]) && !isLimWrite && !replacesClearedBypass) {
       pipelineLog('apply_circuit_reading_user_value_kept', {
         circuit: reading.circuit,
         pwa_column: column,
       });
       continue;
+    }
+    if (replacesClearedBypass && hasValue(row[column])) {
+      pipelineLog('apply_replaces_cleared_bypass_applied', {
+        circuit: reading.circuit,
+        pwa_column: column,
+      });
     }
     circuits[idx] = {
       ...row,
@@ -1910,7 +2194,18 @@ export function applyExtractionToJob(
 
   // Per-circuit readings + updates + clears. Thread options so
   // ensureRow can apply user defaults on circuit creation (H7 parity).
-  let newCircuits = applyCircuitReadings(job, readings, circuitUpdates, fieldClears, options);
+  // `board_ops` rides the SAME envelope but is applied by the caller
+  // AFTER this returns (`onBoardOps` fires after `onExtraction` —
+  // sonnet-session.ts). The A2 gate below therefore has to read the ops
+  // itself; by the time boards[] reflects them the readings have landed.
+  let newCircuits = applyCircuitReadings(
+    job,
+    readings,
+    circuitUpdates,
+    fieldClears,
+    result.board_ops ?? [],
+    options
+  );
   if (newCircuits) patch.circuits = newCircuits;
 
   // H3 — auto-compute `ocpd_max_zs_ohm` for any circuit whose OCPD

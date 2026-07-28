@@ -733,19 +733,59 @@ function dispatchObservationUpdates(ws, sessionId, updates, { failFast = false }
 // ---------------------------------------------------------------------------
 export const EXTRACTION_EMISSION_CURSOR = Symbol('stage6.extractionEmissionCursor');
 
-function buildResultFrameLedger(snapshot, result) {
-  const frames = [];
+/**
+ * A2 (2026-07-28) — the ONE named production seam that projects a raw
+ * extraction result onto the `type:'extraction'` wire payload. Previously this
+ * was an inline destructure-spread duplicated at each egress site, which meant
+ * a wire-contract test had to re-implement the projection (and could then pass
+ * while production drifted). Both surviving live sites now call this.
+ *
+ * Implemented as a hoisted destructure-spread and NEVER an allowlist: it must
+ * preserve every OTHER enumerable key byte-for-byte (`field_corrections`,
+ * `cleared_readings`, `circuit_updates`, `board_ops`, `turn_id`,
+ * `utterance_id`, `validation_alerts`, `confirmations`, …) and drop the
+ * non-enumerables (`answer_source`/`answer_meta`/the `SAME_TURN_*` Symbols)
+ * exactly as the inline spread did. An allowlist would silently drop the very
+ * `field_corrections`/`cleared_readings` frames the P5 clear/write machinery
+ * depends on the moment a new key is added upstream.
+ *
+ * The four stripped keys are the ones that ride their OWN frames rather than
+ * the extraction envelope: `questions_for_user` (the `question` frames),
+ * `spoken_response`/`action` (voice_command_response) and `observationUpdates`
+ * (observation_update); `extracted_readings` is renamed to the wire's
+ * `readings`. The A2 `replaces_cleared` marker rides its reading BY REFERENCE
+ * — no egress site does bespoke marker handling.
+ */
+export function projectExtractionResultForWire(result) {
   const {
-    questions_for_user: _q,
+    questions_for_user: _questionsForUser,
     extracted_readings,
-    spoken_response,
-    action,
-    observationUpdates,
+    spoken_response: _spokenResponse,
+    action: _action,
+    observationUpdates: _observationUpdates,
     ...rest
   } = result;
+  return { readings: extracted_readings, ...rest };
+}
+
+/**
+ * A2 (2026-07-28) — exported ONLY so the cross-client wire-contract fixture can
+ * be produced by the REAL frame builder rather than by a test re-implementing
+ * `{type:'extraction', result: project(...)}`. A re-implementation would leave
+ * the fixture green if this function ever grew its own inline projection again,
+ * which is precisely the drift the A2 seam exists to stop. Not a production
+ * export: production calls it directly (`:852`) inside this module.
+ */
+export function _test_buildResultFrameLedger(snapshot, result) {
+  return buildResultFrameLedger(snapshot, result);
+}
+
+function buildResultFrameLedger(snapshot, result) {
+  const frames = [];
+  const { spoken_response, action, observationUpdates } = result;
   frames.push({
     kind: 'extraction',
-    json: JSON.stringify({ type: 'extraction', result: { readings: extracted_readings, ...rest } }),
+    json: JSON.stringify({ type: 'extraction', result: projectExtractionResultForWire(result) }),
   });
   if (Array.isArray(result.board_ops)) {
     for (const op of result.board_ops) {
@@ -2678,15 +2718,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const entryRef = activeSessions.get(sessionId);
         const currentWs = entryRef?.ws || ws;
         if (currentWs.readyState === currentWs.OPEN) {
-          const {
-            questions_for_user,
-            extracted_readings,
-            spoken_response,
-            action,
-            observationUpdates,
-            ...rest
-          } = result;
-          const resultWithoutQuestions = { readings: extracted_readings, ...rest };
+          const { spoken_response, action, observationUpdates } = result;
+          const resultWithoutQuestions = projectExtractionResultForWire(result);
           currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
 
           // Phase E: emit `current_board_changed` for any select_board op
@@ -5470,3 +5503,12 @@ export { dispatchObservationUpdates as _test_dispatchObservationUpdates };
 // the turn's consumedUtteranceId — so a unit test of the stamper covers the
 // creation-time-clone contract for every site without standing up the WS closure.
 export { stampQuestionsWithUtteranceId as _test_stampQuestionsWithUtteranceId };
+
+// A2 (2026-07-28) — test seam for the canonical → legacy field-name rewrite.
+// The wire-contract test for `replaces_cleared` must run the REAL egress chain
+// (harness result → validator → projectExtractionResultForWire → JSON), and the
+// validator is the step that renames the reading fields onto their wire form.
+// Exported rather than duplicated so the fixture can never drift from the
+// production rewrite; the function mutates `result.extracted_readings` in place
+// and returns the same object, exactly as both live call sites rely on.
+export { validateAndCorrectFields as _test_validateAndCorrectFields };
