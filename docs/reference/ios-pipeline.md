@@ -93,15 +93,62 @@ Rules:
 
 - **Omit-when-false is the compatibility mechanism** — there is no capability gate, and none is needed: a turn with no collapse is byte-identical to the pre-A2 wire, so an older client is never handed a key it must understand. Emitting `false` would have forfeited that and required a gate.
 - **Never inferred by a consumer.** The marker is stamped by the producer that performed the collapse; nothing downstream reconstructs it from an absent clear.
-- **Fail-closed-unflagged:** if more than one surviving write resolves to the collapsed slot, the bundler stamps NOTHING and emits `stage6.replaces_cleared_ambiguous_projection`. An unflagged write is always safe (the consumer's normal gate applies); a wrongly-flagged one would license an overwrite.
-- **Circuit slots only.** The identity is the effective circuit slot (`EFFECTIVE_CIRCUIT_SLOT`), distinct from the board-scope `EFFECTIVE_BOARD_SLOT` (plan A1a) — the two Symbols are deliberately never cross-wired.
+- **Fail-closed-unflagged:** the bundler stamps the flag only when EXACTLY ONE surviving write resolves to the collapsed slot. An unflagged write is always safe (the consumer's normal gate applies); a wrongly-flagged one would license an overwrite. Since A2-multiboard (below) the per-turn writes are projected last-write-wins per EFFECTIVE slot, so the multi-candidate case is unreachable by construction — the shape is retained so a future duplicate-producing regression degrades to silent-unflagged rather than stamping arbitrarily. (A2-core's `stage6.replaces_cleared_ambiguous_projection` telemetry event and its `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` Symbol were REMOVED by A2-multiboard item 2 — declining to stamp was right while the collision was undecidable, but it left web holding the STALE value on a real replacement.)
+- **Circuit slots only** at A2-core. A2-multiboard item 7 adds the BOARD-scope twin — see below.
 - **Derived writes are not candidates** (`derived: true` mirrors/auto-ticks). Calculator writes (`source_turn_id` starting `::calc::`) **are** candidates — since F/U-1 (2026-07-19) a calc result is an explicitly-requested, spoken value.
 
-**Consumers.** Web is the reason this exists: `applyCircuitReadings` is fill-only and source-agnostic, so it silently skipped the collapsed replacement — the assistant SPOKE it and the server + iOS stored it while web did not (the inverse Audio-First violation). *Epistemic split:* the SKIP is source-confirmed (read straight off `applyCircuitReadings`' `if (hasValue(row[column]) && !isLimWrite) continue`); that the field-visible symptom was a stale WRONG value rather than a blank cell is INFERENCE from the wire shape — no captured web session covers such a turn. Web now bypasses its gate for a flagged reading, but **only** on an unambiguously-resolvable single-board slot; a multi-board job, an orphan ref, or a duplicate ref all DECLINE the bypass and fall through to the unchanged gate (`apply_replaces_cleared_multiboard_deferred` / `_orphan_ref` / `_duplicate_ref`), so declining is never a new skip — an empty cell still fills.
+**Consumers.** Web is the reason this exists: `applyCircuitReadings` is fill-only and source-agnostic, so it silently skipped the collapsed replacement — the assistant SPOKE it and the server + iOS stored it while web did not (the inverse Audio-First violation). *Epistemic split:* the SKIP is source-confirmed (read straight off `applyCircuitReadings`' `if (hasValue(row[column]) && !isLimWrite) continue`); that the field-visible symptom was a stale WRONG value rather than a blank cell is INFERENCE from the wire shape — no captured web session covers such a turn. Web now bypasses its gate for a flagged reading, but only on a slot it can resolve to exactly ONE row; an orphan ref or an unresolvable duplicate DECLINEs the bypass and falls through to the unchanged gate, so declining is never a new skip — an empty cell still fills. (A2-core additionally declined for ANY multi-board job with `apply_replaces_cleared_multiboard_deferred`; A2-multiboard item 6 REPLACED that envelope-wide gate with per-reading row resolution — see below.)
 
 **iOS needs no change and gets none.** `ExtractedReading` declares explicit `CodingKeys`, so the key decodes inertly; `applySonnetValue` already applies any DIFFERING value regardless of source state (only an exact duplicate of a pre-existing value is blocked), so the replacement already lands. Both properties are pinned by `DeepgramRecordingViewModelReplacesClearedTests` (CertMateUnified) rather than assumed — a stricter decoder or a source-priority gate ported from web would reintroduce the defect on iOS, and that test is what catches it.
 
-The frame both clients are tested against is pinned at `tests/fixtures/test-contracts/replaces-cleared-circuit.json` (see the README there — regenerate from the production egress chain, never hand-edit). Web IMPORTS that file; the iOS test embeds a hand-mirrored Swift literal of the same payload, which can drift undetected — a change to the fixture must be mirrored into the iOS test by hand in the same wave.
+The frame both clients are tested against is pinned at `tests/fixtures/test-contracts/replaces-cleared-circuit.json` (see the README there — regenerate from the production egress chain, never hand-edit). Web IMPORTS that file; the iOS test embeds a hand-mirrored Swift literal of the same payload, which can drift undetected — a change to the fixture must be mirrored into the iOS test by hand in the same wave. **A2-multiboard regenerated this fixture** — it now carries `board_id: "main"` on the flagged reading and its confirmation (the enrichment rules below), so the iOS Swift literal must be re-mirrored.
+
+---
+
+## Wire contract — effective-board addressing (A2-multiboard, 2026-07-28)
+
+A2-core shipped `replaces_cleared` for SINGLE-board jobs and explicitly deferred multi-board delivery. A2-multiboard closes that deferral by making the board a first-class part of every write's identity, server-side, and then ADDRESSING the surviving writes to the board the server actually mutated. **Every new wire key is additive-optional and omitted exactly where it was omitted before** — there is no new capability gate on the circuit channel.
+
+### What the server decides before it emits
+
+The per-turn write Maps are keyed by the RAW tool arguments, and the raw key is board-AMBIGUOUS by construction: `record_reading` omits `board_id` in the common case and `record_board_reading` has no `board_id` in its schema at all. A cross-board turn therefore collided under one key and the earlier board's write was silently destroyed (last-write-wins by RAW key). An append-only, monotonically-sequenced **write journal** (`src/extraction/stage6-per-turn-writes.js`) now runs beside those Maps — every producer stages through one helper pair — and the bundler projects it **last-write-wins per EFFECTIVE slot** (field + circuit + effective board). The Maps keep their raw-key semantics (the bundler's Map-type guard, the harness's size check and the speculator's snapshot/diff all depend on them); the journal is what makes the collision decidable. The sequence counter lives on a NON-ENUMERABLE `WRITE_SEQUENCE` Symbol, so it is invisible to `JSON.stringify` and the wire bytes are unchanged.
+
+### Enrichment rules — when `board_id` appears on a reading
+
+| Class | Enriched with the effective board? |
+|---|---|
+| **FLAGGED** (`replaces_cleared: true`) | **ALWAYS** — circuit channel and board channel alike |
+| **ORDINARY** | **ONLY on a cross-board turn** — when the turn's winners span ≥2 distinct effective boards |
+| explicit model `board_id` | never overwritten |
+
+The asymmetry is deliberate. A flagged reading whose target board is unstated is UNRESOLVABLE by a client that fails closed on an ambiguous target — it would drop a spoken replacement, the exact defect the marker exists to prevent — so the flag and the address always travel together. Ordinary readings stay bare on every single-board turn (including every turn of a multi-board job where the inspector works one board at a time), which keeps the wire byte-identical to pre-A2 and keeps the loaded-barrel speculator's null-board cache entries hitting; blanket enrichment would spend latency on every turn to fix a defect that only exists when two boards are written in ONE turn (Audio-First #3). Enrichment runs BEFORE `synthesiseConfirmations`, so a flagged confirmation inherits the same `board_id`.
+
+The board channel differs in one respect: an ORDINARY board-scoped write is filled from its `EFFECTIVE_BOARD_SLOT` stamp only for sessions that advertised `board_clear_v1` (plan A1a's capability line), whereas a FLAGGED board replacement is enriched unconditionally for the reason above.
+
+### Board-aware fail-closed targeting (consumers)
+
+A client that receives `board_id` MUST resolve it to exactly one row and MUST fail closed when it cannot — but *failing closed is never a skip*: the reading falls through to the client's ordinary fill-only gate, so an empty cell still fills. Web resolves in three ordered branches (`ensureBoardScopedRow`): exact `(board_id, ref)` match → first-come claim of an unscoped legacy row → a new scoped row. A `board_id` for which the client has no INDEPENDENT evidence (no such board in its own job state) falls back to ref-only and logs `apply_circuit_reading_unevidenced_board` — the server's word alone never conjures a board row. A newly-created scoped row seeds the ref index only when nothing already owns that ref, so a scoped sibling cannot re-point the ref-only `field_clears` / `circuit_updates` loops.
+
+A2-core's ENVELOPE-WIDE decline (`apply_replaces_cleared_multiboard_deferred` — any multi-board job dropped the bypass for the whole frame) is REPLACED by per-reading row resolution: the resolver DECLINES a specific reading it cannot pin to one row rather than disarming the mechanism for the turn.
+
+### Board-scope `replaces_cleared` (item 7)
+
+The marker now also lands on a collapsed BOARD clear→write (`readings[i]` at `circuit: 0` / board scope). A board value lives in TWO places written by two independent loops (`board_info` and `boards[]`), so the client decides the replacement ONCE, before either leg runs, and applies the SAME decision to both — a local per-leg bypass would let the halves diverge, which is worse than either failing cleanly because it looks like it worked. Three routing rules:
+
+- **BOARDLESS flagged reading ⇒ SECTION-ONLY, and that is a SUCCESS.** `ze` / `pfc` are `'global'` in `BOARD_CLEAR_SCOPE_MAP`, so a flagged global reading carries a NULL board *by construction*.
+- **SUB-BOARD ⇒ `boards[sub]` only, `board_info` WITHHELD.** `board_info` is the MAIN-board summary that the PDF and the backend's own `_applyTopLevelBoardInfo` ingest read as "the board".
+- **ORPHAN (a board id the client cannot evidence) ⇒ NEITHER leg**, logged.
+
+### Circuit-topology ops carry their board
+
+`circuit_updates[]` entries gain `board_id?: string` and `from_ref?: string`, and `op` gains `'delete'`. The board is stamped at DISPATCH (`EFFECTIVE_OP_BOARD`) — the only place the resolution is known — so `select_board sub-b` followed by "delete circuit 2" deletes the SUB-board's circuit 2 on the client, not main's. Ops are emitted losslessly and in wire order; a metadata-free `create_circuit` no longer vanishes (the previous meta fold skipped nulls and the carrier was then deleted).
+
+### Companion contracts touched by this wave
+
+- **Circuit designations** are keyed by `(effective_board_id, circuit_ref)` at both build and resolve sites. On the bare ref, the last writer's name won for BOTH boards, and a sub-board circuit was read back with the MAIN board's name.
+- **Confirmation dedupe keys** fold `board_id` into the hashed text — see the next section.
+- **"All circuits" completeness phrasing** is measured against the confirmation group's OWN board, not the session's.
+- **An empty-string `board_id`** is normalised to ABSENT at the dispatcher boundary (legacy CSV writes `''`). `select_board`, `clear_board_reading` and `record_board_reading` are the enumerated EXEMPTIONS — for them an unaddressable board must not silently become "whatever board is current", so they still reject.
 
 ---
 
@@ -113,13 +160,17 @@ Three key shapes:
 
 | Shape | Key | When |
 |-------|-----|------|
-| per-circuit  | `{field}_{circuit}_{djb2(text)}` | a single-circuit reading confirmation |
-| multi-circuit | `{field}_{sortedCircuits.join('-')}_{djb2(text)}` | a grouped broadcast (`circuit:null`, `circuits:[…]`) |
+| per-circuit  | `{field}_{circuit}_{djb2(text + boardId)}` | a single-circuit reading confirmation |
+| multi-circuit | `{field}_{sortedCircuits.join('-')}_{djb2(text + boardId)}` | a grouped broadcast (`circuit:null`, `circuits:[…]`) |
 | degenerate | `{field}_{djb2(text + boardId)}` | board-level / supply / installation (no circuit) |
+
+`boardId` is `conf.board_id ?? ''` in every shape.
 
 For the five text-op fields (`circuit_op`, `observation`, `observation_deletion`, `field_cleared`, `circuit_designation`) a backend-stamped `dedupe_token` takes precedence in EVERY branch (`{field}_{dedupe_token}`), so identical-text REPEATS of DISTINCT operations don't collide (field-feedback-2026-07-14 §A1a).
 
 > **id-84 (2026-07-24) — value-aware single-circuit key.** The per-circuit shape was previously value-LESS (`{field}_{circuit}`) and kept that way deliberately so the iOS local correction-TTS dedupe could cross-match wire keys. But because field read-back keys are session-**permanent**, a spoken correction (a second reading on the same field+circuit with a DIFFERENT value) collided with the original key forever and was **silently swallowed** — beep-then-silence on a successful correction (session 2ACE7677: "No. It was 0.63." spoke nothing). Fix: fold djb2 of the confirmation TEXT (which encodes the value) into the single-circuit key, matching the multi-circuit branch. A correction (different text) now yields a distinct key and speaks; a genuine duplicate (same field+circuit+SAME text — e.g. the model re-recording circuit 4) still dedupes. The correction-TTS cross-match is **intentionally dropped** (worst case an extra local read-back, never silence). Derek's decisions: TEXT-HASH (not a direct value in the key, which would need wire/decoder changes), and NO new field-key TTL. iOS adds the twin fix to its own client-initiated `correctionDedupeKey`, plus the id-87 fast-path double-read-back suppression (fast clip + bundler safety-net now share a VALUE- and effective-board-aware suppression identity). Parity: `web/docs/parity-ledger.md` `recording/readback-dedup-value-aware`.
+
+> **A2-multiboard item 10 (2026-07-28) — board-aware circuit keys.** Two boards routinely share circuit refs, so the same spoken line about circuit 3 on main and on garage produced the SAME per-circuit key and the second read-back was silently swallowed — Audio-First #1 in the zero-times direction. `board_id` is folded into the HASHED STRING (`text + (board_id ?? '')`) rather than added as a key SEGMENT, so an ABSENT board id hashes byte-identically to the pre-item-10 key and every single-board confirmation keeps the key it has today. The `dedupe_token` precedence branch is deliberately UNCHANGED: the token IS the operation identity and is already replay-stable across boards, so folding a board into it would break the §A1a contract. All three mirrors move together (backend telemetry mirror, web, iOS Swift); the degenerate branch already folded the board and is untouched.
 
 ---
 
