@@ -45,6 +45,14 @@
  * and silently breaks same-turn correction (the key is the correction
  * identity; if the value also carries an older copy, refactors drift).
  *
+ * A2-multiboard (2026-07-28): value objects additionally carry a
+ * NON-ENUMERABLE `[WRITE_SEQUENCE]` monotonic integer, stamped by the ONE
+ * staging helper `recordReadingWrite` / `recordBoardReadingWrite` that every
+ * producer must go through. It exists because the raw Map key is
+ * board-AMBIGUOUS (`record_reading` carries no board_id), so LWW-by-raw-key
+ * silently destroys a cross-board write; the sequence makes LWW decidable per
+ * EFFECTIVE slot. Same non-enumerable contract — wire bytes unchanged.
+ *
  * If a new Phase ever NEEDS more metadata in the value object, add it
  * alongside value/confidence/source_turn_id/boardId — but do NOT re-introduce
  * field/circuit. The tests in `stage6-per-turn-writes.test.js` assert this
@@ -195,10 +203,268 @@ export function attachEffectiveBoardSlot(target, canonicalField, effectiveBoardI
   return target;
 }
 
+// ---------------------------------------------------------------------------
+// A2-multiboard (2026-07-28) — the append-only sequenced write JOURNAL
+// ---------------------------------------------------------------------------
+//
+// WHY: `perTurnWrites.readings` is a Map keyed by the RAW spelling
+// `(field, circuit, input.board_id)`. `record_reading` carries no board_id in
+// the common case, so a turn that does `select_board A → record Zs c1` then
+// `select_board B → record Zs c1` produces the SAME raw key twice and the
+// second `Map.set` DESTROYS the first. The board-A write is then never spoken
+// and never written — the exact "spoken-but-not-written" class Audio-First #1
+// exists to prevent, and the reason the A2-core projection had to fail closed
+// on an ambiguous slot.
+//
+// The journal is an append-only ORDERED log of every write, each entry
+// carrying its raw Map key plus the value object (which already carries the
+// non-enumerable EFFECTIVE_CIRCUIT_SLOT identity stamped at dispatch). A
+// monotonic non-enumerable sequence makes last-write-wins decidable PER
+// EFFECTIVE SLOT rather than per raw key, so two boards' writes both survive.
+//
+// The Map REMAINS the live store and keeps Map semantics — the bundler's
+// Map-type guard, the shadow harness's `.size` check, the tool-loop
+// speculator snapshot/diff and `decodeReadingKey` all still read it. The
+// JOURNAL is authoritative only for: bundler winner-projection, clear→write
+// collapse matching, clear removal, script-backfill precedence and
+// designation projection. Anything that direct-`.set`s the Map without going
+// through `recordReadingWrite` (older tests, future call sites) is UNSEQUENCED
+// and is preserved verbatim by the projection — never dropped.
+
+let WRITE_SEQUENCE_COUNTER = 0;
+
+/**
+ * Non-enumerable monotonic write sequence. Compared only WITHIN one
+ * accumulator, so a module-level counter is sufficient and keeps the
+ * accumulator's enumerable shape unchanged (no counter slot to leak into
+ * snapshots or JSON).
+ */
+export const WRITE_SEQUENCE = Symbol('stage6.writeSequence');
+
+function stampWriteSequence(target) {
+  WRITE_SEQUENCE_COUNTER += 1;
+  Object.defineProperty(target, WRITE_SEQUENCE, {
+    value: WRITE_SEQUENCE_COUNTER,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return target;
+}
+
+/**
+ * The EFFECTIVE slot identity of a readings entry. Prefers the dispatch-time
+ * EFFECTIVE_CIRCUIT_SLOT stamp (raw spelling already resolved to the real
+ * board); falls back to decoding the raw Map key for unsequenced legacy
+ * entries. ONE derivation — the projection, the collapse matcher and the
+ * clear-removal path all call this.
+ */
+export function readingSlotKeyOf(rawKey, value) {
+  const sym = value?.[EFFECTIVE_CIRCUIT_SLOT];
+  if (sym) return rawCircuitSlot(sym.field, sym.circuit, sym.boardId);
+  const decoded = decodeReadingKey(String(rawKey));
+  return rawCircuitSlot(decoded.field, decoded.circuit, decoded.boardId);
+}
+
+/**
+ * THE staging helper every `readings` producer goes through. Stamps the
+ * sequence, appends to the journal, and performs the live Map.set.
+ *
+ * Deliberately still does the Map.set: the Map is the live store for every
+ * existing consumer, and keeping the write in ONE helper is what stops the
+ * two stores drifting.
+ *
+ * @returns {object} the value object (for chaining / assertions)
+ */
+export function recordReadingWrite(perTurnWrites, rawKey, valueObject) {
+  stampWriteSequence(valueObject);
+  if (Array.isArray(perTurnWrites?.readingJournal)) {
+    perTurnWrites.readingJournal.push({ rawKey, value: valueObject });
+  }
+  perTurnWrites?.readings?.set(rawKey, valueObject);
+  return valueObject;
+}
+
+/**
+ * Board twin of `recordReadingWrite`. `boardReadings` has the same collision:
+ * the Map key is `encodeBoardReadingKey(field, board_id)` and
+ * `record_board_reading` carries NO schema `board_id`, so
+ * `select_board A → record manufacturer → select_board B → record manufacturer`
+ * collides and the second `Map.set` destroys the first.
+ */
+export function recordBoardReadingWrite(perTurnWrites, rawKey, valueObject) {
+  stampWriteSequence(valueObject);
+  if (Array.isArray(perTurnWrites?.boardReadingJournal)) {
+    perTurnWrites.boardReadingJournal.push({ rawKey, value: valueObject });
+  }
+  perTurnWrites?.boardReadings?.set(rawKey, valueObject);
+  return valueObject;
+}
+
+/**
+ * The EFFECTIVE board-slot identity of a boardReadings entry. Prefers the
+ * dispatch-time EFFECTIVE_BOARD_SLOT stamp; falls back to the decoded raw key
+ * for unsequenced legacy entries.
+ */
+export function boardReadingSlotKeyOf(rawKey, value) {
+  const sym = value?.[EFFECTIVE_BOARD_SLOT];
+  if (sym) return boardSlotKey(sym.field, sym.boardId);
+  const decoded = decodeBoardReadingKey(String(rawKey));
+  return boardSlotKey(decoded.field, decoded.boardId);
+}
+
+function projectWinners(journal, liveMap, slotKeyOf) {
+  const map = liveMap instanceof Map ? liveMap : new Map();
+  const entries = Array.isArray(journal) ? journal : [];
+
+  // 1. Winner per EFFECTIVE slot, remembering each slot's FIRST appearance so
+  //    the emitted order matches the Map's insertion order in the ordinary
+  //    (non-colliding) case — the wire bytes must not move for single-board
+  //    traffic.
+  const winnerBySlot = new Map();
+  const firstSeenAt = new Map();
+  entries.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object') return;
+    const slot = slotKeyOf(entry.rawKey, entry.value);
+    if (!firstSeenAt.has(slot)) firstSeenAt.set(slot, index);
+    const prev = winnerBySlot.get(slot);
+    const seq = entry.value?.[WRITE_SEQUENCE] ?? 0;
+    if (!prev || seq >= (prev.value?.[WRITE_SEQUENCE] ?? 0)) {
+      winnerBySlot.set(slot, entry);
+    }
+  });
+
+  // 2. A journal winner only counts if it is still LIVE — i.e. its raw key is
+  //    still present in the Map. A clear that removed the raw key removed the
+  //    write; the journal must not resurrect it.
+  const live = [];
+  for (const [slot, entry] of winnerBySlot) {
+    if (!map.has(entry.rawKey)) continue;
+    live.push({ slot, order: firstSeenAt.get(slot) ?? 0, rawKey: entry.rawKey, value: entry.value });
+  }
+  live.sort((a, b) => a.order - b.order);
+
+  // 3. Preserve UNSEQUENCED legacy Map entries (direct `.set` call sites and
+  //    older fixtures never touched the journal). Appended in Map order after
+  //    the journaled winners; in practice a turn is entirely one or the other.
+  const journaledKeys = new Set(live.map((w) => w.rawKey));
+  const out = live.map((w) => ({ rawKey: w.rawKey, value: w.value, slot: w.slot }));
+  for (const [rawKey, value] of map) {
+    if (value?.[WRITE_SEQUENCE] != null && journaledKeys.has(rawKey)) continue;
+    if (value?.[WRITE_SEQUENCE] != null && !journaledKeys.has(rawKey)) {
+      // Journaled but its slot winner is a DIFFERENT raw key — the Map's copy
+      // is a shadowed loser; the journal already emitted the winner.
+      continue;
+    }
+    out.push({ rawKey, value, slot: slotKeyOf(rawKey, value) });
+  }
+  return out;
+}
+
+/**
+ * ONE shared winner-projection. Returns `[{rawKey, value, slot}]` — exactly
+ * one entry per EFFECTIVE circuit slot, ordered to match the Map's insertion
+ * order in the non-colliding case. Used by the bundler's reading projection,
+ * the `circuit_designation::` same-turn overlay, the clear→write collapse and
+ * the `start_dialogue_script` backfill precedence check.
+ */
+export function projectReadingWinners(perTurnWrites) {
+  return projectWinners(perTurnWrites?.readingJournal, perTurnWrites?.readings, readingSlotKeyOf);
+}
+
+/** Board twin of `projectReadingWinners`. */
+export function projectBoardReadingWinners(perTurnWrites) {
+  return projectWinners(
+    perTurnWrites?.boardReadingJournal,
+    perTurnWrites?.boardReadings,
+    boardReadingSlotKeyOf
+  );
+}
+
+/**
+ * Remove every write matching `predicate(rawKey, value)` — the clear side of
+ * the same-turn write→clear collapse.
+ *
+ * WHY this is not just `map.delete(rawKey)`: two boards' writes can share ONE
+ * raw key (board_id omitted on both). Deleting the raw key would silently
+ * un-write the OTHER board's reading — a spoken-but-not-written defect on a
+ * board the clear never targeted. So: drop matching JOURNAL entries, then
+ * reconcile the Map — delete the raw key only when no journal entry still
+ * claims it, otherwise re-point it at the surviving winner.
+ *
+ * A predicate (rather than a slot key) is the API because the dispatchers'
+ * pre-journal contract is TWO-MODE — Symbol-bearing entries match on the
+ * clear's EFFECTIVE slot, Symbol-less legacy entries on its RAW slot — and
+ * collapsing that into one slot comparison would silently widen deletion on
+ * legacy fixtures.
+ *
+ * @returns {number} how many entries were removed.
+ */
+function removeWritesMatching(journal, map, predicate) {
+  if (!(map instanceof Map)) return 0;
+  const entries = Array.isArray(journal) ? journal : null;
+  let removed = 0;
+
+  // 1. Journaled entries — remove per ENTRY, not per raw key.
+  const touchedRawKeys = new Set();
+  if (entries) {
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i];
+      if (!entry) continue;
+      if (!predicate(entry.rawKey, entry.value)) continue;
+      touchedRawKeys.add(entry.rawKey);
+      entries.splice(i, 1);
+      removed += 1;
+    }
+    // 2. Reconcile the live Map for every raw key the removal touched.
+    for (const rawKey of touchedRawKeys) {
+      let survivor = null;
+      for (const entry of entries) {
+        if (entry?.rawKey !== rawKey) continue;
+        const seq = entry.value?.[WRITE_SEQUENCE] ?? 0;
+        if (!survivor || seq >= (survivor.value?.[WRITE_SEQUENCE] ?? 0)) survivor = entry;
+      }
+      if (survivor) map.set(rawKey, survivor.value);
+      else map.delete(rawKey);
+    }
+  }
+
+  // 3. UNSEQUENCED entries (direct `.set` call sites, older fixtures) never
+  //    reached the journal — mirror the pre-journal raw delete for those.
+  for (const [rawKey, value] of [...map]) {
+    if (value?.[WRITE_SEQUENCE] != null) continue;
+    if (!predicate(rawKey, value)) continue;
+    map.delete(rawKey);
+    removed += 1;
+  }
+  return removed;
+}
+
+/** Circuit-reading removal. See `removeWritesMatching`. */
+export function removeReadingWrites(perTurnWrites, predicate) {
+  return removeWritesMatching(perTurnWrites?.readingJournal, perTurnWrites?.readings, predicate);
+}
+
+/** Board-reading removal (mechanism A of the A1a board clear→write collapse). */
+export function removeBoardReadingWrites(perTurnWrites, predicate) {
+  return removeWritesMatching(
+    perTurnWrites?.boardReadingJournal,
+    perTurnWrites?.boardReadings,
+    predicate
+  );
+}
+
 export function createPerTurnWrites() {
   return {
     readings: new Map(),
     boardReadings: new Map(),
+    // A2-multiboard (2026-07-28) — append-only ordered log of every readings /
+    // boardReadings write this turn, `{rawKey, value}` with the value carrying
+    // the non-enumerable EFFECTIVE_*_SLOT identity + WRITE_SEQUENCE. Makes
+    // last-write-wins decidable per EFFECTIVE slot instead of per raw Map key,
+    // so two boards' same-key writes both survive. See the block comment above.
+    readingJournal: [],
+    boardReadingJournal: [],
     cleared: [],
     observations: [],
     deletedObservations: [],

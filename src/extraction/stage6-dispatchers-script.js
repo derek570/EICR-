@@ -30,7 +30,11 @@
 import { enterScriptByName, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { getCircuitBucket, getMainBoardId } from './stage6-multi-board-shape.js';
-import { encodeReadingKey, attachEffectiveSlot } from './stage6-per-turn-writes.js';
+import {
+  encodeReadingKey,
+  attachEffectiveSlot,
+  recordReadingWrite,
+} from './stage6-per-turn-writes.js';
 // Imported from the helper directly rather than the barrel: value-corrections.js
 // is dialogue-engine INTERNAL transport (the barrel exports the turn-processing
 // API), and this dispatcher is the one outside consumer that legitimately has to
@@ -217,7 +221,7 @@ export async function dispatchStartDialogueScript(call, ctx) {
           writable: false,
         });
       }
-      perTurnWrites.readings.set(key, entry);
+      recordReadingWrite(perTurnWrites, key, entry);
     }
   }
 

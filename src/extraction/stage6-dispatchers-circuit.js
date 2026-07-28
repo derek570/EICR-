@@ -59,6 +59,8 @@ import {
   EFFECTIVE_CIRCUIT_SLOT,
   rawCircuitSlot,
   attachEffectiveSlot,
+  recordReadingWrite,
+  removeReadingWrites,
 } from './stage6-per-turn-writes.js';
 import {
   getCircuitBucket,
@@ -401,7 +403,12 @@ export async function dispatchRecordReading(call, ctx) {
       divisor: zeClamp.correction.divisor,
     });
   }
-  perTurnWrites.readings.set(
+  // A2-multiboard — go through the ONE staging helper so the write is
+  // sequenced + journaled. The raw Map key is board-AMBIGUOUS (record_reading
+  // carries no board_id in the common case), so a plain Map.set would let a
+  // board-B write DESTROY the board-A write from earlier in the same turn.
+  recordReadingWrite(
+    perTurnWrites,
     encodeReadingKey(input.field, input.circuit, input.board_id),
     recordValue
   );
@@ -709,17 +716,22 @@ export async function dispatchClearReading(call, ctx) {
   const clearEffectiveBoardId = resolveEffectiveBoardId(session, input.board_id);
   const clearEffectiveKey = rawCircuitSlot(input.field, input.circuit, clearEffectiveBoardId);
   const clearRawKey = rawCircuitSlot(input.field, input.circuit, input.board_id ?? null);
-  for (const [mapKey, val] of perTurnWrites.readings) {
+  // A2-multiboard — removal goes through the JOURNAL, not a bare
+  // `readings.delete(mapKey)`. Two boards' writes can share ONE raw Map key
+  // (board_id omitted on both), so deleting the raw key would silently
+  // un-write the OTHER board's reading — a spoken-but-not-written defect on a
+  // board this clear never targeted. `removeReadingWrites` drops only the
+  // journal ENTRIES whose identity matches, then re-points the Map at whatever
+  // winner still claims that raw key. The predicate below is the pre-journal
+  // two-mode contract verbatim, so legacy Symbol-less fixtures are unaffected.
+  removeReadingWrites(perTurnWrites, (mapKey, val) => {
     const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
-    let matches;
     if (sym) {
-      matches = rawCircuitSlot(sym.field, sym.circuit, sym.boardId) === clearEffectiveKey;
-    } else {
-      const decoded = decodeReadingKey(mapKey);
-      matches = rawCircuitSlot(decoded.field, decoded.circuit, decoded.boardId) === clearRawKey;
+      return rawCircuitSlot(sym.field, sym.circuit, sym.boardId) === clearEffectiveKey;
     }
-    if (matches) perTurnWrites.readings.delete(mapKey);
-  }
+    const decoded = decodeReadingKey(mapKey);
+    return rawCircuitSlot(decoded.field, decoded.circuit, decoded.boardId) === clearRawKey;
+  });
   perTurnWrites.cleared.push(
     attachEffectiveSlot(
       {
@@ -1325,7 +1337,7 @@ function applyCalculatedReading(
     circuit,
     effectiveBoardId ?? boardId ?? null
   );
-  perTurnWrites.readings.set(encodeReadingKey(field, circuit, boardId), calcValue);
+  recordReadingWrite(perTurnWrites, encodeReadingKey(field, circuit, boardId), calcValue);
 }
 
 /**
@@ -1984,7 +1996,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
           writable: true,
         });
       }
-      perTurnWrites.readings.set(encodeReadingKey(input.field, ref, boardId), bulkMirror);
+      recordReadingWrite(
+        perTurnWrites,
+        encodeReadingKey(input.field, ref, boardId),
+        bulkMirror
+      );
       applied.push({
         circuit: ref,
         field: input.field,
