@@ -26,6 +26,7 @@ import {
   projectReadingWinners,
   projectBoardReadingWinners,
   circuitDesignationKey,
+  resolveDesignation,
   readEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
@@ -251,37 +252,6 @@ function synthesiseStateChangeConfirmations(
     }
   }
   return out;
-}
-
-/**
- * A2-multiboard (2026-07-28) — the ONE designation resolver shared by both
- * confirmation synthesisers.
- *
- * The harness builds the designation map with TWO key spaces: the real
- * `(effective_board_id, circuit_ref)` pair identity (circuit refs are PER
- * BOARD, so ref alone is not an identity), and the legacy bare ref for
- * genuinely unscoped lookups. Resolution therefore tries the pair FIRST when
- * the caller knows the reading's board, and only then falls back to the bare
- * ref. A reading with no board id resolves exactly as it did before this
- * change, which is what keeps all single-board traffic byte-identical.
- *
- * Plain-object maps (legacy/test callers) keep their ref-only semantics —
- * they were never board-aware and constructing pair keys on them would only
- * miss.
- */
-function resolveDesignation(designations, circuit, boardId = null) {
-  if (!designations) return null;
-  if (designations instanceof Map) {
-    if (boardId != null && boardId !== '') {
-      const paired = designations.get(circuitDesignationKey(boardId, circuit));
-      if (paired != null) return paired;
-    }
-    return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
-  }
-  if (typeof designations === 'object') {
-    return designations[circuit] ?? designations[String(circuit)] ?? null;
-  }
-  return null;
 }
 
 /**

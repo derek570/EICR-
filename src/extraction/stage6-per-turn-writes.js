@@ -267,6 +267,48 @@ export function circuitDesignationKey(boardId, circuitRef) {
   return `${normBoard}\u0000__desig__\u0000${String(circuitRef)}`;
 }
 
+/**
+ * A2-multiboard (2026-07-28) — the ONE designation resolver, shared by both
+ * confirmation synthesisers AND the loaded-barrel speculator.
+ *
+ * It lives here, beside `circuitDesignationKey`, because it is the READ half of
+ * that key space: a resolver that constructs pair keys any differently from the
+ * writer is a silent cross-board name leak, and the only reliable way to stop
+ * the two drifting is to keep them in one file with no mirror.
+ *
+ * Designation maps carry TWO key spaces: the real `(effective_board_id,
+ * circuit_ref)` pair identity (circuit refs are PER BOARD, so ref alone is not
+ * an identity), and the legacy bare ref for genuinely UNSCOPED lookups.
+ *
+ * A scoped lookup resolves against the pair and NOTHING ELSE. There is
+ * deliberately no bare-ref fallback here, because the bare space is only ever
+ * claimed by MAIN/unscoped writes (see the harness's build: a sub-board write
+ * never touches it, and an unscoped write seeds the main pair alongside it).
+ * Falling back would therefore hand a sub-board circuit MAIN's name for the
+ * same ref — the precise cross-board leak the pair identity exists to close,
+ * and the reason the harness's own resolver has never had that fallback.
+ *
+ * A caller with no board id resolves through the bare space exactly as it did
+ * before this change, which is what keeps single-board traffic byte-identical:
+ * on the main board the pair is always seeded too, so nothing is lost.
+ *
+ * Plain-object maps (legacy/test callers) keep their ref-only semantics — they
+ * were never board-aware and constructing pair keys on them would only miss.
+ */
+export function resolveDesignation(designations, circuit, boardId = null) {
+  if (!designations) return null;
+  if (designations instanceof Map) {
+    if (boardId != null && boardId !== '') {
+      return designations.get(circuitDesignationKey(boardId, circuit)) ?? null;
+    }
+    return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
+  }
+  if (typeof designations === 'object') {
+    return designations[circuit] ?? designations[String(circuit)] ?? null;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // A2-multiboard (2026-07-28) — the append-only sequenced write JOURNAL
 // ---------------------------------------------------------------------------

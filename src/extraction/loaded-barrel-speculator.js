@@ -103,7 +103,12 @@ import {
 } from './loaded-barrel-cache.js';
 import { mintCorrelationId, recordOutcome } from './voice-latency-telemetry.js';
 import { getLoadedBarrelMaxPerTurn, isLimRangedWriteKilled } from './voice-latency-config.js';
-import { decodeReadingKey, decodeBoardReadingKey } from './stage6-per-turn-writes.js';
+import {
+  decodeReadingKey,
+  decodeBoardReadingKey,
+  circuitDesignationKey,
+  resolveDesignation,
+} from './stage6-per-turn-writes.js';
 import {
   coerceRecordReadingValue,
   coerceRecordBoardReadingValue,
@@ -276,6 +281,32 @@ export function createSpeculator({
   // Signature: (boardId: string|null) → string|null. Null/absent ⇒ unknown
   // earthing ⇒ clampReadingForDispatch fails safe and leaves ze alone.
   resolveEarthing = null,
+  // A2-multiboard item 3 (2026-07-28) — effective-board resolver for the
+  // DESIGNATION lookup only.
+  //
+  // Circuit refs are per board, so a designation map keyed by bare ref makes
+  // main's "Cooker" and sub-b's "Shed sockets" fight over circuit 3. The
+  // bundler resolves through the `(effective_board, ref)` pair; the speculator
+  // has to resolve through the SAME pair or its pre-synthesised line speaks a
+  // different circuit's name than the one the bundler is about to emit.
+  //
+  // A FUNCTION, for the same reason resolveEarthing above is one: the effective
+  // board is session state the dispatcher mutates (`select_board`), not a
+  // construction-time constant. Signature: (rawBoardIdFromInput: string|null) →
+  // string|null.
+  //
+  // DELIBERATELY NOT applied to the cache key or the speculation identity — the
+  // RAW board id stays the identity there, because the cache is keyed to what
+  // the wire said and re-keying it would orphan every existing entry. This
+  // resolver only decides which NAME is spoken.
+  //
+  // Same-round staleness is a documented SAFE MISS (the id-100(b) precedent):
+  // the mid-stream hook fires at content_block_stop, BEFORE the round's
+  // `select_board` has been dispatched, so a cross-board turn may resolve
+  // against the previous board. The consequence is a designation mismatch at
+  // validate → MISS → the bundler's correct line is synthesised fresh. A
+  // latency loss, never a wrong name served.
+  resolveEffectiveBoard = null,
 }) {
   if (!sessionId) throw new TypeError('createSpeculator: sessionId required');
   if (!costTracker) throw new TypeError('createSpeculator: costTracker required');
@@ -291,6 +322,21 @@ export function createSpeculator({
       return resolveEarthing(boardId);
     } catch (_e) {
       return null;
+    }
+  };
+
+  // A2-multiboard item 3 — same untrusted-closure treatment as safeEarthing
+  // above, for the same reason: it reads live session state and must not be
+  // able to throw out of a streaming hook. An unresolvable board degrades to
+  // the raw board id the wire carried, which is exactly the pre-item-3
+  // behaviour — so a broken resolver costs cache hits, never correctness.
+  const safeEffectiveBoard = (rawBoardId) => {
+    if (typeof resolveEffectiveBoard !== 'function') return rawBoardId ?? null;
+    try {
+      const resolved = resolveEffectiveBoard(rawBoardId ?? null);
+      return typeof resolved === 'string' && resolved !== '' ? resolved : (rawBoardId ?? null);
+    } catch (_e) {
+      return rawBoardId ?? null;
     }
   };
 
@@ -368,9 +414,17 @@ export function createSpeculator({
         ? initialDesignations.entries()
         : Object.entries(initialDesignations);
     for (const [k, v] of src) {
+      if (typeof v !== 'string' || !v.trim()) continue;
       const refNum = Number(k);
-      if (Number.isInteger(refNum) && refNum > 0 && typeof v === 'string' && v.trim()) {
+      if (Number.isInteger(refNum) && refNum > 0) {
         perTurnDesignations.set(refNum, v.trim());
+      } else if (typeof k === 'string' && k !== '') {
+        // A2-multiboard item 3 — a NON-numeric key is a pair-identity key from
+        // circuitDesignationKey(board, ref); carry it through VERBATIM. Deliberately
+        // format-agnostic (no `includes('__desig__')` sniffing): the key format lives
+        // in exactly one file, and the old `Number(k)` filter silently dropped every
+        // sub-board entry the harness seeded, which is the bug this closes.
+        perTurnDesignations.set(k, v.trim());
       }
     }
   }
@@ -381,13 +435,31 @@ export function createSpeculator({
    * streamed hook and the snapshot-patch hook funnel through here. circuit_ref
    * is the circuit the designation applies to (record_reading.circuit /
    * decoded reading key), value is the designation string.
+   *
+   * A2-multiboard item 3 — `effectiveBoardId` is the board the write actually
+   * lands on (resolved through safeEffectiveBoard, so it accounts for
+   * select_board state, not just an explicit board_id the model usually omits).
+   * When it is known the entry is stored under the PAIR identity, because
+   * circuit refs are per board: main's "Cooker" and sub-b's "Shed sockets" are
+   * both circuit 3, and a bare-ref map lets one speak the other's name.
+   *
+   * When it is NOT known (no resolver wired — legacy callers and every
+   * single-board test) the entry keeps the bare ref, which is byte-for-byte the
+   * pre-item-3 behaviour. Note this is deliberately STRICTER than the harness's
+   * seeding rule, which also claims the bare ref for main: a scoped write here
+   * never writes the bare space at all, so a sub-board rename can never leak
+   * into an unscoped lookup. Reads stay consistent because the lookup resolves
+   * its board through the same closure the write did.
    */
-  function _observeDesignation(circuitRef, value) {
+  function _observeDesignation(circuitRef, value, effectiveBoardId = null) {
     const refNum = Number(circuitRef);
     const valueStr = typeof value === 'string' ? value.trim() : '';
-    if (Number.isInteger(refNum) && refNum > 0 && valueStr) {
-      perTurnDesignations.set(refNum, valueStr);
+    if (!Number.isInteger(refNum) || refNum <= 0 || !valueStr) return;
+    if (effectiveBoardId != null && effectiveBoardId !== '') {
+      perTurnDesignations.set(circuitDesignationKey(effectiveBoardId, refNum), valueStr);
+      return;
     }
+    perTurnDesignations.set(refNum, valueStr);
   }
 
   function _resetTurnCapIfNew(turnId) {
@@ -596,8 +668,22 @@ export function createSpeculator({
     // content_block_stop BEFORE its circuit_designation write), the lookup is
     // empty → un-designated text → safe MISS at validate (drift → fresh synth),
     // never a stale serve.
+    //
+    // A2-multiboard item 3 — resolved through the shared resolveDesignation, on the
+    // EFFECTIVE board rather than the raw wire board_id (the model omits board_id in
+    // the common case and scope comes from select_board state). A SCOPED lookup
+    // resolves against the `(board, ref)` pair and nothing else; only a caller with
+    // no board id reads the legacy bare space. That is the same resolution the
+    // bundler performs — a speculator that constructed pair keys differently from
+    // the writer would be a silent cross-board name leak.
+    //
+    // ONLY the designation is board-resolved. The RAW boardId stays the identity for
+    // the fan-out bucket and the cache key above, because those are keyed to what the
+    // wire said and re-keying them would orphan every existing entry.
     const designation =
-      Number.isInteger(circuit) && circuit > 0 ? (perTurnDesignations.get(circuit) ?? null) : null;
+      Number.isInteger(circuit) && circuit > 0
+        ? resolveDesignation(perTurnDesignations, circuit, safeEffectiveBoard(boardId))
+        : null;
     // F/U-1 — calculated flag keeps the speculated text byte-identical to the
     // bundler's final "calculated as" phrasing; without it every calculator
     // write would open a speculation that can only drift at validate (wasted
@@ -1033,7 +1119,16 @@ export function createSpeculator({
           const slot = decodeReadingKey(item.key);
           if (slot.field !== 'circuit_designation') continue;
           const entry = item.value ?? item.after;
-          _observeDesignation(parseCircuit(slot.circuit), entry?.value);
+          // A2-multiboard item 3 — store under the same board the lookup will
+          // resolve to. Running slot.boardId back through safeEffectiveBoard
+          // (rather than trusting it directly) is what keeps write and read
+          // symmetric: whatever normalisation the closure applies, it applies
+          // to both sides, so the two can never disagree.
+          _observeDesignation(
+            parseCircuit(slot.circuit),
+            entry?.value,
+            safeEffectiveBoard(slot.boardId)
+          );
         }
       }
 
@@ -1319,8 +1414,20 @@ export function createSpeculator({
     // so a LATER reading on circuit N this turn speculates with the designation
     // and matches the bundler's emitted text. Recorded BEFORE the enum-skip /
     // _speculate below so the map is populated as early as the stream allows.
+    //
+    // A2-multiboard item 3 — scoped to the EFFECTIVE board. `input.board_id` alone
+    // is not enough: the model omits it in the common case and scope comes from
+    // select_board state, so a bare rename on a sub-board would otherwise be filed
+    // (and later spoken) against main's circuit of the same number.
+    //
+    // This hook fires at content_block_stop, BEFORE the round's select_board has
+    // been dispatched, so a cross-board turn can resolve against the PREVIOUS
+    // board. That is the documented SAFE MISS class (the id-100(b) precedent):
+    // a wrong designation here produces a text mismatch at validate → cache MISS
+    // → the bundler's correct line is synthesised fresh. Latency loss, never a
+    // wrong name served.
     if (record.name === 'record_reading' && field === 'circuit_designation') {
-      _observeDesignation(circuit, value);
+      _observeDesignation(circuit, value, safeEffectiveBoard(boardIdForClamp));
     }
 
     // 2026-06-03b voice-correctness Fix C — skip pre-synth when the

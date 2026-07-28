@@ -1179,15 +1179,36 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // Snapshot-only here; same-turn circuit_designation writes are layered
         // on inside the speculator as its hooks observe them. Mirrors the
         // snapshot read the post-loop circuitDesignations build does (below).
+        //
+        // A2-multiboard item 3 — seeded in BOTH key spaces, mirroring the
+        // post-loop circuitDesignations build below verbatim. The old
+        // `Number(key)` filter dropped every composite `${board_id}::${ref}`
+        // bucket, so a sub-board circuit's name never reached the SPECULATED
+        // read-back — the speculator said "Circuit 4, Zs 0.62" while the
+        // bundler said "Shed sockets, Zs 0.62", a guaranteed validate-time
+        // MISS on exactly the multi-board turns the pre-synth exists to speed
+        // up. The two builds must stay identical: a divergence is a serve of
+        // the wrong circuit's name.
         const initialDesignations = new Map();
         const seedCircuits = session?.stateSnapshot?.circuits;
+        const seedMainBoardId = getMainBoardId(session?.stateSnapshot);
         if (seedCircuits && typeof seedCircuits === 'object') {
           for (const [key, circ] of Object.entries(seedCircuits)) {
             if (!circ || typeof circ !== 'object') continue;
-            const refNum = Number(key);
-            if (!Number.isInteger(refNum) || refNum <= 0) continue;
             const d = circ.circuit_designation;
-            if (typeof d === 'string' && d.trim()) initialDesignations.set(refNum, d.trim());
+            if (typeof d !== 'string' || !d.trim()) continue;
+            const refNum = Number(key);
+            if (Number.isInteger(refNum) && refNum > 0) {
+              // Legacy bare-numeric key — the MAIN board's bucket namespace.
+              initialDesignations.set(refNum, d.trim());
+              initialDesignations.set(circuitDesignationKey(seedMainBoardId, refNum), d.trim());
+              continue;
+            }
+            // Composite `${board_id}::${ref}` bucket — a SUB-board circuit,
+            // keyed by its own board and NEVER claiming the bare ref.
+            const subRef = Number.isInteger(circ.circuit) ? circ.circuit : null;
+            if (subRef == null || subRef <= 0 || typeof circ.board_id !== 'string') continue;
+            initialDesignations.set(circuitDesignationKey(circ.board_id, subRef), d.trim());
           }
         }
         speculator = createSpeculator({
@@ -1204,6 +1225,23 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // line differ from the emitted confirmation, which is a cache MISS at
           // best and a wrong spoken value at worst.
           resolveEarthing: (boardId) => resolveBoardAwareEarthing(session.stateSnapshot, boardId),
+          // A2-multiboard item 3 — effective-board resolver for the DESIGNATION
+          // lookup. Same closure-over-live-snapshot shape as resolveEarthing, and
+          // for the same reason: the effective board is select_board state the
+          // dispatchers mutate mid-turn, so a captured string would be wrong on
+          // exactly the cross-board turns this exists for.
+          //
+          // Resolution chain mirrors getCircuitBucket / circuitExistsInSnapshot —
+          // explicit board_id → currentBoardId → canonical main — so the
+          // speculator scopes a designation to the same bucket the dispatcher
+          // wrote it into.
+          resolveEffectiveBoard: (boardId) => {
+            if (typeof boardId === 'string' && boardId !== '') return boardId;
+            const snap = session?.stateSnapshot;
+            const current = snap?.currentBoardId;
+            if (typeof current === 'string' && current !== '') return current;
+            return getMainBoardId(snap);
+          },
           // P3 Fix 8 — deny LIM pre-synthesis on capability-gated fields when the
           // client hasn't advertised `lim_ranged_write_v1` (the dispatcher will
           // SKIP the write, so a pre-synth confirmation would be a false
