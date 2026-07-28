@@ -23,6 +23,9 @@ import {
   rawCircuitSlot,
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
+  projectReadingWinners,
+  projectBoardReadingWinners,
+  circuitDesignationKey,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -89,21 +92,17 @@ export const CLEAR_WIRE_EXEMPT = new Set(['r2_ohm']);
  */
 export const SAME_TURN_CLEAR_WRITE_COLLAPSED = Symbol('stage6.sameTurnClearWriteCollapsed');
 
-/**
- * A2 (2026-07-28) — non-enumerable carrier for `replaces_cleared` projections
- * the bundler DECLINED to stamp because the collapsed slot resolved to more
- * than one candidate surviving reading (a same-turn double spelling of the
- * same slot — e.g. one write omitting `board_id` and one carrying the explicit
- * current board). Stamping either would be a guess, so the projection stamps
- * NOTHING (fail-closed-unflagged: the web consumer then behaves exactly as it
- * does today) and records the slot keys here. `stage6-shadow-harness.js` reads
- * this and emits `stage6.replaces_cleared_ambiguous_projection`. Non-enumerable
- * so it never enters JSON wire output or a defensive spread; the bundler itself
- * stays PURE (no logging).
+/*
+ * A2-multiboard (2026-07-28) — `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` (and its
+ * `stage6.replaces_cleared_ambiguous_projection` telemetry row) lived here.
+ * A2-core used it to fail closed when a collapsed slot resolved to more than
+ * one candidate surviving reading — two same-turn SPELLINGS of one slot (one
+ * omitting `board_id`, one carrying the explicit current board) that the raw
+ * Map kept as separate entries. The journal projection is last-write-wins per
+ * EFFECTIVE slot, so both spellings now resolve to one winner and the
+ * ambiguity is structurally unreachable. Removed rather than left dormant: a
+ * dead fail-closed branch reads as live protection in a future review.
  */
-export const REPLACES_CLEARED_AMBIGUOUS_PROJECTION = Symbol(
-  'stage6.replacesClearedAmbiguousProjection'
-);
 
 /**
  * Synthesise brief read-back confirmations from the bundled readings.
@@ -244,6 +243,37 @@ function synthesiseStateChangeConfirmations(
 }
 
 /**
+ * A2-multiboard (2026-07-28) — the ONE designation resolver shared by both
+ * confirmation synthesisers.
+ *
+ * The harness builds the designation map with TWO key spaces: the real
+ * `(effective_board_id, circuit_ref)` pair identity (circuit refs are PER
+ * BOARD, so ref alone is not an identity), and the legacy bare ref for
+ * genuinely unscoped lookups. Resolution therefore tries the pair FIRST when
+ * the caller knows the reading's board, and only then falls back to the bare
+ * ref. A reading with no board id resolves exactly as it did before this
+ * change, which is what keeps all single-board traffic byte-identical.
+ *
+ * Plain-object maps (legacy/test callers) keep their ref-only semantics —
+ * they were never board-aware and constructing pair keys on them would only
+ * miss.
+ */
+function resolveDesignation(designations, circuit, boardId = null) {
+  if (!designations) return null;
+  if (designations instanceof Map) {
+    if (boardId != null && boardId !== '') {
+      const paired = designations.get(circuitDesignationKey(boardId, circuit));
+      if (paired != null) return paired;
+    }
+    return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
+  }
+  if (typeof designations === 'object') {
+    return designations[circuit] ?? designations[String(circuit)] ?? null;
+  }
+  return null;
+}
+
+/**
  * Issue 8 from 2026-05-31 field test. Inspector wants every UI write
  * read back via TTS so the iPad can sit in another room while they
  * work in AirPods. record_reading + state-change ops were already
@@ -259,9 +289,9 @@ function synthesiseStateChangeConfirmations(
  *   per-reading "field_corrected" is the only category we speak —
  *   record_reading-driven corrections already go via the main
  *   confirmation path)
- * @param {Map<number,string>|null} designations circuit ref →
- *   designation, used to prefix cleared circuit-level readings with
- *   the spoken circuit name when known.
+ * @param {Map<number|string,string>|null} designations designation map — see
+ *   `resolveDesignation` for the two key spaces. Used to prefix cleared
+ *   circuit-level readings with the spoken circuit name when known.
  * @returns {Array<{text, expanded_text, field, circuit}>}
  */
 function synthesiseObservationAndClearedConfirmations(
@@ -273,16 +303,8 @@ function synthesiseObservationAndClearedConfirmations(
   turnId = null
 ) {
   const out = [];
-  const lookupDesignation = (circuit) => {
-    if (!designations) return null;
-    if (designations instanceof Map) {
-      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
-    }
-    if (typeof designations === 'object') {
-      return designations[circuit] ?? designations[String(circuit)] ?? null;
-    }
-    return null;
-  };
+  const lookupDesignation = (circuit, boardId = null) =>
+    resolveDesignation(designations, circuit, boardId);
 
   if (Array.isArray(observations)) {
     for (const obs of observations) {
@@ -400,7 +422,10 @@ function synthesiseObservationAndClearedConfirmations(
       if (circ == null || circ === 0) {
         text = `${friendly} cleared`;
       } else {
-        const desig = lookupDesignation(circ);
+        // A2-multiboard — resolve the name on the clear's EFFECTIVE board
+        // (stamped non-enumerably at dispatch) so a cleared circuit 3 on
+        // sub-board B is not announced with board A's circuit-3 name.
+        const desig = lookupDesignation(circ, c?.[EFFECTIVE_CIRCUIT_SLOT]?.boardId ?? null);
         const prefix =
           typeof desig === 'string' && desig.trim() ? desig.trim().slice(0, 40) : `Circuit ${circ}`;
         text = `${prefix}, ${friendly} cleared`;
@@ -454,16 +479,8 @@ function synthesiseConfirmations(
   // meter reading. Null/absent (legacy callers, board readings) → nothing is
   // treated as calculated.
   const isCalc = (r) => calcReadings instanceof Set && calcReadings.has(r);
-  const lookupDesignation = (circuit) => {
-    if (!designations) return null;
-    if (designations instanceof Map) {
-      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
-    }
-    if (typeof designations === 'object') {
-      return designations[circuit] ?? designations[String(circuit)] ?? null;
-    }
-    return null;
-  };
+  const lookupDesignation = (circuit, boardId = null) =>
+    resolveDesignation(designations, circuit, boardId);
 
   // Issue 10 (2026-05-31, session B95B2EE1): a fan-out write to
   // multiple circuits used to emit one per-circuit confirmation each;
@@ -587,7 +604,9 @@ function synthesiseConfirmations(
     // circuit_designation write so a brand-new circuit confirmed in the
     // SAME turn (Sonnet: create_circuit + record_reading) speaks with
     // its name immediately.
-    const designation = lookupDesignation(r.circuit);
+    // A2-multiboard — pass the reading's board so a per-board designation wins
+    // over the bare-ref fallback (two boards can both own a circuit 3).
+    const designation = lookupDesignation(r.circuit, r.board_id ?? null);
     const text = buildConfirmationText(r.field, r.value, r.circuit, designation, {
       calculated: isCalc(r),
       correction: correctionOf(r),
@@ -770,7 +789,23 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   const isDerivedWrite = (entry) => entry?.derived === true;
   const isCalcWrite = (entry) =>
     typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::');
-  for (const [key, entry] of perTurnWrites.readings) {
+  // A2-multiboard (2026-07-28) — project from the JOURNAL, not the raw Map.
+  //
+  // The raw Map key is board-AMBIGUOUS (`record_reading` omits `board_id` in
+  // the common case), so `select_board A → write → select_board B → write`
+  // collapsed onto ONE Map entry and the bundler could only ever see board B's
+  // value: board A's dictated reading had been read back aloud and then
+  // silently vanished. `projectReadingWinners` returns the last-write-wins
+  // winner per EFFECTIVE slot, so BOTH boards' writes reach the wire.
+  //
+  // Ordering is preserved: the projection emits each effective slot at its
+  // FIRST-appearance index, which reproduces `Map.set` insertion-order
+  // semantics exactly whenever no two effective slots share a raw key — i.e.
+  // for all single-board traffic the wire byte order does not move. Entries
+  // that never went through a staging helper (legacy hand-built accumulators)
+  // are appended verbatim in Map order.
+  const readingWinners = projectReadingWinners(perTurnWrites);
+  for (const { rawKey: key, value: entry } of readingWinners) {
     // Slice 1.1c — decodeReadingKey handles BOTH the new boardId-tagged
     // shape `${field}::${circuit}<NUL>__board__<NUL>${boardId}<NUL>` and
     // legacy 2-part `${field}::${circuit}` keys (test fixtures or older
@@ -871,7 +906,11 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // here (a mid-turn select_board would skew it).
   const survivingEffectiveSlots = new Set();
   const survivingRawSlots = new Set();
-  for (const [mapKey, val] of perTurnWrites.readings) {
+  // A2-multiboard — read survival from the JOURNAL winners for the same reason
+  // the projection above does: a board-A write shadowed under a shared raw Map
+  // key still SURVIVED the turn, and a raw-Map scan would have missed it, so a
+  // clear on board A would not have collapsed against its own replacement.
+  for (const { rawKey: mapKey, value: val } of readingWinners) {
     const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
     if (sym) {
       survivingEffectiveSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
@@ -911,9 +950,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   const survivingBoardSlots = new Set();
   // Defensive: hand-built accumulators (older test fixtures) may omit the
   // boardReadings Map entirely.
-  const boardReadingsMap =
-    perTurnWrites.boardReadings instanceof Map ? perTurnWrites.boardReadings : new Map();
-  for (const val of boardReadingsMap.values()) {
+  // A2-multiboard — board winners come from the board JOURNAL for the same
+  // reason as the circuit side: `record_board_reading` has no schema `board_id`
+  // at all, so `select_board A → record manufacturer → select_board B → record
+  // manufacturer` shares ONE raw key and a Map scan sees only board B.
+  const boardReadingWinners = projectBoardReadingWinners(perTurnWrites);
+  for (const { value: val } of boardReadingWinners) {
     const bsym = val?.[EFFECTIVE_BOARD_SLOT];
     if (bsym) survivingBoardSlots.add(boardSlotKey(bsym.field, bsym.boardId));
   }
@@ -945,7 +987,6 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // cannot (`result` is in its temporal dead zone until the declaration), so
   // both halves are deferred together and land at one site.
   const pendingStamp = [];
-  const ambiguousProjectionSlots = [];
   const keptFieldCorrections = [];
   for (const c of rawFieldCorrections) {
     if (c && c.reason === 'clear_reading' && clearSlotHasSurvivingWrite(c)) {
@@ -973,15 +1014,21 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // in the SAME-sidedness bucket, so a stamp can only ever land on a write
         // the collapse predicate itself considered.
         const cands = (sym ? replacesEffectiveCandidates : replacesRawCandidates).get(slotKey);
+        // A2-multiboard (2026-07-28) — A2-core's fail-closed-UNFLAGGED branch
+        // for `cands.length > 1` is REMOVED, because the case it defended
+        // against can no longer arise. It fired when two same-turn SPELLINGS of
+        // one slot (one omitting `board_id`, one carrying the explicit current
+        // board) both survived as separate raw Map keys, leaving the stamp a
+        // guess. The journal projection above is last-write-wins per EFFECTIVE
+        // slot, so those two spellings now resolve to exactly ONE winner —
+        // there is nothing left to guess between, and the write the inspector
+        // actually spoke last is the one that gets flagged.
+        //
+        // The defensive `length === 1` shape is kept (rather than taking
+        // `cands[0]` unconditionally) so a future producer that reintroduced a
+        // duplicate would fail SILENT-UNFLAGGED rather than stamp arbitrarily.
         if (cands && cands.length === 1) {
           pendingStamp.push(cands[0]);
-        } else if (cands && cands.length > 1) {
-          // Fail-closed-UNFLAGGED: two same-turn spellings of one slot survived
-          // (e.g. one write omitting board_id and one carrying the explicit
-          // current board). Stamping either would be a guess, so stamp nothing
-          // and let web behave exactly as it does today; the harness emits
-          // telemetry so the case is observable if it ever fires in the field.
-          ambiguousProjectionSlots.push(slotKey);
         }
         // cands undefined/empty is reachable only when the sole surviving write
         // for the slot was a derived/mirror write (excluded from candidacy).
@@ -1028,12 +1075,6 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // byte-identical to pre-A2.
   for (const reading of pendingStamp) {
     reading.replaces_cleared = true;
-  }
-  if (ambiguousProjectionSlots.length > 0) {
-    Object.defineProperty(result, REPLACES_CLEARED_AMBIGUOUS_PROJECTION, {
-      value: ambiguousProjectionSlots,
-      enumerable: false,
-    });
   }
   if (_turnId) result.turn_id = _turnId;
   // Voice-latency plan 2026-06-05 Phase 2.1 — emit `utterance_id`
@@ -1160,9 +1201,15 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   //
   //    Map.entries() preserves insertion order — same property the readings
   //    Map relies on for STT-09 same-turn correction.
+  // A2-multiboard — iterate the board JOURNAL winners (computed above) rather
+  // than the raw Map, so two boards' writes of one board-scoped field both
+  // reach the wire instead of the second silently destroying the first. The
+  // `boardReadings.size` guard is retained as the emit condition: an empty Map
+  // means an empty journal, and hand-built accumulators with a Map but no
+  // journal still project through the winner helper's legacy passthrough.
   if (boardReadings.size > 0) {
     const extracted_board_readings = [];
-    for (const [key, entry] of boardReadings) {
+    for (const { rawKey: key, value: entry } of boardReadingWinners) {
       // Slice 1.1c — same key-decoder treatment as the readings Map. Legacy
       // field-only keys decode to boardId=null; new boardId-tagged keys
       // strip the tag so `field` is the bare field name on the wire.

@@ -107,7 +107,16 @@ import {
   createPerTurnWrites,
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
+  EFFECTIVE_CIRCUIT_SLOT,
+  circuitDesignationKey,
+  decodeReadingKey,
+  projectReadingWinners,
 } from './stage6-per-turn-writes.js';
+// A2-multiboard — the designation map is keyed by (effective board, circuit
+// ref), and the snapshot's circuit buckets are DUAL-SHAPE (main board under
+// bare numeric keys, sub-boards under `${board_id}::${ref}` composites), so
+// resolving the main board's id is required to key the legacy half correctly.
+import { getMainBoardId } from './stage6-multi-board-shape.js';
 // Plan A1a — the net-0 drain selects mandatory-notice text AT THE DRAIN
 // (post-suppression) via the dispatcher module's exported selector, so the
 // rotation cursor advances exactly once per emitted notice. Safe import:
@@ -132,7 +141,6 @@ import {
   BUNDLER_PHASE,
   applyConfirmationDebounce,
   SAME_TURN_CLEAR_WRITE_COLLAPSED,
-  REPLACES_CLEARED_AMBIGUOUS_PROJECTION,
 } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { buildSessionTools } from './stage6-tool-schemas.js';
@@ -283,31 +291,18 @@ function emitClearWriteCollapseTelemetry(log, session, turnId, result) {
   }
 }
 
-/**
- * A2 (2026-07-28) — emit one `stage6.replaces_cleared_ambiguous_projection`
- * INFO row per slot where the bundler DECLINED to stamp `replaces_cleared`
- * because the collapsed slot resolved to more than one candidate surviving
- * reading. Fail-closed-unflagged is silent on the wire by design, so this row
- * is the ONLY observability that the case fired; without it a web cell that
- * kept a stale value would look identical to an ordinary skip. The slot key is
- * server-derived (canonical field + circuit + effective board id) — no
- * model-controlled string, so no leak-filter concern.
+/*
+ * A2-multiboard (2026-07-28) — `emitReplacesClearedAmbiguousTelemetry` lived
+ * here, emitting one `stage6.replaces_cleared_ambiguous_projection` INFO row
+ * per slot where the bundler DECLINED to stamp `replaces_cleared` because the
+ * collapsed slot resolved to more than one candidate surviving reading. Both
+ * the manifest Symbol and the branch that populated it are gone: the bundler
+ * now projects last-write-wins per EFFECTIVE slot from the append-only write
+ * journal, so two same-turn SPELLINGS of one slot resolve to exactly ONE
+ * winner and the ambiguity is structurally unreachable. Removed rather than
+ * left dormant — a telemetry row that can never fire reads as live
+ * observability in a future review.
  */
-function emitReplacesClearedAmbiguousTelemetry(log, session, turnId, result) {
-  const slots = result?.[REPLACES_CLEARED_AMBIGUOUS_PROJECTION];
-  if (!Array.isArray(slots) || slots.length === 0) return;
-  for (const slotKey of slots) {
-    try {
-      log?.info?.('stage6.replaces_cleared_ambiguous_projection', {
-        sessionId: session?.sessionId,
-        turnId,
-        slot_key: slotKey,
-      });
-    } catch {
-      // Telemetry must never break extraction.
-    }
-  }
-}
 
 /**
  * Estimate shadow-mode cost from the tool-loop output's usage accumulator.
@@ -1528,32 +1523,71 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // just renamed circuit N) > existing snapshot value. Both keyed by
     // numeric circuit_ref; the bundler tolerates either number or string
     // keys via Map.get coercion.
+    //
+    // A2-multiboard (2026-07-28) — the map now carries TWO key spaces:
+    //   * `circuitDesignationKey(effectiveBoardId, ref)` — the real identity.
+    //     Circuit refs are PER BOARD, so ref alone is not an identity: a
+    //     `select_board A → rename circuit 3 → select_board B → rename circuit
+    //     3` turn used to leave ONE entry and both boards' read-backs spoke
+    //     board B's name.
+    //   * the bare numeric ref — retained for genuinely UNSCOPED lookups
+    //     (legacy single-board traffic, and any reading that reaches the
+    //     bundler with no board_id). The two key spaces cannot collide (the
+    //     pair key is NUL-delimited), so single-board behaviour is unchanged.
     const circuitDesignations = new Map();
     const snapshotCircuits = session?.stateSnapshot?.circuits;
+    const snapshotMainBoardId = getMainBoardId(session?.stateSnapshot);
     if (snapshotCircuits && typeof snapshotCircuits === 'object') {
       for (const [key, circ] of Object.entries(snapshotCircuits)) {
         if (!circ || typeof circ !== 'object') continue;
-        const refNum = Number(key);
-        if (!Number.isInteger(refNum) || refNum <= 0) continue;
         const d = circ.circuit_designation;
-        if (typeof d === 'string' && d.trim()) {
+        if (typeof d !== 'string' || !d.trim()) continue;
+        const refNum = Number(key);
+        if (Number.isInteger(refNum) && refNum > 0) {
+          // Legacy bare-numeric key — the MAIN board's bucket namespace
+          // (see stage6-multi-board-shape.js getCircuitBucket).
           circuitDesignations.set(refNum, d.trim());
+          circuitDesignations.set(circuitDesignationKey(snapshotMainBoardId, refNum), d.trim());
+          continue;
         }
+        // Composite `${board_id}::${ref}` bucket — a SUB-board circuit. These
+        // were skipped entirely before (the `Number(key)` parse yields NaN),
+        // so a sub-board circuit's name never reached the spoken read-back at
+        // all; key them by their own board.
+        const subRef = Number.isInteger(circ.circuit) ? circ.circuit : null;
+        if (subRef == null || subRef <= 0 || typeof circ.board_id !== 'string') continue;
+        circuitDesignations.set(circuitDesignationKey(circ.board_id, subRef), d.trim());
       }
     }
     // Overlay: same-turn circuit_designation writes win. Sonnet emitting
     // create_circuit + record_reading(designation) + record_reading(zs)
     // in one turn must hear "Cooker, Zs 0.62" — not "Circuit 4, Zs 0.62".
-    for (const [key, entry] of perTurnWrites.readings ?? new Map()) {
-      // Bundler's decodeReadingKey is what splits these in production;
-      // here we just need the field + circuit prefix, so a string parse
-      // suffices.
-      const m = /^circuit_designation::(\d+)(?:\0|$)/.exec(key);
-      if (!m) continue;
-      const refNum = Number(m[1]);
+    //
+    // A2-multiboard — projected from the JOURNAL winners, not the raw Map, and
+    // keyed by the EFFECTIVE board. The raw Map key is board-ambiguous
+    // (`record_reading` omits `board_id` in the common case), so two boards'
+    // same-ref designation writes collapsed onto one entry and the raw-Map
+    // last-writer's name was spoken for BOTH. The winner projection is
+    // last-write-wins per effective slot, so each board keeps its own.
+    for (const { rawKey: key, value: entry } of projectReadingWinners(perTurnWrites)) {
+      const decoded = decodeReadingKey(key);
+      if (decoded.field !== 'circuit_designation') continue;
+      const sym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
+      const refNum = Number(sym?.circuit ?? decoded.circuit);
       const valueStr = String(entry?.value ?? '').trim();
-      if (Number.isInteger(refNum) && refNum > 0 && valueStr) {
+      if (!Number.isInteger(refNum) || refNum <= 0 || !valueStr) continue;
+      const effectiveBoardId = sym ? (sym.boardId ?? null) : (decoded.boardId ?? null);
+      if (effectiveBoardId != null) {
+        circuitDesignations.set(circuitDesignationKey(effectiveBoardId, refNum), valueStr);
+      }
+      // The bare-ref entry is the unscoped-lookup fallback. Only a write on the
+      // MAIN/unscoped board may claim it: letting a sub-board write own the
+      // bare ref is exactly the cross-board leak this re-key closes.
+      if (effectiveBoardId == null || effectiveBoardId === snapshotMainBoardId) {
         circuitDesignations.set(refNum, valueStr);
+        if (effectiveBoardId == null) {
+          circuitDesignations.set(circuitDesignationKey(snapshotMainBoardId, refNum), valueStr);
+        }
       }
     }
 
@@ -1649,7 +1683,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
 
     // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
     emitClearWriteCollapseTelemetry(log, session, turnId, result);
-    emitReplacesClearedAmbiguousTelemetry(log, session, turnId, result);
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
     // readings (record_board_reading dispatches) into extracted_readings with
@@ -3956,7 +3989,6 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
 
   // P5 (2026-07-23) — emit clear→write collapse telemetry (shadow path).
   emitClearWriteCollapseTelemetry(log, session, turnId, toolResult);
-  emitReplacesClearedAmbiguousTelemetry(log, session, turnId, toolResult);
 
   // Step 6: slot-diff the two result shapes.
   const divergence = compareSlots(legacy, toolResult);

@@ -17,7 +17,9 @@
  * This file pins the producer end across the SAME matrix P5's own collapse
  * matrix covers (`stage6-p5-clear-write-collapse.test.js`) — the stamp must
  * follow the collapse everywhere the collapse fires, and nowhere else — plus:
- *   - the fail-closed-UNFLAGGED guard (>1 candidate for a slot → stamp NOTHING);
+ *   - two same-turn spellings of ONE effective slot resolving to exactly one
+ *     flagged winner (A2-multiboard, 2026-07-28 — A2-core's fail-closed-UNFLAGGED
+ *     guard is REMOVED because the journal projection makes the case unreachable);
  *   - derived/mirror writes being excluded from candidacy;
  *   - the WIRE contract, driven through the real egress chain and deep-equalled
  *     against the shared cross-client fixture web's decoder test imports.
@@ -40,7 +42,6 @@ import { dispatchStartDialogueScript } from '../extraction/stage6-dispatchers-sc
 import {
   bundleToolCallsIntoResult,
   SAME_TURN_CLEAR_WRITE_COLLAPSED,
-  REPLACES_CLEARED_AMBIGUOUS_PROJECTION,
 } from '../extraction/stage6-event-bundler.js';
 import {
   createPerTurnWrites,
@@ -174,8 +175,6 @@ describe('A2 — the marker follows the collapse across every producer', () => {
     expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toHaveLength(1);
     expect(readingFor(r, 'ir_live_live_mohm', 3).replaces_cleared).toBe(true);
     expect(flagged(r)).toHaveLength(1);
-    // The guard never fires on an unambiguous slot.
-    expect(r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION]).toBeUndefined();
   });
 
   test('repeated clear→write→clear→write: only the FINAL surviving write is flagged, once', async () => {
@@ -221,7 +220,6 @@ describe('A2 — the marker follows the collapse across every producer', () => {
     expect(r.extracted_readings).toHaveLength(1);
     expect(r.extracted_readings[0].value).toBe('100');
     expect(r.extracted_readings[0].replaces_cleared).toBe(true);
-    expect(r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION]).toBeUndefined();
   });
 
   test('set_field_for_all_circuits: only the collapsed circuit is flagged', async () => {
@@ -598,13 +596,11 @@ describe('A2 — derived/mirror writes are excluded from candidacy', () => {
 
     // The collapse still fires (that is P5's contract, unchanged)…
     expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toHaveLength(1);
-    // …but a silent mirror is not a spoken replacement, so nothing is marked
-    // and the fail-closed guard is NOT tripped either.
+    // …but a silent mirror is not a spoken replacement, so nothing is marked.
     expect(flagged(r)).toHaveLength(0);
-    expect(r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION]).toBeUndefined();
   });
 
-  test('a derived twin alongside ONE real write does not make the slot ambiguous', () => {
+  test('a derived twin alongside ONE real write still flags exactly the real write', () => {
     const p = createPerTurnWrites();
     // Two Map entries, one effective slot: one derived (excluded), one real.
     p.readings.set(encodeReadingKey('measured_zs_ohm', 1, 'main'), derivedEntry('main'));
@@ -622,25 +618,30 @@ describe('A2 — derived/mirror writes are excluded from candidacy', () => {
 
     expect(flagged(r)).toHaveLength(1);
     expect(flagged(r)[0].value).toBe('0.42');
-    expect(r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION]).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 5. Fail-closed-UNFLAGGED: >1 candidate for one collapsed slot.
+// 5. Two same-turn SPELLINGS of one effective slot → ONE last-write-wins winner.
 //
 //    `encodeReadingKey` embeds the RAW board_id and `dispatchRecordReading`
 //    passes `input.board_id` verbatim, so a same-turn omitted-board write and
 //    an explicit-current-board write of the same slot are TWO Map entries with
-//    ONE effective identity. Stamping either would be a guess about which one
-//    replaced the cleared value, so we stamp NEITHER and the turn behaves
-//    exactly as it does today. Declining is safe by construction: web falls
-//    through to its unchanged fill-only gate, so an empty cell still FILLS —
-//    the guard can never create a NEW spoken-but-not-written case.
+//    ONE effective identity.
+//
+//    A2-core stamped NEITHER (fail-closed-UNFLAGGED) because it could not tell
+//    which write the clear belonged to. A2-multiboard (2026-07-28) removes that
+//    guard: the append-only sequenced write JOURNAL makes the ordering
+//    decidable, so the projection is last-write-wins PER EFFECTIVE SLOT and the
+//    two spellings collapse to exactly ONE surviving reading — which is then
+//    unambiguously the replacement, and IS flagged. The inversion is the point:
+//    the old behaviour left web holding the stale value (the very
+//    spoken-but-not-written class A2 exists to close) on any turn where the
+//    model spelled the board both ways.
 // ---------------------------------------------------------------------------
 
-describe('A2 — fail-closed-unflagged on an ambiguous projection', () => {
-  test('two same-turn spellings of one slot: NOTHING is flagged, the slot is recorded for telemetry', async () => {
+describe('A2-multiboard — two same-turn spellings of one slot resolve to ONE flagged winner', () => {
+  test('the LAST write wins and carries the marker; the shadowed spelling never reaches the wire', async () => {
     const session = makeSession({ 3: { measured_zs_ohm: '1.50' } });
     const p = createPerTurnWrites();
     await dispatchClearReading(
@@ -678,21 +679,22 @@ describe('A2 — fail-closed-unflagged on an ambiguous projection', () => {
     );
     const r = bundle(p);
 
-    // Precondition: the two spellings really did survive as separate writes.
-    expect(r.extracted_readings.filter((x) => x.field === 'measured_zs_ohm')).toHaveLength(2);
+    // The two spellings are ONE effective slot, so exactly one write survives —
+    // the LAST one, per the journal's write sequence.
+    const zs = r.extracted_readings.filter((x) => x.field === 'measured_zs_ohm');
+    expect(zs).toHaveLength(1);
+    expect(zs[0].value).toBe('0.44');
     // The collapse fired (P5 behaviour unchanged)…
     expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toHaveLength(1);
     expect('field_corrections' in r).toBe(false);
-    // …and NOTHING is flagged.
-    expect(flagged(r)).toHaveLength(0);
-    // The slot is recorded on the non-enumerable manifest the harness reads to
-    // emit `stage6.replaces_cleared_ambiguous_projection`.
-    expect(r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION]).toHaveLength(1);
-    expect(typeof r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION][0]).toBe('string');
-    expect(r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION][0]).toContain('measured_zs_ohm');
+    // …and the sole survivor IS the replacement, so it carries the marker.
+    // (Pre-A2-multiboard this asserted ZERO flags — the inversion is deliberate:
+    // declining left web holding the stale value.)
+    expect(flagged(r)).toHaveLength(1);
+    expect(flagged(r)[0].value).toBe('0.44');
   });
 
-  test('the ambiguity manifest is NON-ENUMERABLE — it can never ride the wire', async () => {
+  test('no ambiguity manifest rides the wire — the removed guard leaves no residue', async () => {
     const session = makeSession({ 3: { measured_zs_ohm: '1.50' } });
     const p = createPerTurnWrites();
     await dispatchClearReading(
@@ -728,9 +730,13 @@ describe('A2 — fail-closed-unflagged on an ambiguous projection', () => {
     );
     const r = bundle(p);
 
-    expect(r[REPLACES_CLEARED_AMBIGUOUS_PROJECTION]).toBeDefined();
     expect(Object.keys(r)).not.toContain('replaces_cleared_ambiguous_projection');
     expect(JSON.stringify(r)).not.toContain('ambiguous');
+    // No Symbol-keyed manifest survives either — the export is gone, so nothing
+    // can read one; this pins that no NEW symbol quietly replaced it.
+    expect(
+      Object.getOwnPropertySymbols(r).map((s) => s.toString()).join('|')
+    ).not.toContain('ambiguous');
   });
 });
 
@@ -1005,18 +1011,18 @@ describe('A2 — projectExtractionResultForWire', () => {
 });
 
 // ---------------------------------------------------------------------------
-// The fail-closed branch's ONLY observability.
+// The two-spelling case, driven END-TO-END through the REAL harness.
 //
-// When two same-turn spellings of one slot survive, the bundler stamps NOTHING
-// (correct — guessing which write the clear belongs to could flag the wrong
-// one) and web keeps its stale value. On the wire that is indistinguishable
-// from an ordinary skip, so `stage6.replaces_cleared_ambiguous_projection` is
-// the only way the case is ever visible in production. These tests drive the
-// REAL harness so the emitter can't be deleted while the suites stay green.
+// A2-core routed this case to a fail-closed skip whose ONLY observability was
+// `stage6.replaces_cleared_ambiguous_projection`. A2-multiboard resolves it
+// instead (journal last-write-wins per effective slot), so the telemetry has
+// no subject left and BOTH the emitter and its manifest Symbol are removed.
+// These tests pin the replacement behaviour on the real live lane AND assert
+// the dead emitter cannot creep back in.
 // ---------------------------------------------------------------------------
 
-/** A turn whose clear has TWO surviving same-slot replacements (differing only
- *  in board spelling) — the ambiguity the bundler refuses to resolve. */
+/** A turn whose clear has TWO same-slot replacements differing only in board
+ *  spelling — one effective slot, so the journal picks the last writer. */
 function ambiguousProjectionSession() {
   const streams = [
     toolUseRound([
@@ -1077,8 +1083,8 @@ function ambiguousProjectionSession() {
   };
 }
 
-describe('A2 — ambiguous-projection telemetry reaches the logger', () => {
-  test('the LIVE lane emits one row carrying the exact slot key', async () => {
+describe('A2-multiboard — the two-spelling turn resolves on the real LIVE lane', () => {
+  test('exactly ONE reading reaches the wire, flagged, and NO ambiguity row is logged', async () => {
     const logger = mockLogger();
     const session = ambiguousProjectionSession();
     const result = await runShadowHarness(
@@ -1092,24 +1098,20 @@ describe('A2 — ambiguous-projection telemetry reaches the logger', () => {
       }
     );
 
-    // Precondition — the bundler really did decline to flag anything.
-    expect(
-      (result.extracted_readings ?? []).filter((r) => r.replaces_cleared === true)
-    ).toHaveLength(0);
-    const slots = result[REPLACES_CLEARED_AMBIGUOUS_PROJECTION];
-    expect(slots).toHaveLength(1);
+    const zs = (result.extracted_readings ?? []).filter((r) => r.field === 'measured_zs_ohm');
+    expect(zs).toHaveLength(1);
+    expect(zs[0].value).toBe('0.44');
+    expect(zs[0].replaces_cleared).toBe(true);
 
-    const rows = logger.info.mock.calls.filter(
-      ([event]) => event === 'stage6.replaces_cleared_ambiguous_projection'
-    );
-    expect(rows).toHaveLength(1);
-    // The EXACT key, not a substring — a payload that merely mentions the field
-    // can't be traced back to a slot, which is the whole point of logging it.
-    expect(rows[0][1].slot_key).toBe(slots[0]);
-    expect(rows[0][1].sessionId).toBe('a2-amb');
+    // The dead telemetry must never fire again — nothing emits it.
+    expect(
+      logger.info.mock.calls.filter(
+        ([event]) => event === 'stage6.replaces_cleared_ambiguous_projection'
+      )
+    ).toHaveLength(0);
   });
 
-  test('an ordinary collapsed turn emits NO ambiguity row', async () => {
+  test('an ordinary collapsed turn is unchanged and emits NO ambiguity row', async () => {
     const logger = mockLogger();
     const result = await runShadowHarness(
       wireContractSession(),
@@ -1130,11 +1132,11 @@ describe('A2 — ambiguous-projection telemetry reaches the logger', () => {
     ).toHaveLength(0);
   });
 
-  test('DRIFT LOCK — the emitter is wired on BOTH harness lanes', () => {
-    // The live lane is covered end-to-end above; the shadow lane is only
-    // reachable behind a legacy-comparison run, so its wiring is pinned
-    // structurally. Deleting either call site must fail a test — otherwise the
-    // documented observability silently becomes live-only.
+  test('DRIFT LOCK — the ambiguity emitter is GONE from both harness lanes', () => {
+    // The inverse of A2-core's lock. The guard is unreachable by construction
+    // now (journal LWW collapses the two spellings), so re-adding an emitter
+    // would be re-adding a branch that can never fire — a silent lie in the
+    // logs. Its P5 sibling must still be wired on BOTH lanes, unchanged.
     const src = readFileSync(
       path.join(
         path.dirname(fileURLToPath(import.meta.url)),
@@ -1142,19 +1144,11 @@ describe('A2 — ambiguous-projection telemetry reaches the logger', () => {
       ),
       'utf8'
     );
-    // Two CALL sites — the live lane's `result` and the shadow lane's
-    // `toolResult`.
-    const callSites = src.match(
-      /emitReplacesClearedAmbiguousTelemetry\(log, session, turnId, (result|toolResult)\);/g
+    expect(src).not.toMatch(/emitReplacesClearedAmbiguousTelemetry\(/);
+    const p5CallSites = src.match(
+      /emitClearWriteCollapseTelemetry\(log, session, turnId, (result|toolResult)\);/g
     );
-    expect(callSites).toHaveLength(2);
-    expect(new Set(callSites).size).toBe(2); // one per lane, not one line twice
-    // Beside its P5 sibling at both sites, reading the SAME turn object — the
-    // pairing that would break first if either lane were re-plumbed.
-    expect(
-      src.match(
-        /emitClearWriteCollapseTelemetry\(log, session, turnId, (result|toolResult)\);\n\s*emitReplacesClearedAmbiguousTelemetry\(log, session, turnId, \1\);/g
-      )
-    ).toHaveLength(2);
+    expect(p5CallSites).toHaveLength(2);
+    expect(new Set(p5CallSites).size).toBe(2); // one per lane, not one line twice
   });
 });

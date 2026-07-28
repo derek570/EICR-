@@ -203,6 +203,26 @@ export function attachEffectiveBoardSlot(target, canonicalField, effectiveBoardI
   return target;
 }
 
+/**
+ * A2-multiboard (2026-07-28) — the shared `(effective_board_id, circuit_ref)`
+ * designation identity.
+ *
+ * WHY: the confirmation-TTS designation map was keyed by circuit REF ALONE, so
+ * on a multi-board job `select_board A → rename circuit 3 → select_board B →
+ * rename circuit 3` left ONE entry and both boards' read-backs spoke the last
+ * writer's name. Circuit refs are per-board, not global — the pair is the real
+ * identity, and every designation producer/consumer keys through this helper.
+ *
+ * The NUL-delimited shape (same convention as `rawCircuitSlot`/`boardSlotKey`)
+ * cannot collide with the legacy numeric/`String(ref)` keys the map ALSO
+ * carries for unscoped lookups, so a single Map holds both key spaces and
+ * single-board traffic resolves exactly as it did before.
+ */
+export function circuitDesignationKey(boardId, circuitRef) {
+  const normBoard = boardId == null || boardId === '' ? '' : String(boardId);
+  return `${normBoard}\u0000__desig__\u0000${String(circuitRef)}`;
+}
+
 // ---------------------------------------------------------------------------
 // A2-multiboard (2026-07-28) — the append-only sequenced write JOURNAL
 // ---------------------------------------------------------------------------
