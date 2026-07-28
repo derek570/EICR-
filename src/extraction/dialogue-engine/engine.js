@@ -832,7 +832,12 @@ function detectDifferentEntry(text, schema, currentCircuitRef) {
   if (typeof text !== 'string' || !text) {
     return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  const { refs } = collectTriggerCircuitRefs(text, schema.triggers);
+  const { matched, refs } = collectTriggerCircuitRefs(text, schema.triggers);
+  // A refs-only collection (later-sentence terse segment, no entry-eligible
+  // trigger match) is NOT a switch (Codex cycle 3): "Zs is 0.62. Ring on
+  // circuit 13." during an active episode must fall through to the model,
+  // never clear the episode and discard its queued readings.
+  if (!matched) return { matched: false, circuit_ref: null, scope_conflict: false };
   if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
   if (refs.length === 1 && refs[0] !== currentCircuitRef) {
     return { matched: true, circuit_ref: refs[0], scope_conflict: false };

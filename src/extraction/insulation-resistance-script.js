@@ -280,7 +280,9 @@ function detectDifferentIrEntry(text, currentCircuitRef) {
   if (typeof text !== 'string' || !text) {
     return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  const { refs } = collectIrTriggerCircuitRefs(text);
+  const { matched, refs } = collectIrTriggerCircuitRefs(text);
+  // Refs-only collection is NOT a switch (mirrors the engine — Codex cycle 3).
+  if (!matched) return { matched: false, circuit_ref: null, scope_conflict: false };
   if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
   if (refs.length === 1 && refs[0] !== currentCircuitRef) {
     return { matched: true, circuit_ref: refs[0], scope_conflict: false };

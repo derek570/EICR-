@@ -740,6 +740,35 @@ describe('cycle 2 — terse entry stays start-only; disambiguation supersede; co
 });
 
 // ---------------------------------------------------------------------------
+// 3e. Cycle-3 pin.
+// ---------------------------------------------------------------------------
+
+describe('cycle 3 — a refs-only later-sentence terse never SWITCHES an active episode', () => {
+  test.each([
+    ['engine ring', engineRing],
+    ['legacy ring twin', legacyRing],
+  ])(
+    '%s: active unresolved episode keeps its queue when a later-sentence terse follows a Zs reading',
+    (_l, proc) => {
+      const { session } = run(
+        proc,
+        [
+          { text: 'Ring continuity is lives are 0.61.', now: 1000 }, // unresolved, queues R1
+          { text: 'Zs is 0.62. Ring on circuit 13.', now: 2000 }, // topic switch — NOT a switch-to-13
+          // Re-enter and resolve — the queue was preserved through nothing
+          // having consumed it as a phantom switch. (Topic switch clears the
+          // episode by design; this pins that no write landed on 13.)
+        ],
+        { 13: {} }
+      );
+      expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBeUndefined();
+      const state = session.dialogueScriptState ?? session.ringContinuityScript ?? null;
+      expect(state?.active ?? false).toBe(false); // topic-switch exit, not a switch
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
 // 4. Existing exclusions unchanged.
 // ---------------------------------------------------------------------------
 
