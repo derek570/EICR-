@@ -2201,11 +2201,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           rejectedSetFullyCovered =
             rejectedIds.length > 0 && rejectedIds.every((id) => coveredUnion.has(id));
           if (coveredUnion.size > 0 && !rejectedSetFullyCovered) {
-            if (ORPHAN_PROMPT_ENABLED) {
-              partialCoveragePending = true;
-            } else {
-              stampCoveredNoticesNonDraining();
-            }
+            partialCoveragePending = true;
           }
         }
         const producedNothing =
@@ -2242,13 +2238,25 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // recorded chime_observed:true — so a fixture with no chime never
         // triggers a false apology.
         const chimeFired = options.chimeObserved === true;
-        if (
+        // Codex mini-review (cycle 1) — the partial-coverage drain:false
+        // stamp defers ONLY when the recovery/emission block below is
+        // actually eligible to run (recovery-first, branch 1). Any
+        // ineligible combination — flag-off, answer turn, confirmations
+        // off, content gate — stamps IMMEDIATELY: otherwise the covered
+        // refusal would drain, count as speech-intent, and suppress
+        // marker-② while the UNCOVERED rejection lost today's generic
+        // fallback (the exact class branch 3 exists to prevent).
+        const orphanEmissionEligible =
           ORPHAN_PROMPT_ENABLED &&
           options.confirmationsEnabled === true &&
           producedNothing &&
           !isAnswerTurn &&
-          (carriesValue || carriesObservation || chimeFired)
-        ) {
+          (carriesValue || carriesObservation || chimeFired);
+        if (partialCoveragePending && !orphanEmissionEligible) {
+          stampCoveredNoticesNonDraining();
+          partialCoveragePending = false;
+        }
+        if (orphanEmissionEligible) {
           // #5a apply-complete guard (PR #68) — before emitting a contentless
           // clarifying prompt, try a deterministic re-parse of transcriptText
           // (result is EMPTY here by definition of producedNothing). If it yields

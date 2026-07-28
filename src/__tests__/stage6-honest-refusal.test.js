@@ -1025,6 +1025,31 @@ describe('Codex cycle-1 — recovery × partial coverage, board-scoped provenanc
     }
   });
 
+  test.each([
+    ['inResponseTo:true', { inResponseTo: true }],
+    [
+      'pendingAsks.size>0',
+      { pendingAsks: { __tag: 'pending-asks-registry', size: 2, entries: () => [] } },
+    ],
+  ])(
+    'ANSWER-turn partial coverage (%s): covered notices stamp drain:false immediately — one marker-② catch-all line, zero refusal lines (mini-review gate parity)',
+    async (_label, optOverrides) => {
+      const session = makeSession({ circuits: { 4: {} } });
+      loopDispatching([
+        clearReadingCall('circuit_ref', 4, 'toolu_at1'),
+        clearReadingCall('measured_zs_ohm', 99, 'toolu_at2'),
+      ]);
+      const opts = baseOpts(optOverrides);
+      const result = await runShadowHarness(session, 'Clear those.', [], opts);
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(1);
+      expect(CATCHALL_SET.has(speakers[0].text)).toBe(true);
+      const refusalPool = bridgePoolTexts('unsupported_clear', CIRCUIT_REF_LABEL_C4);
+      for (const c of speakers) expect(refusalPool.includes(c.text)).toBe(false);
+      expect(mandatoryRows(opts.logger)).toHaveLength(0);
+    }
+  );
+
   test('fake-clock: the 30 s expiry anchors at DRAIN time, not stage time (a late-draining attempt keeps the next attempt in-window)', () => {
     const session = {};
     const ptw = { mandatoryNotices: [] };
