@@ -1083,6 +1083,50 @@ function rollbackReinjectionReservation(entry, reservation) {
   return reservation.suppressed.splice(0);
 }
 
+// REQUEUE AFTER ROLLBACK — the one place that decides what goes back on the
+// queue when a re-injection is rolled back mid-flight (extraction threw, or it
+// resolved having produced nothing). Callers MUST use this rather than pushing
+// `rollbackReinjectionReservation`'s return value directly.
+//
+// Codex r3 BLOCKER (lens 2). Rollback returns only the SUPPRESSED PAIRED
+// frames, which exist only under transcript-first ordering. Under answer-first
+// ordering — the client sends `ask_user_answered` before (or without) the real
+// transcript — `suppressed` is empty, so pushing the return value verbatim
+// requeued NOTHING and the synthetic was the only copy of that speech: chime
+// fired, nothing written, nothing spoken (Audio-First #1). The reconnect
+// reconciler already handled this case correctly; these two sites did not.
+//
+// The fallback clone is deliberately MARKER-FREE (no REINJECTION_RESERVATION):
+// it takes the ordinary gate path, and — being unreserved — cannot itself
+// trigger another rollback, so recovery is bounded to one hop.
+function requeueAfterReinjectionRollback(entry, reservation, fallbackFrame) {
+  // IDEMPOTENCE, and it is load-bearing. Several paths can settle the same
+  // reservation (a produced-nothing rollback followed by the unsettled-exit
+  // sweep; a commit followed by that same sweep). rollbackReinjectionReservation
+  // returns [] for an already-settled reservation, which used to make the second
+  // call a silent no-op — but "recovered nothing" is exactly the condition that
+  // now triggers the fallback, so without this guard the second call requeues a
+  // DUPLICATE of speech that was already handled. Check liveness first: only a
+  // reservation this call actually settles may requeue anything.
+  const live =
+    Array.isArray(entry.reinjectionReservations) &&
+    entry.reinjectionReservations.includes(reservation);
+  if (!live) return 0;
+  const recovered = rollbackReinjectionReservation(entry, reservation);
+  if (!Array.isArray(entry.pendingTranscripts)) return 0;
+  if (recovered.length > 0) {
+    for (const frame of recovered) entry.pendingTranscripts.push({ ...frame });
+    return recovered.length;
+  }
+  if (!fallbackFrame || typeof fallbackFrame.text !== 'string' || fallbackFrame.text === '') {
+    return 0;
+  }
+  const clone = { ...fallbackFrame };
+  delete clone[REINJECTION_RESERVATION];
+  entry.pendingTranscripts.push(clone);
+  return 1;
+}
+
 // RECONCILE ON RECONNECT — the single owner of what happens to live
 // reinjection reservations (and the synthetics that carry them) when the
 // socket is swapped. Shared by the two reconnect seams (handleSessionStart's
@@ -1156,10 +1200,37 @@ function reconcileReinjectionsOnReconnect(entry, sessionId) {
     entry.pendingTranscripts = surviving;
   }
 
-  // Requeued real transcripts go to the BACK: they were suppressed while the
-  // synthetic was in flight, so they are the newest speech on the wire and
-  // must not jump ahead of frames queued before them.
-  if (requeued.length > 0) entry.pendingTranscripts.push(...requeued);
+  // Requeued real transcripts are re-inserted in ARRIVAL order, not appended.
+  // They were suppressed at the moment their synthetic was re-injected, so
+  // anything the inspector said AFTER that point is still sitting in
+  // pendingTranscripts behind them — a blind append would drain the OLDER
+  // reading last and let it overwrite the newer one (both are ordinary writes;
+  // last-writer-wins). Every accepted frame carries the enumerable
+  // TRANSCRIPT_ARRIVED_AT stamp (survives the `{ ...frame }` clones above), and
+  // both lists are individually in arrival order, so a two-pointer merge
+  // restores true wire order. A frame missing the stamp degrades to the old
+  // behaviour rather than jumping the queue: absent on a requeued frame sorts
+  // LAST, absent on an already-queued frame sorts FIRST.
+  if (requeued.length > 0) {
+    const arrivedAt = (frame, fallback) =>
+      typeof frame?.[TRANSCRIPT_ARRIVED_AT] === 'number' ? frame[TRANSCRIPT_ARRIVED_AT] : fallback;
+    const queued = Array.isArray(entry.pendingTranscripts) ? entry.pendingTranscripts : [];
+    const merged = [];
+    let qi = 0;
+    let ri = 0;
+    while (qi < queued.length && ri < requeued.length) {
+      if (arrivedAt(queued[qi], -Infinity) <= arrivedAt(requeued[ri], Infinity)) {
+        merged.push(queued[qi]);
+        qi += 1;
+      } else {
+        merged.push(requeued[ri]);
+        ri += 1;
+      }
+    }
+    while (qi < queued.length) merged.push(queued[qi++]);
+    while (ri < requeued.length) merged.push(requeued[ri++]);
+    entry.pendingTranscripts = merged;
+  }
 
   if (live.length > 0 || dropped > 0 || kept > 0) {
     logger.warn('stage6.reinjection_reconciled_on_reconnect', {
@@ -1392,6 +1463,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       }
     }, 30000);
 
+    // Plan E §4b piece 4 — CONFIRMATION-MODE LATCH. Real transcript frames
+    // carry confirmations_enabled; the direct ask_user_answered frame does
+    // NOT, so a re-injected reply needs the session's last-known mode or the
+    // recovered write would be SILENT (Audio-First #1).
+    //
+    // Codex r3 (lens 2) — the latch reads ABSENCE AS FALSE, deliberately. Both
+    // clients OMIT confirmations_enabled when it is false rather than sending
+    // `false` (web: sonnet-session.ts, pinned by a test asserting the field is
+    // undefined on the off path; iOS matches). A `typeof === 'boolean'` guard
+    // therefore never observes the off state, making the latch a ONE-WAY switch
+    // to true — an inspector who turned confirmations off mid-session would
+    // still hear a re-injected reply read back. Omitted ⟺ false IS the wire
+    // contract, so the tri-state is latched down to a boolean.
+    //
+    // It lives at the WIRE seam rather than inside handleTranscript because
+    // that function is also entered with INTERNAL synthetics that legitimately
+    // carry no mode: the re-injected ask answer (derives its own from this
+    // latch) and handleCorrection's `{ text }` frame. Latching inside would let
+    // those clobber the session mode to false. Requeued/drained frames are real
+    // client frames already latched at arrival, so they need no re-latch.
+    const latchConfirmationsMode = (sessionId, frame) => {
+      if (!sessionId) return;
+      const entry = activeSessions.get(sessionId);
+      if (!entry) return;
+      entry.lastConfirmationsEnabled = frame?.confirmations_enabled === true;
+    };
+
     ws.on('message', async (data) => {
       let msg;
       try {
@@ -1412,6 +1510,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               const buffered = [...preSessionBuffer];
               preSessionBuffer.length = 0;
               for (const bufferedMsg of buffered) {
+                latchConfirmationsMode(currentSessionId, bufferedMsg);
                 await handleTranscript(ws, currentSessionId, bufferedMsg, preSessionBuffer);
               }
             }
@@ -1433,6 +1532,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               ws.close(1008, 'Rate limit exceeded');
               return;
             }
+            latchConfirmationsMode(currentSessionId, msg);
             await handleTranscript(ws, currentSessionId, msg, preSessionBuffer);
             break;
 
@@ -2402,11 +2502,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     });
                     // Terminal failure of the re-injection promise itself —
                     // roll the reservation back so the paired real transcript
-                    // (or a restatement) can still land the reading.
-                    const requeue = rollbackReinjectionReservation(entry, reservation);
-                    for (const frame of requeue) {
-                      entry.pendingTranscripts.push({ ...frame });
-                    }
+                    // (answer-first: the synthetic itself) can still land the
+                    // reading.
+                    requeueAfterReinjectionRollback(entry, reservation, syntheticTranscript);
                   });
                   break;
                 }
@@ -3954,27 +4052,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         logger.info('stage6.reinjection_committed', { sessionId, reason });
         return;
       }
-      const requeue = rollbackReinjectionReservation(entry, reinjectionReservation);
-      if (requeue.length === 0) return;
+      // `msg` is the fallback: under answer-first ordering there is no
+      // suppressed paired frame and the synthetic IS the only copy of the
+      // speech (Codex r3 BLOCKER, lens 2). The helper strips the reservation
+      // marker from the clone, so the requeued frame takes the ordinary gate
+      // path and cannot re-enter this rollback.
+      const requeued = requeueAfterReinjectionRollback(entry, reinjectionReservation, msg);
+      if (requeued === 0) return;
       logger.warn('stage6.reinjection_rolled_back', {
         sessionId,
         reason,
-        requeued: requeue.length,
+        requeued,
       });
-      for (const frame of requeue) {
-        entry.pendingTranscripts.push({ ...frame });
-      }
     };
 
-    // Plan E §4b piece 4 — CONFIRMATION-MODE LATCH. Real transcript frames
-    // carry confirmations_enabled; the direct ask_user_answered frame does
-    // NOT, so a re-injected reply needs the session's last-known mode or the
-    // recovered write would be silent. Latched from every REAL frame that
-    // states it (synthetic frames excluded — theirs is derived from this
-    // latch).
-    if (typeof msg.confirmations_enabled === 'boolean' && !reinjectionReservation) {
-      entry.lastConfirmationsEnabled = msg.confirmations_enabled;
-    }
+    // Plan E §4b piece 4 — the CONFIRMATION-MODE LATCH is maintained at the
+    // WIRE seam (`latchConfirmationsMode`, called from the ws.on('message')
+    // transcript cases), not here. See that function for why.
 
     // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — late-stop race guard.
     // handleSessionStop sets entry.isStopping=true before its first rejectAll
@@ -5549,15 +5643,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         if (producedSomething) {
           commitReinjectionReservation(entry, reinjectionReservation);
         } else {
-          const requeue = rollbackReinjectionReservation(entry, reinjectionReservation);
+          // NO synthetic fallback on this path (deliberate, unlike the two
+          // error paths). Here the turn RAN and simply produced nothing:
+          // requeuing the paired real transcript is worthwhile because it is a
+          // DIFFERENT frame (its own regex context and utterance id) that may
+          // fare better, but with no pair the only thing left to requeue is the
+          // identical synthetic text — a pure retry of the same input through
+          // the same pipeline, doubling model spend on every legitimately empty
+          // turn. And it would not be silent anyway: a chimed turn that
+          // produces no audible output is already caught by the marker-②
+          // catch-all audibility net, so the inspector hears an apology and can
+          // restate. Contrast the error paths, where nothing ran at all and the
+          // reading really would vanish without a trace.
+          const requeued = requeueAfterReinjectionRollback(entry, reinjectionReservation, null);
           logger.warn('stage6.reinjection_rolled_back', {
             sessionId,
             reason: 'produced_nothing',
-            requeued: requeue.length,
+            requeued,
           });
-          for (const frame of requeue) {
-            entry.pendingTranscripts.push({ ...frame });
-          }
         }
       }
 
@@ -5795,20 +5898,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     } catch (error) {
       // Plan E §4b piece 4 — the synthetic re-injection's extraction FAILED
       // before producing anything audible: ROLL BACK the reservation and
-      // requeue any suppressed paired frame(s) onto pendingTranscripts (the
-      // finally's drain re-enters them), so the reading is never lost to a
-      // failed re-injection.
+      // requeue the surviving copy of the speech onto pendingTranscripts (the
+      // finally's drain re-enters it) — the suppressed paired frame under
+      // transcript-first ordering, or the synthetic itself under answer-first —
+      // so the reading is never lost to a failed re-injection.
       if (reinjectionReservation) {
-        const requeue = rollbackReinjectionReservation(entry, reinjectionReservation);
+        const requeued = requeueAfterReinjectionRollback(entry, reinjectionReservation, msg);
         logger.warn('stage6.reinjection_rolled_back', {
           sessionId,
           reason: 'extraction_error',
-          requeued: requeue.length,
+          requeued,
           error: error?.message,
         });
-        for (const frame of requeue) {
-          entry.pendingTranscripts.push({ ...frame });
-        }
       }
       // F7 Item 3 — defence-in-depth. The LIVE path finalizes a fatal
       // cancellation at runLiveMode and returns normally, so a fatal

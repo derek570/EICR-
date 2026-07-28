@@ -801,7 +801,6 @@ describe('plan E — paired-transcript reservation lifecycle (both wire orders)'
       consumed_utterance_id: 'u-e-9',
     });
     await flushUntilHarnessCalled();
-    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1); // the failed synthetic
 
     // Rolled back: reservation gone, BOTH anchors released.
     expect(entry.reinjectionReservations).toHaveLength(0);
@@ -813,8 +812,24 @@ describe('plan E — paired-transcript reservation lifecycle (both wire orders)'
     expect(rollbackRows).toHaveLength(1);
     expect(rollbackRows[0][1]).toMatchObject({ reason: 'extraction_error' });
 
-    // The paired real transcript arrives — NOT suppressed, processes as a
-    // normal turn (exactly one successful extraction of the reading).
+    // Codex r3 BLOCKER (lens 2) — this is ANSWER-FIRST ordering: no paired real
+    // transcript had arrived when the synthetic failed, so `suppressed` was
+    // empty. Rollback alone therefore requeued NOTHING and, if the pair never
+    // came, the reading was lost with nothing spoken. The rollback now requeues
+    // the synthetic itself as the surviving copy of that speech: the failed
+    // extraction is retried once (call 2) rather than dropped.
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(2);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('main earth is 16');
+    // The requeued clone is MARKER-FREE, so it takes the ordinary gate path and
+    // cannot roll back again — recovery is bounded to one hop.
+    expect(rollbackRows).toHaveLength(1);
+
+    // The paired real transcript arrives LATE — anchors were released, so it is
+    // NOT suppressed and processes as a normal turn (call 3). That means this
+    // one reading is extracted twice, which is the DELIBERATE trade in the
+    // Audio-First hierarchy: a duplicate read-back is a far lesser evil than a
+    // silent loss, and P2's value-aware confirmation dedupe swallows the
+    // byte-identical repeat client-side so the inspector still hears it once.
     await sendFrame(ws, {
       type: 'transcript',
       text: 'main earth is 16',
@@ -824,7 +839,7 @@ describe('plan E — paired-transcript reservation lifecycle (both wire orders)'
     await new Promise((resolve) => {
       setImmediate(resolve);
     });
-    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(2);
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(3);
     expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('main earth is 16');
   });
 
