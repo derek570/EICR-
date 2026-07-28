@@ -213,6 +213,30 @@ function collapsedReplacementMatches(regSlot, reading) {
   const readingBoard = normaliseSpeculationBoardId(reading.board_id);
   if (regBoard !== null && regBoard !== readingBoard) return false;
 
+  // BOARD-READING arm (A2-multiboard item 7). `record_board_reading` registers
+  // with circuit === null — board fields live on the board record, not on a
+  // circuit row (`onToolUseStreamed` parses a circuit for `record_reading`
+  // ONLY). The same write reaches `extracted_readings` as a synthesised
+  // `circuit: 0` copy via the shadow harness's compatibility fold, and the real
+  // `extracted_board_readings` slot is STRIPPED before the frame leaves the
+  // server (iOS Build 282's Codable decoder rejects it) — so the folded copy is
+  // the only shape this reconciliation can ever see for a board write. Match
+  // those two shapes on field + board alone.
+  //
+  // Without this arm the circuit arm below derives `regCircuits = [null]` and
+  // its `c != null` guard makes a board speculation permanently unterminatable:
+  // parked audio speaking the value the turn has since REPLACED would be served.
+  //
+  // Double-termination of the folded copy needs no guard here — it is prevented
+  // by construction: the reconciliation loop iterates per REGISTRATION (not per
+  // reading), `flagged.some(...)` short-circuits on the first match, and
+  // `terminateByKey` is a CAS returning false on a second call, with the
+  // `continue` in front of both the counter and the telemetry row riding on it.
+  if (regSlot.circuit == null) {
+    const c = reading.circuit;
+    return c == null || Number(c) === 0;
+  }
+
   const readingCircuit = reading.circuit == null ? null : Number(reading.circuit);
   // A non-numeric circuit ref (`Number(...)` → NaN) has no slot identity here.
   if (readingCircuit === null || !Number.isFinite(readingCircuit)) return false;

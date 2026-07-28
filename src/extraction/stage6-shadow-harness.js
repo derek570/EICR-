@@ -1765,6 +1765,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           source: br.source,
         };
         if (br.board_id != null) synthesised.board_id = br.board_id;
+        // A2-multiboard item 7 (2026-07-28) — carry the collapse flag through
+        // the fold. `extracted_board_readings` is STRIPPED below (the iOS
+        // Codable decoder rejects the slot), so this synthesised circuit:0 copy
+        // is the ONLY shape any client ever sees for a board write. Dropping
+        // the flag here would leave a collapsed board replacement arriving as a
+        // bare write against a still-populated cell — silently skipped by a
+        // fill-only apply gate, spoken but never written.
+        if (br.replaces_cleared === true) synthesised.replaces_cleared = true;
         result.extracted_readings.push(synthesised);
       }
     }

@@ -45,7 +45,9 @@ const {
 } = await import('../extraction/loaded-barrel-cache.js');
 const { buildConfirmationText } = await import('../extraction/confirmation-text.js');
 const { expandForTTS } = await import('../extraction/tts-text-expander.js');
-const { encodeReadingKey } = await import('../extraction/stage6-per-turn-writes.js');
+const { encodeReadingKey, encodeBoardReadingKey } = await import(
+  '../extraction/stage6-per-turn-writes.js'
+);
 
 /** Every `voice_latency.outcome` row logged so far, oldest first. */
 function outcomeRows() {
@@ -527,5 +529,251 @@ describe('item 4 — ordinary traffic is untouched', () => {
         },
       })
     ).not.toThrow();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// A2-multiboard item 7 (2026-07-28) — the BOARD arm of the same reconciliation.
+//
+// `record_board_reading` registers its speculation with `circuit: null` (a
+// board field lives on the board record, not on a circuit row). The circuit arm
+// above therefore derives `regCircuits = [null]` and its `c != null` guard is
+// unsatisfiable — WITHOUT a board arm a board speculation could never be
+// terminated, and parked audio speaking the value the turn has since REPLACED
+// would be served for its whole TTL.
+//
+// The wire shape it has to match is the FOLDED one: the harness synthesises a
+// `circuit: 0` copy of every board reading into `extracted_readings` and then
+// STRIPS `extracted_board_readings`, so `circuit: 0` is the only shape this
+// pass can ever see for a board write.
+
+/** A `record_board_reading` snapshot patch (registers with circuit === null). */
+function boardPatchForAdded({ field, boardId = null, value, turnId = 'T1' }) {
+  return {
+    patch: {
+      readings: { added: [], overwritten: [], removed: [] },
+      boardReadings: {
+        added: [
+          {
+            key: encodeBoardReadingKey(field, boardId),
+            value: { value, confidence: 1.0, source_turn_id: turnId },
+          },
+        ],
+        overwritten: [],
+        removed: [],
+      },
+      cleared: [],
+      observations: [],
+      deletedObservations: [],
+      circuitOps: [],
+      boardOps: [],
+      fieldCorrections: [],
+    },
+    raw: { perTurnWrites: null },
+    ctx: {
+      sessionId: 'S',
+      turnId,
+      toolName: 'record_board_reading',
+      toolCallId: 'tcb',
+      roundIdx: 1,
+    },
+  };
+}
+
+/** Open a BOARD speculation and drive it to READY. */
+async function specBoardReady(spec, synths, { field, value, boardId = null, turnId = 'T1' }) {
+  const idxBefore = synths.length;
+  spec.onSnapshotPatch(boardPatchForAdded({ field, boardId, value, turnId }));
+  await flush();
+  synths[idxBefore].resolve();
+  await flush();
+  return keyFor({ field, value, circuit: null, boardId, turnId });
+}
+
+/** The wire shape of a collapsed BOARD survivor after the circuit:0 fold. */
+function foldedFlaggedBoardReading({ field, value, boardId = null }) {
+  return {
+    field,
+    circuit: 0,
+    value,
+    confidence: 1.0,
+    source: 'tool_call',
+    ...(boardId == null ? {} : { board_id: boardId }),
+    replaces_cleared: true,
+  };
+}
+
+describe('item 7 — a collapsed BOARD replacement terminates its speculation', () => {
+  test('the folded circuit:0 flagged reading terminates the circuit-null board speculation, exactly once', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specBoardReady(spec, synths, {
+      field: 'manufacturer',
+      value: 'Wylex',
+      boardId: SUB,
+    });
+    expect(peek(key)?.state).toBe('ready');
+
+    const terminated = spec.reconcileCollapsedReplacements('T1', {
+      extracted_readings: [
+        foldedFlaggedBoardReading({ field: 'manufacturer', value: 'Wylex', boardId: SUB }),
+      ],
+    });
+
+    expect(terminated).toBe(1);
+    expect(peek(key)).toBeNull();
+    const rows = outcomeRows().filter(
+      (r) => r.outcome === 'loaded_barrel_collapsed_replacement_invalidated'
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].meta).toMatchObject({ field: 'manufacturer', circuit: null, boardId: SUB });
+  });
+
+  test('the null-board board speculation is matched by the ENRICHED folded reading', async () => {
+    // The common shape: `record_board_reading` omitted board_id (scope came
+    // from select_board), so the speculation parked under the NULL board while
+    // item 7 enriched the flagged wire reading with the effective board.
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specBoardReady(spec, synths, { field: 'manufacturer', value: 'Wylex' });
+
+    expect(
+      spec.reconcileCollapsedReplacements('T1', {
+        extracted_readings: [
+          foldedFlaggedBoardReading({ field: 'manufacturer', value: 'Wylex', boardId: SUB }),
+        ],
+      })
+    ).toBe(1);
+    expect(peek(key)).toBeNull();
+  });
+
+  test('a board reading that reaches the pass UNFOLDED (circuit absent) matches too', async () => {
+    // Defence in depth: the fold is what a client sees today, but the pass must
+    // not depend on the fold having happened — a future emit-order change that
+    // reconciled before folding must not silently stop invalidating.
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specBoardReady(spec, synths, {
+      field: 'manufacturer',
+      value: 'Wylex',
+      boardId: SUB,
+    });
+
+    expect(
+      spec.reconcileCollapsedReplacements('T1', {
+        extracted_readings: [
+          { field: 'manufacturer', value: 'Wylex', board_id: SUB, replaces_cleared: true },
+        ],
+      })
+    ).toBe(1);
+    expect(peek(key)).toBeNull();
+  });
+
+  test('TWO matching flagged shapes for one registration terminate it ONCE (no double-count, no duplicate audit row)', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specBoardReady(spec, synths, {
+      field: 'manufacturer',
+      value: 'Wylex',
+      boardId: SUB,
+    });
+
+    // Both the folded copy and a hypothetical unfolded twin in one frame. The
+    // loop iterates per REGISTRATION and `flagged.some(...)` short-circuits, so
+    // there is exactly one terminate attempt — and `terminateByKey` is a CAS
+    // that would return false on a second one anyway.
+    const terminated = spec.reconcileCollapsedReplacements('T1', {
+      extracted_readings: [
+        foldedFlaggedBoardReading({ field: 'manufacturer', value: 'Wylex', boardId: SUB }),
+        { field: 'manufacturer', value: 'Wylex', board_id: SUB, replaces_cleared: true },
+      ],
+    });
+
+    expect(terminated).toBe(1);
+    expect(peek(key)).toBeNull();
+    expect(
+      outcomeRows().filter((r) => r.outcome === 'loaded_barrel_collapsed_replacement_invalidated')
+    ).toHaveLength(1);
+  });
+});
+
+describe('item 7 — the board arm does not bleed across scopes', () => {
+  test('NEGATIVE — an ORDINARY (unflagged) folded board reading terminates nothing', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specBoardReady(spec, synths, {
+      field: 'manufacturer',
+      value: 'Wylex',
+      boardId: SUB,
+    });
+
+    expect(
+      spec.reconcileCollapsedReplacements('T1', {
+        extracted_readings: [
+          { field: 'manufacturer', circuit: 0, value: 'Wylex', board_id: SUB },
+        ],
+      })
+    ).toBe(0);
+    expect(peek(key)?.state).toBe('ready');
+  });
+
+  test('NEGATIVE — a flagged reading for circuit 3 does NOT terminate a board speculation', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specBoardReady(spec, synths, {
+      field: 'manufacturer',
+      value: 'Wylex',
+      boardId: SUB,
+    });
+
+    expect(
+      spec.reconcileCollapsedReplacements('T1', {
+        extracted_readings: [
+          flaggedReading({ field: 'manufacturer', circuit: 3, value: 'Wylex', boardId: SUB }),
+        ],
+      })
+    ).toBe(0);
+    expect(peek(key)?.state).toBe('ready');
+  });
+
+  test('NEGATIVE — a folded circuit:0 board reading does NOT terminate a CIRCUIT speculation', async () => {
+    // The inverse cross-talk: circuit 0 is the fold's synthetic sentinel, not a
+    // real circuit ref, so it must never reach a genuine circuit registration.
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specReady(spec, synths, {
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      value: '0.42',
+      boardId: SUB,
+    });
+
+    expect(
+      spec.reconcileCollapsedReplacements('T1', {
+        extracted_readings: [
+          foldedFlaggedBoardReading({ field: 'measured_zs_ohm', value: '0.42', boardId: SUB }),
+        ],
+      })
+    ).toBe(0);
+    expect(peek(key)?.state).toBe('ready');
+  });
+
+  test('NEGATIVE — the flagged reading names a DIFFERENT board than the registration', async () => {
+    const { factory, synths } = makeMockClientFactory();
+    const spec = makeSpeculator({ factory });
+    const key = await specBoardReady(spec, synths, {
+      field: 'manufacturer',
+      value: 'Wylex',
+      boardId: MAIN,
+    });
+
+    expect(
+      spec.reconcileCollapsedReplacements('T1', {
+        extracted_readings: [
+          foldedFlaggedBoardReading({ field: 'manufacturer', value: 'Wylex', boardId: SUB }),
+        ],
+      })
+    ).toBe(0);
+    expect(peek(key)?.state).toBe('ready');
   });
 });

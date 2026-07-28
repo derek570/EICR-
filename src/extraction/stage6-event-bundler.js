@@ -959,9 +959,28 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // at all, so `select_board A → record manufacturer → select_board B → record
   // manufacturer` shares ONE raw key and a Map scan sees only board B.
   const boardReadingWinners = projectBoardReadingWinners(perTurnWrites);
+  // A2-multiboard item 7 (2026-07-28) — the BOARD twin of the
+  // `replaces_cleared` candidate index. Mechanism B already dropped the stale
+  // board clear from the wire; without a stamp on the surviving board write,
+  // web receives a BARE board write against a still-populated cell and its
+  // fill-only gate silently skips it — P5's exact defect, at board scope.
+  //
+  // This index holds the perTurnWrites VALUE object, not the wire reading: the
+  // board readings are projected much further down (after `result` exists), so
+  // the wire object the stamp belongs on has not been built yet. The stamp is
+  // therefore applied by OBJECT IDENTITY in that loop, which is stricter than
+  // re-deriving the slot key there and cannot drift from what the collapse
+  // predicate actually matched.
+  const replacesBoardCandidates = new Map();
   for (const { value: val } of boardReadingWinners) {
     const bsym = val?.[EFFECTIVE_BOARD_SLOT];
-    if (bsym) survivingBoardSlots.add(boardSlotKey(bsym.field, bsym.boardId));
+    if (!bsym) continue;
+    const bslot = boardSlotKey(bsym.field, bsym.boardId);
+    survivingBoardSlots.add(bslot);
+    // Derived/mirror board writes are silent (they never produce a read-back),
+    // so they are excluded from candidacy for the same reason as the circuit
+    // side: there is nothing spoken for the flag to protect.
+    if (!isDerivedWrite(val)) addReplacesCandidate(replacesBoardCandidates, bslot, val);
   }
   const boardClearHasSurvivingWrite = (entry) => {
     const bsym = entry?.[EFFECTIVE_BOARD_SLOT];
@@ -991,6 +1010,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // cannot (`result` is in its temporal dead zone until the declaration), so
   // both halves are deferred together and land at one site.
   const pendingStamp = [];
+  // A2-multiboard item 7 — board twin of `pendingStamp`. Holds perTurnWrites
+  // VALUE objects (see `replacesBoardCandidates`); consumed by identity in the
+  // board-reading projection loop further down, which is the first point at
+  // which the wire object exists. A Set (not an Array) because two clear
+  // corrections for one slot must not queue the same write twice.
+  const pendingBoardStamp = new Set();
   const keptFieldCorrections = [];
   for (const c of rawFieldCorrections) {
     if (c && c.reason === 'clear_reading' && clearSlotHasSurvivingWrite(c)) {
@@ -1044,7 +1069,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // dedupe discipline as the circuit branch (one row per collapsed SLOT).
     if (c && c.reason === 'clear_reading' && boardClearHasSurvivingWrite(c)) {
       const bsym = c[EFFECTIVE_BOARD_SLOT];
-      const slotKey = `board:${boardSlotKey(bsym.field, bsym.boardId)}`;
+      const bslot = boardSlotKey(bsym.field, bsym.boardId);
+      const slotKey = `board:${bslot}`;
       if (!collapsedSlotSeen.has(slotKey)) {
         collapsedSlotSeen.add(slotKey);
         clearWriteCollapsedSlots.push({
@@ -1053,6 +1079,19 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           board_id: bsym.boardId ?? c.board_id ?? null,
           final_effect: 'write',
         });
+        // A2-multiboard item 7 — queue the surviving board write for the
+        // `replaces_cleared` stamp. Same defensive `length === 1` shape as the
+        // circuit branch: the journal projection is last-write-wins per
+        // EFFECTIVE board slot so exactly one winner is the norm, and a future
+        // producer that reintroduced a duplicate fails SILENT-UNFLAGGED rather
+        // than stamping an arbitrary one of them.
+        const bcands = replacesBoardCandidates.get(bslot);
+        if (bcands && bcands.length === 1) {
+          pendingBoardStamp.add(bcands[0]);
+        }
+        // bcands undefined/empty is reachable only when the sole surviving
+        // write for the slot was derived/mirror (excluded from candidacy) —
+        // nothing audible replaced the clear, so nothing to stamp.
       }
       continue;
     }
@@ -1284,6 +1323,30 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           reading.board_id == null
         ) {
           reading.board_id = a1aSym.boardId;
+        }
+      }
+      // A2-multiboard item 7 — the BOARD `replaces_cleared` stamp. Matched by
+      // object identity against the queue the collapse branch built, so the
+      // flag can only ever land on a write the collapse predicate itself
+      // considered.
+      if (pendingBoardStamp.has(entry)) {
+        reading.replaces_cleared = true;
+        // FLAGGED replacements are ALWAYS enriched with the resolved effective
+        // board — item 1's rule, applied here to the board channel. Deliberately
+        // NOT gated on `hasBoardClearV1` (unlike the ordinary fill above): the
+        // collapse manifest keys on the EFFECTIVE board, so an un-enriched flag
+        // would tell the client "this replaces a cleared value" while leaving it
+        // no way to decide WHICH board's value — and a board-aware client that
+        // fails closed on an unresolvable target would then drop a spoken
+        // replacement, which is the exact defect this plan closes. Safe for
+        // capability-absent clients too: `board_id` on a board reading (and on
+        // its circuit:0 fold) has been decoded since slice 1.1a, so the extra
+        // key can only route the value to the RIGHT board.
+        if (reading.board_id == null) {
+          const flaggedBoardId = entry?.[EFFECTIVE_BOARD_SLOT]?.boardId;
+          if (flaggedBoardId != null && flaggedBoardId !== '') {
+            reading.board_id = flaggedBoardId;
+          }
         }
       }
       if (isDerivedWrite(entry)) {

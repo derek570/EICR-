@@ -389,3 +389,115 @@ describe('test 17 (bundler half) — post-canonicalisation wire names + projecte
     expect(off.extracted_board_readings[0]).not.toHaveProperty('board_id');
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// A2-multiboard item 7 (2026-07-28) — the BOARD `replaces_cleared` twin.
+//
+// Mechanism B (test 6b/6d above) already drops the stale board clear from the
+// wire. Without a stamp on the SURVIVING board write, web receives a bare write
+// against a still-populated cell and its fill-only apply gate silently skips
+// it — P5's ordering wipe, at board scope: spoken but never written.
+describe('item 7 — collapsed board clear→write stamps replaces_cleared on the survivor', () => {
+  test('scoped field (manufacturer) on a sub-board: flag stamped AND board_id enriched, clear dropped, write speaks once', async () => {
+    const session = makeSession(twoBoards());
+    session.stateSnapshot.boards.find((b) => b.id === 'garage').manufacturer = 'Hager';
+    const ptw = createPerTurnWrites();
+
+    await selectBoard(session, ptw, 'garage');
+    const cEnv = await clear(session, ptw, 'manufacturer', 'toolu_c7');
+    expect(JSON.parse(cEnv.content)).toEqual({ ok: true });
+    expect(ptw.fieldCorrections.filter((c) => c.reason === 'clear_reading')).toHaveLength(1);
+
+    await write(session, ptw, 'manufacturer', 'Wylex', 'toolu_w7');
+
+    const result = bundle(ptw, { boardDesignations: { main: 'Main DB', garage: 'Garage CU' } });
+    // The stale clear collapsed (same effective board slot).
+    expect(
+      (result.field_corrections ?? []).filter((c) => c.reason === 'clear_reading')
+    ).toHaveLength(0);
+    // The survivor carries the flag AND the effective board it replaced on.
+    expect(result.extracted_board_readings).toHaveLength(1);
+    expect(result.extracted_board_readings[0].replaces_cleared).toBe(true);
+    expect(result.extracted_board_readings[0].board_id).toBe('garage');
+    // SPEECH unchanged by the flag: the switch + the write, no "cleared" line.
+    const speakers = audible(result);
+    expect(speakers.filter((c) => c.field === 'manufacturer')).toHaveLength(1);
+    expect(speakers.filter((c) => c.field === 'field_cleared')).toHaveLength(0);
+  });
+
+  test('a FLAGGED board write is enriched with board_id even when hasBoardClearV1 is OFF (deliberate bypass of the ordinary capability gate)', async () => {
+    const session = makeSession(twoBoards());
+    session.stateSnapshot.boards.find((b) => b.id === 'garage').manufacturer = 'Hager';
+    const ptw = createPerTurnWrites();
+    await selectBoard(session, ptw, 'garage');
+    await clear(session, ptw, 'manufacturer', 'toolu_c7b');
+    await write(session, ptw, 'manufacturer', 'Wylex', 'toolu_w7b');
+
+    const off = bundleToolCallsIntoResult(ptw, null, {
+      confirmationsEnabled: true,
+      turnId: 'turn-b1',
+      hasBoardClearV1: false,
+    });
+    // The collapse manifest keys on the EFFECTIVE board, so a flag with no
+    // board_id would tell the client "this replaces a cleared value" while
+    // leaving it no way to decide WHICH board's — and a board-aware client that
+    // fails closed on an unresolvable target would drop a SPOKEN replacement.
+    // `board_id` on a board reading has been decoded since slice 1.1a, so the
+    // extra key can only route the value to the right board.
+    expect(off.extracted_board_readings[0].replaces_cleared).toBe(true);
+    expect(off.extracted_board_readings[0].board_id).toBe('garage');
+  });
+
+  test('NEGATIVE — two ze writes in one turn (global scope, no clear) LWW under ONE null-board slot and carry NO flag', async () => {
+    const session = makeSession(twoBoards());
+    const ptw = createPerTurnWrites();
+    // `ze` is scope:'global' in BOARD_CLEAR_SCOPE_MAP, so BOTH writes land on
+    // the SAME (field, null-board) effective slot regardless of the board
+    // selected between them. Last-write-wins is correct; a spurious
+    // `replaces_cleared` here would tell the client to overwrite on a turn that
+    // cleared nothing.
+    await write(session, ptw, 'ze', '0.30', 'toolu_z1');
+    await selectBoard(session, ptw, 'garage');
+    await write(session, ptw, 'ze', '0.42', 'toolu_z2');
+
+    const result = bundle(ptw, { boardDesignations: { main: 'Main DB', garage: 'Garage CU' } });
+    expect(result.extracted_board_readings).toHaveLength(1);
+    expect(result.extracted_board_readings[0].value).toBe('0.42');
+    expect(result.extracted_board_readings[0]).not.toHaveProperty('replaces_cleared');
+  });
+
+  test('NEGATIVE — board write→CLEAR (mechanism A) leaves neither a stale write nor a flag', async () => {
+    const session = makeSession([{ id: 'main', board_type: 'main' }]);
+    const ptw = createPerTurnWrites();
+    await write(session, ptw, 'manufacturer', 'Wylex', 'toolu_wA7');
+    const cEnv = await clear(session, ptw, 'manufacturer', 'toolu_cA7');
+    expect(JSON.parse(cEnv.content)).toEqual({ ok: true });
+
+    const result = bundle(ptw);
+    // Item 9's `removeBoardReadingWrites` deleted the write from BOTH the
+    // journal and the Map, so nothing survives to be stamped and the clear is
+    // the turn's real outcome.
+    expect(result.extracted_board_readings ?? []).toHaveLength(0);
+    expect(
+      (result.field_corrections ?? []).filter((c) => c.reason === 'clear_reading')
+    ).toHaveLength(1);
+    for (const r of result.extracted_board_readings ?? []) {
+      expect(r).not.toHaveProperty('replaces_cleared');
+    }
+  });
+
+  test('a DERIVED/mirror survivor is not a stamp candidate — nothing audible replaced the clear', async () => {
+    const session = makeSession([{ id: 'main', board_type: 'main' }]);
+    session.stateSnapshot.boards[0].manufacturer = 'Hager';
+    const ptw = createPerTurnWrites();
+    await clear(session, ptw, 'manufacturer', 'toolu_cd7');
+    await write(session, ptw, 'manufacturer', 'Wylex', 'toolu_wd7');
+    // Mark the survivor derived AFTER dispatch (the real derived producers are
+    // the continuity mirror; this exercises the candidacy filter itself).
+    for (const v of ptw.boardReadings.values()) v.derived = true;
+
+    const result = bundle(ptw);
+    expect(result.extracted_board_readings).toHaveLength(1);
+    expect(result.extracted_board_readings[0]).not.toHaveProperty('replaces_cleared');
+  });
+});
