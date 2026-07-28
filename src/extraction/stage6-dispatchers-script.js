@@ -38,6 +38,8 @@ import {
   encodeReadingKey,
   attachEffectiveSlot,
   recordReadingWrite,
+  projectReadingWinners,
+  rawCircuitSlot,
 } from './stage6-per-turn-writes.js';
 // Imported from the helper directly rather than the barrel: value-corrections.js
 // is dialogue-engine INTERNAL transport (the barrel exports the turn-processing
@@ -176,6 +178,26 @@ export async function dispatchStartDialogueScript(call, ctx) {
       input.board_id ??
       session.stateSnapshot?.currentBoardId ??
       getMainBoardId(session.stateSnapshot);
+    // A2-multiboard (2026-07-28) — the precedence check below is keyed on the
+    // EFFECTIVE slot, not the raw Map key.
+    //
+    // The raw key is board-AMBIGUOUS: start_dialogue_script declares no
+    // board_id, so `encodeReadingKey(field, ref, undefined)` is the SAME string
+    // for every board. A `record_reading` on main followed by
+    // `select_board garage` + a garage script seeding the same field on the
+    // same ref would have matched `readings.has(key)` and skipped the garage
+    // backfill entirely — the second board's value never reaching
+    // extracted_readings at all. That is the spoken-but-not-written class this
+    // plan exists to close, and it is exactly the collision the journal was
+    // introduced to make decidable: `projectReadingWinners` is authoritative
+    // for slot occupancy (see stage6-per-turn-writes.js — this backfill is one
+    // of its named consumers), and it already excludes writes a same-turn clear
+    // removed, matching the old `Map.has` semantics on that path.
+    //
+    // The raw `key` is still what feeds encodeReadingKey/recordReadingWrite, so
+    // the Map key and the entry's enumerable `boardId` — and therefore the wire
+    // bytes — are unchanged.
+    const occupiedSlots = new Set(projectReadingWinners(perTurnWrites).map((w) => w.slot));
     for (const fieldName of result.seeded_writes) {
       const writtenValue = bucket?.[fieldName];
       if (writtenValue === undefined || writtenValue === null || writtenValue === '') continue;
@@ -183,8 +205,11 @@ export async function dispatchStartDialogueScript(call, ctx) {
       // Skip if record_reading or another tool already wrote this slot
       // earlier in the same turn (Sonnet rarely double-emits but be
       // defensive — last-write-wins via Map.set would otherwise
-      // overwrite the more-recent value).
-      if (perTurnWrites.readings.has(key)) continue;
+      // overwrite the more-recent value). "This slot" is the EFFECTIVE one —
+      // see the note above the Set.
+      const slot = rawCircuitSlot(fieldName, result.circuit_ref, seededEffectiveBoardId);
+      if (occupiedSlots.has(slot)) continue;
+      occupiedSlots.add(slot);
       const entry = attachEffectiveSlot(
         {
           value: writtenValue,
