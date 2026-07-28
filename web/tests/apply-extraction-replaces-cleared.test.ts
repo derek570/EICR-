@@ -386,6 +386,61 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
   });
 
+  it('LEGACY SHAPE — the backend default main id overwrites on a job with no board identity', () => {
+    // The single most common job shape: no `boards[]`, every row unscoped. The
+    // backend has synthesised its default main board and stamps that literal
+    // id on the reading. Web has never seen the string, so without the seed it
+    // reads as an unknown board and the bypass declines — leaving the stale
+    // value in place, i.e. the exact defect A2 exists to close.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading({ board_id: 'main' })],
+      } as unknown as Partial<ExtractionResult>)
+    );
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('LEGACY SHAPE — the seed cannot mask a SECOND board in the same envelope', () => {
+    // The seed goes into the independence snapshot, never into the cardinality
+    // set, so `main` + `sub-1` still declines on the count.
+    expectDeferred(
+      makeJob({ circuits: [populatedRow()], boards: [] } as unknown as Partial<JobDetail>),
+      makeResult({
+        readings: [
+          flaggedReading({ board_id: 'main' }),
+          flaggedReading({
+            circuit: 2,
+            field: 'measured_zs_ohm',
+            value: '0.42',
+            board_id: 'sub-1',
+            replaces_cleared: undefined,
+          }),
+        ],
+      } as unknown as Partial<ExtractionResult>)
+    );
+  });
+
+  it('a job that HAS its own registry naming something else is a real mismatch and defers', () => {
+    // The seed is deliberately narrow: it fires only when web has NO board
+    // identity of its own. Here web knows `db-1`, so a server-asserted `main`
+    // is a genuine registry disagreement, not the legacy flat shape.
+    expectDeferred(
+      makeJob({
+        circuits: [populatedRow({ board_id: 'db-1' } as Partial<CircuitRow>)],
+        boards: [{ id: 'db-1' }],
+      } as unknown as Partial<JobDetail>),
+      makeResult({ readings: [flaggedReading({ board_id: 'main' })] })
+    );
+  });
+
   it('NEVER A NEW SKIP — a `select_board`-deferred reading still FILLS an empty cell', () => {
     const job = makeJob({
       circuits: [populatedRow({ ir_live_live_mohm: undefined })],

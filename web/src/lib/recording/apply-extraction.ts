@@ -746,6 +746,18 @@ function applyCircuit0Readings(
 // name (ocpd_rating / zs / r1_plus_r2 / insulation_resistance_l_l / …) still
 // resolves to its canonical column here — F1: checking the raw wire field would
 // miss those and re-block the legitimate single-board LIM correction.
+// A2 (2026-07-28) — the board id the BACKEND synthesises for a snapshot that
+// arrived with no `boards[]` at all (`DEFAULT_MAIN_BOARD_ID` in
+// `src/extraction/stage6-multi-board-shape.js`). Web has no board named this —
+// it is the server's name for "the only board" on a legacy flat job — so the
+// `replaces_cleared` evidence check seeds it, and ONLY it, when web's own
+// evidence is empty. A hand-mirrored literal: web cannot import from `src/`.
+// If the backend constant ever changes, the symptom is a `replaces_cleared`
+// write silently declining on legacy single-board jobs (stale value kept, the
+// A2 defect back) — pinned by the legacy-shape test in
+// `web/tests/apply-extraction-replaces-cleared.test.ts`.
+const BACKEND_DEFAULT_MAIN_BOARD_ID = 'main';
+
 const NUMERIC_READING_COLUMNS = new Set<string>([
   'measured_zs_ohm',
   'rcd_time_ms',
@@ -953,6 +965,26 @@ function applyCircuitReadings(
           // is what stops an assertion vouching for itself, and makes the
           // result order-independent — no reading or op can evidence another.
           const independent = new Set(ids);
+          // …with ONE seeded id. When web has no board identity of its own at
+          // all — no `boards[]`, every row unscoped, i.e. the legacy flat
+          // single-board shape — the backend has SYNTHESISED its default main
+          // board (`DEFAULT_MAIN_BOARD_ID` in `src/extraction/
+          // stage6-multi-board-shape.js`) and may stamp that literal id on the
+          // reading. Web has never seen the string, so without this it reads as
+          // an unknown board and the bypass declines — which would leave the
+          // stale value in place on the single most common job shape there is,
+          // i.e. re-open the exact defect A2 exists to close. The synthesised
+          // default is the one id whose meaning web CAN infer: "the only
+          // board", which is precisely what its one flat row set is.
+          //
+          // Deliberately narrow: seeded ONLY when web's own evidence is empty
+          // (a job that HAS a board registry naming something else is a real
+          // registry mismatch and must still defer), it goes into
+          // `independent` and NOT `ids` (so it can never inflate cardinality),
+          // and every OTHER id stays unknown — a `sub-1` on the same legacy
+          // job still declines, and a `main` + `sub-1` envelope still declines
+          // on the count.
+          if (independent.size === 0) independent.add(BACKEND_DEFAULT_MAIN_BOARD_ID);
           let unknownNamedBoard = false;
           const note = (v: unknown) => {
             if (typeof v !== 'string' || v === '') return;
