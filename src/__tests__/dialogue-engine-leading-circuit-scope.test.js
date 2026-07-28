@@ -573,6 +573,83 @@ describe('review r1 — collect-all across OCCURRENCES, masking on the ordinary 
 });
 
 // ---------------------------------------------------------------------------
+// 3c. Mini-review r1 pins.
+// ---------------------------------------------------------------------------
+
+describe('mini-review r1 — repeated terse, disambiguation switch, conflict follow-up upsert', () => {
+  test('repeated TERSE contradiction across sentences is collected (engine + twins)', () => {
+    const conflict = { matched: true, circuit_ref: null, scope_conflict: true };
+    expect(
+      engineDetectEntry('Ring on circuit 10. Ring on circuit 13.', ringContinuitySchema)
+    ).toEqual(conflict);
+    expect(legacyRingDetectEntry('Ring on circuit 10. Ring on circuit 13.')).toEqual(conflict);
+    expect(
+      engineDetectEntry('IR for circuit 10. IR for circuit 13.', insulationResistanceSchema)
+    ).toEqual(conflict);
+    expect(legacyIrDetectEntry('IR for circuit 10. IR for circuit 13.')).toEqual(conflict);
+  });
+
+  test('engine IR: a SINGLE different-circuit entry during awaiting_disambiguation switches instead of consuming the routing answer', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {}, 13: {} });
+    session.dialogueScriptState = {
+      active: true,
+      schemaName: 'insulation_resistance',
+      circuit_ref: 13,
+      values: {},
+      valueCorrections: {},
+      slotPendingConfirm: null,
+      pending_writes: [],
+      skipped_slots: new Set(),
+      entered_at: 500,
+      last_turn_at: 500,
+      circuit_retry_attempted: false,
+      last_designation_attempt: null,
+      slot_no_progress: null,
+      entered_via_pivot: false,
+      pivoted_from: null,
+      ambiguous_bare_value: null,
+      paused: false,
+      awaiting_disambiguation: { value: '299', source: 'megaohm' },
+      disambiguation_retry_attempted: false,
+    };
+    engineIR({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Circuit 5, insulation resistance live to live is 200.',
+      logger: null,
+      now: 1000,
+    });
+    // The buffered 299 must NOT land on circuit 13; the explicit circuit-5
+    // reading must land on 5 via the fresh scoped entry.
+    expect(session.stateSnapshot.circuits[13].ir_live_live_mohm).toBeUndefined();
+    expect(session.stateSnapshot.circuits[5].ir_live_live_mohm).toBe('200');
+  });
+
+  test.each([
+    ['engine ring', engineRing],
+    ['legacy ring twin', legacyRing],
+  ])(
+    '%s: a conflict follow-up CORRECTION upserts and wins on a pre-filled destination',
+    (_l, proc) => {
+      const { session } = run(
+        proc,
+        [
+          { text: 'Circuit 5, ring continuity for circuit 3.', now: 1000 },
+          { text: 'Lives are 0.61.', now: 2000 },
+          { text: 'Lives are 0.63.', now: 3000 }, // correction — newest wins
+          { text: 'circuit 5', now: 4000 },
+        ],
+        { 3: {}, 5: { ring_r1_ohm: '0.31' } } // destination pre-filled
+      );
+      expect(session.stateSnapshot.circuits[5].ring_r1_ohm).toBe('0.63');
+      expect(session.stateSnapshot.circuits[3].ring_r1_ohm).toBeUndefined();
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
 // 4. Existing exclusions unchanged.
 // ---------------------------------------------------------------------------
 

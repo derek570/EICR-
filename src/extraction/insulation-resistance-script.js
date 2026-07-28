@@ -168,7 +168,11 @@ const IR_ENTRY_PATTERNS = [
   // 1. Full: "insulation/installation/international resistance" + optional "circuit N"
   /\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // 2. Terse: "IR for circuit N" — requires "circuit N" trailer.
-  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
+  // Terse anchor widened ^ → clause-start (mini-review r1): matchAll must
+  // collect a REPEATED terse trigger in a later sentence ("Ring on circuit
+  // 10. Ring on circuit 13.") or the contradiction is missed. Horizontal
+  // whitespace only, same rules as the leading patterns.
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 
 /**
@@ -224,9 +228,12 @@ function collectIrTriggerCircuitRefs(text) {
   const refs = [];
   for (const pattern of IR_ENTRY_PATTERNS) {
     // EVERY occurrence, not just the first (mirrors the engine).
-    const global = pattern.flags.includes('g')
-      ? pattern
-      : new RegExp(pattern.source, `${pattern.flags}g`);
+    // Clone UNCONDITIONALLY (mini-review r1) — never matchAll a shared
+    // global RegExp (stateful lastIndex).
+    const global = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+    );
     for (const m of text.matchAll(global)) {
       matched = true;
       if (m[1]) {
@@ -1150,11 +1157,19 @@ export function processInsulationResistanceTurn(ctx) {
       const followUpVolunteered = extractNamedFieldValues(maskCircuitSpans(text));
       if (followUpVolunteered.length > 0) {
         for (const w of followUpVolunteered) {
-          const alreadyQueued = (state.pending_writes ?? []).some(
-            (existing) => existing.field === w.field
-          );
-          if (alreadyQueued) continue;
           if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          if (state.scope_conflict_origin === true) {
+            // Conflict-origin episodes UPSERT + mark (mirrors the engine):
+            // a follow-up restatement is the newest dictated value.
+            w[IR_CONFLICT_OVERWRITE] = true;
+            const idx = state.pending_writes.findIndex((e) => e.field === w.field);
+            if (idx >= 0) state.pending_writes[idx] = w;
+            else state.pending_writes.push(w);
+            continue;
+          }
+          // De-dup: don't queue the same field twice.
+          const alreadyQueued = state.pending_writes.some((existing) => existing.field === w.field);
+          if (alreadyQueued) continue;
           state.pending_writes.push(w);
         }
         logger?.info?.('stage6.insulation_resistance_script_queued_values', {

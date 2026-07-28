@@ -763,9 +763,13 @@ function collectTriggerCircuitRefs(text, patterns) {
     // 10. Ring continuity for circuit 13." — are as much a contradiction as
     // a leading-vs-trailing pair; a first-occurrence read would silently
     // pick 10. Clone with /g so matchAll walks the whole utterance.
-    const global = pattern.flags.includes('g')
-      ? pattern
-      : new RegExp(pattern.source, `${pattern.flags}g`);
+    // Clone UNCONDITIONALLY (mini-review r1): matchAll on a shared global
+    // RegExp starts from its current lastIndex — never hand it the shared
+    // object.
+    const global = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+    );
     for (const m of text.matchAll(global)) {
       matched = true;
       if (m[1]) {
@@ -1502,8 +1506,15 @@ function runActivePath({
     // which_circuit ask. Fall through to the position-2 conflict branch,
     // which replaces the episode and asks. Non-conflict replies keep
     // today's disambiguation handling unchanged.
-    const disambiguationConflict = detectDifferentEntry(reply, schema, state.circuit_ref);
-    if (disambiguationConflict.scope_conflict !== true) {
+    // WIDENED (mini-review r1): any matched different-entry — conflict OR a
+    // single different circuit — falls through: "Circuit 5, insulation
+    // resistance live to live is 200" while circuit 13 awaits L-L/L-E
+    // routing is a fresh scoped entry, not a routing answer; consuming it
+    // here wrote the buffered value to the OLD circuit and dropped the
+    // explicit circuit-5 reading. A genuine routing answer ("live to
+    // live") matches no entry trigger and is handled below unchanged.
+    const disambiguationEntry = detectDifferentEntry(reply, schema, state.circuit_ref);
+    if (disambiguationEntry.matched !== true) {
       const bare = state.awaiting_disambiguation;
       const verdict = schema.disambiguateBareValue(text);
       // Plan D Seam B — the clamped value actually stored, for the log row below.
@@ -2452,11 +2463,20 @@ function runActivePath({
       const followUpVolunteered = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
       if (followUpVolunteered.length > 0) {
         for (const w of followUpVolunteered) {
-          const alreadyQueued = (state.pending_writes ?? []).some(
-            (existing) => existing.field === w.field
-          );
-          if (alreadyQueued) continue;
           if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          if (state.scope_conflict_origin === true) {
+            // Conflict-origin episodes UPSERT (mini-review r1): a follow-up
+            // restatement is the newest dictated value and must both replace
+            // an already-queued entry for the field and carry the
+            // overwrite marker for the drain.
+            w[CONFLICT_OVERWRITE] = true;
+            const idx = state.pending_writes.findIndex((e) => e.field === w.field);
+            if (idx >= 0) state.pending_writes[idx] = w;
+            else state.pending_writes.push(w);
+            continue;
+          }
+          const alreadyQueued = state.pending_writes.some((existing) => existing.field === w.field);
+          if (alreadyQueued) continue;
           state.pending_writes.push(w);
         }
         logger?.info?.(`${schema.logEventPrefix}_queued_values`, {
@@ -2775,8 +2795,10 @@ function runActivePath({
     //        in-script voltage re-ask (script stays active).
     //   else → legacy finish-and-consume (brief unparseable, no IR signal, <30s).
     const handleVoltageNoParse = () => {
-      const freshVolunteered = extractNamedFieldValues(text, schema.slots);
-      const freshEntry = detectEntry(text, schema).matched;
+      // RAW reply + masked (mini-review r1) — mirrors the entry loop; the
+      // annotation must not defeat the leading patterns or feed extraction.
+      const freshVolunteered = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+      const freshEntry = detectEntry(reply, schema).matched;
       if (freshVolunteered.length > 0 || freshEntry) {
         const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
         const readingsCaptured =
@@ -2800,6 +2822,7 @@ function runActivePath({
           session,
           sessionId,
           transcriptText,
+          rawReplyText: reply,
           schemas: [schema],
           logger,
           now,
@@ -3996,7 +4019,9 @@ export function tryResumePausedScript({
   const drainedWrites = [];
   if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
     for (const w of state.pending_writes) {
-      if (state.values[w.field] !== undefined) continue;
+      // Marker-aware (mini-review r1): the resume drain is a SECOND drain
+      // site and must honour CONFLICT_OVERWRITE like the position-4 drain.
+      if (w[CONFLICT_OVERWRITE] !== true && state.values[w.field] !== undefined) continue;
       // P3 — normalise seeded pending_writes for the WHOLE numeric reading field
       // set on the circuit-create resume drain (was scoped to ir_live_*).
       // Coerce four-form LIM → "LIM", validate, and REJECT a near-match /

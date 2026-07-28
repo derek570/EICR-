@@ -193,7 +193,11 @@ const triggers = [
   // so the false-positive surface is negligible (same rationale as "installation").
   /\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 (terse): "IR for circuit N" — requires "circuit N" trailer.
-  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
+  // Terse anchor widened ^ → clause-start (mini-review r1): matchAll must
+  // collect a REPEATED terse trigger in a later sentence ("Ring on circuit
+  // 10. Ring on circuit 13.") or the contradiction is missed. Horizontal
+  // whitespace only, same rules as the leading patterns.
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 
 // Cross-utterance delete fix, IR same-utterance parity (feedback id 93

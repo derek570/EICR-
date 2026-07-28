@@ -144,7 +144,11 @@ const RING_ENTRY_PATTERNS = [
   // 2. Terse: clause-start "ring ... circuit N" — no "continuity"/"final"
   //    word required, but the "circuit N" trailer is mandatory to block
   //    "ringing"/"ring main" false positives.
-  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?ring\b[^.?!]{0,20}?\bcircuit\s*(\d{1,3})\b/i,
+  // Terse anchor widened ^ → clause-start (mini-review r1): matchAll must
+  // collect a REPEATED terse trigger in a later sentence ("Ring on circuit
+  // 10. Ring on circuit 13.") or the contradiction is missed. Horizontal
+  // whitespace only, same rules as the leading patterns.
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?ring\b[^.?!]{0,20}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 
 // ── P1 ring-script-hardening (2026-07-22) — confirmation-correction
@@ -343,9 +347,12 @@ function collectRingTriggerCircuitRefs(text) {
     // EVERY occurrence, not just the first (mirrors the engine): two clauses
     // using the SAME trigger family are as much a contradiction as a
     // leading-vs-trailing pair.
-    const global = pattern.flags.includes('g')
-      ? pattern
-      : new RegExp(pattern.source, `${pattern.flags}g`);
+    // Clone UNCONDITIONALLY (mini-review r1) — never matchAll a shared
+    // global RegExp (stateful lastIndex).
+    const global = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+    );
     for (const m of text.matchAll(global)) {
       matched = true;
       if (m[1]) {
@@ -1706,12 +1713,19 @@ export function processRingContinuityTurn(ctx) {
         // disruptive. The hard timeout / next entry will handle the
         // case where the circuit never arrives.)
         for (const w of followUpVolunteered) {
-          // De-dup: don't queue the same field twice.
-          const alreadyQueued = (state.pending_writes ?? []).some(
-            (existing) => existing.field === w.field
-          );
-          if (alreadyQueued) continue;
           if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          if (state.scope_conflict_origin === true) {
+            // Conflict-origin episodes UPSERT + mark (mirrors the engine):
+            // a follow-up restatement is the newest dictated value.
+            w[RING_CONFLICT_OVERWRITE] = true;
+            const idx = state.pending_writes.findIndex((e) => e.field === w.field);
+            if (idx >= 0) state.pending_writes[idx] = w;
+            else state.pending_writes.push(w);
+            continue;
+          }
+          // De-dup: don't queue the same field twice.
+          const alreadyQueued = state.pending_writes.some((existing) => existing.field === w.field);
+          if (alreadyQueued) continue;
           state.pending_writes.push(w);
         }
         logger?.info?.('stage6.ring_continuity_script_queued_values', {
