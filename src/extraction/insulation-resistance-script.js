@@ -156,6 +156,15 @@ const IR_VALUE_ONLY_RE =
  * "resistance" — vanishingly unlikely in mid-test dictation.
  */
 const IR_ENTRY_PATTERNS = [
+  // 0a/0b. Leading-circuit patterns (feedback id 98, 2026-07-27) — behavioural
+  //    mirror of the live schema's leading patterns (see
+  //    dialogue-engine/schemas/insulation-resistance.js and the ring
+  //    schema for the anchoring rationale). This twin's OWN head-word
+  //    vocabulary is preserved verbatim (`international`, where the live
+  //    schema carries `insurance` — the historical per-file divergence is
+  //    deliberate and pinned by test). Circuit stays capture group 1.
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\bi\s*r\b/i,
   // 1. Full: "insulation/installation/international resistance" + optional "circuit N"
   /\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // 2. Terse: "IR for circuit N" — requires "circuit N" trailer.
@@ -195,35 +204,65 @@ const TOPIC_SWITCH_PATTERNS = [
 ];
 
 /**
- * Detect a different IR entry on a NEW circuit while one is already active.
+ * Mask `circuit N` spans out of a transcript so a circuit ref can never be
+ * captured as a reading value on a scope-conflict path (feedback id 98) —
+ * "Circuit 5, insulation resistance live to live for circuit 3 is 200"
+ * must never queue 3 as a megaohm value. Length-preserving so proximity
+ * windows in the extractors stay honest. Mirrors ring-continuity-script.js
+ * maskCircuitSpans / the engine's helper.
  */
-function detectDifferentIrEntry(text, currentCircuitRef) {
+function maskCircuitSpans(text) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/\bcircuit\s*\d{1,3}\b/gi, (m) => ' '.repeat(m.length));
+}
+
+// Collect-all across every matching pattern (feedback id 98) — mirrors the
+// engine's collectTriggerCircuitRefs so contradiction scenarios stay
+// replay-parity-eligible. Circuit stays capture group 1 in every pattern.
+function collectIrTriggerCircuitRefs(text) {
+  let matched = false;
+  const refs = [];
   for (const pattern of IR_ENTRY_PATTERNS) {
     const m = text.match(pattern);
-    if (m && m[1]) {
-      const newRef = Number(m[1]);
-      if (Number.isInteger(newRef) && newRef > 0 && newRef !== currentCircuitRef) {
-        return newRef;
-      }
+    if (!m) continue;
+    matched = true;
+    if (m[1]) {
+      const ref = Number(m[1]);
+      if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
     }
   }
-  return null;
+  return { matched, refs };
 }
 
 /**
- * Detect script entry from a transcript.
+ * Detect a different IR entry on a NEW circuit while one is already active.
+ * Returns the common `{matched, circuit_ref, scope_conflict}` shape
+ * (mirrors the engine's detectDifferentEntry).
+ */
+function detectDifferentIrEntry(text, currentCircuitRef) {
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
+  }
+  const { refs } = collectIrTriggerCircuitRefs(text);
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  if (refs.length === 1 && refs[0] !== currentCircuitRef) {
+    return { matched: true, circuit_ref: refs[0], scope_conflict: false };
+  }
+  return { matched: false, circuit_ref: null, scope_conflict: false };
+}
+
+/**
+ * Detect script entry from a transcript. Returns the common detection
+ * shape `{matched, circuit_ref, scope_conflict}` (mirrors the engine).
  */
 export function detectEntry(text) {
-  if (typeof text !== 'string' || !text) return { matched: false, circuit_ref: null };
-  for (const pattern of IR_ENTRY_PATTERNS) {
-    const m = text.match(pattern);
-    if (m) {
-      const ref = m[1] ? Number(m[1]) : null;
-      const validRef = Number.isInteger(ref) && ref > 0 ? ref : null;
-      return { matched: true, circuit_ref: validRef };
-    }
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  return { matched: false, circuit_ref: null };
+  const { matched, refs } = collectIrTriggerCircuitRefs(text);
+  if (!matched) return { matched: false, circuit_ref: null, scope_conflict: false };
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  return { matched: true, circuit_ref: refs[0] ?? null, scope_conflict: false };
 }
 
 export function detectCancel(text) {
@@ -449,7 +488,14 @@ function stampResponseEpoch(payload, responseEpoch) {
   return payload;
 }
 
-function buildScriptAsk({ sessionId, circuit_ref, missing_field, now, kind, responseEpoch = null }) {
+function buildScriptAsk({
+  sessionId,
+  circuit_ref,
+  missing_field,
+  now,
+  kind,
+  responseEpoch = null,
+}) {
   if (kind === 'which_circuit') {
     return stampResponseEpoch(
       {
@@ -794,6 +840,32 @@ export function processInsulationResistanceTurn(ctx) {
     const entry = detectEntry(text);
     if (!entry.matched) return { handled: false };
 
+    // Scope-conflict entry (feedback id 98) — mirrors the engine's runEntry
+    // conflict branch: skip the designation fallback, queue MASKED
+    // volunteered values against an unresolved episode, ask which_circuit.
+    if (entry.scope_conflict === true) {
+      initScript(session, null, now);
+      const queued = extractNamedFieldValues(maskCircuitSpans(text));
+      for (const w of queued) session.insulationResistanceScript.pending_writes.push(w);
+      logger?.info?.('stage6.insulation_resistance_script_entry_scope_conflict', {
+        sessionId,
+        pending_writes: session.insulationResistanceScript.pending_writes.map((w) => w.field),
+        textPreview: text.slice(0, 80),
+      });
+      safeSend(
+        ws,
+        buildScriptAsk({
+          sessionId,
+          circuit_ref: null,
+          missing_field: null,
+          now,
+          kind: 'which_circuit',
+          responseEpoch,
+        })
+      );
+      return { handled: true, fallthrough: false };
+    }
+
     // Entry-time designation lookup (2026-04-29, mirrors ring-continuity-
     // script.js fix from session 6754FE6E): the entry regex's circuit-
     // capture group only matches the literal word "circuit" + digits.
@@ -933,7 +1005,37 @@ export function processInsulationResistanceTurn(ctx) {
   }
 
   // 2. Different IR entry on a NEW circuit — seamlessly switch.
-  const newRef = detectDifferentIrEntry(text, state.circuit_ref);
+  //    SCOPE-CONFLICT exception (feedback id 98) — mirrors the engine's
+  //    position-2 conflict branch (the IR twin has no confirmation mode, so
+  //    only the active-collection state needs it): never pick a silent
+  //    winner; queue MASKED volunteered values on a fresh unresolved
+  //    episode and ask which_circuit.
+  const diffEntry = detectDifferentIrEntry(text, state.circuit_ref);
+  if (diffEntry.scope_conflict === true) {
+    const queued = extractNamedFieldValues(maskCircuitSpans(text));
+    logger?.info?.('stage6.insulation_resistance_script_different_entry_scope_conflict', {
+      sessionId,
+      from_ref: state.circuit_ref,
+      pending_writes: queued.map((w) => w.field),
+      textPreview: text.slice(0, 80),
+    });
+    clearScript(session);
+    initScript(session, null, now);
+    for (const w of queued) session.insulationResistanceScript.pending_writes.push(w);
+    safeSend(
+      ws,
+      buildScriptAsk({
+        sessionId,
+        circuit_ref: null,
+        missing_field: null,
+        now,
+        kind: 'which_circuit',
+        responseEpoch,
+      })
+    );
+    return { handled: true, fallthrough: false };
+  }
+  const newRef = diffEntry.matched ? diffEntry.circuit_ref : null;
   if (newRef !== null) {
     logger?.info?.('stage6.insulation_resistance_script_switched_circuit', {
       sessionId,

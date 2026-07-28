@@ -67,6 +67,7 @@ describe('detectEntry', () => {
     expect(detectEntry('Ring continuity for circuit 13.')).toEqual({
       matched: true,
       circuit_ref: 13,
+      scope_conflict: false,
     });
   });
 
@@ -74,6 +75,7 @@ describe('detectEntry', () => {
     expect(detectEntry('Ring continuity for, uh, circuit 13.')).toEqual({
       matched: true,
       circuit_ref: 13,
+      scope_conflict: false,
     });
   });
 
@@ -81,6 +83,7 @@ describe('detectEntry', () => {
     expect(detectEntry('ring final on circuit 7')).toEqual({
       matched: true,
       circuit_ref: 7,
+      scope_conflict: false,
     });
   });
 
@@ -88,6 +91,7 @@ describe('detectEntry', () => {
     expect(detectEntry('Ring continuance for circuit 5')).toEqual({
       matched: true,
       circuit_ref: 5,
+      scope_conflict: false,
     });
   });
 
@@ -95,6 +99,7 @@ describe('detectEntry', () => {
     expect(detectEntry('ring continuity')).toEqual({
       matched: true,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
@@ -102,6 +107,7 @@ describe('detectEntry', () => {
     expect(detectEntry('OK, ring on circuit 4')).toEqual({
       matched: true,
       circuit_ref: 4,
+      scope_conflict: false,
     });
   });
 
@@ -109,6 +115,7 @@ describe('detectEntry', () => {
     expect(detectEntry('Zs is 0.62 on circuit 6.')).toEqual({
       matched: false,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
@@ -116,6 +123,7 @@ describe('detectEntry', () => {
     expect(detectEntry('the phone is ringing again')).toEqual({
       matched: false,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
@@ -123,6 +131,7 @@ describe('detectEntry', () => {
     expect(detectEntry('ring continuity for circuit 0')).toEqual({
       matched: true,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 });

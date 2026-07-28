@@ -114,6 +114,17 @@ export function processDialogueTurn(ctx) {
     // threaded UNCHANGED through every nested engine fn to the builders. null
     // when there is no live arming utterance (test paths / legacy callers).
     responseEpoch = null,
+    // Cross-utterance destructive-intent suppression (feedback id 93,
+    // 2026-07-27). sonnet-stream OWNS the token lifecycle (arrival stamping,
+    // arming at the model-commit seam, one-shot consumption + window
+    // arbitration); the engine only HONOURS the flag: when true, entry
+    // detection is skipped for any schema that carries an
+    // entryExclusionPattern, so the scoped trigger that FOLLOWED a
+    // standalone "delete" utterance falls through to the model (which owns
+    // clear_reading) instead of the script hijacking the turn with its
+    // confirmation. Active-path handling is deliberately unaffected — an
+    // in-flight episode keeps processing its own turns.
+    suppressDestructiveEntry = false,
     // P1 ring-script-hardening (Fix 4) — the RAW client reply, un-annotated.
     // sonnet-stream prepends the `[In response to TTS question…]` bracket to
     // transcriptText BEFORE invoking the engine; parsing that annotated
@@ -468,6 +479,21 @@ export function processDialogueTurn(ctx) {
     const entry = detectEntry(text, schema);
     if (!entry.matched) continue;
 
+    // Cross-utterance destructive suppression (id 93) — a standalone
+    // "delete" on the PREVIOUS utterance armed a one-shot token in
+    // sonnet-stream; within the arrival-delta window the follow-up scoped
+    // trigger ("recontinuity readings for circuit 13") must reach the model
+    // with the delete intent intact, not enter a script. Scoped to schemas
+    // that opted into the entry guard (entryExclusionPattern) — the same
+    // schemas whose SAME-utterance destructive entries already fall through.
+    if (suppressDestructiveEntry === true && schema.entryExclusionPattern) {
+      logger?.info?.(`${schema.name}_entry_suppressed_cross_utterance_destructive`, {
+        sessionId,
+        textPreview: text.slice(0, 80),
+      });
+      continue;
+    }
+
     // Entry-exclusion guard — OPT-IN per schema (P1 ring-script-hardening,
     // 2026-07-22, generalising the Phase 6.1 RCD-only guard). Field repro for
     // the original RCD guard: session 60754E4D ("please delete RCD" ×6
@@ -695,42 +721,74 @@ function sendScriptPurge(ws, schema, sessionId) {
 }
 
 /**
- * Test if a transcript matches a schema's entry triggers. Returns
- * { matched, circuit_ref } — circuit_ref is the digit captured by the
- * trigger regex, or null if the regex matched but didn't bind a digit.
+ * Collect the unique, valid circuit refs bound by EVERY matching trigger
+ * pattern (feedback id 98, 2026-07-27). The old first-match-return shape
+ * silently picked whichever pattern sat earlier in the list — with the new
+ * leading-circuit patterns placed first, "Circuit 10, ring continuity for
+ * circuit 13" would have silently won as 10, the exact silent-winner bug
+ * the scope-conflict resolver exists to prevent. Every pattern keeps its
+ * circuit capture at m[1], so this is the ONLY reader of the group index.
+ * Mirrored behaviourally in both legacy twins (ring-continuity-script.js /
+ * insulation-resistance-script.js) so contradiction scenarios stay
+ * replay-parity-eligible.
+ */
+function collectTriggerCircuitRefs(text, patterns) {
+  let matched = false;
+  const refs = [];
+  for (const pattern of patterns) {
+    const m = text.match(pattern);
+    if (!m) continue;
+    matched = true;
+    if (m[1]) {
+      const ref = Number(m[1]);
+      if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+    }
+  }
+  return { matched, refs };
+}
+
+/**
+ * Test if a transcript matches a schema's entry triggers. Returns the
+ * common detection shape { matched, circuit_ref, scope_conflict }:
+ *   - circuit_ref is the SINGLE unambiguous circuit the trigger patterns
+ *     bound (same number stated twice is unambiguous), or null;
+ *   - scope_conflict=true when DIFFERENT circuits were bound by different
+ *     patterns (an explicit contradiction — the caller must ask
+ *     which_circuit, never pick a silent winner).
  *
  * Each trigger regex is expected to have an optional capture group at
  * position 1 for the circuit number.
  */
 function detectEntry(text, schema) {
-  if (typeof text !== 'string' || !text) return { matched: false, circuit_ref: null };
-  for (const pattern of schema.triggers) {
-    const m = text.match(pattern);
-    if (m) {
-      const ref = m[1] ? Number(m[1]) : null;
-      const validRef = Number.isInteger(ref) && ref > 0 ? ref : null;
-      return { matched: true, circuit_ref: validRef };
-    }
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  return { matched: false, circuit_ref: null };
+  const { matched, refs } = collectTriggerCircuitRefs(text, schema.triggers);
+  if (!matched) return { matched: false, circuit_ref: null, scope_conflict: false };
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  return { matched: true, circuit_ref: refs[0] ?? null, scope_conflict: false };
 }
 
 /**
  * Detect a different entry on a NEW circuit while one is already
  * active. Used so an inspector mid-script can seamlessly switch to a
  * different circuit by re-stating the entry phrase with a new ref.
+ * Returns the same { matched, circuit_ref, scope_conflict } shape as
+ * detectEntry: matched=true ONLY for a single ref different from the
+ * current circuit, or for a scope conflict (≥2 distinct refs — the
+ * conflict is reported regardless of whether the current circuit is
+ * among them; the caller owns the ask).
  */
 function detectDifferentEntry(text, schema, currentCircuitRef) {
-  for (const pattern of schema.triggers) {
-    const m = text.match(pattern);
-    if (m && m[1]) {
-      const newRef = Number(m[1]);
-      if (Number.isInteger(newRef) && newRef > 0 && newRef !== currentCircuitRef) {
-        return newRef;
-      }
-    }
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  return null;
+  const { refs } = collectTriggerCircuitRefs(text, schema.triggers);
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  if (refs.length === 1 && refs[0] !== currentCircuitRef) {
+    return { matched: true, circuit_ref: refs[0], scope_conflict: false };
+  }
+  return { matched: false, circuit_ref: null, scope_conflict: false };
 }
 
 function clearScriptState(session) {
@@ -1054,6 +1112,44 @@ function runEntry({
   overwriteVolunteered = false,
   responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
+  // Scope-conflict entry (feedback id 98, 2026-07-27): the trigger patterns
+  // bound DIFFERENT circuits ("Circuit 10, ring continuity for circuit 13").
+  // An explicit contradiction must never pick a silent winner — skip the
+  // designation fallback entirely (a designation match would just be a third
+  // candidate), queue any volunteered readings against the UNRESOLVED
+  // episode, and emit the schema's existing which_circuit ask. Volunteered
+  // extraction runs on the circuit-span-MASKED text: the raw extractors
+  // accept the first digit within their char-bound after a conductor label,
+  // so "Circuit 5, ring continuity earths for circuit 3 are 1.19" would
+  // otherwise capture 3 as the CPC value and write it once the scope
+  // resolves (same masking contract as the confirmation 5a seed path).
+  if (entry.scope_conflict === true) {
+    initScriptState(session, schema, null, now);
+    const conflictState = session.dialogueScriptState;
+    const queued = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
+    for (const w of queued) conflictState.pending_writes.push(w);
+    logger?.info?.(`${schema.logEventPrefix}_entry_scope_conflict`, {
+      sessionId,
+      pending_writes: conflictState.pending_writes.map((w) => w.field),
+      textPreview: text.slice(0, 80),
+    });
+    safeSend(
+      ws,
+      buildScriptAsk({
+        toolCallIdPrefix: schema.toolCallIdPrefix,
+        sessionId,
+        circuit_ref: null,
+        missing_field: null,
+        whichCircuitQuestion: schema.whichCircuitQuestion,
+        slotQuestion: null,
+        now,
+        kind: 'which_circuit',
+        responseEpoch,
+      })
+    );
+    return { handled: true, fallthrough: false };
+  }
+
   let circuitRef = entry.circuit_ref;
   let entryDesignationMatched = false;
   // Designation lookup at entry time. Three outcomes:
@@ -1542,9 +1638,71 @@ function runActivePath({
   // preflight owns different-circuit routing there (with masking, negation
   // polarity and overwriteVolunteered semantics the generic recursion
   // lacks).
-  const newRef = state.awaiting_confirmation
-    ? null
-    : detectDifferentEntry(text, schema, state.circuit_ref);
+  //
+  // SCOPE-CONFLICT exception (feedback id 98, 2026-07-27): a reply whose
+  // trigger patterns bind TWO different circuits ("Circuit 10, ring
+  // continuity for circuit 13") is an explicit contradiction and IS handled
+  // here in BOTH states — awaiting_confirmation is NOT exempt, because the
+  // 5a preflight filters out the CURRENT circuit from its target set, so
+  // with current circuit 10 the conflicting pair {10, 13} would silently
+  // switch to 13. Non-conflicting different-circuit replies keep today's
+  // routing (generic switch below when collecting; 5a during confirmation).
+  // Detection parses the raw reply in confirmation mode (P1 Fix-4 contract —
+  // the annotated text quotes the confirm question) and the annotated text
+  // otherwise (matching the pre-existing position-2 behaviour).
+  const diffEntry = detectDifferentEntry(
+    state.awaiting_confirmation === true ? reply : text,
+    schema,
+    state.circuit_ref
+  );
+  if (diffEntry.scope_conflict === true) {
+    const wasConfirmation = state.awaiting_confirmation === true;
+    // Volunteered values from the conflict utterance, extraction-safe: the
+    // circuit-span mask stops "…earths for circuit 3 are 1.19" capturing 3
+    // as a conductor value; in confirmation mode the full ring-safe
+    // qualification also rejects explicit non-ring contexts (mirrors 5a/5b).
+    let queued;
+    if (wasConfirmation) {
+      const safe = extractRingSafeNamedValues(reply, schema);
+      queued = safe.rejected ? [] : safe.values;
+    } else {
+      queued = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+    }
+    logger?.info?.(`${schema.logEventPrefix}_different_entry_scope_conflict`, {
+      sessionId,
+      from_ref: state.circuit_ref,
+      was_confirmation: wasConfirmation,
+      pending_writes: queued.map((w) => w.field),
+      textPreview: reply.slice(0, 80),
+    });
+    // Audio-First purge contract: abandoning an in-flight confirmation makes
+    // the queued "All correct?" prompt stale — purge before the replacement
+    // ask (same srv- prefix; purge must go first so the ask isn't swallowed).
+    if (wasConfirmation) sendScriptPurge(ws, schema, sessionId);
+    // Replace the old episode with an UNRESOLVED one: never write the
+    // volunteered values to the OLD circuit; the target stays open until the
+    // which_circuit answer drains pending_writes via the position-4 resolver.
+    clearScriptState(session);
+    initScriptState(session, schema, null, now);
+    const conflictState = session.dialogueScriptState;
+    for (const w of queued) conflictState.pending_writes.push(w);
+    safeSend(
+      ws,
+      buildScriptAsk({
+        toolCallIdPrefix: schema.toolCallIdPrefix,
+        sessionId,
+        circuit_ref: null,
+        missing_field: null,
+        whichCircuitQuestion: schema.whichCircuitQuestion,
+        slotQuestion: null,
+        now,
+        kind: 'which_circuit',
+        responseEpoch,
+      })
+    );
+    return { handled: true, fallthrough: false };
+  }
+  const newRef = state.awaiting_confirmation || !diffEntry.matched ? null : diffEntry.circuit_ref;
   if (newRef !== null) {
     const { filled } = countFilledForCancel(state.values, schema.slots);
     logger?.info?.(`${schema.logEventPrefix}_switched_circuit`, {

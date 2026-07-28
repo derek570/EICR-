@@ -118,6 +118,16 @@ const FIELD_PROMPTS = {
  * the circuit capture group undefined, which the caller treats as null.
  */
 const RING_ENTRY_PATTERNS = [
+  // 0a/0b. Leading-circuit patterns (feedback id 98, 2026-07-27) — behavioural
+  //    mirror of the live schema's leading patterns (see
+  //    dialogue-engine/schemas/ring-continuity.js for the anchoring
+  //    rationale: clause-start only, horizontal whitespace, ≤20-char
+  //    clause-bounded gap, circuit stays capture group 1). ONE deliberate
+  //    per-file divergence preserved: this twin's terse trigger token is
+  //    `ring` only (matching its own Pattern 2 below), while the schema's
+  //    terse family carries the bring/wing garble alternation.
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b[^\r\n.?!]{0,20}?\bring\b/i,
   // 1. Full: "ring/bring/wing continuity/final" + optional "circuit N"
   //    within 50 chars. Allows filler ("for, uh,"), any preposition, or none.
   //
@@ -323,37 +333,54 @@ const TOPIC_SWITCH_PATTERNS = [
  * Returns the new circuit_ref if a different ring entry is detected,
  * else null.
  */
-function detectDifferentRingEntry(text, currentCircuitRef) {
+// Collect-all across every matching pattern (feedback id 98) — mirrors the
+// engine's collectTriggerCircuitRefs so contradiction scenarios stay
+// replay-parity-eligible. Circuit stays capture group 1 in every pattern.
+function collectRingTriggerCircuitRefs(text) {
+  let matched = false;
+  const refs = [];
   for (const pattern of RING_ENTRY_PATTERNS) {
     const m = text.match(pattern);
-    if (m && m[1]) {
-      const newRef = Number(m[1]);
-      if (Number.isInteger(newRef) && newRef > 0 && newRef !== currentCircuitRef) {
-        return newRef;
-      }
+    if (!m) continue;
+    matched = true;
+    if (m[1]) {
+      const ref = Number(m[1]);
+      if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
     }
   }
-  return null;
+  return { matched, refs };
+}
+
+function detectDifferentRingEntry(text, currentCircuitRef) {
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
+  }
+  const { refs } = collectRingTriggerCircuitRefs(text);
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  if (refs.length === 1 && refs[0] !== currentCircuitRef) {
+    return { matched: true, circuit_ref: refs[0], scope_conflict: false };
+  }
+  return { matched: false, circuit_ref: null, scope_conflict: false };
 }
 
 /**
- * Detect script entry from a transcript. Returns `{matched, circuit_ref}`
- * where `circuit_ref` is `null` when the inspector didn't name a circuit.
+ * Detect script entry from a transcript. Returns the common detection
+ * shape `{matched, circuit_ref, scope_conflict}` (mirrors the engine's
+ * detectEntry): `circuit_ref` is null when the inspector didn't name a
+ * circuit; `scope_conflict` is true when different patterns bound
+ * DIFFERENT circuits (an explicit contradiction — ask, never pick).
  *
  * @param {string} text
- * @returns {{matched: boolean, circuit_ref: number | null}}
+ * @returns {{matched: boolean, circuit_ref: number | null, scope_conflict: boolean}}
  */
 export function detectEntry(text) {
-  if (typeof text !== 'string' || !text) return { matched: false, circuit_ref: null };
-  for (const pattern of RING_ENTRY_PATTERNS) {
-    const m = text.match(pattern);
-    if (m) {
-      const ref = m[1] ? Number(m[1]) : null;
-      const validRef = Number.isInteger(ref) && ref > 0 ? ref : null;
-      return { matched: true, circuit_ref: validRef };
-    }
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  return { matched: false, circuit_ref: null };
+  const { matched, refs } = collectRingTriggerCircuitRefs(text);
+  if (!matched) return { matched: false, circuit_ref: null, scope_conflict: false };
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  return { matched: true, circuit_ref: refs[0] ?? null, scope_conflict: false };
 }
 
 /**
@@ -930,6 +957,33 @@ export function processRingContinuityTurn(ctx) {
       return { handled: false };
     }
 
+    // Scope-conflict entry (feedback id 98) — mirrors the engine's runEntry
+    // conflict branch: different circuits bound by different patterns is an
+    // explicit contradiction; skip the designation fallback, queue masked
+    // volunteered values against an UNRESOLVED episode, ask which_circuit.
+    if (entry.scope_conflict === true) {
+      initScript(session, null, now);
+      const queued = extractNamedFieldValues(maskCircuitSpans(text));
+      for (const w of queued) session.ringContinuityScript.pending_writes.push(w);
+      logger?.info?.('stage6.ring_continuity_script_entry_scope_conflict', {
+        sessionId,
+        pending_writes: session.ringContinuityScript.pending_writes.map((w) => w.field),
+        textPreview: text.slice(0, 80),
+      });
+      safeSend(
+        ws,
+        buildScriptAsk({
+          sessionId,
+          circuit_ref: null,
+          missing_field: null,
+          now,
+          kind: 'which_circuit',
+          responseEpoch,
+        })
+      );
+      return { handled: true, fallthrough: false };
+    }
+
     // Honour any pre-existing partial fill on this circuit (e.g. R1
     // already written from a prior turn) so the script picks up where
     // the inspector left off rather than overwriting.
@@ -1111,9 +1165,52 @@ export function processRingContinuityTurn(ctx) {
   //    P1 canonical position 3 GATE: generic different-entry detection must
   //    NOT consume confirmation-mode replies — the confirmation branch's 5a
   //    preflight owns different-circuit routing there (mirrors the engine).
-  const newRef = state.awaiting_confirmation
-    ? null
-    : detectDifferentRingEntry(text, state.circuit_ref);
+  //
+  //    SCOPE-CONFLICT exception (feedback id 98) — mirrors the engine's
+  //    position-2 conflict branch: a two-circuit contradiction is handled in
+  //    BOTH states (the 5a preflight filters out the CURRENT circuit, so a
+  //    conflicting pair containing it would silently switch to the other
+  //    ref). Raw reply parsed in confirmation mode; annotated text otherwise.
+  const diffEntry = detectDifferentRingEntry(
+    state.awaiting_confirmation ? reply : text,
+    state.circuit_ref
+  );
+  if (diffEntry.scope_conflict === true) {
+    const wasConfirmation = state.awaiting_confirmation === true;
+    let queued;
+    if (wasConfirmation) {
+      const safe = extractRingSafeNamedValues(reply);
+      queued = safe.rejected ? [] : safe.values;
+    } else {
+      queued = extractNamedFieldValues(maskCircuitSpans(reply));
+    }
+    logger?.info?.('stage6.ring_continuity_script_different_entry_scope_conflict', {
+      sessionId,
+      from_ref: state.circuit_ref,
+      was_confirmation: wasConfirmation,
+      pending_writes: queued.map((w) => w.field),
+      textPreview: reply.slice(0, 80),
+    });
+    // No cancel_pending_tts purge here: the twin emits no purge frames by
+    // convention (engine-only; replay parity filters them out — see the
+    // position-0 comment above).
+    clearScript(session);
+    initScript(session, null, now);
+    for (const w of queued) session.ringContinuityScript.pending_writes.push(w);
+    safeSend(
+      ws,
+      buildScriptAsk({
+        sessionId,
+        circuit_ref: null,
+        missing_field: null,
+        now,
+        kind: 'which_circuit',
+        responseEpoch,
+      })
+    );
+    return { handled: true, fallthrough: false };
+  }
+  const newRef = state.awaiting_confirmation || !diffEntry.matched ? null : diffEntry.circuit_ref;
   if (newRef !== null) {
     logger?.info?.('stage6.ring_continuity_script_switched_circuit', {
       sessionId,
