@@ -472,7 +472,7 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
   it('NEVER A NEW SKIP — an implicit-unregistered-board defer still FILLS an empty cell', () => {
     const job = makeJob({
       circuits: [populatedRow({ ir_live_live_mohm: undefined })],
-      boards: [{ id: 'sub-1' }],
+      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
     } as unknown as Partial<JobDetail>);
     const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
 
@@ -480,15 +480,62 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
   });
 
+  it('BOARD-TAB SHAPE — a registry MAIN board owning no row is the single board, and overwrites', () => {
+    // The commonest real single-board job that HAS a `boards[]`: the Board tab
+    // synthesises `boards[0]` from legacy `board_info` (`board_type: 'main'`,
+    // a fresh uuid) and persists it on any edit WITHOUT scoping the existing
+    // circuits, which the Circuits tab renders under the selected board. The
+    // registry board owns no row, but it is MAIN — the unscoped rows are its
+    // own. Declining here would keep the stale value and reopen the exact
+    // spoken-but-not-written defect A2 closes.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [{ id: 'b7f1c0de-0000-4000-8000-000000000001', board_type: 'main' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('BOARD-TAB SHAPE — a legacy registry board with NO board_type reads as main, and overwrites', () => {
+    // Mirrors the backend's own predicate (`stage6-multi-board-shape.js:54`):
+    // an absent `board_type` is a legacy main board, not an unknown sub.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [{ id: 'legacy-1' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('a MAIN-typed registry board that declares a parent is still a sub scope, and defers', () => {
+    // `board_type` alone is not the whole predicate: a declared parent is
+    // independent proof the unscoped rows belong to a scope nothing names.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [{ id: 'odd-1', board_type: 'main', parent_board_id: 'p-1' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('LIM');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
   it('a registry board that DOES own a row is not an implicit second scope', () => {
     // Same registry, but a row is scoped to it — the unscoped sibling belongs to
-    // that one board, so this stays cardinality 1 and must still bypass.
+    // that one board, so this stays cardinality 1 and must still bypass. The
+    // board is deliberately a SUB board, so row-ownership is the ONLY reason
+    // the implicit-unregistered term stays quiet.
     const job = makeJob({
       circuits: [
         populatedRow({ board_id: 'sub-1' } as Partial<CircuitRow>),
         { id: 'c-2', circuit_ref: '2', circuit_designation: 'Lights' } as CircuitRow,
       ],
-      boards: [{ id: 'sub-1' }],
+      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
     } as unknown as Partial<JobDetail>);
     const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
 

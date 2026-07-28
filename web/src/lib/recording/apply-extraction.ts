@@ -958,7 +958,21 @@ function applyCircuitReadings(
           if (typeof v === 'string' && v !== '') ids.add(v);
         };
         const boards = Array.isArray(job.boards) ? job.boards : [];
-        for (const b of boards) addId((b as { id?: unknown } | null)?.id);
+        // Registry records are kept whole, not flattened to ids: whether an
+        // unowned board implies a SECOND scope turns on what KIND of board it
+        // is (see `implicitUnregisteredBoard` below).
+        const registry: { id: string; isSub: boolean }[] = [];
+        for (const b of boards) {
+          const rec = b as { id?: unknown; board_type?: unknown; parent_board_id?: unknown } | null;
+          addId(rec?.id);
+          if (typeof rec?.id !== 'string' || rec.id === '') continue;
+          // Mirrors the backend's own main-board predicate verbatim
+          // (`src/extraction/stage6-multi-board-shape.js:54`): a board is main
+          // when its type is 'main' OR absent (legacy records carry no type).
+          // A declared parent is independent proof of a sub board.
+          const typeIsMain = !rec.board_type || rec.board_type === 'main';
+          registry.push({ id: rec.id, isSub: !typeIsMain || rec.parent_board_id != null });
+        }
         // Rows are read BEFORE the reading loop can synthesise any (a
         // synthesised row carries no board_id, so it could only ever dilute
         // this set with nothing).
@@ -975,10 +989,10 @@ function applyCircuitReadings(
         // is what stops an assertion vouching for itself, and makes the
         // result order-independent — no reading or op can evidence another.
         const independent = new Set(ids);
-        // A board web's REGISTRY names but NO row is scoped to, while
-        // unscoped rows exist, means the unscoped rows belong to a board the
-        // registry does not name — two scopes, not one, and the count alone
-        // says one. This is not hypothetical: `applyBoardOpsToJob`'s
+        // A SUB board web's REGISTRY names but NO row is scoped to, while
+        // unscoped rows exist, means those unscoped rows belong to the parent
+        // the registry does not name — two scopes, not one, and the count
+        // alone says one. This is not hypothetical: `applyBoardOpsToJob`'s
         // `add_board` appends the new board WITHOUT materialising the
         // implicit main the existing flat rows belong to (unlike the backend,
         // which synthesises one), so the turn AFTER "add the garage board"
@@ -988,8 +1002,21 @@ function applyCircuitReadings(
         // reading term cannot see it either, and the bypass would overwrite
         // MAIN's circuit 1 with SUB's reading. CCU never produces this shape
         // (it scopes every row it writes), so the term costs nothing real.
+        //
+        // The SUB restriction is what keeps this from over-declining the
+        // commonest real single-board shape. The Board tab synthesises a sole
+        // `boards[0]` from legacy `board_info` with `board_type: 'main'` and
+        // persists it on any edit WITHOUT scoping the existing circuits
+        // (`web/src/app/job/[id]/board/page.tsx` — the memo and
+        // `persistBoards`), and the Circuits tab deliberately renders those
+        // unscoped legacy rows under the selected board. That job is genuinely
+        // single-board: a registry MAIN board that owns no row owns the
+        // unscoped ones. Declining it would keep the stale value and reopen
+        // the very spoken-but-not-written defect A2 exists to close, so a main
+        // board never fires this term — only a sub board, which by definition
+        // implies a parent scope nothing here names.
         const implicitUnregisteredBoard =
-          hasUnscopedRow && [...independent].some((id) => !rowScopedIds.has(id));
+          hasUnscopedRow && registry.some((b) => b.isSub && !rowScopedIds.has(b.id));
         // …with ONE seeded id. When web has no board identity of its own at
         // all — no `boards[]`, every row unscoped, i.e. the legacy flat
         // single-board shape — the backend has SYNTHESISED its default main
