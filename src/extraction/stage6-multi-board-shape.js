@@ -36,6 +36,68 @@ export const DEFAULT_MAIN_BOARD_ID = 'main';
 export const DEFAULT_MAIN_BOARD_DESIGNATION = 'DB-1';
 export const DEFAULT_MAIN_BOARD_TYPE = 'main';
 
+/**
+ * A2-multiboard (2026-07-28) scope item 6 — the UNSCOPED-BOARD-ID rule, stated
+ * once so every seam agrees on what "no board" looks like.
+ *
+ * A board id is UNSCOPED when it is absent (`null`/`undefined`) OR the empty
+ * string. The empty string is not a hypothetical: legacy CSV parsing writes
+ * `board_id: ''`, `record_reading` can retain `boardId: ''`, and the bundler
+ * emits it (it only checks `!= null`). Everything downstream then disagrees
+ * about what it means — `getCircuitBucket` and friends use a nullish fallback
+ * and treat it as "the current board", while `validateBoardScope` compares it
+ * against the current board id and REJECTS the call as `wrong_board`. So the
+ * same tool call is simultaneously routable and unroutable depending on which
+ * helper looks at it first.
+ *
+ * Mirrors web's `isUnscopedBoardId` (three ad-hoc copies, e.g.
+ * `web/src/lib/recording/apply-ccu-analysis.ts`).
+ *
+ * @param {unknown} boardId
+ * @returns {boolean}
+ */
+export function isUnscopedBoardId(boardId) {
+  return boardId == null || boardId === '';
+}
+
+/**
+ * Normalise a tool-call input's board scope IN PLACE, deleting an unscoped
+ * `board_id` so every downstream reader sees the key as ABSENT — which is the
+ * one spelling all of them already agree on (`?? currentBoardId`,
+ * `!= null` omit-guards, `validateBoardScope`'s `== null` early-return).
+ *
+ * Called at the TOP of each in-scope dispatcher, BEFORE validation, snapshot
+ * lookup/mutation, Map-key encoding, outward metadata, telemetry and
+ * effective-slot attachment — one call covers all of them, because after it
+ * runs the empty string never existed.
+ *
+ * In-place rather than a clone deliberately: `dispatchRecordReading` already
+ * mutates `call.input` (coercion, then the impedance clamp) precisely so the
+ * snapshot write and the wire mirror cannot hold different values. A clone
+ * would silently break that contract on exactly the legacy inputs this
+ * normaliser exists to handle. Identity is always preserved.
+ *
+ * `'*'` (the `set_field_for_all_circuits` broadcast) is NOT a board id and is
+ * passed through untouched.
+ *
+ * Deliberately NOT applied to the identity/selection and destructive
+ * board-scoped inputs — `select_board`, `clear_board_reading` and
+ * `record_board_reading` must keep REJECTING an injected empty id
+ * (`invalid_board_id` / `wrong_board`) rather than silently retargeting a
+ * destructive or authoritative write at the current board. See the exemption
+ * note on `validateBoardScope`.
+ *
+ * @template {object} T
+ * @param {T} input
+ * @returns {T} the same object
+ */
+export function normaliseBoardScopeInput(input) {
+  if (input && typeof input === 'object' && input.board_id === '') {
+    delete input.board_id;
+  }
+  return input;
+}
+
 // "Work on Board" sprint Phase A — resolve the main board id from a
 // snapshot. Used by the dual-shape helpers below to decide whether a
 // per-call boardId targets the legacy flat namespace (main) or the
@@ -53,6 +115,64 @@ export function getMainBoardId(snapshot) {
   }
   const main = snapshot.boards.find((b) => b && (!b.board_type || b.board_type === 'main'));
   return main?.id ?? snapshot.boards[0]?.id ?? DEFAULT_MAIN_BOARD_ID;
+}
+
+/**
+ * A2-multiboard (2026-07-28) scope item 5 — the CANONICAL-MAIN ATTRIBUTION
+ * rule, stated once so backend, web and iOS can agree byte-for-byte.
+ *
+ * This is deliberately NOT `getMainBoardId`. The two answer different
+ * questions and must not be merged:
+ *
+ *   * `getMainBoardId` is NAMESPACE ROUTING — "which board id reads the
+ *     legacy bare-numeric circuit keys?". Its `boards[0].id` fallthrough is
+ *     load-bearing there: on a `[sub, off_peak]` snapshot SOMETHING has to own
+ *     the legacy namespace, and flipping that answer would silently re-key
+ *     every circuit on such a job.
+ *   * This helper is ATTRIBUTION — "which board record IS the main board?".
+ *     A sub-board is never the answer. When no record qualifies, the caller
+ *     synthesises/retains the default `{id:'main'}` identity instead of
+ *     crowning the first entry.
+ *
+ * The two agree everywhere it matters because the production hydration path
+ * (`eicr-extraction-session.js _seedStateFromJobState`) guarantees a
+ * qualifying main-typed record sits at the head of `boards[]` before either
+ * is consulted — that guarantee is exactly what this helper now enforces.
+ *
+ * Rule, in order:
+ *   1. Keep only USABLE entries — plain records carrying a truthy `id`. An
+ *      id-less record cannot be an attribution target: nothing can address a
+ *      reading to it.
+ *   2. The FIRST usable entry whose `board_type` is absent or `'main'`
+ *      (absent = legacy seeded snapshots that predate the field).
+ *   3. Otherwise `null` — never the first sub-board, never a parent-pointer
+ *      walk.
+ *
+ * @param {unknown} boards
+ * @returns {Object|null}
+ */
+export function findCanonicalMainBoard(boards) {
+  if (!Array.isArray(boards)) return null;
+  for (const b of boards) {
+    if (!b || typeof b !== 'object' || Array.isArray(b)) continue;
+    if (!b.id) continue;
+    if (!b.board_type || b.board_type === 'main') return b;
+  }
+  return null;
+}
+
+/**
+ * The id half of {@link findCanonicalMainBoard}. Falls back to the
+ * synthesised default identity (`'main'`) rather than to any other board —
+ * that identity is the one the hydration path creates and the one the
+ * dispatcher/enrichment stamp on a boardless job, so an unattributable
+ * snapshot resolves to the SAME id on every actor.
+ *
+ * @param {unknown} boards
+ * @returns {string}
+ */
+export function resolveCanonicalMainBoardId(boards) {
+  return findCanonicalMainBoard(boards)?.id ?? DEFAULT_MAIN_BOARD_ID;
 }
 
 // "Work on Board" sprint Phase A — dual-shape circuit-bucket lookup.

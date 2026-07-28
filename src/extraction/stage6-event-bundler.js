@@ -23,6 +23,11 @@ import {
   rawCircuitSlot,
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
+  projectReadingWinners,
+  projectBoardReadingWinners,
+  circuitDesignationKey,
+  resolveDesignation,
+  readEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -89,21 +94,17 @@ export const CLEAR_WIRE_EXEMPT = new Set(['r2_ohm']);
  */
 export const SAME_TURN_CLEAR_WRITE_COLLAPSED = Symbol('stage6.sameTurnClearWriteCollapsed');
 
-/**
- * A2 (2026-07-28) — non-enumerable carrier for `replaces_cleared` projections
- * the bundler DECLINED to stamp because the collapsed slot resolved to more
- * than one candidate surviving reading (a same-turn double spelling of the
- * same slot — e.g. one write omitting `board_id` and one carrying the explicit
- * current board). Stamping either would be a guess, so the projection stamps
- * NOTHING (fail-closed-unflagged: the web consumer then behaves exactly as it
- * does today) and records the slot keys here. `stage6-shadow-harness.js` reads
- * this and emits `stage6.replaces_cleared_ambiguous_projection`. Non-enumerable
- * so it never enters JSON wire output or a defensive spread; the bundler itself
- * stays PURE (no logging).
+/*
+ * A2-multiboard (2026-07-28) — `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` (and its
+ * `stage6.replaces_cleared_ambiguous_projection` telemetry row) lived here.
+ * A2-core used it to fail closed when a collapsed slot resolved to more than
+ * one candidate surviving reading — two same-turn SPELLINGS of one slot (one
+ * omitting `board_id`, one carrying the explicit current board) that the raw
+ * Map kept as separate entries. The journal projection is last-write-wins per
+ * EFFECTIVE slot, so both spellings now resolve to one winner and the
+ * ambiguity is structurally unreachable. Removed rather than left dormant: a
+ * dead fail-closed branch reads as live protection in a future review.
  */
-export const REPLACES_CLEARED_AMBIGUOUS_PROJECTION = Symbol(
-  'stage6.replacesClearedAmbiguousProjection'
-);
 
 /**
  * Synthesise brief read-back confirmations from the bundled readings.
@@ -157,6 +158,16 @@ function synthesiseStateChangeConfirmations(
   turnId = null
 ) {
   const out = [];
+  // A2-multiboard item 3 — a designation read-back only covers THIS op when it
+  // landed on the SAME board. The pair key is consulted first (multi-board
+  // turns enrich the reading with its board); the bare ref is the unscoped
+  // fallback every single-board turn takes.
+  const designationCovered = (op, ref) => {
+    if (!skipCircuitDesignations) return false;
+    const eff = readEffectiveOpBoard(op);
+    if (eff != null && skipCircuitDesignations.has(circuitDesignationKey(eff, ref))) return true;
+    return skipCircuitDesignations.has(ref);
+  };
   if (Array.isArray(circuitOps)) {
     for (let opIdx = 0; opIdx < circuitOps.length; opIdx += 1) {
       const op = circuitOps[opIdx];
@@ -164,7 +175,7 @@ function synthesiseStateChangeConfirmations(
       if (!Number.isInteger(ref) || ref <= 0) continue;
       let text = null;
       if (op.op === 'create') {
-        if (skipCircuitDesignations.has(ref)) continue; // covered by reading TTS
+        if (designationCovered(op, ref)) continue; // covered by reading TTS
         const desig = op?.meta?.designation;
         if (typeof desig === 'string' && desig.trim()) {
           text = `Circuit ${ref} is now the ${desig.trim()}`;
@@ -172,7 +183,7 @@ function synthesiseStateChangeConfirmations(
           text = `Circuit ${ref} created`;
         }
       } else if (op.op === 'rename') {
-        if (skipCircuitDesignations.has(ref)) continue;
+        if (designationCovered(op, ref)) continue;
         const desig = op?.meta?.designation;
         if (typeof desig === 'string' && desig.trim()) {
           text = `Circuit ${ref} is now the ${desig.trim()}`;
@@ -259,9 +270,9 @@ function synthesiseStateChangeConfirmations(
  *   per-reading "field_corrected" is the only category we speak —
  *   record_reading-driven corrections already go via the main
  *   confirmation path)
- * @param {Map<number,string>|null} designations circuit ref →
- *   designation, used to prefix cleared circuit-level readings with
- *   the spoken circuit name when known.
+ * @param {Map<number|string,string>|null} designations designation map — see
+ *   `resolveDesignation` for the two key spaces. Used to prefix cleared
+ *   circuit-level readings with the spoken circuit name when known.
  * @returns {Array<{text, expanded_text, field, circuit}>}
  */
 function synthesiseObservationAndClearedConfirmations(
@@ -273,16 +284,8 @@ function synthesiseObservationAndClearedConfirmations(
   turnId = null
 ) {
   const out = [];
-  const lookupDesignation = (circuit) => {
-    if (!designations) return null;
-    if (designations instanceof Map) {
-      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
-    }
-    if (typeof designations === 'object') {
-      return designations[circuit] ?? designations[String(circuit)] ?? null;
-    }
-    return null;
-  };
+  const lookupDesignation = (circuit, boardId = null) =>
+    resolveDesignation(designations, circuit, boardId);
 
   if (Array.isArray(observations)) {
     for (const obs of observations) {
@@ -365,9 +368,31 @@ function synthesiseObservationAndClearedConfirmations(
       if (writtenSlots) {
         const circ = c.circuit;
         if (Number.isInteger(circ) && circ > 0) {
+          // A2-multiboard (2026-07-28) — membership is by EFFECTIVE CIRCUIT
+          // SLOT, the exact circuit-side twin of the board fix plan A1a made
+          // below for the same reason. `field|circuit` is board-AMBIGUOUS
+          // (record_reading / clear_reading both omit `board_id` in the common
+          // case), so a write on ONE board ate the read-back of a surviving
+          // clear on ANOTHER: write Zs c1 on main, select_board garage, clear
+          // Zs c1 on garage — the two effective slots differ so P5's collapse
+          // correctly keeps BOTH operations, then the bare `measured_zs_ohm|1`
+          // string from main's write suppressed garage's "Zs cleared". The
+          // clear lands server-side and on the client and is never spoken:
+          // Audio-First #1, written-but-not-spoken.
+          //
+          // The clear carries its dispatch-time EFFECTIVE_CIRCUIT_SLOT stamp
+          // (dispatchClearReading attaches it to every fieldCorrections entry),
+          // so this is a pure server-side suppression decision — no wire field
+          // is read or written and the frame bytes are untouched. Symbol-less
+          // (legacy-fixture) clears fall back to the stable null-board sentinel
+          // key, which is what keeps their existing behaviour byte-identical.
+          const csym = c[EFFECTIVE_CIRCUIT_SLOT];
+          const clearSlot = csym
+            ? rawCircuitSlot(csym.field, csym.circuit, csym.boardId)
+            : rawCircuitSlot(field, circ, null);
           if (
             writtenSlots.circuitSlots instanceof Set &&
-            writtenSlots.circuitSlots.has(`${field}|${String(circ)}`)
+            writtenSlots.circuitSlots.has(clearSlot)
           ) {
             continue;
           }
@@ -400,7 +425,10 @@ function synthesiseObservationAndClearedConfirmations(
       if (circ == null || circ === 0) {
         text = `${friendly} cleared`;
       } else {
-        const desig = lookupDesignation(circ);
+        // A2-multiboard — resolve the name on the clear's EFFECTIVE board
+        // (stamped non-enumerably at dispatch) so a cleared circuit 3 on
+        // sub-board B is not announced with board A's circuit-3 name.
+        const desig = lookupDesignation(circ, c?.[EFFECTIVE_CIRCUIT_SLOT]?.boardId ?? null);
         const prefix =
           typeof desig === 'string' && desig.trim() ? desig.trim().slice(0, 40) : `Circuit ${circ}`;
         text = `${prefix}, ${friendly} cleared`;
@@ -438,9 +466,46 @@ function synthesiseConfirmations(
   designations = null,
   totalCircuitsInJob = null,
   calcReadings = null,
-  clampCorrections = null
+  clampCorrections = null,
+  boardScope = null
 ) {
   const out = [];
+  // A2-multiboard item 8 (2026-07-28) — per-GROUP circuit populations.
+  //
+  // `totalCircuitsInJob` is one session-wide scalar; a fan-out group belongs to
+  // whichever board the DISPATCHER resolved for its writes, which on a
+  // multi-board job is not always the board the session is pointed at. Feeding
+  // the scalar to every group is how "All circuits" comes to assert a
+  // completeness measured against a DIFFERENT board's population — an
+  // over-claim the hands-free inspector has no way to see is wrong, on the one
+  // phrasing whose entire job is to assert completeness.
+  //
+  // Resolution, fail-closed at every step (a false "All circuits" is an
+  // inaudible lie; a range/list line is merely less elegant):
+  //
+  //   * group's effective board KNOWN and censused → that board's count.
+  //   * group's effective board KNOWN but absent from the census (a board with
+  //     no snapshot circuits, a stale/unknown id) → null, never "All".
+  //   * group's effective board UNKNOWN → the legacy scalar ONLY when the job
+  //     is unambiguously single-board; on a multi-board job → null.
+  //   * no census at all (legacy callers / hand-built fixtures) → the scalar,
+  //     byte-identical to pre-item-8 behaviour.
+  const boardCounts = boardScope?.byBoard instanceof Map ? boardScope.byBoard : null;
+  const jobIsMultiBoard = boardCounts != null && boardCounts.size > 1;
+  // The WIRE `board_id` is only enriched onto ordinary readings on a
+  // cross-board turn (see the enrichment pass in bundleToolCallsIntoResult), so
+  // the dispatcher-resolved fallback is what keeps a single-board turn on a
+  // multi-board job attributable at all.
+  const effectiveBoardOf = (r) => {
+    if (r?.board_id != null && r.board_id !== '') return r.board_id;
+    const resolver = boardScope?.effectiveBoardOf;
+    return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
+  };
+  const resolveTotalForBoard = (boardId) => {
+    if (boardCounts == null) return totalCircuitsInJob;
+    if (boardId != null) return boardCounts.get(boardId) ?? null;
+    return jobIsMultiBoard ? null : totalCircuitsInJob;
+  };
   // id-100(b) (2026-07-25) — per-bundle identity map from a projected reading
   // object to the impedance-clamp correction the dispatcher recorded for it.
   // Keyed on object IDENTITY (same pattern as calcReadings/suppress sets) rather
@@ -454,16 +519,8 @@ function synthesiseConfirmations(
   // meter reading. Null/absent (legacy callers, board readings) → nothing is
   // treated as calculated.
   const isCalc = (r) => calcReadings instanceof Set && calcReadings.has(r);
-  const lookupDesignation = (circuit) => {
-    if (!designations) return null;
-    if (designations instanceof Map) {
-      return designations.get(circuit) ?? designations.get(String(circuit)) ?? null;
-    }
-    if (typeof designations === 'object') {
-      return designations[circuit] ?? designations[String(circuit)] ?? null;
-    }
-    return null;
-  };
+  const lookupDesignation = (circuit, boardId = null) =>
+    resolveDesignation(designations, circuit, boardId);
 
   // Issue 10 (2026-05-31, session B95B2EE1): a fan-out write to
   // multiple circuits used to emit one per-circuit confirmation each;
@@ -509,6 +566,13 @@ function synthesiseConfirmations(
         field: r.field,
         value: r.value,
         board_id: r.board_id,
+        // A2-multiboard item 8 — the board this group's "All circuits" claim is
+        // measured against. Safe to read off the FIRST member for the same
+        // reason `correction` is: the wire `board_id` is part of the group key,
+        // and a turn on which two members could differ in EFFECTIVE board is by
+        // definition cross-board, which is exactly when the enrichment pass has
+        // already stamped that difference onto the wire.
+        effectiveBoardId: effectiveBoardOf(r),
         calculated: isCalc(r),
         // Safe to read off the FIRST member: every member of a bucket shares
         // this correction by construction (it is part of the group key).
@@ -542,7 +606,7 @@ function synthesiseConfirmations(
       bucket.field,
       bucket.value,
       circuits,
-      totalCircuitsInJob,
+      resolveTotalForBoard(bucket.effectiveBoardId),
       { calculated: bucket.calculated, correction: bucket.correction }
     );
     if (!grouped) continue;
@@ -587,7 +651,9 @@ function synthesiseConfirmations(
     // circuit_designation write so a brand-new circuit confirmed in the
     // SAME turn (Sonnet: create_circuit + record_reading) speaks with
     // its name immediately.
-    const designation = lookupDesignation(r.circuit);
+    // A2-multiboard — pass the reading's board so a per-board designation wins
+    // over the bare-ref fallback (two boards can both own a circuit 3).
+    const designation = lookupDesignation(r.circuit, r.board_id ?? null);
     const text = buildConfirmationText(r.field, r.value, r.circuit, designation, {
       calculated: isCalc(r),
       correction: correctionOf(r),
@@ -770,7 +836,35 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   const isDerivedWrite = (entry) => entry?.derived === true;
   const isCalcWrite = (entry) =>
     typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::');
-  for (const [key, entry] of perTurnWrites.readings) {
+  // A2-multiboard (2026-07-28) — effective-board WIRE ENRICHMENT bookkeeping.
+  //
+  // `dispatchRecordReading` stores only the RAW `input.board_id`, which the
+  // model omits in the common case, so a write dispatched while board B is
+  // selected reaches the wire with no `board_id` at all. Both clients then
+  // resolve it by circuit REF alone (web `ensureRow`, iOS's single envelope-
+  // wide current/first-board fallback), so two winners for circuit 3 on two
+  // different boards land on ONE client row — the write survives the bundler
+  // and is still lost. The effective board the dispatcher resolved is recorded
+  // here per projected reading and stamped onto the wire below.
+  const effectiveBoardByReading = new WeakMap();
+  const distinctEffectiveBoards = new Set();
+  // A2-multiboard (2026-07-28) — project from the JOURNAL, not the raw Map.
+  //
+  // The raw Map key is board-AMBIGUOUS (`record_reading` omits `board_id` in
+  // the common case), so `select_board A → write → select_board B → write`
+  // collapsed onto ONE Map entry and the bundler could only ever see board B's
+  // value: board A's dictated reading had been read back aloud and then
+  // silently vanished. `projectReadingWinners` returns the last-write-wins
+  // winner per EFFECTIVE slot, so BOTH boards' writes reach the wire.
+  //
+  // Ordering is preserved: the projection emits each effective slot at its
+  // FIRST-appearance index, which reproduces `Map.set` insertion-order
+  // semantics exactly whenever no two effective slots share a raw key — i.e.
+  // for all single-board traffic the wire byte order does not move. Entries
+  // that never went through a staging helper (legacy hand-built accumulators)
+  // are appended verbatim in Map order.
+  const readingWinners = projectReadingWinners(perTurnWrites);
+  for (const { rawKey: key, value: entry } of readingWinners) {
     // Slice 1.1c — decodeReadingKey handles BOTH the new boardId-tagged
     // shape `${field}::${circuit}<NUL>__board__<NUL>${boardId}<NUL>` and
     // legacy 2-part `${field}::${circuit}` keys (test fixtures or older
@@ -812,6 +906,17 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       suppressConfirmationReadings.add(reading);
     } else if (isCalcWrite(entry)) {
       calcConfirmationReadings.add(reading);
+    }
+    // A2-multiboard — remember the dispatcher-resolved effective board for the
+    // enrichment pass below. Derived/mirror writes are included here (unlike
+    // the candidate index): they are silent, but they still have to land on the
+    // right client row.
+    {
+      const effBoard = entry?.[EFFECTIVE_CIRCUIT_SLOT]?.boardId ?? null;
+      if (effBoard != null && effBoard !== '') {
+        effectiveBoardByReading.set(reading, effBoard);
+        distinctEffectiveBoards.add(effBoard);
+      }
     }
     // A2 — index this projected reading as a `replaces_cleared` candidate
     // unless it is a derived/mirror write (see the Map declarations above).
@@ -871,7 +976,11 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // here (a mid-turn select_board would skew it).
   const survivingEffectiveSlots = new Set();
   const survivingRawSlots = new Set();
-  for (const [mapKey, val] of perTurnWrites.readings) {
+  // A2-multiboard — read survival from the JOURNAL winners for the same reason
+  // the projection above does: a board-A write shadowed under a shared raw Map
+  // key still SURVIVED the turn, and a raw-Map scan would have missed it, so a
+  // clear on board A would not have collapsed against its own replacement.
+  for (const { rawKey: mapKey, value: val } of readingWinners) {
     const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
     if (sym) {
       survivingEffectiveSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
@@ -911,11 +1020,33 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   const survivingBoardSlots = new Set();
   // Defensive: hand-built accumulators (older test fixtures) may omit the
   // boardReadings Map entirely.
-  const boardReadingsMap =
-    perTurnWrites.boardReadings instanceof Map ? perTurnWrites.boardReadings : new Map();
-  for (const val of boardReadingsMap.values()) {
+  // A2-multiboard — board winners come from the board JOURNAL for the same
+  // reason as the circuit side: `record_board_reading` has no schema `board_id`
+  // at all, so `select_board A → record manufacturer → select_board B → record
+  // manufacturer` shares ONE raw key and a Map scan sees only board B.
+  const boardReadingWinners = projectBoardReadingWinners(perTurnWrites);
+  // A2-multiboard item 7 (2026-07-28) — the BOARD twin of the
+  // `replaces_cleared` candidate index. Mechanism B already dropped the stale
+  // board clear from the wire; without a stamp on the surviving board write,
+  // web receives a BARE board write against a still-populated cell and its
+  // fill-only gate silently skips it — P5's exact defect, at board scope.
+  //
+  // This index holds the perTurnWrites VALUE object, not the wire reading: the
+  // board readings are projected much further down (after `result` exists), so
+  // the wire object the stamp belongs on has not been built yet. The stamp is
+  // therefore applied by OBJECT IDENTITY in that loop, which is stricter than
+  // re-deriving the slot key there and cannot drift from what the collapse
+  // predicate actually matched.
+  const replacesBoardCandidates = new Map();
+  for (const { value: val } of boardReadingWinners) {
     const bsym = val?.[EFFECTIVE_BOARD_SLOT];
-    if (bsym) survivingBoardSlots.add(boardSlotKey(bsym.field, bsym.boardId));
+    if (!bsym) continue;
+    const bslot = boardSlotKey(bsym.field, bsym.boardId);
+    survivingBoardSlots.add(bslot);
+    // Derived/mirror board writes are silent (they never produce a read-back),
+    // so they are excluded from candidacy for the same reason as the circuit
+    // side: there is nothing spoken for the flag to protect.
+    if (!isDerivedWrite(val)) addReplacesCandidate(replacesBoardCandidates, bslot, val);
   }
   const boardClearHasSurvivingWrite = (entry) => {
     const bsym = entry?.[EFFECTIVE_BOARD_SLOT];
@@ -945,7 +1076,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // cannot (`result` is in its temporal dead zone until the declaration), so
   // both halves are deferred together and land at one site.
   const pendingStamp = [];
-  const ambiguousProjectionSlots = [];
+  // A2-multiboard item 7 — board twin of `pendingStamp`. Holds perTurnWrites
+  // VALUE objects (see `replacesBoardCandidates`); consumed by identity in the
+  // board-reading projection loop further down, which is the first point at
+  // which the wire object exists. A Set (not an Array) because two clear
+  // corrections for one slot must not queue the same write twice.
+  const pendingBoardStamp = new Set();
   const keptFieldCorrections = [];
   for (const c of rawFieldCorrections) {
     if (c && c.reason === 'clear_reading' && clearSlotHasSurvivingWrite(c)) {
@@ -973,15 +1109,21 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // in the SAME-sidedness bucket, so a stamp can only ever land on a write
         // the collapse predicate itself considered.
         const cands = (sym ? replacesEffectiveCandidates : replacesRawCandidates).get(slotKey);
+        // A2-multiboard (2026-07-28) — A2-core's fail-closed-UNFLAGGED branch
+        // for `cands.length > 1` is REMOVED, because the case it defended
+        // against can no longer arise. It fired when two same-turn SPELLINGS of
+        // one slot (one omitting `board_id`, one carrying the explicit current
+        // board) both survived as separate raw Map keys, leaving the stamp a
+        // guess. The journal projection above is last-write-wins per EFFECTIVE
+        // slot, so those two spellings now resolve to exactly ONE winner —
+        // there is nothing left to guess between, and the write the inspector
+        // actually spoke last is the one that gets flagged.
+        //
+        // The defensive `length === 1` shape is kept (rather than taking
+        // `cands[0]` unconditionally) so a future producer that reintroduced a
+        // duplicate would fail SILENT-UNFLAGGED rather than stamp arbitrarily.
         if (cands && cands.length === 1) {
           pendingStamp.push(cands[0]);
-        } else if (cands && cands.length > 1) {
-          // Fail-closed-UNFLAGGED: two same-turn spellings of one slot survived
-          // (e.g. one write omitting board_id and one carrying the explicit
-          // current board). Stamping either would be a guess, so stamp nothing
-          // and let web behave exactly as it does today; the harness emits
-          // telemetry so the case is observable if it ever fires in the field.
-          ambiguousProjectionSlots.push(slotKey);
         }
         // cands undefined/empty is reachable only when the sole surviving write
         // for the slot was a derived/mirror write (excluded from candidacy).
@@ -993,7 +1135,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // dedupe discipline as the circuit branch (one row per collapsed SLOT).
     if (c && c.reason === 'clear_reading' && boardClearHasSurvivingWrite(c)) {
       const bsym = c[EFFECTIVE_BOARD_SLOT];
-      const slotKey = `board:${boardSlotKey(bsym.field, bsym.boardId)}`;
+      const bslot = boardSlotKey(bsym.field, bsym.boardId);
+      const slotKey = `board:${bslot}`;
       if (!collapsedSlotSeen.has(slotKey)) {
         collapsedSlotSeen.add(slotKey);
         clearWriteCollapsedSlots.push({
@@ -1002,6 +1145,19 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           board_id: bsym.boardId ?? c.board_id ?? null,
           final_effect: 'write',
         });
+        // A2-multiboard item 7 — queue the surviving board write for the
+        // `replaces_cleared` stamp. Same defensive `length === 1` shape as the
+        // circuit branch: the journal projection is last-write-wins per
+        // EFFECTIVE board slot so exactly one winner is the norm, and a future
+        // producer that reintroduced a duplicate fails SILENT-UNFLAGGED rather
+        // than stamping an arbitrary one of them.
+        const bcands = replacesBoardCandidates.get(bslot);
+        if (bcands && bcands.length === 1) {
+          pendingBoardStamp.add(bcands[0]);
+        }
+        // bcands undefined/empty is reachable only when the sole surviving
+        // write for the slot was derived/mirror (excluded from candidacy) —
+        // nothing audible replaced the clear, so nothing to stamp.
       }
       continue;
     }
@@ -1029,11 +1185,35 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   for (const reading of pendingStamp) {
     reading.replaces_cleared = true;
   }
-  if (ambiguousProjectionSlots.length > 0) {
-    Object.defineProperty(result, REPLACES_CLEARED_AMBIGUOUS_PROJECTION, {
-      value: ambiguousProjectionSlots,
-      enumerable: false,
-    });
+  // A2-multiboard (2026-07-28) — effective-board WIRE ENRICHMENT.
+  //
+  // Two classes of reading get the dispatcher-resolved effective board stamped
+  // onto the wire when the model omitted it:
+  //
+  //   1. FLAGGED replacements, ALWAYS (archive P1's enrichment clause). The
+  //      collapse manifest already keys on the EFFECTIVE board, so without this
+  //      the manifest knows the board while the reading does not — and the
+  //      board-aware fail-closed targeting on the client would then reject a
+  //      perfectly valid multi-board replacement as unresolvable, which is the
+  //      exact spoken-but-not-written defect this whole plan closes.
+  //
+  //   2. ORDINARY writes, but ONLY on a CROSS-BOARD turn (winners spanning two
+  //      or more distinct effective boards). This is deliberately narrow. On a
+  //      single-board turn — including every turn of a multi-board job where
+  //      the inspector is working one board at a time — nothing is enriched, so
+  //      the wire stays byte-identical to pre-A2 and the loaded-barrel
+  //      speculator's null-board cache entries keep hitting (blanket enrichment
+  //      would cost latency on every turn to fix a defect that only exists when
+  //      two boards are written in ONE turn; Audio-First #3).
+  //
+  // An already-explicit `board_id` is never overwritten: the model said which
+  // board it meant, and the dispatcher validated that against the current one.
+  const enrichCrossBoard = distinctEffectiveBoards.size > 1;
+  for (const reading of extracted_readings) {
+    if (reading.board_id != null) continue;
+    if (reading.replaces_cleared !== true && !enrichCrossBoard) continue;
+    const effBoard = effectiveBoardByReading.get(reading);
+    if (effBoard != null) reading.board_id = effBoard;
   }
   if (_turnId) result.turn_id = _turnId;
   // Voice-latency plan 2026-06-05 Phase 2.1 — emit `utterance_id`
@@ -1160,9 +1340,15 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   //
   //    Map.entries() preserves insertion order — same property the readings
   //    Map relies on for STT-09 same-turn correction.
+  // A2-multiboard — iterate the board JOURNAL winners (computed above) rather
+  // than the raw Map, so two boards' writes of one board-scoped field both
+  // reach the wire instead of the second silently destroying the first. The
+  // `boardReadings.size` guard is retained as the emit condition: an empty Map
+  // means an empty journal, and hand-built accumulators with a Map but no
+  // journal still project through the winner helper's legacy passthrough.
   if (boardReadings.size > 0) {
     const extracted_board_readings = [];
-    for (const [key, entry] of boardReadings) {
+    for (const { rawKey: key, value: entry } of boardReadingWinners) {
       // Slice 1.1c — same key-decoder treatment as the readings Map. Legacy
       // field-only keys decode to boardId=null; new boardId-tagged keys
       // strip the tag so `field` is the bare field name on the wire.
@@ -1203,6 +1389,30 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           reading.board_id == null
         ) {
           reading.board_id = a1aSym.boardId;
+        }
+      }
+      // A2-multiboard item 7 — the BOARD `replaces_cleared` stamp. Matched by
+      // object identity against the queue the collapse branch built, so the
+      // flag can only ever land on a write the collapse predicate itself
+      // considered.
+      if (pendingBoardStamp.has(entry)) {
+        reading.replaces_cleared = true;
+        // FLAGGED replacements are ALWAYS enriched with the resolved effective
+        // board — item 1's rule, applied here to the board channel. Deliberately
+        // NOT gated on `hasBoardClearV1` (unlike the ordinary fill above): the
+        // collapse manifest keys on the EFFECTIVE board, so an un-enriched flag
+        // would tell the client "this replaces a cleared value" while leaving it
+        // no way to decide WHICH board's value — and a board-aware client that
+        // fails closed on an unresolvable target would then drop a spoken
+        // replacement, which is the exact defect this plan closes. Safe for
+        // capability-absent clients too: `board_id` on a board reading (and on
+        // its circuit:0 fold) has been decoded since slice 1.1a, so the extra
+        // key can only route the value to the RIGHT board.
+        if (reading.board_id == null) {
+          const flaggedBoardId = entry?.[EFFECTIVE_BOARD_SLOT]?.boardId;
+          if (flaggedBoardId != null && flaggedBoardId !== '') {
+            reading.board_id = flaggedBoardId;
+          }
         }
       }
       if (isDerivedWrite(entry)) {
@@ -1272,10 +1482,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // totalCircuitsInJob lets the helper decide whether a multi-circuit
     // group qualifies as "all circuits" vs "circuits X to Y". Sourced
     // from the caller (stage6-shadow-harness.js builds it from
-    // session.stateSnapshot.circuits, board-scoped if a sub-board is
-    // the current target so a fan-out on board B doesn't count board
-    // A's circuits toward the total). Null means "I don't know" → the
-    // helper falls through to range/list phrasing.
+    // session.stateSnapshot.circuits, scoped to the SESSION'S currently
+    // selected board). Null means "I don't know" → the helper falls
+    // through to range/list phrasing.
+    // A2-multiboard item 8 — `totalCircuitsByBoard` is the per-board census
+    // that supersedes the scalar whenever the group's own effective board is
+    // knowable; the scalar survives as the answer for an unambiguously
+    // single-board job and for callers that pass no census at all.
     // Audio-first: exclude mirror/polarity auto-derivations (derived: true)
     // from the spoken read-back while keeping them on the extracted_readings
     // wire. F/U-1: calculator writes are NOT excluded — they speak with
@@ -1292,7 +1505,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       options.circuitDesignations,
       options.totalCircuitsInJob ?? null,
       calcConfirmationReadings,
-      clampCorrectionByReading
+      clampCorrectionByReading,
+      {
+        byBoard: options.totalCircuitsByBoard instanceof Map ? options.totalCircuitsByBoard : null,
+        // Same WeakMap the enrichment pass above consulted, so a group whose
+        // wire `board_id` was deliberately left off (single-board turn) is
+        // still measured against ITS board rather than the session's.
+        effectiveBoardOf: (r) => effectiveBoardByReading.get(r) ?? null,
+      }
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
     // loop and the `_confidence` strip MOVED to stage6-shadow-harness.js,
@@ -1341,27 +1561,79 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // confirmations expand. Tokens gain an ordinal so each op is a distinct
     // replay-stable identity for the client dedupe.
     if (Array.isArray(perTurnWrites.designationOps) && perTurnWrites.designationOps.length > 0) {
+      // A2-multiboard item 3 — group by the EFFECTIVE board, not the raw one.
+      // `record_reading` omits `board_id` in the common case, so a
+      // `select_board A → rename circuit 3 → select_board B → rename circuit 3`
+      // turn produced TWO raw-null ops that merged into ONE scope bucket, and
+      // the expansion then spoke both boards' names as if they were two edits
+      // of a single circuit. The effective board separates them; single-board
+      // traffic groups identically to before (one board ⇒ one bucket either
+      // way).
       const opsByScope = new Map();
+      const groupCountByCircuit = new Map();
       for (const op of perTurnWrites.designationOps) {
-        const k = `${op.circuit}|${op.boardId ?? ''}`;
-        if (!opsByScope.has(k)) opsByScope.set(k, []);
+        const k = `${op.circuit}|${readEffectiveOpBoard(op) ?? ''}`;
+        if (!opsByScope.has(k)) {
+          opsByScope.set(k, []);
+          groupCountByCircuit.set(op.circuit, (groupCountByCircuit.get(op.circuit) ?? 0) + 1);
+        }
         opsByScope.get(k).push(op);
       }
-      for (const [k, ops] of opsByScope) {
+      for (const [, ops] of opsByScope) {
         if (ops.length < 2) continue; // single op — the Map-derived entry is exact
         // Codex r5-#2 — the lookup must match BOARD as well as circuit:
         // without it, repeated writes on board B could replace board A's
         // confirmation for the same circuit ref (A omitted, B duplicated).
-        const idx = confirmations.findIndex(
+        //
+        // A2-multiboard item 3 — the confirmation's `board_id` is the WIRE
+        // value, which item 1 enriches onto ORDINARY readings only when the
+        // turn touched more than one board. So match the effective board FIRST
+        // (exact, and the only correct answer in the multi-board case), then
+        // fall back to a circuit-only match ONLY when this circuit has a single
+        // op-group — i.e. there is no other board it could be confused with.
+        // That fallback is what keeps single-board traffic byte-identical.
+        const opEffectiveBoard = readEffectiveOpBoard(ops[0]);
+        let idx = confirmations.findIndex(
           (c) =>
             c.field === 'circuit_designation' &&
             c.circuit === ops[0].circuit &&
-            (c.board_id ?? null) === (ops[0].boardId ?? null)
+            (c.board_id ?? null) === opEffectiveBoard
         );
+        if (idx < 0 && (groupCountByCircuit.get(ops[0].circuit) ?? 0) === 1) {
+          idx = confirmations.findIndex(
+            (c) => c.field === 'circuit_designation' && c.circuit === ops[0].circuit
+          );
+        }
         if (idx < 0) continue;
+        // A2-multiboard item 3 (Codex cycle 2) — the replacements inherit the
+        // board identity of the confirmation they REPLACE, not the raw
+        // `op.boardId`.
+        //
+        // Raw is board-AMBIGUOUS: `rename_circuit`/`record_reading` omit
+        // `board_id` in the common case, so on a
+        // `select_board main → rename 3 → rename 3 → select_board sub → rename 3 → rename 3`
+        // turn BOTH groups minted `desig_3_<turn>_ord0`/`_ord1` and emitted no
+        // `board_id` at all. `applyConfirmationDebounce` then swallowed the
+        // second board's pair as duplicates: the sub-board's designations were
+        // written but never spoken — Audio-First #1, and the exact
+        // spoken-vs-written split this item exists to close. It also left the
+        // surviving read-backs unroutable, since the client can only address a
+        // board it is told about.
+        //
+        // The wire `board_id` is the right source rather than
+        // `opEffectiveBoard` because these entries SUBSTITUTE for
+        // `confirmations[idx]` — they must carry the identity the client would
+        // otherwise have received — and because it is the same convention the
+        // §A1a primary token stamping above already uses. Byte-invariance
+        // follows for free: a single-board turn is not cross-board-enriched, so
+        // the value is absent, `boardPart` is '' and every existing token (and
+        // its pinned iOS/web hash vector) is unchanged. It only ever differs in
+        // the colliding cross-board case, where the primary lookup above
+        // already proved the confirmation carries its effective board.
+        const wireBoardId = confirmations[idx].board_id ?? null;
+        const boardPart = wireBoardId != null ? `_${wireBoardId}` : '';
         const replacement = ops.map((op, i) => {
           const text = buildConfirmationText('circuit_designation', op.value, op.circuit, op.value);
-          const boardPart = op.boardId != null ? `_${op.boardId}` : '';
           const entry = {
             text,
             expanded_text: expandForTTS(text),
@@ -1370,7 +1642,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
             dedupe_token: `desig_${op.circuit}${boardPart}_${_turnId ?? 'noturn'}_ord${i}`,
             _confidence: typeof op.confidence === 'number' ? op.confidence : null,
           };
-          if (op.boardId != null) entry.board_id = op.boardId;
+          if (wireBoardId != null) entry.board_id = wireBoardId;
           return entry;
         });
         confirmations.splice(idx, 1, ...replacement);
@@ -1382,10 +1654,22 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // reading writes. Dedup against the per-turn circuit_designation
     // writes so we don't double-announce "Circuit 1 is now the Cooker"
     // when Sonnet pairs create_circuit + record_reading.
+    //
+    // A2-multiboard item 3 — the dedupe identity is `(effective_board, ref)`,
+    // not the bare ref. On a multi-board turn a designation read-back for
+    // board A's circuit 3 used to suppress board B's `create circuit 3`
+    // confirmation as well, so a real state change on B went unspoken
+    // (Audio-First #1). A board-scoped reading contributes ONLY its pair key;
+    // an unscoped reading contributes the bare ref, which is what every
+    // single-board turn produces — so single-board behaviour is unchanged.
     const skipDesignations = new Set();
     for (const r of extracted_readings) {
       if (r.field === 'circuit_designation' && Number.isInteger(r.circuit)) {
-        skipDesignations.add(r.circuit);
+        if (r.board_id != null && r.board_id !== '') {
+          skipDesignations.add(circuitDesignationKey(r.board_id, r.circuit));
+        } else {
+          skipDesignations.add(r.circuit);
+        }
       }
     }
     const stateChanges = synthesiseStateChangeConfirmations(
@@ -1404,11 +1688,25 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // Circuit readings key by field+circuit ref; board/installation readings
     // (client_name, supply fields, …) live in a separate slot with no circuit,
     // so they key field-only at board scope.
+    // A2-multiboard (2026-07-28) — the circuit twin of the A1a board fix
+    // immediately below: membership is a Set of EFFECTIVE CIRCUIT SLOTS,
+    // sourced from the write JOURNAL's stamps, not the bare `field|circuit`
+    // string. `extracted_readings` is deliberately NOT the source — its
+    // entries are freshly constructed downstream and therefore CANNOT carry
+    // the non-enumerable EFFECTIVE_CIRCUIT_SLOT stamp, the exact trap the
+    // board half documents. `projectReadingWinners` is the one authoritative
+    // answer to "which effective slots did this turn write?", and it is the
+    // same source the clear→write collapse already matches on — one source
+    // for both, or they drift.
+    //
+    // Unsequenced/Symbol-less legacy writes resolve, via readingSlotKeyOf's
+    // own fallback, to the raw decoded key — whose board is null for every
+    // omitted-`board_id` write, i.e. the same stable null-board sentinel the
+    // clear side falls back to. Single-board turns therefore behave exactly
+    // as before (both sides resolve to the one board, or both to null).
     const writtenCircuitSlots = new Set();
-    for (const r of extracted_readings) {
-      if (typeof r.field === 'string' && r.circuit != null) {
-        writtenCircuitSlots.add(`${r.field}|${String(r.circuit)}`);
-      }
+    for (const w of projectReadingWinners(perTurnWrites)) {
+      writtenCircuitSlots.add(w.slot);
     }
     // Plan A1a (2026-07-27) — the #31 board membership is now a Set of
     // EFFECTIVE BOARD SLOTS, not bare field names, sourced from

@@ -107,7 +107,38 @@ import {
   createPerTurnWrites,
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
+  EFFECTIVE_CIRCUIT_SLOT,
+  circuitDesignationKey,
+  decodeReadingKey,
+  projectBoardReadingWinners,
+  projectReadingWinners,
+  readEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
+
+/**
+ * A2-multiboard item 3 — read the server-authoritative designation for a
+ * circuit out of the (effective board, ref)-keyed map the harness builds
+ * post-mutation. Pair FIRST, bare ref as the unscoped fallback, empty string
+ * when genuinely nameless: the wire shape's `designation` is a non-optional
+ * Swift `String`, so a projection must always produce one.
+ */
+function resolveHarnessDesignation(designations, boardId, circuitRef) {
+  if (!(designations instanceof Map)) return '';
+  if (boardId != null && boardId !== '') {
+    // Board-scoped: the pair is the ONLY correct answer. Falling back to the
+    // bare ref here would hand a sub-board circuit MAIN's name for the same
+    // ref — the exact cross-board leak the pair key exists to close.
+    const paired = designations.get(circuitDesignationKey(boardId, circuitRef));
+    return typeof paired === 'string' && paired ? paired : '';
+  }
+  const bare = designations.get(circuitRef) ?? designations.get(String(circuitRef));
+  return typeof bare === 'string' && bare ? bare : '';
+}
+// A2-multiboard — the designation map is keyed by (effective board, circuit
+// ref), and the snapshot's circuit buckets are DUAL-SHAPE (main board under
+// bare numeric keys, sub-boards under `${board_id}::${ref}` composites), so
+// resolving the main board's id is required to key the legacy half correctly.
+import { getMainBoardId } from './stage6-multi-board-shape.js';
 // Plan A1a — the net-0 drain selects mandatory-notice text AT THE DRAIN
 // (post-suppression) via the dispatcher module's exported selector, so the
 // rotation cursor advances exactly once per emitted notice. Safe import:
@@ -132,7 +163,6 @@ import {
   BUNDLER_PHASE,
   applyConfirmationDebounce,
   SAME_TURN_CLEAR_WRITE_COLLAPSED,
-  REPLACES_CLEARED_AMBIGUOUS_PROJECTION,
 } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { buildSessionTools } from './stage6-tool-schemas.js';
@@ -283,31 +313,18 @@ function emitClearWriteCollapseTelemetry(log, session, turnId, result) {
   }
 }
 
-/**
- * A2 (2026-07-28) — emit one `stage6.replaces_cleared_ambiguous_projection`
- * INFO row per slot where the bundler DECLINED to stamp `replaces_cleared`
- * because the collapsed slot resolved to more than one candidate surviving
- * reading. Fail-closed-unflagged is silent on the wire by design, so this row
- * is the ONLY observability that the case fired; without it a web cell that
- * kept a stale value would look identical to an ordinary skip. The slot key is
- * server-derived (canonical field + circuit + effective board id) — no
- * model-controlled string, so no leak-filter concern.
+/*
+ * A2-multiboard (2026-07-28) — `emitReplacesClearedAmbiguousTelemetry` lived
+ * here, emitting one `stage6.replaces_cleared_ambiguous_projection` INFO row
+ * per slot where the bundler DECLINED to stamp `replaces_cleared` because the
+ * collapsed slot resolved to more than one candidate surviving reading. Both
+ * the manifest Symbol and the branch that populated it are gone: the bundler
+ * now projects last-write-wins per EFFECTIVE slot from the append-only write
+ * journal, so two same-turn SPELLINGS of one slot resolve to exactly ONE
+ * winner and the ambiguity is structurally unreachable. Removed rather than
+ * left dormant — a telemetry row that can never fire reads as live
+ * observability in a future review.
  */
-function emitReplacesClearedAmbiguousTelemetry(log, session, turnId, result) {
-  const slots = result?.[REPLACES_CLEARED_AMBIGUOUS_PROJECTION];
-  if (!Array.isArray(slots) || slots.length === 0) return;
-  for (const slotKey of slots) {
-    try {
-      log?.info?.('stage6.replaces_cleared_ambiguous_projection', {
-        sessionId: session?.sessionId,
-        turnId,
-        slot_key: slotKey,
-      });
-    } catch {
-      // Telemetry must never break extraction.
-    }
-  }
-}
 
 /**
  * Estimate shadow-mode cost from the tool-loop output's usage accumulator.
@@ -1163,15 +1180,36 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // Snapshot-only here; same-turn circuit_designation writes are layered
         // on inside the speculator as its hooks observe them. Mirrors the
         // snapshot read the post-loop circuitDesignations build does (below).
+        //
+        // A2-multiboard item 3 — seeded in BOTH key spaces, mirroring the
+        // post-loop circuitDesignations build below verbatim. The old
+        // `Number(key)` filter dropped every composite `${board_id}::${ref}`
+        // bucket, so a sub-board circuit's name never reached the SPECULATED
+        // read-back — the speculator said "Circuit 4, Zs 0.62" while the
+        // bundler said "Shed sockets, Zs 0.62", a guaranteed validate-time
+        // MISS on exactly the multi-board turns the pre-synth exists to speed
+        // up. The two builds must stay identical: a divergence is a serve of
+        // the wrong circuit's name.
         const initialDesignations = new Map();
         const seedCircuits = session?.stateSnapshot?.circuits;
+        const seedMainBoardId = getMainBoardId(session?.stateSnapshot);
         if (seedCircuits && typeof seedCircuits === 'object') {
           for (const [key, circ] of Object.entries(seedCircuits)) {
             if (!circ || typeof circ !== 'object') continue;
-            const refNum = Number(key);
-            if (!Number.isInteger(refNum) || refNum <= 0) continue;
             const d = circ.circuit_designation;
-            if (typeof d === 'string' && d.trim()) initialDesignations.set(refNum, d.trim());
+            if (typeof d !== 'string' || !d.trim()) continue;
+            const refNum = Number(key);
+            if (Number.isInteger(refNum) && refNum > 0) {
+              // Legacy bare-numeric key — the MAIN board's bucket namespace.
+              initialDesignations.set(refNum, d.trim());
+              initialDesignations.set(circuitDesignationKey(seedMainBoardId, refNum), d.trim());
+              continue;
+            }
+            // Composite `${board_id}::${ref}` bucket — a SUB-board circuit,
+            // keyed by its own board and NEVER claiming the bare ref.
+            const subRef = Number.isInteger(circ.circuit) ? circ.circuit : null;
+            if (subRef == null || subRef <= 0 || typeof circ.board_id !== 'string') continue;
+            initialDesignations.set(circuitDesignationKey(circ.board_id, subRef), d.trim());
           }
         }
         speculator = createSpeculator({
@@ -1188,6 +1226,23 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // line differ from the emitted confirmation, which is a cache MISS at
           // best and a wrong spoken value at worst.
           resolveEarthing: (boardId) => resolveBoardAwareEarthing(session.stateSnapshot, boardId),
+          // A2-multiboard item 3 — effective-board resolver for the DESIGNATION
+          // lookup. Same closure-over-live-snapshot shape as resolveEarthing, and
+          // for the same reason: the effective board is select_board state the
+          // dispatchers mutate mid-turn, so a captured string would be wrong on
+          // exactly the cross-board turns this exists for.
+          //
+          // Resolution chain mirrors getCircuitBucket / circuitExistsInSnapshot —
+          // explicit board_id → currentBoardId → canonical main — so the
+          // speculator scopes a designation to the same bucket the dispatcher
+          // wrote it into.
+          resolveEffectiveBoard: (boardId) => {
+            if (typeof boardId === 'string' && boardId !== '') return boardId;
+            const snap = session?.stateSnapshot;
+            const current = snap?.currentBoardId;
+            if (typeof current === 'string' && current !== '') return current;
+            return getMainBoardId(snap);
+          },
           // P3 Fix 8 — deny LIM pre-synthesis on capability-gated fields when the
           // client hasn't advertised `lim_ranged_write_v1` (the dispatcher will
           // SKIP the write, so a pre-synth confirmation would be a false
@@ -1528,32 +1583,71 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // just renamed circuit N) > existing snapshot value. Both keyed by
     // numeric circuit_ref; the bundler tolerates either number or string
     // keys via Map.get coercion.
+    //
+    // A2-multiboard (2026-07-28) — the map now carries TWO key spaces:
+    //   * `circuitDesignationKey(effectiveBoardId, ref)` — the real identity.
+    //     Circuit refs are PER BOARD, so ref alone is not an identity: a
+    //     `select_board A → rename circuit 3 → select_board B → rename circuit
+    //     3` turn used to leave ONE entry and both boards' read-backs spoke
+    //     board B's name.
+    //   * the bare numeric ref — retained for genuinely UNSCOPED lookups
+    //     (legacy single-board traffic, and any reading that reaches the
+    //     bundler with no board_id). The two key spaces cannot collide (the
+    //     pair key is NUL-delimited), so single-board behaviour is unchanged.
     const circuitDesignations = new Map();
     const snapshotCircuits = session?.stateSnapshot?.circuits;
+    const snapshotMainBoardId = getMainBoardId(session?.stateSnapshot);
     if (snapshotCircuits && typeof snapshotCircuits === 'object') {
       for (const [key, circ] of Object.entries(snapshotCircuits)) {
         if (!circ || typeof circ !== 'object') continue;
-        const refNum = Number(key);
-        if (!Number.isInteger(refNum) || refNum <= 0) continue;
         const d = circ.circuit_designation;
-        if (typeof d === 'string' && d.trim()) {
+        if (typeof d !== 'string' || !d.trim()) continue;
+        const refNum = Number(key);
+        if (Number.isInteger(refNum) && refNum > 0) {
+          // Legacy bare-numeric key — the MAIN board's bucket namespace
+          // (see stage6-multi-board-shape.js getCircuitBucket).
           circuitDesignations.set(refNum, d.trim());
+          circuitDesignations.set(circuitDesignationKey(snapshotMainBoardId, refNum), d.trim());
+          continue;
         }
+        // Composite `${board_id}::${ref}` bucket — a SUB-board circuit. These
+        // were skipped entirely before (the `Number(key)` parse yields NaN),
+        // so a sub-board circuit's name never reached the spoken read-back at
+        // all; key them by their own board.
+        const subRef = Number.isInteger(circ.circuit) ? circ.circuit : null;
+        if (subRef == null || subRef <= 0 || typeof circ.board_id !== 'string') continue;
+        circuitDesignations.set(circuitDesignationKey(circ.board_id, subRef), d.trim());
       }
     }
     // Overlay: same-turn circuit_designation writes win. Sonnet emitting
     // create_circuit + record_reading(designation) + record_reading(zs)
     // in one turn must hear "Cooker, Zs 0.62" — not "Circuit 4, Zs 0.62".
-    for (const [key, entry] of perTurnWrites.readings ?? new Map()) {
-      // Bundler's decodeReadingKey is what splits these in production;
-      // here we just need the field + circuit prefix, so a string parse
-      // suffices.
-      const m = /^circuit_designation::(\d+)(?:\0|$)/.exec(key);
-      if (!m) continue;
-      const refNum = Number(m[1]);
+    //
+    // A2-multiboard — projected from the JOURNAL winners, not the raw Map, and
+    // keyed by the EFFECTIVE board. The raw Map key is board-ambiguous
+    // (`record_reading` omits `board_id` in the common case), so two boards'
+    // same-ref designation writes collapsed onto one entry and the raw-Map
+    // last-writer's name was spoken for BOTH. The winner projection is
+    // last-write-wins per effective slot, so each board keeps its own.
+    for (const { rawKey: key, value: entry } of projectReadingWinners(perTurnWrites)) {
+      const decoded = decodeReadingKey(key);
+      if (decoded.field !== 'circuit_designation') continue;
+      const sym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
+      const refNum = Number(sym?.circuit ?? decoded.circuit);
       const valueStr = String(entry?.value ?? '').trim();
-      if (Number.isInteger(refNum) && refNum > 0 && valueStr) {
+      if (!Number.isInteger(refNum) || refNum <= 0 || !valueStr) continue;
+      const effectiveBoardId = sym ? (sym.boardId ?? null) : (decoded.boardId ?? null);
+      if (effectiveBoardId != null) {
+        circuitDesignations.set(circuitDesignationKey(effectiveBoardId, refNum), valueStr);
+      }
+      // The bare-ref entry is the unscoped-lookup fallback. Only a write on the
+      // MAIN/unscoped board may claim it: letting a sub-board write own the
+      // bare ref is exactly the cross-board leak this re-key closes.
+      if (effectiveBoardId == null || effectiveBoardId === snapshotMainBoardId) {
         circuitDesignations.set(refNum, valueStr);
+        if (effectiveBoardId == null) {
+          circuitDesignations.set(circuitDesignationKey(snapshotMainBoardId, refNum), valueStr);
+        }
       }
     }
 
@@ -1589,18 +1683,52 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
-    // Count of distinct circuits on the CURRENT board (board scope
-    // matters: a "for all circuits" broadcast on sub-board B should
-    // measure against B's circuit count, not A+B combined). Falls
-    // back to a board-agnostic count if no currentBoardId is set
-    // (legacy single-board jobs).
+    // Circuit populations feeding the "All circuits, …" fan-out phrasing.
+    //
+    // A2-multiboard item 8 (2026-07-28) — the scalar below is measured against
+    // the SESSION'S currently-selected board, but a confirmation GROUP is not
+    // necessarily about that board: the dispatcher resolves an effective board
+    // per write, so one turn can fan out on the board the inspector just left,
+    // or on two boards at once. Measuring every group against one session-wide
+    // scalar is how "All circuits" comes to mean "all circuits on some OTHER
+    // board" — an over-claim the hands-free inspector cannot see is wrong, on
+    // the one phrasing whose whole job is to assert completeness.
+    //
+    // So we ALSO build a per-board census and let the bundler pick the count
+    // that belongs to each group. Two key namespaces have to be folded in
+    // (stage6-multi-board-shape.js): the legacy-namespace owner's circuits sit
+    // under bare numeric keys, every other board's under `${board_id}::${ref}`.
+    // The composite half was invisible to the scalar (`Number('garage::3')` is
+    // NaN), which is precisely why a sub-board fan-out could never be counted.
+    //
+    // The scalar's own arithmetic is deliberately UNCHANGED — bare keys only,
+    // same currentBoardId filter — because it is still the answer for a
+    // single-board job, and the bundler now uses it ONLY there.
     let totalCircuitsInJob = 0;
+    const totalCircuitsByBoard = new Map();
     if (snapshotCircuits && typeof snapshotCircuits === 'object') {
       const currentBoardId = session?.stateSnapshot?.currentBoardId ?? null;
       for (const [key, circ] of Object.entries(snapshotCircuits)) {
         if (!circ || typeof circ !== 'object') continue;
-        const refNum = Number(key);
+        // `lastIndexOf` rather than `indexOf`: board ids are barred from
+        // containing '::' at write time, but splitting on the LAST separator
+        // is the same defensive convention `decodeReadingKey` uses.
+        const sep = key.lastIndexOf('::');
+        const isComposite = sep > 0;
+        const refNum = Number(isComposite ? key.slice(sep + 2) : key);
         if (!Number.isInteger(refNum) || refNum <= 0) continue;
+
+        // Effective board, most-specific first: the bucket's own attribution
+        // (what the dispatchers stamp) → the composite key's prefix → the
+        // board that owns the legacy bare-numeric namespace (`getMainBoardId`,
+        // already resolved above for the designation map).
+        const effBoard =
+          circ.board_id ?? (isComposite ? key.slice(0, sep) : null) ?? snapshotMainBoardId;
+        if (typeof effBoard === 'string' && effBoard !== '') {
+          totalCircuitsByBoard.set(effBoard, (totalCircuitsByBoard.get(effBoard) ?? 0) + 1);
+        }
+
+        if (isComposite) continue;
         if (currentBoardId && circ.board_id && circ.board_id !== currentBoardId) continue;
         totalCircuitsInJob += 1;
       }
@@ -1632,6 +1760,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       circuitDesignations,
       boardDesignations,
       totalCircuitsInJob,
+      // A2-multiboard item 8 — the per-board census. The bundler resolves each
+      // confirmation group's effective board and looks its population up here;
+      // `totalCircuitsInJob` above stays the answer only for an unambiguous
+      // single-board job (see resolveTotalForBoard in stage6-event-bundler.js).
+      totalCircuitsByBoard,
       // PLAN voice-feedback-2026-06-05 W1.4 — thread the session logger
       // through so the bundler can emit one `ios_send_attempt` row per
       // confirmation entry (with byte-equal-to-iOS expected_dedupe_key
@@ -1649,7 +1782,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
 
     // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
     emitClearWriteCollapseTelemetry(log, session, turnId, result);
-    emitReplacesClearedAmbiguousTelemetry(log, session, turnId, result);
 
     // iOS Build 282 only knows about `extracted_readings`. Fold any board-level
     // readings (record_board_reading dispatches) into extracted_readings with
@@ -1673,6 +1805,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           source: br.source,
         };
         if (br.board_id != null) synthesised.board_id = br.board_id;
+        // A2-multiboard item 7 (2026-07-28) — carry the collapse flag through
+        // the fold. `extracted_board_readings` is STRIPPED below (the iOS
+        // Codable decoder rejects the slot), so this synthesised circuit:0 copy
+        // is the ONLY shape any client ever sees for a board write. Dropping
+        // the flag here would leave a collapsed board replacement arriving as a
+        // bare write against a still-populated cell — silently skipped by a
+        // fill-only apply gate, spoken but never written.
+        if (br.replaces_cleared === true) synthesised.replaces_cleared = true;
         result.extracted_readings.push(synthesised);
       }
     }
@@ -1725,6 +1865,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // lands the create/rename meta on the right board's circuit row
           // rather than always main's. Omit when nullish (single-board session
           // / pre-1.1a dispatcher write).
+          //
+          // A2-multiboard item 3 — the address is the EFFECTIVE board, not the
+          // raw one. `create_circuit`'s `board_id` is optional and the common
+          // model call omits it (scope comes from `select_board`), so a
+          // `select_board B → create circuit 4 named "Cooker"` turn used to
+          // send an UNSCOPED designation reading that both clients landed on
+          // MAIN. The stamp is what the server actually mutated.
           const synthesised = {
             field: legacyField,
             circuit: ref,
@@ -1732,7 +1879,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             confidence: 1.0,
             source: 'tool_call',
           };
-          if (op.board_id != null) synthesised.board_id = op.board_id;
+          const effBoard = readEffectiveOpBoard(op);
+          if (effBoard != null) synthesised.board_id = effBoard;
           result.extracted_readings.push(synthesised);
         }
       }
@@ -1879,22 +2027,71 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // (iOS ignores it for deletes — see applyCircuitUpdates handler).
     // Capturing first lets us preserve the strip's invariant ("no Stage 6
     // shape on the wire to iOS") while still surfacing the delete intent.
-    const legacyShapeDeletes = [];
+    //
+    // A2-multiboard item 3 (2026-07-28) — the fold above is LOSSY, and this
+    // block is now the lossless complement for the two shapes it cannot carry:
+    //
+    //   1. A metadata-free `create_circuit` (only `circuit_ref`). Every
+    //      META_TO_LEGACY_FIELD value is null, so the fold emits NOTHING, and
+    //      the strip below removes the only other carrier — the created row
+    //      reached NEITHER client. The next dictated reading for it then had
+    //      no row to land on.
+    //   2. A `rename_circuit` that RENUMBERS (`from_ref !== circuit_ref`).
+    //      The fold emits the new ref's meta but never `from_ref`, so a client
+    //      could only ever ADD a row at the new ref and left the old one
+    //      behind as a duplicate.
+    //
+    // Ops that the fold DOES represent (a create/rename carrying a
+    // designation, same ref) are deliberately NOT duplicated here — the fold's
+    // designation reading already creates/renames the row on both clients, and
+    // a second carrier would risk a double read-back.
+    //
+    // `designation` is always a String because iOS's `CircuitUpdate` Codable
+    // declares it non-optional and throws away the WHOLE extraction message on
+    // a shape mismatch (the Bug-F class). It is sourced from the op's own meta
+    // first, then the server-authoritative post-mutation designation map, so a
+    // projection can never blank a name the server still holds.
+    const legacyShapeCircuitOps = [];
     if (Array.isArray(result.circuit_updates)) {
       for (const op of result.circuit_updates) {
-        if (op && op.op === 'delete' && Number.isInteger(op.circuit_ref)) {
-          // "Work on Board" hotfix slice 1.1b — board_id rides through to iOS
-          // so the delete routes to the right board's bucket on apply.
-          // Slice 1.2 extends iOS's CircuitUpdate Codable with the optional
-          // boardId field; pre-fix iOS clients ignore it via decodeIfPresent.
-          const projected = {
-            circuit: op.circuit_ref,
-            designation: '',
-            action: 'delete',
-          };
-          if (op.board_id != null) projected.board_id = op.board_id;
-          legacyShapeDeletes.push(projected);
+        if (!op || !Number.isInteger(op.circuit_ref) || op.circuit_ref <= 0) continue;
+        // A2-multiboard item 3 — address every projected op to the board the
+        // server actually mutated. `board_id` is optional on all three circuit
+        // tools and the common model call omits it (scope comes from
+        // `select_board`), so the raw key sent an unscoped op that both clients
+        // resolved against MAIN — deleting or renumbering the wrong board's
+        // circuit. Slice 1.2 extended iOS's CircuitUpdate Codable with the
+        // optional boardId field; pre-fix clients ignore it via decodeIfPresent.
+        const effBoard = readEffectiveOpBoard(op);
+        const metaDesig =
+          typeof op?.meta?.designation === 'string' && op.meta.designation.trim()
+            ? op.meta.designation.trim()
+            : null;
+
+        if (op.op === 'delete') {
+          // designation:'' is a placeholder — iOS ignores it for deletes (see
+          // applyCircuitUpdates handler), and web's handler resolves the row by
+          // (board_id, circuit) alone.
+          const projected = { circuit: op.circuit_ref, designation: '', action: 'delete' };
+          if (effBoard != null) projected.board_id = effBoard;
+          legacyShapeCircuitOps.push(projected);
+          continue;
         }
+
+        const renumbering =
+          op.op === 'rename' && Number.isInteger(op.from_ref) && op.from_ref !== op.circuit_ref;
+        const unrepresentedByFold = op.op === 'create' && metaDesig == null;
+        if (!renumbering && !unrepresentedByFold) continue;
+
+        const projected = {
+          circuit: op.circuit_ref,
+          designation:
+            metaDesig ?? resolveHarnessDesignation(circuitDesignations, effBoard, op.circuit_ref),
+          action: op.op,
+        };
+        if (effBoard != null) projected.board_id = effBoard;
+        if (renumbering) projected.from_ref = op.from_ref;
+        legacyShapeCircuitOps.push(projected);
       }
     }
 
@@ -1914,12 +2111,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     delete result.cleared_readings;
     delete result.observation_deletions;
 
-    // Re-emit deletes in the legacy iOS shape AFTER the strip so the iOS
-    // CircuitUpdate decoder accepts them. Only set the slot if there are any —
-    // an empty array would be benign for current iOS but pointlessly noisy
-    // in session logs.
-    if (legacyShapeDeletes.length > 0) {
-      result.circuit_updates = legacyShapeDeletes;
+    // Re-emit the projected ops in the legacy iOS shape AFTER the strip so the
+    // iOS CircuitUpdate decoder accepts them. Only set the slot if there are
+    // any — an empty array would be benign for current iOS but pointlessly
+    // noisy in session logs.
+    if (legacyShapeCircuitOps.length > 0) {
+      result.circuit_updates = legacyShapeCircuitOps;
     }
 
     // Bug-H fix (2026-04-28): same Codable-throw class as Bug-F, but for
@@ -2070,6 +2267,30 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       transcriptText,
       dedupeReadbacks(spokenReadbacks)
     );
+
+    // A2-multiboard item 4 — reconcile same-turn COLLAPSED clear→write
+    // replacements before the drift validation runs.
+    //
+    // Ordering is load-bearing, and this is deliberately its OWN block rather
+    // than a branch inside the validate guard below. The validate pass compares
+    // expanded TEXT only, so a speculation parked under the null board (the
+    // model omits `board_id` in the common case) whose text equals the emitted
+    // confirmation is judged VALID and left servable for its whole TTL — even
+    // though the surviving write reached the wire enriched with its effective
+    // board. Reconciliation therefore gets first refusal on those entries;
+    // whatever it does not terminate falls through to the ordinary drift check
+    // unchanged. The separate-block shape also means a LOADED_BARREL-off
+    // session, or an older speculator with no such method, is a silent no-op
+    // rather than a throw.
+    if (speculator && typeof speculator.reconcileCollapsedReplacements === 'function') {
+      speculator.reconcileCollapsedReplacements(turnId, result, {
+        // Same aborted expression the validate call computes below.
+        aborted:
+          cancelled ||
+          toolLoopOut?.aborted === true ||
+          toolLoopOut?.terminal_reason === 'tool_use_cap_hit',
+      });
+    }
 
     // Plan B (2026-06-17) B1b — post-loop speculation drift validation. Runs
     // on the FINAL emitted confirmation set (after the mid-stream-canonical
@@ -2747,11 +2968,23 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // clear_board_reading SUCCESS (or a same-slot already-empty
           // outcome), never by an unrelated same-slot write.
           const survivingClearSlots = new Set();
-          if (perTurnWrites?.boardReadings instanceof Map) {
-            for (const val of perTurnWrites.boardReadings.values()) {
-              const bsym = val?.[EFFECTIVE_BOARD_SLOT];
-              if (bsym) survivingSlots.add(boardSlotKey(bsym.field, bsym.boardId));
-            }
+          // A2-multiboard (2026-07-28) — the write side reads the PROJECTED
+          // winners, never the raw `boardReadings` Map. `record_board_reading`
+          // carries no schema `board_id`, so two boards' writes for the same
+          // field collide on one raw key and `Map.set` keeps only the last:
+          // `clear manufacturer on main (already blank) → record manufacturer
+          // on main → select_board garage → record manufacturer on garage`
+          // left main's write invisible here, so main's already-empty notice
+          // was NOT suppressed and spoke alongside main's own write read-back —
+          // a contradiction ("manufacturer already blank" + "manufacturer
+          // recorded as Wylex") that this plan's own projection fix newly makes
+          // audible, because main's write now survives to be read back at all.
+          // The stamp-only guard is kept deliberately: a Symbol-less legacy
+          // entry contributes nothing (as before), so the new set is a strict
+          // SUPERSET of the old one and single-board turns are unchanged.
+          for (const w of projectBoardReadingWinners(perTurnWrites)) {
+            const bsym = w?.value?.[EFFECTIVE_BOARD_SLOT];
+            if (bsym) survivingSlots.add(boardSlotKey(bsym.field, bsym.boardId));
           }
           if (Array.isArray(perTurnWrites?.fieldCorrections)) {
             for (const c of perTurnWrites.fieldCorrections) {
@@ -3248,19 +3481,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     if (Array.isArray(result.confirmations)) {
       for (const entry of result.confirmations) {
         let expectedDedupeKey;
+        // A2-multiboard item 10 — the circuit branches now fold the wire
+        // `board_id` too (the degenerate branch always did). This row must stay
+        // byte-truthful about what a client computes, so it passes the SAME
+        // wire field the client sees; a confirmation with no `board_id` hashes
+        // identically to before.
         if (Number.isInteger(entry.circuit)) {
           expectedDedupeKey = buildPerCircuitDedupeKey(
             entry.field,
             entry.circuit,
             entry.text,
-            entry.dedupe_token
+            entry.dedupe_token,
+            entry.board_id
           );
         } else if (Array.isArray(entry.circuits) && entry.circuits.length > 0) {
           expectedDedupeKey = buildMultiCircuitDedupeKey(
             entry.field,
             entry.circuits,
             entry.text,
-            entry.dedupe_token
+            entry.dedupe_token,
+            entry.board_id
           );
         } else {
           expectedDedupeKey = buildDegenerateDedupeKey(
@@ -3956,7 +4196,6 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
 
   // P5 (2026-07-23) — emit clear→write collapse telemetry (shadow path).
   emitClearWriteCollapseTelemetry(log, session, turnId, toolResult);
-  emitReplacesClearedAmbiguousTelemetry(log, session, turnId, toolResult);
 
   // Step 6: slot-diff the two result shapes.
   const divergence = compareSlots(legacy, toolResult);

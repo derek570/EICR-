@@ -162,10 +162,12 @@ describe('voice-latency-telemetry', () => {
       expect(tel.HOPS.length).toBe(15);
     });
 
-    test('SERVER_OUTCOMES includes original 8 server states + 13 loaded-barrel states', () => {
+    test('SERVER_OUTCOMES includes original 8 server states + 14 loaded-barrel states', () => {
       // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 11.4)
       // added `loaded_barrel_pretext_abort` — bumping the total to 21.
-      expect(tel.SERVER_OUTCOMES.length).toBe(21);
+      // A2-multiboard item 4 added
+      // `loaded_barrel_collapsed_replacement_invalidated` — 22.
+      expect(tel.SERVER_OUTCOMES.length).toBe(22);
       // Original 8 (pre-Loaded-Barrel) — pin for back-compat:
       expect(tel.SERVER_OUTCOMES).toContain('sent_to_client');
       expect(tel.SERVER_OUTCOMES).toContain('suppressed_after_synth');
@@ -183,6 +185,12 @@ describe('voice-latency-telemetry', () => {
       expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_text_drift_detected');
       // Single-round latency sprint Phase 1:
       expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_pretext_abort');
+      // A2-multiboard item 4 — an unregistered outcome is DROPPED by
+      // recordOutcome (warn + return), so the reconciliation would run with no
+      // audit trail at all if this membership ever regressed.
+      expect(tel.SERVER_OUTCOMES).toContain(
+        'loaded_barrel_collapsed_replacement_invalidated'
+      );
     });
 
     test('IOS_OUTCOMES includes the 5 ack outcomes', () => {

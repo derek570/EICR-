@@ -24,8 +24,22 @@
 # field_corrected frame), so a plain reading oracle GREENs on broken main. The
 # clear_then_write oracle JOINTLY asserts the replacement present AND zero
 # same-slot clear_reading field_corrections — so it RED-proves the wipe.
-# board_id/clear_board_id are both null: single-board job, the model passed no
-# board_id on either call (the outward wire identities the collapse preserves).
+# clear_board_id is null: the model passed no board_id on the clear call, and
+# field_corrections are never board-enriched — so a REGRESSED collapse would
+# still surface the surviving stale clear at board null, which is what leg (b)
+# (the RED differentiator) matches on. It is unchanged by A2-multiboard.
+#
+# board_id was ALSO null until A2-multiboard (2026-07-28). That plan's item 1
+# enriches every FLAGGED replacement (`replaces_cleared === true`) with the
+# dispatcher-resolved EFFECTIVE board before it goes out, unconditionally —
+# because the collapse manifest already keys on the effective board, so a
+# board-less flagged reading would be rejected as unresolvable by the clients'
+# board-aware fail-closed targeting (the very spoken-but-not-written defect the
+# flag exists to prevent). This job's sole board is `main`, so the outward
+# identity of the replacement is now `board_id: main`. The expectation below was
+# updated to match, which STRENGTHENS leg (a): it now pins the enrichment as
+# well as the write. Leg (b) — and therefore the documented RED proof — is
+# untouched.
 #
 # RED proof: reverting the P5 bundler collapse (git checkout <base> --
 # src/extraction/stage6-event-bundler.js) and running `npm run
@@ -127,7 +141,7 @@ turns:
         field: ir_live_live_mohm
         circuit: 3
         value: '100'
-        board_id: null
+        board_id: main
         clear_board_id: null
         state_transition: clear_then_write
         audibility: exactly_once

@@ -125,12 +125,25 @@ export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
     // local correction-TTS dedupe could cross-match these wire keys; that
     // cross-match is now INTENTIONALLY dropped (it permanently swallowed
     // the second read-back of a corrected value — session 2ACE7677 id-84).
-    return `${field}_${conf.circuit}_${djb2UInt64Decimal(conf.text)}`;
+    //
+    // A2-multiboard item 10 (2026-07-28): `board_id` is folded into the hash
+    // too, exactly as the degenerate branch below has always folded it. Two
+    // boards routinely share circuit refs, so "circuit 1, Zs 0.55" on main and
+    // the identical line on the garage board produced the SAME key and the
+    // second read-back was silently swallowed — a dictated reading the
+    // hands-free inspector never hears (Audio-First #1), though both writes
+    // landed. Folding into the hash (rather than adding a key segment) keeps an
+    // ABSENT board id hashing `text + ''` — byte-identical to the pre-item-10
+    // key — so every single-board confirmation keeps the key it has today.
+    return `${field}_${conf.circuit}_${djb2UInt64Decimal(conf.text + (conf.board_id ?? ''))}`;
   }
   if (conf.circuits != null && conf.circuits.length > 0) {
     // Multi-circuit broadcast: sorted circuits + djb2 of the spoken text.
+    // A2-multiboard item 10 — `board_id` folded on the same terms; a fan-out is
+    // if anything MORE collision-prone, since two boards' schedules commonly
+    // run 1..N over the same refs with the same fields.
     const circuitKey = [...conf.circuits].sort((a, b) => a - b).join('-');
-    return `${field}_${circuitKey}_${djb2UInt64Decimal(conf.text)}`;
+    return `${field}_${circuitKey}_${djb2UInt64Decimal(conf.text + (conf.board_id ?? ''))}`;
   }
   // Degenerate (board-level / supply / installation) — W2.3 shape:
   // boardId folded into the hashed string so same-field same-text

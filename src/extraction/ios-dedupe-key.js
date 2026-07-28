@@ -119,28 +119,52 @@ export function djb2UInt64Decimal(text) {
  * Measured-value fields ignore the token; their value-aware shape does the
  * correction-vs-duplicate separation on its own.
  *
+ * A2-multiboard item 10 (2026-07-28): the wire `board_id` is folded into the
+ * hashed string, exactly as the degenerate branch has always folded it. Two
+ * boards routinely share circuit refs, so "circuit 1, Zs 0.55" on the main
+ * board and the same line on the garage board produced the SAME key and the
+ * second read-back was silently swallowed — a dictated reading the hands-free
+ * inspector never hears (Audio-First #1), even though both writes landed.
+ *
+ * Folding into the hash rather than adding a key segment is deliberate: an
+ * ABSENT board id hashes `text + ''`, i.e. byte-identical to the pre-item-10
+ * key, so every single-board confirmation — the overwhelming majority — keeps
+ * the key it has today and no existing session's dedupe state shifts. The wire
+ * id is the right discriminator (not the dispatcher's effective board) because
+ * the client can only compute the key from what it receives, and item 1
+ * guarantees enrichment on exactly the cross-board turns that need it.
+ *
  * @param {string} field
  * @param {number} circuit
  * @param {string} text  — the final TTS-line text the bundler emitted (encodes value)
  * @param {string|null|undefined} opToken — the wire `dedupe_token`, if any
+ * @param {string|null|undefined} boardId — the wire `board_id`, if any
  * @returns {string}
  */
-export function buildPerCircuitDedupeKey(field, circuit, text, opToken) {
+export function buildPerCircuitDedupeKey(field, circuit, text, opToken, boardId) {
   if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
     return `${field}_${opToken}`;
   }
-  return `${field ?? 'unknown'}_${circuit}_${djb2UInt64Decimal(text ?? '')}`;
+  const composite = `${text ?? ''}${boardId ?? ''}`;
+  return `${field ?? 'unknown'}_${circuit}_${djb2UInt64Decimal(composite)}`;
 }
 
 /**
  * Multi-circuit (broadcast) dedupe key. djb2 over the spoken TTS text.
  *
+ * A2-multiboard item 10: `board_id` folded into the hashed string on the same
+ * terms as the per-circuit branch above — a fan-out is if anything MORE prone
+ * to the collision, since two boards' schedules commonly run 1..N over the
+ * same refs with the same fields.
+ *
  * @param {string} field
  * @param {number[]} circuits
  * @param {string} text  — the final TTS-line text the bundler emitted
+ * @param {string|null|undefined} opToken — the wire `dedupe_token`, if any
+ * @param {string|null|undefined} boardId — the wire `board_id`, if any
  * @returns {string}
  */
-export function buildMultiCircuitDedupeKey(field, circuits, text, opToken) {
+export function buildMultiCircuitDedupeKey(field, circuits, text, opToken, boardId) {
   // §A1a: token takes precedence in EVERY branch an allowlisted text-op
   // confirmation can reach (a grouped circuit_designation broadcast lands
   // here, not in the per-circuit branch).
@@ -149,7 +173,8 @@ export function buildMultiCircuitDedupeKey(field, circuits, text, opToken) {
   }
   const sorted = [...(circuits ?? [])].sort((a, b) => a - b);
   const circuitKey = sorted.join('-');
-  return `${field ?? 'unknown'}_${circuitKey}_${djb2UInt64Decimal(text ?? '')}`;
+  const composite = `${text ?? ''}${boardId ?? ''}`;
+  return `${field ?? 'unknown'}_${circuitKey}_${djb2UInt64Decimal(composite)}`;
 }
 
 /**

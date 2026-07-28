@@ -112,6 +112,15 @@ export const SERVER_OUTCOMES = Object.freeze([
   // is opened, so this outcome is purely diagnostic — dashboards count
   // pre-text failures distinctly from synth-time errors.
   'loaded_barrel_pretext_abort',
+  // A2-multiboard item 4. The turn's surviving write carried
+  // `replaces_cleared: true` (P5 collapsed a same-turn clear→write pair AFTER
+  // the speculation was already open), so the parked audio was terminated
+  // through the cache's exact-key door rather than served. Distinct from
+  // `text_drift_detected`: that one is the TEXT comparison noticing drift,
+  // whereas this fires on SLOT identity alone — and slot identity is the only
+  // signal available for a stale entry whose text happens to equal the emitted
+  // confirmation, which is exactly the entry the drift check waves through.
+  'loaded_barrel_collapsed_replacement_invalidated',
 ]);
 
 export const IOS_OUTCOMES = Object.freeze([

@@ -10,6 +10,7 @@ import { SelectChips } from '@/components/ui/select-chips';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { BoardSelectorBar } from '@/components/job/board-selector-bar';
+import { findCanonicalMainBoard } from '@/lib/boards/canonical-main';
 
 /**
  * Board tab — mirrors iOS `BoardTab.swift` + `BoardInfo.swift`.
@@ -134,22 +135,32 @@ export default function BoardPage() {
     }
   }, [boards, activeId]);
 
-  const persistBoards = (next: BoardRecord[]) => {
-    // Keep `board_info` in sync as a single-board summary — matches the
-    // backend's dual-field pattern (boards null / board_info populated
-    // for single-board jobs) and keeps any consumer reading `board_info`
-    // (e.g. the Overview hero strip) from going stale after a Board-tab
-    // edit. For multi-board jobs, board_info is best-effort primary-
-    // board summary; we mirror the first (main) board so it stays
-    // meaningful.
-    const primary = next[0];
-    const boardInfoSummary = primary ? { ...primary } : {};
+  /**
+   * Build the single-board `board_info` summary that rides alongside
+   * `boards[]`. Matches the backend's dual-field pattern (boards null /
+   * board_info populated for single-board jobs) and keeps any consumer
+   * reading `board_info` (the Overview hero strip, the backend's own
+   * `_applyTopLevelBoardInfo` ingest) from going stale after a Board-tab edit.
+   *
+   * A2-multiboard item 5 — the summary is derived from the CANONICAL MAIN
+   * board, never from array index 0. `moveActive` lets the inspector reorder
+   * the array freely, so index 0 is a UI-ordering artefact: on a reordered
+   * `[sub, main]` job the old code published the SUB-board's designation and
+   * fields as "the board" to every board_info consumer.
+   */
+  const buildBoardInfoSummary = (next: BoardRecord[]): Record<string, unknown> => {
+    const primary = findCanonicalMainBoard(next);
+    const boardInfoSummary: Record<string, unknown> = primary ? { ...primary } : {};
     // Drop the synthetic `id` + `board_type` fields before writing to
     // board_info — those are PWA-client identifiers, not part of the
     // BoardInfo wire shape.
-    delete (boardInfoSummary as Record<string, unknown>).id;
-    delete (boardInfoSummary as Record<string, unknown>).board_type;
-    updateJob({ boards: next, board_info: boardInfoSummary });
+    delete boardInfoSummary.id;
+    delete boardInfoSummary.board_type;
+    return boardInfoSummary;
+  };
+
+  const persistBoards = (next: BoardRecord[]) => {
+    updateJob({ boards: next, board_info: buildBoardInfoSummary(next) });
   };
 
   const patchActive = (patch: Partial<BoardRecord>) => {
@@ -214,14 +225,11 @@ export default function BoardPage() {
     const remainingObservations = (
       (job.observations ?? []) as unknown as Array<Record<string, unknown>>
     ).filter((o) => o.board_id !== removedId);
-    // Mirror the primary board to board_info (see persistBoards above).
-    const primary = remaining[0];
-    const boardInfoSummary = primary ? { ...primary } : {};
-    delete (boardInfoSummary as Record<string, unknown>).id;
-    delete (boardInfoSummary as Record<string, unknown>).board_type;
+    // Mirror the canonical main board to board_info (see buildBoardInfoSummary
+    // above) — removing a board can leave a sub-board at index 0.
     updateJob({
       boards: remaining,
-      board_info: boardInfoSummary,
+      board_info: buildBoardInfoSummary(remaining),
       circuits: remainingCircuits as unknown as typeof job.circuits,
       observations: remainingObservations as unknown as typeof job.observations,
     });

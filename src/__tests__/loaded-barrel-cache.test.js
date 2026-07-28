@@ -11,6 +11,7 @@ import {
   claim,
   markReady,
   markSuperseded,
+  terminateByKey,
   invalidateBySlot,
   pruneSessionUnboardedEntries,
   pruneMismatchedBoardEntries,
@@ -517,5 +518,112 @@ describe('set defensive', () => {
       controller: { abort: () => {} },
     });
     expect(dup).toBe(a.entry);
+  });
+});
+
+/**
+ * A2-multiboard item 4 — the exact-key terminate door used by the
+ * collapsed-replacement reconciliation.
+ *
+ * The two pre-existing doors are both wrong for that job (markSuperseded is
+ * pending-only, invalidateBySlot is session-wide with no turn identity), so the
+ * state machine around the new one is pinned here.
+ */
+describe('terminateByKey (A2-multiboard item 4)', () => {
+  test('terminates a PENDING entry — resolves the promise with null and aborts', async () => {
+    const a = speculate({
+      sessionId: 'S',
+      turnId: 'T',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      expandedText: 'X',
+    });
+    expect(a.entry.state).toBe('pending');
+
+    expect(terminateByKey(a.key, 'collapsed_replacement')).toBe(true);
+
+    expect(a.entry.state).toBe('aborted');
+    expect(a.entry.terminationReason).toBe('collapsed_replacement');
+    expect(a.controller.abort).toHaveBeenCalled();
+    await expect(a.promise).resolves.toBeNull();
+    expect(peek(a.key)).toBeNull();
+  });
+
+  test('terminates a READY entry — the case markSuperseded cannot reach', () => {
+    const a = speculate({
+      sessionId: 'S',
+      turnId: 'T',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      expandedText: 'X',
+    });
+    expect(markReady(a.key, Buffer.from('mp3'))).toBe(true);
+    expect(peek(a.key).state).toBe('ready');
+
+    // The pre-existing pending-only door is a no-op here — that is the whole
+    // reason a new primitive exists.
+    expect(markSuperseded(a.key)).toBe(false);
+    expect(peek(a.key)).not.toBeNull();
+
+    expect(terminateByKey(a.key, 'collapsed_replacement')).toBe(true);
+    expect(peek(a.key)).toBeNull();
+  });
+
+  test('is a no-op on an absent key', () => {
+    expect(terminateByKey('no-such-key')).toBe(false);
+  });
+
+  test('terminal states stay terminal — a claimed entry is not re-terminated', () => {
+    const a = speculate({
+      sessionId: 'S',
+      turnId: 'T',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      expandedText: 'X',
+    });
+    markReady(a.key, Buffer.from('mp3'));
+    expect(claim(a.key)).toBe(true);
+    expect(a.entry.state).toBe('claimed');
+
+    expect(terminateByKey(a.key)).toBe(false);
+    expect(a.entry.state).toBe('claimed');
+  });
+
+  test('a second terminate of the same key returns false (idempotent)', () => {
+    const a = speculate({
+      sessionId: 'S',
+      turnId: 'T',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      expandedText: 'X',
+    });
+    expect(terminateByKey(a.key)).toBe(true);
+    expect(terminateByKey(a.key)).toBe(false);
+  });
+
+  test('touches ONLY the named key — a sibling sharing field/circuit/board survives', () => {
+    const a = speculate({
+      sessionId: 'S',
+      turnId: 'T1',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      expandedText: 'Circuit 3, Zs 0.4 ohms',
+    });
+    const b = speculate({
+      sessionId: 'S',
+      turnId: 'T2',
+      field: 'measured_zs_ohm',
+      circuit: 3,
+      expandedText: 'Circuit 3, Zs 0.5 ohms',
+    });
+    expect(a.key).not.toBe(b.key);
+
+    expect(terminateByKey(a.key)).toBe(true);
+
+    expect(peek(a.key)).toBeNull();
+    expect(peek(b.key)).not.toBeNull();
+    // invalidateBySlot — the door the reconciliation deliberately does NOT use
+    // — would have taken both.
+    expect(_snapshot().totalEntries).toBe(1);
   });
 });

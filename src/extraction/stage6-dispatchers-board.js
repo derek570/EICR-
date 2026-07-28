@@ -57,6 +57,8 @@ import {
   attachEffectiveBoardSlot,
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
+  recordBoardReadingWrite,
+  removeBoardReadingWrites,
 } from './stage6-per-turn-writes.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM, CLEAR_BOARD_READING_FIELD_ENUM } from './stage6-tool-schemas.js';
@@ -70,6 +72,7 @@ import {
   ensureMultiBoardShape,
   getCircuitBucket,
   getMainBoardId,
+  normaliseBoardScopeInput,
 } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 import { validateBoardScope, BOARD_FIELD_VALUE_ENUMS } from './stage6-dispatch-validation.js';
@@ -453,7 +456,16 @@ export async function dispatchRecordBoardReading(call, ctx) {
       );
     }
   }
-  perTurnWrites.boardReadings.set(encodeBoardReadingKey(input.field, input.board_id), boardMirror);
+  // A2-multiboard — journal the board write. `record_board_reading` carries NO
+  // schema `board_id`, so the raw Map key is boardless and
+  // `select_board A → record manufacturer → select_board B → record manufacturer`
+  // collided: the second Map.set DESTROYED the first, silently un-writing a
+  // dictated board reading that had already been read back aloud.
+  recordBoardReadingWrite(
+    perTurnWrites,
+    encodeBoardReadingKey(input.field, input.board_id),
+    boardMirror
+  );
 
   // 4b) Bonding-continuity mirror derivation — 2026-06-12 field report
   // (session 15B88D6B, voiceFeedbackId 21): "I'd like this [main protective
@@ -479,7 +491,7 @@ export async function dispatchRecordBoardReading(call, ctx) {
         value: 'PASS',
         boardId: input.board_id,
       });
-      perTurnWrites.boardReadings.set(continuityKey, {
+      recordBoardReadingWrite(perTurnWrites, continuityKey, {
         value: 'PASS',
         confidence: input.confidence ?? 1.0,
         source_turn_id: input.source_turn_id,
@@ -951,7 +963,14 @@ export async function dispatchSelectBoard(call, ctx) {
 // ---------------------------------------------------------------------------
 export async function dispatchMarkDistributionCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input ?? {};
+  // A2-multiboard item 6 — normalise the board scope before anything reads it.
+  // Here `board_id` names the SOURCE board, resolved with a nullish fallback to
+  // the current board; an empty string used to slip past that fallback and come
+  // back `source_board_not_found` instead of defaulting like an absent key.
+  // The two destructive/authoritative board dispatchers in this file
+  // (`clear_board_reading`, `record_board_reading`) are deliberately EXEMPT and
+  // must keep rejecting an injected empty id — see validateBoardScope.
+  const input = normaliseBoardScopeInput(call.input ?? {});
 
   function reject(code, field) {
     const err = field == null ? { code } : { code, field };
@@ -1325,24 +1344,29 @@ export async function dispatchClearBoardReading(call, ctx) {
   //    match on the stamped EFFECTIVE_BOARD_SLOT, with a raw-identity
   //    fallback for Symbol-less (legacy/unclassified) entries so a
   //    same-raw-spelling write→clear still collapses.
+  //
+  //    A2-multiboard — the removal goes through the JOURNAL, not a bare
+  //    `boardReadings.delete(mapKey)`. The raw key is boardless, so two boards'
+  //    writes of the same field share ONE key; deleting that key would also
+  //    un-write the OTHER board's reading. `removeBoardReadingWrites` drops
+  //    only the matching journal ENTRIES and then re-points the Map at whatever
+  //    winner still claims the raw key. The predicate is the pre-journal
+  //    identity contract verbatim.
   const clearSlotBoardComponent = scope === 'global' ? null : resolvedBoardId;
   const clearSlotKey = boardSlotKey(canonicalField, clearSlotBoardComponent);
-  for (const [mapKey, val] of perTurnWrites.boardReadings) {
+  removeBoardReadingWrites(perTurnWrites, (mapKey, val) => {
     const sym = val?.[EFFECTIVE_BOARD_SLOT];
-    let matches;
     if (sym) {
-      matches = boardSlotKey(sym.field, sym.boardId) === clearSlotKey;
-    } else {
-      const decoded = decodeBoardReadingKey(mapKey);
-      const decodedCanonical = FIELD_CORRECTIONS[decoded.field] ?? decoded.field;
-      const decodedBoard =
-        scope === 'global'
-          ? null
-          : (decoded.boardId ?? resolveEffectiveBoardIdForClear(session, null));
-      matches = boardSlotKey(decodedCanonical, decodedBoard) === clearSlotKey;
+      return boardSlotKey(sym.field, sym.boardId) === clearSlotKey;
     }
-    if (matches) perTurnWrites.boardReadings.delete(mapKey);
-  }
+    const decoded = decodeBoardReadingKey(mapKey);
+    const decodedCanonical = FIELD_CORRECTIONS[decoded.field] ?? decoded.field;
+    const decodedBoard =
+      scope === 'global'
+        ? null
+        : (decoded.boardId ?? resolveEffectiveBoardIdForClear(session, null));
+    return boardSlotKey(decodedCanonical, decodedBoard) === clearSlotKey;
+  });
 
   // 8) Emit the board field_corrected entry (§3.4b wire contract): circuit
   //    null + non-null board_id is the discriminator both clients route on.

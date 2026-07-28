@@ -8,7 +8,8 @@
         "value": "100",
         "confidence": 0.9,
         "source": "tool_call",
-        "replaces_cleared": true
+        "replaces_cleared": true,
+        "board_id": "main"
       },
       {
         "field": "zs",
@@ -22,7 +23,8 @@
         "circuit": 2,
         "value": "Sockets",
         "confidence": 1,
-        "source": "tool_call"
+        "source": "tool_call",
+        "board_id": "main"
       }
     ],
     "observations": [],
@@ -44,7 +46,8 @@
         "text": "Circuit 1, IR L to L 100",
         "expanded_text": "Circuit 1, IR L to L 100.",
         "field": "ir_live_live_mohm",
-        "circuit": 1
+        "circuit": 1,
+        "board_id": "main"
       },
       {
         "text": "Circuit 1, Zs 0.42",

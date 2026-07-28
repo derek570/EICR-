@@ -43,22 +43,22 @@ iOS (16kHz PCM audio)
 
 **Key files:**
 
-| File | Purpose |
-|------|---------|
-| `CertMateUnified/.../DeepgramRecordingViewModel.swift` | iOS recording VM — orchestrates full pipeline |
-| `CertMateUnified/.../DeepgramService.swift` | Direct WebSocket to Deepgram Flux (`/v2/listen`) |
-| `CertMateUnified/.../ServerWebSocketService.swift` | WebSocket client to backend Sonnet extraction |
-| `CertMateUnified/.../NumberNormaliser.swift` | Spoken number → digit conversion |
-| `CertMateUnified/.../KeywordBoostGenerator.swift` | Board photo data + remote config → Deepgram keyword boosts |
-| `CertMateUnified/.../DebugLogger.swift` | JSONL per-session debug logging |
-| `CertMateUnified/.../AlertManager.swift` | Validation alerts (voice + visual) during recording |
-| `src/sonnet-stream.js` | Backend WebSocket session manager |
-| `src/eicr-extraction-session.js` | Multi-turn Sonnet conversation + compaction |
-| `src/api.js` (`GET /api/keys`) | Backend endpoint to serve API keys to iOS |
-| `src/secrets.js` | Loads Deepgram + Anthropic keys from AWS Secrets Manager |
-| `CertMateUnified/.../SleepManager.swift` | Auto-sleep state machine (Active/Dozing/Sleeping) |
-| `CertMateUnified/.../AudioRingBuffer.swift` | 3s ring buffer for zero word loss on wake |
-| `CertMateUnified/.../TranscriptFieldMatcher.swift` | Instant regex extraction (30+ patterns) |
+| File                                                   | Purpose                                                    |
+| ------------------------------------------------------ | ---------------------------------------------------------- |
+| `CertMateUnified/.../DeepgramRecordingViewModel.swift` | iOS recording VM — orchestrates full pipeline              |
+| `CertMateUnified/.../DeepgramService.swift`            | Direct WebSocket to Deepgram Flux (`/v2/listen`)           |
+| `CertMateUnified/.../ServerWebSocketService.swift`     | WebSocket client to backend Sonnet extraction              |
+| `CertMateUnified/.../NumberNormaliser.swift`           | Spoken number → digit conversion                           |
+| `CertMateUnified/.../KeywordBoostGenerator.swift`      | Board photo data + remote config → Deepgram keyword boosts |
+| `CertMateUnified/.../DebugLogger.swift`                | JSONL per-session debug logging                            |
+| `CertMateUnified/.../AlertManager.swift`               | Validation alerts (voice + visual) during recording        |
+| `src/sonnet-stream.js`                                 | Backend WebSocket session manager                          |
+| `src/eicr-extraction-session.js`                       | Multi-turn Sonnet conversation + compaction                |
+| `src/api.js` (`GET /api/keys`)                         | Backend endpoint to serve API keys to iOS                  |
+| `src/secrets.js`                                       | Loads Deepgram + Anthropic keys from AWS Secrets Manager   |
+| `CertMateUnified/.../SleepManager.swift`               | Auto-sleep state machine (Active/Dozing/Sleeping)          |
+| `CertMateUnified/.../AudioRingBuffer.swift`            | 3s ring buffer for zero word loss on wake                  |
+| `CertMateUnified/.../TranscriptFieldMatcher.swift`     | Instant regex extraction (30+ patterns)                    |
 
 **Server-side Sonnet extraction:** Multi-turn conversation with `claude-sonnet-4-5-20250929`. Prompt caching (system prompt cached at ≥1024 tokens), conversation compaction at ~6000 tokens. Returns `RollingExtractionResult` with structured certificate fields.
 
@@ -68,9 +68,9 @@ iOS (16kHz PCM audio)
 
 ## Wire contract — response epoch (PLAN-C chime-silence watchdog)
 
-The client chime-silence watchdog (Phases 5/6) arms a timer when a processing chime fires for an utterance and disarms it when a matching spoken output plays back. To correlate the two, server-emitted **speech** frames carry an **optional `utterance_id`** — the *response epoch*: the id of the utterance the spoken output is a reply to.
+The client chime-silence watchdog (Phases 5/6) arms a timer when a processing chime fires for an utterance and disarms it when a matching spoken output plays back. To correlate the two, server-emitted **speech** frames carry an **optional `utterance_id`** — the _response epoch_: the id of the utterance the spoken output is a reply to.
 
-- **P4c (answer side):** post-answer `confirmations[]` carry the epoch of the utterance that *answered* an open ask (advance-only-on-non-empty).
+- **P4c (answer side):** post-answer `confirmations[]` carry the epoch of the utterance that _answered_ an open ask (advance-only-on-non-empty).
 - **P4d (question side):** `ask_user_started` (dialogue-engine + dispatcher initial/pvr), legacy `question`, and `voice_command_response` frames carry the **creation-time** epoch of the arming utterance. Also carried on the reconnect-replay `voice_command_response` (a buffered `spoken_response` now replays as a separate frame, stripped from the extraction replay).
 
 Rules: the epoch is snapshotted at frame **creation** (never re-read from mutable session state at emit time); `utterance_id` is stamped **only for a non-empty string** epoch, so a no-epoch frame is byte-identical to the pre-P4c/P4d wire. `turn_id` remains a reserved/optional telemetry field (not populated by P4d). All fields are additive-optional — clients that ignore them behave exactly as before; the client watchdog is gated behind the P4b `session_ack speech_epochs: 1` capability. THE doc of record for the full frame catalogue is the `certmate-voice-wire-protocol` skill.
@@ -79,47 +79,98 @@ Rules: the epoch is snapshotted at frame **creation** (never re-read from mutabl
 
 ## Wire contract — `replaces_cleared` (A2, 2026-07-28)
 
-A same-turn `clear_reading` + `record_reading` on ONE circuit slot is collapsed **server-side** (P5, 2026-07-23): the clear is dropped from the wire and only the surviving write is sent. That collapse is correct for ordering, but it destroys the one fact a fill-only client needs — *the server already emptied this cell* — so the write arrives BARE against a cell the client still believes the user owns.
+A same-turn `clear_reading` + `record_reading` on ONE circuit slot is collapsed **server-side** (P5, 2026-07-23): the clear is dropped from the wire and only the surviving write is sent. That collapse is correct for ordering, but it destroys the one fact a fill-only client needs — _the server already emptied this cell_ — so the write arrives BARE against a cell the client still believes the user owns.
 
 `replaces_cleared` restores exactly that fact on the surviving `readings[]` entry:
 
-| | |
-|---|---|
-| **Shape** | `readings[i].replaces_cleared?: true` — boolean, **omit-when-false** |
-| **Producer** | `stage6-event-bundler.js`, at the same point the collapse drops the clear |
-| **Meaning** | this write superseded a same-turn clear of the SAME circuit slot; treat it as a REPLACEMENT, not a new value competing on source priority |
+|              |                                                                                                                                           |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Shape**    | `readings[i].replaces_cleared?: true` — boolean, **omit-when-false**                                                                      |
+| **Producer** | `stage6-event-bundler.js`, at the same point the collapse drops the clear                                                                 |
+| **Meaning**  | this write superseded a same-turn clear of the SAME circuit slot; treat it as a REPLACEMENT, not a new value competing on source priority |
 
 Rules:
 
 - **Omit-when-false is the compatibility mechanism** — there is no capability gate, and none is needed: a turn with no collapse is byte-identical to the pre-A2 wire, so an older client is never handed a key it must understand. Emitting `false` would have forfeited that and required a gate.
 - **Never inferred by a consumer.** The marker is stamped by the producer that performed the collapse; nothing downstream reconstructs it from an absent clear.
-- **Fail-closed-unflagged:** if more than one surviving write resolves to the collapsed slot, the bundler stamps NOTHING and emits `stage6.replaces_cleared_ambiguous_projection`. An unflagged write is always safe (the consumer's normal gate applies); a wrongly-flagged one would license an overwrite.
-- **Circuit slots only.** The identity is the effective circuit slot (`EFFECTIVE_CIRCUIT_SLOT`), distinct from the board-scope `EFFECTIVE_BOARD_SLOT` (plan A1a) — the two Symbols are deliberately never cross-wired.
+- **Fail-closed-unflagged:** the bundler stamps the flag only when EXACTLY ONE surviving write resolves to the collapsed slot. An unflagged write is always safe (the consumer's normal gate applies); a wrongly-flagged one would license an overwrite. Since A2-multiboard (below) the per-turn writes are projected last-write-wins per EFFECTIVE slot, so the multi-candidate case is unreachable by construction — the shape is retained so a future duplicate-producing regression degrades to silent-unflagged rather than stamping arbitrarily. (A2-core's `stage6.replaces_cleared_ambiguous_projection` telemetry event and its `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` Symbol were REMOVED by A2-multiboard item 2 — declining to stamp was right while the collision was undecidable, but it left web holding the STALE value on a real replacement.)
+- **Circuit slots only** at A2-core. A2-multiboard item 7 adds the BOARD-scope twin — see below.
 - **Derived writes are not candidates** (`derived: true` mirrors/auto-ticks). Calculator writes (`source_turn_id` starting `::calc::`) **are** candidates — since F/U-1 (2026-07-19) a calc result is an explicitly-requested, spoken value.
 
-**Consumers.** Web is the reason this exists: `applyCircuitReadings` is fill-only and source-agnostic, so it silently skipped the collapsed replacement — the assistant SPOKE it and the server + iOS stored it while web did not (the inverse Audio-First violation). *Epistemic split:* the SKIP is source-confirmed (read straight off `applyCircuitReadings`' `if (hasValue(row[column]) && !isLimWrite) continue`); that the field-visible symptom was a stale WRONG value rather than a blank cell is INFERENCE from the wire shape — no captured web session covers such a turn. Web now bypasses its gate for a flagged reading, but **only** on an unambiguously-resolvable single-board slot; a multi-board job, an orphan ref, or a duplicate ref all DECLINE the bypass and fall through to the unchanged gate (`apply_replaces_cleared_multiboard_deferred` / `_orphan_ref` / `_duplicate_ref`), so declining is never a new skip — an empty cell still fills.
+**Consumers.** Web is the reason this exists: `applyCircuitReadings` is fill-only and source-agnostic, so it silently skipped the collapsed replacement — the assistant SPOKE it and the server + iOS stored it while web did not (the inverse Audio-First violation). _Epistemic split:_ the SKIP is source-confirmed (read straight off `applyCircuitReadings`' `if (hasValue(row[column]) && !isLimWrite) continue`); that the field-visible symptom was a stale WRONG value rather than a blank cell is INFERENCE from the wire shape — no captured web session covers such a turn. Web now bypasses its gate for a flagged reading, but only on a slot it can resolve to exactly ONE row; an orphan ref or an unresolvable duplicate DECLINEs the bypass. ~~At A2-core the decline fell through to the unchanged gate, so declining was never a new skip and an empty cell still filled.~~ **SUPERSEDED by A2-multiboard item 6:** an unresolvable FLAGGED reading is now SKIPPED outright — see "fail closed differs by class" below for the resolution rules and the reasoning. (A2-core additionally declined for ANY multi-board job with `apply_replaces_cleared_multiboard_deferred`; item 6 REPLACED that envelope-wide gate with per-reading row resolution — see below.)
 
 **iOS needs no change and gets none.** `ExtractedReading` declares explicit `CodingKeys`, so the key decodes inertly; `applySonnetValue` already applies any DIFFERING value regardless of source state (only an exact duplicate of a pre-existing value is blocked), so the replacement already lands. Both properties are pinned by `DeepgramRecordingViewModelReplacesClearedTests` (CertMateUnified) rather than assumed — a stricter decoder or a source-priority gate ported from web would reintroduce the defect on iOS, and that test is what catches it.
 
-The frame both clients are tested against is pinned at `tests/fixtures/test-contracts/replaces-cleared-circuit.json` (see the README there — regenerate from the production egress chain, never hand-edit). Web IMPORTS that file; the iOS test embeds a hand-mirrored Swift literal of the same payload, which can drift undetected — a change to the fixture must be mirrored into the iOS test by hand in the same wave.
+The frame both clients are tested against is pinned at `tests/fixtures/test-contracts/replaces-cleared-circuit.json` (see the README there — regenerate from the production egress chain, never hand-edit). Web IMPORTS that file; the iOS test embeds a hand-mirrored Swift literal of the same payload, which can drift undetected — a change to the fixture must be mirrored into the iOS test by hand in the same wave. **A2-multiboard regenerated this fixture** — it now carries `board_id: "main"` on the flagged reading and its confirmation (the enrichment rules below), so the iOS Swift literal must be re-mirrored.
+
+---
+
+## Wire contract — effective-board addressing (A2-multiboard, 2026-07-28)
+
+A2-core shipped `replaces_cleared` for SINGLE-board jobs and explicitly deferred multi-board delivery. A2-multiboard closes that deferral by making the board a first-class part of every write's identity, server-side, and then ADDRESSING the surviving writes to the board the server actually mutated. **Every new wire key is additive-optional and omitted exactly where it was omitted before** — there is no new capability gate on the circuit channel.
+
+### What the server decides before it emits
+
+The per-turn write Maps are keyed by the RAW tool arguments, and the raw key is board-AMBIGUOUS by construction: `record_reading` omits `board_id` in the common case and `record_board_reading` has no `board_id` in its schema at all. A cross-board turn therefore collided under one key and the earlier board's write was silently destroyed (last-write-wins by RAW key). An append-only, monotonically-sequenced **write journal** (`src/extraction/stage6-per-turn-writes.js`) now runs beside those Maps — every producer stages through one helper pair — and the bundler projects it **last-write-wins per EFFECTIVE slot** (field + circuit + effective board). The Maps keep their raw-key semantics (the bundler's Map-type guard, the harness's size check and the speculator's snapshot/diff all depend on them); the journal is what makes the collision decidable. The sequence counter lives on a NON-ENUMERABLE `WRITE_SEQUENCE` Symbol, so it is invisible to `JSON.stringify` and the wire bytes are unchanged.
+
+### Enrichment rules — when `board_id` appears on a reading
+
+| Class                                  | Enriched with the effective board?                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ |
+| **FLAGGED** (`replaces_cleared: true`) | **ALWAYS** — circuit channel and board channel alike                                       |
+| **ORDINARY**                           | **ONLY on a cross-board turn** — when the turn's winners span ≥2 distinct effective boards |
+| explicit model `board_id`              | never overwritten                                                                          |
+
+The asymmetry is deliberate. A flagged reading whose target board is unstated is UNRESOLVABLE by a client that fails closed on an ambiguous target — it would drop a spoken replacement, the exact defect the marker exists to prevent — so the flag and the address always travel together. Ordinary readings stay bare on every single-board turn (including every turn of a multi-board job where the inspector works one board at a time), which keeps the wire byte-identical to pre-A2 and keeps the loaded-barrel speculator's null-board cache entries hitting; blanket enrichment would spend latency on every turn to fix a defect that only exists when two boards are written in ONE turn (Audio-First #3). Enrichment runs BEFORE `synthesiseConfirmations`, so a flagged confirmation inherits the same `board_id`.
+
+The board channel differs in one respect: an ORDINARY board-scoped write is filled from its `EFFECTIVE_BOARD_SLOT` stamp only for sessions that advertised `board_clear_v1` (plan A1a's capability line), whereas a FLAGGED board replacement is enriched unconditionally for the reason above.
+
+### Board-aware fail-closed targeting (consumers)
+
+A client that receives `board_id` MUST resolve it to exactly one row and MUST fail closed when it cannot. **What "fail closed" means differs by class, and deliberately so.** For an ORDINARY reading it is never a skip: the reading falls through to the client's ordinary fill-only gate, so an empty cell still fills — the value is only a fill, and landing it ref-only is safer than losing it. For a FLAGGED (`replaces_cleared`) reading it IS a skip: the flag's whole purpose is to OVERWRITE an existing cell, so an unresolvable target must not be guessed at — no row is created and no cell is touched, and telemetry names which of the three outcomes fired (`apply_replaces_cleared_ambiguous_board` / `_orphan_board_ref` / `_duplicate_board_ref`). Writing a replacement onto the wrong board's row is a silent wrong value in a legally-significant certificate; a missed one is a visible empty cell the inspector re-dictates. Web resolves in three ordered branches (`ensureBoardScopedRow`): exact `(board_id, ref)` match → first-come claim of an unscoped legacy row → a new scoped row. A `board_id` for which the client has no INDEPENDENT evidence (no such board in its own job state) falls back to ref-only and logs `apply_circuit_reading_unevidenced_board` — the server's word alone never conjures a board row. A newly-created scoped row seeds the ref index only when nothing already owns that ref, so a scoped sibling cannot re-point the ref-only `field_clears` / `circuit_updates` loops.
+
+A2-core's ENVELOPE-WIDE decline (`apply_replaces_cleared_multiboard_deferred` — any multi-board job dropped the bypass for the whole frame) is REPLACED by per-reading row resolution: the resolver DECLINES a specific reading it cannot pin to one row rather than disarming the mechanism for the turn.
+
+### Board-scope `replaces_cleared` (item 7)
+
+The marker now also lands on a collapsed BOARD clear→write (`readings[i]` at `circuit: 0` / board scope). A board value lives in TWO places written by two independent loops (`board_info` and `boards[]`), so the client decides the replacement ONCE, before either leg runs, and applies the SAME decision to both — a local per-leg bypass would let the halves diverge, which is worse than either failing cleanly because it looks like it worked. Three routing rules:
+
+- **BOARDLESS flagged reading ⇒ SECTION-ONLY, and that is a SUCCESS.** `ze` / `pfc` are `'global'` in `BOARD_CLEAR_SCOPE_MAP`, so a flagged global reading carries a NULL board _by construction_.
+- **SUB-BOARD ⇒ `boards[sub]` only, `board_info` WITHHELD.** `board_info` is the MAIN-board summary that the PDF and the backend's own `_applyTopLevelBoardInfo` ingest read as "the board".
+- **ORPHAN (a board id the client cannot evidence) ⇒ NEITHER leg**, logged.
+
+### Circuit-topology ops carry their board
+
+`circuit_updates[]` entries gain `board_id?: string` and `from_ref?: string`, and `op` gains `'delete'`. The board is stamped at DISPATCH (`EFFECTIVE_OP_BOARD`) — the only place the resolution is known — so `select_board sub-b` followed by "delete circuit 2" deletes the SUB-board's circuit 2 on the client, not main's. Ops are emitted losslessly and in wire order; a metadata-free `create_circuit` no longer vanishes (the previous meta fold skipped nulls and the carrier was then deleted).
+
+### Companion contracts touched by this wave
+
+- **Circuit designations** are keyed by `(effective_board_id, circuit_ref)` at both build and resolve sites. On the bare ref, the last writer's name won for BOTH boards, and a sub-board circuit was read back with the MAIN board's name.
+- **Confirmation dedupe keys** fold `board_id` into the hashed text — see the next section.
+- **"All circuits" completeness phrasing** is measured against the confirmation group's OWN board, not the session's.
+- **An empty-string `board_id`** is normalised to ABSENT at the dispatcher boundary (legacy CSV writes `''`). `select_board`, `clear_board_reading` and `record_board_reading` are the enumerated EXEMPTIONS — for them an unaddressable board must not silently become "whatever board is current", so they still reject.
 
 ---
 
 ## Confirmation read-back dedupe key (client-side; value-aware since id-84)
 
-The spoken read-back loop suppresses a *duplicate* confirmation via a per-client dedupe key computed from the wire `Confirmation`. The key is computed CLIENT-side (iOS `buildConfirmationDedupeKey`, web `confirmation-dedupe-key.ts`); the backend `src/extraction/ios-dedupe-key.js` is a **telemetry-only mirror** that reproduces the same key so the `ios_send_attempt` `expected_dedupe_key` row reconciles byte-for-byte against client reality — it is NOT a wire field.
+The spoken read-back loop suppresses a _duplicate_ confirmation via a per-client dedupe key computed from the wire `Confirmation`. The key is computed CLIENT-side (iOS `buildConfirmationDedupeKey`, web `confirmation-dedupe-key.ts`); the backend `src/extraction/ios-dedupe-key.js` is a **telemetry-only mirror** that reproduces the same key so the `ios_send_attempt` `expected_dedupe_key` row reconciles byte-for-byte against client reality — it is NOT a wire field.
 
 Three key shapes:
 
-| Shape | Key | When |
-|-------|-----|------|
-| per-circuit  | `{field}_{circuit}_{djb2(text)}` | a single-circuit reading confirmation |
-| multi-circuit | `{field}_{sortedCircuits.join('-')}_{djb2(text)}` | a grouped broadcast (`circuit:null`, `circuits:[…]`) |
-| degenerate | `{field}_{djb2(text + boardId)}` | board-level / supply / installation (no circuit) |
+| Shape         | Key                                                         | When                                                 |
+| ------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
+| per-circuit   | `{field}_{circuit}_{djb2(text + boardId)}`                  | a single-circuit reading confirmation                |
+| multi-circuit | `{field}_{sortedCircuits.join('-')}_{djb2(text + boardId)}` | a grouped broadcast (`circuit:null`, `circuits:[…]`) |
+| degenerate    | `{field}_{djb2(text + boardId)}`                            | board-level / supply / installation (no circuit)     |
+
+`boardId` is `conf.board_id ?? ''` in every shape.
 
 For the five text-op fields (`circuit_op`, `observation`, `observation_deletion`, `field_cleared`, `circuit_designation`) a backend-stamped `dedupe_token` takes precedence in EVERY branch (`{field}_{dedupe_token}`), so identical-text REPEATS of DISTINCT operations don't collide (field-feedback-2026-07-14 §A1a).
 
 > **id-84 (2026-07-24) — value-aware single-circuit key.** The per-circuit shape was previously value-LESS (`{field}_{circuit}`) and kept that way deliberately so the iOS local correction-TTS dedupe could cross-match wire keys. But because field read-back keys are session-**permanent**, a spoken correction (a second reading on the same field+circuit with a DIFFERENT value) collided with the original key forever and was **silently swallowed** — beep-then-silence on a successful correction (session 2ACE7677: "No. It was 0.63." spoke nothing). Fix: fold djb2 of the confirmation TEXT (which encodes the value) into the single-circuit key, matching the multi-circuit branch. A correction (different text) now yields a distinct key and speaks; a genuine duplicate (same field+circuit+SAME text — e.g. the model re-recording circuit 4) still dedupes. The correction-TTS cross-match is **intentionally dropped** (worst case an extra local read-back, never silence). Derek's decisions: TEXT-HASH (not a direct value in the key, which would need wire/decoder changes), and NO new field-key TTL. iOS adds the twin fix to its own client-initiated `correctionDedupeKey`, plus the id-87 fast-path double-read-back suppression (fast clip + bundler safety-net now share a VALUE- and effective-board-aware suppression identity). Parity: `web/docs/parity-ledger.md` `recording/readback-dedup-value-aware`.
+
+> **A2-multiboard item 10 (2026-07-28) — board-aware circuit keys.** Two boards routinely share circuit refs, so the same spoken line about circuit 3 on main and on garage produced the SAME per-circuit key and the second read-back was silently swallowed — Audio-First #1 in the zero-times direction. `board_id` is folded into the HASHED STRING (`text + (board_id ?? '')`) rather than added as a key SEGMENT, so an ABSENT board id hashes byte-identically to the pre-item-10 key and every single-board confirmation keeps the key it has today. The `dedupe_token` precedence branch is deliberately UNCHANGED: the token IS the operation identity and is already replay-stable across boards, so folding a board into it would break the §A1a contract. All three mirrors move together (backend telemetry mirror, web, iOS Swift); the degenerate branch already folded the board and is untouched.
 
 ---
 
@@ -147,11 +198,11 @@ The old client text-similarity gate (>0.7 word overlap / 40-char prefix, on BOTH
 
 Apply rules (`applySonnetObservations` / `applyObservations`):
 
-| Incoming `observation_id` | Behaviour |
-|---------------------------|-----------|
+| Incoming `observation_id`                     | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | non-nil, already on a row (`server_id` match) | **IDEMPOTENT REPLAY — PURE NO-OP.** A P4d reconnect replays the ORIGINAL extraction frame PRESERVING ids. Because it is the SAME frame the original apply already consumed, "filling absent fields" could only ever no-op OR restore a field an authoritative `observation_update` has since CLEARED (`regulation_title`/`description` clear to nil on a table-miss refinement; schedule linking is owned by the create path), so a replay fills NOTHING and skips every creation side-effect (append, pending-photo attach, `recentObservationId`/reverse-link, `observation_added` card) AND schedule projection. Authoritative field changes remain `observation_update`'s job. |
-| non-nil, not seen | apply (server authoritative, already deduped) |
-| nil/empty (older servers omit it) | retain the text-similarity fallback for id-less rows ONLY, so a nil-id replay can't duplicate-render |
+| non-nil, not seen                             | apply (server authoritative, already deduped)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| nil/empty (older servers omit it)             | retain the text-similarity fallback for id-less rows ONLY, so a nil-id replay can't duplicate-render                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 The `observation_update` handler is **id-first, scoped-fuzzy**: match `server_id` first; on a miss, fuzzy-match ONLY legacy (no-`server_id`) rows and STAMP the incoming id onto the match; NEVER fuzzy-match a row carrying a DIFFERENT server id (that would patch the wrong distinct observation — the same side/top-hole shape). A nil incoming id keeps the unrestricted fuzzy (older-server compat).
 
@@ -165,10 +216,10 @@ One-release diagnostic (iOS): `observation_apply {observation_id, dedupe_bypasse
 
 There is now ONE canonical normalisation layer for the raw dictation transcript, applied at the backend ingest in `src/extraction/sonnet-stream.js`. `src/extraction/transcript-normalise.js` is a pure, enumerated `normalise(text) → {text, rules_hit[]}` with **two evidence-backed rules** (word-boundary, pattern-anchored — **no fuzzy/edit-distance**, per §3E + the research-methodology ban):
 
-| Rule ID | Rewrite | Notes |
-|---------|---------|-------|
-| `a_hundred` | `"a hundred"` → `"100"` | The article word-number (iOS/web digit-ise `"one hundred"` + compounds, not `"a hundred"`). Compound guard: `"a hundred and fifty"` is left UNTOUCHED (out of scope, no corruption). Runs FIRST so its digit output satisfies the `zs_field_token` gate. |
-| `zs_field_token` | `"Z s"`/`"Zed s"`/`"zed s"` → `"Zs"` | **Context-gated** on a reading-shaped same-clause (connector/scope word + numeric-or-sentinel value) so genuine two-letter dictation (`"Z S Electrical"`, `"designation Z S 1"`, spelled postcodes) is NOT collapsed. |
+| Rule ID          | Rewrite                              | Notes                                                                                                                                                                                                                                                    |
+| ---------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a_hundred`      | `"a hundred"` → `"100"`              | The article word-number (iOS/web digit-ise `"one hundred"` + compounds, not `"a hundred"`). Compound guard: `"a hundred and fifty"` is left UNTOUCHED (out of scope, no corruption). Runs FIRST so its digit output satisfies the `zs_field_token` gate. |
+| `zs_field_token` | `"Z s"`/`"Zed s"`/`"zed s"` → `"Zs"` | **Context-gated** on a reading-shaped same-clause (connector/scope word + numeric-or-sentinel value) so genuine two-letter dictation (`"Z S Electrical"`, `"designation Z S 1"`, spelled postcodes) is NOT collapsed.                                    |
 
 **Origin:** id 89 (`"Z s on the heating was 0.67"`) failed to anchor because `reading-transcript-anchor.js` looks for the substring `"zs"`, which spaced `"z s"` misses; id 80A (`"A hundred MΩ"`) failed to parse because the word-number produced no digit.
 
@@ -178,10 +229,10 @@ There is now ONE canonical normalisation layer for the raw dictation transcript,
 
 Applied at **two seams**, with this consumer routing table:
 
-| Seam | CANONICAL (canonical copy) | RAW (unchanged) |
-|------|----------------------------|-----------------|
-| **A — `handleTranscript`** (top, after the `isStopping` guard) | both content anchors (recentAskAnswers consult + recentTranscripts push), the pre-LLM gate, BOTH `classifyOvertake` calls (pre-queue + transcript-overtake — the latter stays **un-annotated**), `detectStructuredReading`, the model-bound `transcriptText` (incl. the `in_response_to` annotation), the three dialogue-script `rawReplyText` args (normalised but **un-annotated**), `runShadowHarness` | `msg.text`; exact-dedupe on `utterance_id`; log previews (`.slice(0,80)`) |
-| **B — `ask_user_answered`** | **Behavioural (model-facing) consumers** use `canonicalAnswerText` (= normalise of the POST-sanitisation text): the `classifyOvertake` shape check, the new-command gate, `detectStructuredReading`, `resolvePayload.user_text`, the re-injected synthetic transcript. **Dedupe-ledger ops** (the pre-sanitisation reverse-race lookup AND the recentAskAnswers anchor push) use one raw-based `canonicalUserTextForAnchor` (= normalise(`msg.user_text`)) so their keys match Seam A's raw-based transcript stamp in either arrival order — even for a truncated/control-stripped answer. | `sanitiseUserText` runs on RAW `msg.user_text` (length/truncation semantics unchanged); raw previews + sanitisation flags |
+| Seam                                                           | CANONICAL (canonical copy)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | RAW (unchanged)                                                                                                           |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| **A — `handleTranscript`** (top, after the `isStopping` guard) | both content anchors (recentAskAnswers consult + recentTranscripts push), the pre-LLM gate, BOTH `classifyOvertake` calls (pre-queue + transcript-overtake — the latter stays **un-annotated**), `detectStructuredReading`, the model-bound `transcriptText` (incl. the `in_response_to` annotation), the three dialogue-script `rawReplyText` args (normalised but **un-annotated**), `runShadowHarness`                                                                                                                                                                                  | `msg.text`; exact-dedupe on `utterance_id`; log previews (`.slice(0,80)`)                                                 |
+| **B — `ask_user_answered`**                                    | **Behavioural (model-facing) consumers** use `canonicalAnswerText` (= normalise of the POST-sanitisation text): the `classifyOvertake` shape check, the new-command gate, `detectStructuredReading`, `resolvePayload.user_text`, the re-injected synthetic transcript. **Dedupe-ledger ops** (the pre-sanitisation reverse-race lookup AND the recentAskAnswers anchor push) use one raw-based `canonicalUserTextForAnchor` (= normalise(`msg.user_text`)) so their keys match Seam A's raw-based transcript stamp in either arrival order — even for a truncated/control-stripped answer. | `sanitiseUserText` runs on RAW `msg.user_text` (length/truncation semantics unchanged); raw previews + sanitisation flags |
 
 **Both content anchors are canonical on BOTH seams** so cross-seam dedupe equality holds in either arrival order (no double-exposure). The re-injected synthetic transcript is already canonical, so Seam A re-normalises it to a no-op.
 
@@ -201,9 +252,9 @@ Applied at **two seams**, with this consumer routing table:
 
 Two steers were folded into `config/prompts/sonnet_agentic_system.md`. Both land in the SHARED region (outside the `<!--A1:OFF-->`/`<!--A1:ON-->` marker blocks), so they render in BOTH `VOICE_AGENTIC_ANSWERS` flag states.
 
-| Steer | Where | Rule |
-|-------|-------|------|
-| **Steer 1 — garble-adjacent value writes (id 88)** | Folded into **Example 8** (`Calculate Zs vs bare Zs`) | When a field anchor + an UNAMBIGUOUS circuit/board scope + a schema-valid value are ALL present, WRITE even if a garble (`"n o"`, a stray mid-utterance `"no"`, filler) sits between anchor and value — a mid-utterance garble is not a negation (`"Zs on the cooker is n o 0.55"` → `record_reading`, not a `missing_value` ask). Does NOT weaken missing-scope / contradiction / invalid-range handling; does NOT fire for a leading-`"no"` correction with no in-utterance anchor+scope (`"No. It was 0.63"` stays a correction), nor for a `"no"`+value reply to a pending `ask_user` (that resolves the ask). |
+| Steer                                                               | Where                                                                                                                                                      | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Steer 1 — garble-adjacent value writes (id 88)**                  | Folded into **Example 8** (`Calculate Zs vs bare Zs`)                                                                                                      | When a field anchor + an UNAMBIGUOUS circuit/board scope + a schema-valid value are ALL present, WRITE even if a garble (`"n o"`, a stray mid-utterance `"no"`, filler) sits between anchor and value — a mid-utterance garble is not a negation (`"Zs on the cooker is n o 0.55"` → `record_reading`, not a `missing_value` ask). Does NOT weaken missing-scope / contradiction / invalid-range handling; does NOT fire for a leading-`"no"` correction with no in-utterance anchor+scope (`"No. It was 0.63"` stays a correction), nor for a `"no"`+value reply to a pending `ask_user` (that resolves the ask).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **Steer 2 — observation C-coding deciding-facts checklist (id 83)** | Inside the existing **AMBIGUOUS C2/C3 SEVERITY** block (reuses its bounded clarification budget + `clarification_chain_id` framing — no parallel ask path) | A compact THREE-class checklist. TWO classes (enclosure penetrations/holes · basic protection at accessories/CUs) share one ACCESS LADDER — live parts accessible TO TOUCH → **C1**; potential access → **C2**; tool/lockable or no danger → **C3**; main protective **bonding** has its OWN tree (for an extraneous-conductive part, absent/ineffective bonding or CSA <6 mm² → C2; thermal damage independently → C2, or C1 if immediate present danger; a sound ≥6 mm² bond with no thermal damage → **C3 at most, never C2**). Per-class BS 7671 citations (416.2.2 top-surface IP4X vs 416.2.1 side IP2X; 411.3.1.2 + 544.1.1/Table 54.8 bonding; 701.415.2 bathroom supplementary; 512.2 environmental IP ≠ 416.2). A FACT-WEIGHTING cue, never a blanket-default code: weight the deciding fact, ASK it first (bounded: one initial ask + at most one continuation), then code. **All outcomes are emittable C1/C2/C3/FI — there is no NC code in `record_observation` (enum is C1/C2/C3/FI); the plan's "NC"/"NO observation" outcomes were reworked to "C3 at most, never C2" during the Codex diff review so an explicit observation always records a valid code (RULE 1a) and no silent-drop / dropped-observation-net path exists.** |
 
 **Prompt-budget note:** the steers added ~+745 tokens (base render) / ~+745 (combined), minimised via the shared ACCESS LADDER consolidation + terse prose. A measured cap bump on BOTH budget assertions in `src/__tests__/stage6-agentic-prompt.test.js` was the EXPECTED path — the plan states "compaction cannot recover ~600 tokens by folding alone" and the ~250-token target is STRUCTURALLY unreachable with Derek's mandated THREE cited C2/C3 classes. Base cap `renderedOn <= 16790` (measured 16705), combined cap `combinedRenderedOn <= 22025` (measured 21943), each `measured + ~100` headroom. One cold-cache window post-deploy (~5-min TTL re-warms).
@@ -218,19 +269,21 @@ Two steers were folded into `config/prompts/sonnet_agentic_system.md`. Both land
 
 Prevents wasted Deepgram billing when the inspector stops speaking. Three-tier state machine:
 
-| State | Trigger | Deepgram WS | Sonnet Session | Visual |
-|-------|---------|-------------|---------------|--------|
-| **Active** | Recording started | Connected, streaming | Active | Red dot |
-| **Dozing** | 60s silence | Connected, KeepAlive ($0/min) | Compacted, paused | Grey dot, "Saving power..." |
-| **Sleeping** | 5min in dozing | Disconnected | Preserved (5min timeout) | Grey dot, "Paused — speak to resume" |
+| State        | Trigger           | Deepgram WS                   | Sonnet Session           | Visual                               |
+| ------------ | ----------------- | ----------------------------- | ------------------------ | ------------------------------------ |
+| **Active**   | Recording started | Connected, streaming          | Active                   | Red dot                              |
+| **Dozing**   | 60s silence       | Connected, KeepAlive ($0/min) | Compacted, paused        | Grey dot, "Saving power..."          |
+| **Sleeping** | 5min in dozing    | Disconnected                  | Preserved (5min timeout) | Grey dot, "Paused — speak to resume" |
 
 **Wake detection:** Silero VAD runs only during doze/sleep states (not during active recording). Requires 3 consecutive frames above 0.5 probability threshold. Audio ring buffer (3s, 16kHz Int16 PCM, ~96KB) captures speech during wake detection window.
 
 **Wake flow:**
+
 - From dozing: Resume audio streaming (WS still alive) → replay ring buffer → zero word loss
 - From sleeping: Reconnect Deepgram WS → poll for connection (up to 3s) → replay ring buffer. If no transcript arrives within 5s, TTS prompts "Sorry, could you repeat that?"
 
 **Backend support:**
+
 - Anthropic prompt cache TTL extended to 1 hour (from 5min default) — saves ~$0.09/session by avoiding cache rebuilds during silence gaps
 - Session timeout extended to 5 minutes (from 30s) — preserves Sonnet conversation history across sleep
 - `session_compact` message triggers proactive compaction before sleep
@@ -301,11 +354,11 @@ For each chunk, read the audio file and transcribe what you hear.
 
 Build a comparison table with THREE columns for each chunk:
 
-| Chunk | What was actually said (your transcription) | What Gemini transcribed | What made it into the UI |
-|-------|---------------------------------------------|------------------------|-------------------------|
-| 000   | "Ze is 0.35 ohms"                          | "Ze is 0.35 ohms"     | Ze: 0.35               |
-| 001   | "Circuit 1 lights, 6 amp B type MCB"       | "Circuit 1 lights, 6 amp"  | Circuit 1: lights, 6A (missing MCB type) |
-| 002   | "R1 plus R2 is 0.8"                         | "Our one plus R2 is 0.8"   | r1_r2: empty (bad transcription) |
+| Chunk | What was actually said (your transcription) | What Gemini transcribed   | What made it into the UI                 |
+| ----- | ------------------------------------------- | ------------------------- | ---------------------------------------- |
+| 000   | "Ze is 0.35 ohms"                           | "Ze is 0.35 ohms"         | Ze: 0.35                                 |
+| 001   | "Circuit 1 lights, 6 amp B type MCB"        | "Circuit 1 lights, 6 amp" | Circuit 1: lights, 6A (missing MCB type) |
+| 002   | "R1 plus R2 is 0.8"                         | "Our one plus R2 is 0.8"  | r1_r2: empty (bad transcription)         |
 
 **To get "What Gemini transcribed":** Parse the debug log (`debug_log.json`). Look at `CHUNK_COMPLETE` events — each has a `transcript=` field showing what Gemini returned for that chunk index.
 
@@ -315,14 +368,14 @@ Build a comparison table with THREE columns for each chunk:
 
 For every value that was spoken but didn't end up in the UI, classify the failure:
 
-| Failure Type | Meaning | Example |
-|-------------|---------|---------|
-| **Audio quality** | Your transcription also couldn't understand it | Mumbled, background noise, too quiet |
-| **Gemini transcription error** | You heard it correctly but Gemini got it wrong | "0.35" → "0.25", "MCB" → "and CB" |
-| **Extraction miss** | Gemini transcribed correctly but the value wasn't extracted into structured data | Transcript says "Ze 0.35" but extraction JSON has no Ze field |
-| **Field routing error** | Value extracted but put in wrong field or wrong circuit | Zs value put in Ze field, or circuit 2 data assigned to circuit 1 |
-| **Priority/overwrite** | Value was set but later overwritten by a subsequent chunk | Earlier chunk set Ze=0.35, later chunk overwrote with Ze=0.40 |
-| **Pre-existing block** | Field already filled by CCU photo, extraction skipped it | CCU set ocpd_rating=32, recording said 40 but was blocked |
+| Failure Type                   | Meaning                                                                          | Example                                                           |
+| ------------------------------ | -------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| **Audio quality**              | Your transcription also couldn't understand it                                   | Mumbled, background noise, too quiet                              |
+| **Gemini transcription error** | You heard it correctly but Gemini got it wrong                                   | "0.35" → "0.25", "MCB" → "and CB"                                 |
+| **Extraction miss**            | Gemini transcribed correctly but the value wasn't extracted into structured data | Transcript says "Ze 0.35" but extraction JSON has no Ze field     |
+| **Field routing error**        | Value extracted but put in wrong field or wrong circuit                          | Zs value put in Ze field, or circuit 2 data assigned to circuit 1 |
+| **Priority/overwrite**         | Value was set but later overwritten by a subsequent chunk                        | Earlier chunk set Ze=0.35, later chunk overwrote with Ze=0.40     |
+| **Pre-existing block**         | Field already filled by CCU photo, extraction skipped it                         | CCU set ocpd_rating=32, recording said 40 but was blocked         |
 
 ### Step 6: Produce a diagnostic report
 
@@ -367,35 +420,35 @@ aws logs filter-log-events --log-group-name /ecs/eicr/eicr-backend \
 
 Key events in the iOS debug log (`whisper_debug.json`):
 
-| Event | Meaning |
-|-------|---------|
-| `SESSION_START` | Recording began — shows sessionId, jobId |
-| `CHUNK_START` | Audio chunk created — shows index, duration, sample count |
-| `CHUNK_COMPLETE` | Transcription returned results — shows transcript, circuit count, orphans, latency |
-| `CHUNK_ERROR` | Transcription call failed — shows error details |
-| `GEMINI_SET` | Field set for first time by extraction |
-| `GEMINI_UPDATE` | Field overwritten by later extraction |
-| `GEMINI_CIRCUIT_CREATED` | New circuit created from extraction data |
-| `GEMINI_MERGE` | Final merge applied — shows total circuit count |
-| `SESSION_END` | Recording stopped — shows total chunks and transcript length |
+| Event                    | Meaning                                                                            |
+| ------------------------ | ---------------------------------------------------------------------------------- |
+| `SESSION_START`          | Recording began — shows sessionId, jobId                                           |
+| `CHUNK_START`            | Audio chunk created — shows index, duration, sample count                          |
+| `CHUNK_COMPLETE`         | Transcription returned results — shows transcript, circuit count, orphans, latency |
+| `CHUNK_ERROR`            | Transcription call failed — shows error details                                    |
+| `GEMINI_SET`             | Field set for first time by extraction                                             |
+| `GEMINI_UPDATE`          | Field overwritten by later extraction                                              |
+| `GEMINI_CIRCUIT_CREATED` | New circuit created from extraction data                                           |
+| `GEMINI_MERGE`           | Final merge applied — shows total circuit count                                    |
+| `SESSION_END`            | Recording stopped — shows total chunks and transcript length                       |
 
 ## S3 Paths Reference
 
-| Artifact | S3 Path | Format |
-|----------|---------|--------|
-| Audio chunks | `debug/<userId>/<sessionId>/chunk_XXX.flac` | FLAC 16kHz mono (5-10s each) |
-| iOS debug log | `jobs/<userId>/<address>/output/whisper_debug.json` | JSON (events, transcripts, field updates) |
-| Backend debug log | `jobs/<userId>/<address>/output/debug_transcription.json` | JSON (chunk metrics, accumulated transcript) |
-| Job data (UI state) | `jobs/<userId>/<address>/output/extracted_data.json` | JSON (circuits, supply, installation, observations) |
+| Artifact            | S3 Path                                                   | Format                                              |
+| ------------------- | --------------------------------------------------------- | --------------------------------------------------- |
+| Audio chunks        | `debug/<userId>/<sessionId>/chunk_XXX.flac`               | FLAC 16kHz mono (5-10s each)                        |
+| iOS debug log       | `jobs/<userId>/<address>/output/whisper_debug.json`       | JSON (events, transcripts, field updates)           |
+| Backend debug log   | `jobs/<userId>/<address>/output/debug_transcription.json` | JSON (chunk metrics, accumulated transcript)        |
+| Job data (UI state) | `jobs/<userId>/<address>/output/extracted_data.json`      | JSON (circuits, supply, installation, observations) |
 
 ## Common Recording Issues
 
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| Values said but not in transcript | Audio too quiet, mumbled, or background noise | Speak clearly, closer to mic |
-| Numbers without context lost | Said "0.8" without "Ze is 0.8" | Always prefix values with field name |
-| Circuit data missing | Never said circuit name/number | Say "Circuit 1 is..." before readings |
-| Short chunks empty | Transcription struggles with <3s audio | Speak in longer continuous phrases |
-| Values transcribed but not extracted | Extraction prompt doesn't map the phrasing to a field | Check extraction prompt — may need synonym |
-| Values in wrong circuit | Circuit ref wasn't mentioned before values | Say circuit number before each set of readings |
-| Field blocked by CCU | CCU photo pre-filled the field, extraction won't overwrite | Expected — CCU data takes priority over voice |
+| Issue                                | Cause                                                      | Solution                                       |
+| ------------------------------------ | ---------------------------------------------------------- | ---------------------------------------------- |
+| Values said but not in transcript    | Audio too quiet, mumbled, or background noise              | Speak clearly, closer to mic                   |
+| Numbers without context lost         | Said "0.8" without "Ze is 0.8"                             | Always prefix values with field name           |
+| Circuit data missing                 | Never said circuit name/number                             | Say "Circuit 1 is..." before readings          |
+| Short chunks empty                   | Transcription struggles with <3s audio                     | Speak in longer continuous phrases             |
+| Values transcribed but not extracted | Extraction prompt doesn't map the phrasing to a field      | Check extraction prompt — may need synonym     |
+| Values in wrong circuit              | Circuit ref wasn't mentioned before values                 | Say circuit number before each set of readings |
+| Field blocked by CCU                 | CCU photo pre-filled the field, extraction won't overwrite | Expected — CCU data takes priority over voice  |

@@ -317,6 +317,15 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
     // reading validated/wrote against currentBoardId instead of the board
     // the original ask named. Omit-when-null keeps single-board synthCalls
     // byte-identical.
+    //
+    // A2-multiboard item 6 — this gate stays a bare `!= null` on purpose. An
+    // auto-resolved write is dispatched through the SAME `WRITE_DISPATCHERS`
+    // table as a model-emitted one, and the in-scope dispatchers now normalise
+    // an empty-string `board_id` at their own entry — so auto-resolve is
+    // routed through the normaliser without this hook knowing about it.
+    // Normalising HERE instead would also silently normalise the dispatchers
+    // that are deliberately EXEMPT (`record_board_reading`, `clear_board_reading`),
+    // punching a hole in their destructive-write safety contract.
     if (write.board_id != null) {
       synthInput.board_id = write.board_id;
     }

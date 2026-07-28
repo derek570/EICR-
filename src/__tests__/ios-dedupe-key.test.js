@@ -56,7 +56,11 @@ describe('djb2UInt64Decimal — UInt64 wrap arithmetic mirror', () => {
 describe('buildPerCircuitDedupeKey — VALUE-AWARE shape (id-84 correction-swallow fix)', () => {
   test('shape is "<field>_<circuit>_<djb2(text)>" (text encodes the value)', () => {
     expect(
-      buildPerCircuitDedupeKey('ir_live_live_mohm', 1, 'Circuit 1, insulation resistance L-L 100 megaohms')
+      buildPerCircuitDedupeKey(
+        'ir_live_live_mohm',
+        1,
+        'Circuit 1, insulation resistance L-L 100 megaohms'
+      )
     ).toBe('ir_live_live_mohm_1_11903432231037752243');
   });
 
@@ -164,7 +168,12 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
     // clear → {field, circuit, turn, ordinal} (token is the 4th positional arg;
     // 3rd is `text`, ignored when the token key wins)
     expect(
-      buildPerCircuitDedupeKey('field_cleared', 3, 'R1 plus R2 cleared', 'clear_r1_r2_ohm_3_turn-9_ord0')
+      buildPerCircuitDedupeKey(
+        'field_cleared',
+        3,
+        'R1 plus R2 cleared',
+        'clear_r1_r2_ohm_3_turn-9_ord0'
+      )
     ).toBe('field_cleared_clear_r1_r2_ohm_3_turn-9_ord0');
     // rename/circuit op → turn + operation identity (turnId + ordinal + op + ref)
     expect(
@@ -172,7 +181,12 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
     ).toBe('circuit_op_circop_turn-9_0_rename_4');
     // designation → turn + operation identity
     expect(
-      buildPerCircuitDedupeKey('circuit_designation', 2, 'Circuit 2 named Sockets', 'desig_2_turn-9')
+      buildPerCircuitDedupeKey(
+        'circuit_designation',
+        2,
+        'Circuit 2 named Sockets',
+        'desig_2_turn-9'
+      )
     ).toBe('circuit_designation_desig_2_turn-9');
   });
 
@@ -201,9 +215,9 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
       )
     ).toBe('circuit_designation_desig_1-2_t1');
     // Per-circuit branch (token 4th positional; 3rd `text` ignored under the token key).
-    expect(buildPerCircuitDedupeKey('circuit_op', 3, 'Circuit 3 renamed', 'circop_t1_0_rename_3')).toBe(
-      'circuit_op_circop_t1_0_rename_3'
-    );
+    expect(
+      buildPerCircuitDedupeKey('circuit_op', 3, 'Circuit 3 renamed', 'circop_t1_0_rename_3')
+    ).toBe('circuit_op_circop_t1_0_rename_3');
   });
 
   test('degenerate-branch token vectors — same op replay → SAME key; distinct ops → distinct keys', () => {
@@ -235,5 +249,88 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
     // shape (backward-compatible fallback — ship order is backend-first).
     expect(buildPerCircuitDedupeKey('circuit_op', 3, null)).toBe('circuit_op_3_5381');
     expect(buildPerCircuitDedupeKey('circuit_op', 3, undefined)).toBe('circuit_op_3_5381');
+  });
+});
+
+/**
+ * A2-multiboard item 10 (2026-07-28) — board identity in the CIRCUIT dedupe keys.
+ *
+ * The degenerate (board-level) branch has folded `boardId` into its hash since
+ * W2.3. The two circuit branches never did, and circuit refs are not unique
+ * across a job: a two-board installation routinely has a circuit 1 on the main
+ * board AND a circuit 1 on the garage board. Dictate the same field with the
+ * same value on both and the spoken lines are character-identical, so the keys
+ * collided and the SECOND read-back was silently swallowed — a reading the
+ * hands-free inspector never hears, though both writes landed (Audio-First #1).
+ *
+ * The fix folds the WIRE `board_id` into the hashed string, not into a new key
+ * segment. That choice is what these tests pin hardest: an ABSENT board id must
+ * hash `text + ''`, i.e. produce the exact key it produced before item 10, so
+ * the change cannot shift dedupe state for the single-board majority.
+ *
+ * These are the backend TELEMETRY mirror's vectors; `web/tests/confirmation-
+ * dedupe-key.test.ts` pins the same literals, which is what keeps
+ * `expected_dedupe_key` byte-truthful about what the client computes.
+ */
+describe('A2-multiboard item 10 — board-aware circuit dedupe keys', () => {
+  const LINE = 'Circuit 1, Zs 0.55';
+  const FANOUT = 'Circuits 1 to 3, Zs 0.55';
+
+  test('THE DEFECT: same field, same ref, same text on DIFFERENT boards → DISTINCT keys', () => {
+    const main = buildPerCircuitDedupeKey('measured_zs_ohm', 1, LINE, null, 'main');
+    const garage = buildPerCircuitDedupeKey('measured_zs_ohm', 1, LINE, null, 'garage');
+    expect(main).toBe('measured_zs_ohm_1_12509886869430908783');
+    expect(garage).toBe('measured_zs_ohm_1_9569674412376072497');
+    // Pre-item-10 both of these were `measured_zs_ohm_1_<djb2(LINE)>` and the
+    // garage read-back was swallowed by the main one.
+    expect(main).not.toBe(garage);
+  });
+
+  test('GATE INTACT: a genuine same-board duplicate still dedupes', () => {
+    expect(buildPerCircuitDedupeKey('measured_zs_ohm', 1, LINE, null, 'garage')).toBe(
+      buildPerCircuitDedupeKey('measured_zs_ohm', 1, LINE, null, 'garage')
+    );
+  });
+
+  test('GATE INTACT: a same-board CORRECTION still speaks (value-awareness preserved)', () => {
+    expect(
+      buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Circuit 1, Zs 0.83', null, 'main')
+    ).not.toBe(buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Circuit 1, Zs 0.63', null, 'main'));
+  });
+
+  test('BYTE-IDENTICAL: no board id hashes exactly as pre-item-10 (text alone)', () => {
+    const noBoard = buildPerCircuitDedupeKey('measured_zs_ohm', 1, LINE, null, null);
+    expect(noBoard).toBe('measured_zs_ohm_1_3803995004801192586');
+    // The literal the pre-item-10 shape produced, recomputed here from the
+    // text alone. If the fold ever stops treating absent-as-empty, this fails.
+    expect(noBoard).toBe(`measured_zs_ohm_1_${djb2UInt64Decimal(LINE)}`);
+    // undefined (an entry with no `board_id` key at all) is the same as null.
+    expect(buildPerCircuitDedupeKey('measured_zs_ohm', 1, LINE, null, undefined)).toBe(noBoard);
+  });
+
+  test('MULTI-CIRCUIT: a fan-out on two boards is likewise distinct, and boardless is unchanged', () => {
+    const main = buildMultiCircuitDedupeKey('measured_zs_ohm', [1, 2, 3], FANOUT, null, 'main');
+    const garage = buildMultiCircuitDedupeKey('measured_zs_ohm', [1, 2, 3], FANOUT, null, 'garage');
+    expect(main).toBe('measured_zs_ohm_1-2-3_11373077424483400792');
+    expect(garage).toBe('measured_zs_ohm_1-2-3_7516041803079828570');
+    expect(main).not.toBe(garage);
+
+    const noBoard = buildMultiCircuitDedupeKey('measured_zs_ohm', [1, 2, 3], FANOUT, null, null);
+    expect(noBoard).toBe('measured_zs_ohm_1-2-3_16967602662836620019');
+    expect(noBoard).toBe(`measured_zs_ohm_1-2-3_${djb2UInt64Decimal(FANOUT)}`);
+  });
+
+  test('TOKEN PRECEDENCE UNCHANGED: an allowlisted text-op ignores the board id', () => {
+    // The token IS the operation identity — it already distinguishes two
+    // renames on two boards — so folding a board id in would only break the
+    // §A1a replay-stability contract.
+    expect(
+      buildPerCircuitDedupeKey('circuit_op', 1, 'Circuit 1 renamed', 'rename_c1_t7_ord0', 'main')
+    ).toBe(
+      buildPerCircuitDedupeKey('circuit_op', 1, 'Circuit 1 renamed', 'rename_c1_t7_ord0', 'garage')
+    );
+    expect(buildMultiCircuitDedupeKey('circuit_op', [1, 2], 'Renamed', 'rn_t7_ord0', 'main')).toBe(
+      buildMultiCircuitDedupeKey('circuit_op', [1, 2], 'Renamed', 'rn_t7_ord0', 'garage')
+    );
   });
 });

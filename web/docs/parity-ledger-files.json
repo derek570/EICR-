@@ -65,7 +65,8 @@
     "board/boardtab-304",
     "board/boardtab-370",
     "board/boardtab-50",
-    "board/boardtab-71"
+    "board/boardtab-71",
+    "recording/replaces-cleared-multiboard"
   ],
   "web/src/app/job/[id]/circuits/match-review/page.tsx": [
     "ccu-flow/circuitmatchreviewview-5",
@@ -459,6 +460,9 @@
   "web/src/lib/api-client.ts": [
     "pdf/pdftab-270"
   ],
+  "web/src/lib/boards/canonical-main.ts": [
+    "recording/replaces-cleared-multiboard"
+  ],
   "web/src/lib/ccu/pending-extraction-queue.ts": [
     "ccu-flow/circuitstab-272"
   ],
@@ -545,14 +549,16 @@
     "recording/board-clear-denial-notice",
     "recording/impedance-clamp-readback",
     "recording/impedance-out-of-range-divergence",
-    "recording/observation-id-dedupe"
+    "recording/observation-id-dedupe",
+    "recording/replaces-cleared-multiboard"
   ],
   "web/src/lib/recording/capture-observation-photo.ts": [
     "observations/obs-photo-autolink"
   ],
   "web/src/lib/recording/confirmation-dedupe-key.ts": [
     "recording/readback-dedup-rekey",
-    "recording/readback-dedup-value-aware"
+    "recording/readback-dedup-value-aware",
+    "recording/replaces-cleared-multiboard"
   ],
   "web/src/lib/recording/confirmation-dedupe-store.ts": [
     "recording/confirmation-dedupe-ttl"
@@ -583,7 +589,8 @@
     "recording/cancel-pending-tts",
     "recording/capability-advertising",
     "recording/fast-path-tts",
-    "recording/playback-telemetry"
+    "recording/playback-telemetry",
+    "recording/replaces-cleared-multiboard"
   ],
   "web/src/lib/recording/tones.ts": [
     "recording/gate-pass-chime"

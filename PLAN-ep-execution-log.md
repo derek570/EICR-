@@ -1,142 +1,100 @@
-# /ep execution log — A2-core (`replaces_cleared`)
+# /ep execution log — plan A2-multiboard (`replaces_cleared` multi-board hardening)
 
-- **Plan:** `~/.claude/handoffs/EICR_Automation--replaces-cleared-chain-a2-2026-07-26/PLAN-final.md`
-- **Wave:** `feedback-2026-07-25-batch-resume-20260727`, **hop 5** of the chain
-- **Session:** `20260728T112819Z-ep`
-- **Repo:** `/Users/derekbeckley/Developer/EICR_Automation` (worktree `…-ep-20260728T112819Z-ep`, branch `ep/PLAN-20260728T112819Z-ep`, base `origin/main` @ `e60f04f3`)
-- **PRs:** backend+web [EICR- #127](https://github.com/derek570/EICR-/pull/127) · iOS test-pin [CertMateUnified #40](https://github.com/derek570/CertMateUnified/pull/40)
-- **Verdict:** ALL PASSED · Codex **PASSED** (9 cycles) → READY PR → merge → deploy
+- **Session:** `20260728T155441Z-ep`
+- **Plan:** `/Users/derekbeckley/.claude/handoffs/EICR_Automation--replaces-cleared-multiboard-2026-07-27/PLAN-final.md`
+- **Repo:** `/Users/derekbeckley/Developer/EICR_Automation`
+- **Worktree:** `/Users/derekbeckley/Developer/EICR_Automation-ep-20260728T155441Z-ep`
+- **Branch:** `ep/replaces-cleared-multiboard-20260728T155441Z-ep`
+- **Base:** `origin/main` @ `9bafeac9` (A2-core merge, PR #127)
+- **Chain:** hop 6, batch `feedback-2026-07-25-batch-resume-20260727`
 
----
+## Prerequisite gate — PASSED
 
-## What shipped
+A2-core (`PLAN-final.md` in `EICR_Automation--replaces-cleared-chain-a2-2026-07-26`) is a hard prerequisite: **merged AND deployed**.
 
-P5 (2026-07-23) collapses a same-turn `clear_reading` + `record_reading` for one circuit slot **server-side**, so web receives a bare write against a still-populated cell. Web's `applyCircuitReadings` 3-tier gate is fill-only and source-agnostic —
+- Merged: PR #127 → `9bafeac9` (`.ep-done` records `outcome=ALL PASSED`, iOS PR CertMateUnified#40 `d76eb887`).
+- Deployed: CI run `30372616285` on `main` — job **"Deploy to AWS ECS (Production): completed/success"**.
+- Live task def **`eicr-backend:350`** (was `:347` at A1a/#123) — the revision INCREMENTED, which per the deploy-verification rule is the trustworthy signal (rolloutState alone is stale).
 
-```ts
-if (hasValue(row[column]) && !isLimWrite) continue;
-```
+Gate PASSED — proceeding.
 
-— so it **silently skipped**. The assistant spoke the replacement, the backend and iOS stored it, web kept the stale value: the inverse Audio-First violation (spoken-but-not-written) in a legally-significant certificate. P5's changelog claim that dropping the frames left "both clients coherent" was wrong for web and is corrected in this PR.
+## [PLAN-SIZE] warning
 
-**Fix:** the bundler stamps an omit-when-false boolean `replaces_cleared: true` on the surviving reading of a collapsed turn; web decodes it and, gated on board evidence, bypasses the fill-only gate for exactly that write.
+This plan bundles **10 top-level scope items** spanning THREE distinct surfaces (backend `src/extraction`, `web/src/lib/recording`, iOS `CertMateUnified`) and several high-interaction subsystems (the per-turn write accumulator, the event bundler's projection/collapse passes, the loaded-barrel speculator, and both clients' apply layers). Review effort scales with the interaction count, so a long Codex convergence is expected. Flagging per the `/ep` plan-size heuristic — this is a warning, not a gate; execution proceeds.
 
-### Wire-shape honesty
+## Steps
 
-`replaces_cleared` is **ADDITIVE-OPTIONAL, not "zero wire-shape change"** — an un-collapsed turn is byte-identical to pre-A2 traffic, but a collapsed turn carries one new enumerable key. What stands in for a capability gate is *verified* unknown-key tolerance on every consumer, checked rather than assumed:
+All 10 plan items executed. 24 commits, 51 files, +9914/−1776. Nothing skipped, nothing blocked, no `[ASSUMED]` deviations.
 
-- **iOS** — `ExtractedReading` declares explicit `CodingKeys`, so the key decodes inertly. The iOS half is genuinely test-only.
-- **web** — permissive `JSON.parse`.
-- **replay oracles** — project readings to circuit/field/value.
+| #   | Item                                                                                       | Commits                              |
+| --- | ------------------------------------------------------------------------------------------ | ------------------------------------ |
+| 9   | Append-only sequenced write JOURNAL (foundation for everything else)                        | `8cae1d3c`                           |
+| 2   | Project per-turn writes LWW per EFFECTIVE slot; retire the ambiguous-projection decline     | `a1d3c24b`                           |
+| 1   | Address every cross-board winner to its own board, end to end (asymmetric wire enrichment)  | `7301477d`                           |
+| 5   | Derive `board_info` from the CANONICAL main board, never array index 0                      | `9d49fc3f`                           |
+| 6   | Empty-string `board_id` normalisation at the dispatchers + per-reading row resolution (web) | `8f641062`, `ee326649`               |
+| 3   | Circuit ops reach the clients on the board the server mutated, losslessly and in wire order | `f3fe028c`, `2e77806a`, `fd15cb28`   |
+| 4   | Invalidate loaded-barrel speculations for same-turn collapsed replacements                  | `3adb5dc4`                           |
+| 7   | `replaces_cleared` at BOARD scope (backend stamp + web two-leg preflight)                   | `50f193b1`, `dfbf636e`, `debcb0b5`   |
+| 8   | Measure "All circuits" against the group's own board                                        | `17efeee1`                           |
+| 10  | Fold board identity into the circuit confirmation dedupe keys                               | `625a7144`                           |
+| —   | A1b dependency wording, archive §4 regression inventory, T10 fixture, docs                  | `b151c2c5`, `82f808d6`, `88744502`   |
 
-### Producer (backend)
+### The load-bearing design decision
 
-- `EFFECTIVE_CIRCUIT_SLOT`-keyed candidate index, **split the same way the P5 collapse matches** (effective-stamped bucket vs Symbol-less raw-key bucket). `EFFECTIVE_BOARD_SLOT` (plan A1a) is a distinct Symbol and is never cross-wired.
-- **Fail-closed-unflagged:** >1 candidate for a slot ⇒ stamp nothing, push the slot key onto a non-enumerable `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` Symbol. The bundler stays **PURE** (no logging); the harness emits `stage6.replaces_cleared_ambiguous_projection` on **both** lanes.
-- `derived: true` writes excluded. **Calculator writes (`::calc::`) remain candidates** — per F/U-1 (2026-07-19) a calc result is explicitly-requested and spoken.
-- `projectExtractionResultForWire` promoted to a named egress seam (hoisted destructure-spread, deliberately **never** an allowlist) shared by `buildResultFrameLedger` and `session.onBatchResult`.
+`record_reading`, `record_board_reading` and `start_dialogue_script` all carry **no schema `board_id`**, so two boards' writes for the same field collide on ONE raw accumulator key and `Map.set` destroys the first. Every defect in this plan is a consequence of that single ambiguity. The fix is one mechanism used everywhere: an append-only journal stamped with a monotonic `WRITE_SEQUENCE` Symbol at dispatch, projected to winners **per effective slot** at read time. Non-enumerable Symbols carry the effective slot/board, so `JSON.stringify` output — the wire — is untouched.
 
-### Consumer (web) — the board-evidence guard
+Single-board wire output is **byte-identical to pre-diff** by construction: an ORDINARY reading is enriched with `board_id` only when `distinctEffectiveBoards.size > 1`; a FLAGGED (`replaces_cleared`) reading is always enriched, because that is the class whose whole purpose is to overwrite an occupied cell.
 
-Web's apply is ref-only, so the bypass is gated on web proving *independently* that the write targets the right row. The governing principle: **a board id the SERVER asserts this turn can never vouch for itself.** Only web's own `boards[]` registry and the scopes of its existing rows are independent evidence.
+### Item 7 round 2 — deliberately NOT implemented (`dfbf636e`)
 
-Five doors, all the same wrong-board class:
-
-| term | declines when |
-|---|---|
-| `ids` cardinality | union of `job.boards` ids + row `board_id`s + envelope reading `board_id`s + every id named by `board_ops` resolves to >1 |
-| `addsBoardThisTurn` | a same-envelope `add_board` — `onBoardOps` fires **after** `onExtraction`, so `job.boards` is stale at apply time |
-| `unknownNamedBoard` | the server names a board web has no record of |
-| `implicitUnregisteredBoard` | a CHILD board owns no row beside unscoped rows |
-| `mixedRowScopes` | the ROWS carry more than one scope |
-
-`BACKEND_DEFAULT_MAIN_BOARD_ID` (`'main'`) is seeded into the independence set **only** when web has zero independent evidence (legacy flat job) — into `independent`, **not** `ids`, so cardinality is unaffected. Ordering vs `implicitUnregisteredBoard` is load-bearing.
-
-**Never a new skip.** Every decline falls through to the unchanged gate, so an empty cell still fills. Success logs `apply_replaces_cleared_bypass_applied`; declines log `_multiboard_deferred` / `_orphan_ref` / `_duplicate_ref`.
-
----
-
-## Codex review loop — 9 cycles
-
-The plan converged through `/rp` with zero BLOCKERs, and the gate was green from cycle 1. **Every one of cycles 1–8 still found a real, test-invisible wrong-board write.** That is the calibration point for this plan class: a green suite proved nothing about the guard, because the guard's whole job is to be correct on job shapes no test author had thought to construct.
-
-| cycle | finding | fix | commit |
-|---|---|---|---|
-| 1 | same-envelope `add_board` — `board_ops` rides the same envelope but `onBoardOps` fires *after* `onExtraction`, so `job.boards` is stale at apply time | `addsBoardThisTurn` | `fb9f398c` |
-| 2 | an unevidenced `select_board` defers too; the wire fixture was hand-built, not from the real frame builder | broadened + fixture regenerated from the producer | `0ec273ec` |
-| 3 | a board id the server names this turn was being counted as its own evidence | `independent` snapshot taken *before* any server-named id | `ed8d438a` |
-| 4 | the backend's synthesised default main board (`DEFAULT_MAIN_BOARD_ID = 'main'`) read as an *unknown* board on a legacy flat job, so the bypass never fired there | `BACKEND_DEFAULT_MAIN_BOARD_ID` seed, gated on `independent.size === 0` | `f2df6845` |
-| 5 | a registry board that no row is scoped to is a SECOND board, not the only one | `implicitUnregisteredBoard` | `557d5806` |
-| 6 | …but a MAIN board owning no row *is* the single board — cycle 5 over-deferred | type-aware narrowing | `512138f9` |
-| 7 | `off_peak` is a SIBLING of main (top-level per the closed `BoardType` union + the Board tab's parent-clearing), not a sub-board — it must not defer | closed-union handling; absent type reads as main | `b857bf37` |
-| 8 | a child board owning SOME row (just not the target ref row) walked past the registry test entirely | `mixedRowScopes` | `3fa27c52` |
-| 9 | — | **NO NEW FINDINGS** | — |
-
-### Cycle 8 — the one I extended
-
-Codex's scenario: unscoped legacy circuit 1 (an unregistered main) + circuit 2 scoped to child board `sub-1`, registry `[sub-1]`. Backend is on `sub-1` and emits a collapsed clear→write for circuit 1 that **omits `board_id`** (`dispatchRecordReading` stores only the raw `input.board_id`, and the bundler emits the key only when it exists — so whenever the model relies on the current board the field is simply absent, and the reading term is blind). `rowScopedIds` contains `sub-1`, so the registry term is quiet; cardinality is 1; `refMatches === 1`, so no duplicate-ref decline. **The bypass overwrites the unregistered main's circuit 1 with sub-1's reading.**
-
-Verifying it in source turned up a **second instance Codex did not find**: `applyAddNewBoardMode` (`web/src/lib/recording/apply-ccu-analysis.ts`) deliberately leaves `board_type` **unset** on an appended sub-board — its docstring says board type belongs to the inspector via the Board tab, not the CCU photo — so a CCU-appended SUB board reads as **top-level** and `isSub` is false. The type-based term could never have fired on the *commonest producer of the two-scope shape*.
-
-Both are one defect stated at the wrong layer: the guard reasoned about the **registry** when the decisive evidence is the **rows**. Fixed with `mixedRowScopes` (scope count = distinct row `board_id`s + 1 if any row is unscoped; >1 defers), **disjoined with** — not replacing — the registry term, so cycle 5's all-unscoped shape still defers.
-
-### Cycle 9 — forcing a real verdict
-
-Cycle 8's first submission came back as a bare `CLEAN` in 264 tokens. Per the dead-reviewer-lens rule that is **not** a converging round — a verdict is only evidence if the reviewer's *work* is evidenced. Re-submitted with a mandatory three-section output contract, which produced the real IMPORTANT finding above:
-
-- **A — evidence:** ≥8 verbatim `file:line` quotes spanning the producer index, the fail-closed branch, the egress seam, the decode, every guard term, the bypass site, and the unchanged fall-through.
-- **B — discrimination:** for each guard term, name the test that reddens if the term is deleted, and say whether any test passes for the *wrong* reason.
-- **C — findings.**
-
-Cycle 9 returned 33 verbatim quotes, a per-term discrimination table, and `NO NEW FINDINGS`. Its section B is worth keeping: it names, per term, which tests are genuinely discriminating and which pass only because a *different* term also fires (e.g. `source 4 — a same-envelope add_board defers` would still pass with `addsBoardThisTurn` deleted, because that op also trips cardinality and `unknownNamedBoard` — the discriminating test is `source 4b`, the **empty-id** op). Every term has at least one discriminating test.
-
-### Post-review — the docs lagged the code (`6ab66408`)
-
-Re-reading `web/docs/parity-ledger.md` before merge caught a self-inflicted problem the review loop had no reason to look at: the `recording/replaces-cleared-write` row's web column was written at cycle 1 and still described the bypass as gated on **board cardinality alone**. Cycles 5–8 had added four more terms and a seeded default without the row moving. The ledger is the contract a future reader trusts when deciding whether web still matches iOS, and an under-described guard invites the wrong repair — reading "cardinality ≤ 1", the extra terms look like redundant belt-and-braces worth deleting. Corrected in place (all five terms, the seed and its load-bearing ordering, the governing principle, and *why* term 5 is blind to which board is which); the "declining is never a new skip" clause is unchanged. Docs-only, and it re-ran the full gate on push.
-
----
-
-## Deliberate decisions (not defects)
-
-- **`mixedRowScopes` is blind to which board is which.** Web cannot distinguish `append_rail` (new rows scoped to the SAME board the unscoped legacy rows belong to — safe) from `add_new_board` (a DIFFERENT board — a wrong-board write): both produce **byte-identical** mixed row scoping. So it declines both, on the asymmetry — a stale value is the recoverable pre-A2 status quo and the inspector can re-dictate it; a wrong-board overwrite is *new* corruption of a cell the inspector never spoke about, in a legally-significant certificate, and no read-back can catch it by ear. The guard exists on that asymmetry.
-- This **subsumes the ambiguous CCU `off_peak`-append residual** recorded as owned at cycle 7 — that shape now declines on its rows rather than bypassing on its type, so the tie never has to be broken.
-- **Calculator writes remain candidates**; `derived: true` writes do not.
-- **The bundler stays pure.** All ambiguous-projection telemetry is the harness's, on both lanes.
-
-## Deviations from the written plan
-
-None of substance. The plan's guard was a single-board cardinality check; cycles 1–8 grew it into five terms. That is elaboration within the plan's stated intent ("bypass only when web can prove the target row"), not a deviation from it — no plan step was skipped, and no ambiguity-ladder rule 3 skip was taken.
-
----
+The plan's item 7 round 2 is unreachable by construction after item 2: the projection makes the multi-candidate board case impossible, so there is nothing to disambiguate. A test locks the unreachability instead of implementing dead code. Logged here because "item present in plan, absent from diff" would otherwise read as an omission.
 
 ## Gates
 
-| gate | result |
-|---|---|
-| Backend Jest | **6457 passed / 19 skipped / 0 failed** |
-| Web vitest | **1510 passed / 1 skipped** (A2 consumer suite RED-proven 12/15 → **38/38**) |
-| Field-replay corpus (recorded, strict) | **9/9** |
-| `tsc --noEmit` | at the two known baseline files, zero new |
-| iOS suite | **1530 / 0** |
-| Codex diff review | **PASSED** at cycle 9 (cap 10) |
+| Gate                                     | Result                                                            |
+| ---------------------------------------- | ----------------------------------------------------------------- |
+| Backend Jest (`src/__tests__/`)          | **6580 passed**, 19 skipped, 282 suites                           |
+| Web vitest                               | green                                                             |
+| Field-replay corpus (strict, recorded)   | **9/9**                                                           |
+| eslint                                   | clean                                                             |
+| prettier                                 | clean                                                             |
+| `tsc --noEmit` (web)                     | at main's 17-error baseline, zero new                             |
+| parity-ledger check                      | clean apart from one pre-existing unrelated blank-date warning     |
 
-### One process lesson worth keeping
+## Codex pre-merge diff review — PASSED at cycle 5
 
-**Vitest does not typecheck.** The full 1510-test suite was green while `mixedRowScopes` was missing from the explicit `boardEvidence` type annotation — a real `TS2339`. Only `tsc --noEmit` caught it. Always run tsc after touching a typed return shape; the suite will not.
+Model `gpt-5.5`, reasoning `high`, read-only sandbox. Cap 10; used 5 + one per-fix mini-review.
 
----
+| Cycle               | Findings | Outcome                                                                                                    |
+| ------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| 1 (parallel 3-lens) | 5        | 1 real → script-backfill precedence guard re-keyed to the EFFECTIVE slot (`e76f8c8a`); 4 refuted/OOS         |
+| 2                   | 2        | 1 BLOCKER → expanded designation read-backs addressed to the EFFECTIVE board (`8a65f0c7`); 1 refuted        |
+| 3                   | 2        | 1 BLOCKER → #31 clear-suppression keyed on the EFFECTIVE circuit slot (`0aaba884`); 1 OOS → follow-up       |
+| 4                   | 2        | 1 IMPORTANT → §3.5 notice drain reads PROJECTED board winners (`8054dd20`); 1 MINOR docs (`56da0682`)       |
+| mini-review         | 1        | MINOR → retracted the A2-core fall-through claim at its two other sites (`74b48536`)                        |
+| 5 (full)            | 1        | **refuted** — see below. No real findings.                                                                  |
 
-## Follow-ups
+Raw finding counts were flat at 2, but severity converged monotonically — BLOCKER → BLOCKER → IMPORTANT → MINOR-docs → none — and each cycle was directed at surface earlier cycles had not reached rather than re-churning patched code. The "two non-decreasing cycles ⇒ hold" rule was not triggered in substance.
 
-Logged to `~/obsidian-vault/active/todos-certmate.md`. None are decision-class, so nothing was added to `ep-digest.md`.
+### Cycle 5's single finding was a REPEAT false positive — worth not re-learning
 
-1. **Full `(board_id, circuit_ref)` routing for the web apply path.** The real fix for `append_rail`-on-a-legacy-job, which now deliberately declines the bypass. Owned by the A2-multiboard plan (hop 6 — `replaces-cleared-multiboard-2026-07-27`).
-2. **Utterance-correlated freshness for `replaces_cleared`** — accepted mid-flight manual-edit race (an inspector editing the cell between utterance and apply).
-3. **iOS fixture literal ↔ shared JSON fixture drift.** The iOS pin hard-codes the frame; needs a generated resource or a CI hash comparison against `tests/fixtures/test-contracts/replaces-cleared-circuit.json`.
-4. **Web has several ad-hoc notions of board identity** — `isUnscopedBoardId` is duplicated in `apply-ccu-analysis.ts:65` and `circuits/page.tsx:296`, plus the bare `'main'` literal. Worth consolidating; the A2 guard now depends on getting this right.
-5. **`applyBoardOpsToJob`'s `add_board` should materialise the implicit main board the way the backend does.** That would make web's registry self-consistent and retire the `implicitUnregisteredBoard` heuristic entirely.
-6. **Pre-existing (not caused here):** the LIM/multi-board overwrite on the same ref-only routing.
+Codex reported `boardRefKey` at `web/src/lib/recording/apply-extraction.ts:1078` as concatenating board id and circuit ref **with no delimiter**, so `(db-12, 3)` and `(db-1, 23)` would collide on `db-123`. Verified with `cat -v`: the separator is a literal **NUL** — exactly the unambiguous key Codex proposed as the fix. `rg`/`grep` silently strip it, and this is the **second** cycle to produce this same false positive on this same file, despite an explicit NUL warning in the review prompt. Any future review of `src/extraction/*.js` or `apply-extraction.ts` must verify suspicious string-concatenation findings with `cat -v` before acting.
 
-## Chain
+### Fixes the review actually bought (all test-invisible before)
 
-Hop 5 complete. Next eligible wave member (oldest unclaimed `feedback-2026-07-25-batch-resume-20260727` plan): `EICR_Automation--replaces-cleared-multiboard-2026-07-27` — the direct successor, which owns follow-up 1. Spawned as hop 6.
+1. **`e76f8c8a`** — the dialogue-script backfill's precedence guard compared bare `field|circuit`, so a main-board write suppressed a sub-board script's backfill.
+2. **`8a65f0c7`** — an expanded designation read-back ("circuits 1 to 3") was addressed to the session's current board rather than the group's own, so a cross-board expansion named the wrong board aloud.
+3. **`0aaba884`** — #31's clear-suppression key was board-ambiguous: write Zs c1 on main, `select_board garage`, clear Zs c1 on garage → main's write ate garage's spoken "Zs cleared". Applied on the server AND the client, never heard. Audio-First #1.
+4. **`8054dd20`** — the §3.5 mandatory-notice drain still read the raw `boardReadings` Map, so an earlier board's write was invisible and its `board_clear_already_empty` notice spoke **alongside its own write read-back** — "manufacturer already blank" then "manufacturer recorded as Wylex". Newly audible precisely because item 2's projection resurrects that write, so it belonged in this change rather than in a follow-up.
+
+## Follow-ups (2 of a 5 cap; written to `~/obsidian-vault/active/todos-certmate.md`)
+
+1. **The dialogue engine is board-blind in two ways** — `applyWrite` writes to the legacy bare-numeric circuit key regardless of `currentBoardId` (so a sub-board script backfill is silently skipped), and its `type:'extraction'` side-channel frames carry no `board_id` (so web routes them ref-only). Out of scope; found by cycle 3.
+2. **Standalone circuit clears are board-blind on the wire** — the dispatcher resolves the effective board and stamps it non-enumerably, but the emitted `field_corrected` frame still carries `input.board_id ?? null`, so a cross-board clear can land on the wrong row client-side. Cross-client wave; the T10 corpus fixture pins the current shape and must be re-declared in the same change.
+
+Plus the standing **iOS companion** item (CertMateUnified, separate repo/PR, rides a wave TestFlight build) — regenerated fixture literal, `CircuitUpdate.from_ref`/`'delete'`, item 5's tri-state board resolution, item 7's decoder, item 10's djb2 board fold.
+
+## Outcome
+
+**ALL PASSED** — gates green, Codex review PASSED at cycle 5. Proceeding to PR + merge + deploy.

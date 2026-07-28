@@ -59,11 +59,16 @@ import {
   EFFECTIVE_CIRCUIT_SLOT,
   rawCircuitSlot,
   attachEffectiveSlot,
+  recordReadingWrite,
+  removeReadingWrites,
+  attachEffectiveOpBoard,
 } from './stage6-per-turn-writes.js';
 import {
   getCircuitBucket,
   listCircuitRefsInBoard,
   getMainBoardId,
+  isUnscopedBoardId,
+  normaliseBoardScopeInput,
 } from './stage6-multi-board-shape.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
 import { IR_FIELDS, recordIrWrite } from './insulation-resistance-timeout.js';
@@ -138,7 +143,7 @@ function envelope(tool_use_id, body, is_error) {
  */
 function resolveEffectiveBoardId(session, rawBoardId) {
   const snapshot = session?.stateSnapshot;
-  if (rawBoardId != null && rawBoardId !== '') return rawBoardId;
+  if (!isUnscopedBoardId(rawBoardId)) return rawBoardId;
   return snapshot?.currentBoardId ?? getMainBoardId(snapshot);
 }
 
@@ -154,7 +159,14 @@ function resolveEffectiveBoardId(session, rawBoardId) {
  */
 export async function dispatchRecordReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — normalise the board scope FIRST, before validation,
+  // snapshot lookup/mutation, Map-key encoding, outward metadata, telemetry and
+  // effective-slot attachment. A legacy `board_id: ''` used to be routable and
+  // unroutable at the same time: `getCircuitBucket` read it as "current board"
+  // while `validateBoardScope` compared it to the current board id and rejected
+  // the whole call as `wrong_board`. Doing this at the dispatcher boundary means
+  // every seam below sees the one spelling they already agree on — absent.
+  const input = normaliseBoardScopeInput(call.input);
   // readback-correction-optionb §6 — capability flag threaded via the
   // write dispatcher's extraCtx (stage6-shadow-harness.js sources it from
   // entry.voiceLatency.capabilities.hasLowConfReadbackV1). Absent/false on
@@ -401,7 +413,12 @@ export async function dispatchRecordReading(call, ctx) {
       divisor: zeClamp.correction.divisor,
     });
   }
-  perTurnWrites.readings.set(
+  // A2-multiboard — go through the ONE staging helper so the write is
+  // sequenced + journaled. The raw Map key is board-AMBIGUOUS (record_reading
+  // carries no board_id in the common case), so a plain Map.set would let a
+  // board-B write DESTROY the board-A write from earlier in the same turn.
+  recordReadingWrite(
+    perTurnWrites,
     encodeReadingKey(input.field, input.circuit, input.board_id),
     recordValue
   );
@@ -409,12 +426,21 @@ export async function dispatchRecordReading(call, ctx) {
   // (the Map above is last-write-wins) so two distinct same-turn
   // designation changes each get their own read-back + dedupe token.
   if (input.field === 'circuit_designation' && Array.isArray(perTurnWrites.designationOps)) {
-    perTurnWrites.designationOps.push({
-      circuit: input.circuit,
-      boardId: input.board_id ?? null,
-      value: input.value,
-      confidence: input.confidence ?? 1.0,
-    });
+    // A2-multiboard item 3 — `boardId` stays the RAW value (existing consumers
+    // read it and the wire dedupe token is built from it), but the EFFECTIVE
+    // board is stamped alongside it so the bundler's op grouping can key on the
+    // real per-board identity instead of merging two boards' same-ref writes.
+    perTurnWrites.designationOps.push(
+      attachEffectiveOpBoard(
+        {
+          circuit: input.circuit,
+          boardId: input.board_id ?? null,
+          value: input.value,
+          confidence: input.confidence ?? 1.0,
+        },
+        resolveEffectiveBoardId(session, input.board_id)
+      )
+    );
   }
 
   // Ring continuity tracking — stamp the circuit's last-write timestamp
@@ -629,7 +655,11 @@ function stageClearReadingRefusal(call, ctx, input) {
  */
 export async function dispatchClearReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading. Note this is the CIRCUIT
+  // clear, which is in scope; `clear_board_reading` is deliberately EXEMPT (an
+  // injected empty id there must keep rejecting rather than silently retarget a
+  // destructive clear at the current board).
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -709,17 +739,22 @@ export async function dispatchClearReading(call, ctx) {
   const clearEffectiveBoardId = resolveEffectiveBoardId(session, input.board_id);
   const clearEffectiveKey = rawCircuitSlot(input.field, input.circuit, clearEffectiveBoardId);
   const clearRawKey = rawCircuitSlot(input.field, input.circuit, input.board_id ?? null);
-  for (const [mapKey, val] of perTurnWrites.readings) {
+  // A2-multiboard — removal goes through the JOURNAL, not a bare
+  // `readings.delete(mapKey)`. Two boards' writes can share ONE raw Map key
+  // (board_id omitted on both), so deleting the raw key would silently
+  // un-write the OTHER board's reading — a spoken-but-not-written defect on a
+  // board this clear never targeted. `removeReadingWrites` drops only the
+  // journal ENTRIES whose identity matches, then re-points the Map at whatever
+  // winner still claims that raw key. The predicate below is the pre-journal
+  // two-mode contract verbatim, so legacy Symbol-less fixtures are unaffected.
+  removeReadingWrites(perTurnWrites, (mapKey, val) => {
     const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
-    let matches;
     if (sym) {
-      matches = rawCircuitSlot(sym.field, sym.circuit, sym.boardId) === clearEffectiveKey;
-    } else {
-      const decoded = decodeReadingKey(mapKey);
-      matches = rawCircuitSlot(decoded.field, decoded.circuit, decoded.boardId) === clearRawKey;
+      return rawCircuitSlot(sym.field, sym.circuit, sym.boardId) === clearEffectiveKey;
     }
-    if (matches) perTurnWrites.readings.delete(mapKey);
-  }
+    const decoded = decodeReadingKey(mapKey);
+    return rawCircuitSlot(decoded.field, decoded.circuit, decoded.boardId) === clearRawKey;
+  });
   perTurnWrites.cleared.push(
     attachEffectiveSlot(
       {
@@ -779,7 +814,8 @@ export async function dispatchClearReading(call, ctx) {
  */
 export async function dispatchCreateCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -929,22 +965,33 @@ export async function dispatchCreateCircuit(call, ctx) {
     boardId: input.board_id,
   });
 
-  perTurnWrites.circuitOps.push({
-    op: 'create',
-    circuit_ref: input.circuit_ref,
-    // "Work on Board" hotfix slice 1.1a — circuit_updates wire shape carries
-    // board_id so the iOS apply path (which converts shadow-harness's legacy-
-    // shape delete projection into a bucket lookup) routes the new bucket to
-    // the right board. Omit-when-undefined preserves byte-identical traffic
-    // for single-board sessions.
-    ...(input.board_id != null ? { board_id: input.board_id } : {}),
-    meta: {
-      designation: input.designation ?? null,
-      phase: input.phase ?? null,
-      rating_amps: input.rating_amps ?? null,
-      cable_csa_mm2: input.cable_csa_mm2 ?? null,
-    },
-  });
+  perTurnWrites.circuitOps.push(
+    attachEffectiveOpBoard(
+      {
+        op: 'create',
+        circuit_ref: input.circuit_ref,
+        // "Work on Board" hotfix slice 1.1a — circuit_updates wire shape carries
+        // board_id so the iOS apply path (which converts shadow-harness's legacy-
+        // shape delete projection into a bucket lookup) routes the new bucket to
+        // the right board. Omit-when-undefined preserves byte-identical traffic
+        // for single-board sessions.
+        //
+        // A2-multiboard item 3 — this RAW key is retained (it is what the
+        // existing consumers read); the EFFECTIVE board is stamped
+        // non-enumerably and it is the stamp, not this key, that the wire
+        // projection emits. A `select_board B → create circuit 4` turn omits
+        // board_id here but MUST reach the clients addressed to B.
+        ...(input.board_id != null ? { board_id: input.board_id } : {}),
+        meta: {
+          designation: input.designation ?? null,
+          phase: input.phase ?? null,
+          rating_amps: input.rating_amps ?? null,
+          cable_csa_mm2: input.cable_csa_mm2 ?? null,
+        },
+      },
+      resolveEffectiveBoardId(session, input.board_id)
+    )
+  );
 
   // Mark the new circuit as "recent" so its full bucket (including the
   // designation we just wrote) renders in the compact snapshot on the next
@@ -997,7 +1044,8 @@ export async function dispatchCreateCircuit(call, ctx) {
  */
 export async function dispatchRenameCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1120,20 +1168,26 @@ export async function dispatchRenameCircuit(call, ctx) {
     });
   }
 
-  perTurnWrites.circuitOps.push({
-    op: 'rename',
-    from_ref: input.from_ref,
-    circuit_ref: input.circuit_ref,
-    // "Work on Board" hotfix slice 1.1a — see dispatchCreateCircuit for
-    // rationale. Rename ops route to the target board's bucket on iOS.
-    ...(input.board_id != null ? { board_id: input.board_id } : {}),
-    meta: {
-      designation: input.designation ?? null,
-      phase: input.phase ?? null,
-      rating_amps: input.rating_amps ?? null,
-      cable_csa_mm2: input.cable_csa_mm2 ?? null,
-    },
-  });
+  perTurnWrites.circuitOps.push(
+    attachEffectiveOpBoard(
+      {
+        op: 'rename',
+        from_ref: input.from_ref,
+        circuit_ref: input.circuit_ref,
+        // "Work on Board" hotfix slice 1.1a — see dispatchCreateCircuit for
+        // rationale. Rename ops route to the target board's bucket on iOS.
+        // A2-multiboard item 3 — the EFFECTIVE board is the stamp below.
+        ...(input.board_id != null ? { board_id: input.board_id } : {}),
+        meta: {
+          designation: input.designation ?? null,
+          phase: input.phase ?? null,
+          rating_amps: input.rating_amps ?? null,
+          cable_csa_mm2: input.cable_csa_mm2 ?? null,
+        },
+      },
+      resolveEffectiveBoardId(session, input.board_id)
+    )
+  );
 
   // Mark the (renamed) circuit as "recent" so its bucket renders in the
   // compact snapshot on the next turn — same rationale as
@@ -1187,7 +1241,8 @@ export async function dispatchRenameCircuit(call, ctx) {
  */
 export async function dispatchDeleteCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1212,14 +1267,22 @@ export async function dispatchDeleteCircuit(call, ctx) {
     boardId: input.board_id,
   });
 
-  perTurnWrites.circuitOps.push({
-    op: 'delete',
-    circuit_ref: input.circuit_ref,
-    // "Work on Board" hotfix slice 1.1a — board_id flows through to iOS so
-    // the legacy-shape delete projection (shadow-harness :436-447) can route
-    // to the right board's bucket on apply.
-    ...(input.board_id != null ? { board_id: input.board_id } : {}),
-  });
+  perTurnWrites.circuitOps.push(
+    attachEffectiveOpBoard(
+      {
+        op: 'delete',
+        circuit_ref: input.circuit_ref,
+        // "Work on Board" hotfix slice 1.1a — board_id flows through to iOS so
+        // the legacy-shape delete projection (shadow-harness :436-447) can route
+        // to the right board's bucket on apply.
+        // A2-multiboard item 3 — the EFFECTIVE board is the stamp below; a
+        // `select_board B → delete circuit 2` turn used to reach the clients
+        // unscoped and delete MAIN's circuit 2.
+        ...(input.board_id != null ? { board_id: input.board_id } : {}),
+      },
+      resolveEffectiveBoardId(session, input.board_id)
+    )
+  );
 
   logToolCall(logger, {
     sessionId: session.sessionId,
@@ -1325,7 +1388,7 @@ function applyCalculatedReading(
     circuit,
     effectiveBoardId ?? boardId ?? null
   );
-  perTurnWrites.readings.set(encodeReadingKey(field, circuit, boardId), calcValue);
+  recordReadingWrite(perTurnWrites, encodeReadingKey(field, circuit, boardId), calcValue);
 }
 
 /**
@@ -1475,7 +1538,11 @@ function noteAlreadyRecordedIfWhollySkipped(
  */
 export async function dispatchCalculateZs(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchRecordReading. The calculators route
+  // through `validateCalculateBoardTarget` rather than `validateBoardScope`, and
+  // its `?? currentBoardId` guard is a `== null` check too, so an empty id used
+  // to survive as a phantom explicit target and come back `board_not_found`.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err = validateCalculateZs(input, session.stateSnapshot);
   if (err) {
@@ -1584,7 +1651,8 @@ export async function dispatchCalculateZs(call, ctx) {
  */
 export async function dispatchCalculateR1PlusR2(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input;
+  // A2-multiboard item 6 — see dispatchCalculateZs.
+  const input = normaliseBoardScopeInput(call.input);
 
   const err = validateCalculateR1PlusR2(input, session.stateSnapshot);
   if (err) {
@@ -1740,7 +1808,10 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
  */
 export async function dispatchSetFieldForAllCircuits(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input ?? {};
+  // A2-multiboard item 6 — see dispatchRecordReading. Only the empty string is
+  // touched; the `'*'` broadcast sentinel is not a board id and is passed
+  // through untouched to the per-board fan-out below.
+  const input = normaliseBoardScopeInput(call.input ?? {});
 
   const err = validateSetFieldForAllCircuits(input);
   if (err) {
@@ -1984,7 +2055,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
           writable: true,
         });
       }
-      perTurnWrites.readings.set(encodeReadingKey(input.field, ref, boardId), bulkMirror);
+      recordReadingWrite(
+        perTurnWrites,
+        encodeReadingKey(input.field, ref, boardId),
+        bulkMirror
+      );
       applied.push({
         circuit: ref,
         field: input.field,
