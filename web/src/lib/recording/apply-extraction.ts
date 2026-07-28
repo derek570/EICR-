@@ -1037,16 +1037,25 @@ function applyCircuitReadings(
   );
   const jobBoardCount = Array.isArray(job.boards) ? job.boards.length : 0;
   /**
-   * The row a flagged replacement may write to, or `null` when it must fail
-   * closed (telemetry already emitted by then). Never creates a row.
+   * The ONE row a wire operation may address, or a NAMED reason it must fail
+   * closed. Never creates a row, never picks between candidates.
+   *
+   * Shared by the `replaces_cleared` replacement resolver (item 6) and by the
+   * circuit-topology ops (item 3) deliberately: a `delete circuit 3 on board B`
+   * and a `replaces_cleared` write to circuit 3 on board B must never disagree
+   * about which row that is. One resolver makes divergence impossible rather
+   * than a thing to keep in sync.
    */
-  const resolveFlaggedReplacementRow = (
-    reading: { circuit: number; board_id?: unknown },
-    column: string
-  ): number | null => {
-    const ref = String(reading.circuit);
-    const bid = reading.board_id;
-    const scopedTo = typeof bid === 'string' && bid !== '' ? bid : null;
+  const resolveExistingRow = (
+    circuitNum: number,
+    boardIdRaw: unknown
+  ): {
+    idx: number | null;
+    reason: 'ambiguous_board' | 'orphan' | 'duplicate' | null;
+    eligible: number;
+  } => {
+    const ref = String(circuitNum);
+    const scopedTo = typeof boardIdRaw === 'string' && boardIdRaw !== '' ? boardIdRaw : null;
 
     if (scopedTo === null) {
       // Item 1 enriches EVERY flagged write with its effective board, so an
@@ -1055,34 +1064,16 @@ function applyCircuitReadings(
       // resolve. Either way the ref alone cannot say which board's circuit 3
       // this is, and ref uniqueness does not rescue it: two boards can both
       // have exactly one circuit 3 and only one of them is a row here.
-      if (jobBoardCount > 1) {
-        pipelineLog('apply_replaces_cleared_ambiguous_board', {
-          circuit: reading.circuit,
-          pwa_column: column,
-          job_board_count: jobBoardCount,
-        });
-        return null;
-      }
+      if (jobBoardCount > 1) return { idx: null, reason: 'ambiguous_board', eligible: 0 };
       // At most one board — every row is that board's, scoped or not, so the
       // ref IS the identity. Require it to be unique.
       const refMatches = refCounts.get(ref) ?? 0;
-      if (refMatches === 1) return indexByRef.get(ref) ?? null;
-      if (refMatches === 0) {
-        pipelineLog('apply_replaces_cleared_orphan_board_ref', {
-          circuit: reading.circuit,
-          pwa_column: column,
-          board_id: null,
-          eligible_matches: 0,
-        });
-      } else {
-        pipelineLog('apply_replaces_cleared_duplicate_board_ref', {
-          circuit: reading.circuit,
-          pwa_column: column,
-          board_id: null,
-          eligible_matches: refMatches,
-        });
-      }
-      return null;
+      if (refMatches === 1) return { idx: indexByRef.get(ref) ?? null, reason: null, eligible: 1 };
+      return {
+        idx: null,
+        reason: refMatches === 0 ? 'orphan' : 'duplicate',
+        eligible: refMatches,
+      };
     }
 
     // Scoped. Eligible = rows already scoped to this board, PLUS — only when
@@ -1101,46 +1092,121 @@ function applyCircuitReadings(
       ...attributedUnscoped,
     ];
 
-    if (eligible.length === 1) {
-      const idx = eligible[0];
+    if (eligible.length === 1) return { idx: eligible[0], reason: null, eligible: 1 };
+    return {
+      idx: null,
+      reason: eligible.length === 0 ? 'orphan' : 'duplicate',
+      eligible: eligible.length,
+    };
+  };
+
+  /**
+   * The row a flagged replacement may write to, or `null` when it must fail
+   * closed (telemetry already emitted by then). Never creates a row.
+   */
+  const resolveFlaggedReplacementRow = (
+    reading: { circuit: number; board_id?: unknown },
+    column: string
+  ): number | null => {
+    const ref = String(reading.circuit);
+    const bid = reading.board_id;
+    const scopedTo = typeof bid === 'string' && bid !== '' ? bid : null;
+    const outcome = resolveExistingRow(reading.circuit, bid);
+
+    if (outcome.idx != null) {
       // If the winner is an unscoped legacy row, record the claim so an
       // ORDINARY reading for a different board later in this same turn gets its
       // own row instead of landing on the one this replacement just took.
-      if (rowBoardId(circuits[idx]) === null && !unscopedRefClaimedBy.has(ref)) {
+      if (
+        scopedTo !== null &&
+        rowBoardId(circuits[outcome.idx]) === null &&
+        !unscopedRefClaimedBy.has(ref)
+      ) {
         unscopedRefClaimedBy.set(ref, scopedTo);
       }
-      return idx;
+      return outcome.idx;
     }
-    if (eligible.length === 0) {
+
+    if (outcome.reason === 'ambiguous_board') {
+      pipelineLog('apply_replaces_cleared_ambiguous_board', {
+        circuit: reading.circuit,
+        pwa_column: column,
+        job_board_count: jobBoardCount,
+      });
+    } else if (outcome.reason === 'orphan') {
       pipelineLog('apply_replaces_cleared_orphan_board_ref', {
         circuit: reading.circuit,
         pwa_column: column,
         board_id: scopedTo,
         eligible_matches: 0,
       });
-    } else {
+    } else if (outcome.reason === 'duplicate') {
       pipelineLog('apply_replaces_cleared_duplicate_board_ref', {
         circuit: reading.circuit,
         pwa_column: column,
         board_id: scopedTo,
-        eligible_matches: eligible.length,
+        eligible_matches: outcome.eligible,
       });
     }
     return null;
   };
 
-  // Apply circuit_updates (create / rename designation) first so
-  // readings against renamed circuits land on the right row.
+  // A2-multiboard item 3 (2026-07-28) — rows removed by a `delete` op in this
+  // envelope. TOMBSTONED, not spliced: every index in this function is an ARRAY
+  // POSITION, and splicing would silently re-point `synthesisedIndexes` and
+  // every already-resolved `idx` at the wrong row. Positions therefore stay
+  // stable for the whole apply and the tombstones are filtered out exactly
+  // once, at the end, after the defaults pass has run.
+  const deletedIndexes = new Set<number>();
+  /**
+   * Recompute every row index from `circuits`, skipping tombstones. Called
+   * after EVERY topology mutation (create / delete / re-key) so the next op —
+   * and every reading after the ops pass — resolves against the shape the
+   * previous op actually left behind.
+   *
+   * A full rebuild rather than incremental patching, because the incremental
+   * version is where the bugs live: `ensureRow` never maintained `refCounts`,
+   * so before this a freshly-created circuit was still `orphan` to the flagged
+   * replacement resolver and its own replacement write was declined.
+   */
+  const rebuildRowIndexes = () => {
+    indexByRef.clear();
+    refCounts.clear();
+    indexByBoardRef.clear();
+    unscopedIndexesByRef.clear();
+    circuits.forEach((row, idx) => {
+      if (deletedIndexes.has(idx)) return;
+      const ref = row.circuit_ref ?? row.number;
+      if (typeof ref !== 'string' || !ref) return;
+      indexByRef.set(ref, idx);
+      refCounts.set(ref, (refCounts.get(ref) ?? 0) + 1);
+      const bid = rowBoardId(row);
+      if (bid == null) pushIndex(unscopedIndexesByRef, ref, idx);
+      else pushIndex(indexByBoardRef, boardRefKey(bid, ref), idx);
+    });
+  };
+
+  // Apply `circuit_updates` (create / rename / delete) first so readings
+  // against a circuit this turn created or renumbered land on the right row.
+  //
+  // ONE ORDERED PASS (A2-multiboard item 3). The wire sequence is
+  // AUTHORITATIVE — the backend emits these in the order the model called the
+  // tools, and `create 3 → delete 3` means the opposite of `delete 3 →
+  // create 3`. Staging by action (all creates, then all deletes) would reorder
+  // the inspector's intent, so every op resolves against the shape its
+  // predecessor left behind and every topology mutation rebuilds the indexes
+  // before the next one is read.
   for (const upd of circuitUpdates) {
     const obj = upd as unknown as Record<string, unknown>;
-    if (upd.circuit < 1 || !upd.designation) {
+    const opBoardId = typeof obj.board_id === 'string' && obj.board_id !== '' ? obj.board_id : null;
+
+    // Strict integer guard. The old `upd.circuit < 1` test let an ENTRY WITH NO
+    // `circuit` AT ALL through (`undefined < 1` is false), which then created a
+    // row keyed `"undefined"` — the `circuit_undefined` reason string below was
+    // unreachable. It is reachable now.
+    if (!Number.isInteger(upd.circuit) || upd.circuit < 1) {
       pipelineLog('apply_circuit_update_skipped', {
-        reason:
-          upd.circuit < 1
-            ? typeof upd.circuit === 'undefined'
-              ? 'circuit_undefined'
-              : 'circuit_lt_1'
-            : 'designation_missing_or_empty',
+        reason: typeof upd.circuit === 'number' ? 'circuit_lt_1' : 'circuit_undefined',
         keys: Object.keys(obj),
         circuit: upd.circuit,
         action: upd.action,
@@ -1148,16 +1214,123 @@ function applyCircuitReadings(
       });
       continue;
     }
-    const idx = ensureRow(upd.circuit);
+
+    // DELETE — resolved BEFORE the empty-designation guard below, because a
+    // delete legitimately carries no designation (the backend projects `''`,
+    // which iOS's non-optional Codable field forces) and that guard silently
+    // dropped every one of them: a circuit the inspector deleted aloud, and
+    // heard confirmed, stayed on screen.
+    //
+    // Fail-closed on the SAME resolver the flagged-replacement path uses. A
+    // delete is the most destructive op on the wire, so an ambiguous target is
+    // never guessed at: an unresolvable delete leaves the row alone and says so
+    // in telemetry. The inspector can re-say it; a wrong-board delete of a
+    // completed circuit's readings is not recoverable by ear.
+    if (upd.action === 'delete') {
+      const outcome = resolveExistingRow(upd.circuit, opBoardId);
+      if (outcome.idx == null) {
+        pipelineLog('apply_circuit_delete_declined', {
+          circuit: upd.circuit,
+          board_id: opBoardId,
+          reason: outcome.reason ?? 'unresolved',
+          eligible_matches: outcome.eligible,
+        });
+        continue;
+      }
+      deletedIndexes.add(outcome.idx);
+      // A row created earlier in THIS envelope and then deleted must not draw
+      // the defaults pass — it is about to disappear.
+      synthesisedIndexes.delete(outcome.idx);
+      rebuildRowIndexes();
+      pipelineLog('apply_circuit_delete_applied', {
+        circuit: upd.circuit,
+        board_id: opBoardId,
+        row_idx: outcome.idx,
+      });
+      continue;
+    }
+
+    // RENUMBERING rename — `from_ref` names the row that must MOVE. Without it
+    // a client can only add a row at the new ref, leaving the old one behind as
+    // a duplicate of the same circuit with the readings still on it.
+    const fromRefRaw = obj.from_ref;
+    const fromRef = Number.isInteger(fromRefRaw) ? (fromRefRaw as number) : null;
+    if (upd.action === 'rename' && fromRef !== null && fromRef !== upd.circuit) {
+      const src = resolveExistingRow(fromRef, opBoardId);
+      const dest = resolveExistingRow(upd.circuit, opBoardId);
+      // Only move when the source is unambiguous AND the destination ref is
+      // genuinely free on that board (`orphan` = zero eligible rows). Moving
+      // onto an occupied ref would merge two circuits' readings.
+      if (src.idx != null && dest.idx == null && dest.reason === 'orphan') {
+        const srcRow = circuits[src.idx];
+        const rekeyed: CircuitRow = { ...srcRow, circuit_ref: String(upd.circuit) };
+        // Legacy rows key off `number` when `circuit_ref` is absent; leaving a
+        // stale one behind would make the row resolve differently downstream.
+        if (typeof srcRow.number === 'string') rekeyed.number = String(upd.circuit);
+        circuits[src.idx] = rekeyed;
+        rebuildRowIndexes();
+        pipelineLog('apply_circuit_rekeyed', {
+          from_ref: fromRef,
+          circuit: upd.circuit,
+          board_id: opBoardId,
+          row_idx: src.idx,
+        });
+      } else {
+        pipelineLog('apply_circuit_rekey_declined', {
+          from_ref: fromRef,
+          circuit: upd.circuit,
+          board_id: opBoardId,
+          reason: src.idx == null ? `source_${src.reason ?? 'unresolved'}` : 'target_occupied',
+        });
+      }
+    }
+
+    if (!upd.designation) {
+      // A METADATA-FREE CREATE still has to reach the row store. The folded-
+      // reading carrier drops null metadata, so `create_circuit{circuit_ref}`
+      // with no designation emitted nothing at all — the created circuit
+      // reached neither client and the next dictated reading for it had no row
+      // to land on. This projection is its only carrier.
+      if (upd.action === 'create') {
+        const idx =
+          opBoardId != null
+            ? ensureBoardScopedRow(upd.circuit, opBoardId)
+            : ensureRow(upd.circuit);
+        rebuildRowIndexes();
+        pipelineLog('apply_circuit_create_bare_applied', {
+          circuit: upd.circuit,
+          board_id: opBoardId,
+          row_idx: idx,
+        });
+      } else {
+        pipelineLog('apply_circuit_update_skipped', {
+          reason: 'designation_missing_or_empty',
+          keys: Object.keys(obj),
+          circuit: upd.circuit,
+          action: upd.action,
+          designation_present: false,
+        });
+      }
+      continue;
+    }
+
+    // Board-aware from here: circuit refs are per-board, so a create/rename the
+    // server performed on a sub-board must not land on MAIN's row of the same
+    // ref. Unscoped ops keep the ref-only path they have always taken.
+    const idx =
+      opBoardId != null ? ensureBoardScopedRow(upd.circuit, opBoardId) : ensureRow(upd.circuit);
+    const rowCreated = idx === circuits.length - 1 && !deletedIndexes.has(idx);
+    rebuildRowIndexes();
     const row = circuits[idx];
     if (upd.action === 'rename' || !hasValue(row.circuit_designation)) {
       circuits[idx] = { ...row, circuit_designation: upd.designation };
       pipelineLog('apply_circuit_update_applied', {
         circuit: upd.circuit,
         action: upd.action,
+        board_id: opBoardId,
         designation_length: upd.designation.length,
         designation_preview: upd.designation.slice(0, 40),
-        rowCreated: idx === circuits.length - 1,
+        rowCreated,
       });
     } else {
       pipelineLog('apply_circuit_update_user_value_kept', {
@@ -1336,6 +1509,17 @@ function applyCircuitReadings(
         });
       }
     }
+  }
+
+  // Drop the tombstones LAST — every index above is an array position, and the
+  // defaults pass immediately above is the final consumer of them.
+  if (deletedIndexes.size > 0) {
+    const kept = circuits.filter((_, idx) => !deletedIndexes.has(idx));
+    pipelineLog('apply_circuits_deleted_rows_dropped', {
+      deleted_count: deletedIndexes.size,
+      remaining: kept.length,
+    });
+    return kept;
   }
 
   return circuits;

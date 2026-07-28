@@ -70,7 +70,32 @@ export interface FieldClear {
 export interface CircuitUpdate {
   circuit: number;
   designation: string;
-  action: 'create' | 'rename';
+  /**
+   * A2-multiboard item 3 (2026-07-28) — `delete` joined the union. The backend
+   * has always dispatched `delete_circuit`, but the wire carrier for circuit
+   * ops is a fold of the op's metadata into `readings`, and a delete has no
+   * metadata to fold: it reached NEITHER client, so a circuit the inspector
+   * deleted aloud stayed on screen. It now projects explicitly, with
+   * `designation: ''` (iOS declares that field non-optional, so it cannot be
+   * omitted without rejecting the whole envelope on an older installed build).
+   */
+  action: 'create' | 'rename' | 'delete';
+  /**
+   * The board the SERVER actually mutated, stamped at dispatch. Circuit refs
+   * are per-board — every board has a circuit 1 — and the model overwhelmingly
+   * omits `board_id` on these tools because the scope comes from the session's
+   * `select_board` state. Without this a `select_board sub-b → delete 2` turn
+   * reached the clients unscoped and deleted MAIN's circuit 2. Absent on
+   * single-board traffic, which stays byte-identical.
+   */
+  board_id?: string | null;
+  /**
+   * Present only on a RENUMBERING rename (`from_ref !== circuit`). The row at
+   * `from_ref` must MOVE to `circuit`; without it a client can only add a row
+   * at the new ref and leaves the old one behind as a duplicate of the same
+   * circuit.
+   */
+  from_ref?: number;
 }
 
 export interface Observation {
