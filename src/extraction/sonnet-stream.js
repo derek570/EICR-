@@ -927,7 +927,11 @@ const TRANSCRIPT_NORMALISED = Symbol('transcriptNormalised');
 // supplied (or overwritten) by a client JSON frame, and never leaks into
 // JSON.stringify output. Non-writable: the stamp is set-once by design — a
 // drain re-entry must see the ORIGINAL arrival time, not a re-stamp.
-const TRANSCRIPT_ARRIVED_AT = Symbol('transcriptArrivedAt');
+// Exported for TEST observability only (asserting byte-exact stamp survival
+// through the queue/requeue spreads). Exporting does not weaken the trust
+// property: clients speak JSON, which cannot carry Symbol keys — only
+// same-process server code can read or set this property.
+export const TRANSCRIPT_ARRIVED_AT = Symbol('transcriptArrivedAt');
 
 /**
  * Normalise a freeform utterance for equality-based dedupe.
