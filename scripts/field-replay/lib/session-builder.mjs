@@ -56,6 +56,12 @@ export const ACTIVE_ENTRY_CLASSIFICATION = Object.freeze({
   seenTranscriptUtterances: { class: 'reproduced', how: 'initialized new Set() (reverse-race dedupe ledger)' },
   recentAskAnswers: { class: 'reproduced', how: '[] (content-match fallback dedupe)' },
   recentTranscripts: { class: 'reproduced', how: 'initialized [] (reverse content-match dedupe FIFO)' },
+  // Plan E §4b piece 4 (2026-07-28) — synthetic-reinjection reservation
+  // ledger + confirmation-mode latch. Both start empty/false exactly as the
+  // production session_start init does; the replay's turns populate them
+  // through the same handleTranscript/ask_user_answered seams.
+  reinjectionReservations: { class: 'reproduced', how: 'initialized [] (reinjection reservation ledger — commit/rollback settled per turn)' },
+  lastConfirmationsEnabled: { class: 'reproduced', how: 'initialized false; latched from each replayed transcript frame carrying confirmations_enabled' },
 });
 
 /**
@@ -146,6 +152,9 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
     seenTranscriptUtterances: new Set(),
     recentAskAnswers: [],
     recentTranscripts: [],
+    // Plan E §4b piece 4 — same construction-time shape as production.
+    reinjectionReservations: [],
+    lastConfirmationsEnabled: false,
   };
   entry.filledSlotsShadow = createFilledSlotsShadowLogger({
     sessionGetter: () => activeSessions.get(sessionId),

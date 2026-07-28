@@ -87,6 +87,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 const classifyOvertakeSpy = jest.fn(() => ({ kind: 'no_pending_asks' }));
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: classifyOvertakeSpy,
+  // Plan E (2026-07-28) — sonnet-stream also imports the shared slot-identity
+  // helpers from this module; the mock must export them or the suite fails to
+  // link. Minimal fakes: no slot ever matches (the classifier spy above stays
+  // the single behavioural control point for these suites).
+  buildReplySlot: jest.fn(() => ({ fieldKey: null, circuits: null, boardId: null })),
+  isSameSemanticSlot: jest.fn(() => false),
 }));
 
 // pre-LLM gate spy — arg[0] is the text the gate judges. Always forward so the
@@ -150,9 +156,8 @@ const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.
 // REAL helpers — the whole point is to exercise the genuine anchor + parser.
 const { normalise } = await import('../extraction/transcript-normalise.js');
 const { hasReadingFieldAnchor } = await import('../extraction/reading-transcript-anchor.js');
-const { parseBareMegaohmsWithUnit } = await import(
-  '../extraction/dialogue-engine/parsers/megaohms.js'
-);
+const { parseBareMegaohmsWithUnit } =
+  await import('../extraction/dialogue-engine/parsers/megaohms.js');
 
 // ── Harness helpers (lifted from ask-routing.test.js) ────────────────────────
 
