@@ -735,7 +735,9 @@ describe('A2-multiboard — two same-turn spellings of one slot resolve to ONE f
     // No Symbol-keyed manifest survives either — the export is gone, so nothing
     // can read one; this pins that no NEW symbol quietly replaced it.
     expect(
-      Object.getOwnPropertySymbols(r).map((s) => s.toString()).join('|')
+      Object.getOwnPropertySymbols(r)
+        .map((s) => s.toString())
+        .join('|')
     ).not.toContain('ambiguous');
   });
 });
@@ -1165,4 +1167,119 @@ describe('A2-multiboard — the two-spelling turn resolves on the real LIVE lane
     expect(p5CallSites).toHaveLength(2);
     expect(new Set(p5CallSites).size).toBe(2); // one per lane, not one line twice
   });
+});
+
+// ---------------------------------------------------------------------------
+// Archive §4 leg 4d-iv — ORDINARY-write LWW dedup (the UNFLAGGED path).
+//
+// The flagged legs above prove the journal collapses two spellings of one
+// effective slot when a clear is in play. This leg proves the SAME collapse on
+// a turn with NO clear at all — i.e. that the dedup is a property of the
+// projection, not of the replacement marker.
+//
+// Why it matters: pre-A2-multiboard the two spellings were two Map entries and
+// BOTH reached the wire. Web's fill-only gate then filled on the FIRST and
+// skipped the second with `apply_circuit_reading_user_value_kept`, so web ended
+// on the OLDER value while the backend snapshot and iOS both ended
+// last-write-wins. A silent cross-client divergence with nothing spoken about
+// it. One wire reading carrying the LAST value is what makes all three agree.
+// ---------------------------------------------------------------------------
+
+describe('A2-multiboard leg 4d-iv — an ordinary turn dedups two spellings to the LAST value', () => {
+  test('board-omitted then explicit-current-board: ONE wire reading, the later value, NO marker', async () => {
+    const session = makeSession({ 3: {} });
+    const p = createPerTurnWrites();
+    // Spelling 1 — board omitted, so the dispatcher resolves it to the current
+    // board ('main'). Raw Map key carries no board.
+    await dispatchRecordReading(
+      recordCall(
+        {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.42',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+        'w1'
+      ),
+      ctx(session, p)
+    );
+    // Spelling 2 — the SAME slot named explicitly. Different raw Map key,
+    // identical EFFECTIVE slot.
+    await dispatchRecordReading(
+      recordCall(
+        {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.44',
+          confidence: 0.9,
+          source_turn_id: 't1',
+          board_id: 'main',
+        },
+        'w2'
+      ),
+      ctx(session, p)
+    );
+    const r = bundle(p);
+
+    const zs = r.extracted_readings.filter((x) => x.field === 'measured_zs_ohm');
+    // Asserted as a VALUE list, not a bare length — a regression that emits both
+    // spellings should say WHICH values leaked, not just "expected 1 got 2".
+    expect(zs.map((x) => x.value)).toEqual(['0.44']);
+    expect(zs[0].circuit).toBe(3);
+    // Nothing was cleared this turn, so nothing is a replacement.
+    expect(flagged(r)).toHaveLength(0);
+    expect('replaces_cleared' in zs[0]).toBe(false);
+    expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toBeUndefined();
+  });
+
+  test('the reverse dictation order also ends on the LAST value (order is the only input)', async () => {
+    const session = makeSession({ 3: {} });
+    const p = createPerTurnWrites();
+    await dispatchRecordReading(
+      recordCall(
+        {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.44',
+          confidence: 0.9,
+          source_turn_id: 't1',
+          board_id: 'main',
+        },
+        'w1'
+      ),
+      ctx(session, p)
+    );
+    await dispatchRecordReading(
+      recordCall(
+        {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.42',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+        'w2'
+      ),
+      ctx(session, p)
+    );
+    const r = bundle(p);
+
+    // Mirror image of the leg above — proves the winner is chosen by SEQUENCE,
+    // not by which spelling is "more specific" (a board-id-preferring tie-break
+    // would pass the first leg and fail this one).
+    expect(
+      r.extracted_readings.filter((x) => x.field === 'measured_zs_ohm').map((x) => x.value)
+    ).toEqual(['0.42']);
+  });
+
+  // The discriminating NEGATIVE for this leg — same field+circuit on two
+  // DIFFERENT boards must NOT dedup (a collapse keyed on (field, circuit) alone
+  // would eat the second board's reading entirely) — lives in
+  // `stage6-a2-multiboard-enrichment.test.js` ("select_board A → write →
+  // select_board B → write: both survive AND carry their own board"). It is not
+  // duplicated here because the cross-board turn is only reachable via a
+  // `currentBoardId` switch: `record_reading` rejects an explicit off-current
+  // board outright (`wrong_board`), so the two-spelling shape above cannot
+  // express it.
 });

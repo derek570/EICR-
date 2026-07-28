@@ -216,3 +216,127 @@ describe('A2-multiboard — the branch is non-destructive everywhere it cannot r
     expect(circuits.find((c) => c.id !== 'c-legacy-3')!.measured_zs_ohm).toBe('0.55');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Archive §4 leg 4d-iv — the CONSUMER half of the ordinary-write LWW dedup.
+//
+// The producer half (`stage6-a2-replaces-cleared.test.js`, leg 4d-iv) proves
+// the backend now emits exactly ONE reading — the LAST value — when a turn
+// spells one effective slot two ways. That fix is only meaningful because of
+// what web does with two: its gate is fill-only, so it filled on the FIRST and
+// skipped the second with `apply_circuit_reading_user_value_kept` — ending on
+// the OLDER value while the backend snapshot and iOS both ended
+// last-write-wins. These legs pin BOTH sides of that: the divergence web still
+// has if two ever arrive, and the correct outcome for the one that does.
+// ---------------------------------------------------------------------------
+
+describe('A2-multiboard leg 4d-iv — web ends on the LAST value the backend kept', () => {
+  it('the single deduped reading lands, even though a sibling spelling would have been skipped', () => {
+    const job = makeJob({
+      boards: [{ id: MAIN, designation: 'DB-1', board_type: 'main' }],
+      circuits: [row({ id: 'c-legacy-3' })],
+    } as Partial<JobDetail>);
+
+    // Exactly what the producer leg asserts reaches the wire: ONE reading,
+    // the later value.
+    const circuits = applied(job, makeResult({ readings: [zs(undefined, '0.44')] }));
+
+    expect(circuits.find((c) => c.id === 'c-legacy-3')!.measured_zs_ohm).toBe('0.44');
+    expect(stages()).not.toContain('apply_circuit_reading_user_value_kept');
+  });
+
+  it('WHY THE BACKEND MUST DEDUP — two spellings of one slot leave web on the FIRST', () => {
+    // The characterisation lock. This is the divergence, reproduced: web's
+    // fill-only gate is order-sensitive and has no notion of "the server sent
+    // me two views of one write", so it keeps the earlier value and logs the
+    // skip. If a future change ever makes web LWW on its own, this test goes
+    // red and the backend dedup can be reconsidered — until then the dedup is
+    // load-bearing, not belt-and-braces.
+    const job = makeJob({
+      boards: [{ id: MAIN, designation: 'DB-1', board_type: 'main' }],
+      circuits: [row({ id: 'c-legacy-3' })],
+    } as Partial<JobDetail>);
+
+    const circuits = applied(
+      job,
+      makeResult({ readings: [zs(undefined, '0.42'), zs(MAIN, '0.44')] })
+    );
+
+    expect(circuits.find((c) => c.id === 'c-legacy-3')!.measured_zs_ohm).toBe('0.42');
+    expect(stages()).toContain('apply_circuit_reading_user_value_kept');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Archive §4 leg 4e — a flagged LIM replacement on a multi-board job.
+//
+// `apply_circuit_reading_lim_ambiguous_ref_skipped` (F6/F4) drops a LIM write
+// ENTIRELY when its ref is ambiguous, because a LIM overwrites a populated cell
+// and web's ref-only apply could not tell two boards' circuit 1 apart —
+// corrupting the wrong board is worse than dropping the write.
+//
+// Item 6 bypasses that guard for a FLAGGED replacement, and only AFTER the
+// resolver has already returned a single row. That ordering is the whole
+// safety argument: the resolver DECLINES rather than picks, so the ambiguity
+// the guard defends against has already been ruled out by the time the bypass
+// is consulted. Leaving the guard armed there would silently drop exactly the
+// spoken-and-cleared LIM correction the board scoping exists to route.
+// ---------------------------------------------------------------------------
+
+describe('A2-multiboard leg 4e — a flagged LIM replacement routes; an unflagged one still fails closed', () => {
+  const limOn = (boardId: string, flagged: boolean) =>
+    ({
+      circuit: 1,
+      field: 'measured_zs_ohm',
+      value: 'LIM',
+      board_id: boardId,
+      ...(flagged ? { replaces_cleared: true } : {}),
+    }) as unknown as ExtractionResult['readings'][number];
+
+  const twoBoardsSharingCircuit1 = () =>
+    makeJob({
+      circuits: [
+        row({
+          id: 'c-main-1',
+          circuit_ref: '1',
+          board_id: MAIN,
+          measured_zs_ohm: '0.42',
+        } as Partial<CircuitRow>),
+        row({
+          id: 'c-sub-1',
+          circuit_ref: '1',
+          board_id: SUB,
+          measured_zs_ohm: '0.55',
+        } as Partial<CircuitRow>),
+      ],
+    });
+
+  it('FLAGGED — only the named board becomes LIM, and the ambiguity guard never fires', () => {
+    const circuits = applied(
+      twoBoardsSharingCircuit1(),
+      makeResult({ readings: [limOn(SUB, true)] })
+    );
+
+    expect(circuits.find((c) => c.id === 'c-sub-1')!.measured_zs_ohm).toBe('LIM');
+    // The other board's reading is untouched — the corruption the guard exists
+    // to prevent did not happen by another route.
+    expect(circuits.find((c) => c.id === 'c-main-1')!.measured_zs_ohm).toBe('0.42');
+    expect(stages()).not.toContain('apply_circuit_reading_lim_ambiguous_ref_skipped');
+    // …and it landed as a REPLACEMENT over a populated cell, not by accident on
+    // an empty one.
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+  });
+
+  it('NEGATIVE — the identical UNFLAGGED LIM still fails closed on the ambiguous ref', () => {
+    const circuits = applied(
+      twoBoardsSharingCircuit1(),
+      makeResult({ readings: [limOn(SUB, false)] })
+    );
+
+    // Nothing moved on EITHER board…
+    expect(circuits.find((c) => c.id === 'c-main-1')!.measured_zs_ohm).toBe('0.42');
+    expect(circuits.find((c) => c.id === 'c-sub-1')!.measured_zs_ohm).toBe('0.55');
+    // …and the drop is explained in the log rather than being silent.
+    expect(stages()).toContain('apply_circuit_reading_lim_ambiguous_ref_skipped');
+  });
+});
