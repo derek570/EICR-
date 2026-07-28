@@ -512,6 +512,53 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
   });
 
+  it('BOARD-TAB SHAPE — an OFF-PEAK sole board is a sibling of main, not a sub, and overwrites', () => {
+    // `off_peak` is a TOP-LEVEL board fed straight from the supply mains: the
+    // Board tab clears `parent_board_id` when the user flips to it, and the
+    // backend hierarchy validator accepts one main beside one off_peak. So a
+    // legacy flat job whose sole synthesised board the user has relabelled
+    // "Off-Peak Board" is still ONE board owning its own unscoped rows —
+    // declining it would reopen the defect exactly as the main-typed shape did.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [{ id: 'op-1', board_type: 'off_peak' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
+    expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('THE CLOSED UNION — every BoardType picks a side, and only the CHILD types defer', () => {
+    // `BoardType` is closed (`packages/shared-types/src/circuit.ts:9`), so this
+    // is exhaustive, not a sample. A new member added later lands here as a
+    // failure rather than silently inheriting whichever side the predicate
+    // happens to give it.
+    const expectations: [string | undefined, boolean][] = [
+      ['main', false],
+      ['off_peak', false],
+      [undefined, false],
+      ['sub_distribution', true],
+      ['sub_main', true],
+    ];
+    for (const [boardType, shouldDefer] of expectations) {
+      const board: Record<string, unknown> = { id: 'b-1' };
+      if (boardType !== undefined) board.board_type = boardType;
+      const job = makeJob({
+        circuits: [populatedRow()],
+        boards: [board],
+      } as unknown as Partial<JobDetail>);
+      const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+      expect(
+        { boardType, value: row.ir_live_live_mohm },
+        `board_type=${String(boardType)} should ${shouldDefer ? 'defer' : 'overwrite'}`
+      ).toEqual({ boardType, value: shouldDefer ? 'LIM' : '100' });
+      clearPipelineLog();
+    }
+  });
+
   it('a MAIN-typed registry board that declares a parent is still a sub scope, and defers', () => {
     // `board_type` alone is not the whole predicate: a declared parent is
     // independent proof the unscoped rows belong to a scope nothing names.

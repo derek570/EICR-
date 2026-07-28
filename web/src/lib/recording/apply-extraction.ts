@@ -966,12 +966,21 @@ function applyCircuitReadings(
           const rec = b as { id?: unknown; board_type?: unknown; parent_board_id?: unknown } | null;
           addId(rec?.id);
           if (typeof rec?.id !== 'string' || rec.id === '') continue;
-          // Mirrors the backend's own main-board predicate verbatim
-          // (`src/extraction/stage6-multi-board-shape.js:54`): a board is main
-          // when its type is 'main' OR absent (legacy records carry no type).
-          // A declared parent is independent proof of a sub board.
-          const typeIsMain = !rec.board_type || rec.board_type === 'main';
-          registry.push({ id: rec.id, isSub: !typeIsMain || rec.parent_board_id != null });
+          // What matters is whether the board is a CHILD — a child implies a
+          // parent scope nothing here names. `BoardType` is a CLOSED union
+          // (`packages/shared-types/src/circuit.ts:9`) of exactly
+          // main | sub_distribution | sub_main | off_peak, so this is
+          // exhaustive rather than a guess: `main` and `off_peak` are both
+          // TOP-LEVEL boards fed straight from the supply mains — the Board
+          // tab says so and CLEARS `parent_board_id` for both
+          // (`web/src/app/job/[id]/board/page.tsx`), and the backend hierarchy
+          // validator accepts one main beside one off_peak. An ABSENT type is
+          // main, mirroring the backend's own predicate
+          // (`src/extraction/stage6-multi-board-shape.js:54`). A declared
+          // parent is independent proof of a child whatever the type says.
+          const typeIsTopLevel =
+            !rec.board_type || rec.board_type === 'main' || rec.board_type === 'off_peak';
+          registry.push({ id: rec.id, isSub: !typeIsTopLevel || rec.parent_board_id != null });
         }
         // Rows are read BEFORE the reading loop can synthesise any (a
         // synthesised row carries no board_id, so it could only ever dilute
@@ -1010,11 +1019,14 @@ function applyCircuitReadings(
         // (`web/src/app/job/[id]/board/page.tsx` — the memo and
         // `persistBoards`), and the Circuits tab deliberately renders those
         // unscoped legacy rows under the selected board. That job is genuinely
-        // single-board: a registry MAIN board that owns no row owns the
+        // single-board: a registry TOP-LEVEL board that owns no row owns the
         // unscoped ones. Declining it would keep the stale value and reopen
-        // the very spoken-but-not-written defect A2 exists to close, so a main
-        // board never fires this term — only a sub board, which by definition
-        // implies a parent scope nothing here names.
+        // the very spoken-but-not-written defect A2 exists to close, so a
+        // top-level board never fires this term — only a CHILD board, which by
+        // definition implies a parent scope nothing here names. The same
+        // applies to an `off_peak` board relabelled onto a legacy flat job:
+        // it is a sibling of main, not a sub-board, so it owns its own
+        // unscoped rows.
         const implicitUnregisteredBoard =
           hasUnscopedRow && registry.some((b) => b.isSub && !rowScopedIds.has(b.id));
         // …with ONE seeded id. When web has no board identity of its own at
