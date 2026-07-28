@@ -1454,6 +1454,7 @@ async function brokerDeterministicAsk({
   question,
   contextField,
   contextCircuit,
+  contextBoardId = null,
   expectedAnswerShape,
   pendingValue,
   onAskUserStarted = null,
@@ -1475,15 +1476,23 @@ async function brokerDeterministicAsk({
       pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
     }, ASK_USER_TIMEOUT_MS);
     try {
-      // Plan E §4b piece 3 (Codex r2) — deliberately NO contextCircuits /
-      // contextBoardId here. These are the server's own deterministic §A4
-      // asks, whose whole purpose is to ESTABLISH the missing scope ("which
-      // circuit was that for?"); there is no multi-circuit or board scope to
-      // carry, and no caller has one to pass. The registry defaults both to
-      // null, which is the correct ask-side scope for this family.
+      // Plan E §4b piece 3 — no contextCircuits: these are the server's own
+      // deterministic §A4 asks, which ask about ONE circuit at a time (the
+      // classifier falls back to singular contextCircuit), so there is no
+      // circuit SET to carry.
+      //
+      // contextBoardId IS carried (Codex r3, lens 1 — an earlier comment here
+      // wrongly claimed no caller had one to pass). The shape-2 value ask knows
+      // the board it is asking about and already uses it for resolveValueAnswer;
+      // omitting it from the registry left askBoard null, so a reply that names
+      // the board ("Zs for circuit 4 on the garage board is 0.35") compared as a
+      // DIFFERENT slot and was classified user_moved_on instead of answering the
+      // ask it was plainly answering. Callers with no board scope pass null,
+      // which is the pre-existing behaviour.
       pendingAsks.register(pvrId, {
         contextField,
         contextCircuit,
+        contextBoardId: contextBoardId ?? null,
         expectedAnswerShape,
         pendingWrite: null,
         pendingValue: pendingValue ?? null,
@@ -1837,6 +1846,7 @@ async function runPendingValueChain(args) {
           question: `Which circuit is that ${value}${valueUnit ? ` ${valueUnit}` : ''} reading for?`,
           contextField: fieldKey,
           contextCircuit: null,
+          contextBoardId,
           expectedAnswerShape: 'circuit_ref',
           pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
         });
@@ -1920,6 +1930,7 @@ async function runPendingValueChain(args) {
         question: `Sorry — which reading was that ${value}${valueUnit ? ` ${valueUnit}` : ''} for${circuit != null ? `, on circuit ${circuit}` : ''}?`,
         contextField: 'none',
         contextCircuit: circuit,
+        contextBoardId,
         expectedAnswerShape: 'free_text',
         // Carrying the pendingValue on the registry entry is what lets the
         // transcript-overtake continuation branch accept the field-name
@@ -1960,6 +1971,7 @@ async function runPendingValueChain(args) {
         question: `What is the ${fieldKey.replace(/_/g, ' ')} reading${circuit != null ? ` for circuit ${circuit}` : ''}?`,
         contextField: fieldKey,
         contextCircuit: circuit,
+        contextBoardId,
         expectedAnswerShape: 'number',
         pendingValue: null,
       });
