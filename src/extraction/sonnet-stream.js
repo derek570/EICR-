@@ -698,6 +698,158 @@ function dispatchObservationUpdates(ws, sessionId, updates, { failFast = false }
   }
 }
 
+// ---------------------------------------------------------------------------
+// Plan A1a (2026-07-27) §3.4c — ORDERED FRAME LEDGER for extraction results.
+//
+// Why: the reconnect flush re-sent only the `type:'extraction'` envelope and
+// never the STANDALONE `field_corrected` frames — and neither client consumes
+// nested `field_corrections` from an extraction payload — so a successful
+// server-side board clear during socket loss was spoken and persisted
+// server-side while the client stayed stale (the F5 class, on the recovery
+// path). ONE shared emitter now drives BOTH the immediate-send path and
+// flushPendingExtractions over the SAME ordered ledger:
+//
+//   extraction → ALL current_board_changed → ALL observation_update →
+//   ALL field_corrected → voice_command_response (when the result carries
+//   spoken_response/action)
+//
+// preserving today's live ordering. Emission state is RESUMABLE at FRAME
+// level: a Symbol-backed cursor on the raw result object (invisible to
+// JSON.stringify and every spread by construction — pendingExtractions
+// stores raw results that are destructure-spread into extraction frames, so
+// an enumerable cursor would leak onto the wire). On any failure the cursor
+// records the FIRST unsent frame; the requeued result resumes exactly there
+// on the next flush — no loss, no duplicates, and the audible VCR (last
+// fallible frame) is delivered EXACTLY once (P4d rows 6–7). readyState is
+// checked before EVERY frame; cost updates stay best-effort OUTSIDE the
+// ledger. The ledger OWNS the observation_update sends (round-9: the legacy
+// dispatchObservationUpdates helper swallows per-frame failures and returns
+// no status, so a cursor could not see an unsent observation frame; the
+// legacy helper survives for NON-ledger callers — the legacy batch path).
+// ---------------------------------------------------------------------------
+export const EXTRACTION_EMISSION_CURSOR = Symbol('stage6.extractionEmissionCursor');
+
+function buildResultFrameLedger(snapshot, result) {
+  const frames = [];
+  const {
+    questions_for_user: _q,
+    extracted_readings,
+    spoken_response,
+    action,
+    observationUpdates,
+    ...rest
+  } = result;
+  frames.push({
+    kind: 'extraction',
+    json: JSON.stringify({ type: 'extraction', result: { readings: extracted_readings, ...rest } }),
+  });
+  if (Array.isArray(result.board_ops)) {
+    for (const op of result.board_ops) {
+      if (!op || typeof op.board_id !== 'string') continue;
+      const isAddBoard = op.op === 'add_board';
+      const isSelectBoard = op.op === 'select_board';
+      if (!isAddBoard && !isSelectBoard) continue;
+      const target = (snapshot?.boards ?? []).find((b) => b && b.id === op.board_id);
+      frames.push({
+        kind: 'current_board_changed',
+        json: JSON.stringify({
+          type: 'current_board_changed',
+          board_id: op.board_id,
+          designation: target?.designation ?? null,
+          source: isAddBoard ? 'sonnet_add' : 'sonnet',
+        }),
+      });
+    }
+  }
+  if (Array.isArray(observationUpdates)) {
+    for (const u of observationUpdates) {
+      if (!u) continue;
+      const ruleSixCanonical = lookupRegulation(u.regulation);
+      frames.push({
+        kind: 'observation_update',
+        json: JSON.stringify({
+          type: 'observation_update',
+          observation_id: u.observation_id || null,
+          observation_text: u.observation_text || '',
+          code: u.code,
+          regulation: u.regulation || null,
+          regulation_title: ruleSixCanonical?.title ?? null,
+          regulation_description: ruleSixCanonical?.description ?? null,
+          rationale: u.rationale || null,
+          source: u.source || 'rule_6_edit',
+        }),
+      });
+    }
+  }
+  if (Array.isArray(result.field_corrections)) {
+    for (const evt of result.field_corrections) {
+      if (!evt) continue;
+      frames.push({ kind: 'field_corrected', json: JSON.stringify(evt) });
+    }
+  }
+  // The audible frame is LAST (exactly-once contract, P4d row 7): if any
+  // earlier frame fails, the VCR has not gone out and the resumed replay
+  // speaks it exactly once.
+  if (spoken_response || action) {
+    frames.push({
+      kind: 'voice_command_response',
+      json: JSON.stringify({
+        type: 'voice_command_response',
+        understood: true,
+        spoken_response: spoken_response || '',
+        action: action || null,
+        ...(typeof result.utterance_id === 'string' && result.utterance_id
+          ? { utterance_id: result.utterance_id }
+          : {}),
+      }),
+    });
+  }
+  return frames;
+}
+
+/**
+ * Send a result's frame ledger from its cursor onward. Returns
+ * `{ok:true, vcrSent}` on completion (cursor cleared) or
+ * `{ok:false, cursor, frameKind, error?}` on the first failure (cursor
+ * persisted on the result for the next flush). The ledger is rebuilt from
+ * the same raw result each attempt, so frame positions are stable across
+ * retries (board_ops / observationUpdates / field_corrections are immutable
+ * once bundled).
+ */
+function sendResultFrameLedger(ws, snapshot, result) {
+  const frames = buildResultFrameLedger(snapshot, result);
+  const stored = result[EXTRACTION_EMISSION_CURSOR];
+  let start = Number.isInteger(stored) && stored >= 0 ? stored : 0;
+  if (start > frames.length) start = frames.length;
+  const persistCursor = (idx) => {
+    Object.defineProperty(result, EXTRACTION_EMISSION_CURSOR, {
+      value: idx,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  };
+  for (let i = start; i < frames.length; i += 1) {
+    if (!ws || ws.readyState !== ws.OPEN) {
+      persistCursor(i);
+      return { ok: false, cursor: i, frameKind: frames[i].kind, error: null };
+    }
+    try {
+      ws.send(frames[i].json);
+    } catch (err) {
+      persistCursor(i);
+      return { ok: false, cursor: i, frameKind: frames[i].kind, error: err };
+    }
+  }
+  // Completed — clear the cursor so a later (unrelated) requeue of the same
+  // object starts fresh, and so tests can assert it never leaks.
+  if (EXTRACTION_EMISSION_CURSOR in result) delete result[EXTRACTION_EMISSION_CURSOR];
+  return {
+    ok: true,
+    vcrSent: frames.length > 0 && frames[frames.length - 1].kind === 'voice_command_response',
+  };
+}
+
 // --- Per-connection rate limiting for transcript messages ---
 const WS_RATE_LIMIT = {
   maxTranscripts: 60, // max transcript messages per sliding window
@@ -2346,6 +2498,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (existing.session) {
         existing.session.applyModeChange(toolCallsMode);
       }
+      // Plan A1a (Codex diff-review r1 + mini-review M1) — re-parse
+      // voice-latency CAPABILITIES at rebind time, following the r5-#2
+      // precedent (write the freshly-computed handshake state back onto the
+      // existing entry). Without this, `existing.voiceLatency.capabilities`
+      // stayed at its construction-time value for the entry's lifetime: a
+      // client reconnecting with a DIFFERENT build (app update mid-session)
+      // kept the OLD advert — for the deny-first `board_clear_v1` MUTATION
+      // gate that means a downgraded client retains destructive-clear
+      // authority (and an upgraded one stays denied). UNCONDITIONAL
+      // re-parse, deliberately: an OMITTED block parses to the
+      // empty/deny-everything shape, which is the DENY-FIRST direction for
+      // every capability in the registry (they are all rollout-sequencing
+      // gates whose absent state is the safe state). Both shipped clients
+      // build reconnect session_start frames with the same builder as the
+      // original, so a capable client always re-advertises; a legacy client
+      // that never sent the block re-parses to the same empty shape it
+      // already had.
+      if (existing.voiceLatency) {
+        existing.voiceLatency.capabilities = parseVoiceLatencyCapabilities(msg.capabilities);
+      }
       if (existing.disconnectTimer) {
         clearTimeout(existing.disconnectTimer);
         existing.disconnectTimer = null;
@@ -3258,66 +3430,58 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           halted = true;
           continue;
         }
-        try {
-          // PLAN-C P4d (row 7) — strip spoken_response/action from the extraction
-          // REPLAY and canonicalise them onto the SAME voice_command_response
-          // channel the live sync/batch paths use (see the live-path strip at the
-          // sync send below) — carrying the buffered result's response epoch.
-          // SANCTIONED behaviour change (per the plan a buffered spoken_response
-          // was effectively dropped on reconnect): the spoken reply now rides the
-          // canonical channel and disarms the client chime watchdog via utterance_id.
-          const {
-            questions_for_user,
-            extracted_readings,
-            observationUpdates,
-            spoken_response,
-            action,
-            ...rest
-          } = result;
-          const resultWithoutQuestions = { readings: extracted_readings, ...rest };
-          ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
-          // Hotfix slice 2.2 — replay any select_board / add_board boardOps
-          // through the same broadcast scan the live tool-loop turn would
-          // have used. Reconnect-during-board-switch was a silent banner
-          // miss pre-hotfix: the buffered extraction reaches iOS but the
-          // current_board_changed envelope was never re-emitted, so iOS
-          // jobVM.currentBoardId stayed stale until the next live op.
-          // The snapshot is the post-flip state at flush time, so
-          // designations resolve correctly inside the helper.
-          emitCurrentBoardChangedFromBoardOps(ws, entry.session?.stateSnapshot, result.board_ops);
-          // Phase A: if the buffered extraction carried RULE 6 correction edits,
-          // replay them on the restored socket so iOS doesn't miss the patch.
-          // failFast so a swallowed obs-update send failure re-queues the entry
-          // (Codex r2) instead of losing the correction while the VCR still sends.
-          dispatchObservationUpdates(ws, sessionId, observationUpdates, { failFast: true });
-          // The audible reply is the LAST fallible send (exactly-once contract).
-          if (spoken_response || action) {
-            ws.send(
-              JSON.stringify({
-                type: 'voice_command_response',
-                understood: true,
-                spoken_response: spoken_response || '',
-                action: action || null,
-                // Matches the sync/batch voice_command_response shape (row 6).
-                ...(typeof result.utterance_id === 'string' && result.utterance_id
-                  ? { utterance_id: result.utterance_id }
-                  : {}),
-              })
-            );
-            // A1 Codex r1 — answers delivered via reconnect replay carry the
-            // same redacted emission telemetry as the sync path (non-enumerable
-            // answer_source survives buffering by reference).
-            if (result.answer_source) {
-              logAnswerEmitted(sessionId, result, spoken_response, 'reconnect_replay');
-            }
-          }
-        } catch (err) {
-          logger.error('Failed to flush buffered extraction', { sessionId, error: err.message });
+        // Plan A1a §3.4c — the SAME ordered-ledger emitter as the immediate
+        // path (extraction → current_board_changed → observation_update →
+        // field_corrected → VCR). This closes the reconnect gap where only
+        // the extraction envelope was replayed and the standalone
+        // field_corrected frames never re-sent (a board clear during socket
+        // loss was spoken/persisted server-side while the client stayed
+        // stale — the F5 class on the recovery path). The Symbol-backed
+        // cursor makes the replay a SUFFIX replay: a result whose earlier
+        // frames already went out resumes at the first unsent frame — no
+        // loss, no duplicates, VCR exactly once (P4d rows 6–7: the strip,
+        // the separate VCR-last send and the halt/requeue FIFO are all
+        // preserved inside the ledger; observation-frame failures are now
+        // VISIBLE to the cursor instead of best-effort-swallowed, which is
+        // what the old {failFast:true} flag approximated).
+        const out = sendResultFrameLedger(ws, entry.session?.stateSnapshot, result);
+        if (!out.ok) {
+          logger.error('Failed to flush buffered extraction', {
+            sessionId,
+            failed_frame_kind: out.frameKind ?? null,
+            resume_cursor: out.cursor ?? null,
+            error: out.error?.message ?? 'socket not open',
+          });
           // Re-queue this entry AND halt so nothing after it is delivered
-          // out of order; the buffered spoken_response replays next reconnect
-          // (row 7 audible-replay guarantee).
+          // out of order; the unsent suffix (including any buffered
+          // spoken_response) replays next reconnect (row 7 guarantee).
           requeue.push(result);
           halted = true;
+          continue;
+        }
+        // A1 Codex r1 — answers delivered via reconnect replay carry the
+        // same redacted emission telemetry as the sync path (non-enumerable
+        // answer_source survives buffering by reference).
+        if (out.vcrSent && result.answer_source) {
+          logAnswerEmitted(sessionId, result, result.spoken_response, 'reconnect_replay');
+        }
+        // A1a Codex r2 — kick BPG4 refinement for observations whose FIRST
+        // delivery happens via this replay. The immediate path kicks
+        // refinement only on full-ledger success, so every result in this
+        // buffer has NEVER had it kicked (immediate failure, socket-closed
+        // buffering, and flush requeue all skip the kick) — firing here on
+        // ledger completion is therefore exactly-once by construction.
+        // Without this, an observation extracted during socket loss rendered
+        // on reconnect but never received its refined code/regulation
+        // (pendingRefinements was never seeded, so replayPendingRefinements
+        // below had nothing to re-kick).
+        if (Array.isArray(result.observations) && result.observations.length > 0) {
+          refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
+            logger.warn('refineObservationsAsync unhandled (reconnect flush)', {
+              sessionId,
+              error: err?.message,
+            });
+          });
         }
       }
       if (requeue.length) {
@@ -4702,72 +4866,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // Rename extracted_readings → readings to match the web client interface
       // Strip spoken_response/action — they're sent separately as voice_command_response
       if (ws.readyState === ws.OPEN) {
-        const {
-          questions_for_user,
-          extracted_readings,
-          spoken_response,
-          action,
-          observationUpdates,
-          ...rest
-        } = result;
-        const resultWithoutQuestions = { readings: extracted_readings, ...rest };
-        // A1 Codex diff-review r1 — the plan's "post-harness WS send failure
-        // is covered by buffering + P4d replay" claim was only true for a
-        // socket that was ALREADY non-OPEN. Wrap the whole OPEN-socket
-        // emission sequence: a throw BEFORE the audible voice_command_response
-        // went out re-queues the ORIGINAL result into pendingExtractions
-        // (reconnect replays extraction idempotently and the VCR exactly
-        // once); a throw AFTER a delivered VCR is logged but never re-queued
-        // — the answer already spoke, and a replay would double-speak
-        // (Audio-First #1).
-        // Mini-review r1 (M2): track the AUDIBLE delivery separately from
-        // "this turn has no VCR". A no-VCR turn that fails mid-sequence must
-        // still requeue (previously vcrDelivered started true there, so an
-        // extraction-send throw silently dropped the whole result).
+        const { spoken_response, action } = result;
+        // Plan A1a §3.4c — the shared ORDERED FRAME LEDGER emitter (see
+        // buildResultFrameLedger): extraction → current_board_changed →
+        // observation_update → field_corrected → voice_command_response,
+        // with a Symbol-backed frame-level cursor so a mid-sequence failure
+        // resumes from the FIRST unsent frame on reconnect (previously the
+        // whole result was re-sent — and the flush path never re-sent the
+        // standalone field_corrected frames at all). readyState is checked
+        // before EVERY frame, which subsumes the old pre-VCR re-check
+        // (mini-review r1 M1: `ws` silently NO-OPS a callback-less send on
+        // a CLOSING/CLOSED socket). The audible VCR stays the LAST fallible
+        // frame, so a requeue can never double-speak (Audio-First #1) — a
+        // failure at any earlier frame leaves the VCR unsent and the
+        // resumed replay delivers it exactly once (P4d rows 6–7).
         const needsVcr = Boolean(spoken_response || action);
-        let audibleVcrDelivered = false;
-        try {
-          ws.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
-
-          // Phase E: emit `current_board_changed` for any select_board op
-          // Sonnet emitted this turn. iOS uses the unified envelope to drive
-          // `JobViewModel.currentBoardId` regardless of switch source — see
-          // helper docstring above.
-          emitCurrentBoardChangedFromBoardOps(ws, entry.session.stateSnapshot, result.board_ops);
-
-          // Phase A: dispatch RULE 6 correction edits (observation_id reused).
-          // These must fire before the BPG4 refinement path so iOS patches the
-          // code change before any web-search-based refinement considers the
-          // observation.
-          dispatchObservationUpdates(ws, sessionId, observationUpdates);
-
-          // Stage 1a 1a.6 — emit each `field_corrected` WS event after the
-          // extraction envelope. iOS handler at Stage6Messages.swift:138-165
-          // decodes the snake_case wire shape and patches local state.
-          // Stage 3 will consume these events to invalidate matching
-          // suppression entries; in 1a.6 the emission is informational
-          // (iOS handler exists but does nothing user-facing until Stage 1b
-          // ships a UI hook).
-          if (Array.isArray(result.field_corrections) && result.field_corrections.length > 0) {
-            for (const evt of result.field_corrections) {
-              try {
-                ws.send(JSON.stringify(evt));
-              } catch (err) {
-                logger.warn('field_corrected emit failed', {
-                  sessionId,
-                  circuit: evt?.circuit,
-                  field: evt?.field,
-                  error: err?.message,
-                });
-              }
-            }
-          }
-
-          // Fire-and-forget BPG4 / BS 7671 refinement for new observations. Runs
-          // AFTER extraction is sent so the inspector sees the observation
+        const ledgerOut = sendResultFrameLedger(ws, entry.session.stateSnapshot, result);
+        if (ledgerOut.ok) {
+          // Fire-and-forget BPG4 / BS 7671 refinement for new observations.
+          // Runs AFTER the ledger so the inspector sees the observation
           // immediately; the refined code/regulation arrives a second or two
-          // later as an `observation_update` and the iOS client patches the
-          // already-rendered observation in place.
+          // later as an `observation_update` patching the rendered row.
           if (Array.isArray(result.observations) && result.observations.length > 0 && entry) {
             refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
               logger.warn('refineObservationsAsync unhandled', {
@@ -4776,41 +4895,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               });
             });
           }
-
-          // If Sonnet returned a spoken_response or action (query/command recognised),
-          // forward as a voice_command_response — iOS handles these via the existing
-          // serverDidReceiveVoiceCommandResponse delegate path.
-          if (needsVcr) {
-            // Mini-review r1 (M1): `ws` (the ws lib) silently NO-OPS a
-            // callback-less send on a CLOSING/CLOSED socket — a bare send
-            // cannot prove acceptance. Re-check readyState immediately before
-            // the audible frame so a socket that left OPEN mid-sequence
-            // routes to the requeue path instead of a phantom "delivered".
-            // (Async post-acceptance write errors remain unobservable
-            // server-side — that residual is the PLAN-C client chime-silence
-            // watchdog's territory by design.)
-            if (ws.readyState !== ws.OPEN) {
-              throw new Error('socket left OPEN state before voice_command_response send');
-            }
-            ws.send(
-              JSON.stringify({
-                type: 'voice_command_response',
-                understood: true,
-                spoken_response: spoken_response || '',
-                action: action || null,
-                // PLAN-C P4d (row 6) — carry the sync result's response epoch so the
-                // client chime watchdog disarms on the spoken command reply.
-                ...(typeof result.utterance_id === 'string' && result.utterance_id
-                  ? { utterance_id: result.utterance_id }
-                  : {}),
-              })
-            );
-            audibleVcrDelivered = true;
-            // A1 agentic-voice — LEAK-RULE branch on the internal answer-source
-            // marker (non-enumerable, bundler-attached). The legacy substring(0,80)
-            // preview was fine for legacy voice-command text, but for MODEL-
-            // GENERATED answers raw text is never logged (shared redacted
-            // logger, also called by the reconnect replay).
+          if (needsVcr && ledgerOut.vcrSent) {
+            // A1 agentic-voice — LEAK-RULE branch on the internal
+            // answer-source marker (non-enumerable, bundler-attached).
+            // MODEL-GENERATED answer text is never logged raw.
             if (result.answer_source) {
               logAnswerEmitted(sessionId, result, spoken_response, 'sync');
             } else {
@@ -4821,29 +4909,36 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               });
             }
           }
-
-          // Send cost update
-          ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
-        } catch (emitErr) {
-          // Requeue unless the audible frame ALREADY went out (replaying a
-          // spoken answer would double-speak — Audio-First #1). No-VCR turns
-          // always requeue: a re-sent extraction frame is idempotent-benign
-          // per the P4d replay contract (dedupe tokens carry replay-stable
-          // operation identity).
-          if (!needsVcr || !audibleVcrDelivered) {
-            entry.pendingExtractions.push(result);
-            logger.warn('sync emission failed — result re-queued for reconnect replay', {
+          // Cost update — best-effort, deliberately OUTSIDE the ledger (a
+          // cost-frame failure must never requeue an already-spoken turn).
+          try {
+            ws.send(JSON.stringify(entry.session.costTracker.toCostUpdate()));
+          } catch (costErr) {
+            logger.warn('cost update send failed post-ledger', {
               sessionId,
-              needs_vcr: needsVcr,
-              error: emitErr?.message ?? String(emitErr),
-              buffered: entry.pendingExtractions.length,
-            });
-          } else {
-            logger.warn('sync emission failed post-VCR — NOT re-queued (answer already spoken)', {
-              sessionId,
-              error: emitErr?.message ?? String(emitErr),
+              error: costErr?.message ?? String(costErr),
             });
           }
+        } else {
+          const emitErr =
+            ledgerOut.error ?? new Error(`socket not OPEN at frame ${ledgerOut.frameKind}`);
+          // A ledger failure can never be post-VCR (the VCR is the ledger's
+          // LAST frame; the cost frame is outside it), so requeueing is
+          // always double-speak-safe: the cursor resumes at the first unsent
+          // frame — if the failed frame was the VCR itself, the resumed
+          // replay sends ONLY the VCR, exactly once (P4d row 7). Re-sent
+          // pre-VCR frames cannot occur at all under the cursor (an
+          // improvement over the old whole-result requeue, which relied on
+          // idempotent re-application).
+          entry.pendingExtractions.push(result);
+          logger.warn('sync emission failed — result re-queued for reconnect replay', {
+            sessionId,
+            needs_vcr: needsVcr,
+            failed_frame_kind: ledgerOut.frameKind ?? null,
+            resume_cursor: ledgerOut.cursor ?? null,
+            error: emitErr?.message ?? String(emitErr),
+            buffered: entry.pendingExtractions.length,
+          });
         }
       } else {
         // Buffer extraction results when WebSocket not OPEN — flushed on reconnect

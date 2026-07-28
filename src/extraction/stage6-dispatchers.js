@@ -47,6 +47,7 @@ import {
 } from './stage6-dispatchers-observation.js';
 import {
   dispatchRecordBoardReading,
+  dispatchClearBoardReading,
   dispatchAddBoard,
   dispatchSelectBoard,
   dispatchMarkDistributionCircuit,
@@ -107,6 +108,13 @@ export const WRITE_DISPATCHERS = {
   // call add_board FIRST. Path-2 resolver entanglement risk made the
   // ask_user flow a supervised slice.
   mark_distribution_circuit: dispatchMarkDistributionCircuit,
+  // Plan A1a (2026-07-27, feedback id 101) — clear_board_reading, the
+  // board/supply-scope analogue of clear_reading ("Delete Ze" had no possible
+  // tool; session C06B9904). Deny-first at the DISPATCHER via board_clear_v1
+  // (denyBoardClear) — the tool is always advertised, and every session
+  // without the capability gets a soft-skip + spoken notice, never a
+  // mutation or a board field_corrected frame.
+  clear_board_reading: dispatchClearBoardReading,
 };
 
 /**
@@ -329,7 +337,20 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
  * @returns {boolean}
  */
 export function isEarthingArrangementRecord(rec) {
-  if (!rec || rec.name !== 'record_board_reading') return false;
+  // Plan A1a (Codex diff-review r1): `clear_board_reading` joins the
+  // earthing-OPERATION group. With only the write recognised, the hoist
+  // would reorder an earthing WRITE ahead of a preceding earthing CLEAR,
+  // inverting a model-emitted clear→write correction into write→clear —
+  // once A1b classifies `earthing_arrangement` as clearable, mechanism A
+  // would then delete the write and the final state would be blank. The
+  // partition preserves order WITHIN a partition, so keeping the whole
+  // group in partition 1 keeps clear→write and write→clear in their
+  // emitted order. Today `earthing_arrangement` is scope-UNCLASSIFIED
+  // (the clear soft-skips without mutating), so this is a zero-behaviour
+  // change that removes a latent A1b footgun.
+  if (!rec || (rec.name !== 'record_board_reading' && rec.name !== 'clear_board_reading')) {
+    return false;
+  }
   const input = rec.input;
   if (!input || typeof input !== 'object') return false;
   return input.field === 'earthing_arrangement';

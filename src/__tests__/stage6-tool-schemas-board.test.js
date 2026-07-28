@@ -86,9 +86,11 @@ describe('record_board_reading schema', () => {
     // select_board (14) appended 2026-05-07 (Phase 6.2 — id-only);
     // mark_distribution_circuit (15) appended 2026-05-07 (Phase 6.3).
     // answer_user (16) + inspect_session_state (17) appended 2026-07-23
-    // (A1 agentic-voice) — indices 0-15 stay stable per the append-at-end
+    // (A1 agentic-voice); clear_board_reading (18) appended 2026-07-27
+    // (plan A1a) — indices 0-17 stay stable per the append-at-end
     // convention.
-    expect(TOOL_SCHEMAS).toHaveLength(18);
+    expect(TOOL_SCHEMAS).toHaveLength(19);
+    expect(TOOL_SCHEMAS[18].name).toBe('clear_board_reading');
     expect(TOOL_SCHEMAS[7]).toBeDefined();
     expect(TOOL_SCHEMAS[7].name).toBe('record_board_reading');
     expect(TOOL_SCHEMAS[8].name).toBe('start_dialogue_script');

@@ -116,6 +116,22 @@ export function isLimRangedWriteKilled() {
 }
 
 /**
+ * Plan A1a (2026-07-27, feedback id 101) — SERVER kill-switch for the
+ * `clear_board_reading` tool. Read fresh every call. When
+ * `BOARD_CLEAR_DISABLED=true` the backend DENIES a board/supply-scope clear
+ * EVEN FOR a client that advertises `board_clear_v1`. Same rationale as
+ * `isLimRangedWriteKilled`: an already-deployed client's advert cannot be
+ * remotely revoked, so this env (source: ecs/task-def-backend.json) is the
+ * real rollback lever. The effective condition in the dispatcher is:
+ * `denyBoardClear = isBoardClearKilled() || ctx.hasBoardClearV1 !== true`.
+ *
+ * @returns {boolean}
+ */
+export function isBoardClearKilled() {
+  return parseBool(process.env.BOARD_CLEAR_DISABLED);
+}
+
+/**
  * Names of the snapshot flags, in declaration order. Exposed so the
  * startup-log emitter (1a.4) can iterate without duplicating the
  * list.
@@ -195,6 +211,19 @@ const KNOWN_SUPPORTS = Object.freeze([
   // renders a false-green circuit result. Web advertises it in the same wave
   // (deploys instantly); iOS on its own TestFlight build.
   'lim_ranged_write_v1',
+  // Plan A1a (2026-07-27, feedback id 101). A client advertises
+  // `board_clear_v1` once it can APPLY a board/supply-scope
+  // `field_corrected` frame (circuit: null + non-null board_id) — the
+  // A1b client sweep. It is a ROLLOUT-SEQUENCING gate: until advertised,
+  // the backend dispatcher DENIES `clear_board_reading` (soft skip +
+  // spoken capability notice, NO mutation, NO frame), so a client that
+  // cannot route a board-scope clear never hears "cleared" while the
+  // value survives on screen (the F5 spoken-but-not-written class).
+  // The tool itself is ALWAYS advertised to the model — the gate lives
+  // at the DISPATCHER, never in buildSessionTools (§3.1: the prompt
+  // latches before capabilities are parsed, so a capability-conditional
+  // toolset would split prompt and toolset).
+  'board_clear_v1',
 ]);
 
 export function parseVoiceLatencyCapabilities(capabilitiesObj) {
@@ -220,6 +249,11 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     // denies LIM acceptance) so a pre-guard client never silently overwrites a
     // LIM via recomputeAll or shows a false-green status.
     hasLimRangedWriteV1: false,
+    // Plan A1a — board_clear_v1: absent/false is the SAFE default (the
+    // dispatcher denies every board/supply clear), so an un-upgraded,
+    // silent or malformed capabilities block can never let a client that
+    // cannot apply a board-scope clear receive one.
+    hasBoardClearV1: false,
     raw,
   });
 
@@ -245,6 +279,7 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     hasClientPlaybackTelemetry: supports.has('client_playback_telemetry'),
     hasLowConfReadbackV1: supports.has('low_conf_readback_v1'),
     hasLimRangedWriteV1: supports.has('lim_ranged_write_v1'),
+    hasBoardClearV1: supports.has('board_clear_v1'),
     raw,
   };
 }

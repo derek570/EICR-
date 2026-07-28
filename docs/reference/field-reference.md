@@ -13,6 +13,30 @@
 3. Update the relevant table below to document the change
 4. The AI will automatically use the updated schema for extraction
 
+## Voice clearing of board/supply/installation fields (`clear_board_reading` — plan A1a, 2026-07-27)
+
+The `clear_board_reading` Stage-6 tool is **DEPLOYED but DISPATCHER-DENIED for
+every session** pending client rollout (plan A1b) — do NOT describe board/
+supply/installation fields as voice-clearable yet. The tool is advertised to
+the model unconditionally, but no shipped client advertises the
+`board_clear_v1` capability, so every call is soft-denied (no mutation, no
+`field_corrected` frame; the inspector hears a specific capability notice).
+Circuit-field clearing via `clear_reading` is unchanged and live.
+
+The candidate enum is `BOARD_FIELD_ENUM` minus `BOARD_CLEAR_EXCLUSIONS` (78
+members today) — the exclusions are the five structural/hierarchy keys that
+define WHAT a board is (`name`, `board_type`, `parent_board_id`,
+`feed_circuit_ref`, `sort_order`) plus `earth_loop_impedance_ze` (a wire-alias
+duplicate of `ze`: `FIELD_CORRECTIONS` collapses both onto one wire name, so
+only the canonical spelling is advertised; the mutator still sweeps BOTH
+snapshot spellings on a clear). A NEW `field_schema.json` key added to any
+board/supply/installation section becomes a clear-enum candidate automatically
+and FAILS the literal pin in `stage6-clear-board-reading-enum.test.js` until a
+human classifies it (clearable vs structural exclusion) — that fail-closed
+step is deliberate; do not blindly re-paste the literal. A1b's advert-time
+sweep re-narrows the enum to the both-clients-routable subset before any
+client advertises.
+
 ## Installation Details Tab (`/job/[id]/installation`)
 
 | Field | Type | Options | AI Extraction Guidance |

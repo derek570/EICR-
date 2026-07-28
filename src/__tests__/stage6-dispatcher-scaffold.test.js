@@ -39,9 +39,11 @@ function mockLogger() {
 }
 
 describe('WRITE_DISPATCHERS dispatch table', () => {
-  test('has exactly fifteen keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2 + set_field_for_all_circuits + add_board + select_board + mark_distribution_circuit', () => {
+  test('has exactly sixteen keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2 + set_field_for_all_circuits + add_board + select_board + mark_distribution_circuit + clear_board_reading', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
+        // Plan A1a (2026-07-27, feedback id 101) — board/supply-scope clear.
+        'clear_board_reading',
         'clear_reading',
         'create_circuit',
         'delete_observation',

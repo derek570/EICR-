@@ -693,7 +693,7 @@ export async function runToolLoop({
         // `isBoardContextChangingRecord` there, and a parity test pins this
         // branch's output to the hook's so the two cannot drift.
         const isEarthing = (r) =>
-          r?.name === 'record_board_reading' &&
+          (r?.name === 'record_board_reading' || r?.name === 'clear_board_reading') &&
           !!r.input &&
           typeof r.input === 'object' &&
           r.input.field === 'earthing_arrangement';

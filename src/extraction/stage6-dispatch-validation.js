@@ -685,7 +685,11 @@ export function validateAskUser(input) {
  * door so they can only happen via an explicit board switch.
  *
  * Tools gated by this validator: record_reading, clear_reading,
- * create_circuit, rename_circuit, delete_circuit, record_board_reading.
+ * create_circuit, rename_circuit, delete_circuit, record_board_reading,
+ * clear_board_reading (plan A1a — backstop only: the tool has no board_id
+ * param, so this fires only for injected/off-schema calls; an empty-string
+ * board_id deliberately returns wrong_board rather than being normalised
+ * to the current board, which would permit a destructive retargeted clear).
  *
  * Tools INTENTIONALLY exempt:
  *   - calculate_zs / calculate_r1_plus_r2 — Phase 6.5 explicitly threads
