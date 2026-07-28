@@ -32,7 +32,12 @@ class FakeEICRExtractionSession {
     this.turnCount = 0;
     this.toolCallsMode = 'off'; // legacy path — rows 5-7 live here
     this.costTracker = { toCostUpdate: () => ({ type: 'cost_update', cost: 0 }) };
-    this.stateSnapshot = { circuits: {}, pending_readings: [], observations: [], validation_alerts: [] };
+    this.stateSnapshot = {
+      circuits: {},
+      pending_readings: [],
+      observations: [],
+      validation_alerts: [],
+    };
     this.start = mockSessionStart;
     this.stop = mockSessionStop;
     this.flushUtteranceBuffer = mockFlushBuffer;
@@ -68,6 +73,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: jest.fn(() => ({ kind: 'no_pending_asks' })),
+  // Plan E (2026-07-28) — sonnet-stream also imports the shared slot-identity
+  // helpers from this module; the mock must export them or the suite fails to
+  // link. Minimal fakes: no slot ever matches (the classifier spy above stays
+  // the single behavioural control point for these suites).
+  buildReplySlot: jest.fn(() => ({ fieldKey: null, circuits: null, boardId: null })),
+  isSameSemanticSlot: jest.fn(() => false),
 }));
 
 // Identity filter so a synthetic question isn't dropped against the empty snapshot.
@@ -75,9 +86,8 @@ jest.unstable_mockModule('../extraction/filled-slots-filter.js', () => ({
   filterQuestionsAgainstFilledSlots: jest.fn((questions) => questions),
 }));
 
-const { initSonnetStream, activeSessions, _test_stampQuestionsWithUtteranceId } = await import(
-  '../extraction/sonnet-stream.js'
-);
+const { initSonnetStream, activeSessions, _test_stampQuestionsWithUtteranceId } =
+  await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
 
 function makeFakeWs() {
@@ -171,7 +181,11 @@ describe('P4d row 5 — stampQuestionsWithUtteranceId (mechanism shared by all 3
 describe('P4d row 5 — onBatchResult stamps the response epoch onto the question', () => {
   test('enqueued questions carry result.utterance_id', async () => {
     const ws = connect(wss);
-    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-p4d', jobState: { certificateType: 'eicr' } });
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
     const entry = activeSessions.get('sess-p4d');
     const enqueueSpy = jest.spyOn(entry.questionGate, 'enqueue');
 
@@ -194,7 +208,11 @@ describe('P4d row 5 — onBatchResult stamps the response epoch onto the questio
 describe('P4d row 6 — voice_command_response carries the response epoch', () => {
   test('onBatchResult voice_command_response carries utterance_id', async () => {
     const ws = connect(wss);
-    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-p4d', jobState: { certificateType: 'eicr' } });
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
     const entry = activeSessions.get('sess-p4d');
 
     await entry.session.onBatchResult({
@@ -214,7 +232,11 @@ describe('P4d row 6 — voice_command_response carries the response epoch', () =
 
   test('no epoch on the result → voice_command_response omits utterance_id', async () => {
     const ws = connect(wss);
-    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-p4d', jobState: { certificateType: 'eicr' } });
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
     const entry = activeSessions.get('sess-p4d');
 
     await entry.session.onBatchResult({
@@ -237,7 +259,11 @@ describe('P4d row 6 — voice_command_response carries the response epoch', () =
 describe('P4d row 7 — flushPendingExtractions replay', () => {
   test('buffered spoken_response speaks via a SEPARATE voice_command_response carrying the epoch, stripped from the extraction replay', async () => {
     const wsA = connect(wss);
-    await sendFrame(wsA, { type: 'session_start', sessionId: 'sess-p4d', jobState: { certificateType: 'eicr' } });
+    await sendFrame(wsA, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
     const entry = activeSessions.get('sess-p4d');
 
     // Simulate a result buffered while the socket was down (row 8 preserves
@@ -254,7 +280,11 @@ describe('P4d row 7 — flushPendingExtractions replay', () => {
 
     // Reconnect on a fresh socket with the same sessionId → flushPendingExtractions.
     const wsB = connect(wss);
-    await sendFrame(wsB, { type: 'session_start', sessionId: 'sess-p4d', jobState: { certificateType: 'eicr' } });
+    await sendFrame(wsB, {
+      type: 'session_start',
+      sessionId: 'sess-p4d',
+      jobState: { certificateType: 'eicr' },
+    });
 
     const extraction = wsB._sent.find((m) => m.type === 'extraction');
     const vcr = wsB._sent.find((m) => m.type === 'voice_command_response');
@@ -457,7 +487,9 @@ describe('P4d rows 5/6 — sync handleTranscript path carries the epoch', () => 
     // Gate: turnCount > 0 && turnCount % 10 === 0.
     entry.session.turnCount = 10;
     entry.session.reviewForOrphanedValues = jest.fn(async () => ({
-      questions_for_user: [{ field: 'zs', circuit: 3, type: 'orphaned', question: 'Which circuit was Zs 0.4 for?' }],
+      questions_for_user: [
+        { field: 'zs', circuit: 3, type: 'orphaned', question: 'Which circuit was Zs 0.4 for?' },
+      ],
     }));
     const enqueueSpy = jest.spyOn(entry.questionGate, 'enqueue');
     runShadowHarnessSpy.mockImplementationOnce(async () => ({

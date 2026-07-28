@@ -121,6 +121,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: jest.fn(() => ({ kind: 'no_pending_asks' })),
+  // Plan E (2026-07-28) — sonnet-stream also imports the shared slot-identity
+  // helpers from this module; the mock must export them or the suite fails to
+  // link. Minimal fakes: no slot ever matches (the classifier spy above stays
+  // the single behavioural control point for these suites).
+  buildReplySlot: jest.fn(() => ({ fieldKey: null, circuits: null, boardId: null })),
+  isSameSemanticSlot: jest.fn(() => false),
 }));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');

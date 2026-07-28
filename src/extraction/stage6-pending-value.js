@@ -258,6 +258,34 @@ const FAMILY_SOURCES = [
 
 // Hand aliases for spoken field names the schema labels don't cover.
 // Evidence-backed, same discipline as FIELD_NAME_ALIASES.
+//
+// Entry shape: value is EITHER the legacy [family, key] pair OR an object
+// {family, key, notFollowedBy}. `notFollowedBy` is an exclusion regex applied
+// as an IMMEDIATE lookahead at the alias match position — embedded as
+// `\b<alias>\b(?!<exclusion>)`, NEVER a whole-string boolean test, which
+// would false-exclude compound utterances like "main earth is 16 and the
+// bonding is 10" (plan E round-6). A Map-key lookahead cannot work: the
+// match loop escapes the alias (escapeRe), so a lookahead embedded in the
+// key becomes literal text and never functions (plan E round-4).
+//
+// Plan E (2026-07-28, feedback id 100(a)) — the two anchored main-earth
+// entries route the inspector vocabulary "main earth" / "main earthing
+// conductor" to earthing_conductor_csa so a reply naming that vocabulary is
+// detector-COMPLETE and can overtake a stale wrong-field ask (the id-100
+// sticky-Ze loop). PER-ALIAS exclusions (round-5 — one shared regex cannot
+// fit both aliases): after "main earthing conductor" the adjacent-form
+// suffix is bare " material"/" continuity"; after "main earth" it is
+// " bonding"/" conductor…". A bare "earthing conductor" alias is
+// deliberately ABSENT (round-2): the detector stops at the first alias hit,
+// so it would seize "earthing conductor material is Copper" /
+// "…continuity is pass" as CSA and consume those complete readings as
+// stale-ask answers — the lexicon owns those longer names.
+//
+// Ordering is load-bearing (round-4): "ze at the board" / "ze at db" sit
+// BEFORE bare "ze" (first-hit-wins), else "Ze at the board is 0.2" would
+// classify as supply earth_loop_impedance_ze and, during an outstanding
+// supply-Ze ask, be consumed against the stale ask instead of writing
+// ze_at_db.
 const DETECTOR_ALIASES = new Map([
   ['zs', ['circuit', 'measured_zs_ohm']],
   ['zed s', ['circuit', 'measured_zs_ohm']],
@@ -265,8 +293,26 @@ const DETECTOR_ALIASES = new Map([
   ['trip time', ['circuit', 'rcd_time_ms']],
   ['r1 plus r2', ['circuit', 'r1_r2_ohm']],
   ['r1 r2', ['circuit', 'r1_r2_ohm']],
+  ['ze at the board', ['board', 'ze_at_db']],
+  ['ze at db', ['board', 'ze_at_db']],
   ['ze', ['supply', 'earth_loop_impedance_ze']],
   ['zed e', ['supply', 'earth_loop_impedance_ze']],
+  [
+    'main earth',
+    {
+      family: 'supply',
+      key: 'earthing_conductor_csa',
+      notFollowedBy: /\s+(?:bonding|conductor\b)/i,
+    },
+  ],
+  [
+    'main earthing conductor',
+    {
+      family: 'supply',
+      key: 'earthing_conductor_csa',
+      notFollowedBy: /\s+(?:material|continuity)/i,
+    },
+  ],
   ['pfc', ['supply', 'prospective_fault_current']],
   ['earthing arrangement', ['supply', 'earthing_arrangement']],
   ['customer name', ['installation', 'client_name']],
@@ -275,6 +321,12 @@ const DETECTOR_ALIASES = new Map([
   ['reference method', ['circuit', 'ref_method']],
   ['ref method', ['circuit', 'ref_method']],
 ]);
+
+// Normalise a DETECTOR_ALIASES value to {family, key, notFollowedBy|null}.
+function normaliseDetectorAliasSpec(spec) {
+  if (Array.isArray(spec)) return { family: spec[0], key: spec[1], notFollowedBy: null };
+  return { family: spec.family, key: spec.key, notFollowedBy: spec.notFollowedBy ?? null };
+}
 
 // Codex r1-#2 — evidence-backed spoken aliases for select values that don't
 // reduce to a hyphen/space squash of a canonical option. PME is the
@@ -382,8 +434,15 @@ export function detectStructuredReading(text, fieldSchema = FIELD_SCHEMA) {
   // Field-name match: detector aliases first (spoken forms), then lexicon.
   let hit = null;
   let matchedName = null;
-  for (const [alias, [family, key]] of DETECTOR_ALIASES) {
-    const re = new RegExp(`\\b${escapeRe(alias)}\\b`, 'i');
+  for (const [alias, spec] of DETECTOR_ALIASES) {
+    const { family, key, notFollowedBy } = normaliseDetectorAliasSpec(spec);
+    // Per-alias exclusion as an IMMEDIATE lookahead at the match position
+    // (plan E rounds 4-6): the guard rides inside the compiled regex so a
+    // match is rejected only when the excluded suffix directly follows THIS
+    // occurrence — a compound utterance with the excluded word elsewhere
+    // still matches at its own position.
+    const guard = notFollowedBy ? `(?!${notFollowedBy.source})` : '';
+    const re = new RegExp(`\\b${escapeRe(alias)}\\b${guard}`, 'i');
     if (re.test(lower)) {
       const entry = lexicon.find((l) => l.key === key && l.family === family);
       if (entry) {

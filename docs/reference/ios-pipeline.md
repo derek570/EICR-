@@ -109,6 +109,27 @@ For the five text-op fields (`circuit_op`, `observation`, `observation_deletion`
 
 ---
 
+## Ask-answer semantic-slot routing + re-injection lifecycle (Plan E — main-earth steer / C4)
+
+> Added 2026-07-28 (feedback id 100(a) + INDEX correction C4, session C06B9904). Backend prompt + server-internal routing, **zero wire change** — both clients benefit identically. The model's INITIAL field selection is live-probe-only; the routing below is deterministic and unit/integration-tested.
+
+**The bug pair.** Derek dictated *"Main earth is 16"* (a conductor CSA in mm²); the model wrote `earth_loop_impedance_ze` (an impedance in ohms). The prompt half (the MAIN EARTH vs Ze precedence ladder beside the ZE/ZS block + the Example-8 re-opened-field-choice exception) prevents the initial misroute. C4 is the RECOVERY path: once misrouted, the model's clarify re-ask stayed pinned to Ze and Derek's next FULL restatement was consumed as the wrong-field ask's ANSWER and written to Ze again — the structured-reading escape hatch covered only pendingValue-class + `pvr-*` asks.
+
+**Semantic-slot identity (ONE shared verdict, both ingresses).** `stage6-overtake-classifier.js` exports `canonicalReadingFieldIdentity` / `buildReplySlot` / `isSameSemanticSlot`, consumed by BOTH `classifyOvertake` (the transcript-first pre-queue path — the PRODUCTION decision for current clients, which send the transcript before `ask_user_answered`) and sonnet-stream's direct handler. Field identity is alias-normalised (`ze` ≡ `earth_loop_impedance_ze`, `zs`/`pfc`/`r1_plus_r2`/`rcd_trip_time` likewise); circuit scope consumes the ALREADY-STORED `contextCircuits`/`contextCircuit` (reply-explicit circuits compare as a SET — subset answers, outside/newly-explicit re-scopes overtake; a bare reply matches only a scope-less ask, preserving pre-E exact-null semantics); board scope projects the reply's board from `stateSnapshot.boards` DESIGNATIONS only (never server-internal ids — a board id `main` must not match the "main" in "main earth"), gated on a board-context cue word, and a reply-projected board must equal the ask's `contextBoardId`. Same slot ⇒ the reply is the ANSWER (no false overtake); different slot ⇒ overtake.
+
+**Ordinary-ask overtake (direct channel).** Ordinary concrete-field `toolu_*` asks now run the typed detector too — a deliberate generalisation of the old pendingValue-only scoping, guarded by the slot comparison (stricter than the pendingValue any-complete-reading rule). A different-slot complete reply resolves the old ask `user_moved_on` WITHOUT writing and re-injects through normal extraction; same-field/bare-value replies keep the `answered:true` path byte-identically. `DETECTOR_ALIASES` carries the two anchored earth phrases (`main earth`, `main earthing conductor` → `earthing_conductor_csa`) with PER-ALIAS `notFollowedBy` exclusions compiled as immediate lookaheads (`\b<alias>\b(?!…)`) so the adjacent material/continuity/bonding fields are never seized, plus `ze at the board`/`ze at db` → `ze_at_db` ordered BEFORE bare `ze` (first-hit-wins).
+
+**Re-injection lifecycle** (applies to every STAGE-2 re-inject — imperative, bulk-scope, pendingValue, ordinary overtake):
+- **Confirmation-mode latch** — the `ask_user_answered` frame carries no `confirmations_enabled`; the synthetic transcript carries the session's last-known mode (latched off every real transcript frame) so a recovered write is never silently applied (Audio-First #1).
+- **Generation supersession** — resolving the overtaken ask doesn't kill its awaiting `runToolLoop`, so the handler first aborts the generation via a per-generation `supersedeActiveGeneration` handle (F7 machinery: partial finalization reads applied writes back exactly once, `onAskRegistered` rejects the aborted generation's late asks, marker-② exempts cancelled turns), then resolves `user_moved_on` and drains stragglers — no old-generation ask/answer survives, nothing double-speaks (P4's decline net keys on `answered:true`).
+- **Reservation/rollback paired-transcript dedupe** — on the answer-first wire order the re-injection ARMS the normal dedupe anchors (`consumedAskUtterances` + `recentAskAnswers`) as a RESERVATION; the synthetic frame carries a trusted-bypass `Symbol` (enumerable, JSON-invisible) so it passes through its own anchors; a paired real transcript suppressed under a live reservation is STASHED; harness success COMMITS (the pair stays suppressed — spoken exactly once), failure ROLLS BACK the anchors and REQUEUES the stashed frame (the reading is never lost to a failed re-injection). Reservations reset with their anchor ledgers on reconnect/`session_resume`.
+
+**Telemetry:** `ordinary_ask_overtake` + `ask_field`/`reply_field` (field KEYS only) on `stage6.ask_user_answered_rejected_new_command`; `stage6.generation_superseded`; `stage6.reinjection_rolled_back`.
+
+**Key files:** `config/prompts/sonnet_agentic_system.md` (steer), `src/extraction/stage6-pending-value.js` (aliases + exclusions), `src/extraction/stage6-overtake-classifier.js` (slot identity + widened comparison), `src/extraction/sonnet-stream.js` (STAGE-2 overtake + lifecycle); tests in `stage6-pending-value.test.js`, `stage6-overtake-classifier.test.js`, `sonnet-stream-pending-value-routing.test.js` (+ Group 20 prompt pins).
+
+---
+
 ## Observation apply identity (P7 — server-id keying, marker ④)
 
 > Added 2026-07-24 (feedback id 82, session 36731498). Client-only (iOS `applySonnetObservations` + web `applyObservations`); **zero backend change**.

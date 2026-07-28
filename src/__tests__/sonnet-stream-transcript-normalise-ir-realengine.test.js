@@ -63,6 +63,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 const classifyOvertakeSpy = jest.fn(() => ({ kind: 'no_pending_asks' }));
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: classifyOvertakeSpy,
+  // Plan E (2026-07-28) — sonnet-stream also imports the shared slot-identity
+  // helpers from this module; the mock must export them or the suite fails to
+  // link. Minimal fakes: no slot ever matches (the classifier spy above stays
+  // the single behavioural control point for these suites).
+  buildReplySlot: jest.fn(() => ({ fieldKey: null, circuits: null, boardId: null })),
+  isSameSemanticSlot: jest.fn(() => false),
 }));
 
 // Gate forwards so the turn reaches the dialogue scripts. GATE_REASONS +
@@ -77,9 +83,7 @@ jest.unstable_mockModule('../extraction/pre-llm-gate.js', () => ({
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
-const { processInsulationResistanceTurn } = await import(
-  '../extraction/dialogue-engine/index.js'
-);
+const { processInsulationResistanceTurn } = await import('../extraction/dialogue-engine/index.js');
 
 function makeFakeWs() {
   const sent = [];
@@ -161,7 +165,14 @@ describe('P6 real-engine IR ingress — "A hundred MΩ" captures 100', () => {
   test('control: the RAW word-number defeats the live engine WITHOUT normalisation', () => {
     // Direct real-engine call (bypassing the seam) proves normalisation is
     // load-bearing: "a hundred megaohms" delivered RAW does not fill L-L.
-    const ws = { OPEN: 1, readyState: 1, sent: [], send(d) { this.sent.push(JSON.parse(d)); } };
+    const ws = {
+      OPEN: 1,
+      readyState: 1,
+      sent: [],
+      send(d) {
+        this.sent.push(JSON.parse(d));
+      },
+    };
     const session = { sessionId: 'sess_direct', stateSnapshot: { circuits: { 13: {} } } };
     processInsulationResistanceTurn({
       ws,

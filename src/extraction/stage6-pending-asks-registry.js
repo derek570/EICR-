@@ -43,6 +43,8 @@ export function createPendingAsksRegistry() {
       {
         contextField,
         contextCircuit,
+        contextCircuits,
+        contextBoardId,
         expectedAnswerShape,
         pendingWrite,
         pendingValue,
@@ -68,6 +70,17 @@ export function createPendingAsksRegistry() {
         timer,
         contextField,
         contextCircuit,
+        // Plan E §4b piece 3 (Codex r2 IMPORTANT) — the ASK-side scope the
+        // semantic-slot comparison needs. `contextCircuit` is a single ref and
+        // cannot express a multi-circuit ask ("Zs for circuits 1 and 2?"), and
+        // there was no board-scope field at all. Both were being set on the
+        // dispatcher's buildResolvedBody() call but NOT here, so
+        // isSameSemanticSlot() always read the ask side as unscoped in
+        // production: a reply that named its circuits explicitly looked like a
+        // NEW scope and false-fired user_moved_on, re-injecting instead of
+        // answering the ask it was plainly answering.
+        contextCircuits: Array.isArray(contextCircuits) ? contextCircuits : null,
+        contextBoardId: contextBoardId ?? null,
         expectedAnswerShape,
         // Schema-driven server-side resolution (2026-04-27 — bug-1B fix).
         // When non-null, the dispatcher hands this + the user reply +

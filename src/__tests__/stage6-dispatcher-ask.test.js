@@ -670,3 +670,77 @@ describe('createAskDispatcher — r10 outer try/catch emits dispatcher_error row
     expect(rows[0][1]).not.toHaveProperty('lifecycle');
   });
 });
+
+// --- Plan E §4b piece 3 (Codex r2) — ask-side scope reaches the REGISTRY ----
+//
+// The semantic-slot comparison in stage6-overtake-classifier reads the ask's
+// scope off the registry entry. Before this fix `context_circuits` /
+// `context_board_id` were set only on the dispatcher's buildResolvedBody()
+// call — never on pendingAsks.register() — and the registry's destructure
+// dropped them anyway. So in production the ask side always compared as
+// UNSCOPED, and a reply that named its circuits explicitly looked like a new
+// scope: false user_moved_on, re-injection instead of answering.
+//
+// This drives the REAL dispatcher against the REAL registry deliberately: a
+// test that hand-built a registry entry would have passed throughout the bug.
+
+describe('createAskDispatcher — ask scope is stored on the registry entry', () => {
+  function scopedEntry(pending) {
+    const entries = [...pending.entries()];
+    expect(entries).toHaveLength(1);
+    return entries[0][1];
+  }
+
+  test('a multi-circuit ask stores context_circuits (context_circuit cannot express it)', async () => {
+    const pending = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatch = createAskDispatcher(makeSession('live'), makeLogger(), 'turn-1', pending, ws);
+
+    // Do NOT await — a live ask blocks until answered or timed out.
+    dispatch(makeCall('toolu_scope', {
+      context_field: 'measured_zs_ohm',
+      context_circuit: null,
+      context_circuits: [1, 2],
+      expected_answer_shape: 'number',
+    }), { sessionId: 'sess-1', turnId: 'turn-1' });
+    await Promise.resolve();
+
+    const entry = scopedEntry(pending);
+    expect(entry.contextCircuits).toEqual([1, 2]);
+    expect(entry.contextCircuit).toBeNull();
+    pending.rejectAll('session_terminated');
+  });
+
+  test('a board-scoped ask stores context_board_id', async () => {
+    const pending = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatch = createAskDispatcher(makeSession('live'), makeLogger(), 'turn-1', pending, ws);
+
+    dispatch(makeCall('toolu_board', {
+      context_field: 'measured_zs_ohm',
+      context_circuit: 4,
+      context_board_id: 'board-garage',
+      expected_answer_shape: 'number',
+    }), { sessionId: 'sess-1', turnId: 'turn-1' });
+    await Promise.resolve();
+
+    const entry = scopedEntry(pending);
+    expect(entry.contextBoardId).toBe('board-garage');
+    expect(entry.contextCircuit).toBe(4);
+    pending.rejectAll('session_terminated');
+  });
+
+  test('an unscoped ask stores explicit nulls, never undefined (the comparison distinguishes "no scope" from "absent")', async () => {
+    const pending = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatch = createAskDispatcher(makeSession('live'), makeLogger(), 'turn-1', pending, ws);
+
+    dispatch(makeCall('toolu_bare'), { sessionId: 'sess-1', turnId: 'turn-1' });
+    await Promise.resolve();
+
+    const entry = scopedEntry(pending);
+    expect(entry.contextCircuits).toBeNull();
+    expect(entry.contextBoardId).toBeNull();
+    pending.rejectAll('session_terminated');
+  });
+});

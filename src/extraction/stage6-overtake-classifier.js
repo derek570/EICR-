@@ -126,18 +126,272 @@ function normaliseForYesNo(text) {
     .replace(/[\s"'`.,;:!?(){}[\]-]+$/, '');
 }
 
-export function classifyOvertake(newText, regexResults, pendingAsks) {
+// ─── Plan E §4b piece 3 (2026-07-28) — shared semantic-slot identity ────────
+//
+// ONE helper family used by BOTH ask-answer ingresses (this classifier's
+// transcript-first pre-queue path AND sonnet-stream's direct
+// ask_user_answered handler) so the two channels cannot disagree about
+// whether a reply targets the SAME slot as a pending ask. Current clients
+// send the transcript BEFORE ask_user_answered, so the production decision
+// is THIS module's path — a direct-handler-only fix would pass its tests
+// while the real ingress still false-overtook same-field aliases.
+//
+// Field identity is ALIAS-NORMALISED: the regex layer + older asks spell
+// fields with legacy wire aliases (ze / zs / pfc / r1_plus_r2 /
+// rcd_trip_time) while the typed detector returns canonical schema keys —
+// `earth_loop_impedance_ze` ≡ `ze`. Without normalisation a "Ze is 0.35"
+// reply to a ze-spelled ask classifies user_moved_on (false overtake).
+const READING_FIELD_IDENTITY_ALIASES = new Map([
+  ['ze', 'earth_loop_impedance_ze'],
+  ['zs', 'measured_zs_ohm'],
+  ['pfc', 'prospective_fault_current'],
+  ['r1_plus_r2', 'r1_r2_ohm'],
+  ['rcd_trip_time', 'rcd_time_ms'],
+]);
+
+export function canonicalReadingFieldIdentity(field) {
+  if (typeof field !== 'string' || field.length === 0) return null;
+  const lower = field.toLowerCase();
+  return READING_FIELD_IDENTITY_ALIASES.get(lower) ?? lower;
+}
+
+function escapeReSlot(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Reply-side circuit-SET parse (round-6: the typed detector parses only the
+// FIRST `circuit N` number — pending-side metadata alone cannot reveal that
+// the reply changed the circuit set). Continuations ride comma / "and" / "&"
+// separators plus bare-space INTEGER tokens; a bare-space token followed by
+// a decimal point is rejected so "circuit 4 0.3" cannot misparse as
+// circuits [4, 0].
+// Codex r1 #4/#8 — the round-6 parser had TWO fidelity bugs, both resolving
+// to a WRONG same-slot verdict:
+//   (a) a RANGE ("circuits 1 to 3" against an ask scoped [1,2]) parsed as
+//       [1] alone, a subset ⇒ "same slot" ⇒ the broader reply was consumed
+//       by the narrower ask.
+//   (b) SINGULAR "circuit N" allowed bare-space continuations, so
+//       "RCD trip time circuit 2 26" parsed as [2, 26] — the VALUE was eaten
+//       as a second circuit and a legitimate same-slot answer reclassified
+//       as a re-scope.
+// Bare-space continuation is now PLURAL-only ("circuits 1 2 3"); explicit
+// separators (`,`/and/&) work for both; ranges expand. An explicit circuit
+// phrase we cannot fully parse FAILS CLOSED (UNPARSED_CIRCUIT_SCOPE — an
+// empty set that can never be a subset of the ask's), so a scope we do not
+// understand is treated as a re-scope, never as a silently truncated match.
+export const UNPARSED_CIRCUIT_SCOPE = Object.freeze([]);
+
+function parseReplyCircuitSet(text) {
+  if (typeof text !== 'string') return null;
+  const lower = text.toLowerCase();
+  const head = lower.match(/\bcircuits?\s+(\d{1,3})/);
+  if (!head) return null;
+  const plural = /\bcircuits\s/.test(head[0]);
+  const first = Number.parseInt(head[1], 10);
+  if (!Number.isFinite(first)) return null;
+
+  const out = [first];
+  let rest = lower.slice(head.index + head[0].length);
+
+  for (;;) {
+    // Range: "1 to 3", "1-3", "1 through 3".
+    const range = rest.match(/^\s*(?:to|through|thru|[-–—])\s*(\d{1,3})(?!\s*\.)/);
+    if (range) {
+      const end = Number.parseInt(range[1], 10);
+      const start = out[out.length - 1];
+      // A descending or absurdly wide range is not a scope we understand.
+      if (!Number.isFinite(end) || end < start || end - start > 64) {
+        return UNPARSED_CIRCUIT_SCOPE;
+      }
+      for (let c = start + 1; c <= end; c += 1) out.push(c);
+      rest = rest.slice(range[0].length);
+      continue;
+    }
+    // Explicit separator continuation — always allowed.
+    const sep = rest.match(/^\s*(?:,|and|&)\s*(\d{1,3})(?!\s*\.)/);
+    if (sep) {
+      out.push(Number.parseInt(sep[1], 10));
+      rest = rest.slice(sep[0].length);
+      continue;
+    }
+    // Bare-space continuation — PLURAL only, never a decimal (that's a value).
+    if (plural) {
+      const bare = rest.match(/^\s+(\d{1,3})(?!\s*\.)/);
+      if (bare) {
+        out.push(Number.parseInt(bare[1], 10));
+        rest = rest.slice(bare[0].length);
+        continue;
+      }
+    }
+    break;
+  }
+
+  // A range connector we could not consume means the phrase is WIDER than
+  // what we parsed — fail closed rather than compare a truncated set.
+  if (/^\s*(?:to|through|thru|[-–—])/.test(rest)) return UNPARSED_CIRCUIT_SCOPE;
+
+  const set = [...new Set(out.filter((c) => Number.isFinite(c)))];
+  return set.length > 0 ? set : null;
+}
+
+// Reply-side board projection (round-6: the direct handler calls the
+// classifier with empty regex results and the detector knows nothing about
+// boards — only the session snapshot can reveal that the reply re-scoped to
+// a different board). CONSERVATIVE: a board is projected ONLY when the
+// reply carries a board-context cue word (board / DB / distribution /
+// consumer unit / sub-main) AND a known board DESIGNATION matches on a word
+// boundary. Matching bare designations without the cue would false-project
+// on vocabulary collisions — a board designated "Main" must not match the
+// "main" in "main earth is 16". Board IDs are server-internal (e.g.
+// 'main') and are deliberately NOT matched. Longest designation wins so
+// "DB-1" cannot shadow "DB-12".
+const BOARD_CONTEXT_CUE_RE = /\b(?:board|db|distribution|consumer\s+unit|sub[-\s]?main)\b/i;
+
+export function projectReplyBoardId(text, boards) {
+  if (typeof text !== 'string' || !Array.isArray(boards) || boards.length === 0) return null;
+  const lower = text.toLowerCase();
+  // Codex r1 #3 — cue-gating alone DISCARDED explicit scope grammar: "main
+  // switch BS EN is 60947-3 on Garage" (Garage a known designation) carries
+  // no cue word, projected null, and was consumed against the ask's board —
+  // a wrong-board write. An explicit `on|for|at [the] <designation>` phrase
+  // IS the scope, so it projects without needing a cue. Bare designation
+  // mentions still require the cue (a board designated "Main" must not match
+  // the "main" in "main earth is 16").
+  const hasCue = BOARD_CONTEXT_CUE_RE.test(text);
+  let best = null;
+  for (const b of boards) {
+    if (!b || typeof b !== 'object') continue;
+    const designation = typeof b.designation === 'string' ? b.designation.trim() : '';
+    if (designation.length < 2) continue;
+    const escaped = escapeReSlot(designation.toLowerCase());
+    const explicitScoped = new RegExp(`\\b(?:on|for|at)\\s+(?:the\\s+)?${escaped}\\b`, 'i').test(
+      lower
+    );
+    const mentioned = hasCue && new RegExp(`\\b${escaped}\\b`, 'i').test(lower);
+    if ((explicitScoped || mentioned) && (best === null || designation.length > best.len)) {
+      best = { id: b.id, len: designation.length };
+    }
+  }
+  return best && best.id != null ? best.id : null;
+}
+
+/**
+ * Build the reply's semantic slot from a detector result + the raw reply
+ * text (+ optional session boards for board-scope projection).
+ *
+ * @param {string} text - the (canonical) reply text
+ * @param {{fieldKey: string, circuit: number|null}|null} detected - detectStructuredReading output
+ * @param {Array<{id: string, designation?: string}>|null} boards - session snapshot boards
+ * @returns {{fieldKey: string|null, circuits: number[]|null, boardId: string|null}}
+ */
+export function buildReplySlot(text, detected, boards) {
+  const circuits =
+    parseReplyCircuitSet(text) ??
+    (detected && detected.circuit != null ? [detected.circuit] : null);
+  return {
+    fieldKey: canonicalReadingFieldIdentity(detected ? detected.fieldKey : null),
+    circuits,
+    boardId: projectReplyBoardId(text, boards ?? null),
+  };
+}
+
+// Ask-side circuit scope: the dispatcher stores BOTH contextCircuit (single)
+// and contextCircuits (multi) on registry entries (stage6-dispatcher-ask
+// buildResolvedBody threading) — round-7: the storage half already exists;
+// this is the comparison half.
+function askCircuitSet(entry) {
+  if (Array.isArray(entry?.contextCircuits) && entry.contextCircuits.length > 0) {
+    return entry.contextCircuits
+      .map((c) => (typeof c === 'number' ? c : Number.parseInt(c, 10)))
+      .filter((c) => Number.isFinite(c));
+  }
+  if (entry?.contextCircuit != null) {
+    const c =
+      typeof entry.contextCircuit === 'number'
+        ? entry.contextCircuit
+        : Number.parseInt(entry.contextCircuit, 10);
+    return Number.isFinite(c) ? [c] : null;
+  }
+  return null;
+}
+
+/**
+ * SAME-slot verdict between a pending ask entry and a reply slot.
+ *
+ * Rules (plan E rounds 3-7):
+ *   - fields compare ALIAS-NORMALISED; different canonical field ⇒ different.
+ *   - circuits: ask scope from contextCircuits/contextCircuit. A reply with
+ *     NO explicit circuit INHERITS the ask's scope (same slot — the ask is
+ *     what supplied the circuit; this is the ordinary answer shape). An
+ *     explicit-but-unparseable scope fails closed ⇒ different. A reply with
+ *     explicit circuit(s) against a scope-LESS ask is a NEWLY-EXPLICIT
+ *     re-scope ⇒ different ("which circuit?" Zs ask answered "Zs circuit 4
+ *     is 0.30" must overtake and write circuit 4, never consume against the
+ *     old scope). Both explicit ⇒ same iff the reply set ⊆ the ask set.
+ *   - board: a reply that names NO board is compatible with any ask; a
+ *     reply that projects a board must equal the ask's contextBoardId (a
+ *     newly-explicit board, or a different one, is a re-scope ⇒ different).
+ *
+ * @returns {boolean} true when the reply targets the SAME semantic slot.
+ */
+export function isSameSemanticSlot(askEntry, replySlot) {
+  if (!askEntry || !replySlot) return false;
+  const askField = canonicalReadingFieldIdentity(askEntry.contextField);
+  if (askField == null || replySlot.fieldKey == null) return false;
+  if (askField !== replySlot.fieldKey) return false;
+
+  const askSet = askCircuitSet(askEntry);
+  // An EMPTY (non-null) reply set is the fail-closed UNPARSED_CIRCUIT_SCOPE
+  // sentinel: the reply carried explicit circuit grammar we could not fully
+  // parse ⇒ treat as a re-scope, never as a match.
+  if (Array.isArray(replySlot.circuits) && replySlot.circuits.length === 0) return false;
+  const replySet =
+    Array.isArray(replySlot.circuits) && replySlot.circuits.length > 0 ? replySlot.circuits : null;
+  if (replySet == null) {
+    // Codex r1 #5 — a reply naming the SAME field but NO scope INHERITS the
+    // ask's scope: "What was the Zs for circuit 4?" → "Zs is 0.30" is the
+    // ordinary answer, and the ask is what supplies circuit 4. The earlier
+    // "bare reply vs scoped ask ⇒ different" rule made the single commonest
+    // ask-answer shape overtake and re-inject, which then produced a
+    // spurious "which circuit?" re-ask — the exact behaviour plan E §4b
+    // promises to keep byte-identical for same-field replies. Same slot.
+  } else if (askSet == null) {
+    return false; // newly-explicit circuit scope ⇒ re-scope
+  } else if (!replySet.every((c) => askSet.includes(c))) {
+    return false; // outside the ask's circuit set ⇒ re-scope
+  }
+
+  const askBoard = askEntry.contextBoardId ?? null;
+  const replyBoard = replySlot.boardId ?? null;
+  if (replyBoard != null && replyBoard !== askBoard) return false; // board re-scope
+  return true;
+}
+// ─── end plan E slot identity ───────────────────────────────────────────────
+
+export function classifyOvertake(newText, regexResults, pendingAsks, options = {}) {
   if (!pendingAsks || pendingAsks.size === 0) {
     return { kind: 'no_pending_asks' };
   }
 
   const regex = Array.isArray(regexResults) ? regexResults : [];
+  const text = typeof newText === 'string' ? newText : '';
 
-  // 1. Exact (field, circuit) match wins — iterate regex hits in order, then
-  //    pending asks in insertion order. First full match returns immediately.
+  // 1. Same-SLOT match wins — iterate regex hits in order, then pending asks
+  //    in insertion order. First full match returns immediately.
+  //    Plan E §4b piece 3: the comparison is the shared SEMANTIC-SLOT verdict
+  //    (alias-normalised field + circuit-SET + board compatibility), not the
+  //    old exact (field, circuit) equality — a "Ze is 0.35" reply to an ask
+  //    whose contextField is spelled with the legacy wire alias `ze` is the
+  //    SAME field (no false overtake), while an explicitly re-scoped
+  //    same-field reply (different circuit set / different board) is NOT.
   for (const r of regex) {
+    const slot = buildReplySlot(
+      text,
+      { fieldKey: r.field, circuit: r.circuit ?? null },
+      options.boards
+    );
     for (const [id, entry] of pendingAsks.entries()) {
-      if (r.field === entry.contextField && r.circuit === entry.contextCircuit) {
+      if (isSameSemanticSlot(entry, slot)) {
         return { kind: 'answers', toolCallId: id, userText: newText };
       }
     }
@@ -212,10 +466,23 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
   // a structurally complete fresh reading is an OVERTAKE no matter which
   // pending ask shape might otherwise claim it (a detector-complete
   // utterance consumed as a circuit_ref/free-text answer loses the reading).
-  const structuredEarly = !hasRecordableRegex
-    ? detectStructuredReading(typeof newText === 'string' ? newText : '')
-    : null;
+  //
+  // Plan E refinement: "no matter which pending ask" was too blunt — a
+  // complete reading whose semantic slot MATCHES a pending concrete-field
+  // ask is that ask's ANSWER ("Ze is 0.35" answering a ze-spelled ask must
+  // not false-overtake; alias-normalised). A pendingValue-class ask
+  // (contextField none/null) has no concrete field, so it can never
+  // slot-match and the round-13 overtake guard is preserved byte-for-byte
+  // for that class. A DIFFERENT slot (field, newly-explicit/outside circuit
+  // set, or board re-scope) still overtakes.
+  const structuredEarly = !hasRecordableRegex ? detectStructuredReading(text) : null;
   if (structuredEarly && structuredEarly.complete === true) {
+    const replySlot = buildReplySlot(text, structuredEarly, options.boards);
+    for (const [id, entry] of pendingAsks.entries()) {
+      if (isSameSemanticSlot(entry, replySlot)) {
+        return { kind: 'answers', toolCallId: id, userText: newText };
+      }
+    }
     return { kind: 'user_moved_on' };
   }
 
@@ -296,10 +563,17 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
   //    has moved on. Covers BOTH different-field AND same-field-different-
   //    circuit (e.g. pending (ze,5) + regex (ze,3) — step 1 didn't match, so
   //    we land here). Defers to the rejectAll path; user will restate.
+  //    Plan E: mirrors step 1's shared slot verdict so the two passes can
+  //    never disagree about what "fully match" means.
   for (const r of regex) {
+    const slot = buildReplySlot(
+      text,
+      { fieldKey: r.field, circuit: r.circuit ?? null },
+      options.boards
+    );
     let hadFullMatch = false;
     for (const [, entry] of pendingAsks.entries()) {
-      if (r.field === entry.contextField && r.circuit === entry.contextCircuit) {
+      if (isSameSemanticSlot(entry, slot)) {
         hadFullMatch = true;
         break;
       }
