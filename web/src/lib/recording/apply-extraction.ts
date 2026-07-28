@@ -898,6 +898,17 @@ function applyCircuitReadings(
   // exists. `addsBoardThisTurn` is belt-and-braces for a malformed op whose
   // `board_id` is missing/empty and so contributes nothing to the set.
   //
+  // Why an op-named board must also be INDEPENDENTLY evidenced: folding an op's
+  // id into the set proves the server named a board, NOT that it is the only
+  // one. A stale/legacy job whose `boards[]` and row `board_id`s are all empty
+  // would, on a `select_board(sub-1)` + board-omitted flagged replacement, see
+  // a union of exactly {sub-1} and take the bypass — overwriting whichever flat
+  // "circuit 1" row happens to exist, which may be the MAIN board's. So an op
+  // naming a board web has no independent record of is itself a defer signal:
+  // web's registry is out of sync with the server's and the ref cannot be
+  // routed. A `select_board` onto a board already in `boards[]`/rows/readings
+  // is fully evidenced and still takes the bypass.
+  //
   // Every declined case FALLS THROUGH to the unchanged gate — never a new
   // skip. A fail-closed SKIP would create a fresh spoken-but-not-written case,
   // which is the very defect this closes. Declines are observability-only.
@@ -917,30 +928,43 @@ function applyCircuitReadings(
   //    change and out of A2's scope.
   const hasReplacesClearedReading = readings.some((r) => r.replaces_cleared === true);
   const addsBoardThisTurn = boardOps.some((op) => op?.op === 'add_board');
-  const effectiveBoardIds: Set<string> | null = hasReplacesClearedReading
-    ? (() => {
-        const ids = new Set<string>();
-        const addId = (v: unknown) => {
-          if (typeof v === 'string' && v !== '') ids.add(v);
-        };
-        const boards = Array.isArray(job.boards) ? job.boards : [];
-        for (const b of boards) addId((b as { id?: unknown } | null)?.id);
-        // Rows are read BEFORE the reading loop can synthesise any (a
-        // synthesised row carries no board_id, so it could only ever dilute
-        // this set with nothing).
-        for (const row of circuits) addId((row as Record<string, unknown>).board_id);
-        for (const r of readings) addId(r.board_id);
-        for (const op of boardOps) {
-          const o = op as unknown as Record<string, unknown>;
-          if (!o) continue;
-          addId(o.board_id);
-          addId(o.parent_board_id);
-          addId(o.feeds_board_id);
-          addId(o.source_board_id);
-        }
-        return ids;
-      })()
-    : null;
+  const boardEvidence: { ids: Set<string>; unknownOpBoard: boolean } | null =
+    hasReplacesClearedReading
+      ? (() => {
+          const ids = new Set<string>();
+          const addId = (v: unknown) => {
+            if (typeof v === 'string' && v !== '') ids.add(v);
+          };
+          const boards = Array.isArray(job.boards) ? job.boards : [];
+          for (const b of boards) addId((b as { id?: unknown } | null)?.id);
+          // Rows are read BEFORE the reading loop can synthesise any (a
+          // synthesised row carries no board_id, so it could only ever dilute
+          // this set with nothing).
+          for (const row of circuits) addId((row as Record<string, unknown>).board_id);
+          for (const r of readings) addId(r.board_id);
+          // Snapshot BEFORE folding the ops in, so "independently evidenced" is
+          // order-independent: one op cannot vouch for another op's board.
+          const independent = new Set(ids);
+          let unknownOpBoard = false;
+          const OP_BOARD_KEYS = [
+            'board_id',
+            'parent_board_id',
+            'feeds_board_id',
+            'source_board_id',
+          ];
+          for (const op of boardOps) {
+            const o = op as unknown as Record<string, unknown> | null;
+            if (!o) continue;
+            for (const key of OP_BOARD_KEYS) {
+              const v = o[key];
+              if (typeof v !== 'string' || v === '') continue;
+              if (!independent.has(v)) unknownOpBoard = true;
+              ids.add(v);
+            }
+          }
+          return { ids, unknownOpBoard };
+        })()
+      : null;
 
   // Earthing arrangement is needed to widen the Ze clamp ceiling on
   // TT systems (200 Ω vs 5 Ω). Resolve once outside the loop —
@@ -1031,12 +1055,16 @@ function applyCircuitReadings(
     // is logged whether or not the cell happened to be populated.
     let replacesClearedBypass = false;
     if (reading.replaces_cleared === true) {
-      if (effectiveBoardIds !== null && (effectiveBoardIds.size > 1 || addsBoardThisTurn)) {
+      if (
+        boardEvidence !== null &&
+        (boardEvidence.ids.size > 1 || addsBoardThisTurn || boardEvidence.unknownOpBoard)
+      ) {
         pipelineLog('apply_replaces_cleared_multiboard_deferred', {
           circuit: reading.circuit,
           pwa_column: column,
-          effective_board_count: effectiveBoardIds.size,
+          effective_board_count: boardEvidence.ids.size,
           adds_board_this_turn: addsBoardThisTurn,
+          unknown_op_board: boardEvidence.unknownOpBoard,
         });
       } else {
         // Ref cardinality comes from `refCounts`, built from the ORIGINAL

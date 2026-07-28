@@ -768,6 +768,18 @@ export function projectExtractionResultForWire(result) {
   return { readings: extracted_readings, ...rest };
 }
 
+/**
+ * A2 (2026-07-28) — exported ONLY so the cross-client wire-contract fixture can
+ * be produced by the REAL frame builder rather than by a test re-implementing
+ * `{type:'extraction', result: project(...)}`. A re-implementation would leave
+ * the fixture green if this function ever grew its own inline projection again,
+ * which is precisely the drift the A2 seam exists to stop. Not a production
+ * export: production calls it directly (`:852`) inside this module.
+ */
+export function _test_buildResultFrameLedger(snapshot, result) {
+  return buildResultFrameLedger(snapshot, result);
+}
+
 function buildResultFrameLedger(snapshot, result) {
   const frames = [];
   const { spoken_response, action, observationUpdates } = result;

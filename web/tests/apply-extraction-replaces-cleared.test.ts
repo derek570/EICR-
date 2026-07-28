@@ -283,6 +283,56 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
   });
 
+  it('source 4d — a `select_board` onto a board web has NO record of defers', () => {
+    // The wrong-board class `add_board` covers, reached by a different door.
+    // Legacy/stale job: no `boards[]`, no row scope — so web's own evidence is
+    // EMPTY. The server, which knows main + sub-1, selects sub-1 and sends a
+    // board-omitted flagged replacement for "circuit 1". Folding the op's id in
+    // makes the union exactly {sub-1} — cardinality 1, no add_board — so on
+    // count alone this would take the bypass and overwrite the one flat
+    // "circuit 1" row, which may well be the MAIN board's. Naming a board web
+    // cannot independently corroborate means the registries are out of sync and
+    // the ref is unroutable, so it defers.
+    const job = makeJob({
+      circuits: [populatedRow()],
+      boards: [],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading()],
+        board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
+      } as unknown as Partial<ExtractionResult>)
+    );
+
+    expect(row.ir_live_live_mohm).toBe('LIM');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+    expect(stages()).not.toContain('apply_replaces_cleared_bypass_applied');
+    const deferred = getPipelineLog().find(
+      (e) => e.stage === 'apply_replaces_cleared_multiboard_deferred'
+    );
+    // Pinned so the reason cannot silently become the cardinality term: this
+    // case defers at count 1, which is exactly what the count alone misses.
+    expect(deferred?.payload).toMatchObject({ unknown_op_board: true, effective_board_count: 1 });
+  });
+
+  it('NEVER A NEW SKIP — a `select_board`-deferred reading still FILLS an empty cell', () => {
+    const job = makeJob({
+      circuits: [populatedRow({ ir_live_live_mohm: undefined })],
+      boards: [],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(
+      job,
+      makeResult({
+        readings: [flaggedReading()],
+        board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
+      } as unknown as Partial<ExtractionResult>)
+    );
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
   it('NEVER A NEW SKIP — an `add_board`-deferred reading still FILLS an empty cell', () => {
     const job = makeJob({
       circuits: [populatedRow({ ir_live_live_mohm: undefined, board_id: 'main' })],

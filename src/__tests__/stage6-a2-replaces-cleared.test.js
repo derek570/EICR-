@@ -79,8 +79,11 @@ jest.unstable_mockModule('../storage.js', () => ({
   getBucketName: jest.fn(() => 'test-bucket'),
 }));
 
-const { projectExtractionResultForWire, _test_validateAndCorrectFields } =
-  await import('../extraction/sonnet-stream.js');
+const {
+  projectExtractionResultForWire,
+  _test_validateAndCorrectFields,
+  _test_buildResultFrameLedger,
+} = await import('../extraction/sonnet-stream.js');
 
 const WIRE_CONTRACT_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -856,11 +859,69 @@ describe('A2 — wire contract (shared cross-client fixture)', () => {
       utteranceId: 'utt-a2-wire',
     });
     _test_validateAndCorrectFields(result, 'a2-wire');
-    const frame = { type: 'extraction', result: projectExtractionResultForWire(result) };
 
-    // JSON round-trip: what a client decoder actually parses, not the in-memory
-    // object (which still carries non-enumerable telemetry Symbols).
-    expect(JSON.parse(JSON.stringify(frame))).toEqual(wireContract);
+    // Built by the REAL frame builder production sends from, NOT by this test
+    // re-assembling `{type:'extraction', result: project(...)}`. That distinction
+    // is the whole point: a re-implementation here would stay green if
+    // buildResultFrameLedger ever grew its own inline projection again, and the
+    // fixture would then pin a shape production had stopped emitting.
+    const frames = _test_buildResultFrameLedger(session.stateSnapshot, result);
+    const extractionFrames = frames.filter((f) => f.kind === 'extraction');
+    expect(extractionFrames).toHaveLength(1);
+
+    // The ledger hands the socket a JSON STRING — parsing it is exactly what a
+    // client decoder does, and it drops the non-enumerable telemetry Symbols the
+    // in-memory result still carries.
+    expect(JSON.parse(extractionFrames[0].json)).toEqual(wireContract);
+  });
+
+  test('the OTHER production egress site emits the same extraction frame as the ledger', async () => {
+    // `session.onBatchResult` (sonnet-stream.js:2710) sends its extraction frame
+    // WITHOUT going through the ledger. Both sites are only equivalent because
+    // both call the shared projection; pin that equivalence at the frame level so
+    // re-inlining a projection at either site is a failure here rather than a
+    // client-visible divergence between the live and batch paths.
+    const session = wireContractSession();
+    const result = await runShadowHarness(session, 'insulation live live is one hundred', [], {
+      logger: mockLogger(),
+      confirmationsEnabled: true,
+      utteranceId: 'utt-a2-wire',
+    });
+    _test_validateAndCorrectFields(result, 'a2-wire');
+
+    const ledgerFrame = _test_buildResultFrameLedger(session.stateSnapshot, result).find(
+      (f) => f.kind === 'extraction'
+    ).json;
+    // The literal `:2711` send expression.
+    const batchFrame = JSON.stringify({
+      type: 'extraction',
+      result: projectExtractionResultForWire(result),
+    });
+
+    expect(JSON.parse(batchFrame)).toEqual(JSON.parse(ledgerFrame));
+  });
+
+  test('DRIFT LOCK — every extraction-frame egress site routes through the shared projection', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../extraction/sonnet-stream.js'),
+      'utf8'
+    );
+    // Every place that builds a `type: 'extraction'` payload must take its
+    // `result` from the seam. A re-inlined `...rest` spread at an egress site is
+    // invisible to every behavioural test above (it would produce the same bytes
+    // TODAY and drift the moment the seam changes), so it is caught structurally.
+    const egressSites = src.match(/type: 'extraction',\s*result: ([A-Za-z_][\w]*)/g) ?? [];
+    expect(egressSites.length).toBeGreaterThanOrEqual(2);
+    for (const site of egressSites) {
+      expect(site).toMatch(
+        /result: (projectExtractionResultForWire|resultWithoutQuestions|result)\b/
+      );
+    }
+    // And the ONE variable spelling that is not literally the seam call is
+    // assigned from it on the immediately preceding line.
+    expect(src).toMatch(
+      /const resultWithoutQuestions = projectExtractionResultForWire\(result\);\s*\n\s*currentWs\.send\(\s*JSON\.stringify\(\{ type: 'extraction', result: resultWithoutQuestions \}\)\s*\);/
+    );
   });
 
   test('the fixture itself encodes the contract: flagged replacement, bare ordinary write, surviving clear', () => {
