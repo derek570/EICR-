@@ -1,72 +1,90 @@
-# /ep execution log — Plan F (leading-circuit-scope + cross-utterance delete)
+# /ep execution log — PLAN-final.md (honest-refusal-2026-07-25, plan B)
 
-- **Plan:** `~/.claude/handoffs/EICR_Automation--leading-circuit-scope-2026-07-25/PLAN-final.md`
-- **Session:** `20260728T003617Z-ep` · chain hop 2 · branch `ep/leading-circuit-scope-2026-07-25-20260728T003617Z-ep`
-- **Base:** `origin/main` @ `1a30d937` (includes PR #123 from chain hop 1 — basing on the fetched remote rather than the stale local `main` was load-bearing)
-- **Repo:** `/Users/derekbeckley/Developer/EICR_Automation` (backend-only wave; zero wire change)
+- Session: `20260728T033356Z-ep` (chain hop 3)
+- Worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260728T033356Z-ep`
+- Branch: `ep/honest-refusal-2026-07-25-20260728T033356Z-ep` (base `origin/main` @ `1d4507ea`, post-A1a #123 + post-F #124 — the plan's required post-A1a base)
+- Startup sweep: `ep-reap: reaped=0 held=0 working=1`
 
-## Steps
-
-### Step 1 — Verify source anchors by symbol (post-#123 main)
+## Step 1 — Survey post-A1a source anchors
 - Status: applied
-- Decision: rule 1 — all plan anchors located by symbol; line refs had drifted ~160 lines post-#123 but every symbol resolved (wrappers `:4160/:4213/:4243`, classifyOvertake `:4441`, requeue spread `:4679`, runShadowHarness `:4711`).
-- Notes: confirmed "delete"/"remove" are pre-LLM-gate strong words (bare "delete" forwards); wrappers spread `ctx` so the suppress flag threads with zero wrapper edits; the queue drain re-enters `handleTranscript` FIFO from the `finally`.
+- Decision: rule 1 — every symbol anchor in the plan verified present on post-#124 main (A1a machinery in `stage6-dispatchers-board.js`, A3 net `:2111`, net-0 drain `:2569`, marker-② `:2828`, both composition sites, both unknown-tool envelope shapes, enums, `field_not_clearable` at `stage6-dispatch-validation.js:261`).
+- Files: none (read-only)
+- Commit: none
 
-### Step 2 — id 98: leading-circuit patterns + collect-all readers (commit `37e21492`)
+## Step 2 — Shared refusal-notice registry + pure classifyBoardClear (§3.1 + §3.2 extraction)
 - Status: applied
-- Files: both live schemas, engine.js, both legacy twins, 3 test files
-- Notes: per-file trigger vocabularies preserved (schema `insurance` vs twin `international`; twin ring-only terse). 20 pre-existing twin test expectations updated for the `{scope_conflict}` shape; one positional `triggers[0]` pin re-targeted by shape.
+- Decision: rule 1. New `src/extraction/refusal-notices.js` (dependency-downstream-only): A1a families + `selectMandatoryNoticeText` moved VERBATIM (compat re-export kept in `stage6-dispatchers-board.js`), `stageMandatoryNotice` exported + extended (coveredToolCallIds/route/repeatKey, coalescing appends coverage, count bumps only on covered-acceptance incl. the round-14 first-transition rule), B-staged pools + all terminals + `renderMandatoryNoticeText` + `renderedNoticeInventory` + `spokenBoardOrdinal`. `classifyBoardClear` extracted pure from dispatcher steps 3–5; dispatcher consumes it. A1a suites 62/62 green unchanged (byte parity).
+- Files: `src/extraction/refusal-notices.js` (new), `src/extraction/stage6-dispatchers-board.js`
+- Commit: f249b28a
 
-### Step 3 — Conflict resolver + conflict branches + span masking (same commit)
+## Step 3 — Three-way field_not_clearable classification + unknown-tool staging (§3.2)
 - Status: applied
-- Notes: initial-entry, active-episode, and awaiting_confirmation conflict branches; purge-before-ask in confirmation mode; NEW `maskCircuitSpans` in the IR twin.
-- [ASSUMED] the plan's IR-twin masking anchor ":936/:1152" was read as "the different-entry conflict path" — the `:1152` reading-phase site was later masked anyway by the cycle-1 review fixes, so the ambiguity is moot.
-- [ASSUMED] IR contaminated exemplar: the IR gap regex breaks on "for", so "…live to live for circuit 3 is 200" extracts nothing raw OR masked — the §6 test-3 IR analogue pins digit-protection with that exemplar and queue+drain with a cleanly-phrased sibling ("… for circuit 3. Live to live is 200.").
+- Decision: rule 1. `dispatchClearReading`: board-coverable (CANONICAL_BOARD_CLEARABLE canonical-vs-canonical) → bridge (denial family w/ coverage, or `wrong_tool_clear` on the scope-conditioned boardSlotKey); `CIRCUIT_FIELD_ENUM − CLEAR_READING_FIELD_ENUM` → `unsupported_clear` (field_schema label + circuit + board-ordinal discriminator); off-schema → `model_contract::offschema_clear` (raw string never renders). `createToolDispatcher` (string-form) + `createWriteDispatcher` (object-form) invoke a bound `onUnknownToolRefusal` callback at both live + shadow composition sites; envelopes byte-identical.
+- Files: `src/extraction/stage6-dispatchers-circuit.js`, `src/extraction/stage6-dispatchers.js`, `src/extraction/refusal-notices.js`, `src/extraction/stage6-shadow-harness.js`
+- Commit: b487a150
 
-### Step 4 — id 93: destructive-intent memory (commit `12716ba1`-family, "fix(voice): cross-utterance…")
+## Step 4 — A3 × coverage × recovery state machine + net-0 drain (§3.3)
 - Status: applied
-- Notes: `DESTRUCTIVE_INTENT_RE` + `CROSS_UTTERANCE_DESTRUCTIVE_WINDOW_MS` in the new helpers module (the plan's files table put the window constant in engine.js; it lives beside the RE in the helper as the single source — engine imports nothing, it only honours the flag). Arm at model-commit seam; consume at every terminal disposition; ordered arrival delta. IR schema gains the ring-shape `entryExclusionPattern`.
+- Decision: rule 1. allRejected widened for hard-unknown_tool ask_user (round-15); coverage arbitration beside the classification, outside ORPHAN_PROMPT_ENABLED (round-17); branch 2 suppresses REJECTED_PROMPTS + entire orphan branch (no orphanContext — round-16); branch 3 stamps drain:false; net-0 drain gains drain!==false + wrong_tool_clear same-slot success/already-empty reconciliation (round-8, order-independent); rendering via `renderMandatoryNoticeText`; telemetry + route/covered_count.
+- Files: `src/extraction/stage6-shadow-harness.js`
+- Commit: 3512d1d2
 
-### Step 5 — §6 test matrix (commit "test(dialogue): §6 matrix…")
+## Step 5 — Tests (§5 matrix)
 - Status: applied
-- Notes: 39-test engine/twin matrix + 5 replay-parity scenarios + 12-test real-ingress suite (grew to 52 + 15 + 27-scenario replay through the review cycles). The plan's "ask answered with a bare 'delete' via classifyOvertake" case is structurally unreachable through the transcript channel (no classifier branch returns 'answers' for a bare destructive with no regex hit) — pinned instead via the content-anchor path AND a live-registered-ask pre-queue consume test; the no-arm property holds by construction (arm site sits after every ask-resolution return).
+- Decision: rule 1. 28-test main suite (`stage6-honest-refusal.test.js`) at the harness seam + 2-test `VOICE_ORPHAN_PROMPT=false` file (module-load env constant forces a separate file) + inventory wired into BOTH client-dedupe sweeps (marker-② union + client-watchdog ALL_BACKEND_LINES, both describes). One assertion adjusted mid-write: `orphanContext` is nulled (not undefined) by the harness's consume path — pin loosened to nullish, substance (no `{transcript}` reinjection) unchanged.
+- Files: `src/__tests__/stage6-honest-refusal.test.js` (new), `src/__tests__/stage6-honest-refusal-orphan-off.test.js` (new), `src/__tests__/stage6-catchall-audibility-net.test.js`, `src/__tests__/client-watchdog-fallback.test.js`
+- Commit: 157418a7
 
-### Step 6 — Docs (commit `95f72951`)
+## Step 6 — Docs (§4)
 - Status: applied
-- Files: hub CLAUDE.md + AGENTS.md changelog rows, docs/reference/changelog.md full entry, docs/reference/ios-pipeline.md dated section, web/docs/parity-ledger.md dated note row `recording/leading-circuit-scope-cross-utterance-delete` (owner Derek).
+- Decision: rule 1. Changelog rows in hub CLAUDE.md + AGENTS.md + docs/reference/changelog.md; architecture.md refusal-registry paragraph beside the A1a net-0 entry; dated parity-ledger row `recording/honest-refusal-notices` (backend-only, owner Derek).
+- Files: `CLAUDE.md`, `AGENTS.md`, `docs/reference/changelog.md`, `docs/reference/architecture.md`, `web/docs/parity-ledger.md`
+- Commit: 4c7a3e17
 
-### Step 7 — Gate + Codex diff review + ship
+## Step 7 — Gates
 - Status: applied
-- Full backend suite green at every stage; field-replay corpus 9/9 throughout (general gate only — `dialogue_answer_ingress` is the documented corpus capability exclusion).
+- Full backend suite: **6416 passed, 19 skipped (pre-existing), 0 failed** (267/269 suites, 2 skipped suites pre-existing).
+- Field-replay corpus: **9/9 pass** (general gate; NO recorded fixture for B by design — §5).
+- NO recorded fixture authored (plan §5: the C06B9904 replay is A1a's; a B fixture lands only when a real captured turn contains a B-family refusal).
 
-## Codex diff review
+## [ASSUMED] decisions
+- [ASSUMED] step 3 — the unsupported_clear board-ordinal clause renders whenever the slot's board component resolves to an ordinal (incl. single-board jobs with a boards[] array → " on board 1") because plan §3.5 rule (2) requires the rendered string to embed the FULL slot discriminator matching the repeat bucket, and the repeat bucket always carries the resolved board id. Legacy snapshots with no boards[] omit the clause (no second board can exist without boards[]).
+- [ASSUMED] step 3 — `stageClearReadingRefusal` is wrapped in try/catch and staging failure logs `stage6.clear_refusal_stage_error` (best-effort beside the byte-identical envelope) — the plan specifies envelopes byte-identical but not the failure posture; fail-open to today's A3 behaviour is the fail-audible choice (§3.6).
+- [ASSUMED] step 4 — branch-2 suppression logs a NEW info row `stage6.rejected_prompt_suppressed_by_refusals` (the plan forbids the orphan row on that branch but is silent on replacement forensics; a suppressed-generic with zero telemetry would be undiagnosable in CloudWatch).
 
-Cycle 1 (parallel 3-lens: wire-contract / silent-path / edge-interactions): **11 merged findings** (5+5+6 raw, 3 triple-reported). ALL applied in-scope (commit `6b290460`), notably: matchAll collect-across-occurrences; CONFLICT_OVERWRITE drain semantics; unresolved-episode pending_writes carry-forward; conflict-origin follow-up re-ask; awaiting_disambiguation conflict preflight; RAW-reply entry detection/extraction (the in_response_to annotation defeated the leading anchor and exposed quoted-question words to extraction); masking on the ORDINARY extraction paths; `(?![ \t]+is\b)` topic-switch claim preservation; requeue-surviving verdict Symbol; performance.now stamps; Symbol un-exported.
+## Follow-ups (running)
+[FOLLOWUP] A3 REJECTED_PROMPTS wrap-silence for UNCOVERED rejections — `src/extraction/stage6-shadow-harness.js` (REJECTED_PROMPTS is a 3-string `turnNum % len` rotation); byte-identical wrap inside the client 30 s dedupe can silence a 4th consecutive uncovered all-rejected turn; pre-existing, named in plan §8.5 as declined-widening; smallest next action: widen REJECTED_PROMPTS to 5 variants or add an ordinal terminal like plan B's families.
+[FOLLOWUP] Recorded fixture for a B-family refusal — none exists by design (plan §5); when a captured field session contains a dispatcher-authored refusal (unsupported_clear / wrong_tool_clear / model_contract), author a recorded-lane fixture locking the refusal audibility; smallest next action: watch session-analytics for `stage6.mandatory_notice_emitted` rows with `route != 'direct'` after deploy.
 
-Per-fix mini-review: **7 findings — 6 applied, 1 declined** (commit `6e582460`). Applied: disambiguation preflight widened; conflict follow-up UPSERT+mark; resume-drain marker honoured; terse-anchor widening (later REVERSED — see cycle 2); voltage escape-hatch raw-reply; unconditional RegExp clone. Declined with reasoning: removing the `is`-lookahead (it preserves shipped main behaviour in both contexts; removal would re-open cycle-1's C5).
+## Codex diff review (in progress at checkpoint)
+- Cycle 1 ran as THREE serial lens reviews (rate-limit forced serial; @-inlining replaced by read-from-disk prompts + addDirs after discovering the MCP schema needed strict `additionalProperties:false`).
+- MERGED cycle-1 findings (deduped): F1 partial-coverage drain:false stamped BEFORE recovery (all 3 lenses) — FIXED: stamp deferred into the `!recovered` branch, immediate only under flag-off; F2 direct→covered transition retained direct metadata losing the board ordinal (all 3) — FIXED: transition adopts incoming friendly/field/boardId/reason/turnId; F3 untrusted discriminators (malformed circuit, unresolvable board ordinal) could render byte-identical covered repeats — FIXED: stage nothing, leave uncovered (fail-audible via A3); F4 terminal byte mismatch "voice-clearable" vs plan "voice-CLEARABLE" — FIXED byte-exact; F6 repeat expiry anchored at stage time — FIXED: renderMandatoryNoticeText(nowMs) refreshes entry.lastAt at drain; F5 test-matrix omissions — FIXED: 10 new tests added (partial-coverage recovery, untrusted-discriminator, board-scoped direct↔bridge both orders w/ shared designation, two-circuit interleave to attempt 3+, attempt-6 terminals for ALL remaining direct families, cross-turn direct↔bridge Ze, unknown/offschema attempt-3 terminals, object-form partial coverage, capable-correction-via-already-empty both orders, fake-clock drain-anchor).
+- HELD (cycle-2 adjudication): lens-b finding "backend 30s reset vs client playback-anchored dedupe TTL skew" — recommended fix is cross-client (new wire token honored by iOS+web dedupe), OUT_OF_SCOPE with intent_verdict WITHIN_INTENT quoting the ctx gotcha line. The in-scope drain-time anchor (F6) addresses the server-side drain-delay part; the residual client-side TTS-deferral skew is a pre-existing property of the WHOLE field-nil channel (A1a families, all apology rotations identical exposure). Cycle 2 will be asked to re-adjudicate severity given F6 + the pre-existing-class argument; if it still insists on the cross-client fix, run holds CODEX-HELD per rules.
+- Next: re-run affected suites (running at checkpoint: bg task b7vmanw05), commit fixes as `fix(ep): address Codex review cycle 1`, re-gate full suite + corpus, cycle-2 review (single-pass verify, listing applied fixes + the held finding), then per-fix mini-review of fix hunks if cycle 2 finds more.
 
-Cycle 2: **4 findings — 3 applied, 1 declined** (commit `f2f342fa`). Applied: terse patterns RESTORED to origin ^ anchors with clause-segment ref-only scanning (the mini-review's own widening had let "Zs is 0.62. Ring on circuit 13." swallow the Zs reading — review churn caught by the next cycle, as designed); disambiguation supersede widened to same-circuit/unscoped fresh entries + router parses raw reply; combined circuit-answer+correction upsert-before-drain. Declined with reasoning: consuming a newly-armed token on a requeued transcript's RETRY pass — the retry is the SAME transcript re-playing, not "the next utterance"; a second consume violates exactly-once-per-transcript and discards the suppression owed to the newer delete→trigger pair; the feared "unrelated utterance suppressed" cannot occur (suppression only skips guarded-schema entry).
+## Codex diff review — VERDICT: PASSED (cycle 2 clean)
+- Cycle 1 (3 serial lenses): 5 deduped in-scope findings — ALL APPLIED (commit 80b251e5): F1 stamp-before-recovery, F2 transition metadata, F3 untrusted discriminators, F4 terminal bytes, F6 drain-time expiry anchor; +10 matrix tests.
+- Per-fix mini-review: 1 IMPORTANT (deferral gate must equal the recovery block's exact eligibility — answer turns/content-gate combos left the stamp unconsumed) — APPLIED (commit 4ac5894c) + 2 answer-turn tests.
+- Cycle 2 (full re-review): "Cycle-1 fixes are resolved and the amended implementation is faithful to the refined plan. No additional in-scope correctness defects." The single carried finding (client playback-anchored dedupe TTL vs backend drain-anchored reset window) was re-adjudicated: IMPORTANT, "explicitly non-BLOCKER for this backend-only diff", recommended_fix explicitly "Do not widen this backend-only plan into that coordinated wire change" (OUT_OF_SCOPE, OUT_OF_INTENT vs the backend-only plan/context). Logged as [FOLLOWUP] below per the held-finding rule — an independent reviewer's real finding is routed to the todo queue, not discarded.
+- Final gates after all fixes: full backend suite 6428 passed / 19 skipped / 0 failed; field-replay corpus 9/9; A1a suites byte-green.
 
-Cycle 3: **1 finding — applied** (commit for "different-entry readers gate on matched"): refs-only later-sentence terse collections no longer register as a circuit switch during an active episode.
+[FOLLOWUP] Playback-aware field-nil dedupe (cross-client) — the client 30 s text dedupe anchors at PLAYBACK start while the backend's refusal repeat-window anchors at drain; a deferred-playback client can swallow a reset-to-attempt-1 refusal repeat. Pre-existing exposure for the WHOLE field-nil channel (A1a families, all apology rotations); plan-B families are LESS exposed (ordinal terminals). Codex cycle-2 wording: "Make field-nil refusal dedupe playback-aware across backend, iOS, and web by carrying a unique refusal-occurrence token or playback acknowledgement; expire/reset repeat identity only after the client playback-anchored TTL has elapsed." Smallest next action: author an /rp plan for a refusal-occurrence dedupe token (rides the existing dedupe_token machinery from A1a-P2).
 
-Cycle 4: **0 findings — PASSED.** Convergence: 11 → 7 → 4 → 1 → 0.
-
-**Plan-deviation note (1, applied within original intent):** the requeue-surviving `DESTRUCTIVE_SUPPRESS_VERDICT` Symbol. The written plan specified persistence only for the arrival STAMP; the wire-contract lens marked the verdict persistence `OUT_OF_SCOPE` with `intent_verdict: WITHIN_INTENT`, quoting the conversation context: *"Cross-utterance memory (the id-93 fix) must be CONSUMED/EXPIRED — a stale destructive utterance must not poison an unrelated later entry"* plus the id-93 fold-in directive. The other two lenses recommended the identical fix as in-scope. Without it, id 93 recurs whenever the suppressed trigger is requeued by the post-wrapper user_moved_on path.
-
-## Completed 2026-07-28T02:0xZ
-
-- **Outcome: ALL PASSED (plan-deviation: 1 applied within original intent)**
-- **Commits:** `37e21492` (id 98), cross-utterance id-93 commit, §6 matrix tests, `95f72951` (docs), `6b290460` (cycle 1), `6e582460` (mini-review), `f2f342fa` (cycle 2), cycle-3 fix, exec-log mirror.
-- **Files touched:** `src/extraction/dialogue-engine/schemas/{ring-continuity,insulation-resistance}.js`, `src/extraction/dialogue-engine/engine.js`, `src/extraction/dialogue-engine/helpers/destructive-intent.js` (new), `src/extraction/sonnet-stream.js`, `src/extraction/{ring-continuity,insulation-resistance}-script.js`, tests (`dialogue-engine-leading-circuit-scope`, `sonnet-stream-cross-utterance-delete-ingress` new; replay/twin/engine suites extended), docs (hub CLAUDE.md, AGENTS.md, changelog.md, ios-pipeline.md, parity-ledger.md).
-- **Assumed decisions:** see Steps 3–5 `[ASSUMED]` entries (window-constant placement; IR masking anchor; IR exemplar restructure; unreachable classifier case pinned via its real production paths).
+## Completed 2026-07-28T06:25:00Z
+- **Outcome header: ALL PASSED** (every step applied or assumed; full backend suite green; Codex diff review PASSED after 1 fix cycle + 1 mini-review cycle).
+- **Commits made:**
+  - f249b28a refactor(stage6): extract shared refusal-notice registry + pure classifyBoardClear (plan B §3.1–3.2)
+  - b487a150 feat(stage6): dispatcher-authored structural refusals — clear_reading three-way classification + unknown-tool routes (plan B §3.2)
+  - 3512d1d2 feat(stage6): A3 × coverage × recovery state machine + net-0 drain refusal handling (plan B §3.3)
+  - 157418a7 test(stage6): plan B §5 matrix — refusal routing, coverage arbitration, rotation/terminals, distinctness sweeps
+  - 4c7a3e17 docs: plan B honest-refusal — changelog rows, architecture net note, parity-ledger row
+  - 80b251e5 fix(ep): address Codex review cycle 1 — 5 in-scope findings applied
+  - 4ac5894c fix(ep): address Codex per-fix mini-review — partial-coverage stamp gate matches recovery eligibility exactly
+- **Files touched:** src/extraction/refusal-notices.js (new), stage6-dispatchers-board.js, stage6-dispatchers-circuit.js, stage6-dispatchers.js, stage6-shadow-harness.js; tests: stage6-honest-refusal.test.js (new, 40 tests), stage6-honest-refusal-orphan-off.test.js (new, 2), stage6-catchall-audibility-net.test.js, client-watchdog-fallback.test.js; docs: CLAUDE.md, AGENTS.md, docs/reference/changelog.md, docs/reference/architecture.md, web/docs/parity-ledger.md.
+- **Plan deviations:** none (zero WITHIN_INTENT deviations applied; the one OUT_OF_SCOPE finding was re-adjudicated non-BLOCKER by Codex and logged as a follow-up, per its own recommendation).
+- **Assumed decisions:** 3 (see [ASSUMED] section above — board-ordinal clause on single-board jobs; best-effort staging try/catch + warn row; suppression telemetry row).
 - **Skipped / blocked / failed steps:** none.
 - **Stashes left behind:** none.
-- **Tests:** final state 6385 backend passed / 0 failed (19 skipped pre-existing); field-replay corpus 9/9; replay parity green; new-file lint clean (repo-level `packages/` lint glob failure pre-exists on main).
-- **Deploy:** ready PR → merge to main → CI (ECS backend). No iOS half (backend-only; both clients benefit identically over the existing wire).
-
-## Follow-ups noticed
-
-[FOLLOWUP] IR named-extractor gap breaks on "for" — `insulation-resistance-script.js` `extractNamedFieldValues` + the live schema's connector allowlist reject "live to live for circuit 3 is 200" (captures NOTHING, raw or masked; engine re-asks); observed while building §6 test 3; a legitimate phrasing class silently costs a re-ask turn; smallest next action: evaluate adding a bounded "for <ref>" skip to the connector bridge with the same adversarial review the 2026-06-02 allowlist got.
-[FOLLOWUP] Conflict-origin which_circuit RE-ASK reuses byte-identical question text — `engine.js`/twins conflict follow-up branch; within the client 30 s text-keyed TTS dedupe the re-ask may be swallowed (accepted D-2 residual this wave); smallest next action: add a full-string-distinct alternate wording (the P1 `emitPendingSlotAlternate` pattern) for the conflict re-ask.
-[FOLLOWUP] Token-consume semantics on requeued-transcript retry passes were DECLINED-by-reasoning against a Codex cycle-2 recommendation — `sonnet-stream.js` DESTRUCTIVE_SUPPRESS_VERDICT block documents why; if a field session ever shows a stale suppression after a user_moved_on requeue interleaved with a fresh delete, revisit with that comment as the starting point.
-[FOLLOWUP] No end-to-end conflict→pause→resume integration test — `tryResumePausedScript`'s drain honours CONFLICT_OVERWRITE (one-line condition, mirrored from the tested position-4 drain) but the full IR conflict → two unresolvable answers → pause → create_circuit resume path is untested; smallest next action: add one integration test driving `tryResumePausedScript` with a conflict-origin paused episode and a pre-filled destination.
+- **Tests run + result:** full backend Jest 6428 passed / 19 skipped (pre-existing) / 0 failed; field-replay corpus 9/9 pass; A1a byte-parity suites green throughout.
+- **Follow-ups noticed:** 3 — (1) A3 REJECTED_PROMPTS wrap-silence for uncovered rejections (pre-existing, plan §8.5); (2) recorded fixture for a B-family refusal once a real captured turn contains one; (3) playback-aware field-nil dedupe cross-client design (Codex cycle-2 held finding). All queued to todos-certmate.md.
+- Deploy outcome appended below after merge + CI.
