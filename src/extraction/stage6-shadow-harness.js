@@ -1682,18 +1682,52 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
-    // Count of distinct circuits on the CURRENT board (board scope
-    // matters: a "for all circuits" broadcast on sub-board B should
-    // measure against B's circuit count, not A+B combined). Falls
-    // back to a board-agnostic count if no currentBoardId is set
-    // (legacy single-board jobs).
+    // Circuit populations feeding the "All circuits, …" fan-out phrasing.
+    //
+    // A2-multiboard item 8 (2026-07-28) — the scalar below is measured against
+    // the SESSION'S currently-selected board, but a confirmation GROUP is not
+    // necessarily about that board: the dispatcher resolves an effective board
+    // per write, so one turn can fan out on the board the inspector just left,
+    // or on two boards at once. Measuring every group against one session-wide
+    // scalar is how "All circuits" comes to mean "all circuits on some OTHER
+    // board" — an over-claim the hands-free inspector cannot see is wrong, on
+    // the one phrasing whose whole job is to assert completeness.
+    //
+    // So we ALSO build a per-board census and let the bundler pick the count
+    // that belongs to each group. Two key namespaces have to be folded in
+    // (stage6-multi-board-shape.js): the legacy-namespace owner's circuits sit
+    // under bare numeric keys, every other board's under `${board_id}::${ref}`.
+    // The composite half was invisible to the scalar (`Number('garage::3')` is
+    // NaN), which is precisely why a sub-board fan-out could never be counted.
+    //
+    // The scalar's own arithmetic is deliberately UNCHANGED — bare keys only,
+    // same currentBoardId filter — because it is still the answer for a
+    // single-board job, and the bundler now uses it ONLY there.
     let totalCircuitsInJob = 0;
+    const totalCircuitsByBoard = new Map();
     if (snapshotCircuits && typeof snapshotCircuits === 'object') {
       const currentBoardId = session?.stateSnapshot?.currentBoardId ?? null;
       for (const [key, circ] of Object.entries(snapshotCircuits)) {
         if (!circ || typeof circ !== 'object') continue;
-        const refNum = Number(key);
+        // `lastIndexOf` rather than `indexOf`: board ids are barred from
+        // containing '::' at write time, but splitting on the LAST separator
+        // is the same defensive convention `decodeReadingKey` uses.
+        const sep = key.lastIndexOf('::');
+        const isComposite = sep > 0;
+        const refNum = Number(isComposite ? key.slice(sep + 2) : key);
         if (!Number.isInteger(refNum) || refNum <= 0) continue;
+
+        // Effective board, most-specific first: the bucket's own attribution
+        // (what the dispatchers stamp) → the composite key's prefix → the
+        // board that owns the legacy bare-numeric namespace (`getMainBoardId`,
+        // already resolved above for the designation map).
+        const effBoard =
+          circ.board_id ?? (isComposite ? key.slice(0, sep) : null) ?? snapshotMainBoardId;
+        if (typeof effBoard === 'string' && effBoard !== '') {
+          totalCircuitsByBoard.set(effBoard, (totalCircuitsByBoard.get(effBoard) ?? 0) + 1);
+        }
+
+        if (isComposite) continue;
         if (currentBoardId && circ.board_id && circ.board_id !== currentBoardId) continue;
         totalCircuitsInJob += 1;
       }
@@ -1725,6 +1759,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       circuitDesignations,
       boardDesignations,
       totalCircuitsInJob,
+      // A2-multiboard item 8 — the per-board census. The bundler resolves each
+      // confirmation group's effective board and looks its population up here;
+      // `totalCircuitsInJob` above stays the answer only for an unambiguous
+      // single-board job (see resolveTotalForBoard in stage6-event-bundler.js).
+      totalCircuitsByBoard,
       // PLAN voice-feedback-2026-06-05 W1.4 — thread the session logger
       // through so the bundler can emit one `ios_send_attempt` row per
       // confirmation entry (with byte-equal-to-iOS expected_dedupe_key

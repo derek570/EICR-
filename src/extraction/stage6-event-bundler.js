@@ -444,9 +444,46 @@ function synthesiseConfirmations(
   designations = null,
   totalCircuitsInJob = null,
   calcReadings = null,
-  clampCorrections = null
+  clampCorrections = null,
+  boardScope = null
 ) {
   const out = [];
+  // A2-multiboard item 8 (2026-07-28) — per-GROUP circuit populations.
+  //
+  // `totalCircuitsInJob` is one session-wide scalar; a fan-out group belongs to
+  // whichever board the DISPATCHER resolved for its writes, which on a
+  // multi-board job is not always the board the session is pointed at. Feeding
+  // the scalar to every group is how "All circuits" comes to assert a
+  // completeness measured against a DIFFERENT board's population — an
+  // over-claim the hands-free inspector has no way to see is wrong, on the one
+  // phrasing whose entire job is to assert completeness.
+  //
+  // Resolution, fail-closed at every step (a false "All circuits" is an
+  // inaudible lie; a range/list line is merely less elegant):
+  //
+  //   * group's effective board KNOWN and censused → that board's count.
+  //   * group's effective board KNOWN but absent from the census (a board with
+  //     no snapshot circuits, a stale/unknown id) → null, never "All".
+  //   * group's effective board UNKNOWN → the legacy scalar ONLY when the job
+  //     is unambiguously single-board; on a multi-board job → null.
+  //   * no census at all (legacy callers / hand-built fixtures) → the scalar,
+  //     byte-identical to pre-item-8 behaviour.
+  const boardCounts = boardScope?.byBoard instanceof Map ? boardScope.byBoard : null;
+  const jobIsMultiBoard = boardCounts != null && boardCounts.size > 1;
+  // The WIRE `board_id` is only enriched onto ordinary readings on a
+  // cross-board turn (see the enrichment pass in bundleToolCallsIntoResult), so
+  // the dispatcher-resolved fallback is what keeps a single-board turn on a
+  // multi-board job attributable at all.
+  const effectiveBoardOf = (r) => {
+    if (r?.board_id != null && r.board_id !== '') return r.board_id;
+    const resolver = boardScope?.effectiveBoardOf;
+    return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
+  };
+  const resolveTotalForBoard = (boardId) => {
+    if (boardCounts == null) return totalCircuitsInJob;
+    if (boardId != null) return boardCounts.get(boardId) ?? null;
+    return jobIsMultiBoard ? null : totalCircuitsInJob;
+  };
   // id-100(b) (2026-07-25) — per-bundle identity map from a projected reading
   // object to the impedance-clamp correction the dispatcher recorded for it.
   // Keyed on object IDENTITY (same pattern as calcReadings/suppress sets) rather
@@ -507,6 +544,13 @@ function synthesiseConfirmations(
         field: r.field,
         value: r.value,
         board_id: r.board_id,
+        // A2-multiboard item 8 — the board this group's "All circuits" claim is
+        // measured against. Safe to read off the FIRST member for the same
+        // reason `correction` is: the wire `board_id` is part of the group key,
+        // and a turn on which two members could differ in EFFECTIVE board is by
+        // definition cross-board, which is exactly when the enrichment pass has
+        // already stamped that difference onto the wire.
+        effectiveBoardId: effectiveBoardOf(r),
         calculated: isCalc(r),
         // Safe to read off the FIRST member: every member of a bucket shares
         // this correction by construction (it is part of the group key).
@@ -540,7 +584,7 @@ function synthesiseConfirmations(
       bucket.field,
       bucket.value,
       circuits,
-      totalCircuitsInJob,
+      resolveTotalForBoard(bucket.effectiveBoardId),
       { calculated: bucket.calculated, correction: bucket.correction }
     );
     if (!grouped) continue;
@@ -1416,10 +1460,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // totalCircuitsInJob lets the helper decide whether a multi-circuit
     // group qualifies as "all circuits" vs "circuits X to Y". Sourced
     // from the caller (stage6-shadow-harness.js builds it from
-    // session.stateSnapshot.circuits, board-scoped if a sub-board is
-    // the current target so a fan-out on board B doesn't count board
-    // A's circuits toward the total). Null means "I don't know" → the
-    // helper falls through to range/list phrasing.
+    // session.stateSnapshot.circuits, scoped to the SESSION'S currently
+    // selected board). Null means "I don't know" → the helper falls
+    // through to range/list phrasing.
+    // A2-multiboard item 8 — `totalCircuitsByBoard` is the per-board census
+    // that supersedes the scalar whenever the group's own effective board is
+    // knowable; the scalar survives as the answer for an unambiguously
+    // single-board job and for callers that pass no census at all.
     // Audio-first: exclude mirror/polarity auto-derivations (derived: true)
     // from the spoken read-back while keeping them on the extracted_readings
     // wire. F/U-1: calculator writes are NOT excluded — they speak with
@@ -1436,7 +1483,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       options.circuitDesignations,
       options.totalCircuitsInJob ?? null,
       calcConfirmationReadings,
-      clampCorrectionByReading
+      clampCorrectionByReading,
+      {
+        byBoard: options.totalCircuitsByBoard instanceof Map ? options.totalCircuitsByBoard : null,
+        // Same WeakMap the enrichment pass above consulted, so a group whose
+        // wire `board_id` was deliberately left off (single-board turn) is
+        // still measured against ITS board rather than the session's.
+        effectiveBoardOf: (r) => effectiveBoardByReading.get(r) ?? null,
+      }
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
     // loop and the `_confidence` strip MOVED to stage6-shadow-harness.js,
