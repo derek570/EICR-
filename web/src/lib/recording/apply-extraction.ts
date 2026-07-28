@@ -30,6 +30,7 @@ import type {
 import type { ScheduleOutcome } from '@/lib/constants/inspection-schedule';
 import { EIC_SCHEDULE, EICR_SCHEDULE } from '@/lib/constants/inspection-schedule';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
+import { BACKEND_DEFAULT_MAIN_BOARD_ID } from '@/lib/boards/canonical-main';
 import {
   applyDefaultsToCircuit,
   clampImpedance,
@@ -747,16 +748,14 @@ function applyCircuit0Readings(
 // resolves to its canonical column here — F1: checking the raw wire field would
 // miss those and re-block the legitimate single-board LIM correction.
 // A2 (2026-07-28) — the board id the BACKEND synthesises for a snapshot that
-// arrived with no `boards[]` at all (`DEFAULT_MAIN_BOARD_ID` in
-// `src/extraction/stage6-multi-board-shape.js`). Web has no board named this —
-// it is the server's name for "the only board" on a legacy flat job — so the
-// `replaces_cleared` evidence check seeds it, and ONLY it, when web's own
-// evidence is empty. A hand-mirrored literal: web cannot import from `src/`.
-// If the backend constant ever changes, the symptom is a `replaces_cleared`
-// write silently declining on legacy single-board jobs (stale value kept, the
-// A2 defect back) — pinned by the legacy-shape test in
+// arrived with no `boards[]` at all. Used here as the seed for the
+// `replaces_cleared` evidence check when web's own evidence is empty: it is
+// the server's name for "the only board" on a legacy flat job. Sourced from
+// the shared canonical-main module (scope item 5) so the literal exists ONCE
+// on web. If the backend constant ever changes, the symptom is a
+// `replaces_cleared` write silently declining on legacy single-board jobs
+// (stale value kept, the A2 defect back) — pinned by the legacy-shape test in
 // `web/tests/apply-extraction-replaces-cleared.test.ts`.
-const BACKEND_DEFAULT_MAIN_BOARD_ID = 'main';
 
 const NUMERIC_READING_COLUMNS = new Set<string>([
   'measured_zs_ohm',

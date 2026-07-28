@@ -10,10 +10,13 @@ import Anthropic from '@anthropic-ai/sdk';
 import { CostTracker } from './cost-tracker.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import {
+  buildDefaultMainBoard,
   ensureMultiBoardShape,
+  findCanonicalMainBoard,
   getCircuitBucket,
   getMainBoardId,
   listCircuitRefsInBoard,
+  resolveCanonicalMainBoardId,
   DEFAULT_MAIN_BOARD_ID,
 } from './stage6-multi-board-shape.js';
 import {
@@ -1580,17 +1583,31 @@ export class EICRExtractionSession {
         // main namespace (a sub circuit would overwrite the main circuit
         // with the same ref). Pre-r3 the junk {} record incidentally kept
         // 'main' resolving; this preserves that routing deliberately.
-        const hasMainTyped = hydrated.some((b) => !b.board_type || b.board_type === 'main');
-        if (!hasMainTyped) {
-          const existingMain = (this.stateSnapshot.boards ?? []).find(
-            (b) => b && (!b.board_type || b.board_type === 'main')
+        //
+        // A2-multiboard scope item 5 — the rule that decides "is there a main
+        // record here?" is now the SHARED `findCanonicalMainBoard` predicate
+        // (mirrored on web + iOS) rather than three hand-rolled copies of the
+        // same `!board_type || board_type === 'main'` test. Behaviour is
+        // unchanged for every shape that reaches production today, with one
+        // deliberate tightening: the retained `existingMain` must itself be
+        // ID-BEARING. An id-less "main" record is useless as an attribution
+        // target — nothing can address a reading to it — so it now falls
+        // through to the synthesised default identity instead of being
+        // unshifted as a board that no write can ever name.
+        if (!findCanonicalMainBoard(hydrated)) {
+          hydrated.unshift(
+            findCanonicalMainBoard(this.stateSnapshot.boards) ?? buildDefaultMainBoard()
           );
-          hydrated.unshift(existingMain ?? { id: 'main', designation: 'DB-1', board_type: 'main' });
         }
         this.stateSnapshot.boards = hydrated;
       }
     }
-    this.stateSnapshot.currentBoardId = getMainBoardId(this.stateSnapshot);
+    // Attribution, not namespace routing — see findCanonicalMainBoard. The
+    // unshift above guarantees a qualifying record exists, so this agrees
+    // with `getMainBoardId(this.stateSnapshot)` on every shape that reaches
+    // here; using the attribution helper makes the "never first-sub"
+    // guarantee explicit at the seam that decides session focus.
+    this.stateSnapshot.currentBoardId = resolveCanonicalMainBoardId(this.stateSnapshot.boards);
     const mainBoardId = this.stateSnapshot.currentBoardId;
     // F/U-5 — consume the TOP-LEVEL `board_info` container. It is the
     // PRIMARY board-fields carrier for single-board PWA jobs (`boards:
@@ -2201,7 +2218,15 @@ export class EICRExtractionSession {
     // MAIN board still takes fields) and main-fields route to circuits[0] /
     // identity to the main record (Codex F/U-5 r1+r2; see
     // _applyTopLevelBoardInfo).
-    this._applyTopLevelBoardInfo(jobState, getMainBoardId(this.stateSnapshot));
+    // A2-multiboard item 5 — ATTRIBUTION, so the canonical-main helper rather
+    // than the namespace router. `_applyTopLevelBoardInfo` merges the
+    // board_info IDENTITY (designation / board_type) into the record this id
+    // names; `getMainBoardId`'s first-entry fallthrough would hand that merge
+    // a SUB-board on a snapshot with no main-typed record, stamping the main
+    // board's designation onto a sub-board. The canonical helper resolves to
+    // the default `main` identity instead, and the merge simply finds no
+    // record and skips — a no-op beats a wrong write.
+    this._applyTopLevelBoardInfo(jobState, resolveCanonicalMainBoardId(this.stateSnapshot.boards));
   }
 
   /**
@@ -2262,9 +2287,10 @@ export class EICRExtractionSession {
     if (usable.length >= 2) return;
     let mergeIdentity = true;
     if (usable.length === 1) {
-      const sole = usable[0];
-      const isMain = !sole.board_type || sole.board_type === 'main';
-      if (!isMain) return;
+      // A2-multiboard item 5 — the same shared main-shaped predicate the
+      // hydration path uses, so "is this record the main board?" cannot drift
+      // between the two seams that ask it.
+      if (!findCanonicalMainBoard(usable)) return;
       mergeIdentity = false;
     }
     const info = jobState.board_info;

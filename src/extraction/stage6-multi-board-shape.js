@@ -55,6 +55,64 @@ export function getMainBoardId(snapshot) {
   return main?.id ?? snapshot.boards[0]?.id ?? DEFAULT_MAIN_BOARD_ID;
 }
 
+/**
+ * A2-multiboard (2026-07-28) scope item 5 — the CANONICAL-MAIN ATTRIBUTION
+ * rule, stated once so backend, web and iOS can agree byte-for-byte.
+ *
+ * This is deliberately NOT `getMainBoardId`. The two answer different
+ * questions and must not be merged:
+ *
+ *   * `getMainBoardId` is NAMESPACE ROUTING — "which board id reads the
+ *     legacy bare-numeric circuit keys?". Its `boards[0].id` fallthrough is
+ *     load-bearing there: on a `[sub, off_peak]` snapshot SOMETHING has to own
+ *     the legacy namespace, and flipping that answer would silently re-key
+ *     every circuit on such a job.
+ *   * This helper is ATTRIBUTION — "which board record IS the main board?".
+ *     A sub-board is never the answer. When no record qualifies, the caller
+ *     synthesises/retains the default `{id:'main'}` identity instead of
+ *     crowning the first entry.
+ *
+ * The two agree everywhere it matters because the production hydration path
+ * (`eicr-extraction-session.js _seedStateFromJobState`) guarantees a
+ * qualifying main-typed record sits at the head of `boards[]` before either
+ * is consulted — that guarantee is exactly what this helper now enforces.
+ *
+ * Rule, in order:
+ *   1. Keep only USABLE entries — plain records carrying a truthy `id`. An
+ *      id-less record cannot be an attribution target: nothing can address a
+ *      reading to it.
+ *   2. The FIRST usable entry whose `board_type` is absent or `'main'`
+ *      (absent = legacy seeded snapshots that predate the field).
+ *   3. Otherwise `null` — never the first sub-board, never a parent-pointer
+ *      walk.
+ *
+ * @param {unknown} boards
+ * @returns {Object|null}
+ */
+export function findCanonicalMainBoard(boards) {
+  if (!Array.isArray(boards)) return null;
+  for (const b of boards) {
+    if (!b || typeof b !== 'object' || Array.isArray(b)) continue;
+    if (!b.id) continue;
+    if (!b.board_type || b.board_type === 'main') return b;
+  }
+  return null;
+}
+
+/**
+ * The id half of {@link findCanonicalMainBoard}. Falls back to the
+ * synthesised default identity (`'main'`) rather than to any other board —
+ * that identity is the one the hydration path creates and the one the
+ * dispatcher/enrichment stamp on a boardless job, so an unattributable
+ * snapshot resolves to the SAME id on every actor.
+ *
+ * @param {unknown} boards
+ * @returns {string}
+ */
+export function resolveCanonicalMainBoardId(boards) {
+  return findCanonicalMainBoard(boards)?.id ?? DEFAULT_MAIN_BOARD_ID;
+}
+
 // "Work on Board" sprint Phase A — dual-shape circuit-bucket lookup.
 // Main board reads from the legacy bare-numeric key; non-main boards
 // read from composite keys (`${board_id}::${ref}`). Replaces the
