@@ -165,15 +165,73 @@ function escapeReSlot(s) {
 // separators plus bare-space INTEGER tokens; a bare-space token followed by
 // a decimal point is rejected so "circuit 4 0.3" cannot misparse as
 // circuits [4, 0].
+// Codex r1 #4/#8 — the round-6 parser had TWO fidelity bugs, both resolving
+// to a WRONG same-slot verdict:
+//   (a) a RANGE ("circuits 1 to 3" against an ask scoped [1,2]) parsed as
+//       [1] alone, a subset ⇒ "same slot" ⇒ the broader reply was consumed
+//       by the narrower ask.
+//   (b) SINGULAR "circuit N" allowed bare-space continuations, so
+//       "RCD trip time circuit 2 26" parsed as [2, 26] — the VALUE was eaten
+//       as a second circuit and a legitimate same-slot answer reclassified
+//       as a re-scope.
+// Bare-space continuation is now PLURAL-only ("circuits 1 2 3"); explicit
+// separators (`,`/and/&) work for both; ranges expand. An explicit circuit
+// phrase we cannot fully parse FAILS CLOSED (UNPARSED_CIRCUIT_SCOPE — an
+// empty set that can never be a subset of the ask's), so a scope we do not
+// understand is treated as a re-scope, never as a silently truncated match.
+export const UNPARSED_CIRCUIT_SCOPE = Object.freeze([]);
+
 function parseReplyCircuitSet(text) {
   if (typeof text !== 'string') return null;
-  const m = text
-    .toLowerCase()
-    .match(/\bcircuits?\s+(\d{1,3}(?:(?:\s*(?:,|and|&)\s*|\s+)\d{1,3}(?!\.))*)/);
-  if (!m) return null;
-  const nums = m[1].match(/\d{1,3}/g);
-  if (!nums || nums.length === 0) return null;
-  return [...new Set(nums.map((n) => Number.parseInt(n, 10)))];
+  const lower = text.toLowerCase();
+  const head = lower.match(/\bcircuits?\s+(\d{1,3})/);
+  if (!head) return null;
+  const plural = /\bcircuits\s/.test(head[0]);
+  const first = Number.parseInt(head[1], 10);
+  if (!Number.isFinite(first)) return null;
+
+  const out = [first];
+  let rest = lower.slice(head.index + head[0].length);
+
+  for (;;) {
+    // Range: "1 to 3", "1-3", "1 through 3".
+    const range = rest.match(/^\s*(?:to|through|thru|[-–—])\s*(\d{1,3})(?!\s*\.)/);
+    if (range) {
+      const end = Number.parseInt(range[1], 10);
+      const start = out[out.length - 1];
+      // A descending or absurdly wide range is not a scope we understand.
+      if (!Number.isFinite(end) || end < start || end - start > 64) {
+        return UNPARSED_CIRCUIT_SCOPE;
+      }
+      for (let c = start + 1; c <= end; c += 1) out.push(c);
+      rest = rest.slice(range[0].length);
+      continue;
+    }
+    // Explicit separator continuation — always allowed.
+    const sep = rest.match(/^\s*(?:,|and|&)\s*(\d{1,3})(?!\s*\.)/);
+    if (sep) {
+      out.push(Number.parseInt(sep[1], 10));
+      rest = rest.slice(sep[0].length);
+      continue;
+    }
+    // Bare-space continuation — PLURAL only, never a decimal (that's a value).
+    if (plural) {
+      const bare = rest.match(/^\s+(\d{1,3})(?!\s*\.)/);
+      if (bare) {
+        out.push(Number.parseInt(bare[1], 10));
+        rest = rest.slice(bare[0].length);
+        continue;
+      }
+    }
+    break;
+  }
+
+  // A range connector we could not consume means the phrase is WIDER than
+  // what we parsed — fail closed rather than compare a truncated set.
+  if (/^\s*(?:to|through|thru|[-–—])/.test(rest)) return UNPARSED_CIRCUIT_SCOPE;
+
+  const set = [...new Set(out.filter((c) => Number.isFinite(c)))];
+  return set.length > 0 ? set : null;
 }
 
 // Reply-side board projection (round-6: the direct handler calls the
@@ -191,15 +249,26 @@ const BOARD_CONTEXT_CUE_RE = /\b(?:board|db|distribution|consumer\s+unit|sub[-\s
 
 export function projectReplyBoardId(text, boards) {
   if (typeof text !== 'string' || !Array.isArray(boards) || boards.length === 0) return null;
-  if (!BOARD_CONTEXT_CUE_RE.test(text)) return null;
   const lower = text.toLowerCase();
+  // Codex r1 #3 — cue-gating alone DISCARDED explicit scope grammar: "main
+  // switch BS EN is 60947-3 on Garage" (Garage a known designation) carries
+  // no cue word, projected null, and was consumed against the ask's board —
+  // a wrong-board write. An explicit `on|for|at [the] <designation>` phrase
+  // IS the scope, so it projects without needing a cue. Bare designation
+  // mentions still require the cue (a board designated "Main" must not match
+  // the "main" in "main earth is 16").
+  const hasCue = BOARD_CONTEXT_CUE_RE.test(text);
   let best = null;
   for (const b of boards) {
     if (!b || typeof b !== 'object') continue;
     const designation = typeof b.designation === 'string' ? b.designation.trim() : '';
     if (designation.length < 2) continue;
-    const re = new RegExp(`\\b${escapeReSlot(designation.toLowerCase())}\\b`, 'i');
-    if (re.test(lower) && (best === null || designation.length > best.len)) {
+    const escaped = escapeReSlot(designation.toLowerCase());
+    const explicitScoped = new RegExp(`\\b(?:on|for|at)\\s+(?:the\\s+)?${escaped}\\b`, 'i').test(
+      lower
+    );
+    const mentioned = hasCue && new RegExp(`\\b${escaped}\\b`, 'i').test(lower);
+    if ((explicitScoped || mentioned) && (best === null || designation.length > best.len)) {
       best = { id: b.id, len: designation.length };
     }
   }
@@ -252,8 +321,9 @@ function askCircuitSet(entry) {
  * Rules (plan E rounds 3-7):
  *   - fields compare ALIAS-NORMALISED; different canonical field ⇒ different.
  *   - circuits: ask scope from contextCircuits/contextCircuit. A reply with
- *     NO explicit circuit matches only a scope-less ask (preserves the
- *     pre-plan-E exact-equality semantics, incl. null===null). A reply with
+ *     NO explicit circuit INHERITS the ask's scope (same slot — the ask is
+ *     what supplied the circuit; this is the ordinary answer shape). An
+ *     explicit-but-unparseable scope fails closed ⇒ different. A reply with
  *     explicit circuit(s) against a scope-LESS ask is a NEWLY-EXPLICIT
  *     re-scope ⇒ different ("which circuit?" Zs ask answered "Zs circuit 4
  *     is 0.30" must overtake and write circuit 4, never consume against the
@@ -271,10 +341,20 @@ export function isSameSemanticSlot(askEntry, replySlot) {
   if (askField !== replySlot.fieldKey) return false;
 
   const askSet = askCircuitSet(askEntry);
+  // An EMPTY (non-null) reply set is the fail-closed UNPARSED_CIRCUIT_SCOPE
+  // sentinel: the reply carried explicit circuit grammar we could not fully
+  // parse ⇒ treat as a re-scope, never as a match.
+  if (Array.isArray(replySlot.circuits) && replySlot.circuits.length === 0) return false;
   const replySet =
     Array.isArray(replySlot.circuits) && replySlot.circuits.length > 0 ? replySlot.circuits : null;
   if (replySet == null) {
-    if (askSet != null) return false; // bare reply vs circuit-scoped ask — pre-E semantics
+    // Codex r1 #5 — a reply naming the SAME field but NO scope INHERITS the
+    // ask's scope: "What was the Zs for circuit 4?" → "Zs is 0.30" is the
+    // ordinary answer, and the ask is what supplies circuit 4. The earlier
+    // "bare reply vs scoped ask ⇒ different" rule made the single commonest
+    // ask-answer shape overtake and re-inject, which then produced a
+    // spurious "which circuit?" re-ask — the exact behaviour plan E §4b
+    // promises to keep byte-identical for same-field replies. Same slot.
   } else if (askSet == null) {
     return false; // newly-explicit circuit scope ⇒ re-scope
   } else if (!replySet.every((c) => askSet.includes(c))) {
