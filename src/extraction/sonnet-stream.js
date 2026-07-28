@@ -113,6 +113,10 @@ import {
 // fires in handleTranscript BEFORE shadow-harness dispatch so an unrelated
 // utterance drains stale asks (rejectAll 'user_moved_on') rather than
 // poisoning the slot map.
+import {
+  DESTRUCTIVE_INTENT_RE,
+  CROSS_UTTERANCE_DESTRUCTIVE_WINDOW_MS,
+} from './dialogue-engine/helpers/destructive-intent.js';
 import { createPendingAsksRegistry } from './stage6-pending-asks-registry.js';
 import { ASK_USER_TIMEOUT_MS } from './stage6-dispatcher-ask.js';
 import { ExtractionCancelledError } from './stage6-control-flow-errors.js';
@@ -909,6 +913,21 @@ export const RECENT_ASK_ANSWER_CAP = 8;
 // regardless of enumerability), so it can NEVER leak into the wire frame or the
 // S3 capture — only object-spread (which we rely on here) copies it.
 const TRANSCRIPT_NORMALISED = Symbol('transcriptNormalised');
+
+// id 93 (cross-utterance delete, 2026-07-27) — the transcript's FIRST
+// server-arrival timestamp, stamped ONCE in handleTranscript the moment the
+// frame is accepted (before any queueing). The destructive-token window is
+// arbitrated as an ORDERED ARRIVAL DELTA (trigger.arrivedAt −
+// delete.arrivedAt), never a consumption-time `now` comparison — if both the
+// "delete" and the follow-up scoped trigger queue behind an in-flight
+// extraction, queue latency must not expire a live token, and an
+// out-of-order stamp must never match. Same Symbol mechanics as
+// TRANSCRIPT_NORMALISED above: a module-private, server-owned, ENUMERABLE
+// Symbol survives the `{ ...msg }` queue/requeue spreads but can never be
+// supplied (or overwritten) by a client JSON frame, and never leaks into
+// JSON.stringify output. Non-writable: the stamp is set-once by design — a
+// drain re-entry must see the ORIGINAL arrival time, not a re-stamp.
+const TRANSCRIPT_ARRIVED_AT = Symbol('transcriptArrivedAt');
 
 /**
  * Normalise a freeform utterance for equality-based dedupe.
@@ -3549,6 +3568,57 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       return;
     }
 
+    // id 93 — stamp the transcript's FIRST server-arrival time the moment it
+    // is accepted, BEFORE any queueing. `in` (not a truthiness read) so a
+    // requeued clone that already carries the Symbol is never re-stamped at
+    // drain — the destructive-token window is an arrival-to-arrival delta
+    // and a drain-time re-stamp would silently widen it by the queue wait.
+    if (!(TRANSCRIPT_ARRIVED_AT in msg)) {
+      Object.defineProperty(msg, TRANSCRIPT_ARRIVED_AT, {
+        value: Date.now(),
+        // enumerable so `{ ...msg }` at the two pendingTranscripts.push sites
+        // copies it forward (see TRANSCRIPT_NORMALISED for the mechanics).
+        enumerable: true,
+        configurable: false,
+        writable: false,
+      });
+    }
+
+    // id 93 — one-shot destructive-token arbitration. The token a standalone
+    // "delete" armed at the model-commit seam is CONSUMED (deleted) by the
+    // NEXT transcript to reach a terminal disposition — exactly once per
+    // transcript, at the point it is actually consumed: immediately before a
+    // terminal return on the gate-block / ask-resolution paths below (a
+    // gate-blocked filler or an ask-answer early return would otherwise
+    // leave a stale token to suppress a later legitimate entry), or, for
+    // transcripts that reach extraction, AFTER dequeue when the transcript
+    // owns the extraction slot and BEFORE the three dialogue wrappers.
+    // Deliberately NOT at arrival: if the delete and its follow-up trigger
+    // both queue behind an in-flight extraction, an arrival-time check would
+    // run before the queued delete had drained and armed — reproducing the
+    // exact id-93 miss. Suppression holds only within the ordered
+    // arrival-delta window; a consumed-but-expired (or out-of-order) token
+    // is still deleted, just without suppression.
+    const consumeDestructiveToken = (seam) => {
+      const pending = entry.session?.pendingDestructiveIntent;
+      if (!pending) return false;
+      delete entry.session.pendingDestructiveIntent;
+      const arrivedAt = msg[TRANSCRIPT_ARRIVED_AT];
+      const delta =
+        typeof arrivedAt === 'number' && typeof pending.deleteArrivedAt === 'number'
+          ? arrivedAt - pending.deleteArrivedAt
+          : NaN;
+      const suppress =
+        Number.isFinite(delta) && delta >= 0 && delta <= CROSS_UTTERANCE_DESTRUCTIVE_WINDOW_MS;
+      logger.info('stage6.cross_utterance_destructive_consumed', {
+        sessionId,
+        seam,
+        arrival_delta_ms: Number.isFinite(delta) ? delta : null,
+        suppressed: suppress,
+      });
+      return suppress;
+    };
+
     // P6 (feedback 89 + 80A) — SEAM A: canonical dictation-transcript
     // normalisation. Derive a canonical COPY of the raw transcript WITHOUT
     // mutating msg.text (the raw garble MUST survive for the recorded-corpus
@@ -3611,6 +3681,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         utterance_id: msg.utterance_id,
         reason: 'answered_ask',
       });
+      // id 93 — terminal ask-resolution disposition: consume any armed token.
+      consumeDestructiveToken('transcript_suppressed_answered_ask');
       return;
     }
 
@@ -3652,6 +3724,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               ttl_remaining_ms: matched.expiresAt - nowTs,
               reason: 'content_anchor_match',
             });
+            // id 93 — terminal ask-resolution disposition: consume the token.
+            consumeDestructiveToken('transcript_suppressed_content_anchor');
             return;
           }
         }
@@ -3773,6 +3847,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         had_pending_ask: entry.pendingAsks && entry.pendingAsks.size > 0,
         had_active_dialogue_script: hasActiveDialogueScript,
       });
+      // id 93 — terminal gate-block disposition: a blocked filler still
+      // consumes an armed token (leaving it would let a stale delete
+      // suppress a later legitimate entry).
+      consumeDestructiveToken('gate_blocked');
       return;
     }
     // PLAN-backend-final.md Phase 5.2 — positive-side counter for the
@@ -3899,6 +3977,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // responseEpochRef and residual speech disarms the client watchdog.
             response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
           });
+          // id 93 — terminal ask-resolution disposition.
+          consumeDestructiveToken('pre_queue_validation_error');
           return;
         }
         const preResolvePayload = {
@@ -3923,6 +4003,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             tool_call_id: preVerdict.toolCallId,
             textPreview: String(msg.text || '').slice(0, 80),
           });
+          // id 93 — terminal ask-resolution disposition: a "delete" consumed
+          // as an ask ANSWER must consume any armed token too (and, by
+          // construction, never reaches the model-commit arm site — a
+          // pending ask answered with "delete" arms NO token).
+          consumeDestructiveToken('pre_queue_answered');
           return; // consumed by the ask channel — never queued
         }
         // Stale resolve (raced a timeout/direct frame) — queue as normal.
@@ -3963,6 +4048,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     entry.isExtracting = true;
+
+    // id 93 — consumption-time arbitration for a transcript that OWNS the
+    // extraction slot: consume any armed destructive token now (after
+    // dequeue, before the three dialogue wrappers) and, when the ordered
+    // arrival delta is within the window, suppress script ENTRY for guarded
+    // schemas this turn so the scoped trigger reaches the model with the
+    // delete intent intact. Running this post-dequeue (not at arrival) is
+    // what makes the FIFO case work: delete + trigger both queued behind an
+    // in-flight extraction drain in order — the delete arms during its own
+    // drain, the trigger consumes here on its.
+    const suppressDestructiveEntry = consumeDestructiveToken('extraction_slot');
+
     // F7 Item 2 — mint ONE generation id per extraction invocation. Threaded
     // via runShadowHarness options to the emission / fallback / ios_send_attempt
     // telemetry sites so the ship-gate join keys on the EXACT triple
@@ -4179,6 +4276,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // ask_user_started this active-path turn emits is THIS transcript's
         // utterance id, so the client chime watchdog disarms on the spoken ask.
         responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+        // id 93 — one consistent verdict for ALL THREE wrapper calls this
+        // turn (the token was consumed once, above; the engine skips entry
+        // for guarded schemas when true).
+        suppressDestructiveEntry,
       });
       if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
         // Script handled the turn end-to-end. Return — the finally block
@@ -4223,6 +4324,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         logger,
         // PLAN-C P4d (row 1) — see the ring-script call above.
         responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+        // id 93 — same verdict as the ring call: the arm/consume seam wraps
+        // all three wrappers, so the FIRST family call can never burn the
+        // token before the IR/PD families are evaluated.
+        suppressDestructiveEntry,
       });
       if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
         return;
@@ -4252,6 +4357,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         logger,
         // PLAN-C P4d (row 1) — see the ring-script call above.
         responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+        // id 93 — same verdict as the ring/IR calls (RCD is the guarded
+        // schema in this three-schema registry).
+        suppressDestructiveEntry,
       });
       if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
         return;
@@ -4708,6 +4816,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         (typeof msg.utterance_id === 'string' && msg.utterance_id) ||
         (typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id) ||
         null;
+
+      // id 93 — ARM at the MODEL-COMMIT seam. Reaching this point means the
+      // wrapper pipeline hit MODEL FALLTHROUGH without a terminal consume
+      // (every handled+non-fallthrough script turn, every pending-ask
+      // early-return and the user_moved_on requeue all returned above —
+      // this INCLUDES the {handled:true, fallthrough:true} shape: in the
+      // exact id-93 repro a bare "delete" reaches ring confirmation
+      // position 5h, clears the episode and falls through, and MUST still
+      // arm). Arming after the classifyOvertake branches is what keeps a
+      // "delete" consumed as an ask ANSWER from leaving a stale token.
+      // Grammar runs on the CANONICAL UN-ANNOTATED transcript: the
+      // `[In response to …]` prefix on transcriptText would defeat the
+      // ^…$ anchor exactly when the "delete" answers a TTS question.
+      if (
+        typeof canonicalTranscriptText === 'string' &&
+        DESTRUCTIVE_INTENT_RE.test(canonicalTranscriptText)
+      ) {
+        entry.session.pendingDestructiveIntent = {
+          deleteArrivedAt: msg[TRANSCRIPT_ARRIVED_AT],
+        };
+        logger.info('stage6.cross_utterance_destructive_armed', {
+          sessionId,
+          textPreview: typeof msg.text === 'string' ? msg.text.slice(0, 80) : null,
+        });
+      }
+
       const result = await runShadowHarness(entry.session, transcriptText, regexResults, {
         confirmationsEnabled: msg.confirmations_enabled || false,
         // F7 Item 2 — the per-invocation generation id (minted above). Item 3's
