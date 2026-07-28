@@ -991,24 +991,39 @@ describe('plan E — Codex cycle-1 remediation', () => {
     expect(supersedeSpy).toHaveBeenCalledWith('transcript_pre_queue_overtake');
   });
 
-  test('#5/#6 reconnect: a queued synthetic whose reservation just died is DROPPED, and the confirmation-mode latch is cleared so it cannot synthesise under the old socket mode', async () => {
-    const { ws, entry } = await startSession(wss, 'sess-e-r4');
-    entry.lastConfirmationsEnabled = true;
-    // A turn is in flight, so the answer-first re-injection QUEUES its
-    // synthetic (carrying the module-private reservation marker) rather than
-    // running it inline.
+  // The reservation marker is module-private, and queued transcript frames
+  // legitimately carry OTHER symbols (transcriptArrivedAt,
+  // transcriptNormalised) — so probe for this one by description rather than
+  // asserting a frame has no symbols at all.
+  const hasReservationMarker = (frame) =>
+    Object.getOwnPropertySymbols(frame ?? {}).some(
+      (s) => s.description === 'reinjectionReservation'
+    );
+
+  // Queue the answer-first re-injection so its synthetic (carrying the
+  // reservation marker) sits in pendingTranscripts rather than running inline.
+  async function queueReinjectedSynthetic(ws, entry, { toolCallId, utteranceId, text }) {
     entry.isExtracting = true;
-    registerOrdinaryFieldAsk(entry, 'toolu_ze_rc', () => {});
+    registerOrdinaryFieldAsk(entry, toolCallId, () => {});
     await sendFrame(ws, {
       type: 'ask_user_answered',
-      tool_call_id: 'toolu_ze_rc',
-      user_text: 'main earth is 16',
-      consumed_utterance_id: 'u-e-r4',
+      tool_call_id: toolCallId,
+      user_text: text,
+      consumed_utterance_id: utteranceId,
     });
-    const queuedSynthetics = entry.pendingTranscripts.filter(
-      (f) => Object.getOwnPropertySymbols(f).length > 0
-    );
-    expect(queuedSynthetics.length).toBeGreaterThan(0); // guard: the shape under test
+    const queued = entry.pendingTranscripts.filter(hasReservationMarker);
+    expect(queued.length).toBeGreaterThan(0); // guard: the shape under test
+    return queued[0];
+  }
+
+  test('#5/#6 + r2 BLOCKER reconnect with NO paired transcript: the queued synthetic SURVIVES (it is the only copy of that speech) with its dead reservation marker stripped', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-r4');
+    entry.lastConfirmationsEnabled = true;
+    await queueReinjectedSynthetic(ws, entry, {
+      toolCallId: 'toolu_ze_rc',
+      utteranceId: 'u-e-r4',
+      text: 'main earth is 16',
+    });
     entry.pendingTranscripts.push({ type: 'transcript', text: 'an ordinary queued frame' });
 
     // Reconnect: the client re-opens a socket and re-sends session_start for
@@ -1017,10 +1032,47 @@ describe('plan E — Codex cycle-1 remediation', () => {
 
     expect(entry.reinjectionReservations).toHaveLength(0);
     expect(entry.lastConfirmationsEnabled).toBe(false);
-    // The dead-reservation synthetic is gone; the ordinary frame survives.
-    expect(
-      entry.pendingTranscripts.filter((f) => Object.getOwnPropertySymbols(f).length > 0)
-    ).toHaveLength(0);
+    // THE REGRESSION: dropping this frame lost the reading outright. The
+    // client already sent its answer frame, so it owes no retransmission —
+    // nothing would ever have replaced it. Chime fired, nothing written,
+    // nothing spoken.
+    expect(entry.pendingTranscripts.some((f) => f.text === 'main earth is 16')).toBe(true);
+    // ...but the dead reservation marker is gone, so it takes the ordinary
+    // gate path rather than the trusted re-injection bypass.
+    expect(entry.pendingTranscripts.filter(hasReservationMarker)).toHaveLength(0);
     expect(entry.pendingTranscripts.some((f) => f.text === 'an ordinary queued frame')).toBe(true);
+  });
+
+  test('r2 BLOCKER reconnect WITH a paired suppressed transcript: the real frame is requeued and the duplicate synthetic dropped — exactly one copy survives', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-e-r5');
+    await queueReinjectedSynthetic(ws, entry, {
+      toolCallId: 'toolu_ze_rc5',
+      utteranceId: 'u-e-r5',
+      text: 'main earth is 16',
+    });
+    // The client's paired REAL transcript for the same utterance arrives while
+    // the reservation is live — it is suppressed (the synthetic owns the
+    // speech) and stashed for rollback-requeue.
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'main earth is 16',
+      utterance_id: 'u-e-r5',
+      regexResults: [],
+    });
+    expect(entry.reinjectionReservations).toHaveLength(1);
+    expect(entry.reinjectionReservations[0].suppressed.length).toBeGreaterThan(0);
+
+    await startSession(wss, 'sess-e-r5');
+
+    expect(entry.reinjectionReservations).toHaveLength(0);
+    // THE REGRESSION: clearing the array discarded the stash, and the later
+    // rollback found the reservation absent and returned [] — so the
+    // suppressed real transcript was never requeued and the reading vanished.
+    const copies = entry.pendingTranscripts.filter((f) => f.text === 'main earth is 16');
+    expect(copies).toHaveLength(1); // exactly one — never zero, never two
+    expect(hasReservationMarker(copies[0])).toBe(false);
+    // The anchors the reservation armed are released, so the requeued frame is
+    // not re-suppressed on its way through.
+    expect(entry.consumedAskUtterances.has('u-e-r5')).toBe(false);
   });
 });

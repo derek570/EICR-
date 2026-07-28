@@ -1083,6 +1083,95 @@ function rollbackReinjectionReservation(entry, reservation) {
   return reservation.suppressed.splice(0);
 }
 
+// RECONCILE ON RECONNECT — the single owner of what happens to live
+// reinjection reservations (and the synthetics that carry them) when the
+// socket is swapped. Shared by the two reconnect seams (handleSessionStart's
+// reconnect branch and session_resume) so they can never drift apart.
+//
+// Codex r2 BLOCKER (found independently by two lenses) — the previous code
+// cleared `reinjectionReservations` outright and then DROPPED every queued
+// synthetic holding one. Both halves lost a reading:
+//
+//   (a) A paired real transcript already stashed in `reservation.suppressed`
+//       was discarded with the reservation. The later rollback found the
+//       reservation absent and returned [], so nothing was ever requeued —
+//       the inspector's reading vanished after a reconnect.
+//   (b) With NO paired transcript (answer-first ordering — the real transcript
+//       had not arrived yet), the queued synthetic was the ONLY copy of that
+//       speech. Dropping it left nothing to process: chime fired, nothing
+//       written, nothing spoken. The old comment's premise — "the client
+//       retransmits whatever it still owes" — is not guaranteed; a client that
+//       already sent the answer frame owes nothing.
+//
+// So: roll each reservation back FIRST (recovering any suppressed frame and
+// un-arming its anchors), then decide each queued synthetic's fate by whether
+// its reservation yielded a real transcript to stand in for it. Exactly one
+// copy of the speech survives either way.
+//
+// Accepted residual (deliberate, per the Audio-First hierarchy): a reservation
+// whose synthetic is already IN FLIGHT (dequeued, not in `pendingTranscripts`)
+// is rolled back here, so if that in-flight extraction later succeeds AND we
+// requeued its suppressed pair, the reading is read back twice. A duplicate
+// read-back is a far lesser evil than a silent loss, and the client's
+// value-aware confirmation dedupe swallows a byte-identical repeat.
+function reconcileReinjectionsOnReconnect(entry, sessionId) {
+  const live = Array.isArray(entry.reinjectionReservations)
+    ? entry.reinjectionReservations.slice()
+    : [];
+
+  // Pass 1 — settle every live reservation, tagging it with whether a real
+  // paired transcript came back so pass 2 can read the outcome off the frame.
+  const requeued = [];
+  for (const reservation of live) {
+    const frames = rollbackReinjectionReservation(entry, reservation);
+    reservation.reconciledOnReconnect = frames.length > 0 ? 'requeued' : 'orphaned';
+    for (const frame of frames) requeued.push({ ...frame });
+  }
+  entry.reinjectionReservations = [];
+
+  // Pass 2 — a queued synthetic whose reservation recovered a real transcript
+  // is now a DUPLICATE of it: drop the synthetic, keep the real frame. One
+  // whose reservation recovered nothing is the only copy of that speech: KEEP
+  // it, but strip the now-dead reservation marker so it takes the ordinary
+  // gate path instead of the trusted re-injection bypass (the bypass exists to
+  // skip anchors that no longer exist).
+  let dropped = 0;
+  let kept = 0;
+  if (Array.isArray(entry.pendingTranscripts) && entry.pendingTranscripts.length > 0) {
+    const surviving = [];
+    for (const frame of entry.pendingTranscripts) {
+      const reservation = frame?.[REINJECTION_RESERVATION] ?? null;
+      if (reservation == null) {
+        surviving.push(frame);
+        continue;
+      }
+      if (reservation.reconciledOnReconnect === 'requeued') {
+        dropped += 1;
+        continue;
+      }
+      delete frame[REINJECTION_RESERVATION];
+      kept += 1;
+      surviving.push(frame);
+    }
+    entry.pendingTranscripts = surviving;
+  }
+
+  // Requeued real transcripts go to the BACK: they were suppressed while the
+  // synthetic was in flight, so they are the newest speech on the wire and
+  // must not jump ahead of frames queued before them.
+  if (requeued.length > 0) entry.pendingTranscripts.push(...requeued);
+
+  if (live.length > 0 || dropped > 0 || kept > 0) {
+    logger.warn('stage6.reinjection_reconciled_on_reconnect', {
+      sessionId,
+      reservations: live.length,
+      requeued: requeued.length,
+      dropped,
+      kept,
+    });
+  }
+}
+
 /**
  * Normalise a freeform utterance for equality-based dedupe.
  * Lowercase, strip non-alphanumerics, collapse internal whitespace,
@@ -2820,28 +2909,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // r18 MAJOR#2 — clear reverse content ledger on reconnect for
       // the same reason.
       existing.recentTranscripts = [];
-      // Plan E §4b piece 4 — reinjection reservations are anchored in the
-      // two ledgers just cleared; a reservation surviving the clear could
-      // stash (and on rollback requeue) frames from the OLD socket. Reset
-      // together with its anchors.
-      existing.reinjectionReservations = [];
-      // Codex r1 #5 — the reservations are gone, so a synthetic still QUEUED in
-      // pendingTranscripts now carries a DEAD reservation object: its
-      // commit/rollback would be a no-op against the fresh array, and its
-      // trusted-bypass marker would let it re-extract speech whose anchors no
-      // longer exist (double-write on the retransmitted pair). Drop the queued
-      // synthetics with the ledgers that backed them; the client retransmits
-      // whatever it still owes on the new socket.
-      if (Array.isArray(existing.pendingTranscripts) && existing.pendingTranscripts.length > 0) {
-        const before = existing.pendingTranscripts.length;
-        existing.pendingTranscripts = existing.pendingTranscripts.filter(
-          (f) => f?.[REINJECTION_RESERVATION] == null
-        );
-        const dropped = before - existing.pendingTranscripts.length;
-        if (dropped > 0) {
-          logger.warn('stage6.reinjection_dropped_on_reconnect', { sessionId, dropped });
-        }
-      }
+      // Plan E §4b piece 4 + Codex r1 #5 / r2 BLOCKER — reinjection
+      // reservations are anchored in the two ledgers just cleared, so they are
+      // settled here too. Reconciling (rather than clearing) is what keeps
+      // exactly one copy of the in-flight speech alive across the swap; see
+      // reconcileReinjectionsOnReconnect.
+      reconcileReinjectionsOnReconnect(existing, sessionId);
       // Codex r1 #6 — the confirmation-mode latch belongs to the OLD socket's
       // frames. A synthetic re-injected after the rebind must not synthesise
       // under the previous connection's mode (a forbidden speak, or a silent
@@ -3675,27 +3748,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     entry.recentAskAnswers = [];
     // r18 MAJOR#2 — clear reverse content ledger on session_resume.
     entry.recentTranscripts = [];
-    // Plan E §4b piece 4 — mirror of the handleSessionStart reconnect branch:
-    // reservations anchor into the ledgers just cleared, so they reset too.
-    entry.reinjectionReservations = [];
-    // Codex r1 #5 + #6 — mirror of the handleSessionStart reconnect branch:
-    // drop queued synthetics whose reservation just died (their commit/rollback
-    // would no-op and their trusted bypass would re-extract retransmitted
-    // speech), and clear the confirmation-mode latch so a post-rebind synthetic
-    // can't synthesise under the previous socket's mode.
-    if (Array.isArray(entry.pendingTranscripts) && entry.pendingTranscripts.length > 0) {
-      const before = entry.pendingTranscripts.length;
-      entry.pendingTranscripts = entry.pendingTranscripts.filter(
-        (f) => f?.[REINJECTION_RESERVATION] == null
-      );
-      const dropped = before - entry.pendingTranscripts.length;
-      if (dropped > 0) {
-        logger.warn('stage6.reinjection_dropped_on_reconnect', {
-          sessionId: clientSessionId,
-          dropped,
-        });
-      }
-    }
+    // Plan E §4b piece 4 + Codex r1 #5 / r2 BLOCKER — mirror of the
+    // handleSessionStart reconnect branch: reservations anchor into the
+    // ledgers just cleared, so they settle here too, via the same shared
+    // reconciler (one owner — the two seams cannot drift).
+    reconcileReinjectionsOnReconnect(entry, clientSessionId);
+    // Codex r1 #6 — clear the confirmation-mode latch so a post-rebind
+    // synthetic can't synthesise under the previous socket's mode.
     entry.lastConfirmationsEnabled = false;
 
     // Rebind the socket + questionGate callback to the new WS, matching the
