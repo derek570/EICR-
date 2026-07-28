@@ -842,6 +842,122 @@ function applyCircuitReadings(
     return newIdx;
   };
 
+  // A2-multiboard (2026-07-28) — board-scoped row resolution for readings that
+  // carry an effective `board_id`.
+  //
+  // The defect: `ensureRow` resolves by `circuit_ref` ALONE, and circuit refs
+  // are PER BOARD — every board has a circuit 1. The backend now stamps the
+  // dispatcher-resolved effective board onto every winner of a CROSS-BOARD turn
+  // (`stage6-event-bundler.js`), because without it a
+  // `select_board A → Zs on 3 → select_board B → Zs on 3` turn puts two
+  // distinct winners on the wire and web collapses BOTH onto whichever
+  // circuit-3 row it finds first. One of the two spoken readings is then read
+  // back aloud and never written — the exact Audio-First #1 inverse this plan
+  // closes. The enrichment alone changes nothing until the consumer reads it;
+  // this is that consumer.
+  //
+  // It is deliberately NON-DESTRUCTIVE. Every path that cannot resolve the
+  // board unambiguously falls back to the ref-only behaviour that shipped
+  // before this change, so a reading is never dropped and no pre-A2-multiboard
+  // job shape changes:
+  //
+  //  • an UNSCOPED reading (no `board_id` — every single-board turn, which is
+  //    the overwhelming majority) never enters here at all;
+  //  • an EXACT `(board_id, ref)` row wins outright;
+  //  • an UNSCOPED legacy row is claimed by the FIRST board to want it this
+  //    turn (legacy flat rows genuinely belong to one board and web has no way
+  //    to say which — first-come is deterministic, and the SECOND board then
+  //    gets its own row rather than silently overwriting the first's);
+  //  • a NEW scoped row is only ever created for a board web has INDEPENDENT
+  //    evidence of (its own `boards[]` registry, or an existing row already
+  //    scoped to it). A board id the server asserts but web has never seen is
+  //    a registry mismatch, not a licence to invent a circuit on a phantom
+  //    board — those fall back to ref-only, exactly as before.
+  const evidencedBoardIds = new Set<string>();
+  for (const b of Array.isArray(job.boards) ? job.boards : []) {
+    const id = (b as { id?: unknown } | null)?.id;
+    if (typeof id === 'string' && id !== '') evidencedBoardIds.add(id);
+  }
+  const indexByBoardRef = new Map<string, number>();
+  const boardRefKey = (boardId: string, ref: string) => `${boardId} ${ref}`;
+  const rowBoardId = (row: CircuitRow): string | null => {
+    const bid = (row as unknown as Record<string, unknown>).board_id;
+    return typeof bid === 'string' && bid !== '' ? bid : null;
+  };
+  circuits.forEach((row, idx) => {
+    const ref = row.circuit_ref ?? row.number;
+    const bid = rowBoardId(row);
+    if (typeof ref !== 'string' || !ref || bid == null) return;
+    evidencedBoardIds.add(bid);
+    // Last-wins mirrors `indexByRef`; a same-board duplicate ref is a broken
+    // job either way and is not this change's problem to arbitrate.
+    indexByBoardRef.set(boardRefKey(bid, ref), idx);
+  });
+  /** Which board (if any) has already claimed each unscoped legacy row THIS turn. */
+  const unscopedRefClaimedBy = new Map<string, string>();
+  const ensureBoardScopedRow = (circuitNum: number, boardId: string): number => {
+    const ref = String(circuitNum);
+    const exact = indexByBoardRef.get(boardRefKey(boardId, ref));
+    if (exact != null) return exact;
+
+    const refOnly = indexByRef.get(ref);
+    if (refOnly != null) {
+      const existingBoard = rowBoardId(circuits[refOnly]);
+      if (existingBoard === null) {
+        const claimed = unscopedRefClaimedBy.get(ref);
+        if (claimed == null || claimed === boardId) {
+          unscopedRefClaimedBy.set(ref, boardId);
+          return refOnly;
+        }
+      }
+      // The only row with this ref belongs to a DIFFERENT board (or an unscoped
+      // one another board already claimed this turn). Writing here is the
+      // wrong-board overwrite; give this board its own row instead — but only
+      // if web can independently vouch for the board.
+      if (!evidencedBoardIds.has(boardId)) {
+        pipelineLog('apply_circuit_reading_unevidenced_board', {
+          circuit: circuitNum,
+          board_id: boardId,
+          existing_row_board_id: existingBoard,
+        });
+        return refOnly;
+      }
+    } else if (!evidencedBoardIds.has(boardId)) {
+      // No row for this ref at all — `ensureRow` would create a bare one, and
+      // that stays the behaviour for an unevidenced board so the new row is
+      // indistinguishable from pre-A2-multiboard output.
+      return ensureRow(circuitNum);
+    }
+
+    const id = globalThis.crypto?.randomUUID?.() ?? `c-${Date.now()}-${circuitNum}-${boardId}`;
+    const row = {
+      id,
+      circuit_ref: ref,
+      circuit_designation: '',
+      board_id: boardId,
+    } as unknown as CircuitRow;
+    circuits.push(row);
+    const newIdx = circuits.length - 1;
+    indexByBoardRef.set(boardRefKey(boardId, ref), newIdx);
+    // Only seed the ref-only index when nothing owns the ref yet, so a scoped
+    // sibling never re-points `field_clears` / `circuit_updates` (both ref-only)
+    // away from the row they have always resolved to.
+    if (refOnly == null) indexByRef.set(ref, newIdx);
+    synthesisedIndexes.add(newIdx);
+    pipelineLog('apply_circuit_reading_board_scoped_row_created', {
+      circuit: circuitNum,
+      board_id: boardId,
+      row_idx: newIdx,
+    });
+    return newIdx;
+  };
+  /** Ref-only for an unscoped reading; board-scoped the moment the wire says which board. */
+  const resolveReadingRow = (reading: { circuit: number; board_id?: unknown }): number => {
+    const bid = reading.board_id;
+    if (typeof bid !== 'string' || bid === '') return ensureRow(reading.circuit);
+    return ensureBoardScopedRow(reading.circuit, bid);
+  };
+
   // Apply circuit_updates (create / rename designation) first so
   // readings against renamed circuits land on the right row.
   for (const upd of circuitUpdates) {
@@ -1110,7 +1226,11 @@ function applyCircuitReadings(
   })();
 
   for (const reading of perCircuitReadings) {
-    const idx = ensureRow(reading.circuit);
+    // A2-multiboard — board-scoped when the wire says which board, ref-only
+    // otherwise (see `ensureBoardScopedRow`). Row TARGETING only: the
+    // `replaces_cleared` bypass ELIGIBILITY below is untouched and still defers
+    // on any multi-board evidence.
+    const idx = resolveReadingRow(reading as unknown as { circuit: number; board_id?: unknown });
     const row = circuits[idx];
     // Translate iOS-legacy wire field name → PWA column name. Pass-through
     // when already modern. See LEGACY_TO_PWA_CIRCUIT_FIELD docstring above.

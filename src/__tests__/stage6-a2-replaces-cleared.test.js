@@ -935,10 +935,24 @@ describe('A2 — wire contract (shared cross-client fixture)', () => {
     // The replacement carries the marker, under its LEGACY wire field name.
     const replacement = readings.find((r) => r.field === 'insulation_resistance_l_l');
     expect(replacement.replaces_cleared).toBe(true);
+    // A2-multiboard (2026-07-28) — DELIBERATE contract change, asserted rather
+    // than deleted. A flagged replacement is ALWAYS enriched with the
+    // dispatcher-resolved effective board, even on this single-board turn: the
+    // collapse manifest keys on the EFFECTIVE board, so an unenriched flagged
+    // reading is unresolvable by the client's board-aware fail-closed targeting
+    // and the spoken replacement would be dropped all over again. This turn's
+    // job declares no boards, so the value is the SYNTHESISED canonical main
+    // identity — the same string web seeds when it has no board evidence of its
+    // own (`BACKEND_DEFAULT_MAIN_BOARD_ID`).
+    expect(replacement.board_id).toBe('main');
     // The ordinary write in the SAME frame stays bare — omit-when-false is what
-    // keeps a pre-A2 client byte-identical.
+    // keeps a pre-A2 client byte-identical, and ordinary writes are enriched
+    // ONLY on a genuinely cross-board turn (this one writes one board), so a
+    // single-board frame grows no new key and the speculator's null-board cache
+    // entries keep hitting.
     const ordinary = readings.find((r) => r.field === 'zs');
     expect('replaces_cleared' in ordinary).toBe(false);
+    expect('board_id' in ordinary).toBe(false);
     // The collapsed clear is gone from the wire; the un-replaced one survives.
     const clearedFields = wireContract.result.field_corrections.map((c) => c.field);
     expect(clearedFields).toEqual(['r1_plus_r2']);

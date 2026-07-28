@@ -789,6 +789,18 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   const isDerivedWrite = (entry) => entry?.derived === true;
   const isCalcWrite = (entry) =>
     typeof entry?.source_turn_id === 'string' && entry.source_turn_id.startsWith('::calc::');
+  // A2-multiboard (2026-07-28) — effective-board WIRE ENRICHMENT bookkeeping.
+  //
+  // `dispatchRecordReading` stores only the RAW `input.board_id`, which the
+  // model omits in the common case, so a write dispatched while board B is
+  // selected reaches the wire with no `board_id` at all. Both clients then
+  // resolve it by circuit REF alone (web `ensureRow`, iOS's single envelope-
+  // wide current/first-board fallback), so two winners for circuit 3 on two
+  // different boards land on ONE client row — the write survives the bundler
+  // and is still lost. The effective board the dispatcher resolved is recorded
+  // here per projected reading and stamped onto the wire below.
+  const effectiveBoardByReading = new WeakMap();
+  const distinctEffectiveBoards = new Set();
   // A2-multiboard (2026-07-28) — project from the JOURNAL, not the raw Map.
   //
   // The raw Map key is board-AMBIGUOUS (`record_reading` omits `board_id` in
@@ -847,6 +859,17 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       suppressConfirmationReadings.add(reading);
     } else if (isCalcWrite(entry)) {
       calcConfirmationReadings.add(reading);
+    }
+    // A2-multiboard — remember the dispatcher-resolved effective board for the
+    // enrichment pass below. Derived/mirror writes are included here (unlike
+    // the candidate index): they are silent, but they still have to land on the
+    // right client row.
+    {
+      const effBoard = entry?.[EFFECTIVE_CIRCUIT_SLOT]?.boardId ?? null;
+      if (effBoard != null && effBoard !== '') {
+        effectiveBoardByReading.set(reading, effBoard);
+        distinctEffectiveBoards.add(effBoard);
+      }
     }
     // A2 — index this projected reading as a `replaces_cleared` candidate
     // unless it is a derived/mirror write (see the Map declarations above).
@@ -1075,6 +1098,36 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // byte-identical to pre-A2.
   for (const reading of pendingStamp) {
     reading.replaces_cleared = true;
+  }
+  // A2-multiboard (2026-07-28) — effective-board WIRE ENRICHMENT.
+  //
+  // Two classes of reading get the dispatcher-resolved effective board stamped
+  // onto the wire when the model omitted it:
+  //
+  //   1. FLAGGED replacements, ALWAYS (archive P1's enrichment clause). The
+  //      collapse manifest already keys on the EFFECTIVE board, so without this
+  //      the manifest knows the board while the reading does not — and the
+  //      board-aware fail-closed targeting on the client would then reject a
+  //      perfectly valid multi-board replacement as unresolvable, which is the
+  //      exact spoken-but-not-written defect this whole plan closes.
+  //
+  //   2. ORDINARY writes, but ONLY on a CROSS-BOARD turn (winners spanning two
+  //      or more distinct effective boards). This is deliberately narrow. On a
+  //      single-board turn — including every turn of a multi-board job where
+  //      the inspector is working one board at a time — nothing is enriched, so
+  //      the wire stays byte-identical to pre-A2 and the loaded-barrel
+  //      speculator's null-board cache entries keep hitting (blanket enrichment
+  //      would cost latency on every turn to fix a defect that only exists when
+  //      two boards are written in ONE turn; Audio-First #3).
+  //
+  // An already-explicit `board_id` is never overwritten: the model said which
+  // board it meant, and the dispatcher validated that against the current one.
+  const enrichCrossBoard = distinctEffectiveBoards.size > 1;
+  for (const reading of extracted_readings) {
+    if (reading.board_id != null) continue;
+    if (reading.replaces_cleared !== true && !enrichCrossBoard) continue;
+    const effBoard = effectiveBoardByReading.get(reading);
+    if (effBoard != null) reading.board_id = effBoard;
   }
   if (_turnId) result.turn_id = _turnId;
   // Voice-latency plan 2026-06-05 Phase 2.1 — emit `utterance_id`
