@@ -21,6 +21,11 @@ import {
   dispatchRenameCircuit,
 } from '../extraction/stage6-dispatchers-circuit.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+// Plan B (honest-refusal, 2026-07-28) — the shared refusal-notice registry's
+// FULL rendered inventory (A1a direct families + B-staged pools + every
+// ordinal terminal) joins this sweep: all of it rides the same field-nil
+// channel the watchdog line must never collide with.
+import { renderedNoticeInventory } from '../extraction/refusal-notices.js';
 
 function mkLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -107,6 +112,7 @@ describe('CLIENT_CHIME_WATCHDOG_FALLBACK_TEXT — cross-family distinctness', ()
       // a private const; mirrored here so a change to it fails this pin).
       "Sorry, I couldn't place that reading — could you say the field and value together again?",
       ...(await realNoticeSweep()),
+      ...renderedNoticeInventory().map((e) => e.text),
     ];
   });
 
@@ -155,6 +161,7 @@ describe('P1 ring confirmation-correction wordings — cross-family distinctness
       "Sorry, I couldn't place that reading — could you say the field and value together again?",
       CLIENT_CHIME_WATCHDOG_FALLBACK_TEXT,
       ...(await realNoticeSweep()),
+      ...renderedNoticeInventory().map((e) => e.text),
     ];
     // Render from the PRODUCTION schema so template drift can't silently pass.
     const { ringContinuitySchema } =

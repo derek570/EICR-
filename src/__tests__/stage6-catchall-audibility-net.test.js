@@ -74,6 +74,9 @@ const {
 } = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
 const { encodeReadingKey } = await import('../extraction/stage6-per-turn-writes.js');
+// Plan B (honest-refusal, 2026-07-28) — the shared refusal-notice inventory
+// joins the apology-text distinctness union below.
+const { renderedNoticeInventory } = await import('../extraction/refusal-notices.js');
 
 const CATCHALL_SET = new Set(CATCHALL_AUDIBILITY_PROMPTS);
 
@@ -1062,6 +1065,32 @@ describe('marker-② — apology-text distinctness (client dedupe channels never
     }
     // And the family itself has no internal duplicates.
     expect(new Set(CATCHALL_AUDIBILITY_PROMPTS).size).toBe(CATCHALL_AUDIBILITY_PROMPTS.length);
+  });
+
+  // Plan B (honest-refusal, 2026-07-28) — the WHOLE refusal-notice inventory
+  // (A1a direct families + B-staged pools + every ordinal terminal) joins the
+  // union: everything here rides the same field-nil channel and the client
+  // 30 s text-keyed dedupe is family-BLIND, so any byte collision — across
+  // families, routes, or with an apology — can swallow a spoken line.
+  test('the refusal-notice inventory shares no text with ANY apology family and is internally distinct', () => {
+    const apologies = new Set([
+      ...CATCHALL_AUDIBILITY_PROMPTS,
+      ...ORPHAN_PROMPTS,
+      ...REJECTED_PROMPTS,
+      OBSERVATION_ORPHAN_PROMPT,
+      ...NOOP_AUDIBILITY_PROMPTS,
+      ASK_AUDIBILITY_FALLBACK_TEXT,
+      "Sorry — I didn't record those observations. Could you give them to me again?",
+      "Sorry — I didn't record that observation. Could you give it to me again?",
+    ]);
+    const inventory = renderedNoticeInventory();
+    expect(inventory.length).toBeGreaterThanOrEqual(40);
+    const seen = new Set();
+    for (const { text } of inventory) {
+      expect(apologies.has(text)).toBe(false);
+      expect(seen.has(text)).toBe(false);
+      seen.add(text);
+    }
   });
 
   test('rotation varies the wording across turns (turnNum % len)', async () => {
