@@ -125,11 +125,13 @@ const triggers = [
   // scope; §3E bans fuzzy widening). Circuit stays capture group 1.
   /\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 ("terse") matches "ring on circuit N" with optional leading filler.
-  // Terse anchor widened ^ → clause-start (mini-review r1): matchAll must
-  // collect a REPEATED terse trigger in a later sentence ("Ring on circuit
-  // 10. Ring on circuit 13.") or the contradiction is missed. Horizontal
-  // whitespace only, same rules as the leading patterns.
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\b(?:ring|bring|wing)\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
+  // Terse pattern RESTORED to its origin ^ anchor (Codex cycle 2): the
+  // clause-start widening let "Zs is 0.62. Ring on circuit 13." ENTER the
+  // ring script and swallow the Zs reading. Entry stays start-only; the
+  // collectors scan later clause SEGMENTS with this anchored pattern for
+  // contradiction REFS only (never for entry), which is what the
+  // repeated-terse conflict needs.
+  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\b(?:ring|bring|wing)\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 
 // P1 ring-script-hardening (2026-07-22, session B4C45F25 feedback 90):

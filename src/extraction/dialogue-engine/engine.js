@@ -757,25 +757,40 @@ function sendScriptPurge(ws, schema, sessionId) {
 function collectTriggerCircuitRefs(text, patterns) {
   let matched = false;
   const refs = [];
+  const addRef = (raw) => {
+    const ref = Number(raw);
+    if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+  };
+  // ^-anchored patterns (the terse triggers) stay START-ONLY for entry —
+  // "Zs is 0.62. Ring on circuit 13." must NOT enter and swallow the Zs
+  // reading (Codex cycle 2). But a REPEATED anchored trigger in a later
+  // sentence still contributes its ref to CONTRADICTION collection, so the
+  // collectors scan punctuation-delimited clause segments (horizontal
+  // whitespace only, same newline rules as the leading patterns) with the
+  // anchored pattern for refs only.
+  const clauseSegments = text.split(/(?<=[.?!])[ \t]+/);
   for (const pattern of patterns) {
-    // EVERY occurrence, not just the first (Codex diff-review r1): two
-    // clauses using the SAME trigger family — "Ring continuity for circuit
-    // 10. Ring continuity for circuit 13." — are as much a contradiction as
-    // a leading-vs-trailing pair; a first-occurrence read would silently
-    // pick 10. Clone with /g so matchAll walks the whole utterance.
-    // Clone UNCONDITIONALLY (mini-review r1): matchAll on a shared global
-    // RegExp starts from its current lastIndex — never hand it the shared
-    // object.
+    if (pattern.source.startsWith('^')) {
+      const m = text.match(pattern);
+      if (m) {
+        matched = true;
+        if (m[1]) addRef(m[1]);
+      }
+      for (let i = 1; i < clauseSegments.length; i++) {
+        const cm = clauseSegments[i].match(pattern);
+        if (cm && cm[1]) addRef(cm[1]); // refs only — never entry
+      }
+      continue;
+    }
+    // Non-anchored patterns: EVERY occurrence via a fresh /g clone (never
+    // matchAll a shared global RegExp — stateful lastIndex).
     const global = new RegExp(
       pattern.source,
       pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
     );
     for (const m of text.matchAll(global)) {
       matched = true;
-      if (m[1]) {
-        const ref = Number(m[1]);
-        if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
-      }
+      if (m[1]) addRef(m[1]);
     }
   }
   return { matched, refs };
@@ -1506,17 +1521,41 @@ function runActivePath({
     // which_circuit ask. Fall through to the position-2 conflict branch,
     // which replaces the episode and asks. Non-conflict replies keep
     // today's disambiguation handling unchanged.
-    // WIDENED (mini-review r1): any matched different-entry — conflict OR a
-    // single different circuit — falls through: "Circuit 5, insulation
-    // resistance live to live is 200" while circuit 13 awaits L-L/L-E
-    // routing is a fresh scoped entry, not a routing answer; consuming it
-    // here wrote the buffered value to the OLD circuit and dropped the
-    // explicit circuit-5 reading. A genuine routing answer ("live to
-    // live") matches no entry trigger and is handled below unchanged.
-    const disambiguationEntry = detectDifferentEntry(reply, schema, state.circuit_ref);
-    if (disambiguationEntry.matched !== true) {
+    // WIDENED twice (mini-review r1 + Codex cycle 2): ANY fresh entry-shaped
+    // reply supersedes the routing question — "Circuit 5, insulation
+    // resistance live to live is 200" (different circuit), "Circuit 13,
+    // insulation resistance live to live is 200" (SAME circuit), and the
+    // unscoped "insulation resistance live to live is 200" are all
+    // definitive fresh dictation, not L-L/L-E routing answers; consuming
+    // them here wrote the stale buffered value and dropped the dictated
+    // one. A genuine routing answer ("live to live") matches no entry
+    // trigger and is handled below unchanged. Different-circuit/conflict
+    // shapes fall through to position 2; same-current/unscoped shapes clear
+    // the routing state and continue to normal named-value extraction.
+    const disambiguationEntry = detectEntry(reply, schema);
+    if (disambiguationEntry.matched === true) {
+      const differs = detectDifferentEntry(reply, schema, state.circuit_ref);
+      if (differs.matched !== true) {
+        logger?.info?.(`${schema.logEventPrefix}_disambiguation_superseded_by_entry`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          dropped_bare_value: state.awaiting_disambiguation?.value ?? null,
+          textPreview: reply.slice(0, 80),
+        });
+        state.awaiting_disambiguation = null;
+        state.disambiguation_retry_attempted = false;
+        // Continue through the normal active path below (named extraction
+        // applies the dictated reading).
+      }
+      // differs.matched === true (different circuit or conflict) → position
+      // 2 owns the turn; fall through without touching the routing state
+      // (the conflict/switch branch replaces the episode wholesale).
+    } else {
       const bare = state.awaiting_disambiguation;
-      const verdict = schema.disambiguateBareValue(text);
+      // RAW reply (mini-review r1): the annotated text QUOTES the routing
+      // question ("Was that L-L or L-E?"), whose own tokens could satisfy
+      // the router regardless of what the inspector actually said.
+      const verdict = schema.disambiguateBareValue(reply);
       // Plan D Seam B — the clamped value actually stored, for the log row below.
       let disambiguatedValue = null;
       if (verdict && verdict.field) {
@@ -2389,6 +2428,23 @@ function runActivePath({
       for (const [f, v] of Object.entries(existing)) {
         if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
           state.values[f] = v;
+        }
+      }
+      // Combined circuit-answer + correction (Codex cycle 2): for a
+      // conflict-origin episode, "Circuit 5, lives are 0.63" both resolves
+      // the circuit AND restates a value. The drain below would otherwise
+      // apply the OLDER queued value first and step-7 would then skip the
+      // newer one (field already filled) — silently discarding the newest
+      // dictation. Upsert the same-reply masked values (marked, so they
+      // overwrite) before draining once.
+      if (state.scope_conflict_origin === true) {
+        const sameReplyValues = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+        for (const w of sameReplyValues) {
+          w[CONFLICT_OVERWRITE] = true;
+          if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          const idx = state.pending_writes.findIndex((e) => e.field === w.field);
+          if (idx >= 0) state.pending_writes[idx] = w;
+          else state.pending_writes.push(w);
         }
       }
       // Drain pending_writes onto the now-resolved circuit.

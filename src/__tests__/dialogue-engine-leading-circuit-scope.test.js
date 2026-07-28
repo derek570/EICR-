@@ -650,6 +650,96 @@ describe('mini-review r1 — repeated terse, disambiguation switch, conflict fol
 });
 
 // ---------------------------------------------------------------------------
+// 3d. Cycle-2 pins.
+// ---------------------------------------------------------------------------
+
+describe('cycle 2 — terse entry stays start-only; disambiguation supersede; combined answer+correction', () => {
+  test('a later-sentence terse trigger does NOT enter (the Zs reading must reach the model)', () => {
+    // Entry is start-anchored; the later "Ring on circuit 13." contributes a
+    // ref for contradiction collection ONLY, never an entry.
+    expect(engineDetectEntry('Zs is 0.62. Ring on circuit 13.', ringContinuitySchema)).toEqual({
+      matched: false,
+      circuit_ref: null,
+      scope_conflict: false,
+    });
+    expect(legacyRingDetectEntry('Zs is 0.62. Ring on circuit 13.')).toEqual({
+      matched: false,
+      circuit_ref: null,
+      scope_conflict: false,
+    });
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    const out = engineRing({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Zs is 0.62. Ring on circuit 13.',
+      logger: null,
+      now: 1000,
+    });
+    expect(out).toEqual({ handled: false });
+    expect(ws.sent).toHaveLength(0);
+  });
+
+  test('engine IR: a SAME-circuit fresh entry during awaiting_disambiguation supersedes the routing question (dictated value wins, buffered value dropped)', () => {
+    const mkState = () => ({
+      active: true,
+      schemaName: 'insulation_resistance',
+      circuit_ref: 13,
+      values: {},
+      valueCorrections: {},
+      slotPendingConfirm: null,
+      pending_writes: [],
+      skipped_slots: new Set(),
+      entered_at: 500,
+      last_turn_at: 500,
+      circuit_retry_attempted: false,
+      last_designation_attempt: null,
+      slot_no_progress: null,
+      entered_via_pivot: false,
+      pivoted_from: null,
+      ambiguous_bare_value: null,
+      paused: false,
+      awaiting_disambiguation: { value: '299', source: 'megaohm' },
+      disambiguation_retry_attempted: false,
+    });
+    for (const utterance of [
+      'Circuit 13, insulation resistance live to live is 200.',
+      'Insulation resistance live to live is 200.',
+    ]) {
+      const ws = new FakeWS();
+      const session = buildSession({ 13: {} });
+      session.dialogueScriptState = mkState();
+      engineIR({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: utterance,
+        logger: null,
+        now: 1000,
+      });
+      expect(session.stateSnapshot.circuits[13].ir_live_live_mohm).toBe('200');
+    }
+  });
+
+  test.each([
+    ['engine ring', engineRing],
+    ['legacy ring twin', legacyRing],
+  ])('%s: a COMBINED circuit-answer + correction wins over the older queued value', (_l, proc) => {
+    const { session } = run(
+      proc,
+      [
+        { text: 'Circuit 5, ring continuity for circuit 3.', now: 1000 },
+        { text: 'Lives are 0.61.', now: 2000 },
+        { text: 'Circuit 5, lives are 0.63.', now: 3000 }, // answer + correction in ONE reply
+      ],
+      { 3: {}, 5: {} }
+    );
+    expect(session.stateSnapshot.circuits[5].ring_r1_ohm).toBe('0.63');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 4. Existing exclusions unchanged.
 // ---------------------------------------------------------------------------
 

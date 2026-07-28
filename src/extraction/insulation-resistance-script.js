@@ -168,11 +168,13 @@ const IR_ENTRY_PATTERNS = [
   // 1. Full: "insulation/installation/international resistance" + optional "circuit N"
   /\b(?:insulation|installation|international)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // 2. Terse: "IR for circuit N" — requires "circuit N" trailer.
-  // Terse anchor widened ^ → clause-start (mini-review r1): matchAll must
-  // collect a REPEATED terse trigger in a later sentence ("Ring on circuit
-  // 10. Ring on circuit 13.") or the contradiction is missed. Horizontal
-  // whitespace only, same rules as the leading patterns.
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
+  // Terse pattern RESTORED to its origin ^ anchor (Codex cycle 2): the
+  // clause-start widening let "Zs is 0.62. Ring on circuit 13." ENTER the
+  // ring script and swallow the Zs reading. Entry stays start-only; the
+  // collectors scan later clause SEGMENTS with this anchored pattern for
+  // contradiction REFS only (never for entry), which is what the
+  // repeated-terse conflict needs.
+  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 
 /**
@@ -226,20 +228,40 @@ function maskCircuitSpans(text) {
 function collectIrTriggerCircuitRefs(text) {
   let matched = false;
   const refs = [];
+  const addRef = (raw) => {
+    const ref = Number(raw);
+    if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+  };
+  // ^-anchored patterns (the terse triggers) stay START-ONLY for entry —
+  // "Zs is 0.62. Ring on circuit 13." must NOT enter and swallow the Zs
+  // reading (Codex cycle 2). But a REPEATED anchored trigger in a later
+  // sentence still contributes its ref to CONTRADICTION collection, so the
+  // collectors scan punctuation-delimited clause segments (horizontal
+  // whitespace only, same newline rules as the leading patterns) with the
+  // anchored pattern for refs only.
+  const clauseSegments = text.split(/(?<=[.?!])[ \t]+/);
   for (const pattern of IR_ENTRY_PATTERNS) {
-    // EVERY occurrence, not just the first (mirrors the engine).
-    // Clone UNCONDITIONALLY (mini-review r1) — never matchAll a shared
-    // global RegExp (stateful lastIndex).
+    if (pattern.source.startsWith('^')) {
+      const m = text.match(pattern);
+      if (m) {
+        matched = true;
+        if (m[1]) addRef(m[1]);
+      }
+      for (let i = 1; i < clauseSegments.length; i++) {
+        const cm = clauseSegments[i].match(pattern);
+        if (cm && cm[1]) addRef(cm[1]); // refs only — never entry
+      }
+      continue;
+    }
+    // Non-anchored patterns: EVERY occurrence via a fresh /g clone (never
+    // matchAll a shared global RegExp — stateful lastIndex).
     const global = new RegExp(
       pattern.source,
       pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
     );
     for (const m of text.matchAll(global)) {
       matched = true;
-      if (m[1]) {
-        const ref = Number(m[1]);
-        if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
-      }
+      if (m[1]) addRef(m[1]);
     }
   }
   return { matched, refs };
@@ -1125,6 +1147,20 @@ export function processInsulationResistanceTurn(ctx) {
           v !== undefined
         ) {
           state.values[f] = v;
+        }
+      }
+      // Combined circuit-answer + correction (Codex cycle 2, mirrors the
+      // engine): conflict-origin episodes upsert same-reply masked values
+      // (marked) before draining once. (The IR twin has no rawReplyText —
+      // the replay harness passes none, so text is the reply.)
+      if (state.scope_conflict_origin === true) {
+        const sameReplyValues = extractNamedFieldValues(maskCircuitSpans(text));
+        for (const w of sameReplyValues) {
+          w[IR_CONFLICT_OVERWRITE] = true;
+          if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          const idx = state.pending_writes.findIndex((e) => e.field === w.field);
+          if (idx >= 0) state.pending_writes[idx] = w;
+          else state.pending_writes.push(w);
         }
       }
       // Drain pending_writes onto the resolved circuit.

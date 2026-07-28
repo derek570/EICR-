@@ -193,11 +193,13 @@ const triggers = [
   // so the false-positive surface is negligible (same rationale as "installation").
   /\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 (terse): "IR for circuit N" — requires "circuit N" trailer.
-  // Terse anchor widened ^ → clause-start (mini-review r1): matchAll must
-  // collect a REPEATED terse trigger in a later sentence ("Ring on circuit
-  // 10. Ring on circuit 13.") or the contradiction is missed. Horizontal
-  // whitespace only, same rules as the leading patterns.
-  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
+  // Terse pattern RESTORED to its origin ^ anchor (Codex cycle 2): the
+  // clause-start widening let "Zs is 0.62. Ring on circuit 13." ENTER the
+  // ring script and swallow the Zs reading. Entry stays start-only; the
+  // collectors scan later clause SEGMENTS with this anchored pattern for
+  // contradiction REFS only (never for entry), which is what the
+  // repeated-terse conflict needs.
+  /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 
 // Cross-utterance delete fix, IR same-utterance parity (feedback id 93

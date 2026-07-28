@@ -4079,7 +4079,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     if (typeof msg[DESTRUCTIVE_SUPPRESS_VERDICT] === 'boolean') {
       // A previous pass of THIS transcript already arbitrated (it was then
       // requeued by the post-wrapper user_moved_on path) — reuse the verdict;
-      // the one-shot token is long gone.
+      // the token IT consumed is long gone. DELIBERATELY no second consume
+      // here (Codex cycle-2 suggestion declined): the retry is the SAME
+      // transcript re-playing, not "the next utterance" — consuming a token
+      // a NEWER delete armed between the passes would (a) violate the
+      // exactly-once-per-transcript consume contract and (b) throw away the
+      // suppression owed to the delete→trigger pair that follows (the
+      // retry's arrival PREDATES that delete, so the ordered arrival delta
+      // could never have suppressed the retry anyway; an unrelated later
+      // utterance is never affected — suppression only skips guarded-schema
+      // ENTRY, and the window bounds staleness).
       suppressDestructiveEntry = msg[DESTRUCTIVE_SUPPRESS_VERDICT];
     } else {
       suppressDestructiveEntry = consumeDestructiveToken('extraction_slot');
