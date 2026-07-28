@@ -951,6 +951,7 @@ function applyCircuitReadings(
     ids: Set<string>;
     unknownNamedBoard: boolean;
     implicitUnregisteredBoard: boolean;
+    mixedRowScopes: boolean;
   } | null = hasReplacesClearedReading
     ? (() => {
         const ids = new Set<string>();
@@ -1027,8 +1028,35 @@ function applyCircuitReadings(
         // applies to an `off_peak` board relabelled onto a legacy flat job:
         // it is a sibling of main, not a sub-board, so it owns its own
         // unscoped rows.
+        //
+        // That registry test is necessary but NOT sufficient, and the gap is
+        // the ROWS. It only fires on a board owning NO row, so a child board
+        // owning SOME row — just not the target one — walks straight past it
+        // while unscoped rows sit beside it: two scopes, count 1, bypass. And
+        // the type reasoning above cannot even see the commonest producer of
+        // that shape, because `applyAddNewBoardMode` deliberately leaves
+        // `board_type` UNSET for the inspector to fill in on the Board tab
+        // (`apply-ccu-analysis.ts`), so a CCU-appended SUB board reads as
+        // top-level here and `isSub` is false. Both are one defect: a job
+        // whose rows carry MORE THAN ONE scope cannot be resolved by bare
+        // `circuit_ref`, whatever the registry claims. Unscoped rows are their
+        // own scope, so scope count is the distinct row `board_id`s plus one
+        // if any row is unscoped, and anything above 1 defers.
+        //
+        // This is deliberately BLIND to which board is which: web cannot tell
+        // `append_rail` (new rows scoped to the SAME board the legacy unscoped
+        // rows belong to — safe to overwrite) from `add_new_board` (new rows
+        // scoped to a DIFFERENT board — a wrong-board write), because both
+        // produce byte-identical mixed scoping. So it declines both. That
+        // costs a stale value on an `append_rail` job, which is the pre-A2
+        // status quo and is recoverable by re-dictating; guessing costs a
+        // silent overwrite of a cell the inspector never spoke about, in a
+        // legally-significant certificate, which no read-back can catch by
+        // ear. The guard exists on that asymmetry.
+        const mixedRowScopes = rowScopedIds.size + (hasUnscopedRow ? 1 : 0) > 1;
         const implicitUnregisteredBoard =
-          hasUnscopedRow && registry.some((b) => b.isSub && !rowScopedIds.has(b.id));
+          mixedRowScopes ||
+          (hasUnscopedRow && registry.some((b) => b.isSub && !rowScopedIds.has(b.id)));
         // …with ONE seeded id. When web has no board identity of its own at
         // all — no `boards[]`, every row unscoped, i.e. the legacy flat
         // single-board shape — the backend has SYNTHESISED its default main
@@ -1062,7 +1090,12 @@ function applyCircuitReadings(
           if (!o) continue;
           for (const key of OP_BOARD_KEYS) note(o[key]);
         }
-        return { ids, unknownNamedBoard, implicitUnregisteredBoard };
+        // `mixedRowScopes` is reported separately from the combined verdict so
+        // the decline telemetry says WHICH evidence fired: a mixed-scope job
+        // is a routine `append_rail`/`add_new_board` shape the A2-multiboard
+        // plan can fix properly, while a registry-only fire is the rarer
+        // unmaterialised-parent bug.
+        return { ids, unknownNamedBoard, implicitUnregisteredBoard, mixedRowScopes };
       })()
     : null;
 
@@ -1169,6 +1202,7 @@ function applyCircuitReadings(
           adds_board_this_turn: addsBoardThisTurn,
           unknown_named_board: boardEvidence.unknownNamedBoard,
           implicit_unregistered_board: boardEvidence.implicitUnregisteredBoard,
+          mixed_row_scopes: boardEvidence.mixedRowScopes,
         });
       } else {
         // Ref cardinality comes from `refCounts`, built from the ORIGINAL

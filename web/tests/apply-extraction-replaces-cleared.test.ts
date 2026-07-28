@@ -572,15 +572,20 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
   });
 
-  it('a registry board that DOES own a row is not an implicit second scope', () => {
-    // Same registry, but a row is scoped to it — the unscoped sibling belongs to
-    // that one board, so this stays cardinality 1 and must still bypass. The
-    // board is deliberately a SUB board, so row-ownership is the ONLY reason
-    // the implicit-unregistered term stays quiet.
+  it('a registry board that owns EVERY row is not an implicit second scope', () => {
+    // Same registry, and every row is scoped to it — ONE scope, so this stays
+    // cardinality 1 and must still bypass. The board is deliberately a SUB
+    // board, so row-ownership is the ONLY reason the implicit-unregistered
+    // term stays quiet.
     const job = makeJob({
       circuits: [
         populatedRow({ board_id: 'sub-1' } as Partial<CircuitRow>),
-        { id: 'c-2', circuit_ref: '2', circuit_designation: 'Lights' } as CircuitRow,
+        {
+          id: 'c-2',
+          circuit_ref: '2',
+          circuit_designation: 'Lights',
+          board_id: 'sub-1',
+        } as CircuitRow,
       ],
       boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
     } as unknown as Partial<JobDetail>);
@@ -589,6 +594,77 @@ describe('A2 — multi-board jobs defer (all three cardinality sources)', () => 
     expect(row.ir_live_live_mohm).toBe('100');
     expect(stages()).toContain('apply_replaces_cleared_bypass_applied');
     expect(stages()).not.toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('MIXED ROW SCOPES — a board owning SOME row, beside an unscoped row, defers', () => {
+    // The gap row-ownership alone cannot see. `sub-1` owns a row, so the
+    // implicit-unregistered term stays quiet; the flagged reading carries NO
+    // board_id (the backend omits it whenever the model relies on the current
+    // board) so the reading term is blind too; cardinality is 1. But an
+    // unscoped row belongs to a board the registry never names, so the job
+    // carries TWO scopes and a bare `circuit_ref` cannot pick between them.
+    // Without the row-scope term this overwrites the unregistered board's
+    // circuit 1 with SUB's reading.
+    const job = makeJob({
+      circuits: [
+        populatedRow(),
+        {
+          id: 'c-2',
+          circuit_ref: '2',
+          circuit_designation: 'Lights',
+          board_id: 'sub-1',
+        } as CircuitRow,
+      ],
+      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('LIM');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('MIXED ROW SCOPES — a CCU-appended board with NO board_type defers on the ROWS', () => {
+    // `applyAddNewBoardMode` (`apply-ccu-analysis.ts`) deliberately leaves
+    // `board_type` UNSET on an appended sub-board — the inspector fills it in
+    // on the Board tab — so the type predicate reads it as TOP-LEVEL and
+    // `isSub` is false. The registry term therefore CANNOT fire on the
+    // commonest producer of a two-scope job. The row-scope term catches it,
+    // and needs no type at all.
+    const job = makeJob({
+      circuits: [
+        populatedRow(),
+        {
+          id: 'c-2',
+          circuit_ref: '2',
+          circuit_designation: 'Lights',
+          board_id: 'ccu-new',
+        } as CircuitRow,
+      ],
+      boards: [{ id: 'ccu-new', designation: 'DB-2' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('LIM');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
+  });
+
+  it('NEVER A NEW SKIP — a mixed-row-scope defer still FILLS an empty cell', () => {
+    const job = makeJob({
+      circuits: [
+        populatedRow({ ir_live_live_mohm: undefined }),
+        {
+          id: 'c-2',
+          circuit_ref: '2',
+          circuit_designation: 'Lights',
+          board_id: 'sub-1',
+        } as CircuitRow,
+      ],
+      boards: [{ id: 'sub-1', board_type: 'sub_distribution' }],
+    } as unknown as Partial<JobDetail>);
+    const row = cellAfter(job, makeResult({ readings: [flaggedReading()] }));
+
+    expect(row.ir_live_live_mohm).toBe('100');
+    expect(stages()).toContain('apply_replaces_cleared_multiboard_deferred');
   });
 
   it('NEVER A NEW SKIP — a `select_board`-deferred reading still FILLS an empty cell', () => {
