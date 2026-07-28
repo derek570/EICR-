@@ -114,6 +114,17 @@ export function processDialogueTurn(ctx) {
     // threaded UNCHANGED through every nested engine fn to the builders. null
     // when there is no live arming utterance (test paths / legacy callers).
     responseEpoch = null,
+    // Cross-utterance destructive-intent suppression (feedback id 93,
+    // 2026-07-27). sonnet-stream OWNS the token lifecycle (arrival stamping,
+    // arming at the model-commit seam, one-shot consumption + window
+    // arbitration); the engine only HONOURS the flag: when true, entry
+    // detection is skipped for any schema that carries an
+    // entryExclusionPattern, so the scoped trigger that FOLLOWED a
+    // standalone "delete" utterance falls through to the model (which owns
+    // clear_reading) instead of the script hijacking the turn with its
+    // confirmation. Active-path handling is deliberately unaffected — an
+    // in-flight episode keeps processing its own turns.
+    suppressDestructiveEntry = false,
     // P1 ring-script-hardening (Fix 4) — the RAW client reply, un-annotated.
     // sonnet-stream prepends the `[In response to TTS question…]` bracket to
     // transcriptText BEFORE invoking the engine; parsing that annotated
@@ -464,9 +475,34 @@ export function processDialogueTurn(ctx) {
   }
 
   // Entry detection — first matching schema wins.
+  //
+  // Detection + entry extraction parse the RAW reply (replyText), never the
+  // annotated transcript (Codex diff-review r1): the `[In response to TTS
+  // question: "…"] ` prefix (a) defeats the leading patterns' clause-start
+  // anchor exactly when the entry answers a TTS question, and (b) exposes
+  // the QUOTED question's own words to trigger matching and to
+  // extractNamedFieldValues (a quoted "What are the lives?" plus a leading
+  // "Circuit 14" in the reply would extract 14 as a lives value). replyText
+  // falls back to the annotated text for direct callers that pass no raw
+  // reply, so the replay harness and unit paths are byte-unchanged.
   for (const schema of schemas) {
-    const entry = detectEntry(text, schema);
+    const entry = detectEntry(replyText, schema);
     if (!entry.matched) continue;
+
+    // Cross-utterance destructive suppression (id 93) — a standalone
+    // "delete" on the PREVIOUS utterance armed a one-shot token in
+    // sonnet-stream; within the arrival-delta window the follow-up scoped
+    // trigger ("recontinuity readings for circuit 13") must reach the model
+    // with the delete intent intact, not enter a script. Scoped to schemas
+    // that opted into the entry guard (entryExclusionPattern) — the same
+    // schemas whose SAME-utterance destructive entries already fall through.
+    if (suppressDestructiveEntry === true && schema.entryExclusionPattern) {
+      logger?.info?.(`${schema.name}_entry_suppressed_cross_utterance_destructive`, {
+        sessionId,
+        textPreview: text.slice(0, 80),
+      });
+      continue;
+    }
 
     // Entry-exclusion guard — OPT-IN per schema (P1 ring-script-hardening,
     // 2026-07-22, generalising the Phase 6.1 RCD-only guard). Field repro for
@@ -487,7 +523,7 @@ export function processDialogueTurn(ctx) {
     // keep entering, because field evidence shows they usefully recover
     // the user. Sonnet has the right tools (`clear_reading` /
     // `delete_circuit` / `record_reading`) for the excluded utterances.
-    if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(text)) {
+    if (schema.entryExclusionPattern && schema.entryExclusionPattern.test(replyText)) {
       logger?.info?.(`${schema.name}_entry_guard_skipped`, {
         sessionId,
         textPreview: text.slice(0, 80),
@@ -509,7 +545,9 @@ export function processDialogueTurn(ctx) {
       ws,
       session,
       sessionId,
-      text,
+      // RAW reply — see the loop comment above (annotation must not feed
+      // designation lookup / extraction / the bare parser).
+      text: replyText,
       schema,
       schemas,
       entry,
@@ -610,6 +648,16 @@ function maskCircuitSpans(text) {
   return text.replace(/\bcircuit\s*\d{1,3}\b/gi, (m) => ' '.repeat(m.length));
 }
 
+// Scope-conflict provenance marker on a queued pending write (Codex
+// diff-review r1). A value dictated ON the conflict utterance is an explicit
+// fresh reading — when the which_circuit answer resolves onto a circuit that
+// ALREADY holds that field, the drain must OVERWRITE, not skip (the
+// skip-if-seeded guard exists for values the inspector did NOT restate).
+// A Symbol property so it can never cross a JSON wire boundary; ordinary
+// (non-conflict) pending writes never carry it and keep today's skip
+// semantics. Mirrored per-file in both legacy twins.
+const CONFLICT_OVERWRITE = Symbol('conflictOverwrite');
+
 /**
  * Masked-and-qualified named extraction for confirmation-mode replies
  * (canonical positions 5a evidence + 5b named-amend). Returns
@@ -695,42 +743,106 @@ function sendScriptPurge(ws, schema, sessionId) {
 }
 
 /**
- * Test if a transcript matches a schema's entry triggers. Returns
- * { matched, circuit_ref } — circuit_ref is the digit captured by the
- * trigger regex, or null if the regex matched but didn't bind a digit.
+ * Collect the unique, valid circuit refs bound by EVERY matching trigger
+ * pattern (feedback id 98, 2026-07-27). The old first-match-return shape
+ * silently picked whichever pattern sat earlier in the list — with the new
+ * leading-circuit patterns placed first, "Circuit 10, ring continuity for
+ * circuit 13" would have silently won as 10, the exact silent-winner bug
+ * the scope-conflict resolver exists to prevent. Every pattern keeps its
+ * circuit capture at m[1], so this is the ONLY reader of the group index.
+ * Mirrored behaviourally in both legacy twins (ring-continuity-script.js /
+ * insulation-resistance-script.js) so contradiction scenarios stay
+ * replay-parity-eligible.
+ */
+function collectTriggerCircuitRefs(text, patterns) {
+  let matched = false;
+  const refs = [];
+  const addRef = (raw) => {
+    const ref = Number(raw);
+    if (Number.isInteger(ref) && ref > 0 && !refs.includes(ref)) refs.push(ref);
+  };
+  // ^-anchored patterns (the terse triggers) stay START-ONLY for entry —
+  // "Zs is 0.62. Ring on circuit 13." must NOT enter and swallow the Zs
+  // reading (Codex cycle 2). But a REPEATED anchored trigger in a later
+  // sentence still contributes its ref to CONTRADICTION collection, so the
+  // collectors scan punctuation-delimited clause segments (horizontal
+  // whitespace only, same newline rules as the leading patterns) with the
+  // anchored pattern for refs only.
+  const clauseSegments = text.split(/(?<=[.?!])[ \t]+/);
+  for (const pattern of patterns) {
+    if (pattern.source.startsWith('^')) {
+      const m = text.match(pattern);
+      if (m) {
+        matched = true;
+        if (m[1]) addRef(m[1]);
+      }
+      for (let i = 1; i < clauseSegments.length; i++) {
+        const cm = clauseSegments[i].match(pattern);
+        if (cm && cm[1]) addRef(cm[1]); // refs only — never entry
+      }
+      continue;
+    }
+    // Non-anchored patterns: EVERY occurrence via a fresh /g clone (never
+    // matchAll a shared global RegExp — stateful lastIndex).
+    const global = new RegExp(
+      pattern.source,
+      pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+    );
+    for (const m of text.matchAll(global)) {
+      matched = true;
+      if (m[1]) addRef(m[1]);
+    }
+  }
+  return { matched, refs };
+}
+
+/**
+ * Test if a transcript matches a schema's entry triggers. Returns the
+ * common detection shape { matched, circuit_ref, scope_conflict }:
+ *   - circuit_ref is the SINGLE unambiguous circuit the trigger patterns
+ *     bound (same number stated twice is unambiguous), or null;
+ *   - scope_conflict=true when DIFFERENT circuits were bound by different
+ *     patterns (an explicit contradiction — the caller must ask
+ *     which_circuit, never pick a silent winner).
  *
  * Each trigger regex is expected to have an optional capture group at
  * position 1 for the circuit number.
  */
 function detectEntry(text, schema) {
-  if (typeof text !== 'string' || !text) return { matched: false, circuit_ref: null };
-  for (const pattern of schema.triggers) {
-    const m = text.match(pattern);
-    if (m) {
-      const ref = m[1] ? Number(m[1]) : null;
-      const validRef = Number.isInteger(ref) && ref > 0 ? ref : null;
-      return { matched: true, circuit_ref: validRef };
-    }
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  return { matched: false, circuit_ref: null };
+  const { matched, refs } = collectTriggerCircuitRefs(text, schema.triggers);
+  if (!matched) return { matched: false, circuit_ref: null, scope_conflict: false };
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  return { matched: true, circuit_ref: refs[0] ?? null, scope_conflict: false };
 }
 
 /**
  * Detect a different entry on a NEW circuit while one is already
  * active. Used so an inspector mid-script can seamlessly switch to a
  * different circuit by re-stating the entry phrase with a new ref.
+ * Returns the same { matched, circuit_ref, scope_conflict } shape as
+ * detectEntry: matched=true ONLY for a single ref different from the
+ * current circuit, or for a scope conflict (≥2 distinct refs — the
+ * conflict is reported regardless of whether the current circuit is
+ * among them; the caller owns the ask).
  */
 function detectDifferentEntry(text, schema, currentCircuitRef) {
-  for (const pattern of schema.triggers) {
-    const m = text.match(pattern);
-    if (m && m[1]) {
-      const newRef = Number(m[1]);
-      if (Number.isInteger(newRef) && newRef > 0 && newRef !== currentCircuitRef) {
-        return newRef;
-      }
-    }
+  if (typeof text !== 'string' || !text) {
+    return { matched: false, circuit_ref: null, scope_conflict: false };
   }
-  return null;
+  const { matched, refs } = collectTriggerCircuitRefs(text, schema.triggers);
+  // A refs-only collection (later-sentence terse segment, no entry-eligible
+  // trigger match) is NOT a switch (Codex cycle 3): "Zs is 0.62. Ring on
+  // circuit 13." during an active episode must fall through to the model,
+  // never clear the episode and discard its queued readings.
+  if (!matched) return { matched: false, circuit_ref: null, scope_conflict: false };
+  if (refs.length >= 2) return { matched: true, circuit_ref: null, scope_conflict: true };
+  if (refs.length === 1 && refs[0] !== currentCircuitRef) {
+    return { matched: true, circuit_ref: refs[0], scope_conflict: false };
+  }
+  return { matched: false, circuit_ref: null, scope_conflict: false };
 }
 
 function clearScriptState(session) {
@@ -1054,6 +1166,51 @@ function runEntry({
   overwriteVolunteered = false,
   responseEpoch = RESPONSE_EPOCH_REQUIRED, // sentinel default — see askNextOrFinish
 }) {
+  // Scope-conflict entry (feedback id 98, 2026-07-27): the trigger patterns
+  // bound DIFFERENT circuits ("Circuit 10, ring continuity for circuit 13").
+  // An explicit contradiction must never pick a silent winner — skip the
+  // designation fallback entirely (a designation match would just be a third
+  // candidate), queue any volunteered readings against the UNRESOLVED
+  // episode, and emit the schema's existing which_circuit ask. Volunteered
+  // extraction runs on the circuit-span-MASKED text: the raw extractors
+  // accept the first digit within their char-bound after a conductor label,
+  // so "Circuit 5, ring continuity earths for circuit 3 are 1.19" would
+  // otherwise capture 3 as the CPC value and write it once the scope
+  // resolves (same masking contract as the confirmation 5a seed path).
+  if (entry.scope_conflict === true) {
+    initScriptState(session, schema, null, now);
+    const conflictState = session.dialogueScriptState;
+    // Conflict-origin episode: the position-4 resolver re-asks on silent
+    // value-only follow-ups and the drain OVERWRITES pre-filled fields for
+    // the marker-carrying writes (see CONFLICT_OVERWRITE).
+    conflictState.scope_conflict_origin = true;
+    const queued = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
+    for (const w of queued) {
+      w[CONFLICT_OVERWRITE] = true;
+      conflictState.pending_writes.push(w);
+    }
+    logger?.info?.(`${schema.logEventPrefix}_entry_scope_conflict`, {
+      sessionId,
+      pending_writes: conflictState.pending_writes.map((w) => w.field),
+      textPreview: text.slice(0, 80),
+    });
+    safeSend(
+      ws,
+      buildScriptAsk({
+        toolCallIdPrefix: schema.toolCallIdPrefix,
+        sessionId,
+        circuit_ref: null,
+        missing_field: null,
+        whichCircuitQuestion: schema.whichCircuitQuestion,
+        slotQuestion: null,
+        now,
+        kind: 'which_circuit',
+        responseEpoch,
+      })
+    );
+    return { handled: true, fallthrough: false };
+  }
+
   let circuitRef = entry.circuit_ref;
   let entryDesignationMatched = false;
   // Designation lookup at entry time. Three outcomes:
@@ -1081,7 +1238,15 @@ function runEntry({
 
   const slotFields = schema.slots.map((s) => s.field);
   const existing = circuitRef ? readExistingValues(session, circuitRef, slotFields) : {};
-  const volunteered = extractNamedFieldValues(text, schema.slots);
+  // Circuit-span-MASKED extraction on the ORDINARY entry path too (Codex
+  // diff-review r1) — not only the conflict branch: with an unambiguous
+  // repeated scope ("Circuit 13, ring continuity earths for circuit 13 are
+  // 1.19") the raw extractors accept the trailing span's digit as the
+  // conductor value (13 → clamped 1.3) exactly as they would on a conflict.
+  // Length-preserving, and a legitimate reading value never sits inside a
+  // `circuit N` span, so masking can only remove corruption.
+  const maskedEntryText = maskCircuitSpans(text);
+  const volunteered = extractNamedFieldValues(maskedEntryText, schema.slots);
 
   // Handover-to-Sonnet bail. See session 87856B72 (2026-05-26): the
   // RCD trigger /\bRCD\b/ matched on "RCD triptan for upstairs
@@ -1109,7 +1274,7 @@ function runEntry({
     circuitRef === null &&
     volunteered.length === 0 &&
     typeof schema.bareEntryParser === 'function' &&
-    schema.bareEntryParser(text) != null;
+    schema.bareEntryParser(maskedEntryText) != null;
   if (
     volunteered.length === 0 &&
     Object.keys(existing).length === 0 &&
@@ -1202,7 +1367,7 @@ function runEntry({
     state.pending_writes.length === 0 &&
     typeof schema.bareEntryParser === 'function'
   ) {
-    const bare = schema.bareEntryParser(text);
+    const bare = schema.bareEntryParser(maskedEntryText);
     if (bare !== null && bare !== undefined) {
       state.ambiguous_bare_value = {
         value: bare,
@@ -1353,98 +1518,140 @@ function runActivePath({
   //    bare value + continue), or null (unparseable — re-ask once,
   //    then discard on second miss).
   if (state.awaiting_disambiguation && typeof schema.disambiguateBareValue === 'function') {
-    const bare = state.awaiting_disambiguation;
-    const verdict = schema.disambiguateBareValue(text);
-    // Plan D Seam B — the clamped value actually stored, for the log row below.
-    let disambiguatedValue = null;
-    if (verdict && verdict.field) {
-      // Belt-and-braces: don't overwrite if the inspector somehow
-      // filled the chosen slot in the meantime (rare but possible if
-      // a parallel write landed).
-      if (state.values[verdict.field] == null) {
-        // Plan D Seam B — capture the return value. The raw re-assignment that
-        // used to sit on the next line (`state.values[...] = bare.value`) is
-        // DELETED: applyWrite already writes state.values, and re-assigning the
-        // raw value would undo the clamp so the NEXT turn's read-back re-reads
-        // the uncorrected magnitude.
-        const written = applyWrite(
-          session,
-          schema,
-          state.circuit_ref,
-          verdict.field,
-          bare.value,
-          now
-        );
-        disambiguatedValue = written.value;
+    // Scope-conflict preflight (Codex diff-review r1): a contradictory
+    // scoped ENTRY ("Circuit 5, insulation resistance … for circuit 3 is
+    // 200") is NOT a disambiguation answer — without this check
+    // disambiguateBareValue would treat it as the L-L/L-E routing reply and
+    // write the previously buffered bare value to the OLD circuit with no
+    // which_circuit ask. Fall through to the position-2 conflict branch,
+    // which replaces the episode and asks. Non-conflict replies keep
+    // today's disambiguation handling unchanged.
+    // WIDENED twice (mini-review r1 + Codex cycle 2): ANY fresh entry-shaped
+    // reply supersedes the routing question — "Circuit 5, insulation
+    // resistance live to live is 200" (different circuit), "Circuit 13,
+    // insulation resistance live to live is 200" (SAME circuit), and the
+    // unscoped "insulation resistance live to live is 200" are all
+    // definitive fresh dictation, not L-L/L-E routing answers; consuming
+    // them here wrote the stale buffered value and dropped the dictated
+    // one. A genuine routing answer ("live to live") matches no entry
+    // trigger and is handled below unchanged. Different-circuit/conflict
+    // shapes fall through to position 2; same-current/unscoped shapes clear
+    // the routing state and continue to normal named-value extraction.
+    const disambiguationEntry = detectEntry(reply, schema);
+    if (disambiguationEntry.matched === true) {
+      const differs = detectDifferentEntry(reply, schema, state.circuit_ref);
+      if (differs.matched !== true) {
+        logger?.info?.(`${schema.logEventPrefix}_disambiguation_superseded_by_entry`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          dropped_bare_value: state.awaiting_disambiguation?.value ?? null,
+          textPreview: reply.slice(0, 80),
+        });
+        state.awaiting_disambiguation = null;
+        state.disambiguation_retry_attempted = false;
+        // Continue through the normal active path below (named extraction
+        // applies the dictated reading).
+      }
+      // differs.matched === true (different circuit or conflict) → position
+      // 2 owns the turn; fall through without touching the routing state
+      // (the conflict/switch branch replaces the episode wholesale).
+    } else {
+      const bare = state.awaiting_disambiguation;
+      // RAW reply (mini-review r1): the annotated text QUOTES the routing
+      // question ("Was that L-L or L-E?"), whose own tokens could satisfy
+      // the router regardless of what the inspector actually said.
+      const verdict = schema.disambiguateBareValue(reply);
+      // Plan D Seam B — the clamped value actually stored, for the log row below.
+      let disambiguatedValue = null;
+      if (verdict && verdict.field) {
+        // Belt-and-braces: don't overwrite if the inspector somehow
+        // filled the chosen slot in the meantime (rare but possible if
+        // a parallel write landed).
+        if (state.values[verdict.field] == null) {
+          // Plan D Seam B — capture the return value. The raw re-assignment that
+          // used to sit on the next line (`state.values[...] = bare.value`) is
+          // DELETED: applyWrite already writes state.values, and re-assigning the
+          // raw value would undo the clamp so the NEXT turn's read-back re-reads
+          // the uncorrected magnitude.
+          const written = applyWrite(
+            session,
+            schema,
+            state.circuit_ref,
+            verdict.field,
+            bare.value,
+            now
+          );
+          disambiguatedValue = written.value;
+          safeSend(
+            ws,
+            buildExtractionPayload(
+              state.circuit_ref,
+              [{ field: verdict.field, value: written.value }],
+              schema.extractionSource
+            )
+          );
+        }
+        logger?.info?.(`${schema.logEventPrefix}_disambiguation_resolved`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          bare_value: disambiguatedValue ?? bare.value,
+          target_field: verdict.field,
+          textPreview: text.slice(0, 80),
+        });
+        state.awaiting_disambiguation = null;
+        state.disambiguation_retry_attempted = false;
+        return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
+      }
+      if (verdict && verdict.discard) {
+        logger?.info?.(`${schema.logEventPrefix}_disambiguation_discarded_by_user`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          bare_value: bare.value,
+          textPreview: text.slice(0, 80),
+        });
+        state.awaiting_disambiguation = null;
+        state.disambiguation_retry_attempted = false;
+        return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
+      }
+      // Unparseable. Re-ask once, then drop the bare value on a second
+      // miss so the script doesn't loop forever.
+      if (!state.disambiguation_retry_attempted) {
+        state.disambiguation_retry_attempted = true;
+        logger?.info?.(`${schema.logEventPrefix}_disambiguation_retry`, {
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          textPreview: text.slice(0, 80),
+        });
         safeSend(
           ws,
-          buildExtractionPayload(
-            state.circuit_ref,
-            [{ field: verdict.field, value: written.value }],
-            schema.extractionSource
-          )
+          buildScriptAsk({
+            toolCallIdPrefix: schema.toolCallIdPrefix,
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            missing_field: '_ir_disambiguate_bare',
+            whichCircuitQuestion: null,
+            slotQuestion:
+              typeof schema.bareDisambiguationQuestion === 'function'
+                ? schema.bareDisambiguationQuestion(bare.value)
+                : `Live-to-live or live-to-earth?`,
+            now,
+            kind: 'value',
+            responseEpoch,
+          })
         );
+        return { handled: true, fallthrough: false };
       }
-      logger?.info?.(`${schema.logEventPrefix}_disambiguation_resolved`, {
-        sessionId,
-        circuit_ref: state.circuit_ref,
-        bare_value: disambiguatedValue ?? bare.value,
-        target_field: verdict.field,
-        textPreview: text.slice(0, 80),
-      });
-      state.awaiting_disambiguation = null;
-      state.disambiguation_retry_attempted = false;
-      return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
-    }
-    if (verdict && verdict.discard) {
-      logger?.info?.(`${schema.logEventPrefix}_disambiguation_discarded_by_user`, {
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_dropped`, {
         sessionId,
         circuit_ref: state.circuit_ref,
         bare_value: bare.value,
+        reason: 'second_unparseable',
         textPreview: text.slice(0, 80),
       });
       state.awaiting_disambiguation = null;
       state.disambiguation_retry_attempted = false;
       return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
-    }
-    // Unparseable. Re-ask once, then drop the bare value on a second
-    // miss so the script doesn't loop forever.
-    if (!state.disambiguation_retry_attempted) {
-      state.disambiguation_retry_attempted = true;
-      logger?.info?.(`${schema.logEventPrefix}_disambiguation_retry`, {
-        sessionId,
-        circuit_ref: state.circuit_ref,
-        textPreview: text.slice(0, 80),
-      });
-      safeSend(
-        ws,
-        buildScriptAsk({
-          toolCallIdPrefix: schema.toolCallIdPrefix,
-          sessionId,
-          circuit_ref: state.circuit_ref,
-          missing_field: '_ir_disambiguate_bare',
-          whichCircuitQuestion: null,
-          slotQuestion:
-            typeof schema.bareDisambiguationQuestion === 'function'
-              ? schema.bareDisambiguationQuestion(bare.value)
-              : `Live-to-live or live-to-earth?`,
-          now,
-          kind: 'value',
-          responseEpoch,
-        })
-      );
-      return { handled: true, fallthrough: false };
-    }
-    logger?.info?.(`${schema.logEventPrefix}_disambiguation_dropped`, {
-      sessionId,
-      circuit_ref: state.circuit_ref,
-      bare_value: bare.value,
-      reason: 'second_unparseable',
-      textPreview: text.slice(0, 80),
-    });
-    state.awaiting_disambiguation = null;
-    state.disambiguation_retry_attempted = false;
-    return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
+    } // end scope-conflict-preflight guard — a conflict falls through to position 2
   }
 
   // P1 canonical position 1 — delete/clear-intent PREFLIGHT. Evaluated ONLY
@@ -1542,9 +1749,86 @@ function runActivePath({
   // preflight owns different-circuit routing there (with masking, negation
   // polarity and overwriteVolunteered semantics the generic recursion
   // lacks).
-  const newRef = state.awaiting_confirmation
-    ? null
-    : detectDifferentEntry(text, schema, state.circuit_ref);
+  //
+  // SCOPE-CONFLICT exception (feedback id 98, 2026-07-27): a reply whose
+  // trigger patterns bind TWO different circuits ("Circuit 10, ring
+  // continuity for circuit 13") is an explicit contradiction and IS handled
+  // here in BOTH states — awaiting_confirmation is NOT exempt, because the
+  // 5a preflight filters out the CURRENT circuit from its target set, so
+  // with current circuit 10 the conflicting pair {10, 13} would silently
+  // switch to 13. Non-conflicting different-circuit replies keep today's
+  // routing (generic switch below when collecting; 5a during confirmation).
+  // Detection parses the RAW reply in EVERY state (Codex diff-review r1,
+  // superseding the older annotated-text stance for THIS check): the
+  // `[In response to …]` annotation defeats the leading patterns'
+  // clause-start anchor, so an annotated "Circuit 14, ring continuity"
+  // reply to a script ask would miss the switch and step-7 extraction
+  // would eat the 14 as a conductor value. Positions 1 (cancel) and 3
+  // (topic switch) deliberately keep parsing the annotated text (P1 Fix-4
+  // note — their trigger words never appear in quoted questions).
+  const diffEntry = detectDifferentEntry(reply, schema, state.circuit_ref);
+  if (diffEntry.scope_conflict === true) {
+    const wasConfirmation = state.awaiting_confirmation === true;
+    // Volunteered values from the conflict utterance, extraction-safe: the
+    // circuit-span mask stops "…earths for circuit 3 are 1.19" capturing 3
+    // as a conductor value; in confirmation mode the full ring-safe
+    // qualification also rejects explicit non-ring contexts (mirrors 5a/5b).
+    let queued;
+    if (wasConfirmation) {
+      const safe = extractRingSafeNamedValues(reply, schema);
+      queued = safe.rejected ? [] : safe.values;
+    } else {
+      queued = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+    }
+    // An UNRESOLVED prior episode (circuit never answered) may still hold
+    // queued dictated values — they are real readings; carry them into the
+    // replacement episode instead of deleting them (Codex diff-review r1).
+    // Fields the conflict utterance restates take precedence.
+    const priorPending =
+      state.circuit_ref === null && Array.isArray(state.pending_writes)
+        ? state.pending_writes.filter((pw) => !queued.some((q) => q.field === pw.field))
+        : [];
+    logger?.info?.(`${schema.logEventPrefix}_different_entry_scope_conflict`, {
+      sessionId,
+      from_ref: state.circuit_ref,
+      was_confirmation: wasConfirmation,
+      pending_writes: queued.map((w) => w.field),
+      carried_pending_writes: priorPending.map((w) => w.field),
+      textPreview: reply.slice(0, 80),
+    });
+    // Audio-First purge contract: abandoning an in-flight confirmation makes
+    // the queued "All correct?" prompt stale — purge before the replacement
+    // ask (same srv- prefix; purge must go first so the ask isn't swallowed).
+    if (wasConfirmation) sendScriptPurge(ws, schema, sessionId);
+    // Replace the old episode with an UNRESOLVED one: never write the
+    // volunteered values to the OLD circuit; the target stays open until the
+    // which_circuit answer drains pending_writes via the position-4 resolver.
+    clearScriptState(session);
+    initScriptState(session, schema, null, now);
+    const conflictState = session.dialogueScriptState;
+    conflictState.scope_conflict_origin = true;
+    for (const w of queued) {
+      w[CONFLICT_OVERWRITE] = true;
+      conflictState.pending_writes.push(w);
+    }
+    for (const w of priorPending) conflictState.pending_writes.push(w);
+    safeSend(
+      ws,
+      buildScriptAsk({
+        toolCallIdPrefix: schema.toolCallIdPrefix,
+        sessionId,
+        circuit_ref: null,
+        missing_field: null,
+        whichCircuitQuestion: schema.whichCircuitQuestion,
+        slotQuestion: null,
+        now,
+        kind: 'which_circuit',
+        responseEpoch,
+      })
+    );
+    return { handled: true, fallthrough: false };
+  }
+  const newRef = state.awaiting_confirmation || !diffEntry.matched ? null : diffEntry.circuit_ref;
   if (newRef !== null) {
     const { filled } = countFilledForCancel(state.values, schema.slots);
     logger?.info?.(`${schema.logEventPrefix}_switched_circuit`, {
@@ -1555,12 +1839,17 @@ function runActivePath({
       textPreview: text.slice(0, 80),
     });
     clearScriptState(session);
-    // Recurse so the fresh entry runs on the same transcript.
+    // Recurse so the fresh entry runs on the same transcript. rawReplyText
+    // rides along (Codex diff-review r1) so the fresh entry's detection AND
+    // extraction parse the un-annotated reply — without it the recursion
+    // would re-derive replyText from the ANNOTATED transcript and the
+    // quoted question's words would feed extractNamedFieldValues.
     return processDialogueTurn({
       ws,
       session,
       sessionId,
       transcriptText,
+      rawReplyText: reply,
       schemas: [schema],
       logger,
       now,
@@ -2146,10 +2435,32 @@ function runActivePath({
           state.values[f] = v;
         }
       }
+      // Combined circuit-answer + correction (Codex cycle 2): for a
+      // conflict-origin episode, "Circuit 5, lives are 0.63" both resolves
+      // the circuit AND restates a value. The drain below would otherwise
+      // apply the OLDER queued value first and step-7 would then skip the
+      // newer one (field already filled) — silently discarding the newest
+      // dictation. Upsert the same-reply masked values (marked, so they
+      // overwrite) before draining once.
+      if (state.scope_conflict_origin === true) {
+        const sameReplyValues = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+        for (const w of sameReplyValues) {
+          w[CONFLICT_OVERWRITE] = true;
+          if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          const idx = state.pending_writes.findIndex((e) => e.field === w.field);
+          if (idx >= 0) state.pending_writes[idx] = w;
+          else state.pending_writes.push(w);
+        }
+      }
       // Drain pending_writes onto the now-resolved circuit.
       if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
         for (const w of state.pending_writes) {
-          if (state.values[w.field] !== undefined) continue;
+          // Conflict-origin writes OVERWRITE a pre-filled destination (the
+          // inspector explicitly restated the value on the conflict
+          // utterance — skipping would silently drop a dictated correction,
+          // Codex diff-review r1); ordinary queued writes keep the
+          // skip-if-seeded guard.
+          if (w[CONFLICT_OVERWRITE] !== true && state.values[w.field] !== undefined) continue;
           // P3 — normalise seeded pending_writes for the WHOLE numeric reading
           // field set (was scoped to ir_live_* only). Coerces four-form LIM →
           // "LIM", then validates range / numeric-validity / allowedValues; a
@@ -2206,15 +2517,27 @@ function runActivePath({
       });
     } else {
       // Couldn't resolve. Try to queue any volunteered values for a
-      // later turn that DOES name the circuit.
-      const followUpVolunteered = extractNamedFieldValues(text, schema.slots);
+      // later turn that DOES name the circuit. Masked (Codex diff-review
+      // r1): a follow-up like "earths for circuit 99 are 1.19" with an
+      // out-of-set/unmatchable ref must never capture the ref digit as the
+      // conductor value.
+      const followUpVolunteered = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
       if (followUpVolunteered.length > 0) {
         for (const w of followUpVolunteered) {
-          const alreadyQueued = (state.pending_writes ?? []).some(
-            (existing) => existing.field === w.field
-          );
-          if (alreadyQueued) continue;
           if (!Array.isArray(state.pending_writes)) state.pending_writes = [];
+          if (state.scope_conflict_origin === true) {
+            // Conflict-origin episodes UPSERT (mini-review r1): a follow-up
+            // restatement is the newest dictated value and must both replace
+            // an already-queued entry for the field and carry the
+            // overwrite marker for the drain.
+            w[CONFLICT_OVERWRITE] = true;
+            const idx = state.pending_writes.findIndex((e) => e.field === w.field);
+            if (idx >= 0) state.pending_writes[idx] = w;
+            else state.pending_writes.push(w);
+            continue;
+          }
+          const alreadyQueued = state.pending_writes.some((existing) => existing.field === w.field);
+          if (alreadyQueued) continue;
           state.pending_writes.push(w);
         }
         logger?.info?.(`${schema.logEventPrefix}_queued_values`, {
@@ -2223,6 +2546,30 @@ function runActivePath({
           queued_fields: followUpVolunteered.map((w) => w.field),
           pending_writes_total: state.pending_writes.length,
         });
+        // Conflict-origin episodes RE-ASK after queueing (Codex diff-review
+        // r1): the inspector answered the which_circuit ask with a value
+        // instead of a circuit; staying silent strands the queue behind an
+        // unanswered question they may not remember. Ordinary unresolved
+        // episodes keep the pre-existing queue-silently behaviour (pinned
+        // by the 361A638D replay scenario). Residual: a byte-identical
+        // repeat within the client's 30 s text-keyed TTS dedupe may be
+        // swallowed on some clients — accepted D-2 class.
+        if (state.scope_conflict_origin === true) {
+          safeSend(
+            ws,
+            buildScriptAsk({
+              toolCallIdPrefix: schema.toolCallIdPrefix,
+              sessionId,
+              circuit_ref: null,
+              missing_field: null,
+              whichCircuitQuestion: schema.whichCircuitQuestion,
+              slotQuestion: null,
+              now,
+              kind: 'which_circuit',
+              responseEpoch,
+            })
+          );
+        }
         return { handled: true, fallthrough: false };
       }
       // First miss: re-ask once before discarding pending_writes. Save
@@ -2509,8 +2856,10 @@ function runActivePath({
     //        in-script voltage re-ask (script stays active).
     //   else → legacy finish-and-consume (brief unparseable, no IR signal, <30s).
     const handleVoltageNoParse = () => {
-      const freshVolunteered = extractNamedFieldValues(text, schema.slots);
-      const freshEntry = detectEntry(text, schema).matched;
+      // RAW reply + masked (mini-review r1) — mirrors the entry loop; the
+      // annotation must not defeat the leading patterns or feed extraction.
+      const freshVolunteered = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+      const freshEntry = detectEntry(reply, schema).matched;
       if (freshVolunteered.length > 0 || freshEntry) {
         const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
         const readingsCaptured =
@@ -2534,6 +2883,7 @@ function runActivePath({
           session,
           sessionId,
           transcriptText,
+          rawReplyText: reply,
           schemas: [schema],
           logger,
           now,
@@ -2676,7 +3026,11 @@ function runActivePath({
   // 7. Named-field extraction — multiple slots can fill from one
   //    utterance. Track any pivot request from a derivation.
   let pivotTo = null;
-  const named = extractNamedFieldValues(text, schema.slots);
+  // Masked (Codex diff-review r1): a mid-collection reply mentioning a
+  // circuit span ("earths for circuit 13 are 1.19", or a quoted TTS
+  // question containing "circuit N" in the annotation) must never capture
+  // the span's digit as a conductor value.
+  const named = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
   for (const w of named) {
     if (state.values[w.field] !== undefined) continue;
     const slot = schema.slots.find((s) => s.field === w.field);
@@ -2720,7 +3074,9 @@ function runActivePath({
     currentSlot &&
     currentSlot.acceptsBareValue !== false
   ) {
-    const bareValue = currentSlot.parser(text);
+    // Masked for the same reason as step 7 — a "circuit N" span's digit is
+    // never a bare reading value.
+    const bareValue = currentSlot.parser(maskCircuitSpans(text));
     // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
     // gate. The OCPD breaking-capacity slot now declares the realistic kA
     // set ([1.5, 3, 4.5, 6, 10, 16, 20, 25, 36, 50, 80] — see
@@ -3724,7 +4080,9 @@ export function tryResumePausedScript({
   const drainedWrites = [];
   if (Array.isArray(state.pending_writes) && state.pending_writes.length > 0) {
     for (const w of state.pending_writes) {
-      if (state.values[w.field] !== undefined) continue;
+      // Marker-aware (mini-review r1): the resume drain is a SECOND drain
+      // site and must honour CONFLICT_OVERWRITE like the position-4 drain.
+      if (w[CONFLICT_OVERWRITE] !== true && state.values[w.field] !== undefined) continue;
       // P3 — normalise seeded pending_writes for the WHOLE numeric reading field
       // set on the circuit-create resume drain (was scoped to ir_live_*).
       // Coerce four-form LIM → "LIM", validate, and REJECT a near-match /

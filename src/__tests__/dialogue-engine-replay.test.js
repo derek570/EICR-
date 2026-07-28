@@ -196,6 +196,42 @@ describe('replay — ring continuity', () => {
     expectIdentical(engineRun, legacyRun);
   });
 
+  test('id 98: leading-circuit entry scopes without a which-circuit ask', () => {
+    const transcripts = [
+      { text: 'Circuit 10, ring continuity. Lives are 0.61.', now: 1000 },
+      { text: 'Neutrals are 0.62.', now: 2000 },
+      { text: 'Earths are 1.02.', now: 3000 },
+    ];
+    const initialCircuits = { 10: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('id 98: entry contradiction asks which_circuit, masked value drains onto the answer', () => {
+    const transcripts = [
+      { text: 'Circuit 5, ring continuity earths for circuit 3 are 1.19.', now: 1000 },
+      { text: 'circuit 5', now: 2000 },
+    ];
+    const initialCircuits = { 3: {}, 5: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('id 98: mid-script contradiction replaces the episode with an unresolved one', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: 'Lives are 0.30.', now: 2000 },
+      { text: 'Circuit 5, ring continuity for circuit 3.', now: 3000 },
+      { text: 'circuit 3', now: 4000 },
+    ];
+    const initialCircuits = { 3: {}, 5: {}, 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
   test('topic switch mid-script: clear state + fallthrough on Zs', () => {
     const transcripts = [
       { text: 'Ring continuity for circuit 13.', now: 1000 },
@@ -416,6 +452,29 @@ describe('replay — insulation resistance', () => {
     const initialCircuits = {
       1: { circuit_designation: 'upstairs sockets' },
     };
+    const engineRun = runScenario(engineIR, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyIR, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('id 98: IR leading-circuit entry scopes without a which-circuit ask', () => {
+    const transcripts = [
+      { text: 'Circuit 5, insulation resistance. Live to live 200.', now: 1000 },
+      { text: 'Live to earth over 999.', now: 2000 },
+      { text: '500', now: 3000 },
+    ];
+    const initialCircuits = { 5: {} };
+    const engineRun = runScenario(engineIR, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyIR, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('id 98: IR entry contradiction asks which_circuit, value drains onto the answer', () => {
+    const transcripts = [
+      { text: 'Circuit 5, insulation resistance for circuit 3. Live to live is 200.', now: 1000 },
+      { text: 'circuit 5', now: 2000 },
+    ];
+    const initialCircuits = { 3: {}, 5: {} };
     const engineRun = runScenario(engineIR, transcripts, initialCircuits);
     const legacyRun = runScenario(legacyIR, transcripts, initialCircuits);
     expectIdentical(engineRun, legacyRun);

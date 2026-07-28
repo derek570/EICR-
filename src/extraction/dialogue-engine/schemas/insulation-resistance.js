@@ -174,6 +174,16 @@ const slots = [
 ];
 
 const triggers = [
+  // Leading-circuit patterns (feedback id 98 companion, 2026-07-27): a
+  // circuit stated BEFORE the trigger ("Circuit 4, insulation resistance
+  // live to live 200") now binds. Same clause-start anchoring rules as the
+  // ring schema's leading patterns (see ring-continuity.js for the full
+  // rationale); this file's OWN head-word vocabulary (insurance, not the
+  // legacy twin's international) is preserved verbatim. Circuit stays
+  // capture group 1; detect* collect across all patterns and a
+  // leading-vs-trailing contradiction surfaces as scope_conflict.
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b/i,
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\bi\s*r\b/i,
   // Pattern 1 (full): "insulation/installation/insurance resistance" + optional
   // "circuit N". The "installation"/"insurance" alternations tolerate Deepgram's
   // tendency to mis-hear "insulation". Field report 2026-06-24 #3: "insurance
@@ -183,8 +193,25 @@ const triggers = [
   // so the false-positive surface is negligible (same rationale as "installation").
   /\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 (terse): "IR for circuit N" — requires "circuit N" trailer.
+  // Terse pattern RESTORED to its origin ^ anchor (Codex cycle 2): the
+  // clause-start widening let "Zs is 0.62. Ring on circuit 13." ENTER the
+  // ring script and swallow the Zs reading. Entry stays start-only; the
+  // collectors scan later clause SEGMENTS with this anchored pattern for
+  // contradiction REFS only (never for entry), which is what the
+  // repeated-terse conflict needs.
   /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\bi\s*r\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
+
+// Cross-utterance delete fix, IR same-utterance parity (feedback id 93
+// fold-in, 2026-07-27): the IR schema had NO entryExclusionPattern, so
+// "delete the insulation resistance readings for circuit 13" trigger-matched
+// Pattern 1 and hijacked into the IR walk-through instead of falling through
+// to Sonnet (which owns clear_reading) — the exact class P1
+// ring-script-hardening closed for ring on 2026-07-22. Same shape as ring's
+// pattern: destructive/corrective verbs ONLY, no question words, no denial
+// phrases — question-form entries must keep entering (see the ring schema's
+// comment for the field evidence and Derek's 2026-07-22 decision).
+const entryExclusionPattern = /\b(delete|undo|remove|clear|cancel|fix)\b/i;
 
 const cancelTriggers = [
   /\b(?:cancel|stop(?:\s+(?:that|this))?|skip(?:\s+(?:this|that|ir|insulation))?|scrap(?:\s+(?:that|this|ir|insulation))?|forget\s+(?:it|that|this)|never\s+mind|abort|ignore\s+(?:that|this))\b/i,
@@ -211,6 +238,7 @@ const topicSwitchTriggers = [
 export const insulationResistanceSchema = {
   name: 'insulation_resistance',
   triggers,
+  entryExclusionPattern,
   cancelTriggers,
   topicSwitchTriggers,
   slots,

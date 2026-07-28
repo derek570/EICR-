@@ -227,10 +227,34 @@ describe('engine — ring continuity', () => {
   function walkToConfirmation() {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
-    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: 'Ring continuity for circuit 13.', now: 1000 });
-    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: '0.43', now: 2000 });
-    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: 'Neutrals are 0.43.', now: 3000 });
-    processRingContinuityTurn({ ws, session, sessionId: SESSION_ID, transcriptText: '0.78', now: 4000 });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '0.43',
+      now: 2000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Neutrals are 0.43.',
+      now: 3000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '0.78',
+      now: 4000,
+    });
     expect(ws.sent.at(-1)).toMatchObject({
       type: 'ask_user_started',
       question: 'R1 0.43, Rn 0.43, R2 0.78. All correct?',
@@ -852,7 +876,14 @@ describe('engine — insulation resistance', () => {
   });
 
   test('#3 IR trigger regex matches insurance/insulation/installation head-words', () => {
-    const [pattern1] = insulationResistanceSchema.triggers;
+    // Pattern 1 (trailing "full") now sits AFTER the two id-98 leading-circuit
+    // patterns — select it by shape (head-word alternation, no clause-start
+    // anchor) instead of by position so a future pattern insertion can't
+    // silently retarget this pin at the wrong regex.
+    const pattern1 = insulationResistanceSchema.triggers.find(
+      (p) => p.source.startsWith('\\b(?:insulation') && !p.source.startsWith('(?:^')
+    );
+    expect(pattern1).toBeDefined();
     expect(pattern1.test('insurance resistance for the cooker')).toBe(true);
     // Regression — the existing head-words must still match.
     expect(pattern1.test('insulation resistance for circuit 3')).toBe(true);
@@ -1056,9 +1087,7 @@ describe('engine — insulation resistance', () => {
       );
       expect(readback).toBeDefined();
       // Voltage re-ask registered for the PRIOR circuit (5).
-      expect(session.pendingVoltageReask).toEqual([
-        expect.objectContaining({ circuit_ref: 5 }),
-      ]);
+      expect(session.pendingVoltageReask).toEqual([expect.objectContaining({ circuit_ref: 5 })]);
       // Fresh reading NOT dropped — circuit 6 received live-to-earth.
       expect(session.stateSnapshot.circuits[6].ir_live_earth_mohm).toBeDefined();
       expect(session.stateSnapshot.circuits[6].ir_live_earth_mohm).not.toBe('>999');
@@ -1107,9 +1136,7 @@ describe('engine — insulation resistance', () => {
         (m) => m.reason === 'info' && m.question === 'Got it. L-L 200, L-E >999.'
       );
       expect(readback).toBeDefined();
-      expect(session.pendingVoltageReask).toEqual([
-        expect.objectContaining({ circuit_ref: 7 }),
-      ]);
+      expect(session.pendingVoltageReask).toEqual([expect.objectContaining({ circuit_ref: 7 })]);
       expect(session.dialogueScriptState).toBeNull();
     });
 

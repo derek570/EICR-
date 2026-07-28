@@ -84,6 +84,32 @@ const slots = [
 ];
 
 const triggers = [
+  // Leading-circuit patterns (feedback id 98, session 2D8E432D, 2026-07-27):
+  // "Circuit 10, ring continuity lives are 0.61…" — the trailing-only capture
+  // groups below ignored a circuit STATED FIRST, so the script entered
+  // unscoped and asked "Which circuit is the ring continuity for?" even
+  // though the inspector had just said it. These are SEPARATE clause-start
+  // patterns placed FIRST so the circuit number stays at capture group 1 in
+  // every pattern (no reader renumbers). Anchoring rules (all deliberate):
+  //   - clause start only: `(?:^|[.?!][ \t]+)` — HORIZONTAL whitespace after
+  //     the punctuation, so a sentence ending at a newline never lets a
+  //     circuit mention on the previous line bind across lines;
+  //   - `circuit[ \t]*(\d{1,3})` — a newline between "circuit" and its
+  //     number never binds;
+  //   - `[^\r\n.?!]{0,20}?` clause-bounded gap to THIS FILE'S OWN trigger
+  //     vocabulary — an unanchored prefix would bind any circuit mention up
+  //     to 20 chars before a trigger anywhere in the utterance.
+  // detectEntry/detectDifferentEntry COLLECT across all matching patterns;
+  // a leading ref that contradicts a trailing ref ("Circuit 10, ring
+  // continuity for circuit 13") surfaces as scope_conflict → which_circuit
+  // ask, never a silent winner.
+  // Leading-full: "Circuit N, ring/bring/wing continuity/final …" (incl. the
+  // enumerated `re-?continuity` Flux garble — same alternation as Pattern 1).
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b/i,
+  // Leading-terse: "Circuit N … ring" — same bring/wing garble alternation
+  // as this schema's Pattern 2 (the legacy twin's terse pattern is ring-only;
+  // that historical divergence is preserved per-file, not reconciled here).
+  /(?:^|[.?!][ \t]+)[ \t]*(?:(?:so|right|ok(?:ay)?|now)[ \t,]+)?\bcircuit[ \t]*(\d{1,3})\b(?![ \t]+is\b)[^\r\n.?!]{0,20}?\b(?:ring|bring|wing)\b/i,
   // Pattern 1 ("full") matches "ring/bring/wing continuity/final" with an
   // optional circuit number anywhere within ~50 characters of the trigger
   // phrase. The "bring" / "wing" alternation tolerates Deepgram's habit of
@@ -99,6 +125,12 @@ const triggers = [
   // scope; §3E bans fuzzy widening). Circuit stays capture group 1.
   /\b(?:(?:ring|bring|wing)\s+(?:continu(?:ity|ance|ancy|ed|e)|final)|re-?continuity)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
   // Pattern 2 ("terse") matches "ring on circuit N" with optional leading filler.
+  // Terse pattern RESTORED to its origin ^ anchor (Codex cycle 2): the
+  // clause-start widening let "Zs is 0.62. Ring on circuit 13." ENTER the
+  // ring script and swallow the Zs reading. Entry stays start-only; the
+  // collectors scan later clause SEGMENTS with this anchored pattern for
+  // contradiction REFS only (never for entry), which is what the
+  // repeated-terse conflict needs.
   /^(?:\s*(?:so|right|ok(?:ay)?|now)[\s,]+)?\b(?:ring|bring|wing)\b[^.?!]{0,30}?\bcircuit\s*(\d{1,3})\b/i,
 ];
 

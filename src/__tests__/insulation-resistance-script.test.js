@@ -47,6 +47,7 @@ describe('detectEntry', () => {
     expect(detectEntry('insulation resistance for circuit 3.')).toEqual({
       matched: true,
       circuit_ref: 3,
+      scope_conflict: false,
     });
   });
 
@@ -54,15 +55,24 @@ describe('detectEntry', () => {
     expect(detectEntry('insulation resistance.')).toEqual({
       matched: true,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
   test('"IR for circuit 5" → matched, ref=5 (terse)', () => {
-    expect(detectEntry('IR for circuit 5.')).toEqual({ matched: true, circuit_ref: 5 });
+    expect(detectEntry('IR for circuit 5.')).toEqual({
+      matched: true,
+      circuit_ref: 5,
+      scope_conflict: false,
+    });
   });
 
   test('"I R on circuit 12" → matched, ref=12 (terse with space)', () => {
-    expect(detectEntry('I R on circuit 12.')).toEqual({ matched: true, circuit_ref: 12 });
+    expect(detectEntry('I R on circuit 12.')).toEqual({
+      matched: true,
+      circuit_ref: 12,
+      scope_conflict: false,
+    });
   });
 
   test('Garbled "insulation resistence" still matches', () => {
@@ -73,6 +83,7 @@ describe('detectEntry', () => {
     expect(detectEntry('ring continuity for circuit 3.')).toEqual({
       matched: false,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
@@ -80,11 +91,16 @@ describe('detectEntry', () => {
     expect(detectEntry('I need some insulation tape')).toEqual({
       matched: false,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
   test('Bare "IR" without "circuit N" → does NOT match (needs trailer)', () => {
-    expect(detectEntry('IR done.')).toEqual({ matched: false, circuit_ref: null });
+    expect(detectEntry('IR done.')).toEqual({
+      matched: false,
+      circuit_ref: null,
+      scope_conflict: false,
+    });
   });
 });
 
@@ -1225,6 +1241,7 @@ describe('"installation" Deepgram garbling tolerance', () => {
     expect(detectEntry('Installation resistance for circuit 3.')).toEqual({
       matched: true,
       circuit_ref: 3,
+      scope_conflict: false,
     });
   });
 
@@ -1232,6 +1249,7 @@ describe('"installation" Deepgram garbling tolerance', () => {
     expect(detectEntry('Installation resistance.')).toEqual({
       matched: true,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
@@ -1279,6 +1297,7 @@ describe('"international" Deepgram garbling tolerance', () => {
     expect(detectEntry('International resistance for circuit 3.')).toEqual({
       matched: true,
       circuit_ref: 3,
+      scope_conflict: false,
     });
   });
 
@@ -1286,6 +1305,7 @@ describe('"international" Deepgram garbling tolerance', () => {
     expect(detectEntry('International resistance.')).toEqual({
       matched: true,
       circuit_ref: null,
+      scope_conflict: false,
     });
   });
 
