@@ -113,7 +113,11 @@ import {
 // rotation cursor advances exactly once per emitted notice. Safe import:
 // stage6-dispatchers-board.js is already in this module's graph via
 // stage6-dispatchers.js.
-import { selectMandatoryNoticeText } from './stage6-dispatchers-board.js';
+// Plan B (honest-refusal, 2026-07-28) — the drain renders through the shared
+// registry's ONE dispatch point (direct A1a rotation + terminals, B-staged
+// per-slot pools + terminals); the unknown-tool staging callback is bound at
+// both composition sites.
+import { renderMandatoryNoticeText, stageUnknownToolRefusal } from './refusal-notices.js';
 // readback-correction-optionb §3.3a/b — rolling conversational window so the
 // live model can resolve a bare "no" against the read-backs it spoke.
 import {
@@ -987,11 +991,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // diverging the clone from live state and reporting spurious divergence
     // on every subsequent turn.
     const hasBoardClearV1 = entry?.voiceLatency?.capabilities?.hasBoardClearV1 === true;
+    // Plan B §3.2 — the bound refusal-staging callback for BOTH unknown-tool
+    // envelope routes (composer string-form + write-dispatcher object-form).
+    // Bound here because createToolDispatcher carries no session/perTurnWrites
+    // of its own; passed to createWriteDispatcher too so the two routes stage
+    // identically.
+    const onUnknownToolRefusal = (toolCallId) =>
+      stageUnknownToolRefusal(perTurnWrites, liveSession, { turnId, toolCallId });
     const writes = createWriteDispatcher(liveSession, log, turnId, perTurnWrites, {
       ws,
       hasLowConfReadbackV1,
       hasLimRangedWriteV1,
       hasBoardClearV1,
+      onUnknownToolRefusal,
     });
     // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
     // path into the normal write infrastructure: when ask_user carries a
@@ -1066,14 +1078,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           obsClarifyChains: liveSession.obsClarifyChains,
         });
       }
-      dispatcher = createToolDispatcher(writes, asks, { answers, inspects });
+      dispatcher = createToolDispatcher(writes, asks, { answers, inspects, onUnknownToolRefusal });
       sortRecords = createSortRecordsAsksLast();
     } else {
       // A1: route through the composer even without pendingAsks so
       // answer_user/inspect_session_state always have a dispatch route;
       // ask_user falls back to `writes` inside the composer, reproducing the
-      // pre-A1 unknown_tool behaviour byte-for-byte.
-      dispatcher = createToolDispatcher(writes, null, { answers, inspects });
+      // pre-A1 unknown_tool behaviour byte-for-byte (plan B: plus the staged
+      // model_contract refusal riding beside that envelope).
+      dispatcher = createToolDispatcher(writes, null, { answers, inspects, onUnknownToolRefusal });
       sortRecords = undefined;
     }
 
@@ -2108,15 +2121,73 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // all-rejected turn and push a REJECTED_PROMPTS apology IN ADDITION
         // to the Item-4 fixed fallback answer (double-speak). A turn that
         // touched the answer feature is owned by the fallback machinery.
+        // Plan B (round-15) — an `ask_user`-named call whose result is the
+        // HARD unknown_tool error envelope (createWriteDispatcher's
+        // object-form when no ask dispatcher is composed) COUNTS as
+        // rejected: excluding it by name alone would leave its staged
+        // refusal notice draining while the rejection stayed invisible to
+        // this net's coverage arbitration. Genuinely-emitted asks remain
+        // excluded (is_error:false — the every() test already fails on
+        // them; the name guard stays as belt-and-suspenders).
+        const isHardUnknownToolResult = (c) => {
+          if (c?.result?.is_error !== true) return false;
+          try {
+            const body = JSON.parse(c?.result?.content ?? 'null');
+            return body?.error === 'unknown_tool' || body?.error?.code === 'unknown_tool';
+          } catch {
+            return false;
+          }
+        };
         const allRejected =
           orphanToolCalls > 0 &&
           toolCalls.every((c) => c?.result?.is_error === true) &&
           !toolCalls.some(
             (c) =>
-              c?.name === 'ask_user' ||
+              (c?.name === 'ask_user' && !isHardUnknownToolResult(c)) ||
               c?.name === 'answer_user' ||
               c?.name === 'inspect_session_state'
           );
+        // ── Plan B §3.3 — coverage arbitration (branches 2–3 of the A3 ×
+        // coverage × recovery state machine). Placed BESIDE the
+        // classification, deliberately OUTSIDE the ORPHAN_PROMPT_ENABLED
+        // gate below (round-17: under VOICE_ORPHAN_PROMPT=false the
+        // emission block is bypassed but partial coverage must STILL stamp
+        // drain:false, so the drained refusal cannot suppress marker-②
+        // while the uncovered rejection loses today's fallback).
+        //
+        //   FULL coverage (every rejected id ∈ the union of staged
+        //   coveredToolCallIds) → `rejectedSetFullyCovered` suppresses the
+        //   REJECTED_PROMPTS emission + the ENTIRE orphan branch below;
+        //   the dispatcher-authored refusals drain at net-0 and ARE the
+        //   turn's audible output.
+        //   PARTIAL coverage → A3 owns the WHOLE rejected set: the covered
+        //   subset's notices are stamped drain:false (one generic line,
+        //   zero refusal lines — never both).
+        //   NO coverage → today's behaviour byte-identically (fail-audible).
+        let rejectedSetFullyCovered = false;
+        if (allRejected) {
+          const stagedNotices = Array.isArray(perTurnWrites?.mandatoryNotices)
+            ? perTurnWrites.mandatoryNotices
+            : [];
+          const coveredUnion = new Set();
+          for (const n of stagedNotices) {
+            if (Array.isArray(n?.coveredToolCallIds)) {
+              for (const id of n.coveredToolCallIds) coveredUnion.add(id);
+            }
+          }
+          const rejectedIds = toolCalls
+            .filter((c) => c?.result?.is_error === true)
+            .map((c) => c?.tool_call_id);
+          rejectedSetFullyCovered =
+            rejectedIds.length > 0 && rejectedIds.every((id) => coveredUnion.has(id));
+          if (coveredUnion.size > 0 && !rejectedSetFullyCovered) {
+            for (const n of stagedNotices) {
+              if (Array.isArray(n?.coveredToolCallIds) && n.coveredToolCallIds.length > 0) {
+                n.drain = false;
+              }
+            }
+          }
+        }
         const producedNothing =
           (orphanToolCalls === 0 || allRejected) &&
           (result.extracted_readings?.length ?? 0) === 0 &&
@@ -2180,7 +2251,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               });
             }
           }
-          if (!recovered) {
+          if (!recovered && allRejected && rejectedSetFullyCovered) {
+            // Plan B §3.3 branch 2 — recovery failed but EVERY rejected call
+            // is covered by a dispatcher-authored refusal notice: the
+            // refusals drain at net-0 and ARE the turn's audible output.
+            // Suppress the generic REJECTED_PROMPTS *and the entire orphan
+            // branch* — no session.orphanContext (round-16: carrying the
+            // honestly-refused transcript forward would reinject it into
+            // the NEXT turn as words that "weren't understood" and tell the
+            // model to retry, recreating the exact loop this plan kills)
+            // and no stage6.orphan_prompt_emitted row. Recovery (branch 1)
+            // already ran above — a structurally complete reading emitted
+            // through a refused call was written + read back, and the
+            // refusal notices still drain additively beside it.
+            log.info?.('stage6.rejected_prompt_suppressed_by_refusals', {
+              sessionId: session.sessionId,
+              turnId,
+              rejected_count: orphanToolCalls,
+              textPreview: String(transcriptText || '').slice(0, 80),
+            });
+          } else if (!recovered) {
             // M1 Defect B: all-rejected turns get an "I couldn't action that"
             // message (the action WAS understood but rejected); the zero-tool-call
             // orphan case keeps the "didn't catch what that was for" wording.
@@ -2566,8 +2656,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // unstamped pendingVoicePrompts entry counts as current-generation).
     try {
       if (options.confirmationsEnabled === true && options.chimeObserved === true && !cancelled) {
+        // Plan B (round-3) — the drain gains a `notice.drain !== false` term:
+        // A3's coverage arbitration (which runs BEFORE net-0) stamps
+        // drain:false on the covered subset of a PARTIALLY-covered
+        // all-rejected turn, so the turn speaks exactly one generic line and
+        // zero refusal lines — never both. The old "net-0 drain unchanged"
+        // claim is retired; a drain-level test pins both new terms.
         const staged = Array.isArray(perTurnWrites?.mandatoryNotices)
-          ? perTurnWrites.mandatoryNotices.filter((n) => n && typeof n.family === 'string')
+          ? perTurnWrites.mandatoryNotices.filter(
+              (n) => n && typeof n.family === 'string' && n.drain !== false
+            )
           : [];
         if (staged.length > 0) {
           // §3.5 narrow exception — same-slot suppression, ALREADY-EMPTY
@@ -2580,6 +2678,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // suppression only; it must never generalise back into whole-turn
           // suppression (the round-11 defect this channel replaces).
           const survivingSlots = new Set();
+          // Plan B — the CLEAR-only subset, for the wrong_tool_clear
+          // reconciliation below: a bridge-staged misroute notice is
+          // reconciled away ONLY by a surviving same-slot
+          // clear_board_reading SUCCESS (or a same-slot already-empty
+          // outcome), never by an unrelated same-slot write.
+          const survivingClearSlots = new Set();
           if (perTurnWrites?.boardReadings instanceof Map) {
             for (const val of perTurnWrites.boardReadings.values()) {
               const bsym = val?.[EFFECTIVE_BOARD_SLOT];
@@ -2591,6 +2695,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               const bsym = c?.[EFFECTIVE_BOARD_SLOT];
               if (bsym && c.reason === 'clear_reading') {
                 survivingSlots.add(boardSlotKey(bsym.field, bsym.boardId));
+                survivingClearSlots.add(boardSlotKey(bsym.field, bsym.boardId));
               }
             }
           }
@@ -2603,6 +2708,30 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             ) {
               continue;
             }
+            // Plan B §3.2 — wrong_tool_clear same-slot reconciliation
+            // (order-INDEPENDENT: the loop is multi-round and the model may
+            // self-correct via clear_board_reading before OR after the
+            // rejected clear_reading; perTurnWrites state at drain time is
+            // identical either way). A surviving same-board-slot clear
+            // SUCCESS or a same-slot already-empty outcome (round-8: a
+            // corrected clear that finds the field already blank produces
+            // NO success slot — without this term the turn would speak
+            // "⟨label⟩ has NOT been cleared" beside "already blank", a
+            // contradiction) means the user's intent WAS satisfied — the
+            // success/already-empty read-back speaks alone.
+            if (
+              notice.family === 'wrong_tool_clear' &&
+              typeof notice.slotKey === 'string' &&
+              (survivingClearSlots.has(notice.slotKey) ||
+                staged.some(
+                  (n2) =>
+                    n2 !== notice &&
+                    n2.family === 'board_clear_already_empty' &&
+                    n2.slotKey === notice.slotKey
+                ))
+            ) {
+              continue;
+            }
             // Codex diff-review r1 — text SELECTION happens HERE, after the
             // within-turn dedupe (stage time) AND the same-slot suppression
             // above have both settled, so the per-session rotation cursor
@@ -2611,19 +2740,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // silently — after enough suppressed attempts the next audible
             // notice could wrap to the last HEARD byte string and be
             // swallowed by the clients' 30 s text dedupe.
-            const noticeText = selectMandatoryNoticeText(
-              session,
-              notice.family,
-              notice.turnId ?? turnId,
-              notice.friendly
-            );
+            // Plan B — selection routes through the shared registry's ONE
+            // dispatch point: DIRECT (A1a) notices keep the exact rotation
+            // semantics for attempts 1–5 then the family's ordinal terminal
+            // (the sanctioned wrap-silence fix); B-STAGED notices (coverage
+            // present) select from the per-slot attempt count, never the
+            // family cursor. Still drain-time-only, so a suppressed or
+            // reconciled notice never consumes rotation state.
+            const noticeText = renderMandatoryNoticeText(session, notice, notice.turnId ?? turnId);
             if (typeof noticeText !== 'string' || noticeText.trim().length === 0) continue;
             session.pendingVoicePrompts.push({ text: noticeText, generationId });
             // Distinct telemetry row — NEVER reuse dispatcher_voice_notice_
             // emitted; the two channels must be separable in CloudWatch.
             // Carries the §3.5a dimensions (family/field/board/reason) —
             // PII-safe: field names and board ids only, never values; the
-            // preview is bounded at 80 chars.
+            // preview is bounded at 80 chars. Plan B adds route +
+            // covered_count (server-owned constants / a count — leak-safe).
             log.info?.('stage6.mandatory_notice_emitted', {
               sessionId: session.sessionId,
               turnId,
@@ -2632,6 +2764,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               field: notice.field ?? null,
               board: notice.boardId ?? null,
               reason: notice.reason ?? notice.family ?? null,
+              route: notice.route ?? 'direct',
+              covered_count: Array.isArray(notice.coveredToolCallIds)
+                ? notice.coveredToolCallIds.length
+                : 0,
               textPreview: noticeText.slice(0, 80),
             });
           }
@@ -3511,8 +3647,14 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // reports spurious divergence — the exact failure the clone invariant
   // comment exists to prevent.
   const shadowCapEntry = getActiveSessionEntry(session.sessionId);
+  // Plan B §3.2 — same bound refusal-staging callback as the live lane
+  // (both unknown-tool routes stage identically on both lanes; the shadow
+  // lane's notices land in the shadow perTurnWrites and never cross to live).
+  const shadowOnUnknownToolRefusal = (toolCallId) =>
+    stageUnknownToolRefusal(perTurnWrites, shadowSession, { turnId, toolCallId });
   const writes = createWriteDispatcher(shadowSession, log, turnId, perTurnWrites, {
     hasBoardClearV1: shadowCapEntry?.voiceLatency?.capabilities?.hasBoardClearV1 === true,
+    onUnknownToolRefusal: shadowOnUnknownToolRefusal,
   });
   // A1 agentic-voice (2026-07-23) — same two dedicated answer-feature routes
   // as the live lane (a tool is never advertised on one lane only, and never
@@ -3607,6 +3749,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     dispatcher = createToolDispatcher(writes, asks, {
       answers: shadowAnswers,
       inspects: shadowInspects,
+      onUnknownToolRefusal: shadowOnUnknownToolRefusal,
     });
     sortRecords = createSortRecordsAsksLast();
   } else {
@@ -3614,6 +3757,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     dispatcher = createToolDispatcher(writes, null, {
       answers: shadowAnswers,
       inspects: shadowInspects,
+      onUnknownToolRefusal: shadowOnUnknownToolRefusal,
     });
     sortRecords = undefined; // runToolLoop treats undefined as identity.
   }
