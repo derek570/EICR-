@@ -468,10 +468,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // Plan E (2026-07-28, main-earth steer — feedback id 100(a)): the MAIN
       // EARTH vs Ze precedence ladder (beside the ZE/ZS block) + the Example-8
       // re-opened-field-choice exception + the line-~123 exemplar swap all
-      // land in the SHARED region (both renders grow). Measured 22750; cap
-      // 22850 leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // land in the SHARED region (both renders grow). ep-diff-review
+      // cycle-1 fixes (negation-safe anchors, adjacent-field precedence,
+      // clause-locality, category-specific conflict) grew it further.
+      // Measured 22891; cap 22991 leaves ~100-token headroom (measured +
+      // ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(22850);
+      expect(estimate).toBeLessThanOrEqual(22991);
     });
   });
 
@@ -1209,10 +1212,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // cap 17108 leaves ~100-token headroom (measured + ~100, P8 precedent).
       // Plan E (2026-07-28, main-earth steer): shared-region growth (MAIN
       // EARTH vs Ze ladder + Example-8 re-open exception + exemplar swap —
-      // see the Group 1 combined-cap comment). Measured 17512; cap 17612
-      // leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // see the Group 1 combined-cap comment). ep-diff-review cycle-1 fixes
+      // (negation-safe anchors, adjacent-field precedence, clause-locality,
+      // category-specific conflict) grew it further. Measured 17653; cap
+      // 17753 leaves ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(17612);
+      expect(estimate).toBeLessThanOrEqual(17753);
     });
   });
 
@@ -2043,7 +2048,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         // the bare-Ze rule (round-6: an unqualified "any explicit Ze ⇒
         // supply Ze" would contradict the source's existing routing).
         expect(rendered).toMatch(
-          /Precedence, highest first: \(1\) "Ze at the board" \/ "Ze at DB" → `ze_at_db`/
+          /Precedence, highest first, EACH VALUE JUDGED ONLY BY ITS OWN CLAUSE: \(1\) "Ze at the board" \/ "Ze at DB" → `ze_at_db`/
         );
         // Ladder rung 3 guard: bare "conductor" is NOT a size anchor — the
         // adjacent material/continuity/bonding fields must keep their homes.
@@ -2054,12 +2059,15 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           '"main bonding is 10" / "main earth bonding is 10" → `bonding_conductor_csa`'
         );
-        // ep-diff-review cycle-1 IMPORTANT (2026-07-29): rungs (2)-(3) must
-        // yield to an explicitly-named adjacent field — an ohms-unit token
-        // beside "continuity" must never be read as a Ze anchor.
-        expect(rendered).toContain('Rungs (2)-(3) apply ONLY when no adjacent field name');
+        // ep-diff-review cycle-1 IMPORTANT (2026-07-29, revised after the
+        // fix-hunk mini-review): rungs (2)-(3) must yield to an
+        // explicitly-named adjacent field in the SAME clause — an ohms-unit
+        // token beside "continuity" must never be read as a Ze anchor, and
+        // an invalid PASS/FAIL value there is asked for, never written and
+        // never reinterpreted as Ze.
+        expect(rendered).toContain('with NO adjacent field name in that clause');
         expect(rendered).toContain(
-          'or any value invalid for a PASS/FAIL field, e.g. a number) → `earthing_conductor_continuity`, never Ze'
+          '"earthing conductor continuity is pass" → `earthing_conductor_continuity` (an invalid PASS/FAIL value there is never written and never becomes Ze — ask)'
         );
         // Vocabulary default with the CSA enum magnitudes.
         expect(rendered).toContain('(6, 10, 16, 25, 35, 50) → `earthing_conductor_csa`');
@@ -2099,16 +2107,18 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     // millimetres squared, not ohms" carries the token "ohms" and could be
     // misread as Ze-anchored even though the utterance explicitly
     // disambiguates itself. Pin the negation-safe wording + the widened
-    // genuine-conflict trigger (two AFFIRMATIVE anchors, not just "fits
-    // neither pattern") so a future edit can't silently drop either half.
-    test('genuine-conflict rule is negation-safe and covers two competing affirmative anchors', () => {
+    // genuine-conflict trigger. Revised after the fix-hunk mini-review
+    // (2026-07-29): "two affirmative anchors" alone would false-trigger on
+    // same-family reinforcement ("16 mm² CSA" is size+size, not a
+    // conflict) — the rule now requires ONE anchor from EACH family.
+    test('genuine-conflict rule is negation-safe and requires one anchor from EACH family (never same-family reinforcement)', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         expect(rendered).toContain(
           "Only an AFFIRMATIVE anchor in the value's own clause counts — a negated one"
         );
         expect(rendered).toContain('never wins even though the word is present');
         expect(rendered).toContain(
-          'Genuine conflict (a value fitting neither pattern, OR TWO affirmative anchors both present)'
+          'Genuine conflict = the SAME clause carries BOTH a Ze-family anchor AND a size-family anchor (never two of the SAME family — "16 mm² CSA" is size+size, not a conflict), OR a value fitting neither pattern'
         );
       }
     });
