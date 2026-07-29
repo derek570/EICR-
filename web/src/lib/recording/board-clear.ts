@@ -207,9 +207,17 @@ export function applyBoardClearToJob(
     // visible forever. With ANY usable board registry present, an unmatched
     // explicit id stays FAIL-CLOSED (never boards[0], never fuzzy).
     const hasUsableBoards = boards.some((b) => typeof b.id === 'string' && b.id !== '');
+    // Cycle-2: the sole id-less row must itself be MAIN-SHAPED (board_type
+    // absent or 'main') to participate — backend hydration drops an
+    // unusable SUB/off-peak row and treats board_info as main, so clearing
+    // an explicitly-sub sole row here would be a wrong-board mutation.
+    const soleRowIsMainShaped =
+      boards.length === 0 ||
+      (boards.length === 1 && (!boards[0].board_type || boards[0].board_type === 'main'));
     if (
       !hasUsableBoards &&
       boards.length <= 1 &&
+      soleRowIsMainShaped &&
       input.boardId === resolveCanonicalMainBoardId(boards as MainBoardCandidate[])
     ) {
       // Mini-review: a SOLE id-less board row is part of the legacy shape —

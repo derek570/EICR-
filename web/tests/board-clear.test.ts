@@ -237,6 +237,25 @@ describe('board scope — manufacturer tri-state target resolution', () => {
     expect(applied!.changedKeys).toEqual(['board_info.manufacturer']);
   });
 
+  it('sole id-less MAIN-SHAPED row: synthetic-main clear removes BOTH the row value and board_info atomically', () => {
+    const job = makeJob({
+      boards: [{ id: '', manufacturer: 'Hager' }],
+      board_info: { manufacturer: 'Hager' },
+    });
+    const applied = applyBoardClearToJob(job, { field: 'manufacturer', boardId: 'main' });
+    expect(applied).not.toBeNull();
+    expect((applied!.patch.boards as Record<string, unknown>[])[0].manufacturer).toBeUndefined();
+    expect((applied!.patch.board_info as Record<string, unknown>).manufacturer).toBeUndefined();
+  });
+
+  it('sole id-less EXPLICITLY-SUB row: synthetic-main clear FAILS CLOSED (backend treats board_info as main; the sub row is not ours to clear)', () => {
+    const job = makeJob({
+      boards: [{ id: '', board_type: 'sub_distribution', manufacturer: 'Crabtree' }],
+      board_info: { manufacturer: 'Hager' },
+    });
+    expect(applyBoardClearToJob(job, { field: 'manufacturer', boardId: 'main' })).toBeNull();
+  });
+
   it('explicit-unmatched board id: FAILS CLOSED — no mutation, never boards[0]', () => {
     const job = seededGlobalJob();
     const applied = applyBoardClearToJob(job, { field: 'manufacturer', boardId: 'loft' });
