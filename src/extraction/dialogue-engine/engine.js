@@ -23,7 +23,7 @@
  */
 
 import {
-  parseCircuitDigit,
+  parseCircuitDigitWithSpan,
   findCircuitByDesignation,
   findCircuitsByDesignation,
   readExistingValues,
@@ -642,6 +642,45 @@ const NON_RING_EARTH_COMPOUND_RE =
 // must never write 17) moved to helpers/extraction.js as the canonical shared
 // copy (feedback id 109 wave, 2026-07-29): stage6-shadow-harness.js now masks
 // its reparse input with the SAME function, so the two sites cannot drift.
+
+/**
+ * Group C fix 1 (feedback id 105, 2026-07-29) — mask the RESOLUTION text out
+ * of a circuit-answer reply before the exclusive (IR voltage) parser runs on
+ * the remainder. Rules, per the resolution metadata's kind:
+ *   - bare whole-reply numeric ("56") → mask the WHOLE reply (the entire
+ *     utterance IS the circuit ref; a 56-circuit board's "56" must never
+ *     parse as a voltage);
+ *   - explicit `circuit N` → mask only that span, so "circuit 4, tested at
+ *     500" keeps 500 parseable;
+ *   - matched designation → mask the first case-insensitive occurrence of
+ *     the matched designation text (same keeps-the-remainder property).
+ * All masking is length-preserving; residual `circuit N` spans elsewhere in
+ * the reply are masked too (a second circuit mention's digits must not be
+ * misread as a voltage), matching the step-7/8 extraction convention.
+ */
+function maskCircuitResolution(replyText, meta) {
+  if (typeof replyText !== 'string' || !replyText) return '';
+  if (!meta) return maskCircuitSpans(replyText);
+  if (meta.kind === 'digit') {
+    if (meta.wholeReply) return ' '.repeat(replyText.length);
+    const masked =
+      replyText.slice(0, meta.start) +
+      ' '.repeat(meta.end - meta.start) +
+      replyText.slice(meta.end);
+    return maskCircuitSpans(masked);
+  }
+  if (meta.kind === 'designation' && typeof meta.matchedDesignation === 'string') {
+    const idx = replyText.toLowerCase().indexOf(meta.matchedDesignation);
+    if (idx >= 0) {
+      const masked =
+        replyText.slice(0, idx) +
+        ' '.repeat(meta.matchedDesignation.length) +
+        replyText.slice(idx + meta.matchedDesignation.length);
+      return maskCircuitSpans(masked);
+    }
+  }
+  return maskCircuitSpans(replyText);
+}
 
 // Scope-conflict provenance marker on a queued pending write (Codex
 // diff-review r1). A value dictated ON the conflict utterance is an explicit
@@ -2477,8 +2516,32 @@ function runActivePath({
   const writes = [];
   let drainedFromPending = false;
   let circuitResolvedThisTurn = false;
+  // Group C fix 1 (feedback id 105, 2026-07-29) — resolution METADATA: the
+  // span that established the circuit this turn, consumed by the step-6
+  // exclusive-voltage masking rule (a whole-reply bare numeric answer masks
+  // the WHOLE reply; an explicit `circuit N` or a matched designation masks
+  // only that resolution text, so a separate "tested at 500" in the same
+  // reply stays parseable). Additive — the scalar resolution behaviour is
+  // unchanged.
+  let circuitResolutionMeta = null;
   if (state.circuit_ref === null) {
-    let ref = parseCircuitDigit(text);
+    // Resolution reads the RAW reply (round-6): production answer turns
+    // prepend an `[In response to TTS question…]` annotation to `text`,
+    // which defeats parseCircuitDigit's whole-reply numeric alternative
+    // (an annotated "56" is no longer a bare-numeric reply) and pollutes
+    // designation matching with the quoted question's words. `reply` falls
+    // back to `text` for direct callers without rawReplyText, so
+    // non-production paths are byte-identical.
+    const digitRes = parseCircuitDigitWithSpan(reply);
+    let ref = digitRes ? digitRes.ref : null;
+    if (ref !== null) {
+      circuitResolutionMeta = {
+        kind: 'digit',
+        start: digitRes.start,
+        end: digitRes.end,
+        wholeReply: digitRes.wholeReply,
+      };
+    }
     if (ref !== null && candidateSet && !candidateSet.includes(ref)) {
       // Digit answer outside the offered set. Reject and re-ask once.
       // Falls through to the existing `circuit_retry_attempted` block
@@ -2492,6 +2555,7 @@ function runActivePath({
         textPreview: text.slice(0, 80),
       });
       ref = null;
+      circuitResolutionMeta = null;
     }
     if (ref === null) {
       // Designation match. When a candidate set is offered, narrow the
@@ -2501,11 +2565,15 @@ function runActivePath({
       // (existing behaviour).
       const lookup = findCircuitsByDesignation(
         session,
-        text,
+        reply,
         candidateSet ? { restrictToRefs: candidateSet } : {}
       );
       if (lookup.matched !== null) {
         ref = lookup.matched;
+        circuitResolutionMeta = {
+          kind: 'designation',
+          matchedDesignation: lookup.matchedDesignation,
+        };
         logger?.info?.(`${schema.logEventPrefix}_designation_match`, {
           sessionId,
           circuit_ref: ref,
@@ -2910,9 +2978,57 @@ function runActivePath({
   // 6. Schema-specific exclusive-parser hook (for IR voltage phase):
   //    when the current expected slot has `exclusiveWhenExpected: true`,
   //    skip named-field extraction and run only this slot's parser on
-  //    the bare text. If nothing parses, finish silently.
+  //    the bare text.
+  //
+  //    Group C (feedback id 105, 2026-07-29): two defects lived here when
+  //    BOTH readings were volunteered BEFORE the circuit was named. (1) The
+  //    reply being processed was the CIRCUIT ANSWER, but it was fed to the
+  //    voltage parser raw — "56" answering which_circuit on a 56-circuit
+  //    board would have parsed as a voltage, and a genuinely voltage-less
+  //    circuit answer fell into handleVoltageNoParse, whose 30 s re-ask is
+  //    armed only by an ask that was never emitted, so the script FINISHED
+  //    with the voltage never asked. (2) Every non-writeExclusiveAndFinish
+  //    exit returned BEFORE the step-8 wire emit, so the drained LL/LE
+  //    writes were spoken and stored server-side but never wire-emitted
+  //    (inverse Audio-First — the client cells stayed empty).
   if (currentSlot && currentSlot.exclusiveWhenExpected) {
-    const value = currentSlot.parser(text);
+    // On the circuit-resolution turn, parse the voltage from the RAW reply
+    // with the resolution text masked (whole reply for a bare numeric
+    // answer; only the `circuit N` / matched-designation span otherwise, so
+    // a separate "tested at 500" in the same reply stays parseable). On
+    // ordinary voltage-phase turns the annotated `text` path is unchanged.
+    const value = circuitResolvedThisTurn
+      ? currentSlot.parser(maskCircuitResolution(reply, circuitResolutionMeta))
+      : currentSlot.parser(text);
+
+    // Group C fix 2 — exactly-once wire flush for the drained writes. Every
+    // enumerated exit out of this branch calls this (writeExclusiveAndFinish
+    // inlines it below; handleVoltageNoParse flushes at its top, BEFORE the
+    // fresh-reading finish+reprocess recursion; the confirm-gate prompt, the
+    // confirm-gate bare-no re-ask, and the new post-resolution voltage ask
+    // flush before their sends) — so no path can emit zero times and no
+    // path can emit twice. The step-8 general emit is UNREACHABLE from this
+    // branch (every path returns first) and stays untouched.
+    let exclusiveWritesFlushed = false;
+    const flushWritesOnce = () => {
+      if (exclusiveWritesFlushed) return;
+      exclusiveWritesFlushed = true;
+      if (writes.length > 0) {
+        safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
+      }
+    };
+
+    // §4.2.3 fail-audible backstop: dev/test throws if an exit is ever added
+    // that strands drained writes; prod EMITS rather than throws (a delivered
+    // frame beats a crashed turn — fail-audible-and-delivered, never
+    // fail-stop).
+    const assertWritesFlushed = () => {
+      if (exclusiveWritesFlushed || writes.length === 0) return;
+      if (process.env.NODE_ENV === 'test') {
+        throw new Error('dialogue-engine exclusive branch exited without flushing drained writes');
+      }
+      flushWritesOnce();
+    };
 
     // Local: write the parsed exclusive value (+ any derivations) and finish.
     const writeExclusiveAndFinish = (v) => {
@@ -2925,10 +3041,45 @@ function runActivePath({
       // consistent across paths if a future schema declares them.
       for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
       for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
-      if (writes.length > 0) {
-        safeSend(ws, buildExtractionPayload(state.circuit_ref, writes, schema.extractionSource));
-      }
+      flushWritesOnce();
       finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
+      return { handled: true, fallthrough: false };
+    };
+
+    // Group C fix 1 — the circuit answer carried NO parseable voltage: emit
+    // the voltage ask through the normal ask path instead of falling into
+    // handleVoltageNoParse (whose 30 s re-ask branch is gated on
+    // voltage_phase_entered_at, stamped only when the exclusive ask was
+    // EMITTED — never true on this path, so it silently finished). Stamping
+    // here arms the existing 30 s re-ask + onExclusiveSlotAbandoned
+    // machinery for free.
+    const emitVoltageAskAfterResolution = () => {
+      flushWritesOnce();
+      if (state.voltage_phase_entered_at == null) {
+        state.voltage_phase_entered_at = now;
+        state.voltage_reask_done = false;
+      }
+      logger?.info?.(`${schema.logEventPrefix}_voltage_ask_after_circuit_resolution`, {
+        sessionId,
+        circuit_ref: state.circuit_ref,
+        drained_writes: writes.map((w) => w.field),
+        textPreview: text.slice(0, 80),
+      });
+      safeSend(
+        ws,
+        buildScriptAsk({
+          toolCallIdPrefix: schema.toolCallIdPrefix,
+          sessionId,
+          circuit_ref: state.circuit_ref,
+          missing_field: currentSlot.field,
+          whichCircuitQuestion: schema.whichCircuitQuestion,
+          slotQuestion: currentSlot.question,
+          now,
+          kind: 'value',
+          responseEpoch,
+        })
+      );
+      assertWritesFlushed();
       return { handled: true, fallthrough: false };
     };
 
@@ -2948,6 +3099,12 @@ function runActivePath({
     //        in-script voltage re-ask (script stays active).
     //   else → legacy finish-and-consume (brief unparseable, no IR signal, <30s).
     const handleVoltageNoParse = () => {
+      // Group C fix 2 — flush the drained writes FIRST (exactly-once via the
+      // latch): every one of this helper's three exits (fresh-reading
+      // finish+reprocess recursion, 30 s re-ask, legacy finish) previously
+      // returned without reaching the step-8 emit, stranding the writes.
+      // Ordinary voltage-phase turns have an empty `writes` and this no-ops.
+      flushWritesOnce();
       // RAW reply + masked (mini-review r1) — mirrors the entry loop; the
       // annotation must not defeat the leading patterns or feed extraction.
       const freshVolunteered = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
@@ -3045,6 +3202,11 @@ function runActivePath({
           return writeExclusiveAndFinish(pending);
         } else if (NEGATIVE_RE.test(text)) {
           // Bare "no" with no value → re-ask, stay active (don't strand empty).
+          // Group C fix 2 — flush first (legitimately empty `writes` on this
+          // second-turn path; the latch's conditional makes it a no-op, but
+          // the exit is enumerated so no future reordering can strand a
+          // drained write here).
+          flushWritesOnce();
           state.slotPendingConfirm = null;
           state.last_turn_at = now;
           safeSend(
@@ -3072,6 +3234,13 @@ function runActivePath({
       }
       // Standard decision (no pending, or just cleared after a different value).
       if (value !== null && value !== undefined && !confirmSet.has(Number(value))) {
+        // Group C fix 2 — the confirm-gate prompt return is a write-stranding
+        // exit on the circuit-resolution turn: "circuit 4 at 350" drains
+        // LL/LE then hits confirmWhenNotIn, and the LATER confirm turn has a
+        // fresh empty `writes` local — flush the drained readings NOW, on
+        // the turn they were drained (§6 row (g): exactly one extraction
+        // frame here; the confirm resolution later writes only the voltage).
+        flushWritesOnce();
         state.slotPendingConfirm = Number(value);
         state.last_turn_at = now;
         safeSend(
@@ -3098,19 +3267,30 @@ function runActivePath({
         });
         return { handled: true, fallthrough: false };
       }
-      // Standard value → write + finish. Unparseable → M4 escape hatch
-      // (fresh-reading reprocess / 30s re-ask / finish) instead of a silent
-      // finish that would eat a fresh reading.
+      // Standard value → write + finish. Unparseable on the circuit-
+      // resolution turn → the voltage ask (Group C fix 1 — the reply's job
+      // was to resolve the circuit; absence of a voltage draws the ask,
+      // never handleVoltageNoParse's silent finish). Unparseable on an
+      // ordinary voltage-phase turn → M4 escape hatch (fresh-reading
+      // reprocess / 30s re-ask / finish) instead of a silent finish that
+      // would eat a fresh reading.
       if (value !== null && value !== undefined) {
         return writeExclusiveAndFinish(value);
+      }
+      if (circuitResolvedThisTurn) {
+        return emitVoltageAskAfterResolution();
       }
       return handleVoltageNoParse();
     }
 
     // No confirm gate declared — write (if any) + finish; unparseable → the
-    // same M4 escape hatch.
+    // voltage ask on the circuit-resolution turn, else the same M4 escape
+    // hatch.
     if (value !== null && value !== undefined) {
       return writeExclusiveAndFinish(value);
+    }
+    if (circuitResolvedThisTurn) {
+      return emitVoltageAskAfterResolution();
     }
     return handleVoltageNoParse();
   }
