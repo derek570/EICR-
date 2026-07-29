@@ -134,23 +134,54 @@ const slots = [
   },
 ];
 
+// Intent-gated entry (feedback id 113, session BE1C53C0, 2026-07-29). The
+// pre-gate trigger was `\b(?:RCD|ICD)\b` with an OPTIONAL circuit clause —
+// any bare RCD token anywhere entered the script, so a DESCRIPTIVE mention
+// ("There is an RCD in the consumer unit", "…the general condition is
+// satisfactory but there is no RCD protection") was hijacked into the RCD
+// loop and the model never saw the rest of the sentence (general_condition
+// is fully voice-writable; the hijack made it look like a capability gap).
+//
+// Gate = RCD token AND (in-clause `circuit N` OR in-clause enumerated INTENT
+// term) AND NOT narrative veto (the veto lives in entryExclusionPattern
+// below). Intent terms are ENUMERATED, word-boundary, no fuzzy (parity §3E):
+// test | trip | milliseconds | ms | button | x1 | x5 | times one | times
+// five. Deliberate exclusions, both DECIDED rows in the plan's §3.2 table:
+//   - bare `times?` — matches everyday "time(s)" ("fitted at the same time
+//     as the board" would re-open the hijack);
+//   - past-tense/report morphology — `\btest\b` does NOT match "tested" and
+//     `\btrip\b` does NOT match "trips"/"tripped" (a past-tense report is
+//     descriptive; such utterances usually carry ms/milliseconds/times-N
+//     anyway, and the residual fail-forwards to the model, which owns
+//     record_reading for RCD fields and can ask).
+//
+// Three patterns (intent may sit BEFORE or AFTER the token, clause-bounded
+// both ways; the engine's detectEntry COLLECTS across all patterns, plan-F
+// semantics). Every added alternation is NON-CAPTURING; the circuit ref
+// stays capture group 1 in EVERY pattern — reparseSingleCompleteReading and
+// the entry parser both read m[1] as the circuit number, and the reparse
+// path consults `schema.triggers` DIRECTLY, so the gate tightens it
+// identically.
+//
+// `ICD` — Deepgram garble of "RCD" (field session 6B6FE011 F8: "ICD trip
+// time") — keeps identical treatment throughout. "RCBO" stays excluded via
+// the trailing word boundary on the token, as before.
+const RCD_TOKEN = '(?:RCD|ICD)';
+const RCD_INTENT_TERM = '(?:test|trip|milliseconds|ms|button|x\\s*(?:1|5)|times\\s+(?:one|five))';
 const triggers = [
-  // "RCD on circuit N" — the trigger word "RCD" excludes "RCBO" via
-  // the trailing word boundary, so "RCBO" doesn't accidentally enter
-  // RCD when the user really wanted RCBO. The optional "trip time"
-  // alternative lets the script enter on the natural "RCD trip time
-  // for the cooker is 25 ms." utterance — without it, that utterance
-  // matched but the entry parser couldn't harvest "25 ms" because
-  // `rcd_trip_time` wasn't a slot.
-  //
-  // `ICD` — Deepgram garble of "RCD" (field session 6B6FE011 F8:
-  // "ICD trip time"). Without it the utterance never entered the
-  // schema at all and fell through to Sonnet. Same enumerated-alias
-  // class as `tryptoid` below — a specific field-evidenced garble,
-  // NOT broad fuzzy matching. Non-capturing so group 1 stays the
-  // circuit ref (reparseSingleCompleteReading and the entry parser
-  // both read m[1] as the circuit number).
-  /\b(?:RCD|ICD)\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
+  // Circuit-scoped: "RCD [for] circuit N" — the circuit clause is now
+  // MANDATORY in this pattern (it was the optional tail of the old trigger).
+  new RegExp(`\\b${RCD_TOKEN}\\b[^.?!]{0,50}?\\bcircuit\\s*(\\d{1,3})\\b`, 'i'),
+  // Intent AFTER the token: "RCD trip time [for circuit N]".
+  new RegExp(
+    `\\b${RCD_TOKEN}\\b[^.?!]{0,50}?\\b${RCD_INTENT_TERM}\\b(?:[^.?!]{0,50}?\\bcircuit\\s*(\\d{1,3})\\b)?`,
+    'i'
+  ),
+  // Intent BEFORE the token: "test the RCD [on circuit N]".
+  new RegExp(
+    `\\b${RCD_INTENT_TERM}\\b[^.?!]{0,50}?\\b${RCD_TOKEN}\\b(?:[^.?!]{0,50}?\\bcircuit\\s*(\\d{1,3})\\b)?`,
+    'i'
+  ),
 ];
 
 const cancelTriggers = [
@@ -174,9 +205,28 @@ const cancelTriggers = [
 // RCD-only gate.
 const RCD_ENTRY_EXCLUSION_IMPERATIVE = /\b(delete|undo|cancel|fix|why|stop|remove|clear)\b/i;
 const RCD_ENTRY_EXCLUSION_DENIAL = /\b(what are you|i didn't|that's wrong|that's not)\b/i;
+// Pattern C — narrative VETO (feedback id 113, 2026-07-29): a descriptive
+// statement about RCD protection is never a test walk-through, and the veto
+// OUTRANKS circuit scope — "No RCD protection on circuit 4" names a circuit
+// but must not enter (it is an observation-shaped fact for the model). Lives
+// here as a third exclusion beside the P1 pair — NOT as lookarounds inside
+// the triggers ("no RCD protection" precedes the token, "RCD absent" follows
+// it; trigger-side lookarounds would be unmaintainable) — so the engine's
+// existing composite test gates BOTH initial entry and 5g re-entry.
+// Enumerated forms only (§3E): no fuzzy widening.
+// Known limitation (pre-existing, documented in the plan):
+// reparseSingleCompleteReading consults `schema.triggers` only, never
+// entryExclusionPattern — the veto gates script ENTRY, not orphan-net
+// recovery; a veto-bearing COMPLETE tuple can still be recovered there.
+const RCD_ENTRY_EXCLUSION_NARRATIVE =
+  /\b(?:no\s+(?:RCD|ICD)\s+protection|without\s+(?:RCD|ICD)\s+protection|(?:RCD|ICD)\s+absent|not\s+(?:RCD|ICD)\s+protected)\b/i;
 const entryExclusionPattern = {
   test(text) {
-    return RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) || RCD_ENTRY_EXCLUSION_DENIAL.test(text);
+    return (
+      RCD_ENTRY_EXCLUSION_IMPERATIVE.test(text) ||
+      RCD_ENTRY_EXCLUSION_DENIAL.test(text) ||
+      RCD_ENTRY_EXCLUSION_NARRATIVE.test(text)
+    );
   },
 };
 
