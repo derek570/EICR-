@@ -525,9 +525,17 @@ describe('§A4 — regressions: flows that must NOT engage', () => {
   // routes ohms-on-main-earth to Ze. Reaching the writer requires hand-building
   // a registry entry and calling past this gate — not a real reachable path.
   //
-  // Two assertions, deliberately: the refusal itself, AND that the mis-labelled
-  // CSA field never appears in what is dispatched. If a future refactor makes
-  // the detector's field authoritative, the second assertion is what fails.
+  // Three assertions, deliberately: the refusal itself, that the mis-labelled
+  // CSA field never appears in what is dispatched, AND (ep-diff-review cycle-1
+  // NIT) that the reply text itself survives into the tool-result body as
+  // `untrusted_user_text` — proving "goes to the model" is a real guarantee
+  // here, not just an absence of a wrong write. Without this third assertion
+  // the test would pass identically even if the reply were silently dropped
+  // instead of forwarded, which is exactly the failure mode Audio-First #1
+  // exists to catch. If a future refactor makes the detector's field
+  // authoritative, the second assertion is what fails; if a future refactor
+  // drops the reply instead of forwarding it, the third assertion is what
+  // fails.
   test.each([
     'main earth is 0.35 ohms',
     'main earth 0.35 ohms',
@@ -549,5 +557,6 @@ describe('§A4 — regressions: flows that must NOT engage', () => {
     expect(body.match_status).toBeUndefined();
     expect(autoResolveWrite).not.toHaveBeenCalled();
     expect(JSON.stringify(body)).not.toContain('earthing_conductor_csa');
+    expect(body.untrusted_user_text).toBe(reply);
   });
 });
