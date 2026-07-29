@@ -63,6 +63,7 @@ import {
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import { BOARD_FIELD_ENUM, CLEAR_BOARD_READING_FIELD_ENUM } from './stage6-tool-schemas.js';
 import { isBoardClearKilled } from './voice-latency-config.js';
+import { getActiveSessionEntry } from './active-sessions.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { CONFIRMATION_FRIENDLY_NAMES, deriveFriendlyName } from './confirmation-text.js';
 import { stageMandatoryNotice } from './refusal-notices.js';
@@ -1158,7 +1159,20 @@ export function classifyBoardClear(session, ctx, canonicalField, input) {
     scope === 'global'
       ? boardSlotKey(canonicalField, null)
       : boardSlotKey(canonicalField, resolvedBoardId);
-  const capabilityMissing = ctx.hasBoardClearV1 !== true;
+  // A1b (2026-07-29) — the capability is read LIVE from the active-sessions
+  // registry at DISPATCH time, never from the turn-start ctx snapshot. The
+  // reconnect re-parse (sonnet-stream.js ~:2594) mutates the SIBLING
+  // `entry.voiceLatency.capabilities` mid-turn, so a snapshot taken at
+  // harness construction (`ctx.hasBoardClearV1`) can be stale by the time a
+  // destructive clear dispatches; the synchronous registry read is
+  // event-loop-atomic against that re-parse (same live-read pattern as
+  // stage6-shadow-harness.js `getActiveSessionEntry(session.sessionId)`).
+  // An UNREGISTERED session (no entry) reads as capability-missing —
+  // deny-first, the safe direction. `ctx.hasBoardClearV1` remains for the
+  // bundler's projection-time board-fill gate; the DISPATCH decision must
+  // not use it.
+  const capabilityMissing =
+    getActiveSessionEntry(session.sessionId)?.voiceLatency?.capabilities?.hasBoardClearV1 !== true;
   const killed = isBoardClearKilled();
   if (capabilityMissing || killed) {
     return {

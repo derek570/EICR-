@@ -32,6 +32,31 @@ const { createPerTurnWrites, EFFECTIVE_BOARD_SLOT, boardSlotKey, encodeBoardRead
 const { boardFieldAliasSet, clearBoardReadingFlagAware } =
   await import('../extraction/stage6-snapshot-mutators.js');
 const { EICRExtractionSession } = await import('../extraction/eicr-extraction-session.js');
+const { activeSessions } = await import('../extraction/active-sessions.js');
+const { parseVoiceLatencyCapabilities } = await import('../extraction/voice-latency-config.js');
+
+// A1b (2026-07-29) -- the dispatcher reads `board_clear_v1` LIVE from the
+// active-sessions registry (never `ctx.hasBoardClearV1`), so the capable
+// state is expressed by a REAL registry entry. The ctx flag remains in
+// ctxFor as the (now ignored) turn-start snapshot the fence deliberately
+// bypasses.
+function setBoardClearCapability(on, sessionId = 'sess-cbr-unit') {
+  activeSessions.set(sessionId, {
+    voiceLatency: {
+      capabilities: parseVoiceLatencyCapabilities({
+        voice_latency: { version: 1, supports: on ? ['board_clear_v1'] : [] },
+      }),
+    },
+  });
+}
+
+beforeEach(() => {
+  setBoardClearCapability(true);
+});
+
+afterEach(() => {
+  activeSessions.clear();
+});
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -259,6 +284,8 @@ describe('test 4 — multi-board targeting via select_board (+ the four hydratio
   // session and assert the canonical-main target resolution.
   const hydrated = [];
   function hydratedSession(boards) {
+    // A1b — the live-read fence keys on THIS session's id.
+    setBoardClearCapability(true, 'sess-hydra');
     const s = new EICRExtractionSession('k', 'sess-hydra', 'eicr');
     s.start({
       circuits: [{ circuit_ref: 1, circuit_designation: 'Lights' }],
@@ -438,6 +465,7 @@ describe('test 5 — same-board write→clear (mechanism A), six legs + the glob
 describe('test 20 — the pinned validation order (enum → capability → cert-type → mutator)', () => {
   test('(20) off-enum field + capability ABSENT + kill-switch ENABLED → hard invalid_field WINS; no notice, no mutation, no frame', async () => {
     process.env.BOARD_CLEAR_DISABLED = 'true';
+    setBoardClearCapability(false);
     const session = makeSession({ circuits: { 0: { ze: '0.4' } } });
     const ptw = createPerTurnWrites();
     const env = await dispatchClearBoardReading(
@@ -452,6 +480,7 @@ describe('test 20 — the pinned validation order (enum → capability → cert-
   });
 
   test('(20b) UPPERCASE-EICR comments + capability ABSENT → board_clear_capability_missing (denial precedes the cert-type refusal)', async () => {
+    setBoardClearCapability(false);
     const session = makeSession({}, { certType: 'EICR' });
     const ptw = createPerTurnWrites();
     const env = await dispatchClearBoardReading(
@@ -560,6 +589,7 @@ describe('test 19 (envelope half) — unknown scope fails CLOSED', () => {
 // ───────────────────────────────────────────────────────────────────────────
 describe('tests 9/10 (dispatcher half) — deny-first capability gate + kill-switch', () => {
   test('capability absent → soft skip board_clear_capability_missing; field still populated; no frame', async () => {
+    setBoardClearCapability(false);
     const session = makeSession({ circuits: { 0: { ze: '0.4' } } });
     const ptw = createPerTurnWrites();
     const env = await dispatchClearBoardReading(
