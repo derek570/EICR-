@@ -352,10 +352,15 @@ export const BOARD_CLEAR_EXCLUSIONS = Object.freeze(
 // exclusions = 78 today); ONLY the test owns a pasted literal. That split is
 // what makes a new field_schema.json key fail CLOSED: the derived enum grows,
 // the test's literal pin does not, and the suite reddens until a human
-// classifies the new key. A1b's advert-time sweep re-narrows this enum
-// (client-unroutable / scope-incoherent classes) before any client
-// advertises `board_clear_v1`; A1a ships the full candidate set mutation-dark
-// (the dispatcher denies every session).
+// classifies the new key. A1b (2026-07-29) — the enum deliberately STAYS at
+// 78: it is model GUIDANCE, not the clearable gate. The authoritative
+// clearable set is BOARD_CLEAR_SCOPE_MAP (stage6-dispatchers-board.js); the
+// dispatcher fails CLOSED (`board_clear_scope_unclassified`, audible
+// soft-skip) for every enum member the scope map does not classify, so
+// clients never receive a board `field_corrected` frame outside the map.
+// Growing the clearable set = growing the scope map + both client route maps
+// under the set-equality contract gate (follow-up plan
+// `board-clear-scope-map-expansion`), never re-narrowing this enum.
 export const CLEAR_BOARD_READING_FIELD_ENUM = BOARD_FIELD_ENUM.filter(
   (k) => !BOARD_CLEAR_EXCLUSIONS.has(k)
 );
