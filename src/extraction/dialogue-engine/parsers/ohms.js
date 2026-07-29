@@ -1,17 +1,17 @@
 /**
  * Bare-decimal ohms parser. Used by ring continuity (R1/Rn/R2).
  *
- * Recognised shapes (order matters):
- *   - "OL" / "infinite" / "open" → ">999" (over-range sentinel)
- *   - "DISC" / "discontinuous" / "open circuit" → "DISC" (will be added later
- *     when the discontinuous-display feature lands; for PR1 we mirror the
- *     existing ring parser's shape to preserve byte-identical output)
+ * Recognised shapes (docstring corrected 2026-07-29 — it previously claimed
+ * an UNIMPLEMENTED ">999"/"DISC" sentinel mapping):
+ *   - LIM forms ("lim" / "limb" / "limp" / "limitation") → "LIM" via the
+ *     shared parseLimSlot (P3)
  *   - Bare decimal: "0.43", ".43", "43" → leading-zero-normalised numeric
+ *   - Sentinel words ("infinite" / "open" / "discontinuous" / "infinity")
+ *     → null. They CAPTURE in the slot regexes but do not write — the
+ *     documented pre-existing limitation: sentinel-valued ring readings
+ *     remain model-bound (a future wave owns writing them).
  *
- * Returns the canonical string value or null. Keep semantics identical to
- * the existing parseValue() in ring-continuity-script.js so the byte-
- * identical replay corpus passes — we are NOT taking the opportunity to
- * extend ring's vocabulary in this PR.
+ * Returns the canonical string value or null.
  */
 import { parseLimSlot } from './lim-slot.js';
 
