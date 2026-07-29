@@ -15,6 +15,7 @@ import {
   LogOut,
   BarChart3,
   ScrollText,
+  ScanSearch,
   Server,
   ShieldCheck,
   SlidersHorizontal,
@@ -293,6 +294,13 @@ export default function SettingsHubPage() {
             icon={<Server className="h-5 w-5" aria-hidden />}
             title="Task Queue"
             subtitle="Background job processing state"
+            accent="blue"
+          />
+          <LinkCard
+            href="/settings/admin/ccu-review"
+            icon={<ScanSearch className="h-5 w-5" aria-hidden />}
+            title="CCU Ground Truth"
+            subtitle="Review original board photos beside editable CertMate circuit fields"
             accent="blue"
           />
         </SectionGroup>

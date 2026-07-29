@@ -149,6 +149,71 @@ components:
         polarity_confirmed:
           type: string
 
+    CcuReviewSample:
+      type: object
+      required: [sampleId, extractionId, sessionId, createdAt, reviewed]
+      properties:
+        sampleId:
+          type: string
+          description: Opaque base64url identifier for one extraction prefix
+        extractionId:
+          type: string
+        sessionId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        reviewed:
+          type: boolean
+
+    CcuReviewGroundTruth:
+      type: object
+      required: [board, circuits, notes]
+      properties:
+        board:
+          type: object
+          additionalProperties: true
+        circuits:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/Circuit"
+        notes:
+          type: string
+          maxLength: 5000
+
+    CcuReviewDetail:
+      type: object
+      required: [sample, imageUrl, extracted, extractionMeta, groundTruth, reviewMeta]
+      properties:
+        sample:
+          $ref: "#/components/schemas/CcuReviewSample"
+        imageUrl:
+          type: string
+          format: uri
+          description: Signed original-photo URL valid for 15 minutes
+        extracted:
+          type: object
+          additionalProperties: true
+        extractionMeta:
+          type: object
+          additionalProperties: true
+        groundTruth:
+          oneOf:
+            - $ref: "#/components/schemas/CcuReviewGroundTruth"
+            - type: "null"
+        reviewMeta:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+        sessionConfirmedLayout:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: "null"
+
     Observation:
       type: object
       properties:
@@ -2841,6 +2906,113 @@ paths:
                 type: object
 
   # ============= Admin =============
+  /api/admin/ccu-review:
+    get:
+      tags: [Admin, CCU]
+      summary: List stored CCU extractions for system-admin ground-truth review
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [unreviewed, reviewed, all]
+            default: unreviewed
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Review queue and corpus counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, reviewed, unreviewed, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CcuReviewSample"
+                  total:
+                    type: integer
+                  reviewed:
+                    type: integer
+                  unreviewed:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+        "401":
+          description: Authentication required
+        "403":
+          description: System administrator required
+
+  /api/admin/ccu-review/{sampleId}:
+    parameters:
+      - in: path
+        name: sampleId
+        required: true
+        schema:
+          type: string
+        description: Opaque sample id returned by the list endpoint
+    get:
+      tags: [Admin, CCU]
+      summary: Load one extraction, signed original photo, and any saved ground truth
+      responses:
+        "200":
+          description: CCU review detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CcuReviewDetail"
+        "400":
+          description: Invalid opaque sample id
+        "404":
+          description: Extraction not found
+    put:
+      tags: [Admin, CCU]
+      summary: Save revisioned CertMate-shaped ground truth for one extraction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CcuReviewGroundTruth"
+      responses:
+        "200":
+          description: Ground truth saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, sampleId, reviewedAt, revision]
+                properties:
+                  success:
+                    type: boolean
+                    const: true
+                  sampleId:
+                    type: string
+                  reviewedAt:
+                    type: string
+                    format: date-time
+                  revision:
+                    type: integer
+        "400":
+          description: Invalid sample id or ground-truth payload
+        "404":
+          description: Extraction not found
+
   /api/admin/health:
     get:
       tags: [Admin]

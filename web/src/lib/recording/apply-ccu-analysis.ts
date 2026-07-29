@@ -518,6 +518,27 @@ function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): Circuit
   return row;
 }
 
+/**
+ * Convert one stored CCU extraction into the same circuit-row shape the
+ * CertMate form edits. Ground-truth review deliberately starts from this
+ * projection instead of maintaining a second field mapping that could drift
+ * from the production apply path.
+ */
+export function ccuAnalysisToCircuitRows(
+  analysis: CCUAnalysis,
+  boardId = 'ccu-ground-truth'
+): CircuitRow[] {
+  return circuitsForSchedule(analysis.circuits ?? []).map((analysed, index) => {
+    const row = buildNewCircuit(analysed, boardId);
+    row.id = `ccu-review-${index + 1}`;
+    if (typeof analysed.is_rcbo === 'boolean') row.is_rcbo = analysed.is_rcbo;
+    if (typeof analysed.rcd_protected === 'boolean') {
+      row.rcd_protected = analysed.rcd_protected;
+    }
+    return row;
+  });
+}
+
 /** Generate "what's the RCD type for circuit X?" prompts for any
  *  RCD-protected circuit whose type we couldn't resolve. iOS does
  *  this in FuseboardAnalysisApplier.swift. */

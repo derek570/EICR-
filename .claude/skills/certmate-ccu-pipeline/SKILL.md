@@ -139,6 +139,7 @@ Per `docs/reference/architecture.md` table + code headers: classifier ~5 s/~$0.0
 - `node scripts/ccu-cv-prototype.mjs [--id <extractionId>] [--stress]` — pure-CV pitch/count on the corpus, no API, ~50-100 ms/photo.
 - `node scripts/ccu-box-tighten.mjs` — rail-bbox tightener in isolation.
 - `node scripts/ccu-extract-via-tightener.mjs [--id X] [--classify]` — tightener → crops → optional Stage-3 classify (billed when `--classify`).
+- **Admin ground-truth queue (2026-07-29):** `/settings/admin/ccu-review?sample={opaqueId}` shows each stored `original.jpg` beside editable CertMate board/circuit fields and saves a revisioned per-extraction `ground-truth.json`. The API lives at `/api/admin/ccu-review`; the session-level `final.json` is reference-only because it may span multiple boards.
 - Unit/integration tests: 13 `src/__tests__/ccu-*.test.js` files (merger, quality gate, label matcher, dewarp, quad, rcd lookup…). `npm test -- ccu` runs them.
 
 ## 10. Doctrine + thrash history (why the pipeline is shaped this way)
@@ -155,7 +156,7 @@ The CCU pipeline is the repo's highest-churn experimental zone (geometric → pe
 
 **In-scope live failure modes** (hub CLAUDE.md, verbatim): gpt-5.5 mis-counts in long identical-MCB runs; label-column mis-alignment; post-merge enrichment overrides; `slotsToCircuits` phase-walking heuristics. **Not in scope**: CV crop accuracy / slot-crop boundaries.
 
-**Open items** (as of 2026-07-06, candidates not commitments): CCU training-loop review UI; box-tighten V2 Hager regression; Stage-1 VLM out-of-range coords on small images.
+**Open items** (as of 2026-07-29, candidates not commitments): connect reviewed `ground-truth.json` records to an automated scoring/training export; box-tighten V2 Hager regression; Stage-1 VLM out-of-range coords on small images.
 
 ## 11. Known-stale docs (do not propagate)
 

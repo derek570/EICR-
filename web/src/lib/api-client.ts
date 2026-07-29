@@ -7,6 +7,11 @@ import {
   type AdminUser,
   ApiError,
   type CCUAnalysis,
+  type CcuReviewDetailResponse,
+  type CcuReviewGroundTruth,
+  type CcuReviewListResponse,
+  type CcuReviewSaveResponse,
+  type CcuReviewStatus,
   type CompanyJobRow,
   type CompanyMember,
   type CompanySettings,
@@ -31,6 +36,9 @@ import {
   AdminUserListSchema,
   AdminUserSchema,
   CCUAnalysisSchema,
+  CcuReviewDetailResponseSchema,
+  CcuReviewListResponseSchema,
+  CcuReviewSaveResponseSchema,
   CompanyJobListSchema,
   CompanyMemberListSchema,
   CompanySettingsSchema,
@@ -438,6 +446,46 @@ export const api = {
       '/api/analyze-ccu',
       { method: 'POST', body: form, headers },
       CCUAnalysisSchema
+    );
+  },
+
+  adminListCcuReviewSamples(
+    status: CcuReviewStatus = 'unreviewed',
+    limit = 200,
+    offset = 0
+  ): Promise<CcuReviewListResponse> {
+    const query = new URLSearchParams({
+      status,
+      limit: String(limit),
+      offset: String(offset),
+    });
+    return request<CcuReviewListResponse>(
+      `/api/admin/ccu-review?${query.toString()}`,
+      {},
+      CcuReviewListResponseSchema
+    );
+  },
+
+  adminGetCcuReviewSample(sampleId: string): Promise<CcuReviewDetailResponse> {
+    return request<CcuReviewDetailResponse>(
+      `/api/admin/ccu-review/${encodeURIComponent(sampleId)}`,
+      {},
+      CcuReviewDetailResponseSchema
+    );
+  },
+
+  adminSaveCcuGroundTruth(
+    sampleId: string,
+    groundTruth: CcuReviewGroundTruth
+  ): Promise<CcuReviewSaveResponse> {
+    return request<CcuReviewSaveResponse>(
+      `/api/admin/ccu-review/${encodeURIComponent(sampleId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(groundTruth),
+      },
+      CcuReviewSaveResponseSchema,
+      { strict: true }
     );
   },
 

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { applyCcuAnalysisToJob } from '@/lib/recording/apply-ccu-analysis';
+import {
+  applyCcuAnalysisToJob,
+  ccuAnalysisToCircuitRows,
+} from '@/lib/recording/apply-ccu-analysis';
 import type { CCUAnalysis, JobDetail } from '@/lib/types';
 
 /**
@@ -110,6 +113,51 @@ describe('applyCcuAnalysisToJob — P0-3 multi-board scoping', () => {
     // Untouched because spd_present was undefined on the incoming analysis.
     expect(row.spd_status).toBe('Fitted');
     expect(row.spd_type).toBe('Type 2');
+  });
+});
+
+describe('ccuAnalysisToCircuitRows — ground-truth review projection', () => {
+  it('uses the production CertMate mapping and excludes standalone RCD device rows', () => {
+    const rows = ccuAnalysisToCircuitRows({
+      circuits: [
+        {
+          circuit_number: null,
+          is_rcd_device: true,
+          rcd_bs_en: '61008-1',
+        },
+        {
+          circuit_number: 1,
+          label: 'Kitchen sockets',
+          ocpd_bs_en: '60898-1',
+          ocpd_type: 'B',
+          ocpd_rating_a: '32',
+          ocpd_breaking_capacity_ka: '6',
+          is_rcbo: true,
+          rcd_protected: true,
+          rcd_type: 'A',
+          rcd_rating_ma: '30',
+          rcd_bs_en: '61009-1',
+        },
+      ],
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'ccu-review-1',
+        board_id: 'ccu-ground-truth',
+        circuit_ref: '1',
+        circuit_designation: 'Kitchen sockets',
+        ocpd_bs_en: '60898-1',
+        ocpd_type: 'B',
+        ocpd_rating_a: '32',
+        ocpd_breaking_capacity_ka: '6',
+        is_rcbo: true,
+        rcd_protected: true,
+        rcd_type: 'A',
+        rcd_operating_current_ma: '30',
+        rcd_bs_en: '61009-1',
+      }),
+    ]);
   });
 });
 
