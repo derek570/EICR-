@@ -1046,6 +1046,16 @@ function initScriptState(session, schema, circuit_ref, now) {
     confirmation_no_progress: 0,
     confirmation_pending_slot: null,
     confirmation_negation_reask_emitted: false,
+    // §2.2.2 (feedback id 110b, 2026-07-29): a bare "No. 0.85" (negation +
+    // ONE anchored value, no slot label, no pending slot) retains the value
+    // here while the negation re-ask asks WHICH slot is wrong; the slot
+    // answer ("R1") applies it via the 5c write path — a two-turn correction
+    // instead of P1's three-turn No. → R1. → 0.85 machine. Cleared on every
+    // exit (clearScriptState kills the whole object) AND on every
+    // mid-episode continuation (5b amend, 5c pending-slot write, value-less
+    // 5g re-entry) so a stale value can never land on a slot the inspector
+    // didn't pair it with.
+    confirmation_pending_value: null,
     // M4 (2026-06-25, field session 6674E8C5): IR voltage-phase tracking.
     // `voltage_phase_entered_at` is stamped (once) by askNextOrFinish the
     // first time it emits the exclusive voltage ask; the step-6 voltage block
@@ -2207,9 +2217,12 @@ function runActivePath({
         );
       }
       // Genuine progress — reset the miss machinery; an explicit named
-      // amend also satisfies any pending slot.
+      // amend also satisfies any pending slot AND supersedes a retained
+      // bare value (§2.2.2 lifecycle — "No. 0.85" → "Actually R1 is 0.9"
+      // must never later apply the stale 0.85).
       state.confirmation_no_progress = 0;
       state.confirmation_pending_slot = null;
+      state.confirmation_pending_value = null;
       transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
       logger?.info?.(`${schema.logEventPrefix}_confirmation_amended`, {
         sessionId,
@@ -2252,6 +2265,9 @@ function runActivePath({
           });
           state.confirmation_no_progress = 0;
           state.confirmation_pending_slot = null;
+          // §2.2.2 lifecycle — a 5c pending-slot write is a mid-episode
+          // continuation; any retained bare value is superseded by it.
+          state.confirmation_pending_value = null;
           transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
           return { handled: true, fallthrough: false };
         }
@@ -2279,6 +2295,50 @@ function runActivePath({
         });
         return { handled: true, fallthrough: false };
       }
+      // §2.2.2 consume site (feedback id 110b): when a bare "No. 0.85"
+      // retained a value on the previous turn, the slot name the inspector
+      // now gives is the missing half of that correction — apply the
+      // retained value via the 5c write path (write + extraction frame +
+      // re-confirm) instead of asking "What should R1 be?" for a number
+      // already dictated. One write, one frame, retained state cleared.
+      const retainedValue = state.confirmation_pending_value ?? null;
+      if (retainedValue !== null) {
+        state.confirmation_pending_value = null;
+        const retainedSlot = schema.slots.find((s) => s.field === selected.field);
+        const retainedParsed =
+          retainedSlot && typeof retainedSlot.parser === 'function'
+            ? retainedSlot.parser(retainedValue)
+            : null;
+        if (retainedParsed !== null && retainedParsed !== undefined) {
+          const r = applyWriteWithDerivations(
+            session,
+            schema,
+            retainedSlot,
+            state.circuit_ref,
+            retainedParsed,
+            now
+          );
+          const retainedWrites = [{ field: retainedSlot.field, value: r.effectiveValue }];
+          for (const mw of r.mirrorWrites) retainedWrites.push({ ...mw, auto_resolved: true });
+          for (const sw of r.setWrites) retainedWrites.push({ ...sw, auto_resolved: true });
+          safeSend(
+            ws,
+            buildExtractionPayload(state.circuit_ref, retainedWrites, schema.extractionSource)
+          );
+          logger?.info?.(`${schema.logEventPrefix}_confirmation_retained_value_applied`, {
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            field: retainedSlot.field,
+            value: r.effectiveValue,
+          });
+          state.confirmation_no_progress = 0;
+          state.confirmation_pending_slot = null;
+          transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
+          return { handled: true, fallthrough: false };
+        }
+        // Unparseable retained value (the anchor pattern is digits-only, so
+        // this is defensive) — already cleared; fall to the normal ask.
+      }
       // First-time (or different-slot) selection — genuine progress.
       state.confirmation_pending_slot = selected.field;
       state.confirmation_no_progress = 0;
@@ -2291,8 +2351,33 @@ function runActivePath({
       return { handled: true, fallthrough: false };
     }
 
-    // ── 5e. Bare negation (reply-initial NEGATIVE_RE).
+    // ── 5e. Bare negation (reply-initial NEGATIVE_RE). Three arms (§2.2.2,
+    // feedback id 110b). Arm 1 — labelled value(s) — never reaches here:
+    // ladder order means 5b consumed it ("No, 0.85 on the lives" is an
+    // amend, not a denial). Arm 2 — negation + ONE bare anchored value
+    // ("No. 0.85") — the slot is genuinely unknown, so do NOT write: retain
+    // the value and let handleNegation ask WHICH slot is wrong (the 5d
+    // consume site applies it when the inspector answers "R1"). The anchor
+    // is the schema's existing pendingValuePattern — negation-tolerant and
+    // digits-only, so "No, infinite" stays arm 3 byte-identically. 5c
+    // consumes this same shape first whenever a pending slot IS already
+    // set, so this arm is reachable only with no pending slot. The ask goes
+    // THROUGH handleNegation so the P1 bookkeeping (per-episode reask
+    // latch, no-progress counter, cap) is shared — an immediately-following
+    // bare "No." takes the CAP EXIT per the counter contract. Arm 3 — no
+    // value at all — today's handleNegation byte-identically.
     if (NEGATIVE_RE.test(reply)) {
+      if (!state.confirmation_pending_slot && confirmCfg.pendingValuePattern) {
+        const pv = reply.match(confirmCfg.pendingValuePattern);
+        if (pv) {
+          state.confirmation_pending_value = pv[1];
+          logger?.info?.(`${schema.logEventPrefix}_confirmation_negation_value_retained`, {
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            textPreview: reply.slice(0, 80),
+          });
+        }
+      }
       return handleNegation();
     }
 
@@ -2324,7 +2409,19 @@ function runActivePath({
         return clearAndFallThrough('confirmation_reentry_guarded', {}, { armVeto: true });
       }
       state.confirmation_pending_slot = null;
-      state.confirmation_negation_reask_emitted = false;
+      // §2.2.2 lifecycle — a value-less re-entry CONTINUES the episode via
+      // transitionToConfirmation, so a value retained by a prior "No. 0.85"
+      // must die here: a later "Rn" must draw "What should Rn be?", never
+      // apply the stale 0.85 to a slot the inspector didn't pair it with.
+      state.confirmation_pending_value = null;
+      // 5g latch rule (round-7): PRESERVE confirmation_negation_reask_emitted.
+      // Resetting it (the pre-2026-07-29 behaviour) let "No. 0.85" →
+      // value-less re-entry → "No." re-emit the byte-identical original
+      // negation prompt inside the client 30 s text-keyed dedupe window —
+      // the exact feedback-91 silence class the per-episode latch exists to
+      // prevent. The counter still resets: re-entry is genuine engagement,
+      // so the miss cap starts fresh, and a post-re-entry negation draws the
+      // full-string-distinct alternate (or the cap per the counter).
       state.confirmation_no_progress = 0;
       transitionToConfirmation({ ws, session, sessionId, schema, logger, now, responseEpoch });
       return { handled: true, fallthrough: false };
