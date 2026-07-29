@@ -33,6 +33,7 @@ import {
   extractNamedFieldValues,
   nextMissingSlot,
   countFilledForCancel,
+  maskCircuitSpans,
 } from './helpers/extraction.js';
 import { applyWrite } from './helpers/snapshot-write.js';
 import {
@@ -636,17 +637,11 @@ const R1_PLUS_R2_COMPOUND_RE = /\bR\s*1\s*(?:\+|\s+plus\s+)\s*R\s*2\b/i;
 const NON_RING_EARTH_COMPOUND_RE =
   /\b(?:earth\s+fault\s+loop|loop\s+impedance|earth\s+electrode|electrode\s+resistance|earth\s+leakage)\b/i;
 
-/**
- * Mask `circuit N` spans out of a reply so a circuit ref can never be
- * captured as a reading value by the named extractors (or by runEntry's own
- * internal extraction when the 5a preflight seeds a different circuit —
- * "ring continuity earths for circuit 17 are 1.19" must never write 17).
- * Length-preserving so proximity windows in the extractors stay honest.
- */
-function maskCircuitSpans(text) {
-  if (typeof text !== 'string') return '';
-  return text.replace(/\bcircuit\s*\d{1,3}\b/gi, (m) => ' '.repeat(m.length));
-}
+// `maskCircuitSpans` (a circuit ref must never be captured as a reading value
+// by the named extractors — "ring continuity earths for circuit 17 are 1.19"
+// must never write 17) moved to helpers/extraction.js as the canonical shared
+// copy (feedback id 109 wave, 2026-07-29): stage6-shadow-harness.js now masks
+// its reparse input with the SAME function, so the two sites cannot drift.
 
 // Scope-conflict provenance marker on a queued pending write (Codex
 // diff-review r1). A value dictated ON the conflict utterance is an explicit
