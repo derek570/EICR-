@@ -23,6 +23,7 @@ import {
   applyExtractionToJob,
   applyObservationUpdate,
 } from './recording/apply-extraction';
+import { applyBoardClearToJob } from './recording/board-clear';
 import {
   getRecordingTestServices,
   type DeepgramServiceLike,
@@ -2705,6 +2706,37 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
       },
       onFieldCorrected: (msg) => {
+        // A1b (2026-07-29) — BOARD-scope clear frame (circuit:null +
+        // non-null board_id, A1a's clear_board_reading wire
+        // discriminator). Routed through the tested BOARD_CLEAR_ROUTE_MAP
+        // (board-clear.ts): ze/pfc sweep every stored representation
+        // atomically; manufacturer resolves its target tri-state
+        // (canonical-main two legs, sub-board boards[]-only,
+        // explicit-unmatched fail-closed).
+        if (msg.circuit == null) {
+          const appliedClear = applyBoardClearToJob(jobRef.current, {
+            field: msg.field,
+            boardId: msg.board_id ?? null,
+          });
+          if (appliedClear) {
+            updateJobRef.current(appliedClear.patch);
+            jobRef.current = {
+              ...jobRef.current,
+              ...(appliedClear.patch as Partial<typeof jobRef.current>),
+            };
+            getRecordingTestServices()?.jobStateObserver?.({
+              source: 'extraction',
+              patch: appliedClear.patch,
+              job: jobRef.current,
+              changedKeys: appliedClear.changedKeys,
+            });
+            if (appliedClear.changedKeys.length > 0) {
+              liveFill.markUpdated(appliedClear.changedKeys);
+            }
+            schedulePushJobState();
+          }
+          return;
+        }
         // Stage 6 STI-05 — clear the slot Sonnet asked us to forget. Route
         // through the existing field_clears extraction path so the
         // mutation + flash fire through the same single code path as
