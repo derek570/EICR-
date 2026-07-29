@@ -47,7 +47,11 @@
 
 import type { JobDetail } from '../types';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
-import { resolveCanonicalMainBoardId, type MainBoardCandidate } from '@/lib/boards/canonical-main';
+import {
+  findCanonicalMainBoard,
+  resolveCanonicalMainBoardId,
+  type MainBoardCandidate,
+} from '@/lib/boards/canonical-main';
 
 export type BoardClearScope = 'global' | 'board';
 
@@ -73,7 +77,10 @@ const GLOBAL_SWEEP: Readonly<
 > = Object.freeze({
   ze: {
     sectionKeys: ['ze', 'earth_loop_impedance_ze'],
-    boardKeys: ['ze'],
+    // BOTH aliases on boards[] too — the Circuits page consumes
+    // `boards[].earth_loop_impedance_ze` as a fallback (Codex cycle-1), so
+    // a short-key-only board sweep leaves a live Ze feeding calculations.
+    boardKeys: ['ze', 'earth_loop_impedance_ze'],
   },
   pfc: {
     sectionKeys: ['pfc', 'prospective_fault_current'],
@@ -89,6 +96,14 @@ export interface BoardClearInput {
 export interface AppliedBoardClear {
   patch: Partial<JobDetail>;
   changedKeys: string[];
+  /**
+   * FieldSourceTracker keys whose ownership this ACCEPTED clear releases
+   * (Codex cycle-1): without this, a cleared-but-still-owned `preExisting`
+   * slot rejects the next regex write into a visibly empty cell. Non-empty
+   * on every accepted clear (including accepted-but-already-empty); the
+   * fail-closed paths return null and release nothing.
+   */
+  ownershipKeys: string[];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -162,9 +177,15 @@ export function applyBoardClearToJob(
         changedKeys.push(...sweep.boardKeys.map((k) => `boards.${k}`));
       }
     }
-    if (changedKeys.length === 0) return null;
+    const ownershipKeys = sweep.sectionKeys.map((k) => `supply.${k}`);
+    if (changedKeys.length === 0) {
+      // Accepted clear of an already-empty slot: nothing to patch, but the
+      // ownership release still applies (the tracker may hold a stale
+      // preExisting claim from a value cleared through another path).
+      return { patch: {}, changedKeys: [], ownershipKeys };
+    }
     pipelineLog('board_clear_global_sweep', { field: input.field, changed: changedKeys });
-    return { patch, changedKeys };
+    return { patch, changedKeys, ownershipKeys };
   }
 
   // scope === 'board'
@@ -175,7 +196,28 @@ export function applyBoardClearToJob(
     return null;
   }
   const targetIdx = boards.findIndex((b) => b.id === input.boardId);
+  const boardInfo = asRecord(job.board_info);
   if (targetIdx === -1) {
+    // Legacy single-board acceptance (Codex cycle-1): a job may carry its
+    // manufacturer ONLY in `board_info` with no usable boards[] registry at
+    // all. The backend synthesises board id 'main' for exactly that shape,
+    // so when NO usable board rows exist and the target equals the
+    // synthetic canonical-main id, the clear is honoured on the board_info
+    // leg alone — refusing here would leave a spoken 'cleared' value
+    // visible forever. With ANY usable board registry present, an unmatched
+    // explicit id stays FAIL-CLOSED (never boards[0], never fuzzy).
+    const hasUsableBoards = boards.some((b) => typeof b.id === 'string' && b.id !== '');
+    if (
+      !hasUsableBoards &&
+      input.boardId === resolveCanonicalMainBoardId(boards as MainBoardCandidate[])
+    ) {
+      const ownershipKeys = [`board.${input.field}`];
+      if (!(input.field in boardInfo)) return { patch: {}, changedKeys: [], ownershipKeys };
+      const { next } = deleteKeys(boardInfo, [input.field]);
+      patch.board_info = next as JobDetail['board_info'];
+      pipelineLog('board_clear_synthetic_main_board_info_leg', { field: input.field });
+      return { patch, changedKeys: [`board_info.${input.field}`], ownershipKeys };
+    }
     // explicitUnmatched — NEVER boards[0], never a fuzzy fallback.
     pipelineLog('board_clear_explicit_unmatched', {
       field: input.field,
@@ -184,14 +226,21 @@ export function applyBoardClearToJob(
     return null;
   }
 
-  const canonicalMainId = resolveCanonicalMainBoardId(boards as MainBoardCandidate[]);
-  const isCanonicalMain = input.boardId === canonicalMainId;
-
   const targetBoard = boards[targetIdx];
+  // Canonical-main classification by RECORD IDENTITY (Codex cycle-1): the
+  // id-string comparison against resolveCanonicalMainBoardId misclassifies
+  // a SUB-board that happens to be named 'main' when no true canonical
+  // record exists (the resolver's synthetic fallback) — which would delete
+  // the main summary on a sub-board clear.
+  const canonicalMain = findCanonicalMainBoard(boards as MainBoardCandidate[]);
+  const isCanonicalMain = canonicalMain === (targetBoard as MainBoardCandidate);
+
   const boardHasValue = input.field in targetBoard;
-  const boardInfo = asRecord(job.board_info);
   const infoHasValue = isCanonicalMain && input.field in boardInfo;
-  if (!boardHasValue && !infoHasValue) return null;
+  const ownershipKeys = isCanonicalMain ? [`board.${input.field}`] : [];
+  if (!boardHasValue && !infoHasValue) {
+    return { patch: {}, changedKeys: [], ownershipKeys };
+  }
 
   if (boardHasValue) {
     const nextBoards = boards.map((b, i) => {
@@ -215,5 +264,5 @@ export function applyBoardClearToJob(
     canonical_main: isCanonicalMain,
     changed: changedKeys,
   });
-  return { patch, changedKeys };
+  return { patch, changedKeys, ownershipKeys };
 }

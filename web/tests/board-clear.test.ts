@@ -136,9 +136,24 @@ describe('global scope — atomic sweep of every representation', () => {
     expect(applied!.patch.boards).toBeUndefined();
   });
 
-  it('already-empty global clear → null (no patch, no phantom flash)', () => {
+  it('already-empty global clear → accepted-empty shape (no patch keys, ownership still released)', () => {
     const job = makeJob({ supply_characteristics: { earthing_arrangement: 'TT' }, boards: [] });
-    expect(applyBoardClearToJob(job, { field: 'ze', boardId: 'main' })).toBeNull();
+    const applied = applyBoardClearToJob(job, { field: 'ze', boardId: 'main' });
+    expect(applied).not.toBeNull();
+    expect(applied!.changedKeys).toEqual([]);
+    expect(applied!.patch).toEqual({});
+    expect(applied!.ownershipKeys).toEqual(['supply.ze', 'supply.earth_loop_impedance_ze']);
+  });
+
+  it('ze sweep also removes the LONG alias off boards[] (Circuits-page fallback reads it)', () => {
+    const job = makeJob({
+      boards: [{ id: 'main', board_type: 'main', earth_loop_impedance_ze: '0.35' }],
+      supply_characteristics: { ze: '0.35' },
+    });
+    const applied = applyBoardClearToJob(job, { field: 'ze', boardId: 'main' });
+    expect(applied).not.toBeNull();
+    const boards = applied!.patch.boards as Record<string, unknown>[];
+    expect(boards[0].earth_loop_impedance_ze).toBeUndefined();
   });
 });
 
@@ -187,6 +202,39 @@ describe('board scope — manufacturer tri-state target resolution', () => {
     expect(boards[0].manufacturer).toBe('Hager');
     // board_info leg NOT in the patch — the main summary keeps 'Hager'.
     expect(applied!.patch.board_info).toBeUndefined();
+  });
+
+  it('a SUB-board that happens to be named "main" with NO true canonical record: single leg, board_info untouched', () => {
+    const job = makeJob({
+      boards: [
+        {
+          id: 'main',
+          designation: 'Garage CU',
+          board_type: 'sub_distribution',
+          manufacturer: 'Crabtree',
+        },
+      ],
+      board_info: { manufacturer: 'Hager' },
+    });
+    const applied = applyBoardClearToJob(job, { field: 'manufacturer', boardId: 'main' });
+    expect(applied).not.toBeNull();
+    const boards = applied!.patch.boards as Record<string, unknown>[];
+    expect(boards[0].manufacturer).toBeUndefined();
+    // The record is NOT the canonical main (sub_distribution type), so the
+    // main summary must survive — the resolver's synthetic 'main' fallback
+    // must never classify an existing record.
+    expect(applied!.patch.board_info).toBeUndefined();
+  });
+
+  it('LEGACY job: manufacturer only in board_info, no usable boards[] — synthetic-main target clears the board_info leg', () => {
+    const job = makeJob({
+      boards: [],
+      board_info: { manufacturer: 'Hager' },
+    });
+    const applied = applyBoardClearToJob(job, { field: 'manufacturer', boardId: 'main' });
+    expect(applied).not.toBeNull();
+    expect((applied!.patch.board_info as Record<string, unknown>).manufacturer).toBeUndefined();
+    expect(applied!.changedKeys).toEqual(['board_info.manufacturer']);
   });
 
   it('explicit-unmatched board id: FAILS CLOSED — no mutation, never boards[0]', () => {

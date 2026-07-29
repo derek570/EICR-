@@ -2719,6 +2719,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             boardId: msg.board_id ?? null,
           });
           if (appliedClear) {
+            // Accepted clear (including accepted-but-already-empty):
+            // release tracker ownership so the next dictation into the
+            // now-empty slot is not rejected as preExisting-owned.
+            fieldSourceTrackerRef.current?.forget(appliedClear.ownershipKeys);
+          }
+          if (appliedClear && appliedClear.changedKeys.length > 0) {
             updateJobRef.current(appliedClear.patch);
             jobRef.current = {
               ...jobRef.current,
@@ -2730,9 +2736,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               job: jobRef.current,
               changedKeys: appliedClear.changedKeys,
             });
-            if (appliedClear.changedKeys.length > 0) {
-              liveFill.markUpdated(appliedClear.changedKeys);
-            }
+            liveFill.markUpdated(appliedClear.changedKeys);
             schedulePushJobState();
           }
           return;
