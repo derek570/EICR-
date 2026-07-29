@@ -2047,12 +2047,19 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         );
         // Ladder rung 3 guard: bare "conductor" is NOT a size anchor — the
         // adjacent material/continuity/bonding fields must keep their homes.
-        expect(rendered).toContain('The bare word "conductor" is NOT a size anchor');
+        expect(rendered).toContain('The bare word "conductor" alone is NOT such a name');
         expect(rendered).toContain(
           '"earthing conductor material is Copper" → `earthing_conductor_material`'
         );
         expect(rendered).toContain(
           '"main bonding is 10" / "main earth bonding is 10" → `bonding_conductor_csa`'
+        );
+        // ep-diff-review cycle-1 IMPORTANT (2026-07-29): rungs (2)-(3) must
+        // yield to an explicitly-named adjacent field — an ohms-unit token
+        // beside "continuity" must never be read as a Ze anchor.
+        expect(rendered).toContain('Rungs (2)-(3) apply ONLY when no adjacent field name');
+        expect(rendered).toContain(
+          'or any value invalid for a PASS/FAIL field, e.g. a number) → `earthing_conductor_continuity`, never Ze'
         );
         // Vocabulary default with the CSA enum magnitudes.
         expect(rendered).toContain('(6, 10, 16, 25, 35, 50) → `earthing_conductor_csa`');

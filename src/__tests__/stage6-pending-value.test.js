@@ -352,11 +352,16 @@ describe('detectStructuredReading — plan E main-earth aliases', () => {
   // in the PROMPT (§4), not in this detector. The detector's only job is to
   // decide whether a reply is a FRESH structured reading or the answer to a
   // pending ask — it never writes a field. When the detector disagrees with an
-  // ask still pending, the ask is resolved WITHOUT a write and the text is
-  // re-injected as a fresh transcript (pre-existing `ask_user_answered`
-  // behaviour on main), so the MODEL makes the final field decision under the
-  // §4 ladder. A detector disagreement therefore costs one extra round-trip;
-  // it can never produce a wrong write or a lost reading.
+  // ask still pending, no branch on `origin/main` writes the detector's field:
+  // depending on which pre-existing path the reply arrives through, it is
+  // either re-injected as a fresh transcript (the pendingValue-class direct
+  // `ask_user_answered` channel and the transcript-first overtake path both do
+  // this) or, on the dispatcher's own fallback, forwarded to the model as
+  // `untrusted_user_text` in the tool result (see
+  // stage6-dispatcher-ask-pending-value.test.js's main-earth pins, which
+  // assert this exact field on the response body) — either way the MODEL
+  // makes the final field decision under the §4 ladder, never this detector.
+  // It can never produce a wrong write or a lost reading.
   test('DECIDED: an explicit ohms unit does NOT re-route the detector — the prompt ladder owns unit precedence, and the detector never writes', () => {
     expect(detectStructuredReading('main earth is 0.35 ohms')).toMatchObject({
       fieldKey: 'earthing_conductor_csa',
