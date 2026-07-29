@@ -2048,7 +2048,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         // the bare-Ze rule (round-6: an unqualified "any explicit Ze ⇒
         // supply Ze" would contradict the source's existing routing).
         expect(rendered).toMatch(
-          /Precedence, highest first, EACH VALUE JUDGED ONLY BY ITS OWN CLAUSE: \(1\) "Ze at the board" \/ "Ze at DB" → `ze_at_db`/
+          /Precedence, highest first, EACH VALUE JUDGED ONLY BY ITS OWN CLAUSE — check the genuine-conflict test below FIRST; rungs \(2\)-\(3\) apply ONLY when it does NOT fire: \(1\) "Ze at the board" \/ "Ze at DB" → `ze_at_db`/
         );
         // Ladder rung 3 guard: bare "conductor" is NOT a size anchor — the
         // adjacent material/continuity/bonding fields must keep their homes.
