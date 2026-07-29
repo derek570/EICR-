@@ -261,3 +261,86 @@ describe('detectStructuredReading — typed, schema-aware completeness', () => {
     expect(d).toMatchObject({ fieldKey: 'means_earthing_electrode', complete: true });
   });
 });
+
+// -----------------------------------------------------------------------------
+// Plan E §4b piece 2 (2026-07-28, feedback id 100(a)) — anchored main-earth
+// DETECTOR_ALIASES + per-alias notFollowedBy exclusions + ze-at-board
+// precedence. The safety matrix here is what keeps the two new aliases from
+// cannibalising the ADJACENT earth-family fields: the lexicon-form cases
+// exercise the lexicon path, the alias-FORM cases exercise the alias path
+// with its exclusion lookahead (round-5: lexicon-form cases alone never
+// exercise the alias path).
+// -----------------------------------------------------------------------------
+
+describe('detectStructuredReading — plan E main-earth aliases', () => {
+  test('"main earth is 16" → earthing_conductor_csa, complete (the id-100 repro reply)', () => {
+    const d = detectStructuredReading('main earth is 16');
+    expect(d).toMatchObject({
+      fieldKey: 'earthing_conductor_csa',
+      family: 'supply',
+      complete: true,
+    });
+  });
+
+  test('"main earthing conductor 10" → earthing_conductor_csa, complete', () => {
+    const d = detectStructuredReading('main earthing conductor 10');
+    expect(d).toMatchObject({ fieldKey: 'earthing_conductor_csa', complete: true });
+  });
+
+  test('lexicon-form adjacents keep their homes: material / continuity', () => {
+    expect(detectStructuredReading('earthing conductor material is Copper')).toMatchObject({
+      fieldKey: 'earthing_conductor_material',
+      complete: true,
+    });
+    expect(detectStructuredReading('earthing conductor continuity is pass')).toMatchObject({
+      fieldKey: 'earthing_conductor_continuity',
+      complete: true,
+    });
+  });
+
+  test('ALIAS-form adjacents (round-5 — these exercise the notFollowedBy lookahead): "main earthing conductor material/continuity" are NOT CSA', () => {
+    expect(detectStructuredReading('main earthing conductor material is Copper')).toMatchObject({
+      fieldKey: 'earthing_conductor_material',
+    });
+    expect(detectStructuredReading('main earthing conductor continuity is pass')).toMatchObject({
+      fieldKey: 'earthing_conductor_continuity',
+    });
+  });
+
+  test('SAFETY INVARIANT (round-4): "main earth bonding is 10" is NOT CSA — no lexicon name exists, so the detector returns null', () => {
+    // A positive bonding_conductor_csa assertion is unachievable (the
+    // lexicon has no "main bonding"/"main earth bonding" name); the
+    // invariant is null-or-not-CSA — the prompt steers the model for the
+    // positive bonding write (live probe 6).
+    const d = detectStructuredReading('main earth bonding is 10');
+    expect(d === null || d.fieldKey !== 'earthing_conductor_csa').toBe(true);
+  });
+
+  test('adjacent select field unaffected: "earthing arrangement is TT" → earthing_arrangement', () => {
+    expect(detectStructuredReading('earthing arrangement is TT')).toMatchObject({
+      fieldKey: 'earthing_arrangement',
+      complete: true,
+    });
+  });
+
+  test('ze-at-board precedence (round-4): "Ze at the board is 0.2" → ze_at_db, never supply earth_loop_impedance_ze', () => {
+    expect(detectStructuredReading('Ze at the board is 0.2')).toMatchObject({
+      fieldKey: 'ze_at_db',
+      family: 'board',
+      complete: true,
+    });
+    expect(detectStructuredReading('Ze at DB is 0.2')).toMatchObject({ fieldKey: 'ze_at_db' });
+    // Bare Ze keeps its supply routing.
+    expect(detectStructuredReading('Ze is 0.35')).toMatchObject({
+      fieldKey: 'earth_loop_impedance_ze',
+      family: 'supply',
+    });
+  });
+
+  test('IMMEDIATE-lookahead exclusion (round-6): a compound utterance with the excluded word ELSEWHERE still matches at its own position', () => {
+    expect(detectStructuredReading('main earth is 16 and the bonding is 10')).toMatchObject({
+      fieldKey: 'earthing_conductor_csa',
+      complete: true,
+    });
+  });
+});
