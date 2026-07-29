@@ -643,6 +643,14 @@ const STAGE6_PROTOCOL_VERSION = 'stage6';
 export const VOICE_LATENCY_SUPPORTS: readonly string[] = [
   'low_conf_readback_v1',
   'lim_ranged_write_v1',
+  // A1b (2026-07-29) — board_clear_v1: this build decodes the board-scope
+  // `field_corrected` frame (circuit:null + board_id) and routes it through
+  // BOARD_CLEAR_ROUTE_MAP (board-clear.ts), so the server's deny-first
+  // clear_board_reading gate may open for this session. Flipped as the LAST
+  // commit of the A1b wave, after every dependency gate was verified in the
+  // /ep execution log. Rollback = server BOARD_CLEAR_DISABLED, never
+  // un-advertising.
+  'board_clear_v1',
 ];
 
 export class SonnetSession {
