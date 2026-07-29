@@ -2044,11 +2044,19 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           'MAIN EARTH vs Ze (CRITICAL — "main earth" is a conductor SIZE in mm², not an impedance)'
         );
-        // Ladder rung 1: the at-board form keeps its ze_at_db routing ABOVE
-        // the bare-Ze rule (round-6: an unqualified "any explicit Ze ⇒
-        // supply Ze" would contradict the source's existing routing).
+        // Priority order (ep-diff-review cycle-3 IMPORTANT, 2026-07-29):
+        // adjacent field name (a) beats the genuine-conflict test (b) beats
+        // the ladder (c). Cycle-2's "conflict-first" wording was itself a
+        // contradiction — it let "earthing conductor continuity is pass"
+        // (a value fitting neither the Ze nor CSA pattern) trip the
+        // genuine-conflict ask INSTEAD of routing to the explicitly-named
+        // continuity field, since the conflict test ran before the
+        // adjacent-name check existed. Restructured so (a) is checked first.
         expect(rendered).toMatch(
-          /Precedence, highest first, EACH VALUE JUDGED ONLY BY ITS OWN CLAUSE — check the genuine-conflict test below FIRST; NO rung below applies when it fires: \(1\) "Ze at the board" \/ "Ze at DB" → `ze_at_db`/
+          /Precedence, highest first, EACH VALUE JUDGED ONLY BY ITS OWN CLAUSE\. Checked in THIS order: \(a\) an adjacent field name \(material\/continuity\/bonding\) ALWAYS wins first/
+        );
+        expect(rendered).toContain(
+          '(b) ONLY when no adjacent name applies, the genuine-conflict test below fires — no ladder rung applies when it does. (c) Otherwise the ladder: (1) "Ze at the board" / "Ze at DB" → `ze_at_db`'
         );
         // Ladder rung 3 guard: bare "conductor" is NOT a size anchor — the
         // adjacent material/continuity/bonding fields must keep their homes.
@@ -2059,15 +2067,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           '"main bonding is 10" / "main earth bonding is 10" → `bonding_conductor_csa`'
         );
-        // ep-diff-review cycle-1 IMPORTANT (2026-07-29, revised after the
-        // fix-hunk mini-review): rungs (2)-(3) must yield to an
-        // explicitly-named adjacent field in the SAME clause — an ohms-unit
-        // token beside "continuity" must never be read as a Ze anchor, and
-        // an invalid PASS/FAIL value there is asked for, never written and
-        // never reinterpreted as Ze.
-        expect(rendered).toContain('with NO adjacent field name in that clause');
+        // ep-diff-review cycle-1 IMPORTANT (2026-07-29): an explicitly-named
+        // adjacent field always wins — an ohms-unit token beside
+        // "continuity" must never be read as a Ze anchor, and an invalid
+        // PASS/FAIL value there is asked for, never written and never
+        // reinterpreted as Ze.
         expect(rendered).toContain(
-          '"earthing conductor continuity is pass" → `earthing_conductor_continuity` (an invalid PASS/FAIL value there is never written and never becomes Ze — ask)'
+          '"earthing conductor continuity is pass" → `earthing_conductor_continuity` (an invalid PASS/FAIL value there is asked for, never written, never Ze)'
         );
         // Vocabulary default with the CSA enum magnitudes.
         expect(rendered).toContain('(6, 10, 16, 25, 35, 50) → `earthing_conductor_csa`');
@@ -2111,14 +2117,20 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     // (2026-07-29): "two affirmative anchors" alone would false-trigger on
     // same-family reinforcement ("16 mm² CSA" is size+size, not a
     // conflict) — the rule now requires ONE anchor from EACH family.
-    test('genuine-conflict rule is negation-safe and requires one anchor from EACH family (never same-family reinforcement)', () => {
+    // Revised AGAIN after cycle-3 (2026-07-29): the conflict test's "value
+    // fitting neither pattern" fallback is now explicitly scoped to
+    // "main earth"/"main earthing conductor" vocabulary and gated on no
+    // adjacent field name applying — otherwise it would trip on "earthing
+    // conductor continuity is pass" (a PASS/FAIL value fitting neither the
+    // Ze nor CSA numeric pattern) instead of routing to the named field.
+    test('genuine-conflict rule is negation-safe, gated on no adjacent field name, and requires one anchor from EACH family (never same-family reinforcement)', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         expect(rendered).toContain(
           "Only an AFFIRMATIVE anchor in the value's own clause counts — a negated one"
         );
         expect(rendered).toContain('never wins even though the word is present');
         expect(rendered).toContain(
-          'Genuine conflict = the SAME clause carries BOTH a Ze-family anchor AND a size-family anchor (never two of the SAME family — "16 mm² CSA" is size+size, not a conflict), OR a value fitting neither pattern'
+          'Genuine conflict (checked ONLY when no adjacent field name applies — see (a) above) = the SAME clause carries BOTH a Ze-family anchor AND a size-family anchor (never two of the SAME family — "16 mm² CSA" is size+size, not a conflict), OR "main earth"/"main earthing conductor" vocabulary with a value fitting NEITHER the Ze pattern NOR the CSA pattern'
         );
       }
     });
