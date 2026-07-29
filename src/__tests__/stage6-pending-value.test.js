@@ -343,4 +343,39 @@ describe('detectStructuredReading — plan E main-earth aliases', () => {
       complete: true,
     });
   });
+
+  // Two DECIDED-behaviour pins carried over as the review-quiet evidence for
+  // this standalone extraction (the main-earth precedence steer + detector
+  // aliases above). Both are checked here rather than assumed.
+  //
+  // The unit-precedence ladder ("an ohms unit ⇒ earth_loop_impedance_ze") lives
+  // in the PROMPT (§4), not in this detector. The detector's only job is to
+  // decide whether a reply is a FRESH structured reading or the answer to a
+  // pending ask — it never writes a field. When the detector disagrees with an
+  // ask still pending, the ask is resolved WITHOUT a write and the text is
+  // re-injected as a fresh transcript (pre-existing `ask_user_answered`
+  // behaviour on main), so the MODEL makes the final field decision under the
+  // §4 ladder. A detector disagreement therefore costs one extra round-trip;
+  // it can never produce a wrong write or a lost reading.
+  test('DECIDED: an explicit ohms unit does NOT re-route the detector — the prompt ladder owns unit precedence, and the detector never writes', () => {
+    expect(detectStructuredReading('main earth is 0.35 ohms')).toMatchObject({
+      fieldKey: 'earthing_conductor_csa',
+    });
+    // The consequence that makes this safe: the value still reaches the model
+    // as a fresh transcript, and "Ze"-anchored speech is unaffected.
+    expect(detectStructuredReading('Ze is 0.35 ohms')).toMatchObject({
+      fieldKey: 'earth_loop_impedance_ze',
+    });
+  });
+
+  test('DECIDED: the BARE "earthing conductor" alias stays dropped — adding it would seize "earthing conductor material is Copper" as a CSA reading', () => {
+    // Returning null means this reply is treated as the pending ask's answer
+    // rather than a fresh reading. That is the accepted cost of keeping the
+    // adjacent material/continuity fields correct; the inverted-ask earth case
+    // is the named follow-up, not this alias.
+    expect(detectStructuredReading('earthing conductor is 16')).toBeNull();
+    expect(detectStructuredReading('earthing conductor material is Copper')).toMatchObject({
+      fieldKey: 'earthing_conductor_material',
+    });
+  });
 });
