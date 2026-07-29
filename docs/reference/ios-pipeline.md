@@ -452,3 +452,50 @@ Key events in the iOS debug log (`whisper_debug.json`):
 | Values transcribed but not extracted | Extraction prompt doesn't map the phrasing to a field      | Check extraction prompt — may need synonym     |
 | Values in wrong circuit              | Circuit ref wasn't mentioned before values                 | Say circuit number before each set of readings |
 | Field blocked by CCU                 | CCU photo pre-filled the field, extraction won't overwrite | Expected — CCU data takes priority over voice  |
+
+## Board-Clear Client Contract (Plan A1b, 2026-07-29)
+
+The `clear_board_reading` tool (A1a, feedback id 101 — "Delete Ze") emits a
+BOARD-scope `field_corrected` frame both clients route on:
+
+```
+{ type: 'field_corrected', circuit: null, field: 'ze'|'pfc'|'manufacturer',
+  previous_value, reason: 'clear_reading', board_id: '<non-null>' }
+```
+
+- **Discriminator:** `circuit: null` + non-null `board_id`. The dispatcher
+  ALWAYS resolves a board id (`resolveEffectiveBoardIdForClear` → main-board
+  fallback), so a scope-less frame (neither circuit nor board_id) is a
+  contract violation — both clients REJECT it at decode (iOS throws, web
+  drops + logs `field_corrected_scopeless_rejected`). An un-upgraded build
+  decode-rejects board frames safely (`DECODE_ERROR` log; nothing mutates).
+- **The clearable set is the SCOPE MAP, not the tool enum.** The 78-member
+  `clear_board_reading` field enum is model guidance; `BOARD_CLEAR_SCOPE_MAP`
+  (`stage6-dispatchers-board.js`) is the authority and the dispatcher fails
+  CLOSED (`board_clear_scope_unclassified`, audible) outside it. The committed
+  manifest `tests/fixtures/test-contracts/board-clear-scope-keys.json`
+  (`{ze:global, pfc:global, manufacturer:board}`) is deep-equal drift-tested
+  (field AND scope value) against all three route-map surfaces: the backend
+  map, web `BOARD_CLEAR_ROUTE_MAP` (`web/src/lib/recording/board-clear.ts`),
+  and iOS (`DeepgramRecordingViewModel` board-clear routing) via a
+  byte-identical committed copy in CertMateUnified. Growing the set =
+  follow-up plan `board-clear-scope-map-expansion` (backend + both clients +
+  fixture in ONE delivery), never a partial ship.
+- **Routing semantics.** `global` (`ze`, `pfc`): ONE value per job — the
+  clear sweeps EVERY stored representation atomically (iOS: supply store +
+  every `BoardInfo.ze`; web: both supply aliases short+long + every
+  `boards[].ze` + retained `board_info` copy). `board` (`manufacturer`): the
+  target resolves TRI-STATE (A2-multiboard) — canonical-main clears web's
+  TWO legs (`board_info` + `boards[canonicalMainIndex]`) atomically but ONE
+  leg on iOS (its `board_info` is a decode fallback folded into `boards[]`,
+  not a store); a sub-board clears `boards[idx]` only; an explicit board id
+  matching NO board FAILS CLOSED (never `boards.first`/index 0).
+- **Capability + fence.** Clients advertise `board_clear_v1`; the server is
+  deny-first and reads the capability LIVE from the active-sessions entry at
+  DISPATCH (never a turn-start snapshot). A mid-session capability change is
+  structurally impossible under the current wire (web `session_resume` never
+  re-parses capabilities — pinned by test; an iOS build re-advertises its
+  own static set on its process-private sessionId); the
+  `stage6.capability_changed_on_reparse` telemetry is a zero-expected
+  TRIPWIRE, not a handled path. Rollback = server `BOARD_CLEAR_DISABLED`
+  (kill-switch), never un-advertising a shipped client.

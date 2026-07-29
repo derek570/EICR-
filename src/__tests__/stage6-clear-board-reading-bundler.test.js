@@ -17,6 +17,30 @@ const { dispatchClearBoardReading, dispatchRecordBoardReading, dispatchSelectBoa
 const { createPerTurnWrites, EFFECTIVE_BOARD_SLOT } =
   await import('../extraction/stage6-per-turn-writes.js');
 const { bundleToolCallsIntoResult } = await import('../extraction/stage6-event-bundler.js');
+const { activeSessions } = await import('../extraction/active-sessions.js');
+const { parseVoiceLatencyCapabilities } = await import('../extraction/voice-latency-config.js');
+
+// A1b (2026-07-29) -- dispatch reads `board_clear_v1` LIVE from the
+// active-sessions registry; register the capable entry for this file's fixed
+// sessionId. The `hasBoardClearV1` BUNDLER option below is the separate
+// projection-time board-fill gate and is deliberately unchanged.
+function setBoardClearCapability(on, sessionId = 'sess-cbr-bundler') {
+  activeSessions.set(sessionId, {
+    voiceLatency: {
+      capabilities: parseVoiceLatencyCapabilities({
+        voice_latency: { version: 1, supports: on ? ['board_clear_v1'] : [] },
+      }),
+    },
+  });
+}
+
+beforeEach(() => {
+  setBoardClearCapability(true);
+});
+
+afterEach(() => {
+  activeSessions.clear();
+});
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };

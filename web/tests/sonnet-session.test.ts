@@ -611,12 +611,18 @@ describe('SonnetSession', () => {
           version: 1,
           // P3 (2026-07-23) — lim_ranged_write_v1 added: web ships the
           // sentinel-safe guards this wave, so it advertises LIM-ranged-write.
-          supports: ['low_conf_readback_v1', 'lim_ranged_write_v1'],
+          // A1b (2026-07-29) — board_clear_v1 added: web decodes + routes the
+          // board-scope field_corrected frame this wave.
+          supports: ['low_conf_readback_v1', 'lim_ranged_write_v1', 'board_clear_v1'],
         },
       });
       // Exported constant is the single source of truth (iOS parity:
       // ServerWebSocketService.voiceLatencySupports).
-      expect(VOICE_LATENCY_SUPPORTS).toEqual(['low_conf_readback_v1', 'lim_ranged_write_v1']);
+      expect(VOICE_LATENCY_SUPPORTS).toEqual([
+        'low_conf_readback_v1',
+        'lim_ranged_write_v1',
+        'board_clear_v1',
+      ]);
       // regex_fast_v2 / client_playback_telemetry MUST NOT be claimed until
       // their web plumbing ships (parity-ledger follow-up rows own them).
       expect(VOICE_LATENCY_SUPPORTS).not.toContain('regex_fast_v2');

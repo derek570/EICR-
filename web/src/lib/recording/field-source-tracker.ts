@@ -116,6 +116,19 @@ export class FieldSourceTracker {
     return out;
   }
 
+  /**
+   * A1b (2026-07-29) — release ownership of cleared slots. A board/supply
+   * clear empties the visible cell; keeping the `preExisting` claim would
+   * make `canRegexWrite` reject the inspector's NEXT dictation into that
+   * empty cell. Clears both the source map and the per-turn regex set.
+   */
+  forget(keys: readonly string[]): void {
+    for (const key of keys) {
+      this.fieldSources.delete(key);
+      this.thisTurnRegexWrites.delete(key);
+    }
+  }
+
   /** Test seam — peek the source of a key without mutation. */
   getSource(key: string): FieldSource | undefined {
     return this.fieldSources.get(key);

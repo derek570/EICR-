@@ -286,3 +286,40 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
 
 /** Known supports list for documentation / log enumeration. */
 export const VOICE_LATENCY_KNOWN_SUPPORTS = KNOWN_SUPPORTS;
+
+/**
+ * A1b (2026-07-29) — pure diff of two parsed capability shapes, for the
+ * `stage6.capability_changed_on_reparse` TRIPWIRE at the reconnect re-parse
+ * site (sonnet-stream.js). Under the current wire a mid-session capability
+ * change is STRUCTURALLY IMPOSSIBLE (web `session_resume` never re-parses;
+ * an iOS build always re-advertises its own static set on the same
+ * sessionId), so this diff is expected to return [] for every production
+ * re-parse — a non-empty result in CloudWatch means that impossibility
+ * argument has been broken by some future path and the live-read fence is
+ * load-bearing.
+ *
+ * Compares `version` plus every boolean `has*` flag (union of both shapes,
+ * so a flag added on one side only still diffs). Deliberately IGNORES `raw`
+ * and the `supports` Set (the has* flags are the consumed projection; raw
+ * echoes client bytes and would leak into logs). PII-safe by construction:
+ * flag names + booleans/numbers only.
+ *
+ * @returns {Array<{flag: string, from: boolean|number, to: boolean|number}>}
+ */
+export function diffVoiceLatencyCapabilities(prev, next) {
+  const changed = [];
+  const p = prev ?? {};
+  const n = next ?? {};
+  if ((p.version ?? 0) !== (n.version ?? 0)) {
+    changed.push({ flag: 'version', from: p.version ?? 0, to: n.version ?? 0 });
+  }
+  const flagKeys = new Set(
+    [...Object.keys(p), ...Object.keys(n)].filter((k) => k.startsWith('has'))
+  );
+  for (const key of [...flagKeys].sort()) {
+    const from = p[key] === true;
+    const to = n[key] === true;
+    if (from !== to) changed.push({ flag: key, from, to });
+  }
+  return changed;
+}

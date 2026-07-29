@@ -193,10 +193,18 @@ export interface Stage6ToolCallCompleted {
  *  matching slot on the live grid so the inspector sees the previous
  *  value disappear before the next `record_reading` lands ms later. */
 export interface Stage6FieldCorrected {
-  circuit: number;
+  /**
+   * A1b (2026-07-29) — `null` for a BOARD-scope clear frame (the §3.4b
+   * discriminator: `circuit: null` + non-null `board_id`). A number for the
+   * legacy circuit-scope clear. Never both absent — that shape is rejected
+   * at decode.
+   */
+  circuit: number | null;
   field: string;
   previous_value?: string | null;
   reason?: string | null;
+  /** Non-null on board-scope frames; absent/null on circuit frames. */
+  board_id?: string | null;
 }
 
 /** STI-06 — emitted when `create_circuit` dispatches. iOS appends to
@@ -635,6 +643,14 @@ const STAGE6_PROTOCOL_VERSION = 'stage6';
 export const VOICE_LATENCY_SUPPORTS: readonly string[] = [
   'low_conf_readback_v1',
   'lim_ranged_write_v1',
+  // A1b (2026-07-29) — board_clear_v1: this build decodes the board-scope
+  // `field_corrected` frame (circuit:null + board_id) and routes it through
+  // BOARD_CLEAR_ROUTE_MAP (board-clear.ts), so the server's deny-first
+  // clear_board_reading gate may open for this session. Flipped as the LAST
+  // commit of the A1b wave, after every dependency gate was verified in the
+  // /ep execution log. Rollback = server BOARD_CLEAR_DISABLED, never
+  // un-advertising.
+  'board_clear_v1',
 ];
 
 export class SonnetSession {
@@ -1960,12 +1976,26 @@ export class SonnetSession {
         // and the LiveFillView flash fires identically.
         const circuit = typeof json.circuit === 'number' ? json.circuit : null;
         const field = typeof json.field === 'string' ? json.field : '';
-        if (circuit == null || !field) break;
+        // A1b (2026-07-29) — the board frame decodes: circuit-less +
+        // non-empty `board_id` is A1a's board-scope clear discriminator
+        // (mirrors the iOS Stage6Messages decode rule; iOS is canon for
+        // the frame shape). A frame with NEITHER a circuit NOR a board id
+        // is scope-less and is REJECTED + logged — the dispatcher always
+        // resolves a non-null board_id for board clears, so a scope-less
+        // frame is a contract violation, never a legitimate global clear.
+        const boardId =
+          typeof json.board_id === 'string' && json.board_id !== '' ? json.board_id : null;
+        if (!field) break;
+        if (circuit == null && boardId == null) {
+          pipelineLog('field_corrected_scopeless_rejected', { field });
+          break;
+        }
         const msg: Stage6FieldCorrected = {
           circuit,
           field,
           previous_value: (json.previous_value as string | null | undefined) ?? null,
           reason: (json.reason as string | null | undefined) ?? null,
+          board_id: boardId,
         };
         this.callbacks.onFieldCorrected?.(msg);
         break;
