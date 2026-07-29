@@ -6,7 +6,7 @@
 import fs from 'node:fs/promises';
 import fssync from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import logger from './logger.js';
 
 // Determine storage mode from environment
@@ -27,7 +27,7 @@ async function getS3() {
 }
 
 // Local storage base path
-const LOCAL_DATA_DIR = path.resolve(import.meta.dirname, '..', 'data');
+const LOCAL_DATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
 
 /**
  * Ensure a local directory exists.
@@ -421,16 +421,29 @@ export async function listFiles(prefix) {
     try {
       const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
       const s3 = await getS3();
+      const keys = [];
+      let continuationToken;
 
-      const response = await s3.send(
-        new ListObjectsV2Command({
-          Bucket: S3_BUCKET,
-          Prefix: prefix,
-        })
-      );
+      // S3 returns at most 1,000 keys per ListObjectsV2 call. CCU review
+      // stores 2–3 objects per extraction, so the old single-page helper
+      // would silently hide older samples after only a few hundred reviews.
+      // Paginate in the shared abstraction so every prefix consumer gets
+      // complete results rather than making the review route S3-specific.
+      do {
+        const response = await s3.send(
+          new ListObjectsV2Command({
+            Bucket: S3_BUCKET,
+            Prefix: prefix,
+            ContinuationToken: continuationToken,
+          })
+        );
+        for (const object of response.Contents ?? []) {
+          if (object.Key) keys.push(object.Key);
+        }
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+      } while (continuationToken);
 
-      if (!response.Contents) return [];
-      return response.Contents.map((obj) => obj.Key);
+      return keys;
     } catch (e) {
       logger.error('S3 list error', { error: e.message });
       return [];

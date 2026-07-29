@@ -554,6 +554,55 @@ export interface CCUAnalysis {
   [key: string]: unknown;
 }
 
+export type CcuReviewStatus = 'unreviewed' | 'reviewed' | 'all';
+
+export interface CcuReviewSample {
+  sampleId: string;
+  extractionId: string;
+  sessionId: string;
+  createdAt: string | null;
+  reviewed: boolean;
+}
+
+export interface CcuReviewListResponse {
+  items: CcuReviewSample[];
+  total: number;
+  reviewed: number;
+  unreviewed: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CcuReviewGroundTruth {
+  board: Record<string, string | boolean | null>;
+  circuits: CircuitRow[];
+  notes: string;
+}
+
+export interface CcuReviewDetailResponse {
+  sample: CcuReviewSample;
+  imageUrl: string;
+  extracted: CCUAnalysis;
+  extractionMeta: {
+    model: string | null;
+    timestamp: string | null;
+    totalElapsedMs: number | null;
+  };
+  groundTruth: CcuReviewGroundTruth | null;
+  reviewMeta: {
+    reviewedAt: string | null;
+    revision: number;
+  } | null;
+  sessionConfirmedLayout: Record<string, unknown> | null;
+}
+
+export interface CcuReviewSaveResponse {
+  success: true;
+  sampleId: string;
+  reviewedAt: string;
+  revision: number;
+}
+
 /**
  * Response from POST /api/analyze-document. GPT Vision extracts EICR/EIC
  * certificate data from an image (typed cert, handwritten test sheet,

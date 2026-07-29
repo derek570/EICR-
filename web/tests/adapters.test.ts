@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   AdminUserListSchema,
   CCUAnalysisSchema,
+  CcuReviewDetailResponseSchema,
+  CcuReviewListResponseSchema,
   CompanyJobListSchema,
   CompanyLiteListSchema,
   CompanyMemberListSchema,
@@ -270,6 +272,49 @@ describe('CCUAnalysisSchema', () => {
     );
     expect(result).toBe(raw);
     expect(warnCalls).toHaveLength(1);
+  });
+});
+
+describe('CCU ground-truth review schemas', () => {
+  const sample = {
+    sampleId: 'opaque-sample',
+    extractionId: '1785232800000-abc123',
+    sessionId: 'session-1',
+    createdAt: '2026-07-29T10:00:00.000Z',
+    reviewed: false,
+  };
+
+  it('accepts the review queue summary', () => {
+    expect(
+      CcuReviewListResponseSchema.parse({
+        items: [sample],
+        total: 1,
+        reviewed: 0,
+        unreviewed: 1,
+        limit: 200,
+        offset: 0,
+      }).items[0]
+    ).toEqual(sample);
+  });
+
+  it('accepts a photo/detail response with CertMate-shaped ground truth', () => {
+    const parsed = CcuReviewDetailResponseSchema.parse({
+      sample: { ...sample, reviewed: true },
+      imageUrl: 'https://signed.example/original.jpg',
+      extracted: {
+        board_manufacturer: 'Hager',
+        circuits: [{ circuit_number: 1, label: 'Sockets' }],
+      },
+      extractionMeta: { model: 'gpt-5.5', timestamp: null, totalElapsedMs: 900 },
+      groundTruth: {
+        board: { board_manufacturer: 'Hager', spd_present: true },
+        circuits: [{ id: 'c1', circuit_ref: '1', circuit_designation: 'Sockets' }],
+        notes: '',
+      },
+      reviewMeta: { reviewedAt: '2026-07-29T11:00:00.000Z', revision: 1 },
+      sessionConfirmedLayout: null,
+    });
+    expect(parsed.groundTruth?.circuits[0].circuit_designation).toBe('Sockets');
   });
 });
 

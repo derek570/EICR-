@@ -205,6 +205,12 @@ Sequence (current pipeline):
 
 **Legacy per-slot pipeline (LEGACY FALLBACK ONLY)**: `src/extraction/ccu-geometric.js`, `src/extraction/ccu-geometric-rewireable.js`, `src/extraction/ccu-label-pass.js` still exist and can be activated by setting `CCU_USE_SINGLE_SHOT=false`. They run a 4-stage Sonnet pipeline (rail bbox → CV pitch → per-slot crop+classify in batches of 4 → wider per-slot label-zone crop). Pre-2026-05-08 the live pipeline; retained for emergency rollback if single-shot regresses. **Do not reason about its behaviour as a current failure mode unless the env override is confirmed set.**
 
+### CCU ground-truth review loop
+
+Every extraction already persists its full-resolution source and raw answer at `ccu-extractions/{userId}/{sessionId}/{extractionId}/{original.jpg,result.json}`. The system-admin workspace at `/settings/admin/ccu-review?sample={opaqueId}` turns those diagnostic pairs into a review queue: the original photograph stays visible beside editable CertMate board/circuit fields, initially populated through the same `ccuAnalysisToCircuitRows` mapping used by the production apply path.
+
+Saving writes a revisioned `ground-truth.json` beside the exact extraction. The session-level `final.json` is not treated as that photograph's truth because it may combine multiple boards or later voice edits; the detail API exposes it only as optional reference data. The admin-only API is `GET /api/admin/ccu-review`, `GET /api/admin/ccu-review/{sampleId}`, and `PUT /api/admin/ccu-review/{sampleId}`. All three are protected by `requireAuth` + `requireAdmin`; image bytes are exposed through a 15-minute S3 URL. Review payloads use field allowlists, strip stored crop/base64 diagnostics, and never expose the source user id. `storage.listFiles()` paginates S3 so the queue remains complete beyond the 1,000-object ListObjectsV2 page size.
+
 ## AWS Configuration
 
 | Resource | Value |

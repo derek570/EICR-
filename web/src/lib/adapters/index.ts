@@ -31,6 +31,13 @@ export {
 } from './job';
 export { CCUAnalysisSchema, CCUAnalysisCircuitSchema } from './ccu';
 export {
+  CcuReviewDetailResponseSchema,
+  CcuReviewGroundTruthSchema,
+  CcuReviewListResponseSchema,
+  CcuReviewSampleSchema,
+  CcuReviewSaveResponseSchema,
+} from './ccu-review';
+export {
   DocumentExtractionCircuitSchema,
   DocumentExtractionObservationSchema,
   DocumentExtractionFormDataSchema,
