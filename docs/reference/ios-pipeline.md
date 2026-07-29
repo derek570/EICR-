@@ -188,6 +188,22 @@ For the five text-op fields (`circuit_op`, `observation`, `observation_deletion`
 
 ---
 
+## Dialogue-engine correction paths (PLAN-1, feedback-2026-07-27 wave)
+
+> Added 2026-07-30 (feedback ids 105/109/110b/113, sessions 2C297353/CCFE039C/BE1C53C0). Backend-only, **zero wire change** — both clients benefit identically. Same verification lane as Plan F (dialogue ingress is outside the field-replay corpus boundary).
+
+**Ring correction ladder is bidirectional (ids 109/110b).** The `awaiting_confirmation` ladder's named extractors required label-before-value, so `"0.85 on the lives"` exited engine-silent and an entry-shaped amend re-read the OLD values. The ring slots now carry `namedExtractorCandidates` — a field-first + value-first candidate pair with the legacy twin's smaller-gap/field-first-ties selection rule (`helpers/extraction.js`; the value-first connector `on/for/across/at/down/onto/to` is MANDATORY so circuit/way numbers never mis-classify as readings). The widening reaches every extractor consumer — entry, unresolved-queue/drain, mid-collection, conflict resolution, and the orphan-net `reparseSingleCompleteReading`, which now masks `circuit N` spans (shared canonical `maskCircuitSpans`) before extracting.
+
+**Retained-value negation machine.** `"No. 0.85"` (negation + one bare anchored value, no pending slot) retains the value on `state.confirmation_pending_value` while the existing negation re-ask asks WHICH slot is wrong — routed through `handleNegation` so the P1 latch/counter/cap bookkeeping is shared; the slot answer (`"R1"`) applies the retained value via the 5c write path (one write, one frame, re-confirm) — a two-turn correction. Cleared on every exit and every mid-episode continuation (5b amend, 5c write, value-less 5g re-entry). 5g now PRESERVES the per-episode `confirmation_negation_reask_emitted` latch — resetting it re-opened the feedback-91 byte-identical-repeat silence class. Non-negated bare unnamed triples (`"0.85, 0.86, 0.91"`) stay model-bound — dated known limitation, Derek-confirmed 2026-07-29.
+
+**RCD entry is intent-gated (id 113).** Entry now requires the RCD/ICD token AND (an in-clause `circuit N` OR an enumerated intent term: `test | trip | milliseconds | ms | button | x1 | x5 | times one | times five` — stem-only, both directions, clause-bounded) AND NOT the narrative veto (`no/without RCD protection | RCD absent | not RCD protected` — a third entry-exclusion pattern beside the P1 imperative/denial pair; it outranks circuit scope). Descriptive RCD mentions — including the general-condition sentence the script used to hijack — now reach the model, which owns `record_reading` for RCD fields and can ask (fail-forward, Derek-confirmed). Circuit stays capture group 1 in every trigger; the veto gates script ENTRY only (documented asymmetry: `reparseSingleCompleteReading` consults `schema.triggers`, never `entryExclusionPattern`).
+
+**IR volunteer-both path (id 105).** When both readings arrive before the circuit, the circuit-resolution turn now parses the voltage from the RAW reply with the resolution span masked (whole-reply mask for a bare numeric answer; span-only for `circuit N`/designation, so `"circuit 4, tested at 500"` is byte-identical) — resolution metadata rides additively on `parseCircuitDigitWithSpan` + `findCircuitsByDesignation.matchedDesignation`. A null parse EMITS the voltage ask and stamps `voltage_phase_entered_at` (arming the existing 30 s re-ask + `onExclusiveSlotAbandoned`); a `flushWritesOnce` latch on every enumerated exclusive-branch exit wire-emits the drained writes exactly once (the confirm-gate non-standard prompt flushes on the drain turn). Schema-scan pin: exclusive slots == `{ir_test_voltage_v}` across all registered schemas.
+
+**Key files:** `src/extraction/dialogue-engine/{engine.js, helpers/extraction.js, helpers/circuit-resolution.js, schemas/ring-continuity.js, schemas/rcd.js, parsers/ohms.js}`, `src/extraction/stage6-shadow-harness.js`; tests `dialogue-engine-correction-paths.test.js` (48), `dialogue-engine-rcd-entry-guard.test.js` (decision table), `dialogue-engine-replay.test.js` (+3 value-first parity scenarios — the twin needed zero edits).
+
+---
+
 ## Observation apply identity (P7 — server-id keying, marker ④)
 
 > Added 2026-07-24 (feedback id 82, session 36731498). Client-only (iOS `applySonnetObservations` + web `applyObservations`); **zero backend change**.
