@@ -453,6 +453,20 @@ Key events in the iOS debug log (`whisper_debug.json`):
 | Values in wrong circuit              | Circuit ref wasn't mentioned before values                 | Say circuit number before each set of readings |
 | Field blocked by CCU                 | CCU photo pre-filled the field, extraction won't overwrite | Expected — CCU data takes priority over voice  |
 
+## MAIN EARTH vs Ze detector aliases + prompt precedence (Plan E-ship, 2026-07-29)
+
+> Backend prompt + `src/extraction/stage6-pending-value.js`, **zero wire change** — both clients benefit identically. This is the standalone, review-quiet extraction of held PR #126 (plan E main-earth-steer); the C4 concurrent-state ask-answer routing half of that plan (shared semantic-slot identity, ordinary-ask overtake/re-injection lifecycle, generation supersession, reservation/rollback) is **NOT** part of this section and stays on the held branch pending a future re-plan (`sticky-wrong-field-replan`).
+
+**The bug.** Derek dictated *"Main earth is 16"* — a conductor cross-sectional area in mm² — and the model wrote `earth_loop_impedance_ze`, an impedance in ohms. Two quantities, two certificate boxes.
+
+**Prompt precedence ladder** (`config/prompts/sonnet_agentic_system.md`, Group 20): "Ze at the board"/"Ze at DB" keeps its existing `ze_at_db` routing ABOVE bare Ze; a bare-Ze anchor or an explicit ohms unit ⇒ `earth_loop_impedance_ze`; an explicit size anchor ⇒ `earthing_conductor_csa` (bare "conductor" is explicitly NOT a size anchor, so material/continuity/bonding phrasings keep their existing fields); a genuine conflict draws ONE ask naming the unit. Example-8 gains a re-opened-field-choice exception: a reply naming a different field's vocabulary re-maps from the reply's own words.
+
+**Detector aliases** (`detectStructuredReading`'s `DETECTOR_ALIASES` map): two new anchored earth phrases route to `earthing_conductor_csa` — `main earth` and `main earthing conductor` — each with a `notFollowedBy` immediate-lookahead exclusion so an adjacent phrasing ("main earthing conductor material is Copper") is NOT seized as a CSA reading. A bare "earthing conductor" alias is deliberately absent (first-hit-wins would seize the material/continuity fields). `ze at the board`/`ze at db` are ordered ahead of bare `ze` in the same map.
+
+**What this buys standalone (no C4 machinery needed) — and its known limit:** the detector's field label is only ever used as a boolean "is this a fresh structured reading?" guard — nothing downstream writes from the label itself. On the tested pendingValue-class dispatcher path (a `context_field:"none"` ask, or a brokered `pvr-*` ask), an ambiguous main-earth reply that arrives while that kind of ask is pending fails the guard and falls through to the model as a fresh transcript, where the prompt ladder above resolves it — pinned by two DECIDED-pin tests (`src/__tests__/stage6-pending-value.test.js`, `src/__tests__/stage6-dispatcher-ask-pending-value.test.js`). This guard is **NOT** applied on the direct `ask_user_answered` channel for an ORDINARY concrete-field ask (e.g. a pending Zs ask) — that scoping is pre-existing on `origin/main`, untouched by this extraction, and the same limitation applies today to any already-recognised alias (e.g. "Ze is 0.35" answering an open Zs ask). Closing it requires exactly the C4 semantic-slot ask-answer comparison this extraction defers to the re-plan (`sticky-wrong-field-replan`).
+
+**Live probes required (post-deploy, ear-verified only — never closed headlessly):** the main-earth positive pair, a blocking "Ze is 0.35" no-regression check, "the earth is 16" ambiguity, an adversarial precedence set, and the blocking adjacent-field set (`earthing arrangement is TT` / `Ze at the board is 0.2` / `main bonding is 10`). See the ep-digest for outcomes.
+
 ## Board-Clear Client Contract (Plan A1b, 2026-07-29)
 
 The `clear_board_reading` tool (A1a, feedback id 101 — "Delete Ze") emits a

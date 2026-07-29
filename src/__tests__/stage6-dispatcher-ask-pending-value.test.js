@@ -508,4 +508,58 @@ describe('§A4 — regressions: flows that must NOT engage', () => {
     expect(body.match_status).toBeUndefined();
     expect(autoResolveWrite).not.toHaveBeenCalled();
   });
+
+  // DISPOSITION PIN — a plausible-sounding wrong-write, found NOT to be one;
+  // this test is what keeps it that way.
+  //
+  // The claim: "main earth is 0.35 ohms" is detected by detectStructuredReading
+  // as field `earthing_conductor_csa` (a SUPPLY-family cross-section field), so
+  // consuming it as an ask answer would write an impedance into a CSA field and
+  // read it back — silently wrong, on a circuit it was never about.
+  //
+  // Why it does not reach production: the detector's field label is only ever
+  // used as a BOOLEAN "is this a fresh structured reading?" guard — no consumer
+  // writes from `structured.fieldKey`. Here that guard makes the chain REFUSE
+  // the answer outright, so the deterministic write path is never entered and
+  // the utterance goes to the model, where the main-earth §4 precedence ladder
+  // routes ohms-on-main-earth to Ze. Reaching the writer requires hand-building
+  // a registry entry and calling past this gate — not a real reachable path.
+  //
+  // Three assertions, deliberately: the refusal itself, that the mis-labelled
+  // CSA field never appears in what is dispatched, AND (ep-diff-review cycle-1
+  // NIT) that the reply text itself survives into the tool-result body as
+  // `untrusted_user_text` — the DISPATCHER-level guarantee that the reply is
+  // forwarded rather than silently dropped (whether the surrounding tool loop
+  // then relays that tool_result to the model is the Anthropic tool-use
+  // protocol's own structural guarantee, not something this unit re-proves).
+  // Without this third assertion the test would pass identically even if the
+  // reply were silently dropped instead of forwarded, which is exactly the
+  // failure mode Audio-First #1 exists to catch. If a future refactor makes
+  // the detector's field
+  // authoritative, the second assertion is what fails; if a future refactor
+  // drops the reply instead of forwarding it, the third assertion is what
+  // fails.
+  test.each([
+    'main earth is 0.35 ohms',
+    'main earth 0.35 ohms',
+    'the main earth is 0.35',
+    'main earthing conductor is 16',
+  ])('main-earth reply %j never reaches the deterministic writer', async (reply) => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, makeWs(), {
+      autoResolveWrite,
+    });
+    const p = dispatcher({ tool_call_id: 'toolu_e', name: 'ask_user', input: noneAsk() }, {});
+    await tick();
+    pendingAsks.resolve('toolu_e', { answered: true, user_text: reply });
+    const env = await p;
+    const body = JSON.parse(env.content);
+
+    expect(body.match_status).toBeUndefined();
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain('earthing_conductor_csa');
+    expect(body.untrusted_user_text).toBe(reply);
+  });
 });

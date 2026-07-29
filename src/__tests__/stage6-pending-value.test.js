@@ -261,3 +261,126 @@ describe('detectStructuredReading — typed, schema-aware completeness', () => {
     expect(d).toMatchObject({ fieldKey: 'means_earthing_electrode', complete: true });
   });
 });
+
+// -----------------------------------------------------------------------------
+// Plan E §4b piece 2 (2026-07-28, feedback id 100(a)) — anchored main-earth
+// DETECTOR_ALIASES + per-alias notFollowedBy exclusions + ze-at-board
+// precedence. The safety matrix here is what keeps the two new aliases from
+// cannibalising the ADJACENT earth-family fields: the lexicon-form cases
+// exercise the lexicon path, the alias-FORM cases exercise the alias path
+// with its exclusion lookahead (round-5: lexicon-form cases alone never
+// exercise the alias path).
+// -----------------------------------------------------------------------------
+
+describe('detectStructuredReading — plan E main-earth aliases', () => {
+  test('"main earth is 16" → earthing_conductor_csa, complete (the id-100 repro reply)', () => {
+    const d = detectStructuredReading('main earth is 16');
+    expect(d).toMatchObject({
+      fieldKey: 'earthing_conductor_csa',
+      family: 'supply',
+      complete: true,
+    });
+  });
+
+  test('"main earthing conductor 10" → earthing_conductor_csa, complete', () => {
+    const d = detectStructuredReading('main earthing conductor 10');
+    expect(d).toMatchObject({ fieldKey: 'earthing_conductor_csa', complete: true });
+  });
+
+  test('lexicon-form adjacents keep their homes: material / continuity', () => {
+    expect(detectStructuredReading('earthing conductor material is Copper')).toMatchObject({
+      fieldKey: 'earthing_conductor_material',
+      complete: true,
+    });
+    expect(detectStructuredReading('earthing conductor continuity is pass')).toMatchObject({
+      fieldKey: 'earthing_conductor_continuity',
+      complete: true,
+    });
+  });
+
+  test('ALIAS-form adjacents (round-5 — these exercise the notFollowedBy lookahead): "main earthing conductor material/continuity" are NOT CSA', () => {
+    expect(detectStructuredReading('main earthing conductor material is Copper')).toMatchObject({
+      fieldKey: 'earthing_conductor_material',
+    });
+    expect(detectStructuredReading('main earthing conductor continuity is pass')).toMatchObject({
+      fieldKey: 'earthing_conductor_continuity',
+    });
+  });
+
+  test('SAFETY INVARIANT (round-4): "main earth bonding is 10" is NOT CSA — no lexicon name exists, so the detector returns null', () => {
+    // A positive bonding_conductor_csa assertion is unachievable (the
+    // lexicon has no "main bonding"/"main earth bonding" name); the
+    // invariant is null-or-not-CSA — the prompt steers the model for the
+    // positive bonding write (live probe 6).
+    const d = detectStructuredReading('main earth bonding is 10');
+    expect(d === null || d.fieldKey !== 'earthing_conductor_csa').toBe(true);
+  });
+
+  test('adjacent select field unaffected: "earthing arrangement is TT" → earthing_arrangement', () => {
+    expect(detectStructuredReading('earthing arrangement is TT')).toMatchObject({
+      fieldKey: 'earthing_arrangement',
+      complete: true,
+    });
+  });
+
+  test('ze-at-board precedence (round-4): "Ze at the board is 0.2" → ze_at_db, never supply earth_loop_impedance_ze', () => {
+    expect(detectStructuredReading('Ze at the board is 0.2')).toMatchObject({
+      fieldKey: 'ze_at_db',
+      family: 'board',
+      complete: true,
+    });
+    expect(detectStructuredReading('Ze at DB is 0.2')).toMatchObject({ fieldKey: 'ze_at_db' });
+    // Bare Ze keeps its supply routing.
+    expect(detectStructuredReading('Ze is 0.35')).toMatchObject({
+      fieldKey: 'earth_loop_impedance_ze',
+      family: 'supply',
+    });
+  });
+
+  test('IMMEDIATE-lookahead exclusion (round-6): a compound utterance with the excluded word ELSEWHERE still matches at its own position', () => {
+    expect(detectStructuredReading('main earth is 16 and the bonding is 10')).toMatchObject({
+      fieldKey: 'earthing_conductor_csa',
+      complete: true,
+    });
+  });
+
+  // Two DECIDED-behaviour pins carried over as the review-quiet evidence for
+  // this standalone extraction (the main-earth precedence steer + detector
+  // aliases above). Both are checked here rather than assumed.
+  //
+  // The unit-precedence ladder ("an ohms unit ⇒ earth_loop_impedance_ze") lives
+  // in the PROMPT (§4), not in this detector. The detector's only job is to
+  // decide whether a reply is a FRESH structured reading or the answer to a
+  // pending ask — it never writes a field. When the detector disagrees with an
+  // ask still pending, no branch on `origin/main` writes the detector's field:
+  // depending on which pre-existing path the reply arrives through, it is
+  // either re-injected as a fresh transcript (the pendingValue-class direct
+  // `ask_user_answered` channel and the transcript-first overtake path both do
+  // this) or, on the dispatcher's own fallback, forwarded to the model as
+  // `untrusted_user_text` in the tool result (see
+  // stage6-dispatcher-ask-pending-value.test.js's main-earth pins, which
+  // assert this exact field on the response body) — either way the MODEL
+  // makes the final field decision under the §4 ladder, never this detector.
+  // It can never produce a wrong write or a lost reading.
+  test('DECIDED: an explicit ohms unit does NOT re-route the detector — the prompt ladder owns unit precedence, and the detector never writes', () => {
+    expect(detectStructuredReading('main earth is 0.35 ohms')).toMatchObject({
+      fieldKey: 'earthing_conductor_csa',
+    });
+    // The consequence that makes this safe: the value still reaches the model
+    // as a fresh transcript, and "Ze"-anchored speech is unaffected.
+    expect(detectStructuredReading('Ze is 0.35 ohms')).toMatchObject({
+      fieldKey: 'earth_loop_impedance_ze',
+    });
+  });
+
+  test('DECIDED: the BARE "earthing conductor" alias stays dropped — adding it would seize "earthing conductor material is Copper" as a CSA reading', () => {
+    // Returning null means this reply is treated as the pending ask's answer
+    // rather than a fresh reading. That is the accepted cost of keeping the
+    // adjacent material/continuity fields correct; the inverted-ask earth case
+    // is the named follow-up, not this alias.
+    expect(detectStructuredReading('earthing conductor is 16')).toBeNull();
+    expect(detectStructuredReading('earthing conductor material is Copper')).toMatchObject({
+      fieldKey: 'earthing_conductor_material',
+    });
+  });
+});

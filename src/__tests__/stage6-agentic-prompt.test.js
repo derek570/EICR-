@@ -465,8 +465,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // markers), plus the corrected 17/19 headings. Measured 22245; cap
       // 22345 leaves ~100-token headroom (measured + ~100 per the P8
       // precedent).
+      // Plan E (2026-07-28, main-earth steer — feedback id 100(a)): the MAIN
+      // EARTH vs Ze precedence ladder (beside the ZE/ZS block) + the Example-8
+      // re-opened-field-choice exception + the line-~123 exemplar swap all
+      // land in the SHARED region (both renders grow). ep-diff-review
+      // cycle-1 fixes (negation-safe anchors, adjacent-field precedence,
+      // clause-locality, category-specific conflict) grew it further.
+      // Measured 22891; cap 22991 leaves ~100-token headroom (measured +
+      // ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(22345);
+      expect(estimate).toBeLessThanOrEqual(22991);
     });
   });
 
@@ -1202,8 +1210,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // tool bullet, scope-explicit clear directives, Delete-Ze steer,
       // corrected 17/19 headings — see the Group 1 comment). Measured 17008;
       // cap 17108 leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // Plan E (2026-07-28, main-earth steer): shared-region growth (MAIN
+      // EARTH vs Ze ladder + Example-8 re-open exception + exemplar swap —
+      // see the Group 1 combined-cap comment). ep-diff-review cycle-1 fixes
+      // (negation-safe anchors, adjacent-field precedence, clause-locality,
+      // category-specific conflict) grew it further. Measured 17653; cap
+      // 17753 leaves ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(17108);
+      expect(estimate).toBeLessThanOrEqual(17753);
     });
   });
 
@@ -2013,6 +2027,111 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         // source_turn_id is a record_reading field, NOT record_observation —
         // it must not appear on these observation examples.
         expect(call[0]).not.toContain('source_turn_id');
+      }
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 20 — 2026-07-28 plan E: MAIN EARTH vs Ze steer (feedback id
+  // 100(a), session C06B9904) + the Example-8 re-opened-field-choice
+  // exception (INDEX correction C4). The steers land in the SHARED
+  // region, so BOTH flag renders must carry them (prod is flag-ON; a
+  // flag-OFF rollback must not resurrect the misroute).
+  // ------------------------------------------------------------------
+  describe('Group 20 — 2026-07-28 plan E main-earth steer + C4 re-open rule', () => {
+    test('MAIN EARTH vs Ze block present in BOTH flag renders with the precedence ladder', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain(
+          'MAIN EARTH vs Ze (CRITICAL — "main earth" is a conductor SIZE in mm², not an impedance)'
+        );
+        // Priority order (ep-diff-review cycle-3 IMPORTANT, 2026-07-29):
+        // adjacent field name (a) beats the genuine-conflict test (b) beats
+        // the ladder (c). Cycle-2's "conflict-first" wording was itself a
+        // contradiction — it let "earthing conductor continuity is pass"
+        // (a value fitting neither the Ze nor CSA pattern) trip the
+        // genuine-conflict ask INSTEAD of routing to the explicitly-named
+        // continuity field, since the conflict test ran before the
+        // adjacent-name check existed. Restructured so (a) is checked first.
+        expect(rendered).toMatch(
+          /Precedence, highest first, EACH VALUE JUDGED ONLY BY ITS OWN CLAUSE\. Checked in THIS order: \(a\) an adjacent field name \(material\/continuity\/bonding\) ALWAYS wins first/
+        );
+        expect(rendered).toContain(
+          '(b) ONLY when no adjacent name applies, the genuine-conflict test below fires — no ladder rung applies when it does. (c) Otherwise the ladder: (1) "Ze at the board" / "Ze at DB" → `ze_at_db`'
+        );
+        // Ladder rung 3 guard: bare "conductor" is NOT a size anchor — the
+        // adjacent material/continuity/bonding fields must keep their homes.
+        expect(rendered).toContain('The bare word "conductor" alone is NOT such a name');
+        expect(rendered).toContain(
+          '"earthing conductor material is Copper" → `earthing_conductor_material`'
+        );
+        expect(rendered).toContain(
+          '"main bonding is 10" / "main earth bonding is 10" → `bonding_conductor_csa`'
+        );
+        // ep-diff-review cycle-1 IMPORTANT (2026-07-29): an explicitly-named
+        // adjacent field always wins — an ohms-unit token beside
+        // "continuity" must never be read as a Ze anchor, and an invalid
+        // PASS/FAIL value there is asked for, never written and never
+        // reinterpreted as Ze.
+        expect(rendered).toContain(
+          '"earthing conductor continuity is pass" → `earthing_conductor_continuity` (an invalid PASS/FAIL value there is asked for, never written, never Ze)'
+        );
+        // Vocabulary default with the CSA enum magnitudes.
+        expect(rendered).toContain('(6, 10, 16, 25, 35, 50) → `earthing_conductor_csa`');
+        expect(rendered).toContain(
+          '*"Main earth is 16"* → `earthing_conductor_csa: "16"` — NEVER a Ze write'
+        );
+        // Conflict ⇒ ONE ask naming the deciding fact (unit) — D2 style only.
+        expect(rendered).toContain('ONE `ask_user` NAMING the deciding fact');
+      }
+    });
+
+    test('Example-8 precedence carries the re-opened-field-choice exception in BOTH renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('EXCEPTION — re-opened field choice');
+        expect(rendered).toContain(
+          "re-map from the reply's own words, NEVER write it to the ask's original field"
+        );
+        // The bare-value guard survives: a bare value reply still resolves
+        // the ask's original field (the normal ask-answer case unweakened).
+        expect(rendered).toContain("A bare value reply still resolves the ask's original field");
+      }
+    });
+
+    test('line-~123 un-enumerable-vocabulary exemplar no longer names "main earth" (now mapped vocabulary)', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        // The missing_field ask guidance keeps its open-question rule but the
+        // exemplar list must not present "main earth" as unmapped — plan E
+        // maps it. "spare ways" (genuinely unmapped) replaces it.
+        expect(rendered).toContain('(e.g. "spare ways", "OCPD rating", "breaking capacity"');
+        expect(rendered).not.toContain('(e.g. "main earth", "OCPD rating"');
+      }
+    });
+
+    // ep-diff-review cycle-1 IMPORTANT (2026-07-29): the literal precedence
+    // ladder ranks "an explicit ohms unit" above a size anchor with no
+    // regard for negation, so a natural correction like "main earth is 16
+    // millimetres squared, not ohms" carries the token "ohms" and could be
+    // misread as Ze-anchored even though the utterance explicitly
+    // disambiguates itself. Pin the negation-safe wording + the widened
+    // genuine-conflict trigger. Revised after the fix-hunk mini-review
+    // (2026-07-29): "two affirmative anchors" alone would false-trigger on
+    // same-family reinforcement ("16 mm² CSA" is size+size, not a
+    // conflict) — the rule now requires ONE anchor from EACH family.
+    // Revised AGAIN after cycle-3 (2026-07-29): the conflict test's "value
+    // fitting neither pattern" fallback is now explicitly scoped to
+    // "main earth"/"main earthing conductor" vocabulary and gated on no
+    // adjacent field name applying — otherwise it would trip on "earthing
+    // conductor continuity is pass" (a PASS/FAIL value fitting neither the
+    // Ze nor CSA numeric pattern) instead of routing to the named field.
+    test('genuine-conflict rule is negation-safe, gated on no adjacent field name, and requires one anchor from EACH family (never same-family reinforcement)', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain(
+          "Only an AFFIRMATIVE anchor in the value's own clause counts — a negated one"
+        );
+        expect(rendered).toContain('never wins even though the word is present');
+        expect(rendered).toContain(
+          'Genuine conflict (checked ONLY when no adjacent field name applies — see (a) above) = the SAME clause carries BOTH a Ze-family anchor AND a size-family anchor (never two of the SAME family — "16 mm² CSA" is size+size, not a conflict), OR "main earth"/"main earthing conductor" vocabulary with a value fitting NEITHER the Ze pattern NOR the CSA pattern'
+        );
       }
     });
   });
