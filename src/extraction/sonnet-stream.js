@@ -1053,6 +1053,7 @@ import {
 import {
   snapshotFlagsForSession as snapshotVoiceLatencyFlags,
   parseVoiceLatencyCapabilities,
+  diffVoiceLatencyCapabilities,
   SNAPSHOT_FLAG_ENV_NAMES as VOICE_LATENCY_SNAPSHOT_ENV_NAMES,
 } from './voice-latency-config.js';
 
@@ -2592,7 +2593,25 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // that never sent the block re-parses to the same empty shape it
       // already had.
       if (existing.voiceLatency) {
-        existing.voiceLatency.capabilities = parseVoiceLatencyCapabilities(msg.capabilities);
+        // A1b (2026-07-29) — TRIPWIRE: under the current wire a re-parse
+        // that CHANGES any capability is structurally impossible (web
+        // resumes via session_resume which never reaches this branch; an
+        // iOS build always re-advertises its own static set, and an older
+        // build cannot know this in-memory sessionId). Zero occurrences
+        // expected; a row in CloudWatch means that argument broke and the
+        // dispatcher's live-read fence is what is holding the line.
+        const nextCapabilities = parseVoiceLatencyCapabilities(msg.capabilities);
+        const capabilityDiff = diffVoiceLatencyCapabilities(
+          existing.voiceLatency.capabilities,
+          nextCapabilities
+        );
+        if (capabilityDiff.length > 0) {
+          logger.info('stage6.capability_changed_on_reparse', {
+            sessionId,
+            changed: capabilityDiff,
+          });
+        }
+        existing.voiceLatency.capabilities = nextCapabilities;
       }
       if (existing.disconnectTimer) {
         clearTimeout(existing.disconnectTimer);
