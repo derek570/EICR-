@@ -2085,5 +2085,25 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).not.toContain('(e.g. "main earth", "OCPD rating"');
       }
     });
+
+    // ep-diff-review cycle-1 IMPORTANT (2026-07-29): the literal precedence
+    // ladder ranks "an explicit ohms unit" above a size anchor with no
+    // regard for negation, so a natural correction like "main earth is 16
+    // millimetres squared, not ohms" carries the token "ohms" and could be
+    // misread as Ze-anchored even though the utterance explicitly
+    // disambiguates itself. Pin the negation-safe wording + the widened
+    // genuine-conflict trigger (two AFFIRMATIVE anchors, not just "fits
+    // neither pattern") so a future edit can't silently drop either half.
+    test('genuine-conflict rule is negation-safe and covers two competing affirmative anchors', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain(
+          "Only an AFFIRMATIVE anchor in the value's own clause counts — a negated one"
+        );
+        expect(rendered).toContain('never wins even though the word is present');
+        expect(rendered).toContain(
+          'Genuine conflict (a value fitting neither pattern, OR TWO affirmative anchors both present)'
+        );
+      }
+    });
   });
 });
