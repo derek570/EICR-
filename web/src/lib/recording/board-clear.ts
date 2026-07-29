@@ -209,14 +209,27 @@ export function applyBoardClearToJob(
     const hasUsableBoards = boards.some((b) => typeof b.id === 'string' && b.id !== '');
     if (
       !hasUsableBoards &&
+      boards.length <= 1 &&
       input.boardId === resolveCanonicalMainBoardId(boards as MainBoardCandidate[])
     ) {
+      // Mini-review: a SOLE id-less board row is part of the legacy shape —
+      // clear it atomically WITH the board_info leg (a board_info-only
+      // clear would leave the Board UI rendering boards[0]'s stale value).
+      // Two or more unusable rows are ambiguous → fall through fail-closed.
       const ownershipKeys = [`board.${input.field}`];
-      if (!(input.field in boardInfo)) return { patch: {}, changedKeys: [], ownershipKeys };
-      const { next } = deleteKeys(boardInfo, [input.field]);
-      patch.board_info = next as JobDetail['board_info'];
+      if (boards.length === 1 && input.field in boards[0]) {
+        const { next } = deleteKeys(boards[0], [input.field]);
+        patch.boards = [next] as JobDetail['boards'];
+        changedKeys.push(`boards.${input.field}`);
+      }
+      if (input.field in boardInfo) {
+        const { next } = deleteKeys(boardInfo, [input.field]);
+        patch.board_info = next as JobDetail['board_info'];
+        changedKeys.push(`board_info.${input.field}`);
+      }
+      if (changedKeys.length === 0) return { patch: {}, changedKeys: [], ownershipKeys };
       pipelineLog('board_clear_synthetic_main_board_info_leg', { field: input.field });
-      return { patch, changedKeys: [`board_info.${input.field}`], ownershipKeys };
+      return { patch, changedKeys, ownershipKeys };
     }
     // explicitUnmatched — NEVER boards[0], never a fuzzy fallback.
     pipelineLog('board_clear_explicit_unmatched', {
