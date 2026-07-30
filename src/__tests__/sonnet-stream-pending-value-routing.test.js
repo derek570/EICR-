@@ -572,6 +572,83 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
+  test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
+    'a transcript-only bounded scalar form "%s" reaches the registered mdr resolver',
+    async (userText) => {
+      const slug = userText.startsWith('Add') ? 'imperative' : 'rcd-qualifier';
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        response_utterance_id: `u-mdr-transcript-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
+    'a direct-channel bounded scalar form "%s" reaches the registered mdr resolver',
+    async (userText) => {
+      const slug = userText.startsWith('Add') ? 'imperative' : 'rcd-qualifier';
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        utterance_id: `u-mdr-direct-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
   test.each([
     ['ambiguous designation', 'lighting'],
     ['fuzzy designation', 'upstars lights'],

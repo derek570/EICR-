@@ -1028,7 +1028,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
 
       partialRun.pendingAsks.resolve(partialFrame.tool_call_id, {
         answered: true,
-        user_text: 'circuit 5',
+        user_text: 'Add to circuit 5 please',
       });
       const partialBody = JSON.parse((await partialRun.promise).content);
       expect(partialBody.match_status).toBe('partial');
@@ -1099,6 +1099,33 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       ]);
     }
   );
+
+  test('the registered mdr follow-up preserves the bounded postfix RCD qualifier', async () => {
+    const run = startMultiDispatcher({
+      session: buildSession([
+        { circuit_ref: 3, circuit_designation: 'Upstairs Lights' },
+        { circuit_ref: 4, circuit_designation: 'Smoke Alarm' },
+      ]),
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 3 without the RCD',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({ match_status: 'full', unresolved: [] });
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([4, 3]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
 
   test('two equally valid overlapping assignments keep both source segments unresolved', async () => {
     const run = startMultiDispatcher();

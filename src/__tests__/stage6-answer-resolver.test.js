@@ -1906,6 +1906,10 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ['I think circuit 2', [2]],
     ['circuits 1 and 2', [1, 2]],
     ['numbers one and two', [1, 2]],
+    ['Add to circuit 5 please', [5]],
+    ['Put it onto cct 6', [6]],
+    ['circuit 3 without the RCD', [3]],
+    ['circuit 3 without RCD qualifier', [3]],
   ])('the mdr-only anchored ref grammar accepts "%s"', (reply, expectedRefs) => {
     const circuits = Array.from({ length: 21 }, (_, index) => ({
       circuit_ref: index + 1,
@@ -1925,6 +1929,29 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes.map((write) => write.circuit)).toEqual(expectedRefs);
     expect(isMultiDescriptionAnswerText(reply, circuits)).toBe(true);
   });
+
+  test.each([
+    ['Add to Bedroom 2', false],
+    ['Add 0.42 to circuit 5', false],
+    ['Add to circuit 5 and circuit 6', false],
+    ['circuit 3 without sockets', true],
+  ])(
+    'the mdr-only exceptional ref grammar rejects out-of-bounds form "%s"',
+    (reply, shouldConsumeAsCorrection) => {
+      const circuits = Array.from({ length: 6 }, (_, index) => ({
+        circuit_ref: index + 1,
+        circuit_designation: `Target ${index + 1}`,
+      }));
+      const verdict = resolveMultiDescriptionFollowup({
+        userText: reply,
+        pendingWrite: SAMPLE_PENDING,
+        availableCircuits: circuits,
+      });
+      expect(verdict).toMatchObject({ kind: 'escalate' });
+      expect(verdict.writes).toBeUndefined();
+      expect(isMultiDescriptionAnswerText(reply, circuits)).toBe(shouldConsumeAsCorrection);
+    }
+  );
 
   test.each(['give me 2 seconds', 'hold on for 2 minutes', 'just 2 secs', 'I need 2 minutes'])(
     'time-unit chatter "%s" is not an mdr circuit-ref answer',

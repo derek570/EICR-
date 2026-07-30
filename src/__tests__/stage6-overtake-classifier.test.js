@@ -1091,6 +1091,34 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
     });
   });
 
+  test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
+    'bounded scalar form "%s" remains an answer to the registered mdr ask',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'mdr-bounded-scalar',
+            {
+              ...mdrEntry,
+              multiDescriptionCircuits: [
+                ...mdrEntry.multiDescriptionCircuits,
+                { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+                { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+              ],
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({
+        kind: 'answers',
+        toolCallId: 'mdr-bounded-scalar',
+        userText,
+      });
+    }
+  );
+
   test('a designation-only restatement is accepted only for the mdr namespace', () => {
     expect(
       classifyOvertake('upstairs lights', [], mockPending([['mdr-multi-description-2', mdrEntry]]))
