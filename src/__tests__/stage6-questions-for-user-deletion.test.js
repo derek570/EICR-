@@ -131,6 +131,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 // post-harness branch, not the ask routing that ask-routing tests cover.
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: jest.fn(() => ({ kind: 'no_pending_asks' })),
+  classifyFreshCommandText: jest.fn(() => ({
+    isFreshCommand: false,
+    matchedImperative: false,
+    matchedBulkScope: false,
+    wordCount: 0,
+  })),
 }));
 
 // ── Dynamic import AFTER mocks ────────────────────────────────────────────────
