@@ -366,10 +366,27 @@ function stampWriteSequence(target) {
  * clear-removal path all call this.
  */
 export function readingSlotKeyOf(rawKey, value) {
+  const parts = readingSlotPartsOf(rawKey, value);
+  return rawCircuitSlot(parts.field, parts.circuit, parts.boardId);
+}
+
+/**
+ * The same ONE derivation as `readingSlotKeyOf`, returned UNJOINED as
+ * `{field, circuit, boardId}`.
+ *
+ * Plan 2A needs the parts, not the joined string: its partial-failure drain
+ * compares a notice target against the turn's surviving writes with the FIELD
+ * IDENTITY CANONICALISED on both sides (so an alias-spelled retry —
+ * `measured_zs_ohm` then `zs` — subtracts instead of speaking a false "not
+ * recorded"), which a pre-joined key cannot express. Kept here, next to the
+ * key builder, so the two can never disagree about which stamp wins or how a
+ * null board normalises.
+ */
+export function readingSlotPartsOf(rawKey, value) {
   const sym = value?.[EFFECTIVE_CIRCUIT_SLOT];
-  if (sym) return rawCircuitSlot(sym.field, sym.circuit, sym.boardId);
+  if (sym) return { field: sym.field, circuit: sym.circuit, boardId: sym.boardId ?? null };
   const decoded = decodeReadingKey(String(rawKey));
-  return rawCircuitSlot(decoded.field, decoded.circuit, decoded.boardId);
+  return { field: decoded.field, circuit: decoded.circuit, boardId: decoded.boardId ?? null };
 }
 
 /**
@@ -624,6 +641,24 @@ export function createPerTurnWrites() {
     // is boardSlotKey(canonical field, scope-conditioned board id), used for
     // within-turn (family + slot) dedupe BEFORE rotation selection.
     mandatoryNotices: [],
+    // Plan 2A (2026-07-30) §3.1 — PARTIAL-FAILURE notices: a SEPARATE
+    // accumulator from mandatoryNotices, deliberately not a new `family` on
+    // that one. Plan B's notices answer "the whole turn was refused" and are
+    // wired into the coverage arbitration (coveredUnion,
+    // stampCoveredNoticesNonDraining, the net-0 drain filter, which admits any
+    // entry with a string `family` and drain !== false). These answer "part of
+    // the turn silently did not land" and MUST be excluded from all of that:
+    // an unclassed partial notice inside mandatoryNotices would first suppress
+    // the generic A3 prompt and then be dropped at net-0, leaving an
+    // all-rejected turn SILENT (round-2 BLOCKER). A separate array makes that
+    // exclusion a property of the data structure instead of a field being
+    // absent, so it cannot regress when a future family is added.
+    // Aggregated at STAGE time by `(reason, canonical field, boardId)` with a
+    // per-target list retained, so a spoken line can name refs ("circuits 7
+    // and 8") and two boards' same-numbered misses never merge.
+    // Entries: { noticeKind: 'partial_failure', key, reason, field, fieldLabel,
+    //            boardId, producer, targets: [{kind:'circuit', ref}|{kind:'scope'}] }.
+    partialFailureNotices: [],
     // A1 agentic-voice (2026-07-23) — turn-local answer state
     // (PLAN Item 4 `turnAnswerState`). Fed by the answer_user AND
     // inspect_session_state dispatchers (stage6-dispatchers-answer.js);

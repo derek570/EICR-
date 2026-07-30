@@ -116,6 +116,10 @@ import {
   resolveFieldNameAnswer,
   detectStructuredReading,
 } from './stage6-pending-value.js';
+// Plan 2A (partial-failure notices, 2026-07-30) — the shared raw-then-canonical
+// label resolver. Pure and dependency-downstream-only; see its docstring for why
+// the lookup order is load-bearing.
+import { resolvePartialFailureFieldLabel } from './refusal-notices.js';
 
 const require = createRequire(import.meta.url);
 // Schema-driven enum validation for select-typed asks (Bug B from session
@@ -222,6 +226,15 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     opts?.responseEpochRef && typeof opts.responseEpochRef === 'object'
       ? opts.responseEpochRef
       : null;
+  // Plan 2A channel 3 (2026-07-30, feedback id 112) — STAGING hook for the
+  // partial-failure notice channel. Fired once per auto-resolved write that did
+  // not land, with a fully-formed notice spec (see stageAskAutoResolveFailure).
+  // A callback, not the `perTurnWrites` accumulator: this module has never held
+  // the accumulator and giving it one to reach a single array would also hand it
+  // every other per-turn channel. Absent (shadow mode / legacy callers) ⇒
+  // staging silently no-ops, which is the pre-plan-2A behaviour exactly.
+  const stagePartialFailureNotice =
+    typeof opts?.stagePartialFailureNotice === 'function' ? opts.stagePartialFailureNotice : null;
   return async function dispatchAskUser(call, ctx) {
     // F7 Item 3 — a cancellation can land while this ask sits in the gate
     // debounce delay (createAskGateWrapper fires the inner dispatcher on a
@@ -812,6 +825,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // send and resolves through the same channels as any other ask.
       pendingAsks,
       ws,
+      // Plan 2A channel 3 — staging callback for auto-resolved writes that
+      // don't land (closed over perTurnWrites by the harness).
+      stagePartialFailureNotice,
       // F7 Item 2 — the broker fires this on a SUCCESSFUL pvr-* send
       // (source:'pvr') so the post-loop audibility net counts brokered asks.
       onAskUserStarted,
@@ -852,6 +868,76 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
 }
 
 /**
+ * Plan 2A channel 3 (partial-failure notices, 2026-07-30, feedback id 112) —
+ * stage a `write_failed` partial-failure target for ONE auto-resolved write
+ * that did NOT land.
+ *
+ * THE SILENT PATH. `resolved_writes` reports per-circuit `ok:false` in the tool
+ * result body, but nothing in the turn SPEAKS it: the ask itself was answered
+ * (so P4's answered-ask net stands down), a sibling circuit's write produces a
+ * read-back (so marker-② stands down), and the turn is not `allRejected` (so
+ * plan B's generic prompt never fires). On a fan-out answer — "circuits 5 to 10
+ * are 0.4" resolving one ask into six writes — the circuits that failed are
+ * inaudible. That is Audio-First #1 in the zero-times direction.
+ *
+ * WHY THIS DOES NOT STAGE EVERY `ok:false`. `autoResolveWrite` dispatches
+ * through the SAME `WRITE_DISPATCHERS` table as a model-emitted call and is
+ * handed the SAME `perTurnWrites` (`stage6-dispatchers.js:342`), so the
+ * dispatcher's own plan-2A staging has ALREADY run for the two commonest
+ * causes: a `circuit_not_found` validation reject (channel 1) and a non-error
+ * capability SKIP (channels 6a/6b). Staging again here would emit a SECOND
+ * sentence about the same target from a different aggregate — "Circuit 7 wasn't
+ * found, no Zs recorded for it" followed by "Zs didn't save for circuit 7".
+ * That is not the double-mention §3.1 accepts (an ask and a notice serve
+ * different purposes); it is one miss reported twice, which reads as two
+ * separate faults. So the already-covered causes are discriminated out on the
+ * dispatcher's OWN returned body and only the genuinely-uncovered residue is
+ * staged: a dispatcher THROW (nothing staged — the envelope never existed) and
+ * any other rejection code (`wrong_board`, value-shaped rejects, `unknown_tool`)
+ * which channel 1 deliberately does not claim.
+ *
+ * TRUSTED-DISCRIMINATOR CONTRACT (identical to the circuit dispatcher's): the
+ * spoken sentence embeds a field LABEL and a circuit NUMBER, so the label comes
+ * only from `FIELD_SCHEMA.circuit_fields[field].label` and the ref must be a
+ * real integer. When either is untrusted we stage NOTHING — the notice is
+ * dropped rather than rendered from model-controlled text, and the turn keeps
+ * whatever audibility it already had.
+ *
+ * Board writes are excluded: `record_board_reading` carries no circuit, and a
+ * board-scope partial failure has no per-target identity to name.
+ *
+ * @param {((spec: object) => boolean)|null} stageFn harness-supplied callback closed over perTurnWrites
+ * @param {{write: object, result: object|null, producer: string}} args
+ * @returns {void}
+ */
+function stageAskAutoResolveFailure(stageFn, { write, result, producer }) {
+  if (typeof stageFn !== 'function') return;
+  const body = result?.body;
+  // Already covered by channel 6a/6b (capability + low-conf skips).
+  if (body?.skipped === true) return;
+  // Already covered by channel 1 (validation reject inside the dispatcher).
+  if (body?.error?.code === 'circuit_not_found') return;
+  if (write?.tool !== 'record_reading') return;
+  if (!Number.isInteger(write?.circuit)) return;
+  // Raw spelling first, canonical identity only as a fallback — see
+  // resolvePartialFailureFieldLabel for why that order is load-bearing.
+  const label = resolvePartialFailureFieldLabel(FIELD_SCHEMA.circuit_fields, write.field);
+  if (label === null) return;
+  stageFn({
+    reason: 'write_failed',
+    field: write.field,
+    fieldLabel: label,
+    // Aggregate key only — never spoken. The harness callback resolves an
+    // absent id to the session's current board so this target keys the same
+    // way the dispatcher's own targets do (and so the drain's surviving-write
+    // subtraction can match it).
+    boardId: write.board_id ?? null,
+    target: { kind: 'circuit', ref: write.circuit },
+    producer,
+  });
+}
+
+/**
  * Shape the tool_result body. Centralised so the dispatcher's main flow stays
  * legible and the resolution branches are testable in isolation.
  *
@@ -881,6 +967,15 @@ async function buildResolvedBody({
   signal = null,
   generationId = null,
   responseEpochRef = null,
+  // Plan 2A channel 3 — an explicit staging CALLBACK rather than a
+  // `perTurnWrites` argument: this module has never taken the accumulator (the
+  // ask dispatcher writes nothing itself; it delegates to the write dispatchers
+  // through `autoResolveWrite`), and threading the whole accumulator in just to
+  // reach one array would hand this file the ability to mutate every other
+  // per-turn channel. The harness closes the callback over `perTurnWrites` and
+  // resolves the effective board id there. Null in shadow mode / any caller
+  // that doesn't supply it — staging then no-ops.
+  stagePartialFailureNotice = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
@@ -1074,14 +1169,27 @@ async function buildResolvedBody({
           // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
           throwIfStage6Cancelled(signal);
           const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+          const ok = result?.ok !== false;
           dispatched.push({
             tool: write.tool,
             field: write.field,
             circuit: write.circuit,
             value: write.value,
-            ok: result?.ok !== false,
+            ok,
           });
+          if (!ok) {
+            stageAskAutoResolveFailure(stagePartialFailureNotice, {
+              write,
+              result,
+              producer: 'ask_auto_resolve_enum',
+            });
+          }
         } catch (err) {
+          stageAskAutoResolveFailure(stagePartialFailureNotice, {
+            write,
+            result: null,
+            producer: 'ask_auto_resolve_enum_throw',
+          });
           if (logger?.warn) {
             logger.warn('stage6.ask_user_enum_auto_resolve_dispatch_failed', {
               sessionId,
@@ -1173,14 +1281,31 @@ async function buildResolvedBody({
           // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
           throwIfStage6Cancelled(signal);
           const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+          const ok = result?.ok !== false;
           dispatched.push({
             tool: write.tool,
             field: write.field,
             circuit: write.circuit,
             value: write.value,
-            ok: result?.ok !== false,
+            ok,
           });
+          if (!ok) {
+            stageAskAutoResolveFailure(stagePartialFailureNotice, {
+              write,
+              result,
+              producer: 'ask_auto_resolve_value',
+            });
+          }
         } catch (err) {
+          // A cancellation throw lands here too; staging is still correct
+          // because the harness drain is gated on `!cancelled` and drops every
+          // staged notice for a cancelled generation. Discriminating the error
+          // class here would duplicate that gate.
+          stageAskAutoResolveFailure(stagePartialFailureNotice, {
+            write,
+            result: null,
+            producer: 'ask_auto_resolve_value_throw',
+          });
           if (logger?.warn) {
             logger.warn('stage6.ask_user_value_auto_resolve_dispatch_failed', {
               sessionId,
@@ -1281,14 +1406,32 @@ async function buildResolvedBody({
         // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
         throwIfStage6Cancelled(signal);
         const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+        const ok = result?.ok !== false;
         dispatched.push({
           tool: write.tool,
           field: write.field,
           circuit: write.circuit,
           value: write.value,
-          ok: result?.ok !== false,
+          ok,
         });
+        // Plan 2A channel 3, Codex diff-review cycle 1 (lens 3) — this is the
+        // THIRD auto-resolve loop in this file and it was the one the original
+        // wiring missed. Same silence class as the other two: the inspector
+        // dictated a value, ANSWERED the "which circuit?" ask, the resolved
+        // write then failed, and without this the turn says nothing about it.
+        if (!ok) {
+          stageAskAutoResolveFailure(stagePartialFailureNotice, {
+            write,
+            result,
+            producer: 'ask_auto_resolve_circuit',
+          });
+        }
       } catch (err) {
+        stageAskAutoResolveFailure(stagePartialFailureNotice, {
+          write,
+          result: null,
+          producer: 'ask_auto_resolve_circuit_throw',
+        });
         if (logger?.warn) {
           logger.warn('stage6.ask_user_auto_resolve_dispatch_failed', {
             sessionId,

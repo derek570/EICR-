@@ -104,7 +104,17 @@ import {
 // known-but-excluded circuit fields stage `unsupported_clear`, off-schema
 // strings stage the leak-safe `model_contract` off-schema route.
 import { classifyBoardClear } from './stage6-dispatchers-board.js';
-import { stageMandatoryNotice, spokenBoardOrdinal } from './refusal-notices.js';
+// Plan 2A (partial-failure notices, 2026-07-30, feedback id 112) —
+// `stagePartialFailureNotice` is the THIRD notice regime: it answers "part of
+// this turn silently did not land" where plan B's two regimes answer "the whole
+// turn was refused". Staged unconditionally at dispatch; the harness drain
+// arbitrates (and can drop) it later.
+import {
+  stageMandatoryNotice,
+  spokenBoardOrdinal,
+  stagePartialFailureNotice,
+  resolvePartialFailureFieldLabel,
+} from './refusal-notices.js';
 import {
   CLEAR_BOARD_READING_FIELD_ENUM,
   CIRCUIT_FIELD_ENUM,
@@ -140,11 +150,114 @@ function envelope(tool_use_id, body, is_error) {
  * record_reading + clear_reading ONLY; calculators pass their computed
  * targetBoardId, set_field_for_all_circuits uses each iteration tuple's local
  * boardId, and start_dialogue_script resolves its own once.
+ *
+ * EXPORTED for plan 2A channel 3 (2026-07-30): the ask dispatcher's
+ * auto-resolved writes go through THIS dispatcher, so their partial-failure
+ * notices must key their board the same way — otherwise the drain's
+ * surviving-write subtraction compares an unresolved raw id against a resolved
+ * one, misses, and speaks a FALSE "didn't save" over a value that did land.
+ * Exported rather than re-derived in the harness so there stays ONE formula.
  */
-function resolveEffectiveBoardId(session, rawBoardId) {
+export function resolveEffectiveBoardId(session, rawBoardId) {
   const snapshot = session?.stateSnapshot;
   if (!isUnscopedBoardId(rawBoardId)) return rawBoardId;
   return snapshot?.currentBoardId ?? getMainBoardId(snapshot);
+}
+
+// ---- Plan 2A partial-failure staging (2026-07-30) ---------------------------
+
+/**
+ * Stage ONE per-circuit partial-failure target (plan 2A §3.1, feedback id 112).
+ *
+ * The defect class: a turn in which SOME targets landed and others were
+ * rejected or silently skipped spoke only the successes. "Zs for circuits 5 to
+ * 10 is 0.4" on a board where 7 and 8 do not exist read back four values and
+ * said NOTHING about the two misses — the inspector walks away believing six
+ * circuits were recorded (Audio-First #1, in the zero-times direction, for the
+ * half of the turn that failed).
+ *
+ * TRUSTED-DISCRIMINATOR CONTRACT, modelled on `stageClearReadingRefusal`'s
+ * `unsupported_clear` branch below: every component that will be SPOKEN must
+ * come from a trusted source, and when any of them is untrusted we stage
+ * NOTHING rather than render a half-guessed sentence. Staging nothing is safe
+ * because it leaves the turn to marker-②'s generic catch-all, which still
+ * speaks — the floor this plan raises, never removes.
+ *
+ *   - `fieldLabel` comes ONLY from `FIELD_SCHEMA.circuit_fields[field].label`,
+ *     never from the model's raw `field` string (leak safety: an off-schema
+ *     field name must never reach TTS).
+ *   - `circuit` must be `Number.isInteger`. `validateRecordReading` returns
+ *     `circuit_not_found` for a MISSING or non-numeric circuit too (see
+ *     `stage6-dispatch-validation.js`), so without this guard we would render
+ *     "Circuit undefined wasn't found".
+ *
+ * DELIBERATELY NOT guarded on the board ORDINAL (the third guard the
+ * `unsupported_clear` branch applies). A partial-failure sentence embeds no
+ * board component at all — the board id is only an aggregate KEY component, so
+ * that two boards' same-numbered misses never merge into one line — so
+ * requiring a renderable ordinal here would invent a fail-silent drop the plan
+ * never asks for.
+ *
+ * @returns {boolean} true when a target was staged (test/telemetry convenience).
+ */
+function stageCircuitPartialFailure(ctx, { reason, field, circuit, boardId, producer }) {
+  if (!Number.isInteger(circuit)) return false;
+  return stagePartialFailureTarget(ctx, {
+    reason,
+    field,
+    boardId,
+    producer,
+    target: { kind: 'circuit', ref: circuit },
+  });
+}
+
+/**
+ * Stage a SCOPE-level partial-failure target ("all circuits", plan 2A §3.1) —
+ * used by `set_field_for_all_circuits`' pre-iteration capability gate, which
+ * skips the whole fan-out before the candidate ref set has been computed.
+ *
+ * §3.1 offers two options for that gate: compute the intended target set
+ * without mutation, or "stage an explicit scope-level target record". We take
+ * the SECOND: the gate provably runs before `requestedExcludes`, the snapshot
+ * read and the iteration plan, so computing the ref set there would duplicate
+ * `listCircuitRefsInBoard` + `getCircuitBucket` + both scope filters — a
+ * parallel code path that could silently disagree with the real one about which
+ * circuits were meant.
+ *
+ * A scope target names no refs, so it is reachable ONLY from a family whose
+ * every variant is true of a whole-scope skip; `stagePartialFailureNotice`
+ * enforces that (`PARTIAL_FAILURE_SCOPE_FAMILIES`) rather than trusting this
+ * call site to remember.
+ */
+function stageScopePartialFailure(ctx, { reason, field, boardId, producer }) {
+  return stagePartialFailureTarget(ctx, {
+    reason,
+    field,
+    boardId,
+    producer,
+    target: { kind: 'scope' },
+  });
+}
+
+/**
+ * Shared body of the two stagers above: resolve the TRUSTED field label, resolve
+ * the effective board id (aggregate key only — never spoken), delegate.
+ */
+function stagePartialFailureTarget(ctx, { reason, field, boardId, producer, target }) {
+  const { session, perTurnWrites } = ctx;
+  if (typeof field !== 'string') return false;
+  // Raw spelling first, canonical identity only as a fallback — see
+  // resolvePartialFailureFieldLabel for why that order is load-bearing.
+  const schemaLabel = resolvePartialFailureFieldLabel(FIELD_SCHEMA.circuit_fields, field);
+  if (schemaLabel === null) return false;
+  return stagePartialFailureNotice(perTurnWrites, {
+    reason,
+    field,
+    fieldLabel: schemaLabel,
+    boardId: resolveEffectiveBoardId(session, boardId) ?? null,
+    target,
+    producer,
+  });
 }
 
 // ---- record_reading --------------------------------------------------------
@@ -243,6 +356,21 @@ export async function dispatchRecordReading(call, ctx) {
         reason: 'lim_ranged_write_capability_missing',
       },
     });
+    // Plan 2A channel 6a — an `is_error:false` capability SKIP is
+    // structurally invisible to every whole-turn net: it is not an error, so
+    // it can never make a turn `allRejected`, and it produces no write and no
+    // confirmation, so a sibling success makes the turn "audible" and
+    // marker-② stands down. Before 2A a mixed turn dropped this target in
+    // complete silence. (A skip-ONLY turn did draw marker-②'s generic
+    // apology — that pre-plan floor is preserved; this notice just replaces
+    // the vague line with a specific one that names the target.)
+    stageCircuitPartialFailure(ctx, {
+      reason: 'lim_capability_gated',
+      field: input.field,
+      circuit: input.circuit,
+      boardId: input.board_id,
+      producer: 'record_reading_lim_capability',
+    });
     return envelope(
       call.tool_call_id,
       { ok: true, skipped: true, reason: 'lim_ranged_write_capability_missing' },
@@ -265,6 +393,23 @@ export async function dispatchRecordReading(call, ctx) {
       validation_error: err,
       input_summary: { field: input.field, circuit: input.circuit },
     });
+    // Plan 2A channel 1 — the id-112 mechanism. `circuit_not_found` ONLY:
+    // `validateBoardScope` runs first and its `wrong_board` outcome is a
+    // DIFFERENT class (the circuit may well exist, on another board), so
+    // "circuit N wasn't found" would be a false statement about the
+    // installation. Every other `validateRecordReading` code
+    // (`value_out_of_range` etc.) is a value-shaped rejection the model can
+    // and does re-ask about, and is deliberately left to it — a notice there
+    // would double up on the model's own clarification.
+    if (err.code === 'circuit_not_found') {
+      stageCircuitPartialFailure(ctx, {
+        reason: 'circuit_not_found',
+        field: input.field,
+        circuit: input.circuit,
+        boardId: input.board_id,
+        producer: 'record_reading_circuit_not_found',
+      });
+    }
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
@@ -337,6 +482,17 @@ export async function dispatchRecordReading(call, ctx) {
         confidence: input.confidence,
         reason: 'low_conf_readback_capability_missing',
       },
+    });
+    // Plan 2A channel 6b — same `is_error:false` silent-skip shape as 6a.
+    // The wording family for this one asks the inspector to repeat the value
+    // (unlike the capability families, a repeat CAN succeed: the model may
+    // score the second attempt above the gate).
+    stageCircuitPartialFailure(ctx, {
+      reason: 'low_conf_capability_gated',
+      field: input.field,
+      circuit: input.circuit,
+      boardId: input.board_id,
+      producer: 'record_reading_low_conf_capability',
     });
     return envelope(
       call.tool_call_id,
@@ -1878,6 +2034,16 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       validation_error: null,
       input_summary: { field: input.field, reason: 'lim_ranged_write_capability_missing' },
     });
+    // Plan 2A channel 6c — the bulk twin of 6a, staged as a SCOPE target
+    // because this gate is PRE-iteration: nothing here knows which refs were
+    // going to be written. See stageScopePartialFailure for why we don't
+    // reconstruct that set.
+    stageScopePartialFailure(ctx, {
+      reason: 'lim_capability_gated',
+      field: input.field,
+      boardId: input.board_id,
+      producer: 'set_field_for_all_circuits_lim_capability',
+    });
     return envelope(
       call.tool_call_id,
       { ok: true, skipped: true, reason: 'lim_ranged_write_capability_missing' },
@@ -1954,13 +2120,48 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   for (const { boardId, refs } of iterationPlan) {
     for (const ref of refs) {
       const bucket = getCircuitBucket(snapshot, ref, boardId);
-      if (!bucket) continue;
+      if (!bucket) {
+        // Plan 2A (2026-07-30) §3.1 — the ONE genuinely silent channel inside
+        // this loop. `listCircuitRefsInBoard` offered the ref but
+        // `getCircuitBucket` can't resolve a record for it (a registry/bucket
+        // disagreement), so the ref is dropped with no `applied[]` entry, no
+        // `skipped[]` entry and nothing spoken. It joins channel 1's
+        // `circuit_not_found` machinery.
+        //
+        // The exclusion test is HOISTED above the staging deliberately: a ref
+        // the inspector explicitly asked us to skip must stay silent, and
+        // without this ordering an excluded ref that also missed its bucket
+        // would announce a failure the inspector had requested. (The real
+        // `continue` for excludes stays in its original position below so the
+        // non-miss path is byte-unchanged.)
+        if (!requestedExcludes.has(ref)) {
+          stageCircuitPartialFailure(ctx, {
+            reason: 'circuit_not_found',
+            field: input.field,
+            circuit: ref,
+            boardId,
+            producer: 'set_field_for_all_circuits_bucket_miss',
+          });
+        }
+        continue;
+      }
       // PLAN-backend-final.md Phase 8.2 — exclude_circuits subtractive
       // filter. Runs BEFORE the scope check so an excluded ref doesn't
       // also pollute `skipped[]` with a scope reason — the inspector's
       // intent is "skip 3", not "skip 3 because spare". `excluded[]` is
       // surfaced as its own count below.
       if (requestedExcludes.has(ref)) continue;
+      // Plan 2A (2026-07-30) §3.1 — the two SCOPE-POLICY skips below
+      // (`spare_circuit`, `no_rcd`) are DESIGNED-SILENT for a scope
+      // instruction and are deliberately NOT partial-failure targets. The
+      // inspector said "all the non-spare circuits": a circuit excluded
+      // BECAUSE it is spare is the instruction working as asked, not a
+      // failure, and announcing every spare slot on a 12-way board would bury
+      // the read-back the turn actually exists for. They already surface in
+      // the `skipped[]` envelope, so the model can name them if the inspector
+      // asks. (An EXPLICITLY-NAMED ref rejected by policy is a different case
+      // and does join the notice channel — that path is `record_reading`'s,
+      // above, not this fan-out's.) Pinned by test.
       if (scope === 'non_spare') {
         // Two ways a circuit reads as "spare":
         //   (a) the designation literally contains the word "spare" — but
