@@ -16,6 +16,9 @@
 import { jest } from '@jest/globals';
 import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
 import { ExtractionCancelledError } from '../extraction/stage6-control-flow-errors.js';
+import { createAutoResolveWriteHook } from '../extraction/stage6-dispatchers.js';
+import { bundleToolCallsIntoResult } from '../extraction/stage6-event-bundler.js';
+import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 // F7 Item 2 step 3b — a null/closed ws now fast-fails the initial ask, so
 // these resolution-logic tests use an OPEN ws to keep the ask pending until
 // the external resolve drives buildResolvedBody.
@@ -638,6 +641,47 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
+  test('verbatim id-104 crosses the real write hook and bundles one grouped read-back', async () => {
+    const session = buildSession(multiCircuits.slice(0, 3));
+    const perTurnWrites = createPerTurnWrites();
+    const autoResolveWrite = createAutoResolveWriteHook(
+      session,
+      noopLogger(),
+      'turn-multi',
+      perTurnWrites
+    );
+    const run = startMultiDispatcher({ session, autoResolveWrite });
+
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: "I said it's for 2 lighting circuits and the smoke alarm",
+    });
+    const body = JSON.parse((await run.promise).content);
+    expect(body.match_status).toBe('full');
+
+    const result = bundleToolCallsIntoResult(
+      perTurnWrites,
+      { questions: [] },
+      {
+        confirmationsEnabled: true,
+        totalCircuitsInJob: 3,
+        turnId: 'turn-multi',
+      }
+    );
+    const applied = (result.extracted_readings ?? []).filter(
+      (reading) => reading.field === 'number_of_points'
+    );
+    expect(applied.map((reading) => reading.circuit).sort((a, b) => a - b)).toEqual([1, 2, 3]);
+
+    const spoken = (result.confirmations ?? []).filter(
+      (confirmation) => confirmation.field === 'number_of_points'
+    );
+    expect(spoken).toHaveLength(1);
+    expect([...spoken[0].circuits].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+    expect(spoken.filter((confirmation) => Number.isInteger(confirmation.circuit))).toHaveLength(0);
+  });
+
   test('partial no-match stages one ordinal notice only after a sibling write succeeds', async () => {
     const run = startMultiDispatcher();
     await tick();
@@ -904,6 +948,40 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       expect.objectContaining({
         tool: 'record_board_reading',
         circuit: 0,
+        ok: true,
+      }),
+    ]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
+
+  test('an exact-designation board follow-up uses its successful census ref without metadata', async () => {
+    const run = startMultiDispatcher({
+      inputOverrides: { context_field: 'earth_loop_impedance_ze' },
+      pendingWriteOverrides: {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+      },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and please',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'Upstairs Lights',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({ match_status: 'full', unresolved: [] });
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({
+        tool: 'record_board_reading',
+        circuit: 4,
         ok: true,
       }),
     ]);

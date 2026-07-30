@@ -786,6 +786,20 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     });
   });
 
+  test('a single numeric target with a negation qualifier remains on the scalar path', () => {
+    const verdict = resolveMulti('circuit 3 without the RCD');
+    expect(verdict).toEqual({
+      kind: 'auto_resolve',
+      writes: [
+        expect.objectContaining({
+          circuit: 3,
+          field: 'measured_zs_ohm',
+          value: '0.42',
+        }),
+      ],
+    });
+  });
+
   test('whole-reply C1 fuzzy still resolves one circuit', () => {
     const verdict = resolveMulti('upstars lights');
     expect(verdict.kind).toBe('auto_resolve');

@@ -850,6 +850,8 @@ function unresolvedSpan({
  */
 function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, contextBoardId }) {
   const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
+  const normalisedText = stripDescriptionWrappers(text);
+  if (!hasMultiTargetSyntax(normalisedText)) return null;
   if (hasCorrectionOrNegationSyntax(text)) {
     return {
       kind: 'escalate',
@@ -857,8 +859,6 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       available_circuits: circuits,
     };
   }
-  const normalisedText = stripDescriptionWrappers(text);
-  if (!hasMultiTargetSyntax(normalisedText)) return null;
 
   // Whole-designation-first preserves shipped C1 fuzzy behaviour and protects
   // a real designation containing "and" from segmentation.
@@ -1300,6 +1300,18 @@ export function resolveCircuitAnswer({
   const numericRef = extractCircuitRef(lower);
   if (numericRef !== null) {
     return { kind: 'auto_resolve', writes: [buildWrite(pendingWrite, numericRef, contextBoardId)] };
+  }
+
+  // The multi-description helper deliberately declines single-target replies.
+  // Keep a retracted DESIGNATION from being swallowed by scalar substring
+  // matching, while preserving the shipped numeric path above for replies
+  // such as "circuit 3 without the RCD".
+  if (hasCorrectionOrNegationSyntax(lower)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+      available_circuits: availableCircuits ?? [],
+    };
   }
 
   // Designation match. Require the cleaned residue to be at least 2 chars —

@@ -1677,16 +1677,28 @@ async function buildResolvedBody({
             );
             const collectSuccessfulSelectedRefs = () => {
               if (pendingWrite.tool === 'record_board_reading') {
-                const collapsedBoardSlotSucceeded = followWrites.some((write) =>
+                const successfulBoardWrites = followWrites.filter((write) =>
                   successfulDispatchedSlots.has(dispatchSlotKey(write))
                 );
-                if (!collapsedBoardSlotSucceeded) return [];
-                return [
+                if (successfulBoardWrites.length === 0) return [];
+                const metadataRefs = [
                   ...new Set(
                     (Array.isArray(followVerdict.selected_circuit_refs)
                       ? followVerdict.selected_circuit_refs
                       : []
                     ).filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                  ),
+                ];
+                if (metadataRefs.length > 0) return metadataRefs;
+                // Scalar designation fallback verdicts predate the
+                // multi-description metadata, but their write circuit is
+                // still census-validated. Admit only its successful positive
+                // ref; circuit 0 and absent refs can never satisfy scope.
+                return [
+                  ...new Set(
+                    successfulBoardWrites
+                      .map((write) => write?.circuit)
+                      .filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
                   ),
                 ];
               }
